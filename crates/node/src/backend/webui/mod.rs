@@ -17,18 +17,18 @@ use crate::deploy::normalize_deployment_name;
 use crate::gateway::GatewayState;
 use crate::gguf;
 use crate::network::PeerInfo;
-use crate::plan::{self, DEFAULT_RESERVE_PCT, PeerBudget};
+use crate::plan::{self, PeerBudget, DEFAULT_RESERVE_PCT};
 use crate::runtime::{NodeConfig, RuntimeStatus};
 use crate::sysmon::{self, SystemLoad};
 use crate::thermal::ThermalPolicy;
 use anyhow::Context;
 use axum::{
-    Json, Router,
     body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -144,6 +144,7 @@ mod cluster;
 mod jobs;
 mod jobs_apply;
 mod lifecycle;
+mod network;
 mod params;
 mod routes;
 mod setup;
@@ -155,6 +156,7 @@ pub use cluster::*;
 pub use jobs::*;
 pub use jobs_apply::*;
 pub use lifecycle::*;
+pub use network::*;
 pub use params::*;
 pub use routes::*;
 pub use setup::*;

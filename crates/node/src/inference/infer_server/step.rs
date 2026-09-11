@@ -1,4 +1,5 @@
 use super::*;
+use crate::prefill::Phase;
 
 pub(super) struct PreparedStep {
     pub(super) sid_key: String,
@@ -10,6 +11,10 @@ pub(super) struct PreparedStep {
     pub(super) capture_block: Option<u32>,
     pub(super) input: PreparedStepInput,
     pub(super) queued_at: Instant,
+    pub(super) scheduler_wait_us: u64,
+    pub(super) scheduler_wait_reason: Option<&'static str>,
+    pub(super) scheduler_session_existing: bool,
+    pub(super) pipeline_session: bool,
 }
 
 pub(super) enum PreparedStepInput {
@@ -29,6 +34,7 @@ pub(crate) async fn handle_step(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    app.request_activity.mark_now();
     let _load_guard = app.loads.acquire(&app.load_node_id).await;
     // Só o cabeçalho é lido aqui: um quadro de um item - o caso normal de
     // todo salto interno - não pode pagar uma cópia do estado oculto inteiro
@@ -61,10 +67,11 @@ pub(crate) async fn handle_step(
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
-    let (meta, tensor) = match wire::decode_inference_request(&body) {
+    let (mut meta, tensor) = match wire::decode_inference_request(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
+    meta["telemetry_source_peer_id"] = json!(app.load_node_id.clone());
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
     let wire_dtype = match meta.get("dtype").and_then(|value| value.as_str()) {
         Some(value) => match WireDtype::parse(value) {
@@ -74,12 +81,10 @@ pub(crate) async fn handle_step(
         None => return err400("quadro sem dtype de estado oculto"),
     };
 
-    let sid_key = meta
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("__session__")
-        .to_string();
+    let sid_key = match required_session_id(&meta) {
+        Ok(session_id) => session_id,
+        Err(error) => return err400(error),
+    };
     // Present and non-empty only when the sender negotiated relay mode
     // (`PipelinePlan::supports_relay_chain`) — the ordered chain from *our*
     // next hop through the tail. An empty list still parses as `Some(vec![])`
@@ -97,6 +102,10 @@ pub(crate) async fn handle_step(
         });
     let remote_stream = meta
         .get("remote_stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let pipeline_session = meta
+        .get("pipeline_session")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
@@ -122,6 +131,13 @@ pub(crate) async fn handle_step(
     // A largura de lote que o gateway quer na rodada seguinte, gerada na
     // cabeça (do `speculate`) e ecoada até a cauda (ver o doc de `mtp_k`).
     let mtp_k: Option<u32> = meta.get("mtp_k").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let profiling = crate::prefill::TelemetryContext::from_meta(
+        &meta,
+        app.load_node_id.clone(),
+        Phase::Decode,
+        processing_started,
+        None,
+    );
 
     let input_prepare_started = Instant::now();
     let tensor = match tensor {
@@ -174,6 +190,11 @@ pub(crate) async fn handle_step(
         batch_tokens,
         mtp_k,
         queued_at,
+        scheduler_wait_us: 0,
+        scheduler_wait_reason: None,
+        scheduler_session_existing: false,
+        pipeline_session,
+        profiling: profiling.clone(),
     }) {
         Ok(receiver) => receiver.await,
         Err(SchedulerSubmitError::Full { limit }) => {
@@ -215,6 +236,24 @@ pub(crate) async fn handle_step(
         Ok(v) => v,
         Err(e) => return err500(e),
     };
+    if let Some(context) = profiling.as_ref() {
+        reply.timings.record_profile_span(
+            context,
+            "node-processing",
+            context.origin,
+            Instant::now(),
+            None,
+            None,
+        );
+    }
+    if local_meta
+        .get("token_id")
+        .and_then(|value| value.as_u64())
+        .is_some()
+    {
+        reply.timings.first_token_serialized_us = processing_started.elapsed().as_micros() as u64;
+        reply.timings.first_token_serialized_at_ms = super::core::wall_clock_ms();
+    }
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
     local_meta["node_timings"] = reply.timings.json();
     local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
@@ -304,7 +343,8 @@ pub(crate) async fn handle_step(
     let (residual, shape) = local_tensor.expect("should_relay implies local_tensor is Some");
     let forward_meta = step_forward_meta(&sid_for_forward, &meta, &local_meta, &hops[0]);
 
-    let bubbled = match relay_and_bubble(
+    let downstream_started = Instant::now();
+    let mut bubbled = match relay_and_bubble(
         http_client(),
         &hops,
         "/v1/step",
@@ -321,6 +361,8 @@ pub(crate) async fn handle_step(
         Err(resp) => return resp,
     };
     if remote_stream {
+        bubbled["remote_stream_downstream_wait_ms"] =
+            json!(downstream_started.elapsed().as_millis() as u64);
         let accept_count = bubbled
             .get("accept_count")
             .and_then(Value::as_u64)
@@ -390,6 +432,7 @@ pub(crate) async fn handle_step_stream(
     _headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    app.request_activity.mark_now();
     let (meta, tensor) = match wire::decode_inference_request(&body) {
         Ok(v) => v,
         Err(error) => return err400(format!("quadro inválido: {error}")),
@@ -397,11 +440,19 @@ pub(crate) async fn handle_step_stream(
     if tensor.is_some() {
         return err400("transporte remoto por lotes não aceita estado oculto");
     }
-    let Some(reply_to) = meta.get("reply_to").cloned() else {
+    let Some(mut reply_to) = meta.get("reply_to").cloned() else {
         return err400("transporte remoto por lotes sem reply_to");
     };
     if reply_to.get("ticket").and_then(Value::as_str).is_none() {
         return err400("transporte remoto por lotes sem ticket");
+    }
+    // The callback is the only response path for this stream. Carry the
+    // request identity alongside its ticket so profiling spans from the
+    // remote head remain correlated after the control request returns.
+    for field in ["trace_id", "request_id", "pipeline_id", "session_id"] {
+        if let Some(value) = meta.get(field) {
+            reply_to[field] = value.clone();
+        }
     }
     let Some(dtype) = meta
         .get("dtype")
@@ -410,21 +461,26 @@ pub(crate) async fn handle_step_stream(
     else {
         return err400("quadro sem dtype de estado oculto");
     };
-    if meta.get("session_id").and_then(Value::as_str).is_none()
-        || meta.get("token_id").and_then(Value::as_i64).is_none()
+    if required_session_id(&meta).is_err() || meta.get("token_id").and_then(Value::as_i64).is_none()
     {
         return err400("transporte remoto por lotes sem sessão ou token inicial");
     }
 
     let loads = app.loads.clone();
     let load_node_id = app.load_node_id.clone();
-    let (producer_tx, producer_rx) = mpsc::channel(16);
-    tokio::spawn(async move {
+    let source_node_id = load_node_id.clone();
+    let stream_started = Instant::now();
+    // Keep enough completed tokens in flight to absorb short network tails.
+    // The queue is bounded, so a persistently slow callback still applies
+    // backpressure instead of growing memory without limit.
+    let (producer_tx, producer_rx) = mpsc::channel(64);
+    let producer = async move {
         let _load_guard = loads.acquire(&load_node_id).await;
         let producer = remote_stream_producer(app, meta, dtype, producer_tx);
-        let emitter = remote_stream_emitter(reply_to, producer_rx);
-        let _ = tokio::join!(producer, emitter);
-    });
+        let emitter = remote_stream_emitter(reply_to, producer_rx, stream_started, source_node_id);
+        run_remote_stream_tasks(producer, emitter).await;
+    };
+    tokio::spawn(producer);
 
     match wire::encode(
         &json!({"stream_accepted": true, "processing_ms": 0, "node_timings": {}}),
@@ -441,16 +497,62 @@ pub(crate) async fn handle_step_stream(
     }
 }
 
+/// Keep the producer and emitter coupled for the lifetime of one stream.
+///
+/// The HTTP control request returns as soon as the stream is accepted, so a
+/// client disconnect cannot cancel the task that owns the autoregressive
+/// loop. If the emitter notices a gone gateway first, waiting on a plain
+/// `join!` would leave that loop running until its next callback or until the
+/// inference timeout. Aborting the producer at that boundary releases its
+/// scheduler admission and its generation KV promptly. When the producer
+/// finishes normally, the emitter is still allowed to drain the bounded
+/// queue and deliver the final token.
+async fn run_remote_stream_tasks<P, E>(producer: P, emitter: E)
+where
+    P: std::future::Future<Output = ()> + Send + 'static,
+    E: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut producer = tokio::spawn(producer);
+    let mut emitter = tokio::spawn(emitter);
+
+    tokio::select! {
+        _ = &mut producer => {
+            let _ = emitter.await;
+        }
+        _ = &mut emitter => {
+            producer.abort();
+            let _ = producer.await;
+        }
+    }
+}
+
 pub(super) struct RemoteStreamToken {
     pub(super) token_id: u32,
+    pub(super) token_index: u64,
     pub(super) text: String,
     pub(super) done: bool,
     pub(super) processing_ms: u64,
     pub(super) node_timings: Option<Value>,
+    /// Contributions from peers after the remote head. The head's own
+    /// processing remains in `processing_ms`/`node_timings`; these entries
+    /// preserve the rest of the ordered pipeline for the callback batch.
+    pub(super) hop_timings: Option<Value>,
     pub(super) speculated: bool,
     pub(super) speculation_active: bool,
     pub(super) speculation_disabled_reason: Option<String>,
+    pub(super) speculation_disabled_detail: Option<String>,
     pub(super) next_draft: Option<Vec<i32>>,
+    /// Wall time spent waiting for the next hop to finish this token. This
+    /// includes that hop's compute and its transport, so it is not reported
+    /// as local queue time.
+    pub(super) downstream_wait_ms: u64,
+    /// Momento monotônico em que o produtor terminou de montar este token.
+    /// Não é serializado: serve apenas para separar produção de espera local.
+    pub(super) ready_at: Instant,
+    /// Momento monotônico em que o token entrou no canal depois de adquirir
+    /// o permit. Separar este ponto de `ready_at` torna a contrapressão do
+    /// `Sender` observável, sem chamar todo o intervalo de fila.
+    pub(super) enqueued_at: Instant,
 }
 
 pub(super) enum RemoteStreamItem {
@@ -458,10 +560,41 @@ pub(super) enum RemoteStreamItem {
     Error(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RemoteStreamWaitBreakdown {
+    interval_ms: u64,
+    producer_ms: u64,
+    channel_send_ms: u64,
+    queue_ms: u64,
+}
+
+fn overlap_ms(start: Instant, end: Instant, window_start: Instant, window_end: Instant) -> u64 {
+    let start = start.max(window_start);
+    let end = end.min(window_end);
+    end.saturating_duration_since(start).as_millis() as u64
+}
+
+fn remote_stream_wait_breakdown(
+    wait_started: Instant,
+    ready_at: Instant,
+    enqueued_at: Instant,
+    received_at: Instant,
+) -> RemoteStreamWaitBreakdown {
+    RemoteStreamWaitBreakdown {
+        interval_ms: received_at
+            .saturating_duration_since(wait_started)
+            .as_millis() as u64,
+        producer_ms: overlap_ms(wait_started, ready_at, wait_started, received_at),
+        channel_send_ms: overlap_ms(ready_at, enqueued_at, wait_started, received_at),
+        queue_ms: overlap_ms(enqueued_at, received_at, wait_started, received_at),
+    }
+}
+
 pub(super) fn remote_stream_install_draft(
     step_meta: &mut Value,
     next_draft: Option<&[i32]>,
     disabled_reason: Option<&str>,
+    disabled_detail: Option<&str>,
 ) -> bool {
     let Some(object) = step_meta.as_object_mut() else {
         return false;
@@ -476,6 +609,9 @@ pub(super) fn remote_stream_install_draft(
         object.remove("speculate");
         if let Some(reason) = disabled_reason {
             object.insert("speculation_disabled_reason".into(), json!(reason));
+        }
+        if let Some(detail) = disabled_detail {
+            object.insert("speculation_disabled_detail".into(), json!(detail));
         }
         false
     }
@@ -565,6 +701,28 @@ pub(super) async fn remote_stream_producer(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let token_index = step_meta
+            .get("telemetry_token_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let hop_timings = reply_meta
+            .get("hop_timings")
+            .and_then(Value::as_array)
+            .map(|hops| {
+                Value::Array(
+                    hops.iter()
+                        .map(|hop| {
+                            let mut hop = hop.clone();
+                            hop["span_count"] = json!(accepted.len().max(1));
+                            hop
+                        })
+                        .collect(),
+                )
+            });
+        let downstream_wait_ms = reply_meta
+            .get("remote_stream_downstream_wait_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let requested_mtp = Speculate::from_meta(&step_meta)
             .is_some_and(|speculate| speculate.source == DraftSource::Mtp);
         let next_draft = reply_meta
@@ -599,32 +757,50 @@ pub(super) async fn remote_stream_producer(
                 .unwrap_or(SPECULATION_REASON_MODEL_WITHOUT_MTP)
                 .to_string()
         });
+        let speculation_disabled_detail = (!speculation_active && requested_mtp).then(|| {
+            reply_meta
+                .get("speculation_disabled_detail")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    reply_meta
+                        .get("speculation_disabled_reason")
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("nenhum detalhe foi devolvido pela cauda")
+                .to_owned()
+        });
         if requested_mtp {
             remote_stream_install_draft(
                 &mut step_meta,
                 next_draft.as_deref(),
                 speculation_disabled_reason.as_deref(),
+                speculation_disabled_detail.as_deref(),
             );
         }
         if !accepted.is_empty() {
             for (index, (token_id, text)) in accepted.iter().enumerate() {
-                if sender
-                    .send(RemoteStreamItem::Token(RemoteStreamToken {
-                        token_id: *token_id,
-                        text: text.clone(),
-                        done: done && index + 1 == accepted.len(),
-                        processing_ms: if index == 0 { processing_ms } else { 0 },
-                        node_timings: (index == 0).then(|| node_timings.clone()).flatten(),
-                        speculated,
-                        speculation_active,
-                        speculation_disabled_reason: speculation_disabled_reason.clone(),
-                        next_draft: (index == 0).then(|| next_draft.clone()).flatten(),
-                    }))
-                    .await
-                    .is_err()
-                {
+                let ready_at = Instant::now();
+                let Ok(permit) = sender.reserve().await else {
                     return;
-                }
+                };
+                let enqueued_at = Instant::now();
+                permit.send(RemoteStreamItem::Token(RemoteStreamToken {
+                    token_id: *token_id,
+                    token_index: token_index.saturating_add(index as u64),
+                    text: text.clone(),
+                    done: done && index + 1 == accepted.len(),
+                    processing_ms: if index == 0 { processing_ms } else { 0 },
+                    node_timings: (index == 0).then(|| node_timings.clone()).flatten(),
+                    hop_timings: (index == 0).then(|| hop_timings.clone()).flatten(),
+                    speculated,
+                    speculation_active,
+                    speculation_disabled_reason: speculation_disabled_reason.clone(),
+                    speculation_disabled_detail: speculation_disabled_detail.clone(),
+                    next_draft: (index == 0).then(|| next_draft.clone()).flatten(),
+                    downstream_wait_ms: if index == 0 { downstream_wait_ms } else { 0 },
+                    ready_at,
+                    enqueued_at,
+                }));
             }
             if done {
                 return;
@@ -636,6 +812,8 @@ pub(super) async fn remote_stream_producer(
             if let Some(token_id) = accepted.last().map(|(token_id, _)| *token_id) {
                 step_meta["token_id"] = json!(token_id);
             }
+            step_meta["telemetry_token_index"] =
+                json!(token_index.saturating_add(accepted.len() as u64));
             continue;
         }
 
@@ -647,31 +825,37 @@ pub(super) async fn remote_stream_producer(
                 .await;
             return;
         };
-        if sender
-            .send(RemoteStreamItem::Token(RemoteStreamToken {
-                token_id: token_id as u32,
-                text: reply_meta
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                done,
-                processing_ms,
-                node_timings,
-                speculated,
-                speculation_active,
-                speculation_disabled_reason,
-                next_draft,
-            }))
-            .await
-            .is_err()
-        {
+        let ready_at = Instant::now();
+        let Ok(permit) = sender.reserve().await else {
             return;
-        }
+        };
+        let enqueued_at = Instant::now();
+        permit.send(RemoteStreamItem::Token(RemoteStreamToken {
+            token_id: token_id as u32,
+            token_index,
+            text: reply_meta
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            done,
+            processing_ms,
+            node_timings,
+            hop_timings,
+            speculated,
+            speculation_active,
+            speculation_disabled_reason,
+            speculation_disabled_detail,
+            next_draft,
+            downstream_wait_ms,
+            ready_at,
+            enqueued_at,
+        }));
         if done {
             return;
         }
         step_meta["token_id"] = json!(token_id);
+        step_meta["telemetry_token_index"] = json!(token_index.saturating_add(1));
     }
 }
 
@@ -713,6 +897,62 @@ pub(super) fn aggregate_remote_node_timings(items: &[RemoteStreamItem]) -> Value
     Value::Object(merged)
 }
 
+fn add_remote_timing_value(target: &mut Value, incoming: &Value) {
+    let (Some(target), Value::Object(incoming)) = (target.as_object_mut(), incoming) else {
+        return;
+    };
+    for (key, value) in incoming {
+        if key == "node_timings" {
+            let nested = target.entry(key.clone()).or_insert_with(|| json!({}));
+            add_remote_timing_value(nested, value);
+        } else if key == "engine_mismatch" {
+            let mismatch = target.get(key).and_then(Value::as_bool).unwrap_or(false)
+                || value.as_bool().unwrap_or(false);
+            target.insert(key.clone(), json!(mismatch));
+        } else if key.ends_with("_ms")
+            || matches!(
+                key.as_str(),
+                "round_trip_ms"
+                    | "bytes_sent"
+                    | "bytes_received"
+                    | "hidden_state_bytes_sent"
+                    | "hidden_state_bytes_received"
+                    | "span_count"
+            )
+        {
+            let total = target.get(key).and_then(Value::as_f64).unwrap_or(0.0)
+                + value.as_f64().unwrap_or(0.0);
+            target.insert(key.clone(), json!(total));
+        } else if !target.contains_key(key) {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn aggregate_remote_hop_timings(items: &[RemoteStreamItem]) -> Value {
+    let mut merged: Vec<Value> = Vec::new();
+    for item in items {
+        let RemoteStreamItem::Token(token) = item else {
+            continue;
+        };
+        let Some(Value::Array(hops)) = &token.hop_timings else {
+            continue;
+        };
+        for (index, hop) in hops.iter().enumerate() {
+            if let Some(current) = merged.get_mut(index) {
+                add_remote_timing_value(current, hop);
+            } else {
+                let mut hop = hop.clone();
+                if hop.get("span_count").is_none() {
+                    hop["span_count"] = json!(1);
+                }
+                merged.push(hop);
+            }
+        }
+    }
+    Value::Array(merged)
+}
+
 pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<String>, bool) {
     let mut tokens = Vec::new();
     let mut processing_ms = 0_u64;
@@ -720,12 +960,14 @@ pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<
     let mut error = None;
     let mut status = None;
     let mut next_draft = None;
+    let mut downstream_wait_ms = 0_u64;
     for item in items {
         match item {
             RemoteStreamItem::Token(token) => {
                 tokens.push(json!({
                     "token_id": token.token_id,
                     "text": token.text,
+                    "token_index": token.token_index,
                 }));
                 processing_ms = processing_ms.saturating_add(token.processing_ms);
                 done |= token.done;
@@ -733,26 +975,32 @@ pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<
                     token.speculated,
                     token.speculation_active,
                     token.speculation_disabled_reason.clone(),
+                    token.speculation_disabled_detail.clone(),
                 ));
                 if next_draft.is_none() {
                     next_draft = token.next_draft.clone();
                 }
+                downstream_wait_ms = downstream_wait_ms.max(token.downstream_wait_ms);
             }
             RemoteStreamItem::Error(message) => error = Some(message.clone()),
         }
     }
     let terminal = done || error.is_some();
-    let (speculated, speculation_active, speculation_disabled_reason) =
-        status.unwrap_or((false, false, None));
+    let (speculated, speculation_active, speculation_disabled_reason, speculation_disabled_detail) =
+        status.unwrap_or((false, false, None, None));
     let batch = json!({
         "accepted": tokens,
         "done": done && error.is_none(),
         "processing_ms": processing_ms,
         "node_timings": aggregate_remote_node_timings(items),
+        "hop_timings": aggregate_remote_hop_timings(items),
+        "span_count": tokens.len(),
         "speculated": speculated,
         "speculation_active": speculation_active,
         "speculation_disabled_reason": speculation_disabled_reason,
+        "speculation_disabled_detail": speculation_disabled_detail,
         "next_draft": next_draft,
+        "remote_stream_downstream_wait_ms": downstream_wait_ms,
     });
     (batch, error, terminal)
 }
@@ -760,9 +1008,45 @@ pub(super) fn remote_stream_batch(items: &[RemoteStreamItem]) -> (Value, Option<
 pub(super) async fn remote_stream_emitter(
     reply_to: Value,
     receiver: mpsc::Receiver<RemoteStreamItem>,
+    stream_started: Instant,
+    source_node_id: String,
 ) {
-    emit_remote_stream_batches(reply_to, receiver, |reply_to, batch| async move {
-        crate::direct::deliver_stream_batch(http_client(), &reply_to, batch).await
+    let stream_id = reply_to
+        .get("ticket")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    let mut frames_sent = 0_u64;
+    let mut previous_frame_at = None;
+    let delivery = Arc::new(tokio::sync::Mutex::new(
+        crate::direct::RemoteStreamDelivery::new(http_client().clone(), reply_to.clone()),
+    ));
+    emit_remote_stream_batches(reply_to.clone(), receiver, |_reply_to, mut batch| {
+        let stream_id = stream_id.clone();
+        let frame_index = frames_sent;
+        frames_sent = frames_sent.saturating_add(1);
+        let now = Instant::now();
+        let frame_latency_ms = previous_frame_at
+            .map(|previous: Instant| now.saturating_duration_since(previous).as_millis() as u64)
+            .unwrap_or_else(|| now.saturating_duration_since(stream_started).as_millis() as u64);
+        previous_frame_at = Some(now);
+        batch["stream_id"] = json!(stream_id);
+        for field in ["trace_id", "request_id", "pipeline_id", "session_id"] {
+            if let Some(value) = reply_to.get(field) {
+                batch[field] = value.clone();
+            }
+        }
+        batch["remote_stream_frame_index"] = json!(frame_index);
+        batch["remote_stream_frames_sent"] = json!(frames_sent);
+        batch["remote_stream_lifetime_ms"] =
+            json!(now.saturating_duration_since(stream_started).as_millis() as u64);
+        batch["remote_stream_frame_latency_ms"] = json!(frame_latency_ms);
+        batch["remote_stream_source_node_id"] = json!(&source_node_id);
+        if frame_index == 0 {
+            batch["remote_stream_first_frame_latency_ms"] = json!(frame_latency_ms);
+        }
+        let delivery = delivery.clone();
+        async move { delivery.lock().await.deliver(batch).await }
     })
     .await;
 }
@@ -787,9 +1071,33 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
     F: FnMut(Value, Value) -> Fut,
     Fut: Future<Output = crate::direct::Delivery>,
 {
+    let mut wait_started = Instant::now();
+    let mut previous_delivery_ms = 0_u64;
     while let Some(first) = receiver.recv().await {
+        let received_at = Instant::now();
+        let breakdown = match &first {
+            RemoteStreamItem::Token(token) => remote_stream_wait_breakdown(
+                wait_started,
+                token.ready_at,
+                token.enqueued_at,
+                received_at,
+            ),
+            RemoteStreamItem::Error(_) => RemoteStreamWaitBreakdown {
+                interval_ms: 0,
+                producer_ms: 0,
+                channel_send_ms: 0,
+                queue_ms: 0,
+            },
+        };
         let items = crate::prefill::drain_opportunistic_batch(first, &mut receiver);
-        let (batch, error, terminal) = remote_stream_batch(&items);
+        let (mut batch, error, terminal) = remote_stream_batch(&items);
+        if let Some(session_id) = reply_to.get("session_id") {
+            batch["session_id"] = session_id.clone();
+        }
+        batch["remote_stream_wait_ms"] = json!(breakdown.interval_ms);
+        batch["remote_stream_producer_wait_ms"] = json!(breakdown.producer_ms);
+        batch["remote_stream_channel_send_wait_ms"] = json!(breakdown.channel_send_ms);
+        batch["remote_stream_queue_wait_ms"] = json!(breakdown.queue_ms);
         let has_tokens = batch
             .get("accepted")
             .and_then(Value::as_array)
@@ -798,7 +1106,15 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
             let _ = deliver(reply_to.clone(), remote_stream_error_batch(json!(error))).await;
             return;
         }
-        match deliver(reply_to.clone(), batch).await {
+        // The duration is attached to the next batch because the current
+        // batch has already been serialized by the delivery future before we
+        // know how long its callback took. The first batch is consequently
+        // zero and the final callback has no following batch to carry it.
+        batch["remote_stream_delivery_ms"] = json!(previous_delivery_ms);
+        let delivery_started = Instant::now();
+        let delivery_result = deliver(reply_to.clone(), batch).await;
+        previous_delivery_ms = delivery_started.elapsed().as_millis() as u64;
+        match delivery_result {
             crate::direct::Delivery::Accepted => {}
             // O gateway já desistiu deste stream: não há a quem reportar.
             crate::direct::Delivery::GatewayGone => return,
@@ -831,6 +1147,7 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
         if terminal {
             return;
         }
+        wait_started = Instant::now();
     }
 }
 
@@ -838,8 +1155,54 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
 mod remote_stream_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn emissor_para_quando_a_entrega_termina_antes_do_produtor() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        struct DropSignal(Arc<AtomicBool>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let producer_dropped = Arc::new(AtomicBool::new(false));
+        let producer_guard = DropSignal(producer_dropped.clone());
+        let producer = async move {
+            let _guard = producer_guard;
+            std::future::pending::<()>().await;
+        };
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            run_remote_stream_tasks(producer, async {}),
+        )
+        .await
+        .expect("a entrega encerrada deve cancelar o produtor");
+        assert!(producer_dropped.load(Ordering::Acquire));
+    }
+
     fn token(token_id: u32, text: &str, done: bool) -> RemoteStreamItem {
         token_state(token_id, text, done, false, false, None)
+    }
+
+    #[test]
+    fn espera_do_stream_separa_producao_de_fila_com_instantes_conhecidos() {
+        let origin = Instant::now();
+        let wait_started = origin + std::time::Duration::from_millis(100);
+        let ready_at = origin + std::time::Duration::from_millis(176);
+        let enqueued_at = origin + std::time::Duration::from_millis(177);
+        let received_at = origin + std::time::Duration::from_millis(178);
+
+        let breakdown =
+            remote_stream_wait_breakdown(wait_started, ready_at, enqueued_at, received_at);
+
+        assert_eq!(breakdown.interval_ms, 78);
+        assert_eq!(breakdown.producer_ms, 76);
+        assert_eq!(breakdown.channel_send_ms, 1);
+        assert_eq!(breakdown.queue_ms, 1);
     }
 
     fn token_state(
@@ -852,14 +1215,20 @@ mod remote_stream_tests {
     ) -> RemoteStreamItem {
         RemoteStreamItem::Token(RemoteStreamToken {
             token_id,
+            token_index: token_id as u64,
             text: text.into(),
             done,
             processing_ms: 3,
             node_timings: Some(json!({"decode_ms": 2, "engine_mismatch": false})),
+            hop_timings: None,
             speculated,
             speculation_active,
             speculation_disabled_reason: None,
+            speculation_disabled_detail: None,
             next_draft,
+            downstream_wait_ms: 0,
+            ready_at: Instant::now(),
+            enqueued_at: Instant::now(),
         })
     }
 
@@ -868,13 +1237,67 @@ mod remote_stream_tests {
         let (batch, error, terminal) =
             remote_stream_batch(&[token(4, "A", false), token(9, "ção", true)]);
 
-        assert_eq!(batch["accepted"][0], json!({"token_id": 4, "text": "A"}));
-        assert_eq!(batch["accepted"][1], json!({"token_id": 9, "text": "ção"}));
+        assert_eq!(
+            batch["accepted"][0],
+            json!({"token_id": 4, "text": "A", "token_index": 4})
+        );
+        assert_eq!(
+            batch["accepted"][1],
+            json!({"token_id": 9, "text": "ção", "token_index": 9})
+        );
         assert_eq!(batch["processing_ms"], 6);
         assert_eq!(batch["node_timings"]["decode_ms"], 4.0);
         assert_eq!(batch["done"], true);
         assert!(error.is_none());
         assert!(terminal);
+    }
+
+    #[tokio::test]
+    async fn lote_remoto_preserva_session_id_do_canal_de_retorno() {
+        let (items_tx, items_rx) = mpsc::channel(1);
+        items_tx
+            .send(token(7, "token", true))
+            .await
+            .expect("token enfileirado");
+        drop(items_tx);
+
+        emit_remote_stream_batches(
+            json!({"ticket": "stream-session", "session_id": "session-42"}),
+            items_rx,
+            |_, batch| async move {
+                assert_eq!(batch["session_id"], "session-42");
+                crate::direct::Delivery::Accepted
+            },
+        )
+        .await;
+    }
+
+    #[test]
+    fn lote_remoto_preserva_tempos_dos_hops_downstream() {
+        let mut first = token_state(4, "A", false, false, false, None);
+        if let RemoteStreamItem::Token(token) = &mut first {
+            token.hop_timings = Some(json!([
+                {
+                    "processing_ms": 7,
+                    "round_trip_ms": 11,
+                    "span_count": 2,
+                },
+                {
+                    "processing_ms": 13,
+                    "round_trip_ms": 17,
+                    "span_count": 2,
+                }
+            ]));
+        }
+        let (batch, error, terminal) =
+            remote_stream_batch(&[first, token_state(9, "ção", true, false, false, None)]);
+
+        assert!(error.is_none());
+        assert!(terminal);
+        assert_eq!(batch["span_count"], 2);
+        assert_eq!(batch["hop_timings"][0]["processing_ms"], 7);
+        assert_eq!(batch["hop_timings"][0]["span_count"], 2);
+        assert_eq!(batch["hop_timings"][1]["processing_ms"], 13);
     }
 
     #[test]
@@ -901,14 +1324,20 @@ mod remote_stream_tests {
     fn token_with_node_timings(node_timings: Value) -> RemoteStreamItem {
         RemoteStreamItem::Token(RemoteStreamToken {
             token_id: 0,
+            token_index: 0,
             text: String::new(),
             done: false,
             processing_ms: 0,
             node_timings: Some(node_timings),
+            hop_timings: None,
             speculated: true,
             speculation_active: true,
             speculation_disabled_reason: None,
+            speculation_disabled_detail: None,
             next_draft: None,
+            downstream_wait_ms: 0,
+            ready_at: Instant::now(),
+            enqueued_at: Instant::now(),
         })
     }
 
@@ -916,14 +1345,27 @@ mod remote_stream_tests {
     fn lote_remoto_transporta_o_rascunho_no_mesmo_callback() {
         let item = RemoteStreamItem::Token(RemoteStreamToken {
             token_id: 4,
+            token_index: 4,
             text: "A".into(),
             done: false,
             processing_ms: 3,
             node_timings: None,
+            hop_timings: Some(json!([
+                {
+                    "processing_ms": 11,
+                    "round_trip_ms": 17,
+                    "transport": "remote-stream",
+                    "node_timings": {"decode_ms": 9}
+                }
+            ])),
             speculated: false,
             speculation_active: true,
             speculation_disabled_reason: None,
+            speculation_disabled_detail: None,
             next_draft: Some(vec![5, 6]),
+            downstream_wait_ms: 0,
+            ready_at: Instant::now(),
+            enqueued_at: Instant::now(),
         });
 
         let (batch, error, terminal) = remote_stream_batch(&[item]);
@@ -931,6 +1373,7 @@ mod remote_stream_tests {
         assert_eq!(batch["next_draft"], json!([5, 6]));
         assert_eq!(batch["speculated"], false);
         assert_eq!(batch["speculation_active"], true);
+        assert_eq!(batch["hop_timings"][0]["processing_ms"], 11);
         assert!(error.is_none());
         assert!(!terminal);
     }
@@ -945,6 +1388,7 @@ mod remote_stream_tests {
         assert!(remote_stream_install_draft(
             &mut step_meta,
             Some(&[5, 6]),
+            None,
             None,
         ));
         assert_eq!(step_meta["speculate"]["draft"], json!([5, 6]));
@@ -967,12 +1411,17 @@ mod remote_stream_tests {
         assert!(!remote_stream_install_draft(
             &mut step_meta,
             None,
-            Some(SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK),
+            Some(SPECULATION_REASON_MODEL_WITHOUT_MTP),
+            Some("MTP desligado nesta sessão: teste"),
         ));
         assert!(step_meta.get("speculate").is_none());
         assert_eq!(
             step_meta["speculation_disabled_reason"],
-            SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK
+            SPECULATION_REASON_MODEL_WITHOUT_MTP
+        );
+        assert_eq!(
+            step_meta["speculation_disabled_detail"],
+            "MTP desligado nesta sessão: teste"
         );
     }
 
@@ -1037,6 +1486,42 @@ mod remote_stream_tests {
             deliveries_rx.try_recv().is_err(),
             "oito tokens e o rascunho, um callback"
         );
+    }
+
+    #[tokio::test]
+    async fn emitter_nao_conta_fila_anterior_ao_inicio_da_janela() {
+        use std::time::{Duration, Instant};
+
+        let (items_tx, items_rx) = mpsc::channel(1);
+        let mut item = token(7, "token", true);
+        if let RemoteStreamItem::Token(token) = &mut item {
+            let queued_at = Instant::now() - Duration::from_millis(5);
+            token.ready_at = queued_at;
+            token.enqueued_at = queued_at;
+        }
+        items_tx.send(item).await.expect("token enfileirado");
+        drop(items_tx);
+
+        let (deliveries_tx, mut deliveries_rx) = mpsc::channel(1);
+        emit_remote_stream_batches(
+            json!({"ticket": "split-wait"}),
+            items_rx,
+            move |_, batch| {
+                let deliveries_tx = deliveries_tx.clone();
+                async move {
+                    deliveries_tx
+                        .send(batch)
+                        .await
+                        .map(|_| crate::direct::Delivery::Accepted)
+                        .unwrap_or(crate::direct::Delivery::Failed)
+                }
+            },
+        )
+        .await;
+
+        let batch = deliveries_rx.recv().await.expect("callback");
+        assert_eq!(batch["remote_stream_producer_wait_ms"], 0);
+        assert_eq!(batch["remote_stream_queue_wait_ms"], 0);
     }
 
     #[tokio::test]
@@ -1110,7 +1595,17 @@ pub(super) fn step_forward_meta(
         "exec_end": next.exec_end,
     });
     preserve_batch_identity(request_meta, &mut meta);
-    for field in ["draft", "tokens", "mtp_k", "remote_stream"] {
+    for field in [
+        "draft",
+        "tokens",
+        "mtp_k",
+        "remote_stream",
+        "trace_id",
+        "request_id",
+        "pipeline_id",
+        "telemetry_token_index",
+        "telemetry_source_peer_id",
+    ] {
         if let Some(value) = local_meta.get(field).or_else(|| request_meta.get(field)) {
             meta[field] = value.clone();
         }

@@ -16,6 +16,37 @@ servidor de inferência local, então `GET /api/ui/node` mede também pedidos qu
 chegam diretamente à porta de inferência; a ausência de requisições reporta
 zero, e falha de leitura permanece desconhecida na UI.
 
+## Entrada multimodal
+
+O catálogo e a implantação carregam a visão como estado explícito: sem
+`NodeConfig.mmproj_path`, uma parte de imagem em `/v1/chat/completions` é
+recusada com `este modelo não tem visão`; arquivos de texto continuam sendo
+aceitos. Com o projetor carregado, o gateway valida imagens `data:image/...`
+em base64, envia-as para o primeiro peer junto do prompt e o prefill usa o
+`mtmd` do llama.cpp. O caminho é intencionalmente separado do prefill textual
+para não reutilizar prefixos ou misturar imagens em batches concorrentes.
+
+### Células de KV e posições lógicas M-RoPE
+
+Uma imagem escreve uma célula de KV por token de embedding, mas em M-RoPE ela
+ocupa apenas `max(nx, ny)` **posições lógicas**: `mtmd_input_chunk_get_n_pos`
+é deliberadamente menor que `mtmd_input_chunk_get_n_tokens`. Uma imagem 28x28
+gera 784 células e avança a posição em 28. As linhas
+`find_slot: non-consecutive token position` que o llama.cpp imprime no lote de
+imagem são a consequência normal desse desenho, não sinal de defeito.
+
+Por isso a sessão do peer guarda as duas grandezas separadas: `n_past` é a
+posição lógica seguinte e `prompt_cells` a contagem de células físicas. Quem
+decide se o prompt tem mais um pedaço compara posição com posição
+(`prefill_has_more_chunks`), e um decode multimodal é sempre completo porque
+`mtmd_helper_eval_chunks` consome todos os chunks numa chamada. Reduzir as
+duas a uma só fazia o head pedir um segundo pedaço de um prompt já ingerido e
+decodificar o preenchimento `vec![0; n_tokens]` de `prompt_tokens` como se
+fossem tokens reais - a resposta saía como uma fila de pontos de exclamação.
+Sessões com mídia também não servem de prefixo reutilizável nem de snapshot
+(`Session::positions_match_cells`): `prompt_tokens` ali é preenchimento, não
+os ids reais das células.
+
 ## Porta de inferência e exposição administrativa
 
 O servidor de inferência (`--inference-port`) mantém a escuta em IPv4 e IPv6,
@@ -53,15 +84,18 @@ cima, ligada junto com o fork do llama.cpp que chama a coletiva no meio do
 forward pass. O rank 0 contribui diretamente na `ReduceBarrier` local; os
 workers enviam a parcial ao primary. `broadcast_to` mantém a URL base e a rota
 separadas para o túnel encaminhar a requisição ao path correto no loopback do
-worker. O broadcast e o reduce remoto tentam primeiro os candidatos HTTPS
-diretos pinados. Se nenhum endereço responde por falha de transporte, tentam o
-túnel libp2p quando o membro anunciou `PeerId` e capability. Essa ordem é
-necessária para a coletiva: a chamada fica aguardando dentro da barreira e um
-túnel indisponível não deve atrasar um endereço HTTPS alcançável.
+worker. O broadcast e o reduce remoto seguem a preferência do transporte: com
+QUIC ligado, tentam HTTP/3 e caem para HTTP/HTTPS; com QUIC desligado, tentam
+os candidatos diretos. Em ambos os casos, o túnel libp2p só é usado depois de
+uma falha de transporte direta, quando o membro anunciou `PeerId` e capability.
+Essa ordem é necessária para a coletiva: a chamada fica aguardando dentro da
+barreira e um túnel indisponível não deve atrasar um endereço HTTPS alcançável.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
-As rotas entre peers aceitam exclusivamente `Authorization: Bearer
-<connection_key>` junto de `x-pom-internal-node: 1`; uma API key de cliente não
-é fallback e não atravessa o pipeline. O loopback do túnel mantém o
+As rotas entre peers aceitam `Authorization: Bearer <connection_key>` junto de
+`x-pom-internal-node: 1` em redes privadas e no fallback HTTP público; HTTPS e
+QUIC podem usar o transporte seguro e o marcador sem depender do segredo. Uma
+API key de cliente não é fallback e não atravessa o pipeline. O loopback do túnel
+mantém o
 `Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
 O gateway valida a API key do cliente na superfície de entrada e pode consultar
 o principal para uma chave desconhecida. Essa consulta não participa da
@@ -69,8 +103,9 @@ autenticação dos hops internos.
 Quando o destino anunciado de um passo é o próprio `node_id` deste processo, o
 relay despacha o quadro diretamente para o handler de inferência em processo.
 Essa chamada não abre socket nem passa por HTTP. O servidor HTTP de inferência
-continua ativo para health checks e para peers remotos; nesses peers a ordem é
-túnel libp2p e fallback HTTP direto.
+continua ativo para health checks e para peers remotos; com QUIC ligado, a
+ordem remota é QUIC, HTTP/HTTPS direto e, só por último, túnel libp2p. Com
+QUIC desligado, HTTP/HTTPS direto também precede o túnel.
 Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
 
@@ -79,10 +114,21 @@ contexto local de uma task Tokio. Por isso o registro do grupo captura o
 `tokio::runtime::Handle` do servidor e o callback usa esse handle para aguardar
 o reduce; chamar `Handle::current()` dentro da thread nativa causa panic.
 
-A medição de RTT do mapa é separada do tempo de um frame: `measure_rtt` envia
-um GET vazio para `/health` pelo mesmo túnel libp2p, sem prefill, decode ou
-estado oculto. Portanto `round_trip_ms` de um frame não é usado como RTT de
-topologia.
+A telemetria do mapa não inventa RTT a partir de uma sonda de topologia. O
+endpoint de Chat agrega as medições da execução concluída: cada hop de avanço
+é uma perna direcional origem->destino e o retorno final é uma perna
+peer->gateway. O valor é a duração observada da operação no transporte
+efetivo, sem dividir por dois nem copiar o RTT de outra origem. Se a operação
+assíncrona não publica uma observação compatível, a perna fica desconhecida.
+Uma sonda de `/health` continua podendo existir para admissão e planejamento,
+mas não é apresentada como RTT da execução nem misturada ao custo do ciclo.
+
+O ciclo visual e temporal de uma pipeline com três peers é
+`Gateway->A->B->C->Gateway`. A soma de rede usa somente essas pernas, uma vez
+cada, e o custo total acrescenta o compute medido de cada hop. O backend expõe
+isso em `RequestTrace.pipeline_cycle`; a UI mostra o agregado no Gateway
+virtual do fim da fila. A ausência de uma perna não vira zero: o total fica
+explicitamente não medido.
 
 Cada execução também pode carregar `node_timings.tp`. Esse bloco registra
 reduces esperados e observados, espera total, p50/p95 da coletiva, bytes de
@@ -95,7 +141,10 @@ camadas completas por nó troca um frame de hidden state entre blocos e evita
 essas coletivas TP.
 
 O `PhaseTrace` também preserva `round_trip_ms`, a soma das idas e voltas
-observadas das chamadas daquela fase. Esse campo segue no `x_pom` do stream
+observadas das chamadas daquela fase, e `network_ms`, que usa o RTT de conexão
+medido pelo QUIC quando disponível ou o residual de `round_trip_ms` menos o
+`processing_ms` remoto no restante. O resumo publica os quantis de ambos. O
+campo segue no `x_pom` do stream
 para a tela do Chat e não entra no frame entre peers nem no planejador. O Chat
 usa `/api/ui/chat/telemetry` para buscar separadamente o RTT direcional das
 arestas entre os peers do trace. O `/health` publica `profile_sync_enabled`
@@ -105,6 +154,97 @@ por máquina, derivado diretamente de `POM_PROFILE_SYNC`; um zero em
 ele só aparece quando bytes de estado oculto cruzaram o hop. Por isso fica
 ausente, em vez de afirmar f8 ou f16, no caso de um plano de modelo inteiro de
 um único nó, que não transmite estado oculto.
+Quando `expected_decode_spans` é zero, o modo direto só observou chamadas e
+não possui denominador de spans distribuídos; `decode_span_expectation_available`
+fica falso e a UI mostra a cobertura como não medida, nunca como `N/0 · 100%`.
+
+### Trace ponta a ponta e tempos fora do nó
+
+`RequestTrace.trace_id` é o mesmo identificador da auditoria da requisição e
+segue no metadata do prefill e do step entre gateway e peers. Um nó não
+subtrai relógios de outro: cada processo mede intervalos com `Instant`, e os
+campos `*_at_ms` usam wall clock apenas para correlação visual. O gateway
+registra spans locais de validação, orquestração, seleção da pipeline,
+resolução de rota, aquisição de sessão e retorno do primeiro token. Esses
+intervalos formam a timeline local e não são somados a spans de peers para
+fabricar uma partição E2E. Os campos `outside_node_total_ms`,
+`outside_node_accounted_ms` e `outside_node_unaccounted_ms` só são publicados
+quando uma medição explícita de residual, com fronteiras temporais compatíveis,
+for fornecida; o runtime não os deriva de E2E menos o processamento agregado.
+Se o perfil for `off`, os spans detalhados e o cálculo de atribuição não são
+emitidos; o `POM_PROFILE_SYNC` continua sendo uma política independente do
+trace.
+
+`decode_calls` e `tokens_per_decode_call` são **derivados dos saltos**
+(`RequestTrace::refresh_decode_counters`), não de um contador solto: o laço de
+continuação funde o traço de cada perna no traço base, e a fusão carrega
+`PhaseTrace::calls` mas não carregava o contador do resumo - por isso o resumo
+dizia "não medido" enquanto a tabela por salto mostrava 111 chamadas na mesma
+execução. É o **máximo** entre os saltos, não a soma: uma rodada de decode toca
+cada salto uma vez, e somar dividiria o rendimento por chamada - a taxa de
+aceitação da especulação - pelo tamanho do pipeline.
+
+#### Sonda de admissão do pipeline
+
+`ready_for_pipeline` continua confirmando, por requisição, que cada peer
+anunciado responde `/health` antes de entrar no plano - a defesa contra um
+anunciante UDP velho. O que mudou é o preço. O prazo é o
+`ADMISSION_PROBE_TIMEOUT` de 300 ms, não o `CONNECT_TIMEOUT` de 2 s do cliente
+geral, e quem reprova entra em quarentena por `ADMISSION_FAILURE_COOLDOWN`
+(`AdmissionHealth`, em `gateway/state.rs`), ficando fora do plano sem voltar a
+ser sondado. Antes disso, como `join_all` só termina com o mais lento, **um**
+peer inalcançável custava 2,005 s a toda inferência do cluster - constante entre
+motores, tamanhos de prompt e frio/quente. Medido com um anunciante que engole
+SYN: 2005 ms antes, 301 ms na primeira requisição e 0 ms nas seguintes. A volta
+é automática: passado o prazo, a próxima requisição paga uma sonda e o peer
+reentra se responder.
+
+O trace também carrega `server_ttft_ms`, `engine_ttft_ms`, contagem de chamadas
+de decode, tokens por chamada, estado cold/warm e chamadas com conexão nova,
+reutilizada ou desconhecida. No peer, `NodeTimings` registra o primeiro token
+produzido e serializado com duração monotônica e um wall timestamp local. O
+cliente web acrescenta a recepção no navegador com `performance.now()` e
+`Date.now()` somente para correlação. `streaming` separa primeiro chunk,
+primeiro token, duração, fim do último token, quantidade de chunks e bytes.
+Mais precisamente, `stream_duration_ms` é `primeiro frame SSE -> [DONE]` no
+relógio monotônico do navegador: exclui TTFT e inclui o intervalo terminal até
+o corpo fechar. `time_last_token_to_response_end_ms` é
+`último frame com token -> [DONE]`, isolando esse intervalo terminal. Já
+`timings.total_ms` é medido no gateway quando `summary_for` monta o resumo,
+antes do rewind/release final que pode atrasar o `[DONE]`. Os campos não são
+intercambiáveis nem devem ser comparados como se fossem um único relógio.
+Campos que a arquitetura não mede permanecem ausentes e aparecem como não
+atribuídos na UI.
+
+O contrato e o plano incremental estão em
+`docs/superpowers/specs/2026-09-08-inferencia-trace-outside-node-design.md` e
+`docs/superpowers/plans/2026-09-08-inferencia-trace-outside-node.md`.
+
+`RequestTrace::telemetry` separa o fim da resposta do fim da coleta. O status
+é `collecting`, `response_complete`, `complete` ou `incomplete`, e o objeto
+publica peers esperados/observados, spans de decode esperados/observados,
+duplicatas, recibos tardios, peers ausentes, wall-clock, caminho crítico e
+acumulados de compute/transporte. Esses acumulados não são uma decomposição
+exclusiva do wall-clock: a UI não calcula `outside-node` por
+`E2E - soma(processing)`. `overlap_ms` e `true_residual_ms` ficam ausentes
+enquanto não houver intervalos sincronizáveis para sustentá-los.
+
+No `remote-stream`, o head envia `hop_timings` dos peers downstream junto ao
+lote de tokens. O modo normal agrega frames, bytes, abertura, lifetime,
+primeira entrega, latências, processamento remoto e espera com histogramas de
+amostra limitada. O produtor usa uma fila limitada de 64 itens e o emitter
+separa `remote_stream_wait` em produção até o token ficar pronto, reserva e
+envio no canal, tempo do token já enfileirado e entrega do callback anterior.
+`remote_stream_downstream_wait_ms` fica aninhado na produção e mede o relay até
+o próximo hop, incluindo compute remoto e transporte. Não há timer artificial:
+um valor alto de produção só é legítimo quando os spans de decode, sampling,
+`mtp-draft`, residual ou downstream o explicam. O retorno normal do callback
+usa `/v1/link` full-duplex no gateway; somente uma falha explícita do canal cai
+para `/v1/remote-stream-result`, com contagem e razão de fallback HTTPS na
+telemetria. `POM_PROFILE_SYNC=1` acrescenta
+spans de frame e eventos por token, mantendo duração zero para um evento cujo
+lote não mede um intervalo individual. O relógio publicado identifica o
+domínio monotônico do peer e nunca é subtraído de um relógio de outra máquina.
 
 ### Cache KV e fallback de VRAM
 
@@ -155,6 +295,17 @@ ocupação que apareça entre a consulta e a carga. Se o livre ficar abaixo da
 margem configurada, a reserva acompanha o livre; abaixo do piso de 4 MiB,
 vira zero para não transformar toda tentativa de carga em uma meta impossível.
 O valor não é consultado quando `fit_memory=false`.
+`llama_max_devices()` é a **capacidade de compilação** dos vetores que o
+wrapper C preenche (16 hoje), nunca o número de placas presentes. Os vetores
+entregues ao C continuam com essa capacidade, mas toda decisão física usa
+`fit_device_count`, que conta os handles elegíveis de `llama_rs_get_devices` e
+cai para a contagem do snapshot de memória, com um slot mínimo para o host.
+Confundir os dois tinha duas consequências, ambas observadas na ksia em
+2026-09-08: o aviso `snapshot parcial de memória` disparava em toda máquina com
+menos de 16 GPUs (`reported_devices=2 expected_devices=16`), e - o defeito
+real - a reserva de KV do contexto MTP, que pertence à última placa, caía no
+índice 15, um dispositivo inexistente que o C nunca lê. O fit então planejava
+sobre VRAM que já estava prometida ao contexto MTP.
 Esse encaixe nativo é exclusivo do carregamento real. A pré-visualização de
 capacidade da tela Implantar usa metadata GGUF, `plan::range_cost` e a VRAM
 livre atual para uma estimativa analítica; ela não chama `llama_backend_init`,
@@ -370,17 +521,28 @@ tradicionais:
    remoto e recebe os tokens por callbacks em `/v1/remote-stream-result`. O
    head mantém o laço de geração; em um pipeline com mais hops, os demais peers
    continuam dentro do relay do head. O produtor põe cada token numa fila
-   limitada a 16 itens e não espera o callback; o emissor drena, até 8 itens que
+   limitada a 64 itens e não espera o callback; o emissor drena, até 8 itens que
   já estejam prontos. Se a fila enche, o envio do callback espera e aplica
   contrapressão até a geração. Cada URL de callback que falha fica fora por 5
   min e a entrega tem teto de 500 ms por tentativa, então uma rota que engole
   SYN não é repetida a cada lote. EOS e erro enviam
    um lote terminal; stop, limite, ciclo e cancelamento removem o ticket e
-   fazem uma entrega atrasada receber `410 Gone`. Em plano MTP fatiado, o
-   control frame inicial leva `speculate.source="mtp"`; a cauda devolve
-   `next_draft` no mesmo callback e o head instala o draft no próximo `step`
-   interno. O callback também informa `speculated`, `speculation_active` e
+   fazem uma entrega atrasada receber `410 Gone`. No retorno persistente, o ACK
+   continua assíncrono para não impor um RTT por token, mas o `410` é propagado
+   ao emitter como `GatewayGone`; ele encerra junto o producer do head remoto,
+   liberando a sessão de KV e a admissão do scheduler em vez de deixar uma
+   geração órfã rodando até um timeout. Em plano MTP fatiado de dois ou mais
+   hops, o `remote-stream` não envia `speculate.source="mtp"`: o `nextn` da
+   cauda é síncrono dentro do ciclo do produtor e bloquearia cada liberação.
+   A seleção registra `remote_stream_sliced_mtp_disabled`; isso é um fallback
+   de cadência, não uma mudança no motor, e o caminho legado continua elegível
+   a MTP. O callback também informa `speculated`, `speculation_active` e
    `speculation_disabled_reason`, sem travessia ou chamada adicional por token.
+   Cada lote também preserva `hop_timings` e `span_count` dos peers downstream,
+   além de `stream_id`, índice do frame, lifetime, latência, bytes e espera;
+   assim o head não é o único hop visível no trace. O `session_id` do frame de
+   controle é copiado para o `reply_to` e para cada lote, mantendo a mesma
+   sessão no caminho do token até o ticket do gateway.
 2. **Resposta direta** (`relay/v2-direct`, `run_direct`/`step_direct`) - quando
    `PipelinePlan::supports_direct_reply()`: todos os passos anunciam
    `relay/v2-direct` **e** a cadeia tem pelo menos 2 hops. O gateway despacha
@@ -466,6 +628,11 @@ maiores que 1 são recusadas; dimensões posteriores iguais a 1 são ignoradas.
 Se mais de um eixo tiver a contagem de tokens, o menor eixo que também fecha os
 strides contíguos é escolhido de forma determinística. Geometria ou stride que
 não fecha essa regra é recusado com o shape no erro.
+Em prefill multimodal, o callback pode separar o trecho textual das células
+expandidas pela imagem; nesse caso a captura identifica a quantidade física de
+cada callback e acumula os trechos até o total esperado, sem confundir essa
+contagem com a posição lógica `n_past`. No caminho hub, as posições M-RoPE
+seguem no metadata junto do residual para os hops seguintes.
 
 Na recepção, a validação usa `n_embd_inp` para a forma 2D e para dimensões
 extras singleton. Quando há um eixo extra não singleton, a largura efetiva é
@@ -518,12 +685,21 @@ O quadro acima descreve **o que** atravessa. Esta seção descreve **por onde**,
 dentro da pipeline: entre um hop e o hop seguinte.
 
 O transporte remoto por lotes (seção 1, item 1) tirou a travessia por ficha do
-trecho gateway → cabeça. Dentro do laço da cabeça, porém, cada ativação ainda
-montava uma requisição nova para o hop seguinte: `POST /v1/step`, cabeçalhos,
-roteamento e enquadramento reconstruídos por ficha, por salto. A conexão TCP/TLS
-por baixo já vinha do pool (é por isso que `tls_handshake_ms` só aparece no
-salto que abre conexão); o que se refazia por ativação era a abstração de
-requisição por cima dela.
+trecho gateway → cabeça. O laço da cabeça também usa o canal persistente no hop
+seguinte quando ele anuncia `transport/link-v1`: `POST /v1/step` continua sendo
+a rota lógica, mas cabeçalhos, roteamento e enquadramento viajam dentro do
+fluxo por aresta. A flag `remote_stream` não exclui mais esse caminho. Quando a
+capability não existe ou o canal falha, a escada de fallback ainda pode fazer
+uma requisição por ativação. A conexão TCP/TLS por baixo já vinha do pool (é por
+isso que `tls_handshake_ms` só aparece no salto que abre conexão).
+
+O controle inicial de `/v1/step-stream` não é encapsulado como lote porque o
+receptor dessa rota espera o wire de controle. Depois que a cabeça inicia o
+laço, o handoff MTP em `/v1/step` leva `draft` e `mtp_k` num lote de um item;
+esses campos não podem impedir o `BatchCoordinator`, e o lote é entregue pelo
+canal persistente quando o hop anuncia `transport/link-v1`. A chave do
+coordenador marca o contrato como especulativo, mantendo esse frame separado
+dos lotes densos.
 
 `transport/link-v1` mantém **um canal por aresta** (`node_id` + URL de
 inferência): um único `POST /v1/link` cujo corpo de ida é um fluxo de quadros
@@ -560,15 +736,67 @@ global do mapa de canais. Cada quadro, nas duas direções:
   administrativa Ed25519 a cada frame de inferência. Um quadro recusado é recusa
   **daquele quadro** - o canal continua servindo os seguintes.
 
-**Degradação.** Falha de transporte no canal não mata a geração: a chamada volta
-pela escada de sempre (túnel libp2p, depois HTTPS por requisição) com
-`transport_fallback=true`, e o canal morto sai do pool. Um destino cuja abertura
-falhou fica 5 min em quarentena, o mesmo prazo da memória de rotas, para a
+**Degradação.** Falha de transporte no canal não mata a geração: com QUIC
+desligado, a chamada volta por HTTP/HTTPS por requisição e só depois pelo túnel
+libp2p; com QUIC ligado, cai primeiro para HTTP/HTTPS e usa libp2p somente
+como última reserva. Em ambos os casos publica `transport_fallback=true`, e o canal morto sai do pool. Um
+destino cuja abertura falhou fica 5 min em quarentena, o mesmo prazo da memória de rotas, para a
 tentativa de abrir não se pagar por ficha num cluster onde o endereço direto não
 serve (peer atrás de NAT alcançável só pelo túnel). O canal tem teto de vida de
 12 h, porque o timeout do cliente HTTP vale para a requisição inteira e o corpo
 em fluxo conta para ele; vencido o teto, a chamada em voo degrada e a seguinte
 abre canal novo.
+
+No retorno do `remote-stream`, o head remoto reutiliza esse mesmo protocolo
+persistente para enviar frames de callback ao gateway, que os entrega ao ticket
+e responde somente o ACK do envelope. O hop interno do produtor usa o mesmo
+canal para as ativações `/v1/step`, correlacionadas por `batch_id`; a espera da
+resposta continua necessária para respeitar a dependência autoregressiva, mas a
+abertura de uma requisição HTTP nova deixa de ser parte de cada token. O emissor
+enfileira os callbacks sem
+esperar o ACK individual, de modo que o round-trip do retorno não vira uma
+barreira por token; a fila limitada do canal ainda aplica contrapressão e uma
+tarefa leitora observa ACKs tardios e falhas. Se a abertura ou o uso do canal falhar,
+`direct::RemoteStreamDelivery` muda para o POST HTTPS por callback e grava
+`remote_stream_transport_fallback` e
+`remote_stream_transport_fallback_reason`; a troca fica visível e não é
+confundida com o nome agregado do transporte.
+
+### 2.2 HTTP/3 opcional sobre QUIC
+
+Quando `Config.quic_enabled` está ligado pelo principal, os novos hops de
+estado oculto e as entregas diretas de retorno preferem HTTP/3 sobre QUIC. O
+endpoint usa uma porta UDP dedicada, derivada do `p2p_port` por
+`p2p_port + 1000` e
+anunciada como `inference_quic_port` (o gateway anuncia
+`gateway_quic_port`). O cliente recebe os endereços `host:porta` do anúncio
+público do peer, com IPv6 devidamente colchetado; `inference_url` continua
+sendo apenas o fallback TCP. A configuração do endpoint é criada
+separadamente da configuração TLS TCP e o servidor HTTP/3 fica preparado desde
+o arranque para que virar a preferência não reinicie o modelo nem interrompa
+uma chamada em voo. Cada request abre um stream independente da conexão QUIC
+por peer e endereço anunciado, e a sessão fica no pool para permitir
+multiplexação futura.
+
+QUIC sempre negocia TLS 1.3 próprio e valida o certificado Ed25519 contra o
+`node_id`; por isso `quic` é cifrado mesmo com `tls_required=false`. Se a
+negociação falhar, o peer ainda não oferecer HTTP/3 ou a rota responder 404/405,
+o mesmo frame é tentado no TCP escolhido pela política TLS: `http://` quando ela
+está desligada e `https://` quando ligada. O caminho de fallback conserva a
+execução e publica `transport_fallback=true`; uma recusa HTTP de inferência
+fora desses códigos continua sendo final.
+
+Em `hop_timings` e no `transport_summary`, o campo `transport` representa o
+fio real e é limitado a `http`, `https` e `quic` para esses hops. O detalhe
+interno do link persistente não aparece como uma quarta camada: é normalizado
+para `http` ou `https`. O campo `transport_rtt_us` carrega o RTT medido pela
+conexão QUIC, sem o processamento do handler remoto. O campo `tls` fica
+verdadeiro para QUIC porque o TLS 1.3 pertence ao próprio protocolo,
+independentemente do interruptor TCP.
+Cada tentativa completa, do handshake ao corpo da resposta, respeita um
+deadline de transporte de 30 s, inclusive no fallback HTTP/HTTPS e antes da
+autorização, para que um endpoint alcançável mas sem resposta não consuma o
+timeout de processamento do frame.
 
 **Limpeza.** Toda entrega pendente vive num registro por canal e sai dele no
 `Drop` de um guarda, em qualquer caminho de saída: resposta, erro, prazo,
@@ -762,10 +990,12 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   um modelo inteiro, para o gateway e os hops seguintes não fabricarem a
   posição pelo índice do chunk.
 - O fechamento do stream cria um cancelamento cooperativo por geração.
-  `prefill::Cancellation` interrompe a espera HTTP em voo e impede o próximo
-  retry, hop ou chunk. Um frame que o peer já aceitou pode terminar, porque o
-  contrato de fio não ganhou um cancelamento remoto; depois disso o gateway
-  libera as sessões dos peers alcançados.
+  O pump observa o fechamento do `Sender` HTTP mesmo mantendo um clone para a
+  escrituração do turno, e `prefill::Cancellation` interrompe a espera HTTP em
+  voo e impede o próximo retry, hop ou chunk. Um frame de callback já aceito
+  não espera ACK no caminho crítico; seu ACK assíncrono distingue `410 Gone`
+  do gateway de falha de transporte, e o primeiro encerra o producer remoto.
+  Depois disso o gateway libera as sessões dos peers alcançados.
 
 **Pipeline de prefill (H1).** Nos caminhos hub e resposta direta, quando há
 mais de um hop, o prefill roda como um pipeline em ordem, não como um par
@@ -906,8 +1136,10 @@ remoções possíveis hoje são:
 - reinício do processo, que recria `sessions` vazio;
 - coleta de ociosidade em `reap_idle`, depois de 900 segundos sem uso, chamada
   quando `alloc_seq` precisa de um slot;
-- pressão de capacidade: `max_sessions` é 1 por padrão, e `alloc_seq` despeja
-  primeiro a sessão retida menos usada em `evict_retained`;
+- pressão de capacidade: `max_sessions` é 1 por padrão. Até 2026-09-08 o
+  `alloc_seq` despejava na hora a sessão retida menos usada; hoje não despeja
+  nada, e só o escalonador reclama uma sessão retida, depois da carência (ver
+  "Um pedido avulso não despeja uma conversa quente");
 - remoção ativa por `finish`, usada pelo `/v1/session/release`, pelo cleanup de
   cancelamento/erro e pelo próprio despejo de capacidade.
 
@@ -921,6 +1153,40 @@ processo ou remoção explícita/concurrente durante o prefill; TTL e capacidade
 explicam principalmente o cache de prefixo ficar apontando para uma sessão
 perdida entre turnos. O pedido novo funcionar logo depois no mesmo peer prova
 que ele voltou a atender, mas não distingue reinício de remoção.
+
+#### Um pedido avulso não despeja uma conversa quente
+
+Defeito de produção apanhado na ksia em 2026-09-08, com o captain a usar um
+agente de código contra o POM. Um pedido de 35 caracteres, uma mensagem e zero
+ferramentas - geração de título de conversa - despejava o contexto de 62 mil
+tokens do agente. A primeira palavra passava de 2,7 s para 41,1 s e o
+aproveitamento do cache caía de 99% para zero. No mesmo registo: 29 despejos de
+prefixo e 10 recusas de rewind.
+
+Eram dois mecanismos a somar-se, um em cada ponta:
+
+- **No gateway**, um miss do `PrefixCache` reciclava a identidade da sessão
+  ociosa menos usada. O pedido pequeno estreava com o `session_id` da conversa
+  do agente, e o follow-up dela voltava com "rewind recusado: sessão
+  desconhecida". Hoje um miss estreia com identidade própria; as entradas
+  ociosas continuam limitadas por LRU no `commit`, que é quem sempre limitou o
+  tamanho do cache.
+- **No peer**, `alloc_seq` chamava `evict_retained` assim que o `seq_pool`
+  esvaziava, trocando o KV quente pelo prefill recém-chegado. Hoje a admissão é
+  do escalonador: `new_session_slots` conta somente sequência realmente livre,
+  e sessão retida não é capacidade. Um prefill de sessão nova sem slot espera
+  na fila FIFO, e só depois de `RETAINED_RECLAIM_GRACE` (5 s) o escalonador
+  reclama uma sessão retida - para que nenhuma requisição aceita fique
+  pendurada até o `reap_idle` de 900 s.
+
+Com `max_sessions = 1` continua a existir uma só sequência: duas conversas
+verdadeiramente simultâneas alternam-se, e a segunda espera a carência. O que
+deixou de acontecer é a conversa quente ser destruída por um pedido trivial que
+chegou no meio do turno. Para concorrência real o operador aumenta
+`max_sessions`, que multiplica a reserva de KV (ver `total_context_tokens`).
+
+Bancadas: `prefix_cache::tests::a_small_concurrent_request_does_not_take_over_a_hot_sessions_identity`,
+`scheduler::tests::prefill_novo_espera_em_vez_de_despejar_a_sessao_retida`.
 
 Conclusão: a perda da sessão é possível e, em parte, intencional no ciclo de
 vida atual, mas não há telemetria suficiente para dizer qual dos eventos ocorreu
@@ -1065,20 +1331,20 @@ escolha explícita `dense` ou `moe` vence o ambiente derivado da marca
 override, a metadata escolhe. `moe` recusa um GGUF denso com erro explícito.
 
 O caminho MoE atual aparece como `moe/q4_0` no `/health` quando o seletor
-escolhe esse modo e abre o runtime próprio em `inference/moe/`: o dispatcher
-detecta o dtype do GGUF, calcula o router top-k e usa o LRU global. Hidden states recebidos são transformados
+escolhe esse modo e abre o runtime próprio em `crates/llama-engine/src/moe/`:
+o dispatcher detecta o dtype do GGUF, calcula o router top-k e usa o LRU global.
+Hidden states recebidos são transformados
 antes do decode local; residuals produzidos a partir de tokens passam pela
 mesma ponte antes de seguir ao próximo hop. O wire continua em f16 e nenhum
 peso é transportado. Atenção, operações restantes e sampling final ainda
 delegam ao `LlmEngine`, então esta é uma ligação parcial do bloco, não um
-transformer MoE completo. NVFP4, K-quants e IQ-quants usam loaders próprios
-com validação da ordem GGUF `[input, output, experts]` antes do forward. A Fase
-5 ainda não está ativa: não há executor GPU próprio nem perfil medido carregado
-no runtime. O plano de ownership externaliza todos os formatos que o runtime
-próprio consegue executar em CPU, mesmo sem ponte CUDA; só NVFP4 sem feature
-CUDA e sem pedido explícito de CPU fica indisponível. O caminho CUDA continua
-reservado aos dtypes com ponte validada e não há afirmação de sobreposição
-CPU/GPU além da telemetria publicada.
+transformer MoE completo. Q4_0, NVFP4, K-quants e IQ-quants usam loaders
+próprios com validação da ordem GGUF `[input, output, experts]` antes do
+forward. Com a feature `cuda`, Q4_0 usa a ponte heterogênea CUDA e o cache
+residente; sem CUDA, o decoder CPU é uma escolha explícita na telemetria e no
+log de inicialização. O caminho CUDA continua reservado aos dtypes com ponte
+validada, e não há fallback nativo silencioso quando a seleção MoE externa
+falha.
 
 `path/engine mismatch` na UI é um rótulo de telemetria real: o `selected_path`
 registra o caminho escolhido (`moe/q4_0` ou `dense/llama.cpp`) e
@@ -1306,17 +1572,19 @@ devolve ao chamador é só um aceite imediato (`direct_ack`, `{"accepted": true}
 wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket.
 
 - `ReplyInbox`/`Ticket`: mapa ticket → canal oneshot que vive no `GatewayState`.
-  O `Drop` do `Ticket` remove o ticket do inbox em **qualquer** caminho de saída
-  (erro, prazo estourado) - impede ticket órfão de segurar memória e um
-  resultado atrasado de cair no token seguinte. Resultado para ticket já
-  desistido é **410 Gone**, e como o ticket é único por quadro nunca pode ser
-  confundido com o do quadro seguinte.
+  O `Drop` do `Ticket` remove o ticket ainda não entregue em **qualquer** caminho
+  de saída (erro, prazo estourado). Quando há travessias esperadas, `deliver`
+  libera o resultado e retém apenas o snapshot por 30 s para recibos tardios;
+  depois disso o ticket desconhecido é **410 Gone**, e como o ticket é único
+  por quadro nunca pode ser confundido com o do quadro seguinte.
 - `DirectReply::new` devolve `None` quando o nó não conhece nenhum endereço de
   si mesmo - aí o anel assume em vez de despachar um quadro que nunca volta.
 - `await_result_with_ack`: `select!` biased entre o resultado do inbox (caso normal), o
   ack da cabeça (só interessa quando falha, ou quando um peer antigo borbulhou
   a resposta inteira - `token_id` presente vale como resultado), e o prazo
-  `DIRECT_REPLY_DEADLINE = 600 s` (hop morreu depois de aceitar).
+  `DIRECT_REPLY_DEADLINE = 600 s` (hop morreu depois de aceitar). Se o
+  resultado vence, o ack continua em tarefa destacada para não perder a
+  evidência de transporte do primeiro hop.
 - `deliver_result`: a cauda tenta cada URL de `reply_to` em ordem; candidatos
   intermediários têm `DELIVERY_TIMEOUT = 500 ms` e o último tem 30 s.
   Três falhas seguidas movem a URL para o fim por 5 min. `410` para de tentar
@@ -1347,11 +1615,16 @@ O transporte novo envia um control frame `/v1/step-stream` uma vez ao head
 remoto. O produtor do peer chama o mesmo `handle_step` e continua a inferência;
 um emissor separado drena no máximo oito tokens que já estejam na fila e faz um
 POST por lote em `/v1/remote-stream-result`, sem sleep nem temporizador. A fila
-de callback tem capacidade 16: um cliente lento bloqueia o emissor quando ela
+de callback tem capacidade 64: um cliente lento bloqueia o emissor quando ela
 enche e, em seguida, o produtor, em vez de deixar memória crescer sem limite.
 Em planos fatiados, o head mantém os demais hops dentro da rede. O trace conta
 `remote-stream` por callback, registra bytes e soma os tempos do nó; a travessia
-de controle aparece separadamente. O conteúdo continua vindo do sampler e do
+de controle aparece separadamente. A decomposição de espera não soma intervalos
+que se sobrepõem: `producer_wait` é o ciclo até a produção, `channel_send_wait`
+é a reserva do `Sender`, `queue_wait` é o tempo do item pronto até o emitter e
+`delivery_ms` é o callback anterior. `node_timings.mtp_draft_ms` torna visível o
+`nextn` síncrono; assim, `5108 ms / 59` com canal e fila próximos de zero é
+cadência de produção, não rede. O conteúdo continua vindo do sampler e do
 UTF-8 assembler existentes, na mesma ordem.
 
 **`prompt_progress`**: sem volta, a cabeça não pode mais sobrepor
@@ -1368,13 +1641,15 @@ chunk reaproveita um prefixo. `direct_lab.rs` recusa chunks posteriores sem
 **Telemetria** (`direct::hop_entry`/`accumulate`/`record_transport`): cada hop
 descreve a si mesmo na ida e o chamador envia uma evidência separada da
 travessia. `transport_traversals` contém uma entrada por chamada, em ordem,
-com `transport` (`local`, `libp2p-tunnel` ou `https`), `transport_fallback`,
+com `transport` (`local`, `libp2p-tunnel`, `http`, `https` ou `quic`), `transport_fallback`,
 tempo e bytes enviados e recebidos. O trace copia cada entrada para o hop e
 fase correspondentes, sem lançar o residual no primeiro hop. O resultado não
 espera recibos atrasados: se uma evidência ainda não chegou, o pedido segue com
 `transport_trace_complete=false` e a UI deixa a ausência visível. Um hop local
 na mesma máquina pode ter zero de rede corretamente; isso não é uma atribuição
-ao primeiro hop.
+ao primeiro hop. Se o resultado direto vencer o ACK da cabeça,
+`await_result_with_ack` mantém o ACK em tarefa destacada e reconcilia o recibo
+quando ele chegar, sem atrasar o cliente.
 
 ## 5. Decodificação especulativa
 
@@ -1409,14 +1684,12 @@ extra), `accept_count` e `batch_width`.
   `rollback_from` descartam do KV o que não foi confirmado; sessão desconhecida
   é no-op, não erro). Todo hop decodificou o lote inteiro, então todo hop
   precisa do rollback - não só a cauda.
-- **Modelo híbrido/recorrente não produz draft quando
-  `kv_can_shift=false`.** A cauda aplica essa guarda no momento de produzir o
-  `next_draft`, informa `hybrid_tail_no_rollback` e o gateway desativa MTP pelo
-  restante da requisição. A cabeça ainda pode aceitar um draft que já tenha
-  chegado para concluir uma rodada; o que não pode acontecer é iniciar outra
-  rodada com estado cuja cauda não consegue reverter. `should_draft` continua
-  decidindo apenas se a cabeça monta o lote, com base em `mtp_ready` ou em
-  draft pronto.
+- **`kv_can_shift` não é a guarda de rollback.** Esse campo expõe o K-shift do
+  `--ctx-shift` de referência do llama.cpp. A cauda pronta (`mtp_ready=true`)
+  pode produzir `next_draft` mesmo quando ele é falso; o rollback especulativo
+  real usa `kv_remove` (`llama_memory_seq_rm`) após cada lote e falha fechado
+  quando o motor recusa a remoção. `should_draft` continua decidindo apenas
+  se a cabeça monta o lote, com base em `mtp_ready` ou em draft pronto.
 - **A prova de verdade não é mais estática, é o `seq_rm` de cada rodada.**
   `handle_rollback` (`/v1/session/rollback`) chama `kv_remove`
   (`llama_memory_seq_rm`) e devolve `{rolled_back, reason}` no corpo -
@@ -1442,10 +1715,11 @@ requisição (`especulando`, em `generate_stream_with_stops`): passa a chamar
 - O gateway clampa `speculative_k` a `n_batch` (`speculative_k_of`), porque o
   lote especulativo também é um batch único na cabeça.
 - A rota legada `step_speculative` continua no anel/hub, sem usar
-  `relay/v2-direct`. O transporte remoto usa a mesma especulação em planos de
-  um ou mais hops quando todos anunciam `speculate/v1-mtp-sliced` e a cauda
-  anuncia `speculate/v1-mtp`; cada hop faz rollback local no reply já em voo.
-  Peer sem a capacidade nova degrada para o sampler plain com a razão
+  `relay/v2-direct`. O MTP fatiado continua permitido no caminho legado quando
+  todos anunciam `speculate/v1-mtp-sliced` e a cauda anuncia
+  `speculate/v1-mtp`; no `remote-stream` de dois ou mais hops ele é omitido para
+  não impor o draft síncrono a cada callback. Cada hop faz rollback local no
+  reply já em voo. Peer sem a capacidade nova degrada para o sampler plain com a razão
   `peer_without_sliced_mtp_wire`.
 
 ### 5.2 Predição multi-token (MTP) - `inference/mtp.rs`
@@ -1528,11 +1802,11 @@ valores são iguais.
   `speculate/v1-mtp-sliced` em cada step (o protocolo `tokens`/`mtp_k`/
   `next_draft` só existe em build novo - um peer velho no anel receberia um
   `speculate` que não entende) **e** `speculate/v1-mtp` na cauda.
-- **Modelo híbrido/recorrente não rascunha quando `kv_can_shift=false`.** A
-  cauda informa `hybrid_tail_no_rollback` e não devolve `next_draft`; o gateway
-  encerra a especulação de forma limpa. Em stream remoto, cada hop faz
-  rollback local antes de a resposta subir, sem endpoint extra. No caminho
-  legado, permanece o fan-out de `/v1/session/rollback`.
+- **Modelo híbrido/recorrente pronto rascunha mesmo quando
+  `kv_can_shift=false`.** Em stream remoto, cada hop faz rollback local com
+  `kv_remove` antes de a resposta subir, sem endpoint extra, e encerra com
+  erro se a remoção efetiva falhar. No caminho legado, permanece o fan-out de
+  `/v1/session/rollback`.
 - O MTP fatiado usa `step_stream` quando o head é remoto: um control frame
   inicia o ciclo e os callbacks carregam os tokens e o estado. Se o head é
   local, o gateway mantém o caminho direto `prefill::step` +
@@ -1638,6 +1912,20 @@ gateway mede o prompt
 prompt e recusa com uma mensagem citando as flags. O `/health` expõe os dois
 valores como `n_ctx_total` e `n_ctx_per_session`.
 
+Essa admissão vale **também no gateway que não carrega modelo nenhum**. Até
+2026-09-08 ela só existia quando havia `NodeConfig` local; um nó gateway-only
+deixava o prompt atravessar inteiro, e o decode do peer abortava o processo com
+`CUDA error: out of memory` em `ggml-cuda.cu` - sem recusa, sem mensagem e
+derrubando junto todos os outros pedidos em curso. Sem config local o gateway
+usa a `RuntimeCapacity` anunciada pelo peer que serve o modelo, a mesma que
+`/v1/models` publica, via `runtime_capacity_for_model`. A verificação fica
+antes da sondagem de saúde e do planejamento: um pedido já inadmissível não
+justifica uma volta na rede, muito menos um prefill. Capacidade **pendente** é
+ausência de informação, não permissão - nesse caso quem decide continua sendo
+o peer. `prompt_budget_error_of(n_ctx, max_new_tokens, prompt)` é a função pura
+compartilhada pelos dois caminhos; a variante local acrescenta a nota de que
+`n_batch` não limita o prompt.
+
 O adaptador OpenAI de chat faz essa mesma verificação antes de iniciar o SSE e responde
 HTTP 413 quando o orçamento foi excedido. Sem esse preflight, a geração emitia
 um evento de erro dentro de um HTTP 200; clientes como OpenCode aguardavam uma
@@ -1713,8 +2001,9 @@ o teto.
 **A capacidade do nó é derivada do runtime, não é um corte silencioso.**
 O `n_ctx` efetivo confirmado pelo `/health` é anunciado em `/v1/models` como
 `context_length` e `max_completion_tokens`. O gateway usa o menor contexto
-confirmado entre os peers vivos do modelo e reduz o orçamento somente quando o
-prompt ocupa parte dessa janela. Não há uma capacidade absoluta adicional no
+confirmado entre os peers da pipeline planejada do modelo e reduz o orçamento
+somente quando o prompt ocupa parte dessa janela. Não há uma capacidade
+absoluta adicional no
 arquivo de configuração.
 
 O contexto que sobrou continua apertando o teto **sem** recusar, e isso é
@@ -1763,16 +2052,21 @@ prefixo e contar com o cache de prefixo - custaria reprefill do que já saiu, a
 cada perna, e ocuparia exatamente o mesmo KV no fim. Não há vantagem nenhuma em
 pagar por ela.
 
-**Capacidade de todos os peers.** Depois que o `/health` prova o carregamento,
+**Capacidade dos peers da pipeline.** Depois que o `/health` prova o carregamento,
 `runtime::spawn_health_watch` publica em `Announce.runtime_capacity` o
 `n_ctx` efetivo por sessão retornado pelo `/health` (o total do engine dividido
-por `max_sessions`), e o `max_new_tokens` da perna. O gateway usa o menor valor entre todos os
-peers vivos do modelo/implantação tanto em `/v1/models` quanto na validação da
-requisição. Apply, erro, stop e unload térmico limpam o anúncio antes do
-restart, então uma capacidade antiga não fica no catálogo. Sem peer
-correspondente, a configuração local continua sendo fallback para rotas sem
-implantação; havendo peer vivo sem capacidade reportada, a requisição fica
-indisponível até todos confirmarem o runtime, sem esconder um estágio antigo.
+por `max_sessions`), e o `max_new_tokens` da perna. O gateway usa o menor
+valor entre os peers da pipeline planejada tanto em `/v1/models` quanto na
+validação da requisição. Apply, erro, stop e unload térmico limpam o anúncio
+antes do restart, então uma capacidade antiga não fica no catálogo. Um
+deployment ocioso continua no catálogo como selecionável, mesmo sem
+`runtime_capacity`, enquanto um peer em reinicialização sem `idle` continua
+oculto até confirmar a saúde. Um peer ocioso escolhido pelo plano é acordado
+pelo evento `reload_model` em paralelo
+com os demais peers ociosos planejados e a requisição espera o novo `/health`
+por até 15 minutos; um peer vivo de rota alternativa não bloqueia a admissão.
+Sem peer correspondente, a configuração local continua sendo fallback para
+rotas sem implantação.
 
 **Limite conhecido.** `context_available` ainda usa a janela por sessão; com
 um pool (`max_sessions > 1`) cada contexto recebe `n_ctx / n`, então esse
@@ -1788,7 +2082,7 @@ cada travessia, e eles aparecem numa linha própria da tabela de telemetria do
 Chat.
 
 - **`transport_summary`** - resumo limitado das travessias deste hop, agrupado
-  por transporte (`local`, `libp2p-tunnel`, `https`, `https-link`,
+  por transporte (`local`, `libp2p-tunnel`, `http`, `https`, `quic`,
   `remote-stream` ou `unknown`). Cada entrada
   informa chamadas, bytes enviados e recebidos, RTT mínimo, mediana, p95 e
   máximo, além de quantas chamadas chegaram por fallback naquele transporte.
@@ -1799,6 +2093,13 @@ Chat.
   `transport_trace_complete=false` deixa a perda explícita. As amostras usadas
   para quantis são limitadas internamente, portanto a resposta de produção não
   cresce com o número de tokens.
+
+- **`telemetry`** - resumo da integridade da coleta distribuída. O callback
+  `remote-stream` preserva a participação de cada hop e seus `span_count`,
+  enquanto o `ReplyInbox` mantém um snapshot por uma janela curta para anexar
+  recibos de transporte que chegam depois da resposta. Duplicatas não entram
+  duas vezes; depois da expiração, uma entrega tardia é recusada e não vira
+  tempo desconhecido retroativamente.
 
 - **`tls` / `tls_calls`** - se o salto foi cifrado. Na `PhaseTrace` é uma
   **contagem**, não um booleano: uma fase soma várias chamadas, e se só parte
@@ -1821,10 +2122,10 @@ cifra do record layer, diluída dentro de `response_body_ms` e não separável s
 instrumentar o socket; a tela nomeia essa limitação em vez de inventar uma
 coluna.
 
-**`https-link` é o canal persistente da seção 2.1.** Ele é o mesmo HTTPS
-pinado - `tls` segue a política do cluster, como em `https` -, mas uma
+**O canal persistente da seção 2.1 não é um transporte público separado.** Ele
+usa o mesmo HTTP ou HTTPS pinado - `tls` segue a política do cluster -, mas uma
 travessia por ali não abriu requisição: o quadro entrou num corpo já aberto.
-Uma travessia que aparece como `https` ou `libp2p-tunnel` com
+Uma travessia que aparece como `http` ou `https` com
 `transport_fallback=true` num hop que anuncia `transport/link-v1` é o canal
 tendo falhado e a geração tendo continuado - que é o comportamento pedido, não
 um defeito. `tls_handshake_ms` fica zero nas travessias do canal pelo mesmo
@@ -1838,8 +2139,12 @@ No transporte remoto, o registro `remote-stream` representa um callback de
 lote, não uma nova ida e volta de inferência. `bytes_received` é o corpo do
 lote e `processing_ms`/`node_timings` são agregados dos tokens contidos nele;
 `round_trip_ms` fica zero porque o callback é entregue ao inbox do gateway, que
-já separa a espera do cliente da geração. O primeiro control frame mantém a
-medição do transporte usado para iniciar o stream.
+já separa a espera do cliente da geração. O resumo também publica abertura,
+lifetime, frames e bytes, primeira entrega, latências de frame min/p50/p95/p99/
+  máximo, compute remoto total/min/p50/p95/p99/máximo e espera do stream
+  total/p50/p95. A espera também publica totais e quantis de produção,
+  downstream, reserva do canal, fila e callback anterior. O primeiro control
+  frame mantém a medição do transporte usado para iniciar o stream.
 
 ## 11. Defeitos anotados
 
@@ -1893,17 +2198,17 @@ medição do transporte usado para iniciar o stream.
   transporte, e telemetria atrasada não segura o resultado.
   O teste de `link_lab` também ficou verde com a escada que não desativa a
   rota por requisição.
-- Continuam vermelhos, sem alteração de expectativa nesta tarefa:
-  `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado` (espera teto 2048,
-  recebe 96), três de `deploy::whole_route_tests` (estado de catálogo/fatias)
-  e `webui::tests::merge_parts_joins_two_slices_into_a_whole` (metadado
+- Continuam vermelhos, sem alteração de expectativa nesta tarefa, três de
+  `deploy::whole_route_tests` (estado de catálogo/fatias) e
+  `webui::tests::merge_parts_joins_two_slices_into_a_whole` (metadado
   `head_count_kv_by_layer`). São expectativas de outros subsistemas e ficam
   anotados sem conserto de passagem.
 - A contagem acima repete a medição da revisão com
-  `--skip prefix_reuse_lab`. Sem esse filtro, a suíte também mantém vermelho
-  `prefix_reuse_lab::unknown_session_recovery_is_bounded` (o hub repete os três
-  chunks depois de perder a sessão); esse caso não fazia parte dos oito
-  achados medidos e não foi alterado aqui.
+  `--skip prefix_reuse_lab`. Os testes
+  `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado` e
+  `prefix_reuse_lab::unknown_session_recovery_is_bounded` agora isolam,
+  respectivamente, o orçamento do detector de ciclos e o limite de tentativas
+  frias; o total de frames permanece determinado pela janela de prefill.
 - **Os testes de `webui` que repassam para uma máquina falsa são instáveis sob
   carga** (2026-09-03): cada rodada da suíte cheia derruba **um** deles, e nem
   sempre o mesmo - vistos `webui::leave_tests::leaving_for_a_peer_is_forwarded_to_that_peer`

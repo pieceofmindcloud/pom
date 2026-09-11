@@ -32,14 +32,43 @@ pub(crate) fn step_blocking(
     // cabeça a ecoa a partir do próprio `speculate` (`mtp_k_hint`).
     mtp_k: Option<u32>,
     queued_at: Instant,
+    scheduler_wait_us: u64,
+    scheduler_wait_reason: Option<&'static str>,
+    scheduler_session_existing: bool,
+    pipeline_session: bool,
+    profiling: Option<crate::prefill::TelemetryContext>,
 ) -> Result<TimedReply> {
     let mut timings = NodeTimings {
+        session_id: Some(sid_key.clone()),
         queue_us: queued_at.elapsed().as_micros() as u64,
+        scheduler_wait_us,
+        scheduler_wait_reason,
+        scheduler_session_existing,
+        pipeline_session,
+        profiling_spans: profiling.as_ref().map(|_| Vec::new()),
         ..Default::default()
     };
     let lock_started = Instant::now();
     let mut s = lock_inference_state(&state)?;
     timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
+    if let Some(context) = profiling.as_ref() {
+        timings.record_profile_span(
+            context,
+            "scheduler-queue",
+            queued_at,
+            lock_started,
+            None,
+            None,
+        );
+        timings.record_profile_span(
+            context,
+            "lock-wait",
+            lock_started,
+            Instant::now(),
+            None,
+            None,
+        );
+    }
     timings.selected_path = s.inference_path;
 
     let setup_started = Instant::now();
@@ -54,6 +83,16 @@ pub(crate) fn step_blocking(
     let n_past = session.n_past;
     let seq_id = session.seq_id();
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
+    if let Some(context) = profiling.as_ref() {
+        timings.record_profile_span(
+            context,
+            "session-setup",
+            setup_started,
+            Instant::now(),
+            None,
+            None,
+        );
+    }
 
     let n_tokens;
     let decode_started = Instant::now();
@@ -143,8 +182,26 @@ pub(crate) fn step_blocking(
                 match spec.source {
                     DraftSource::Mtp => {
                         let p_min = s.mtp_min_probability;
-                        s.engine
-                            .mtp_draft(tid, n_past, seq_id, spec.k.saturating_sub(1), p_min)
+                        let mtp_started = Instant::now();
+                        let draft = s.engine.mtp_draft(
+                            tid,
+                            n_past,
+                            seq_id,
+                            spec.k.saturating_sub(1),
+                            p_min,
+                        );
+                        timings.mtp_draft_us += mtp_started.elapsed().as_micros() as u64;
+                        if let Some(context) = profiling.as_ref() {
+                            timings.record_profile_span(
+                                context,
+                                "mtp-draft",
+                                mtp_started,
+                                Instant::now(),
+                                None,
+                                None,
+                            );
+                        }
+                        draft
                     }
                     DraftSource::Lookup => {
                         let session = &s.sessions[&sid_key];
@@ -197,9 +254,19 @@ pub(crate) fn step_blocking(
         timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
+    if let Some(context) = profiling.as_ref() {
+        timings.record_profile_span(
+            context,
+            "decode",
+            decode_started,
+            Instant::now(),
+            None,
+            None,
+        );
+    }
     timings.backend_enqueue_us += engine_timing.enqueue_us;
     timings.backend_completion_us += engine_timing.backend_completion_us;
-    timings.residual_capture_d2h_sync_us += engine_timing.residual_capture_d2h_sync_us;
+    timings.merge_engine_capture(&engine_timing);
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;
 
@@ -230,6 +297,9 @@ pub(crate) fn step_blocking(
             for i in 0..n_tokens {
                 let logits = s.engine.logits_ith(i as i32);
                 let (id, _timing) = sample_token_profiled(logits, &recent, &sampling);
+                if i == 0 {
+                    super::core::mark_first_token_produced(&mut timings, decode_started);
+                }
                 recent.push(id);
                 let is_stop = s.engine.is_generation_stop(&recent[..recent.len() - 1], id);
                 pieces.push(if is_stop {
@@ -245,6 +315,16 @@ pub(crate) fn step_blocking(
                 }
             }
             timings.sampling_us += verification_started.elapsed().as_micros() as u64;
+            if let Some(context) = profiling.as_ref() {
+                timings.record_profile_span(
+                    context,
+                    "sampling",
+                    verification_started,
+                    Instant::now(),
+                    None,
+                    None,
+                );
+            }
 
             let accept_len = longest_match(&sampled, &draft);
             record_mtp_verification(&mut timings, mtp_verification, draft.len(), accept_len);
@@ -295,16 +375,34 @@ pub(crate) fn step_blocking(
             // um pipeline (a composição do lote veio de fora, via `tokens`):
             // numa máquina só a cabeça é a própria cauda e não há para onde
             // devolver o rascunho.
-            let mut speculation_disabled_reason = None;
-            let mtp_tail_reason = mtp_k.is_some().then(|| {
-                mtp_tail_speculation_reason(
+            let (mtp_tail_reason, mut speculation_disabled_detail) = if mtp_k.is_some() {
+                if let Some(reason) = mtp_tail_speculation_reason(
                     s.engine.mtp_ready(),
                     s.engine.mtp_unavailable_reason(),
-                    s.engine.kv_can_shift(),
-                )
-            });
+                ) {
+                    (
+                        Some(reason),
+                        Some(
+                            s.engine
+                                .mtp_unavailable_reason()
+                                .unwrap_or(reason)
+                                .to_owned(),
+                        ),
+                    )
+                } else if batch_tokens.is_none() {
+                    (
+                        Some(SPECULATION_REASON_MTP_INPUT_MISSING),
+                        Some("cauda recebeu estado oculto sem o campo tokens".to_owned()),
+                    )
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+            let mut speculation_disabled_reason = None;
             let next_draft: Option<Vec<i32>> =
-                if !done && batch_tokens.is_some() && mtp_tail_reason.flatten().is_none() {
+                if !done && batch_tokens.is_some() && mtp_tail_reason.is_none() {
                     // A sessão já avançou `n_tokens`; só as primeiras `keep`
                     // posições foram confirmadas, então o próximo slot livre do
                     // tronco é `n_past - (n_tokens - keep)`.
@@ -312,17 +410,31 @@ pub(crate) fn step_blocking(
                     let n_past_next = session_n_past - (n_tokens as u32 - keep as u32);
                     let id0 = *accepted_ids.last().unwrap_or(&eos);
                     let p_min = s.mtp_min_probability;
+                    let mtp_started = Instant::now();
                     let dr =
                         s.engine
                             .mtp_draft(id0, n_past_next, seq_id, draft.len() as u32, p_min);
+                    timings.mtp_draft_us += mtp_started.elapsed().as_micros() as u64;
+                    if let Some(context) = profiling.as_ref() {
+                        timings.record_profile_span(
+                            context,
+                            "mtp-draft",
+                            mtp_started,
+                            Instant::now(),
+                            None,
+                            None,
+                        );
+                    }
                     if dr.is_empty() {
                         speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
+                        speculation_disabled_detail =
+                            Some("nextn não produziu tokens para a rodada seguinte".to_owned());
                         None
                     } else {
                         Some(dr)
                     }
                 } else {
-                    speculation_disabled_reason = mtp_tail_reason.flatten();
+                    speculation_disabled_reason = mtp_tail_reason;
                     None
                 };
 
@@ -363,12 +475,23 @@ pub(crate) fn step_blocking(
                     "speculated": true,
                     "speculation_active": next_draft.is_some(),
                     "speculation_disabled_reason": speculation_disabled_reason,
+                    "speculation_disabled_detail": speculation_disabled_detail,
                     "next_draft": next_draft,
                 }),
                 None,
                 wire_dtype,
             )?;
             timings.encode_us += encode_started.elapsed().as_micros() as u64;
+            if let Some(context) = profiling.as_ref() {
+                timings.record_profile_span(
+                    context,
+                    "response-encode",
+                    encode_started,
+                    Instant::now(),
+                    None,
+                    None,
+                );
+            }
             return Ok(TimedReply { bytes, timings });
         }
 
@@ -377,6 +500,7 @@ pub(crate) fn step_blocking(
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        super::core::mark_first_token_produced(&mut timings, decode_started);
         let done = s.engine.is_generation_stop(&recent, next_id);
         let token_text_started = Instant::now();
         let mut text = if done {
@@ -419,6 +543,16 @@ pub(crate) fn step_blocking(
         timings.top_p_us += sampling_timing.top_p_us;
         timings.selection_us += sampling_timing.selection_us;
         timings.token_text_us += token_text_us;
+        if let Some(context) = profiling.as_ref() {
+            timings.record_profile_span(
+                context,
+                "sampling",
+                logits_access_started,
+                Instant::now(),
+                None,
+                None,
+            );
+        }
 
         // A cauda de um pipeline fatiado também rascunha na rodada em que a
         // cabeça recusou — a primeira, quando ainda não há rascunho pronto
@@ -428,24 +562,55 @@ pub(crate) fn step_blocking(
         // decodificado; sem ele o draft seguinte usaria a linha de uma posição
         // anterior e parearia errado. Rodada de modelo inteiro recusada não
         // tem `mtp_k` — nada a devolver, e não há segunda máquina esperando.
+        let (mtp_tail_reason, mut speculation_disabled_detail) = if mtp_k.is_some() {
+            if let Some(reason) =
+                mtp_tail_speculation_reason(s.engine.mtp_ready(), s.engine.mtp_unavailable_reason())
+            {
+                (
+                    Some(reason),
+                    Some(
+                        s.engine
+                            .mtp_unavailable_reason()
+                            .unwrap_or(reason)
+                            .to_owned(),
+                    ),
+                )
+            } else if batch_tokens.is_none() {
+                (
+                    Some(SPECULATION_REASON_MTP_INPUT_MISSING),
+                    Some("cauda recebeu estado oculto sem o campo tokens".to_owned()),
+                )
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
         let mut speculation_disabled_reason = None;
-        let mtp_tail_reason = mtp_k.is_some().then(|| {
-            mtp_tail_speculation_reason(
-                s.engine.mtp_ready(),
-                s.engine.mtp_unavailable_reason(),
-                s.engine.kv_can_shift(),
-            )
-        });
-        let next_draft: Option<Vec<i32>> = if !done && mtp_tail_reason.flatten().is_none() {
+        let next_draft: Option<Vec<i32>> = if !done && mtp_tail_reason.is_none() {
             if let Some(k) = mtp_k {
                 s.engine.mtp_accept(0);
                 let session_n_past = s.sessions[&sid_key].n_past;
                 let p_min = s.mtp_min_probability;
+                let mtp_started = Instant::now();
                 let dr =
                     s.engine
                         .mtp_draft(next_id, session_n_past, seq_id, k.saturating_sub(1), p_min);
+                timings.mtp_draft_us += mtp_started.elapsed().as_micros() as u64;
+                if let Some(context) = profiling.as_ref() {
+                    timings.record_profile_span(
+                        context,
+                        "mtp-draft",
+                        mtp_started,
+                        Instant::now(),
+                        None,
+                        None,
+                    );
+                }
                 if dr.is_empty() {
                     speculation_disabled_reason = Some(SPECULATION_REASON_TAIL_DRAFT_EMPTY);
+                    speculation_disabled_detail =
+                        Some("nextn não produziu tokens para a rodada seguinte".to_owned());
                     None
                 } else {
                     Some(dr)
@@ -454,7 +619,7 @@ pub(crate) fn step_blocking(
                 None
             }
         } else {
-            speculation_disabled_reason = mtp_tail_reason.flatten();
+            speculation_disabled_reason = mtp_tail_reason;
             None
         };
         let encode_started = Instant::now();
@@ -462,11 +627,22 @@ pub(crate) fn step_blocking(
         reply["speculated"] = json!(false);
         reply["speculation_active"] = json!(next_draft.is_some());
         reply["speculation_disabled_reason"] = json!(speculation_disabled_reason);
+        reply["speculation_disabled_detail"] = json!(speculation_disabled_detail);
         if let Some(nd) = &next_draft {
             reply["next_draft"] = json!(nd);
         }
         let bytes = wire::encode(&reply, None, wire_dtype)?;
         timings.encode_us += encode_started.elapsed().as_micros() as u64;
+        if let Some(context) = profiling.as_ref() {
+            timings.record_profile_span(
+                context,
+                "response-encode",
+                encode_started,
+                Instant::now(),
+                None,
+                None,
+            );
+        }
         return Ok(TimedReply { bytes, timings });
     }
 
@@ -501,6 +677,16 @@ pub(crate) fn step_blocking(
         wire_dtype,
     )?;
     timings.encode_us += encode_started.elapsed().as_micros() as u64;
+    if let Some(context) = profiling.as_ref() {
+        timings.record_profile_span(
+            context,
+            "response-encode",
+            encode_started,
+            Instant::now(),
+            None,
+            None,
+        );
+    }
     Ok(TimedReply { bytes, timings })
 }
 

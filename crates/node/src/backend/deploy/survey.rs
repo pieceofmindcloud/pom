@@ -4,6 +4,10 @@ use super::*;
 /// One slice of the chosen set, as it exists on one machine.
 #[derive(Debug, Clone)]
 pub(super) struct HeldShard {
+    /// O mesmo intervalo pode existir como GGUF inteiro e como fatia. A
+    /// distinção precisa sobreviver ao survey para o diálogo não oferecer a
+    /// escolha errada quando os dois arquivos estão na máquina.
+    pub(super) kind: HeldKind,
     pub(super) start_layer: u32,
     pub(super) end_layer: u32,
     /// How many layers the *original* model had, when the slice says so.
@@ -17,6 +21,8 @@ pub(super) struct HeldShard {
     pub(super) total_layers: Option<u32>,
     pub(super) name: String,
     pub(super) path: String,
+    /// Adjacent llama.cpp projector, when the catalog found one.
+    pub(super) mmproj_path: Option<String>,
     pub(super) size_bytes: u64,
     /// sha256 da parte, quando ela é endereçada por conteúdo.
     ///
@@ -39,6 +45,12 @@ pub(super) struct HeldShard {
     pub(super) is_moe: bool,
     /// Evidência do modelo lida no GGUF, quando o peer conseguiu apurá-la.
     pub(super) model_capabilities: Option<crate::gguf::ModelCapabilityEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HeldKind {
+    Shard,
+    Whole,
 }
 
 /// A machine in the cluster, with the slices of this set it already holds.
@@ -115,9 +127,20 @@ pub(super) struct RttReport {
 
 impl Machine {
     pub(super) fn holds(&self, start: u32, end: u32) -> Option<&HeldShard> {
-        self.held
-            .iter()
-            .find(|s| s.start_layer == start && s.end_layer == end)
+        self.holds_kind(start, end, None)
+    }
+
+    pub(super) fn holds_kind(
+        &self,
+        start: u32,
+        end: u32,
+        kind: Option<HeldKind>,
+    ) -> Option<&HeldShard> {
+        self.held.iter().find(|s| {
+            s.start_layer == start
+                && s.end_layer == end
+                && kind.is_none_or(|wanted| s.kind == wanted)
+        })
     }
     pub(super) fn holds_ready(&self, start: u32, end: u32) -> Option<&HeldShard> {
         self.held
@@ -261,19 +284,26 @@ pub(super) fn selected_model_metadata_path(
 /// still enriching unrelated files. A failed or unavailable targeted route is
 /// intentionally left as a pending selection, never guessed from a filename.
 pub(super) async fn enrich_selected_model_on_peer(
+    state: &GatewayState,
     client: &reqwest::Client,
     base: &str,
-    key: &str,
     body: &mut serde_json::Value,
     path: String,
 ) {
-    let response = client
-        .post(format!("{base}/api/ui/model-metadata"))
-        .bearer_auth(key)
-        .timeout(PEER_TIMEOUT)
-        .json(&crate::webui::ModelMetadataRequest { path: path.clone() })
-        .send()
-        .await;
+    let request_body = crate::webui::ModelMetadataRequest { path: path.clone() };
+    let Ok(request) = state
+        .control_json_request(
+            client
+                .post(format!("{base}/api/ui/model-metadata"))
+                .timeout(PEER_TIMEOUT),
+            "/api/ui/model-metadata",
+            &request_body,
+        )
+        .await
+    else {
+        return;
+    };
+    let response = request.send().await;
     let Ok(response) = response else { return };
     if !response.status().is_success() {
         return;
@@ -409,8 +439,6 @@ pub(super) async fn survey(
                 .insert((self_id.clone(), node_id.clone()), *rtt_ms);
         }
     }
-    let connection_key = state.auth.read().await.connection_key.clone();
-
     let futures = peers.into_iter().map(|peer| {
         // Pinado no node_id do destino: sem isto, com o cluster em TLS o
         // levantamento inteiro falhava calado e a tela de implantar dizia
@@ -423,30 +451,41 @@ pub(super) async fn survey(
             route_rtt.get(&peer.node_id).copied()
         };
         let group = group.to_string();
-        let connection_key = connection_key.clone();
+        let state = state;
         async move {
             let base = peer.gateway_url()?;
             let http = http.ok()?;
 
-            let (models, node, rtt) = futures::future::join3(
-                http.get(format!("{base}/api/ui/models"))
-                    .bearer_auth(&connection_key)
-                    .timeout(PEER_TIMEOUT * 4)
-                    .send(),
-                http.get(format!("{base}/api/ui/node"))
-                    .bearer_auth(&connection_key)
-                    .timeout(PEER_TIMEOUT)
-                    .send(),
-                http.get(format!("{base}/api/ui/network/rtt"))
-                    .timeout(PEER_TIMEOUT)
-                    .bearer_auth(&connection_key)
-                    .send(),
-            )
-            .await;
+            let models = state
+                .control_get_request(
+                    http.get(format!("{base}/api/ui/models"))
+                        .timeout(PEER_TIMEOUT * 4),
+                    "/api/ui/models",
+                )
+                .await
+                .ok()?;
+            let node = state
+                .control_get_request(
+                    http.get(format!("{base}/api/ui/node"))
+                        .timeout(PEER_TIMEOUT),
+                    "/api/ui/node",
+                )
+                .await
+                .ok()?;
+            let rtt = state
+                .control_get_request(
+                    http.get(format!("{base}/api/ui/network/rtt"))
+                        .timeout(PEER_TIMEOUT),
+                    "/api/ui/network/rtt",
+                )
+                .await
+                .ok()?;
+            let (models, node, rtt) =
+                futures::future::join3(models.send(), node.send(), rtt.send()).await;
 
             let mut body: serde_json::Value = models.ok()?.json().await.ok()?;
             if let Some(path) = selected_model_metadata_path(&body, &group, kind) {
-                enrich_selected_model_on_peer(&http, &base, &connection_key, &mut body, path).await;
+                enrich_selected_model_on_peer(state, &http, &base, &mut body, path).await;
             }
             let metadata_pending_candidate = body
                 .get("metadata_complete")
@@ -543,13 +582,16 @@ pub(super) async fn survey(
                     .filter(|set| set.get("group").and_then(|g| g.as_str()) == Some(group.as_str()))
                     .flat_map(|set| {
                         let pom_id = set.get("pom_id").and_then(|value| value.as_str());
+                        let mmproj_path = set.get("mmproj_path").and_then(|value| value.as_str());
                         set.get("shards")
                             .and_then(|v| v.as_array())
                             .into_iter()
                             .flatten()
-                            .map(move |shard| (shard, pom_id))
+                            .map(move |shard| (shard, pom_id, mmproj_path))
                     })
-                    .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
+                    .filter_map(|(shard, pom_id, mmproj_path)| {
+                        parse_shard(shard, pom_id, mmproj_path)
+                    })
                     .collect(),
                 DeployKind::Whole => {
                     let mut models = body
@@ -572,13 +614,17 @@ pub(super) async fn survey(
                         })
                         .flat_map(|set| {
                             let pom_id = set.get("pom_id").and_then(|value| value.as_str());
+                            let mmproj_path =
+                                set.get("mmproj_path").and_then(|value| value.as_str());
                             set.get("shards")
                                 .and_then(|v| v.as_array())
                                 .into_iter()
                                 .flatten()
-                                .map(move |shard| (shard, pom_id))
+                                .map(move |shard| (shard, pom_id, mmproj_path))
                         })
-                        .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
+                        .filter_map(|(shard, pom_id, mmproj_path)| {
+                            parse_shard(shard, pom_id, mmproj_path)
+                        })
                         .collect::<Vec<_>>();
                     models.append(&mut slices);
                     models
@@ -596,13 +642,17 @@ pub(super) async fn survey(
                         })
                         .flat_map(|set| {
                             let pom_id = set.get("pom_id").and_then(|value| value.as_str());
+                            let mmproj_path =
+                                set.get("mmproj_path").and_then(|value| value.as_str());
                             set.get("tp_parts")
                                 .and_then(|v| v.as_array())
                                 .into_iter()
                                 .flatten()
-                                .map(move |shard| (shard, pom_id))
+                                .map(move |shard| (shard, pom_id, mmproj_path))
                         })
-                        .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
+                        .filter_map(|(shard, pom_id, mmproj_path)| {
+                            parse_shard(shard, pom_id, mmproj_path)
+                        })
                         .collect();
                     if parts.is_empty() {
                         body.get("models")
@@ -624,7 +674,7 @@ pub(super) async fn survey(
             // holder of it. The whole-model path meets this the moment the same
             // GGUF is reachable through two scanned folders — the captain's
             // `~/.ollama/models` is a symlink into the LM Studio library.
-            held.dedup_by_key(|s| (s.start_layer, s.end_layer, s.tp_rank, s.tp_size));
+            held.dedup_by_key(|s| (s.start_layer, s.end_layer, s.kind, s.tp_rank, s.tp_size));
 
             Some((
                 Machine {
@@ -735,9 +785,14 @@ pub(super) fn memory_capacity(system: Option<&serde_json::Value>) -> (u64, u64) 
     (gpu, ram)
 }
 
-pub(super) fn parse_shard(v: &serde_json::Value, pom_id: Option<&str>) -> Option<HeldShard> {
+pub(super) fn parse_shard(
+    v: &serde_json::Value,
+    pom_id: Option<&str>,
+    set_mmproj_path: Option<&str>,
+) -> Option<HeldShard> {
     let range = v.get("shard_range")?.as_array()?;
     Some(HeldShard {
+        kind: HeldKind::Shard,
         start_layer: range.first()?.as_u64()? as u32,
         end_layer: range.get(1)?.as_u64()? as u32,
         total_layers: v
@@ -747,6 +802,11 @@ pub(super) fn parse_shard(v: &serde_json::Value, pom_id: Option<&str>) -> Option
             .filter(|t| *t > 0),
         name: v.get("name")?.as_str()?.to_string(),
         path: v.get("path")?.as_str()?.to_string(),
+        mmproj_path: v
+            .get("mmproj_path")
+            .and_then(|value| value.as_str())
+            .or(set_mmproj_path)
+            .map(str::to_string),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
         sha256: v
             .get("sha256")
@@ -802,11 +862,16 @@ pub(super) fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShar
         .and_then(|t| t.as_u64())
         .filter(|t| *t > 0)? as u32;
     Some(HeldShard {
+        kind: HeldKind::Whole,
         start_layer: 0,
         end_layer: total - 1,
         total_layers: Some(total),
         name: name.to_string(),
         path: v.get("path")?.as_str()?.to_string(),
+        mmproj_path: v
+            .get("mmproj_path")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
         // Modelo inteiro não é parte de rodada nenhuma: não tem hash de parte.
         sha256: None,

@@ -47,14 +47,20 @@ remain local until the deploy preflight.
   what survives a reload. This gate is only a UI flow: the server remains the
   authorization boundary.
 
+  The real first-access route is `/setup` and uses `routes/Setup.tsx` with the
+  loopback `/api/setup/*` backend. `routes/SetupWizard.tsx` and
+  `components/setup-wizard/*` are visual mock references only. The live wizard
+  also owns the country/city location step, hardware-first order, profile
+  branches, and the restart after save.
+
 ### App.tsx route table
 
 `App` first decides setup vs dashboard: `useAdminSurface()` probes `/api/ui/node` with `auth: false`; a 404 means the node runs only the `/api/setup/*` router and `Setup` renders instead, while a local-only refusal renders the server-equivalent bilingual no-navigation state (the probe never hits `/api/setup/key` because that route mints a connection key). Both Sidebar and Topbar sit in their own `ErrorBoundary` so a chrome crash cannot blank the menu.
 
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
-O perfil `infer` é uma vista reduzida da interface: conversa, documentação,
-API key e a tela de rede local para pedir entrada no processamento. O valor vem
+O perfil `infer` é uma vista reduzida da interface: conversa, Chat da rede,
+documentação, API key e a tela de rede local para pedir entrada no processamento. O valor vem
 de `/api/ui/node`, é propriedade persistida do nó e aparece na toolbar. Isso
 não substitui a autorização do backend: o servidor também limita a resposta da
 rede e as promoções.
@@ -73,7 +79,11 @@ clique no Fluxo abria - também é do administrador (`canSeePeerDetails`, em
 desenhado**, porque uma vista só não é uma escolha.
 
 - `/` -> Dashboard
-- `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens)
+- `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens); `/network-chat` -> NetworkChat, página própria com o mesmo padrão visual do chat de IA, com cabeçalho full-bleed alinhado às outras telas e acompanhamento automático do fim do histórico
+- A Sidebar consulta o snapshot do Chat da rede em segundo plano para exibir
+  mensagens não lidas; abrir `/network-chat` marca o snapshot atual como lido.
+  No celular, a lista de usuários online permanece fechada até `Ver online` ser
+  acionado.
 - `/admin-ui/chat` -> Chat compacto para o painel nativo da barra de status do macOS; mantém somente a tela de chat, com layout `h-full min-h-0 overflow-hidden`, e o botão de janela maior só aparece quando o WebKit nativo fornece a ponte `pomOpenWindow`.
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels (busca,
   detalhes e downloads persistidos no nó); `/modelos/fatiar` -> SliceModels, que também
@@ -87,29 +97,26 @@ desenhado**, porque uma vista só não é uma escolha.
   leitura, com os parâmetros da versão escolhida
 - `/implantacoes/logs` -> DeploymentLogs, consola terminal dos logs de processo
   do cluster, em ordem de chegada no principal e filtrável por `deploy_id`
-- `/setup` -> SetupWizard, **fora da moldura**: sem Sidebar nem Topbar, como o
-  `Setup` do primeiro arranque (`isWizard` no `App.tsx` devolve antes do shell)
+- `/setup` -> Setup, o wizard real de primeiro arranque, **fora da moldura**:
+  sem Sidebar nem Topbar. `SetupWizard` continua sendo uma referência visual
+  mock, não a tela usada quando o nó está em modo setup.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com barra compacta de
   filtros, tabela densa, scroll infinito e inspetor com Markdown renderizado,
   expansão para leitura e redação de credenciais; `/estatisticas` -> Statistics,
-  tela separada dos agregados da auditoria. `/logs/estatisticas` redireciona
-  para a rota nova.
+  tela full-bleed separada dos agregados da auditoria, sem título duplicado, com
+  filtros de usuário, API key, modelo, nó, prompt e intervalo de datas.
+  `/logs/estatisticas` redireciona para a rota nova.
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
-- `/config/rede` -> NetworkSettings; `/config/administracao` -> AdminAuthority,
-  which shows the principal, secondary administrators and the promotion chain.
-  Only the principal gets promotion, demotion and resignation controls; pending
-  authority offers use the activity bell. `/config/confianca` -> TrustAnchor,
-  a raiz de confiança desta máquina: impressão digital da âncora, estado
-  ancorado/por ancorar e, num nó ainda sem raiz, o formulário que instala a
-  cadeia trazida do admin. **Aberta aos três perfis de propósito** - antes de
-  ancorar, um `profile: admin` não tem capacidade efetiva de admin, e quem
-  recebe a âncora costuma ser `node` ou `infer`; a trava é do servidor
-  (loopback real, nó por ancorar, impressão digital conferida).
-  `/config/preferencias` -> Preferences,
-  including administrative exposure and gateway port plus the moved TLS choice;
-  `/config/keys/api` -> TokenKeys; `/config/keys/conexao` -> ConnectionKeys;
-  `/config/pastas` -> ModelPaths
+- `/config/rede` -> NetworkSettings; a seção principal Rede também reúne
+  `/config/rede/participantes`, `/config/administracao` (Administradores),
+  `/config/compartilhamento` (TrustAnchor com máquina, raiz e chave de conexão)
+  e `/config/keys/api`. A rota antiga `/config/confianca` continua como alias
+  compatível da tela da raiz de confiança.
+- `/config/preferencias` -> Preferences com exposição, Hugging Face e proteção
+  térmica; `/config/armazenamento` -> ModelPaths; `/config/preferencias/admin`
+  -> preferências administrativas de TLS, QUIC, logs e chat da rede. Estes são
+  os três itens que permanecem na seção principal Configurações.
 - `*` -> NotFound
 
 Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-fade wrapper; chat and dashboard get overflow-hidden main, the rest scroll.
@@ -125,14 +132,27 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 - `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, tipos compartilhados e o contrato de métricas de TTFT, prefill, geração e total. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider, including telemetry and initial-model copy. See `src/i18n/AGENTS.md`.
 - `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action, initial-model mark and `RemoteModels`. See `src/routes/AGENTS.md`.
-- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications, TlsIndicator, ChatSessionList) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog). `RuntimeParamsForm` é o editor compartilhado dos ajustes da implantação, incluindo a reserva de segurança de VRAM por dispositivo e o detector configurável de ciclos de geração.
+- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications, TlsIndicator, ChatSessionList, ChatSurfaceTabs) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog, ApiKeysTable, DeploymentLogDock, OpenNativeChatWindowButton). `ChatSurfaceTabs` mantém `/chat` e `/network-chat` navegáveis nos dois sentidos. `RuntimeParamsForm` é o editor compartilhado dos ajustes da implantação, incluindo a reserva de segurança de VRAM por dispositivo e o detector configurável de ciclos de geração.
 - `src/brand/` + `public/brand/` - **generated** by `scripts/build-brand.mjs` from the root `brand.json`; read through `src/lib/brand.ts` (`brand`, `storageKey`). Never edit or commit.
 - `src/guides/` - the human half of the documentation: guide content per locale, its renderer and the SVG diagrams. See `src/guides/AGENTS.md`.
 - `src/test/` - `fixtures.ts`: fake peers/nodes/clusters with the *full* shape the node serves, for tests only. A partial `node` (e.g. one without `status`) passes one component's `?.` and crashes the next, so tests build from these fixtures and override only the field under test.
 
+`Chat.tsx` mantém somente a conversa de IA e exibe `ChatSurfaceTabs` para que a
+rede possa ser aberta e fechada sem depender da Sidebar. `NetworkChat.tsx` é a página
+`/network-chat`: consulta o snapshot autenticado, envia texto, arquivos e
+ações de digitação com a chave da API do nó, resolve cada `node_id` pelo mapa
+de nomes usado pelo painel e mantém o histórico no fim enquanto a pessoa não
+rolou para cima. `Preferences.tsx` expõe a política de chat da rede somente ao
+administrador. `PublicNetworks.tsx` deriva os combos de país e cidade dos
+metadados públicos recebidos, mantendo a cidade limitada ao país selecionado.
+Cada endereço publicado também recebe uma verificação `/health` no navegador,
+com timeout curto, cache de 30 segundos e nova tentativa apenas por atualização
+explícita; o resultado verde/vermelho representa alcançabilidade observada, não
+uma alteração no endereço que o pkarr publicou.
+
 ## Links
 
-- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.
+- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, deployments, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, network/info, network/geo-reference, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.
 - Auth: `api.ts` sends same-origin credentials so the gateway can use its
   `HttpOnly` admin session. Administrative requests use the cluster connection
   key, while `/v1/*` chat requests use the dedicated `pom-[node_id]` API key

@@ -188,6 +188,8 @@ pub struct Plan {
     /// Echoed so the screen never has to guess which question it asked. A whole
     /// model plan has exactly one step covering every layer.
     pub(super) kind: DeployKind,
+    /// Projector selected by the catalog for the model, if any.
+    pub(super) mmproj_path: Option<String>,
     /// True only when the surveyed GGUF metadata reports more than one expert.
     /// The UI must never infer this from a filename or architecture label.
     pub(super) is_moe: bool,
@@ -1139,6 +1141,21 @@ pub(super) fn plan_with_rtt_options(
         }
     }
 
+    // Vision belongs to the selected pipeline head, not to whichever peer
+    // happened to report a layer-0 file first. Downstream peers receive hidden
+    // state and must never be asked to load the raw image projector.
+    let mmproj_path = chosen
+        .iter()
+        .find(|(index, target, _)| !target.is_empty() && available[*index].start_layer == 0)
+        .and_then(|(_, target, _)| machines.iter().find(|machine| machine.node_id == *target))
+        .and_then(|machine| {
+            machine
+                .held
+                .iter()
+                .find(|shard| shard.mmproj_path.is_some())
+                .and_then(|shard| shard.mmproj_path.clone())
+        });
+
     for (i, ..) in &chosen {
         available[*i].selected = true;
     }
@@ -1754,6 +1771,7 @@ pub(super) fn plan_with_rtt_options(
         deployment_name: deployment_name.to_string(),
         strategy,
         kind,
+        mmproj_path,
         tp,
         is_moe,
         inference_mode_supported,
@@ -1905,15 +1923,24 @@ pub(super) async fn tp_shardability_check(
     // máquina, porque isto não depende de quem é o primary. `for_peer` resolve
     // só o TLS (cliente pinado por node_id); credencial é por requisição, como
     // no resto do arquivo.
-    let key = state.auth.read().await.connection_key.clone();
-    let resp = match http
-        .post(format!("{base}/api/ui/tp/check"))
-        .timeout(PEER_TIMEOUT * 4)
-        .bearer_auth(&key)
-        .json(&json!({ "model_path": path, "tp_size": tp.size }))
-        .send()
+    let body = json!({ "model_path": path, "tp_size": tp.size });
+    let request = match state
+        .control_json_request(
+            http.post(format!("{base}/api/ui/tp/check"))
+                .timeout(PEER_TIMEOUT * 4),
+            "/api/ui/tp/check",
+            &body,
+        )
         .await
     {
+        Ok(request) => request,
+        Err(error) => {
+            return Some(format!(
+                "não foi possível assinar a checagem de shard: {error}"
+            ))
+        }
+    };
+    let resp = match request.send().await {
         Ok(r) => r,
         Err(e) => {
             return Some(format!(

@@ -53,6 +53,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/public/",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
         prefix: "/peers",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -73,7 +78,17 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/cluster/quic",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
         prefix: "/api/cluster/logs",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
+        prefix: "/api/cluster/network-chat",
         method: None,
         scope: RouteScope::CommonOrInternal,
     },
@@ -128,6 +143,21 @@ const ROUTE_RULES: &[RouteRule] = &[
     },
     RouteRule {
         prefix: "/api/ui/network/rtt",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/info",
+        method: None,
+        scope: RouteScope::InferNodeAdmin,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/geo-reference",
+        method: Some(Method::GET),
+        scope: RouteScope::InferNodeAdmin,
+    },
+    RouteRule {
+        prefix: "/api/ui/network-chat",
         method: None,
         scope: RouteScope::CommonOrInternal,
     },
@@ -200,6 +230,21 @@ const ROUTE_RULES: &[RouteRule] = &[
     RouteRule {
         prefix: "/api/ui/network/advertise-addr",
         method: None,
+        scope: RouteScope::InferNodeAdmin,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/settings",
+        method: Some(Method::POST),
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/trust-share",
+        method: Some(Method::GET),
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/leave",
+        method: Some(Method::POST),
         scope: RouteScope::InferNodeAdmin,
     },
     RouteRule {
@@ -286,6 +331,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::AdminOnly,
     },
     RouteRule {
+        prefix: "/api/ui/network/quic",
+        method: None,
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
         prefix: "/api/ui/network/logs",
         method: None,
         scope: RouteScope::AdminOnly,
@@ -299,6 +349,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         prefix: "/api/ui/deploy",
         method: None,
         scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/deployments",
+        method: Some(Method::GET),
+        scope: RouteScope::NodeAdmin,
     },
     RouteRule {
         prefix: "/api/ui/deployments",
@@ -449,7 +504,10 @@ mod policy_tests {
         );
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
         assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);
-        assert_eq!(scope_of("/api/ui/model-provider/status"), RouteScope::NodeAdmin);
+        assert_eq!(
+            scope_of("/api/ui/model-provider/status"),
+            RouteScope::NodeAdmin
+        );
         assert_eq!(
             scope_of("/api/ui/network/advertise-addr"),
             RouteScope::InferNodeAdmin
@@ -463,6 +521,15 @@ mod policy_tests {
             RouteScope::CommonOrInternal
         );
         assert_eq!(
+            scope_of("/api/ui/network/geo-reference"),
+            RouteScope::InferNodeAdmin
+        );
+        assert_eq!(scope_of("/api/ui/deployments"), RouteScope::NodeAdmin);
+        assert_eq!(
+            route_scope(&Method::POST, "/api/ui/deployments"),
+            RouteScope::AdminOnly
+        );
+        assert_eq!(
             scope_of("/api/ui/network/request-node"),
             RouteScope::InferNodeAdmin
         );
@@ -471,9 +538,20 @@ mod policy_tests {
             RouteScope::NodeAdmin
         );
         assert_eq!(scope_of("/api/ui/infer/heads"), RouteScope::InferNodeAdmin);
+        assert!(profile_can_access(
+            crate::profile::NodeProfile::Admin,
+            scope_of("/api/ui/infer/heads")
+        ));
         assert_eq!(scope_of("/v1/chat/completions"), RouteScope::InferNodeAdmin);
         assert_eq!(scope_of("/api/ui/node"), RouteScope::CommonOrInternal);
-        assert_eq!(scope_of("/api/ui/chat/history/abc"), RouteScope::InferNodeAdmin);
+        assert_eq!(
+            scope_of("/api/ui/chat/capabilities"),
+            RouteScope::CommonOrInternal
+        );
+        assert_eq!(
+            scope_of("/api/ui/chat/history/abc"),
+            RouteScope::InferNodeAdmin
+        );
         assert_eq!(scope_of("/api/ui/chat-key"), RouteScope::InferNodeAdmin);
         assert_eq!(
             scope_of("/api/internal/api-keys/validate"),
@@ -486,9 +564,15 @@ mod policy_tests {
         assert_eq!(scope_of("/api/ui/models-old"), RouteScope::AdminOnly);
         assert_eq!(scope_of("/admin"), RouteScope::AdminOnly);
         assert_eq!(scope_of("/api/ui"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/api/ui/requests/stats/today"), RouteScope::AdminOnly);
+        assert_eq!(
+            scope_of("/api/ui/requests/stats/today"),
+            RouteScope::AdminOnly
+        );
         assert_eq!(scope_of("/api/new-control"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/api/ui/chat/telemetry"), RouteScope::CommonOrInternal);
+        assert_eq!(
+            scope_of("/api/ui/chat/telemetry"),
+            RouteScope::CommonOrInternal
+        );
     }
 
     /// A tela Rede do perfil `node` lê o retrato da rede; mudar o que ela
@@ -496,7 +580,10 @@ mod policy_tests {
     /// o mesmo prefixo.
     #[test]
     fn reading_the_roster_is_wider_than_administering_it() {
-        assert_eq!(route_scope(&Method::GET, "/admin/nodes"), RouteScope::NodeAdmin);
+        assert_eq!(
+            route_scope(&Method::GET, "/admin/nodes"),
+            RouteScope::NodeAdmin
+        );
         assert_eq!(
             route_scope(&Method::POST, "/admin/nodes/abc/block"),
             RouteScope::AdminOnly

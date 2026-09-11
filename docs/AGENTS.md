@@ -37,21 +37,29 @@ gated e a licença antes do download.
   adiciona o caminho MoE próprio ao lado do caminho denso, incluindo o marco
   dos quatro modelos da ksia, a salvaguarda por dtype, o diagnóstico de reserva
   de KV multiplicada por `max_sessions` e o goal CUDA posterior.
-- `subsystems/rede-p2p.md` - descoberta, identidade, TLS e o canal unidirecional
-  de logs de processo enviado ao principal.
+- `subsystems/rede-p2p.md` - descoberta, identidade, TLS e os canais libp2p de
+  logs de processo e auditoria replicados entre admins.
+
+O fluxo incremental de topologia de deployments, incluindo o modo misto e as
+versões criadas ao adicionar ou remover máquinas, é detalhado em
+`subsystems/implantacao.md`, `subsystems/api-http.md` e `subsystems/web-ui.md`.
 
 ## subsystems/
 
 Os guias permanentes do runtime ficam em `docs/subsystems/`. `rede-p2p.md`
 documenta também que os testes usam o `Network::testkit` em loopback, com
-destino de anúncio injetável e sem broadcast global. `fatiamento.md`
+destino de anúncio injetável e sem broadcast global.
+As sondas autenticadas das políticas de cluster usam listeners reais no
+testkit e percorrem os candidatos de gateway quando um endereço fantasma
+responde 401/403. `fatiamento.md`
 documenta a seleção de tensores obrigatórios, o custo real das cabeças repetidas,
 o rebase de metadata de camadas para a numeração local e a leitura somente de
 cabeçalho do catálogo, inclusive para o modelo selecionado. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
 a leitura da telemetria correspondente. `build-execucao.md` documenta também a
 geração em tempo de compilação da lista MTP a partir do fork local do
-`llama.cpp`. `inferencia.md` e `web-ui.md` também
+`llama.cpp`, o helper condicional de sccache e a medição do target compartilhado.
+`inferencia.md` e `web-ui.md` também
 documentam o RTT observado do Chat, o RTT direcional por aresta, a leitura
 efetiva de colocação e configuração por peer, a reserva do segundo contexto MTP
 e o recuo dele para a RAM. Em `inferencia.md`, o fit do modelo principal é a
@@ -74,7 +82,9 @@ em campo. A seção 2.1.1 registra a regressão de endereço anunciada de
 corrige.
 `api-http.md` registra também que o endereço anunciado é uma mutação local
 disponível a todo perfil e que o fallback da interface não intercepta métodos
-de rotas administrativas concretas.
+de rotas administrativas concretas. `implantacao.md` e `inferencia.md` mantêm
+o contrato de que deployments `idle` continuam selecionáveis pelo nome, mesmo
+sem capacidade efetiva anunciada, para que a primeira requisição possa acordá-los.
 
 O armazenamento local unificado está especificado em
 `superpowers/specs/2026-09-02-pom-db-unificado-design.md` e implementado no
@@ -102,6 +112,10 @@ frame multi-item e sincronizacao de lotes no Tensor Parallelism).
 `2026-08-24-chat-telemetria-design.md` registra o inventário do fio e a decisão
 de manter os dados no `x_pom`, no `/health` e numa rota autenticada de RTT, sem
 mudar frame entre peers ou planner.
+`2026-09-08-inferencia-trace-outside-node-design.md` registra o desenho do trace
+por inferência, os relógios locais, a matemática de spans paralelos e a
+decomposição de `outside-node`/TTFT; o plano homônimo cobre a execução
+incremental e a publicação.
 `2026-08-26-auditoria-de-requisicoes-design.md` e o plano homônimo registram a
 auditoria persistente de prompts em SQLite, a identidade não secreta da chave,
 o FTS5 e o ciclo em duas etapas do registro.
@@ -152,6 +166,10 @@ pela descricao do backend, pela base do sistema e pelo identificador PCI.
   fossem da raiz, vivem em `old/python-inference/` e sao legado; o runtime
   suportado e Rust (`crates/node/src/inference/infer_server.rs`,
   `crates/node/src/models/splitter.rs`). Caracterizados em `scripts/AGENTS.md`.
+
+`docs/subsystems/rede-p2p.md` também documenta o Chat da rede: protocolo
+libp2p, validação e retransmissão pelo principal, catraca autenticada do
+interruptor e prioridade do túnel de inferência sobre o tráfego de conversa.
 
 ## Defeitos anotados
 

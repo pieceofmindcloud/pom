@@ -263,6 +263,72 @@ mod profile_network_tests {
     }
 
     #[tokio::test]
+    async fn chat_capabilities_keep_full_coverage_without_exposing_infer_topology() {
+        let mut tail = peer("outro", "salem", 1);
+        tail.model = "qwen".into();
+        tail.start_layer = 16;
+        tail.end_layer = 31;
+        tail.total_layers = 32;
+        let state = state_with("eu", vec![tail]).await;
+        let mut config = crate::gateway::testkit::spec_config();
+        config.model_label = "qwen".into();
+        config.end_layer = 15;
+        config.total_layers = 32;
+        config.mmproj_path = Some("/models/mmproj-qwen.gguf".into());
+        state.runtime.seed_config_for_test(config).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
+
+        let body = body_of(chat_capabilities(State(state.clone())).await.into_response()).await;
+        assert_eq!(body["vision"], "supported");
+        assert_eq!(body["coverage"], "complete");
+
+        let cluster_body = body_of(cluster(HeaderMap::new(), State(state)).await).await;
+        assert_eq!(cluster_body["peers"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn chat_capabilities_reads_mmproj_from_a_remote_sliced_head_config() {
+        let app = Router::new().route(
+            "/api/ui/node",
+            get(|| async {
+                Json(json!({
+                    "config": {
+                        "start_layer": 0,
+                        "model_label": "qwen",
+                        "mmproj_path": "/models/mmproj-qwen.gguf"
+                    },
+                    "active_model": "qwen"
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut head = peer("head", "salem", port);
+        head.model = "qwen".into();
+        head.start_layer = 0;
+        head.end_layer = 15;
+        head.total_layers = 32;
+        head.inference_port = Some(8181);
+        let mut tail = peer("tail", "ksia", 1);
+        tail.model = "qwen".into();
+        tail.start_layer = 16;
+        tail.end_layer = 31;
+        tail.total_layers = 32;
+        tail.inference_port = Some(8181);
+
+        let mut state = state_with("eu", vec![head, tail]).await;
+        state.default_model = "qwen".into();
+
+        let body = body_of(chat_capabilities(State(state)).await.into_response()).await;
+        assert_eq!(body["vision"], "supported");
+        assert_eq!(body["coverage"], "complete");
+    }
+
+    #[tokio::test]
     async fn infer_head_response_selects_the_fastest_fresh_candidate() {
         let mut slow = peer("slow", "salem", 8091);
         slow.model = "qwen35".into();

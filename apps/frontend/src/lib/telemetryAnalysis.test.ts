@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { PhaseTrace, RequestTrace } from "./chatStream";
-import { analyzeTelemetry, buildTelemetryAnalysisPrompt, serializeTelemetryTables } from "./telemetryAnalysis";
+import type { PhaseTrace, RequestTrace, TelemetrySummary } from "./chatStream";
+import { analyzeTelemetry, buildTelemetryAnalysisPrompt, decodeCoverageMeasured, fitTokenLatencyRegression, serializeTelemetryTables } from "./telemetryAnalysis";
 
 function phase(overrides: Partial<PhaseTrace> = {}): PhaseTrace {
   return {
@@ -57,7 +57,57 @@ const trace = (decode: PhaseTrace): RequestTrace => ({
   }],
 });
 
+function emptyRemoteStream(): TelemetrySummary["remote_stream"] {
+  return {
+    frames_sent: 0,
+    frames_received: 0,
+    bytes_sent: 0,
+    bytes_received: 0,
+    frame_latency_min_ms: 0,
+    frame_latency_p50_ms: 0,
+    frame_latency_p95_ms: 0,
+    frame_latency_p99_ms: 0,
+    frame_latency_max_ms: 0,
+    remote_compute_total_ms: 0,
+    remote_compute_min_ms: 0,
+    remote_compute_p50_ms: 0,
+    remote_compute_p95_ms: 0,
+    remote_compute_p99_ms: 0,
+    remote_compute_max_ms: 0,
+    remote_stream_wait_total_ms: 0,
+    remote_stream_wait_p50_ms: 0,
+    remote_stream_wait_p95_ms: 0,
+    remote_stream_producer_wait_total_ms: 0,
+    remote_stream_producer_wait_p50_ms: 0,
+    remote_stream_producer_wait_p95_ms: 0,
+    remote_stream_queue_wait_total_ms: 0,
+    remote_stream_queue_wait_p50_ms: 0,
+    remote_stream_queue_wait_p95_ms: 0,
+  };
+}
+
 describe("telemetryAnalysis", () => {
+  it("does not treat an unavailable decode expectation as 282/0 coverage", () => {
+    expect(decodeCoverageMeasured({ expected_decode_spans: 0 })).toBe(false);
+    expect(decodeCoverageMeasured({
+      expected_decode_spans: 384,
+      decode_span_expectation_available: true,
+    })).toBe(true);
+  });
+
+  it("fits fixed and per-token latency terms across the required regression sizes", () => {
+    const regression = fitTokenLatencyRegression([1, 10, 50, 100, 200, 500].map((tokens) => ({
+      tokens,
+      latency_ms: 237 + 38.6 * tokens,
+    })));
+
+    expect(regression).not.toBeNull();
+    expect(regression?.fixed_ms).toBeCloseTo(237, 8);
+    expect(regression?.per_token_ms).toBeCloseTo(38.6, 8);
+    expect(regression?.r2).toBeCloseTo(1, 8);
+    expect(regression?.samples).toBe(6);
+  });
+
   it("identifies TP wait as the dominant bottleneck", () => {
     const result = analyzeTelemetry(trace(phase({
       processing_ms: 1_000,
@@ -142,9 +192,24 @@ describe("telemetryAnalysis", () => {
     expect(result.evidence).toContain("700 ms");
   });
 
-  it("does not blame the backend when total time is outside node measurements", () => {
+  it("does not call missing distributed spans outside-node", () => {
     const result = analyzeTelemetry(
-      trace(phase({ processing_ms: 593, node_decode_ms: 588 })),
+      {
+        ...trace(phase({ processing_ms: 593, node_decode_ms: 588 })),
+        telemetry: {
+          status: "collecting",
+          expected_peers: 2,
+          reported_peers: 1,
+          missing_peers: ["node-b"],
+          expected_decode_spans: 384,
+          reported_decode_spans: 192,
+          completeness_percent: 50,
+          duplicate_spans: 0,
+          late_spans: 0,
+          orphan_spans: 0,
+          remote_stream: emptyRemoteStream(),
+        },
+      },
       {
         ttft_ms: 6_040,
         prefill_ms: 153,
@@ -158,8 +223,49 @@ describe("telemetryAnalysis", () => {
       },
     );
 
-    expect(result.kind).toBe("outside-node");
-    expect(result.evidence).toContain("outside 30407 ms");
+    expect(result.kind).toBe("remote-telemetry-incomplete");
+    expect(result.evidence).toContain("1/2 peers");
+    expect(result.evidence).not.toContain("outside");
+  });
+
+  it("does not manufacture a residual from accumulated peer processing", () => {
+    const result = analyzeTelemetry(
+      {
+        ...trace(phase({ processing_ms: 1_000, node_decode_ms: 100 })),
+        telemetry: {
+          status: "complete",
+          expected_peers: 2,
+          reported_peers: 2,
+          missing_peers: [],
+          expected_decode_spans: 384,
+          reported_decode_spans: 384,
+          completeness_percent: 100,
+          duplicate_spans: 0,
+          late_spans: 0,
+          orphan_spans: 0,
+          wall_clock_ms: 8_807,
+          accumulated_compute_ms: 2_100,
+          accumulated_transport_ms: 7_100,
+          overlap_ms: 393,
+          remote_stream: emptyRemoteStream(),
+        },
+      },
+      {
+        ttft_ms: 545,
+        prefill_ms: 100,
+        prefill_tokens: 51,
+        prefill_tokens_per_sec: 99.6,
+        generation_ms: 8_262,
+        generation_tokens: 192,
+        generation_tokens_per_sec: 23.2,
+        total_ms: 8_807,
+        total_tokens_per_sec: 21.8,
+      },
+    );
+
+    expect(result.kind).not.toBe("outside-node");
+    expect(result.evidence).not.toContain("outside");
+    expect(result.evidence).toContain("overlap");
   });
 
   it("does not invent TP data when the trace has no TP phase", () => {
@@ -167,5 +273,30 @@ describe("telemetryAnalysis", () => {
 
     expect(result.tpObserved).toBe(false);
     expect(result.evidence).toContain("not recorded");
+  });
+
+  it("uses server-accounted outside-node time when the trace provides it", () => {
+    const result = analyzeTelemetry(
+      {
+        ...trace(phase({ processing_ms: 1_000, node_decode_ms: 900 })),
+        outside_node_total_ms: 1_955,
+        outside_node_accounted_ms: 125,
+        outside_node_unaccounted_ms: 1_830,
+      },
+      {
+        ttft_ms: 2_050,
+        prefill_ms: 128,
+        prefill_tokens: 122,
+        prefill_tokens_per_sec: 953,
+        generation_ms: 1_005,
+        generation_tokens: 119,
+        generation_tokens_per_sec: 109.7,
+        total_ms: 3_134,
+        total_tokens_per_sec: 38,
+      },
+    );
+
+    expect(result.kind).toBe("outside-node");
+    expect(result.evidence).toContain("unaccounted 1830 ms");
   });
 });

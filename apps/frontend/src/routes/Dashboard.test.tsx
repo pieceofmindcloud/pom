@@ -14,14 +14,87 @@ import { Dashboard } from "./Dashboard";
 import { LocaleProvider } from "../i18n/provider";
 import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer } from "../test/fixtures";
 import { keys } from "../lib/queries";
+import type { DeploymentRow } from "../lib/api";
 import { ProfileProvider } from "../lib/profile";
-import type { NodeInfo } from "../lib/types";
+import type { NodeInfo, RuntimeParams } from "../lib/types";
+import type { PipelineRouteCost } from "../components/PipelineGatewayNode";
+
+const deploymentParams: RuntimeParams = {
+  inference_mode: "auto",
+  n_gpu_layers: 99,
+  n_ctx: 8192,
+  offload_kqv: true,
+  fit_memory: true,
+  fit_memory_margin_mb: 256,
+  n_batch: 512,
+  max_new_tokens: 256,
+  max_sessions: 1,
+  prefill_chunk_tokens: 512,
+  prefill_max_inflight_chunks: 2,
+  temperature: 0.7,
+  top_p: 0.95,
+  top_k: 40,
+  repeat_penalty: 1.1,
+  repeat_last_n: 64,
+  no_thinking: true,
+  no_embeddings: false,
+  speculative_decoding_enabled: false,
+  speculative_k: 4,
+  speculative_lookup_window: 3,
+  mtp_enabled: false,
+  mtp_draft_tokens: 3,
+  mtp_min_probability: 0.1,
+  unload_if_idle: false,
+  idle_minutes: 60,
+};
+
+function deploymentRow(
+  deployId: string,
+  options: { isDefault: boolean; activeVersion: number; versions?: number[] },
+): DeploymentRow {
+  const nodes = [{
+    node_id: "a",
+    hostname: "a",
+    start_layer: 0,
+    end_layer: 31,
+    peer_index: 0,
+    peer_count: 1,
+    primary: true,
+    config: { ...deploymentParams },
+  }];
+  const versions = (options.versions ?? [1]).map((version) => ({
+    version,
+    created_at: "2026-09-11T15:00:00Z",
+    created_by: "a",
+    params: { ...deploymentParams },
+    nodes,
+  }));
+  return {
+    deployment: {
+      deployment_version: 2,
+      deploy_id: deployId,
+      kind: "whole",
+      model: { label: "qwen35", total_layers: 32 },
+      created_at: "2026-09-11T15:00:00Z",
+      created_by: "a",
+      activated_at: "2026-09-11T15:00:00Z",
+      nodes,
+      versions,
+      active_version: options.activeVersion,
+    },
+    serving: true,
+    is_default: options.isDefault,
+    holders: ["a"],
+  };
+}
 
 function mount(
   cluster = fakeCluster([], "qwen35"),
   profile: "admin" | "node" | "infer" = "admin",
   rttMeasurements?: { from_node_id: string; to_node_id: string; rtt_ms: number; transport: string }[],
   nodeOverride?: Partial<NodeInfo> | null,
+  deployments?: { node_id: string; deployments: DeploymentRow[] },
+  pipelineRoutes?: PipelineRouteCost[],
 ) {
   // active_model is set, but there are no peers: the estendida view shows
   // "Nenhuma maquina na rede" in its panel.
@@ -35,9 +108,17 @@ function mount(
   });
   // useQuery will read from the cache immediately.
   client.setQueryData(keys.cluster, cluster);
-  if (rttMeasurements) {
-    client.setQueryData(keys.networkRtt(["a", "b"]), { measurements: rttMeasurements });
+  if (rttMeasurements || pipelineRoutes) {
+    client.setQueryData(keys.networkRtt(rttMeasurements ? ["a", "b"] : []), {
+      measurements: rttMeasurements ?? [],
+      pipeline_routes: pipelineRoutes?.map((route) => ({
+        node_ids: route.nodeIds,
+        legs_ms: route.legsMs,
+        rtt_ms: route.rttMs ?? null,
+      })),
+    });
   }
+  if (deployments) client.setQueryData(keys.deployments, deployments);
   const defaultNode = {
     node_id: "no-0", short_id: "no-0", hostname: "no-0",
     role: "peer" as const, profile, connection_key: "",
@@ -112,6 +193,20 @@ describe("Dashboard", () => {
     }]);
 
     await waitFor(() => expect(screen.getByText("RTT 7.4 ms")).toBeTruthy());
+  });
+
+  it("mostra o custo da rota de um modelo inteiro com um unico head", async () => {
+    const cluster = fakeCluster([fakeSlicePeer("head", 0, 31)], "qwen35");
+
+    mount(cluster, "admin", undefined, undefined, undefined, [
+      { nodeIds: ["head", "gateway"], legsMs: [5, 3], computeMs: null },
+    ]);
+
+    await waitFor(() => {
+      const gateway = screen.getByRole("heading", { name: "Gateway" }).closest("article") as HTMLElement;
+      expect(gateway.textContent).not.toContain("não medido");
+      expect(gateway.textContent).toMatch(/head.*8\.0 ms/);
+    });
   });
 
   /**
@@ -199,6 +294,32 @@ describe("Dashboard", () => {
       expect(screen.getByRole("button", { name: "Adicionar" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Desimplantar" })).toBeTruthy();
     });
+  });
+
+  it("usa a implantação padrão para manter as propriedades no mapa", async () => {
+    const stale = deploymentRow("d-stale", {
+      isDefault: false,
+      activeVersion: 2,
+      versions: [1],
+    });
+    const current = deploymentRow("d-current", {
+      isDefault: true,
+      activeVersion: 1,
+    });
+
+    mount(
+      fakeCluster([fakeSlicePeer("a", 0, 31)], "qwen35"),
+      "admin",
+      undefined,
+      undefined,
+      { node_id: "a", deployments: [stale, current] },
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "Ocultar propriedades da implantação" })
+        .some((button) => button.className.includes("w-8"))).toBe(true);
+    });
+    expect(screen.getByText(/d-curren/)).toBeTruthy();
   });
 
   it.each(["node", "infer"] as const)(

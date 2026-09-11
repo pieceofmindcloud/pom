@@ -69,6 +69,9 @@ Passo operacional exato antes de testar uma implantação longa:
 2. Aplique a implantação e aguarde o `/health` de **cada peer** confirmar
    `model_loaded` e `runtime_capacity`. Um peer que ainda está reiniciando não
    entra na capacidade publicada.
+   O `/health` do gateway continua respondendo durante o enriquecimento frio do
+   catálogo; a sonda opcional do Ollama tem prazo curto e não transforma esse
+   trabalho em bloqueio do readiness HTTP.
 3. Consulte `/v1/models` autenticado e confirme
    `context_length: 100000` e
    `top_provider.max_completion_tokens: 100000` quando esse for o contexto
@@ -79,11 +82,16 @@ Passo operacional exato antes de testar uma implantação longa:
      http://ksia:8080/v1/models | jq '.data[] | {id, context_length, max_completion_tokens: .top_provider.max_completion_tokens}'
    ```
 
-O gateway anuncia o menor `n_ctx` confirmado entre todos os peers vivos do
-modelo e mantém `max_new_tokens` apenas como tamanho de perna. O limite local
-do cliente, como `maxTokens: 5000` no Pi, continua independente dessa
-capacidade. Um `pom.json` legado que contenha o campo removido é recusado na
-leitura, em vez de ser aceito com um valor padrão escondido.
+O gateway anuncia o menor `n_ctx` confirmado entre os peers da pipeline
+planejada do modelo e mantém `max_new_tokens` apenas como tamanho de perna. Um
+peer ocioso escolhido pela pipeline é acordado por `reload_model` antes do
+prefill. Todos os peers ociosos planejados recebem o evento em paralelo, e a
+barreira espera o `/health` por até 15 minutos para que uma carga fria conclua;
+se esse prazo vencer, a requisição falha com erro explícito. Peers vivos de
+rotas alternativas não bloqueiam a capacidade. O
+limite local do cliente, como `maxTokens: 5000` no Pi, continua independente
+dessa capacidade. Um `pom.json` legado que contenha o campo removido é recusado
+na leitura, em vez de ser aceito com um valor padrão escondido.
 
 Três regras saem da arquitetura, não do gosto:
 
@@ -117,6 +125,29 @@ desimplantação e também não prova que é seguro religar.
 `POST /api/ui/stop-inference` limpa a recuperação pendente, para que uma
 desimplantação manual não seja anulada pelo monitor. Cada transição registra
 temperatura observada, limites e tempo no log do servidor.
+
+## 1.5 Descarregamento quando o peer fica ocioso
+
+`RuntimeParams.unload_if_idle` e `idle_minutes` são persistidos por deployment.
+Quando habilitado, cada peer registra localmente a última requisição em
+`backend/reqlog.rs`. O monitor existente, fora do caminho quente e sem criar
+timer ou `sleep` de inferência, avalia esse carimbo e chama o descarregamento
+local. O deployment continua ativo: o peer vivo anuncia `idle`, com a faixa
+preservada, em vez de `serving`. A identidade do deployment continua no
+catálogo de modelos enquanto todos os peers correspondentes estiverem
+`idle`, mesmo sem `runtime_capacity`; isso permite que uma requisição por nome
+seja planejada e acorde os peers antes do primeiro salto. Um peer em
+reinicialização (`runtime_capacity` ausente sem `idle`) continua fora do
+catálogo até confirmar o `/health`.
+
+Na primeira requisição depois de `idle`, o gateway recarrega o runtime local e
+reinicia a atividade. Envia em paralelo o evento autenticado `reload_model` a
+cada peer ocioso planejado; o evento é idempotente para uma segunda requisição
+que acorde a mesma máquina, e cada destinatário carrega sua própria fatia.
+Assim, a primeira requisição pode esperar a carga, mas os hops não são
+aquecidos sequencialmente nem ficam esperando uns pelos outros. O status volta
+a `serving` quando o `/health` confirma o modelo carregado. `idle` é por peer,
+não por deployment: uma máquina ociosa não muda o estado das demais.
 
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 
@@ -360,6 +391,23 @@ inferência escolhe a cópia com menor RTT medido, equilibrando também a carga 
 voo. `load_distribution` separa carga atual de carga projetada pelo plano, sem
 abrir uma segunda execução concorrente.
 
+### Visão opcional
+
+O catálogo registra `mmproj_path` quando encontra, no mesmo diretório, o GGUF
+vizinho que segue a convenção do llama.cpp. Para uma rodada de fatias, o
+`ShardSet` também expõe o projetor adjacente a uma fatia ou ao modelo inteiro
+de origem identificado por `model_label`; o `Plan` resolve o caminho para o
+alvo escolhido na camada 0 sem uma nova varredura do disco. Sem esse caminho,
+a tela mantém a visão indisponível e o backend recusa `vision: true` com a
+mensagem de que nenhum `mmproj` foi encontrado.
+
+`DeployRequest.vision` só pode ser marcado quando o plano tem projetor. Nesse
+caso, `deploy::lifecycle` marca `use_mmproj` exclusivamente no alvo cujo
+`start_layer` é `0`. Só a cabeça carrega `--mmproj <caminho>` e transforma a
+imagem em estado oculto; os peers seguintes recebem esse estado e nunca tocam
+na imagem crua. A escolha e o caminho local são persistidos em `NodeConfig`,
+para que o chat e as rotas de administração conheçam a visão ativa.
+
 ### O modelo e seu tamanho
 
 `model_size` resolve o total de camadas do modelo com precedência
@@ -458,15 +506,24 @@ placa somam. `Step.capacity` (`CapacityPreview`) é o passo isolado.
 | `POST /api/ui/deploy/plan` | prévia (leitura, chamada a cada edição); enriquece os passos com a projeção de capacidade |
 | `POST /api/ui/deploy/capacity-preview` | prévia por passo, local ao peer: estima por metadata GGUF e VRAM livre, sem chamar o fit nativo, e devolve a VRAM projetada por GPU (`webui.rs`) |
 | `POST /api/ui/deploy` | executa (re-varre, recusa `blocked`/vazio, job) |
+| `POST /api/ui/deploy/node/options` | catálogo e opções locais da máquina escolhida para uma alteração incremental |
 | `POST /api/ui/deploy/node` | adiciona uma máquina a um pipeline já no ar |
 | `POST /api/ui/deploy/node/remove` | tira uma máquina do modelo (libera a memória) |
 | `POST /api/ui/undeploy` | tira a pipeline inteira do ar |
 
 ## 6. Adicionar e remover máquina
 
-`add_node_endpoint` recebe uma faixa + máquina alvo e chama `webui::launch` com
-um único `LaunchTarget` (`skip_split: true` - a fatia já existe e o passo é só
-carregar). Dois detalhes escondidos na chamada:
+`add_node_options_endpoint` revarre somente o catálogo real da máquina
+selecionada e devolve as fatias materializadas que ela tem, o modelo inteiro
+correspondente quando existe e os defaults locais de GPU/KV. Ao trocar a
+máquina no Painel, a tela refaz essa consulta e não reaproveita as opções de
+outro peer nem o plano antigo enquanto o inventário ainda está sendo lido.
+
+`add_node_endpoint` recebe uma opção + máquina alvo e chama `webui::launch` com
+um único `LaunchTarget` (`skip_split: true` - o arquivo já existe e o passo é
+só carregar). `cache_type_k`/`cache_type_v` são aplicados no `pom.json` local
+ou pela API do peer antes do launch; `n_gpu_layers` e `offload_kqv` seguem como
+overrides efetivos da máquina. Dois detalhes escondidos na chamada:
 
 - **`peer_index`/`peer_count`** - a posição é a do pipeline, não "este nó sozinho":
   sem isso o nó somado se diz o último da divisão.
@@ -476,13 +533,23 @@ carregar). Dois detalhes escondidos na chamada:
 - Resposta `{applied, overlapping_layers, peer_index, peer_count}` - sobreposição
   é reportada, não recusada (a máquina entra e a tela mostra o que colide).
 
+Quando o pedido identifica um deployment persistido, a resposta de
+`add_node_endpoint` também traz `deploy_id`, `version` e `kind`. Sobreposição é
+reportada, não recusada. Uma máquina inteira e uma ou mais fatias podem
+coexistir no mesmo deployment, que passa a usar `kind: "mixed"` e expõe as
+duas cabeças de camada 0 como entradas possíveis para o mesmo modelo.
+
 `remove_node_endpoint` ("essa máquina não está servindo este modelo" se o alvo não
 serve) calcula `uncovered_after_removal` contra as máquinas restantes. **Quem
 libera a memória é o dono dela**: alvo == self usa `runtime.stop()`; senão
 encaminha `POST /api/ui/unload` ao gateway do alvo (a mesma rota do botão de
 descarregar uma máquina). Resposta `{removed, uncovered_layers}`; vazio significa
 que outra máquina cobre a mesma faixa - a rede perde uma rota paralela e segue
-servindo; não-vazio é buraco, e a confirmação é explícita.
+servindo; não-vazio é buraco, e a confirmação é explícita. A resposta também
+informa `deploy_id`, `version` e `serving`. A remoção anexa uma versão com o
+alvo fora do conjunto. Enquanto restar uma máquina, `serving` continua
+verdadeiro; a última remoção grava uma versão ativa vazia, encerra a seleção
+como deployment vivo e preserva todo o histórico.
 
 ## 7. Desimplantar (undeploy)
 
@@ -517,6 +584,13 @@ ativa. O que distingue uma versão é o `RuntimeParams` do deployment inteiro -
 ajustes por máquina (`n_gpu_layers`/`offload_kqv`) entram no snapshot da versão
 mas não forkam versão. Um registro v1 legado (sem `versions`) ganha a v1
 sintetizada por `ensure_versions` em toda leitura.
+
+Alterações incrementais de topologia são eventos de histórico independentes dos
+parâmetros: adicionar ou remover máquina usa `append_version`, com
+`active_version` novo e o conjunto de `nodes` daquela versão. O coordenador
+publica o snapshot aos participantes atuais e aos peers que já conheceram o
+deployment, para que uma máquina removida limpe seu registro sem descarregar
+nem reiniciar as demais.
 
 `POST /api/ui/deploy` faz uma pré-verificação antes de copiar qualquer arquivo
 ou chamar `launch`. Para fatias, a prova é o `pom_id` do manifesto; para um GGUF
@@ -609,8 +683,9 @@ precisa saber:
 
 `run_apply` decide o caminho:
 
-- `merge` -> `merge_parts` (temp com sufixo único + rename no fim; reaproveita
-  arquivo já completo e invalida o catálogo).
+- `merge` -> `merge_parts` (temp com sufixo único; reconstrói a metadata por
+  camada, valida o GGUF final com `read_layout` antes do rename e de
+  `finalize_run`, reaproveita arquivo já completo e invalida o catálogo).
 - `skip_split` ou `(is_first && is_last && peer_count <= 1)` -> serve o arquivo
   como está (a fatia já existe em disco).
 - senão -> `extract_shard` (fatiamento local, job "fatiando", progresso por
@@ -618,8 +693,10 @@ precisa saber:
 
 Aplicada, a fatia é anotada em `<config>.last-slice.json` como `pending` pelo
 `runtime::apply` - e só vira `serving` quando o `/health` do servidor de
-inferência responde `model_loaded` (`spawn_health_watch`). É esse estado que
-decide o que um reinício retoma (só `serving`), não o `apply`. Ver
+inferência responde `model_loaded` (`spawn_health_watch`). Quando o monitor de
+ociosidade descarrega o modelo, anota `idle` e mantém a implantação ativa para
+que `reload_model` possa restaurá-la. É esse estado que decide o que um
+reinício retoma (`serving` ou `idle`), não o `apply`. Ver
 `fatiamento.md` seção 6 e o `AGENTS.md` de `inference/`.
 
 `/api/ui/plan` (`plan_split_endpoint`) planeja por orçamento do cluster e **delega**

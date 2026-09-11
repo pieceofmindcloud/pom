@@ -88,7 +88,8 @@ describe("TokenKeys no perfil infer", () => {
     mocks.del.mockResolvedValueOnce({ revoked: true });
     mount();
 
-    fireEvent.click(screen.getByRole("button", { name: "Gerar nova chave" }));
+    fireEvent.click(screen.getByRole("button", { name: "Criar token" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Criar token" }).at(-1)!);
 
     await waitFor(() => expect(mocks.del).toHaveBeenCalledWith("/admin/api-keys/sk-old"));
     expect(mocks.post).toHaveBeenCalledWith("/admin/api-keys", {

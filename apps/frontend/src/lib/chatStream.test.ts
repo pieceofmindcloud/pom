@@ -4,6 +4,7 @@ import {
   consumeChatError,
   emptyChatStream,
   finishChatStream,
+  withClientStreamTiming,
   streamErrorMessage,
 } from "./chatStream";
 
@@ -58,6 +59,7 @@ describe("chat stream parsing", () => {
       tokens_per_sec: 2,
       tokens_generated: 20,
       duration_ms: 10000,
+      client_ttft_ms: 2510,
       timings: {
         ttft_ms: 2400,
         prefill_ms: 2000,
@@ -72,6 +74,7 @@ describe("chat stream parsing", () => {
     });
 
     expect(state.timings?.ttft_ms).toBe(2400);
+    expect(state.timings?.client_ttft_ms).toBe(2510);
     expect(state.timings?.prefill_tokens_per_sec).toBe(50);
     expect(state.timings?.generation_tokens_per_sec).toBe(20 / 7.6);
     expect(state.timings?.total_tokens_per_sec).toBe(2);
@@ -119,5 +122,96 @@ describe("chat stream parsing", () => {
     });
 
     expect(state.trace?.cached_tokens).toBeUndefined();
+  });
+
+  it("records browser delivery timing without inventing server timestamps", () => {
+    const metrics = {
+      timings: {
+        ttft_ms: 120,
+        prefill_ms: 80,
+        prefill_tokens: 10,
+        prefill_tokens_per_sec: 125,
+        generation_ms: 40,
+        generation_tokens: 2,
+        generation_tokens_per_sec: 50,
+        total_ms: 120,
+        total_tokens_per_sec: 16.7,
+      },
+      trace: {
+        model: "qwen",
+        input_tokens: 10,
+        output_tokens: 2,
+        prefill_ms: 80,
+        total_bytes_sent: 10,
+        total_bytes_received: 20,
+        hops: [],
+      },
+    };
+
+    const enriched = withClientStreamTiming(metrics, {
+      requestStartedAt: 100,
+      firstChunkAt: 160,
+      firstTokenAt: 180,
+      lastTokenAt: 260,
+      responseEndedAt: 300,
+      clientReceivedAtMs: 1_700_000_000_180,
+      chunks: 4,
+      bytes: 240,
+    });
+
+    expect(enriched.trace?.client_ttft_ms).toBe(80);
+    expect(enriched.trace?.streaming).toEqual({
+      time_to_first_chunk_ms: 60,
+      time_to_first_token_ms: 80,
+      stream_duration_ms: 140,
+      time_last_token_to_response_end_ms: 40,
+      chunks: 4,
+      bytes: 240,
+      tokens_per_chunk: 0.5,
+    });
+    expect(enriched.timings?.client_ttft_ms).toBe(80);
+    expect(enriched.trace?.first_token?.client_received_at_ms).toBe(1_700_000_000_180);
+    expect(enriched.trace?.first_token?.engine_produced_at_ms).toBeUndefined();
+  });
+
+  it("does not infer tokens per chunk from an invalid server count", () => {
+    const enriched = withClientStreamTiming({
+      trace: {
+        model: "qwen",
+        input_tokens: 10,
+        output_tokens: 0,
+        prefill_ms: 80,
+        total_bytes_sent: 10,
+        total_bytes_received: 20,
+        hops: [],
+      },
+    }, {
+      requestStartedAt: 100,
+      firstChunkAt: 160,
+      responseEndedAt: 200,
+      chunks: 4,
+      bytes: 240,
+    });
+
+    expect(enriched.trace?.streaming?.tokens_per_chunk).toBe(0);
+
+    const withoutOutput = withClientStreamTiming({
+      trace: {
+        model: "qwen",
+        input_tokens: 10,
+        output_tokens: Number.NaN,
+        prefill_ms: 80,
+        total_bytes_sent: 10,
+        total_bytes_received: 20,
+        hops: [],
+      },
+    }, {
+      requestStartedAt: 100,
+      responseEndedAt: 200,
+      chunks: 4,
+      bytes: 240,
+    });
+
+    expect(withoutOutput.trace?.streaming?.tokens_per_chunk).toBeNull();
   });
 });

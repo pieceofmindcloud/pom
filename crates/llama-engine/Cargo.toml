@@ -16,7 +16,7 @@ metal = ["llama-cpp-sys-2/metal"]
 vulkan = ["llama-cpp-sys-2/vulkan"]
 
 [dependencies]
-llama-cpp-sys-2 = { version = "0.1.154", default-features = false, features = ["common"] }
+llama-cpp-sys-2 = { version = "0.1.154", default-features = false, features = ["common", "mtmd"] }
 half = "2"
 anyhow = { workspace = true }
 serde = { workspace = true }

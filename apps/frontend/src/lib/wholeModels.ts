@@ -27,6 +27,7 @@ export interface WholeModelEntry {
   size_bytes: number;
   quant: string | null;
   architecture: string | null;
+  mmproj_path: string | null;
   /** Node ids that have this file. */
   holders: string[];
 }
@@ -71,6 +72,7 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
           size_bytes: model.size_bytes,
           quant: model.quant,
           architecture: model.architecture,
+          mmproj_path: model.mmproj_path ?? null,
           holders: [peer.node_id],
         });
         continue;
@@ -82,6 +84,7 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
       found.total_layers ??= model.total_layers;
       found.quant ??= model.quant;
       found.architecture ??= model.architecture;
+      found.mmproj_path ??= model.mmproj_path ?? null;
       found.size_bytes = Math.max(found.size_bytes, model.size_bytes);
     }
   }

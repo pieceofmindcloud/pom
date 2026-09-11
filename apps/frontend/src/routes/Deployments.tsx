@@ -55,6 +55,7 @@ const KIND_TONE: Record<DeploymentKind, "iris" | "aqua" | "sky"> = {
   shards: "iris",
   whole: "aqua",
   tensor_parallel: "sky",
+  mixed: "iris",
 };
 
 function dateTimeLabel(iso: string, locale: string) {
@@ -402,10 +403,12 @@ function Row({
         </td>
         <td className="px-5 py-3">
           <div className="flex flex-wrap gap-1.5">
-            {row.serving ? (
-              <Badge tone="lime">{t("deployments.serving")}</Badge>
+            {!row.serving ? (
+              <Badge tone="neutral">{t("deployments.noAir")}</Badge>
+            ) : row.idle === true ? (
+              <Badge tone="amber">{t("deployments.peerIdle")}</Badge>
             ) : (
-              <Badge tone="neutral">{t("deployments.idle")}</Badge>
+              <Badge tone="lime">{t("deployments.serving")}</Badge>
             )}
             {row.is_default && (
               <Badge tone="amber">{t("deployments.default")}</Badge>

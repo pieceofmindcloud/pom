@@ -112,10 +112,13 @@ local usa `MemAvailable` no Linux, `vm_stat` no macOS e
 `GlobalMemoryStatusEx` no Windows. Uma futura sonda de VRAM pode implementar a
 mesma trait sem mudar a política.
 
-O primeiro formato é Q4_0 packed em CPU. `format_q4_0.rs` valida a geometria
-GGML, mmapa o GGUF, copia somente os bancos do expert solicitado para o cache,
-decodifica os blocos de 32 elementos, executa gate-up, SiLU gated e down. O
-loader aceita tanto `ffn_gate_up_exps.weight` fundido quanto
+O primeiro formato é Q4_0 packed. `format_q4_0.rs` valida a geometria GGML,
+mmapa o GGUF, copia somente os bancos do expert solicitado para o cache,
+decodifica os blocos de 32 elementos, executa gate-up, SiLU gated e down. Com
+`--features cuda`, `block.rs` mantém o payload admitido no cache residente e a
+ponte heterogênea executa as três fases na GPU; sem CUDA, o mesmo decoder roda
+explicitamente em `CPUReference`. O loader aceita tanto
+`ffn_gate_up_exps.weight` fundido quanto
 `ffn_gate_exps.weight` + `ffn_up_exps.weight` separados, recombinando estes
 últimos no payload interno do executor. `router.rs` escolhe top-k de forma
 determinística e renormaliza os pesos;
@@ -340,8 +343,37 @@ executor de referência.
 
 No Qwen3.6-35B-A3B-UD-IQ3_S real, a ponte agora está autorizada a publicar
 `moe_executor=cuda`, `moe_executor_dtypes=[21,22,23]` e nenhum motivo de
-CPUReference, depois da prova diferencial dos três dtypes na GPU real. A
-prova física desse GGUF ainda não foi executada neste worktree, portanto a
+CPUReference, depois da prova diferencial dos três dtypes na GPU real. Q4_0
+usa o mesmo contrato CUDA com dtype GGML `2`; a validação preserva blocos de 32
+para esse formato, em vez de aplicar a exigência de 256 usada pelos K/IQ-quants.
+Q5_K entra pelo dtype GGML `13`, bloco de 176 bytes em 256 elementos
+(`d[2] dmin[2] scales[12] qh[32] ql[128]`): é o Q4_K com um plano de bit alto,
+e `k_value_q5_k`/`k_dot_q5_k` reproduzem `dequantize_q5_k_block` do decoder CPU.
+
+### Um dtype sem ponte derruba a rota inteira
+
+`Ornith-1.5-35B-A3B-Q5_K_S` mede 2 dtypes Q4_0 e 13 Q5_K nos experts: enquanto
+Q5_K não tinha kernel, a rota caía inteira para `CPUReference` mesmo com a
+ponte Q4_0 pronta. Quants dinâmicos (UD) misturam dtypes **por papel de
+expert**, portanto a cobertura da ponte se confere pelo dtype concreto na
+telemetria (`moe_executor_dtypes`), nunca pelo nome do ficheiro. Provar o ganho
+num modelo cujo dtype já tinha ponte engana a medição.
+
+### `offloaded 42/42 layers to GPU` não fala dos experts
+
+Com `moe_external_executor` ligado, o llama.cpp carrega a metadata dos experts
+mas **não aloca os pesos deles** (`EngineConfig::moe_external_executor`). Logo
+o seu `offloaded N/N layers to GPU` é verdadeiro sobre o que ele próprio possui
+- atenção, normas, saída - e omite a maior parte do modelo. Na ksia isso
+apareceu como `offloaded 42/42` ao lado de apenas ~1,6 GB de buffers de modelo
+em GPU (CUDA0 615,83 MiB + CUDA1 978,08 MiB) num modelo de 35 B, com
+`CPU_Mapped` de 333,44 MiB: a leitura correta do operador, "o modelo está todo
+na RAM", estava certa. Quem aloja os experts é o executor MoE do POM, e onde
+eles ficam depende do executor escolhido: no cache residente de device quando
+há ponte CUDA para **todos** os dtypes, mmapados na RAM quando é
+`CPUReference`. O log de inicialização do `infer_server` diz isso
+explicitamente para que as duas linhas não se contradigam aos olhos de quem lê.
+A prova física desse GGUF ainda não foi executada neste worktree, portanto a
 telemetria esperada é um contrato a verificar, não um resultado já afirmado.
 
 Para separar uma falha de dados recebidos de uma falha na leitura Rust, execute

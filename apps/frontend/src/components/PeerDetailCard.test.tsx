@@ -266,6 +266,7 @@ describe("PeerDetailCard sem GPU (nó Linux, ex. num container Docker)", () => {
           vram_used_mb: null,
           vram_used_pct: null,
           utilization_pct: null,
+          power_watts: null,
           temperature_c: null,
         }],
       }),
@@ -307,8 +308,8 @@ describe("temperatura das GPUs", () => {
         system: fakeSystem({
           gpu_kind: "nvidia",
           gpus: [
-            { index: 0, name: "RTX A", vendor: "nvidia", vram_total_mb: 1024, vram_used_mb: 512, vram_used_pct: 50, utilization_pct: 20, temperature_c: 72 },
-            { index: 1, name: "RTX B", vendor: "nvidia", vram_total_mb: 1024, vram_used_mb: 512, vram_used_pct: 50, utilization_pct: 20, temperature_c: 90 },
+            { index: 0, name: "RTX A", vendor: "nvidia", vram_total_mb: 1024, vram_used_mb: 512, vram_used_pct: 50, utilization_pct: 20, power_watts: null, temperature_c: 72 },
+            { index: 1, name: "RTX B", vendor: "nvidia", vram_total_mb: 1024, vram_used_mb: 512, vram_used_pct: 50, utilization_pct: 20, power_watts: null, temperature_c: 90 },
           ],
         }),
       }),
@@ -328,7 +329,7 @@ describe("temperatura das GPUs", () => {
         system: fakeSystem({
           gpu_kind: "nvidia",
           gpus: [
-            { index: 0, name: "RTX A", vendor: "nvidia", vram_total_mb: 1024, vram_used_mb: 512, vram_used_pct: 50, utilization_pct: 20, temperature_c: null },
+            { index: 0, name: "RTX A", vendor: "nvidia", vram_total_mb: 1024, vram_used_mb: 512, vram_used_pct: 50, utilization_pct: 20, power_watts: null, temperature_c: null },
           ],
         }),
       }),
@@ -424,6 +425,47 @@ describe("PeerDetailCard · arrumação do card", () => {
     const titulo = screen.getByText("Parâmetros de carga do llama.cpp");
     expect(titulo.closest("details")).toBeTruthy();
     expect(titulo.closest("details")!.open).toBe(false);
+  });
+
+  it("mostra GPUs, RAM, carga e discos nessa sequência", () => {
+    const peer = fakeSlicePeer("telemetria", 0, 15, {
+      node: fakeNode({
+        node_id: "telemetria",
+        short_id: "telemetria",
+        hostname: "node-telemetria",
+        system: fakeSystem({
+          gpu_kind: "nvidia",
+          gpus: [{
+            index: 0,
+            name: "RTX A",
+            vendor: "nvidia",
+            vram_total_mb: 8192,
+            vram_used_mb: 2048,
+            vram_used_pct: 25,
+            utilization_pct: 30,
+            temperature_c: 72,
+            power_watts: 250,
+          } as never],
+        }),
+      }),
+    });
+    mount(peer);
+
+    const gpu = screen.getByTestId("gpu-telemetry-section");
+    const ram = screen.getByText("RAM");
+    const load = screen.getByText(/Carga ·/);
+    const disk = screen.getByText("Disco · /");
+    expect(gpu.compareDocumentPosition(ram) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(ram.compareDocumentPosition(load) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(load.compareDocumentPosition(disk) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId("gpu-telemetry-row").textContent).toMatch(/30%.*72,0 °C.*250 W/);
+  });
+
+  it("não oferece atualizar e reiniciar no card", () => {
+    mount(fakeSlicePeer("sem-update", 0, 15, {
+      node: fakeNode({ dev_update: true }),
+    }));
+    expect(screen.queryByRole("button", { name: /atualizar e reiniciar/i })).toBeNull();
   });
 });
 

@@ -8,10 +8,73 @@ export interface StreamMetrics {
   tokens_generated?: number;
   duration_ms?: number;
   timings?: GenerationTimings;
+  /** TTFT measured by the browser from request dispatch to first token. */
+  client_ttft_ms?: number | null;
   trace?: RequestTrace;
+  source?: string;
+}
+
+export type RequestState = "cold" | "warm" | "unknown";
+
+export interface TraceSpan {
+  name: string;
+  span_id: string;
+  parent_span_id?: string | null;
+  host: string;
+  /** Wall-clock value for correlation only. Never subtract across hosts. */
+  started_at_ms: number;
+  /** Monotonic offset from the local request start. */
+  start_offset_ms: number;
+  duration_ms: number;
+  parallel_group?: string | null;
+}
+
+export interface FirstTokenTrace {
+  engine_produced_at_ms?: number | null;
+  node_serialized_at_ms?: number | null;
+  node_sent_at_ms?: number | null;
+  coordinator_received_at_ms?: number | null;
+  gateway_stream_at_ms?: number | null;
+  client_received_at_ms?: number | null;
+  engine_ttft_ms?: number | null;
+  node_serialized_ms?: number | null;
+  node_to_gateway_ms?: number | null;
+  gateway_to_client_ms?: number | null;
+}
+
+export interface StreamingTrace {
+  time_to_first_chunk_ms?: number | null;
+  time_to_first_token_ms?: number | null;
+  /** Browser-local first SSE data frame through receipt of the [DONE] frame. */
+  stream_duration_ms?: number | null;
+  /** Browser-local last token data frame through receipt of the [DONE] frame. */
+  time_last_token_to_response_end_ms?: number | null;
+  chunks: number;
+  bytes: number;
+  tokens_per_chunk?: number | null;
 }
 
 export interface RequestTrace {
+  trace_id?: string;
+  profile?: "off" | "basic" | "trace";
+  request_state?: RequestState;
+  spans?: TraceSpan[];
+  outside_node_total_ms?: number | null;
+  outside_node_accounted_ms?: number | null;
+  outside_node_unaccounted_ms?: number | null;
+  first_token?: FirstTokenTrace;
+  streaming?: StreamingTrace;
+  server_ttft_ms?: number | null;
+  engine_ttft_ms?: number | null;
+  client_ttft_ms?: number | null;
+  decode_calls?: number;
+  generated_tokens?: number;
+  tokens_per_decode_call?: number | null;
+  connection_new_calls?: number;
+  connection_reused_calls?: number;
+  connection_unknown_calls?: number;
+  https_fallback_calls?: number;
+  https_fallback_reasons?: string[];
   model: string;
   input_tokens: number;
   /** Tokens do prompt que o pipeline não reprocessou porque já estavam no KV
@@ -30,17 +93,189 @@ export interface RequestTrace {
   total_bytes_received: number;
   hops: HopTrace[];
   transport_trace_complete?: boolean;
+  telemetry?: TelemetrySummary;
+  profiling_spans?: TelemetrySpan[];
+  token_cycle?: TokenCycleTelemetry;
+  /** Pernas direcionais agregadas do ciclo lógico, quando observadas. */
+  pipeline_cycle?: PipelineCycleTelemetry;
   prefill_overlap_enabled?: boolean;
   prefill_max_inflight_chunks?: number;
   prefill_overlapped_chunks?: number;
   prefill_pipeline_depth_max?: number;
 }
 
+export interface ClientStreamObservation {
+  requestStartedAt: number;
+  firstChunkAt?: number;
+  firstTokenAt?: number;
+  lastTokenAt?: number;
+  responseEndedAt: number;
+  /** Browser wall clock for cross-host log correlation only. */
+  clientReceivedAtMs?: number;
+  chunks: number;
+  bytes: number;
+}
+
+function elapsedMs(start: number | undefined, end: number | undefined) {
+  return start == null || end == null ? null : Math.max(0, Math.round(end - start));
+}
+
+/** Adds browser-local delivery observations to a server trace. */
+export function withClientStreamTiming(
+  metrics: StreamMetrics,
+  observation: ClientStreamObservation,
+): StreamMetrics {
+  const clientTtft = elapsedMs(observation.requestStartedAt, observation.firstTokenAt);
+  const firstChunk = elapsedMs(observation.requestStartedAt, observation.firstChunkAt);
+  // This intentionally excludes TTFT and includes any terminal work before
+  // the response body closes. The adjacent last-token value makes that tail
+  // visible instead of attributing it to generation.
+  const streamDuration = observation.firstChunkAt == null
+    ? null
+    : Math.max(0, Math.round(observation.responseEndedAt - observation.firstChunkAt));
+  const lastTokenToEnd = elapsedMs(observation.lastTokenAt, observation.responseEndedAt);
+  const tokenCount = metrics.trace?.generated_tokens ?? metrics.trace?.output_tokens;
+  const tokensPerChunk = observation.chunks > 0 && tokenCount != null && Number.isFinite(tokenCount)
+    ? tokenCount / observation.chunks
+    : null;
+  const trace = metrics.trace
+    ? {
+        ...metrics.trace,
+        client_ttft_ms: clientTtft,
+        first_token: {
+          ...(metrics.trace.first_token ?? {}),
+          client_received_at_ms: observation.clientReceivedAtMs ?? null,
+        },
+        streaming: {
+          ...(metrics.trace.streaming ?? {}),
+          time_to_first_chunk_ms: firstChunk,
+          time_to_first_token_ms: clientTtft,
+          stream_duration_ms: streamDuration,
+          time_last_token_to_response_end_ms: lastTokenToEnd,
+          chunks: observation.chunks,
+          bytes: observation.bytes,
+          tokens_per_chunk: tokensPerChunk,
+        },
+      }
+    : undefined;
+  const timings = metrics.timings
+    ? { ...metrics.timings, client_ttft_ms: clientTtft }
+    : undefined;
+  return { ...metrics, trace, timings };
+}
+
+export type TelemetryStatus = "collecting" | "response_complete" | "complete" | "incomplete" | "timeout";
+
+export interface RemoteStreamTelemetry {
+  open_ms?: number;
+  lifetime_ms?: number;
+  frames_sent: number;
+  frames_received: number;
+  bytes_sent: number;
+  bytes_received: number;
+  first_frame_latency_ms?: number;
+  frame_latency_min_ms: number;
+  frame_latency_p50_ms: number;
+  frame_latency_p95_ms: number;
+  frame_latency_p99_ms: number;
+  frame_latency_max_ms: number;
+  remote_compute_total_ms: number;
+  remote_compute_min_ms: number;
+  remote_compute_p50_ms: number;
+  remote_compute_p95_ms: number;
+  remote_compute_p99_ms: number;
+  remote_compute_max_ms: number;
+  remote_stream_wait_total_ms: number;
+  remote_stream_wait_p50_ms: number;
+  remote_stream_wait_p95_ms: number;
+  remote_stream_producer_wait_total_ms?: number;
+  remote_stream_producer_wait_p50_ms?: number;
+  remote_stream_producer_wait_p95_ms?: number;
+  remote_stream_channel_send_wait_total_ms?: number;
+  remote_stream_channel_send_wait_p50_ms?: number;
+  remote_stream_channel_send_wait_p95_ms?: number;
+  remote_stream_downstream_wait_total_ms?: number;
+  remote_stream_downstream_wait_p50_ms?: number;
+  remote_stream_downstream_wait_p95_ms?: number;
+  remote_stream_queue_wait_total_ms?: number;
+  remote_stream_queue_wait_p50_ms?: number;
+  remote_stream_queue_wait_p95_ms?: number;
+  remote_stream_delivery_total_ms?: number;
+  remote_stream_delivery_p50_ms?: number;
+  remote_stream_delivery_p95_ms?: number;
+  token_delivery_interval_min_ms?: number;
+  token_delivery_interval_p50_ms?: number;
+  token_delivery_interval_p95_ms?: number;
+  token_delivery_interval_p99_ms?: number;
+  token_delivery_interval_max_ms?: number;
+  token_delivery_interval_samples?: number;
+}
+
+export interface TokenCycleTelemetry {
+  samples: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  max_ms: number;
+}
+
+export interface PipelineCycleLeg {
+  from_node_id: string;
+  to_node_id: string;
+  transport_summary: TransportSummary;
+}
+
+export interface PipelineCycleTelemetry {
+  prefill: PipelineCycleLeg[];
+  decode: PipelineCycleLeg[];
+}
+
+export interface TelemetrySummary {
+  status: TelemetryStatus;
+  response_complete?: boolean;
+  expected_peers: number;
+  reported_peers: number;
+  missing_peers: string[];
+  expected_decode_spans: number;
+  reported_decode_spans: number;
+  /** False when direct per-frame mode has observations but no expected total. */
+  decode_span_expectation_available?: boolean;
+  completeness_percent: number;
+  duplicate_spans: number;
+  late_spans: number;
+  orphan_spans: number;
+  wall_clock_ms?: number;
+  critical_path_ms?: number;
+  accumulated_compute_ms: number;
+  accumulated_transport_ms: number;
+  overlap_ms?: number;
+  true_residual_ms?: number;
+  remote_stream: RemoteStreamTelemetry;
+}
+
+export interface TelemetrySpan {
+  trace_id: string;
+  request_id: string;
+  pipeline_id: string;
+  peer_id: string;
+  span_id: string;
+  parent_span_id?: string;
+  phase: "prefill" | "decode";
+  token_index?: number;
+  start_ns: number;
+  end_ns: number;
+  duration_ns: number;
+  transport?: string;
+  clock_domain: string;
+}
+
 export interface TransportSummaryEntry {
   transport:
     | "local"
     | "libp2p-tunnel"
+    | "http"
     | "https"
+    | "quic"
     // A ligação persistente entre andares: o mesmo HTTPS pinado, mas com o
     // quadro entrando num corpo já aberto em vez de numa requisição nova.
     | "https-link"
@@ -53,6 +288,11 @@ export interface TransportSummaryEntry {
   rtt_median_ms: number;
   rtt_p95_ms: number;
   rtt_max_ms: number;
+  /** RTT de rede medido no transporte, sem o processamento remoto. */
+  net_rtt_min_ms: number;
+  net_rtt_median_ms: number;
+  net_rtt_p95_ms: number;
+  net_rtt_max_ms: number;
   fallback_calls: number;
 }
 
@@ -94,6 +334,7 @@ export interface PhaseTrace {
   bytes_sent: number;
   bytes_received: number;
   calls: number;
+  reported_spans?: number;
   client_encode_ms: number;
   response_headers_ms: number;
   response_body_ms: number;
@@ -120,6 +361,8 @@ export interface PhaseTrace {
   node_lock_wait_ms: number;
   node_setup_ms: number;
   node_decode_ms: number;
+  /** Measured synchronous MTP/nextn draft production, when reported. */
+  node_mtp_draft_ms?: number;
   node_backend_enqueue_ms: number;
   /** Backend completion timing. Never infer POM_PROFILE_SYNC from this value. */
   node_backend_completion_ms: number;
@@ -235,6 +478,7 @@ export interface ChatStreamState {
   durationMs?: number;
   timings?: GenerationTimings;
   trace?: RequestTrace;
+  source?: string;
   error?: string;
 }
 
@@ -304,7 +548,15 @@ export function finishChatStream(previous: ChatStreamState, metrics?: StreamMetr
   if (metrics?.tokens_per_sec != null) state = { ...state, tokensPerSecond: metrics.tokens_per_sec };
   if (metrics?.tokens_generated != null) state = { ...state, tokensGenerated: metrics.tokens_generated };
   if (metrics?.duration_ms != null) state = { ...state, durationMs: metrics.duration_ms };
-  if (metrics?.timings) state = { ...state, timings: metrics.timings };
+  if (metrics?.timings) {
+    state = {
+      ...state,
+      timings: metrics.client_ttft_ms === undefined
+        ? metrics.timings
+        : { ...metrics.timings, client_ttft_ms: metrics.client_ttft_ms },
+    };
+  }
   if (metrics?.trace) state = { ...state, trace: metrics.trace };
+  if (metrics?.source != null) state = { ...state, source: metrics.source };
   return state;
 }

@@ -200,6 +200,12 @@ quebra o produto inteiro.
 - **`<config>.last-slice.json` só vira `serving` pelo watcher do `/health`.**
   Anotar no `apply` o que só o `/health` sabe é laço infinito de reinício. →
   `implantacao.md`
+- **`idle` é um estado ativo por peer.** Com `unload_if_idle`, a atividade local
+  anotada em `backend/reqlog.rs` é avaliada fora do caminho quente pelo monitor
+  existente: o modelo é descarregado, o peer continua anunciado e entra em
+  `idle`; a próxima requisição recarrega localmente e envia o evento autenticado
+  `reload_model` aos peers ociosos do plano para carregamento paralelo. Não há
+  timer ou `sleep` novo na inferência. → `implantacao.md`, `rede-p2p.md`
 - **Nenhum peso trafega na rede por causa do fatiamento**: cada peer extrai a
   própria faixa da própria cópia. Transferência de arquivo é ato explícito do
   operador. → `fatiamento.md`, `transferencia.md`

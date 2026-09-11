@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { Preferences, ThermalPanel } from "./Preferences";
@@ -12,6 +13,15 @@ const mocks = vi.hoisted(() => ({
   fromError: vi.fn(),
   setAdminAccessToken: vi.fn(),
   clearAdminAccessToken: vi.fn(),
+  node: {
+    thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
+    tls_required: false,
+    tls_authority: true,
+    quic_enabled: false,
+    quic_authority: true,
+    cluster_logs_enabled: false,
+    cluster_logs_authority: true,
+  },
 }));
 
 vi.mock("../lib/api", () => ({
@@ -32,11 +42,7 @@ vi.mock("../lib/queries", () => ({
     isError: false,
   }),
   useInvalidate: () => mocks.invalidate,
-  useNode: () => ({
-    data: {
-      thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
-    },
-  }),
+  useNode: () => ({ data: mocks.node }),
 }));
 
 vi.mock("../lib/toast", () => ({
@@ -52,12 +58,14 @@ afterEach(() => {
   mocks.fromError.mockReset();
   mocks.setAdminAccessToken.mockReset();
   mocks.clearAdminAccessToken.mockReset();
+  mocks.node.tls_required = false;
+  mocks.node.quic_enabled = false;
 });
 
 function mount(child: React.ReactNode) {
   return render(
     <LocaleProvider initialLocale="pt-BR">
-      {child}
+      <MemoryRouter>{child}</MemoryRouter>
     </LocaleProvider>,
   );
 }
@@ -89,6 +97,36 @@ describe("Preferences", () => {
         cooldown_secs: 45,
       });
     });
+  });
+
+  it("mostra QUIC ao lado de TLS e salva a preferência do principal", async () => {
+    mocks.post.mockResolvedValue({ quic_enabled: true });
+    mount(<Preferences administrative />);
+
+    expect(screen.getByText("Transporte QUIC")).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: /ligar quic/i }));
+
+    await waitFor(() => {
+      expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/quic", {
+        quic_enabled: true,
+      });
+    });
+  });
+
+  it("esconde a política incompatível com o transporte ativo", () => {
+    mocks.node.quic_enabled = true;
+    mount(<Preferences administrative />);
+
+    expect(screen.getByText("Transporte QUIC")).toBeTruthy();
+    expect(screen.queryByText("Criptografia entre nós")).toBeNull();
+
+    cleanup();
+    mocks.node.quic_enabled = false;
+    mocks.node.tls_required = true;
+    mount(<Preferences administrative />);
+
+    expect(screen.getByText("Criptografia entre nós")).toBeTruthy();
+    expect(screen.queryByText("Transporte QUIC")).toBeNull();
   });
 
   it("gera e guarda o token quando a interface passa para a rede", async () => {

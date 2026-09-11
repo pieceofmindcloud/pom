@@ -135,15 +135,19 @@ function AdminAccessUnavailable() {
 export const routeLoaders = {
   setup: () => import("./routes/Setup").then(({ Setup }) => Setup),
   setupWizard: () => import("./routes/SetupWizard").then(({ SetupWizard }) => SetupWizard),
+  publicNetworks: () => import("./routes/PublicNetworks").then(({ PublicNetworks }) => PublicNetworks),
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
+  networkChat: () => import("./routes/NetworkChat").then(({ NetworkChat }) => NetworkChat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
   logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
   statistics: () => import("./routes/Statistics").then(({ Statistics }) => Statistics),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
+  networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
   adminAuthority: () => import("./routes/AdminAuthority").then(({ AdminAuthority }) => AdminAuthority),
   trustAnchor: () => import("./routes/TrustAnchor").then(({ TrustAnchor }) => TrustAnchor),
+  networkSharing: () => import("./routes/NetworkSharing").then(({ NetworkSharing }) => NetworkSharing),
   preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
@@ -166,15 +170,19 @@ function lazyRoute<T extends React.ComponentType<any>>(loader: () => Promise<T>)
 
 const Setup = lazyRoute(routeLoaders.setup);
 const SetupWizard = lazyRoute(routeLoaders.setupWizard);
+const PublicNetworks = lazyRoute(routeLoaders.publicNetworks);
 const Chat = lazyRoute(routeLoaders.chat);
+const NetworkChat = lazyRoute(routeLoaders.networkChat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
 const Logs = lazyRoute(routeLoaders.logs);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
 const Statistics = lazyRoute(routeLoaders.statistics);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
+const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
 const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
 const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
+const NetworkSharing = lazyRoute(routeLoaders.networkSharing);
 const Preferences = lazyRoute(routeLoaders.preferences);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
@@ -248,7 +256,11 @@ export default function App() {
       location.pathname === "/implantar" ||
       location.pathname === "/implantacoes" ||
       location.pathname === "/logs" ||
-      location.pathname === "/implantacoes/logs");
+      location.pathname === "/implantacoes/logs" ||
+      location.pathname === "/redes-publicas" ||
+      location.pathname === "/network-chat" ||
+      location.pathname === "/estatisticas" ||
+      location.pathname === "/config/keys/api");
   /*
    * O assistente é a única tela que sai da moldura inteira: ele guia a
    * configuração do zero, com barra de progresso e uma pergunta por vez, e o
@@ -261,9 +273,9 @@ export default function App() {
    * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
    *
-   * Deliberately not probed with `/api/setup/key`: that route *mints* a new
-   * connection key, so asking it "are we in setup?" would rotate the cluster
-   * credential on every page load.
+   * Deliberately not probed with a setup mutation endpoint. Setup mode is
+   * detected by the normal surface probe, while `/api/setup/*` is reserved for
+   * the real first-access wizard.
    */
   const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
@@ -377,6 +389,8 @@ export default function App() {
                     <AnimatePresence mode="wait">
                       <Routes location={location} key={location.pathname}>
                         <Route path="/" element={<Page><Dashboard /></Page>} />
+                        <Route path="/redes-publicas" element={<Page><PublicNetworks /></Page>} />
+                        <Route path="/network-chat" element={<Page><NetworkChat /></Page>} />
                         <Route path="/modelos" element={<Page><WholeModels /></Page>} />
                         <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
                         <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
@@ -393,9 +407,12 @@ export default function App() {
                         <Route path="/logs/estatisticas" element={<Navigate to="/estatisticas" replace />} />
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
+                        <Route path="/config/rede/participantes" element={<Page><NetworkParticipants /></Page>} />
                         <Route path="/config/administracao" element={<Page><AdminAuthority /></Page>} />
+                        <Route path="/config/compartilhamento" element={<Page><NetworkSharing /></Page>} />
                         <Route path="/config/confianca" element={<Page><TrustAnchor /></Page>} />
                         <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
+                        <Route path="/config/preferencias/admin" element={<Page><Preferences administrative /></Page>} />
                         <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                         <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
                         <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />

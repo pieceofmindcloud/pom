@@ -12,6 +12,42 @@
         assert_eq!(a.taking, Some([0, 15]));
     }
 
+    #[test]
+    fn sliced_vision_uses_only_the_selected_pipeline_head() {
+        let mut machines = build(vec![
+            m("unselected-head", 100_000, &[(0, 15)]),
+            m("selected-head", 100_000, &[(0, 15)]),
+            m("tail", 100_000, &[(16, 31)]),
+        ]);
+        machines[0].held[0].mmproj_path = Some("/unselected/mmproj.gguf".into());
+        machines[1].held[0].mmproj_path = Some("/selected/mmproj.gguf".into());
+
+        let selection = [pick(0, 15, "selected-head"), pick(16, 31, "tail")];
+        let planned = plan("vision", &machines, Some(&selection));
+        assert_eq!(planned.mmproj_path.as_deref(), Some("/selected/mmproj.gguf"));
+
+        let targets = super::launch_targets(
+            &planned.steps,
+            &machines,
+            DeployKind::Shards,
+            None,
+            &[],
+        )
+        .expect("targets should be launchable");
+        assert_eq!(targets[0].mmproj_path.as_deref(), Some("/selected/mmproj.gguf"));
+        assert_eq!(targets[1].mmproj_path, None);
+
+        let selection = [pick(0, 15, "unselected-head"), pick(16, 31, "tail")];
+        let planned = plan("vision", &machines, Some(&selection));
+        assert_eq!(planned.mmproj_path.as_deref(), Some("/unselected/mmproj.gguf"));
+
+        machines[0].held[0].mmproj_path = Some("/unselected/mmproj.gguf".into());
+        machines[1].held[0].mmproj_path = None;
+        let selection = [pick(0, 15, "selected-head"), pick(16, 31, "tail")];
+        let planned = plan("vision", &machines, Some(&selection));
+        assert_eq!(planned.mmproj_path, None);
+    }
+
     // ── Execution settings ──────────────────────────────────────────────────
 
     /// The screen fills its form from the plan, so the plan has to carry the
@@ -328,6 +364,7 @@
                 "size_bytes": 2569314208u64,
             }),
             None,
+            None,
         )
         .expect("a fatia é válida, só não diz o total");
         assert_eq!(shard.total_layers, None);
@@ -341,9 +378,24 @@
                 "size_bytes": 1u64,
             }),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(declared.total_layers, Some(40));
+
+        let inherited = parse_shard(
+            &json!({
+                "shard_range": [0, 15],
+                "total_layers": 32,
+                "name": "vision_0_15.gguf",
+                "path": "/shards/vision_0_15.gguf",
+                "size_bytes": 1u64,
+            }),
+            None,
+            Some("/models/mmproj-vision.gguf"),
+        )
+        .unwrap();
+        assert_eq!(inherited.mmproj_path.as_deref(), Some("/models/mmproj-vision.gguf"));
     }
 
     // ── Um modelo inteiro ───────────────────────────────────────────────────
@@ -375,6 +427,7 @@
             load_known: true,
             held: if has {
                 vec![HeldShard {
+                    kind: HeldKind::Whole,
                     sha256: None,
                     pom_id: None,
                     virtual_slice: false,
@@ -390,6 +443,7 @@
                     total_layers: Some(32),
                     name: "qwen3.5-9b".into(),
                     path: format!("/{id}/qwen3.5-9b.gguf"),
+                    mmproj_path: None,
                     size_bytes: 5 * GIB,
                 }]
             } else {
@@ -401,11 +455,13 @@
     fn tp_machine(id: &'static str, rank: u32) -> Machine {
         let mut machine = whole_machine(id, 900_000, false);
         machine.held.push(HeldShard {
+            kind: HeldKind::Shard,
             start_layer: 0,
             end_layer: 31,
             total_layers: Some(32),
             name: format!("qwen · {}of2", rank + 1),
             path: format!("/{id}/rank-{rank}.gguf"),
+            mmproj_path: None,
             size_bytes: 2 * GIB,
             sha256: Some(format!("{:064x}", rank + 1)),
             pom_id: None,
@@ -939,6 +995,7 @@
             load: 0,
             load_known: true,
             held: vec![HeldShard {
+                kind: HeldKind::Whole,
                 sha256: None,
                 pom_id: None,
                 virtual_slice: false,
@@ -954,6 +1011,7 @@
                 total_layers: Some(32),
                 name: "qwen3.5-9b.gguf".into(),
                 path: "/modelos/qwen3.5-9b.gguf".into(),
+                mmproj_path: None,
                 size_bytes: 1,
             }],
         }];

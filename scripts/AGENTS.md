@@ -5,6 +5,11 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 
 ## scripts/
 
+- `build-env.sh` - helper opt-in, carregado com `source`, que detecta
+  `sccache` e exporta o cache CAS compartilhado, o limite de 80G, os wrappers
+  Rust/CMake/CUDA, `CCACHE`, o socket dedicado e um `CARGO_TARGET_DIR` comum.
+  Sem `sccache` no `PATH`, nao altera o ambiente do build.
+  `test-build-env.sh` verifica os dois caminhos e a preservacao de overrides.
 - `bench-rotas.sh` - executa a bateria reproduzivel de medicao da geracao
   distribuida: quatro origens, cinco prompts, aquecimento por origem, CSV com
   as telemetrias de timings/trace/decode/prefill e tabela de medianas. O CSV
@@ -36,7 +41,10 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   `--force` sobrescreve config existente. Nunca gera a chave de conexao - herda
   da config base (`--base`, padrao `pom.json` na raiz) para nao partir um
   cluster existente. `--advertise-addr` atualiza somente o endereco anunciado
-  tambem em configs existentes, preservando os outros campos.
+  tambem em configs existentes, preservando os outros campos. Quando recebe
+  `HOST:PORT`, trata a porta como a base do conjunto e usa a porta `p2p_port`
+  propria de cada no; assim quatro processos no mesmo host nao anunciam todos
+  o socket 42777.
 - `test_gen_node_configs.py` - testes unitarios do override de
   `advertise_addr`, incluindo a preservacao dos demais campos da config.
 - `bench-llamacpp.sh` - CLI do benchmark do llama.cpp puro na ksia. Recebe o

@@ -22,9 +22,22 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   para não destruir a cópia de segurança antiga. O campo obrigatório
   `profile` é o perfil oficial do nó; um `pom.json` antigo sem ele exige novo
   setup, sem migração.
+  `NetworkSettings` guarda nome, organização, descrição, regras, canais,
+  visibilidade (`local`, `private`, `public`), política de acesso e localização
+  geo (país, cidade, coordenadas e label canônico). `setup_pending` permite
+  preservar preferências locais ao sair da rede e voltar ao wizard mesmo com
+  `pom.json` presente.
+  `ResourcePolicy` guarda os percentuais de RAM e CPU reservados ao sistema.
+  O primeiro acesso usa `~/.pom/models` e `~/.pom/models_sliced` como padrões
+  e grava `shard_max_gb` para limitar as fatias compartilhadas.
+  `cluster_logs_min_level` também vive no JSON, aceita
+  `trace`, `debug`, `info`, `warn` e `error`, e assume `info` quando ausente;
+  ele só controla o que `CaptureLayer` enfileira.
 - `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
   health).
-- `respawn.rs` - reiniciar este processo preservando o argv do arranque.
+- `respawn.rs` - reiniciar este processo preservando o argv do arranque,
+  criando uma nova sessão em Unix e redirecionando stdout/stderr para
+  `<project_root>/pom.log` para que falhas logo após o reinício deixem rastro.
 - `sysmon.rs` - amostragem de RAM/VRAM/disco por plataforma, com cache.
 - `thermal.rs` - política de temperatura, histerese e cooldown como máquina de
   estados pura, sem dependência de fornecedor ou hardware.
@@ -59,10 +72,10 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 - `ui_dist_dir` - `$POM_UI_DIST` ou `<project_root>/apps/frontend/dist`
   (a UI é lida do disco em runtime por `webapp.rs`).
 - `model_dir_paths`/`shard_dir_path` - onde procurar modelos inteiros e onde
-  escrever/ler fatias. `model_dirs` ausente = detectar (LM Studio + Ollama);
-  lista **vazia** = não procure em lugar nenhum; `shard_dir` em branco cai para
-  `<project_root>/models`. `shard_max_gb` limita somente a pasta de fatias e
-  assume 100 GB quando falta em um `pom.json` antigo.
+  escrever/ler fatias. A configuração criada pelo wizard usa `~/.pom/models` e
+  `~/.pom/models_sliced`; configurações existentes ainda conservam sua escolha.
+  `model_dirs` vazio não procura em lugar nenhum. `shard_max_gb` limita somente
+  a pasta de fatias e assume 100 GB quando falta em um `pom.json` antigo.
 - A configuração não possui teto absoluto de saída. A capacidade efetiva é
   observada no runtime depois do carregamento do modelo e chega ao gateway por
   `n_ctx`; o gateway agrega o menor valor entre os peers vivos. O único limite
@@ -74,6 +87,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   são `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0` e
   `q5_1`. Esses campos vivem no `pom.json` e não fazem parte dos parâmetros
   por máquina de uma implantação.
+- `cluster_logs_min_level` - limiar mínimo da captura de logs de implantação;
+  o console mantém sua política `RUST_LOG` independente. A retenção é fixa no
+  principal e não é uma preferência da auditoria de requisições.
 - `DEFAULT_INFERENCE_PORT` (8181) - anunciado desde o arranque mesmo antes de
   a fatia ser atribuída (sem ele o `apply` recusava todo modelo).
 
@@ -89,8 +105,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 - `remember_argv`/`original_argv` - captura o argv (sem argv[0]) no início do
   main; é o que preserva `--advertise-addr` etc. num restart (o respawn ingênuo
   com `Command::new(current_exe())` perdia os argumentos).
-- `respawn_self` - spawna `current_exe` + argv original e sai (exit 0); se o
-  spawn falhar retorna o erro e o nó segue vivo para reportar.
+- `respawn_self` - spawna `current_exe` + argv original em uma sessão
+  independente, com stdout/stderr em `pom.log`, e sai (exit 0); se abrir o log
+  ou o spawn falhar retorna o erro e o nó segue vivo para reportar.
 
 `sysmon.rs`:
 - `sample` - leitura com cache de 1,2 s (`nvidia-smi` custa um spawn por leitura;
@@ -132,6 +149,11 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 `nvidia-smi` que enumera VRAM e utilização, Radeon vem de `amdgpu`/hwmon, e
 GPU unificada fica explicitamente sem leitura. `None` significa temperatura
 desconhecida e nunca é convertido em alarme pela proteção térmica.
+
+`config.rs` mantém `validate_network_settings` como a validação única do bloco
+de rede. Ela é usada tanto pelo wizard quanto pela edição posterior e exige
+nome público, país e cidade quando a visibilidade é pública; redes locais e
+privadas podem deixar esses campos vazios.
 
 ## Ligações
 

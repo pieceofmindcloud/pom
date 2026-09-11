@@ -14,10 +14,10 @@ mod auth;
 // usam. Ver `docs/subsystems/build-execucao.md`.
 use ::brand;
 pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
-#[path = "backend/capabilities.rs"]
-mod capabilities;
 #[path = "admin_trust.rs"]
 mod admin_trust;
+#[path = "backend/capabilities.rs"]
+mod capabilities;
 #[path = "models/catalog.rs"]
 mod catalog;
 #[path = "network/cluster_logs.rs"]
@@ -26,11 +26,6 @@ mod cluster_logs;
 mod cluster_logs_policy;
 #[path = "utils/config.rs"]
 mod config;
-#[path = "profile.rs"]
-pub(crate) mod profile;
-#[cfg(test)]
-#[path = "profile_tests.rs"]
-mod profile_tests;
 #[cfg(test)]
 #[path = "backend/continuation_lab.rs"]
 mod continuation_lab;
@@ -85,6 +80,13 @@ mod model_provider;
 mod model_provider_backend;
 #[path = "network/network.rs"]
 mod network;
+#[path = "network/network_chat.rs"]
+mod network_chat;
+#[path = "network/network_chat_policy.rs"]
+mod network_chat_policy;
+#[cfg(test)]
+#[path = "network/network_chat_tests.rs"]
+mod network_chat_tests;
 #[path = "models/ollama.rs"]
 mod ollama;
 #[path = "backend/openai.rs"]
@@ -109,6 +111,15 @@ mod prefix_cache_lab;
 #[cfg(test)]
 #[path = "inference/prefix_reuse_lab.rs"]
 mod prefix_reuse_lab;
+#[path = "profile.rs"]
+pub(crate) mod profile;
+#[cfg(test)]
+#[path = "profile_tests.rs"]
+mod profile_tests;
+#[path = "network/quic.rs"]
+pub mod quic;
+#[path = "network/quic_policy.rs"]
+pub mod quic_policy;
 #[path = "inference/relay.rs"]
 mod relay;
 #[path = "backend/reqlog.rs"]
@@ -131,6 +142,8 @@ mod spec_lab;
 mod splitter;
 #[path = "models/storage.rs"]
 mod storage;
+#[path = "telemetry.rs"]
+pub(crate) mod telemetry;
 #[path = "utils/thermal.rs"]
 mod thermal;
 #[path = "network/tls.rs"]
@@ -476,8 +489,12 @@ fn anchor_admin(
     }
 
     let (document, local_root) = if let Some(source) = from_file {
-        let source_store = crate::admin_trust::AdminTrust::load(source)
-            .with_context(|| format!("não foi possível ler a cadeia transportada em {}", source.display()))?;
+        let source_store = crate::admin_trust::AdminTrust::load(source).with_context(|| {
+            format!(
+                "não foi possível ler a cadeia transportada em {}",
+                source.display()
+            )
+        })?;
         let document = source_store.document();
         if let Some(expected_cluster) = cluster_id {
             if expected_cluster != document.anchor.cluster_id {
@@ -493,11 +510,9 @@ fn anchor_admin(
         let cluster_id = cluster_id
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("--cluster-id é obrigatório ao criar a raiz local"))?;
-        let (_signing_key, principal) = local_authority_identity()?;
-        let anchor = crate::admin_trust::TrustAnchor::for_principal(
-            cluster_id.to_string(),
-            principal,
-        );
+        let (_signing_key, principal) = crate::admin_trust::local_authority_identity()?;
+        let anchor =
+            crate::admin_trust::TrustAnchor::for_principal(cluster_id.to_string(), principal);
         let root_principal = anchor.principal.clone();
         let document = crate::admin_trust::AdminTrustDocument {
             version: crate::admin_trust::TRUST_VERSION,
@@ -530,7 +545,7 @@ fn anchor_admin(
     }
 
     if local_root {
-        let (signing_key, principal) = local_authority_identity()?;
+        let (signing_key, principal) = crate::admin_trust::local_authority_identity()?;
         let anchor = crate::admin_trust::TrustAnchor::manual(
             document.anchor.cluster_id.clone(),
             principal,
@@ -551,40 +566,28 @@ fn anchor_admin(
     } else {
         crate::admin_trust::AdminTrust::install_document(&destination, document)?;
     }
-    println!("âncora administrativa instalada em {}", destination.display());
+    println!(
+        "âncora administrativa instalada em {}",
+        destination.display()
+    );
     Ok(())
 }
 
-fn local_authority_identity() -> Result<(
-    ed25519_dalek::SigningKey,
-    crate::admin_trust::AuthorityPrincipal,
-)> {
-    let local_identity = identity::Identity::load_or_create(&identity::key_path());
-    let pkarr = pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path())
-        .context("não foi possível carregar a identidade libp2p para a âncora")?;
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&pkarr.secret_key_bytes());
-    let mut seed = signing_key.to_bytes();
-    let keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
-        .context("a identidade local não pôde ser convertida em chave libp2p")?;
-    let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
-        local_identity.node_id.0,
-        keypair.public().to_peer_id().to_string(),
-        &signing_key,
-    );
-    Ok((signing_key, principal))
-}
-
+#[cfg(target_os = "macos")]
 fn gateway_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/admin-ui/chat")
 }
 
+#[cfg(target_os = "macos")]
 fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
     config_port.unwrap_or(cli_port)
 }
 
 #[cfg(target_os = "macos")]
 fn configured_gateway_port(args: &Args) -> u16 {
-    let persisted = config::Config::load().ok().map(|config| config.gateway_port);
+    let persisted = config::Config::load()
+        .ok()
+        .map(|config| config.gateway_port);
     select_gateway_port(persisted, args.gateway_port)
 }
 
@@ -593,7 +596,6 @@ async fn async_main(
     log_capture: Arc<cluster_logs::LogCapture>,
     log_receiver: tokio::sync::mpsc::Receiver<cluster_logs::LogEntry>,
 ) -> Result<()> {
-
     info!(
         "Project root: {} (config: {})",
         config::project_root().display(),
@@ -603,17 +605,45 @@ async fn async_main(
     let database = Arc::new(db::PomDb::open(config::database_path())?);
     info!("Local database: {}", database.path().display());
 
-    // ── Setup flow: if no config exists, serve only the setup page ──────────
-    if !config::Config::exists() {
-        info!("No config found — starting in setup mode");
-        start_setup_mode(args.gateway_port).await?;
+    // ── Setup flow: a fresh node and a node that just left a network both
+    // serve only the setup page. The latter keeps pom.json as a local
+    // preference shell, so checking only for file existence would boot the old
+    // network again.
+    let existing_config = if config::Config::exists() {
+        Some(config::Config::load()?)
+    } else {
+        None
+    };
+    if existing_config
+        .as_ref()
+        .is_none_or(|config| config.setup_pending)
+    {
+        if existing_config.is_some() {
+            info!("Setup pending — starting in setup mode");
+        } else {
+            info!("No config found — starting in setup mode");
+        }
+        let gateway_port = existing_config
+            .as_ref()
+            .map_or(args.gateway_port, |config| config.gateway_port);
+        start_setup_mode(gateway_port, existing_config, database.clone()).await?;
         return Ok(());
     }
 
     // ── Load existing config ─────────────────────────────────────────────────
-    let mut app_config = config::Config::load()?;
+    let mut app_config = existing_config.expect("config já carregada antes do modo completo");
+    if app_config.connection_key.trim().is_empty() {
+        app_config.connection_key = crate::webui::fresh_connection_key();
+        app_config.save()?;
+        info!("Generated a local admin credential for the configured node");
+    }
+    log_capture.set_min_level(app_config.cluster_logs_min_level);
     let cluster_logs = cluster_logs::ClusterLogs::new(log_capture, log_receiver, database.clone());
+    let audit = reqlog::AuditLog::new(database.clone());
     app_config.api_keys = database.api_keys()?;
+    if let Err(error) = database.save_network_settings(&app_config.network) {
+        warn!("não foi possível guardar os detalhes da rede no banco: {error:#}");
+    }
     app_config.thermal = database
         .thermal_policy()?
         .unwrap_or_else(crate::thermal::ThermalPolicy::default);
@@ -697,6 +727,7 @@ async fn async_main(
             args.public_addr.clone(),
             !args.no_cycle_detection,
             cluster_logs,
+            audit,
         )
         .await;
     }
@@ -845,8 +876,20 @@ async fn async_main(
 
     // ── Determine Ollama port to advertise ───────────────────────────────────
     let ollama_port: Option<u16> = advertised_ollama_port(&args.ollama_url);
+    // Portas QUIC derivadas do `p2p_port` deste nó, nunca de gateway/inference:
+    // ver `quic::gateway_quic_port`.
+    let inference_quic_port =
+        inference_port.and_then(|_| crate::quic::inference_quic_port(p2p_port));
+    let gateway_quic_port = crate::quic::gateway_quic_port(p2p_port);
+
+    peer_client::set_quic_ativo(app_config.quic_enabled);
 
     // ── Start P2P network + (best-effort) libp2p discovery ───────────────────
+    let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
+        Arc::new(tokio::sync::RwLock::new(app_config.clone()));
+    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
+        config::admin_trust_path(),
+    ));
     let node_display_name = match app_config.node_name.clone() {
         Some(name) => name,
         None => sysmon::sample().await.hostname,
@@ -858,13 +901,21 @@ async fn async_main(
         bootstrap_nodes: bootstrap_nodes.clone(),
         ollama_port,
         inference_port,
+        inference_quic_port,
         gateway_port,
+        gateway_quic_port,
         profile: app_config.profile,
         node_display_name,
-        advertise_addr,
+        advertise_addr: advertise_addr.clone(),
         tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
+        audit: audit.clone(),
+        primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
+        network_chat_enabled: app_config.network_chat_enabled,
+        auth: auth_config.clone(),
+        admin_trust: admin_trust.clone(),
+        database: database.clone(),
         relay_peer_keys: relay_peer_keys.clone(),
         serve_relay: args.serve_relay,
         use_default_relays: !args.no_default_relays,
@@ -877,9 +928,6 @@ async fn async_main(
         stack.libp2p_peer_id.clone(),
         &stack.authority_signing_key,
     );
-    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
-        config::admin_trust_path(),
-    ));
     if app_config.profile == crate::profile::NodeProfile::Admin
         && admin_trust
             .effective_authority(&authority_principal, app_config.profile)
@@ -895,30 +943,29 @@ async fn async_main(
         );
     }
     let net = stack.net;
+    net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
     let cluster_logs = stack.cluster_logs;
-    let pkarr_node = stack.pkarr_node;
+    let network_chat = stack.network_chat;
+    let pkarr_node = stack.pkarr_node.map(Arc::new);
+    let local_is_admin = admin_trust
+        .effective_authority(&authority_principal, app_config.profile)
+        .is_some();
+    net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
+    cluster_logs.set_admin_receiver(local_is_admin);
+    audit.set_admin_receiver(local_is_admin);
     let disc_dial_tx = stack.disc_dial_tx;
     let p2p_port = net.bind_addr.port();
     display::print_node_info(&node_id, &pubkey, p2p_port);
 
     // ── Compute pkarr multiaddr to publish ───────────────────────────────────
     // Use the actual UDP port when the config requested an ephemeral bind.
-    let pkarr_multiaddr = {
-        let default_tcp_port = p2p_port.saturating_add(10000);
-        if !args.public_addr.is_empty() {
-            if let Some((host, port_str)) = args.public_addr.split_once(':') {
-                let udp_port = port_str.parse::<u16>().unwrap_or(p2p_port);
-                format!("/ip4/{}/tcp/{}", host, udp_port.saturating_add(10000))
-            } else {
-                format!("/ip4/{}/tcp/{}", args.public_addr, default_tcp_port)
-            }
-        } else {
-            let ip = pkarr_node::detect_local_ip().unwrap_or_else(|| "0.0.0.0".to_string());
-            format!("/ip4/{}/tcp/{}", ip, default_tcp_port)
-        }
-    };
+    let pkarr_multiaddr = pkarr_multiaddr_for_advertise(
+        (!args.public_addr.is_empty()).then_some(args.public_addr.as_str()),
+        pkarr_node::detect_local_ip(),
+        p2p_port,
+    );
 
     info!("⏳ Scanning network for existing layer coverage...");
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -993,11 +1040,21 @@ async fn async_main(
         *a = Some(assignment.clone());
     }
 
+    let pkarr_publisher = pkarr_node.as_ref().map(|node| {
+        Arc::new(crate::gateway::PkarrPublishHandle::new(
+            node.clone(),
+            pkarr_multiaddr.clone(),
+            Some(gateway_port),
+            inference_port,
+            profile.name.clone(),
+            assignment_shared.clone(),
+            args.serve_relay,
+        ))
+    });
+
     net.announce(Some(&assignment)).await?;
 
     // ── Runtime: owns the model configuration and the inference server ──────
-    let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
-        Arc::new(tokio::sync::RwLock::new(app_config.clone()));
     let hf_token_store =
         huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
     // ── TLS entre peers ──────────────────────────────────────────────────────
@@ -1010,6 +1067,13 @@ async fn async_main(
     // máquina, o que o operador fixou, e o hostname. Sem eles o navegador
     // reclamaria do host, e não do emissor.
     let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
+    let quic_config = match serve::quic_server_config(&identity) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}");
+            None
+        }
+    };
     let tls_server =
         match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
             Ok(t) => Some(t),
@@ -1019,10 +1083,11 @@ async fn async_main(
             }
         };
 
-    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_quic_and_auth(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
+        quic_config.clone(),
         Some(auth_config.clone()),
     );
     node_runtime
@@ -1043,6 +1108,7 @@ async fn async_main(
     {
         let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
         peer_clients.apply_cluster_policy(app_config.tls_required);
+        peer_clients.set_quic(app_config.quic_enabled);
         peer_clients.set_auth_state(auth_config.clone());
         // A catraca do TLS: escuta o gatilho do gossip e confirma a política
         // com o principal antes de gravar qualquer coisa. Ver `tls_policy`.
@@ -1051,12 +1117,28 @@ async fn async_main(
             peer_clients.clone(),
             auth_config.clone(),
             tls_server.clone(),
+            authority_signing_key.clone(),
+            authority_principal.clone(),
+            admin_trust.clone(),
         );
+        quic_policy::spawn_ratchet(net.clone(), peer_clients.clone(), auth_config.clone());
         cluster_logs_policy::spawn_ratchet(
             net.clone(),
             peer_clients.clone(),
             auth_config.clone(),
             cluster_logs.clone(),
+            authority_signing_key.clone(),
+            authority_principal.clone(),
+            admin_trust.clone(),
+        );
+        network_chat_policy::spawn_ratchet(
+            net.clone(),
+            peer_clients.clone(),
+            auth_config.clone(),
+            network_chat.clone(),
+            authority_signing_key.clone(),
+            authority_principal.clone(),
+            admin_trust.clone(),
         );
 
         let gw_state = GatewayState {
@@ -1068,14 +1150,17 @@ async fn async_main(
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
             peer_http: peer_clients.clone(),
+            admission_health: Default::default(),
             runtime: node_runtime.clone(),
             cycle_config: crate::cycle::CycleConfig {
                 enabled: !args.no_cycle_detection,
                 ..crate::cycle::CycleConfig::default()
             },
-            audit: reqlog::AuditLog::new(database.clone()),
+            audit: audit.clone(),
             database: database.clone(),
             gateway_port,
+            quic_server: quic_config.clone(),
+            quic_port: net.gateway_quic_port,
             auth: auth_config,
             admin_trust: admin_trust.clone(),
             authority_signing_key: authority_signing_key.clone(),
@@ -1086,6 +1171,7 @@ async fn async_main(
             tunnel_tx: Some(tunnel_tx.clone()),
             tls_server: tls_server.clone(),
             cluster_logs: cluster_logs.clone(),
+            network_chat: network_chat.clone(),
             cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
             model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
                 Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
@@ -1093,6 +1179,7 @@ async fn async_main(
                 )),
                 hf_token_store,
             )),
+            pkarr_publisher: pkarr_publisher.clone(),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -1107,6 +1194,7 @@ async fn async_main(
             deploy_id: String::new(),
             // Configurado pela linha de comando: não veio de implantação nenhuma.
             model_path: model_name.clone(),
+            mmproj_path: None,
             model_label: profile.name.clone(),
             deployment_name: profile.name.clone(),
             start_layer: assignment.start_layer,
@@ -1163,6 +1251,8 @@ async fn async_main(
             mtp_draft_tokens: args.mtp_draft_tokens,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
         };
         if let Err(e) = node_runtime.apply(cfg).await {
             error!("não foi possível iniciar o servidor de inferência: {e:#}");
@@ -1189,32 +1279,13 @@ async fn async_main(
     }
 
     // ── Publish pkarr record and schedule 30-min republish ───────────────────
-    let serve_relay = args.serve_relay;
-    if let Some(pn) = pkarr_node {
-        let pn = std::sync::Arc::new(pn);
-        let addr = pkarr_multiaddr.clone();
-        let inf_port = inference_port;
-        let model_name_pk = profile.name.clone();
-        let asgn_pk = assignment_shared.clone();
-
+    if let Some(publisher) = pkarr_publisher {
         // Initial publish (best-effort, does not block startup)
         {
-            let pn2 = pn.clone();
-            let addr2 = addr.clone();
-            let mn2 = model_name_pk.clone();
-            let asgn2 = asgn_pk.clone();
+            let publisher = publisher.clone();
+            let geo_label = app_config.network.geo_label.clone();
             tokio::spawn(async move {
-                let (start_l, end_l, total_l) = {
-                    let a = asgn2.read().await;
-                    match *a {
-                        Some(ref asgn) => (asgn.start_layer, asgn.end_layer, asgn.total_layers),
-                        None => return,
-                    }
-                }; // guard dropped here
-                if let Err(e) = pn2
-                    .publish(&addr2, inf_port, &mn2, start_l, end_l, total_l, serve_relay)
-                    .await
-                {
+                if let Err(e) = publisher.publish_geo_label(&geo_label).await {
                     warn!("pkarr initial publish failed: {}", e);
                 }
             });
@@ -1226,25 +1297,10 @@ async fn async_main(
             ticker.tick().await; // skip first immediate tick
             loop {
                 ticker.tick().await;
-                let (start_l, end_l, total_l) = {
-                    let a = asgn_pk.read().await;
-                    match *a {
-                        Some(ref asgn) => (asgn.start_layer, asgn.end_layer, asgn.total_layers),
-                        None => continue,
-                    }
-                }; // guard dropped here
-                if let Err(e) = pn
-                    .publish(
-                        &addr,
-                        inf_port,
-                        &model_name_pk,
-                        start_l,
-                        end_l,
-                        total_l,
-                        serve_relay,
-                    )
-                    .await
-                {
+                let geo_label = crate::config::Config::load()
+                    .map(|config| config.network.geo_label)
+                    .unwrap_or_default();
+                if let Err(e) = publisher.publish_geo_label(&geo_label).await {
                     warn!("pkarr republish failed: {}", e);
                 }
             }
@@ -1330,6 +1386,7 @@ fn runtime_mem_source(status: &runtime::RuntimeStatus) -> String {
     use runtime::ServerState;
     match status.state {
         ServerState::Ready => "inference_server".to_string(),
+        ServerState::Idle => format!("inference_server ocioso: {}", status.detail),
         ServerState::Starting => format!("inference_server (subindo: {})", status.detail),
         ServerState::Failed => format!("❌ inference_server parado: {}", status.detail),
         ServerState::Disabled => format!("inference_server desligado: {}", status.detail),
@@ -1359,17 +1416,25 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
         .and_then(|s| s.parse::<u16>().ok())
 }
 
-async fn start_setup_mode(gateway_port: u16) -> Result<()> {
+async fn start_setup_mode(
+    gateway_port: u16,
+    preserved: Option<config::Config>,
+    database: Arc<db::PomDb>,
+) -> Result<()> {
     use crate::config::Config;
     use crate::webui;
     use axum::{routing::get, Router};
     use std::net::SocketAddr;
 
     config::validate_gateway_port(gateway_port)?;
-    let config = Arc::new(RwLock::new(Config {
+    let config = Arc::new(RwLock::new(preserved.unwrap_or_else(|| Config {
         profile: crate::profile::NodeProfile::Admin,
+        setup_pending: true,
         tls_required: false,
+        quic_enabled: false,
         cluster_logs_enabled: false,
+        network_chat_enabled: false,
+        cluster_logs_min_level: Default::default(),
         // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
         // depois que a `pom.json` existir.
         gpus: None,
@@ -1384,6 +1449,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         inference_port: None,
         bootstrap_nodes: vec![],
         advertise_addr: None,
+        network: Default::default(),
         api_keys: vec![],
         blocked_nodes: vec![],
         // Um nó recém-configurado sobe com as bibliotecas detectadas; a tela de
@@ -1391,22 +1457,45 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         model_dirs: None,
         shard_dir: None,
         shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+        resources: Default::default(),
+        setup_model: None,
         node_name: None,
         huggingface_token: None,
         slot_save_path: None,
         slot_persist_prefix_cache: false,
         slot_auto_max_bytes: None,
         slot_auto_ttl_secs: None,
-    }));
+    })));
 
     // The same interface the configured node serves, so setup is not a second
     // look-and-feel to maintain. The app notices it is in setup mode because
     // `/api/ui/node` is not among the routes here.
     let app = Router::new()
-        .route("/api/setup/key", get(webui::get_setup_key))
+        .route("/api/setup/hardware", get(webui::get_setup_hardware))
+        .route("/api/setup/models", get(webui::get_setup_models))
+        .route(
+            "/api/setup/geo-reference",
+            get(webui::get_setup_geo_reference),
+        )
+        .route(
+            "/api/setup/admin-anchor/preview",
+            axum::routing::post(webui::preview_setup_anchor),
+        )
+        .route(
+            "/api/setup/admin-token",
+            axum::routing::post(webui::generate_setup_admin_token),
+        )
+        .route(
+            "/api/setup/trust-anchor",
+            axum::routing::post(webui::install_setup_trust_anchor),
+        )
+        .route(
+            "/api/setup/health",
+            axum::routing::post(webui::get_setup_health),
+        )
         .route("/api/setup/save", axum::routing::post(webui::save_setup))
         .merge(crate::webapp::routes())
-        .with_state(config)
+        .with_state(webui::SetupState { config, database })
         .layer(tower_http::compression::CompressionLayer::new());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], gateway_port));
@@ -1436,6 +1525,46 @@ fn resolve_advertise_addr(
     }
 }
 
+/// Convert the operator-facing advertised endpoint into the libp2p address
+/// stored in the pkarr record. IPv6 endpoints must use `/ip6` and preserve
+/// their configured port, including the bracketed `[addr]:port` form used by
+/// the setup wizard.
+fn pkarr_multiaddr_for_advertise(
+    configured: Option<&str>,
+    fallback_ip: Option<String>,
+    default_udp_port: u16,
+) -> String {
+    let raw = configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or(fallback_ip)
+        .unwrap_or_else(|| "0.0.0.0".to_string());
+    let (host, udp_port) = if let Some(rest) = raw.strip_prefix('[') {
+        rest.split_once(']')
+            .map(|(host, suffix)| {
+                let port = suffix
+                    .strip_prefix(':')
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(default_udp_port);
+                (host.to_string(), port)
+            })
+            .unwrap_or((rest.trim_end_matches(']').to_string(), default_udp_port))
+    } else if raw.parse::<std::net::Ipv6Addr>().is_ok() {
+        (raw, default_udp_port)
+    } else if let Some((host, port)) = raw.rsplit_once(':') {
+        (host.to_string(), port.parse().unwrap_or(default_udp_port))
+    } else {
+        (raw, default_udp_port)
+    };
+    let protocol = if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        "ip6"
+    } else {
+        "ip4"
+    };
+    format!("/{protocol}/{host}/tcp/{}", udp_port.saturating_add(10000))
+}
+
 /// Everything `P2pStack` needs to bring up pkarr, a stable libp2p identity,
 /// `Network`, and (best-effort) `Discovery` — shared by `main()`'s CLI path
 /// and `start_gateway_only`, so the ordering constraint below can't be
@@ -1450,7 +1579,9 @@ struct P2pStackArgs {
     bootstrap_nodes: Vec<String>,
     ollama_port: Option<u16>,
     inference_port: Option<u16>,
+    inference_quic_port: Option<u16>,
     gateway_port: u16,
+    gateway_quic_port: Option<u16>,
     profile: crate::profile::NodeProfile,
     node_display_name: String,
     advertise_addr: Option<String>,
@@ -1459,7 +1590,13 @@ struct P2pStackArgs {
     /// começava em HTTP e todos os RTTs remotos ficavam ausentes.
     tls_required: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
+    audit: Arc<reqlog::AuditLog>,
+    primary_authority_pubkey: String,
     cluster_logs_enabled: bool,
+    network_chat_enabled: bool,
+    auth: Arc<RwLock<config::Config>>,
+    admin_trust: Arc<crate::admin_trust::AdminTrust>,
+    database: Arc<db::PomDb>,
     /// Raw pkarr public keys (`--relay-peers`), resolved to multiaddrs
     /// *inside* this function, after it loads its own `pkarr_node` — not
     /// pre-resolved by the caller. Resolution needs an already-loaded pkarr
@@ -1482,6 +1619,7 @@ struct P2pStack {
     authority_signing_key: ed25519_dalek::SigningKey,
     libp2p_peer_id: String,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
+    network_chat: Arc<network_chat::NetworkChat>,
     tunnel_tx: mpsc::Sender<infer_tunnel::TunnelOutbound>,
     pkarr_node: Option<pkarr_node::PkarrNode>,
     assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>>,
@@ -1508,9 +1646,15 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .collect();
     infer_tunnel::set_local_node_id(args.node_id.clone());
     let cluster_logs = args.cluster_logs.clone();
+    let primary_authority_pubkey = args.primary_authority_pubkey.clone();
     cluster_logs.set_identity(args.node_id.clone(), args.node_display_name.clone());
-    cluster_logs.set_principal(args.profile == crate::profile::NodeProfile::Admin);
+    // Keep the startup behavior of the existing process-log receiver until
+    // the authenticated trust document is loaded below; the final receiver
+    // state is narrowed to effective admins before the gateway is exposed.
+    cluster_logs.set_admin_receiver(args.profile == crate::profile::NodeProfile::Admin);
     cluster_logs.set_enabled(args.cluster_logs_enabled);
+    let audit = args.audit.clone();
+    audit.set_admin_receiver(args.profile == crate::profile::NodeProfile::Admin);
 
     let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path()) {
         Ok(n) => {
@@ -1529,9 +1673,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     let authority_signing_key = pkarr_node
         .as_ref()
         .map(|pn| ed25519_dalek::SigningKey::from_bytes(&pn.secret_key_bytes()))
-        .unwrap_or_else(|| {
-            ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)
-        });
+        .unwrap_or_else(|| ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng));
     let mut authority_seed = authority_signing_key.to_bytes();
     let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut authority_seed[..])
         .expect("a chave Ed25519 da autoridade deve ser uma identidade libp2p válida");
@@ -1583,13 +1725,17 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .await?
         .with_identity(args.profile, args.node_display_name)
         .with_advertise_addr(args.advertise_addr)
+        .with_quic_ports(args.inference_quic_port, args.gateway_quic_port)
         .with_authority_pubkey(hex::encode(
             authority_signing_key.verifying_key().as_bytes(),
         ))
-        .with_libp2p_peer_id(Some(libp2p_peer_id.clone())),
+        .with_libp2p_peer_id(Some(libp2p_peer_id.clone()))
+        .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
+    net.set_policy_principal_pubkey(primary_authority_pubkey);
     net.set_tls(args.tls_required);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
+    net.set_network_chat_enabled(args.network_chat_enabled);
 
     if args.no_discovery {
         net.detach().await;
@@ -1601,6 +1747,13 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     net.clone().start(assignment_shared.clone()).await?;
     let (log_tx, log_rx) = mpsc::channel(cluster_logs::LOG_TRANSPORT_QUEUE_CAPACITY);
     cluster_logs.start(net.clone(), assignment_shared.clone(), log_tx);
+    let (network_chat, chat_rx) = network_chat::NetworkChat::new(
+        args.database.clone(),
+        args.auth.clone(),
+        args.network_chat_enabled,
+    );
+    let (audit_tx, audit_rx) = mpsc::channel(reqlog::AUDIT_TRANSPORT_QUEUE_CAPACITY);
+    audit.start_replication(net.clone(), audit_tx);
 
     // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777). Announce
     // messages are published to gossipsub every 5 s so internet peers learn
@@ -1619,6 +1772,10 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         tunnel_rx,
         log_rx,
         cluster_logs.clone(),
+        chat_rx,
+        network_chat.clone(),
+        audit_rx,
+        audit,
     ) {
         Ok(disc) => {
             let ann_tx = disc.announce_tx.clone();
@@ -1660,6 +1817,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         authority_signing_key,
         libp2p_peer_id,
         cluster_logs,
+        network_chat,
         tunnel_tx,
         pkarr_node,
         assignment_shared,
@@ -1685,6 +1843,7 @@ async fn start_gateway_only(
     public_addr_cli: String,
     cycle_detection_enabled: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
+    audit: Arc<reqlog::AuditLog>,
 ) -> Result<()> {
     use crate::gateway::{start_gateway, GatewayState};
     let identity = identity::Identity::load_or_create(&identity::key_path());
@@ -1701,20 +1860,38 @@ async fn start_gateway_only(
         app_config.advertise_addr.as_deref(),
     );
     let ollama_port = advertised_ollama_port(&ollama_url);
+    let inference_port = Some(app_config.inference_port_or_default());
+    // Portas QUIC derivadas do `p2p_port` deste nó: ver `quic::gateway_quic_port`.
+    let inference_quic_port =
+        inference_port.and_then(|_| crate::quic::inference_quic_port(app_config.p2p_port));
+    let gateway_quic_port = crate::quic::gateway_quic_port(app_config.p2p_port);
+    peer_client::set_quic_ativo(app_config.quic_enabled);
+    let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
+    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
+        config::admin_trust_path(),
+    ));
     let stack = start_p2p_stack(P2pStackArgs {
         node_id: node_id.clone(),
         pubkey: pubkey.clone(),
         p2p_port: app_config.p2p_port,
         bootstrap_nodes: app_config.bootstrap_nodes.clone(),
         ollama_port,
-        inference_port: Some(app_config.inference_port_or_default()),
+        inference_port,
+        inference_quic_port,
         gateway_port,
+        gateway_quic_port,
         profile: app_config.profile,
         node_display_name,
-        advertise_addr,
+        advertise_addr: advertise_addr.clone(),
         tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
+        audit: audit.clone(),
+        primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
+        network_chat_enabled: app_config.network_chat_enabled,
+        auth: auth_state.clone(),
+        admin_trust: admin_trust.clone(),
+        database: database.clone(),
         // No CLI here to source pkarr/relay peer keys from — see the plan's
         // addendum on deferred parity for `start_gateway_only`.
         relay_peer_keys: vec![],
@@ -1729,9 +1906,6 @@ async fn start_gateway_only(
         stack.libp2p_peer_id.clone(),
         &stack.authority_signing_key,
     );
-    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
-        config::admin_trust_path(),
-    ));
     if app_config.profile == crate::profile::NodeProfile::Admin
         && admin_trust
             .effective_authority(&authority_principal, app_config.profile)
@@ -1747,9 +1921,45 @@ async fn start_gateway_only(
         );
     }
     let net = stack.net;
+    net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
     let cluster_logs = stack.cluster_logs;
+    let network_chat = stack.network_chat;
+
+    // A gateway-only public admin still needs a pkarr record so the public
+    // network directory can find it before a model is deployed.
+    let pkarr_node = stack.pkarr_node.map(Arc::new);
+    let pkarr_multiaddr = pkarr_multiaddr_for_advertise(
+        advertise_addr.as_deref(),
+        pkarr_node::detect_local_ip(),
+        app_config.p2p_port,
+    );
+    let pkarr_publisher = pkarr_node.as_ref().map(|node| {
+        Arc::new(crate::gateway::PkarrPublishHandle::new(
+            node.clone(),
+            pkarr_multiaddr.clone(),
+            Some(gateway_port),
+            None,
+            String::new(),
+            assignment_shared.clone(),
+            false,
+        ))
+    });
+    if let Some(publisher) = pkarr_publisher.clone() {
+        let geo_label = app_config.network.geo_label.clone();
+        tokio::spawn(async move {
+            if let Err(error) = publisher.publish_geo_label(&geo_label).await {
+                warn!("pkarr gateway-only publish failed: {error}");
+            }
+        });
+    }
+    let local_is_admin = admin_trust
+        .effective_authority(&authority_principal, app_config.profile)
+        .is_some();
+    net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
+    cluster_logs.set_admin_receiver(local_is_admin);
+    audit.set_admin_receiver(local_is_admin);
 
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
@@ -1761,6 +1971,13 @@ async fn start_gateway_only(
     // máquina, o que o operador fixou, e o hostname. Sem eles o navegador
     // reclamaria do host, e não do emissor.
     let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
+    let quic_config = match serve::quic_server_config(&identity) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}");
+            None
+        }
+    };
     let tls_server =
         match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
             Ok(t) => Some(t),
@@ -1770,13 +1987,13 @@ async fn start_gateway_only(
             }
         };
 
-    let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
     let hf_token_store =
         huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
-    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_quic_and_auth(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
+        quic_config.clone(),
         Some(auth_state.clone()),
     );
     node_runtime.start_thermal_monitor(auth_state.clone()).await;
@@ -1785,6 +2002,7 @@ async fn start_gateway_only(
     // schedule a model load, but that load must never hide the control plane.
     let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
     peer_clients.apply_cluster_policy(app_config.tls_required);
+    peer_clients.set_quic(app_config.quic_enabled);
     peer_clients.set_auth_state(auth_state.clone());
 
     tls_policy::spawn_ratchet(
@@ -1792,12 +2010,28 @@ async fn start_gateway_only(
         peer_clients.clone(),
         auth_state.clone(),
         tls_server.clone(),
+        authority_signing_key.clone(),
+        authority_principal.clone(),
+        admin_trust.clone(),
     );
+    quic_policy::spawn_ratchet(net.clone(), peer_clients.clone(), auth_state.clone());
     cluster_logs_policy::spawn_ratchet(
         net.clone(),
         peer_clients.clone(),
         auth_state.clone(),
         cluster_logs.clone(),
+        authority_signing_key.clone(),
+        authority_principal.clone(),
+        admin_trust.clone(),
+    );
+    network_chat_policy::spawn_ratchet(
+        net.clone(),
+        peer_clients.clone(),
+        auth_state.clone(),
+        network_chat.clone(),
+        authority_signing_key.clone(),
+        authority_principal.clone(),
+        admin_trust.clone(),
     );
 
     let gw_state = GatewayState {
@@ -1811,12 +2045,13 @@ async fn start_gateway_only(
         // cache de prefixo persistente precisa do índice aqui também.
         prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
         peer_http: peer_clients.clone(),
+        admission_health: Default::default(),
         runtime: node_runtime.clone(),
         cycle_config: crate::cycle::CycleConfig {
             enabled: cycle_detection_enabled,
             ..crate::cycle::CycleConfig::default()
         },
-        audit: reqlog::AuditLog::new(database.clone()),
+        audit,
         database,
         gateway_port,
         auth: auth_state,
@@ -1832,7 +2067,10 @@ async fn start_gateway_only(
         // "no tunnel available" outcome `send_frame_via_tunnel` treats as.
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
+        quic_server: quic_config.clone(),
+        quic_port: net.gateway_quic_port,
         cluster_logs,
+        network_chat,
         cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
         model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
             Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
@@ -1840,6 +2078,7 @@ async fn start_gateway_only(
             )),
             hf_token_store,
         )),
+        pkarr_publisher,
     };
 
     info!(
@@ -1861,6 +2100,12 @@ async fn start_gateway_only(
                 Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
             }
         }
+        lastslice::LastSlice::Idle(cfg) => {
+            let label = cfg.model_label.clone();
+            let (a, b) = (cfg.start_layer, cfg.end_layer);
+            node_runtime.restore_idle(cfg).await;
+            info!("↩️  fatia ociosa restaurada após reinício: {label} {a}-{b}");
+        }
         // A fatia foi aplicada e o processo morreu antes de ela carregar uma
         // única vez. Retomá-la é o laço infinito: a mesma fatia derruba o
         // processo, o Docker religa o container, e assim para sempre. O nó
@@ -1878,12 +2123,14 @@ async fn start_gateway_only(
 mod main_tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn menu_bar_chat_url_uses_loopback_and_gateway_port() {
         assert_eq!(gateway_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
         assert_eq!(gateway_url(8090), "http://127.0.0.1:8090/admin-ui/chat");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn persisted_gateway_port_wins_over_cli_fallback() {
         assert_eq!(select_gateway_port(Some(9123), 8080), 9123);
@@ -1965,5 +2212,21 @@ mod main_tests {
             Some("3.3.3.3:3".to_string())
         );
         assert_eq!(resolve_advertise_addr("", "", None), None);
+    }
+
+    #[test]
+    fn pkarr_advertise_addr_preserves_ipv6_and_port() {
+        assert_eq!(
+            pkarr_multiaddr_for_advertise(Some("[2001:db8::1]:42777"), None, 42777),
+            "/ip6/2001:db8::1/tcp/52777"
+        );
+        assert_eq!(
+            pkarr_multiaddr_for_advertise(Some("192.0.2.1:42777"), None, 42777),
+            "/ip4/192.0.2.1/tcp/52777"
+        );
+        assert_eq!(
+            pkarr_multiaddr_for_advertise(Some("2001:db8::1"), None, 42777),
+            "/ip6/2001:db8::1/tcp/52777"
+        );
     }
 }

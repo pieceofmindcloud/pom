@@ -4,6 +4,7 @@
 //! de `tracing` só usa `try_send` numa fila limitada; o escritor e o envio por
 //! libp2p vivem em tasks próprias e podem perder linhas quando estão ocupados.
 
+use crate::db::ClusterLogsPruneResult;
 use crate::network::Network;
 use anyhow::Result;
 use arc_swap::ArcSwap;
@@ -11,7 +12,7 @@ use async_trait::async_trait;
 use futures::prelude::*;
 use libp2p::{request_response, PeerId, StreamProtocol};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, RwLock as TokioRwLock};
@@ -23,9 +24,67 @@ pub const LOG_CAPTURE_QUEUE_CAPACITY: usize = 1024;
 pub const LOG_TRANSPORT_QUEUE_CAPACITY: usize = 32;
 pub const LOG_BATCH_MAX_ENTRIES: usize = 64;
 pub const LOG_BATCH_INTERVAL: Duration = Duration::from_millis(100);
+/// Retention keeps the last seven days, capped at 500,000 rows. A burst of
+/// logs therefore cannot grow the database beyond the lower of the time and
+/// count windows.
+pub const LOG_RETENTION_MAX_ROWS: u64 = 500_000;
+pub const LOG_RETENTION_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const LOG_RETENTION_BATCH_SIZE: usize = 256;
+const LOG_RETENTION_MAX_BATCHES_PER_CYCLE: usize = 128;
+const LOG_RETENTION_PAUSE: Duration = Duration::from_millis(50);
+const LOG_RETENTION_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const MAX_LOG_PAYLOAD_BYTES: usize = 256 * 1024;
 const LOG_QUERY_DEFAULT_LIMIT: usize = 500;
 const LOG_QUERY_MAX_LIMIT: usize = 1000;
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ClusterLogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl Default for ClusterLogLevel {
+    fn default() -> Self {
+        Self::Info
+    }
+}
+
+impl ClusterLogLevel {
+    fn rank(self) -> u8 {
+        match self {
+            Self::Trace => 0,
+            Self::Debug => 1,
+            Self::Info => 2,
+            Self::Warn => 3,
+            Self::Error => 4,
+        }
+    }
+
+    fn from_rank(rank: u8) -> Self {
+        match rank {
+            0 => Self::Trace,
+            1 => Self::Debug,
+            3 => Self::Warn,
+            4 => Self::Error,
+            _ => Self::Info,
+        }
+    }
+
+    fn allows(self, level: &tracing::Level) -> bool {
+        let rank = match *level {
+            tracing::Level::TRACE => 0,
+            tracing::Level::DEBUG => 1,
+            tracing::Level::INFO => 2,
+            tracing::Level::WARN => 3,
+            tracing::Level::ERROR => 4,
+        };
+        rank >= self.rank()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LogEntry {
@@ -118,6 +177,7 @@ pub struct LogCapture {
     queue: LogQueue,
     context: ArcSwap<LogContext>,
     enabled: AtomicBool,
+    min_level: AtomicU8,
 }
 
 impl LogCapture {
@@ -128,6 +188,7 @@ impl LogCapture {
                 queue,
                 context: ArcSwap::from_pointee(LogContext::default()),
                 enabled: AtomicBool::new(false),
+                min_level: AtomicU8::new(ClusterLogLevel::default().rank()),
             }),
             receiver,
         )
@@ -161,8 +222,16 @@ impl LogCapture {
         self.enabled.load(Ordering::Acquire)
     }
 
+    pub fn set_min_level(&self, level: ClusterLogLevel) {
+        self.min_level.store(level.rank(), Ordering::Release);
+    }
+
+    pub fn min_level(&self) -> ClusterLogLevel {
+        ClusterLogLevel::from_rank(self.min_level.load(Ordering::Acquire))
+    }
+
     fn record(&self, event: &Event<'_>) {
-        if !self.enabled() {
+        if !self.enabled() || !self.min_level().allows(event.metadata().level()) {
             return;
         }
         let context = self.context.load();
@@ -344,6 +413,8 @@ pub fn cluster_logs_behaviour() -> request_response::Behaviour<ClusterLogsCodec>
 
 enum PersistCommand {
     Batch(LogBatch),
+    #[cfg(test)]
+    Flush(std::sync::mpsc::Sender<()>),
 }
 
 /// Cluster log state. Its writer queue is independent from the capture queue
@@ -353,7 +424,7 @@ pub struct ClusterLogs {
     database: Arc<crate::db::PomDb>,
     writer: std::sync::mpsc::SyncSender<PersistCommand>,
     dropped: AtomicU64,
-    principal: AtomicBool,
+    admin_receiver: AtomicBool,
     started: AtomicBool,
     local_receiver: Mutex<Option<mpsc::Receiver<LogEntry>>>,
     live: broadcast::Sender<StoredLogEntry>,
@@ -370,11 +441,19 @@ impl ClusterLogs {
         std::thread::Builder::new()
             .name("pom-cluster-log-writer".into())
             .spawn(move || {
-                while let Ok(PersistCommand::Batch(batch)) = receiver.recv() {
-                    if let Err(error) =
-                        writer_database.append_cluster_logs(&batch.entries, batch.dropped)
-                    {
-                        eprintln!("cluster log persistence failed: {error:#}");
+                while let Ok(command) = receiver.recv() {
+                    match command {
+                        PersistCommand::Batch(batch) => {
+                            if let Err(error) =
+                                writer_database.append_cluster_logs(&batch.entries, batch.dropped)
+                            {
+                                eprintln!("cluster log persistence failed: {error:#}");
+                            }
+                        }
+                        #[cfg(test)]
+                        PersistCommand::Flush(done) => {
+                            let _ = done.send(());
+                        }
                     }
                 }
             })
@@ -385,7 +464,7 @@ impl ClusterLogs {
             database,
             writer,
             dropped: AtomicU64::new(0),
-            principal: AtomicBool::new(false),
+            admin_receiver: AtomicBool::new(false),
             started: AtomicBool::new(false),
             local_receiver: Mutex::new(Some(local_receiver)),
             live,
@@ -408,12 +487,14 @@ impl ClusterLogs {
         self.capture.set_identity(node_id, node_name);
     }
 
-    pub fn set_principal(&self, principal: bool) {
-        self.principal.store(principal, Ordering::Release);
+    pub fn set_admin_receiver(&self, enabled: bool) {
+        self.admin_receiver.store(enabled, Ordering::Release);
     }
 
     pub fn try_ingest_remote(&self, batch: LogBatch) -> bool {
-        if !self.principal.load(Ordering::Acquire) || batch.entries.len() > LOG_BATCH_MAX_ENTRIES {
+        if !self.admin_receiver.load(Ordering::Acquire)
+            || batch.entries.len() > LOG_BATCH_MAX_ENTRIES
+        {
             self.dropped.fetch_add(
                 batch.entries.len() as u64 + batch.dropped,
                 Ordering::Relaxed,
@@ -500,6 +581,31 @@ impl ClusterLogs {
                 service.capture.set_deploy_id(deploy_id);
             }
         });
+
+        if self.admin_receiver.load(Ordering::Acquire) {
+            let service = self.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(LOG_RETENTION_INTERVAL);
+                loop {
+                    ticker.tick().await;
+                    let cutoff = (chrono::Utc::now()
+                        - chrono::Duration::from_std(LOG_RETENTION_AGE).unwrap_or_default())
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                    if let Err(error) = run_retention_cycle(
+                        service.database.clone(),
+                        &cutoff,
+                        LOG_RETENTION_MAX_ROWS,
+                        LOG_RETENTION_BATCH_SIZE,
+                        LOG_RETENTION_MAX_BATCHES_PER_CYCLE,
+                        LOG_RETENTION_PAUSE,
+                    )
+                    .await
+                    {
+                        tracing::warn!("poda dos logs do cluster falhou: {error:#}");
+                    }
+                }
+            });
+        }
     }
 
     pub fn try_send_dropped(&self, count: u64) {
@@ -526,6 +632,51 @@ impl ClusterLogs {
     pub fn subscribe(&self) -> broadcast::Receiver<StoredLogEntry> {
         self.live.subscribe()
     }
+
+    #[cfg(test)]
+    pub(crate) fn flush(&self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.writer
+            .send(PersistCommand::Flush(sender))
+            .expect("enfileirar barreira dos logs de processo");
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("aguardar escritor dos logs de processo");
+    }
+}
+
+async fn run_retention_cycle(
+    database: Arc<crate::db::PomDb>,
+    older_than: &str,
+    max_rows: u64,
+    batch_size: usize,
+    max_batches: usize,
+    pause: Duration,
+) -> Result<usize> {
+    let mut deleted_total = 0;
+    for batch_index in 0..max_batches {
+        let database = database.clone();
+        let older_than = older_than.to_owned();
+        let result = tokio::task::spawn_blocking(move || {
+            database.try_prune_cluster_logs(&older_than, max_rows, batch_size)
+        })
+        .await??;
+        let ClusterLogsPruneResult::Deleted {
+            count,
+            space_reclaimed,
+        } = result
+        else {
+            break;
+        };
+        deleted_total += count;
+        if !space_reclaimed {
+            break;
+        }
+        if batch_index + 1 < max_batches && !pause.is_zero() {
+            tokio::time::sleep(pause).await;
+        }
+    }
+    Ok(deleted_total)
 }
 
 async fn flush_local(
@@ -544,22 +695,24 @@ async fn flush_local(
         entries,
         dropped,
     };
-    if service.principal.load(Ordering::Acquire) {
-        service.try_ingest(batch);
-        return;
+    if service.admin_receiver.load(Ordering::Acquire) {
+        service.try_ingest(batch.clone());
     }
-    let Some((peer_id, addr_candidates)) = network.principal_peer().await else {
-        service.try_send_dropped(batch.entries.len() as u64 + batch.dropped);
-        return;
-    };
-    if outbound
-        .try_send(LogOutbound {
-            peer_id,
-            addr_candidates,
-            request: batch.clone(),
-        })
-        .is_err()
-    {
+    let peers = network.admin_peers().await;
+    let mut sent = 0usize;
+    for (peer_id, addr_candidates) in peers {
+        if outbound
+            .try_send(LogOutbound {
+                peer_id,
+                addr_candidates,
+                request: batch.clone(),
+            })
+            .is_ok()
+        {
+            sent += 1;
+        }
+    }
+    if !service.admin_receiver.load(Ordering::Acquire) && sent == 0 {
         service.try_send_dropped(batch.entries.len() as u64 + batch.dropped);
     }
 }
@@ -606,6 +759,62 @@ mod tests {
 
         assert_eq!(capture.queue.dropped(), 1);
         assert_eq!(receiver.try_recv().unwrap().message, "primeira");
+    }
+
+    #[test]
+    fn captura_descarta_debug_por_padrao_sem_filtrar_o_subscriber() {
+        use std::sync::atomic::AtomicUsize;
+        use tracing_subscriber::layer::Context;
+        use tracing_subscriber::prelude::*;
+
+        struct Counter(Arc<AtomicUsize>);
+        impl<S> Layer<S> for Counter
+        where
+            S: Subscriber,
+        {
+            fn on_event(&self, _event: &Event<'_>, _ctx: Context<'_, S>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let (capture, mut receiver) = LogCapture::new(8);
+        capture.set_enabled(true);
+        let observed = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry()
+            .with(Counter(observed.clone()))
+            .with(CaptureLayer::new(capture));
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!(target: "cluster_logs_test", "nao persistir trace");
+            tracing::debug!(target: "cluster_logs_test", "nao persistir");
+            tracing::info!(target: "cluster_logs_test", "persistir");
+            tracing::warn!(target: "cluster_logs_test", "persistir warn");
+            tracing::error!(target: "cluster_logs_test", "persistir error");
+        });
+
+        assert_eq!(observed.load(Ordering::Relaxed), 5);
+        assert_eq!(receiver.try_recv().unwrap().message, "persistir");
+        assert_eq!(receiver.try_recv().unwrap().message, "persistir warn");
+        assert_eq!(receiver.try_recv().unwrap().message, "persistir error");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn captura_aceita_debug_quando_o_limiar_e_configurado() {
+        use tracing_subscriber::prelude::*;
+
+        let (capture, mut receiver) = LogCapture::new(8);
+        capture.set_min_level(ClusterLogLevel::Debug);
+        capture.set_enabled(true);
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer::new(capture));
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!(target: "cluster_logs_test", "trace nao configuravel");
+            tracing::debug!(target: "cluster_logs_test", "debug configuravel");
+        });
+
+        assert_eq!(receiver.try_recv().unwrap().message, "debug configuravel");
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
@@ -661,5 +870,144 @@ mod tests {
 
         assert_eq!(batch.entries, vec![first, second]);
         assert_eq!(batch.entries[0].deploy_id, "deploy-1");
+    }
+
+    #[tokio::test]
+    async fn ciclo_de_retencao_consumes_apenas_lotes_do_seu_orcamento() {
+        let path = std::env::temp_dir().join(format!(
+            "pom-cluster-logs-cycle-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let database = Arc::new(crate::db::PomDb::open(&path).expect("abrir banco"));
+        for index in 0..7 {
+            database
+                .with_write("preparar log do ciclo", |connection| {
+                    connection.execute(
+                        "INSERT INTO cluster_logs (
+                            node_id, node_name, deploy_id, origin_at, received_at,
+                            level, target, message
+                         ) VALUES ('node-a', 'test', 'deploy-1', ?, ?, 'INFO', 'test', ?)",
+                        rusqlite::params![
+                            "2099-01-01T00:00:00Z",
+                            "2099-01-01T00:00:00Z",
+                            format!("mensagem-{index}")
+                        ],
+                    )?;
+                    Ok(())
+                })
+                .expect("preparar log");
+        }
+
+        let deleted = run_retention_cycle(
+            database.clone(),
+            "2026-09-03T00:00:00Z",
+            3,
+            2,
+            2,
+            Duration::ZERO,
+        )
+        .await
+        .expect("executar ciclo");
+
+        assert_eq!(deleted, 4);
+        assert_eq!(database.cluster_logs(None, 100).unwrap().len(), 3);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[tokio::test]
+    async fn ciclo_de_retencao_poda_linhas_aceitas_pelo_writer_do_principal() {
+        let path = std::env::temp_dir().join(format!(
+            "pom-cluster-logs-writer-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let database = Arc::new(crate::db::PomDb::open(&path).expect("abrir banco"));
+        let (capture, receiver) = LogCapture::new(8);
+        let service = ClusterLogs::new(capture, receiver, database.clone());
+        service.set_admin_receiver(true);
+        assert!(service.try_ingest_remote(LogBatch {
+            source_node_id: "node-a".into(),
+            entries: vec![entry("aceito pelo writer")],
+            dropped: 0,
+        }));
+
+        for _ in 0..20 {
+            if database.cluster_logs(None, 100).unwrap().len() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(database.cluster_logs(None, 100).unwrap().len(), 1);
+        database
+            .with_write("envelhecer log do teste", |connection| {
+                connection.execute(
+                    "UPDATE cluster_logs SET received_at = '2026-01-01T00:00:00Z'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("envelhecer log");
+
+        let deleted = run_retention_cycle(
+            database.clone(),
+            "2026-09-03T00:00:00Z",
+            500_000,
+            256,
+            1,
+            Duration::ZERO,
+        )
+        .await
+        .expect("executar poda");
+
+        assert_eq!(deleted, 1);
+        assert!(database.cluster_logs(None, 100).unwrap().is_empty());
+        drop(service);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[tokio::test]
+    async fn lote_local_e_enviado_a_todos_os_admins_conhecidos() {
+        let network = crate::network::Network::testkit(
+            "worker".into(),
+            "pk".into(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("rede de teste");
+        let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);
+        admin.profile = crate::profile::NodeProfile::Admin;
+        admin.libp2p_peer_id = Some(PeerId::random().to_string());
+        network
+            .peers
+            .write()
+            .await
+            .insert(admin.node_id.clone(), admin);
+
+        let path = std::env::temp_dir().join(format!(
+            "pom-cluster-log-replication-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let database = Arc::new(crate::db::PomDb::open(&path).expect("banco de teste"));
+        let (capture, receiver) = LogCapture::new(LOG_CAPTURE_QUEUE_CAPACITY);
+        let logs = ClusterLogs::new(capture, receiver, database);
+        let (outbound, mut received) = mpsc::channel(4);
+        let mut pending = vec![entry("replicar")];
+        flush_local(&logs, &network, &mut pending, &outbound).await;
+
+        let message = received.recv().await.expect("lote para admin secundário");
+        assert_eq!(message.request.entries[0].message, "replicar");
+        assert_eq!(message.request.source_node_id, "worker");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 }

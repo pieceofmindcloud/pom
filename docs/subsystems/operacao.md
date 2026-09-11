@@ -237,8 +237,9 @@ OpenAI-compatível arbitrário por variável de ambiente.
 
 ## Monitor de carga (`crates/llama-engine/src/sysmon.rs`)
 
-Linux: RAM de `/proc/meminfo`, VRAM e processos de `nvidia-smi` (conferido
-contra `nvidia-smi` na mão: bate exato). As chamadas frequentes ao utilitário
+Linux: RAM de `/proc/meminfo`, VRAM, uso, temperatura e consumo de placa de
+`nvidia-smi` (conferido contra `nvidia-smi` na mão: bate exato). As chamadas
+frequentes ao utilitário
 rodam fora do reaper de processos do Tokio, para não interromper o socket UDP
 do DHT pkarr com `EINTR`. macOS: RAM de `sysctl` + `vm_stat`;
 memória unificada **não** reporta VRAM dedicada - a tela diz isso e mostra a
@@ -252,21 +253,27 @@ e o backend usado é o Vulkan. Quem segura VRAM sai de `/proc/<pid>/fdinfo`
 (`drm-resident-vram`, ou `drm-memory-vram` nos kernels antigos), desduplicado
 por `drm-client-id`. A leitura é honestamente **o que este usuário pode ler**:
 processo de outro dono recusa o `fdinfo`, e o nó - que é o que interessa -
-está sempre na lista.
+está sempre na lista. Quando o mesmo `hwmon` publica `power1_average` ou
+`power1_input`, esse valor vira consumo em watts; se não publica, fica ausente.
 
 **Apple Silicon.** O acelerador publica `PerformanceStatistics` no IORegistry,
 sem root e sem `powermetrics`: `ioreg -r -d 1 -w 0 -c AGXAccelerator` dá
 `Device Utilization %` e `In use system memory`, que viram `utilization_pct` e
 `vram_used_mb` (com `vram_total_mb` em `None`, porque VRAM dedicada não
-existe ali). Temperatura continua desconhecida de propósito: ela mora no SMC,
+existe ali). O consumo de placa também permanece ausente: ele não é publicado
+por essa leitura. Temperatura continua desconhecida de propósito: ela mora no SMC,
 atrás de API privada, e "não sei" é a única resposta honesta sem privilégio.
 
 **Discos.** `disk` é o volume onde as fatias moram - o que responde "cabe outra
-fatia?". `disks` é toda partição montada, de `df -k -P`, sem os pseudo sistemas
-de arquivos (`tmpfs`, `devfs`, `overlay`…) e sem repetir ponto de montagem. É
-`-k`, e não `-m`: o `-P` fixa blocos de 512 bytes no macOS e ignora o `-m`, o
-que faria todo volume aparecer 2048 vezes maior. Windows não tem `df` e
-continua reportando só o volume do projeto.
+fatia?". `disks` é toda partição montada relevante, de `df -k -P`, sem os pseudo
+sistemas de arquivos (`tmpfs`, `devfs`, `overlay`…), sem repetir ponto de
+montagem e sem volumes de infraestrutura do macOS (`/System/Volumes/Preboot`,
+`VM`, `Update`, `Recovery` e equivalentes). `/System/Volumes/Data` e volumes
+de dados em `/Volumes` continuam visíveis. A mesma regra retira `/boot/efi`,
+`/boot` e `/efi`, que são montagens de infraestrutura também em sistemas POSIX;
+Windows não tem `df` e continua reportando só o volume do projeto. É `-k`, e não
+`-m`: o `-P` fixa blocos de 512 bytes no macOS e ignora o `-m`, o que faria todo
+volume aparecer 2048 vezes maior.
 
 ## Comparar POM com llama.cpp puro
 

@@ -68,13 +68,15 @@ export function PageHeader({
   title,
   subtitle,
   actions,
+  className,
 }: {
   title: string;
   subtitle?: ReactNode;
   actions?: ReactNode;
+  className?: string;
 }) {
   return (
-    <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <header className={clsx("mb-6 flex flex-wrap items-end justify-between gap-4", className)}>
       <div className="min-w-0">
         <h1 className="font-display text-2xl font-bold tracking-tight text-fg">
           {title}

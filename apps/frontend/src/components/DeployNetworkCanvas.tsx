@@ -9,6 +9,8 @@ import {
   clearPositions,
   deploymentLayoutKey,
   fallbackPosition,
+  gatewayRouteGeometry,
+  pipelineGatewayPosition,
   mergePositions,
   readPositions,
   routeGeometry,
@@ -17,6 +19,7 @@ import {
 } from "../lib/networkLayout";
 import type { DeployMachine, DeployPlan, DeploySelection } from "../lib/types";
 import { edgeStyle, type EdgeState } from "./ModelNetworkCanvas";
+import { PipelineGatewayNode, type PipelineCycleCost } from "./PipelineGatewayNode";
 import { RouteRttLabel } from "./RouteRttLabel";
 import { AlertTooltip, Badge, Button, Dot, Progress } from "./ui";
 import { useI18n } from "../i18n/provider";
@@ -34,6 +37,7 @@ type DeployNetworkCanvasProps = {
   primaryCandidateIds?: string[];
   primaryNodeId?: string;
   onTogglePrimary?: (nodeId: string) => void;
+  pipelineCost?: PipelineCycleCost;
 };
 
 function machineRows(rows: DeploySelection[], nodeId: string) {
@@ -373,6 +377,7 @@ export function DeployNetworkCanvas({
   primaryCandidateIds,
   primaryNodeId,
   onTogglePrimary,
+  pipelineCost,
 }: DeployNetworkCanvasProps) {
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
@@ -476,6 +481,10 @@ export function DeployNetworkCanvas({
       note: "pipeline",
     })),
   ];
+  const terminalNodeIds = stages.at(-1)?.nodeIds.filter((nodeId) => nodeIds.includes(nodeId)) ?? [];
+  const gatewayPosition = pipelineGatewayPosition(
+    terminalNodeIds.map((nodeId) => positionOf(nodeId, nodeIds.indexOf(nodeId))),
+  );
 
   return (
     <section
@@ -520,6 +529,10 @@ export function DeployNetworkCanvas({
               const style = edgeStyle(state);
               return <path key={`${id}-${index}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd?.replace("route-arrow", "deploy-route-arrow")} />;
             })}
+            {gatewayPosition && terminalNodeIds.map((nodeId) => {
+              const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition);
+              return <path key={`gateway-${nodeId}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className="fill-none stroke-aqua" strokeWidth="3" markerEnd="url(#deploy-route-arrow)" />;
+            })}
           </svg>
           {allEdges.map((route, index) => {
             const fromIndex = nodeIds.indexOf(route.from_node_id);
@@ -530,9 +543,15 @@ export function DeployNetworkCanvas({
             const geometry = routeGeometry(from, to);
             return <RouteRttLabel key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} rttMs={route.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
           })}
+          {gatewayPosition && terminalNodeIds.map((nodeId) => {
+            const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition);
+            const route = plan.route_options?.find((option) => option.from_node_id === nodeId && option.to_node_id === "gateway");
+            return <RouteRttLabel key={`rtt-gateway-${nodeId}`} rttMs={route?.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
+          })}
           {machines.map((machine, index) => (
             <NodeCard key={machine.node_id} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
           ))}
+          {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} />}
           <div className="absolute bottom-3 left-4 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
             <Sparkles className="h-3 w-3 text-aqua" /><span>prefill</span>
             {nodeIds.map((nodeId, index) => <span key={nodeId} className="flex items-center gap-1"><ArrowRight className="h-3 w-3 text-faint" /><span className={index === 0 ? "text-iris" : "text-aqua"}>{labelOf(nodeId)}</span></span>)}

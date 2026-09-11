@@ -76,6 +76,15 @@ pub fn plain_action(path: &str) -> PlainAction {
     }
 }
 
+/// Configuração do listener HTTP/3, independente da política TLS sobre TCP.
+pub type QuicServerConfig = Arc<h3_quinn::quinn::ServerConfig>;
+
+/// Deriva a configuração autoassinada do endpoint QUIC a partir da identidade
+/// do nó. QUIC sempre leva TLS 1.3 próprio, mesmo quando o TCP fala HTTP puro.
+pub fn quic_server_config(id: &crate::identity::Identity) -> Result<QuicServerConfig> {
+    crate::quic::server_config(id)
+}
+
 /// O que o servidor precisa para falar TLS, e o estado que ele publica de volta.
 #[derive(Clone)]
 pub struct TlsServer {
@@ -213,6 +222,39 @@ pub async fn serve_with_shutdown(
     tls: Option<TlsServer>,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
+    serve_with_quic(listener, app, tls, None, None, shutdown).await
+}
+
+/// Como `serve_with_shutdown`, mas com um endpoint HTTP/3 independente da
+/// configuração TLS sobre TCP. A porta de inferência usa esta variante para
+/// que `tls_required = false` não impeça o QUIC.
+pub async fn serve_with_quic(
+    listener: TcpListener,
+    app: Router,
+    tls: Option<TlsServer>,
+    quic: Option<QuicServerConfig>,
+    quic_port: Option<u16>,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
+    let quic_shutdown = Arc::new(tokio::sync::Notify::new());
+    let quic_task = quic.and_then(|config| {
+        let port = quic_port?;
+        let router = app.clone();
+        let stop = quic_shutdown.clone();
+        Some(tokio::spawn(async move {
+            let result = crate::quic::serve(port, router, config, async move {
+                stop.notified().await;
+            })
+            .await;
+            if let Err(error) = &result {
+                warn!(
+                    port,
+                    "endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}"
+                );
+            }
+            result
+        }))
+    });
     let acceptor = tls
         .as_ref()
         .map(|t| tokio_rustls::TlsAcceptor::from(t.config.clone()));
@@ -261,6 +303,14 @@ pub async fn serve_with_shutdown(
     {
         warn!("conexões ainda vivas depois de {DRAIN_DEADLINE:?}; encerrando");
         conns.shutdown().await;
+    }
+    quic_shutdown.notify_waiters();
+    if let Some(task) = quic_task {
+        match task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}"),
+            Err(error) => warn!("task HTTP/3 terminou de forma inesperada: {error}"),
+        }
     }
     Ok(())
 }
@@ -392,7 +442,12 @@ async fn redirecionar_para_https(
 mod integracao {
     use super::*;
     use crate::identity::Identity;
-    use axum::{routing::get, Router};
+    use axum::{
+        body::Bytes,
+        http::StatusCode,
+        routing::{get, post},
+        Router,
+    };
     use std::time::Duration;
 
     async fn subir(id: &Identity, strict: bool) -> std::net::SocketAddr {
@@ -425,6 +480,59 @@ mod integracao {
             .await
             .expect("o handshake tinha que fechar");
         assert!(r.status().is_success());
+    }
+
+    /// HTTP/3 precisa continuar disponível quando o TCP da inferência está em
+    /// HTTP puro. O endpoint recebe sua própria configuração TLS 1.3 e não
+    /// pode depender do `TlsServer` nem de `tls_required`.
+    #[tokio::test]
+    async fn quic_sobe_sem_configuracao_tls_tcp() {
+        let identity = Identity::generate();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route(
+            "/test",
+            post(|body: Bytes| async move { (StatusCode::OK, body) }),
+        );
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let quic = quic_server_config(&identity).unwrap();
+        let udp_probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let quic_port = udp_probe.local_addr().unwrap().port();
+        drop(udp_probe);
+        let server = tokio::spawn(async move {
+            serve_with_quic(
+                listener,
+                app,
+                None,
+                Some(quic),
+                Some(quic_port),
+                async move {
+                    let _ = stop_rx.await;
+                },
+            )
+            .await
+            .unwrap();
+        });
+
+        let response = crate::quic::ClientPool::new()
+            .request(
+                &identity.node_id.0,
+                &format!("http://127.0.0.1:{port}"),
+                &[format!("127.0.0.1:{quic_port}")],
+                "/test",
+                "application/octet-stream",
+                None,
+                None,
+                b"http3-without-tcp-tls".to_vec(),
+                Duration::from_secs(3),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body, b"http3-without-tcp-tls");
+        stop_tx.send(()).unwrap();
+        server.await.unwrap();
     }
 
     /// E o ataque que o pinning existe para impedir: quem espera outro node_id

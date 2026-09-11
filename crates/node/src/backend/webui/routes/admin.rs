@@ -9,7 +9,11 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(admin_access_info).post(save_admin_access),
         )
         .route("/api/ui/network/tls", post(save_tls))
+        .route("/api/ui/network/settings", post(save_network_settings))
+        .route("/api/ui/network/trust-share", get(trust_share))
+        .route("/api/ui/network/quic", post(save_quic))
         .route("/api/ui/network/logs", post(save_cluster_logs))
+        .route("/api/ui/network/chat", post(save_network_chat))
         .route("/api/ui/cluster-logs", get(cluster_logs))
         .route(
             "/api/ui/deploy/capacity-preview",
@@ -22,6 +26,7 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/reconfigure", post(reconfigure))
         .route("/api/ui/release", post(release_slice))
         .route("/api/ui/release/candidate", get(release_candidate))
+        .route("/api/ui/network/leave", post(leave_network_and_reset))
         .route("/api/ui/leave", post(leave_network))
         .route("/api/ui/rejoin", post(rejoin_network))
         .route("/api/ui/requests", get(crate::reqlog::list_requests))

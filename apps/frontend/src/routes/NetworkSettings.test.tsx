@@ -24,6 +24,7 @@ const queryMocks = vi.hoisted(() => ({
       gateway_port: 8080,
       inference_port: 8181,
       profile: "node",
+      authority_level: "primary" as "primary" | null,
       role: "principal",
       detached: false,
       advertise_addr: null,
@@ -35,15 +36,47 @@ const queryMocks = vi.hoisted(() => ({
   },
   cluster: { data: { peers: [] } },
   nodes: { data: [], isError: false, isLoading: false },
+  networkInfo: {
+    data: {
+      network: {
+        public_name: "Rede de teste",
+        organization: "POM",
+        description: "Uma rede para testar",
+        rules: "Respeite os peers",
+        channels: "#pom",
+        country_code: "BR",
+        country_name: "Brasil",
+        city: "Curitiba",
+        geo_label: "com.br.curitiba.node",
+        visibility: "private",
+        access_policy: "authorized",
+        location: { latitude: -25.4, longitude: -49.2 },
+      },
+      can_edit: false,
+    },
+  },
+  trustShare: {
+    filename: ".pom-admin-trust.json",
+    document: '{"anchor":{}}',
+    connection_key: "secret",
+    visibility: "private",
+  },
 }));
 
-vi.mock("../lib/api", () => ({ api: { post: vi.fn() } }));
+vi.mock("../lib/api", () => ({
+  api: {
+    get: vi.fn(async (path: string) => path.includes("trust-share") ? queryMocks.trustShare : queryMocks.networkInfo.data),
+    post: vi.fn(async (path: string, body: unknown) => path.endsWith("/settings") ? { network: body, can_edit: true } : undefined),
+  },
+}));
 vi.mock("../lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), fromError: vi.fn() }),
 }));
 vi.mock("../lib/queries", () => ({
   useNode: () => queryMocks.node,
   useCluster: () => queryMocks.cluster,
+  useNetworkInfo: () => queryMocks.networkInfo,
+  useGeoReference: () => ({ data: { countries: [] } }),
   useAdminNodes: (enabled = true) => (enabled ? queryMocks.nodes : { data: undefined }),
   useInvalidate: () => vi.fn(),
 }));
@@ -130,5 +163,36 @@ describe("NetworkSettings", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /pedir para virar node/i }));
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/request-node"));
+  });
+
+  it("mostra as informações da rede para um infer sem oferecer edição", () => {
+    queryMocks.node.data.profile = "infer";
+    queryMocks.node.data.authority_level = null;
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+
+    expect(screen.getByText("Sobre esta rede")).toBeTruthy();
+    expect(screen.getByText("Rede de teste")).toBeTruthy();
+    expect(screen.getByText("Somente leitura")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Salvar detalhes da rede" })).toBeNull();
+  });
+
+  it("oferece edição ao administrador e mantém o compartilhamento na raiz de confiança", async () => {
+    queryMocks.node.data.profile = "admin";
+    queryMocks.node.data.authority_level = "primary";
+    queryMocks.networkInfo.data.can_edit = true;
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: "Salvar detalhes da rede" })).toBeTruthy();
+    expect(screen.queryByText("Documento de confiança")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Salvar detalhes da rede" }));
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
   });
 });

@@ -231,16 +231,25 @@ fn encode_kv_u32(key: &str, value: u32) -> Vec<u8> {
 }
 
 fn encode_kv_u32_array(key: &str, values: &[u32]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(8 + key.len() + 4 + 4 + 8 + values.len() * 4);
+    let payload: Vec<u8> = values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    encode_kv_array(key, T_U32, &payload)
+}
+
+fn encode_kv_array(key: &str, element_type: u32, payload: &[u8]) -> Vec<u8> {
+    let element_size = scalar_size(element_type)
+        .expect("arrays de metadata reconstruídos precisam de elementos escalares");
+    assert_eq!(payload.len() % element_size, 0);
+    let mut buf = Vec::with_capacity(8 + key.len() + 4 + 4 + 8 + payload.len());
     let kb = key.as_bytes();
     buf.extend_from_slice(&(kb.len() as u64).to_le_bytes());
     buf.extend_from_slice(kb);
     buf.extend_from_slice(&T_ARR.to_le_bytes());
-    buf.extend_from_slice(&T_U32.to_le_bytes());
-    buf.extend_from_slice(&(values.len() as u64).to_le_bytes());
-    for &v in values {
-        buf.extend_from_slice(&v.to_le_bytes());
-    }
+    buf.extend_from_slice(&element_type.to_le_bytes());
+    buf.extend_from_slice(&(u64::try_from(payload.len() / element_size).unwrap()).to_le_bytes());
+    buf.extend_from_slice(payload);
     buf
 }
 
@@ -1555,15 +1564,80 @@ pub struct MergePart {
 /// What a `merge` reads out of each slice: the parts that survive into the
 /// joined file are its tensors, and the joined header is the first slice's with
 /// `*.block_count` and `pom.*` rewritten.
+#[derive(Clone, Copy)]
+struct MergedArray {
+    element_type: u32,
+    count: u64,
+    payload_start: usize,
+    payload_end: usize,
+}
+
+struct MergedKv {
+    key: String,
+    raw: KvOut,
+    value_type: u32,
+    value_start: usize,
+    array: Option<MergedArray>,
+}
+
 struct MergedSrc {
     version: u32,
     arch: String,
+    block_count: Option<u32>,
     original_block_count: Option<u32>,
     /// Every KV entry of this file, tagged with its key so the merge can drop
     /// `pom.*` and swap `*.block_count` before re-emitting.
-    kv: Vec<(String, KvOut)>,
+    kv: Vec<MergedKv>,
     tensors: Vec<TensorRecord>,
     data_start: usize,
+}
+
+fn merged_scalar_u32(mm: &[u8], start: usize, value_type: u32) -> Option<u32> {
+    let bytes = |width| mm.get(start..start.checked_add(width)?);
+    match value_type {
+        T_U8 => mm.get(start).copied().map(u32::from),
+        T_I8 => mm
+            .get(start)
+            .copied()
+            .map(|value| i8::from_le_bytes([value]))
+            .and_then(|value| u32::try_from(value).ok()),
+        T_U16 => bytes(2)
+            .and_then(|value| value.try_into().ok())
+            .map(u16::from_le_bytes)
+            .map(u32::from),
+        T_I16 => bytes(2)
+            .and_then(|value| value.try_into().ok())
+            .map(i16::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
+        T_U32 => bytes(4)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_le_bytes),
+        T_I32 => bytes(4)
+            .and_then(|value| value.try_into().ok())
+            .map(i32::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
+        T_U64 => bytes(8)
+            .and_then(|value| value.try_into().ok())
+            .map(u64::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
+        T_I64 => bytes(8)
+            .and_then(|value| value.try_into().ok())
+            .map(i64::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
+        _ => None,
+    }
+}
+
+fn merged_string(mm: &[u8], start: usize) -> Option<String> {
+    let len = usize::try_from(u64::from_le_bytes(
+        mm.get(start..start.checked_add(8)?)?.try_into().ok()?,
+    ))
+    .ok()?;
+    let value_start = start.checked_add(8)?;
+    let value_end = value_start.checked_add(len)?;
+    std::str::from_utf8(mm.get(value_start..value_end)?)
+        .ok()
+        .map(str::to_owned)
 }
 
 fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
@@ -1584,28 +1658,46 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
     }
 
     let mut arch = "llama".to_string();
+    let mut block_count: Option<u32> = None;
     let mut original_block_count: Option<u32> = None;
-    let mut kv: Vec<(String, KvOut)> = Vec::with_capacity(n_kv);
+    let mut kv: Vec<MergedKv> = Vec::with_capacity(n_kv);
     for _ in 0..n_kv {
         let kv_start = r.pos;
         let key = r.string()?;
         let vtype = r.u32()?;
-
-        if key == "general.architecture" && vtype == T_STR {
-            arch = r.string()?;
-        } else if key == crate::brand::gguf_key("original_block_count") {
-            original_block_count = match vtype {
-                T_U32 => Some(u32::from_le_bytes(r.take(4)?.try_into().unwrap())),
-                T_U64 => Some(r.u64()? as u32),
-                _ => {
-                    r.skip_value(vtype)?;
-                    None
-                }
-            };
+        let value_start = r.pos;
+        let array = if vtype == T_ARR {
+            let element_type = r.u32()?;
+            let count = r.u64()?;
+            let payload_start = r.pos;
+            let (_, payload_end) = r.skip_array_payload(element_type, count)?;
+            Some(MergedArray {
+                element_type,
+                count,
+                payload_start,
+                payload_end,
+            })
         } else {
             r.skip_value(vtype)?;
+            None
+        };
+
+        if key == "general.architecture" && vtype == T_STR {
+            if let Some(value) = merged_string(mm, value_start) {
+                arch = value;
+            }
+        } else if key.ends_with(".block_count") {
+            block_count = merged_scalar_u32(mm, value_start, vtype);
+        } else if key == crate::brand::gguf_key("original_block_count") {
+            original_block_count = merged_scalar_u32(mm, value_start, vtype);
         }
-        kv.push((key, KvOut::Raw(kv_start, r.pos)));
+        kv.push(MergedKv {
+            key,
+            raw: KvOut::Raw(kv_start, r.pos),
+            value_type: vtype,
+            value_start,
+            array,
+        });
     }
 
     let mut tensors: Vec<TensorRecord> = Vec::with_capacity(n_tensors);
@@ -1652,11 +1744,132 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
     Ok(MergedSrc {
         version,
         arch,
+        block_count,
         original_block_count,
         kv,
         tensors,
         data_start,
     })
+}
+
+/// Rebuild an architecture-namespaced scalar array from the layer coverage of
+/// every input slice. The first `block_count` values in each slice belong to
+/// its local layers; values after that are a producer-defined special-layer
+/// suffix and are retained once, after the joined layers.
+fn merge_layer_array(
+    key: &str,
+    arch: &str,
+    parts: &[MergePart],
+    parsed: &[MergedSrc],
+    mmaps: &[Mmap],
+) -> Result<Option<Vec<u8>>> {
+    if is_global_array(key, arch) {
+        return Ok(None);
+    }
+
+    let mut element_type = None;
+    let mut layer_payload = Vec::new();
+    let mut suffix: Option<Vec<u8>> = None;
+    let mut broadcast = false;
+
+    for (index, part) in parts.iter().enumerate() {
+        let local_count = part
+            .end_layer
+            .checked_sub(part.start_layer)
+            .and_then(|count| count.checked_add(1))
+            .ok_or_else(|| anyhow::anyhow!("overflow ao contar camadas da fatia {index}"))?;
+        if let Some(block_count) = parsed[index].block_count {
+            if block_count != local_count {
+                bail!(
+                    "a fatia L{}-{} declara {} blocos, esperado {}",
+                    part.start_layer,
+                    part.end_layer,
+                    block_count,
+                    local_count
+                );
+            }
+        }
+
+        let entry = parsed[index]
+            .kv
+            .iter()
+            .find(|entry| entry.key == key)
+            .ok_or_else(|| anyhow::anyhow!("metadata '{}' ausente na fatia {}", key, index + 1))?;
+        let array = entry.array.ok_or_else(|| {
+            anyhow::anyhow!("metadata '{}' não é array na fatia {}", key, index + 1)
+        })?;
+        if let Some(previous) = element_type {
+            if previous != array.element_type {
+                bail!(
+                    "metadata '{}' muda o tipo de elemento entre fatias ({} e {})",
+                    key,
+                    previous,
+                    array.element_type
+                );
+            }
+        } else {
+            element_type = Some(array.element_type);
+        }
+
+        if array.count == 1 {
+            if !layer_payload.is_empty() || suffix.is_some() {
+                bail!("metadata '{}' mistura array broadcast e por camada", key);
+            }
+            broadcast = true;
+            continue;
+        }
+        if broadcast {
+            bail!("metadata '{}' mistura array broadcast e por camada", key);
+        }
+        let element_size = scalar_size(array.element_type).ok_or_else(|| {
+            anyhow::anyhow!(
+                "array metadata '{}' tem elementos aninhados e não pode ser reconstruído",
+                key
+            )
+        })?;
+        let layer_bytes = usize::try_from(local_count)
+            .ok()
+            .and_then(|count| count.checked_mul(element_size))
+            .ok_or_else(|| anyhow::anyhow!("overflow no array metadata '{}'", key))?;
+        if array.count < u64::from(local_count) {
+            bail!(
+                "array metadata '{}' tem comprimento {}; esperado pelo menos {} na fatia",
+                key,
+                array.count,
+                local_count
+            );
+        }
+        let payload = mmaps[index]
+            .get(array.payload_start..array.payload_end)
+            .ok_or_else(|| anyhow::anyhow!("array metadata '{}' truncado", key))?;
+        let layer = payload
+            .get(..layer_bytes)
+            .ok_or_else(|| anyhow::anyhow!("array metadata '{}' truncado", key))?;
+        layer_payload.extend_from_slice(layer);
+
+        let tail = payload
+            .get(layer_bytes..)
+            .ok_or_else(|| anyhow::anyhow!("array metadata '{}' truncado", key))?;
+        if !tail.is_empty() {
+            match &suffix {
+                Some(previous) if previous != tail => {
+                    bail!("o sufixo de metadata '{}' diverge entre fatias", key)
+                }
+                Some(_) => {}
+                None => suffix = Some(tail.to_vec()),
+            }
+        }
+    }
+
+    if broadcast {
+        return Ok(None);
+    }
+    let element_type =
+        element_type.ok_or_else(|| anyhow::anyhow!("metadata '{}' sem entradas", key))?;
+    if let Some(suffix) = suffix {
+        layer_payload.extend_from_slice(&suffix);
+    }
+    Ok(Some(encode_kv_array(key, element_type, &layer_payload)))
 }
 
 /// Join adjacent slices of one model back into a single GGUF.
@@ -1718,14 +1931,53 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
 
     // ── Header: the first slice's KVs, with the total and the metadata fixed ──
     let mut kv_out: Vec<KvOut> = Vec::new();
-    for (key, entry) in &parsed[0].kv {
+    for entry in &parsed[0].kv {
+        let key = &entry.key;
         if key.starts_with(&format!("{}.", crate::brand::slug()))
             || key.ends_with(".block_count")
             || key.ends_with(".attention.recurrent_layers")
         {
             continue; // re-added below
         }
-        kv_out.push(entry.clone());
+        if let Some(semantics) = crate::gguf::layer_count_semantics(key) {
+            let mut value = 0u32;
+            for (index, source) in parsed.iter().enumerate() {
+                let source_entry = source
+                    .kv
+                    .iter()
+                    .find(|candidate| candidate.key == *key)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("metadata '{}' ausente na fatia {}", key, index + 1)
+                    })?;
+                let source_value = merged_scalar_u32(
+                    mmaps[index].as_ref(),
+                    source_entry.value_start,
+                    source_entry.value_type,
+                )
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "metadata '{}' não é um inteiro escalar válido na fatia {}",
+                        key,
+                        index + 1
+                    )
+                })?;
+                value = match semantics {
+                    crate::gguf::LayerCountSemantics::FromStart => {
+                        value.saturating_add(source_value).min(total)
+                    }
+                    crate::gguf::LayerCountSemantics::FromEnd => value.max(source_value),
+                };
+            }
+            kv_out.push(KvOut::Encoded(encode_kv_u32(key, value)));
+            continue;
+        }
+        if entry.array.is_some() {
+            if let Some(rebuilt) = merge_layer_array(key, &arch, parts, &parsed, &mmaps)? {
+                kv_out.push(KvOut::Encoded(rebuilt));
+                continue;
+            }
+        }
+        kv_out.push(entry.raw.clone());
     }
     kv_out.push(KvOut::Encoded(encode_kv_u32(
         &format!("{arch}.block_count"),
@@ -2809,6 +3061,91 @@ mod tests {
         );
     }
 
+    #[test]
+    fn merging_slices_keeps_from_end_metadata_from_the_last_slice() {
+        let dir = std::env::temp_dir().join(format!("pom-nextn-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, qwen35_test_gguf_bytes(4)).unwrap();
+
+        let first = dir.join("first.gguf");
+        split(&whole, &first, 0, 2, true, false, |_| {}).unwrap();
+        let last = dir.join("last.gguf");
+        split(&whole, &last, 3, 3, false, true, |_| {}).unwrap();
+
+        let merged = dir.join("merged.gguf");
+        merge(
+            &[
+                MergePart {
+                    path: first,
+                    start_layer: 0,
+                    end_layer: 2,
+                },
+                MergePart {
+                    path: last,
+                    start_layer: 3,
+                    end_layer: 3,
+                },
+            ],
+            &merged,
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(
+            kv_u32(
+                &std::fs::read(&merged).unwrap(),
+                "qwen35.nextn_predict_layers"
+            ),
+            Some(1),
+            "a metadata relativa ao fim deve vir da fatia final"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn merging_slices_sums_from_start_metadata_across_the_union() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-layer-counts-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, deepseek4_test_gguf_bytes(4, true)).unwrap();
+
+        let first = dir.join("first.gguf");
+        split(&whole, &first, 0, 1, true, false, |_| {}).unwrap();
+        let last = dir.join("last.gguf");
+        split(&whole, &last, 2, 3, false, true, |_| {}).unwrap();
+
+        let merged = dir.join("merged.gguf");
+        merge(
+            &[
+                MergePart {
+                    path: first,
+                    start_layer: 0,
+                    end_layer: 1,
+                },
+                MergePart {
+                    path: last,
+                    start_layer: 2,
+                    end_layer: 3,
+                },
+            ],
+            &merged,
+            |_| {},
+        )
+        .unwrap();
+
+        let bytes = std::fs::read(&merged).unwrap();
+        for key in [
+            "deepseek4.hash_layer_count",
+            "deepseek4.leading_dense_block_count",
+            "deepseek4.n_deepstack_layers",
+        ] {
+            assert_eq!(kv_u32(&bytes, key), Some(3), "{key}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A fatia 0-23 do Qwen3.8-27B-Q3_K_S, com a forma exata do modelo que
     /// falhou: 65 blocos, `qwen35.nextn_predict_layers = 1` e o bloco `nextn`
     /// só em `blk.64`. Copiar essa marca para a fatia 0-23 faz o llama.cpp
@@ -3434,7 +3771,9 @@ mod tests {
         let path = std::ffi::CString::new(out.to_string_lossy().as_bytes()).unwrap();
         let mut params = unsafe { llama_engine::llama_cpp_sys_2::llama_model_default_params() };
         params.n_gpu_layers = 0;
-        let model = unsafe { llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
+        let model = unsafe {
+            llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params)
+        };
         assert!(!model.is_null(), "a fatia Gemma4 real deveria carregar");
         unsafe { llama_engine::llama_cpp_sys_2::llama_model_free(model) };
         std::fs::remove_dir_all(dir).unwrap();
@@ -3465,7 +3804,9 @@ mod tests {
         let path = std::ffi::CString::new(out.to_string_lossy().as_bytes()).unwrap();
         let mut params = unsafe { llama_engine::llama_cpp_sys_2::llama_model_default_params() };
         params.n_gpu_layers = 0;
-        let model = unsafe { llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
+        let model = unsafe {
+            llama_engine::llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params)
+        };
         assert!(
             !model.is_null(),
             "uma fatia intermediária DeepSeek4 deveria carregar"

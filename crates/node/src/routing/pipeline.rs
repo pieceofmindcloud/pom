@@ -81,6 +81,11 @@ pub struct PipelineStep {
     /// plano pode ter sido montado por uma maquina noutra rede.
     #[serde(default)]
     pub inference_candidates: Vec<String>,
+    /// Endereços `host:porta` anunciados para o endpoint HTTP/3 deste hop.
+    /// Nunca é derivado de `inference_url`, que continua sendo exclusivamente
+    /// uma URL TCP para HTTP/1.1 ou HTTPS.
+    #[serde(default)]
+    pub quic_addr_candidates: Vec<String>,
     pub start_layer: u32,
     pub end_layer: u32,
     /// A sub-faixa que **este passo executa**, que nem sempre é a faixa que ele
@@ -463,6 +468,34 @@ pub async fn plan_pipeline_with_rtt(
     tracker: &LoadTracker,
     rtts: &HashMap<String, f64>,
 ) -> Option<PipelinePlan> {
+    plan_pipeline_with_rtt_from_head(
+        peers,
+        model_name,
+        deploy_id,
+        total_layers,
+        tracker,
+        rtts,
+        None,
+    )
+    .await
+}
+
+/// Plan a pipeline while optionally pinning the peer that receives layer 0.
+///
+/// The UI may expose more than one complete-model head. When the caller has
+/// explicitly picked one, that choice is authoritative for the first step;
+/// RTT and load still select the remaining contiguous stages. An invalid or
+/// unavailable choice fails closed instead of silently switching to a
+/// different head and misleading the operator.
+pub async fn plan_pipeline_with_rtt_from_head(
+    peers: &[PeerInfo],
+    model_name: &str,
+    deploy_id: Option<&str>,
+    total_layers: u32,
+    tracker: &LoadTracker,
+    rtts: &HashMap<String, f64>,
+    preferred_head: Option<&str>,
+) -> Option<PipelinePlan> {
     let servindo = model_pipeline_candidates(peers, model_name, deploy_id);
 
     if servindo.is_empty() {
@@ -515,7 +548,7 @@ pub async fn plan_pipeline_with_rtt(
         // key is a weighted speed penalty: a small RTT advantage can be lost
         // when its peer is carrying enough in-flight work.
         let mut best: Option<(&PeerInfo, i64, i64)> = None;
-        for peer in reachable {
+        for peer in reachable.iter().copied() {
             let load = tracker.load(&peer.node_id).await as i64;
             let layers = (peer.end_layer - pos + 1) as i64;
             let rtt_penalty = rtts
@@ -537,7 +570,23 @@ pub async fn plan_pipeline_with_rtt(
             }
         }
 
-        let chosen = best.unwrap().0;
+        let chosen = if pos == 0 {
+            match preferred_head {
+                Some(preferred) => reachable
+                    .iter()
+                    .copied()
+                    .find(|peer| peer.node_id == preferred),
+                None => best.map(|(peer, _, _)| peer),
+            }
+        } else {
+            best.map(|(peer, _, _)| peer)
+        };
+
+        let Some(chosen) = chosen else {
+            // A requested head is only allowed to fail closed at layer zero.
+            // Later gaps are the normal no-pipeline result handled below.
+            return None;
+        };
 
         // `PeerInfo::inference_url` is the one place that knows how to turn an
         // address into a URL. Splitting `chosen.addr` on ':' here instead cut
@@ -551,6 +600,7 @@ pub async fn plan_pipeline_with_rtt(
             node_id: chosen.node_id.clone(),
             inference_url,
             inference_candidates: chosen.inference_candidates(),
+            quic_addr_candidates: chosen.quic_addr_candidates(),
             start_layer: chosen.start_layer,
             end_layer: chosen.end_layer,
             // O que falta cobrir a partir de `pos`, não a fatia inteira. Quando
@@ -561,7 +611,7 @@ pub async fn plan_pipeline_with_rtt(
             exec_end: chosen.end_layer,
             inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
             libp2p_peer_id: chosen.libp2p_peer_id.clone(),
-            libp2p_addr_candidates: chosen.dialable_addrs(),
+            libp2p_addr_candidates: chosen.libp2p_dialable_addrs(),
         });
 
         pos = chosen.end_layer + 1;
@@ -642,6 +692,7 @@ mod ipv6_tests {
             node_id: "n".repeat(64),
             pubkey: "p".into(),
             authority_pubkey: String::new(),
+            cluster_id: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -652,7 +703,9 @@ mod ipv6_tests {
             last_seen: chrono::Utc::now(),
             ollama_port: None,
             inference_port: Some(8181),
+            inference_quic_port: None,
             gateway_port: Some(8090),
+            gateway_quic_port: None,
             profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
             capabilities: Vec::new(),
@@ -664,6 +717,7 @@ mod ipv6_tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         }
     }
 
@@ -856,6 +910,35 @@ mod ipv6_tests {
     }
 
     #[tokio::test]
+    async fn planner_honors_an_explicit_inference_head() {
+        let mut score_winner = peer("10.0.0.1:42777", 0, 7);
+        let mut requested = peer("10.0.0.2:42777", 0, 7);
+        let mut tail = peer("10.0.0.3:42777", 8, 15);
+        score_winner.node_id = "score-winner".into();
+        requested.node_id = "requested-head".into();
+        tail.node_id = "tail".into();
+
+        let rtts = HashMap::from([
+            (String::from("score-winner"), 1.0),
+            (String::from("requested-head"), 80.0),
+        ]);
+        let plan = plan_pipeline_with_rtt_from_head(
+            &[score_winner, requested, tail],
+            "qwen35",
+            None,
+            16,
+            &LoadTracker::new(),
+            &rtts,
+            Some("requested-head"),
+        )
+        .await
+        .expect("a cabeça escolhida ainda cobre a pipeline");
+
+        assert_eq!(plan.steps[0].node_id, "requested-head");
+        assert_eq!(plan.steps[1].node_id, "tail");
+    }
+
+    #[tokio::test]
     async fn a_busy_low_rtt_entry_can_lose_to_a_quieter_entry() {
         let mut busy = peer("10.0.0.1:42777", 0, 7);
         let mut quiet = peer("10.0.0.2:42777", 0, 7);
@@ -874,16 +957,10 @@ mod ipv6_tests {
             (String::from("quiet-entry"), 2.0),
         ]);
 
-        let plan = plan_pipeline_with_rtt(
-            &[busy, quiet, tail],
-            "qwen35",
-            None,
-            16,
-            &tracker,
-            &rtts,
-        )
-        .await
-        .expect("as duas entradas cobrem o mesmo ramo");
+        let plan =
+            plan_pipeline_with_rtt(&[busy, quiet, tail], "qwen35", None, 16, &tracker, &rtts)
+                .await
+                .expect("as duas entradas cobrem o mesmo ramo");
 
         assert_eq!(plan.steps[0].node_id, "quiet-entry");
         drop(busy_requests);
@@ -895,6 +972,7 @@ mod ipv6_tests {
             node_id: "old".into(),
             inference_url: "http://127.0.0.1:8181".into(),
             inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
             exec_start: 0,
@@ -938,6 +1016,7 @@ mod ipv6_tests {
                     node_id: "replica-a".into(),
                     inference_url: "http://127.0.0.1:8181".into(),
                     inference_candidates: Vec::new(),
+                    quic_addr_candidates: Vec::new(),
                     start_layer: 0,
                     end_layer: 7,
                     exec_start: 0,
@@ -950,6 +1029,7 @@ mod ipv6_tests {
                     node_id: "replica-b".into(),
                     inference_url: "http://127.0.0.1:8182".into(),
                     inference_candidates: Vec::new(),
+                    quic_addr_candidates: Vec::new(),
                     start_layer: 8,
                     end_layer: 15,
                     exec_start: 8,
@@ -975,6 +1055,7 @@ mod ipv6_tests {
             node_id: "n1".into(),
             inference_url: url.into(),
             inference_candidates: candidatos.into_iter().map(String::from).collect(),
+            quic_addr_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 9,
             exec_start: 0,
@@ -1078,6 +1159,7 @@ mod ipv6_tests {
             node_id: "n".into(),
             inference_url: "http://127.0.0.1:8181".into(),
             inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
             exec_start: 0,
@@ -1265,6 +1347,28 @@ mod ipv6_tests {
                 .collect::<Vec<_>>(),
             ["head"]
         );
+    }
+
+    #[test]
+    fn mixed_deployment_exposes_whole_and_sliced_heads() {
+        let mut whole = peer("whole", 0, 31);
+        whole.node_id = "whole".into();
+        whole.deploy_id = "d-aaaaaaaa".into();
+        let mut shard_head = peer("shard-head", 0, 15);
+        shard_head.node_id = "shard-head".into();
+        shard_head.deploy_id = "d-aaaaaaaa".into();
+        let mut shard_tail = peer("shard-tail", 16, 31);
+        shard_tail.node_id = "shard-tail".into();
+        shard_tail.deploy_id = "d-aaaaaaaa".into();
+
+        let peers = [whole, shard_head, shard_tail];
+        let heads = model_head_candidates(&peers, "qwen35", Some("d-aaaaaaaa"));
+        let ids = heads
+            .iter()
+            .map(|peer| peer.node_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["whole", "shard-head"]);
     }
 
     #[tokio::test]

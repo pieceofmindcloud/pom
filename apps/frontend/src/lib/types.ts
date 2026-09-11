@@ -26,6 +26,7 @@ export interface GpuStat {
   vram_used_mb: number | null;
   vram_used_pct: number | null;
   utilization_pct: number | null;
+  power_watts: number | null;
   temperature_c: number | null;
 }
 
@@ -83,7 +84,7 @@ export interface SystemLoad {
  * was assignable every screen compared against a value the node never sends.
  * A machine serving layers looked idle on every panel.
  */
-export type ServerState = "disabled" | "starting" | "ready" | "failed" | "thermal";
+export type ServerState = "disabled" | "starting" | "ready" | "idle" | "failed" | "thermal";
 
 /** Motor que o backend afirma ter executado, sem inferência da interface. */
 export type ExecutionEngine = "llama.cpp" | "moe" | "unknown";
@@ -104,6 +105,8 @@ export interface RuntimeStatus {
 
 export interface NodeConfig {
   model_path: string;
+  /** Projector multimodal carregado neste nó, quando a visão está ligada. */
+  mmproj_path?: string | null;
   model_label: string;
   /** A implantação de que este nó faz parte; vazio se ele não veio de uma. */
   deploy_id: string;
@@ -148,6 +151,9 @@ export interface NodeConfig {
   mtp_enabled: boolean;
   mtp_draft_tokens: number;
   mtp_min_probability: number;
+  /** Local peer unload policy; absent means the pre-feature default. */
+  unload_if_idle?: boolean;
+  idle_minutes?: number;
 }
 
 /** Fronteira da superfície administrativa, distinta das rotas da pipeline. */
@@ -172,6 +178,7 @@ export interface NodeInfo {
   short_id: string;
   hostname: string;
   profile: Profile;
+  network_name: string;
   /**
    * A chave de conexão do cluster, que esta interface mostra em "Chave de
    * Conexão" e guarda para autenticar as chamadas que a exigem.
@@ -214,11 +221,120 @@ export interface NodeInfo {
   node_promotion_request?: "none" | "pending" | "rejected";
   /** Se **este** nó pode mudar isso: só o principal pode. */
   tls_authority: boolean;
+  /** Se o cluster prefere HTTP/3 sobre QUIC nos novos hops. */
+  quic_enabled: boolean;
+  /** Só o principal pode alterar a preferência QUIC. */
+  quic_authority: boolean;
   /** Se este nó coleta e envia logs de processo do cluster. */
   cluster_logs_enabled: boolean;
   /** Só o principal pode mudar a política de logs. */
   cluster_logs_authority: boolean;
+  /** Se o canal global de conversa está ligado neste nó. */
+  network_chat_enabled: boolean;
+  /** Só o principal pode mudar a política do Chat da rede. */
+  network_chat_authority: boolean;
   thermal: ThermalPolicy;
+}
+
+export type NetworkVisibility = "local" | "private" | "public";
+export type NetworkAccessPolicy = "authorized" | "anyone_with_anchor" | "local_only";
+
+export interface NetworkLocation {
+  latitude: number;
+  longitude: number;
+  accuracy_m?: number | null;
+}
+
+export interface NetworkSettings {
+  public_name: string;
+  organization: string;
+  description: string;
+  rules: string;
+  channels: string;
+  country_code: string;
+  country_name: string;
+  city: string;
+  geo_label: string;
+  visibility: NetworkVisibility;
+  access_policy: NetworkAccessPolicy;
+  location: NetworkLocation | null;
+}
+
+export interface NetworkInfoView {
+  network: NetworkSettings;
+  can_edit: boolean;
+}
+
+export interface GeoCityReference {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+}
+
+export interface GeoCountryReference {
+  code: string;
+  name: string;
+  cities: GeoCityReference[];
+}
+
+export interface GeoReferenceResponse {
+  countries: GeoCountryReference[];
+}
+
+export interface TrustShareView {
+  filename: string;
+  document: string;
+  connection_key: string | null;
+  visibility: NetworkVisibility;
+}
+
+export type NetworkChatKind = "text" | "file" | "typing" | "typing_stopped";
+
+export interface NetworkChatRequest {
+  action: {
+    kind: "text" | "file" | "typing";
+    message_id: string;
+    room_id: string;
+    sender_node_id: string;
+    recipient_node_id: string | null;
+    text?: string;
+    file_name?: string;
+    mime_type?: string;
+    data?: number[];
+    is_typing?: boolean;
+    sent_at: string;
+  };
+  api_key?: string;
+  relayed?: boolean;
+}
+
+export interface NetworkChatEvent {
+  messageId: string;
+  roomId: string;
+  senderNodeId: string;
+  recipientNodeId: string | null;
+  kind: NetworkChatKind;
+  text: string | null;
+  fileName: string | null;
+  mimeType: string | null;
+  fileData: number[];
+  sentAt: string;
+}
+
+export interface NetworkChatParticipant {
+  nodeId: string;
+  hostname: string;
+  online: boolean;
+  profile: string;
+}
+
+export interface NetworkChatSnapshot {
+  enabled: boolean;
+  messages: NetworkChatEvent[];
+  participants: NetworkChatParticipant[];
+  typing: NetworkChatEvent[];
+  dropped: number;
 }
 
 export interface PeerView {
@@ -375,6 +491,17 @@ export interface ChatTelemetryRtt {
 
 export interface ChatTelemetryNetwork {
   measurements: ChatTelemetryRtt[];
+  /** Custo observado do ciclo completo, quando o trace fechou todas as pernas. */
+  pipeline_cost?: {
+    legs_ms: Array<number | null>;
+    compute_ms: number | null;
+  } | null;
+  /** Todas as rotas completas possíveis para o modelo ativo, do head à cauda. */
+  pipeline_routes?: Array<{
+    node_ids: string[];
+    legs_ms: Array<number | null>;
+    rtt_ms: number | null;
+  }>;
 }
 
 /** Resposta do recorte de topologia que um nó infer pode consultar. */
@@ -440,6 +567,8 @@ export interface RoutingEdge {
 export interface ClusterView {
   self_id: string;
   active_model: string;
+  /** Projetor carregado na cabeça da implantação ativa, quando há visão. */
+  mmproj_path?: string | null;
   total_layers: number;
   covered_layers: number;
   coverage: boolean[];
@@ -449,6 +578,13 @@ export interface ClusterView {
   routing_edges: RoutingEdge[];
   candidate_edges: RoutingEdge[];
   node: NodeInfo | null;
+}
+
+/** Aggregate facts the Chat may read from every profile without topology access. */
+export interface ChatCapabilities {
+  active_model: string;
+  vision: "supported" | "unsupported" | "unavailable";
+  coverage: "complete" | "incomplete" | "unavailable";
 }
 
 export type ModelSource = "ollama" | "lmstudio" | "folder" | string;
@@ -466,6 +602,8 @@ export interface DiscoveredModel {
   source: ModelSource;
   source_label: string;
   path: string;
+  /** GGUF mmproj adjacente escolhido pela convenção do llama.cpp. */
+  mmproj_path?: string | null;
   size_bytes: number;
   /** O GGUF declara split.count > 1 e este item representa o conjunto. */
   multipart?: boolean;
@@ -497,7 +635,7 @@ export interface DiscoveredModel {
 export const isWholeModel = (m: DiscoveredModel): boolean => m.shard_range == null;
 
 /** `src/models/deployment.rs` — de que forma um modelo está no ar. */
-export type DeploymentKind = 'shards' | 'whole' | 'tensor_parallel';
+export type DeploymentKind = 'shards' | 'whole' | 'tensor_parallel' | 'mixed';
 
 /** `src/models/deployment.rs` — um nó da implantação, e a config com que subiu. */
 export interface DeploymentNode {
@@ -567,6 +705,8 @@ export interface DeploymentsResponse {
 export interface ShardSet {
   /** Rótulo do modelo — o que se lê. `group` identifica a rodada. */
   model_label: string;
+  /** Projector adjacent to this set or to its original whole model. */
+  mmproj_path?: string | null;
   /** A rodada de fatiamento que produziu estas partes. Identificação, não nome. */
   pom_id: string;
   group: string;
@@ -644,6 +784,24 @@ export interface CacheTypesResponse {
   cache_type_k: KvCacheType;
   cache_type_v: KvCacheType;
   choices: KvCacheType[];
+}
+
+/** Inventário da máquina escolhida no diálogo de adicionar. */
+export interface AddNodeOption {
+  kind: "shards" | "whole";
+  start_layer: number;
+  end_layer: number;
+  label: string;
+}
+
+export interface AddNodeOptionsResponse {
+  node_id: string;
+  options: AddNodeOption[];
+  cache_types: CacheTypesResponse;
+  defaults: {
+    n_gpu_layers: number;
+    offload_kqv: boolean;
+  };
 }
 
 /** A slicing or apply run. `src/webui.rs` — `Job`. */
@@ -982,13 +1140,22 @@ export interface ApiKey {
   key: string;
   label: string;
   node_id: string;
+  origin_node_id?: string;
   active: boolean;
   created_at: string;
 }
 
 /** Request-level performance, aggregated over the whole inference pipeline. */
 export interface GenerationTimings {
+  local_engine_first_event_ms?: number | null;
+  pipeline_first_token_ms?: number;
   ttft_ms: number;
+  /** Gateway TTFT from request ingress to protocol emission. */
+  server_ttft_ms?: number | null;
+  /** First-token timing measured by the inference peer. */
+  engine_ttft_ms?: number | null;
+  /** Browser TTFT measured with performance.now(). */
+  client_ttft_ms?: number | null;
   prefill_ms: number;
   prefill_tokens: number;
   prefill_tokens_per_sec: number | null;
@@ -1454,6 +1621,8 @@ export interface RuntimeParams {
   mtp_min_probability: number;
   /** Permite o recuo do MTP para pesos e cache em RAM quando a VRAM falhar. */
   mtp_cpu_fallback_enabled?: boolean;
+  unload_if_idle?: boolean;
+  idle_minutes?: number;
 }
 
 /** Precisões que o protocolo de inferência consegue converter ponta a ponta. */
@@ -1535,6 +1704,8 @@ export interface DeployPlan {
    * the same default the node applies to a request without a `kind`.
    */
   kind?: DeployKind;
+  /** Projector adjacente encontrado para o modelo escolhido. */
+  mmproj_path?: string | null;
   /** True only when the surveyed model's actual GGUF metadata is MoE. */
   is_moe?: boolean;
   /** Whether this plan can honor the selected inference mode. */

@@ -154,6 +154,9 @@ describe("ExecutionTelemetry", () => {
 
   it("shows request-level TTFT, prefill speed, generation speed and total time", () => {
     const timings: GenerationTimings = {
+      pipeline_first_token_ms: 2400,
+      server_ttft_ms: 2400,
+      client_ttft_ms: 2510,
       ttft_ms: 2400,
       prefill_ms: 2000,
       prefill_tokens: 100,
@@ -167,7 +170,9 @@ describe("ExecutionTelemetry", () => {
 
     mount(<ExecutionTelemetry trace={trace} timings={timings} />);
 
-    expect(screen.getByText("Primeiro token (TTFT)")).toBeTruthy();
+    expect(screen.getByText("Primeiro token do pipeline")).toBeTruthy();
+    expect(screen.getByText("TTFT do servidor")).toBeTruthy();
+    expect(screen.getByText("Primeiro token no cliente")).toBeTruthy();
     expect(screen.getByText("50,0 tokens/s · 100 tokens do prompt")).toBeTruthy();
     expect(screen.getByText("2,6 tokens/s · 20 tokens")).toBeTruthy();
     expect(screen.getByText("10,0 s · 2,0 tokens/s")).toBeTruthy();
@@ -220,6 +225,51 @@ describe("ExecutionTelemetry", () => {
   it("shows the observed aggregate RTT of the execution", () => {
     mount(<ExecutionTelemetry trace={trace} />);
     expect(screen.getByText(/RTT agregado da execução: 1340 ms/)).toBeTruthy();
+  });
+
+  it("shows outside-node accounting and first-token boundaries when available", () => {
+    mount(<ExecutionTelemetry trace={{
+      ...trace,
+      trace_id: "trace-123",
+      profile: "trace",
+      request_state: "cold",
+      spans: [{
+        name: "route_resolution",
+        span_id: "span-1",
+        host: "gateway",
+        started_at_ms: 1_700_000_000_000,
+        start_offset_ms: 12,
+        duration_ms: 8,
+      }],
+      outside_node_total_ms: 1_955,
+      outside_node_accounted_ms: 8,
+      outside_node_unaccounted_ms: 1_947,
+      first_token: { engine_ttft_ms: 128, node_serialized_ms: 2, node_to_gateway_ms: 3 },
+      client_ttft_ms: 2050,
+      streaming: {
+        time_to_first_chunk_ms: 2050,
+        time_to_first_token_ms: 2050,
+        stream_duration_ms: 1084,
+        time_last_token_to_response_end_ms: 12,
+        chunks: 119,
+        bytes: 4096,
+        tokens_per_chunk: 1,
+      },
+      decode_calls: 64,
+      generated_tokens: 119,
+      tokens_per_decode_call: 119 / 64,
+      connection_new_calls: 1,
+      connection_reused_calls: 65,
+      connection_unknown_calls: 0,
+    }} />);
+
+    expect(screen.getByText("trace trace-123 · trace · cold")).toBeTruthy();
+    expect(screen.getByText("1,96 s")).toBeTruthy();
+    expect(screen.getByText(/primeiro token no motor: 128 ms/)).toBeTruthy();
+    expect(screen.getByText(/nó até gateway: 3 ms/)).toBeTruthy();
+    expect(screen.getByText(/último token -> \[DONE\]: 12 ms/)).toBeTruthy();
+    expect(screen.getByText(/chamadas de decode: 64 · tokens: 119/)).toBeTruthy();
+    expect(screen.getByText(/conexões: 1 novas · 65 reutilizadas/)).toBeTruthy();
   });
 
   it("does not infer backend sync state from a zero duration", () => {
@@ -432,6 +482,10 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
             rtt_median_ms: 10,
             rtt_p95_ms: 10,
             rtt_max_ms: 50,
+            net_rtt_min_ms: 0,
+            net_rtt_median_ms: 0,
+            net_rtt_p95_ms: 0,
+            net_rtt_max_ms: 0,
             fallback_calls: 0,
           },
           {
@@ -443,7 +497,26 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
             rtt_median_ms: 40,
             rtt_p95_ms: 40,
             rtt_max_ms: 40,
+            net_rtt_min_ms: 1,
+            net_rtt_median_ms: 1,
+            net_rtt_p95_ms: 2,
+            net_rtt_max_ms: 2,
             fallback_calls: 1,
+          },
+          {
+            transport: "quic",
+            calls: 3,
+            bytes_sent: 300,
+            bytes_received: 600,
+            rtt_min_ms: 20,
+            rtt_median_ms: 25,
+            rtt_p95_ms: 30,
+            rtt_max_ms: 35,
+            net_rtt_min_ms: 1,
+            net_rtt_median_ms: 1,
+            net_rtt_p95_ms: 2,
+            net_rtt_max_ms: 2,
+            fallback_calls: 0,
           },
         ],
         transport_switches: [{ from: "local", to: "https", calls: 1 }],
@@ -474,8 +547,10 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
   it("mostra a distribuição de transporte e a troca sem listar cada chamada", () => {
     mount(<ExecutionTelemetry trace={summaryTrace} />);
     expect(screen.getByText(/local: 5001 chamadas/)).toBeTruthy();
-    expect(screen.getByText(/RTT mínimo\/mediana\/p95\/máximo 10\/10\/10\/50 ms/)).toBeTruthy();
+    expect(screen.getByText(/RTT de execução mínimo\/mediana\/p95\/máximo 10\/10\/10\/50 ms/)).toBeTruthy();
+    expect(screen.getByText(/RTT de rede mínimo\/mediana\/p95\/máximo 0\/0\/0\/0 ms/)).toBeTruthy();
     expect(screen.getByText(/fallback total 1/)).toBeTruthy();
+    expect(screen.getByText(/quic: 3 chamadas/)).toBeTruthy();
     expect(screen.getByText(/troca de transporte local -> https \(1\)/)).toBeTruthy();
   });
 });

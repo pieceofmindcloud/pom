@@ -5,7 +5,9 @@ o UDP nativo (`network.rs`, `addrs.rs`, `identity.rs`, `route.rs`) e o
 libp2p/pkarr para a internet (`discovery.rs`, `pkarr_node.rs`).
 `main.rs` monta `Network` e `Discovery`; `gateway.rs` e `routing/pipeline.rs`
 consomem `PeerInfo` e `RouteTable`. A regra da casa: a decisão de endereço
-pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `RouteTable`).
+pertence a quem vai discar, não a quem anunciou. Com `advertise_addr` fixado,
+ele é o único endpoint anunciado e discado pelo libp2p; sem pin, a política de
+fallback continua em `addr_candidates` + `RouteTable`.
 
 ## Arquivos
 
@@ -13,8 +15,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   macOS, `ip -o addr` no Linux) e a filtragem que decide o que anunciar.
   Captura também a interface dona do endereço para excluir bridges e pares
   virtuais de Docker, Podman, CNI e equivalentes sem perder IPs privados de
-  interfaces reais da LAN. Único arquivo com código por plataforma; a
-  filtragem fica fora do `cfg` e tem teste que roda em qualquer sistema.
+  interfaces reais da LAN. `preferred_local_advertise_ip` reaproveita essa
+  filtragem para a sugestão do wizard, preferindo IPv6 global estável e depois
+  IPv4, sem confundir endereço de privacidade com endereço persistente. Único
+  arquivo com código por plataforma; a filtragem fica fora do `cfg` e tem teste
+  que roda em qualquer sistema.
 - `infer_tunnel.rs` - protocolo request/response que carrega a chamada de
   inferência pelo enxame libp2p como transporte preferencial quando o peer
   anuncia essa capability. Se o túnel falhar por transporte, o relay usa o
@@ -27,31 +32,85 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   nunca é duplicado nem sobrescrito. `measure_rtt` mede a ida e volta pelo
   mesmo túnel Noise.
 - `cluster_logs.rs` - captura limitada do `tracing` e transporte request/response
-  separado (`/pom/cluster-logs/1.0.0`); a fila descarta sob pressão e só o
-  principal ingere e persiste lotes.
+  separado (`/pom/cluster-logs/1.0.0`); a fila descarta sob pressão, e cada
+  lote é persistido localmente por todo admin efetivo e enviado por fanout aos
+  demais peers anunciados como admin. `CaptureLayer` usa `INFO` como nível
+  mínimo por padrão, configurável por `Config.cluster_logs_min_level`, sem
+  alterar o filtro do console. Cada admin efetivo roda a poda em segundo plano:
+  mantém sete dias e no máximo 500.000 linhas, em lotes de 256 com pausa e
+  tentativa não bloqueante.
+- `reqlog.rs` - protocolo request/response da auditoria de requisições
+  (`/pom/request-audit/1.0.0`); cada admin efetivo mantém uma cópia local dos
+  eventos `begin` e `complete`, sem retransmitir eventos recebidos.
 - `cluster_logs_policy.rs` - catraca autenticada do interruptor de logs; o
   campo anunciado só dispara a leitura da política no principal.
+- `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/
+  response próprio, limites de texto/arquivo, fila limitada, rate limit e
+  writer de persistência fora do loop do swarm. A ação original leva a API key;
+  retransmissões internas levam apenas o frame já validado.
+- `network_chat_policy.rs` - catraca autenticada do interruptor do Chat da
+  rede; o booleano anunciado é gatilho e a leitura autenticada no principal é
+  a fonte efetiva.
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
   (cliente e servidor), DCuTR, AutoNAT, túnel de inferência e o
-  protocolo de logs do cluster. Põe peers
-  no `Network` via `insert_peer` e reidrata no swarm os endereços dos peers vivos
-  antes de enviar pelo túnel quando o anúncio chegou antes do registro de rota.
+  protocolo de logs do cluster, da auditoria de requisições e do Chat da rede.
+  Põe peers no `Network` somente
+  depois da catraca de admissão, e reidrata no swarm os endereços dos peers
+  admitidos antes de enviar pelo túnel quando o anúncio chegou antes do
+  registro de rota. A assinatura nativa do gossipsub prova a origem do
+  transporte, mas não substitui a prova de pertencimento do enxame.
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
   pubkey). Vive em `<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`).
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
-  dual-stack, gossip, lifecycle de peers, varredura de descoberta. O perfil
-  anunciado por `with_identity` pode ser atualizado por `set_profile`; a
-  capacidade de admin não vem do anúncio, mas da cadeia em `admin_trust.rs`.
+  dual-stack, gossip, lifecycle de peers, varredura de descoberta e admissão.
+  A `connection_key` não vai no `Announce`: em rede privada, o handler faz
+  uma sonda no `/handshake` antes de registrar o peer. Em rede pública o rigor
+  segue o `network.access_policy`: com `authorized` (padrão) o `cluster_id` só
+  seleciona a cadeia e a tupla `{node_id, peer_id, pubkey}` precisa ser uma
+  concessão ativa em `admin_trust.rs`; com `anyone_with_anchor` basta uma
+  cadeia local ancorada exatamente nesse `cluster_id`
+  (`AdminTrust::anchors_cluster`) mais o vínculo de identidade, sem concessão -
+  é o que admite um worker co-locado sem grant. Campo `profile` nunca concede
+  acesso. `PeerList` é revalidado, e `connection_verified` só é escrito pelo
+  gate local. O perfil anunciado por `with_identity` pode ser
+  atualizado por `set_profile`; a capacidade de admin não vem do anúncio, mas
+  da cadeia em `admin_trust.rs`. O campo `idle` também é anunciado por peer
+  para distinguir modelo descarregado de deployment fora do ar; ele não altera
+  a regra de liveness.
 - `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
   quem colcheta IPv6, além da preferência e da quarentena temporária de rotas
   que falharam. `route_order` apenas reordena os candidatos: mesmo quando
   todos estão em quarentena, devolve a lista para que a tentativa real decida.
+  `get_internal_from_candidates` percorre todos os gateways anunciados para
+  uma rota de controle autenticada; inclusive 401/403 fazem a sonda tentar o
+  próximo endereço, porque um endereço fantasma pode responder como outro nó.
   O cliente destinado a outro nó marca requests de controle com
-  `x-pom-internal-node`, usa a `connection_key` nas rotas internas de
-  inferência e limita a abertura TCP a 2 s; o cliente `plain()` para Ollama e
-  loopback não envia essa marca.
+  `x-pom-internal-node`, usa a `connection_key` compartilhada também no fallback
+  HTTP de inferência em rede pública e limita a abertura TCP a 2 s; HTTPS e
+  QUIC podem validar pelo transporte seguro e o mesmo marcador. O cliente `plain()` para
+  Ollama e
+  loopback não envia essa marca. `for_peer_with_state` informa ao trace se o
+  cliente TLS foi criado ou reutilizado; transporte local, túnel e cliente
+  sem TLS permanecem explicitamente desconhecidos. `effective_quic_enabled`
+  combina a flag do pool com a preferência global confirmada pelo principal,
+  para que clientes lazy criados antes da propagação não desviem inferência
+  para o túnel.
+- `quic.rs` - cliente e servidor HTTP/3 sobre Quinn. O pool mantém uma conexão
+  QUIC por peer e endereço anunciado, usa o mesmo pinning Ed25519 da conexão
+  TCP e deixa o endpoint UDP pronto na porta dedicada anunciada
+  (`inference_quic_port`/`gateway_quic_port`) mesmo quando a preferência está
+  desligada. O dial exige `host:porta` e nunca deriva o destino de uma URL HTTP.
+  A configuração do listener é independente do `tls_required` do TCP, porque
+  QUIC leva seu próprio TLS 1.3. Cada resposta também expõe o RTT suavizado da
+  conexão Quinn em microssegundos, separado do processamento do handler remoto.
+  Cada tentativa completa, do handshake ao corpo da resposta, compartilha um
+  deadline de transporte de 30 s em produção, sem confundir esse teto com o
+  timeout de processamento do frame.
+  A descoberta de um endpoint QUIC morto compartilha um orçamento agregado de
+  300 ms entre endereços, e a falha põe aquele endereço em quarentena por 5 s
+  para não repetir handshake a cada token; a sessão saudável é reutilizada.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
@@ -60,9 +119,22 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `tls_policy.rs` - a catraca: o campo `tls` do Announce é gatilho, e só a
   busca autenticada em `GET /api/cluster/tls` no principal grava a política.
   Busca que falha preserva o valor local.
+- `quic_policy.rs` - catraca autenticada da preferência QUIC: o campo `quic`
+  do Announce só dispara `GET /api/cluster/quic`; o gatilho só é aceito quando
+  `authority_pubkey` identifica o principal ancorado, nunca por `profile: admin`;
+  apenas a resposta do principal é adotada e falha preserva o valor local.
 - `cluster_logs_policy.rs` aplica a mesma disciplina ao campo
   `cluster_logs_enabled`: anúncio é gatilho, leitura autenticada no principal
-  é a fonte, e falha preserva o valor local.
+  é a fonte, e falha preserva o valor local. A lista de admins para réplica é
+  independente dessa catraca e não torna um secundário capaz de mudar a
+  política.
+- `network_chat_enabled` segue o mesmo contrato. O gatilho só é aceito como
+  decisão do principal cuja `authority_pubkey` foi confirmada pelo
+  `AdminTrust`; o perfil anunciado não identifica autoridade. O interruptor
+  aberto num admin secundário encaminha a mutação ao principal e só a gravação
+  dele muda a política autoritativa. A retransmissão do Chat da rede é estrela:
+  o principal valida API key ativa e `blocked_nodes` antes de enviar a outros
+  `node_id`.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health`, histerese contra troca de rota por ruído e invalidação imediata
   quando o peer muda seus endereços anunciados. Guarda também a **memória de
@@ -88,18 +160,21 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   é aplicada antes de `start`; a task sonda `/health` na porta de inferência de
   cada candidato e mede o RTT por libp2p quando o peer anuncia o túnel. Cada
   `self_announce` enumera as interfaces uma vez por anúncio, portanto a
-  troca de IPv6 temporário entra no gossip seguinte sem sondagem de rede. O
+  troca de IPv6 temporário entra no gossip seguinte sem sondagem de rede. Com
+  pin explícito, essa enumeração não é publicada: o pin substitui a lista local.
+  O
   tratamento de cada datagrama é protegido por `catch_unwind`, com contexto no
   aviso e limite de frequência para não inundar o log se o pânico se repetir.
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
-  origem e chama `merge_observed` com o endereço efetivo do socket), PeerRequest
+  origem e chama `merge_observed` somente quando não há candidatos explícitos), PeerRequest
   (responde Announce imediato + `PeerList` fatiado), PeerList, Heartbeat,
   LocalDiscover. O `PeerList` também
   atualiza um peer já conhecido quando o snapshot é mais novo, preservando o
   estado local de verificação e os candidatos de endereço **que este nó ainda
   não provou mortos**; snapshots antigos são
   ignorados para não reverter a cobertura. Nó destacado (`is_detached`) não
-  aprende nem responde.
+  aprende nem responde. Um pin recebido não ganha o endereço de origem como
+  candidato adicional.
 - `Network::request_peer_addresses` - quando **todo** endereço conhecido de um
   peer está desacreditado, manda `PeerRequest` aos bootstrap nodes e aos outros
   peers vivos e poda os candidatos mortos da entrada local, para que o
@@ -114,6 +189,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   nasça desacreditado.
 - `PeerInfo::dialable_addrs` - todos os endereços UDP válidos, com deduplicação,
   para que descoberta e reencontro tentem os candidatos antes de desistir.
+  `PeerInfo::libp2p_dialable_addrs` reduz o conjunto a um endpoint canônico,
+  impedindo que o pipeline ou o Chat transforme listen addresses antigos em
+  fan-out de túneis.
 - `PeerInfo::gateway_candidates` / `gateway_url` - uma URL de gateway por
   endereço conhecido, com `addr` primeiro (fato conhecido: é de onde os pacotes
   do peer chegaram) e os candidatos anunciados depois; `gateway_url` é só a
@@ -138,11 +216,12 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   assignment, para que nó configurado pela UI ainda seja visível. Relê as
   interfaces uma vez a cada anúncio, a cada 5 s no gossip e também em anúncios
   imediatos; é uma leitura local de `ifconfig`/`ip`, sem sonda de rede. O mesmo
-  snapshot alimenta `addr` e `addr_candidates`. O endereço segue a mesma ordem
-  em UDP e gossip: fixação explícita, endereço público atual das interfaces com
-  estável antes de temporário, endereço observado por `identify`, demais
-  interfaces locais e o sentinela `0.0.0.0`. Bridges e pares virtuais de
-  container não entram nos candidatos automáticos. Quando o
+  snapshot alimenta `addr` e `addr_candidates`. Com fixação explícita, ambos
+  contêm somente o `advertise_addr`; sem ela, o endereço segue a ordem em UDP e
+  gossip: endereço público atual das interfaces com estável antes de temporário,
+  endereço observado por `identify`, demais interfaces locais e o sentinela
+  `0.0.0.0`. Bridges e pares virtuais de container não entram nos candidatos
+  automáticos. Quando o
   servidor de inferência está carregado, o anúncio também inclui
   `inference/remote-token-stream-v1`, que permite ao gateway remoto pedir o
   laço de decode com callbacks em lotes limitados. O mesmo anúncio leva
@@ -170,14 +249,21 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   convertido por `udp_to_libp2p_multiaddr` e os relays (padrão IPFS + `--relay-peers`).
 - `handle_event` - Gossipsub Announce vira `PeerInfo` usando
   `addr_candidates.first()` (o literal `0.0.0.0` só sobrevive se nada foi
-  anunciado) e registra os candidatos como multiaddresses `/p2p/<peer-id>`
-  antes de aquecer a conexão do túnel; mDNS descobre na LAN e alimenta
-  Kademlia; Identify grava listen_addrs e, para relays conectados, escuta no
+  anunciado) e registra somente o endpoint canônico como multiaddress
+  `/p2p/<peer-id>` antes de aquecer a conexão do túnel; mDNS descobre na LAN e
+  só é construído quando não há `advertise_addr` pinado; com pin, nem o
+  comportamento mDNS roda. Identify não grava `listen_addrs` no livro de
+  endereços e, para relays conectados, escuta no
   circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
   que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT
-  só logam. O request/response de logs usa um behaviour próprio,
-  responde apenas no nó principal e nunca retransmite por outro peer.
+  só logam. Os request/responses de logs, auditoria e Chat da rede usam
+  behaviours próprios, separados do túnel de inferência. Logs de processo são
+  aceitos por todo admin efetivo; eventos de auditoria também são persistidos
+  por todo admin efetivo e nenhum evento recebido é retransmitido. O Chat valida no principal,
+  retransmite sem segredo e recusa relays que não vieram de um administrador.
+  O `select!` é biased para o swarm e o túnel de inferência; filas de Chat usam
+  `try_send`, descartam sob pressão e nunca esperam SQLite.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.
@@ -254,9 +340,13 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 
 `pkarr_node.rs`:
 - `PkarrNode::publish` - assina TXT `_pom` (JSON compacto, campos de uma
-  letra para caber no limite DNS de ~1000 B) e publica no DHT.
+  letra para caber no limite DNS de ~1000 B) e publica no DHT. O campo `g`
+  carrega o rótulo geo canônico da rede como metadado, sem alterar a chave
+  pkarr nem o contrato de `Announce`.
 - `resolve_peers`/`resolve_one` - resolve chaves `pk:` em `ResolvedPeer`
-  (multiaddr + faixa de camadas + `is_relay`); falha vira `None`, nunca erro.
+  (multiaddr + faixa de camadas + `is_relay` + rótulo geo); falha vira `None`,
+  nunca erro. O gateway mantém um índice local dos rótulos observados para
+  filtrar consultas públicas por prefixo/sufixo antes de sondar peers.
 - `detect_local_ip` - IP de saída por socket UDP conectado a 8.8.8.8:80 (nada é
   enviado).
 

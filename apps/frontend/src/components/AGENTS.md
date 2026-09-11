@@ -3,7 +3,8 @@
 Reusable UI building blocks, split into two kinds. The small primitives live in
 `ui.tsx` (the design system: panels, buttons, inputs, badges, meters, states,
 formatters) and everything is composed from them. The bigger pieces are the
-app chrome (`Sidebar`/`Topbar`/`Notifications`/`nav.ts`), the cluster
+app chrome (`Sidebar`/`Topbar`/`Notifications`/`nav.ts`), chat surface
+navigation (`ChatSurfaceTabs`), the cluster
 visualizations (`PipelineRail`, `ModelNetworkCanvas`, `DeployNetworkCanvas`), and the dialogs/guards
 for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
@@ -16,13 +17,15 @@ present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `GpuTemperature.test.tsx`
 `node` can slip past one component's `?.` and crash the next; the maintenance
 pendência está em `TODO.md`, item 23.
 
-- `InferenceHeadChoice.tsx` - no Chat infer, não mostra nada quando existe uma
-  única cabeça disponível; com duas ou mais, usa o mesmo combo nativo do seletor
+- `InferenceHeadChoice.tsx` - no Chat, em qualquer perfil, não mostra nada
+  quando existe uma única cabeça disponível; com duas ou mais, usa o mesmo combo nativo do seletor
   de modelo para inspecionar as candidatas layer-zero. As opções carregam nome,
   id, RTT e frescura, carga em voo, faixa, capacidade e a marca da escolhida; o
   critério, fallback e pipeline incompleto ficam nas opções desativadas do menu.
   Carga desconhecida aparece como "indisponível", nunca zero. Sem candidata,
   mantém um aviso claro. O componente não apresenta peers fora desse recorte.
+  A escolha é controlada pelo `ChatScreen`: `onChange` devolve o `node_id`
+  selecionado e a próxima chamada envia esse valor em `inference_head`.
 
 - `setup-wizard/` - Componentes visuais reutilizáveis do wizard de primeiro
   acesso: layout com progresso e ações, cards de intenção, hardware, nó,
@@ -82,12 +85,28 @@ Per-file list:
   pelo Chat e pelo inspetor de Logs. Mantém a tabela de fases, tempos por hop,
   rede, ambiente, diagnóstico e demais detalhes em um único componente. Cruza
   também os timings ponta a ponta com o processamento medido no nó, para não
-  chamar de gargalo do backend uma espera que ocorreu fora dele. Mostra também
+  chamar de gargalo do backend uma espera que ocorreu fora dele. A seção
+  distribuída mostra estado de coleta, cobertura de peers/spans, caminho
+  crítico, compute/transporte acumulados, overlap somente quando medido e os
+  histogramas agregados do `remote-stream`; não deduz `outside-node` por
+  subtração do wall-clock. Mostra também
   o executor MoE efetivo e o motivo publicado pelo runtime quando há fallback
   CPU ou indisponibilidade. O cartão distingue o caminho selecionado no
   snapshot atual de `/health` do caminho observado no trace desta requisição;
   cada fase também mostra seu `selected_path`, e uma divergência entre os dois
-  escopos é sinalizada.
+  escopos é sinalizada. A timeline também mostra spans medidos, a decomposição
+  de `outside_node`, TTFT do servidor/motor/cliente, primeiro token, stream,
+  conexões e tokens por chamada; fronteiras ausentes permanecem não medidas.
+  O resumo exibe sempre a contagem e as razões do fallback HTTPS e, quando há
+  amostras, os quantis do intervalo de entrega de tokens do `remote-stream`,
+  separando produção, downstream, reserva do canal, fila e callback anterior;
+  o detalhe por nó também mostra o custo síncrono do draft MTP quando presente.
+  O resumo por transporte diferencia RTT de execução, que inclui processamento
+  remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
+  medição da conexão quando disponível.
+  Cobertura de decode só é exibida quando há denominador esperado; traces
+  diretos sem essa medição mostram o estado como não medido, e uma coleta de
+  transporte incompleta continua visível mesmo quando a resposta terminou.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly
@@ -96,9 +115,24 @@ Per-file list:
   uses the wide variant; the `infer` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,
   delete action and localized new-conversation button.
-- `nav.ts` — `NAV`: the menu as data — a seção Implantações usa `Rocket` (era
-  `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e a consola de
-  processo usa `Terminal` logo abaixo de Histórico; o submenu não
+- `ApiKeysTable.tsx` - tabela full-bleed de API keys. O administrador escolhe o
+  nó na criação, vê seus próprios tokens completos e os demais mascarados;
+  node e infer ficam restritos às chaves do próprio nó.
+- `DeploymentLogDock.tsx` - barra recolhida do Dashboard para o admin, que
+  expande para cima até metade da área e acompanha o log de implantação em
+  tempo real com auto-scroll.
+- `OpenNativeChatWindowButton.tsx` - botão macOS usado somente quando a ponte
+  WebKit `pomOpenWindow` está disponível; fica na toolbar do `Topbar`, não no
+  corpo do Chat. É um controle icon-only: o nome completo permanece no nome
+  acessível e no tooltip.
+- `ChatSurfaceTabs.tsx` - abas de rota compartilhadas por `Chat` e
+  `NetworkChat`. Mantém `/chat` e `/network-chat` acessíveis nos dois sentidos,
+  com o estado ativo derivado do pathname; é a primeira faixa visual das duas
+  telas, antes do cabeçalho e do conteúdo rolável.
+- `nav.ts` - `NAV`: the menu as data. A seção Implantações usa `Rocket` (era
+  `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e Logs possui
+  folhas separadas para requisições e implantação; Network Chat é uma entrada
+  própria. O submenu não
   desenha ícone de folha, então `Rocket` na seção e na folha `/implantar` não
   colidem. A tabela em si é an ordered array of `NavSection`
   (icon + `to` or `children: NavLeaf[]`), each leaf with `labelKey`, route and
@@ -113,6 +147,11 @@ Per-file list:
   tabela marca as entradas que vão para o rodapé do `infer` e promove a rede
   para o menu principal; `navForProfile` e `navFooterForProfile` são suas duas
   projeções. Testes em `nav.test.ts`.
+  A seção principal Rede contém Informações, Participantes, Administradores,
+  Compartilhamento e API Keys. Configurações contém somente Preferências,
+  Armazenamento e Preferências Administrativas; Compartilhamento é a tela única
+  que reutiliza `TrustAnchor` para raiz de confiança, esta máquina e chave de
+  conexão.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
   mobile drawer in `Topbar`). `SidebarContent` lê `useProfile()` e renderiza
   `navForProfile(profile)`, não `NAV` cru. `Section`/`Leaf` render it with an animated
@@ -128,18 +167,21 @@ Per-file list:
   shell, and a peer on an old binary looks healthy until inference.
   `SidebarUtilityControls` is the footer, and the node's `build_commit` lives
   there now, beside the controls: the bare hash in mono, no "build" label in
-  front of it, with the explanation in a `title` tooltip. `SidebarUtilityControls` shows language as **flags**
+  front of it, with the explanation in a `title` tooltip; o hash fica oculto
+  para `infer`. `SidebarUtilityControls` shows language as **flags**
   (`brand.flags[locale]`, from `brand.json`) rather than "EN"/"PT-BR", since a
   text label only helps someone who already knows what the code means and the
   target here is whoever opened the panel in the wrong language - the language
   name stays in `aria-label`/`title`, because a flag is not a language to a
   screen reader. Plus the dark/light toggle (`../lib/theme`). `TlsIndicator.tsx`
-  keeps the TLS policy link beside those flags: icon-only, with different icon
+  keeps the TLS policy link beside those flags only for `admin`: icon-only, with different icon
   and tone for encrypted versus cleartext and the meaning in
   `aria-label`/`title`. Para `infer`, o rodapé também renderiza documentação e
   API keys, enquanto a coluna principal é substituída por `ChatSessionList` e
   o link da rede. O histórico mantém o botão de nova conversa e a rede fora da
   área rolável, para uma lista longa não empurrar nenhuma ação para fora.
+  A entrada `Chat da rede` mostra o contador de mensagens recebidas desde o
+  último marcador local de leitura; abrir a tela do chat atualiza esse marcador.
   Como esse menu é visto de toda rota, escolher uma conversa ou começar uma
   nova também **navega para `/chat`**: sem isso, o clique feito das
   configurações ou da documentação só trocava a sessão ativa e deixava a tela
@@ -153,11 +195,13 @@ Per-file list:
   secondary admins and promotion chain. It exposes promotion, demotion and
   succession controls only when the presentation contract says this viewer is
   the principal; refusal states remain explicit.
-- `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
-  coverage), o selo i18n do perfil persistido do nó, the bell (`Notifications`), and `NodeActions` - a menu to unload
-  this node's slice (`POST /api/ui/unload`) or leave the network
-  (`POST /api/ui/leave`), each behind a `Confirm`. Mobile drawer renders
-  `SidebarContent` inside an animated panel.
+- `Topbar.tsx` - Sticky header: `NodeChip` (hostname, short_id, peer count,
+  coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela
+  maior, the bell (`Notifications`) and `NodeActions` for unloading this
+  node's slice. Mobile drawer renders `SidebarContent` inside an animated
+  panel whose fixed backdrop unmounts synchronously when navigation closes it,
+  so an invisible exit layer never blocks the next hamburger click. A ação de
+  sair da rede não fica exposta no menu.
 - `Notifications.tsx` — The activity bell: counts running slicing jobs
   (`useJobs`), transfers worth notifying (`useTransfers` +
   `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars
@@ -188,8 +232,9 @@ Per-file list:
   imports it); only `trackOf` (the repeating color palette, `TRACKS`) is still
   exported, reused by `PeerDetailCard`, `Dashboard` and `DeployModel`.
   Currently rendered hidden on Dashboard.
-- `ModelNetworkCanvas.tsx` — The primary operational view: a pan/zoom SVG graph
-  of nodes (range cards with VRAM/RAM/load/temperature meters when a GPU exists) and curved edges, driven by
+- `ModelNetworkCanvas.tsx` - A visão operacional principal: um grafo SVG com
+  pan/zoom de nós (cards de faixa com medidores agrupados de RAM/carga/VRAM,
+  seguidos pelas temperaturas compactas quando há GPU) e arestas curvas, guiado por
   `graphFromCluster` (`../lib/networkGraph`). Edges have three states via
   `edgeStyle` (principal / paralela / inativa) from `cluster.routing_edges` and
   `cluster.candidate_edges` (replicas = ready alternate routes). Positions are
@@ -208,11 +253,22 @@ Per-file list:
   label component as the deploy map. The cluster coverage badge is an admin
   summary; node and infer profiles use their own model and slice data instead.
   A missing peer load stays visibly unknown in the card meter and is never
-  rendered as zero.
+  rendered as zero. The selected pipeline is drawn only forward; a virtual
+  `Gateway` is placed after the last layer stage and receives the return-leg
+  arrow. Its card shows every complete deployed route, including the return
+  leg, ordered by aggregate RTT and then node ID. It uses the least-cost route
+  for the headline and keeps alternatives visible; an absent leg remains
+  unknown and is never treated as zero. An observed execution cost still
+  includes peer compute when that measurement exists.
+  When the Dashboard has an active deployment, its properties toggle is a
+  compact icon button inside the map's upper-right control area, next to the
+  zoom and Fit controls; the dashboard toolbar remains reserved for cluster
+  status and actions.
 - `RouteRttLabel.tsx` - selo visual de RTT direcional compartilhado pelo mapa
-  do Painel e pelo mapa de implantação. O texto e as classes são os mesmos nos
-  dois contextos, inclusive quando a medição ainda não existe (`RTT -`).
-- `PeerDetailCard.tsx` — The card of one machine, in the same drawing for every
+  do Painel e pelo mapa de implantação. No Painel ele também identifica o
+  transporte efetivo (`HTTP`, `HTTPS` ou `QUIC`) observado na execução; quando
+  a medição ainda não existe, conserva `RTT -` em vez de usar a sonda libp2p.
+- `PeerDetailCard.tsx` - The card of one machine, in the same drawing for every
   machine. It lives outside `Dashboard` because it shows in two places: the
   details tab stacks one card per machine (`networkPeers` splits the whole
   network into the active deployment first, in layer order, then the rest), and
@@ -238,16 +294,19 @@ Per-file list:
   como beco sem saída mandava o utilizador procurar um defeito inexistente. Ver
   `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder".
   `PipelineRail` e `ModelNetworkCanvas` fazem a mesma distinção.
-  `UpdateNode` (update+restart, dev-only via
-  `POM_DEV_UPDATE`), `RemoveNode`, `LeaveNode` and `ReleaseSlice` all
-  render from here now - e todos numa **barra de ferramentas no topo do
-  card**, junto do distintivo de MTP, em vez de espalhados pelo pé: reiniciar
-  uma máquina era rolar até o fim de tudo o que ela reporta. O card é denso de
+  `RemoveNode`, `LeaveNode` e `ReleaseSlice` renderizam daqui - todos em uma
+  **barra de ferramentas no topo do card**, ao lado do distintivo de MTP, em
+  vez de espalhados pelo rodapé. `RemoveNode` libera a fatia do modelo desta
+  máquina e a mantém no cluster; `LeaveNode` a remove da rede inteira, então
+  as duas ações permanecem visíveis. A ação de atualização e reinício, exclusiva
+  de desenvolvimento, não é renderizada. O card é denso de
   propósito (`compact` em `Meter`/`KeyValue`, seções `px-3 py-2.5`) para caber
   numa tela; o que é útil sem precisar estar sempre visível vive num `InfoTip`
   (a razão de "sem fatia", o `gpu_note`, a nota do fit, caminho do modelo, pid
   e reinícios), e "Parâmetros de carga do llama.cpp" e "Processos na GPU" são
-  `<details>` fechados. Os discos são **um medidor por partição montada**
+  `<details>` fechados. A sequência das métricas segue o mesmo padrão do card
+  compacto: telemetria da GPU (uso, temperatura e watts opcionais em uma linha
+  por GPU), RAM, carga e discos. Os discos são **um medidor por partição montada**
   (`system.disks`), com recuo para `system.disk` num nó que ainda não publique
   a lista. `PeerPlacement` (interno) é a única parte do card que
   faz uma chamada extra: monta só com a máquina servindo, e o `enabled` do
@@ -255,7 +314,8 @@ Per-file list:
   Quando a configuração pediu MTP, o mesmo card também mostra
   `mtp_ready`/`mtp_allocation`/`mtp_unavailable_reason` do runtime, incluindo o
   local medido do contexto e a razão da falha de anexação. A seção térmica mostra uma linha por GPU e declara temperatura
-  desconhecida quando o driver não fornece leitura.
+  desconhecida quando o driver não fornece leitura; a potência permanece
+  desconhecida quando a plataforma não publica watts.
 - `ModelPlacement.tsx` - a seção "Como o modelo foi carregado": a tira de
   camadas (uma célula por bloco, verde na GPU, âmbar dividida, cinza na CPU),
   os totais de peso por lado, onde o cache KV ficou e a cabeça de saída.
@@ -267,18 +327,24 @@ Per-file list:
   derivar de `n_gpu_layers`.
 - `AddNodeDialog.tsx` — "Add a machine to a live model" dialog:
   `POST /api/ui/deploy/node` applies to the target only (no redeploy of the
-  cluster). Overlap is the point — it creates a parallel route — so it is
-  flagged, not blocked. Exports `rangeOverlap` (shared layers between a chosen
-  range and existing ones). Slices come from `Dashboard`'s `deploy/plan`.
+  cluster). `POST /api/ui/deploy/node/options` is re-read for the selected
+  target, so its own slices and whole GGUF are offered instead of a fixed
+  cluster plan. The same response supplies that machine's GPU layers, KV
+  placement and K/V cache choices, which are sent with the add request.
+  Overlap is the point - it creates a parallel route - so it is flagged, not
+  blocked. The dialog can add a whole-model head to a sliced deployment and
+  vice versa. Exports `rangeOverlap` (shared layers between a chosen range and
+  existing ones).
   `Dashboard` mounts this dialog and its trigger only for the `admin` profile;
   the server repeats that authorization and returns a clear localized refusal
   for other profiles.
   Re-seeding the two selects happens on the *open* transition only (`wasOpen`
-  ref): `Dashboard` rebuilds `peers`/`slices` on every cluster poll, so an
-  effect keyed on those props threw the operator's choice away mid-edit. A
-  second effect only replaces a choice that disappeared from the list. The
-  slice select is keyed by `start-end` (`keyOf`), not by array index, so a
-  reordered list cannot silently point at another range.
+  ref): `Dashboard` rebuilds `peers` on every cluster poll, so an effect keyed
+  on those props threw the operator's choice away mid-edit. A second effect
+  only replaces a choice that disappeared from the list. The catalog request
+  is aborted when the machine changes, and the option select is keyed by kind
+  plus `start-end` (`keyOf`), not by array index, so a reordered list cannot
+  silently point at another range.
 - `Confirm.tsx` - Two exports. `Modal` is the shell (veil + panel + header +
   footer) rendered via `createPortal` straight into `document.body`. The portal
   is not preference: `position: fixed` stops being relative to the viewport when
@@ -420,13 +486,17 @@ Key logic carriers:
   padrões* (o que o llama.cpp já tem, incluindo os combos de cache KV da
   instalação), *Configurações POM* (motor, ajuste de memória, chunks em voo,
   fusão de fatias, precisão do estado oculto) e *Configurações POM (DESENV)*
-  (detector de ciclo e recuo do MTP para a RAM). O `[i]` vem **antes** do nome,
+  (detector de ciclo, recuo do MTP para a RAM e descarregamento ocioso por
+  peer). O `[i]` vem **antes** do nome,
   numa coluna reta: depois de nomes de larguras diferentes ele saía serrilhado.
   O combo do motor não oferece "Automático" e assume `dense` ao montar - é
   apresentação, o backend continua aceitando os três modos. Números de ponto
   flutuante passam por `showNumber`, senão a temperatura sai como
   `0.699999988079071`. Os controles de cache KV, fusão de fatias e precisão do
-  estado oculto só aparecem quando quem monta os passa.
+  estado oculto só aparecem quando quem monta os passa. `VisionControl` segue
+  a mesma fronteira: exibe e alterna o mmproj resolvido para modelos inteiros
+  e fatias, ou mostra a indisponibilidade localizada quando a rodada fatiada
+  não tem projetor.
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
   inclui a profundidade do pipeline de prefill (`prefill_max_inflight_chunks`,

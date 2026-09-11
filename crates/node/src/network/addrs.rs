@@ -143,6 +143,49 @@ pub fn filter_candidates(brutos: Vec<LocalAddr>, fixado: Option<&str>) -> Vec<St
     saida
 }
 
+/// Escolhe o endereço inicial que o wizard sugere para os peers.
+///
+/// A rota UDP pode escolher o IPv6 temporário de privacidade no macOS. A
+/// enumeração das interfaces conhece essa distinção, então a sugestão deve
+/// passar pela mesma filtragem usada pelo anúncio e aplicar a preferência de
+/// produto: IPv6 global estável, depois qualquer IPv4 utilizável. O operador
+/// continua podendo editar o valor, e o anúncio do nó continua redetectando os
+/// endereços atuais.
+pub fn preferred_advertise_ip(brutos: Vec<LocalAddr>) -> Option<String> {
+    let candidatos = filter_candidates(brutos.clone(), None);
+    let estavel = |ip: &str| {
+        brutos.iter().any(|source| {
+            !source.deprecated
+                && !source.temporary
+                && sem_colchetes(&source.ip) == sem_colchetes(ip)
+        })
+    };
+    candidatos
+        .iter()
+        .find(|ip| {
+            // `filter_candidates` orders stable addresses first but returns
+            // strings, so retain the explicit stability check here instead
+            // of treating that order as metadata.
+            estavel(ip)
+                && ip
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::Ipv6Addr>()
+                    .is_ok_and(|value| !is_private_or_local(&value.to_string()))
+        })
+        .cloned()
+        .or_else(|| {
+            candidatos
+                .into_iter()
+                .find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+        })
+}
+
+/// Retorna a preferência calculada para as interfaces atuais desta máquina.
+pub fn preferred_local_advertise_ip() -> Option<String> {
+    preferred_advertise_ip(local_addrs())
+}
+
 /// Enderecos das interfaces desta maquina.
 ///
 /// Sem dependencia nova: le a saida de `ifconfig` (macOS) ou `ip -o addr`
@@ -314,6 +357,62 @@ mod tests {
             },
         ];
         assert_eq!(filter_candidates(brutos, None)[0], "2804:d55::sec");
+    }
+
+    #[test]
+    fn preferred_address_chooses_stable_global_ipv6_before_ipv4() {
+        let brutos = vec![
+            LocalAddr {
+                ip: "2804:d55::100".into(),
+                interface: Some("en0".into()),
+                deprecated: false,
+                temporary: true,
+            },
+            LocalAddr {
+                ip: "192.168.1.8".into(),
+                interface: Some("en0".into()),
+                deprecated: false,
+                temporary: false,
+            },
+            LocalAddr {
+                ip: "2804:d55::200".into(),
+                interface: Some("en0".into()),
+                deprecated: false,
+                temporary: false,
+            },
+        ];
+        assert_eq!(
+            preferred_advertise_ip(brutos),
+            Some("2804:d55::200".to_string())
+        );
+    }
+
+    #[test]
+    fn preferred_address_falls_back_to_ipv4_when_ipv6_is_private_or_temporary() {
+        let brutos = vec![
+            LocalAddr {
+                ip: "2804:d55::100".into(),
+                interface: Some("en0".into()),
+                deprecated: false,
+                temporary: true,
+            },
+            LocalAddr {
+                ip: "fd12:3456::1".into(),
+                interface: Some("en0".into()),
+                deprecated: false,
+                temporary: false,
+            },
+            LocalAddr {
+                ip: "192.168.1.8".into(),
+                interface: Some("en0".into()),
+                deprecated: false,
+                temporary: false,
+            },
+        ];
+        assert_eq!(
+            preferred_advertise_ip(brutos),
+            Some("192.168.1.8".to_string())
+        );
     }
 
     #[test]

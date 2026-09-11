@@ -15,15 +15,19 @@ Portas, para situar: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000 (52777),
 gateway HTTP `--gateway-port` (8080), e o servidor de inferência
 `--inference-port` (8181, `inference/infer_server.rs`, um router separado que
 serve `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/health` - não
-passa por este gateway). O
+passa por este gateway). O gateway também registra `/v1/link` para o retorno
+full-duplex do `remote-stream`; os dois listeners usam o mesmo enquadramento,
+mas o callback persistente termina no `ReplyInbox` do gateway. O
 `/health` do servidor de inferência responde `model_loaded` (o que promove a
 anotação da fatia para `serving`, ver `fatiamento.md`) e expõe `kv_can_shift`,
 a condição de a cabeça rascunhar na decodificação especulativa.
-As rotas internas desse listener exigem `Authorization: Bearer <connection_key>`
-e `x-pom-internal-node: 1`; elas não aceitam API keys de cliente.
-Essa reconferência é local e em tempo constante sobre o segredo compartilhado;
-não abre uma requisição adicional. A chave pública e a assinatura Ed25519 são
-usadas separadamente no handshake para provar a identidade do peer.
+As rotas internas desse listener exigem a `connection_key` e
+`x-pom-internal-node: 1` em redes privadas; em redes públicas, HTTPS e QUIC
+podem usar o transporte seguro e o marcador, enquanto o fallback HTTP leva a
+mesma `connection_key` compartilhada com o marcador. Elas não aceitam API keys
+de cliente. Essa reconferência não assina os quadros de inferência. A
+chave pública e a assinatura Ed25519 são usadas separadamente no handshake para
+provar a identidade do peer.
 
 ## 1. O router e os grupos de rotas
 
@@ -33,7 +37,8 @@ usadas separadamente no handshake para provar a identidade do peer.
   `GET /peers`, `GET /health`, `POST /handshake` (`session::handle_handshake`),
   `POST /v1/relay-result` (`direct::RELAY_RESULT_PATH`, limite de corpo 1 MB),
   `POST /v1/remote-stream-result` (`direct::REMOTE_STREAM_RESULT_PATH`, o
-  callback limitado do transporte remoto).
+  callback HTTPS de fallback do transporte remoto) e `POST /v1/link` (canal
+  persistente full-duplex do retorno remoto, sem limite de corpo externo).
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,
@@ -109,8 +114,15 @@ do escopo com HTTP 403 e JSON nomeando rota e perfil. Uma chamada entre nós que
 prova `InternalNodeAuth` pode atravessar o perfil local do receptor para o
 fan-out de controle; o handler ainda exige a assinatura administrativa quando
 a operação muda autoridade. Nas rotas `common/identity internal`, as chamadas
-entre nós exigem a `connection_key` correta e o marcador interno validado pelo
-handler, nunca o marcador sozinho. `/api/setup/key`, `/api/setup/save` e as rotas da porta 8181
+entre nós privados exigem a `connection_key` correta e o marcador interno
+validado pelo handler, nunca o marcador sozinho. Em redes públicas, o controle
+usa `x-pom-control-signature`: um envelope Ed25519 cobre método, caminho,
+nonce, epoch e hash do corpo, e o emissor precisa ser uma autoridade vigente na
+cadeia. Os quadros de inferência ficam fora dessa assinatura e dependem do
+transporte TLS. `/api/setup/hardware`, `/api/setup/models`,
+`/api/setup/admin-anchor/preview`, `/api/setup/admin-token`, `/api/setup/trust-anchor`,
+`/api/setup/health` e `/api/setup/save` só existem no router de primeiro acesso;
+`/api/setup/save` instala a raiz e o `pom.json` antes de reiniciar. As rotas da porta 8181
 (`/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/v1/session/*`,
 `/v1/tp/reduce`, `/health`) ficam explicitamente fora do escopo desta política.
 
@@ -131,8 +143,10 @@ apresentação e não definem chave, assinatura ou armazenamento de concessões.
 
 ## 2.1 Autoridade administrativa
 
-`connection_key` é apenas credencial de transporte entre nós. A capacidade de
-admin vem do arquivo separado `config::admin_trust_path()`, protegido com modo
+`connection_key` é credencial de transporte entre nós privados e credencial
+local da superfície administrativa. Em rede pública, ela não é um segredo de
+admissão nem é compartilhada. A capacidade de admin vem do arquivo separado
+`config::admin_trust_path()`, protegido com modo
 0600 e contendo a âncora manual, a concessão raiz, a cadeia de concessões
 secundárias, despromoções, sucessão e registros persistidos de replay. O
 `profile: admin` sozinho não cria capacidade: sem cadeia válida o nó permanece
@@ -215,8 +229,9 @@ servidor então emite uma sessão em memória identificada por cookie `HttpOnly`
 `SameSite=Strict`, com validade de 8 horas e caminhos somente administrativos.
 O digest da sessão é invalidado ao regenerar o token ou voltar a localhost.
 O valor do token é comparado no servidor e nunca é substituído pela
-`connection_key`. Chamadas de controle entre nós usam um marcador interno junto
-da `connection_key`, sem abrir esse caminho para o navegador.
+`connection_key`. Em rede pública, chamadas de controle entre nós usam somente
+o envelope assinado; em rede privada usam também o marcador interno junto da
+`connection_key`, sem abrir esse caminho para o navegador.
 
 Toda recusa administrativa se nomeia no cabeçalho `x-pom-admin-error`:
 `missing-token` (401, não havia credencial nenhuma), `invalid-token` (403,
@@ -236,10 +251,10 @@ que o HTTP de reserva do túnel libp2p não seja interrompido. `GET /api/access`
 é a única exceção pública da administração, pois informa apenas o modo, a
 necessidade de token e a porta para a tela decidir se deve mostrar a catraca.
 
-Em **modo setup** (sem `pom.json`), `main.rs` monta um router menor: só
-`/api/setup/key`, `/api/setup/save` e a UI. As duas rotas de setup não estão no
-router principal e não podem ser autenticadas - existem justamente antes de
-haver chave.
+Em **modo setup** (sem `pom.json`), `main.rs` monta um router menor: as rotas
+`/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
+`/api/setup/admin-token`, `/api/setup/trust-anchor`, `/api/setup/health`, `/api/setup/save` e a UI. Elas
+não estão no router principal e só existem antes da configuração inicial.
 
 ## 2. Rotas por grupo
 
@@ -249,7 +264,9 @@ haver chave.
   com `response`, `source` (`"pipeline:<cadeia>"`, `"local"`,
   `"peer:<node_id>"` ou `"none"`/`"error"`), `tokens_generated`,
   `tokens_per_sec`, `duration_ms`, `timings`, `trace`. `timings` agrega o
-  pipeline inteiro e separa `ttft_ms` (fila + prefill até o primeiro token),
+  pipeline inteiro e separa `pipeline_first_token_ms`/`server_ttft_ms` (fila +
+  prefill até o primeiro token), `client_ttft_ms` quando o cliente o mede,
+  e `ttft_ms` por compatibilidade,
   `prefill_ms`/`prefill_tokens_per_sec` (tokens efetivamente processados, após
   reuso de prefixo), `generation_ms`/`generation_tokens_per_sec` (saída desde
   o primeiro token) e `total_ms`/`total_tokens_per_sec`. Uma taxa sem tokens ou
@@ -277,7 +294,9 @@ haver chave.
 - **`GET /health`** - `status`, `ollama_available`, `peer_count`,
   `pipeline_peers` (com `inference_port`), `default_model` e
   `runtime_capacity` (`n_ctx`, `max_new_tokens`) quando o runtime local já
-  respondeu `model_loaded`. Na porta de inferência, a resposta também publica
+  respondeu `model_loaded`. A sonda opcional de Ollama tem teto de 500 ms, então
+  um Ollama ausente ou o enriquecimento frio do catálogo não bloqueia a resposta
+  do gateway. Na porta de inferência, a resposta também publica
   `n_ubatch_effective`, `mtp_ready` e `mtp_unavailable_reason`; este último
   explica por que o contexto MTP pedido não foi anexado. `load_params` traz os
   parâmetros de llama.cpp com que o contexto subiu - `n_ctx`, `n_ctx_seq`,
@@ -303,20 +322,36 @@ haver chave.
 - **`POST /v1/relay-result`** - onde a **cauda** de um pipeline entrega o
   resultado direto (`relay/v2-direct`). Não usa API key de cliente: exige um
   ticket vivo no corpo; ticket morto = `410 Gone`.
-- **`POST /v1/remote-stream-result`** - callback do head remoto para cada lote
-  oportunista. Não usa API key de cliente: exige um ticket vivo. O ticket é
-  consumido por um `mpsc` limitado a 16 lotes; quando a
+- **`POST /v1/remote-stream-result`** - callback HTTPS de fallback do head remoto
+  para cada lote oportunista. Não usa API key de cliente: exige um ticket vivo.
+  O ticket é consumido por um `mpsc` limitado a 64 lotes; quando a
   fila está cheia, o handler espera e aplica contrapressão. Ticket cancelado ou
   lote terminal encerra o stream; ticket desconhecido responde `410 Gone`.
   Além de `accepted`, `done`, tempos e `node_timings`, o lote pode trazer
   `next_draft`, `speculated`, `speculation_active` e
-  `speculation_disabled_reason`. O draft viaja nesse mesmo callback, mas a
-  cabeça remota o instala internamente no próximo `step`; o gateway não faz
-  uma chamada de reinjeção. Peers antigos sem esses campos continuam válidos.
+  `speculation_disabled_reason`, identidade de trace e métricas agregadas de
+  frame (`stream_id`, índice, lifetime, primeira entrega, latência e bytes).
+  O trace do gateway resume essas métricas em min/p50/p95/p99/máximo para
+  latência de frame, min/p50/p95/p99/máximo para compute remoto e total/p50/p95
+  para espera. O draft viaja nesse mesmo callback, mas a cabeça remota o
+  instala internamente no próximo `step`; o gateway não faz uma chamada de
+  reinjeção. Peers antigos sem esses campos continuam válidos.
+- **`POST /v1/link` no gateway** - retorno persistente full-duplex do
+  `remote-stream`. O corpo é um fluxo de envelopes do mesmo formato do canal de
+  inferência, cada frame carrega `REMOTE_STREAM_RESULT_PATH` e o item contém o
+  ticket. O handler reconfere a credencial interna antes de despachar cada
+  frame, entrega ao `ReplyInbox` e devolve o ACK no próprio canal. Falha desse
+  transporte é marcada como fallback HTTPS no lote seguinte.
 - **`GET /api/cluster/tls`** - `{ tls_required }`. É o que a catraca dos outros
-  nós consulta no principal. **Exige a chave de conexão**, e é isso que impede
-  um intruso de responder pelo principal e rebaixar o cluster para texto claro.
+  nós consulta no principal. Exige `InternalNodeAuth`, isto é, a chave de
+  conexão e `x-pom-internal-node: 1`; isso impede um intruso de responder pelo
+  principal e rebaixar o cluster para texto claro.
   Ver `rede-p2p.md`, seção 5.
+
+- **`GET /api/cluster/quic`** - `{ quic_enabled }`. É a fonte autenticada da
+  preferência HTTP/3 consultada pelos peers quando o campo `quic` do Announce
+  dispara a catraca. Não aceita o anúncio como política e exige a mesma
+  `connection_key` compartilhada.
 
 ### OpenAI (`/v1/*`)
 
@@ -389,15 +424,19 @@ campos compatíveis com os dois clientes: `type: "model"`, `created_at`,
 
 Os limites vêm do runtime efetivo e da rede: `context_length`,
 `max_input_tokens`, `max_tokens` e `top_provider.max_completion_tokens` são o
-menor `n_ctx` entre todos os peers vivos que servem o modelo/implantação, a
-capacidade da **requisição**, não o teto de uma perna. Anunciar o
+menor `n_ctx` entre os peers da pipeline planejada que servem o
+modelo/implantação, a capacidade da **requisição**, não o teto de uma perna.
+Anunciar o
 `max_new_tokens` da implantação aqui faria o cliente pedir menos do que o nó
 entrega. O mesmo mínimo de peers é usado pela validação de cada requisição.
 Um peer só entra nessa capacidade depois de seu `/health` confirmar o modelo
 carregado; durante restart, o anúncio anterior é retirado.
-Se ainda houver um peer vivo sem essa confirmação, o modelo não entra no
-catálogo e uma requisição explícita fica HTTP 503 até todos os peers provarem
-o runtime, em vez de cair na capacidade local e esconder um estágio antigo.
+Um peer ocioso escolhido pelo plano é acordado por `reload_model` antes da
+geração e a requisição espera seu `/health`; os peers ociosos planejados são
+acordados em paralelo, com teto de 15 minutos para a barreira. Um peer vivo de
+rota alternativa não bloqueia o catálogo nem a admissão. Um peer planejado não
+ocioso sem essa confirmação mantém o modelo pendente, em vez de cair na
+capacidade local e esconder um estágio antigo.
 
 ### Anthropic (`/v1/messages`)
 
@@ -575,17 +614,22 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `peer/:node_id/runtime`, `paths`,
 `plan`, `apply`, `launch`, `stop-inference`, `slice` + `slice/plan`, `jobs` +
 `jobs/:id`, `unload`, `release` + `release/candidate`, `leave`, `rejoin`,
-`requests` e `requests/stats` (a auditoria persistente, respectivamente
-`reqlog::list_requests` e `reqlog::stats_requests`), `network/rtt` (GET
+`requests` e `requests/stats` (a auditoria persistente local de cada admin,
+respectivamente `reqlog::list_requests` e `reqlog::stats_requests`), `network/rtt` (GET
 autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
-recebe `{ node_ids }` e devolve somente os RTTs direcionais observados entre os
-peers solicitados), `chat/history` (GET/POST/DELETE autenticados para o histórico
+recebe `{ node_ids, execution_id? }` e devolve transporte e RTT de fio
+observado nas arestas da execução identificada; sem `execution_id`, também
+devolve todas as rotas completas do modelo ativo com RTT agregado das sondas
+direcionais do gateway e dos peers, incluindo um único head sem aresta no
+grafo; o RTT de execução com processamento remoto continua no trace),
+`chat/history` (GET/POST/DELETE autenticados para o histórico
 durável de conversas), `dev/update` +
 `dev/restart`, `network/advertise-addr`, `network/tls`, `thermal`. `leave` aceita
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
-`GET /api/ui/infer/heads?model=<id>` é a leitura dedicada do perfil `infer`:
+`GET /api/ui/infer/heads?model=<id>` é a leitura dedicada das cabeças de
+inferência, autorizada para os perfis `infer` e `admin`:
 retorna somente as máquinas vivas que anunciam uma faixa começando em L0 para
 o modelo pedido, além da cabeça escolhida, carga em voo e RTT/idade de cada
 candidata. O planejador exige cobertura completa; a cobertura vem primeiro e,
@@ -596,6 +640,12 @@ não chegar, ele é `null`, não zero.
 Sem candidata a resposta é `status: "no_candidate"`; com cabeça mas sem
 cobertura completa é `status: "incomplete_pipeline"`. RTT vencido aparece
 para diagnóstico, mas não entra na escolha.
+O `POST /v1/chat/completions` aceita ainda o campo POM opcional
+`inference_head`, com o `node_id` de uma dessas candidatas. Quando presente,
+o planejador valida que o nó continua vivo e começa a pipeline por ele; não
+recalcula outra cabeça por RTT/carga. O `x_pom.source` e o trace da resposta
+mostram a cadeia que efetivamente começou nessa cabeça. Uma escolha ausente,
+inválida ou já desaparecida falha fechada, sem trocar silenciosamente de nó.
 
 `GET /api/ui/deployments` deduplica as cópias persistidas por `deploy_id` e
 marca `serving` somente quando um peer vivo anuncia o deployment. O registro
@@ -603,6 +653,12 @@ pode continuar visível com `serving: false` para diagnóstico e recuperação,
 mas não publica modelo para os clientes de inferência. `?local=true` responde
 somente o registro local e não faz fan-out; `/v1/models` usa a lista viva do
 gateway, não esse catálogo persistido.
+
+`POST /api/ui/deploy/node/options` consulta o catálogo e a configuração da
+máquina indicada em `target_node_id`. Devolve as opções de fatia e de modelo
+inteiro disponíveis nessa máquina, além de defaults de GPU/KV e os tipos de
+cache aceitos. A tela chama a rota novamente quando o operador troca o
+dropdown, evitando reutilizar um plano de outro peer.
 
 `POST /api/ui/deploy/node` (somar uma máquina a uma implantação) e
 `POST /api/ui/undeploy` (tirar a implantação inteira do ar) exigem, além da
@@ -612,6 +668,11 @@ adicionar uma máquina ou desimplantar a implantação. A interface esconde os
 dois controles para os perfis `node` e `infer`, mas o servidor mantém a
 autoridade. `POST /api/ui/deploy/node/remove` é diferente: libera uma única
 máquina pelo botão do próprio card e continua disponível para qualquer perfil.
+Adicionar ou remover com `deploy_id` anexa uma nova versão com o conjunto de
+máquinas resultante. A remoção parcial mantém `serving: true`; a última grava
+uma versão vazia, que continua no histórico mas não é uma implantação viva.
+O `kind` do registro passa a `mixed` quando uma cabeça de modelo inteiro e uma
+cabeça fatiada coexistem no mesmo deployment.
 
 As rotas remotas `/api/ui/model-provider/search`, `/details`, `/storage` e
 `/downloads` expõem o catálogo e os jobs do `ModelProvider` sem repassar
@@ -625,8 +686,9 @@ e sessão autenticada ficam distinguíveis para a UI. O detalhe do modelo consul
 a licença no provider antes de a tela oferecer o download.
 
 `GET /api/ui/requests` exige `ConnectionAuth`, pois devolve prompts e corpos de
-requisição. Os filtros são `node_id`, `api_key` (id, rótulo ou nó associado),
-`prompt` (busca FTS5), `from`, `to`, `limit` e `offset`; a ordenação é por
+requisição. Os filtros são `node_id`, `user` (rótulo humano da API key),
+`api_key` (id, rótulo ou nó associado), `model`, `prompt` (busca FTS5), `from`,
+`to`, `limit` e `offset`; a ordenação é por
 `received_at` mais recente. A UI usa `limit` e `offset` para scroll infinito,
 sem carregar o histórico inteiro no primeiro pedido. O banco fica em
 `pom.db`, em `POM_DB_DIR` quando definido ou em `config::project_root()` por
@@ -644,9 +706,9 @@ ou de enfileiramento é registrada no log do servidor com a operação e o
 request id perdido, e não é propagada à requisição de inferência.
 
 `GET /api/ui/requests/stats` exige a mesma `ConnectionAuth` e aceita os filtros
-`node_id`, `api_key`, `prompt`, `from` e `to`, mas não pagina. O servidor faz uma
-única agregação sobre as linhas filtradas e devolve totais por token, nó, dia e
-modelo, consumo por peer (`bytes_sent`, `bytes_received`, `network_ms`), média
+`node_id`, `user`, `api_key`, `model`, `prompt`, `from` e `to`, mas não pagina. O
+servidor faz uma única agregação sobre as linhas filtradas e devolve totais por
+token, nó, dia e modelo, consumo por peer (`bytes_sent`, `bytes_received`, `network_ms`), média
 de inferência, TTFT médio, fichas de entrada/saída, estados terminais e cache
 de prefixo (`input_tokens`, `cached_tokens`, requisições elegíveis e acertos).
 Essa separação evita uma varredura pesada no cliente e deixa a lista de linhas
@@ -689,6 +751,33 @@ ciclo de gossip. `GET /api/ui/node` devolve o par `tls_required` (estado) e
 implantação possa reconstruir o túnel no rank que vai executar a chamada. Ver
 `rede-p2p.md`, seção 5.
 
+**`GET /api/cluster/logs`** - exige `InternalNodeAuth`, isto é,
+`Authorization: Bearer <connection_key>` mais `x-pom-internal-node: 1`, e
+devolve `{ logs_enabled }`. É a fonte autenticada que os nós consultam quando
+o campo `cluster_logs_enabled` do anúncio dispara a catraca; não aceita o
+anúncio como política.
+
+**`GET /api/cluster/network-chat`** - usa a mesma `InternalNodeAuth` e devolve
+`{ network_chat_enabled }`. A classificação do gateway é comum/interna, para
+que uma chamada de peer não passe pela catraca de token humano.
+
+O `pom.json` aceita `cluster_logs_min_level` (`trace`, `debug`, `info`, `warn`
+ou `error`) para escolher o nível mínimo gravado; o padrão é `info` e isso não
+altera o console. O principal poda `cluster_logs` periodicamente, mantendo os
+últimos sete dias e no máximo 500.000 linhas, o que ocorrer primeiro. A poda
+em lotes e a recuperação do WAL não alcançam `audit_requests`,
+`audit_request_hops` nem `audit_prompt_fts*`.
+**`POST /api/ui/network/quic`** - corpo `{ quic_enabled: bool }`, liga ou
+desliga a preferência HTTP/3 sobre QUIC para novos hops de inferência. Só o
+principal pode alterar; não há reinício e peers adotam a decisão pela catraca
+autenticada. `GET /api/ui/node` devolve `quic_enabled` e `quic_authority` para
+a tela distinguir estado de autoridade. Os endpoints UDP usam as portas
+dedicadas anunciadas em `inference_quic_port` e `gateway_quic_port`, sem
+reutilizar a porta TCP nem a `inference_url`. Falha de negociação mantém o
+caminho TCP e aparece como fallback na telemetria; a descoberta limita o custo
+de endpoints mortos a um orçamento agregado de 300 ms e evita novo handshake
+no mesmo endpoint por 5 s.
+
 **`GET /api/cluster/logs`** - exige `ConnectionAuth` e devolve
 `{ logs_enabled }`. É a fonte autenticada que os nós consultam quando o campo
 `cluster_logs_enabled` do anúncio dispara a catraca; não aceita o anúncio como
@@ -699,10 +788,16 @@ desliga a captura e o envio do log de processo do cluster em tempo real. Só o
 principal recebe a operação; o efeito é aplicado sem reinício e anunciado como
 gatilho para a busca autenticada dos demais nós.
 
-**`GET /api/ui/cluster-logs`** - exige `ConnectionAuth` no principal e devolve
-as linhas persistidas em ordem de chegada, com `deploy_id`, timestamp de origem,
-nome do nó e contador de descartes. Aceita `deploy_id` e `limit`; não reordena
-por `origin_at`.
+**`GET /api/ui/cluster-logs`** - exige `ConnectionAuth` em qualquer admin com
+autoridade efetiva e devolve as linhas persistidas na réplica local, em ordem de
+chegada, com `deploy_id`, timestamp de origem, nome do nó e contador de
+descartes. Aceita `deploy_id` e `limit`; não reordena por `origin_at`. Sem dados
+locais, a resposta vazia é legítima e não significa que o role seja secundário.
+
+**`GET /api/ui/requests`** e **`GET /api/ui/requests/stats`** - exigem
+`ConnectionAuth` em qualquer admin com autoridade efetiva e consultam o SQLite
+local. O fluxo de geração replica os eventos de auditoria para os demais admins
+por libp2p; a consulta secundária não faz fallback para o principal.
 
 **`GET/POST /api/ui/thermal`** - exige `ConnectionAuth`. O GET devolve a
 política local `{ limit_c, hysteresis_c, cooldown_secs }`; o POST valida que o
@@ -750,13 +845,21 @@ ilegível. Endereços IPv6 temporários rodam sozinhos e o cluster tem de aguent
 isso sem `--advertise-addr`: ver `docs/subsystems/rede-p2p.md`, "Endereço que
 deixou de responder".
 **`POST /api/ui/chat/telemetry`** - coleta sob demanda feita depois de uma
-execução do Chat. O gateway inclui a medição local e consulta o
-`GET /api/ui/network/rtt` autenticado de cada peer solicitado, aceitando o
-relatório somente quando `source_node_id` coincide com o peer que respondeu.
-Cada item responde `{ from_node_id, to_node_id, rtt_ms, transport }`. A medida
-é da origem da aresta até o destino e não é o RTT do card que um gateway mediu
-até um peer. Ausência de uma medida fica ausente na resposta; não há zero de
-fallback.
+execução do Chat. Com `execution_id`, o gateway lê o trace persistido daquela
+requisição e deriva cada aresta de `pipeline_cycle.decode`, que registra a
+travessia lógica observada e o transporte efetivo (`http`, `https` ou `quic`).
+Sem o id, o Painel consulta a última execução concluída para as arestas
+solicitadas e também enumera todas as rotas completas do modelo ativo. Cada
+rota responde em `pipeline_routes` com `{ node_ids, legs_ms, rtt_ms }`, na
+ordem `Gateway -> cabeça -> ... -> cauda -> Gateway`; todas as pernas são
+somadas, e as rotas são ordenadas pelo RTT agregado crescente, com `node_ids`
+como desempate estável. Os RTTs das rotas vêm das sondas direcionais frescas do
+gateway e dos peers, incluindo o caso de um único head sem aresta no grafo.
+Uma perna sem medição fica `null`, portanto o custo daquela rota permanece
+desconhecido. A resposta também pode conter
+`pipeline_cost: { legs_ms, compute_ms }` para a execução observada. Os itens
+de execução preferem `net_rtt_median_ms` e recuam para o RTT de execução em
+traces antigos; a probe não é renomeada como telemetria de inferência.
 
 **`GET/POST/DELETE /api/ui/chat/history`** - exige `ConnectionAuth` e guarda
 sessões do Chat no `pom.db`, não no sistema de arquivos nem em um SQLite
@@ -773,8 +876,9 @@ incluído em logs de erro.
 Há uma credencial de operador, uma credencial de inferência e um extractor
 privado para sincronização entre nós:
 
-- **`ConnectionAuth`** - lê só `authorization` (prefixo `Bearer` opcional) e
-  compara com `connection_key`. É a credencial de operador: cobre `/admin/*`,
+- **`ConnectionAuth`** - lê `authorization` (prefixo `Bearer` opcional) ou um
+  envelope `x-pom-control-signature` válido e compara com `connection_key` quando
+  a rede é privada. É a credencial de operador: cobre `/admin/*`,
   `/api/ui/*` (mutáveis), `/api/transfer/*` e `/api/ui/deploy/*`. Sem header =
   401 `missing Authorization header`; chave errada = 403.
 - **`ApiKeyAuth(pub Caller)`** - aceita `authorization` **ou** `x-api-key`
@@ -784,10 +888,11 @@ privado para sincronização entre nós:
   `node_id`. O `Caller` construído aqui é o único lugar que vê a credencial e
   alimenta a auditoria com essa identidade; o segredo nunca é salvo nem
   devolvido pela rota de auditoria.
-- **`InternalNodeAuth`** - exige a `connection_key` compartilhada mais o
-  marcador `x-pom-internal-node: 1`; cobre a sincronização autenticada de API
-  keys no principal e as chamadas entre peers na porta de inferência. Nunca é
-  aceito nas rotas de inferência do cliente.
+- **`InternalNodeAuth`** - exige o envelope assinado e o marcador em chamadas
+  de controle públicas; em redes privadas aceita também a chave compartilhada.
+  O emissor assinado precisa ser conhecido e mutações de controle precisam
+  estar cobertas por uma autoridade vigente. Nunca é aceito nas rotas de
+  inferência do cliente.
 
 `POST /admin/regenerate-key` troca a `connection_key` (SHA256 de um UUID);
 mintar chaves **acumula** em vez de substituir - um token por nó/harness, e o
@@ -811,9 +916,9 @@ fica disponível nas próximas requisições até a revogação.
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
 router. `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`,
 `/v1/session/release`, `/v1/session/rollback`, `/v1/session/slot` e
-`/v1/tp/reduce` exigem `Authorization: Bearer <connection_key>` mais
-`x-pom-internal-node: 1`; API keys de cliente são recusadas. `/health` continua
-público para sondas de readiness.
+`/v1/tp/reduce` exigem a credencial privada em redes privadas ou TLS mais o
+marcador em redes públicas; API keys de cliente são recusadas. `/health`
+continua público para sondas de readiness.
 
 O identificador `x-pom-inference-session` continua sendo apenas contexto opaco
 de sessão. Ele não é credencial, não guarda API key e não substitui a
@@ -827,6 +932,11 @@ quadro**, para que uma revogação feita por outro processo valha na hora e não
 só quando o canal cair. O limite de corpo é desligado nessa rota porque o corpo
 é a geração inteira, não um quadro - cada quadro dentro do fluxo continua
 limitado pelo enquadramento do canal. Ver `inferencia.md` §2.1.
+
+No gateway, o mesmo path é uma segunda terminação do protocolo, usada somente
+para o retorno do `remote-stream`. Ela não executa inferência: despacha apenas
+`REMOTE_STREAM_RESULT_PATH` para o `ReplyInbox`. Isso mantém o retorno aberto e
+evita um POST HTTPS por token no caminho normal.
 
 Entre peers, um lote de inferência desce esta escada de transporte, e só desce
 um degrau depois de o anterior falhar por **transporte**: canal persistente
@@ -857,8 +967,18 @@ começando com `pipeline:` e com **dois** hops é a prova.
 `x_pom.timings` é extensão própria, tanto no último chunk do SSE quanto nas
 respostas não-streaming. O formato compatível com OpenAI continua intacto:
 clientes que ignoram `x_pom` continuam lendo `usage`, `choices` e os demais
-campos padrão. `x_pom.trace` carrega o mesmo `RequestTrace`, incluindo os quatro
-campos de aceitação MTP por requisição. A auditoria em
+campos padrão. `x_pom.trace` carrega o mesmo `RequestTrace`, incluindo os
+spans locais, `trace_id`, estado cold/warm e os campos opcionais
+`outside_node_total_ms`, `outside_node_accounted_ms` e
+`outside_node_unaccounted_ms` quando há residual explicitamente medido,
+contadores de conexão, marcos do primeiro token, métricas de streaming e os quatro campos
+de aceitação MTP por requisição. `x_pom.timings` separa TTFT legado,
+`server_ttft_ms`, `engine_ttft_ms` e `client_ttft_ms`; campo ausente significa
+que a fronteira não foi medida, não zero. A auditoria em
+e o resumo `telemetry` de integridade distribuída, com peers e spans esperados
+e observados, duplicatas, recibos tardios, ausências e agregados do
+`remote-stream`. Campo ausente significa que a fronteira não foi medida, não
+zero. A auditoria em
 `GET /api/ui/requests` preserva esse mesmo objeto em `telemetry`, ao lado de
 `timings` de geração.
 
@@ -871,14 +991,37 @@ confirmou o ciclo, não pede outra ficha, libera a sessão e fecha o fluxo.
 
 ## 5. Testes de rota - o andaime é um só (`gateway::testkit`)
 
+### Informações compartilhadas da rede
+
+`GET /api/ui/network/info` usa `ConnectionAuth` e fica disponível para
+administrador, node e infer. Ele devolve o bloco `network` persistido no
+SQLite, com fallback para `pom.json`, e `can_edit`, que só é verdadeiro para
+uma autoridade administrativa efetiva. Node e infer usam esse retrato como
+informação somente leitura.
+
+`POST /api/ui/network/settings` é uma mutação administrativa. O servidor
+normaliza e valida nome, visibilidade, país e cidade, grava o bloco em
+`pom.json` e SQLite, republica o rótulo geo no registro pkarr e envia a mesma
+configuração a cada peer. A chamada entre nós usa o envelope de controle
+assinado; uma rede privada acrescenta a `connection_key` apenas como guarda de
+transporte. O receptor verifica a autoridade do emissor antes de persistir.
+
+`GET /api/ui/network/trust-share` é somente do administrador autorizado. Ele
+retorna o documento da raiz com o nome real do arquivo para download e inclui a
+`connection_key` apenas quando a rede é local ou privada. A raiz pode ser
+compartilhada em qualquer rede; redes públicas não distribuem segredo.
+
 `gateway::testkit` (`#[cfg(test)]` em `gateway.rs`) monta um `GatewayState`
 inteiro com a tabela de peers semeada à mão: `peer(node_id, hostname,
 gateway_port)` constrói um `PeerInfo` de loopback, `state_with(node_id, peers)`
 monta o estado (com um `Network` real em porta UDP efêmera, mas **nada fala
 UDP** - um teste nunca anuncia na LAN nem cai no cluster de verdade), e
-`body_of(response)` extrai o JSON da resposta. É o único jeito de testar rota de
-controle sem transmissão; `transfer`, `deploy` e `webui` o usam. Para subir um
-nó de verdade sem sair anunciando, o equivalente em produção é `--no-discovery`.
+`state_with_secondary_admin(node_id, peers)` monta um administrador secundário
+de verdade: outro nó é o principal e o nó local recebe uma concessão
+`Secondary` assinada. `body_of(response)` extrai o JSON da resposta. É o único
+jeito de testar rota de controle sem transmissão; `transfer`, `deploy` e
+`webui` o usam. Para subir um nó de verdade sem sair anunciando, o equivalente
+em produção é `--no-discovery`.
 
 ## 6. Defeitos anotados
 

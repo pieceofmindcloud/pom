@@ -5,6 +5,12 @@ use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Testes que mudam `POM_CONFIG` ou `POM_HOME` compartilham o ambiente do
+/// processo. A trava mantém esses testes assíncronos determinísticos quando a
+/// suíte roda em paralelo.
+#[cfg(test)]
+pub static TEST_ENVIRONMENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Nome do arquivo de config: derivado da marca (`brand.json`), não escrito à
 /// mão, para renomear o produto ser uma edição só.
 fn config_filename() -> String {
@@ -46,6 +52,112 @@ impl AdminExposure {
     }
 }
 
+/// Visibility chosen during first access. It describes the operator's intent
+/// for the network and does not replace the transport or administrator trust
+/// policy.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkVisibility {
+    Local,
+    Private,
+    Public,
+}
+
+impl Default for NetworkVisibility {
+    fn default() -> Self {
+        Self::Local
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkAccessPolicy {
+    Authorized,
+    AnyoneWithAnchor,
+    LocalOnly,
+}
+
+impl Default for NetworkAccessPolicy {
+    fn default() -> Self {
+        Self::Authorized
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NetworkLocation {
+    pub latitude: f64,
+    pub longitude: f64,
+    #[serde(default)]
+    pub accuracy_m: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct NetworkSettings {
+    #[serde(default)]
+    pub public_name: String,
+    #[serde(default)]
+    pub organization: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub rules: String,
+    #[serde(default)]
+    pub channels: String,
+    /// Reference-country code selected in the first-access location step.
+    #[serde(default)]
+    pub country_code: String,
+    /// Human-readable country name from the local reference table.
+    #[serde(default)]
+    pub country_name: String,
+    /// Reference-table city or an operator-entered manual city.
+    #[serde(default)]
+    pub city: String,
+    /// Public discovery index label. This is metadata in the pkarr record, not
+    /// the pkarr public key itself.
+    #[serde(default)]
+    pub geo_label: String,
+    #[serde(default)]
+    pub visibility: NetworkVisibility,
+    #[serde(default)]
+    pub access_policy: NetworkAccessPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<NetworkLocation>,
+}
+
+/// Validate the network block wherever it is edited, not only during setup.
+/// Public networks need the coarse geographic key because discovery groups by
+/// country and city before measuring peer latency.
+pub fn validate_network_settings(settings: &NetworkSettings) -> Result<()> {
+    if settings.visibility == NetworkVisibility::Public {
+        if settings.public_name.trim().is_empty() {
+            anyhow::bail!("redes públicas precisam de um nome público");
+        }
+        if settings.country_code.trim().is_empty() || settings.city.trim().is_empty() {
+            anyhow::bail!("redes públicas precisam de país e cidade");
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResourcePolicy {
+    /// Percentage of memory kept available for the operating system.
+    #[serde(default = "default_resource_reserve_pct")]
+    pub ram_reserve_pct: f64,
+    /// Percentage of CPU capacity kept available for the operating system.
+    #[serde(default = "default_resource_reserve_pct")]
+    pub cpu_reserve_pct: f64,
+}
+
+impl Default for ResourcePolicy {
+    fn default() -> Self {
+        Self {
+            ram_reserve_pct: default_resource_reserve_pct(),
+            cpu_reserve_pct: default_resource_reserve_pct(),
+        }
+    }
+}
+
 /// Tipos de dados aceitos pelo cache KV do llama.cpp desta instalação.
 ///
 /// A definição mudou para `llama-engine` (`kv_cache.rs`) porque o lado FFI
@@ -77,6 +189,11 @@ pub struct Config {
     /// and is intentionally required in the new schema. Administrative
     /// capability comes only from the separate signed grant chain.
     pub profile: crate::profile::NodeProfile,
+    /// This file is a local preference shell waiting for first access. It is
+    /// set when leaving a network so setup can preserve machine preferences
+    /// without booting the old network.
+    #[serde(default)]
+    pub setup_pending: bool,
     #[serde(default)]
     pub connection_key: String,
     #[serde(default = "default_gateway_port")]
@@ -104,6 +221,9 @@ pub struct Config {
     /// address that has stopped answering. See `network::advertised_addr`.
     #[serde(default)]
     pub advertise_addr: Option<String>,
+    /// Human-facing network settings captured during first access.
+    #[serde(default)]
+    pub network: NetworkSettings,
     #[serde(default)]
     pub api_keys: Vec<ApiKey>,
     #[serde(default)]
@@ -118,10 +238,20 @@ pub struct Config {
     /// `tls_policy`.
     #[serde(default)]
     pub tls_required: bool,
+    #[serde(default)]
+    pub quic_enabled: bool,
     /// Coleta de logs de processo para o nó principal. A decisão é do
     /// principal e os demais nós só adotam a resposta autenticada da catraca.
     #[serde(default)]
     pub cluster_logs_enabled: bool,
+    /// Canal global de conversa, decidido pelo principal e confirmado pelos
+    /// demais nós via leitura autenticada.
+    #[serde(default)]
+    pub network_chat_enabled: bool,
+    /// Nível mínimo capturado no histórico de logs do cluster. O filtro é
+    /// local à captura e não altera o nível do console ou de outros sinks.
+    #[serde(default)]
+    pub cluster_logs_min_level: crate::cluster_logs::ClusterLogLevel,
     /// Directories holding **whole** models.
     ///
     /// `None` — the field missing from an old `pom.json`, or never edited —
@@ -139,6 +269,13 @@ pub struct Config {
     /// Maximum disk space reserved for generated model slices, in GB.
     #[serde(default = "default_shard_max_gb")]
     pub shard_max_gb: f64,
+    /// Local resource reservation selected during first access.
+    #[serde(default)]
+    pub resources: ResourcePolicy,
+    /// Optional model selected by the first-access catalog. Loading remains a
+    /// later deployment action and is deliberately not started by setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_model: Option<String>,
     /// Quais GPUs desta máquina a inferência pode usar, pelo `index` que o nó
     /// publica em `system.gpus[]` - o mesmo número que o painel mostra.
     ///
@@ -224,13 +361,18 @@ impl fmt::Debug for Config {
             .field("inference_port", &self.inference_port)
             .field("bootstrap_nodes", &self.bootstrap_nodes)
             .field("advertise_addr", &self.advertise_addr)
+            .field("network", &self.network)
             .field("api_key_count", &self.api_keys.len())
             .field("blocked_nodes", &self.blocked_nodes)
             .field("tls_required", &self.tls_required)
             .field("cluster_logs_enabled", &self.cluster_logs_enabled)
+            .field("network_chat_enabled", &self.network_chat_enabled)
+            .field("cluster_logs_min_level", &self.cluster_logs_min_level)
             .field("model_dirs", &self.model_dirs)
             .field("shard_dir", &self.shard_dir)
             .field("shard_max_gb", &self.shard_max_gb)
+            .field("resources", &self.resources)
+            .field("setup_model", &self.setup_model)
             .field("gpus", &self.gpus)
             .field("thermal", &self.thermal)
             .field("cache_type_k", &self.cache_type_k)
@@ -262,6 +404,10 @@ fn default_p2p_port() -> u16 {
 
 fn default_shard_max_gb() -> f64 {
     crate::storage::DEFAULT_SHARD_MAX_GB
+}
+
+fn default_resource_reserve_pct() -> f64 {
+    20.0
 }
 
 /// Put a peer address the operator typed into the form the resolver accepts.
@@ -417,6 +563,11 @@ impl Config {
             // when another setting updates pom.json, so the legacy source stays
             // a usable safety copy until the operator explicitly migrates it.
             for field in ["api_keys", "thermal", "huggingface_token"] {
+                // Leaving a network revokes every network API key. Never
+                // resurrect it while writing the setup-pending shell.
+                if self.setup_pending && field == "api_keys" {
+                    continue;
+                }
                 if let Some(old_value) = old.get(field) {
                     value[field] = old_value.clone();
                 }
@@ -443,6 +594,25 @@ impl Config {
             .with_context(|| format!("Failed to write config at {:?}", path))?;
         file.flush()
             .with_context(|| format!("Failed to flush config at {:?}", path))
+    }
+
+    /// Turn a configured node into the local shell used by first access after
+    /// it leaves a network. Keep only preferences that belong to this machine;
+    /// every network identity or credential must be supplied again.
+    pub fn prepare_for_setup(&mut self) {
+        self.setup_pending = true;
+        self.profile = crate::profile::NodeProfile::Node;
+        self.connection_key.clear();
+        self.bootstrap_nodes.clear();
+        self.advertise_addr = None;
+        self.network = NetworkSettings::default();
+        self.api_keys.clear();
+        self.blocked_nodes.clear();
+        self.admin_exposure = AdminExposure::Localhost;
+        self.admin_access_token = None;
+        self.tls_required = false;
+        self.cluster_logs_enabled = false;
+        self.setup_model = None;
     }
 
     /// Inference port this node should use, falling back to the default.
@@ -550,9 +720,52 @@ impl Config {
     }
 }
 
-/// `<project_root>/models` — where every slice has always landed.
+/// Stable geo-hierarchical metadata used to narrow public-network discovery.
+/// It deliberately never becomes the pkarr key: the key remains the signed
+/// node identity, while this label is an indexable field in its record.
+pub fn geo_network_label(country_code: &str, city: &str, node_id: &str) -> String {
+    let country = country_code.trim().to_ascii_lowercase();
+    let city = geo_slug(city);
+    let node = geo_slug(node_id);
+    if country.is_empty() || city.is_empty() || node.is_empty() {
+        return String::new();
+    }
+    format!("com.{country}.{city}.{node}")
+}
+
+fn geo_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut separator = false;
+    for character in value.trim().chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            if separator {
+                slug.push('-');
+            }
+            slug.push(character);
+            separator = false;
+        } else if (character.is_whitespace() || character == '-' || character == '_')
+            && !slug.is_empty()
+        {
+            separator = true;
+        }
+    }
+    slug
+}
+
+/// `<project_root>/models` - where every slice has always landed.
 pub fn default_shard_dir() -> PathBuf {
-    project_root().join("models")
+    crate::catalog::home_dir()
+        .unwrap_or_else(project_root)
+        .join(".pom")
+        .join("models_sliced")
+}
+
+/// `~/.pom/models` is the first-access destination for whole models.
+pub fn default_model_dir() -> PathBuf {
+    crate::catalog::home_dir()
+        .unwrap_or_else(project_root)
+        .join(".pom")
+        .join("models")
 }
 
 /// Where the built web interface (`apps/frontend/dist`) is read from at
@@ -656,8 +869,12 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             profile: crate::profile::NodeProfile::Admin,
+            setup_pending: false,
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
+            network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             connection_key: "test-key".into(),
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
@@ -666,11 +883,14 @@ mod tests {
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![],
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
+            resources: Default::default(),
+            setup_model: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,
@@ -715,6 +935,29 @@ mod tests {
     }
 
     #[test]
+    fn nivel_minimo_dos_logs_tem_default_info_e_sobrevive_ao_json() {
+        let defaulted: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        assert_eq!(
+            defaulted.cluster_logs_min_level,
+            crate::cluster_logs::ClusterLogLevel::Info
+        );
+
+        let configured: Config =
+            serde_json::from_str(r#"{"profile":"node","cluster_logs_min_level":"debug"}"#).unwrap();
+        assert_eq!(
+            configured.cluster_logs_min_level,
+            crate::cluster_logs::ClusterLogLevel::Debug
+        );
+        assert_eq!(
+            serde_json::to_value(configured)
+                .unwrap()
+                .get("cluster_logs_min_level")
+                .unwrap(),
+            "debug"
+        );
+    }
+
+    #[test]
     fn test_roundtrip_node_config() {
         let cfg = Config {
             gpus: None,
@@ -722,8 +965,12 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             profile: crate::profile::NodeProfile::Node,
+            setup_pending: false,
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
+            network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             connection_key: "node-key".into(),
             gateway_port: 8090,
             admin_exposure: AdminExposure::Localhost,
@@ -732,11 +979,14 @@ mod tests {
             inference_port: Some(8181),
             bootstrap_nodes: vec!["192.168.1.1:42777".into()],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![],
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
+            resources: Default::default(),
+            setup_model: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,
@@ -787,10 +1037,24 @@ mod tests {
     }
 
     #[test]
+    fn public_network_settings_require_country_and_city() {
+        let settings = NetworkSettings {
+            public_name: "Rede aberta".into(),
+            visibility: NetworkVisibility::Public,
+            ..Default::default()
+        };
+
+        let error = validate_network_settings(&settings)
+            .expect_err("uma rede pública sem localização não deve ser salva");
+        assert!(error.to_string().contains("país e cidade"));
+    }
+
+    #[test]
     fn cache_types_are_persisted_as_installation_settings() {
-        let cfg: Config =
-            serde_json::from_str(r#"{"profile":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#)
-                .unwrap();
+        let cfg: Config = serde_json::from_str(
+            r#"{"profile":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#,
+        )
+        .unwrap();
         let json = serde_json::to_value(cfg).unwrap();
 
         assert_eq!(json["cache_type_k"], "q8_0");
@@ -829,6 +1093,7 @@ mod tests {
         ));
         let mut cfg = Config {
             profile: crate::profile::NodeProfile::Node,
+            setup_pending: false,
             connection_key: String::new(),
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
@@ -837,13 +1102,19 @@ mod tests {
             inference_port: None,
             bootstrap_nodes: vec![],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![],
             blocked_nodes: vec![],
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
+            network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
+            resources: Default::default(),
+            setup_model: None,
             gpus: None,
             thermal: Default::default(),
             cache_type_k: KvCacheType::F16,
@@ -897,7 +1168,8 @@ mod tests {
     /// tem que ser "sem TLS", senão atualizar o binário derruba o cluster.
     #[test]
     fn config_antiga_parseia_sem_tls_required() {
-        let cfg: Config = serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
+        let cfg: Config =
+            serde_json::from_str(r#"{"profile":"node","connection_key":"k"}"#).unwrap();
         assert!(!cfg.tls_required);
     }
 
@@ -925,6 +1197,14 @@ mod tests {
     }
 
     #[test]
+    fn setup_defaults_keep_models_and_slices_in_the_pom_home() {
+        let model_dir = default_model_dir();
+        let shard_dir = default_shard_dir();
+        assert!(model_dir.ends_with(Path::new(".pom").join("models")));
+        assert!(shard_dir.ends_with(Path::new(".pom").join("models_sliced")));
+    }
+
+    #[test]
     fn test_active_api_key() {
         let cfg = Config {
             gpus: None,
@@ -932,8 +1212,12 @@ mod tests {
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
             profile: crate::profile::NodeProfile::Admin,
+            setup_pending: false,
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
+            network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             connection_key: "k".into(),
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
@@ -942,6 +1226,7 @@ mod tests {
             inference_port: None,
             bootstrap_nodes: vec![],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![
                 ApiKey {
                     id: "old-id".into(),
@@ -966,6 +1251,8 @@ mod tests {
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
+            resources: Default::default(),
+            setup_model: None,
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,
@@ -974,5 +1261,70 @@ mod tests {
             slot_auto_ttl_secs: None,
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
+    }
+
+    #[test]
+    fn sair_da_rede_preserva_preferencias_locais_e_limpa_credenciais() {
+        let mut cfg: Config = serde_json::from_value(serde_json::json!({
+            "profile": "admin",
+            "connection_key": "segredo-da-rede",
+            "bootstrap_nodes": ["[2001:db8::2]:42777"],
+            "advertise_addr": "[2001:db8::1]:42777",
+            "network": {
+                "public_name": "Rede antiga",
+                "organization": "Equipe antiga",
+                "visibility": "private"
+            },
+            "api_keys": [{
+                "id": "key-id",
+                "key": "sk-old",
+                "label": "Aplicativo",
+                "node_id": "node",
+                "origin_node_id": "node",
+                "active": true,
+                "created_at": "2026-09-09T00:00:00Z"
+            }],
+            "admin_exposure": "network",
+            "admin_access_token": "admin-token",
+            "tls_required": true,
+            "model_dirs": ["/Volumes/models"],
+            "shard_dir": "/Volumes/slices",
+            "shard_max_gb": 120,
+            "resources": {"ram_reserve_pct": 31, "cpu_reserve_pct": 42},
+            "thermal": {"limit_c": 82, "hysteresis_c": 5, "cooldown_secs": 30},
+            "node_name": "Mesa do Jair"
+        }))
+        .unwrap();
+
+        cfg.prepare_for_setup();
+
+        assert!(cfg.setup_pending);
+        assert!(cfg.connection_key.is_empty());
+        assert!(cfg.bootstrap_nodes.is_empty());
+        assert!(cfg.advertise_addr.is_none());
+        assert_eq!(cfg.network, NetworkSettings::default());
+        assert!(cfg.api_keys.is_empty());
+        assert!(cfg.admin_access_token.is_none());
+        assert_eq!(cfg.admin_exposure, AdminExposure::Localhost);
+        assert!(!cfg.tls_required);
+        assert_eq!(cfg.model_dirs, Some(vec!["/Volumes/models".into()]));
+        assert_eq!(cfg.shard_dir.as_deref(), Some("/Volumes/slices"));
+        assert_eq!(cfg.shard_max_gb, 120.0);
+        assert_eq!(cfg.resources.ram_reserve_pct, 31.0);
+        assert_eq!(cfg.resources.cpu_reserve_pct, 42.0);
+        assert_eq!(cfg.thermal.limit_c, 82.0);
+        assert_eq!(cfg.node_name.as_deref(), Some("Mesa do Jair"));
+    }
+
+    #[test]
+    fn rotulo_geo_separa_pais_cidade_e_identidade_do_no() {
+        assert_eq!(
+            geo_network_label("BR", "Curitiba", "abc123"),
+            "com.br.curitiba.abc123"
+        );
+        assert_eq!(
+            geo_network_label("AU", "Cidade Manual", "node-id"),
+            "com.au.cidade-manual.node-id"
+        );
     }
 }

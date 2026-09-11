@@ -6,11 +6,11 @@
 //! an explicit operation provided by `scripts/migrate_pom_db.py`.
 
 use crate::catalog::{Catalog, DiscoveredModel};
-use crate::config::ApiKey;
+use crate::config::{ApiKey, NetworkSettings};
 use crate::deployment::Deployment;
 use crate::thermal::ThermalPolicy;
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -20,6 +20,82 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 pub const DATABASE_FILENAME: &str = "pom.db";
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GeoCityReference {
+    pub id: String,
+    pub name: String,
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GeoCountryReference {
+    pub code: String,
+    pub name: String,
+    pub cities: Vec<GeoCityReference>,
+}
+
+/// Last geo label observed for a public network peer. This tiny local index is
+/// what lets a prefix/suffix search choose candidates before opening HTTP
+/// probes; the signed pkarr record remains the source of the label itself.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PublicNetworkGeoCacheEntry {
+    pub node_id: String,
+    pub geo_label: String,
+    pub fingerprint: String,
+    pub observed_at: String,
+}
+
+/// Small offline reference catalog used by setup. Operators can still enter
+/// "outra" manually when their city is not in this starter list.
+const GEO_REFERENCE: &[(&str, &str, &str, f64, f64)] = &[
+    ("AR", "Argentina", "Buenos Aires", -34.6037, -58.3816),
+    ("AR", "Argentina", "Córdoba", -31.4201, -64.1888),
+    ("AU", "Austrália", "Sydney", -33.8688, 151.2093),
+    ("AU", "Austrália", "Melbourne", -37.8136, 144.9631),
+    ("BR", "Brasil", "São Paulo", -23.5505, -46.6333),
+    ("BR", "Brasil", "Rio de Janeiro", -22.9068, -43.1729),
+    ("BR", "Brasil", "Curitiba", -25.4284, -49.2733),
+    ("BR", "Brasil", "Brasília", -15.7975, -47.8919),
+    ("CA", "Canadá", "Toronto", 43.6532, -79.3832),
+    ("CA", "Canadá", "Vancouver", 49.2827, -123.1207),
+    ("CL", "Chile", "Santiago", -33.4489, -70.6693),
+    ("CN", "China", "Xangai", 31.2304, 121.4737),
+    ("DE", "Alemanha", "Berlim", 52.5200, 13.4050),
+    ("ES", "Espanha", "Madrid", 40.4168, -3.7038),
+    ("FR", "França", "Paris", 48.8566, 2.3522),
+    ("GB", "Reino Unido", "Londres", 51.5074, -0.1278),
+    ("IN", "Índia", "Bangalore", 12.9716, 77.5946),
+    ("IT", "Itália", "Roma", 41.9028, 12.4964),
+    ("JP", "Japão", "Tóquio", 35.6762, 139.6503),
+    ("MX", "México", "Cidade do México", 19.4326, -99.1332),
+    ("NL", "Países Baixos", "Amsterdã", 52.3676, 4.9041),
+    ("NZ", "Nova Zelândia", "Auckland", -36.8509, 174.7645),
+    ("PT", "Portugal", "Lisboa", 38.7223, -9.1393),
+    ("SG", "Singapura", "Singapura", 1.3521, 103.8198),
+    ("US", "Estados Unidos", "Nova York", 40.7128, -74.0060),
+    ("US", "Estados Unidos", "São Francisco", 37.7749, -122.4194),
+    ("US", "Estados Unidos", "Seattle", 47.6062, -122.3321),
+];
+
+fn is_sqlite_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(sqlite_error, _)
+            if matches!(
+                sqlite_error.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterLogsPruneResult {
+    Deleted { count: usize, space_reclaimed: bool },
+    NothingToPrune,
+    Contended,
+}
 
 /// Durable transcript accepted by the authenticated UI history API.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -61,6 +137,25 @@ pub struct ChatMessageRecord {
     #[serde(default)]
     pub trace: Option<JsonValue>,
     pub at: String,
+}
+
+/// Mensagem aceita pelo principal do Chat da rede. Eventos de digitação não
+/// entram nesta tabela: são presença efêmera e nunca devem crescer o banco.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkChatMessageRecord {
+    pub received_seq: u64,
+    pub message_id: String,
+    pub room_id: String,
+    pub sender_node_id: String,
+    pub recipient_node_id: Option<String>,
+    pub kind: String,
+    pub text: Option<String>,
+    pub file_name: Option<String>,
+    pub mime_type: Option<String>,
+    pub file_data: Vec<u8>,
+    pub sent_at: String,
+    pub received_at: String,
 }
 
 impl ChatSessionRecord {
@@ -328,6 +423,20 @@ impl PomDb {
         })
     }
 
+    /// Remove every locally stored API credential when the node leaves a
+    /// network. The trust boundary is reset together with these rows, so a
+    /// later setup cannot accidentally resurrect a network-owned secret from
+    /// the database.
+    pub fn clear_api_keys(&self) -> Result<()> {
+        self.with_write("limpar chaves de API locais", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            tx.execute("DELETE FROM api_key_revocations", [])?;
+            tx.execute("DELETE FROM api_keys", [])?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     pub fn api_key_for_token(&self, token: &str) -> Result<Option<ApiKey>> {
         self.with_read("consultar chave de API", |connection| {
             connection
@@ -476,6 +585,84 @@ impl PomDb {
         self.save_setting("thermal_policy", &policy)
     }
 
+    pub fn network_settings(&self) -> Result<Option<NetworkSettings>> {
+        self.with_read("ler detalhes da rede", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_json FROM local_settings WHERE setting_key = 'network_settings'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            value
+                .map(|value| serde_json::from_str(&value).context("interpretar detalhes da rede"))
+                .transpose()
+        })
+    }
+
+    pub fn save_network_settings(&self, settings: &NetworkSettings) -> Result<()> {
+        self.save_setting("network_settings", settings)
+    }
+
+    pub fn public_network_geo_cache(&self) -> Result<Vec<PublicNetworkGeoCacheEntry>> {
+        self.with_read("ler índice geo de redes públicas", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_json FROM local_settings WHERE setting_key = 'public_network_geo_cache'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            value
+                .map(|value| {
+                    serde_json::from_str(&value).context("interpretar índice geo de redes públicas")
+                })
+                .transpose()
+                .map(|entries| entries.unwrap_or_default())
+        })
+    }
+
+    pub fn save_public_network_geo_cache(
+        &self,
+        entries: &[PublicNetworkGeoCacheEntry],
+    ) -> Result<()> {
+        self.save_setting("public_network_geo_cache", &entries.to_vec())
+    }
+
+    /// Read the offline country/city reference used by the setup location
+    /// picker. It lives in SQLite so every node has the same queryable source,
+    /// while the seed stays deliberately small and can be extended later.
+    pub fn geo_reference(&self) -> Result<Vec<GeoCountryReference>> {
+        self.with_read("ler referência de países e cidades", |connection| {
+            let mut countries_statement =
+                connection.prepare("SELECT code, name FROM geo_countries ORDER BY name")?;
+            let countries = countries_statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut result = Vec::with_capacity(countries.len());
+            for (code, name) in countries {
+                let mut cities_statement = connection.prepare(
+                    "SELECT id, name, latitude, longitude
+                     FROM geo_cities WHERE country_code = ? ORDER BY name",
+                )?;
+                let cities = cities_statement
+                    .query_map(params![&code], |row| {
+                        Ok(GeoCityReference {
+                            id: row.get(0)?,
+                            name: row.get(1)?,
+                            latitude: row.get(2)?,
+                            longitude: row.get(3)?,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                result.push(GeoCountryReference { code, name, cities });
+            }
+            Ok(result)
+        })
+    }
+
     /// Read the stored credential without logging, formatting or returning it
     /// from an HTTP handler. The database file is restricted to its owner.
     pub fn huggingface_token(&self) -> Result<Option<String>> {
@@ -621,6 +808,149 @@ impl PomDb {
         })
     }
 
+    /// Persiste uma ação de texto ou arquivo exatamente uma vez por id.
+    pub fn append_network_chat(&self, action: &crate::network_chat::ChatAction) -> Result<bool> {
+        action
+            .validate()
+            .map_err(|error| anyhow::anyhow!("ação de chat inválida: {error}"))?;
+        let (
+            message_id,
+            room_id,
+            sender_node_id,
+            recipient_node_id,
+            kind,
+            text,
+            file_name,
+            mime_type,
+            file_data,
+            sent_at,
+        ) = match action {
+            crate::network_chat::ChatAction::Text {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                text,
+                sent_at,
+            } => (
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                "text",
+                Some(text),
+                None,
+                None,
+                Vec::new(),
+                sent_at.to_rfc3339(),
+            ),
+            crate::network_chat::ChatAction::File {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                file_name,
+                mime_type,
+                data,
+                sent_at,
+            } => (
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                "file",
+                None,
+                Some(file_name),
+                Some(mime_type),
+                data.clone(),
+                sent_at.to_rfc3339(),
+            ),
+            crate::network_chat::ChatAction::Typing { .. } => {
+                anyhow::bail!("digitação não é persistente")
+            }
+        };
+        self.with_write("salvar mensagem do Chat da rede", |connection| {
+            let changed = connection.execute(
+                "INSERT OR IGNORE INTO network_chat_messages (
+                    message_id, room_id, sender_node_id, recipient_node_id, kind,
+                    text, file_name, mime_type, file_data, sent_at, received_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                params![
+                    message_id,
+                    room_id,
+                    sender_node_id,
+                    recipient_node_id,
+                    kind,
+                    text,
+                    file_name,
+                    mime_type,
+                    file_data,
+                    sent_at,
+                ],
+            )?;
+            Ok(changed > 0)
+        })
+    }
+
+    pub fn network_chat_messages(
+        &self,
+        room_id: &str,
+        limit: usize,
+    ) -> Result<Vec<NetworkChatMessageRecord>> {
+        let limit = limit.clamp(1, 500) as i64;
+        self.with_read("ler histórico do Chat da rede", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT received_seq, message_id, room_id, sender_node_id,
+                        recipient_node_id, kind, text, file_name, mime_type,
+                        file_data, sent_at, received_at
+                 FROM network_chat_messages
+                 WHERE room_id = ?
+                 ORDER BY received_seq DESC
+                 LIMIT ?",
+            )?;
+            let rows = statement.query_map(params![room_id, limit], |row| {
+                Ok(NetworkChatMessageRecord {
+                    received_seq: row.get::<_, i64>(0)? as u64,
+                    message_id: row.get(1)?,
+                    room_id: row.get(2)?,
+                    sender_node_id: row.get(3)?,
+                    recipient_node_id: row.get(4)?,
+                    kind: row.get(5)?,
+                    text: row.get(6)?,
+                    file_name: row.get(7)?,
+                    mime_type: row.get(8)?,
+                    file_data: row.get::<_, Option<Vec<u8>>>(9)?.unwrap_or_default(),
+                    sent_at: row.get(10)?,
+                    received_at: row.get(11)?,
+                })
+            })?;
+            let mut messages = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            messages.reverse();
+            Ok(messages)
+        })
+    }
+
+    pub fn network_chat_file(&self, message_id: &str) -> Result<Option<(Vec<u8>, String)>> {
+        self.with_read("ler arquivo do Chat da rede", |connection| {
+            connection
+                .query_row(
+                    "SELECT file_data, mime_type
+                     FROM network_chat_messages
+                     WHERE message_id = ? AND kind = 'file'",
+                    params![message_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<Vec<u8>>>(0)?.unwrap_or_default(),
+                            row.get::<_, Option<String>>(1)?
+                                .unwrap_or_else(|| "application/octet-stream".to_string()),
+                        ))
+                    },
+                )
+                .optional()
+                .context("consultar arquivo do Chat da rede")
+        })
+    }
+
     /// Persiste um lote na ordem em que o principal o aceitou. O contador de
     /// perdas é global ao banco porque uma linha descartada não tem mais
     /// `deploy_id` confiável para uma segunda tentativa.
@@ -662,6 +992,108 @@ impl PomDb {
             }
             tx.commit()?;
             Ok(())
+        })
+    }
+
+    /// Remove one bounded batch of cluster logs that falls outside both
+    /// retention limits. The connection and transaction deliberately use a
+    /// zero busy timeout: pruning is best-effort and must yield immediately
+    /// to an active writer instead of delaying inference or audit writes.
+    pub fn try_prune_cluster_logs(
+        &self,
+        older_than: &str,
+        max_rows: u64,
+        batch_size: usize,
+    ) -> Result<ClusterLogsPruneResult> {
+        let batch_size = batch_size.clamp(1, 1_000) as i64;
+        let max_rows = max_rows.max(1);
+        let mut connection = Connection::open(&self.path)
+            .with_context(|| format!("abrir conexão para podar logs {}", self.path.display()))?;
+        connection.busy_timeout(std::time::Duration::ZERO)?;
+
+        // This read happens before BEGIN IMMEDIATE so a large offset cannot
+        // hold the writer lock. If a concurrent writer changes the count
+        // after this snapshot, the next cycle corrects the conservative
+        // result without ever deleting a newly inserted row.
+        let oldest_kept = match connection
+            .query_row(
+                "SELECT received_seq
+                 FROM cluster_logs
+                 ORDER BY received_seq DESC
+                 LIMIT 1 OFFSET ?",
+                params![max_rows.saturating_sub(1).min(i64::MAX as u64) as i64],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+        {
+            Ok(oldest_kept) => oldest_kept,
+            Err(error) if is_sqlite_busy(&error) => {
+                return Ok(ClusterLogsPruneResult::Contended);
+            }
+            Err(error) => return Err(error).context("ler limite de retenção dos logs"),
+        };
+        let transaction = match connection.transaction_with_behavior(TransactionBehavior::Immediate)
+        {
+            Ok(transaction) => transaction,
+            Err(error) if is_sqlite_busy(&error) => {
+                return Ok(ClusterLogsPruneResult::Contended);
+            }
+            Err(error) => return Err(error).context("iniciar transação de poda dos logs"),
+        };
+
+        let deleted = match oldest_kept {
+            Some(oldest_kept) => transaction.execute(
+                "DELETE FROM cluster_logs
+                 WHERE received_seq IN (
+                     SELECT received_seq
+                     FROM cluster_logs
+                     WHERE received_at < ?1 OR received_seq < ?2
+                     ORDER BY received_seq
+                     LIMIT ?3
+                 )",
+                params![older_than, oldest_kept, batch_size],
+            ),
+            None => transaction.execute(
+                "DELETE FROM cluster_logs
+                 WHERE received_seq IN (
+                     SELECT received_seq
+                     FROM cluster_logs
+                     WHERE received_at < ?1
+                     ORDER BY received_seq
+                     LIMIT ?2
+                 )",
+                params![older_than, batch_size],
+            ),
+        };
+        let deleted = match deleted {
+            Ok(deleted) => deleted,
+            Err(error) if is_sqlite_busy(&error) => {
+                return Ok(ClusterLogsPruneResult::Contended);
+            }
+            Err(error) => return Err(error).context("apagar lote de logs antigos"),
+        };
+        if let Err(error) = transaction.commit() {
+            if is_sqlite_busy(&error) {
+                return Ok(ClusterLogsPruneResult::Contended);
+            }
+            return Err(error).context("confirmar poda dos logs");
+        }
+
+        if deleted == 0 {
+            return Ok(ClusterLogsPruneResult::NothingToPrune);
+        }
+
+        let space_reclaimed =
+            match connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                row.get::<_, i64>(0)
+            }) {
+                Ok(busy) => busy == 0,
+                Err(error) if is_sqlite_busy(&error) => false,
+                Err(error) => return Err(error).context("recuperar espaço do WAL dos logs"),
+            };
+        Ok(ClusterLogsPruneResult::Deleted {
+            count: deleted,
+            space_reclaimed,
         })
     }
 
@@ -1133,6 +1565,20 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             secret_key TEXT PRIMARY KEY,
             value_text TEXT
         );
+        CREATE TABLE IF NOT EXISTS geo_countries (
+            code TEXT PRIMARY KEY,
+            name TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS geo_cities (
+            id TEXT PRIMARY KEY,
+            country_code TEXT NOT NULL REFERENCES geo_countries(code),
+            name TEXT NOT NULL,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            UNIQUE(country_code, name)
+        );
+        CREATE INDEX IF NOT EXISTS geo_cities_country_idx
+            ON geo_cities(country_code, name);
         CREATE TABLE IF NOT EXISTS chat_conversations (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
@@ -1165,6 +1611,24 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS chat_messages_id_idx
             ON chat_messages(conversation_id, message_id);
+        CREATE TABLE IF NOT EXISTS network_chat_messages (
+            received_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id TEXT NOT NULL UNIQUE,
+            room_id TEXT NOT NULL,
+            sender_node_id TEXT NOT NULL,
+            recipient_node_id TEXT,
+            kind TEXT NOT NULL CHECK (kind IN ('text', 'file')),
+            text TEXT,
+            file_name TEXT,
+            mime_type TEXT,
+            file_data BLOB NOT NULL DEFAULT X'',
+            sent_at TEXT NOT NULL,
+            received_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS network_chat_room_seq_idx
+            ON network_chat_messages(room_id, received_seq);
+        CREATE INDEX IF NOT EXISTS network_chat_sender_idx
+            ON network_chat_messages(sender_node_id, received_seq);
         CREATE TABLE IF NOT EXISTS audit_requests (
             id TEXT PRIMARY KEY,
             received_at TEXT NOT NULL,
@@ -1222,6 +1686,8 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS cluster_logs_deploy_seq_idx
             ON cluster_logs(deploy_id, received_seq);
+        CREATE INDEX IF NOT EXISTS cluster_logs_received_at_seq_idx
+            ON cluster_logs(received_at, received_seq);
         CREATE TABLE IF NOT EXISTS cluster_log_counters (
             counter_key TEXT PRIMARY KEY,
             value INTEGER NOT NULL
@@ -1242,6 +1708,29 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         connection.execute(
             "UPDATE api_keys SET origin_node_id = node_id WHERE origin_node_id = ''",
             [],
+        )?;
+    }
+    seed_geo_reference(connection)?;
+    Ok(())
+}
+
+fn seed_geo_reference(connection: &Connection) -> Result<()> {
+    for (code, country, city, latitude, longitude) in GEO_REFERENCE {
+        connection.execute(
+            "INSERT INTO geo_countries (code, name) VALUES (?, ?)
+             ON CONFLICT(code) DO UPDATE SET name = excluded.name",
+            params![code, country],
+        )?;
+        let city_id = format!("{code}:{}", city.to_ascii_lowercase().replace(' ', "-"));
+        connection.execute(
+            "INSERT INTO geo_cities (id, country_code, name, latitude, longitude)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                 country_code = excluded.country_code,
+                 name = excluded.name,
+                 latitude = excluded.latitude,
+                 longitude = excluded.longitude",
+            params![city_id, code, city, latitude, longitude],
         )?;
     }
     Ok(())
@@ -1353,9 +1842,11 @@ fn is_last(model: &DiscoveredModel) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{PomDb, DATABASE_FILENAME};
+    use super::{ClusterLogsPruneResult, PomDb, DATABASE_FILENAME};
     use crate::config::ApiKey;
+    use rusqlite::Connection;
     use std::path::{Path, PathBuf};
+    use std::time::Instant;
 
     #[test]
     fn creates_missing_database_with_the_complete_schema() {
@@ -1421,6 +1912,170 @@ mod tests {
         assert_eq!(rows[0].deploy_id, "deploy-1");
         assert_eq!(db.cluster_log_dropped().unwrap(), 3);
         remove_database(&path);
+    }
+
+    #[test]
+    fn cluster_logs_retention_removes_old_rows_even_below_count_limit() {
+        let path = temporary_path("cluster-logs-retention-age");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo-1");
+        insert_cluster_log(&db, "2026-01-02T00:00:00Z", "antigo-2");
+        insert_cluster_log(&db, "2026-09-10T00:00:00Z", "recente");
+
+        let result = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
+            .expect("podar logs antigos");
+
+        assert!(matches!(
+            result,
+            ClusterLogsPruneResult::Deleted { count: 2, .. }
+        ));
+        let rows = db.cluster_logs(None, 100).expect("ler logs restantes");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].message, "recente");
+        remove_database(&path);
+    }
+
+    #[test]
+    fn cluster_logs_retention_respects_count_in_small_batches() {
+        let path = temporary_path("cluster-logs-retention-count");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        for index in 0..7 {
+            insert_cluster_log(&db, "2099-01-01T00:00:00Z", &format!("mensagem-{index}"));
+        }
+
+        let first = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 3, 2)
+            .expect("primeiro lote");
+        let second = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 3, 2)
+            .expect("segundo lote");
+        let third = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 3, 2)
+            .expect("fim da poda");
+
+        assert!(matches!(
+            first,
+            ClusterLogsPruneResult::Deleted { count: 2, .. }
+        ));
+        assert!(matches!(
+            second,
+            ClusterLogsPruneResult::Deleted { count: 2, .. }
+        ));
+        assert_eq!(third, ClusterLogsPruneResult::NothingToPrune);
+        assert_eq!(db.cluster_logs(None, 100).unwrap().len(), 3);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn cluster_logs_retention_returns_immediately_under_sqlite_contention() {
+        let path = temporary_path("cluster-logs-retention-contention");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo");
+        let holder = Connection::open(&path).expect("abrir conexão de contenção");
+        holder
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("reservar escrita");
+
+        let started = Instant::now();
+        let result = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
+            .expect("contenção deve ser tratável");
+
+        assert_eq!(result, ClusterLogsPruneResult::Contended);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        holder.execute_batch("ROLLBACK").expect("liberar escrita");
+        remove_database(&path);
+    }
+
+    #[test]
+    fn cluster_logs_retention_checkpoints_wal_after_a_delete() {
+        let path = temporary_path("cluster-logs-retention-checkpoint");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo");
+
+        let result = db
+            .try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
+            .expect("podar e recuperar espaço");
+
+        assert!(matches!(
+            result,
+            ClusterLogsPruneResult::Deleted {
+                count: 1,
+                space_reclaimed: true
+            }
+        ));
+        remove_database(&path);
+    }
+
+    #[test]
+    fn cluster_logs_retention_does_not_touch_request_audit_tables() {
+        let path = temporary_path("cluster-logs-retention-audit");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        db.with_write("preparar auditoria do teste", |connection| {
+            connection.execute(
+                "INSERT INTO audit_requests (
+                    id, received_at, route, model, api_key_id, api_key_label,
+                    entry_node_id, prompt, status
+                 ) VALUES ('request-1', '2026-09-10T00:00:00Z', '/v1/chat/completions',
+                    'model', 'key-1', 'test', 'node-a', 'prompt', 'in_progress')",
+                [],
+            )?;
+            connection.execute(
+                "INSERT INTO audit_request_hops (request_id, position, node_id)
+                 VALUES ('request-1', 0, 'node-a')",
+                [],
+            )?;
+            connection.execute(
+                "INSERT INTO audit_prompt_fts (request_id, prompt)
+                 VALUES ('request-1', 'prompt')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("preparar auditoria");
+        insert_cluster_log(&db, "2026-01-01T00:00:00Z", "antigo");
+
+        db.try_prune_cluster_logs("2026-09-03T00:00:00Z", 500_000, 256)
+            .expect("podar logs");
+
+        db.with_read("conferir auditoria", |connection| {
+            assert_eq!(
+                connection.query_row("SELECT COUNT(*) FROM audit_requests", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+                1
+            );
+            assert_eq!(
+                connection.query_row("SELECT COUNT(*) FROM audit_request_hops", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+                1
+            );
+            assert_eq!(
+                connection.query_row("SELECT COUNT(*) FROM audit_prompt_fts", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+                1
+            );
+            Ok(())
+        })
+        .expect("auditoria preservada");
+        remove_database(&path);
+    }
+
+    fn insert_cluster_log(db: &PomDb, received_at: &str, message: &str) {
+        db.with_write("preparar log do teste", |connection| {
+            connection.execute(
+                "INSERT INTO cluster_logs (
+                    node_id, node_name, deploy_id, origin_at, received_at,
+                    level, target, message
+                 ) VALUES ('node-a', 'test', 'deploy-1', ?, ?, 'INFO', 'test', ?)",
+                rusqlite::params![received_at, received_at, message],
+            )?;
+            Ok(())
+        })
+        .expect("preparar log");
     }
 
     #[test]
@@ -1511,6 +2166,19 @@ mod tests {
         }
 
         assert_eq!(db.setup_count(), 1);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn geo_reference_contains_countries_and_cities() {
+        let path = temporary_path("geo-reference");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        let countries = db.geo_reference().expect("ler referência geográfica");
+        let brazil = countries
+            .iter()
+            .find(|country| country.code == "BR")
+            .expect("Brasil na referência");
+        assert!(brazil.cities.iter().any(|city| city.name == "Curitiba"));
         remove_database(&path);
     }
 
@@ -1827,6 +2495,7 @@ mod tests {
             source,
             source_label: source.label(),
             path: path.display().to_string(),
+            mmproj_path: None,
             size_bytes,
             multipart: false,
             multipart_parts: Vec::new(),

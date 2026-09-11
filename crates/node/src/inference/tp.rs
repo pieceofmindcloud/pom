@@ -453,7 +453,10 @@ pub fn register_tp_reduce_with_urls(
         *slot = Some(state);
     }
     unsafe {
-        llama_engine::llama_cpp_sys_2::llama_set_tp_reduce_callback(Some(tp_reduce_cb), std::ptr::null_mut());
+        llama_engine::llama_cpp_sys_2::llama_set_tp_reduce_callback(
+            Some(tp_reduce_cb),
+            std::ptr::null_mut(),
+        );
     }
 }
 

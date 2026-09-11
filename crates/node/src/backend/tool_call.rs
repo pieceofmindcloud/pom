@@ -1413,7 +1413,10 @@ mod tests {
         assert!(matches!(parts[1], OutputPart::ToolCallTruncated(_)));
         for part in &parts {
             if let OutputPart::Text(t) = part {
-                assert!(!t.contains("<tool_call>") && !t.contains("<function="), "{t:?}");
+                assert!(
+                    !t.contains("<tool_call>") && !t.contains("<function="),
+                    "{t:?}"
+                );
             }
         }
     }
@@ -1571,9 +1574,15 @@ mod tests {
             .expect("o content saiu");
         assert!(grande.contains("linha_0 = 0 * 2"), "{grande:?}");
         let inteiro = frags.concat();
-        assert!(inteiro.starts_with(r#"{"path":"/tmp/calc.py""#), "{inteiro:?}");
+        assert!(
+            inteiro.starts_with(r#"{"path":"/tmp/calc.py""#),
+            "{inteiro:?}"
+        );
         let json: serde_json::Value = serde_json::from_str(&inteiro).expect("JSON válido");
-        assert!(json["content"].as_str().expect("content").contains("linha_39"));
+        assert!(json["content"]
+            .as_str()
+            .expect("content")
+            .contains("linha_39"));
     }
 
     /// **O corte do teto não se confunde com fragmento parcial.** O que já
@@ -1612,9 +1621,15 @@ mod tests {
     /// ansioso: transmiti-lo como string trocaria o tipo dele em silêncio.
     #[test]
     fn a_long_structured_value_stays_buffered_so_its_type_survives() {
-        let array = format!("[{}]", (0..40).map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+        let array = format!(
+            "[{}]",
+            (0..40).map(|i| i.to_string()).collect::<Vec<_>>().join(",")
+        );
         assert!(array.len() > EAGER_MIN_VALUE_BYTES);
-        assert!(!streams_eagerly(true, &array), "array longo não pode ser transmitido");
+        assert!(
+            !streams_eagerly(true, &array),
+            "array longo não pode ser transmitido"
+        );
         assert!(!streams_eagerly(true, &format!("{{\"a\": {array}}}")));
         assert!(!streams_eagerly(true, &format!("\"{}\"", "x".repeat(80))));
         // Já texto que não pode ser JSON, esse sim.

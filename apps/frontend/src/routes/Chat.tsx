@@ -14,28 +14,24 @@ import {
   Check,
   ChevronDown,
   Copy,
-  ExternalLink,
+  Mic,
+  MicOff,
   MessagesSquare,
+  Paperclip,
   Pencil,
   Plus,
   Square,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
 import { ChatSessionList } from "../components/ChatSessionList";
+import { ChatSurfaceTabs } from "../components/ChatSurfaceTabs";
 import { ExecutionTelemetry, TimingSummary, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
 import { InferenceHeadChoice } from "../components/InferenceHeadChoice";
 import { Badge, Button, Empty } from "../components/ui";
-import { ApiError, streamSse } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
-import {
-  consumeChatDelta,
-  consumeChatError,
-  emptyChatStream,
-  finishChatStream,
-  streamErrorMessage,
-} from "../lib/chatStream";
 import {
   buildTelemetryAnalysisPrompt,
 } from "../lib/telemetryAnalysis";
@@ -46,13 +42,17 @@ import {
   turnsOnly,
   useChatSessionController,
   useOptionalChatSessionController,
+  type ChatAttachment,
   type ChatMessage,
+  type ChatRequestPart,
   type ChatSession,
 } from "../lib/chatStore";
+import { resizeImageForVision } from "../lib/imageResize";
 import { ms, num } from "../lib/format";
 import type { RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
+  useChatCapabilities,
   useCluster,
   useNode,
   usePeerRuntimes,
@@ -68,38 +68,62 @@ import { useProfile } from "../lib/profile";
 
 export { ExecutionTelemetry } from "../components/ExecutionTelemetry";
 export type { ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
+export { OpenNativeChatWindowButton } from "../components/OpenNativeChatWindowButton";
 
-type WebKitWindow = Window & {
-  webkit?: {
-    messageHandlers?: {
-      pomOpenWindow?: { postMessage: (message: string) => void };
-    };
-  };
+function isTextFile(file: File): boolean {
+  if (file.type.startsWith("text/")) return true;
+  return /\.(c|cc|cpp|css|csv|go|h|hpp|html?|ini|java|js|json|jsx|log|md|py|rs|sh|sql|toml|ts|tsx|txt|xml|yaml|yml)$/i.test(file.name);
+}
+
+function attachmentFormat(attachment: ChatAttachment): string {
+  if (attachment.kind === "image") return "IMG";
+  const extension = attachment.name.match(/\.([^.]+)$/)?.[1];
+  if (extension) return extension.slice(0, 6).toUpperCase();
+  return "TXT";
+}
+
+type SpeechRecognitionResultLike = {
+  isFinal: boolean;
+  [index: number]: { transcript: string };
 };
 
-function nativeWindowHandler() {
+type SpeechRecognitionEventLike = {
+  resultIndex: number;
+  results: ArrayLike<SpeechRecognitionResultLike>;
+};
+
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+type SpeechWindow = Window & {
+  SpeechRecognition?: SpeechRecognitionConstructor;
+  webkitSpeechRecognition?: SpeechRecognitionConstructor;
+};
+
+function speechRecognitionConstructor(): SpeechRecognitionConstructor | undefined {
   if (typeof window === "undefined") return undefined;
-  return (window as WebKitWindow).webkit?.messageHandlers?.pomOpenWindow;
+  const speechWindow = window as SpeechWindow;
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
 }
 
-export function OpenNativeChatWindowButton() {
-  const { t } = useI18n();
-  const handler = nativeWindowHandler();
-  if (!handler) return null;
-
-  return (
-    <button
-      type="button"
-      onClick={() => handler.postMessage("open")}
-      aria-label={t("chat.openLargerWindow")}
-      title={t("chat.openLargerWindow")}
-      className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-raised px-2.5 text-[0.76rem] text-muted transition-colors hover:border-line-strong hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
-    >
-      <ExternalLink className="h-3.5 w-3.5" />
-      <span className="hidden min-[360px]:inline">{t("chat.openLargerWindowShort")}</span>
-    </button>
-  );
+function speechLanguage(locale: string): string {
+  return locale === "pt-BR" ? "pt-BR" : "en-US";
 }
+
+function estimatedAttachmentBytes(attachment: ChatAttachment): number {
+  return attachment.size ?? new TextEncoder().encode(attachment.data).byteLength;
+}
+
 
 /**
  * Something that happened to the conversation, on the line where it happened.
@@ -201,9 +225,28 @@ export function Bubble({
     >
       {isUser ? (
         <div className="max-w-[min(42rem,85%)] rounded-2xl rounded-br-md border border-line bg-raised px-4 py-2.5">
-          <p className="whitespace-pre-wrap text-[0.9rem] leading-relaxed text-fg">
-            {message.content}
-          </p>
+          {message.content && (
+            <p className="whitespace-pre-wrap text-[0.9rem] leading-relaxed text-fg">
+              {message.content}
+            </p>
+          )}
+          {message.attachments?.map((attachment) => attachment.kind === "image" ? (
+            <figure key={attachment.id} className={clsx(message.content && "mt-3", "max-w-full")}>
+              <img
+                src={attachment.data}
+                alt={t("chat.attachmentAlt", { name: attachment.name })}
+                className="max-h-[28rem] max-w-full rounded-xl border border-line object-contain"
+              />
+              <figcaption className="mt-1.5 truncate text-[0.7rem] text-faint" title={attachment.name}>
+                {attachment.name}
+              </figcaption>
+            </figure>
+          ) : (
+            <div key={attachment.id} className={clsx(message.content && "mt-2", "flex items-center gap-2 text-[0.75rem] text-muted")}>
+              <Paperclip className="h-3.5 w-3.5 shrink-0 text-faint" />
+              <span className="truncate" title={attachment.name}>{attachment.name}</span>
+            </div>
+          ))}
         </div>
       ) : (
         <div className="min-w-0 flex-1">
@@ -379,39 +422,56 @@ function ChatScreen() {
     startNew: startNewSession,
     deleteSession: removeSession,
     registerBeforeChange,
+    streamingSessionId,
+    lastStreamResult,
+    startStream,
+    stopStream,
   } = useChatSessionController();
   const models = useServableModels();
   const cluster = useCluster();
+  const chatCapabilities = useChatCapabilities();
   const node = useNode();
   const toast = useToast();
 
   const available = useMemo(
     () => chatModelOptions([
       ...(models.data ?? []).map((m) => m.id),
+      ...(node.data?.active_model ? [node.data.active_model] : []),
       ...(cluster.data?.model_inventory.filter((entry) => entry.complete).map((entry) => entry.model_id) ?? []),
     ]),
-    [cluster.data?.model_inventory, models.data],
+    [cluster.data?.model_inventory, models.data, node.data?.active_model],
   );
 
   const [draft, setDraft] = useState("");
-  const [streaming, setStreaming] = useState(false);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [telemetryCapture, setTelemetryCapture] = useState<{
     messageId: string;
     trace: RequestTrace;
     cluster: ClusterView | null;
   } | null>(null);
   const [telemetrySnapshots, setTelemetrySnapshots] = useState<Record<string, ExecutionTelemetryEnvironment>>({});
-  const abort = useRef<AbortController | null>(null);
-  const deletedSessions = useRef(new Set<string>());
+  const [headChoice, setHeadChoice] = useState<{ model: string; nodeId: string | null }>({
+    model: "",
+    nodeId: null,
+  });
   const thread = useRef<HTMLDivElement>(null);
   const autoFollow = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
+  const recognition = useRef<SpeechRecognitionLike | null>(null);
+  const speechBaseDraft = useRef("");
+  const speechTranscript = useRef("");
+  const [listening, setListening] = useState(false);
 
   useEffect(
     () => registerBeforeChange((kind) => {
-      abort.current?.abort();
       setTelemetryCapture(null);
-      if (kind === "new") setDraft("");
+      if (kind === "new") {
+        setDraft("");
+        setAttachments([]);
+      }
     }),
     [registerBeforeChange],
   );
@@ -467,15 +527,35 @@ function ChatScreen() {
   }, [telemetryCapture, telemetryEnvironment]);
 
   // A session with no model yet takes whatever the network is serving.
-  const model = session.model && available.includes(session.model) ? session.model : available[0] ?? cluster.data?.active_model ?? "";
-  const headQuery = useInferenceHeads(model, profile === "infer");
+  const model = session.model && available.includes(session.model)
+    ? session.model
+    : available[0] ?? node.data?.active_model ?? cluster.data?.active_model ?? "";
+  const streaming = streamingSessionId === session.id;
+  const headQuery = useInferenceHeads(model, Boolean(model));
+  const selectedInferenceHead = headQuery.data?.candidates.some(
+    (candidate) => candidate.node_id === headChoice.nodeId && headChoice.model === model,
+  )
+    ? headChoice.nodeId
+    : headQuery.data?.selected_node_id ?? null;
 
   useEffect(() => {
     const element = thread.current;
     if (element && autoFollow.current) element.scrollTop = element.scrollHeight;
   }, [session.messages, streaming]);
 
-  useEffect(() => () => abort.current?.abort(), []);
+  useEffect(() => {
+    if (!showTelemetry || lastStreamResult?.sessionId !== session.id) return;
+    setTelemetryCapture({
+      messageId: lastStreamResult.messageId,
+      trace: lastStreamResult.trace,
+      cluster: lastStreamResult.cluster,
+    });
+  }, [lastStreamResult, session.id, showTelemetry]);
+
+  useEffect(() => () => {
+    recognition.current?.stop();
+    recognition.current = null;
+  }, []);
 
   const grow = useCallback(() => {
     const el = composer.current;
@@ -484,15 +564,196 @@ function ChatScreen() {
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, []);
 
+  const visionAvailable = chatCapabilities.data?.vision === "supported";
+  const servedModel = models.data?.find((candidate) => candidate.id === model);
+  const contextLength = servedModel?.context_length
+    ?? servedModel?.max_input_tokens
+    ?? (node.data?.active_model === model ? node.data?.config?.n_ctx : undefined);
+
+  async function addFiles(files: FileList | File[]) {
+    const selectedFiles = Array.from(files);
+    const contextBytes = contextLength != null ? contextLength * 4 : undefined;
+    const currentBytes = attachments.reduce((total, attachment) => total + estimatedAttachmentBytes(attachment), 0);
+    const selectedBytes = selectedFiles.reduce((total, file) => total + file.size, 0);
+    if (contextBytes != null && currentBytes + selectedBytes > contextBytes) {
+      toast.error(
+        t("chat.attachmentTooLarge"),
+        t("chat.attachmentTooLargeDetail", {
+          bytes: currentBytes + selectedBytes,
+          context: contextLength ?? 0,
+        }),
+      );
+      return;
+    }
+
+    const added: ChatAttachment[] = [];
+    for (const file of selectedFiles) {
+      if (file.type.startsWith("image/")) {
+        if (!visionAvailable) {
+          toast.error(t("chat.imageRejected"), t("chat.imageVisionUnavailable"));
+          continue;
+        }
+        try {
+          added.push({
+            id: newId(),
+            name: file.name,
+            kind: "image",
+            data: await resizeImageForVision(file),
+            mediaType: file.type,
+            size: file.size,
+          });
+        } catch (error) {
+          toast.error(t("chat.imageRejected"), error instanceof Error ? error.message : String(error));
+        }
+        continue;
+      }
+      if (isTextFile(file)) {
+        try {
+          added.push({
+            id: newId(),
+            name: file.name,
+            kind: "text",
+            data: await file.text(),
+            mediaType: file.type,
+            size: file.size,
+          });
+        } catch (error) {
+          toast.error(t("chat.fileRejected"), error instanceof Error ? error.message : String(error));
+        }
+        continue;
+      }
+      try {
+        added.push({
+          id: newId(),
+          name: file.name,
+          kind: "file",
+          data: await file.text(),
+          mediaType: file.type || "application/octet-stream",
+          size: file.size,
+        });
+      } catch (error) {
+        toast.error(t("chat.fileRejected"), error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (added.length > 0) setAttachments((current) => [...current, ...added]);
+  }
+
+  const speechSupported = speechRecognitionConstructor() != null;
+
+  function stopDictation() {
+    recognition.current?.stop();
+    recognition.current = null;
+    setListening(false);
+  }
+
+  function startDictation() {
+    const Constructor = speechRecognitionConstructor();
+    if (!Constructor) return;
+    recognition.current?.stop();
+    const instance = new Constructor();
+    speechBaseDraft.current = draft.trim();
+    speechTranscript.current = "";
+    instance.lang = speechLanguage(locale);
+    instance.continuous = true;
+    instance.interimResults = true;
+    instance.onresult = (event) => {
+      let interim = "";
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const text = result?.[0]?.transcript ?? "";
+        if (result?.isFinal) {
+          speechTranscript.current = [speechTranscript.current, text].filter(Boolean).join(" ");
+        } else {
+          interim += text;
+        }
+      }
+      const transcript = [speechTranscript.current, interim].filter(Boolean).join(" ");
+      const next = [speechBaseDraft.current, transcript].filter(Boolean).join(" ");
+      setDraft(next);
+      window.requestAnimationFrame(grow);
+    };
+    instance.onerror = () => {
+      recognition.current = null;
+      setListening(false);
+    };
+    instance.onend = () => {
+      recognition.current = null;
+      setListening(false);
+    };
+    recognition.current = instance;
+    setListening(true);
+    instance.start();
+  }
+
+  function hasFiles(dataTransfer: DataTransfer): boolean {
+    return Array.from(dataTransfer.types).includes("Files");
+  }
+
+  function handleDragEnter(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (!hasFiles(event.dataTransfer)) return;
+    dragDepth.current += 1;
+    setDragActive(true);
+  }
+
+  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (!hasFiles(event.dataTransfer)) return;
+    event.dataTransfer.dropEffect = "copy";
+    setDragActive(true);
+  }
+
+  function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragActive(false);
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDragActive(false);
+    if (event.dataTransfer.files.length === 0) {
+      toast.error(t("chat.fileRejected"), t("chat.dropRejectedDetail"));
+      return;
+    }
+    void addFiles(event.dataTransfer.files);
+  }
+
   async function send(options?: { visibleText?: string; requestContent?: string }) {
     const text = options?.visibleText ?? draft.trim();
-    if (!text || streaming || !model) return;
+    if ((!text && attachments.length === 0) || streaming || !model) return;
+    if (listening) stopDictation();
+    if (attachments.some((attachment) => attachment.kind === "image") && !visionAvailable) {
+      toast.error(t("chat.imageRejected"), t("chat.imageVisionUnavailable"));
+      return;
+    }
+
+    const requestParts: ChatRequestPart[] = [];
+    if (text) requestParts.push({ type: "text", text });
+    for (const attachment of attachments) {
+      if (attachment.kind === "image") {
+        requestParts.push({ type: "image_url", image_url: { url: attachment.data } });
+      } else {
+        requestParts.push({
+          type: "text",
+          text: t("chat.filePrompt", { name: attachment.name, content: attachment.data }),
+        });
+      }
+    }
+    const requestContent = options?.requestContent ?? (
+      requestParts.length === 1 && requestParts[0].type === "text"
+        ? requestParts[0].text
+        : requestParts
+    );
+    const titleText = text || t("chat.attachments");
 
     const user: ChatMessage = {
       id: newId(),
       role: "user",
       content: text,
-      requestContent: options?.requestContent,
+      attachments,
+      requestContent,
       at: new Date().toISOString(),
     };
     const reply: ChatMessage = {
@@ -514,108 +775,28 @@ function ChatScreen() {
       title:
         session.titled || turnsOnly(session.messages).length > 0
           ? session.title
-          : titleFrom(text),
+          : titleFrom(titleText),
       messages: [...history, reply],
     };
     setSession(live);
     setDraft("");
+    setAttachments([]);
     setTelemetryCapture(null);
-    setStreaming(true);
     autoFollow.current = true;
     window.requestAnimationFrame(grow);
 
-    const controller = new AbortController();
-    abort.current = controller;
-
-    const patchReply = (patch: Partial<ChatMessage>) => {
-      live = {
-        ...live,
-        messages: live.messages.map((m) => (m.id === reply.id ? { ...m, ...patch } : m)),
-      };
-      setSession(live);
-    };
-
-    try {
-      let streamed = emptyChatStream();
-      for await (const data of streamSse(
-        "/v1/chat/completions",
-        {
-          model,
-          stream: true,
-          // Otherwise the server falls back to its own conservative default
-          // (openai.rs's DEFAULT_MAX_TOKENS = 512), independent of whatever
-          // the operator actually configured for this node — a response
-          // could never run longer than that no matter the deployment.
-          // `config` is null before a model is deployed; omitting the field
-          // then just leaves that same server-side default in place.
-          ...(node.data?.config?.max_new_tokens
-            ? { max_tokens: node.data.config.max_new_tokens }
-            : {}),
-          messages: turnsOnly(history).map((m) => ({ role: m.role, content: m.content })),
-        },
-        controller.signal,
-      )) {
-        if (data === "[DONE]") break;
-        try {
-          const chunk = JSON.parse(data);
-          const streamError = streamErrorMessage(chunk);
-          if (streamError) {
-            streamed = consumeChatError(streamed, streamError);
-            patchReply({ error: streamed.error });
-            continue;
-          }
-          const delta = chunk?.choices?.[0]?.delta?.content;
-          if (typeof delta === "string" && delta) {
-            streamed = consumeChatDelta(streamed, delta);
-            patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
-          }
-          const metrics = chunk?.x_pom;
-          if (metrics && typeof metrics === "object") {
-            streamed = finishChatStream(streamed, metrics);
-            patchReply({
-              content: streamed.content,
-              reasoning: streamed.reasoning || undefined,
-              tokensPerSecond: streamed.tokensPerSecond,
-              tokensGenerated: streamed.tokensGenerated,
-              durationMs: streamed.durationMs,
-              timings: streamed.timings,
-              trace: streamed.trace,
-              source: typeof metrics.source === "string" ? metrics.source : undefined,
-            });
-          }
-        } catch {
-          /* a keep-alive or a partial frame — nothing to render */
-        }
-      }
-      streamed = finishChatStream(streamed);
-      patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
-      if (showTelemetry && streamed.trace) {
-        setTelemetryCapture({ messageId: reply.id, trace: streamed.trace, cluster: cluster.data ?? null });
-      }
-      if (!streamed.content && !streamed.reasoning && !streamed.error) {
-        patchReply({
-          error:
-            t("chat.emptyResponse"),
-        });
-      }
-    } catch (e) {
-      if (controller.signal.aborted) {
-        patchReply({ error: t("chat.interrupted") });
-      } else {
-        const detail = e instanceof Error ? e.message : String(e);
-        patchReply({ error: detail });
-        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-          toast.error(
-            t("chat.keyRejected"),
-            t("chat.keyRejectedDetail"),
-          );
-        }
-      }
-    } finally {
-      setStreaming(false);
-      abort.current = null;
-      if (!deletedSessions.current.delete(live.id)) upsert(live);
-    }
+    startStream({
+      session: live,
+      history,
+      replyId: reply.id,
+      model,
+      maxTokens: node.data?.config?.max_new_tokens,
+      inferenceHead: selectedInferenceHead ?? undefined,
+      emptyResponseMessage: t("chat.emptyResponse"),
+      interruptedMessage: t("chat.interrupted"),
+      cluster: cluster.data ?? null,
+      onUnauthorized: () => toast.error(t("chat.keyRejected"), t("chat.keyRejectedDetail")),
+    });
   }
 
   function analyzeTrace(trace: RequestTrace) {
@@ -666,7 +847,6 @@ function ChatScreen() {
   }
 
   function deleteChatSession(id: string) {
-    if (id === session.id) deletedSessions.current.add(id);
     setTelemetrySnapshots((previous) => {
       if (!(id in previous)) return previous;
       const next = { ...previous };
@@ -678,11 +858,12 @@ function ChatScreen() {
 
   function startNewChat() {
     setDraft("");
+    setAttachments([]);
     setTelemetryCapture(null);
     startNewSession(model || null);
   }
 
-  const noModel = available.length === 0 && !cluster.data?.active_model;
+  const noModel = available.length === 0 && !node.data?.active_model && !cluster.data?.active_model;
   const firstTraceModel = session.messages.find((message) => message.trace?.model)?.trace?.model;
   const modelAtStart = session.modelAtStart ?? firstTraceModel ?? session.model ?? model;
 
@@ -707,12 +888,14 @@ function ChatScreen() {
               title={session.messages.length ? session.title : t("chat.title")}
               onRename={rename}
             />
-            {cluster.data && !cluster.data.complete && (
+            {chatCapabilities.data?.coverage === "incomplete" && (
               <Badge tone="amber">{t("chat.incomplete")}</Badge>
+            )}
+            {chatCapabilities.data?.coverage === "unavailable" && (
+              <Badge tone="amber">{t("chat.coverageUnavailable")}</Badge>
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <OpenNativeChatWindowButton />
             {!historyLivesInMainMenu && (
               <Button
                 size="sm"
@@ -784,7 +967,82 @@ function ChatScreen() {
 
         <div className="shrink-0 border-t border-line bg-surface/80 px-4 py-3 backdrop-blur-md sm:px-6">
           <div className="mx-auto w-full max-w-3xl">
-            <div className="flex items-end gap-2 rounded-xl border border-line bg-ink p-2 transition-colors duration-150 focus-within:border-iris/60 focus-within:ring-2 focus-within:ring-iris/20">
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {attachments.map((attachment) => (
+                  <span
+                    key={attachment.id}
+                    className="flex max-w-full items-center gap-2 rounded-lg border border-line bg-raised px-1.5 py-1.5 text-[0.65rem] text-muted"
+                  >
+                    {attachment.kind === "image" ? (
+                      <img
+                        src={attachment.data}
+                        alt={t("chat.attachmentThumbnail", { name: attachment.name })}
+                        className="h-10 w-10 shrink-0 rounded-md border border-line object-cover"
+                      />
+                    ) : (
+                      <span
+                        aria-label={`Formato ${attachmentFormat(attachment)}`}
+                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-aqua/30 bg-aqua/[0.08] px-1 text-center font-mono text-[0.58rem] font-semibold uppercase text-aqua"
+                      >
+                        {attachmentFormat(attachment)}
+                      </span>
+                    )}
+                    <span className="max-w-[16rem] truncate" title={attachment.name}>{attachment.name}</span>
+                    <button
+                      type="button"
+                      aria-label={t("chat.removeAttachment", { name: attachment.name })}
+                      onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                      className="rounded p-0.5 text-faint hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div
+              role="group"
+              aria-label="Campo de mensagem"
+              onDragEnter={handleDragEnter}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={clsx(
+                "relative flex items-end gap-2 rounded-xl border bg-ink p-2 transition-colors duration-150 focus-within:border-iris/60 focus-within:ring-2 focus-within:ring-iris/20",
+                dragActive ? "border-iris bg-iris/[0.08] ring-2 ring-iris/30" : "border-line",
+              )}
+            >
+              {dragActive && (
+                <div
+                  aria-live="polite"
+                  className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-lg border border-dashed border-iris bg-ink/90 px-4 text-center text-sm font-medium text-iris shadow-lift"
+                >
+                  {t("chat.dropHint")}
+                </div>
+              )}
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  const files = event.currentTarget.files;
+                  if (files) void addFiles(files);
+                  event.currentTarget.value = "";
+                }}
+              />
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  aria-label={t("chat.attach")}
+                  title={t("chat.attach")}
+                  onClick={() => fileInput.current?.click()}
+                  className="rounded-md p-1.5 text-faint transition-colors hover:bg-raised hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
+              </div>
               <textarea
                 ref={composer}
                 rows={1}
@@ -806,20 +1064,36 @@ function ChatScreen() {
                 <Button
                   variant="outline"
                   icon={<Square className="h-3.5 w-3.5" />}
-                  onClick={() => abort.current?.abort()}
+                  onClick={stopStream}
                 >
                   {t("chat.stop")}
                 </Button>
               ) : (
-                <Button
-                  variant="primary"
-                  disabled={!draft.trim()}
-                  onClick={() => void send()}
-                  aria-label={t("chat.send")}
-                  className="w-9 px-0"
-                >
-                  <ArrowUp className="h-4 w-4" />
-                </Button>
+                <>
+                  {speechSupported && (
+                    <button
+                      type="button"
+                      aria-label={listening ? t("chat.dictationStop") : t("chat.dictationStart")}
+                      title={listening ? t("chat.dictationStop") : t("chat.dictationStart")}
+                      onClick={listening ? stopDictation : startDictation}
+                      className={clsx(
+                        "rounded-md p-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris",
+                        listening ? "bg-rose/15 text-rose" : "text-faint hover:bg-raised hover:text-fg",
+                      )}
+                    >
+                      {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                    </button>
+                  )}
+                  <Button
+                    variant="primary"
+                    disabled={!draft.trim() && attachments.length === 0}
+                    onClick={() => void send()}
+                    aria-label={t("chat.send")}
+                    className="w-9 px-0"
+                  >
+                    <ArrowUp className="h-4 w-4" />
+                  </Button>
+                </>
               )}
             </div>
             {/* Under the box, on the same baseline: what answers on the left,
@@ -828,12 +1102,14 @@ function ChatScreen() {
               <ModelPicker value={model} options={available} onChange={chooseModel} />
               <p className="text-[0.7rem] text-faint">{t("chat.composerHint")}</p>
             </div>
-            {profile === "infer" && model && (
+            {model && (
               <InferenceHeadChoice
                 model={model}
                 response={headQuery.data}
                 loading={headQuery.isLoading}
                 failed={headQuery.isError}
+                selectedNodeId={selectedInferenceHead}
+                onChange={(nodeId) => setHeadChoice({ model, nodeId })}
               />
             )}
           </div>
@@ -846,11 +1122,17 @@ function ChatScreen() {
 /** Direct consumers such as focused route tests still get an isolated chat. */
 export function Chat() {
   const controller = useOptionalChatSessionController();
-  return controller ? (
+  const ai = controller ? (
     <ChatScreen />
   ) : (
     <ChatSessionProvider>
       <ChatScreen />
     </ChatSessionProvider>
+  );
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <ChatSurfaceTabs />
+      <div className="min-h-0 flex-1">{ai}</div>
+    </div>
   );
 }

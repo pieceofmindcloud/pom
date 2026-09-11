@@ -18,7 +18,8 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
   `socket2`, `tower-http` (compression-full), `rusqlite` bundled para a
   auditoria persistente, `arc-swap` para snapshots lock-free do contexto de
-  captura de logs, `routing-contract` (path).
+  captura de logs, `h3`/`h3-quinn`/`quinn` para o HTTP/3 opcional dos hops de
+  inferência, `routing-contract` (path).
 - O provider Hugging Face usa HTTP nativo via `reqwest`; não há executável `hf`,
   runtime Python ou instalação externa no caminho normal.
 - `build = "build.rs"`.
@@ -85,8 +86,11 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
 
 **Fluxo (`main`):**
 1. `respawn::remember_argv` + tracing.
-2. Sem `pom.json` → `start_setup_mode`: só `/api/setup/key`, `/api/setup/save`
-   + a UI (`webapp::routes`); gravar a config respawna o processo.
+2. Sem `pom.json`, ou com `Config.setup_pending`, → `start_setup_mode`: serve
+   somente `/api/setup/*` para hardware, modelos, referência geo, raiz de
+   confiança, verificações e save, além da UI (`webapp::routes`); gravar a
+   config respawna o processo. O modo setup preserva preferências locais após
+   sair da rede.
 3. Com config: valida a porta da interface e faz o preflight de disponibilidade
    antes de carregar modelos; porta P2P/HTTP vêm da config; `inference_port` =
    flag ou default 8181.
@@ -106,10 +110,15 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    resolvidas contra `config::project_root()`.
 8. Bootstrap = config + `--bootstrap`, ambos passando por
    `config::normalize_peer_addr`. `--advertise-addr` vence a config.
-9. `Network::new` recebe a política TLS inicial antes de `start` (receive,
-   gossip 5 s, medição de rotas 30 s) e `bootstrap_discovery`. Isso garante que
-   a primeira sonda use o mesmo esquema anunciado pela UI; `--no-discovery` →
-   `detach`.
+9. `Network::new` recebe a política TLS inicial e a catraca de admissão antes
+   de `start` (receive, gossip 5 s, medição de rotas 30 s) e
+   `bootstrap_discovery`. Rede privada prova `connection_key` pelo
+   `/handshake`; rede pública exige `cluster_id` e uma principal/concessão da
+   cadeia em `.pom-admin-trust.json`. Isso garante que a primeira sonda use o
+   mesmo esquema anunciado pela UI e que nenhum Announce não autenticado entre
+   em `peers`; a rede pública ainda conserva uma `connection_key` local para a
+   UI do administrador, mas ela não é compartilhada nem usada na admissão;
+   `--no-discovery` → `detach`.
 10. Faixa de camadas, por precedência: `--start-layer/--end-layer` → nome do
     arquivo (`parse_layers_from_filename`, ex. `qwen_0_15.gguf`) →
     `calculate_assignment` (gap-filling). `lastslice::take()` é consumido
@@ -126,8 +135,10 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
 12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI). A rota
     de prévia de capacidade faz somente estimativa analítica, com quatro
     admissões por processo e `429` imediato quando todas estão ocupadas.
-13. `ClusterLogs` inicia a captura limitada e as tasks best-effort; o
-    `Discovery` mantém o behaviour request/response de logs separado do túnel
+13. `ClusterLogs` inicia a captura limitada e as tasks best-effort; o histórico
+    usa `INFO` como nível mínimo por padrão, aceita `cluster_logs_min_level` no
+    `pom.json`, e o principal poda sete dias ou 500.000 linhas em lotes com
+    contenção não bloqueante. O `Discovery` mantém o behaviour request/response de logs separado do túnel
     de inferência e só envia lotes ao principal. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
     UDP, com ou sem assignment) + diala `--pkarr-peers` + pkarr initial publish e republish a
@@ -142,10 +153,13 @@ conduzida da thread principal. O item abre o `/admin-ui/chat` num painel de
 390 x 844 points e numa janela de 1120 x 880 points; as medidas e o endereço
 saem do Rust pela ABI, não são duplicados no Objective-C. Os dois WebViews
 usam o data store padrão do WebKit e, portanto, a mesma sessão do frontend.
-Quando o serviço termina, a ponte apenas para o laço de eventos e o acorda;
-ela não encerra o processo, porque o `join()` Rust precisa propagar a mensagem
-e o código de saída de falhas como `pom.json` inválido. Isso mantém
-`--list-models` saindo sozinho sem engolir erros. Fora do macOS o ponto de
+O menu de aplicativo do AppKit contém Sobre e Sair. Sair usa a ação padrão
+`terminate:` e encerra o processo depois que o laço de eventos volta, porque o
+serviço Tokio de longa duração ainda não tem um canal de cancelamento
+cooperativo. Quando o serviço termina por conta própria, a ponte apenas para o
+laço de eventos e o acorda; ela não encerra o processo, porque o `join()` Rust
+precisa propagar a mensagem e o código de saída de falhas como `pom.json`
+inválido. Isso mantém `--list-models` saindo sozinho sem engolir erros. Fora do macOS o ponto de
 entrada continua um CLI Tokio normal, sem nenhuma dependência de interface
 gráfica.
 
@@ -199,6 +213,11 @@ O protocolo de inferência ainda não foi lançado. `frame/v1-batch` é o primei
 e único contrato oficial: não manter fallback, adapter ou código de
 compatibilidade para formatos v1/v2 anteriores. Mudanças futuras devem
 evoluir este contrato explicitamente.
+
+O arranque cria o `NetworkChat` junto do `Discovery`, usando um behaviour
+libp2p separado do túnel de inferência. O `GatewayState` compartilha o serviço
+com as rotas `/api/ui/network-chat`; a política de cluster é aplicada pela
+catraca de `network_chat_policy`.
 
 ## Ligações
 

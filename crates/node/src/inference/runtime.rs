@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::Command;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{watch, Mutex, Notify, RwLock};
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
 
@@ -54,6 +54,7 @@ pub(crate) fn engine_config_from_node(
 ) -> Result<crate::llm::EngineConfig> {
     let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
     Ok(crate::llm::EngineConfig {
+        mmproj_path: cfg.mmproj_path.clone(),
         n_ctx: total_context_tokens(cfg.n_ctx, cfg.max_sessions)?,
         offload_kqv: cfg.offload_kqv,
         cache_type_k: cfg.cache_type_k,
@@ -105,6 +106,9 @@ pub use llama_engine::DEFAULT_FIT_MEMORY_MARGIN_MB;
 pub struct NodeConfig {
     /// Path of the GGUF this peer loads — a full model or one slice of one.
     pub model_path: String,
+    /// Projector multimodal carregado junto do GGUF, equivalente a `--mmproj`.
+    #[serde(default)]
+    pub mmproj_path: Option<String>,
     /// Label shared by every peer of the same model. The pipeline planner only
     /// chains peers whose label matches exactly, so this must agree across the
     /// cluster (see `ModelProfile::guess_from_name`).
@@ -256,6 +260,12 @@ pub struct NodeConfig {
     /// o operador pode desligar o recuo se a medição local não compensar.
     #[serde(default = "default_mtp_cpu_fallback_enabled")]
     pub mtp_cpu_fallback_enabled: bool,
+    /// Descarrega os pesos quando este peer fica ocioso.
+    #[serde(default)]
+    pub unload_if_idle: bool,
+    /// Minutos sem requisição antes de entrar em `idle`.
+    #[serde(default = "default_idle_minutes")]
+    pub idle_minutes: u32,
 }
 
 impl NodeConfig {
@@ -276,6 +286,7 @@ impl NodeConfig {
             deploy_id: String::new(),
             deployment_name: String::new(),
             model_path: String::new(),
+            mmproj_path: None,
             model_label: String::new(),
             start_layer: 0,
             end_layer: 0,
@@ -325,6 +336,8 @@ impl NodeConfig {
             mtp_draft_tokens: p.mtp_draft_tokens,
             mtp_min_probability: p.mtp_min_probability,
             mtp_cpu_fallback_enabled: p.mtp_cpu_fallback_enabled,
+            unload_if_idle: p.unload_if_idle,
+            idle_minutes: p.idle_minutes,
         }
     }
 
@@ -344,6 +357,7 @@ impl NodeConfig {
             deploy_id: self.deploy_id.clone(),
             deployment_name: self.deployment_name.clone(),
             model_path: self.model_path.clone(),
+            mmproj_path: self.mmproj_path.clone(),
             model_label: self.model_label.clone(),
             start_layer: self.start_layer,
             end_layer: self.end_layer,
@@ -428,6 +442,9 @@ fn default_mtp_min_probability() -> f32 {
 fn default_mtp_cpu_fallback_enabled() -> bool {
     true
 }
+fn default_idle_minutes() -> u32 {
+    60
+}
 
 impl NodeConfig {
     pub fn layers_count(&self) -> u32 {
@@ -493,6 +510,7 @@ impl NodeConfig {
     /// sampling ficam fora desta identidade e são reconstruídos no servidor.
     fn weights_are_compatible(&self, other: &Self) -> bool {
         self.model_path == other.model_path
+            && self.mmproj_path == other.mmproj_path
             && self.start_layer == other.start_layer
             && self.end_layer == other.end_layer
             && self.total_layers == other.total_layers
@@ -509,6 +527,11 @@ impl NodeConfig {
         }
         if !PathBuf::from(&self.model_path).exists() {
             bail!("arquivo não encontrado: {}", self.model_path);
+        }
+        if let Some(mmproj_path) = self.mmproj_path.as_deref() {
+            if !PathBuf::from(mmproj_path).is_file() {
+                bail!("arquivo mmproj não encontrado: {mmproj_path}");
+            }
         }
         if self.start_layer > self.end_layer {
             bail!(
@@ -571,6 +594,8 @@ pub enum ServerState {
     Starting,
     /// `/health` answered and the model is loaded.
     Ready,
+    /// Modelo descarregado por inatividade; a implantação continua anunciada.
+    Idle,
     /// Crashed past the restart budget.
     Failed,
     /// Model was unloaded because a GPU exceeded the thermal limit.
@@ -631,6 +656,10 @@ pub struct NodeRuntime {
     /// Certificado que o servidor de inferência apresenta, quando há um.
     /// `None` nos testes, que sobem em `127.0.0.1` e falam em claro.
     tls: Option<crate::serve::TlsServer>,
+    /// Endpoint HTTP/3 da inferência. Não depende da política TLS sobre TCP.
+    quic: Option<crate::serve::QuicServerConfig>,
+    /// Porta UDP dedicada anunciada para o endpoint HTTP/3 da inferência.
+    quic_port: Option<u16>,
     /// Configuração viva usada para autorizar chamadas internas de inferência.
     auth: Option<crate::auth::AuthState>,
     /// Dono do último conjunto de pesos carregado. O servidor de cada geração
@@ -640,6 +669,8 @@ pub struct NodeRuntime {
     /// Sem a mesma instância, o painel só veria o zero do tracker do gateway
     /// enquanto as requisições executavam na porta de inferência.
     loads: Arc<crate::pipeline::LoadTracker>,
+    request_activity: Arc<crate::reqlog::RequestActivity>,
+    status_changed: Arc<Notify>,
     /// Serializes apply, manual unload and thermal unload so an operator action
     /// cannot race a temperature transition.
     operation: Mutex<()>,
@@ -663,7 +694,7 @@ impl NodeRuntime {
         assignment: Arc<RwLock<Option<LayerAssignment>>>,
         tls: Option<crate::serve::TlsServer>,
     ) -> Arc<Self> {
-        Self::new_with_tls_and_auth(net, assignment, tls, None)
+        Self::new_with_tls_and_quic_and_auth(net, assignment, tls, None, None)
     }
 
     pub fn new_with_tls_and_auth(
@@ -672,7 +703,18 @@ impl NodeRuntime {
         tls: Option<crate::serve::TlsServer>,
         auth: Option<crate::auth::AuthState>,
     ) -> Arc<Self> {
+        Self::new_with_tls_and_quic_and_auth(net, assignment, tls, None, auth)
+    }
+
+    pub fn new_with_tls_and_quic_and_auth(
+        net: Arc<Network>,
+        assignment: Arc<RwLock<Option<LayerAssignment>>>,
+        tls: Option<crate::serve::TlsServer>,
+        quic: Option<crate::serve::QuicServerConfig>,
+        auth: Option<crate::auth::AuthState>,
+    ) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
+        let quic_port = net.inference_quic_port;
         Arc::new(Self {
             config: RwLock::new(None),
             status: Arc::new(RwLock::new(RuntimeStatus::new(
@@ -683,9 +725,13 @@ impl NodeRuntime {
             net,
             generation,
             tls,
+            quic,
+            quic_port,
             auth,
             model_cache: Arc::new(crate::llm::ModelCache::new()),
             loads: Arc::new(crate::pipeline::LoadTracker::new()),
+            request_activity: crate::reqlog::RequestActivity::new(),
+            status_changed: Arc::new(Notify::new()),
             operation: Mutex::new(()),
             thermal: Arc::new(Mutex::new(ThermalRuntime {
                 blocked: false,
@@ -698,6 +744,128 @@ impl NodeRuntime {
     /// inferência da geração atual.
     pub fn load_tracker(&self) -> Arc<crate::pipeline::LoadTracker> {
         self.loads.clone()
+    }
+
+    /// Atomic activity marker used by the out-of-band idle evaluator.
+    pub fn note_request(&self) {
+        self.request_activity.mark_now();
+    }
+
+    /// Wait for the health watcher to prove that a reload is ready. Notify is
+    /// used instead of polling so the first request after idle never adds a
+    /// timer or a sleep to inference.
+    pub async fn wait_until_ready(&self) -> Result<()> {
+        loop {
+            let notified = self.status_changed.notified();
+            match self.status.read().await.state {
+                ServerState::Ready => return Ok(()),
+                ServerState::Failed => bail!("o modelo não conseguiu recarregar"),
+                ServerState::Thermal => bail!("o modelo aguarda resfriamento"),
+                ServerState::Disabled => bail!("o deployment não está configurado"),
+                ServerState::Starting | ServerState::Idle => notified.await,
+            }
+        }
+    }
+
+    /// Ensure this peer is ready for a planned request. Idle peers are loaded;
+    /// peers already starting are awaited; ready peers return immediately.
+    /// The caller may invoke this on all planned peers concurrently, and the
+    /// operation lock keeps duplicate wake-ups idempotent.
+    pub async fn reload_from_idle(&self) -> Result<bool> {
+        let reloaded = {
+            let _operation = self.operation.lock().await;
+            match self.status.read().await.state {
+                ServerState::Idle => {
+                    let Some(cfg) = self.config.read().await.clone() else {
+                        bail!("deployment idle sem configuração");
+                    };
+                    self.note_request();
+                    // Keep the operation lock while transitioning Idle ->
+                    // Starting so concurrent requests cannot duplicate a load.
+                    self.apply_locked(cfg).await?;
+                    true
+                }
+                ServerState::Ready | ServerState::Starting => false,
+                ServerState::Failed => bail!("o modelo não conseguiu recarregar"),
+                ServerState::Thermal => bail!("o modelo aguarda resfriamento"),
+                ServerState::Disabled => bail!("o deployment não está configurado"),
+            }
+        };
+        self.wait_until_ready().await?;
+        Ok(reloaded)
+    }
+
+    /// Evaluate the per-peer policy from the existing monitor. This method is
+    /// intentionally not called by a request handler.
+    async fn evaluate_idle(&self) {
+        let Some(cfg) = self.config.read().await.clone() else {
+            return;
+        };
+        if !cfg.unload_if_idle
+            || cfg.idle_minutes == 0
+            || self.status.read().await.state != ServerState::Ready
+            || !self.request_activity.is_idle(cfg.idle_minutes)
+        {
+            return;
+        }
+        self.unload_for_idle().await;
+    }
+
+    async fn unload_for_idle(&self) {
+        let _operation = self.operation.lock().await;
+        let Some(cfg) = self.config.read().await.clone() else {
+            return;
+        };
+        if !cfg.unload_if_idle
+            || cfg.idle_minutes == 0
+            || !self.request_activity.is_idle(cfg.idle_minutes)
+            || self.loads.load(&self.net.node_id).await != 0
+            || self.status.read().await.state != ServerState::Ready
+        {
+            return;
+        }
+        let Some(assignment) = self.assignment.read().await.clone() else {
+            return;
+        };
+        let generation = *self.generation.borrow() + 1;
+        self.generation.send_replace(generation);
+        self.model_cache.clear();
+        self.net.set_batching_ready(false);
+        self.net.set_slot_persist_ready(false);
+        self.net.set_runtime_generation(generation);
+        self.net.set_idle(true);
+        *self.status.write().await = RuntimeStatus::new(
+            ServerState::Idle,
+            format!(
+                "modelo descarregado após {} min sem requisições",
+                cfg.idle_minutes
+            ),
+        );
+        self.status_changed.notify_waiters();
+        if let Err(error) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Idle) {
+            warn!("não deu para anotar a fatia ociosa: {error}");
+        }
+        if let Err(error) = self.net.announce(Some(&assignment)).await {
+            warn!("announce após unload por inatividade falhou: {error}");
+        }
+    }
+
+    /// Restore an idle deployment without loading its model during process
+    /// startup. The first planned request explicitly wakes it.
+    pub async fn restore_idle(&self, cfg: NodeConfig) {
+        let profile = ModelProfile::guess_from_name(&cfg.model_path);
+        let assignment = cfg.to_assignment(&profile);
+        *self.config.write().await = Some(cfg.clone());
+        *self.assignment.write().await = Some(assignment.clone());
+        self.net.set_idle(true);
+        self.net.set_batching_ready(false);
+        self.net.set_slot_persist_ready(false);
+        *self.status.write().await = RuntimeStatus::new(
+            ServerState::Idle,
+            "deployment restaurado ocioso; aguardando requisição",
+        );
+        self.status_changed.notify_waiters();
+        let _ = self.net.announce(Some(&assignment)).await;
     }
 
     pub async fn config(&self) -> Option<NodeConfig> {
@@ -755,6 +923,7 @@ impl NodeRuntime {
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
+                runtime.evaluate_idle().await;
                 let policy = auth.read().await.thermal;
                 machine.set_policy(policy);
                 let system = crate::sysmon::sample().await;
@@ -789,6 +958,8 @@ impl NodeRuntime {
         self.model_cache.clear();
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
+        self.status_changed.notify_waiters();
+        self.net.set_idle(false);
         self.net.set_batching_ready(false);
         self.net.set_slot_persist_ready(false);
         self.net.set_runtime_generation(generation);
@@ -873,6 +1044,9 @@ impl NodeRuntime {
         *self.assignment.write().await = Some(assignment.clone());
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Starting, "iniciando servidor de inferência");
+        self.status_changed.notify_waiters();
+        self.request_activity.mark_now();
+        self.net.set_idle(false);
         // A configuração nova só vira capacidade efetiva depois que o
         // `/health` do processo novo responder `model_loaded`.
         self.net.set_runtime_generation(generation);
@@ -1078,6 +1252,7 @@ impl NodeRuntime {
         let gen_rx = self.generation.subscribe();
         let status = StatusWriter {
             status: self.status_handle(),
+            changed: self.status_changed.clone(),
         };
         let port = cfg.inference_port;
         let cfg_for_health = cfg.clone();
@@ -1097,10 +1272,13 @@ impl NodeRuntime {
         let auth = self.auth.clone();
         let model_cache = self.model_cache.clone();
         let loads = self.loads.clone();
+        let request_activity = self.request_activity.clone();
         let load_node_id = self.net.node_id.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
         let tls = self.tls.as_ref().map(|t| t.so_de_peers());
+        let quic = self.quic.clone();
+        let quic_port = self.quic_port;
 
         tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;
@@ -1169,11 +1347,14 @@ impl NodeRuntime {
                     mtp_ready.clone(),
                     batching_ready.clone(),
                     tls.clone(),
+                    quic.clone(),
+                    quic_port,
                     auth.clone(),
                     model_cache.clone(),
                     reuse_weights,
                     loads.clone(),
                     load_node_id.clone(),
+                    request_activity.clone(),
                 )
                 .await;
                 if *gen_rx.borrow() != generation {
@@ -1229,6 +1410,7 @@ impl NodeRuntime {
         let port = cfg.inference_port;
         let status = StatusWriter {
             status: self.status_handle(),
+            changed: self.status_changed.clone(),
         };
         let assignment = self.assignment.clone();
         let net = self.net.clone();
@@ -1311,6 +1493,7 @@ impl NodeRuntime {
                 }
                 append_log(port, "modelo carregado (/health respondeu model_loaded)");
                 status.set_ready(reported, reported_gpu).await;
+                net.set_idle(false);
                 if *gen_rx.borrow() != generation {
                     return;
                 }
@@ -1525,6 +1708,7 @@ async fn free_port(port: u16) -> Result<(), String> {
 
 struct StatusWriter {
     status: Arc<RwLock<RuntimeStatus>>,
+    changed: Arc<Notify>,
 }
 
 impl StatusWriter {
@@ -1534,10 +1718,12 @@ impl StatusWriter {
         s.detail = detail;
         s.restarts = restarts;
         s.changed_at = chrono::Utc::now().to_rfc3339();
+        self.changed.notify_waiters();
     }
 
     async fn set_log(&self, path: &str) {
         self.status.write().await.log_path = Some(path.to_string());
+        self.changed.notify_waiters();
     }
 
     async fn set_ready(
@@ -1551,6 +1737,7 @@ impl StatusWriter {
         s.reported_total_layers = reported_total_layers;
         s.reported_gpu_layers = reported_gpu_layers;
         s.changed_at = chrono::Utc::now().to_rfc3339();
+        self.changed.notify_waiters();
     }
 }
 
@@ -1570,6 +1757,7 @@ mod tests {
     /// `--refresh` e o stdout não sobrevive.
     #[tokio::test]
     async fn a_porta_presa_aparece_no_status_e_no_log() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("pom-porta-presa-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("POM_HOME", &dir);
@@ -1753,6 +1941,7 @@ mod tests {
         NodeConfig {
             deploy_id: String::new(),
             model_path: "/nonexistent/model.gguf".into(),
+            mmproj_path: None,
             model_label: "qwen35".into(),
             deployment_name: "qwen35".into(),
             start_layer: 0,
@@ -1802,6 +1991,8 @@ mod tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
             tp: None,
         }
     }
@@ -1816,6 +2007,7 @@ mod tests {
     /// que ele prova é o contrato entre o watch e o disco, não o llama.cpp.
     #[tokio::test]
     async fn o_health_e_quem_promove_a_anotacao_para_servindo() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("pom-health-watch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg_path = dir.join("pom.json");

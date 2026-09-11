@@ -90,12 +90,13 @@ impl InferState {
         if self.seq_pool.is_empty() {
             self.reap_idle();
         }
-        if self.seq_pool.is_empty() {
-            // Uma sessão retida é só cache de prompt entre turnos: devolvê-la
-            // custa o reuso de um turno, e não devolvê-la custa a requisição
-            // inteira ("seq pool esgotado"). O cache cede primeiro.
-            self.evict_retained();
-        }
+        // Aqui não se despeja sessão retida. Uma sessão retida é KV quente de
+        // uma conversa viva - dezenas de milhares de tokens - e trocá-la na
+        // hora pelo prefill que chegou agora era o que fazia um pedido de 35
+        // caracteres reingerir 60 mil tokens do zero. Quem admite uma sessão
+        // nova é o escalonador, que só conta slot realmente livre
+        // (`new_session_slots`) e só reclama uma sessão retida depois de
+        // `RETAINED_RECLAIM_GRACE` esperando (`reclaim_retained_slot`).
         if self.seq_pool.is_empty() {
             return None;
         }
@@ -184,31 +185,33 @@ impl InferState {
     ) -> Result<PrefixDecision> {
         let mut decision = PrefixDecision::default();
         if requested_reuse {
-            let session = self.sessions.get(sid).ok_or_else(|| {
-                anyhow::anyhow!("sessão '{sid}' desconhecida no reuso de prefixo")
-            })?;
-            let retained = session
-                .prompt_tokens
-                .get(..session.n_past as usize)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "sessão '{sid}' retém {} tokens, mas só conhece {}",
-                        session.n_past,
-                        session.prompt_tokens.len()
-                    )
+            let (retained, n_past, cells, physical_cells_match) = {
+                let session = self.sessions.get(sid).ok_or_else(|| {
+                    anyhow::anyhow!("sessão '{sid}' desconhecida no reuso de prefixo")
                 })?;
-            decision = plan_prefix_reuse(retained, session.n_past, &tokens);
-            if !decision.reused {
+                (
+                    session.prompt_tokens.clone(),
+                    session.n_past,
+                    session.prompt_cells,
+                    session.positions_match_cells()
+                        && session.prompt_tokens.len() as u32 == session.n_past,
+                )
+            };
+            if physical_cells_match {
+                decision = plan_prefix_reuse(&retained, n_past, &tokens);
+            }
+            if !physical_cells_match || !decision.reused {
                 let comum = retained
                     .iter()
                     .zip(&tokens)
                     .take_while(|(old, new)| old == new)
                     .count();
                 debug!(
-                    "prefixo da sessão {}… não serve: comum={comum} retido={} retidos={} novos={}",
+                    "prefixo da sessão {}… não serve: comum={comum} lógico={} células={} retidos={} novos={}",
                     &sid[..8.min(sid.len())],
-                    session.n_past,
-                    session.prompt_tokens.len(),
+                    n_past,
+                    cells,
+                    retained.len(),
                     tokens.len()
                 );
                 self.get_or_create(sid, true)?;
@@ -251,8 +254,8 @@ impl InferState {
         let _ = session.finish_token_stream();
         session.retained = true;
         session.last_used = Instant::now();
-        // Uma sessão retida vira slot reclamável (`evict_retained`): um prefill
-        // de sessão nova que esperava pode agora entrar.
+        // Uma sessão retida é slot reclamável só depois da carência: acorda o
+        // escalonador para ele reavaliar quem espera.
         self.signal_slot_freed();
         Some(prompt_len)
     }
@@ -295,6 +298,12 @@ impl InferState {
         }
         let seq = session.prompt_seq;
         let retained = session.prompt_len;
+        if !session.positions_match_cells() || session.prompt_cells != retained {
+            bail!(
+                "sessão '{sid}' usa {} células para a posição lógica {retained}; snapshots de M-RoPE não são reutilizáveis",
+                session.prompt_cells
+            );
+        }
         // Os tokens reais do prompt retido, quando este peer os conhece (a
         // cabeça). Vazio nos hops que só receberam hidden state.
         let real_tokens: Vec<i32> = session
@@ -373,6 +382,7 @@ impl InferState {
         session.prompt_len = sidecar.retained_tokens;
         session.n_past = sidecar.retained_tokens;
         session.stable_len = sidecar.retained_tokens;
+        session.prompt_cells = sidecar.retained_tokens;
         session.prompt_tokens = if sidecar.prompt_tokens.is_empty() {
             header_tokens
         } else {
@@ -519,11 +529,14 @@ pub async fn run(
     mtp_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     batching_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tls: Option<crate::serve::TlsServer>,
+    quic: Option<crate::serve::QuicServerConfig>,
+    quic_port: Option<u16>,
     auth: Option<crate::auth::AuthState>,
     model_cache: Arc<ModelCache>,
     reuse_weights: bool,
     loads: Arc<crate::pipeline::LoadTracker>,
     load_node_id: String,
+    request_activity: Arc<crate::reqlog::RequestActivity>,
 ) -> Result<()> {
     // Derivado, não copiado do pedido: o caminho de linha de comando nunca
     // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
@@ -638,6 +651,40 @@ pub async fn run(
     };
 
     if let Some(runtime) = moe.as_ref() {
+        let telemetry = runtime.executor_telemetry();
+        // O `offloaded N/N layers to GPU` do llama.cpp conta só os tensores que
+        // ele próprio aloca. Com `moe_external_executor` os pesos de expert nem
+        // chegam a ser alocados lá (ver `EngineConfig::moe_external_executor`),
+        // por isso aquele total é verdadeiro e ao mesmo tempo enganador: num
+        // modelo de 35 B os buffers de modelo em GPU somam ~1,6 GB e o operador
+        // conclui, com razão, que "o modelo está todo na RAM". Dizer aqui de
+        // quem são os experts é o que impede essa leitura errada.
+        tracing::info!(
+            model = %cfg.model_label,
+            moe_executor = telemetry.executor.as_str(),
+            "os pesos de expert estão fora da conta `offloaded N/N layers` do llama.cpp: \
+             quem os aloja é o executor MoE do POM, não o llama.cpp"
+        );
+        if telemetry.executor == crate::moe::runtime::MoeExecutorKind::CpuReference {
+            tracing::warn!(
+                model = %cfg.model_label,
+                requested_n_gpu_layers = cfg.n_gpu_layers,
+                moe_executor = telemetry.executor.as_str(),
+                dtypes = ?telemetry.dtypes,
+                reason = ?telemetry.reason,
+                "MoE está usando CPUReference: os pesos de expert ficam mapeados na RAM e \
+                 n_gpu_layers não os leva para a GPU. Basta UM dtype sem ponte CUDA para \
+                 derrubar a rota inteira; confira a lista `dtypes`, não o nome do ficheiro"
+            );
+        } else {
+            tracing::info!(
+                model = %cfg.model_label,
+                requested_n_gpu_layers = cfg.n_gpu_layers,
+                moe_executor = telemetry.executor.as_str(),
+                dtypes = ?telemetry.dtypes,
+                "executor MoE CUDA selecionado; experts serão admitidos no cache residente"
+            );
+        }
         runtime.start_device_warmup();
         engine.set_moe_runtime(Arc::clone(runtime))?;
     }
@@ -671,6 +718,7 @@ pub async fn run(
         direct_forward_order: DirectForwardOrder::default(),
         loads,
         load_node_id,
+        request_activity,
     };
     crate::relay::install_local_inference(generation, Arc::new(app_state.clone())).await;
 
@@ -696,10 +744,7 @@ pub async fn run(
         .route("/v1/session/rollback", post(handle_rollback))
         .route("/v1/session/slot", post(handle_slot));
     let inference_routes = if let Some(auth) = auth.clone() {
-        inference_routes.layer(middleware::from_fn_with_state(
-            auth,
-            require_inference_auth,
-        ))
+        inference_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
     } else {
         inference_routes
     };
@@ -719,10 +764,7 @@ pub async fn run(
         post(handle_link).layer(DefaultBodyLimit::disable()),
     );
     let link_routes = if let Some(auth) = auth.clone() {
-        link_routes.layer(middleware::from_fn_with_state(
-            auth,
-            require_inference_auth,
-        ))
+        link_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
     } else {
         link_routes
     };
@@ -733,10 +775,7 @@ pub async fn run(
         post(handle_tp_reduce).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
     );
     let tp_routes = if let Some(auth) = auth {
-        tp_routes.layer(middleware::from_fn_with_state(
-            auth,
-            require_inference_auth,
-        ))
+        tp_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
     } else {
         tp_routes
     };
@@ -765,17 +804,18 @@ pub async fn run(
     // para de aceitar e encerra as conexões que restaram, só depois a VRAM é
     // devolvida. Na ordem inversa uma requisição em voo tocaria um contexto já
     // liberado.
-    let resultado = crate::serve::serve_with_shutdown(listener, router, tls, async move {
-        loop {
-            if stop_rx.changed().await.is_err() {
-                break;
+    let resultado =
+        crate::serve::serve_with_quic(listener, router, tls, quic, quic_port, async move {
+            loop {
+                if stop_rx.changed().await.is_err() {
+                    break;
+                }
+                if *stop_rx.borrow() != generation {
+                    break;
+                }
             }
-            if *stop_rx.borrow() != generation {
-                break;
-            }
-        }
-    })
-    .await;
+        })
+        .await;
     crate::relay::clear_local_inference(generation).await;
 
     // O aquecimento é cooperativo e pode estar lendo o GGUF enquanto o
@@ -891,6 +931,10 @@ pub(crate) fn http_client() -> &'static crate::peer_client::PeerClients {
     // pode virar a flag depois. `set_tls` só faz trabalho quando o valor muda,
     // então isto custa uma leitura atômica no caminho comum.
     c.set_tls(crate::peer_client::tls_ativo());
+    // O cliente é lazy e vive separado do cliente do gateway. Sincronize a
+    // preferência QUIC a cada uso para que uma mudança propagada pela
+    // política também alcance os relays e as respostas diretas deste nó.
+    c.set_quic(crate::peer_client::quic_ativo());
     c
 }
 

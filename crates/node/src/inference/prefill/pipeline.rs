@@ -6,6 +6,7 @@ pub async fn run_with_options(
     model: &str,
     session_id: &str,
     prompt: &str,
+    images: &[Vec<u8>],
     chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
@@ -21,6 +22,7 @@ pub async fn run_with_options(
     // casos ele recria a sessão a frio desde o pedaço 0. Só hub e resposta
     // direta sabem retomar; o anel ignora e roda do início.
     resume: Option<PrefillResumable>,
+    trace_id: Option<&str>,
 ) -> Result<PrefillOutcome> {
     check_cancelled(cancellation)?;
     plan.validate_wire_dtype(dtype)?;
@@ -36,6 +38,7 @@ pub async fn run_with_options(
             model,
             session_id,
             prompt,
+            images,
             chat_template,
             chunk_size,
             dtype,
@@ -47,6 +50,7 @@ pub async fn run_with_options(
             reuse_prefix,
             overlap_window.clone(),
             resume,
+            trace_id,
         )
         .await;
     }
@@ -56,6 +60,7 @@ pub async fn run_with_options(
             model,
             session_id,
             prompt,
+            images,
             chat_template,
             chunk_size,
             dtype,
@@ -65,12 +70,15 @@ pub async fn run_with_options(
             cancellation,
             reuse_prefix,
             overlap_window.clone(),
+            trace_id,
         )
         .await;
     }
 
     let started = Instant::now();
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
     let window = overlap_window.max_inflight_chunks();
     trace.prefill_overlap_enabled = window > 1 && n_peers > 1;
     trace.prefill_max_inflight_chunks = window as u32;
@@ -123,8 +131,12 @@ pub async fn run_with_options(
                 chat_template,
                 reuse_prefix && idx == 0,
                 start_pos,
+                trace_id,
             );
-            let mut head_trace = RequestTrace::from_plan(model, plan);
+            let head_meta = add_images_to_head_meta(head_meta, (idx == 0).then_some(images));
+            let mut head_trace = trace_id
+                .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+                .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
             let (meta, tensor) = match send_chunk(
                 http,
                 routes,
@@ -377,7 +389,11 @@ pub(super) async fn forward_hub_chunk(
     Option<(Vec<f32>, TensorShape)>,
     RequestTrace,
 )> {
-    let mut trace = RequestTrace::from_plan("prefill", plan);
+    let mut trace = meta
+        .get("trace_id")
+        .and_then(|value| value.as_str())
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, "prefill", plan))
+        .unwrap_or_else(|| RequestTrace::from_plan("prefill", plan));
     for (i, step) in plan.steps.iter().enumerate().skip(1) {
         check_cancelled(cancellation)?;
         let is_last = i == plan.steps.len() - 1;
@@ -389,6 +405,7 @@ pub(super) async fn forward_hub_chunk(
         };
         let mut body_meta = json!({
             "session_id": session_id,
+            "pipeline_session": true,
             "chunk_index": chunk_index,
             "chunk_size": chunk_size,
             "is_last": is_last,
@@ -403,8 +420,12 @@ pub(super) async fn forward_hub_chunk(
         if let Some(tokens) = meta.get("tokens") {
             body_meta["tokens"] = tokens.clone();
         }
+        copy_mrope_positions(&meta, &mut body_meta);
         if let Some(prefix_match_tokens) = meta.get("prefix_match_tokens") {
             body_meta["prefix_match_tokens"] = prefix_match_tokens.clone();
+        }
+        if let Some(trace_id) = meta.get("trace_id") {
+            body_meta["trace_id"] = trace_id.clone();
         }
         let (next_meta, next_tensor) = send_chunk(
             http,
@@ -428,6 +449,14 @@ pub(super) async fn forward_hub_chunk(
     Ok((meta, tensor, trace))
 }
 
+/// Keeps the physical cells and their logical M-RoPE positions together when
+/// a hub forwards a hidden-state chunk to the next slice.
+pub(super) fn copy_mrope_positions(meta: &serde_json::Value, body_meta: &mut serde_json::Value) {
+    if let Some(positions) = meta.get("mrope_positions") {
+        body_meta["mrope_positions"] = positions.clone();
+    }
+}
+
 /// Same chunk-by-chunk loop as `run`, but each chunk makes exactly one
 /// outbound call — to the head — instead of one call per hop. The head
 /// relays to its own next hop, which relays to its own, and so on; the
@@ -440,6 +469,7 @@ pub(super) async fn run_ring(
     model: &str,
     session_id: &str,
     prompt: &str,
+    images: &[Vec<u8>],
     chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
@@ -449,6 +479,7 @@ pub(super) async fn run_ring(
     cancellation: &Cancellation,
     reuse_prefix: bool,
     _overlap_window: PrefillOverlapWindow,
+    trace_id: Option<&str>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -458,7 +489,9 @@ pub(super) async fn run_ring(
     let mut cached_tokens: u32 = 0;
     let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
 
     loop {
         check_cancelled(cancellation)?;
@@ -471,7 +504,9 @@ pub(super) async fn run_ring(
             chat_template,
             reuse_prefix && chunk_index == 0,
             next_start_pos,
+            trace_id,
         );
+        head_meta = add_images_to_head_meta(head_meta, (chunk_index == 0).then_some(images));
         head_meta["next_hops"] = json!(next_hops);
         head_meta["exec_start"] = json!(head.exec_start);
         head_meta["exec_end"] = json!(head.exec_end);
@@ -582,6 +617,7 @@ pub(super) async fn run_direct(
     model: &str,
     session_id: &str,
     prompt: &str,
+    images: &[Vec<u8>],
     chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
@@ -593,12 +629,15 @@ pub(super) async fn run_direct(
     reuse_prefix: bool,
     overlap_window: PrefillOverlapWindow,
     resume: Option<PrefillResumable>,
+    trace_id: Option<&str>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
 
     let started = Instant::now();
-    let mut trace = RequestTrace::from_plan(model, plan);
+    let mut trace = trace_id
+        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
     let window = overlap_window.max_inflight_chunks();
     trace.prefill_overlap_enabled = window > 1 && !next_hops.is_empty();
     trace.prefill_max_inflight_chunks = window as u32;
@@ -640,6 +679,7 @@ pub(super) async fn run_direct(
                 plan,
                 session_id,
                 prompt,
+                images,
                 chat_template,
                 chunk_size,
                 dtype,
@@ -653,6 +693,7 @@ pub(super) async fn run_direct(
                 cancellation,
                 ticket.id(),
                 &prefill_sequence_id,
+                trace_id,
             )
             .await
             {
@@ -855,6 +896,7 @@ pub(super) async fn dispatch_direct_prefill(
     plan: &PipelinePlan,
     session_id: &str,
     prompt: &str,
+    images: &[Vec<u8>],
     chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
@@ -868,6 +910,7 @@ pub(super) async fn dispatch_direct_prefill(
     cancellation: &Cancellation,
     ticket: &str,
     prefill_sequence_id: &str,
+    trace_id: Option<&str>,
 ) -> Result<crate::relay::SentFrame> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -880,7 +923,9 @@ pub(super) async fn dispatch_direct_prefill(
         chat_template,
         reuse_prefix,
         start_pos,
+        trace_id,
     );
+    head_meta = add_images_to_head_meta(head_meta, (chunk_index == 0).then_some(images));
     head_meta["next_hops"] = json!(next_hops);
     head_meta["reply_to"] = direct.reply_to(ticket);
     head_meta["prefill_sequence_id"] = json!(prefill_sequence_id);
@@ -964,8 +1009,43 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
                 trace.transport_trace_complete = false;
                 continue;
             };
+            let destination = destination as usize;
+            let Some(to_node_id) = trace.hops.get(destination).map(|hop| hop.node_id.clone())
+            else {
+                trace.transport_trace_complete = false;
+                continue;
+            };
+            let from_node_id = if destination == 0 {
+                "gateway".to_owned()
+            } else if let Some(hop) = trace.hops.get(destination.saturating_sub(1)) {
+                hop.node_id.clone()
+            } else {
+                trace.transport_trace_complete = false;
+                continue;
+            };
+            // A direct hop answers its caller with an ACK before the tail
+            // delivers the result. Its transport receipt therefore carries
+            // processing_ms=0, while the matching hop_timing has the callee's
+            // measured processing. Use that authoritative value for the TCP
+            // residual; QUIC uses its own wire RTT below instead.
+            let hop_processing_ms = hop
+                .get("processing_ms")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let mut transport = traversal.clone();
+            if transport
+                .get("processing_ms")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+                == 0
+                && hop_processing_ms > 0
+            {
+                transport["processing_ms"] = serde_json::json!(hop_processing_ms);
+            }
             for field in [
                 "round_trip_ms",
+                "processing_ms",
+                "transport_rtt_us",
                 "bytes_sent",
                 "bytes_received",
                 "client_encode_ms",
@@ -976,17 +1056,51 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
                 "tls_handshake_ms",
                 "transport",
                 "transport_fallback",
+                "transport_fallback_reason",
             ] {
-                if let Some(value) = traversal.get(field) {
+                if let Some(value) = transport.get(field) {
                     hop[field] = value.clone();
                 }
             }
+            trace.record_cycle_transport(
+                phase,
+                &from_node_id,
+                &to_node_id,
+                TransportTrace::from_json(&transport),
+            );
         }
     } else {
         trace.transport_trace_complete = false;
     }
     for (i, entry) in hops.iter().enumerate() {
         trace.record_hop_from_json(i, phase, entry);
+    }
+    if let Some(mut return_transport) = meta.get("pipeline_return_transport").cloned() {
+        let missing_rtt = return_transport.get("round_trip_ms").is_none()
+            || return_transport
+                .get("round_trip_ms")
+                .is_some_and(serde_json::Value::is_null);
+        if missing_rtt {
+            return_transport["round_trip_ms"] = return_transport
+                .get("rtt_ms")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+        }
+        let has_rtt = return_transport
+            .get("round_trip_ms")
+            .and_then(serde_json::Value::as_u64)
+            .is_some();
+        if let Some(from_node_id) = trace.hops.last().map(|hop| hop.node_id.clone()) {
+            if has_rtt {
+                trace.record_cycle_return(
+                    phase,
+                    &from_node_id,
+                    TransportTrace::from_json(&return_transport),
+                );
+            }
+        } else {
+            trace.transport_trace_complete = false;
+        }
     }
     if let Some(complete) = meta
         .get("transport_trace_complete")

@@ -2,6 +2,7 @@ import { ShieldCheck, ShieldOff } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useI18n } from "../i18n/provider";
 import { useNode } from "../lib/queries";
+import { useProfile } from "../lib/profile";
 import { Badge } from "./ui";
 
 /**
@@ -13,6 +14,8 @@ import { Badge } from "./ui";
 export function TlsChip() {
   const { t } = useI18n();
   const node = useNode();
+  const { profile } = useProfile();
+  if (profile !== "admin") return null;
   if (!node.data) return null;
 
   const on = node.data.tls_required;

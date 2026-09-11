@@ -94,7 +94,13 @@ pub struct BatchEntry {
 
 impl BatchEntry {
     #[cfg(test)]
-    pub(super) fn test(item_id: &str, seq_id: u32, pos: u32, tokens: usize, want_logits: bool) -> Self {
+    pub(super) fn test(
+        item_id: &str,
+        seq_id: u32,
+        pos: u32,
+        tokens: usize,
+        want_logits: bool,
+    ) -> Self {
         Self {
             item_id: item_id.into(),
             seq_id,
@@ -116,6 +122,9 @@ pub struct HiddenBatchEntry {
     pub descriptor: BatchEntry,
     pub hidden: Vec<f32>,
     pub shape: TensorShape,
+    /// Four M-RoPE coordinates per physical embedding cell, in `[t, y, x, z]`
+    /// order. `None` keeps the ordinary one-dimensional position path.
+    pub mrope_positions: Option<Vec<[u32; 4]>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +320,7 @@ mod pool_tests {
     fn cfg() -> EngineConfig {
         EngineConfig {
             n_ctx: 120_320,
+            mmproj_path: None,
             offload_kqv: true,
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
@@ -376,6 +386,7 @@ mod pool_tests {
             buf: None,
             expected_tokens: 0,
             max_microbatch_tokens: 0,
+            allow_physical_chunks: false,
             n_embd: 0,
             expected_floats: None,
             layout: None,
@@ -384,6 +395,7 @@ mod pool_tests {
             last_strides: None,
             last_nbytes: None,
             copy_us: 0,
+            ..Default::default()
         };
 
         let n_embd = 4;
@@ -418,6 +430,7 @@ mod pool_tests {
             buf: None,
             expected_tokens: 0,
             max_microbatch_tokens: 0,
+            allow_physical_chunks: false,
             n_embd: 0,
             expected_floats: None,
             layout: None,
@@ -426,6 +439,7 @@ mod pool_tests {
             last_strides: None,
             last_nbytes: None,
             copy_us: 0,
+            ..Default::default()
         };
         accumulate_capture(&mut slot, vec![1.0, 2.0]);
         slot.buf = None; // o que `reset_capture_slot` faz antes de cada decode
@@ -440,6 +454,7 @@ mod pool_tests {
             buf: None,
             expected_tokens: 1,
             max_microbatch_tokens: 1,
+            allow_physical_chunks: false,
             n_embd: 4,
             expected_floats: Some(4),
             layout: None,
@@ -448,6 +463,7 @@ mod pool_tests {
             last_strides: None,
             last_nbytes: None,
             copy_us: 0,
+            ..Default::default()
         };
 
         accumulate_capture(&mut slot, vec![1.0, 2.0, 3.0, 4.0]);
@@ -466,6 +482,7 @@ mod pool_tests {
             buf: None,
             expected_tokens,
             max_microbatch_tokens,
+            allow_physical_chunks: false,
             n_embd,
             expected_floats: None,
             layout: None,
@@ -474,6 +491,7 @@ mod pool_tests {
             last_strides: None,
             last_nbytes: None,
             copy_us: 0,
+            ..Default::default()
         }
     }
 

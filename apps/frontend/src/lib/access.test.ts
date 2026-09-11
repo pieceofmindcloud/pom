@@ -60,13 +60,22 @@ describe("canAccessRoute", () => {
 
   it("mantém o infer na rede local, conversa, documentação e sua chave", () => {
     expect(canAccessRoute("/chat", "infer")).toBe(true);
+    expect(canAccessRoute("/network-chat", "infer")).toBe(true);
     expect(canAccessRoute("/config/keys/api", "infer")).toBe(true);
     expect(canAccessRoute("/config/rede", "infer")).toBe(true);
     expect(canAccessRoute("/documentacao", "infer")).toBe(true);
     expect(canAccessRoute("/config/confianca", "infer")).toBe(true);
-    for (const path of ["/", "/modelos", "/implantar", "/logs", "/config/keys/conexao"]) {
+    for (const path of ["/", "/modelos", "/implantar", "/logs", "/config/keys/conexao", "/config/rede/participantes", "/config/preferencias/admin"]) {
       expect(canAccessRoute(path, "infer")).toBe(false);
     }
+  });
+
+  it("mantém participantes e preferências administrativas nos perfis atuais", () => {
+    expect(canAccessRoute("/config/rede/participantes", "admin")).toBe(true);
+    expect(canAccessRoute("/config/rede/participantes", "node")).toBe(true);
+    expect(canAccessRoute("/config/rede/participantes", "infer")).toBe(false);
+    expect(canAccessRoute("/config/preferencias/admin", "admin")).toBe(true);
+    expect(canAccessRoute("/config/preferencias/admin", "node")).toBe(true);
   });
 
   /**

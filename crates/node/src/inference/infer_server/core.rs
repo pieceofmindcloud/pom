@@ -6,13 +6,47 @@ pub(super) const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
 /// before this limit and the handler applies it before decoding the body.
 pub(super) const INFERENCE_FRAME_BODY_LIMIT: usize = wire::MAX_FRAME_PAYLOAD_BYTES;
 pub(super) const BATCH_CHILD_HEADER: &str = "x-pom-batch-child";
+pub(super) const SCHEDULER_WAIT_REASON_QUEUE: &str = "scheduler-queue";
+pub(super) const SCHEDULER_WAIT_REASON_RETAINED_SESSION: &str = "retained-session-reclaim-grace";
+pub(super) const SCHEDULER_WAIT_REASON_PIPELINE_RETAINED_SESSION: &str =
+    "pipeline-retained-session-reclaim";
+
+pub(super) fn scheduler_wait_reason(reclaimed_retained_session: bool) -> &'static str {
+    if reclaimed_retained_session {
+        SCHEDULER_WAIT_REASON_RETAINED_SESSION
+    } else {
+        SCHEDULER_WAIT_REASON_QUEUE
+    }
+}
+
+pub(super) fn pipeline_scheduler_wait_reason() -> &'static str {
+    SCHEDULER_WAIT_REASON_PIPELINE_RETAINED_SESSION
+}
+
+/// Every inference frame belongs to the logical session allocated by the
+/// gateway. A synthetic fallback would make a downstream hop look like a new
+/// request and can route it into retained-session admission. Rejecting a
+/// missing identity at the protocol boundary makes that propagation failure
+/// visible instead of creating an unrelated local session.
+pub(super) fn required_session_id(meta: &Value) -> Result<String> {
+    meta.get("session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("quadro de inferência sem session_id"))
+}
 
 pub(crate) const SPECULATION_REASON_TAIL_WITHOUT_NEXTN: &str = "tail_without_nextn";
 pub(crate) const SPECULATION_REASON_MODEL_WITHOUT_MTP: &str = "model_without_mtp";
-pub(crate) const SPECULATION_REASON_HYBRID_TAIL_NO_ROLLBACK: &str = "hybrid_tail_no_rollback";
+pub(crate) const SPECULATION_REASON_MTP_INPUT_MISSING: &str = "mtp_input_missing";
+pub(crate) const SPECULATION_REASON_MTP_RUNTIME_DISABLED: &str = "mtp_runtime_disabled";
 pub(crate) const SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE: &str =
     "peer_without_sliced_mtp_wire";
+pub(crate) const SPECULATION_REASON_REMOTE_STREAM_MTP_DISABLED: &str =
+    "remote_stream_sliced_mtp_disabled";
 pub(super) const SPECULATION_REASON_TAIL_DRAFT_EMPTY: &str = "tail_mtp_draft_empty";
+const PROFILE_SPAN_LIMIT: usize = 64;
 
 /// Resolve a preferência persistida pelo deploy para o seletor operacional.
 ///
@@ -103,9 +137,24 @@ impl MoeTimings {
 
 #[derive(Default)]
 pub(super) struct NodeTimings {
+    /// Identidade lógica recebida no frame. O peer nunca cria uma identidade
+    /// nova para um item que já tem session_id no envelope.
+    pub(super) session_id: Option<String>,
     pub(super) frame_decode_us: u64,
     pub(super) input_prepare_us: u64,
     pub(super) queue_us: u64,
+    /// Parte da fila medida desde o submit até a seleção pelo scheduler.
+    /// Quando `scheduler_wait_reason` é `retained-session-reclaim-grace`, a
+    /// fila ficou parada porque só havia sessões retidas e o scheduler
+    /// aguardou a carência de 5 s antes de reclamá-las.
+    pub(super) scheduler_wait_us: u64,
+    pub(super) scheduler_wait_reason: Option<&'static str>,
+    /// Estado observado pelo scheduler no momento da admissão.
+    pub(super) scheduler_session_existing: bool,
+    /// The frame carried the gateway's one logical pipeline-session marker.
+    /// This is distinct from `scheduler_session_existing`: the first prefill
+    /// necessarily creates a local KV session on a downstream peer.
+    pub(super) pipeline_session: bool,
     /// Espera pelo mutex do motor, antes de qualquer trabalho.
     ///
     /// O `llama_context` não é seguro para uso concorrente, então todo decode
@@ -116,9 +165,18 @@ pub(super) struct NodeTimings {
     pub(super) lock_wait_us: u64,
     pub(super) setup_us: u64,
     pub(super) decode_us: u64,
+    /// Tempo síncrono gasto pelo bloco `nextn` para montar o draft. Fica
+    /// separado de `decode_us` para não classificar produção do próximo
+    /// token como rede, fila ou espera do scheduler.
+    pub(super) mtp_draft_us: u64,
     pub(super) backend_enqueue_us: u64,
     pub(super) backend_completion_us: u64,
     pub(super) residual_capture_d2h_sync_us: u64,
+    pub(super) residual_capture_ready_wait_us: u64,
+    pub(super) residual_capture_copy_us: u64,
+    pub(super) residual_capture_postprocess_us: u64,
+    pub(super) residual_capture_bytes: u64,
+    pub(super) residual_capture_copies: u64,
     pub(super) residual_us: u64,
     pub(super) logits_access_us: u64,
     pub(super) logits_clone_us: u64,
@@ -130,6 +188,17 @@ pub(super) struct NodeTimings {
     pub(super) token_text_us: u64,
     pub(super) sampling_us: u64,
     pub(super) encode_us: u64,
+    /// Boundary after the engine produced a token-bearing reply. This is
+    /// local to the peer and is never subtracted from a gateway clock.
+    pub(super) first_token_produced_us: u64,
+    /// Boundary just before the peer hands the token-bearing response to its
+    /// HTTP or tunnel adapter.
+    pub(super) first_token_serialized_us: u64,
+    /// Wall-clock correlation point for the first token. Durations still use
+    /// the monotonic values above; this field is never used for arithmetic.
+    pub(super) first_token_produced_at_ms: u64,
+    /// Wall-clock correlation point immediately before serialization.
+    pub(super) first_token_serialized_at_ms: u64,
     pub(super) selected_path: crate::executor::InferencePath,
     pub(super) executed_engines: Vec<crate::executor::ExecutionEngine>,
     pub(super) moe: MoeTimings,
@@ -139,6 +208,26 @@ pub(super) struct NodeTimings {
     pub(super) mtp_draft_tokens_proposed: u64,
     pub(super) mtp_draft_tokens_accepted: u64,
     pub(super) mtp_draft_tokens_rejected: u64,
+    /// Spans por fronteira de um step, somente no modo profiling. O modo
+    /// normal mantém apenas os contadores acima e não aloca um vetor por
+    /// token.
+    pub(super) profiling_spans: Option<Vec<crate::prefill::TelemetrySpan>>,
+}
+
+pub(super) fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Marks the local engine boundary once, using the monotonic clock for the
+/// duration and wall clock only for cross-host log correlation.
+pub(super) fn mark_first_token_produced(timings: &mut NodeTimings, started: Instant) {
+    if timings.first_token_produced_us == 0 {
+        timings.first_token_produced_us = started.elapsed().as_micros() as u64;
+        timings.first_token_produced_at_ms = wall_clock_ms();
+    }
 }
 
 impl NodeTimings {
@@ -208,11 +297,49 @@ impl NodeTimings {
         }
     }
 
+    pub(super) fn merge_engine_capture(&mut self, other: &crate::llm::DecodeTimings) {
+        self.residual_capture_d2h_sync_us = self
+            .residual_capture_d2h_sync_us
+            .saturating_add(other.residual_capture_d2h_sync_us);
+        self.residual_capture_ready_wait_us = self
+            .residual_capture_ready_wait_us
+            .saturating_add(other.residual_capture_ready_wait_us);
+        self.residual_capture_copy_us = self
+            .residual_capture_copy_us
+            .saturating_add(other.residual_capture_copy_us);
+        self.residual_capture_postprocess_us = self
+            .residual_capture_postprocess_us
+            .saturating_add(other.residual_capture_postprocess_us);
+        self.residual_capture_bytes = self
+            .residual_capture_bytes
+            .saturating_add(other.residual_capture_bytes);
+        self.residual_capture_copies = self
+            .residual_capture_copies
+            .saturating_add(other.residual_capture_copies);
+    }
+
     pub(super) fn moe_executor(&self) -> &'static str {
         match self.moe.executors.as_slice() {
             [executor] => executor.as_str(),
             [] => "not-run",
             _ => "mixed",
+        }
+    }
+
+    pub(super) fn record_profile_span(
+        &mut self,
+        context: &crate::prefill::TelemetryContext,
+        name: &str,
+        start: Instant,
+        end: Instant,
+        parent_span_id: Option<String>,
+        transport: Option<String>,
+    ) {
+        let Some(spans) = self.profiling_spans.as_mut() else {
+            return;
+        };
+        if spans.len() < PROFILE_SPAN_LIMIT {
+            spans.push(context.span(name, start, end, parent_span_id, transport));
         }
     }
 
@@ -222,13 +349,14 @@ impl NodeTimings {
         // sum. The wire stays in milliseconds, with a fraction preserved for
         // the diagnostic fields the screen reads.
         let ms = |us: u64| us as f64 / 1_000.0;
-        json!({
+        let mut value = json!({
             "frame_decode_ms": ms(self.frame_decode_us),
             "input_prepare_ms": ms(self.input_prepare_us),
             "queue_ms": ms(self.queue_us),
             "lock_wait_ms": ms(self.lock_wait_us),
             "setup_ms": ms(self.setup_us),
             "decode_ms": ms(self.decode_us),
+            "mtp_draft_ms": ms(self.mtp_draft_us),
             "backend_enqueue_ms": ms(self.backend_enqueue_us),
             "backend_completion_ms": ms(self.backend_completion_us),
             "residual_capture_d2h_sync_ms": ms(self.residual_capture_d2h_sync_us),
@@ -243,6 +371,10 @@ impl NodeTimings {
             "token_text_ms": ms(self.token_text_us),
             "sampling_ms": ms(self.sampling_us),
             "encode_ms": ms(self.encode_us),
+            "first_token_produced_ms": ms(self.first_token_produced_us),
+            "first_token_serialized_ms": ms(self.first_token_serialized_us),
+            "first_token_produced_at_ms": self.first_token_produced_at_ms,
+            "first_token_serialized_at_ms": self.first_token_serialized_at_ms,
             "moe_forward_ms": ms(self.moe.forward_us),
             "moe_executor": self.moe_executor(),
             "moe_executors": self
@@ -271,7 +403,27 @@ impl NodeTimings {
                 .tp
                 .as_ref()
                 .map(|tp| serde_json::to_value(tp).unwrap_or(Value::Null)),
-        })
+        });
+        // Keep these identity/admission fields outside the large json! literal
+        // so adding diagnostic fields does not hit serde_json's macro
+        // recursion limit.
+        value["session_id"] = serde_json::to_value(&self.session_id).unwrap_or(Value::Null);
+        value["scheduler_wait_ms"] = Value::from(ms(self.scheduler_wait_us));
+        value["scheduler_wait_reason"] =
+            serde_json::to_value(self.scheduler_wait_reason).unwrap_or(Value::Null);
+        value["scheduler_session_existing"] = Value::from(self.scheduler_session_existing);
+        value["pipeline_session"] = Value::from(self.pipeline_session);
+        value["residual_capture_ready_wait_ms"] =
+            Value::from(ms(self.residual_capture_ready_wait_us));
+        value["residual_capture_copy_ms"] = Value::from(ms(self.residual_capture_copy_us));
+        value["residual_capture_postprocess_ms"] =
+            Value::from(ms(self.residual_capture_postprocess_us));
+        value["residual_capture_bytes"] = Value::from(self.residual_capture_bytes);
+        value["residual_capture_copies"] = Value::from(self.residual_capture_copies);
+        if let Some(spans) = &self.profiling_spans {
+            value["profiling_spans"] = serde_json::to_value(spans).unwrap_or_else(|_| json!([]));
+        }
+        value
     }
 }
 
@@ -313,6 +465,9 @@ pub(super) struct PrefillJob {
     /// Candidato de prefixo comum, inclusive quando a decisão foi fria.
     pub(super) prefix_match_tokens: u32,
     pub(super) start_pos: Option<u32>,
+    /// Posição lógica seguinte produzida pelo head. Necessária nos hops para
+    /// não tentar deduzi-la pela quantidade de células físicas M-RoPE.
+    pub(super) next_pos: Option<u32>,
     /// Fronteira entre o prompt reutilizável e o rabicho deste turno, decidida
     /// por quem tokenizou - ver `Session::stable_len`.
     pub(super) stable_len: Option<u32>,
@@ -323,10 +478,21 @@ pub(super) struct PrefillJob {
     pub(super) is_final_chunk: bool,
     pub(super) wire_dtype: WireDtype,
     pub(super) prompt: Option<String>,
+    /// Imagens só existem no chunk 0 da cabeça; os hops seguintes recebem
+    /// apenas o estado oculto já produzido pelo projector.
+    pub(super) images: Option<Vec<Vec<u8>>>,
+    /// Posições físicas M-RoPE produzidas pelo head e ecoadas pelos hops.
+    /// `n_tokens`/células físicas e `n_past`/posição lógica não são
+    /// intercambiáveis neste caminho.
+    pub(super) mrope_positions: Option<Vec<[u32; 4]>>,
     pub(super) chat_template: Option<bool>,
     pub(super) tensor: Option<(Vec<f32>, TensorShape)>,
     pub(super) chunk_tokens: Option<Vec<i32>>,
     pub(super) queued_at: Instant,
+    pub(super) scheduler_wait_us: u64,
+    pub(super) scheduler_wait_reason: Option<&'static str>,
+    pub(super) scheduler_session_existing: bool,
+    pub(super) pipeline_session: bool,
 }
 
 pub(super) struct StepJob {
@@ -344,6 +510,11 @@ pub(super) struct StepJob {
     pub(super) batch_tokens: Option<Vec<i32>>,
     pub(super) mtp_k: Option<u32>,
     pub(super) queued_at: Instant,
+    pub(super) scheduler_wait_us: u64,
+    pub(super) scheduler_wait_reason: Option<&'static str>,
+    pub(super) scheduler_session_existing: bool,
+    pub(super) pipeline_session: bool,
+    pub(super) profiling: Option<crate::prefill::TelemetryContext>,
 }
 
 pub(super) enum InferenceCommand {
@@ -360,10 +531,32 @@ pub(super) enum InferenceCommand {
 }
 
 impl InferenceCommand {
+    fn record_scheduler_wait(
+        &mut self,
+        queued_at: Instant,
+        reason: &'static str,
+        session_existing: bool,
+    ) {
+        let wait_us = queued_at.elapsed().as_micros() as u64;
+        match self {
+            Self::Prefill { job, .. } => {
+                job.scheduler_wait_us = wait_us;
+                job.scheduler_wait_reason = Some(reason);
+                job.scheduler_session_existing = session_existing;
+            }
+            Self::Step { job, .. } => {
+                job.scheduler_wait_us = wait_us;
+                job.scheduler_wait_reason = Some(reason);
+                job.scheduler_session_existing = session_existing;
+            }
+        }
+    }
+
     pub(super) fn into_queue_item(self) -> crate::scheduler::QueueItem<Self> {
-        let (session_id, class, tokens, queued_at) = match &self {
+        let (session_id, pipeline_session, class, tokens, queued_at) = match &self {
             Self::Prefill { job, .. } => (
                 job.sid_key.clone(),
+                job.pipeline_session,
                 if job.tensor.is_some() {
                     crate::scheduler::WorkClass::PrefillHidden
                 } else {
@@ -378,6 +571,7 @@ impl InferenceCommand {
             ),
             Self::Step { job, .. } => (
                 job.sid_key.clone(),
+                job.pipeline_session,
                 if job.tensor.is_some() {
                     crate::scheduler::WorkClass::DecodeHidden
                 } else {
@@ -393,6 +587,7 @@ impl InferenceCommand {
         };
         crate::scheduler::QueueItem {
             session_id,
+            pipeline_session,
             class,
             tokens,
             enqueued_at: queued_at,
@@ -502,6 +697,7 @@ pub(crate) struct InferenceAppState {
     /// gateway shares this tracker so `/api/ui/node` reports the local fact.
     pub(super) loads: Arc<crate::pipeline::LoadTracker>,
     pub(super) load_node_id: String,
+    pub(super) request_activity: Arc<crate::reqlog::RequestActivity>,
     /// TP exposes one global decode/barrier identity per process. Serialize
     /// complete inbound batches so a second request cannot replace that id
     /// while the first batch is waiting for its workers.
@@ -682,6 +878,24 @@ pub(super) fn spawn_scheduler(
     handle
 }
 
+/// Quanto tempo um prefill de sessão nova espera antes de reclamar o slot de
+/// uma sessão retida.
+///
+/// É o preço de um pedido avulso contra o prefixo de uma conversa viva. Curto
+/// demais e voltamos ao defeito de produção - um pedido de 35 caracteres
+/// despejando 62 mil tokens quentes e reingerindo tudo do zero. Longo demais e
+/// uma segunda janela do cliente demora a ser servida.
+pub(super) const RETAINED_RECLAIM_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Quantas sessões **novas** cabem agora.
+///
+/// Só sequência realmente livre conta. Sessão retida é KV quente de uma
+/// conversa viva, não capacidade: contá-la como slot livre era admitir um
+/// prefill que, no worker, só entrava despejando o prefixo de outra conversa.
+pub(super) fn new_session_slots(free_slots: usize, _retained: usize) -> usize {
+    free_slots
+}
+
 pub(super) async fn run_scheduler(
     mut rx: mpsc::Receiver<InferenceCommand>,
     state: SharedState,
@@ -689,6 +903,7 @@ pub(super) async fn run_scheduler(
     stats: Arc<SchedulerStats>,
 ) {
     let mut queue = crate::scheduler::SchedulerQueue::new(cfg.clone());
+    let mut admission_wait_reason = None;
     let slot_freed = {
         let guard = state.lock().unwrap_or_else(|e| e.into_inner());
         guard.slot_freed.clone()
@@ -729,17 +944,37 @@ pub(super) async fn run_scheduler(
         };
 
         // Admissão de sessão: um prefill de sessão nova só entra se houver slot
-        // - livre, ou uma sessão retida despejável (`evict_retained`). Sem
-        // slot, o item fica na fila FIFO em vez de ir ao worker e voltar com
-        // "seq pool esgotado".
-        let (present, new_slots) = {
+        // realmente livre. Sessão retida é cache quente, não capacidade - ver
+        // `new_session_slots`. Sem slot, o item fica na fila FIFO em vez de ir
+        // ao worker e voltar com "seq pool esgotado".
+        let (present, new_slots, retained) = {
             let guard = state.lock().unwrap_or_else(|e| e.into_inner());
             let present: std::collections::HashSet<String> =
                 guard.sessions.keys().cloned().collect();
             let retained = guard.sessions.values().filter(|s| s.retained).count();
-            (present, guard.seq_pool.len() + retained)
+            (
+                present,
+                new_session_slots(guard.seq_pool.len(), retained),
+                retained,
+            )
         };
         let is_existing = |sid: &str| present.contains(sid);
+
+        // A downstream peer has no local Session entry until its first prefill
+        // runs, even though the frame carries the same logical session_id as
+        // the gateway and the preceding hop. Pipeline admission is therefore
+        // explicit: reclaim a retained KV slot immediately for this path, but
+        // keep the five-second protection for unrelated standalone requests.
+        if new_slots == 0 && retained > 0 && queue.has_pipeline_new_session_wait(is_existing) {
+            let reclaimed = {
+                let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+                guard.evict_retained()
+            };
+            if reclaimed {
+                admission_wait_reason = Some(pipeline_scheduler_wait_reason());
+                continue;
+            }
+        }
 
         // A classe da frente primeiro (FIFO por chegada); depois as demais, para
         // que a decodificação de uma sessão viva não fique presa atrás de um
@@ -763,8 +998,26 @@ pub(super) async fn run_scheduler(
         }
 
         if selection.items.is_empty() {
-            // Só há prefill de sessão nova esperando slot. Aguarda trabalho
-            // novo OU um slot liberado, sem busy-loop.
+            // Só há prefill de sessão nova esperando slot. Se a espera já
+            // passou da carência e o que segura o slot é uma sessão retida
+            // (cache, não trabalho vivo), reclama uma: a conversa quente teve
+            // a sua chance de voltar, e nenhuma requisição aceita pode ficar
+            // pendurada até o `reap_idle` de 15 minutos.
+            let waited = queue.oldest_new_session_wait(Instant::now(), is_existing);
+            if retained > 0 && waited.is_some_and(|w| w >= RETAINED_RECLAIM_GRACE) {
+                let reclaimed = {
+                    let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.evict_retained()
+                };
+                if reclaimed {
+                    admission_wait_reason = Some(scheduler_wait_reason(true));
+                    continue;
+                }
+            }
+
+            // Aguarda trabalho novo OU um slot liberado, sem busy-loop. O
+            // `sleep` fecha o laço da carência: sem ele, uma fila parada não
+            // teria quem reavaliasse o prazo.
             stats.queue_depth.store(queue.len(), Ordering::Relaxed);
             tokio::select! {
                 command = rx.recv() => match command {
@@ -774,8 +1027,19 @@ pub(super) async fn run_scheduler(
                     None => return,
                 },
                 _ = slot_freed.notified() => {}
+                _ = tokio::time::sleep(RETAINED_RECLAIM_GRACE), if waited.is_some() => {}
             }
             continue;
+        }
+        let wait_reason = admission_wait_reason
+            .take()
+            .unwrap_or(scheduler_wait_reason(false));
+        for item in &mut selection.items {
+            item.payload.record_scheduler_wait(
+                item.enqueued_at,
+                wait_reason,
+                present.contains(item.session_id.as_str()),
+            );
         }
         stats.queue_depth.store(queue.len(), Ordering::Relaxed);
         stats
@@ -802,6 +1066,17 @@ pub(super) fn execute_scheduled_batch(
     items: Vec<crate::scheduler::QueueItem<InferenceCommand>>,
     enabled: bool,
 ) {
+    if items.iter().any(|item| {
+        matches!(
+            &item.payload,
+            InferenceCommand::Prefill { job, .. } if job.images.as_ref().is_some_and(|images| !images.is_empty())
+        )
+    }) {
+        for item in items {
+            execute_one_command(state.clone(), item.payload);
+        }
+        return;
+    }
     if !enabled || items.len() == 1 {
         for item in items {
             execute_one_command(state.clone(), item.payload);
@@ -857,16 +1132,23 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.cached_tokens,
                 job.prefix_match_tokens,
                 job.start_pos,
+                job.next_pos,
                 job.stable_len,
                 job.is_last,
                 job.is_final_chunk,
                 job.wire_dtype,
                 job.prompt,
+                job.images,
                 job.chat_template,
                 job.tensor,
                 job.capture_block,
                 job.chunk_tokens,
+                job.mrope_positions,
                 job.queued_at,
+                job.scheduler_wait_us,
+                job.scheduler_wait_reason,
+                job.scheduler_session_existing,
+                job.pipeline_session,
             );
             let _ = reply.send(result);
         }
@@ -885,6 +1167,11 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.batch_tokens,
                 job.mtp_k,
                 job.queued_at,
+                job.scheduler_wait_us,
+                job.scheduler_wait_reason,
+                job.scheduler_session_existing,
+                job.pipeline_session,
+                job.profiling,
             );
             let _ = reply.send(result);
         }
@@ -935,10 +1222,35 @@ mod tests {
     }
 
     #[test]
+    fn retained_sessions_do_not_create_capacity_for_a_new_prefill() {
+        assert_eq!(new_session_slots(0, 1), 0);
+        assert_eq!(new_session_slots(2, 1), 2);
+    }
+
+    #[test]
+    fn retained_session_grace_has_a_distinct_scheduler_wait_reason() {
+        assert_eq!(
+            scheduler_wait_reason(true),
+            "retained-session-reclaim-grace"
+        );
+    }
+
+    #[test]
+    fn session_id_deve_ser_obrigatorio_e_nao_vazio() {
+        assert_eq!(
+            required_session_id(&json!({"session_id": " sessao-1 "})).unwrap(),
+            "sessao-1"
+        );
+        assert!(required_session_id(&json!({})).is_err());
+        assert!(required_session_id(&json!({"session_id": "  "})).is_err());
+    }
+
+    #[test]
     fn resposta_de_item_unico_preserva_identidade_do_batch() {
         let request = json!({
             "item_id": "request-item",
             "batch_id": "request-batch",
+            "trace_id": "trace-request",
         });
         let mut response = json!({"done": true});
 
@@ -946,6 +1258,7 @@ mod tests {
 
         assert_eq!(response["item_id"], "request-item");
         assert_eq!(response["batch_id"], "request-batch");
+        assert_eq!(response["trace_id"], "trace-request");
     }
 
     #[test]
@@ -953,8 +1266,15 @@ mod tests {
         let timings = NodeTimings {
             frame_decode_us: 999,
             backend_completion_us: 999,
+            residual_capture_ready_wait_us: 1_468_000,
+            residual_capture_copy_us: 1_200,
+            residual_capture_postprocess_us: 340,
+            residual_capture_bytes: 1_048_576,
+            residual_capture_copies: 2,
             residual_us: 1_234,
             sampling_us: 1,
+            first_token_produced_at_ms: 1_700_000_000_006,
+            first_token_serialized_at_ms: 1_700_000_000_007,
             ..Default::default()
         };
 
@@ -963,8 +1283,34 @@ mod tests {
         assert_eq!(json["frame_decode_ms"].as_f64(), Some(0.999));
         assert_eq!(json["backend_completion_ms"].as_f64(), Some(0.999));
         assert_eq!(json["residual_ms"].as_f64(), Some(1.234));
+        assert_eq!(
+            json["residual_capture_ready_wait_ms"].as_f64(),
+            Some(1_468.0)
+        );
+        assert_eq!(json["residual_capture_copy_ms"].as_f64(), Some(1.2));
+        assert_eq!(json["residual_capture_postprocess_ms"].as_f64(), Some(0.34));
+        assert_eq!(json["residual_capture_bytes"], 1_048_576_u64);
+        assert_eq!(json["residual_capture_copies"], 2_u64);
         assert_eq!(json["sampling_ms"].as_f64(), Some(0.001));
+        assert_eq!(json["first_token_produced_at_ms"], 1_700_000_000_006_u64);
+        assert_eq!(json["first_token_serialized_at_ms"], 1_700_000_000_007_u64);
         assert_ne!(json["backend_completion_ms"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn primeiro_token_produzido_e_marcado_uma_so_vez() {
+        let mut timings = NodeTimings::default();
+        let started = Instant::now() - std::time::Duration::from_millis(1);
+
+        mark_first_token_produced(&mut timings, started);
+        let produced_us = timings.first_token_produced_us;
+        let produced_at_ms = timings.first_token_produced_at_ms;
+        mark_first_token_produced(&mut timings, Instant::now());
+
+        assert!(produced_us > 0);
+        assert!(produced_at_ms > 0);
+        assert_eq!(timings.first_token_produced_us, produced_us);
+        assert_eq!(timings.first_token_produced_at_ms, produced_at_ms);
     }
 
     #[test]
@@ -1289,6 +1635,7 @@ mod tests {
         let mut cfg = crate::runtime::NodeConfig {
             deploy_id: String::new(),
             model_path: "/nao/existe/modelo.gguf".into(),
+            mmproj_path: None,
             model_label: "qwen35".into(),
             deployment_name: "qwen35".into(),
             start_layer: 0,
@@ -1338,6 +1685,8 @@ mod tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
             tp: None,
         };
         cfg.inference_port = port;
@@ -1352,10 +1701,13 @@ mod tests {
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             None,
             None,
+            None,
+            None,
             Arc::new(ModelCache::new()),
             false,
             Arc::new(crate::pipeline::LoadTracker::new()),
             "test-node".to_owned(),
+            crate::reqlog::RequestActivity::new(),
         )
         .await
         .expect_err("porta ocupada devia falhar");
@@ -1388,6 +1740,7 @@ mod relay_tests {
             node_id: node_id.into(),
             inference_url: url,
             inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
             start_layer: 16,
             end_layer: 31,
             exec_start: 16,

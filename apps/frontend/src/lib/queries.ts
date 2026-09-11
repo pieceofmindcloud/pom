@@ -24,6 +24,7 @@ import {
 import { modelDownloadJobs } from "./modelProvider";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
+  ChatCapabilities,
   AdminNode,
   AdminAccessInfo,
   AdminAccessStatus,
@@ -37,6 +38,9 @@ import type {
   InferenceHeadsResponse,
   Job,
   NodeInfo,
+  NetworkInfoView,
+  NetworkChatSnapshot,
+  GeoReferenceResponse,
   NetworkOffer,
   PathsResponse,
   PeerCatalog,
@@ -69,6 +73,7 @@ export const keys = {
   adminSurface: ["admin-surface"] as const,
   adminAccessInfo: ["admin-access-info"] as const,
   cluster: ["cluster"] as const,
+  chatCapabilities: ["chat-capabilities"] as const,
   models: ["models"] as const,
   clusterModels: ["cluster-models"] as const,
   paths: ["paths"] as const,
@@ -78,6 +83,9 @@ export const keys = {
   offers: ["offers"] as const,
   adminAuthority: ["admin-authority"] as const,
   trustAnchor: ["trust-anchor"] as const,
+  networkInfo: ["network-info"] as const,
+  networkChat: ["network-chat"] as const,
+  geoReference: ["geo-reference"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
@@ -225,6 +233,44 @@ export function useCluster() {
 }
 
 /**
+ * Shared network-chat snapshot for the chat page and its navigation badge.
+ * Keeping one query source means a message received off the chat screen is
+ * visible to the menu without mounting the chat route.
+ */
+export function useNetworkChat() {
+  return useQuery({
+    queryKey: keys.networkChat,
+    queryFn: () => api.get<NetworkChatSnapshot>("/api/ui/network-chat"),
+    refetchInterval: 1200,
+    retry: false,
+  });
+}
+
+const unavailableChatCapabilities: ChatCapabilities = {
+  active_model: "",
+  vision: "unavailable",
+  coverage: "unavailable",
+};
+
+/**
+ * A refusal is not an empty cluster. The endpoint deliberately returns only
+ * aggregate Chat facts, but an older node or a policy boundary can still deny
+ * it. Keep that uncertainty explicit so the composer never invents a missing
+ * model or missing vision support.
+ */
+export function useChatCapabilities() {
+  return useQuery({
+    queryKey: keys.chatCapabilities,
+    queryFn: () =>
+      api
+        .getConditional<ChatCapabilities>("/api/ui/chat/capabilities", { auth: false })
+        .catch(() => unavailableChatCapabilities),
+    refetchInterval: 5000,
+    staleTime: 2000,
+  });
+}
+
+/**
  * Como uma máquina carregou o modelo, buscado só com o card aberto.
  *
  * `enabled` é o ponto: isto sai do `/health` do peer, e pedir por peer a cada
@@ -272,20 +318,25 @@ export function useChatTelemetryNetwork(nodeIds: string[], enabled: boolean, exe
   return useQuery({
     queryKey: keys.chatTelemetry(executionId, nodeIds),
     queryFn: () =>
-      api.post<ChatTelemetryNetwork>("/api/ui/chat/telemetry", { node_ids: nodeIds }),
+      api.post<ChatTelemetryNetwork>("/api/ui/chat/telemetry", {
+        node_ids: nodeIds,
+        execution_id: executionId,
+      }),
     enabled: enabled && nodeIds.length > 1,
     retry: false,
     staleTime: Infinity,
   });
 }
 
-/** RTT direcional da topologia atual, para o mapa do Painel. */
+/** Último RTT observado nas arestas de inferência, para o mapa do Painel. */
 export function useNetworkRtt(nodeIds: string[], enabled: boolean) {
   return useQuery({
     queryKey: keys.networkRtt(nodeIds),
     queryFn: () =>
       api.post<ChatTelemetryNetwork>("/api/ui/chat/telemetry", { node_ids: nodeIds }),
-    enabled: enabled && nodeIds.length > 1,
+    // A whole-model deployment can have one head and no graph edge. The
+    // endpoint still needs to enumerate that route and its return RTT.
+    enabled,
     retry: false,
     refetchInterval: 15000,
     staleTime: 10000,
@@ -389,7 +440,7 @@ export function useDeployments() {
   });
 }
 
-/** Logs de processo em ordem de chegada ao principal. */
+/** Logs de processo em ordem de chegada à réplica local. */
 export function useClusterLogs(deployId?: string) {
   const query = new URLSearchParams();
   if (deployId) query.set("deploy_id", deployId);
@@ -459,6 +510,24 @@ export function useTrustAnchor() {
   });
 }
 
+export function useNetworkInfo(enabled = true) {
+  return useQuery({
+    queryKey: keys.networkInfo,
+    queryFn: () => api.get<NetworkInfoView>("/api/ui/network/info"),
+    enabled,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useGeoReference(enabled = true) {
+  return useQuery({
+    queryKey: keys.geoReference,
+    queryFn: () => api.get<GeoReferenceResponse>("/api/ui/network/geo-reference"),
+    enabled,
+    staleTime: Infinity,
+  });
+}
+
 export function useAdminNodes(enabled = true) {
   return useQuery({
     queryKey: keys.adminNodes,
@@ -478,7 +547,9 @@ export function useApiKeys() {
 export function useRequestLog(
   params: {
     node_id?: string;
+    user?: string;
     api_key?: string;
+    model?: string;
     prompt?: string;
     from?: string;
     to?: string;
@@ -488,7 +559,9 @@ export function useRequestLog(
 ) {
   const search = new URLSearchParams();
   if (params.node_id) search.set("node_id", params.node_id);
+  if (params.user) search.set("user", params.user);
   if (params.api_key) search.set("api_key", params.api_key);
+  if (params.model) search.set("model", params.model);
   if (params.prompt) search.set("prompt", params.prompt);
   if (params.from) search.set("from", params.from);
   if (params.to) search.set("to", params.to);
@@ -519,7 +592,9 @@ export function useRequestLog(
 export function useRequestStats(
   params: {
     node_id?: string;
+    user?: string;
     api_key?: string;
+    model?: string;
     prompt?: string;
     from?: string;
     to?: string;
@@ -528,7 +603,9 @@ export function useRequestStats(
 ) {
   const search = new URLSearchParams();
   if (params.node_id) search.set("node_id", params.node_id);
+  if (params.user) search.set("user", params.user);
   if (params.api_key) search.set("api_key", params.api_key);
+  if (params.model) search.set("model", params.model);
   if (params.prompt) search.set("prompt", params.prompt);
   if (params.from) search.set("from", params.from);
   if (params.to) search.set("to", params.to);
@@ -545,7 +622,14 @@ export function useServableModels() {
   return useQuery({
     queryKey: keys.openaiModels,
     queryFn: () =>
-      api.get<{ data: Array<{ id: string }> }>("/v1/models").then((r) => r.data ?? []),
+      api.get<{
+        data: Array<{
+          id: string;
+          context_length?: number | null;
+          max_input_tokens?: number | null;
+          max_tokens?: number | null;
+        }>;
+      }>("/v1/models").then((r) => r.data ?? []),
     staleTime: 20_000,
     refetchInterval: 30_000,
   });
@@ -624,6 +708,7 @@ export function invalidateAfterAction(qc: QueryClient) {
     keys.jobs,
     keys.offers,
     keys.adminAuthority,
+    keys.networkInfo,
     keys.adminNodes,
     keys.models,
     keys.remoteModelProviderStatus,

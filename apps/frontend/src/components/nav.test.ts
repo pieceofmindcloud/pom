@@ -25,16 +25,18 @@ describe("navigation structure", () => {
     expect(deployments?.children?.map((child) => [child.labelKey, child.to])).toEqual([
       ["nav.deploy", "/implantar"],
       ["nav.history", "/implantacoes"],
-      ["nav.deploymentLogs", "/implantacoes/logs"],
     ]);
     expect(NAV.some((section) => section.labelKey === "nav.deploy")).toBe(false);
   });
 
-  it("opens Logs directly without a submenu", () => {
+  it("groups request and deployment logs under Logs", () => {
     const logs = NAV.find((section) => section.labelKey === "nav.logs");
 
-    expect(logs?.to).toBe("/logs");
-    expect(logs?.children).toBeUndefined();
+    expect(logs?.to).toBeUndefined();
+    expect(logs?.children?.map((child) => [child.labelKey, child.to])).toEqual([
+      ["nav.requestLogs", "/logs"],
+      ["nav.deploymentLogs", "/implantacoes/logs"],
+    ]);
   });
 
   it("gives statistics its own top-level destination after logs", () => {
@@ -52,6 +54,12 @@ describe("navigation structure", () => {
       "nav.preferences",
       "/config/preferencias",
     ]);
+  });
+
+  it("keeps network chat separate and removes wizard and connection keys from the menu", () => {
+    expect(NAV.map((section) => section.labelKey)).toContain("nav.networkChat");
+    expect(NAV.flatMap((section) => section.children ?? []).map((child) => child.labelKey)).not.toContain("nav.setupWizard");
+    expect(NAV.flatMap((section) => section.children ?? []).map((child) => child.labelKey)).not.toContain("nav.connectionKeys");
   });
 });
 
@@ -88,26 +96,53 @@ describe("navForProfile", () => {
     ]);
   });
 
+  it("mantém Rede e Configurações como menus principais", () => {
+    const settings = navForProfile("node").find((section) => section.labelKey === "nav.settings");
+    const network = navForProfile("node").find((section) => section.labelKey === "nav.network");
+    expect(network?.children?.map((child) => child.to)).toEqual([
+      "/config/rede",
+      "/config/rede/participantes",
+      "/config/administracao",
+      "/config/compartilhamento",
+      "/config/keys/api",
+    ]);
+    expect(network?.children?.map((child) => child.labelKey)).toEqual([
+      "nav.networkInfo",
+      "nav.networkParticipants",
+      "nav.administrators",
+      "nav.sharing",
+      "nav.apiKeys",
+    ]);
+    expect(settings?.children?.map((child) => child.to)).toEqual([
+      "/config/preferencias",
+      "/config/armazenamento",
+      "/config/preferencias/admin",
+    ]);
+
+    const inferSettings = navForProfile("infer");
+    expect(inferSettings.some((section) => section.labelKey === "nav.network")).toBe(true);
+    expect(inferSettings.flatMap((section) => section.children ?? []).some((child) => child.to === "/config/rede/participantes")).toBe(false);
+  });
+
   it("deixa a rede no menu principal do infer e move docs/config para o rodapé", () => {
     expect(navForProfile("infer").map((section) => section.labelKey)).toEqual([
+      "nav.publicNetworks",
+      "nav.networkChat",
       "nav.network",
-      // Ancorar a confiança precede a autoridade: o infer também recebe a
-      // âncora, então a tela não pode depender de um perfil.
-      "nav.trustAnchor",
     ]);
     expect(navFooterForProfile("infer").map((item) => [item.labelKey, item.to])).toEqual([
       ["nav.documentation", "/documentacao"],
-      ["nav.settings", "/config/keys/api"],
+      ["nav.settings", "/config/preferencias"],
     ]);
   });
 
-  it("oferece a raiz de confiança aos três perfis", () => {
+  it("oferece o compartilhamento aos três perfis", () => {
     for (const profile of ["admin", "node", "infer"] as const) {
       const destinos = navForProfile(profile).flatMap((section) => [
         section.to,
         ...(section.children ?? []).map((child) => child.to),
       ]);
-      expect(destinos).toContain("/config/confianca");
+      expect(destinos).toContain("/config/compartilhamento");
     }
   });
 

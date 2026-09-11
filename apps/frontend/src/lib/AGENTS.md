@@ -16,24 +16,63 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
   registry actions (`listDeployments`, `redeployDeployment` - `{ params }` ou
   `{ version }` para reimplantar uma versão registrada -, `activateDeployment`),
-  além do status autenticado do provider remoto.
+  além do status autenticado do provider remoto. `addNodeOptions` consulta o
+  catálogo e a configuração da máquina alvo para o diálogo incremental;
+  `addNode` envia o tipo whole/shards e os overrides por máquina, enquanto
+  `removeNode` recebe o `deploy_id` para versionar a topologia correta.
+  `listDeployments` também preserva o estado `idle` quando os peers continuam
+  vivos, mas descarregaram o modelo.
+- `postNetworkChat` - obtains the node-owned API key and includes it in every
+  network-chat action body. The gateway still authenticates the browser with
+  the connection key separately.
+- `downloadNetworkChatFile` - fetches a persisted network-chat file only when
+  the operator asks to download it, so regular history polling carries metadata
+  but not repeated file bytes.
+- `networkChatUnread.ts` - mantém o marcador local do último snapshot lido,
+  conta apenas mensagens recebidas depois dele e expõe o hook de polling usado
+  pelo badge da Sidebar; abrir o Chat da rede grava o snapshot como lido.
+- `id.ts` - gera ids compactos no formato UUID sem depender de
+  `crypto.randomUUID`, que não existe no contexto HTTP da LAN; usa
+  `getRandomValues` quando disponível e mantém um fallback para ids não
+  secretos em navegadores antigos.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab
-  synced; keeps the initial model mark and private request content for telemetry
-  analysis. `ChatSessionProvider` shares the active session and selection/new/
-  delete actions between `Chat` and the infer Sidebar; direct Chat consumers get
-  an isolated provider wrapper.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including opportunistic `remote-stream` callbacks) and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+  synced; keeps the initial model mark, attachment structure and private request
+  content for telemetry analysis. `ChatSessionProvider` shares the active
+  session and selection/new/delete actions between `Chat` and the infer Sidebar,
+  and owns the active stream so route unmounts preserve live partial replies.
+  Direct Chat consumers get an isolated provider wrapper.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+  `stream_duration_ms` is measured locally from the first SSE data frame to
+  receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
+  separate `time_last_token_to_response_end_ms` isolates that tail.
+  `chatStream.ts` also carries trace spans, outside-node accounting,
+  first-token boundaries, connection counts, decode counts, browser-local stream
+  observations and distributed `TelemetrySummary`/`TelemetrySpan`. TTFT keeps
+  separate pipeline/server/client meanings; backend completion timing must not
+  be used to infer `POM_PROFILE_SYNC` or the engine.
+  The remote-stream contract separates producer, downstream, channel, queue
+  and callback timing, and `PhaseTrace` carries synchronous MTP draft time
+  when reported. `RequestTrace.pipeline_cycle` preserves the measured directional legs of the
+  distributed cycle, including the final peer-to-gateway return when the
+  transport publishes one; missing legs remain unknown. The Dashboard uses
+  this data for the virtual Gateway cost card instead of a topology probe.
+  Decode coverage with no expected span denominator is rendered as not measured,
+  and an incomplete transport receipt remains visible independently of the
+  response-complete state.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
   backend cost and time outside the node; compara timings ponta a ponta com o
-  processamento medido no nó antes de nomear o gargalo. Derives the observed
+  processamento medido no nó antes de nomear o gargalo. It refuses to label
+  a distributed gap as `outside-node` while telemetry is incomplete and keeps
+  the fixed/per-token regression as an analysis helper only. Derives the observed
   execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer
   counts from actual buffers.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
-- `format.ts` - number/time formatting in the active locale plus node-state labels.
+- `format.ts` - number/time formatting in the active locale plus node-state
+  labels, incluindo o estado `idle` distinto de `serving` e `noAir`.
 - `thermal.ts` - pure temperature-band and highest-known-reading helpers used by
   the GPU badge; missing or non-finite readings stay explicitly unknown.
 - `gpu.ts` - `sumVram`/`vramUsedPct`: a VRAM somada das placas que a reportam,
@@ -41,8 +80,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   o card em miniatura do Fluxo mostra - antes ele lia só `gpus[0]` e metade do
   hardware de uma caixa com duas placas sumia da tela. Testes em `gpu.test.ts`.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
-- `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
+- `networkLayout.ts` - posições dos nós do canvas persistidas por impressão
+  digital da implantação; `CARD_HEIGHT` mantém a altura reduzida do card
+  compacto sincronizada com seus medidores agrupados.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
+- `networkStats.ts` - agrega somente dados presentes no `ClusterView`: nós,
+  RTT médio, VRAM conhecida e modelos servidos. Cada métrica permanece nula
+  quando a fonte não a fornece, para a UI mostrar indisponível sem inventar
+  zero.
 - `polling.ts` - the fast 2s and idle 10s cadences used by jobs and offers.
 - `queries.ts` - every read the panel does, as react-query hooks with polling
   intervals. `useCluster`, `useJobs` and `useOffers` use conditional GETs;
@@ -51,16 +96,26 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   is shared by the remote-model and transfers screens.
   `useCacheTypes` reads the installation-wide K/V cache representation from
   `/api/ui/cache-types`; the deployment inspector applies combo changes through
-  the same endpoint, not as a per-machine launch parameter.
+  the same endpoint. The add-machine dialog reads and updates the selected
+  peer's representation through the target-aware deploy flow, so cache choices
+  are applied on that machine before launch.
   `useChatTelemetryNetwork` asks the authenticated gateway for the directional
-  RTT snapshot after a chat stream, and `usePeerRuntimes` reads `/health` for
-  the peers in that trace without polling the whole cluster.
-  `useNetworkRtt` asks the same authenticated telemetry route for the current
-  deployment edges shown on the Dashboard and refreshes them every 15 s.
-  `useInferenceHeads` polls the infer-only model head view every 15 s; this is
-  a capability slice, not a general peer list.
-  `useClusterLogs` lê o log de processo do principal, opcionalmente filtrado
-  por `deploy_id`, e atualiza a consola a cada segundo.
+  transport and RTT observed by the exact chat execution, and
+  `usePeerRuntimes` reads `/health` for the peers in that trace without polling
+  the whole cluster. `useNetworkRtt` asks the same route for all complete
+  deployed model routes and refreshes them every 15 s. The
+  backend gathers fresh directional probes from the gateway and every serving
+  peer, so a whole-model deployment with one head is included even when the
+  graph has no edge. The response sorts routes by aggregate RTT and then node
+  ID; an incomplete leg remains unknown rather than becoming zero.
+  `useInferenceHeads` polls the model head view every 15 s for every profile;
+  this is a capability slice, not a general peer list.
+  `useNetworkChat` polls the authenticated network-chat snapshot so the Sidebar
+  can show unread messages while the chat route está desmontada.
+  `useClusterLogs` lê o log de processo da réplica local do admin,
+  opcionalmente filtrado por `deploy_id`, e atualiza a consola a cada segundo.
+  `useGeoReference` consulta `/api/ui/network/geo-reference` para preencher os
+  selects de país e cidade da tela de Informações da Rede.
   `useAdminSurface` is the one-shot shell probe: it distinguishes setup,
   available, token-required and local-only states without exposing the token.
 - `stableRecord.ts` - preserves the identity of a shallow record while its
@@ -72,9 +127,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `localStorage`: o navegador só apresenta o valor e deriva dele o menu/guarda
   de rota. **Não é autorização** - o backend continua sendo a fronteira.
 - `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
-  para a lista de perfis; para `infer`, `/chat`, `/documentacao`, `/config/keys/api`
-  e `/config/rede` são visíveis. No Chat, esse perfil também esconde os resumos
-  e o painel de telemetria.
+  para a lista de perfis; para `infer`, `/chat`, `/network-chat`,
+  `/documentacao`, `/config/keys/api` e `/config/rede` são visíveis. A lista de
+  participantes da rede e as preferências administrativas continuam fechadas
+  para infer. No Chat, esse perfil também esconde os resumos e o painel de
+  telemetria.
   `canAccessRoute(path, profile)` é
   lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
   `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
@@ -111,7 +168,17 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   cycle detector settings in `RuntimeParams` control the gateway's bounded
   repetition safety stop and can be disabled explicitly. The total output
   capacity comes from live runtime context and `/v1/models`, not from a second deployment field. `PhaseTrace` carries the effective dtype and
-  hidden-state bytes per hop.
+  hidden-state bytes per hop. `RequestTrace` carries the server trace id, local
+  spans, outside-node accounting, first-token boundaries, connection reuse
+  counts and stream measurements when the backend publishes them.
+  `ChatTelemetryNetwork.pipeline_cost` carries the observed execution cycle
+  legs and measured per-hop compute, while `pipeline_routes` carries every
+  complete deployed route and its aggregate network RTT for the Dashboard's
+  Gateway card. The observed cost is optional because an asynchronous return
+  callback may not expose a sender-side RTT.
+  `GpuStat.power_watts` é telemetria opcional: o card de detalhes mostra o
+  valor quando NVIDIA ou AMD expõe a potência da placa e mantém desconhecido
+  quando não há essa leitura.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions
@@ -147,13 +214,20 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `/v1/chat/completions`, with one replacement-key retry.
 - `api.get/post/del` - typed conveniences over `request`.
 - `devUpdate(nodeId)` - update+restart a machine, repassing to a peer when `node_id` is not this node (`src/devupdate.rs`).
-- `addNode` / `removeNode` - add/remove one machine to a deployed model (`/api/ui/deploy/node{,/remove}`).
+- `addNodeOptions` / `addNode` / `removeNode` - query the selected machine's
+  local catalog and cache settings, then add/remove one machine to a deployed
+  model (`/api/ui/deploy/node{,/remove}`). Add and remove responses carry the
+  deployment version when a persisted deployment is being edited.
 - `undeployPipeline(group)` - take the whole pipeline out of service: `POST /api/ui/undeploy` asks every machine serving the model to release RAM/VRAM at once and returns an `UndeployReport` (machine by machine; `released` only when that node confirmed). Nothing is deleted from disk.
 - `leaveNetwork(nodeId?)` - `POST /api/ui/leave`. Without `nodeId` this node leaves; with a peer's `node_id` this node forwards the request to that peer (`webui::forward_leave`) - the panel only uses relative paths, so acting on another machine is always a relay through the local node.
 
 ### types.ts
+- `NetworkChatRequest`, `NetworkChatSnapshot` and related types mirror the
+  network-chat action and snapshot contract. `NetworkChatEvent` preserves
+  `node_id` as the identity key instead of using hostname as a key; the route
+  resolves that identity to the dashboard's display-name map at render time.
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
-- `ServerState` - `"disabled" | "starting" | "ready" | "failed" | "thermal"`; the thermal state is distinct from an unreachable or failed peer.
+- `ServerState` - `"disabled" | "starting" | "ready" | "idle" | "failed" | "thermal"`; `idle` means a live peer unloaded its model, while thermal is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
   `PeerView.rediscovering` distingue "endereço morreu, a rede já foi perguntada"
   de `unreachable` ("atendeu e a leitura quebrou"); `ModelCoverage.unreadable_nodes`
@@ -163,7 +237,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   em voo de `PeerView` é `null` quando o relatório vivo do peer não chegou;
   zero só representa um peer que de fato reportou estar ocioso.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
-  `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
+  `model_label`, `pom_id` and optional local `mmproj_path`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
   `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen
   shapes. `DeployPlan` also carries the operational name, strategy, RTT route
   alternatives and projected load, while `DeployMachine` carries GPU/RAM
@@ -238,8 +312,20 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar
   sempre seria um fan-out por peer a cada ciclo do Painel, por uma seção quase
   sempre fechada.
-- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, api_key, prompt, from, to}, enabled)` 30s while the statistics tab is open, `useServableModels()` 30s.
-- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, api_key, prompt, from, to}, enabled)` 30s while the statistics tab is open, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
+- `useCluster()` 5s with conditional GET, `useChatCapabilities()` 5s from
+  `/api/ui/chat/capabilities` (vision and coverage aggregated for the active
+  model), `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)`
+  60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s
+  while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while
+  waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, user,
+  api_key, model, prompt, from, to, limit, offset})` 3s,
+  `useRequestStats({node_id, user, api_key, model, prompt, from, to}, enabled)`
+  30s while the statistics tab is open,
+  `useServableModels()` 30s. The latter preserves `context_length` and
+  `max_input_tokens` from `/v1/models` for the Chat attachment guard. A refusal
+  or transport failure in the capability read becomes the explicit
+  `unavailable` state, never an empty capability.
+- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, user, api_key, model, prompt, from, to, limit, offset})` 3s, `useRequestStats({node_id, user, api_key, model, prompt, from, to}, enabled)` 30s while the statistics tab is open, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
 - `useOffers()` uses 2s while an offer is waiting and 10s when empty. An offer
   is a question waiting on a human, not a progress bar. With the sender no
@@ -258,10 +344,23 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `ChatSessionProvider` / `useChatSessionController()` - one active session
   and the store actions shared by the Chat screen and `Sidebar`. The controller
   invokes the registered pre-change hook before a menu selection, new session or
-  deletion so a live stream is aborted and the Chat clears transient state.
+  deletion so the Chat clears transient state; changing routes does not abort a
+  live stream. `startStream` aborts the previous request when a new message is
+  sent, while `stopStream` is the explicit user cancellation. Deltas are
+  persisted in the session as they arrive, and deleting a session prevents a
+  finishing stream from recreating it.
+  `startStream` also carries the optional Chat `inference_head` selection in
+  the OpenAI-compatible request body.
 - `turnsOnly(messages)` - drops `role: "event"` entries (model-change marks) before the transcript travels in a request.
 - `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.
+
+### Anexos
+
+`imageResize.ts` reduz imagens para no máximo 2048 px no lado maior e preserva
+a proporção antes de montar o pedido multimodal. `chatStore` preserva as partes
+estruturadas do pedido para que anexos de imagem e de outros tipos sobrevivam ao
+histórico; o Chat aplica o limite de contexto antes de aceitar o lote.
 
 ### chatStream.ts
 - `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).
@@ -277,9 +376,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   report prefix reuse means "unknown", and the chat shows nothing rather than
   claiming savings it cannot prove. The trace also carries prefix candidate and
   transmitted-token counts, reuse status, bounded prefill-overlap counters, and
-  per-transport traversal distributions with fallback and switch counts. The
+  per-transport traversal distributions with execution RTT, measured network
+  RTT, fallback and switch counts. The
   transport contract is aggregate by default, never one serialized entry per
-  decode call.
+  decode call. `RequestTrace` also exposes explicit HTTPS fallback counts and
+  reasons, normal-mode token-cycle quantiles, and remote-stream delivery
+  interval quantiles; the remote-stream contract also separates producer wait
+  from queue wait, and profiling spans remain opt-in.
 
 ### deployMemory.ts
 - `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.
@@ -325,6 +428,26 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### networkGraph.ts
 - `graphFromCluster(cluster)` - groups each peer's `capabilities` by `model_id` into `GraphRange[]` sorted by `start_layer`, for the model network canvas.
 
+### network information
+
+`types.ts` define o retrato compartilhado `NetworkSettings` e o envelope de
+leitura `NetworkInfoView`. `useNetworkInfo` em `queries.ts` consulta
+`/api/ui/network/info` para todos os perfis e `invalidateAfterAction` invalida
+esse retrato após mutações de configuração. `useGeoReference` lê a referência
+SQLite de países e cidades para os selects da tela. A UI nunca guarda a chave
+de conexão no cache: os materiais de compartilhamento são buscados pelo admin
+somente em `/api/ui/network/trust-share`.
+
+### publicReachability.ts
+
+`usePublicAddressReachability` consulta o `/health` do endereço publicado no
+navegador. O resultado usa `reachable` para resposta observada, `unreachable`
+para erro ou timeout de 1,8 s e `checking` durante a primeira consulta. O
+cache compartilhado dura 30 s e uma nova tentativa só é forçada pelo botão de
+atualização da tela de Redes públicas; trocar filtros não gera carga adicional.
+O `mode: no-cors` permite reconhecer resposta opaca cross-origin, sem tentar
+ler o corpo nem alterar o endereço publicado.
+
 ### networkPeers.ts
 The panel asks two questions, and the screen needs both: "who serves the
 active model, in execution order" and "who is on the network" - the second
@@ -364,7 +487,9 @@ would go.
 ## Links to the rest of the app
 
 - Routes/components importing `lib/*` (counted by import): `queries` (19), `format` (17), `toast` (16), `api` (16), `types` (12).
-- `routes/Chat.tsx` is the only consumer of `chatStream`, `chatStore` and `chatScroll`, plus `streamSse` against `/v1/chat/completions`.
+- `routes/Chat.tsx` renders the composer/transcript and consumes `chatStore` and
+  `chatScroll`; `chatStore` owns the `chatStream` parsing and `streamSse` call
+  against `/v1/chat/completions` so the stream survives route unmounts.
 - `routes/DeployModel.tsx` is the only consumer of `deployMemory`.
 - `components/ModelNetworkCanvas.tsx` is the only consumer of `networkGraph` + `networkLayout`.
 - `networkPeers` is used by `components/ModelNetworkCanvas.tsx`,
@@ -374,8 +499,9 @@ would go.
 - `components/Notifications.tsx` and `routes/Transfers.tsx` use `transferStatus` and `transferLabel`.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
-- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
-- O Chat do perfil `infer` também lê `/api/ui/infer/heads?model=...`, que
+- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/requests/stats`, `/api/ui/network/info`, `/api/ui/network/geo-reference`, `/api/ui/models/delete`, `/api/ui/deployments`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`. As consultas aceitam `user` e `model` além dos filtros de período e identidade.
+- O Chat de qualquer perfil que tenha um modelo selecionado lê
+  `/api/ui/infer/heads?model=...`, que é autorizado por `InferNodeAdmin` e
   devolve somente as candidatas de camada zero, o nó escolhido, carga e RTT
   com idade. A carga é `null` se o relatório vivo do candidato não chegar, e a
   UI mostra "indisponível" nesse caso. RTT fora da validade continua

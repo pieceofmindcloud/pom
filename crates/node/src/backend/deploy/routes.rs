@@ -3,6 +3,10 @@ pub fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/deploy/plan", post(plan_endpoint))
         .route("/api/ui/deploy", post(deploy_endpoint))
+        .route(
+            "/api/ui/deploy/node/options",
+            post(add_node_options_endpoint),
+        )
         .route("/api/ui/deploy/node", post(add_node_endpoint))
         .route("/api/ui/deploy/node/remove", post(remove_node_endpoint))
         .route("/api/ui/undeploy", post(undeploy_endpoint))
@@ -93,8 +97,6 @@ pub(super) async fn list_deployments(
     }
 
     let peers = state.all_peers().await;
-    let key = state.auth.read().await.connection_key.clone();
-
     // Por `deploy_id`, ficando com a cópia mais recentemente ativada.
     let mut por_id: HashMap<String, crate::deployment::Deployment> = HashMap::new();
     let mut guardado_por: HashMap<String, Vec<String>> = HashMap::new();
@@ -128,21 +130,24 @@ pub(super) async fn list_deployments(
     };
     absorve(&self_id, local, &mut por_id, &mut guardado_por);
 
+    let peer_state = state.clone();
     let buscas = peers.iter().filter(|p| p.node_id != self_id).map(|peer| {
         let http = state.peer_http.for_peer(&peer.node_id);
-        let key = key.clone();
+        let state = peer_state.clone();
         let node_id = peer.node_id.clone();
         let base = peer.gateway_url();
         async move {
             let base = base?;
-            let resp = http
-                .ok()?
-                .get(format!("{base}/api/ui/deployments?local=true"))
-                .bearer_auth(&key)
-                .timeout(PEER_TIMEOUT)
-                .send()
+            let request = state
+                .control_get_request(
+                    http.ok()?
+                        .get(format!("{base}/api/ui/deployments?local=true"))
+                        .timeout(PEER_TIMEOUT),
+                    "/api/ui/deployments",
+                )
                 .await
                 .ok()?;
+            let resp = request.send().await.ok()?;
             let body: serde_json::Value = resp.json().await.ok()?;
             let registros: Vec<crate::deployment::Deployment> =
                 serde_json::from_value(body.get("deployments")?.clone()).ok()?;
@@ -172,7 +177,6 @@ pub(super) async fn list_deployments(
         .filter(|p| p.is_alive() && !p.deploy_id.is_empty())
         .map(|p| p.deploy_id.clone())
         .collect();
-
     let linhas: Vec<serde_json::Value> = todas
         .iter()
         .map(|d| {
@@ -184,6 +188,9 @@ pub(super) async fn list_deployments(
             json!({
                 "deployment": d,
                 "serving": anunciados.contains(&d.deploy_id),
+                "idle": anunciados.contains(&d.deploy_id)
+                    && peers.iter().any(|p| p.is_alive() && p.deploy_id == d.deploy_id)
+                    && peers.iter().filter(|p| p.is_alive() && p.deploy_id == d.deploy_id).all(|p| p.idle),
                 "is_default": padrao,
                 "holders": holders,
             })
@@ -204,10 +211,17 @@ pub(super) async fn receive_deployment(
     Json(registro): Json<crate::deployment::Deployment>,
 ) -> Response {
     let self_id = state.network.node_id.clone();
-    // Um registro que não menciona esta máquina não é dela para guardar. Sem
-    // isto, qualquer peer autenticado encheria o disco dos outros de registros
-    // de implantações que não os incluem.
-    if registro.node(&self_id).is_none() {
+    // Um registro que não menciona esta máquina não é dela para guardar. A
+    // exceção é uma atualização que ela já conhecia: depois de remover uma
+    // máquina, o snapshot precisa chegar também ao peer removido para que ele
+    // não anuncie uma versão antiga no próximo fan-out.
+    let ja_conhecia = state
+        .database
+        .deployment(&registro.deploy_id)
+        .ok()
+        .flatten()
+        .is_some();
+    if registro.node(&self_id).is_none() && !ja_conhecia {
         return bad(json!({
             "error": "este nó não faz parte da implantação"
         }));
@@ -267,4 +281,3 @@ pub fn uncovered_after_removal(restantes: &[(u32, u32)], removida: (u32, u32)) -
         .filter(|c| !restantes.iter().any(|(i, f)| c >= i && c <= f))
         .collect()
 }
-

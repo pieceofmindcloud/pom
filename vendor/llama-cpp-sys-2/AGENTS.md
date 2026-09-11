@@ -39,6 +39,18 @@ materializar o symlink como um arquivo de texto; o `build.rs` o substitui pelo
 checkout no caminho que o Cargo lê. Ver `docs/subsystems/build-execucao.md`,
 "Release pelo GitHub Actions".
 
+O `build.rs` repassa `CMAKE_C_COMPILER_LAUNCHER`,
+`CMAKE_CXX_COMPILER_LAUNCHER` e `CMAKE_CUDA_COMPILER_LAUNCHER` como entradas do
+cache CMake e declara os tres valores para o Cargo reexecutar o script quando
+o launcher muda. O helper `scripts/build-env.sh` usa `sccache` nesses pontos;
+nao ha caminho prebuilt para `libllama` porque um arquivo isolado nao prova
+source, target, feature ou configuracao CMake compativeis.
+
+Com a feature `vulkan` em macOS, o build tambem publica a busca e o link do
+loader `libvulkan.dylib` a partir de `CMAKE_Vulkan_LIBRARY`, `Vulkan_LIBRARY` ou
+`VULKAN_SDK`; isso é necessário porque o CMake produz os objetos Vulkan
+estáticos e o binário Rust faz o link final.
+
 ## `wrapper_common.cpp` - o que é nosso dentro deste diretório
 
 `wrapper_common.{h,cpp}` e `wrapper_utils.h` são código **deste** repositório,

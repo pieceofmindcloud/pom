@@ -749,7 +749,11 @@ pub(super) fn seal_single_part(
         .into_owned())
 }
 
-pub(super) async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyhow::Result<String> {
+pub(super) async fn run_apply(
+    state: GatewayState,
+    req: ApplyRequest,
+    job_id: &str,
+) -> anyhow::Result<String> {
     let model_path = if let Some(tp) = tp_shard_to_extract(&req) {
         set_job(
             job_id,
@@ -889,9 +893,19 @@ pub(super) async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &s
         .inference_port
         .ok_or_else(|| anyhow::anyhow!("este nó subiu sem --inference-port"))?;
 
+    let mmproj_path = if req.use_mmproj {
+        Some(resolve_mmproj_path(
+            std::path::Path::new(&model_path),
+            req.mmproj_path.as_deref(),
+        )?)
+    } else {
+        None
+    };
+
     let cfg = NodeConfig {
         deploy_id: req.deploy_id.clone(),
         model_path: model_path.clone(),
+        mmproj_path,
         model_label: label,
         deployment_name: deployment,
         start_layer: req.start_layer,
@@ -938,6 +952,44 @@ pub(super) async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &s
     Ok(model_path)
 }
 
+fn resolve_mmproj_path(
+    model_path: &std::path::Path,
+    requested: Option<&str>,
+) -> anyhow::Result<String> {
+    if let Some(path) = requested.filter(|path| !path.is_empty()) {
+        anyhow::ensure!(
+            std::path::Path::new(path).is_file(),
+            "este modelo não tem visão: mmproj não encontrado no caminho informado"
+        );
+        return Ok(path.to_string());
+    }
+    crate::catalog::find_mmproj_sibling(model_path).ok_or_else(|| {
+        anyhow::anyhow!("este modelo não tem visão: mmproj não encontrado ao lado do GGUF")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_mmproj_path;
+
+    #[test]
+    fn explicit_projector_path_is_used_for_a_slice() {
+        let root = std::env::temp_dir().join(format!("pom-mmproj-apply-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let model = root.join("slice.gguf");
+        let projector = root.join("projectors/mmproj.gguf");
+        std::fs::write(&model, b"model").unwrap();
+        std::fs::create_dir_all(projector.parent().unwrap()).unwrap();
+        std::fs::write(&projector, b"projector").unwrap();
+
+        assert_eq!(
+            resolve_mmproj_path(&model, projector.to_str()).unwrap(),
+            projector.to_string_lossy()
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+}
+
 /// Join local slices into one GGUF covering their union, then serve that.
 ///
 /// The peer that receives a merged step holds (or just received) each part as
@@ -971,6 +1023,8 @@ pub(super) async fn merge_parts(
             "modelo junto já existe, reaproveitando: {}",
             caminho.display()
         );
+        crate::gguf::read_layout(&caminho)
+            .with_context(|| format!("validar GGUF juntado existente {}", caminho.display()))?;
         return Ok(caminho.to_string_lossy().into_owned());
     }
     // O nome da pasta vem do manifesto do modelo original associado às partes.
@@ -1014,14 +1068,24 @@ pub(super) async fn merge_parts(
                 let id = progress_job.clone();
                 tokio::spawn(async move { set_job_progress(&id, pct).await });
             })?;
+            crate::gguf::read_layout(&temp)
+                .with_context(|| format!("validar GGUF juntado {}", temp.display()))?;
             let dst = crate::pom::part_path(&destino_dir, &escrito.sha256)?;
             // Um destino já ocupado é outra junção que terminou primeiro. Com
             // endereço de conteúdo os dois arquivos são byte a byte o mesmo,
             // então ficar com o que já está pronto é o certo - e no Windows o
             // rename nem substituiria.
             if dst.exists() {
-                let _ = std::fs::remove_file(&temp);
-                return Ok((dst, escrito.bytes));
+                if crate::gguf::read_layout(&dst).is_ok() {
+                    let _ = std::fs::remove_file(&temp);
+                    return Ok((dst, escrito.bytes));
+                }
+                info!(
+                    "arquivo no endereço de conteúdo não é um GGUF válido, substituindo: {}",
+                    dst.display()
+                );
+                std::fs::remove_file(&dst)
+                    .with_context(|| format!("remover saída inválida {}", dst.display()))?;
             }
             std::fs::rename(&temp, &dst)
                 .with_context(|| format!("mover {} para {}", temp.display(), dst.display()))?;
@@ -1082,6 +1146,17 @@ pub(super) async fn merge_parts(
         Vec::new(),
     );
     manifesto.parts.push(parte);
+    let destino = crate::pom::locate_source_dir(&shard_dir, &manifesto.pom_id)
+        .unwrap_or_else(|| crate::pom::dir_for(&shard_dir, &manifesto));
+    let existing = crate::pom::part_path(&destino, &sha)?;
+    if existing.is_file() && crate::gguf::read_layout(&existing).is_err() {
+        info!(
+            "parte existente no endereço de conteúdo não é um GGUF válido, substituindo: {}",
+            existing.display()
+        );
+        std::fs::remove_file(&existing)
+            .with_context(|| format!("remover parte inválida {}", existing.display()))?;
+    }
     let pasta = crate::pom::finalize_run(&shard_dir, &out_dir, &manifesto)?;
     let final_path = crate::pom::part_path(&pasta, &sha)?;
 
@@ -1092,4 +1167,3 @@ pub(super) async fn merge_parts(
     );
     Ok(final_path.to_string_lossy().into_owned())
 }
-

@@ -32,9 +32,7 @@ impl MtpAllocation {
     }
 }
 
-pub fn mtp_allocation_from_context_memory(
-    value: &serde_json::Value,
-) -> Option<MtpAllocation> {
+pub fn mtp_allocation_from_context_memory(value: &serde_json::Value) -> Option<MtpAllocation> {
     let mut vram_bytes = 0u64;
     let mut ram_bytes = 0u64;
     for buffer in value.get("buffers")?.as_array()? {
@@ -84,6 +82,8 @@ pub const MTP_NO_NEXTN_REASON: &str = "o modelo carregado não traz o bloco next
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
+    /// Projector multimodal opcional, carregado como o `--mmproj` do llama.cpp.
+    pub mmproj_path: Option<String>,
     /// Capacidade total do cache KV. O runtime já multiplica a janela pública
     /// por sessão por `max_sessions` antes de montar esta configuração.
     pub n_ctx: u32,
@@ -301,7 +301,10 @@ pub(super) fn mtp_fit_mode_for_model(
     (requested, None)
 }
 
-pub(super) fn mtp_mode_for_nextn_availability(requested: MtpFitMode, has_nextn: bool) -> MtpFitMode {
+pub(super) fn mtp_mode_for_nextn_availability(
+    requested: MtpFitMode,
+    has_nextn: bool,
+) -> MtpFitMode {
     if !has_nextn {
         MtpFitMode::Disabled
     } else {
@@ -386,7 +389,35 @@ pub(super) fn estimate_mtp_vram_costs(
     Some(costs)
 }
 
-pub(super) fn fit_memory_snapshots(memories: &[FitDeviceMemory], margins: &[usize]) -> Vec<FitMemorySnapshot> {
+/// Quantas GPUs físicas o fit deve considerar.
+///
+/// `max_devices` é `llama_max_devices()`, a **capacidade de compilação** dos
+/// vetores que o wrapper C preenche (16), nunca o número de placas presentes.
+/// Confundir os dois fazia o aviso de snapshot parcial disparar em toda máquina
+/// com menos de 16 GPUs, e - o defeito real - fazia a reserva de KV do contexto
+/// MTP cair no índice 15, um dispositivo inexistente, em vez da última placa
+/// verdadeira. O fit então acreditava ter VRAM livre que já estava prometida.
+///
+/// A contagem elegível vem de `llama_rs_get_devices`; quando ela é vazia, vale
+/// a contagem do snapshot de memória. Sem nenhuma das duas resta um slot para
+/// o host, porque o fit sempre planeja ao menos um destino.
+pub(super) fn fit_device_count(
+    available_count: usize,
+    memory_count: usize,
+    max_devices: usize,
+) -> usize {
+    let counted = if available_count > 0 {
+        available_count
+    } else {
+        memory_count
+    };
+    counted.clamp(1, max_devices.max(1))
+}
+
+pub(super) fn fit_memory_snapshots(
+    memories: &[FitDeviceMemory],
+    margins: &[usize],
+) -> Vec<FitMemorySnapshot> {
     margins
         .iter()
         .enumerate()
@@ -484,6 +515,13 @@ mod fit_memory_margin_tests {
     }
 
     #[test]
+    fn fit_usa_a_contagem_dos_dispositivos_elegiveis_e_nao_o_limite_generico() {
+        assert_eq!(fit_device_count(2, 0, 16), 2);
+        assert_eq!(fit_device_count(0, 2, 16), 2);
+        assert_eq!(fit_device_count(0, 0, 16), 1);
+    }
+
+    #[test]
     fn arquivo_sem_nextn_nao_pede_carga_nem_contexto_mtp() {
         assert_eq!(
             mtp_mode_for_nextn_availability(MtpFitMode::Vram, false),
@@ -545,12 +583,62 @@ mod fit_memory_margin_tests {
             rs_seq_window: 0,
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
+            mmproj_path: None,
         };
 
         assert_eq!(
             estimate_mtp_vram_costs(&info, &cfg, 2),
             Some(vec![0, 2 * 4096 * 2 * 64 * 2 * 2])
         );
+    }
+
+    /// Regressão do defeito de 2026-09-08 na ksia: com `llama_max_devices()`
+    /// (16) no lugar da contagem física, a reserva de KV do contexto MTP caía
+    /// no índice 15 - um dispositivo que não existe - e as duas RTX ficavam
+    /// com margem zero para ele. O fit então planejava sobre VRAM já
+    /// prometida e o decode abortava na segunda placa.
+    #[test]
+    fn reserva_mtp_vai_para_a_ultima_placa_real_e_nao_para_o_limite_de_compilacao() {
+        let info = crate::gguf::GgufInfo {
+            block_count: Some(41),
+            nextn_predict_layers: Some(1),
+            attention_head_count_kv: Some(vec![2]),
+            attention_key_length: Some(vec![64]),
+            attention_value_length: Some(vec![64]),
+            ..Default::default()
+        };
+        let cfg = EngineConfig {
+            n_ctx: 4096,
+            max_sessions: 1,
+            offload_kqv: true,
+            cache_type_k: crate::KvCacheType::F16,
+            cache_type_v: crate::KvCacheType::F16,
+            fit_memory: true,
+            fit_memory_margin_mb: 256,
+            n_batch: 128,
+            n_gpu_layers: 99,
+            n_threads: 0,
+            need_embeddings: false,
+            mtp: true,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+            mmproj_path: None,
+        };
+
+        let physical = fit_device_count(2, 2, 16);
+        let costs = estimate_mtp_vram_costs(&info, &cfg, physical)
+            .expect("o custo do contexto MTP precisa ser estimável");
+
+        assert_eq!(costs.len(), 2, "só existem duas placas nesta máquina");
+        assert!(costs[1] > 0, "a reserva pertence à última placa real");
+
+        // O que acontecia antes: um vetor de 16 posições cuja reserva o C
+        // nunca leria, porque ele só indexa os dispositivos que existem.
+        let inflado = estimate_mtp_vram_costs(&info, &cfg, 16)
+            .expect("o custo do contexto MTP precisa ser estimável");
+        assert_eq!(inflado[1], 0, "a última placa real ficava sem reserva");
     }
 
     #[test]
@@ -683,7 +771,11 @@ pub(super) fn empty_fit_plan_with_mtp_mode_and_reason(
 /// copiar o resultado de embeddings. Essa cópia usa `n_embd_out` como se fosse
 /// a largura real do tensor; quando as duas larguras divergem, o pedido pode
 /// ultrapassar `ggml_nbytes(tensor)` antes de o callback ser consumido.
-pub(super) fn generic_embeddings_compatible(need_embeddings: bool, n_embd: usize, n_embd_out: usize) -> bool {
+pub(super) fn generic_embeddings_compatible(
+    need_embeddings: bool,
+    n_embd: usize,
+    n_embd_out: usize,
+) -> bool {
     need_embeddings && n_embd == n_embd_out
 }
 
@@ -716,15 +808,16 @@ pub fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
 
 /// Aplica a política única de lote público e microlote de computação a cada
 /// contexto que o motor cria, inclusive o contexto MTP.
-pub fn apply_context_batch_params(
-    cparams: &mut sys::llama_context_params,
-    cfg: &EngineConfig,
-) {
+pub fn apply_context_batch_params(cparams: &mut sys::llama_context_params, cfg: &EngineConfig) {
     cparams.n_batch = cfg.n_batch;
     cparams.n_ubatch = effective_n_ubatch(cfg);
 }
 
-pub(super) fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMode) -> Result<FitPlan> {
+pub(super) fn fit_plan(
+    model_path: &str,
+    cfg: &EngineConfig,
+    mtp_mode: MtpFitMode,
+) -> Result<FitPlan> {
     let (mtp_mode, mtp_unavailable_reason) = if mtp_mode == MtpFitMode::Disabled {
         (MtpFitMode::Disabled, None)
     } else {
@@ -869,11 +962,15 @@ pub(super) fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMod
             free_bytes: memory.free_bytes,
         })
         .collect::<Vec<_>>();
+    // Os vetores entregues ao C ficam com a capacidade de compilação, que o
+    // wrapper preenche até o número de placas que ele mesmo enxerga; as
+    // decisões físicas usam a contagem real. Ver `fit_device_count`.
+    let physical_devices = fit_device_count(available_devices.len(), memory_count, n_devices);
     let mut margins = fit_memory_margins(&fit_memories, n_devices, cfg.fit_memory_margin_mb);
-    if memory_count != n_devices {
+    if memory_count != physical_devices {
         warn!(
             reported_devices = memory_count,
-            expected_devices = n_devices,
+            expected_devices = physical_devices,
             "llama.cpp fit recebeu um snapshot parcial de memória"
         );
     }
@@ -973,7 +1070,7 @@ pub(super) fn fit_plan(model_path: &str, cfg: &EngineConfig, mtp_mode: MtpFitMod
         let mtp_cparams = make_context_params();
         let mut joint_margins = match crate::gguf::read_info(std::path::Path::new(model_path))
             .ok()
-            .and_then(|info| estimate_mtp_vram_costs(&info, cfg, n_devices))
+            .and_then(|info| estimate_mtp_vram_costs(&info, cfg, physical_devices))
         {
             Some(mtp_cost) => {
                 tracing::info!(

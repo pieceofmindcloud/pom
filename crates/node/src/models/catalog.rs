@@ -82,6 +82,11 @@ pub struct DiscoveredModel {
     pub source_label: &'static str,
     /// Absolute path of the `.gguf` file.
     pub path: String,
+    /// Adjacent llama.cpp multimodal projector, when the sibling convention
+    /// found one. `None` is also the catalog's fast answer for text-only
+    /// models, so callers never need to scan the directory again.
+    #[serde(default)]
+    pub mmproj_path: Option<String>,
     pub size_bytes: u64,
     /// True when the source GGUF declares a tensor-split set with more than
     /// one part. The catalog exposes only the first part as the selectable
@@ -168,6 +173,10 @@ pub struct ShardSet {
     /// lê. Vazio numa fatia sem manifesto.
     #[serde(default)]
     pub model_label: String,
+    /// Projector adjacent to a shard or to the whole model that originated it.
+    /// The path is local to this peer and is only used by the pipeline head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mmproj_path: Option<String>,
     /// O hash do modelo original. Identificação, não nome.
     #[serde(default)]
     pub pom_id: String,
@@ -549,6 +558,7 @@ fn describe(
         source,
         source_label: source.label(),
         path: path.to_string_lossy().into_owned(),
+        mmproj_path: find_mmproj_sibling(path),
         size_bytes,
         multipart: false,
         multipart_parts: Vec::new(),
@@ -574,6 +584,53 @@ fn describe(
         tp_size: part.and_then(|c| c.tp_size),
         capabilities: None,
     })
+}
+
+/// Match llama.cpp's local projector discovery: a `.gguf` sibling in the same
+/// directory whose filename contains `mmproj`, choosing the closest
+/// quantisation when more than one candidate exists.
+pub(crate) fn find_mmproj_sibling(model: &Path) -> Option<String> {
+    let parent = model.parent()?;
+    let model_name = model.file_name()?.to_string_lossy();
+    let model_bits = parse_quant_bits(&model_name);
+    let mut candidates = std::fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            if path == model
+                || !path.is_file()
+                || !name.to_ascii_lowercase().contains("mmproj")
+                || !name.to_ascii_lowercase().ends_with(".gguf")
+            {
+                return None;
+            }
+            let distance = match (model_bits, parse_quant_bits(&name)) {
+                (Some(model_bits), Some(projector_bits)) => model_bits.abs_diff(projector_bits),
+                _ => u32::MAX,
+            };
+            Some((distance, name, path))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    candidates
+        .first()
+        .map(|(_, _, path)| path.to_string_lossy().into_owned())
+}
+
+fn parse_quant_bits(filename: &str) -> Option<u32> {
+    let quant = parse_quant(filename)?;
+    let digits = quant
+        .strip_prefix("IQ")
+        .or_else(|| quant.strip_prefix('Q'))
+        .or_else(|| quant.strip_prefix('F'))?;
+    digits
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()
 }
 
 fn file_mtime_fingerprint(meta: &std::fs::Metadata) -> u64 {
@@ -775,6 +832,9 @@ pub fn default_model_dirs() -> Vec<PathBuf> {
             out.push(p);
         }
     };
+    if let Some(home) = home_dir() {
+        push(home.join(".pom").join("models"));
+    }
     for home in lmstudio_homes() {
         push(lmstudio_models_dir(&home));
     }
@@ -1200,17 +1260,58 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
                 pipeline_complete
             };
 
+            let model_label = shards
+                .iter()
+                .chain(tp_parts.iter())
+                .find_map(|s| s.model_label.clone())
+                .unwrap_or_else(|| group.clone());
+            let pom_id = shards
+                .iter()
+                .chain(tp_parts.iter())
+                .find_map(|s| s.pom_id.clone())
+                .unwrap_or_default();
+            let origin_name = pom_id
+                .is_empty()
+                .then(|| group.clone())
+                .or_else(|| {
+                    let suffix = format!("-{}", crate::pom::short_id(&pom_id));
+                    group.strip_suffix(&suffix).map(str::to_string)
+                })
+                .unwrap_or_else(|| group.clone());
+            let origin_quant = shards
+                .iter()
+                .chain(tp_parts.iter())
+                .find_map(|s| s.quant.as_deref());
+            let mmproj_path = shards
+                .iter()
+                .chain(tp_parts.iter())
+                .find_map(|s| s.mmproj_path.clone())
+                .or_else(|| {
+                    models
+                        .iter()
+                        .filter(|model| !model.is_shard())
+                        .find(|model| {
+                            let stem = model
+                                .name
+                                .strip_suffix(".gguf")
+                                .or_else(|| model.name.strip_suffix(".GGUF"))
+                                .unwrap_or(&model.name);
+                            let exact = [model.name.as_str(), stem].into_iter().any(|name| {
+                                name == model_label || name == group || name == origin_name
+                            });
+                            let quantized = origin_quant.is_some_and(|quant| {
+                                stem == format!("{origin_name}-{quant}")
+                                    || stem == format!("{origin_name}_{quant}")
+                            });
+                            exact || quantized
+                        })
+                        .and_then(|model| model.mmproj_path.clone())
+                });
+
             ShardSet {
-                model_label: shards
-                    .iter()
-                    .chain(tp_parts.iter())
-                    .find_map(|s| s.model_label.clone())
-                    .unwrap_or_else(|| group.clone()),
-                pom_id: shards
-                    .iter()
-                    .chain(tp_parts.iter())
-                    .find_map(|s| s.pom_id.clone())
-                    .unwrap_or_default(),
+                model_label,
+                mmproj_path,
+                pom_id,
                 group,
                 total_layers,
                 total_layers_inferred: declared.is_none(),
@@ -1317,6 +1418,53 @@ mod tests {
     }
 
     #[test]
+    fn catalog_records_the_llama_mmproj_sibling_without_listing_it() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-catalog-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let model = models.join("gemma-3-4b-it-Q4_K_M.gguf");
+        let projector = models.join("mmproj-gemma-3-4b-it-f16.gguf");
+        std::fs::write(&model, crate::splitter::test_gguf_bytes(8)).unwrap();
+        std::fs::write(&projector, vec![0u8; 4096]).unwrap();
+
+        let catalog = discover_fast(std::slice::from_ref(&models), &shards);
+        assert_eq!(catalog.models.len(), 1);
+        assert_eq!(catalog.models[0].mmproj_path.as_deref(), projector.to_str());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_does_not_pair_a_projector_from_another_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-scope-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let other = root.join("other");
+        let shards = root.join("shards");
+        for directory in [&models, &other, &shards] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(
+            models.join("model-Q4_K_M.gguf"),
+            crate::splitter::test_gguf_bytes(4),
+        )
+        .unwrap();
+        std::fs::write(other.join("mmproj-model-f16.gguf"), vec![0u8; 4096]).unwrap();
+
+        let catalog = discover_fast(std::slice::from_ref(&models), &shards);
+        assert_eq!(catalog.models[0].mmproj_path, None);
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn shard_set_completeness() {
         let mk = |start: u32, end: u32, total: u32| DiscoveredModel {
             id: format!("s{start}"),
@@ -1324,6 +1472,7 @@ mod tests {
             source: ModelSource::Local,
             source_label: "Local",
             path: format!("/tmp/s_{start}_{end}.gguf"),
+            mmproj_path: None,
             size_bytes: 4096,
             architecture: None,
             is_moe: false,
@@ -1353,6 +1502,108 @@ mod tests {
     }
 
     #[test]
+    fn shard_set_inherits_projector_from_original_model() {
+        let source = DiscoveredModel {
+            id: "source".into(),
+            name: "vision-model.gguf".into(),
+            source: ModelSource::Local,
+            source_label: "Local".into(),
+            path: "/models/vision-model.gguf".into(),
+            mmproj_path: Some("/models/mmproj-vision-model.gguf".into()),
+            size_bytes: 4096,
+            architecture: None,
+            is_moe: false,
+            total_layers: Some(32),
+            quant: None,
+            shard_range: None,
+            shard_group: None,
+            sha256: None,
+            model_label: None,
+            pom_id: None,
+            tensor_parallel: false,
+            tp_rank: None,
+            tp_size: None,
+            capabilities: None,
+            multipart: false,
+            multipart_parts: Vec::new(),
+            multipart_error: None,
+            metadata_error: None,
+            metadata_identity: None,
+        };
+        let mut slice = source.clone();
+        slice.id = "slice".into();
+        slice.name = "vision-0-15.gguf".into();
+        slice.path = "/shards/vision-0-15.gguf".into();
+        slice.mmproj_path = None;
+        slice.shard_range = Some((0, 15));
+        slice.shard_group = Some("vision-slices".into());
+        slice.model_label = Some("vision-model".into());
+        let mut second = slice.clone();
+        second.id = "slice-2".into();
+        second.name = "vision-16-31.gguf".into();
+        second.path = "/shards/vision-16-31.gguf".into();
+        second.shard_range = Some((16, 31));
+
+        let sets = build_shard_sets(&[source, slice, second]);
+        assert_eq!(sets.len(), 1);
+        assert_eq!(
+            sets[0].mmproj_path.as_deref(),
+            Some("/models/mmproj-vision-model.gguf")
+        );
+    }
+
+    #[test]
+    fn shard_set_finds_projector_for_a_quantized_original_model() {
+        let source = DiscoveredModel {
+            id: "source".into(),
+            name: "vision-model-Q4_K_M.gguf".into(),
+            source: ModelSource::Local,
+            source_label: "Local",
+            path: "/models/vision-model-Q4_K_M.gguf".into(),
+            mmproj_path: Some("/models/mmproj-vision-model-f16.gguf".into()),
+            size_bytes: 4096,
+            architecture: None,
+            is_moe: false,
+            total_layers: Some(32),
+            quant: Some("Q4_K_M".into()),
+            shard_range: None,
+            shard_group: None,
+            sha256: None,
+            model_label: None,
+            pom_id: None,
+            tensor_parallel: false,
+            tp_rank: None,
+            tp_size: None,
+            capabilities: None,
+            multipart: false,
+            multipart_parts: Vec::new(),
+            multipart_error: None,
+            metadata_error: None,
+            metadata_identity: None,
+        };
+        let mut slice = source.clone();
+        slice.id = "slice".into();
+        slice.name = "vision-part-0.gguf".into();
+        slice.path = "/shards/vision-part-0.gguf".into();
+        slice.mmproj_path = None;
+        slice.shard_range = Some((0, 15));
+        slice.shard_group = Some("vision-model-aaaaaaaa".into());
+        slice.model_label = Some("vision-model".into());
+        slice.pom_id = Some("a".repeat(64));
+        let mut second = slice.clone();
+        second.id = "slice-2".into();
+        second.name = "vision-part-1.gguf".into();
+        second.path = "/shards/vision-part-1.gguf".into();
+        second.shard_range = Some((16, 31));
+
+        let sets = build_shard_sets(&[source, slice, second]);
+        assert_eq!(
+            sets[0].mmproj_path.as_deref(),
+            Some("/models/mmproj-vision-model-f16.gguf")
+        );
+    }
+
+    #[test]
     fn shard_set_separates_pipeline_parts_from_tensor_parallel_parts() {
         let mk = |id: &str, start: u32, end: u32, tensor_parallel: bool| {
             let mut model = DiscoveredModel {
@@ -1379,6 +1630,7 @@ mod tests {
                 multipart_parts: Vec::new(),
                 multipart_error: None,
                 metadata_error: None,
+                mmproj_path: None,
                 metadata_identity: None,
             };
             if tensor_parallel {
@@ -1488,6 +1740,7 @@ mod tests {
             source: ModelSource::Local,
             source_label: "Local",
             path: format!("/tmp/qwen_{start}_{end}.gguf"),
+            mmproj_path: None,
             size_bytes: 4096,
             architecture: None,
             is_moe: false,

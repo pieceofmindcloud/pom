@@ -257,6 +257,27 @@ impl<'a> Q4_0Expert<'a> {
     }
 }
 
+pub fn section_lengths(hidden: usize, intermediate: usize) -> Result<(usize, usize), Q4Error> {
+    let gate_up = (2 * intermediate)
+        .checked_mul(row_bytes(hidden)?)
+        .ok_or(Q4Error::Geometry("overflow em gate_up"))?;
+    let down = hidden
+        .checked_mul(row_bytes(intermediate)?)
+        .ok_or(Q4Error::Geometry("overflow em down"))?;
+    Ok((gate_up, down))
+}
+
+/// Valida o payload e retorna os tamanhos das duas matrizes que a ponte CUDA
+/// recebe sem o cabeçalho interno.
+pub fn payload_section_lengths(
+    hidden: usize,
+    intermediate: usize,
+    payload: &[u8],
+) -> Result<(usize, usize), Q4Error> {
+    let expert = Q4_0Expert::from_payload(hidden, intermediate, payload)?;
+    Ok((expert.gate_up.len(), expert.down.len()))
+}
+
 /// Internal payload format used by the cache provider. It keeps the two bank
 /// lengths explicit so a corrupt or mismatched expert cannot be interpreted as
 /// a different geometry.

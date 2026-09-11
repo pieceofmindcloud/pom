@@ -331,6 +331,7 @@ export function DeployModel() {
   const [cacheTypeV, setCacheTypeV] = useState<KvCacheType>("f16");
   const [cacheTypesLoaded, setCacheTypesLoaded] = useState(false);
   const [savingCacheTypes, setSavingCacheTypes] = useState(false);
+  const [useVision, setUseVision] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const toast = useToast();
   const invalidate = useInvalidate();
@@ -345,14 +346,18 @@ export function DeployModel() {
   }, [cacheTypes.data, cacheTypesLoaded]);
   /** Every slicing round anyone in the cluster holds, named once. */
   const groups = useMemo(() => {
-    const seen = new Map<string, { key: string; label: string; pomId: string }>();
+    const seen = new Map<string, { key: string; label: string; pomId: string; mmprojPath: string | null }>();
     for (const peer of cluster.data?.peers ?? []) {
       for (const set of peer.shard_sets ?? []) {
-        if (!seen.has(set.group)) {
+        const existing = seen.get(set.group);
+        if (existing) {
+          if (!existing.mmprojPath && set.mmproj_path) existing.mmprojPath = set.mmproj_path;
+        } else {
           seen.set(set.group, {
             key: set.group,
             label: set.model_label || set.group,
             pomId: set.pom_id ?? "",
+            mmprojPath: set.mmproj_path ?? null,
           });
         }
       }
@@ -497,6 +502,16 @@ export function DeployModel() {
   });
 
   const p = plan.data;
+  // The plan is authoritative once answered; the catalog is useful while the
+  // first plan is loading so the vision control does not flicker into view.
+  const slicedMmprojPath = groups.find((entry) => entry.key === chosen)?.mmprojPath ?? null;
+  const mmprojPath = p?.mmproj_path !== undefined
+    ? p.mmproj_path
+    : wholeModel?.mmproj_path ?? slicedMmprojPath;
+  const visionAvailable = Boolean(mmprojPath);
+  useEffect(() => {
+    if (!visionAvailable) setUseVision(false);
+  }, [visionAvailable]);
   useEffect(() => {
     if (p?.auto && p.group === chosen && kindOf(p) === kind) {
       autoTopologyKey.current = topologyKey(rowsOf(p));
@@ -894,6 +909,7 @@ export function DeployModel() {
         ...(params ? { params } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
+        vision: useVision,
       });
       setJobId(started.job_id);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
@@ -1307,6 +1323,12 @@ export function DeployModel() {
                   : (inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido.")
               }
               showHiddenStateDtype={crossesPeerBoundary}
+              vision={isWhole && !visionAvailable ? undefined : {
+                available: visionAvailable,
+                enabled: useVision,
+                path: mmprojPath,
+                onChange: setUseVision,
+              }}
             />
             {isMoePlan && !inferenceModeSupported && (
               <p role="alert" className="border-b border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">

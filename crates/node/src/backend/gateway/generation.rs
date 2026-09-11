@@ -1,4 +1,307 @@
 use super::*;
+use futures::FutureExt;
+
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn record_gateway_span(
+    spans: &mut Vec<crate::prefill::TraceSpan>,
+    request_started: Instant,
+    span_started: Instant,
+    started_at_ms: u64,
+    name: &'static str,
+) {
+    if !crate::telemetry::Profile::current().collects_spans() {
+        return;
+    }
+    spans.push(crate::prefill::TraceSpan::new(
+        name,
+        "gateway",
+        None,
+        started_at_ms,
+        span_started
+            .saturating_duration_since(request_started)
+            .as_millis() as u64,
+        span_started.elapsed().as_millis() as u64,
+        None,
+    ));
+}
+
+/// Regista o desfecho de uma requisição que termina antes de planear a
+/// pipeline.
+///
+/// Todo pedido aceite tem de deixar exatamente uma linha de desfecho. Sem
+/// isto, as saídas antecipadas desta função eram mudas: o registo mostrava o
+/// pedido a chegar, mostrava o ajuste do limite de saída, e depois nada - nem
+/// `Pipeline planejado`, nem erro. Do lado do cliente isso é um pedido
+/// pendurado, e foi o que pôs o agente em recuo exponencial a repetir o mesmo
+/// pedido em produção a 2026-09-08.
+fn log_early_outcome(outcome: &str, reason: &str) {
+    warn!("⛔ requisição encerrada antes do plano ({outcome}): {reason}");
+}
+
+/// Wakes every idle step selected for this request at once. This is a control
+/// event on the gateway port, not an inference hop, so all peers begin their
+/// local load concurrently before the first prefill is sent. The event is
+/// idempotent if another request has already woken the same peer.
+const IDLE_RELOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+async fn reload_idle_pipeline(
+    state: &GatewayState,
+    plan: &PipelinePlan,
+    peers: &[crate::network::PeerInfo],
+) -> anyhow::Result<()> {
+    reload_idle_pipeline_with_timeout(state, plan, peers, IDLE_RELOAD_TIMEOUT).await
+}
+
+async fn reload_idle_pipeline_with_timeout(
+    state: &GatewayState,
+    plan: &PipelinePlan,
+    peers: &[crate::network::PeerInfo],
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    if !plan.steps.iter().any(|step| {
+        peers
+            .iter()
+            .any(|peer| peer.node_id == step.node_id && peer.idle)
+    }) {
+        return Ok(());
+    }
+    let requests = plan
+        .steps
+        .iter()
+        .filter_map(|step| {
+            let peer = peers.iter().find(|peer| peer.node_id == step.node_id)?;
+            if !peer.idle {
+                return None;
+            }
+            let node_id = peer.node_id.clone();
+            if node_id == state.network.node_id {
+                let runtime = state.runtime.clone();
+                return Some(Ok(async move {
+                    runtime
+                        .reload_from_idle()
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| {
+                            anyhow::anyhow!("reload_model falhou para {node_id}: {error}")
+                        })
+                }
+                .boxed()));
+            }
+            let client = match state.peer_http.for_peer(&node_id) {
+                Ok(client) => client,
+                Err(error) => return Some(Err(error)),
+            };
+            let urls = peer.gateway_candidates();
+            if urls.is_empty() {
+                return Some(Ok(async move {
+                    Err(anyhow::anyhow!("peer {node_id} sem endpoint de gateway"))
+                }
+                .boxed()));
+            }
+            Some(Ok(async move {
+                let mut last_error = None;
+                for base in urls {
+                    let request = state
+                        .control_json_request(
+                            client.post(format!("{base}/api/internal/reload_model")),
+                            "/api/internal/reload_model",
+                            &serde_json::json!({ "event": "reload_model" }),
+                        )
+                        .await;
+                    let response = match request {
+                        Ok(request) => request.send().await,
+                        Err(error) => {
+                            last_error = Some(error.to_string());
+                            continue;
+                        }
+                    };
+                    match response {
+                        Ok(response) if response.status().is_success() => return Ok(()),
+                        Ok(response) => {
+                            last_error = Some(format!("HTTP {}", response.status()));
+                        }
+                        Err(error) => last_error = Some(error.to_string()),
+                    }
+                }
+                Err(anyhow::anyhow!(
+                    "reload_model falhou para {node_id}: {}",
+                    last_error.unwrap_or_else(|| "nenhum endereço respondeu".into())
+                ))
+            }
+            .boxed()))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let results = tokio::time::timeout(timeout, futures::future::try_join_all(requests))
+        .await
+        .map_err(|_| anyhow::anyhow!("reload_model da pipeline excedeu {timeout:?}"))?;
+    results?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+    use crate::pipeline::PipelineStep;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone)]
+    struct ReloadBarrier {
+        started: Arc<AtomicUsize>,
+        all_started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        expected: usize,
+    }
+
+    async fn gated_reload(State(barrier): State<ReloadBarrier>, _body: Bytes) -> StatusCode {
+        let release = barrier.release.notified();
+        if barrier.started.fetch_add(1, Ordering::SeqCst) + 1 == barrier.expected {
+            barrier.all_started.notify_one();
+        }
+        release.await;
+        StatusCode::OK
+    }
+
+    async fn hanging_reload(State(_): State<()>, _body: Bytes) -> StatusCode {
+        std::future::pending::<()>().await;
+        StatusCode::OK
+    }
+
+    async fn spawn_gated_server(state: ReloadBarrier) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("porta de teste");
+        let port = listener.local_addr().expect("endereço de teste").port();
+        let router = Router::new()
+            .route("/api/internal/reload_model", post(gated_reload))
+            .with_state(state);
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        (port, task)
+    }
+
+    async fn spawn_hanging_server() -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("porta de teste");
+        let port = listener.local_addr().expect("endereço de teste").port();
+        let router = Router::new()
+            .route("/api/internal/reload_model", post(hanging_reload))
+            .with_state(());
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        (port, task)
+    }
+
+    fn plan_for(node_ids: &[&str]) -> PipelinePlan {
+        PipelinePlan {
+            steps: node_ids
+                .iter()
+                .map(|node_id| PipelineStep {
+                    node_id: (*node_id).into(),
+                    inference_url: String::new(),
+                    inference_candidates: Vec::new(),
+                    quic_addr_candidates: Vec::new(),
+                    start_layer: 0,
+                    end_layer: 0,
+                    exec_start: 0,
+                    exec_end: 0,
+                    inference_frame_capabilities: Vec::new(),
+                    libp2p_peer_id: None,
+                    libp2p_addr_candidates: Vec::new(),
+                })
+                .collect(),
+            edges: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn reloads_all_planned_idle_peers_concurrently() {
+        let barrier = ReloadBarrier {
+            started: Arc::new(AtomicUsize::new(0)),
+            all_started: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            expected: 2,
+        };
+        let (first_port, first_task) = spawn_gated_server(barrier.clone()).await;
+        let (second_port, second_task) = spawn_gated_server(barrier.clone()).await;
+
+        let mut first = crate::gateway::testkit::peer("idle-first", "first", first_port);
+        first.idle = true;
+        let mut second = crate::gateway::testkit::peer("idle-second", "second", second_port);
+        second.idle = true;
+        let planned_peers = vec![first.clone(), second.clone()];
+        let state = crate::gateway::testkit::state_with("gateway", vec![first, second]).await;
+        let plan = plan_for(&["idle-first", "idle-second"]);
+        let waiting_for_both = barrier.all_started.notified();
+        let reload = tokio::spawn(async move {
+            reload_idle_pipeline_with_timeout(&state, &plan, &planned_peers, Duration::from_secs(2))
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), waiting_for_both)
+            .await
+            .expect("os dois peers planejados devem receber o evento em paralelo");
+        barrier.release.notify_waiters();
+        tokio::time::timeout(Duration::from_secs(1), reload)
+            .await
+            .expect("reload paralelo não pode ficar bloqueado")
+            .expect("task de reload")
+            .expect("ambos os peers devem confirmar o reload");
+
+        first_task.abort();
+        second_task.abort();
+    }
+
+    #[tokio::test]
+    async fn reload_timeout_returns_instead_of_hanging_the_request() {
+        let (port, server_task) = spawn_hanging_server().await;
+        let mut peer = crate::gateway::testkit::peer("idle-hung", "hung", port);
+        peer.idle = true;
+        let state = crate::gateway::testkit::state_with("gateway", vec![peer.clone()]).await;
+        let plan = plan_for(&["idle-hung"]);
+
+        let error =
+            reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_millis(50))
+                .await
+                .expect_err("um peer preso deve devolver erro com timeout");
+        assert!(error.to_string().contains("excedeu"));
+        server_task.abort();
+    }
+}
+
+#[cfg(test)]
+mod generation_pump_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn desconexao_do_cliente_cancela_a_geracao_mesmo_sem_evento() {
+        let (client_tx, client_rx) = mpsc::channel(1);
+        let (_inner_tx, inner_rx) = mpsc::channel(1);
+        let cancellation = crate::prefill::Cancellation::new();
+        let pump = tokio::spawn(forward_generation_events(
+            client_tx,
+            inner_rx,
+            cancellation.clone(),
+        ));
+
+        drop(client_rx);
+        let result = tokio::time::timeout(Duration::from_secs(1), pump)
+            .await
+            .expect("a bomba deve observar a desconexão")
+            .expect("a bomba não deve entrar em panic");
+
+        assert!(result.is_none());
+        assert!(cancellation.is_cancelled());
+    }
+}
 
 pub(super) async fn generate_stream_inner(
     input: GenerationInput,
@@ -6,35 +309,79 @@ pub(super) async fn generate_stream_inner(
     cancellation: crate::prefill::Cancellation,
 ) {
     let request_started = Instant::now();
+    let mut gateway_spans = Vec::new();
     let GenerationInput {
+        trace_id,
         state,
         inference_token: _inference_token,
         model,
         prompt,
+        images,
         chat_template,
         budget,
         stops,
         cache_key,
+        preferred_head,
         request_details: _,
     } = input;
     let budget = budget.normalized();
     if cancellation.is_cancelled() {
+        log_early_outcome("cancelado", "o cliente desistiu antes do início");
         return;
     }
     // Size the prompt up before any peer sees it — see `prompt_token_budget`.
+    let validation_started = Instant::now();
+    let validation_wall = wall_clock_ms();
     if let Some(cfg) = state.runtime.config().await {
         if let Some(error) = prompt_budget_error(&cfg, &prompt) {
+            log_early_outcome("recusado", &error);
             let _ = tx.send(GenEvent::Failed(error)).await;
             return;
         }
+    } else {
+        // Um gateway sem modelo local não tinha admissão nenhuma: o prompt
+        // atravessava inteiro, chegava ao decode do peer e derrubava o
+        // processo com `CUDA error: out of memory` (ksia, 2026-09-08). A
+        // capacidade anunciada pelo peer que serve este modelo é a mesma que
+        // `/v1/models` publica, e vale como teto aqui. Fica antes de qualquer
+        // sondagem de saúde de propósito: um pedido já inadmissível não
+        // justifica uma volta na rede, muito menos um prefill.
+        let (capacity, capacity_pending) = state.runtime_capacity_for_model(Some(&model)).await;
+        // Capacidade pendente é ausência de informação, não permissão: quem
+        // decide nesse caso continua sendo o peer.
+        if let Some(capacity) = capacity.filter(|_| !capacity_pending) {
+            if let Some(error) =
+                prompt_budget_error_of(capacity.n_ctx, capacity.max_new_tokens, &prompt)
+            {
+                let _ = tx.send(GenEvent::Failed(error)).await;
+                return;
+            }
+        }
     }
+    record_gateway_span(
+        &mut gateway_spans,
+        request_started,
+        validation_started,
+        validation_wall,
+        "validation",
+    );
 
+    let orchestration_started = Instant::now();
+    let orchestration_wall = wall_clock_ms();
     let peers = ready_for_pipeline(
         &state.peer_http,
+        &state.admission_health,
         state.all_peers().await,
-        PIPELINE_HEALTH_TIMEOUT,
+        ADMISSION_PROBE_TIMEOUT,
     )
     .await;
+    record_gateway_span(
+        &mut gateway_spans,
+        request_started,
+        orchestration_started,
+        orchestration_wall,
+        "orchestration",
+    );
 
     // `qwen3:8b@d-4f2a91c3` escolhe **qual** implantação atende; o nome pelado
     // deixa a escolha para quem monta o pipeline. Ver `deployment::split_selector`.
@@ -57,29 +404,63 @@ pub(super) async fn generate_stream_inner(
         .into_iter()
         .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
         .collect::<std::collections::HashMap<_, _>>();
-    let Some(mut plan) = plan_pipeline_with_rtt(
+    let selection_started = Instant::now();
+    let selection_wall = wall_clock_ms();
+    let Some(mut plan) = crate::pipeline::plan_pipeline_with_rtt_from_head(
         &peers,
         model,
         deploy_id,
         total_layers,
         &state.loads,
         &route_rtt,
+        preferred_head.as_deref(),
     )
     .await
     else {
-        let _ = tx
-            .send(GenEvent::Failed(format!(
-                "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
-            )))
-            .await;
+        let error = format!(
+            "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
+        );
+        log_early_outcome("recusado", &error);
+        let _ = tx.send(GenEvent::Failed(error)).await;
         return;
     };
+    if let Err(error) = reload_idle_pipeline(&state, &plan, &peers).await {
+        log_early_outcome("reload_model", &error.to_string());
+        let _ = tx.send(GenEvent::Failed(error.to_string())).await;
+        return;
+    }
+    record_gateway_span(
+        &mut gateway_spans,
+        request_started,
+        selection_started,
+        selection_wall,
+        "pipeline_selection",
+    );
+
+    // The gateway may be a middle or tail peer. Vision is an admission fact
+    // of the selected head, so only reject here when this process owns that
+    // head; a remote head performs the same check in its inference runtime.
+    if !images.is_empty()
+        && plan
+            .steps
+            .first()
+            .is_some_and(|step| step.node_id == state.network.node_id)
+    {
+        let mmproj_path = state.runtime.config().await.and_then(|cfg| cfg.mmproj_path);
+        if let Some(error) = crate::openai::image_vision_error(&images, mmproj_path.as_deref()) {
+            log_early_outcome("recusado", error);
+            let _ = tx.send(GenEvent::Failed(error.to_string())).await;
+            return;
+        }
+    }
 
     // A rota e escolhida por quem vai discar, nao por quem planejou: o plano
     // pode ter vindo de uma maquina noutra rede, e so este no mediu os
     // candidatos. Resolver aqui, uma vez, fixa o endereco de cada hop para a
     // sessao inteira - o cache KV do outro lado e por sessao, e trocar de
     // endereco na metade e pior que a rota lenta.
+    let route_started = Instant::now();
+    let route_wall = wall_clock_ms();
     {
         let mut fixadas = std::collections::HashMap::new();
         for step in plan.steps.iter_mut() {
@@ -87,6 +468,13 @@ pub(super) async fn generate_stream_inner(
                 crate::pipeline::resolve_step_url(step, &state.network.routes, &mut fixadas);
         }
     }
+    record_gateway_span(
+        &mut gateway_spans,
+        request_started,
+        route_started,
+        route_wall,
+        "route_resolution",
+    );
     let prefix_key = crate::prefix_cache::PrefixRouteKey::new(
         format!(
             "{}|deployment={}|chat_template={chat_template}",
@@ -103,6 +491,8 @@ pub(super) async fn generate_stream_inner(
     // A hit reuses the peer session that stayed parked at the end of the prior
     // prompt. A miss gets a fresh id and is published only after this turn has
     // completed its prefill, so an incomplete session cannot enter the cache.
+    let session_started = Instant::now();
+    let session_wall = wall_clock_ms();
     let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
     let mut prefix_lease = state.prefix_cache.acquire(
         prefix_key.clone(),
@@ -110,13 +500,13 @@ pub(super) async fn generate_stream_inner(
         Uuid::new_v4().to_string(),
     );
     let mut session_id = prefix_lease.session_id().to_string();
-    let mut reuse_prefix = prefix_lease.is_hit();
+    let mut reuse_prefix = prefix_lease.is_hit() && images.is_empty();
     // Camada de disco (Phase 3): um miss em memória que casa um snapshot
     // automático em disco - típico depois de um reinício - restaura o KV em
     // todos os hops em vez de refazer o prefill a frio. Ver
     // `crate::prefix_cache::PrefixDiskIndex`.
     let mut disk_restore_hash: Option<String> = None;
-    if !reuse_prefix {
+    if !reuse_prefix && images.is_empty() {
         if let Some(disk) = state.prefix_disk.clone() {
             if let Some(entry) =
                 disk.longest_prefix_match(&prefix_key.model, &prefix_key.hops, &cache_prompt)
@@ -155,6 +545,13 @@ pub(super) async fn generate_stream_inner(
             }
         }
     }
+    record_gateway_span(
+        &mut gateway_spans,
+        request_started,
+        session_started,
+        session_wall,
+        "session_acquire",
+    );
 
     // A sessão não pode trocar de réplica depois que o primeiro prefill criou
     // o KV. O plano é fixado uma vez e esta afinidade é a referência explícita
@@ -177,7 +574,8 @@ pub(super) async fn generate_stream_inner(
             state.gateway_port,
         ),
         state.network.node_id.clone(),
-    );
+    )
+    .map(|reply| reply.with_quic_addresses(state.network.gateway_quic_addr_candidates()));
 
     info!(
         "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} (perna {}) resposta={}",
@@ -216,7 +614,7 @@ pub(super) async fn generate_stream_inner(
         lookup_enabled,
         lookup_k,
         speculative_m,
-        mtp_enabled,
+        mtp_configured,
         mtp_k,
     ) = {
         let cfg = state.runtime.config().await;
@@ -240,7 +638,7 @@ pub(super) async fn generate_stream_inner(
             cfg.as_ref()
                 .map(|c| c.speculative_lookup_window)
                 .unwrap_or(3),
-            cfg.as_ref().is_some_and(|c| c.mtp_enabled),
+            cfg.as_ref().map(|c| c.mtp_enabled),
             // O parâmetro é "quantos tokens rascunhar"; a largura do lote é
             // isso mais o token já confirmado.
             speculative_k_of(
@@ -250,12 +648,24 @@ pub(super) async fn generate_stream_inner(
         )
     };
 
+    let plan_supports_mtp = plan.supports_mtp();
+    let mtp_enabled = mtp_enabled_for_plan(mtp_configured, plan_supports_mtp);
+    info!(
+        gateway_runtime_config_present = mtp_configured.is_some(),
+        gateway_mtp_enabled = ?mtp_configured,
+        plan_supports_mtp,
+        mtp_enabled,
+        mtp_k,
+        pipeline_hops = plan.steps.len(),
+        "decisão de especulação MTP do pipeline"
+    );
+
     // Qual das duas especulações roda nesta requisição. O MTP vem primeiro
     // quando os dois estão ligados: ele usa uma cabeça treinada do próprio
     // modelo, enquanto o lookup só acerta em saída repetitiva. Nunca os dois
     // na mesma rodada - o lote é um só, e misturar as fontes tornaria a taxa
     // de aceitação impossível de atribuir.
-    let (speculative_enabled, speculative_k, draft_source) = if mtp_enabled && plan.supports_mtp() {
+    let (speculative_enabled, speculative_k, draft_source) = if mtp_enabled {
         (true, mtp_k, crate::prefill::DraftSource::Mtp)
     } else {
         (
@@ -288,26 +698,12 @@ pub(super) async fn generate_stream_inner(
     // acabado de escrever. Aqui os eventos de token seguem na hora, ao vivo, e
     // só o terminal (`Done`/`Failed`) espera a arrumação.
     let client_tx = tx;
-    let (tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
-    let pump = {
-        let client_tx = client_tx.clone();
-        tokio::spawn(async move {
-            let mut terminal = None;
-            while let Some(event) = inner_rx.recv().await {
-                match event {
-                    event @ (GenEvent::Done(_) | GenEvent::Failed(_)) => terminal = Some(event),
-                    event => {
-                        if client_tx.send(event).await.is_err() {
-                            // Cliente foi embora. Fechar o lado de cá é o que
-                            // faz o laço de geração perceber e cancelar.
-                            break;
-                        }
-                    }
-                }
-            }
-            terminal
-        })
-    };
+    let (tx, inner_rx) = mpsc::channel::<GenEvent>(64);
+    let pump = tokio::spawn(forward_generation_events(
+        client_tx.clone(),
+        inner_rx,
+        cancellation.clone(),
+    ));
 
     // Whatever ends this generation — EOS, the token limit, the client hanging
     // up, or a peer erroring — every peer has to get its KV slot back. Only the
@@ -327,6 +723,7 @@ pub(super) async fn generate_stream_inner(
                 model,
                 &session_id,
                 &prompt,
+                &images,
                 chat_template,
                 chunk_tokens,
                 dtype,
@@ -338,6 +735,7 @@ pub(super) async fn generate_stream_inner(
                 reuse,
                 max_inflight_chunks,
                 resume,
+                trace_id.as_deref(),
             )
         };
         let mut prefill_result = prefill_attempt(reuse_prefix, None).await;
@@ -350,6 +748,12 @@ pub(super) async fn generate_stream_inner(
                      não é recuperável repetindo o mesmo chunk"
                 );
             } else if !crate::prefill::is_cancelled(e) {
+                // Falha de repasse head->tail causada pelo transporte (caminho
+                // morto, timeout, ou 401/403 de credencial): um gap transitório
+                // na propagação da política de rede some sozinho, então vale um
+                // único prefill frio antes de desistir - `run_direct` trata
+                // qualquer erro no chunk 0 como terminal e não retenta.
+                let original_transport_relay = crate::relay::is_transport_relay_failure(e);
                 // Um erro depois de um chunk aceito não revela se o peer
                 // avançou o KV antes de a resposta se perder. Não se pode
                 // tentar uma remoção parcial: modelos recorrentes recusam-na
@@ -363,17 +767,20 @@ pub(super) async fn generate_stream_inner(
                     prefill_result = prefill_attempt(false, None).await;
                 }
                 // Uma segunda recuperação fria só é necessária para prefixo
-                // reutilizado ou sessão desconhecida. Uma falha durante a
-                // reconstrução já tem a sessão em estado incerto e deve cair
-                // direto no cleanup, sem uma nova tentativa parcial.
+                // reutilizado, sessão desconhecida ou falha transitória de
+                // transporte. Uma falha durante a reconstrução já tem a sessão
+                // em estado incerto e deve cair direto no cleanup, sem uma nova
+                // tentativa parcial.
                 if let Err(e2) = &prefill_result {
                     let unknown_session =
                         original_unknown_session || crate::relay::is_unknown_session_error(e2);
-                    if reuse_prefix || unknown_session {
+                    let transport_relay =
+                        original_transport_relay || crate::relay::is_transport_relay_failure(e2);
+                    if reuse_prefix || unknown_session || transport_relay {
                         unknown_session_recovery_attempted = unknown_session;
                         warn!(
-                            "prefill falhou com estado de sessão incompatível ({e2}); \
-                             reconstruindo o prefill inteiro a frio uma vez"
+                            "prefill falhou com estado de sessão incompatível ou transporte \
+                             transitório ({e2}); reconstruindo o prefill inteiro a frio uma vez"
                         );
                         prefill_result = prefill_attempt(false, None).await;
                     }
@@ -423,6 +830,32 @@ pub(super) async fn generate_stream_inner(
         let first_token_at = Instant::now();
         let mut next_token = first.token_id;
         let mut trace = first.trace;
+        trace.first_token.gateway_stream_at_ms = Some(wall_clock_ms());
+        if crate::telemetry::Profile::current().collects_spans() {
+            if let Some(return_ms) = trace.first_token.node_to_gateway_ms {
+                let end_offset_ms = request_started.elapsed().as_millis() as u64;
+                gateway_spans.push(crate::prefill::TraceSpan::new(
+                    "first_token_return",
+                    "gateway",
+                    None,
+                    wall_clock_ms().saturating_sub(return_ms),
+                    end_offset_ms.saturating_sub(return_ms),
+                    return_ms,
+                    None,
+                ));
+            }
+        }
+        trace.set_accounted_spans(gateway_spans.clone());
+        trace.request_state = match trace.prefix_reuse_status.as_deref() {
+            Some("full" | "disk") => crate::prefill::RequestState::Warm,
+            Some(_) => crate::prefill::RequestState::Cold,
+            None => crate::prefill::RequestState::Unknown,
+        };
+        trace.server_ttft_ms = Some(
+            first_token_at
+                .saturating_duration_since(request_started)
+                .as_millis() as u64,
+        );
         tokens_generated += 1;
         note_leg_boundary(budget, tokens_generated, &mut legs);
         match send_text_with_stop(&tx, &mut stop_matcher, &first.text).await {
@@ -513,22 +946,40 @@ pub(super) async fn generate_stream_inner(
             &state.network.node_id,
             direct.is_some(),
         );
-        let sliced_mtp = mtp_enabled && plan.supports_mtp() && plan.steps.len() >= 2;
-        if mtp_enabled && plan.steps.len() >= 2 && !sliced_mtp {
+        let sliced_mtp_requested = mtp_enabled && plan_supports_mtp && plan.steps.len() >= 2;
+        let remote_stream_sliced_mtp_disabled =
+            disable_sliced_mtp_for_remote_stream(remote_stream_capable, sliced_mtp_requested);
+        let sliced_mtp = sliced_mtp_requested && !remote_stream_sliced_mtp_disabled;
+        info!(
+            remote_stream_capable,
+            sliced_mtp_requested,
+            sliced_mtp,
+            remote_stream_sliced_mtp_disabled,
+            plan_supports_mtp,
+            "caminho de decode do pipeline"
+        );
+        if mtp_enabled && plan.steps.len() >= 2 && !sliced_mtp_requested {
             info!(
                 reason = sliced_mtp_disable_reason(&plan),
                 "pipeline fatiado sem MTP: seguindo com a capacidade disponível"
             );
         }
+        if remote_stream_sliced_mtp_disabled {
+            info!(
+                reason = crate::infer_server::SPECULATION_REASON_REMOTE_STREAM_MTP_DISABLED,
+                "MTP fatiado desativado no remote-stream: o draft síncrono bloquearia cada callback"
+            );
+        }
         let mut remote_stream = if remote_stream_capable {
-            // The remote head owns the autoregressive cycle. For a sliced MTP
-            // plan it also receives the first MTP request and installs every
-            // following draft locally, so the gateway never adds a per-token
-            // reinjection round trip.
+            // The remote head owns the autoregressive cycle. A sliced MTP
+            // request is deliberately omitted here: its synchronous nextn
+            // draft runs before the callback can be released and was measured
+            // as the dominant producer wait on this path. The established
+            // non-stream path keeps the opt-in MTP behavior.
             let speculate = remote_stream_speculation(
                 &plan,
                 speculative_enabled,
-                mtp_enabled,
+                mtp_enabled && !remote_stream_sliced_mtp_disabled,
                 speculative_k,
                 speculative_m,
                 mtp_k,
@@ -539,6 +990,7 @@ pub(super) async fn generate_stream_inner(
                 model,
                 &session_id,
                 next_token,
+                tokens_generated as u64,
                 dtype,
                 &state.peer_http,
                 &state.network.routes,
@@ -546,6 +998,7 @@ pub(super) async fn generate_stream_inner(
                 state.tunnel_tx.as_ref(),
                 speculate,
                 &cancellation,
+                trace_id.as_deref(),
             )
             .await
             {
@@ -574,7 +1027,10 @@ pub(super) async fn generate_stream_inner(
             None
         };
 
-        if plan.supports_speculation() && speculative_enabled {
+        if plan.supports_speculation()
+            && speculative_enabled
+            && !remote_stream_sliced_mtp_disabled
+        {
             // Vira `false` na primeira rodada em que a cabeça recusar o
             // rascunho. Pedir de novo só repetiria a recusa, e o pedido custa
             // caro por um motivo que não se vê: no caminho legado,
@@ -622,6 +1078,7 @@ pub(super) async fn generate_stream_inner(
                                 source: crate::infer_server::DraftSource::Mtp,
                                 draft: stored_draft.take(),
                             }),
+                            trace_id.as_deref(),
                         )
                         .await
                     } else {
@@ -637,6 +1094,7 @@ pub(super) async fn generate_stream_inner(
                             &state.peer_http,
                             &state.network.routes,
                             state.tunnel_tx.as_ref(),
+                            trace_id.as_deref(),
                         )
                         .await
                     }
@@ -652,6 +1110,7 @@ pub(super) async fn generate_stream_inner(
                         direct.as_ref(),
                         state.tunnel_tx.as_ref(),
                         None,
+                        trace_id.as_deref(),
                     )
                     .await
                 };
@@ -699,8 +1158,13 @@ pub(super) async fn generate_stream_inner(
                                     .unwrap_or(
                                         crate::infer_server::SPECULATION_REASON_MODEL_WITHOUT_MTP,
                                     );
+                                let detail = step
+                                    .speculation_disabled_detail
+                                    .as_deref()
+                                    .unwrap_or("cauda não informou a causa da desativação");
                                 info!(
                                     reason,
+                                    detail,
                                     "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
                                 );
                                 especulando = false;
@@ -716,8 +1180,13 @@ pub(super) async fn generate_stream_inner(
                                     .unwrap_or(
                                         crate::infer_server::SPECULATION_REASON_MODEL_WITHOUT_MTP,
                                     );
+                                let detail = step
+                                    .speculation_disabled_detail
+                                    .as_deref()
+                                    .unwrap_or("cauda não informou a causa da desativação");
                                 info!(
                                     reason,
+                                    detail,
                                     "pipeline fatiado sem rascunho MTP: seguindo sem especulação"
                                 );
                                 especulando = false;
@@ -892,6 +1361,7 @@ pub(super) async fn generate_stream_inner(
         }
 
         while remaining_generation_steps(budget.total, tokens_generated) > 0 {
+            let cycle_started = Instant::now();
             let res = if let Some(stream) = remote_stream.as_mut() {
                 stream.next(&cancellation).await
             } else {
@@ -906,6 +1376,7 @@ pub(super) async fn generate_stream_inner(
                     direct.as_ref(),
                     state.tunnel_tx.as_ref(),
                     None,
+                    trace_id.as_deref(),
                 )
                 .await
             };
@@ -951,6 +1422,11 @@ pub(super) async fn generate_stream_inner(
                                 return;
                             }
                             StopSend::Continue => {}
+                        }
+                        if index == 0 {
+                            trace.record_token_cycle(
+                                cycle_started.elapsed().as_millis() as u64,
+                            );
                         }
                         if !step.done || index + 1 < take {
                             if let Some(cycle) = cycle_detector.observe(*token_id, text) {
@@ -1114,6 +1590,46 @@ pub(super) async fn generate_stream_inner(
     }
 }
 
+/// Encaminha os eventos da geração para o adaptador HTTP e transforma o
+/// desaparecimento do consumidor em cancelamento explícito.
+///
+/// O `Sender::closed` precisa ser observado em paralelo ao recebimento de
+/// eventos. Manter outro clone do sender no gerador impede que um monitor
+/// baseado somente em `closed` veja a desconexão, e um produtor remoto pode
+/// continuar consumindo KV mesmo depois de o SSE ter sido abandonado.
+async fn forward_generation_events(
+    client_tx: mpsc::Sender<GenEvent>,
+    mut inner_rx: mpsc::Receiver<GenEvent>,
+    cancellation: crate::prefill::Cancellation,
+) -> Option<GenEvent> {
+    let mut terminal = None;
+    loop {
+        let event = tokio::select! {
+            _ = client_tx.closed() => {
+                cancellation.cancel();
+                break;
+            }
+            event = inner_rx.recv() => event,
+        };
+        let Some(event) = event else {
+            break;
+        };
+        match event {
+            event @ (GenEvent::Done(_) | GenEvent::Failed(_)) => {
+                terminal = Some(event);
+                break;
+            }
+            event => {
+                if client_tx.send(event).await.is_err() {
+                    cancellation.cancel();
+                    break;
+                }
+            }
+        }
+    }
+    terminal
+}
+
 /// Confirma em cada peer que a sessão ficou parada no fim do prompt, pronta
 /// para o turno seguinte. Falha em um hop invalida a entrada inteira: manter só
 /// parte da cadeia criaria um buraco silencioso.
@@ -1137,6 +1653,112 @@ fn inference_route_candidates(step: &crate::pipeline::PipelineStep) -> Vec<Strin
     candidates
 }
 
+/// POST de um corpo JSON pequeno a uma rota de ciclo de vida de sessão de um
+/// peer, pelo mesmo transporte que o decode: QUIC primeiro quando a preferência
+/// do cluster é QUIC, e HTTP/HTTPS como reserva.
+///
+/// Por que não só `http.post(...).json(...)`: toda requisição precisa carregar
+/// o marcador interno e o bearer da `connection_key` quando configurado. Isso
+/// mantém o mesmo contrato de autenticação no HTTP, HTTPS e no fallback de
+/// QUIC; sem o header, `require_inference_auth` responde `401 missing
+/// Authorization header` e deixa a sessão retida. QUIC também pode ser aceito
+/// pelo marcador sobre transporte cifrado na rede pública. Uma falha de
+/// transporte QUIC cai para o caminho HTTP; um 404/405 significa peer sem a
+/// rota HTTP/3 e também cai para HTTP.
+///
+/// `Ok(body)` em qualquer 2xx (corpo desserializado, `Null` se ilegível);
+/// `Err(motivo)` quando nenhum endereço respondeu 2xx.
+async fn post_session_lifecycle(
+    http: &crate::peer_client::PeerClients,
+    step: &crate::pipeline::PipelineStep,
+    path: &str,
+    body: &serde_json::Value,
+    session_id: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    let route_key = format!("inference:{}", step.node_id);
+    let candidates = inference_route_candidates(step);
+    let payload = match serde_json::to_vec(body) {
+        Ok(payload) => payload,
+        Err(error) => return Err(format!("corpo JSON inválido: {error}")),
+    };
+    let mut last_error = None;
+
+    if http.effective_quic_enabled() && !step.quic_addr_candidates.is_empty() {
+        for base in http.route_order(&route_key, &candidates) {
+            match http
+                .quic_post_typed(
+                    &step.node_id,
+                    &base,
+                    &step.quic_addr_candidates,
+                    path,
+                    "application/json",
+                    payload.clone(),
+                    Some(session_id),
+                    timeout,
+                )
+                .await
+            {
+                Ok(response) if response.status.is_success() => {
+                    http.remember_route_success(&route_key, &base);
+                    return Ok(
+                        serde_json::from_slice(&response.body).unwrap_or(serde_json::Value::Null)
+                    );
+                }
+                Ok(response) if matches!(response.status.as_u16(), 404 | 405) => {
+                    last_error = Some(format!("quic: HTTP {} (sem rota HTTP/3)", response.status));
+                    break;
+                }
+                Ok(response) => {
+                    return Err(format!(
+                        "{path} em {} respondeu HTTP {}",
+                        step.node_id, response.status
+                    ));
+                }
+                Err(error) => {
+                    last_error = Some(format!("quic: {error}"));
+                    warn!(
+                        "{path} por QUIC em {} falhou ({error}), tentando TCP",
+                        step.node_id
+                    );
+                }
+            }
+        }
+    }
+
+    let Ok(cliente) = http.for_peer(&step.node_id) else {
+        return Err(last_error.unwrap_or_else(|| "sem cliente para o peer".to_string()));
+    };
+    for base in http.route_order(&route_key, &candidates) {
+        let url = format!("{}{path}", base.trim_end_matches('/'));
+        let request = cliente.post(&url).json(body).timeout(timeout);
+        match http
+            .authorize_inference_request_for_session(request, Some(session_id))
+            .await
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                http.remember_route_success(&route_key, &base);
+                return Ok(response
+                    .json::<serde_json::Value>()
+                    .await
+                    .unwrap_or(serde_json::Value::Null));
+            }
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                last_error = Some(format!("HTTP {status}: {body}"));
+            }
+            Err(error) => {
+                http.remember_route_failure(&route_key, &base);
+                last_error = Some(error.to_string());
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "nenhum endereço anunciado".to_string()))
+}
+
 pub(super) async fn rewind_sessions(
     plan: &PipelinePlan,
     session_id: &str,
@@ -1145,65 +1767,32 @@ pub(super) async fn rewind_sessions(
 ) -> bool {
     let mut all_ok = true;
     for step in &plan.steps {
-        let Ok(http) = clients.for_peer(&step.node_id) else {
-            all_ok = false;
-            continue;
-        };
-        let route_key = format!("inference:{}", step.node_id);
-        let mut rewound = false;
-        let mut last_error = None;
-        for base in clients.route_order(&route_key, &inference_route_candidates(step)) {
-            let url = format!("{}/v1/session/rewind", base.trim_end_matches('/'));
-            let request = http
-                .post(&url)
-                .json(&serde_json::json!({
-                    "session_id": session_id,
-                    "n_tokens": retained_tokens,
-                }))
-                .timeout(REWIND_TIMEOUT);
-            match clients
-                .authorize_inference_request_for_session(request, Some(session_id))
-                .await
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    match response.json::<serde_json::Value>().await {
-                        Ok(body)
-                            if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
-                                && body.get("n_past").and_then(|v| v.as_u64())
-                                    == Some(retained_tokens as u64) =>
-                        {
-                            clients.remember_route_success(&route_key, &base);
-                            rewound = true;
-                        }
-                        Ok(body) => {
-                            warn!("rewind recusado por {}: {}", step.node_id, body);
-                        }
-                        Err(error) => {
-                            warn!("resposta ilegível no rewind de {}: {error}", step.node_id);
-                        }
-                    }
-                    break;
-                }
-                Ok(response) => {
-                    warn!("rewind em {} respondeu {}", step.node_id, response.status());
-                    break;
-                }
-                Err(error) => {
-                    clients.remember_route_failure(&route_key, &base);
-                    last_error = Some(error.to_string());
-                }
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "n_tokens": retained_tokens,
+        });
+        match post_session_lifecycle(
+            clients,
+            step,
+            "/v1/session/rewind",
+            &body,
+            session_id,
+            REWIND_TIMEOUT,
+        )
+        .await
+        {
+            Ok(body)
+                if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
+                    && body.get("n_past").and_then(|v| v.as_u64())
+                        == Some(retained_tokens as u64) => {}
+            Ok(body) => {
+                warn!("rewind recusado por {}: {}", step.node_id, body);
+                all_ok = false;
             }
-        }
-        if !rewound {
-            if let Some(error) = last_error {
-                warn!(
-                    "rewind em {} falhou em todos os endereços: {error}",
-                    step.node_id
-                );
+            Err(error) => {
+                warn!("rewind em {} falhou: {error}", step.node_id);
+                all_ok = false;
             }
-            all_ok = false;
         }
     }
     all_ok
@@ -1218,48 +1807,18 @@ pub(super) async fn release_sessions(
     clients: &crate::peer_client::PeerClients,
 ) {
     for step in &plan.steps {
-        let Ok(http) = clients.for_peer(&step.node_id) else {
-            warn!("sem cliente para liberar sessão em {}", step.node_id);
-            continue;
-        };
-        let candidates = inference_route_candidates(step);
-        let route_key = format!("inference:{}", step.node_id);
-        let mut last_error = None;
-        let mut released = false;
-        for base in clients.route_order(&route_key, &candidates) {
-            let url = format!("{}/v1/session/release", base.trim_end_matches('/'));
-            let request = http
-                .post(&url)
-                .json(&serde_json::json!({ "session_id": session_id }))
-                .timeout(Duration::from_secs(10));
-            match clients
-                .authorize_inference_request_for_session(request, Some(session_id))
-                .await
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    clients.remember_route_success(&route_key, &base);
-                    released = true;
-                    break;
-                }
-                Ok(response) => {
-                    let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
-                    last_error = Some(format!("HTTP {status}: {body}"));
-                }
-                Err(error) => {
-                    clients.remember_route_failure(&route_key, &base);
-                    last_error = Some(error.to_string());
-                }
-            }
-        }
-        if !released {
-            warn!(
-                "release de sessão em {} falhou em todos os endereços: {}",
-                step.node_id,
-                last_error.unwrap_or_else(|| "nenhum endereço anunciado".to_string())
-            );
+        let body = serde_json::json!({ "session_id": session_id });
+        if let Err(error) = post_session_lifecycle(
+            clients,
+            step,
+            "/v1/session/release",
+            &body,
+            session_id,
+            Duration::from_secs(10),
+        )
+        .await
+        {
+            warn!("release de sessão em {} falhou: {error}", step.node_id);
         }
     }
 }
@@ -1285,78 +1844,36 @@ pub(super) async fn rollback_sessions(
 ) -> bool {
     let mut all_ok = true;
     for step in &plan.steps {
-        let Ok(cliente) = http.for_peer(&step.node_id) else {
-            warn!("rollback: sem cliente para {}", step.node_id);
-            all_ok = false;
-            continue;
-        };
-        let route_key = format!("inference:{}", step.node_id);
-        let mut rolled_back = false;
-        let mut last_error = None;
-        for base in http.route_order(&route_key, &inference_route_candidates(step)) {
-            let url = format!("{}/v1/session/rollback", base.trim_end_matches('/'));
-            let request = cliente
-                .post(&url)
-                .json(&serde_json::json!({
-                    "session_id": session_id,
-                    "accept_count": accept_count,
-                    "batch_width": batch_width,
-                }))
-                .timeout(Duration::from_secs(10));
-            match http
-                .authorize_inference_request_for_session(request, Some(session_id))
-                .await
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    match response.json::<serde_json::Value>().await {
-                        Ok(body)
-                            if body.get("rolled_back").and_then(|v| v.as_bool()) == Some(true) =>
-                        {
-                            http.remember_route_success(&route_key, &base);
-                            rolled_back = true;
-                        }
-                        Ok(body) => {
-                            warn!(
-                                "rollback de sessão em {} recusado: {}",
-                                step.node_id,
-                                body.get("reason")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("sem motivo informado")
-                            );
-                        }
-                        Err(error) => {
-                            warn!(
-                                "rollback de sessão em {}: corpo ilegível: {error}",
-                                step.node_id
-                            );
-                        }
-                    }
-                    break;
-                }
-                Ok(response) => {
-                    warn!(
-                        "rollback de sessão em {} respondeu {}",
-                        step.node_id,
-                        response.status()
-                    );
-                    break;
-                }
-                Err(error) => {
-                    http.remember_route_failure(&route_key, &base);
-                    last_error = Some(error.to_string());
-                }
-            }
-        }
-        if !rolled_back {
-            if let Some(error) = last_error {
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "accept_count": accept_count,
+            "batch_width": batch_width,
+        });
+        match post_session_lifecycle(
+            http,
+            step,
+            "/v1/session/rollback",
+            &body,
+            session_id,
+            Duration::from_secs(10),
+        )
+        .await
+        {
+            Ok(body) if body.get("rolled_back").and_then(|v| v.as_bool()) == Some(true) => {}
+            Ok(body) => {
                 warn!(
-                    "rollback de sessão em {} falhou em todos os endereços: {error}",
-                    step.node_id
+                    "rollback de sessão em {} recusado: {}",
+                    step.node_id,
+                    body.get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("sem motivo informado")
                 );
+                all_ok = false;
             }
-            all_ok = false;
+            Err(error) => {
+                warn!("rollback de sessão em {} falhou: {error}", step.node_id);
+                all_ok = false;
+            }
         }
     }
     all_ok
@@ -1627,22 +2144,37 @@ pub(super) fn estimate_tokens(prompt: &str) -> u32 {
     prompt.chars().count().div_ceil(CHARS_PER_TOKEN) as u32
 }
 
-pub fn prompt_budget_error(cfg: &crate::runtime::NodeConfig, prompt: &str) -> Option<String> {
-    let budget = prompt_budget(cfg);
+/// A recusa por prompt acima da capacidade, a partir de números soltos.
+///
+/// Existe separada de [`prompt_budget_error`] porque o gateway que **não**
+/// carrega modelo nenhum precisa da mesma admissão: era exatamente esse o
+/// caminho do defeito de 2026-09-08, em que um prompt de 30 mil caracteres
+/// atravessava o gateway sem config local, chegava ao decode do peer e
+/// derrubava o processo inteiro com `CUDA error: out of memory`. Recusar aqui
+/// é o que mantém o nó vivo para os outros pedidos.
+pub fn prompt_budget_error_of(n_ctx: u32, max_new_tokens: u32, prompt: &str) -> Option<String> {
+    let budget = prompt_budget_of(n_ctx, 1, max_new_tokens);
     let estimated = estimate_tokens(prompt);
     (estimated > budget).then(|| {
         format!(
             "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
-             {budget}. Cada sessão recebe n_ctx ({}) menos max_new_tokens ({}). O prompt \
-             vai em pedaços de {} tokens, então n_batch ({}) não limita o prompt. Aumente \
-             n_ctx em Configurar → ajustes avançados, reduza max_new_tokens, ou reduza \
-             as requisições simultâneas.",
-            cfg.n_ctx,
-            cfg.max_new_tokens,
-            prompt_chunk_tokens(cfg),
-            cfg.n_batch,
+             {budget}. Cada sessão recebe n_ctx ({n_ctx}) menos max_new_tokens \
+             ({max_new_tokens}). Aumente n_ctx em Configurar → ajustes avançados, \
+             reduza max_new_tokens, ou reduza o tamanho do prompt."
         )
     })
+}
+
+pub fn prompt_budget_error(cfg: &crate::runtime::NodeConfig, prompt: &str) -> Option<String> {
+    let error = prompt_budget_error_of(cfg.n_ctx, cfg.max_new_tokens, prompt)?;
+    // O nó que tem o modelo em casa sabe mais: acrescenta por que `n_batch`
+    // não é o limite, que é a confusão que o operador faz primeiro.
+    Some(format!(
+        "{error} O prompt vai em pedaços de {} tokens, então n_batch ({}) não limita \
+         o prompt.",
+        prompt_chunk_tokens(cfg),
+        cfg.n_batch,
+    ))
 }
 
 pub(super) fn rate(tokens: u32, secs: f64) -> f64 {
@@ -1667,13 +2199,17 @@ pub fn spawn_logged_generation_with_stops(
     input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
 ) {
+    input.state.runtime.note_request();
     let entry_node_id = input.state.network.node_id.clone();
     let prompt_tokens = estimate_tokens(&input.prompt);
     let logged_model = input.model.clone();
     let logged_prompt = input.prompt.clone();
     let request_details = input.request_details.clone();
     let audit = input.state.audit.clone();
-    let request_id = Uuid::new_v4().simple().to_string();
+    let request_id = input
+        .trace_id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
     let received_at = chrono::Utc::now().to_rfc3339();
     let started = Instant::now();
     audit.begin(crate::reqlog::AuditRequest {

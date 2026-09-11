@@ -19,7 +19,12 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   estáveis. Textos simples permanecem literais; interpolação usa `{name}` e
   lógica usa `plural`, `select` e seletores exatos ICU. Valores internos de
   `select` são preparados apenas pelo carregador para preservar condicionais
-  de truthiness que existiam no código antigo.
+  de truthiness que existiam no código antigo. As chaves de deployment também
+  cobrem `unloadIfIdle`, minutos de ociosidade e o status `idle`. Os filtros de
+  Redes públicas e Estatísticas mantêm as opções e rótulos em inglês e pt-BR
+  aqui, sem strings hard-coded nas rotas.
+  As métricas do card de máquina usam aqui os rótulos de GPUs, uso e potência
+  para manter o detalhe disponível nas duas línguas.
 - O grupo `adminAuthority.*` cobre a tela do principal e as vistas somente
   leitura de admins secundários e nós: roster, cadeia de promoções, sucessor,
   recusas concretas, confirmações e resultado das ações. O grupo
@@ -51,9 +56,11 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   aba ativa. Também nomeia os botões de expansão e a janela grande de leitura.
   O aviso
   sobre JSON selecionável foi removido; nenhuma mensagem dessa tela recebe o
-  segredo da chave.
-- O grupo `deploymentLogs.*` cobre o console de processo: estado do auto-scroll,
-  cópia das últimas 500 linhas, retorno da cópia, filtro e estados de coleta.
+  segredo da chave. Nas mensagens pt-BR, `Tokens` é o termo de produto para
+  contagens e velocidades de tokens; não use `Fichas`.
+- O grupo `deploymentLogs.*` cobre o console de processo da réplica local:
+  estado do auto-scroll, cópia das últimas 500 linhas, retorno da cópia, filtro
+  e estados de coleta.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 Os identificadores oficiais de perfil são `admin`, `node` e `infer`. O rótulo
@@ -69,6 +76,11 @@ usam essas chaves, nunca literais cravados nos componentes.
 - O CSV entra no bundle por importação `?raw`; não use fetch, estado assíncrono ou carregamento por rota.
 - Rode `npm exec -- vitest run src/i18n/locales.test.ts src/i18n/locales.equivalence.test.ts` após qualquer alteração. O teste de equivalência compara todas as chaves, os dois idiomas e os casos do dump gerado antes da migração.
 
+- O grupo deploy.addNode* cobre o diálogo incremental: catálogo da máquina
+  alvo, modelo inteiro, localização do cache KV e tipos K/V. Toda chave nova
+  desse fluxo precisa existir em en e pt-BR, inclusive o rótulo
+  deployments.kind.mixed usado pelo histórico.
+
 ## Key functions
 
 ### locales.ts
@@ -82,13 +94,42 @@ The chat telemetry additions live in both locale blocks: execution RTT, the
 source-to-destination edge scope, machine capacity/configuration, effective
 placement, per-peer `POM_PROFILE_SYNC`, backend-reported execution engine,
   execution diagnosis, TP collective table, prefix reuse and transmitted-token
-  counts, overlap status, per-traversal transport identity/bytes, AI-analysis
-  action, initial-model mark and the explicit "time outside the node" diagnosis
-  must remain available in
+  counts, overlap status, per-traversal transport identity/bytes, distributed
+  telemetry status/coverage, remote-stream aggregates with producer/downstream/channel/queue/callback wait
+  split and token delivery quantiles, synchronous MTP draft time, explicit HTTPS fallback counts/reasons, semantic TTFT labels,
+  AI-analysis action, initial-model mark and the explicit "time outside the
+  node" diagnosis must remain available in
 English and Brazilian Portuguese. Generic configuration state labels for
 fit-memory and KV offload are separate from the per-peer `POM_PROFILE_SYNC`
 state labels. The footnote explains the measurements but does not claim a fixed
 environment value.
+
+The `canvas.gateway*` messages belong to the virtual return node on both
+network canvases. They identify the gateway, return leg, cycle cost breakdown
+and the count of deployed routes; the component displays `pipelineTotalUnknown`
+when a route does not have all directional legs and no aggregate RTT is
+available.
+
+`chat.coverageUnavailable` names the explicit unknown state returned when the
+Chat capability read is refused or cannot be completed. It must not be replaced
+with the incomplete or empty-coverage message.
+
+The `networkChat.*` messages cover the separate Network chat surface, including
+the disabled state, participants, files, typing indicator, mobile online-list
+toggle and unread badge. They must remain paired in both CSV locale columns
+because this route is reachable from the same AI chat shell.
+
+As chaves `network.networkInfo*`, `network.share*`, `network.publicName*`,
+`network.visibility*`, `network.access*` e os campos geográficos cobrem a tela
+de informações da rede e o compartilhamento da confiança. Cada nova chave
+desse fluxo precisa continuar presente nas colunas `en` e `pt-BR` do CSV;
+textos de documento e de chave são dados do servidor, não mensagens de locale.
+As chaves `publicNetworks.*`, `network.metrics*`, `network.participants*`,
+`keys.*`, `preferences.admin*` e `nav.*` cobrem a reorganização das telas,
+incluindo estados de métrica indisponível, os estados reachable/unreachable do
+indicador de Redes públicas e os rótulos do Chat da rede separado. As chaves
+`setupWizard.uploadTrust*` nomeiam o upload alternativo de `trust.json`; o
+checkbox de confirmação manual do wizard não existe mais.
 
 Os rótulos de tempo por requisição também existem nos dois blocos: TTFT,
 velocidade de pré-processamento do prompt, velocidade de geração da saída,
@@ -130,6 +171,10 @@ gets a translated zero or false incomplete alarm.
 - Imported by nearly every route and component (28 files use `useI18n`).
 - `api.ts` and `chatStore.ts` import `getActiveLocale` from `locales` for non-React strings.
 - `index.html` has a pre-paint script that stamps `document.documentElement.lang` from the same `codai.locale` + browser-locale logic, so the first render is already in the right language before `LocaleProvider` mounts.
+- Chat attachment, context-limit, drop-zone and Web Speech labels live in
+  `messages.csv` in both locales. `locales.ts` remains the parser and fallback
+  layer; new Chat copy should be added to the CSV rather than hard-coded in the
+  route.
 
 ## Maintaining this file
 

@@ -52,10 +52,13 @@ As razões devem distinguir os casos observáveis:
 
 - `tail_without_nextn`: a cauda não tem a cabeça `nextn` disponível;
 - `model_without_mtp`: o modelo servido não está pronto para MTP;
-- `hybrid_tail_no_rollback`: a cauda híbrida ou recorrente informa
-  `kv_can_shift=false` e não pode produzir uma rodada especulativa segura;
 - `peer_without_sliced_mtp_wire`: algum peer não anuncia a capacidade da wire
   nova.
+
+`kv_can_shift` é apenas um diagnóstico do K-shift de `--ctx-shift`; não é uma
+prova de rollback. A cauda pronta pode produzir o rascunho mesmo com esse
+campo falso. Cada hop valida o rollback efetivo com `kv_remove` e encerra a
+rodada se o motor recusar a remoção.
 
 Uma razão específica pode incluir o detalhe fornecido pelo motor, mas deve
   manter um desses identificadores para logs e testes.
@@ -85,7 +88,6 @@ Os testes devem cobrir:
    única travessia de rede;
 3. peer sem `speculate/v1-mtp-sliced`, com degradação e razão
    `peer_without_sliced_mtp_wire`;
-4. cauda com `kv_can_shift=false`, sem `next_draft` e com razão
-   `hybrid_tail_no_rollback`;
+4. cauda pronta com `kv_can_shift=false`, com `next_draft` e rollback efetivo
+   via `kv_remove`;
 5. callbacks antigos sem os metadados novos, aceitos sem quebra.
-

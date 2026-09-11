@@ -66,6 +66,112 @@ cargo test               # testes do nó
   ausente, se nenhuma verificação for encontrada, se o resultado tiver menos de
   treze entradas, ou se for inconsistente, o build falha de forma ruidosa.
 
+### Cache compartilhado entre worktrees
+
+Para builds locais, carregue o helper antes de chamar o Cargo:
+
+```bash
+brew install sccache             # uma vez no macOS
+source scripts/build-env.sh
+cargo build --release --features metal
+```
+
+O helper só ativa o cache quando encontra `sccache` no `PATH`. Sem a ferramenta,
+ele deixa o ambiente inalterado e o build segue pelo caminho normal. Quando o
+cache está disponível, estes são os padrões:
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `SCCACHE_DIR` | `$HOME/.cache/sccache` | cache local content-addressed compartilhado pelos worktrees |
+| `SCCACHE_CACHE_SIZE` | `80G` | teto do cache de compilação |
+| `SCCACHE_SERVER_UDS` | `$SCCACHE_DIR/server.sock` | socket do servidor dedicado ao cache compartilhado |
+| `CARGO_TARGET_DIR` | `$HOME/.cache/pom-target` | saída do Cargo comum aos worktrees |
+| `RUSTC_WRAPPER` | `sccache` | cacheia compilações Rust |
+| `CMAKE_C_COMPILER_LAUNCHER` | `sccache` | cacheia C no CMake do llama.cpp |
+| `CMAKE_CXX_COMPILER_LAUNCHER` | `sccache` | cacheia C++ no CMake do llama.cpp |
+| `CMAKE_CUDA_COMPILER_LAUNCHER` | `sccache` | mantém o caminho CUDA coerente na ksia |
+| `CCACHE` | `sccache` | envolve o `nvcc` chamado diretamente pelo `llama-engine` |
+
+Os valores podem ser sobrescritos antes do `source`, por exemplo
+`CARGO_TARGET_DIR=/tmp/pom-target source scripts/build-env.sh`. O target comum
+é uma saída do Cargo, não o CAS do sccache: para toolchains, plataformas ou
+combinações de features incompatíveis, use um target explícito separado. O
+CAS do sccache é seguro para compilações concorrentes e evita recompilar os
+mesmos objetos em worktrees diferentes. O `vendor/llama-cpp-sys-2/build.rs`
+repassa as três variáveis `CMAKE_*_COMPILER_LAUNCHER` ao CMake e as observa
+como entradas de rerun do Cargo.
+
+Para acompanhar e limpar o cache, sem builds ativos:
+
+```bash
+source scripts/build-env.sh
+sccache --show-stats
+sccache --zero-stats
+sccache --stop-server
+rm -rf "$HOME/.cache/sccache"
+```
+
+O `.cargo/config.toml` não define os wrappers: isso manteria um wrapper
+obrigatório em máquinas sem sccache e não permitiria selecionar explicitamente
+o servidor/socket compartilhado.
+
+### Por que não há `LLAMA_CPP_LIB_DIR`
+
+O build nativo do llama.cpp não é apenas um arquivo `.a` isolado. O
+`vendor/llama-cpp-sys-2/build.rs` configura o CMake, gera bindings e metadados
+no `OUT_DIR` e liga as bibliotecas produzidas para a combinação exata de
+checkout, plataforma, features e compilador. Um diretório apontado por
+`LLAMA_CPP_LIB_DIR` não carregaria prova suficiente de que esses itens são
+compatíveis; reutilizá-lo poderia produzir um binário silenciosamente ligado
+à revisão ou às flags erradas. Por isso esta mudança não adiciona um caminho
+prebuilt: o target comum reduz a cópia do resultado para o mesmo commit e o
+sccache reutiliza cada compilação de forma verificável pelas entradas do CAS.
+
+### Medição no macOS
+
+Medição realizada em 2026-09-09, Apple Silicon, perfil release e
+`--features metal`, com o checkout de `llama.cpp` local. O baseline foi um
+worktree limpo sem wrappers, com `GGML_CCACHE=OFF`; os números depois do helper
+usam o target comum e o cache em `~/.cache/sccache`.
+
+| Cenário | Tempo | Saída do Cargo | Cache |
+|---|---:|---|---|
+| Antes, build limpo | 6m39s | `target/`: 1,4G no worktree | sem requests sccache |
+| Depois, cache frio | 6m33s | `$HOME/.cache/pom-target`: 1,4G; `target/` local não é usado | 732 misses, 224 MiB |
+| Depois, cache quente após `cargo clean` | 6m39s | `$HOME/.cache/pom-target`: 1,4G; `target/` local não é usado | 728 hits acumulados, 42,47% dos requests |
+
+O link fat LTO continua sendo a maior parcela do tempo e não é cacheado pelo
+sccache; o ganho medido está nas compilações Rust/C/C++. Em um segundo worktree
+no mesmo commit, o target comum também permite que o Cargo encontre o binário
+já produzido, sem criar outra árvore de 1,4G. O cache frio registrou quatro
+erros do caminho C/C++ do sccache, mas o compilador retomou e o binário final
+passou; os warnings existentes do llama.cpp continuam aparecendo.
+
+Para validar Vulkan neste macOS, o host precisou de
+`vulkan-headers`, `vulkan-loader`, `shaderc`, `molten-vk`, `spirv-headers` e
+`glslang`. Como o Homebrew não expõe um SDK monolítico, o CMake recebeu os
+paths explicitamente e os headers SPIR-V foram adicionados ao include path:
+
+```bash
+brew install vulkan-headers vulkan-loader shaderc molten-vk spirv-headers glslang
+source scripts/build-env.sh
+export CMAKE_Vulkan_INCLUDE_DIR=/opt/homebrew/opt/vulkan-headers/include
+export CMAKE_Vulkan_LIBRARY=/opt/homebrew/opt/vulkan-loader/lib/libvulkan.dylib
+export CMAKE_PREFIX_PATH=/opt/homebrew/opt/vulkan-loader:/opt/homebrew/opt/vulkan-headers:/opt/homebrew/opt/shaderc:/opt/homebrew/opt/molten-vk:/opt/homebrew/opt/spirv-headers:/opt/homebrew/opt/glslang
+export CPATH=/opt/homebrew/opt/spirv-headers/include
+cargo build --features vulkan
+```
+
+Essa validação passou no perfil dev em 13,35s. Sem essas dependências, a
+tentativa falha no configure com `Vulkan_LIBRARY`, `Vulkan_INCLUDE_DIR` ou
+`glslc` ausentes; isso é uma pré-condição do host, não uma alteração deste
+wiring.
+
+Follow-up para o firstmate, não implementado nesta branch: `bin/fm-spawn.sh`
+deve exportar estas variáveis para os crewmates de rdma-p2p, e
+`bin/fm-teardown.sh` deve recuperar o `target/` do worktree no teardown. Hoje o
+teardown deixa 25-65 GB para trás.
+
 ### Validação CUDA isolada na ksia
 
 A validação CUDA não deve escrever no checkout servido nem no diretório que o
@@ -244,7 +350,9 @@ offload no primeiro clique.
   `api_keys`; demais = node com bootstrap para `127.0.0.1:42777`). Recusa
   gerar sem `connection_key` (herda da config base `--base`, nunca gera a
   chave), `--force` sobrescreve e `--advertise-addr` atualiza apenas o
-  endereço anunciado mesmo em configs existentes. As portas seguem a série:
+  endereço anunciado mesmo em configs existentes. Se o valor vier como
+  `HOST:PORT`, `HOST` é compartilhado e cada config conserva seu `p2p_port`;
+  não se deve fazer quatro processos anunciarem o mesmo socket. As portas seguem a série:
   gateway 8080+, p2p 42777+, inferência 8181+ (nó 1 herda a histórica 8092).
 - `.dockerignore` corta `target/`, `.git/`, `venv/`, `models/`, `*.gguf`,
   `*.key`, `pom.json` e `docs/` do contexto de build - por isso o commit

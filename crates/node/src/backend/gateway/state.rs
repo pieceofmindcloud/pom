@@ -1,11 +1,62 @@
 use super::*;
+use axum::body::Body;
+use axum::http::Method;
 
 /// Tokens `/api/generate` will produce before stopping on its own.
 pub const DEFAULT_MAX_TOKENS: u32 = 512;
 /// A peer that cannot answer its inference health endpoint is not eligible for
 /// a new pipeline. UDP discovery is deliberately lightweight and may still
 /// hear an isolated or old node, so it is not sufficient proof of a usable hop.
-pub(super) const PIPELINE_HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Este é o teto **da sonda de admissão**, curto de propósito.
+///
+/// Um peer vivo na LAN responde `/health` em poucos milissegundos - as próprias
+/// chamadas de decode da inferência medem 12-18 ms de ida e volta. Quem não
+/// respondeu em 300 ms não é "lento": ou engoliu o SYN, ou está desligado, e nos
+/// dois casos ele não vai servir esta requisição. Antes deste teto quem mandava
+/// era o `peer_client::CONNECT_TIMEOUT` de 2 s, e como `join_all` só termina com
+/// o mais lento, **um** anunciante inalcançável custava 2,005 s a toda
+/// inferência do cluster - medido em produção, constante entre motores, tamanhos
+/// de prompt e frio/quente.
+pub(super) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+
+/// Quanto tempo um peer que falhou a sonda fica fora sem ser sondado de novo.
+///
+/// A defesa não enfraquece: o peer em quarentena é **excluído** do plano, que é
+/// exatamente o que a sonda queria. O que a quarentena remove é o custo de
+/// redescobrir a cada requisição que o morto continua morto. A volta é
+/// automática - passado o prazo, a próxima requisição paga uma sonda e o peer
+/// reentra se responder -, então nenhum estado precisa ser limpo à mão.
+pub(super) const ADMISSION_FAILURE_COOLDOWN: Duration = Duration::from_secs(5);
+
+/// Quem falhou a sonda de admissão, e até quando fica fora.
+///
+/// Só guarda o negativo. O peer saudável continua sendo sondado a cada
+/// requisição - a frescura da admissão é o ponto da sonda e custa milissegundos.
+#[derive(Default)]
+pub struct AdmissionHealth {
+    quarantine: tokio::sync::RwLock<std::collections::HashMap<String, Instant>>,
+}
+
+impl AdmissionHealth {
+    async fn quarantined(&self, node_id: &str) -> bool {
+        self.quarantine
+            .read()
+            .await
+            .get(node_id)
+            .is_some_and(|until| *until > Instant::now())
+    }
+
+    async fn note_failure(&self, node_id: &str) {
+        self.quarantine.write().await.insert(
+            node_id.to_string(),
+            Instant::now() + ADMISSION_FAILURE_COOLDOWN,
+        );
+    }
+
+    async fn note_success(&self, node_id: &str) {
+        self.quarantine.write().await.remove(node_id);
+    }
+}
 
 /// Characters per token, used only to size up a prompt before sending it.
 /// Deliberately pessimistic — the real tokenizer lives in the first peer's
@@ -33,6 +84,80 @@ pub(crate) struct ClusterSnapshot {
 pub(crate) struct ClusterSnapshotCache {
     pub(super) snapshot: Option<ClusterSnapshot>,
     pub(super) next_version: u64,
+}
+
+/// Handle shared by the gateway and the network-settings editor. It keeps the
+/// existing pkarr record fields intact and changes only the geo metadata when
+/// an administrator edits the network description.
+pub(crate) struct PkarrPublishHandle {
+    node: Arc<crate::pkarr_node::PkarrNode>,
+    addr: String,
+    gateway_port: Option<u16>,
+    inference_port: Option<u16>,
+    model_name: String,
+    assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
+    serve_relay: bool,
+}
+
+impl PkarrPublishHandle {
+    pub(crate) fn new(
+        node: Arc<crate::pkarr_node::PkarrNode>,
+        addr: String,
+        gateway_port: Option<u16>,
+        inference_port: Option<u16>,
+        model_name: String,
+        assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
+        serve_relay: bool,
+    ) -> Self {
+        Self {
+            node,
+            addr,
+            gateway_port,
+            inference_port,
+            model_name,
+            assignment,
+            serve_relay,
+        }
+    }
+
+    pub(crate) async fn publish_geo_label(&self, geo_label: &str) -> anyhow::Result<()> {
+        let (start_layer, end_layer, total_layers) = self
+            .assignment
+            .read()
+            .await
+            .as_ref()
+            .map(|assignment| {
+                (
+                    assignment.start_layer,
+                    assignment.end_layer,
+                    assignment.total_layers,
+                )
+            })
+            .unwrap_or((0, 0, 0));
+        self.node
+            .publish(
+                &self.addr,
+                self.gateway_port,
+                self.inference_port,
+                &self.model_name,
+                start_layer,
+                end_layer,
+                total_layers,
+                self.serve_relay,
+                (!geo_label.trim().is_empty()).then_some(geo_label),
+            )
+            .await
+    }
+
+    /// Resolve a public directory candidate with this node's Mainline/relay
+    /// client. The public key is announced as hex because the P2P announce
+    /// already carries that identity; no new wire field is needed.
+    pub(crate) async fn resolve_public_peer(
+        &self,
+        authority_pubkey: &str,
+    ) -> Option<crate::pkarr_node::ResolvedPeer> {
+        self.node.resolve_public_peer(authority_pubkey).await
+    }
 }
 
 impl ClusterSnapshotCache {
@@ -102,6 +227,9 @@ pub struct GatewayState {
     /// dos peers. Para destino que não é peer (loopback, Ollama) use
     /// `peer_http.plain()`, que diz o que está fazendo.
     pub peer_http: Arc<crate::peer_client::PeerClients>,
+    /// Quem reprovou a sonda de admissão do pipeline, e até quando fica fora.
+    /// Ver `AdmissionHealth` e `ready_for_pipeline`.
+    pub admission_health: Arc<AdmissionHealth>,
     /// Mutable node configuration driven by the web UI.
     pub runtime: Arc<NodeRuntime>,
     /// Cycle policy used before a deployment exists. A loaded deployment's
@@ -143,12 +271,110 @@ pub struct GatewayState {
     /// conseguiu derivá-los da identidade. `None` só nos servidores de teste,
     /// que sobem em `127.0.0.1:0` e não têm par de chaves a apresentar.
     pub tls_server: Option<crate::serve::TlsServer>,
+    /// Certificado HTTP/3 do gateway, independente da política TLS sobre TCP.
+    pub quic_server: Option<crate::serve::QuicServerConfig>,
+    /// Porta UDP dedicada anunciada para o endpoint HTTP/3 do gateway.
+    pub quic_port: Option<u16>,
     /// Captura, transporte e persistência dos logs de processo do cluster.
     pub cluster_logs: Arc<crate::cluster_logs::ClusterLogs>,
+    /// Canal global da rede, validado e retransmitido pelo principal.
+    pub network_chat: Arc<crate::network_chat::NetworkChat>,
     /// Retrato curto do cluster, isolado por gateway e por instância de teste.
     pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
     /// Provider de modelos remotos e seus jobs de download.
     pub(crate) model_service: Arc<crate::model_provider_backend::ModelService>,
+    /// Best-effort pkarr republisher used when network metadata changes.
+    pub(crate) pkarr_publisher: Option<Arc<PkarrPublishHandle>>,
+}
+
+impl GatewayState {
+    pub(crate) fn signed_control_headers_for(
+        signing_key: &ed25519_dalek::SigningKey,
+        principal: crate::admin_trust::AuthorityPrincipal,
+        trust: &crate::admin_trust::AdminTrust,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> anyhow::Result<reqwest::header::HeaderMap> {
+        let envelope = crate::admin_trust::sign_control_envelope(
+            signing_key,
+            principal,
+            &trust.document(),
+            method,
+            path,
+            body,
+        )?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER,
+            reqwest::header::HeaderValue::from_static("1"),
+        );
+        headers.insert(
+            crate::auth::CONTROL_SIGNATURE_HEADER,
+            reqwest::header::HeaderValue::from_str(&serde_json::to_string(&envelope)?)?,
+        );
+        Ok(headers)
+    }
+
+    /// Build the authenticated headers for a node-to-node control request.
+    /// Public networks use only the signed envelope; private networks may
+    /// still carry the shared secret as an additional transport guard.
+    pub(crate) fn signed_control_headers(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> anyhow::Result<reqwest::header::HeaderMap> {
+        Self::signed_control_headers_for(
+            &self.authority_signing_key,
+            self.authority_principal.clone(),
+            &self.admin_trust,
+            method,
+            path,
+            body,
+        )
+    }
+
+    /// Add the chain signature to a peer control request. The shared key is
+    /// intentionally only an optional private-network transport guard; the
+    /// receiver authorizes the operation from the signed envelope.
+    pub(crate) async fn authorize_control_request(
+        &self,
+        request: reqwest::RequestBuilder,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> anyhow::Result<reqwest::RequestBuilder> {
+        let mut request = request.headers(self.signed_control_headers(method, path, body)?);
+        let config = self.auth.read().await;
+        if let Some(connection_key) = crate::auth::internal_node_token(&config) {
+            request = request.bearer_auth(connection_key);
+        }
+        Ok(request)
+    }
+
+    pub(crate) async fn control_get_request(
+        &self,
+        request: reqwest::RequestBuilder,
+        path: &str,
+    ) -> anyhow::Result<reqwest::RequestBuilder> {
+        self.authorize_control_request(request, "GET", path, &[])
+            .await
+    }
+
+    pub(crate) async fn control_json_request<T: serde::Serialize>(
+        &self,
+        request: reqwest::RequestBuilder,
+        path: &str,
+        body: &T,
+    ) -> anyhow::Result<reqwest::RequestBuilder> {
+        let bytes = serde_json::to_vec(body)?;
+        Ok(self
+            .authorize_control_request(request, "POST", path, &bytes)
+            .await?
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(bytes))
+    }
 }
 
 #[derive(Serialize)]
@@ -176,9 +402,11 @@ pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
         || path == "/generate"
         || path == "/peers"
         || path == "/health"
+        || path.starts_with("/api/public/")
         || path == "/handshake"
         || path == crate::tls_policy::TLS_POLICY_PATH
         || path == crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH
+        || path == crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH
         || path.starts_with("/api/internal/")
         || path.starts_with("/api/transfer/")
         || path.starts_with("/v1/")
@@ -246,6 +474,13 @@ pub(crate) async fn require_admin_for_surface(
         return next.run(request).await;
     }
 
+    // A signed peer request already proved its transport/control identity. It
+    // must not be forced through the browser-only session gate, especially on
+    // a public network where there is intentionally no shared secret.
+    if internal_node_request {
+        return next.run(request).await;
+    }
+
     let (mut parts, body) = request.into_parts();
     if is_public_ui_static_path(&path) {
         let network_exposure = state.auth.read().await.admin_exposure.requires_token();
@@ -271,6 +506,84 @@ pub(crate) async fn require_admin_for_surface(
         }
     }
     response
+}
+
+/// Check the body hash covered by a signed control envelope before any handler
+/// can mutate state. The extractor still validates the header metadata so
+/// direct unit-test routers get a useful refusal; this layer closes the gap
+/// that only exists while axum has not handed the body to `Json` yet.
+pub(crate) async fn verify_control_request(
+    State(state): State<GatewayState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !request
+        .headers()
+        .contains_key(crate::auth::CONTROL_SIGNATURE_HEADER)
+    {
+        return next.run(request).await;
+    }
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let (parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, 16 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "controle assinado excede o limite" })),
+            )
+                .into_response()
+        }
+    };
+    let raw = parts
+        .headers
+        .get(crate::auth::CONTROL_SIGNATURE_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let Some(raw) = raw else {
+        return next
+            .run(Request::from_parts(parts, Body::from(bytes)))
+            .await;
+    };
+    let envelope = match serde_json::from_str::<crate::admin_trust::ControlEnvelope>(raw) {
+        Ok(envelope) => envelope,
+        Err(_) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "assinatura de controle inválida" })),
+            )
+                .into_response()
+        }
+    };
+    if crate::auth::validate_signed_control_metadata(&state, &parts.headers, &method, &path)
+        .await
+        .is_err()
+        || crate::admin_trust::verify_control_envelope(
+            &envelope,
+            &state.admin_trust.document(),
+            method.as_str(),
+            &path,
+            &bytes,
+        )
+        .is_err()
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "assinatura de controle inválida" })),
+        )
+            .into_response();
+    }
+    if !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        if let Err(error) = state.admin_trust.consume_control_replay(&envelope) {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": format!("comando de controle recusado: {error:#}") })),
+            )
+                .into_response();
+        }
+    }
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
 }
 
 #[cfg(test)]
@@ -353,6 +666,7 @@ pub(super) fn peers_visible_to_cluster(peers: Vec<PeerInfo>, blocked: &[String])
 /// layer count or leave a request waiting for a hop that no longer serves HTTP.
 pub(super) async fn ready_for_pipeline(
     http: &crate::peer_client::PeerClients,
+    health: &AdmissionHealth,
     peers: Vec<PeerInfo>,
     timeout: Duration,
 ) -> Vec<PeerInfo> {
@@ -365,13 +679,30 @@ pub(super) async fn ready_for_pipeline(
             let Some(base) = peer.inference_url() else {
                 return None;
             };
+            // Idle peers keep their assignment announced while `/health` has
+            // no loaded model. They are valid plan members and are woken by
+            // the reload event before inference starts.
+            if peer.idle {
+                return Some(peer);
+            }
             let Ok(cliente) = cliente else {
                 return None;
             };
+            // Quem falhou há pouco não volta a ser sondado a preço inteiro: ele
+            // continua fora do plano, e a requisição não paga por isso.
+            if health.quarantined(&peer.node_id).await {
+                return None;
+            }
             let url = format!("{base}/health");
             match tokio::time::timeout(timeout, cliente.get(url).send()).await {
-                Ok(Ok(response)) if response.status().is_success() => Some(peer),
-                _ => None,
+                Ok(Ok(response)) if response.status().is_success() => {
+                    health.note_success(&peer.node_id).await;
+                    Some(peer)
+                }
+                _ => {
+                    health.note_failure(&peer.node_id).await;
+                    None
+                }
             }
         }
     }))
@@ -466,6 +797,7 @@ impl GatewayState {
                 tls: self.network.tls_enabled(),
                 pubkey: self.network.pubkey.clone(),
                 authority_pubkey: self.network.authority_pubkey(),
+                cluster_id: self.network.cluster_id(),
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
                 addr_candidates: self.network.self_addr_candidates(),
                 model: local.as_ref().map(|l| l.model.clone()).unwrap_or_default(),
@@ -476,6 +808,7 @@ impl GatewayState {
                 last_seen: chrono::Utc::now(),
                 ollama_port: self.network.ollama_port,
                 inference_port: self.network.inference_port,
+                inference_quic_port: self.network.inference_quic_port,
                 // Keep in sync with network.rs's `self_announce` and
                 // infer_server.rs's health/announce builder, and with the
                 // capability constants in routing/pipeline.rs.
@@ -505,6 +838,7 @@ impl GatewayState {
                     caps
                 },
                 gateway_port: Some(self.gateway_port),
+                gateway_quic_port: self.network.gateway_quic_port,
                 profile: self.network.profile(),
                 hostname: self.network.hostname.clone(),
                 capabilities: local
@@ -526,6 +860,7 @@ impl GatewayState {
                 libp2p_peer_id: self.network.libp2p_peer_id.clone(),
                 tp: self.network.tp_identity(),
                 runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
+                idle: self.network.is_idle(),
             });
         }
         peers
@@ -545,15 +880,17 @@ impl GatewayState {
         })
     }
 
-    /// Menor capacidade entre os peers vivos que podem atender o seletor.
+    /// Menor capacidade entre os peers da pipeline planejada que podem atender
+    /// o seletor. Peers ociosos dessa pipeline são acordados pelo caminho de
+    /// geração antes do primeiro salto.
     ///
     /// A geração atravessa todos os estágios do pipeline, então anunciar o
     /// maior peer seria uma mentira quando outro ainda está em 8192. Um peer
     /// sem anúncio de capacidade é um nó antigo ou ainda inicializando; nesse
     /// caso a configuração local continua sendo o fallback conservador só
-    /// quando não há peer correspondente. Se há peer vivo sem anúncio, a
-    /// requisição fica pendente: aceitar com a capacidade local poderia
-    /// esconder um estágio antigo no pipeline.
+    /// quando não há peer correspondente. Só um peer não ocioso da pipeline
+    /// sem anúncio deixa a requisição pendente: aceitar com a capacidade local
+    /// poderia esconder um estágio antigo no pipeline.
     pub(super) async fn runtime_capacity_for_model(
         &self,
         model: Option<&str>,
@@ -562,11 +899,60 @@ impl GatewayState {
             return (self.local_runtime_capacity().await, false);
         };
         let peers = self.all_peers().await;
-        let (capacity, pending) = runtime_capacity_from_peers(&peers, model);
+        let Some(planned) = self.planned_peers_for_model(&peers, model).await else {
+            return (None, false);
+        };
+        let (capacity, pending) = runtime_capacity_from_peers(&planned, model);
         if capacity.is_some() || pending {
             return (capacity, pending);
         }
         (self.local_runtime_capacity().await, false)
+    }
+
+    /// The capacity gate belongs to the route the planner will actually use,
+    /// not to every live announcer carrying the same model label. Alternative
+    /// routes and unrelated deployments must not make a valid request look
+    /// unready.
+    pub(super) async fn planned_peers_for_model(
+        &self,
+        peers: &[PeerInfo],
+        model: &str,
+    ) -> Option<Vec<PeerInfo>> {
+        let (model_name, deploy_id) = crate::deployment::split_selector(model);
+        let candidates = crate::pipeline::model_pipeline_candidates(peers, model_name, deploy_id);
+        let total_layers = candidates
+            .iter()
+            .map(|peer| peer.total_layers)
+            .max()
+            .filter(|total| *total > 0)?;
+        let rtts = self
+            .network
+            .rtts
+            .fresh_snapshot()
+            .into_iter()
+            .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
+            .collect::<std::collections::HashMap<_, _>>();
+        let plan = crate::pipeline::plan_pipeline_with_rtt(
+            peers,
+            model_name,
+            deploy_id,
+            total_layers,
+            &self.loads,
+            &rtts,
+        )
+        .await?;
+        let planned_ids = plan
+            .steps
+            .iter()
+            .map(|step| step.node_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        Some(
+            peers
+                .iter()
+                .filter(|peer| planned_ids.contains(peer.node_id.as_str()))
+                .cloned()
+                .collect(),
+        )
     }
 }
 
@@ -605,7 +991,10 @@ pub(super) fn runtime_capacity_from_peers(
     if matching.is_empty() {
         return (None, false);
     }
-    if capacities.len() != matching.len() {
+    if matching
+        .iter()
+        .any(|peer| peer.runtime_capacity.is_none() && !peer.idle)
+    {
         return (None, true);
     }
     (

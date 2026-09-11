@@ -91,6 +91,10 @@ transferência.
   o valor somente na faixa final. A estimativa de tamanho inclui a repetição
   e o plano expõe o custo adicional. A estimativa TP soma a
   replicação de tensores compartilhados por rank e reserva o cabeçalho gerado.
+  Na fusão, arrays escalares sob o namespace da arquitetura são reconstruídos
+  pela cobertura de cada fatia, em vez de copiar a primeira; qualquer cauda de
+  camadas especiais é preservada uma vez. O resultado é validado por
+  `gguf::read_layout` antes de o backend o nomear por conteúdo.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.
@@ -100,6 +104,9 @@ transferência.
   anteriores em silêncio.
 - `provider.rs` - contrato `ModelProvider`, tipos comuns de descoberta,
   download, progresso, licença, armazenamento e manifesto.
+- `ollama.rs` - cliente opcional do Ollama; geração mantém o timeout longo do
+  backend, mas `is_available` usa uma sonda de 500 ms para o `/health` não
+  ficar preso enquanto o catálogo frio é enriquecido.
 - `huggingface.rs` - implementação `HuggingFaceProvider` por HTTP nativo, com
   validação de entradas, retomada por faixa, cache próprio e manifesto local.
 
@@ -157,6 +164,13 @@ função pura que decide se um `POST /api/ui/deploy` reaproveita um `deploy_id`:
 mesmo `kind`, mesma `DeploymentIdentity` provada e o mesmo conjunto de
 `(node_id, faixa, tp_rank)`. Sem identidade provada, cunha id novo.
 
+`DeploymentKind::Mixed` representa um GGUF inteiro e uma cabeça fatiada no mesmo
+deployment. `Deployment::append_version` sempre cria `max+1` para alterações de
+topologia, mesmo com os mesmos `RuntimeParams`, e mantém o conjunto de máquinas
+da nova versão no histórico. A remoção parcial preserva a versão como ativa; a
+última remoção grava uma versão ativa vazia, que é válida para o histórico mas
+não é escolhida por `active()` como deployment vivo.
+
 A última entrada de um plano por tamanho é sempre o resto do modelo. O limite
 de armazenamento vale somente para a pasta de fatias; pastas de modelos
 inteiros são somente leitura e nunca entram na retenção automática.
@@ -184,6 +198,15 @@ arrays de strings, são copiados intactos antes de qualquer comparação de
 comprimento. Comprimento 1 é broadcast e permanece igual; um comprimento
 positivo menor que `block_count` em array da arquitetura é recusa nominal com
 chave e tamanho.
+
+### Projetor multimodal
+
+`catalog.rs::find_mmproj_sibling` segue a convenção do llama.cpp: GGUF `.gguf`
+vizinho no mesmo diretório com `mmproj` no nome, escolhendo a quantização mais
+próxima. `DiscoveredModel.mmproj_path` é a resposta persistida no catálogo;
+`ShardSet.mmproj_path` herda o caminho de uma fatia ou do modelo inteiro de
+origem com o mesmo rótulo. A interface não deve varrer o disco. O projetor não
+é um modelo selecionável.
 
 ## Manutenção deste arquivo
 

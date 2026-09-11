@@ -2,6 +2,7 @@
 #[cfg(test)]
 mod undeploy_tests {
     use super::*;
+    use crate::deployment::{Deployment, DeploymentKind, DeploymentModel, DeploymentNode};
     use crate::gateway::testkit::{body_of, state_with};
     use crate::gateway::GatewayState;
     use crate::profile::NodeProfile;
@@ -25,6 +26,43 @@ mod undeploy_tests {
         p.end_layer = range.1;
         p.total_layers = 32;
         p
+    }
+
+    fn deployment_node(
+        node_id: &str,
+        start_layer: u32,
+        end_layer: u32,
+        peer_index: u32,
+        peer_count: u32,
+    ) -> DeploymentNode {
+        DeploymentNode {
+            node_id: node_id.into(),
+            hostname: node_id.into(),
+            start_layer,
+            end_layer,
+            peer_index,
+            peer_count,
+            primary: start_layer == 0,
+            part_sha256: None,
+            source_model_path: None,
+            tp_rank: None,
+            config: RuntimeParams::default(),
+        }
+    }
+
+    fn deployment(nodes: Vec<DeploymentNode>) -> Deployment {
+        Deployment::new(
+            "d-aaaaaaaa".into(),
+            DeploymentKind::Shards,
+            DeploymentModel {
+                label: "qwen35".into(),
+                total_layers: 32,
+                pom_id: None,
+                identity: None,
+            },
+            "coordenador",
+            nodes,
+        )
     }
 
     /// Uma máquina que responde `/api/ui/unload` com o status pedido, contando
@@ -311,11 +349,81 @@ mod undeploy_tests {
             Json(RemoveNodeRequest {
                 group: "qwen35".into(),
                 target_node_id: "eu".into(),
+                deploy_id: String::new(),
             }),
         )
         .await;
 
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         assert_eq!(body_of(response).await["removed"], true);
+    }
+
+    #[tokio::test]
+    async fn removing_one_machine_appends_a_version_and_keeps_the_deployment_serving() {
+        let (port, _) = fake_machine(axum::http::StatusCode::OK).await;
+        let mut target = peer("no-a", "ksia", port, (0, 15));
+        target.deploy_id = "d-aaaaaaaa".into();
+        let mut remaining = peer("eu", "eu", 0, (16, 31));
+        remaining.deploy_id = "d-aaaaaaaa".into();
+        let state = admin_state(vec![target, remaining]).await;
+        state
+            .database
+            .save_deployment(&deployment(vec![
+                deployment_node("no-a", 0, 15, 0, 2),
+                deployment_node("eu", 16, 31, 1, 2),
+            ]))
+            .unwrap();
+
+        let response = remove_node_endpoint(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(RemoveNodeRequest {
+                group: "qwen35".into(),
+                target_node_id: "no-a".into(),
+                deploy_id: "d-aaaaaaaa".into(),
+            }),
+        )
+        .await;
+        let body = body_of(response).await;
+
+        assert_eq!(body["removed"], true, "{body}");
+        assert_eq!(body["serving"], true);
+        assert_eq!(body["version"], 2);
+        let saved = state.database.deployment("d-aaaaaaaa").unwrap().unwrap();
+        assert_eq!(saved.active_version, 2);
+        assert_eq!(saved.nodes.len(), 1);
+        assert_eq!(saved.nodes[0].node_id, "eu");
+        assert_eq!(saved.versions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn removing_the_last_machine_appends_an_empty_inactive_version() {
+        let mut local = peer("eu", "eu", 0, (0, 31));
+        local.deploy_id = "d-aaaaaaaa".into();
+        let state = admin_state(vec![local]).await;
+        state
+            .database
+            .save_deployment(&deployment(vec![deployment_node("eu", 0, 31, 0, 1)]))
+            .unwrap();
+
+        let response = remove_node_endpoint(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(RemoveNodeRequest {
+                group: "qwen35".into(),
+                target_node_id: "eu".into(),
+                deploy_id: "d-aaaaaaaa".into(),
+            }),
+        )
+        .await;
+        let body = body_of(response).await;
+
+        assert_eq!(body["removed"], true, "{body}");
+        assert_eq!(body["serving"], false);
+        assert_eq!(body["version"], 2);
+        let saved = state.database.deployment("d-aaaaaaaa").unwrap().unwrap();
+        assert!(saved.nodes.is_empty());
+        assert_eq!(saved.versions.len(), 2);
+        assert!(crate::deployment::active(&[saved], "qwen35").is_none());
     }
 }

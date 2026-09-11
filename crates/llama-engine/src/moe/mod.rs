@@ -2,7 +2,7 @@
 //!
 //! O caminho denso não importa este módulo. O ponto de integração do motor
 //! próprio é `Q4_0MoeBlock`, que combina cache, loader GGUF, router e executor
-//! CPU para o primeiro formato suportado.
+//! CPU ou CUDA para o primeiro formato suportado.
 
 pub mod admission;
 #[cfg(any(feature = "cuda", test))]

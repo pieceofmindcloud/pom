@@ -15,13 +15,16 @@ import { storageKey } from "./brand";
 import { modelSearchPath, type ModelSearchPathOptions } from "./modelProvider";
 import type {
   Deployment,
+  AddNodeOptionsResponse,
   HuggingFaceTokenConfig,
   RemoteModelDetails,
   RemoteModelProviderStatus,
   RemoteModelSearchResponse,
   RemoteStorage,
   RuntimeParams,
+  KvCacheType,
 } from "./types";
+import type { NetworkChatRequest } from "./types";
 
 const KEY_STORAGE = storageKey("connectionKey");
 
@@ -125,6 +128,30 @@ export async function ensureChatApiKey(force = false): Promise<string> {
     chatApiKeyRequest = null;
   });
   return chatApiKeyRequest;
+}
+
+/** Every network-chat action carries the node-owned POM API key in its frame. */
+export async function postNetworkChat<T = { accepted: boolean }>(
+  action: NetworkChatRequest,
+): Promise<T> {
+  return api.post<T>("/api/ui/network-chat", {
+    ...action,
+    api_key: await ensureChatApiKey(),
+  });
+}
+
+export async function downloadNetworkChatFile(messageId: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  if (connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
+  const response = await fetch(`/api/ui/network-chat/file/${encodeURIComponent(messageId)}`, {
+    headers,
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const { message, body } = await explain(response);
+    throw new ApiError(response.status, message, body);
+  }
+  return response.blob();
 }
 
 /** Thrown for any non-2xx answer, carrying whatever the node explained. */
@@ -375,13 +402,33 @@ export function devUpdate(nodeId?: string) {
  */
 export function addNode(req: {
   group: string;
+  deploy_id?: string;
+  kind?: "shards" | "whole";
   target_node_id: string;
   start_layer: number;
   end_layer: number;
+  n_gpu_layers?: number;
+  offload_kqv?: boolean;
+  cache_type_k?: KvCacheType;
+  cache_type_v?: KvCacheType;
 }) {
-  return api.post<{ applied: boolean; overlapping_layers: number[] }>(
+  return api.post<{
+    applied: boolean;
+    overlapping_layers: number[];
+    deploy_id?: string;
+    version?: number;
+  }>(
     "/api/ui/deploy/node",
     req,
+  );
+}
+
+/** Inventário e configurações da máquina atualmente escolhida no diálogo. */
+export function addNodeOptions(group: string, targetNodeId: string, signal?: AbortSignal) {
+  return api.post<AddNodeOptionsResponse>(
+    "/api/ui/deploy/node/options",
+    { group, target_node_id: targetNodeId },
+    { signal },
   );
 }
 
@@ -391,10 +438,16 @@ export function addNode(req: {
  * `uncovered_layers` vazio significa que outra máquina serve a mesma faixa: a
  * rede perde uma rota paralela e continua servindo.
  */
-export function removeNode(nodeId: string, group: string) {
-  return api.post<{ removed: boolean; uncovered_layers: number[] }>(
+export function removeNode(nodeId: string, group: string, deployId?: string) {
+  return api.post<{
+    removed: boolean;
+    uncovered_layers: number[];
+    deploy_id?: string;
+    version?: number;
+    serving?: boolean;
+  }>(
     "/api/ui/deploy/node/remove",
-    { group, target_node_id: nodeId },
+    { group, target_node_id: nodeId, ...(deployId ? { deploy_id: deployId } : {}) },
   );
 }
 
@@ -436,6 +489,8 @@ export interface DeploymentRow {
   deployment: Deployment;
   /** Há peer vivo anunciando este `deploy_id`. */
   serving: boolean;
+  /** Há peers vivos, mas todos os peers desta implantação estão ociosos. */
+  idle?: boolean;
   /** É esta que atende quem pede só o nome do modelo, sem sufixo `@`. */
   is_default: boolean;
   /** Quais nós guardam uma cópia do registro. */

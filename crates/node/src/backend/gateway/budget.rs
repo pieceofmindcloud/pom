@@ -44,6 +44,32 @@ pub fn speculative_k_of(speculative_k: u32, n_batch: u32) -> u32 {
     speculative_k.max(1).min(n_batch.max(1))
 }
 
+/// Decide se a geração pode pedir MTP para o plano selecionado.
+///
+/// Um gateway sem modelo local não tem `NodeConfig` para consultar. Nesse
+/// caso, a capacidade anunciada pelo plano é a evidência da execução remota.
+/// `Some(false)` continua sendo um kill-switch explícito do nó que inicia a
+/// geração.
+pub(super) fn mtp_enabled_for_plan(
+    local_mtp_enabled: Option<bool>,
+    plan_supports_mtp: bool,
+) -> bool {
+    plan_supports_mtp && local_mtp_enabled.unwrap_or(true)
+}
+
+/// O callback `remote-stream` não tem uma rodada do gateway para esconder o
+/// custo do draft seguinte: o produtor remoto precisa terminar o `nextn`
+/// antes de liberar o próximo lote. Em uma pipeline fatiada, isso transforma
+/// cada tentativa de MTP em espera do produtor. O caminho legado continua
+/// podendo usar MTP; somente o stream remoto faz fallback para um token por
+/// rodada enquanto o draft não puder ser calculado fora desse ciclo.
+pub(super) fn disable_sliced_mtp_for_remote_stream(
+    remote_stream_capable: bool,
+    sliced_mtp_requested: bool,
+) -> bool {
+    remote_stream_capable && sliced_mtp_requested
+}
+
 // O protocolo antigo `/v1/infer` (tensor em base64, uma chamada por peer)
 // saiu daqui: hoje o pipeline fala `/v1/prefill` e `/v1/step` com o
 // enquadramento binario de `inference/wire.rs`, e o encadeamento dos hops
@@ -154,7 +180,7 @@ impl OutputTokenLimit {
     pub fn rejection_reason(self) -> Option<String> {
         if self.capacity_pending {
             return Some(
-                "a capacidade efetiva do modelo ainda não foi confirmada por todos os peers vivos"
+                "a capacidade efetiva do modelo ainda não foi confirmada por todos os peers da pipeline planejada"
                     .into(),
             );
         } else if self.effective > 0 && self.leg > 0 {
@@ -217,9 +243,10 @@ impl GatewayState {
             .await
     }
 
-    /// Resolve the request against the capacity of every live peer serving the
-    /// selected model. The deployment leg remains separate from the request's
-    /// context-derived total.
+    /// Resolve the request against the capacity of the peers selected by the
+    /// current pipeline plan. The deployment leg remains separate from the
+    /// request's context-derived total; idle planned peers are reloaded by
+    /// generation before the first inference hop.
     pub async fn request_output_limit_for_model(
         &self,
         model: Option<&str>,
@@ -288,7 +315,7 @@ pub fn log_output_limit(route: &str, limit: OutputTokenLimit) {
     if limit.capacity_pending() {
         info!(
             route,
-            "capacidade efetiva aguardando confirmação de todos os peers vivos"
+            "capacidade efetiva aguardando confirmação dos peers da pipeline planejada"
         );
         return;
     }
@@ -427,12 +454,18 @@ pub enum GenEvent {
 /// Keeping them together prevents each adapter from growing a subtly
 /// different list of generation parameters.
 pub(crate) struct GenerationInput {
+    /// Correlation ID chosen at the HTTP boundary. When absent (for an
+    /// internal/test caller), the audit adapter creates one before spawning.
+    pub(crate) trace_id: Option<String>,
     pub(crate) state: GatewayState,
     /// API key validated at the client gateway. It is retained only as input
     /// to the generation adapter and is never sent to an inference peer.
     pub(crate) inference_token: String,
     pub(crate) model: String,
     pub(crate) prompt: String,
+    /// Bytes das imagens já reduzidas pelo cliente. Só a cabeça do pipeline
+    /// recebe este campo; os outros peers trabalham com o estado oculto.
+    pub(crate) images: Vec<Vec<u8>>,
     pub(crate) chat_template: bool,
     /// Os dois tetos desta requisição: o da perna e o do total. Ver
     /// [`OutputBudget`].
@@ -448,6 +481,9 @@ pub(crate) struct GenerationInput {
     /// mensagens, que só cresce: imune a template, a rótulo e a bloco de
     /// ferramentas. Ver `crate::openai::conversation_cache_key`.
     pub(crate) cache_key: Option<String>,
+    /// Explicit layer-0 peer selected by the Chat UI, when any. The planner
+    /// validates it against the live model heads before honoring it.
+    pub(crate) preferred_head: Option<String>,
     /// The parsed HTTP request body, retained for audit without headers or
     /// credentials.
     pub(crate) request_details: serde_json::Value,
@@ -480,7 +516,20 @@ pub struct GenSummary {
 /// Cada taxa usa seu próprio relógio e conjunto de tokens.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GenerationTimings {
+    /// Primeiro evento observável do motor local. Nulo quando o backend não
+    /// publicou uma marca temporal explícita.
+    pub local_engine_first_event_ms: Option<u64>,
+    /// Primeiro token que atravessou o pipeline até o gateway.
+    pub pipeline_first_token_ms: u64,
     pub ttft_ms: u64,
+    /// TTFT measured by the gateway, from generation ingress to first token
+    /// emitted into the protocol adapter.
+    pub server_ttft_ms: Option<u64>,
+    /// TTFT measured locally by the inference peer. It is absent when the
+    /// peer did not return a first-token marker.
+    pub engine_ttft_ms: Option<u64>,
+    /// TTFT measured by the browser with `performance.now()`.
+    pub client_ttft_ms: Option<u64>,
     pub prefill_ms: u64,
     pub prefill_tokens: u32,
     pub prefill_tokens_per_sec: Option<f64>,
@@ -659,7 +708,12 @@ pub(crate) fn timing_metrics(
 ) -> GenerationTimings {
     let generation_ms = total_ms.saturating_sub(ttft_ms);
     GenerationTimings {
+        local_engine_first_event_ms: None,
+        pipeline_first_token_ms: ttft_ms,
         ttft_ms,
+        server_ttft_ms: None,
+        engine_ttft_ms: None,
+        client_ttft_ms: None,
         prefill_ms,
         prefill_tokens,
         prefill_tokens_per_sec: rate_if_measurable(prefill_tokens, prefill_ms),
@@ -688,14 +742,25 @@ pub(super) fn summary_for(
         .saturating_duration_since(request_started)
         .as_millis() as u64;
     trace.output_tokens = tokens_generated;
+    trace.set_generated_tokens(tokens_generated);
     trace.complete = !partial;
-    let timings = timing_metrics(
+    trace.server_ttft_ms = Some(ttft_ms);
+    // Do not manufacture `outside_node` by subtracting accumulated peer
+    // processing from E2E. Those clocks are wall-clock and accumulated work,
+    // respectively, and the distributed pipeline overlaps them. The fields
+    // remain available only when an explicit, causally measured residual is
+    // supplied by a future synchronized trace.
+    let mut timings = timing_metrics(
         total_ms,
         ttft_ms,
         trace.prefill_ms,
         trace.input_tokens.saturating_sub(trace.cached_tokens),
         tokens_generated,
     );
+    timings.server_ttft_ms = Some(ttft_ms);
+    timings.engine_ttft_ms = trace.engine_ttft_ms;
+    timings.client_ttft_ms = trace.client_ttft_ms;
+    trace.refresh_telemetry(total_ms);
     GenSummary {
         source: format!(
             "pipeline:{}{}",

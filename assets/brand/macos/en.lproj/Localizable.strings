@@ -1,5 +1,7 @@
+"status.about" = "About POM";
 "status.gatewayUnavailable.title" = "POM could not reach the gateway";
 "status.gatewayUnavailable.detail" = "The local gateway has not responded yet. Start the node and try again.";
 "status.gatewayUnavailable.retry" = "Try again";
 "status.itemTooltip" = "Open POM chat";
 "status.windowTitle" = "POM chat";
+"status.quit" = "Quit POM";

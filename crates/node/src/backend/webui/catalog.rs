@@ -13,6 +13,8 @@ pub struct NodeInfo {
     /// quando isto é verdade, para nunca oferecer o que vai dar 403.
     pub dev_update: bool,
     pub profile: crate::profile::NodeProfile,
+    /// Human-facing network name shown by the leave action in the main menu.
+    pub network_name: String,
     /// A chave de conexão deste cluster. Não é enfeite de tela: a interface a
     /// mostra em "Chave de Conexão" **e** a guarda para autenticar as chamadas
     /// que exigem `ConnectionAuth` (`lib/queries.ts`, `useNode`). Ela é a
@@ -60,10 +62,18 @@ pub struct NodeInfo {
     /// decidir entre interruptor e leitura; a checagem que vale é a do
     /// `save_tls`, no servidor.
     pub tls_authority: bool,
+    /// Se o cluster prefere HTTP/3 sobre QUIC nos novos hops.
+    pub quic_enabled: bool,
+    /// Só o principal pode mudar a preferência QUIC.
+    pub quic_authority: bool,
     /// Se este nó recolhe e envia logs de processo do cluster.
     pub cluster_logs_enabled: bool,
     /// Só o principal pode mudar a política de logs.
     pub cluster_logs_authority: bool,
+    /// Se este nó aceita o canal global de conversa.
+    pub network_chat_enabled: bool,
+    /// Só o principal pode mudar a política do Chat da rede.
+    pub network_chat_authority: bool,
     pub thermal: ThermalPolicy,
 }
 
@@ -76,13 +86,17 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         .unwrap_or_default();
     let (
         profile,
+        network_name,
         connection_key,
         authority_level,
         authority_fingerprint,
         advertise_addr,
         tls_required,
+        quic_enabled,
         tls_authority,
+        quic_authority,
         cluster_logs_authority,
+        network_chat_authority,
         thermal,
         admin_exposure,
         admin_access_token_configured,
@@ -91,6 +105,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         let cfg = state.auth.read().await;
         (
             cfg.profile,
+            cfg.network.public_name.clone(),
             cfg.connection_key.clone(),
             state
                 .admin_trust
@@ -107,6 +122,15 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 .then(|| crate::admin_trust::fingerprint_of(&state.authority_principal.pubkey)),
             cfg.advertise_addr.clone(),
             cfg.tls_required,
+            cfg.quic_enabled,
+            state
+                .admin_trust
+                .effective_authority(&state.authority_principal, cfg.profile)
+                == Some(crate::admin_trust::EffectiveAuthority::Primary),
+            state
+                .admin_trust
+                .effective_authority(&state.authority_principal, cfg.profile)
+                == Some(crate::admin_trust::EffectiveAuthority::Primary),
             state
                 .admin_trust
                 .effective_authority(&state.authority_principal, cfg.profile)
@@ -134,6 +158,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         build_commit: crate::BUILD_COMMIT.to_string(),
         dev_update: crate::devupdate::enabled(),
         profile,
+        network_name,
         connection_key,
         authority_level,
         authority_fingerprint,
@@ -180,9 +205,13 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         advertise_addr,
         effective_address: state.network.announce_addr(),
         tls_required,
+        quic_enabled,
         tls_authority,
+        quic_authority,
         cluster_logs_enabled: state.network.cluster_logs_enabled(),
         cluster_logs_authority,
+        network_chat_enabled: state.network.network_chat_enabled(),
+        network_chat_authority,
         thermal,
         system,
     })
@@ -199,13 +228,6 @@ pub(super) async fn cluster_logs(
     State(state): State<GatewayState>,
     Query(query): Query<ClusterLogsQuery>,
 ) -> Response {
-    if !local_is_primary(&state).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "os logs do cluster só estão disponíveis no nó principal." })),
-        )
-            .into_response();
-    }
     match state
         .cluster_logs
         .list(query.deploy_id.as_deref(), query.limit)
@@ -348,7 +370,7 @@ pub(super) async fn save_admin_access(
     .into_response()
 }
 
-pub(super) fn new_admin_access_token() -> String {
+pub(crate) fn new_admin_access_token() -> String {
     let raw = uuid::Uuid::new_v4().simple().to_string();
     hex::encode(Sha256::digest(raw.as_bytes()))
 }
@@ -487,7 +509,11 @@ pub(super) async fn enrich_catalog(partial: Arc<Catalog>) -> Arc<Catalog> {
 }
 
 /// Publish header metadata, reconciling it with whichever inventory is current.
-pub(super) fn spawn_enrichment(database: Arc<crate::db::PomDb>, roots: CatalogRoots, partial: Arc<Catalog>) {
+pub(super) fn spawn_enrichment(
+    database: Arc<crate::db::PomDb>,
+    roots: CatalogRoots,
+    partial: Arc<Catalog>,
+) {
     tokio::spawn(async move {
         let started = Instant::now();
         info!(
@@ -904,7 +930,10 @@ pub(super) fn check_dir(raw: &str, what: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-pub(super) fn reject_nested_shard_dir(model_dirs: &[String], shard_dir: &str) -> Result<(), String> {
+pub(super) fn reject_nested_shard_dir(
+    model_dirs: &[String],
+    shard_dir: &str,
+) -> Result<(), String> {
     let shard = std::path::Path::new(shard_dir)
         .canonicalize()
         .map_err(|e| format!("Pasta de modelos fatiados: não deu para resolver o caminho: {e}"))?;
@@ -1030,6 +1059,46 @@ pub struct SaveTlsRequest {
     pub tls_required: bool,
 }
 
+#[derive(Deserialize)]
+pub struct SaveQuicRequest {
+    pub quic_enabled: bool,
+}
+
+pub(super) async fn save_quic(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveQuicRequest>,
+) -> Response {
+    if !local_is_primary(&state).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "só o nó principal decide o QUIC do cluster." })),
+        )
+            .into_response();
+    }
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.quic_enabled = req.quic_enabled;
+        if let Err(error) = cfg.save() {
+            return bad_request(format!(
+                "não deu para gravar {}: {error}",
+                crate::brand::config_filename()
+            ));
+        }
+    }
+    state.peer_http.set_quic(req.quic_enabled);
+    crate::peer_client::set_quic_ativo(req.quic_enabled);
+    info!(
+        "QUIC entre peers {} pela interface",
+        if req.quic_enabled {
+            "ligado"
+        } else {
+            "desligado"
+        }
+    );
+    Json(json!({ "quic_enabled": req.quic_enabled })).into_response()
+}
+
 /// Liga ou desliga o TLS entre peers, para o cluster inteiro.
 ///
 /// Não precisa de reinício, e pode ser virado quantas vezes o operador quiser:
@@ -1119,9 +1188,108 @@ pub(super) async fn save_cluster_logs(
     state.cluster_logs.set_enabled(req.logs_enabled);
     info!(
         "logs de processo do cluster {} pela interface",
-        if req.logs_enabled { "ligados" } else { "desligados" }
+        if req.logs_enabled {
+            "ligados"
+        } else {
+            "desligados"
+        }
     );
     Json(json!({ "logs_enabled": req.logs_enabled })).into_response()
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct SaveNetworkChatRequest {
+    pub network_chat_enabled: bool,
+}
+
+/// Repassa a decisão ao principal real quando a tela está aberta num admin
+/// secundário. A cadeia administrativa continua sendo a autoridade, e o
+/// destino grava o valor no próprio pom.json antes de anunciá-lo.
+async fn forward_network_chat_to_primary(
+    state: &GatewayState,
+    req: &SaveNetworkChatRequest,
+) -> Response {
+    let primary = state.admin_trust.current_primary();
+    let Some(peer) = state.all_peers().await.into_iter().find(|peer| {
+        peer.node_id == primary.node_id
+            && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
+            && peer.authority_pubkey == primary.pubkey
+            && peer.gateway_port.is_some()
+    }) else {
+        return bad_request("o nó principal não está disponível para decidir o Chat da rede");
+    };
+    let Some(base) = peer.gateway_url() else {
+        return bad_request("o nó principal não anuncia uma porta de gateway");
+    };
+    let Ok(client) = state.peer_http.for_peer(&peer.node_id) else {
+        return bad_request("sem cliente para o nó principal");
+    };
+    let request = match state
+        .control_json_request(
+            client.post(format!("{base}/api/ui/network/chat")),
+            "/api/ui/network/chat",
+            req,
+        )
+        .await
+    {
+        Ok(request) => request.timeout(PEER_TIMEOUT),
+        Err(error) => {
+            return bad_request(format!(
+                "não foi possível assinar a decisão do Chat: {error}"
+            ))
+        }
+    };
+    match request.send().await {
+        Ok(response) if response.status().is_success() => {
+            Json(json!({ "network_chat_enabled": req.network_chat_enabled })).into_response()
+        }
+        Ok(response) => {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "o nó principal recusou a decisão".to_string());
+            (status, body).into_response()
+        }
+        Err(error) => bad_request(format!("o nó principal está inacessível: {error}")),
+    }
+}
+
+/// Liga ou desliga o Chat da rede para o cluster inteiro. O valor anunciado
+/// só desperta a busca autenticada nos demais nós; apenas o principal real
+/// grava a política, e um admin secundário encaminha a ação para ele.
+pub(super) async fn save_network_chat(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveNetworkChatRequest>,
+) -> Response {
+    if !local_is_primary(&state).await {
+        return forward_network_chat_to_primary(&state, &req).await;
+    }
+
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.network_chat_enabled = req.network_chat_enabled;
+        if let Err(error) = cfg.save() {
+            return bad_request(format!(
+                "não deu para gravar {}: {error}",
+                crate::brand::config_filename()
+            ));
+        }
+    }
+    state
+        .network
+        .set_network_chat_enabled(req.network_chat_enabled);
+    state.network_chat.set_enabled(req.network_chat_enabled);
+    info!(
+        "Chat da rede {} pela interface",
+        if req.network_chat_enabled {
+            "ligado"
+        } else {
+            "desligado"
+        }
+    );
+    Json(json!({ "network_chat_enabled": req.network_chat_enabled })).into_response()
 }
 
 pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -1151,7 +1319,10 @@ pub(super) struct RttReport {
 /// Publica apenas as medições feitas por este nó. A autenticação é necessária
 /// porque o relatório faz parte da telemetria interna usada para escolher
 /// rotas de inferência.
-pub(super) async fn network_rtt(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Json<RttReport> {
+pub(super) async fn network_rtt(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Json<RttReport> {
     if !state
         .auth
         .read()
@@ -1216,25 +1387,18 @@ fn reported_peer_load(node: &serde_json::Value) -> Option<u32> {
         .and_then(|load| u32::try_from(load).ok())
 }
 
-async fn live_peer_load(
-    state: &GatewayState,
-    peer: &PeerInfo,
-    connection_key: &str,
-) -> Option<u32> {
+async fn live_peer_load(state: &GatewayState, peer: &PeerInfo) -> Option<u32> {
     if peer.node_id == state.network.node_id {
         return Some(state.loads.load(&peer.node_id).await);
     }
 
     let client = state.peer_http.for_peer(&peer.node_id).ok()?;
     for base in peer.gateway_candidates() {
-        let response = tokio::time::timeout(
-            PEER_TIMEOUT,
-            client
-                .get(format!("{base}/api/ui/node"))
-                .bearer_auth(connection_key)
-                .send(),
-        )
-        .await;
+        let request = state
+            .control_get_request(client.get(format!("{base}/api/ui/node")), "/api/ui/node")
+            .await
+            .ok()?;
+        let response = tokio::time::timeout(PEER_TIMEOUT, request.send()).await;
         let Ok(Ok(response)) = response else {
             continue;
         };
@@ -1251,7 +1415,7 @@ async fn live_peer_load(
 
 #[cfg(test)]
 mod tests {
-    use super::reported_peer_load;
+    use super::*;
     use serde_json::json;
 
     #[test]
@@ -1259,6 +1423,42 @@ mod tests {
         assert_eq!(reported_peer_load(&json!({ "load": 4 })), Some(4));
         assert_eq!(reported_peer_load(&json!({})), None);
         assert_eq!(reported_peer_load(&json!({ "load": -1 })), None);
+    }
+
+    #[tokio::test]
+    async fn secondary_admin_reads_its_local_cluster_log_replica() {
+        let state = crate::gateway::testkit::secondary_admin_state("secondary").await;
+        state
+            .database
+            .append_cluster_logs(
+                &[crate::cluster_logs::LogEntry {
+                    node_id: "worker".into(),
+                    node_name: "worker-1".into(),
+                    deploy_id: "deploy-1".into(),
+                    origin_at: "2026-09-11T12:00:00Z".into(),
+                    level: "INFO".into(),
+                    target: "worker::test".into(),
+                    message: "replica local".into(),
+                }],
+                0,
+            )
+            .expect("gravar réplica local");
+
+        let response = cluster_logs(
+            ConnectionAuth,
+            State(state),
+            Query(ClusterLogsQuery {
+                deploy_id: Some("deploy-1".into()),
+                limit: Some(10),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("corpo da réplica");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON da réplica");
+        assert_eq!(body["entries"][0]["message"], "replica local");
     }
 }
 
@@ -1324,13 +1524,8 @@ pub(super) async fn inference_heads(
         })
     };
 
-    let connection_key = state.auth.read().await.connection_key.clone();
-    let loads = futures::future::join_all(
-        heads
-            .iter()
-            .map(|peer| live_peer_load(&state, peer, &connection_key)),
-    )
-    .await;
+    let loads =
+        futures::future::join_all(heads.iter().map(|peer| live_peer_load(&state, peer))).await;
     let candidates = if heads.is_empty() {
         Vec::new()
     } else {
@@ -1390,6 +1585,10 @@ pub(super) async fn inference_heads(
 pub(super) struct ChatTelemetryRequest {
     #[serde(default)]
     pub(super) node_ids: Vec<String>,
+    /// ID OpenAI da execução. Quando ausente, o painel consulta a execução
+    /// concluída mais recente que tiver as arestas pedidas.
+    #[serde(default)]
+    pub(super) execution_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -1403,15 +1602,383 @@ pub(super) struct ChatTelemetryMeasurement {
 #[derive(Debug, Serialize)]
 pub(super) struct ChatTelemetryResponse {
     pub(super) measurements: Vec<ChatTelemetryMeasurement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) pipeline_cost: Option<ChatTelemetryPipelineCost>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) pipeline_routes: Vec<ChatTelemetryPipelineRoute>,
 }
 
-/// Combina a sonda local com os relatórios direcionais dos próprios peers.
+#[derive(Debug, Serialize, PartialEq)]
+pub(super) struct ChatTelemetryPipelineCost {
+    pub(super) legs_ms: Vec<Option<f64>>,
+    pub(super) compute_ms: Option<f64>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Clone)]
+pub(super) struct ChatTelemetryPipelineRoute {
+    /// Caminho completo, incluindo o gateway virtual no retorno.
+    pub(super) node_ids: Vec<String>,
+    /// Gateway -> cabeça, handoffs e cauda -> gateway, nessa ordem.
+    pub(super) legs_ms: Vec<Option<f64>>,
+    /// Soma das pernas quando todas foram medidas; não inclui compute.
+    pub(super) rtt_ms: Option<f64>,
+}
+
+fn collect_pipeline_route_paths(
+    candidates: &[&crate::network::PeerInfo],
+    next_layer: u32,
+    total_layers: u32,
+    path: &mut Vec<String>,
+    routes: &mut Vec<Vec<String>>,
+) {
+    if next_layer >= total_layers {
+        routes.push(path.clone());
+        return;
+    }
+
+    let mut next = candidates
+        .iter()
+        .copied()
+        .filter(|peer| peer.start_layer == next_layer && peer.end_layer >= next_layer)
+        .collect::<Vec<_>>();
+    next.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+    for peer in next {
+        if path.iter().any(|node_id| node_id == &peer.node_id) {
+            continue;
+        }
+        path.push(peer.node_id.clone());
+        collect_pipeline_route_paths(
+            candidates,
+            peer.end_layer.saturating_add(1),
+            total_layers,
+            path,
+            routes,
+        );
+        path.pop();
+    }
+}
+
+/// Produz todas as rotas completas do modelo, não apenas a escolhida pelo
+/// planner. A ordem do resultado é menor soma de RTT primeiro, depois o vetor
+/// de IDs dos nós como desempate estável. Assim o card mostra o head rápido
+/// primeiro sem esconder uma alternativa implantada.
+pub(super) fn pipeline_routes_for(
+    peers: &[crate::network::PeerInfo],
+    model: &str,
+    deploy_id: Option<&str>,
+    total_layers: u32,
+    gateway_node_id: &str,
+    pairwise_rtt: &HashMap<(String, String), f64>,
+) -> Vec<ChatTelemetryPipelineRoute> {
+    if model.is_empty() || total_layers == 0 {
+        return Vec::new();
+    }
+    let candidates = crate::pipeline::model_pipeline_candidates(peers, model, deploy_id);
+    let mut paths = Vec::new();
+    collect_pipeline_route_paths(&candidates, 0, total_layers, &mut Vec::new(), &mut paths);
+
+    let mut routes = paths
+        .into_iter()
+        .map(|path| {
+            let node_ids = path
+                .into_iter()
+                .chain(std::iter::once(gateway_node_id.to_owned()))
+                .collect::<Vec<_>>();
+            let leg_nodes = std::iter::once(gateway_node_id.to_owned())
+                .chain(node_ids.iter().cloned())
+                .collect::<Vec<_>>();
+            let legs_ms = leg_nodes
+                .windows(2)
+                .map(|pair| {
+                    if pair[0] == pair[1] {
+                        return Some(0.0);
+                    }
+                    pairwise_rtt
+                        .get(&(pair[0].clone(), pair[1].clone()))
+                        .copied()
+                        .filter(|rtt| rtt.is_finite() && *rtt >= 0.0)
+                })
+                .collect::<Vec<_>>();
+            let rtt_ms = legs_ms
+                .iter()
+                .copied()
+                .collect::<Option<Vec<_>>>()
+                .map(|legs| legs.into_iter().sum());
+            ChatTelemetryPipelineRoute {
+                node_ids,
+                legs_ms,
+                rtt_ms,
+            }
+        })
+        .collect::<Vec<_>>();
+    routes.sort_by(|left, right| {
+        match (left.rtt_ms, right.rtt_ms) {
+            (Some(left), Some(right)) => left.total_cmp(&right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| left.node_ids.cmp(&right.node_ids))
+    });
+    routes
+}
+
+fn dominant_transport_measurement(summary: &serde_json::Value) -> Option<(String, f64)> {
+    summary
+        .get("transports")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .filter_map(|entry| {
+            let transport = entry.get("transport")?.as_str()?.to_owned();
+            let calls = entry.get("calls")?.as_u64()?;
+            if calls == 0 {
+                return None;
+            }
+            let metric = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(serde_json::Value::as_f64)
+                    .or_else(|| {
+                        entry
+                            .get(key)
+                            .and_then(serde_json::Value::as_u64)
+                            .map(|value| value as f64)
+                    })
+            };
+            // This endpoint feeds the network panel and route labels. The
+            // full execution RTT includes remote processing, so prefer the
+            // transport's wire RTT and keep the old field as a fallback for
+            // traces written before net_rtt_median_ms existed.
+            let rtt_ms = metric("net_rtt_median_ms").or_else(|| metric("rtt_median_ms"))?;
+            Some((calls, transport, rtt_ms))
+        })
+        .max_by_key(|(calls, _, _)| *calls)
+        .map(|(_, transport, rtt_ms)| (transport, rtt_ms))
+}
+
+fn cycle_legs(trace: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    trace
+        .get("pipeline_cycle")
+        .and_then(|cycle| cycle.get("decode"))
+        .and_then(serde_json::Value::as_array)
+        .filter(|legs| !legs.is_empty())
+}
+
+/// Extrai a medição da aresta de modelo a partir do trace que a execução
+/// acabou de produzir.
 ///
-/// A tela de implantação já usa esta mesma fonte para as arestas do plano,
-/// mas o chat precisa de uma consulta sob demanda para a execução recém
-/// terminada. Cada relatório é aceito somente quando o `source_node_id` bate
-/// com o peer que respondeu: sem essa verificação, um gateway intermediário
-/// poderia fazer uma medida parecer ser de outra máquina.
+/// `hops` representa nós, enquanto o transporte de uma aresta entra no hop
+/// downstream. Assim, em `head -> tail`, o probe do gateway em `hops[0]` não
+/// pode ser usado para nomear a aresta: a evidência da aresta está em
+/// `hops[1].decode.transport_summary`. O caso `remote-stream` acrescenta uma
+/// entrada sintética no hop zero, e por isso a mesma regra continua válida.
+pub(super) fn execution_transport_measurements(
+    trace: &serde_json::Value,
+    requested: &std::collections::HashSet<String>,
+) -> Vec<ChatTelemetryMeasurement> {
+    if let Some(legs) = cycle_legs(trace) {
+        return legs
+            .iter()
+            .filter_map(|leg| {
+                let from_node_id = leg.get("from_node_id")?.as_str()?;
+                let to_node_id = leg.get("to_node_id")?.as_str()?;
+                if from_node_id == "gateway"
+                    || !requested.contains(from_node_id)
+                    || (to_node_id != "gateway" && !requested.contains(to_node_id))
+                {
+                    return None;
+                }
+                let summary = leg.get("transport_summary")?;
+                let (transport, rtt_ms) = dominant_transport_measurement(summary)?;
+                Some(ChatTelemetryMeasurement {
+                    from_node_id: from_node_id.to_owned(),
+                    to_node_id: to_node_id.to_owned(),
+                    rtt_ms,
+                    transport,
+                })
+            })
+            .collect();
+    }
+
+    let Some(hops) = trace.get("hops").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+
+    hops.windows(2)
+        .filter_map(|window| {
+            let from_node_id = window[0].get("node_id")?.as_str()?;
+            let to_node_id = window[1].get("node_id")?.as_str()?;
+            if from_node_id == to_node_id
+                || !requested.contains(from_node_id)
+                || !requested.contains(to_node_id)
+            {
+                return None;
+            }
+
+            let phase = window[1]
+                .get("decode")
+                .filter(|phase| {
+                    phase
+                        .get("transport_summary")
+                        .and_then(|summary| summary.get("transports"))
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|entries| {
+                            entries.iter().any(|entry| {
+                                entry.get("calls").and_then(serde_json::Value::as_u64) > Some(0)
+                            })
+                        })
+                })
+                .or_else(|| window[1].get("prefill"))?;
+            let entries = phase
+                .get("transport_summary")
+                .and_then(|summary| summary.get("transports"))
+                .and_then(serde_json::Value::as_array)?;
+            let (transport, rtt_ms) = dominant_transport_measurement(&json!({
+                "transports": entries,
+            }))?;
+
+            Some(ChatTelemetryMeasurement {
+                from_node_id: from_node_id.to_owned(),
+                to_node_id: to_node_id.to_owned(),
+                rtt_ms,
+                transport,
+            })
+        })
+        .collect()
+}
+
+/// Retorna as pernas na ordem do ciclo e o compute observado nos peers. Uma
+/// perna ausente permanece `null`: o card não transforma telemetria incompleta
+/// em zero e não fecha o total a partir de uma subtração do wall clock. Sem
+/// `pipeline_cycle`, mantém o contrato antigo sem inventar um custo parcial.
+pub(super) fn execution_pipeline_cost(
+    trace: &serde_json::Value,
+) -> Option<ChatTelemetryPipelineCost> {
+    let hops = trace.get("hops").and_then(serde_json::Value::as_array)?;
+    if hops.is_empty() {
+        return None;
+    }
+    let expected_pairs: Vec<(String, String)> = std::iter::once((
+        "gateway".to_owned(),
+        hops.first()?.get("node_id")?.as_str()?.to_owned(),
+    ))
+    .chain(hops.windows(2).filter_map(|window| {
+        Some((
+            window[0].get("node_id")?.as_str()?.to_owned(),
+            window[1].get("node_id")?.as_str()?.to_owned(),
+        ))
+    }))
+    .chain(std::iter::once((
+        hops.last()?.get("node_id")?.as_str()?.to_owned(),
+        "gateway".to_owned(),
+    )))
+    .collect();
+
+    let cycle = cycle_legs(trace)?;
+    let legs_ms = expected_pairs
+        .iter()
+        .map(|(from_node_id, to_node_id)| {
+            cycle
+                .iter()
+                .find(|leg| {
+                    leg.get("from_node_id").and_then(serde_json::Value::as_str)
+                        == Some(from_node_id.as_str())
+                        && leg.get("to_node_id").and_then(serde_json::Value::as_str)
+                            == Some(to_node_id.as_str())
+                })
+                .and_then(|leg| leg.get("transport_summary"))
+                .and_then(dominant_transport_measurement)
+                .map(|(_, rtt_ms)| rtt_ms)
+        })
+        .collect();
+
+    let compute_ms = hops
+        .iter()
+        .map(|hop| hop.get("decode")?.get("processing_ms")?.as_f64())
+        .collect::<Option<Vec<_>>>()
+        .map(|values| values.into_iter().sum());
+
+    Some(ChatTelemetryPipelineCost {
+        legs_ms,
+        compute_ms,
+    })
+}
+
+/// Reúne as sondas direcionais frescas que cada peer já mantém localmente.
+/// Uma sonda do gateway só conhece seus destinos; sem os relatórios dos
+/// próprios peers, o card nunca conseguiria somar um pipeline com mais de um
+/// salto nem medir a perna final de volta ao gateway.
+async fn pairwise_rtt_for_pipeline(
+    state: &GatewayState,
+    peers: &[crate::network::PeerInfo],
+) -> HashMap<(String, String), f64> {
+    let self_id = state.network.node_id.clone();
+    let mut values = state
+        .network
+        .rtts
+        .fresh_snapshot()
+        .into_iter()
+        .map(|measurement| {
+            (
+                (self_id.clone(), measurement.target_node_id),
+                measurement.rtt_ms,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let reports = futures::future::join_all(peers.iter().filter_map(|peer| {
+        if peer.node_id == self_id {
+            return None;
+        }
+        let client = state.peer_http.for_peer(&peer.node_id).ok()?;
+        let peer = peer.clone();
+        let state = state.clone();
+        Some(async move {
+            for base in peer.gateway_candidates() {
+                let Ok(request) = state
+                    .control_get_request(
+                        client.get(format!("{base}/api/ui/network/rtt")),
+                        "/api/ui/network/rtt",
+                    )
+                    .await
+                else {
+                    continue;
+                };
+                let Ok(Ok(response)) = tokio::time::timeout(PEER_TIMEOUT, request.send()).await
+                else {
+                    continue;
+                };
+                if !response.status().is_success() {
+                    continue;
+                }
+                let Ok(report) = response.json::<RttReport>().await else {
+                    continue;
+                };
+                if report.source_node_id == peer.node_id {
+                    return Some(report);
+                }
+            }
+            None
+        })
+    }))
+    .await;
+
+    for report in reports.into_iter().flatten() {
+        for measurement in report.measurements {
+            values.insert(
+                (report.source_node_id.clone(), measurement.target_node_id),
+                measurement.rtt_ms,
+            );
+        }
+    }
+    values
+}
+
+/// Retorna apenas o transporte observado na execução distribuída.
+///
+/// `RttTable` continua sendo a fonte de probes para seleção de rota, mas não é
+/// uma medida da execução: em particular, uma probe libp2p não pode aparecer
+/// no Chat ou no mapa quando o frame real cruzou por `https-link`.
 pub(super) async fn chat_telemetry(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -1426,6 +1993,8 @@ pub(super) async fn chat_telemetry(
     {
         return Json(ChatTelemetryResponse {
             measurements: Vec::new(),
+            pipeline_cost: None,
+            pipeline_routes: Vec::new(),
         });
     }
     let requested: std::collections::HashSet<String> = request
@@ -1433,64 +2002,89 @@ pub(super) async fn chat_telemetry(
         .into_iter()
         .filter(|node_id| !node_id.is_empty())
         .collect();
-    if requested.len() < 2 {
+    if requested.len() < 2 && request.execution_id.is_some() {
         return Json(ChatTelemetryResponse {
             measurements: Vec::new(),
+            pipeline_cost: None,
+            pipeline_routes: Vec::new(),
         });
     }
 
-    let self_id = state.network.node_id.clone();
-    let peers = state.all_peers().await;
-    let connection_key = state.auth.read().await.connection_key.clone();
-    let mut measurements = Vec::new();
-
-    append_chat_telemetry_measurements(
-        &mut measurements,
-        &self_id,
-        RttReport {
-            source_node_id: self_id.clone(),
-            measurements: local_rtt_measurements(&state),
-        },
-        &requested,
-    );
-
-    for peer in peers {
-        if peer.node_id == self_id || !requested.contains(&peer.node_id) {
-            continue;
+    let trace = if let Some(execution_id) = request.execution_id.as_deref() {
+        let mut trace = None;
+        for attempt in 0..5 {
+            match state.audit.telemetry(execution_id).await {
+                Ok(found) => {
+                    trace = found;
+                    if trace.is_some() || attempt == 4 {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, execution_id, "não foi possível consultar o trace da execução");
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let Some(base) = peer.gateway_url() else {
-            continue;
-        };
-        let Ok(http) = state.peer_http.for_peer(&peer.node_id) else {
-            continue;
-        };
-        let response = http
-            .get(format!("{base}/api/ui/network/rtt"))
-            .timeout(PEER_TIMEOUT)
-            .bearer_auth(&connection_key)
-            .send()
-            .await;
-        let Ok(response) = response else {
-            continue;
-        };
-        if !response.status().is_success() {
-            continue;
+        trace
+    } else if requested.len() >= 2 {
+        match state.audit.recent_telemetries(32).await {
+            Ok(traces) => traces
+                .into_iter()
+                .find(|trace| !execution_transport_measurements(trace, &requested).is_empty()),
+            Err(error) => {
+                tracing::warn!(%error, "não foi possível consultar a última telemetria");
+                None
+            }
         }
-        let Ok(report) = response.json::<RttReport>().await else {
-            continue;
-        };
-        append_chat_telemetry_measurements(&mut measurements, &peer.node_id, report, &requested);
-    }
+    } else {
+        None
+    };
+    let mut measurements = trace
+        .as_ref()
+        .map(|trace| execution_transport_measurements(trace, &requested))
+        .unwrap_or_default();
+    let pipeline_cost = trace.as_ref().and_then(execution_pipeline_cost);
+
+    let pipeline_routes = if request.execution_id.is_none() {
+        let peers = state.all_peers().await;
+        let active_selector = state.active_model().await;
+        let (model, deploy_id) = crate::deployment::split_selector(&active_selector);
+        let total_layers = crate::pipeline::model_pipeline_candidates(&peers, model, deploy_id)
+            .iter()
+            .map(|peer| peer.total_layers)
+            .max()
+            .unwrap_or(0);
+        let pairwise_rtt = pairwise_rtt_for_pipeline(&state, &peers).await;
+        pipeline_routes_for(
+            &peers,
+            model,
+            deploy_id,
+            total_layers,
+            &state.network.node_id,
+            &pairwise_rtt,
+        )
+    } else {
+        Vec::new()
+    };
 
     measurements.sort_by(|a, b| {
         a.from_node_id
             .cmp(&b.from_node_id)
             .then_with(|| a.to_node_id.cmp(&b.to_node_id))
     });
-    Json(ChatTelemetryResponse { measurements })
+    Json(ChatTelemetryResponse {
+        measurements,
+        pipeline_cost,
+        pipeline_routes,
+    })
 }
 
-pub(super) async fn chat_history(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn chat_history(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     match state.database.chat_sessions() {
         Ok(sessions) => Json(sessions).into_response(),
         Err(error) => {
@@ -1502,6 +2096,104 @@ pub(super) async fn chat_history(_auth: ConnectionAuth, State(state): State<Gate
                 .into_response()
         }
     }
+}
+
+pub(super) async fn network_chat_snapshot(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    let mut messages = match state
+        .network_chat
+        .history(crate::network_chat::NETWORK_CHAT_ROOM, 100)
+    {
+        Ok(messages) => messages,
+        Err(error) => {
+            tracing::error!("não foi possível ler o Chat da rede: {error:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "não foi possível ler o Chat da rede" })),
+            )
+                .into_response();
+        }
+    };
+    for message in &mut messages {
+        message.file_data.clear();
+    }
+    let mut participants = vec![json!({
+        "nodeId": state.network.node_id,
+        "hostname": state.network.hostname,
+        "online": true,
+        "profile": format!("{:?}", state.network.profile()),
+    })];
+    let blocked = state.auth.read().await.blocked_nodes.clone();
+    participants.extend(
+        state
+            .network
+            .alive_peers()
+            .await
+            .into_iter()
+            .filter(|peer| peer.node_id != state.network.node_id)
+            .filter(|peer| !blocked.iter().any(|node_id| node_id == &peer.node_id))
+            .map(|peer| {
+                json!({
+                    "nodeId": peer.node_id,
+                    "hostname": peer.hostname,
+                    "online": true,
+                    "profile": format!("{:?}", peer.profile),
+                })
+            }),
+    );
+    Json(json!({
+        "enabled": state.network_chat.enabled(),
+        "messages": messages,
+        "participants": participants,
+        "typing": state.network_chat.typing_snapshot(),
+        "dropped": state.network_chat.dropped(),
+    }))
+    .into_response()
+}
+
+pub(super) async fn network_chat_action(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(request): Json<crate::network_chat::ChatRequest>,
+) -> Response {
+    if request.api_key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "o token do Chat da rede é obrigatório" })),
+        )
+            .into_response();
+    }
+    match state.network_chat.submit(request).await {
+        Ok(response) if response.accepted => Json(response).into_response(),
+        Ok(response) => (StatusCode::FORBIDDEN, Json(response)).into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn network_chat_file(
+    _auth: ConnectionAuth,
+    Path(message_id): Path<String>,
+    State(state): State<GatewayState>,
+) -> Response {
+    let file = match state.database.network_chat_file(&message_id) {
+        Ok(Some(file)) => file,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            tracing::error!("não foi possível ler arquivo do Chat da rede: {error:#}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let mut response = Body::from(file.0).into_response();
+    if let Ok(value) = HeaderValue::from_str(&file.1) {
+        response.headers_mut().insert(header::CONTENT_TYPE, value);
+    }
+    response
 }
 
 pub(super) async fn save_chat_history(
@@ -1542,7 +2234,10 @@ pub(super) async fn delete_chat_history(
     }
 }
 
-pub(super) async fn clear_chat_history(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+pub(super) async fn clear_chat_history(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
     match state.database.clear_chat_sessions() {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => {
@@ -1558,30 +2253,4 @@ pub(super) async fn clear_chat_history(_auth: ConnectionAuth, State(state): Stat
 
 pub(super) fn local_rtt_measurements(state: &GatewayState) -> Vec<crate::route::RttMeasurement> {
     state.network.rtts.fresh_snapshot()
-}
-
-pub(super) fn append_chat_telemetry_measurements(
-    output: &mut Vec<ChatTelemetryMeasurement>,
-    expected_source: &str,
-    report: RttReport,
-    requested: &std::collections::HashSet<String>,
-) {
-    if report.source_node_id != expected_source {
-        return;
-    }
-    output.extend(
-        report
-            .measurements
-            .into_iter()
-            .filter(|measurement| {
-                requested.contains(&measurement.target_node_id)
-                    && measurement.target_node_id != expected_source
-            })
-            .map(|measurement| ChatTelemetryMeasurement {
-                from_node_id: expected_source.to_string(),
-                to_node_id: measurement.target_node_id,
-                rtt_ms: measurement.rtt_ms,
-                transport: measurement.transport,
-            }),
-    );
 }

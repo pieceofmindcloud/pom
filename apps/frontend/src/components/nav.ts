@@ -2,9 +2,9 @@ import {
   BookOpen,
   Boxes,
   ChartNoAxesColumn,
-  Fingerprint,
   FolderTree,
   Gauge,
+  Globe2,
   History,
   KeyRound,
   Layers,
@@ -18,7 +18,6 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
-  Sparkles,
   Terminal,
   Upload,
   type LucideIcon,
@@ -30,6 +29,7 @@ export interface NavLeaf {
   labelKey: string;
   to: string;
   icon?: LucideIcon;
+  children?: NavLeaf[];
   /** Promotes this child to a standalone main-menu item for a profile. */
   promoteProfiles?: readonly Profile[];
   /** Matches child routes too — used by the sidebar to mark a section open. */
@@ -61,8 +61,10 @@ export interface NavFooterItem {
  * to it, then feed it models, move files, read what happened, and configure.
  */
 export const NAV: NavSection[] = [
+  { labelKey: "nav.publicNetworks", icon: Globe2, to: "/redes-publicas" },
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
   { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["infer"] },
+  { labelKey: "nav.networkChat", icon: MessagesSquare, to: "/network-chat" },
   {
     labelKey: "nav.models",
     icon: Boxes,
@@ -81,7 +83,6 @@ export const NAV: NavSection[] = [
       // Separada de "implantar" de proposito: uma cria, a outra mostra e
       // ajusta o que ja existe. Sao dois momentos diferentes do mesmo trabalho.
       { labelKey: "nav.history", to: "/implantacoes", icon: History },
-      { labelKey: "nav.deploymentLogs", to: "/implantacoes/logs", icon: Terminal },
     ],
   },
   {
@@ -95,7 +96,10 @@ export const NAV: NavSection[] = [
   {
     labelKey: "nav.logs",
     icon: ListTree,
-    to: "/logs",
+    children: [
+      { labelKey: "nav.requestLogs", to: "/logs", icon: ListTree },
+      { labelKey: "nav.deploymentLogs", to: "/implantacoes/logs", icon: Terminal },
+    ],
   },
   { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/estatisticas" },
   // The repo's own documentation, not a screen that reads the cluster: the
@@ -107,27 +111,25 @@ export const NAV: NavSection[] = [
     footerProfiles: ["infer"],
   },
   {
+    labelKey: "nav.network",
+    icon: Network,
+    children: [
+      { labelKey: "nav.networkInfo", to: "/config/rede", icon: Network },
+      { labelKey: "nav.networkParticipants", to: "/config/rede/participantes", icon: Network },
+      { labelKey: "nav.administrators", to: "/config/administracao", icon: ShieldCheck },
+      { labelKey: "nav.sharing", to: "/config/compartilhamento", icon: ShieldCheck },
+      { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
+    ],
+  },
+  {
     labelKey: "nav.settings",
     icon: Settings,
     footerProfiles: ["infer"],
-    footerTo: "/config/keys/api",
+    footerTo: "/config/preferencias",
     children: [
-      { labelKey: "nav.network", to: "/config/rede", icon: Network, promoteProfiles: ["infer"] },
-      { labelKey: "nav.administration", to: "/config/administracao", icon: ShieldCheck },
-      // Promovida para o `infer` porque ancorar a confiança é o trabalho que
-      // vem antes de haver autoridade, e um nó de inferência também recebe a
-      // âncora. Ver o cabeçalho de `routes/TrustAnchor.tsx`.
-      {
-        labelKey: "nav.trustAnchor",
-        to: "/config/confianca",
-        icon: Fingerprint,
-        promoteProfiles: ["infer"],
-      },
       { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
-      { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
-      { labelKey: "nav.connectionKeys", to: "/config/keys/conexao", icon: SlidersHorizontal },
-      { labelKey: "nav.modelFolders", to: "/config/armazenamento", icon: FolderTree },
-      { labelKey: "nav.setupWizard", to: "/setup", icon: Sparkles },
+      { labelKey: "nav.storage", to: "/config/armazenamento", icon: FolderTree },
+      { labelKey: "nav.administrativePreferences", to: "/config/preferencias/admin", icon: SlidersHorizontal },
     ],
   },
 ];
@@ -144,6 +146,13 @@ export const NAV: NavSection[] = [
  * tabela que o roteador consulta.
  */
 export function navForProfile(profile: Profile): NavSection[] {
+  const filterLeaf = (leaf: NavLeaf): NavLeaf | null => {
+    const children = (leaf.children ?? [])
+      .map(filterLeaf)
+      .filter((child): child is NavLeaf => child !== null);
+    if (!canAccessRoute(leaf.to, profile) && children.length === 0) return null;
+    return { ...leaf, ...(children.length > 0 ? { children } : {}) };
+  };
   const visible: NavSection[] = [];
   for (const section of NAV) {
     if (section.chatPanelProfiles?.includes(profile)) continue;
@@ -151,7 +160,7 @@ export function navForProfile(profile: Profile): NavSection[] {
       for (const child of section.children ?? []) {
         if (!child.promoteProfiles?.includes(profile)) continue;
         if (!canAccessRoute(child.to, profile)) continue;
-        visible.push({ labelKey: child.labelKey, icon: child.icon ?? section.icon, to: child.to });
+        visible.push({ labelKey: child.labelKey, icon: child.icon ?? section.icon, to: child.to, children: (child.children ?? []).map(filterLeaf).filter((item): item is NavLeaf => item !== null) });
       }
       continue;
     }
@@ -159,9 +168,9 @@ export function navForProfile(profile: Profile): NavSection[] {
       if (canAccessRoute(section.to, profile)) visible.push(section);
       continue;
     }
-    const children = (section.children ?? []).filter((child) =>
-      canAccessRoute(child.to, profile),
-    );
+    const children = (section.children ?? [])
+      .map(filterLeaf)
+      .filter((child): child is NavLeaf => child !== null);
     if (children.length > 0) visible.push({ ...section, children });
   }
   return visible;

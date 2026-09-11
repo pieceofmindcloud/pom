@@ -1,4 +1,4 @@
-import type { GenerationTimings, LegacyHopTrace, PhaseTrace, RequestTrace, TpTelemetry } from "./chatStream";
+import type { GenerationTimings, LegacyHopTrace, PhaseTrace, RequestTrace, TelemetrySummary, TpTelemetry } from "./chatStream";
 import { isPhasedHop } from "./chatStream";
 import type { LayerPlacement } from "./types";
 
@@ -6,6 +6,8 @@ export type TelemetryAnalysisKind =
   | "tp-network"
   | "pipeline-network"
   | "outside-node"
+  | "remote-telemetry-incomplete"
+  | "unattributed"
   | "queue"
   | "backend"
   | "balanced";
@@ -13,11 +15,63 @@ export type TelemetryAnalysisKind =
 export interface TelemetryAnalysis {
   kind: TelemetryAnalysisKind;
   severity: "critical" | "warning" | "ok";
+  confidence: "low" | "medium" | "high";
   titleKey: string;
   detailKey: string;
   nextStepKey: string;
   evidence: string;
   tpObserved: boolean;
+}
+
+export interface TokenLatencyRegression {
+  fixed_ms: number;
+  per_token_ms: number;
+  r2: number;
+  samples: number;
+}
+
+/**
+ * Direct per-frame traces report observed decode calls but have no expected
+ * span count. A zero denominator is therefore "not measured", not complete
+ * coverage. Remote-stream traces set the expectation as callbacks arrive.
+ */
+export function decodeCoverageMeasured(
+  telemetry: Pick<TelemetrySummary, "expected_decode_spans" | "decode_span_expectation_available">,
+) {
+  return telemetry.expected_decode_spans > 0
+    && telemetry.decode_span_expectation_available !== false;
+}
+
+/**
+ * Fits the fixed and per-token terms from an exported measurement set. This
+ * is an analysis aid for the old outside-node report, not a runtime residual:
+ * the UI must never derive a distributed gap by subtracting span sums.
+ */
+export function fitTokenLatencyRegression(
+  samples: Array<{ tokens: number; latency_ms: number }>,
+): TokenLatencyRegression | null {
+  if (samples.length < 2) return null;
+  const meanX = samples.reduce((sum, sample) => sum + sample.tokens, 0) / samples.length;
+  const meanY = samples.reduce((sum, sample) => sum + sample.latency_ms, 0) / samples.length;
+  const denominator = samples.reduce((sum, sample) => sum + (sample.tokens - meanX) ** 2, 0);
+  if (denominator === 0) return null;
+  const covariance = samples.reduce(
+    (sum, sample) => sum + (sample.tokens - meanX) * (sample.latency_ms - meanY),
+    0,
+  );
+  const perToken = covariance / denominator;
+  const fixed = meanY - perToken * meanX;
+  const totalSquares = samples.reduce((sum, sample) => sum + (sample.latency_ms - meanY) ** 2, 0);
+  const residualSquares = samples.reduce((sum, sample) => {
+    const predicted = fixed + perToken * sample.tokens;
+    return sum + (sample.latency_ms - predicted) ** 2;
+  }, 0);
+  return {
+    fixed_ms: fixed,
+    per_token_ms: perToken,
+    r2: totalSquares === 0 ? 1 : 1 - residualSquares / totalSquares,
+    samples: samples.length,
+  };
 }
 
 function phases(trace: RequestTrace): Array<{ hop: string; phase: string; data: PhaseTrace }> {
@@ -116,16 +170,47 @@ export function analyzeTelemetry(trace: RequestTrace, timings?: GenerationTiming
   const pipelineNetwork = total(rows, (phase) => phase.network_ms + phase.node_residual_ms);
   const lockWait = total(rows, (phase) => phase.node_lock_wait_ms);
   const processing = total(rows, (phase) => phase.processing_ms);
-  const outsideNode = timings == null ? 0 : Math.max(0, timings.total_ms - processing);
+  // An outside-node diagnosis is valid only when the runtime supplied an
+  // explicit measured field. Never reconstruct it from E2E minus phase sums.
+  const outsideNode = trace.outside_node_unaccounted_ms;
+  const outsideEvidence = outsideNode == null ? null : `unaccounted ${formatMs(outsideNode)}`;
 
-  if (timings != null && outsideNode >= Math.max(100, processing * 0.35)) {
+  const telemetry = trace.telemetry;
+  if (telemetry && telemetry.status !== "complete") {
+    return {
+      kind: "remote-telemetry-incomplete",
+      severity: "warning",
+      confidence: "high",
+      titleKey: "chat.telemetry.analysis.remoteTelemetryIncompleteTitle",
+      detailKey: "chat.telemetry.analysis.remoteTelemetryIncompleteDetail",
+      nextStepKey: "chat.telemetry.analysis.remoteTelemetryIncompleteNextStep",
+      evidence: `telemetry ${telemetry.reported_peers}/${telemetry.expected_peers} peers / ${telemetry.completeness_percent.toFixed(1)}% decode spans`,
+      tpObserved: tpRows.length > 0,
+    };
+  }
+
+  if (timings != null && outsideNode != null && outsideNode >= Math.max(100, processing * 0.35)) {
     return {
       kind: "outside-node",
       severity: outsideNode >= Math.max(500, processing * 0.7) ? "critical" : "warning",
+      confidence: "high",
       titleKey: "chat.telemetry.analysis.outsideNodeTitle",
       detailKey: "chat.telemetry.analysis.outsideNodeDetail",
       nextStepKey: "chat.telemetry.analysis.outsideNodeNextStep",
-      evidence: `total ${formatMs(timings.total_ms)} / node processing ${formatMs(processing)} / outside ${formatMs(outsideNode)}`,
+      evidence: `total ${formatMs(timings.total_ms)} / node processing ${formatMs(processing)} / ${outsideEvidence}`,
+      tpObserved: tpRows.length > 0,
+    };
+  }
+
+  if (!telemetry && trace.transport_trace_complete === false) {
+    return {
+      kind: "remote-telemetry-incomplete",
+      severity: "warning",
+      confidence: "high",
+      titleKey: "chat.telemetry.analysis.remoteTelemetryIncompleteTitle",
+      detailKey: "chat.telemetry.analysis.remoteTelemetryIncompleteDetail",
+      nextStepKey: "chat.telemetry.analysis.remoteTelemetryIncompleteNextStep",
+      evidence: "transport trace incomplete; distributed spans are still unavailable",
       tpObserved: tpRows.length > 0,
     };
   }
@@ -134,6 +219,7 @@ export function analyzeTelemetry(trace: RequestTrace, timings?: GenerationTiming
     return {
       kind: "tp-network",
       severity: tpWait >= decode * 0.7 ? "critical" : "warning",
+      confidence: "high",
       titleKey: "chat.telemetry.analysis.tpTitle",
       detailKey: "chat.telemetry.analysis.tpDetail",
       nextStepKey: "chat.telemetry.analysis.tpNextStep",
@@ -146,10 +232,11 @@ export function analyzeTelemetry(trace: RequestTrace, timings?: GenerationTiming
     return {
       kind: "pipeline-network",
       severity: pipelineNetwork >= processing * 0.7 ? "critical" : "warning",
+      confidence: "medium",
       titleKey: "chat.telemetry.analysis.pipelineTitle",
       detailKey: "chat.telemetry.analysis.pipelineDetail",
       nextStepKey: "chat.telemetry.analysis.pipelineNextStep",
-      evidence: `pipeline transport + residual ${formatMs(pipelineNetwork)} / processing ${formatMs(processing)}`,
+      evidence: `pipeline transport ${formatMs(pipelineNetwork)} / processing ${formatMs(processing)}`,
       tpObserved: tpRows.length > 0,
     };
   }
@@ -158,6 +245,7 @@ export function analyzeTelemetry(trace: RequestTrace, timings?: GenerationTiming
     return {
       kind: "queue",
       severity: "warning",
+      confidence: "high",
       titleKey: "chat.telemetry.analysis.queueTitle",
       detailKey: "chat.telemetry.analysis.queueDetail",
       nextStepKey: "chat.telemetry.analysis.queueNextStep",
@@ -170,6 +258,7 @@ export function analyzeTelemetry(trace: RequestTrace, timings?: GenerationTiming
     return {
       kind: "backend",
       severity: "warning",
+      confidence: "high",
       titleKey: "chat.telemetry.analysis.backendTitle",
       detailKey: "chat.telemetry.analysis.backendDetail",
       nextStepKey: "chat.telemetry.analysis.backendNextStep",
@@ -181,10 +270,11 @@ export function analyzeTelemetry(trace: RequestTrace, timings?: GenerationTiming
   return {
     kind: "balanced",
     severity: "ok",
+    confidence: telemetry ? "high" : "low",
     titleKey: "chat.telemetry.analysis.balancedTitle",
     detailKey: "chat.telemetry.analysis.balancedDetail",
     nextStepKey: "chat.telemetry.analysis.balancedNextStep",
-    evidence: `processing ${formatMs(processing)}; TP ${tpRows.length > 0 ? "observed" : "not recorded in this phase"}`,
+    evidence: `processing ${formatMs(processing)}; overlap ${telemetry?.overlap_ms != null ? formatMs(telemetry.overlap_ms) : "not measured"}; TP ${tpRows.length > 0 ? "observed" : "not recorded in this phase"}`,
     tpObserved: tpRows.length > 0,
   };
 }

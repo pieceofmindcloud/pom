@@ -21,17 +21,50 @@ Per-file list:
   no mesmo resumo e não fazem chamadas ao backend; ver `TODO.md`, item 22. O `Setup.tsx` continua
   sendo a tela real de bootstrap quando `/api/ui/node` retorna 404.
 
+- `Setup.tsx` - Wizard real de primeiro acesso. Começa pelo hardware e usa
+  `setupWizardFlow.ts` para manter os percursos separados: administrador cria
+  a rede, node escolhe RAM/CPU e espaço de fatias, e infer apenas instala a
+  raiz de confiança. Todos os perfis registram localização, e a seleção de
+  país/cidade vem da referência SQLite do nó; rede pública exige os dois. As
+  telas conversam com `/api/setup/*`; não confundir com o protótipo
+  `SetupWizard.tsx`.
+
+- `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
+  padrão de Logs: tabela rolável com nome público, organização, localização,
+  label geo-hierárquico, endereço publicado com indicador de alcançabilidade,
+  nós, latência, VRAM, modelos e ação de entrada. Usa `/api/public/networks`;
+  o indicador consulta `/health` no navegador com timeout de 1,8 s e cache de
+  30 s, sem alterar a publicação pkarr. Métricas agregadas só aparecem quando o cluster local
+  corresponde à rede exibida, pois o catálogo público atual não as fornece.
+  Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um
+  país, o combo de cidade mostra apenas as cidades daquele país.
+  O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
+  da rede atual e o wizard real retoma com a rede pública pronta para revisão.
+
+- `NetworkSettings.tsx` - Mantém o retrato operacional da rede separado das
+  preferências locais. Node e infer recebem uma leitura somente leitura com
+  nome, descrição, regras, organização, canais, visibilidade e localização;
+  um administrador autorizado pode editar o bloco completo. A edição grava
+  no nó, propaga o envelope assinado aos peers e atualiza a descoberta pública.
+  País e cidade usam a referência de geografia do nó em selects, sem expor o
+  código do país. A tela também agrega nós, latência média, VRAM e modelos
+  conhecidos. A lista de participantes foi movida para a rota
+  `/config/rede/participantes`, apenas para `admin` e `node`.
+
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage
   and the shared active-session controller) and `../components/ChatSessionList`,
   `../lib/chatStream` (leitura de deltas SSE, erros e métricas), `../lib/chatScroll`
   (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
-  (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatTelemetryNetwork`,
-  `useServableModels`, `useInferenceHeads`), `../components/Markdown`,
+  (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatCapabilities`,
+  `useChatTelemetryNetwork`, `useServableModels`, `useInferenceHeads`),
+  `../components/Markdown`,
   `../components/ui`, `../lib/toast`. The `/v1` call is signed with the
   connection key by `api`. When the stream finishes, it captures the cluster
   snapshot, directional RTT for each adjacent execution pair and each peer's
-  inference health. `ExecutionEnvironment` keeps requested configuration
+  inference health. It also measures browser dispatch-to-first-token TTFT
+  separately from the server-reported pipeline TTFT and stores it only in the
+  client-side timing view. `ExecutionEnvironment` keeps requested configuration
   separate from effective layer placement and shows `POM_PROFILE_SYNC` only
   from the explicit per-peer health field; health shows the selected path,
   while the request trace shows the executed engine and mixed/mismatch flags.
@@ -39,10 +72,16 @@ Per-file list:
   telemetry snapshot cannot trigger a render loop that freezes navigation.
   O perfil `infer` oculta desta tela a origem, os resumos de tempo e
   throughput e o painel detalhado de telemetria; isso é apresentação, não
-  autorização.
+  autorização. `ChatSurfaceTabs` é renderizado acima da conversa para manter
+  `/chat` e `/network-chat` acessíveis nos dois sentidos sem depender da
+  Sidebar.
   No mesmo composer, `InferenceHeadChoice` mostra por qual cabeça de camada 0
-  a próxima inferência entrará e deixa explícito quando não há candidata ou
-  quando a seleção caiu no fallback sem RTT fresco.
+  a próxima inferência entrará para qualquer perfil com modelo selecionado,
+  mas só aparece quando há mais de uma candidata. Deixa explícito quando não
+  há candidata ou quando a seleção caiu no fallback sem RTT fresco.
+  A escolha do combo é controlada pelo `ChatScreen` e segue na próxima chamada
+  como `inference_head`; o backend valida o `node_id` e preserva a cabeça no
+  plano e no `x_pom.source` da telemetria.
   Missing snapshots stay visible as missing data. The environment card also
   renders the effective MoE executor and its concrete reason from `/health`.
   Phase rows also render
@@ -58,6 +97,20 @@ Per-file list:
   deliberadamente invisível no navegador comum e só publica `open` na ponte
   WebKit `pomOpenWindow`, que abre a janela maior sem criar um fluxo paralelo de
   autenticação.
+- `NetworkChat.tsx` - Página própria `/network-chat`, com o mesmo padrão visual
+  do Chat de IA. It reads the
+  authenticated snapshot and sends text, file and typing actions through the
+  node's libp2p-backed gateway. It resolves `node_id` to the node hostname/name
+  map used by the dashboard, downloads persisted file blobs on demand, and
+  polls typing state without touching the AI session store. Message and typing
+  ids come from `lib/id.ts`, so sending over plain HTTP does not call the
+  secure-context-only `crypto.randomUUID` API. The message viewport follows new
+  messages while it is near the bottom, and the page uses the full-bleed
+  `PageHeader` pattern instead of a rounded outer panel. Também renderiza
+  `ChatSurfaceTabs`, que retorna ao Chat de IA sem depender da Sidebar. No
+  celular, participantes ficam ocultos até o botão `Ver online` ser acionado;
+  a entrada da Sidebar recebe o contador de mensagens não lidas e a abertura
+  da rota marca o snapshot atual como lido.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG
@@ -95,9 +148,23 @@ Per-file list:
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `Dashboard.tsx` — Cluster overview: the admin sees cluster
   coverage/machines/model/in-flight stats; node and infer see local model,
-  slice and in-flight requests instead. A graph view ("minima",
+  slice and in-flight requests instead. For administrators, the deployment
+  properties inspector selects the `is_default` row for the active model,
+  preferring a serving default and falling back to the live or latest local
+  record so old deployment history cannot hide the map toggle. A graph view
+  ("minima",
   `ModelNetworkCanvas`) or a details grid ("estendida") is used where the
   profile permits it.
+  The model graph receives directional transport measurements and
+  `pipeline_routes` for every complete deployed route. It renders the
+  distributed cycle as Gateway -> peers -> Gateway, orders route cards by
+  aggregate RTT with node ID as a stable tie-breaker, and uses the least-cost
+  route for the headline while keeping alternatives visible. An observed
+  `pipeline_cost` from a completed chat execution remains available when every
+  execution leg and compute measurement is known.
+  O detalhe local diferencia `idle` de `serving`: o primeiro mantém o nó
+  ativo, mas informa que o modelo foi descarregado e será recarregado no
+  próximo pedido.
   The details grid lists the **whole network**, not just the pipeline:
   `networkPeers` (`../lib/networkPeers`) splits `c.peers` into the active
   deployment first (in layer order, `dashboard.groupDeployed*`) and the rest of
@@ -108,8 +175,11 @@ Per-file list:
   double-click; `GroupHeading` renders the two group labels and `otherRangesFor`
   feeds `RemoveNode` the ranges of the *other* pipeline peers. Empty state is
   `c.peers.length === 0` (was `peers.length`) with `dashboard.noMachines`
-  ("Nenhuma máquina na rede"). Fetches `POST /api/ui/deploy/plan` to feed the
-  "add a machine" dialog. The add trigger, dialog and `UndeployPipeline` are
+  ("Nenhuma máquina na rede"). Derives the active `deploy_id` from
+  `useDeployments` and passes it to the add/remove dialogs. The add dialog
+  fetches the selected target's catalog and cache options from
+  `POST /api/ui/deploy/node/options`; it no longer uses a fixed cluster plan.
+  The add trigger, dialog and `UndeployPipeline` are
   rendered only for `profile: "admin"` (from `useProfile()`, the one source -
   the context is fed by `/api/ui/node`). The details view itself is gated the
   same way, by `canSeePeerDetails` (`../lib/access`): outside `admin` the view
@@ -118,16 +188,22 @@ Per-file list:
   `../components/{LayerRibbon,PipelineRail,PeerDetailCard,UndeployPipeline,AddNodeDialog,ModelNetworkCanvas,ui}`,
   `../lib/api`, `../lib/networkPeers`, `../lib/queries`, `../lib/types`
   (`PeerView`, `DeployPlan`). The per-machine actions that used to live here
-  moved to `PeerDetailCard`: update-and-restart (`UpdateNode`, dev-only when the
-  peer advertises `dev_update`), `RemoveNode` (out of the model, only when
-  serving a slice) and `LeaveNode` (out of the whole network, always). Next to
+  moved to `PeerDetailCard`: `RemoveNode` (out of the model, only when serving
+  a slice) and `LeaveNode` (out of the whole network, always). The
+  development-only update-and-restart action is not rendered in the card. Next to
   "Adicionar nó" there is a `UndeployPipeline` button for an administrator
   when a model is live - `undeployTargets` is the list the confirmation shows
   (peers on `group` with `total_layers > 0`, sorted by start layer); the node
   re-scans the cluster before acting, so the list is just the preview. The flow
   canvas receives the
-  directional RTT measurements for its adjacent routing edges from
-  `useNetworkRtt`, with the same badge presentation used by deployment.
+  directional RTT measurements for its adjacent routing edges and complete
+  pipeline routes from `useNetworkRtt`, with the same badge presentation used
+  by deployment. A whole-model deployment with one head still queries this
+  endpoint even though its graph has no routing edge.
+  A versão ativa do deployment também pode ser aberta num inspetor de leitura
+  à direita, usando o mesmo layout e os mesmos valores configurados no Deploy
+  Studio. No perfil `admin`, `DeploymentLogDock` fica recolhido no rodapé e
+  expande para cima com os logs em tempo real e auto-scroll.
 - In `Dashboard`, node and infer profiles do not reuse the administrator's
   cluster verdict: they show the local model, its real layer slice and local
   in-flight request count. A missing `/api/ui/node` response is rendered as
@@ -270,6 +346,8 @@ Per-file list:
   ativação". Tela cheia, como a de Logs:
   cabeçalho fixo, tabela rolando por dentro e, quando há versão escolhida, um
   inspetor à direita (`lg:grid-cols-[minmax(0,1fr)_minmax(19rem,24rem)]`).
+  Uma implantação ativa com todos os peers vivos ociosos aparece como
+  `idle`, separada de `noAir`.
   Clicar na linha de uma versão abre o `DeploymentInspector` em `readOnly` com
   `version.params` - o mesmo inspetor da tela de implantar, sem duplicar a
   lista de propriedades. O cache KV **não** entra ali: é da instalação e do
@@ -285,13 +363,14 @@ Per-file list:
   reimplantação mostra `job.outputs` (`"<host>: <motivo>"`) abaixo da mensagem.
   Teste: `Deployments.test.tsx` (expansão, badge da ativa, `{version}` na API).
 - `DeploymentLogs.tsx` - consola full-bleed do log de processo do cluster em
-  `/implantacoes/logs`. Consulta os lotes persistidos do principal, atualiza a
-  cada segundo, mantém a ordem de chegada devolvida pela API e pode filtrar por
+  `/implantacoes/logs`. Consulta a réplica local do admin, atualiza a cada
+  segundo, mantém a ordem de chegada devolvida pela API e pode filtrar por
   `deploy_id`; mantém apenas o terminal em preto, acompanha o fim enquanto o
   leitor está no fim, pausa o acompanhamento ao rolar para cima, oferece um
   botão de estado visível para reativá-lo e copia as últimas 500 linhas. Não é a
   auditoria paginada de requisições em `Logs.tsx`.
-- `Keys.tsx` - Two screens in one file. `TokenKeys`: per-node API tokens for
+- `Keys.tsx` - Two screens in one file. `TokenKeys` delega a tabela full-bleed
+  `ApiKeysTable`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   No perfil `infer`, mostra só a chave ativa deste nó, esconde o seletor de nó
   e, ao gerar uma chave nova, revoga a anterior. As rotas de API key são
@@ -301,12 +380,15 @@ Per-file list:
   está no `pom.json` dela e a tela só existe atrás da fronteira administrativa.
   **Trocá-la** (`POST /admin/regenerate-key`) é outra coisa: a chave é a mesma
   no cluster inteiro e girá-la corta todos os outros nós, então o botão só
-  aparece com `authority_level` presente.
+  aparece com `authority_level` presente. O administrador escolhe o nó ao
+  criar e vê os próprios tokens completos, enquanto os tokens de outros nós
+  ficam mascarados; node e infer veem e criam somente os seus.
 - `Logs.tsx` - tela autenticada de auditoria em largura total. A barra aplica
   filtros de API key, prompt, nó e período a `GET /api/ui/requests`; a tela de
   requisições pagina com `limit`/`offset` e sentinela de IntersectionObserver.
   `Statistics.tsx` usa a mesma fonte agregada em `GET /api/ui/requests/stats`
-  como tela própria. Clicar em qualquer
+  como tela própria, com filtros de usuário (rótulo da API key), API key,
+  modelo, nó, prompt e intervalo de datas. Clicar em qualquer
   ponto não interativo da linha abre o inspetor e mantém a linha selecionada
   destacada com acento visível, inclusive enquanto o mouse está em outra linha;
   a lupa continua disponível. O cabeçalho do inspetor repete as métricas da
@@ -321,7 +403,10 @@ Per-file list:
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
   keeps `/config/pastas` as an alias.
-- `NetworkSettings.tsx` - This node's membership
+- `NetworkSettings.tsx` - This node's membership and network information
+  screen. Its `NetworkParticipants` export reuses the known-node area at
+  `/config/rede/participantes`; the route is allowed only to `admin` and
+  `node`, and block/unblock mutations remain admin-only.
   (`POST /api/ui/leave` / `/api/ui/rejoin`, reachable by every profile: leaving
   is abdication, not a privilege) and the known-node list from
   `GET /admin/nodes` (`node+admin`: reading the roster is what this screen
@@ -342,13 +427,12 @@ Per-file list:
   administrators, promotion chain and resignation eligibility. Its mutations
   are isolated in `lib/adminAuthority.ts`; pending principal-transfer and
   infer-to-node offers are answered by `Notifications`.
-- `TrustAnchor.tsx` - a raiz de confiança da máquina, os dois lados de ancorar
+- `TrustAnchor.tsx` - a raiz de confiança da máquina e os dois lados de ancorar
   a autoridade, atrás de `GET/POST /api/ui/network/trust-anchor`. Mostra a
   impressão digital da âncora em grupos de oito com botão de cópia, e o estado
   **ancorado** ou **por ancorar** num relance. Num nó ainda sem raiz, mostra o
-  formulário que cola a cadeia assinada e recebe a impressão digital **digitada
-  à mão** - o campo nunca é pré-preenchido a partir do conteúdo colado, porque
-  é ele que valida o arquivo. Fora do loopback o formulário dá lugar à
+  formulário que cola a cadeia assinada, calcula a impressão digital e mantém a
+  confirmação explícita da conferência pelo canal confiável. Fora do loopback o formulário dá lugar à
   explicação; a decisão continua sendo do servidor, que devolve um `reason`
   estável (`not_loopback`, `already_anchored`, `invalid_document`,
   `fingerprint_mismatch`, `install_failed`) para a tela traduzir a recusa em
@@ -360,8 +444,12 @@ Per-file list:
   `POST /api/ui/access`. It also mounts `TlsPanel`, which moves the cluster TLS
   choice out of Network and explains when it is useful, plus `ThermalPanel` and
   `HuggingFaceSettingsPanel`. Também monta o interruptor de logs do cluster,
-  disponível apenas ao principal e aplicado em tempo real. The access token is
-  a human credential and is not the cluster `connection_key`.
+  disponível apenas ao principal e aplicado em tempo real, e `QuicPanel`, que
+  alterna a preferência HTTP/3 em `POST /api/ui/network/quic` com o mesmo
+  controle de autoridade. The access token is a human credential and is not the
+  cluster `connection_key`. A rota `/config/preferencias/admin` renderiza
+  somente TLS, QUIC, logs de processo entre nós e chat da rede; a rota normal
+  mantém exposição, Hugging Face, proteção térmica e o link de armazenamento.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e
@@ -371,12 +459,22 @@ Per-file list:
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
   it again and the receiver sees only an opaque grant.
-- `Setup.tsx` — First run (no `pom.json`): choose the initial profile
-  `admin`, `node` or `infer`; `admin` mints the key via `GET /api/setup/key`,
-  while the other two paste the key + `ip:port` bootstrap, then
-  `POST /api/setup/save`; the node writes config, respawns, and the screen
-  reloads itself after 4 s. Uses `../components/Logo` and `LanguageSelect` from
-  the i18n provider.
+- `Setup.tsx` - First run (no `pom.json`): real wizard backed by
+  `/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
+  `/api/setup/admin-token`, `/api/setup/health` and `/api/setup/save`. It shows hardware first, then
+  resource reserves, local and Hugging Face reference models, the standard
+  `~/.pom/models` and `~/.pom/models_sliced` paths, shared slice space and the
+  trust-root flow. Public networks use signed control without a shared secret;
+  private networks also carry one connection secret. The node saves config and
+  trust root, respawns and the screen reloads. It reuses `WizardLayout` but is
+  separate from the mock-only `SetupWizard.tsx`. The joining screen accepts the
+  trust document by paste or `.json` upload, derives the anchor fingerprint and
+  no longer asks for an extra confirmation checkbox. The
+  administrator invitation downloads the actual trust filename returned by the
+  server and copies a connection secret only for local/private networks. An
+  admin token is generated only when the interface is exposed to the network;
+  optional peer-link TLS starts disabled because libp2p already protects the
+  peer connection.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
   only shows the difference), with who is missing it. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and
@@ -426,18 +524,21 @@ Per-file list:
 
 Key logic carriers:
 
-- `Chat.send` (Chat.tsx:469) — the streaming loop: snapshots turns before the
-  placeholder reply, streams deltas into `consumeChatDelta` (keeps
+- `ChatSessionProvider.startStream` (`lib/chatStore.ts`) - snapshots turns
+  before the placeholder reply, streams deltas into `consumeChatDelta` (keeps
   reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
-  aborts via `AbortController`, persists the session on finish. The only screen
-  that talks to the OpenAI-compatible surface.
+  measures browser-local first chunk/token and delivery timing, and persists
+  the partial session after every delta. Route unmounts do not abort it;
+  `stopStream` and a new message do.
 - `components/ExecutionTelemetry.tsx` (`ExecutionTelemetry`) - the
   closed-by-default telemetry card shared by Chat and Logs: per-hop
   prefill/decode phases, selected
   path versus backend-reported executed engine, mixed/mismatch evidence,
   gateway vs backend vs residual vs transport timing, bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
-  optional TP collective table, aggregate transport identity/RTT distribution/
-  bytes with fallback and switch counts, prefix reuse counters, overlap counters and a pure diagnosis card. The request summary also shows TTFT, prompt-token prefill rate, output-token generation rate and end-to-end total, including an explicit unavailable state when a rate has no measurable interval. The AI action sends
+  optional TP collective table, aggregate transport identity, execution RTT and
+  measured network RTT distributions, bytes with fallback and switch counts,
+  prefix reuse counters, overlap counters and a pure diagnosis card. The
+  request summary also shows TTFT, prompt-token prefill rate, output-token generation rate and end-to-end total, including an explicit unavailable state when a rate has no measurable interval. The AI action sends
   both tables as private request content, while the initial model is shown as
   a non-turn mark before chat messages.
 - `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime
@@ -461,8 +562,9 @@ Key logic carriers:
   `rememberDeploy`, and tracks the returned job id.
 - `SliceModels.asPlan` (SliceModels.tsx:56) - shape guard on pipeline and TP
   plan responses; the one screen rendering straight off a POST body.
-- `Setup.save` (Setup.tsx:56) — posts the role/key/bootstrap, then reloads; the
-  node respawns itself, so there is no second response to wait for.
+- `Setup.save` (Setup.tsx) - posts the complete first-access payload, including
+  trust document, typed fingerprint, resource policy, storage and network
+  visibility, then reloads after the node respawns.
 - `ModelPaths.save` (ModelPaths.tsx:55) — trims/filters the folder list, posts,
   and re-syncs state from the server's answer (which is authoritative).
 
@@ -476,10 +578,30 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/transfer/send`, `/api/transfer/jobs`, `/api/transfer/jobs/:id/cancel`,
 `/api/transfer/offers`, `/api/transfer/offers/:id/accept|reject`,
 `/admin/nodes`, `/admin/nodes/:id/block|unblock`, `/admin/api-keys`,
-`/admin/regenerate-key`, `/api/setup/key`, `/api/setup/save`,
+`/admin/regenerate-key`, `/api/setup/hardware`, `/api/setup/models`,
+`/api/setup/admin-anchor/preview`, `/api/setup/health`, `/api/setup/save`,
+`/api/public/networks`, `/api/public/network`,
 `/api/ui/model-provider/search`, `/api/ui/model-provider/details`,
 `/api/ui/model-provider/storage`, `/api/ui/model-provider/downloads` e
 `/api/ui/model-provider/downloads/:id/{cancel,retry}`.
+
+### Deploy e chat multimodais
+
+`DeployModel.tsx` exibe a opção de visão para modelo inteiro e para conjunto de
+fatias quando o plano resolve `mmproj_path`; conjuntos sem projetor mostram a
+indisponibilidade sem checkbox morto, e a escolha segue para a implantação.
+`Chat.tsx` usa um único
+campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
+visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens
+exigem visão disponível; outros tipos são convertidos para texto no pedido.
+A soma dos anexos é validada contra o contexto efetivo do modelo, usando
+`context_length` de `/v1/models` ou o `n_ctx` local como fallback. A visão e a
+cobertura do Chat vêm de
+`GET /api/ui/chat/capabilities`, uma leitura agregada da implantação que também
+funciona nos perfis `node` e `infer`; recusa ou falha fica como indisponível,
+nunca como modelo vazio ou cobertura zero. Imagens enviadas ficam inteiras na
+bolha da mensagem, com legenda e texto alternativo. O botão de ditado só é
+renderizado quando o navegador expõe Web Speech e usa o locale da interface.
 
 ## Maintaining this file
 

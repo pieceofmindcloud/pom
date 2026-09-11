@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use subtle::ConstantTimeEq;
 
 const HANDSHAKE_NONCE_BYTES: usize = 32;
 const HANDSHAKE_CHALLENGE_TTL: Duration = Duration::from_secs(30);
@@ -167,7 +168,15 @@ pub async fn handle_handshake(
     let verifier_id = std::sync::Arc::as_ptr(&config) as usize;
     let cfg = config.read().await;
 
-    if req.connection_key != cfg.connection_key {
+    if cfg.connection_key.is_empty()
+        || req.connection_key.is_empty()
+        || cfg
+            .connection_key
+            .as_bytes()
+            .ct_eq(req.connection_key.as_bytes())
+            .unwrap_u8()
+            != 1
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(HandshakeResponse {
@@ -265,8 +274,12 @@ mod tests {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             profile: crate::profile::NodeProfile::Admin,
+            setup_pending: false,
             tls_required: false,
+            quic_enabled: false,
             cluster_logs_enabled: false,
+            network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
             node_name: None,
             huggingface_token: None,
             slot_save_path: None,
@@ -281,11 +294,14 @@ mod tests {
             inference_port: None,
             bootstrap_nodes: vec![],
             advertise_addr: None,
+            network: Default::default(),
             api_keys: vec![],
             blocked_nodes: blocked,
             model_dirs: None,
             shard_dir: None,
             shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+            resources: Default::default(),
+            setup_model: None,
         }))
     }
 
@@ -521,6 +537,15 @@ mod tests {
         let state = make_state("secret", vec![]);
         let cfg = state.read().await;
         assert_ne!("wrong", cfg.connection_key);
+    }
+
+    #[tokio::test]
+    async fn chave_vazia_nunca_e_uma_credencial_de_handshake() {
+        let state = make_state("", vec![]);
+        let (status, body) = responder(state, make_request("")).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "invalid_key");
     }
 
     #[tokio::test]

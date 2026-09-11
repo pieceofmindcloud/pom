@@ -43,27 +43,26 @@ pub(crate) use tokio::net::TcpListener;
 pub(crate) use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 pub(crate) use tracing::{debug, info, warn};
 
-
 #[path = "core.rs"]
 mod core;
+#[path = "direct.rs"]
+mod direct;
+#[path = "prefill.rs"]
+mod prefill;
 #[path = "prefix.rs"]
 mod prefix;
 #[path = "server.rs"]
 mod server;
-#[path = "prefill.rs"]
-mod prefill;
 #[path = "step.rs"]
 mod step;
-#[path = "direct.rs"]
-mod direct;
 #[path = "step_blocking.rs"]
 mod step_blocking;
 
 pub(super) use core::*;
-pub(super) use prefix::*;
-pub(super) use server::*;
-pub(crate) use server::http_client;
-pub(super) use prefill::*;
-pub(super) use step::*;
 pub(super) use direct::*;
+pub(super) use prefill::*;
+pub(super) use prefix::*;
+pub(crate) use server::http_client;
+pub(super) use server::*;
+pub(super) use step::*;
 pub(super) use step_blocking::*;

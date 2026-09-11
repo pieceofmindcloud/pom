@@ -211,54 +211,347 @@ mod state_transport_tests {
 #[cfg(test)]
 mod chat_telemetry_tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use crate::gateway::testkit::peer;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use tower::ServiceExt;
+
+    fn served_peer(node_id: &str, start_layer: u32, end_layer: u32) -> crate::network::PeerInfo {
+        let mut peer = peer(node_id, node_id, 0);
+        peer.model = "qwen35".into();
+        peer.start_layer = start_layer;
+        peer.end_layer = end_layer;
+        peer.total_layers = 32;
+        peer.inference_port = Some(8181);
+        peer
+    }
 
     #[test]
-    fn directional_report_is_kept_only_for_verified_sources_and_requested_targets() {
+    fn execution_telemetry_keeps_only_requested_adjacent_edges() {
         let requested = ["a", "b", "c"].into_iter().map(str::to_string).collect();
-        let mut output = Vec::new();
-        append_chat_telemetry_measurements(
-            &mut output,
-            "a",
-            RttReport {
-                source_node_id: "wrong-source".into(),
-                measurements: vec![crate::route::RttMeasurement {
-                    target_node_id: "b".into(),
-                    rtt_ms: 12.5,
-                    transport: "libp2p".into(),
-                }],
-            },
-            &requested,
-        );
-        assert!(output.is_empty(), "a resposta não pode trocar a origem");
-
-        append_chat_telemetry_measurements(
-            &mut output,
-            "a",
-            RttReport {
-                source_node_id: "a".into(),
-                measurements: vec![
-                    crate::route::RttMeasurement {
-                        target_node_id: "b".into(),
-                        rtt_ms: 12.5,
-                        transport: "libp2p".into(),
-                    },
-                    crate::route::RttMeasurement {
-                        target_node_id: "outside-pipeline".into(),
-                        rtt_ms: 99.0,
-                        transport: "libp2p".into(),
-                    },
-                ],
-            },
-            &requested,
-        );
+        let trace = json!({
+            "hops": [
+                {"node_id": "a", "decode": {"transport_summary": {"transports": [{"transport": "https-link", "calls": 2, "rtt_median_ms": 8}]} }},
+                {"node_id": "b", "decode": {"transport_summary": {"transports": [{"transport": "https-link", "calls": 2, "rtt_median_ms": 9}]} }},
+                {"node_id": "outside-pipeline", "decode": {"transport_summary": {"transports": [{"transport": "libp2p-tunnel", "calls": 5, "rtt_median_ms": 99}]} }}
+            ]
+        });
         assert_eq!(
-            output,
+            execution_transport_measurements(&trace, &requested),
             vec![ChatTelemetryMeasurement {
                 from_node_id: "a".into(),
                 to_node_id: "b".into(),
-                rtt_ms: 12.5,
-                transport: "libp2p".into(),
+                rtt_ms: 9.0,
+                transport: "https-link".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn execution_telemetry_uses_downstream_edge_not_gateway_probe() {
+        let requested = ["head", "tail"].into_iter().map(str::to_string).collect();
+        let trace = json!({
+            "hops": [
+                {
+                    "node_id": "head",
+                    "decode": {
+                        "transport_summary": {
+                            "transports": [{
+                                "transport": "libp2p-tunnel",
+                                "calls": 1,
+                                "rtt_median_ms": 91
+                            }]
+                        }
+                    }
+                },
+                {
+                    "node_id": "tail",
+                    "decode": {
+                        "transport_summary": {
+                            "transports": [{
+                                "transport": "https-link",
+                                "calls": 12,
+                                "rtt_median_ms": 7
+                            }]
+                        }
+                    }
+                }
+            ]
+        });
+
+        assert_eq!(
+            execution_transport_measurements(&trace, &requested),
+            vec![ChatTelemetryMeasurement {
+                from_node_id: "head".into(),
+                to_node_id: "tail".into(),
+                rtt_ms: 7.0,
+                transport: "https-link".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn execution_telemetry_uses_the_real_directional_cycle() {
+        let requested = ["a", "b", "c"].into_iter().map(str::to_string).collect();
+        let trace = json!({
+            "hops": [
+                {"node_id": "a", "decode": {"processing_ms": 10}},
+                {"node_id": "b", "decode": {"processing_ms": 12}},
+                {"node_id": "c", "decode": {"processing_ms": 14}}
+            ],
+            "pipeline_cycle": {
+                "decode": [
+                    {"from_node_id": "gateway", "to_node_id": "a", "transport_summary": {"transports": [{"transport": "http", "calls": 1, "rtt_median_ms": 18}]}},
+                    {"from_node_id": "a", "to_node_id": "b", "transport_summary": {"transports": [{"transport": "http", "calls": 4, "rtt_median_ms": 30}]}},
+                    {"from_node_id": "b", "to_node_id": "c", "transport_summary": {"transports": [{"transport": "quic", "calls": 4, "rtt_median_ms": 31}]}},
+                    {"from_node_id": "c", "to_node_id": "gateway", "transport_summary": {"transports": [{"transport": "https", "calls": 4, "rtt_median_ms": 29}]}}
+                ]
+            }
+        });
+
+        assert_eq!(
+            execution_transport_measurements(&trace, &requested),
+            vec![
+                ChatTelemetryMeasurement {
+                    from_node_id: "a".into(),
+                    to_node_id: "b".into(),
+                    rtt_ms: 30.0,
+                    transport: "http".into(),
+                },
+                ChatTelemetryMeasurement {
+                    from_node_id: "b".into(),
+                    to_node_id: "c".into(),
+                    rtt_ms: 31.0,
+                    transport: "quic".into(),
+                },
+                ChatTelemetryMeasurement {
+                    from_node_id: "c".into(),
+                    to_node_id: "gateway".into(),
+                    rtt_ms: 29.0,
+                    transport: "https".into(),
+                },
+            ]
+        );
+        assert!(execution_transport_measurements(&trace, &requested)
+            .iter()
+            .all(|measurement| measurement.transport != "libp2p-tunnel"));
+    }
+
+    #[test]
+    fn execution_telemetry_network_panel_uses_wire_rtt_not_remote_processing() {
+        let requested = ["head", "tail"].into_iter().map(str::to_string).collect();
+        let trace = json!({
+            "hops": [
+                {"node_id": "head", "decode": {"processing_ms": 34}},
+                {"node_id": "tail", "decode": {"processing_ms": 94}}
+            ],
+            "pipeline_cycle": {
+                "decode": [
+                    {"from_node_id": "head", "to_node_id": "tail", "transport_summary": {
+                        "transports": [{
+                            "transport": "quic",
+                            "calls": 10,
+                            "rtt_median_ms": 77,
+                            "net_rtt_median_ms": 1
+                        }]
+                    }}
+                ]
+            }
+        });
+
+        assert_eq!(
+            execution_transport_measurements(&trace, &requested),
+            vec![ChatTelemetryMeasurement {
+                from_node_id: "head".into(),
+                to_node_id: "tail".into(),
+                rtt_ms: 1.0,
+                transport: "quic".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn execution_pipeline_cost_sums_each_cycle_leg_once_and_adds_compute() {
+        let trace = json!({
+            "hops": [
+                {"node_id": "a", "decode": {"processing_ms": 10}},
+                {"node_id": "b", "decode": {"processing_ms": 12}},
+                {"node_id": "c", "decode": {"processing_ms": 14}}
+            ],
+            "pipeline_cycle": {
+                "decode": [
+                    {"from_node_id": "gateway", "to_node_id": "a", "transport_summary": {"transports": [{"transport": "http", "calls": 1, "rtt_median_ms": 18}]}},
+                    {"from_node_id": "a", "to_node_id": "b", "transport_summary": {"transports": [{"transport": "http", "calls": 4, "rtt_median_ms": 30}]}},
+                    {"from_node_id": "b", "to_node_id": "c", "transport_summary": {"transports": [{"transport": "quic", "calls": 4, "rtt_median_ms": 31}]}},
+                    {"from_node_id": "c", "to_node_id": "gateway", "transport_summary": {"transports": [{"transport": "https", "calls": 4, "rtt_median_ms": 29}]}}
+                ]
+            }
+        });
+
+        assert_eq!(
+            execution_pipeline_cost(&trace),
+            Some(ChatTelemetryPipelineCost {
+                legs_ms: vec![Some(18.0), Some(30.0), Some(31.0), Some(29.0)],
+                compute_ms: Some(36.0),
+            })
+        );
+    }
+
+    #[test]
+    fn pipeline_routes_include_each_head_and_sum_every_hop() {
+        let peers = vec![
+            served_peer("head-fast", 0, 15),
+            served_peer("head-slow", 0, 15),
+            served_peer("tail", 16, 31),
+        ];
+        let rtts = HashMap::from([
+            (("gateway".into(), "head-fast".into()), 4.0),
+            (("gateway".into(), "head-slow".into()), 18.0),
+            (("head-fast".into(), "tail".into()), 12.0),
+            (("head-slow".into(), "tail".into()), 12.0),
+            (("tail".into(), "gateway".into()), 3.0),
+        ]);
+
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, "gateway", &rtts);
+
+        assert_eq!(
+            routes
+                .iter()
+                .map(|route| (&route.node_ids, route.rtt_ms))
+                .collect::<Vec<_>>(),
+            vec![
+                (&vec!["head-fast".into(), "tail".into(), "gateway".into()], Some(19.0)),
+                (&vec!["head-slow".into(), "tail".into(), "gateway".into()], Some(33.0)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_telemetry_ignores_libp2p_probe_when_execution_trace_exists() {
+        let state = crate::gateway::testkit::state_with("gateway", vec![]).await;
+        let trace = json!({
+            "hops": [
+                {"node_id": "head", "decode": {"transport_summary": {"transports": [{"transport": "libp2p-tunnel", "calls": 1, "rtt_median_ms": 90}]} }},
+                {"node_id": "tail", "decode": {"transport_summary": {"transports": [{"transport": "https-link", "calls": 4, "rtt_median_ms": 6}]} }}
+            ]
+        });
+        state.audit.begin(crate::reqlog::AuditRequest {
+            id: "chatcmpl-execution".into(),
+            received_at: "2026-09-10T12:00:00Z".into(),
+            route: "/v1/chat/completions".into(),
+            model: "model.gguf".into(),
+            caller: crate::reqlog::Caller::operator(),
+            entry_node_id: "gateway".into(),
+            prompt: "teste".into(),
+            request_details: json!({"stream": true}),
+        });
+        state.audit.complete(
+            "chatcmpl-execution".into(),
+            crate::reqlog::AuditCompletion {
+                completed_at: "2026-09-10T12:00:01Z".into(),
+                result: Some("ok".into()),
+                telemetry: Some(trace),
+                timings: None,
+                source: "pipeline:head->tail".into(),
+                hops: vec!["head".into(), "tail".into()],
+                prompt_tokens: Some(1),
+                completion_tokens: Some(1),
+                duration_ms: Some(6),
+                status: crate::reqlog::AuditStatus::Ok,
+                error: None,
+            },
+        );
+        state.audit.begin(crate::reqlog::AuditRequest {
+            id: "chatcmpl-unrelated".into(),
+            received_at: "2026-09-10T12:00:02Z".into(),
+            route: "/v1/chat/completions".into(),
+            model: "other-model.gguf".into(),
+            caller: crate::reqlog::Caller::operator(),
+            entry_node_id: "gateway".into(),
+            prompt: "outro teste".into(),
+            request_details: json!({"stream": true}),
+        });
+        state.audit.complete(
+            "chatcmpl-unrelated".into(),
+            crate::reqlog::AuditCompletion {
+                completed_at: "2026-09-10T12:00:02Z".into(),
+                result: Some("ok".into()),
+                telemetry: Some(json!({
+                    "hops": [{"node_id": "unrelated", "decode": {}}
+                    ]
+                })),
+                timings: None,
+                source: "pipeline:unrelated".into(),
+                hops: vec!["unrelated".into()],
+                prompt_tokens: Some(1),
+                completion_tokens: Some(1),
+                duration_ms: Some(1),
+                status: crate::reqlog::AuditStatus::Ok,
+                error: None,
+            },
+        );
+        state.audit.flush();
+        state
+            .network
+            .rtts
+            .remember_for_test("tail", 900.0, "libp2p");
+
+        let app = routes().with_state(state);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/ui/chat/telemetry")
+                    .header("authorization", "Bearer chave")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "node_ids": ["head", "tail"],
+                            "execution_id": "chatcmpl-execution"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(
+            body["measurements"],
+            json!([{
+                "from_node_id": "head",
+                "to_node_id": "tail",
+                "rtt_ms": 6.0,
+                "transport": "https-link"
+            }])
+        );
+
+        let dashboard_response = app
+            .oneshot(
+                Request::post("/api/ui/chat/telemetry")
+                    .header("authorization", "Bearer chave")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"node_ids": ["head", "tail"]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dashboard_response.status(), StatusCode::OK);
+        let dashboard_body = crate::gateway::testkit::body_of(dashboard_response).await;
+        assert_eq!(
+            dashboard_body,
+            json!({
+                "measurements": [{
+                    "from_node_id": "head",
+                    "to_node_id": "tail",
+                    "rtt_ms": 6.0,
+                    "transport": "https-link"
+                }]
+            })
         );
     }
 }
@@ -343,6 +636,7 @@ mod capacity_preview_tests {
             vram_used_mb: Some(used_mb),
             vram_used_pct: None,
             utilization_pct: None,
+            power_watts: None,
             temperature_c: None,
         }
     }
@@ -426,4 +720,3 @@ mod capacity_preview_tests {
         assert!(try_capacity_preview_slot().is_some());
     }
 }
-

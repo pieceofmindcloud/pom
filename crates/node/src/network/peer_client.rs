@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 /// argumento por dezenas de assinaturas para carregar um único bit que nunca
 /// difere entre eles. Dois nós no mesmo processo só acontecem em teste.
 static TLS_ATIVO: AtomicBool = AtomicBool::new(false);
+static QUIC_ATIVO: AtomicBool = AtomicBool::new(false);
 
 pub fn tls_ativo() -> bool {
     TLS_ATIVO.load(Ordering::Relaxed)
@@ -36,6 +37,14 @@ pub fn tls_ativo() -> bool {
 
 pub fn set_tls_ativo(on: bool) {
     TLS_ATIVO.store(on, Ordering::Relaxed);
+}
+
+pub fn quic_ativo() -> bool {
+    QUIC_ATIVO.load(Ordering::Relaxed)
+}
+
+pub fn set_quic_ativo(on: bool) {
+    QUIC_ATIVO.store(on, Ordering::Relaxed);
 }
 
 /// Esquema em vigor para falar com um peer.
@@ -61,6 +70,30 @@ pub fn scheme(tls: bool) -> &'static str {
     }
 }
 
+/// Estado observável do pool HTTP do peer.
+///
+/// O reqwest mantém o socket individual sob o pool interno, então esta
+/// distinção identifica construção/reutilização do cliente pinado. Quando o
+/// caminho usa o cliente claro compartilhado, a reutilização de um socket não
+/// pode ser provada nesta camada e fica desconhecida.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionState {
+    New,
+    Reused,
+    Unknown,
+}
+
+impl ConnectionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Reused => "reused",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Base de URL para falar com um peer, com o esquema que a flag manda.
 ///
 /// O colchete do IPv6 é responsabilidade daqui: o cluster é IPv6 na prática, e
@@ -79,6 +112,8 @@ pub fn peer_base_url(host: &str, port: u16, tls: bool) -> String {
 pub struct PeerClients {
     timeout: Duration,
     tls: Arc<AtomicBool>,
+    quic: Arc<AtomicBool>,
+    quic_pool: crate::quic::ClientPool,
     plain: reqwest::Client,
     internal_plain: reqwest::Client,
     per_peer: Arc<RwLock<HashMap<String, reqwest::Client>>>,
@@ -116,9 +151,11 @@ const ROUTE_FAILURE_STREAK: u32 = 3;
 
 /// Um endereço anunciado que engole SYN não pode entregar o controle do
 /// processo ao timeout do sistema operacional. O timeout total da requisição
-/// continua sendo escolhido pelo chamador, mas a conexão tem teto próprio.
+/// continua sendo escolhido pelo chamador, mas a conexão tem teto próprio -
+/// sub-segundo, para um endereço direto morto virar fallback (para o túnel
+/// Noise) quase de imediato, no mesmo espírito do orçamento de RTT do QUIC.
 #[cfg(not(test))]
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 
 #[cfg(test)]
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
@@ -128,6 +165,8 @@ impl PeerClients {
         Self {
             timeout,
             tls: Arc::new(AtomicBool::new(false)),
+            quic: Arc::new(AtomicBool::new(false)),
+            quic_pool: crate::quic::ClientPool::new(),
             plain: reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(timeout)
@@ -167,23 +206,29 @@ impl PeerClients {
         request: reqwest::RequestBuilder,
         session_id: Option<&str>,
     ) -> reqwest::RequestBuilder {
-        let token = self.internal_node_token().await;
         let request = match session_id {
             Some(id) if !id.is_empty() => request.header(crate::auth::INFERENCE_SESSION_HEADER, id),
             _ => request,
         };
-        match token {
-            Some(token) => {
-                request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            }
-            None => request,
-        }
+        self.authorize_inference_request(request).await
     }
 
+    /// Anexa a credencial POM de um salto interno de inferência, **idêntica** à
+    /// que o túnel libp2p e o cliente QUIC já mandam: o marcador
+    /// `x-pom-internal-node: 1` sempre, e `Authorization: Bearer <token>` quando
+    /// há uma `connection_key` configurada, inclusive no fallback HTTP de uma
+    /// rede pública. Sem o
+    /// marcador, `require_inference_auth` do peer recusa o canal HTTP
+    /// persistente e as chamadas de ciclo de vida de sessão com 401/403 mesmo
+    /// numa rede privada; numa rede pública, o marcador habilita o desvio por
+    /// transporte seguro e o bearer mantém o caminho HTTP em claro autenticado.
+    /// O túnel funcionava só porque montava esses dois cabeçalhos à mão
+    /// (`send_frame_via_tunnel_with_auth`).
     pub async fn authorize_inference_request(
         &self,
         request: reqwest::RequestBuilder,
     ) -> reqwest::RequestBuilder {
+        let request = request.header(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1");
         match self.internal_node_token().await {
             Some(token) => {
                 request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
@@ -194,6 +239,84 @@ impl PeerClients {
 
     pub fn tls_enabled(&self) -> bool {
         self.tls.load(Ordering::Relaxed)
+    }
+
+    pub fn quic_enabled(&self) -> bool {
+        self.quic.load(Ordering::Relaxed)
+    }
+
+    /// Preferência efetiva do nó para novas travessias de inferência.
+    ///
+    /// A política do principal também é mantida no atômico global para
+    /// alcançar os clientes lazy do servidor de inferência. Consultar os dois
+    /// evita que um `PeerClients` criado antes da adoção da política continue
+    /// escolhendo o túnel enquanto o restante do processo já escolhe QUIC.
+    pub fn effective_quic_enabled(&self) -> bool {
+        self.quic_enabled() || quic_ativo()
+    }
+
+    /// Atualiza a preferência sem tocar em clientes TCP já abertos. A política
+    /// só escolhe chamadas novas; uma travessia em andamento conserva o canal
+    /// que já adquiriu.
+    pub fn set_quic(&self, on: bool) {
+        self.quic.store(on, Ordering::Relaxed);
+    }
+
+    pub async fn quic_post(
+        &self,
+        peer_id: &str,
+        base_url: &str,
+        quic_addresses: &[String],
+        path: &str,
+        body: Vec<u8>,
+        session_id: Option<&str>,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::quic::QuicResponse> {
+        self.quic_post_typed(
+            peer_id,
+            base_url,
+            quic_addresses,
+            path,
+            "application/octet-stream",
+            body,
+            session_id,
+            timeout,
+        )
+        .await
+    }
+
+    /// Como `quic_post`, mas com `content-type` explícito. As rotas de ciclo
+    /// de vida de sessão (`/v1/session/{release,rewind,rollback}`) usam
+    /// `application/json` e um `Json<T>` que recusa `octet-stream`; mandá-las
+    /// por QUIC é o que dá a elas o mesmo tratamento de transporte seguro que
+    /// o decode já tem, em vez de um POST em claro sem credencial que o peer
+    /// rejeita com 401 numa rede pública.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn quic_post_typed(
+        &self,
+        peer_id: &str,
+        base_url: &str,
+        quic_addresses: &[String],
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        session_id: Option<&str>,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::quic::QuicResponse> {
+        let token = self.internal_node_token().await;
+        self.quic_pool
+            .request(
+                peer_id,
+                base_url,
+                quic_addresses,
+                path,
+                content_type,
+                token,
+                session_id,
+                body,
+                timeout,
+            )
+            .await
     }
 
     /// Vira a flag e joga fora os clientes: um cliente construído para falar
@@ -247,12 +370,58 @@ impl PeerClients {
     /// Sem TLS devolve o cliente interno compartilhado, que marca as chamadas
     /// de peer para a fronteira administrativa sem alterar a credencial delas.
     pub fn for_peer(&self, node_id: &str) -> Result<reqwest::Client> {
+        self.for_peer_with_state(node_id).map(|(client, _)| client)
+    }
+
+    /// Busca uma rota de controle autenticada em todos os endereços anunciados
+    /// para o mesmo peer.
+    ///
+    /// Um endereço antigo pode continuar aceitando TCP e responder 403 porque
+    /// caiu em outro nó (ou num processo fantasma), portanto uma resposta HTTP
+    /// de erro também precisa deixar a sonda tentar o próximo candidato. A
+    /// identidade TLS continua fixada no peer_id para todas as tentativas.
+    pub(crate) async fn get_internal_from_candidates(
+        &self,
+        peer_id: &str,
+        base_urls: &[String],
+        path: &str,
+        connection_key: &str,
+        extra_headers: &reqwest::header::HeaderMap,
+    ) -> Result<reqwest::Response> {
+        let http = self.for_peer(peer_id)?;
+        let mut failures = Vec::with_capacity(base_urls.len());
+        for base in base_urls {
+            let url = format!("{base}{path}");
+            let mut request = http.get(&url).headers(extra_headers.clone());
+            if !connection_key.is_empty() {
+                request = request.bearer_auth(connection_key);
+            }
+            match request.timeout(crate::webui::PEER_TIMEOUT).send().await {
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) => failures.push(format!("{url}: {}", response.status())),
+                Err(error) => failures.push(format!("{url}: {error}")),
+            }
+        }
+        anyhow::bail!(
+            "nenhum candidato respondeu à rota interna {path}: {}",
+            if failures.is_empty() {
+                "nenhum endereço anunciado".to_string()
+            } else {
+                failures.join(", ")
+            }
+        )
+    }
+
+    /// Cliente e observação atômica da entrada no cache. A observação é feita
+    /// junto da inserção para que chamadas concorrentes não rotulem como
+    /// reutilizado um cliente que acabou de ser construído.
+    pub fn for_peer_with_state(&self, node_id: &str) -> Result<(reqwest::Client, ConnectionState)> {
         if !self.tls_enabled() {
-            return Ok(self.internal_plain.clone());
+            return Ok((self.internal_plain.clone(), ConnectionState::Unknown));
         }
         if let Ok(m) = self.per_peer.read() {
             if let Some(c) = m.get(node_id) {
-                return Ok(c.clone());
+                return Ok((c.clone(), ConnectionState::Reused));
             }
         }
         let cfg = crate::tls::client_config(node_id)?;
@@ -266,7 +435,7 @@ impl PeerClients {
         if let Ok(mut m) = self.per_peer.write() {
             m.insert(node_id.to_string(), client.clone());
         }
-        Ok(client)
+        Ok((client, ConnectionState::New))
     }
 
     /// Base de URL para este peer, já com o esquema em vigor.
@@ -624,15 +793,75 @@ mod tests {
         assert!(!externo.contains("x-pom-internal-node:"));
     }
 
+    #[tokio::test]
+    async fn http_fallback_preserves_connection_authorization_on_public_network() {
+        let state = crate::gateway::testkit::state_with("cluster-secret", vec![]).await;
+        {
+            let mut config = state.auth.write().await;
+            config.connection_key = "cluster-secret".into();
+            config.network.visibility = crate::config::NetworkVisibility::Public;
+        }
+        let clients = PeerClients::new(Duration::from_secs(5));
+        clients.set_auth_state(state.auth.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = stream.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = seen_tx.send(String::from_utf8_lossy(&request).into_owned());
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let request = clients
+            .for_peer("peer-public")
+            .unwrap()
+            .post(format!("http://{address}/v1/prefill"))
+            .body("prefill-frame");
+        let response = clients
+            .authorize_inference_request_for_session(request, Some("session-public"))
+            .await
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let request = seen_rx.await.unwrap().to_ascii_lowercase();
+        server.await.unwrap();
+
+        assert!(request.contains("authorization: bearer cluster-secret"));
+        assert!(request.contains("x-pom-internal-node: 1"));
+        assert!(request.contains("x-pom-inference-session: session-public"));
+    }
+
     /// Com TLS, cada peer precisa do seu, porque o verifier é fixado na
     /// construção do cliente e carrega o node_id esperado.
     #[test]
     fn com_tls_cada_peer_tem_o_seu_e_e_reaproveitado() {
         let c = PeerClients::new(Duration::from_secs(600));
         c.set_tls(true);
-        c.for_peer("aaaa").unwrap();
-        c.for_peer("aaaa").unwrap();
-        c.for_peer("bbbb").unwrap();
+        let (_, first) = c.for_peer_with_state("aaaa").unwrap();
+        let (_, second) = c.for_peer_with_state("aaaa").unwrap();
+        let (_, third) = c.for_peer_with_state("bbbb").unwrap();
+        assert_eq!(first, ConnectionState::New);
+        assert_eq!(second, ConnectionState::Reused);
+        assert_eq!(third, ConnectionState::New);
         assert_eq!(
             c.cached_peers(),
             vec!["aaaa".to_string(), "bbbb".to_string()]

@@ -9,14 +9,14 @@
  * rota que a alimenta é `CommonOrInternal` - quem recebe a âncora costuma ser
  * um `node` ou um `infer`.
  *
- * **O que a tela decide: nada.** Mostrar a impressão digital é seguro porque
- * ela é pública e não concede nada. Instalar é decidido no servidor, que
- * exige loopback real, nó ainda sem âncora e a impressão digital conferida.
+ * **O que a tela decide: nada.** Mostrar a impressão digital calculada é seguro
+ * porque ela é pública e não concede nada. Instalar é decidido no servidor,
+ * que exige loopback real, nó ainda sem âncora e a impressão digital conferida.
  * `can_install` aqui é só o que evita desenhar um formulário que vai ser
  * recusado; não é a trava.
  */
-import { Check, Copy, Fingerprint, Laptop, ShieldAlert, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { Check, Copy, Download, Fingerprint, Laptop, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
 import {
   Badge,
   Button,
@@ -24,19 +24,20 @@ import {
   ErrorState,
   Field,
   Footnote,
-  Input,
   KeyValue,
   PageHeader,
   Panel,
   PanelHeader,
   Skeleton,
 } from "../components/ui";
-import { ApiError } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { trustAnchorApi } from "../lib/adminAuthority";
-import { useTrustAnchor } from "../lib/queries";
+import { useNode, useTrustAnchor } from "../lib/queries";
+import { Confirm } from "../components/Confirm";
 import { useToast } from "../lib/toast";
-import type { TrustAnchorRefusal } from "../lib/types";
+import type { TrustAnchorRefusal, TrustShareView } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { fingerprintFromTrustDocument, groupFingerprint } from "../lib/trustFingerprint";
 
 const REFUSALS: readonly TrustAnchorRefusal[] = [
   "not_loopback",
@@ -57,11 +58,6 @@ function refusalOf(error: unknown): TrustAnchorRefusal | null {
   }
   const reason = (error.body as { reason?: unknown }).reason;
   return REFUSALS.find((known) => known === reason) ?? null;
-}
-
-/** A impressão digital em blocos de oito, que é como se confere a olho. */
-function grouped(fingerprint: string): string {
-  return (fingerprint.match(/.{1,8}/g) ?? [fingerprint]).join(" ");
 }
 
 function FingerprintBlock({ fingerprint }: { fingerprint: string }) {
@@ -87,7 +83,7 @@ function FingerprintBlock({ fingerprint }: { fingerprint: string }) {
         // entre eles, a quebra cai na fronteira dos grupos.
         className="min-w-0 flex-1 select-all break-words rounded-lg border border-line bg-ink px-3 py-2 font-mono text-[0.78rem] leading-6 tracking-tight text-fg"
       >
-        {grouped(fingerprint)}
+        {groupFingerprint(fingerprint)}
       </code>
       <Button
         size="sm"
@@ -100,18 +96,53 @@ function FingerprintBlock({ fingerprint }: { fingerprint: string }) {
   );
 }
 
-export function TrustAnchor() {
+export function TrustAnchor({ sharing = false }: { sharing?: boolean }) {
   const { t } = useI18n();
   const anchor = useTrustAnchor();
+  const node = useNode();
   const toast = useToast();
+  const canShare = node.data?.authority_level != null;
+  const [trustShare, setTrustShare] = useState<TrustShareView | null>(null);
+  const [trustShareLoaded, setTrustShareLoaded] = useState(false);
+  const [trustCopied, setTrustCopied] = useState<"document" | "key" | null>(null);
 
   // Não `document`: o nome sombreia o global do DOM.
   const [chain, setChain] = useState("");
   const [fingerprint, setFingerprint] = useState("");
+  const [fingerprintPending, setFingerprintPending] = useState(false);
+  const [fingerprintConfirmed, setFingerprintConfirmed] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [refusal, setRefusal] = useState<{ reason: TrustAnchorRefusal | null; message: string } | null>(
     null,
   );
+
+  useEffect(() => {
+    if (!canShare || trustShareLoaded) return;
+    setTrustShareLoaded(true);
+    void api.get<TrustShareView>("/api/ui/network/trust-share")
+      .then(setTrustShare)
+      .catch(() => undefined);
+  }, [canShare, trustShareLoaded]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!chain.trim()) {
+      setFingerprint("");
+      setFingerprintConfirmed(false);
+      setFingerprintPending(false);
+      return;
+    }
+    setFingerprintPending(true);
+    setFingerprintConfirmed(false);
+    void fingerprintFromTrustDocument(chain).then((value) => {
+      if (cancelled) return;
+      setFingerprint(value ?? "");
+      setFingerprintPending(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [chain]);
 
   async function install(event: React.FormEvent) {
     event.preventDefault();
@@ -121,6 +152,7 @@ export function TrustAnchor() {
       await trustAnchorApi.install(chain, fingerprint);
       setChain("");
       setFingerprint("");
+      setFingerprintConfirmed(false);
       toast.success(t("trustAnchor.installed"), t("trustAnchor.installedDetail"));
       await anchor.refetch();
     } catch (error) {
@@ -137,7 +169,7 @@ export function TrustAnchor() {
   if (anchor.isLoading) {
     return (
       <>
-        <PageHeader title={t("trustAnchor.pageTitle")} subtitle={t("trustAnchor.pageSubtitle")} />
+        <PageHeader title={t(sharing ? "network.sharingTitle" : "trustAnchor.pageTitle")} subtitle={t(sharing ? "network.sharingSubtitle" : "trustAnchor.pageSubtitle")} />
         <div className="space-y-5" aria-label={t("trustAnchor.pageLoading")}>
           <Skeleton className="h-44 w-full" />
         </div>
@@ -148,7 +180,7 @@ export function TrustAnchor() {
   if (anchor.isError || !anchor.data) {
     return (
       <>
-        <PageHeader title={t("trustAnchor.pageTitle")} subtitle={t("trustAnchor.pageSubtitle")} />
+        <PageHeader title={t(sharing ? "network.sharingTitle" : "trustAnchor.pageTitle")} subtitle={t(sharing ? "network.sharingSubtitle" : "trustAnchor.pageSubtitle")} />
         <ErrorState
           title={t("trustAnchor.pageFailed")}
           error={anchor.error}
@@ -159,12 +191,32 @@ export function TrustAnchor() {
   }
 
   const state = anchor.data;
-  const canSubmit = chain.trim().length > 0 && fingerprint.trim().length > 0 && !installing;
+  const canSubmit = chain.trim().length > 0 && fingerprint.trim().length > 0 && fingerprintConfirmed && !fingerprintPending && !installing;
+
+  async function copySharedValue(kind: "document" | "key", value: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setTrustCopied(kind);
+      window.setTimeout(() => setTrustCopied(null), 1800);
+    } catch {
+      // O valor permanece selecionável quando a área de transferência não existe.
+    }
+  }
+
+  function downloadSharedValue(value: string, filename: string) {
+    const url = URL.createObjectURL(new Blob([value], { type: "application/json;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <>
-      <PageHeader title={t("trustAnchor.pageTitle")} subtitle={t("trustAnchor.pageSubtitle")} />
+      <PageHeader title={t(sharing ? "network.sharingTitle" : "trustAnchor.pageTitle")} subtitle={t(sharing ? "network.sharingSubtitle" : "trustAnchor.pageSubtitle")} />
       <div className="space-y-5">
+        <section id="machine" className="scroll-mt-6">
         <Panel>
           <PanelHeader
             eyebrow={t("trustAnchor.stateEyebrow")}
@@ -212,6 +264,13 @@ export function TrustAnchor() {
             )}
           </div>
         </Panel>
+        </section>
+
+        {canShare && <section id="share" className="scroll-mt-6"><TrustSharePanel share={trustShare} copied={trustCopied} onCopy={copySharedValue} onDownload={downloadSharedValue} t={t} /></section>}
+
+        <section id="keys" className="scroll-mt-6">
+          <ConnectionKeyPanel node={node.data} canRotate={canShare} t={t} />
+        </section>
 
         {!state.anchored && (
           <Panel>
@@ -238,23 +297,14 @@ export function TrustAnchor() {
                     className="w-full min-w-0 resize-y rounded-lg border border-line bg-ink px-3 py-2 font-mono text-[0.75rem] leading-5 text-fg placeholder:text-faint transition-colors duration-150 hover:border-line-strong focus:border-iris focus:outline-none focus:ring-2 focus:ring-iris/25"
                   />
                 </Field>
-                <Field
-                  label={t("trustAnchor.typedFingerprintLabel")}
-                  hint={t("trustAnchor.typedFingerprintHint")}
-                >
-                  <Input
-                    data-testid="anchor-typed-fingerprint"
-                    id="trust-anchor-fingerprint"
-                    name="trust-anchor-fingerprint"
-                    value={fingerprint}
-                    onChange={(event) => setFingerprint(event.target.value)}
-                    autoComplete="off"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    placeholder={t("trustAnchor.typedFingerprintPlaceholder")}
-                    className="font-mono"
-                  />
-                </Field>
+                <div className="rounded-lg border border-line bg-raised px-3 py-3">
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-faint">{t("trustAnchor.fingerprintCalculated")}</p>
+                  {fingerprintPending ? <p className="mt-2 text-sm text-muted">{t("trustAnchor.fingerprintWaiting")}</p> : fingerprint ? <code data-testid="anchor-calculated-fingerprint" className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{groupFingerprint(fingerprint)}</code> : <p className="mt-2 text-sm text-muted">{t("trustAnchor.fingerprintWaiting")}</p>}
+                  <label className="mt-3 flex items-start gap-3 text-sm text-fg">
+                    <input data-testid="anchor-fingerprint-confirm" type="checkbox" checked={fingerprintConfirmed} disabled={!fingerprint || fingerprintPending} onChange={(event) => setFingerprintConfirmed(event.target.checked)} className="mt-0.5 h-4 w-4 accent-iris" />
+                    <span>{t("trustAnchor.fingerprintConfirm")}</span>
+                  </label>
+                </div>
                 {refusal && (
                   <p
                     role="alert"
@@ -292,4 +342,32 @@ export function TrustAnchor() {
       </div>
     </>
   );
+}
+
+function TrustSharePanel({ share, copied, onCopy, onDownload, t }: { share: TrustShareView | null; copied: "document" | "key" | null; onCopy: (kind: "document" | "key", value: string) => Promise<void>; onDownload: (value: string, filename: string) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
+  return <Panel><PanelHeader eyebrow={t("network.shareEyebrow")} title={t("network.shareTitle")} subtitle={t("network.shareSubtitle")} />{!share ? <p className="px-5 py-5 text-sm text-muted">{t("network.shareLoading")}</p> : <div className="space-y-4 px-5 py-5"><ShareBlock label={t("network.trustDocument")} value={share.document} filename={share.filename} kind="document" copied={copied === "document"} onCopy={onCopy} onDownload={onDownload} t={t} />{share.connection_key ? <ShareBlock label={t("network.connectionKey")} value={share.connection_key} filename="pom-connection-key.txt" kind="key" copied={copied === "key"} onCopy={onCopy} onDownload={onDownload} t={t} /> : <p className="text-xs leading-relaxed text-faint">{t("network.publicNoConnectionKey")}</p>}</div>}</Panel>;
+}
+
+function ShareBlock({ label, value, filename, kind, copied, onCopy, onDownload, t }: { label: string; value: string; filename: string; kind: "document" | "key"; copied: boolean; onCopy: (kind: "document" | "key", value: string) => Promise<void>; onDownload: (value: string, filename: string) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
+  return <div className="min-w-0 rounded-xl border border-line bg-raised"><div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3"><span className="text-sm font-medium text-fg">{label}</span><div className="flex flex-wrap gap-2"><Button size="sm" icon={copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} onClick={() => void onCopy(kind, value)}>{copied ? t("network.copied") : t("network.copy")}</Button><Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={() => onDownload(value, filename)}>{t("network.download")}</Button></div></div><pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-[0.7rem] leading-5 text-muted">{value}</pre></div>;
+}
+
+function ConnectionKeyPanel({ node, canRotate, t }: { node: ReturnType<typeof useNode>["data"]; canRotate: boolean; t: (key: string, values?: Record<string, string | number>) => string }) {
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  async function regenerate() {
+    setBusy(true);
+    try {
+      await api.post("/admin/regenerate-key");
+      toast.success(t("keys.rotated"), t("keys.rotatedDetail"));
+    } catch (error) {
+      toast.fromError(t("keys.rotateFailed"), error);
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  }
+  if (!node) return <Skeleton className="h-48 w-full" />;
+  return <><Panel><PanelHeader eyebrow={node.hostname} title={t("keys.clusterKey")} subtitle={t("keys.clusterKeySubtitle")} actions={canRotate ? <Button variant="danger" icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => setConfirming(true)}>{t("keys.generateAnother")}</Button> : undefined} /><div className="space-y-4 px-5 py-4"><code className="block break-all rounded-lg border border-line bg-ink px-3 py-2 font-mono text-[0.78rem] text-fg">{node.connection_key}</code><dl className="grid gap-4 sm:grid-cols-2"><KeyValue label={t("keys.bootstrapAddress")}><span className="font-mono">{node.system.hostname}:{node.p2p_port}</span></KeyValue><KeyValue label={t("keys.apiBaseUrl")}><span className="font-mono">http://{node.system.hostname}:{node.gateway_port}/v1</span></KeyValue></dl></div></Panel><Confirm open={confirming} title={t("keys.rotateTitle")} description={t("keys.rotateDescription")} confirmLabel={t("keys.generateAnother")} tone="danger" busy={busy} onConfirm={() => void regenerate()} onCancel={() => setConfirming(false)} /></>;
 }

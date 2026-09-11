@@ -52,13 +52,20 @@ pub(super) async fn plan_split_endpoint(
             let mut forwarded = req;
             // Clear the hop marker so the receiving peer measures locally.
             forwarded.layout_node_id = None;
-            return match cliente
-                .post(format!("{base}/api/ui/plan"))
-                .bearer_auth(state.auth.read().await.connection_key.clone())
-                .json(&forwarded)
-                .send()
+            let request = match state
+                .control_json_request(
+                    cliente.post(format!("{base}/api/ui/plan")),
+                    "/api/ui/plan",
+                    &forwarded,
+                )
                 .await
             {
+                Ok(request) => request,
+                Err(error) => {
+                    return bad_request(format!("não foi possível assinar o plano: {error}"))
+                }
+            };
+            return match request.send().await {
                 Ok(r) => {
                     let status = r.status();
                     match r.json::<serde_json::Value>().await {
@@ -407,4 +414,3 @@ pub(super) async fn capacity_preview_endpoint(
     })
     .into_response()
 }
-

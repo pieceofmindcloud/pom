@@ -200,7 +200,7 @@ async fn handle_link(State(hop): State<Hop>, body: axum::body::Body) -> Response
     crate::link::serve(body, move |path, bytes| {
         let hop = hop.clone();
         async move {
-            if path != "/v1/step" {
+            if !matches!(path.as_str(), "/v1/step" | "/v1/prefill") {
                 return Err(anyhow::anyhow!("rota inesperada no canal: {path}"));
             }
             Ok(fake_step(State(hop), bytes).await)
@@ -258,6 +258,7 @@ fn step_for(node_id: &str, url: &str, layer: u32, link: bool) -> PipelineStep {
         node_id: node_id.into(),
         inference_url: url.into(),
         inference_candidates: vec![],
+        quic_addr_candidates: vec![],
         start_layer: layer,
         end_layer: layer,
         exec_start: layer,
@@ -353,6 +354,7 @@ async fn measure(hops: usize, link: bool, tokens: usize) -> Measurement {
         transport = match sent.transport {
             crate::relay::InferenceTransport::HttpsLink => "https-link",
             crate::relay::InferenceTransport::Https => "https",
+            crate::relay::InferenceTransport::Http => "http",
             other => {
                 panic!("transporte inesperado na bancada: {}", other.as_str())
             }
@@ -407,7 +409,7 @@ async fn a_ligacao_persistente_custa_menos_bytes_por_ficha() {
                 m.ms_per_token
             );
         }
-        assert_eq!(before.transport, "https");
+        assert_eq!(before.transport, "http");
         assert_eq!(after.transport, "https-link");
         assert_eq!(
             after.connections_first_hop, 0,
@@ -424,6 +426,80 @@ async fn a_ligacao_persistente_custa_menos_bytes_por_ficha() {
             "hops={hops}: a cadeia inteira não economizou"
         );
     }
+}
+
+/// O handoff MTP tem metadados extras, mas continua sendo um frame de
+/// `/v1/step` compatível com o envelope do canal persistente.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn handoff_mtp_usa_a_ligacao_persistente() {
+    let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
+    let (url, _counter) = spawn_hop(Hop {
+        clients: clients.clone(),
+    })
+    .await;
+    let step = step_for("mtp-tail", &url, 0, true);
+    let residual = vec![0.25f32; HIDDEN_DIM];
+    let sent = crate::relay::send_frame_or_tunnel(
+        &clients,
+        &step,
+        None,
+        "/v1/step",
+        &json!({
+            "session_id": "mtp-session",
+            "is_last": true,
+            "tokens": [41, 42, 43],
+            "draft": [42, 43],
+            "mtp_k": 3
+        }),
+        Some((&residual, vec![1, HIDDEN_DIM])),
+        WireDtype::F16,
+        WireDtype::F16.frame_encoding(),
+        1,
+        "mtp-tail",
+        |_| {},
+    )
+    .await
+    .expect("handoff MTP");
+
+    assert_eq!(sent.transport, crate::relay::InferenceTransport::HttpsLink);
+}
+
+/// O prefill direto leva `reply_to`, por isso não pode entrar no
+/// `BatchCoordinator`. Ele ainda precisa usar a mesma ligação persistente do
+/// decode, ou o primeiro handoff continuaria pagando libp2p por chunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn handoff_prefill_direto_usa_a_ligacao_persistente() {
+    let clients = crate::peer_client::PeerClients::new(Duration::from_secs(10));
+    let (url, _counter) = spawn_hop(Hop {
+        clients: clients.clone(),
+    })
+    .await;
+    let node_id = format!("prefill-link-{}", uuid::Uuid::new_v4());
+    let step = step_for(&node_id, &url, 0, true);
+    let residual = vec![0.25f32; HIDDEN_DIM];
+    let sent = crate::relay::send_frame_or_tunnel(
+        &clients,
+        &step,
+        None,
+        "/v1/prefill",
+        &json!({
+            "session_id": "prefill-session",
+            "reply_to": {"ticket": "gateway-ticket"},
+            "is_last": true,
+            "is_final_chunk": true,
+        }),
+        Some((&residual, vec![1, HIDDEN_DIM])),
+        WireDtype::F16,
+        WireDtype::F16.frame_encoding(),
+        1,
+        &node_id,
+        |_| {},
+    )
+    .await
+    .expect("handoff de prefill");
+
+    assert_eq!(sent.transport, crate::relay::InferenceTransport::HttpsLink);
+    assert_eq!(crate::link::channels_opened(&node_id, &url), 1);
 }
 
 /// Um hop que anuncia o canal mas não o serve não pode matar a geração: a
@@ -470,7 +546,7 @@ async fn canal_indisponivel_degrada_para_o_caminho_por_requisicao() {
     )
     .await
     .expect("a geração continua pelo caminho de sempre");
-    assert_eq!(sent.transport, crate::relay::InferenceTransport::Https);
+    assert_eq!(sent.transport, crate::relay::InferenceTransport::Http);
     assert!(
         sent.transport_fallback,
         "a telemetria tem que denunciar que o canal não serviu"
@@ -479,6 +555,66 @@ async fn canal_indisponivel_degrada_para_o_caminho_por_requisicao() {
     assert!(
         !crate::link::has_channel("lab-sem-canal", &url).await,
         "um canal que não abriu não pode ficar no pool"
+    );
+}
+
+/// O hop interno de um `remote-stream` continua sendo autoregressivo, mas não
+/// precisa reconstruir um POST a cada ativação. A capability do link deve
+/// valer também quando a flag `remote_stream` impede a coalescência entre
+/// sessões.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_stream_interno_reutiliza_a_ligacao_persistente() {
+    let clients = crate::peer_client::PeerClients::new(Duration::from_secs(30));
+    let (url, counters) = spawn_hop(Hop {
+        clients: clients.clone(),
+    })
+    .await;
+    let step = step_for("lab-remote-stream-link", &url, 0, true);
+    let residual = vec![0.25f32; HIDDEN_DIM];
+    let shape = vec![1usize, HIDDEN_DIM];
+
+    for token_id in 0..4 {
+        let meta = json!({
+            "session_id": "sessao-remote-stream",
+            "remote_stream": true,
+            "token_id": token_id,
+            "is_last": true,
+            "scale": 1.0,
+            "next_hops": [],
+            "exec_start": 0,
+            "exec_end": 0,
+        });
+        let sent = crate::relay::send_frame_or_tunnel(
+            &clients,
+            &step,
+            None,
+            "/v1/step",
+            &meta,
+            Some((&residual, shape.clone())),
+            WireDtype::F16,
+            WireDtype::F16.frame_encoding(),
+            1,
+            &step.node_id,
+            |_| {},
+        )
+        .await
+        .expect("travessia interna");
+        assert_eq!(
+            sent.transport,
+            crate::relay::InferenceTransport::HttpsLink,
+            "remote-stream deve usar o canal persistente quando anunciado"
+        );
+        assert_eq!(sent.meta["token_id"], json!(1234));
+    }
+
+    assert_eq!(
+        counters.connections.load(Ordering::Relaxed),
+        1,
+        "quatro ativações internas devem compartilhar uma conexão"
+    );
+    assert_eq!(
+        crate::link::channels_opened("lab-remote-stream-link", &url),
+        1
     );
 }
 

@@ -31,10 +31,10 @@ export const trustAnchorApi = {
   /**
    * Instala a âncora transportada pelo operador.
    *
-   * `fingerprint` é digitado por ele a partir do que leu no admin. A tela
-   * nunca o deriva de `document`: derivá-lo anularia a conferência, que é a
-   * única coisa que faz o arquivo colado valer alguma coisa. O servidor
-   * recusa loopback ausente, nó já ancorado e valor que não corresponde.
+   * `fingerprint` é calculado localmente a partir do documento, e a tela exige
+   * que o operador confirme esse valor contra a mensagem separada do admin.
+   * O servidor continua recusando loopback ausente, nó já ancorado e valor que
+   * não corresponde à cadeia completa.
    */
   install(document: string, fingerprint: string) {
     return api.post<{ anchored: boolean; fingerprint: string }>(

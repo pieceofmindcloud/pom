@@ -48,6 +48,52 @@ pub(super) struct ContextParamsSnapshot {
     pub(super) n_rs_seq: u32,
 }
 
+/// Contexto `mtmd` correspondente ao argumento `--mmproj` do llama.cpp.
+///
+/// O projector depende dos pesos do `llama_model`, por isso vive no mesmo
+/// `LlmEngine` que o contexto de texto e é destruído antes dele.
+pub(super) struct VisionContext {
+    pub(super) ctx: *mut sys::mtmd_context,
+}
+
+unsafe impl Send for VisionContext {}
+unsafe impl Sync for VisionContext {}
+
+impl VisionContext {
+    pub(super) fn load(
+        mmproj_path: &str,
+        model: *const sys::llama_model,
+        cfg: &EngineConfig,
+    ) -> Result<Self> {
+        let path = CString::new(mmproj_path)
+            .map_err(|_| anyhow::anyhow!("caminho mmproj contém NUL: {mmproj_path}"))?;
+        let mut params = unsafe { sys::mtmd_context_params_default() };
+        params.use_gpu = cfg.n_gpu_layers != 0;
+        params.batch_max_tokens = i32::try_from(cfg.n_batch)
+            .map_err(|_| anyhow::anyhow!("n_batch excede o limite do mtmd"))?;
+        let ctx = unsafe { sys::mtmd_init_from_file(path.as_ptr(), model, params) };
+        if ctx.is_null() {
+            bail!("não foi possível carregar o mmproj: {mmproj_path}");
+        }
+        if !unsafe { sys::mtmd_support_vision(ctx) } {
+            unsafe { sys::mtmd_free(ctx) };
+            bail!("o mmproj não oferece entrada de imagem: {mmproj_path}");
+        }
+        Ok(Self { ctx })
+    }
+}
+
+impl Drop for VisionContext {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.ctx.is_null() {
+                sys::mtmd_free(self.ctx);
+                self.ctx = ptr::null_mut();
+            }
+        }
+    }
+}
+
 pub struct LlmEngine {
     /// Os pesos. `Arc` porque o último contexto a morrer é quem os libera.
     pub(super) loaded: Arc<LoadedModel>,
@@ -74,6 +120,8 @@ pub struct LlmEngine {
     /// This is part of the engine identity because a dense/native context and
     /// an external-executor context cannot share the same loaded model.
     pub(super) moe_external_executor: bool,
+    /// Projector de visão carregado com o modelo, quando a implantação o pediu.
+    pub(super) vision: Option<VisionContext>,
     /// A cabeça de rascunho `nextn`, quando o modelo traz uma e o operador
     /// ligou o MTP. `None` é o caso comum: modelo sem MTP, fatia não-final de
     /// um modelo com MTP, ou interruptor desligado.
@@ -193,7 +241,14 @@ impl ModelCache {
 pub struct DecodeTimings {
     pub enqueue_us: u64,
     pub backend_completion_us: u64,
+    /// Compatibility total for the old aggregate field: ready wait plus the
+    /// actual device-to-host read.
     pub residual_capture_d2h_sync_us: u64,
+    pub residual_capture_ready_wait_us: u64,
+    pub residual_capture_copy_us: u64,
+    pub residual_capture_postprocess_us: u64,
+    pub residual_capture_bytes: u64,
+    pub residual_capture_copies: u64,
     pub moe_forward_us: u64,
     pub moe_executors: Vec<crate::moe::runtime::MoeExecutorKind>,
     pub moe_executor: Option<crate::moe::runtime::MoeExecutorTelemetry>,
@@ -249,6 +304,7 @@ impl LlmEngine {
         // Primeiro o rascunho: o contexto dele também é VRAM.
         self.mtp = None;
         self.mtp_allocation = None;
+        self.vision = None;
         unsafe {
             if !self.ctx.is_null() {
                 sys::llama_set_moe_ffn_callback(self.ctx, None, ptr::null_mut());
@@ -282,10 +338,7 @@ impl LlmEngine {
             );
         }
         if let Some(mtp) = self.mtp.as_ref() {
-            mtp.set_moe_callback(
-                Some(moe_ffn_callback),
-                Arc::as_ptr(&state) as *mut c_void,
-            );
+            mtp.set_moe_callback(Some(moe_ffn_callback), Arc::as_ptr(&state) as *mut c_void);
         }
         self.moe_callback = Some(state);
         Ok(())
@@ -353,7 +406,11 @@ impl LoadedModel {
     /// Lê os pesos com a opção MTP explícita. O recuo para RAM usa isso para
     /// retirar os pesos `nextn` que a primeira tentativa deixou na VRAM do
     /// modelo alvo, já que o rascunho passa a usar o modelo CPU-only irmão.
-    pub(super) fn load_with_mtp(model_path: &str, plan: &FitPlan, load_mtp: bool) -> Result<Arc<Self>> {
+    pub(super) fn load_with_mtp(
+        model_path: &str,
+        plan: &FitPlan,
+        load_mtp: bool,
+    ) -> Result<Arc<Self>> {
         log_moe_route_diagnostics_configuration();
         // llama_backend_init is idempotent; call it on every load.
         unsafe { sys::llama_backend_init() };

@@ -45,10 +45,10 @@ use axum::body::Bytes;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
@@ -88,6 +88,10 @@ const LAST_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const LAST_DELIVERY_TIMEOUT: Duration = Duration::from_millis(600);
 
+/// A resposta já pode ter sido liberada quando o recibo de transporte chega.
+/// Mantemos apenas o snapshot pequeno por este período, sem segurar a geração.
+const TELEMETRY_RETENTION: Duration = Duration::from_secs(30);
+
 // ── Inbox ─────────────────────────────────────────────────────────────────────
 
 /// Os quadros que este nó despachou e ainda espera resultado.
@@ -105,17 +109,27 @@ struct InboxState {
 }
 
 struct ReplyState {
-    sender: oneshot::Sender<Value>,
+    sender: Option<oneshot::Sender<Value>>,
+    result: Option<Value>,
+    delivered: bool,
     expected_transport: usize,
     transport: Vec<Option<Value>>,
+    late_transport: u64,
+    expires_at: Option<Instant>,
 }
 
 /// Bounded on purpose: a slow gateway must apply backpressure to the remote
 /// emitter and, through it, to the inference producer.
-const REMOTE_STREAM_QUEUE_CAPACITY: usize = 16;
+// A bounded queue decouples the remote producer from callback jitter. 64
+// entries cover several transient 67-114 ms network spikes without allowing
+// an unbounded request-sized allocation; backpressure still closes the loop
+// when the client is genuinely slower than generation.
+const REMOTE_STREAM_QUEUE_CAPACITY: usize = 64;
+const REMOTE_STREAM_DEDUPE_WINDOW: usize = 1_024;
 
 struct StreamState {
     sender: mpsc::Sender<Value>,
+    seen_frames: HashSet<String>,
 }
 
 impl ReplyInbox {
@@ -137,14 +151,19 @@ impl ReplyInbox {
     /// chegam depois deixam a amostra explicitamente incompleta, sem colocar
     /// telemetria no caminho crítico da geração.
     pub fn register_with_expected_transport(&self, expected_transport: usize) -> Ticket {
+        self.cleanup_expired();
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.0.lock().unwrap().replies.insert(
             id.clone(),
             ReplyState {
-                sender: tx,
+                sender: Some(tx),
+                result: None,
+                delivered: false,
                 expected_transport,
                 transport: vec![None; expected_transport],
+                late_transport: 0,
+                expires_at: None,
             },
         );
         Ticket {
@@ -156,13 +175,16 @@ impl ReplyInbox {
 
     /// Opens a ticket that can receive several remote decode batches.
     pub fn register_stream(&self) -> StreamTicket {
+        self.cleanup_expired();
         let id = uuid::Uuid::new_v4().to_string();
         let (sender, receiver) = mpsc::channel(REMOTE_STREAM_QUEUE_CAPACITY);
-        self.0
-            .lock()
-            .unwrap()
-            .streams
-            .insert(id.clone(), StreamState { sender });
+        self.0.lock().unwrap().streams.insert(
+            id.clone(),
+            StreamState {
+                sender,
+                seen_frames: HashSet::new(),
+            },
+        );
         StreamTicket {
             id,
             inbox: self.clone(),
@@ -173,17 +195,29 @@ impl ReplyInbox {
     /// Entrega um resultado. `false` quando o ticket não existe mais — o
     /// gateway já desistiu, e quem entregou precisa saber que chegou tarde.
     pub fn deliver(&self, ticket: &str, meta: Value) -> bool {
+        self.cleanup_expired();
         let mut state = self.0.lock().unwrap();
-        let Some(entry) = state.replies.remove(ticket) else {
+        let Some(entry) = state.replies.get_mut(ticket) else {
             return false;
         };
+        if entry.delivered {
+            return false;
+        }
         let meta = complete_transport_trace(&entry, meta);
-        meta_sender_send(meta, entry.sender)
+        entry.result = Some(meta.clone());
+        entry.delivered = true;
+        entry.expires_at = Some(Instant::now() + TELEMETRY_RETENTION);
+        let sender = entry.sender.take();
+        if entry.expected_transport == 0 {
+            state.replies.remove(ticket);
+        }
+        sender.is_some_and(|sender| meta_sender_send(meta, sender))
     }
 
     /// Registra a resposta de uma travessia sem transformá-la em resultado.
     /// Retorna `false` quando o ticket já expirou ou foi removido.
     pub fn record_transport(&self, ticket: &str, hop_index: usize, meta: Value) -> bool {
+        self.cleanup_expired();
         let mut state = self.0.lock().unwrap();
         let Some(entry) = state.replies.get_mut(ticket) else {
             return false;
@@ -191,19 +225,65 @@ impl ReplyInbox {
         if hop_index >= entry.expected_transport {
             return false;
         }
+        if entry.transport[hop_index].is_some() {
+            return false;
+        }
+        if entry.delivered {
+            entry.late_transport = entry.late_transport.saturating_add(1);
+        }
         entry.transport[hop_index] = Some(meta);
+        if entry.delivered {
+            let Some(previous) = entry.result.take() else {
+                return true;
+            };
+            let mut updated = complete_transport_trace(entry, previous);
+            updated["telemetry_late_spans"] = json!(entry.late_transport);
+            entry.result = Some(updated);
+        }
         true
+    }
+
+    /// Snapshota a versão mais recente da telemetria sem bloquear a resposta.
+    pub fn trace_snapshot(&self, ticket: &str) -> Option<Value> {
+        self.cleanup_expired();
+        self.0
+            .lock()
+            .unwrap()
+            .replies
+            .get(ticket)
+            .and_then(|entry| entry.result.clone())
+    }
+
+    fn cleanup_expired(&self) {
+        let now = Instant::now();
+        let mut state = self.0.lock().unwrap();
+        state
+            .replies
+            .retain(|_, entry| entry.expires_at.is_none_or(|expires_at| expires_at > now));
     }
 
     fn cancel(&self, ticket: &str) {
         let mut state = self.0.lock().unwrap();
-        state.replies.remove(ticket);
+        if state
+            .replies
+            .get(ticket)
+            .is_some_and(|entry| !entry.delivered)
+        {
+            state.replies.remove(ticket);
+        }
         state.streams.remove(ticket);
     }
 
     /// Quantos quadros estão em voo. Só para teste e diagnóstico.
     pub fn outstanding(&self) -> usize {
-        self.0.lock().unwrap().replies.len()
+        self.cleanup_expired();
+        self.0
+            .lock()
+            .unwrap()
+            .replies
+            .values()
+            .filter(|entry| !entry.delivered)
+            .count()
     }
 
     #[cfg(test)]
@@ -215,17 +295,32 @@ impl ReplyInbox {
     /// terminal batch removes the stream after its value has entered the
     /// consumer queue.
     pub async fn deliver_stream(&self, ticket: &str, meta: Value) -> bool {
+        self.cleanup_expired();
         let terminal = meta.get("done").and_then(Value::as_bool).unwrap_or(false)
             || meta.get("error").and_then(Value::as_str).is_some();
         let sender = {
-            let state = self.0.lock().unwrap();
-            state
-                .streams
-                .get(ticket)
-                .map(|stream| stream.sender.clone())
-        };
-        let Some(sender) = sender else {
-            return false;
+            let mut state = self.0.lock().unwrap();
+            let Some(stream) = state.streams.get_mut(ticket) else {
+                return false;
+            };
+            let frame_id = meta
+                .get("stream_id")
+                .and_then(Value::as_str)
+                .zip(
+                    meta.get("remote_stream_frame_index")
+                        .and_then(Value::as_u64),
+                )
+                .map(|(stream_id, index)| format!("{stream_id}:{index}"));
+            if let Some(frame_id) = frame_id {
+                if stream.seen_frames.contains(&frame_id) {
+                    return true;
+                }
+                if stream.seen_frames.len() >= REMOTE_STREAM_DEDUPE_WINDOW {
+                    stream.seen_frames.clear();
+                }
+                stream.seen_frames.insert(frame_id);
+            }
+            stream.sender.clone()
         };
         if sender.send(meta).await.is_err() {
             self.0.lock().unwrap().streams.remove(ticket);
@@ -304,6 +399,7 @@ impl Drop for StreamTicket {
 pub struct DirectReply {
     inbox: ReplyInbox,
     urls: Vec<String>,
+    quic_addresses: Vec<String>,
     /// node_id de quem vai receber a resposta.
     ///
     /// Viaja no `reply_to` porque quem entrega precisa dele para fixar o
@@ -317,19 +413,24 @@ impl DirectReply {
     /// `None` quando este nó não sabe nenhum endereço de si mesmo: sem isso a
     /// cauda não teria para onde responder, e o certo é cair no anel de sempre
     /// em vez de despachar um quadro que nunca volta.
-    pub fn new(
-        inbox: ReplyInbox,
-        urls: Vec<String>,
-        node_id: String,
-    ) -> Option<Self> {
+    pub fn new(inbox: ReplyInbox, urls: Vec<String>, node_id: String) -> Option<Self> {
         if urls.is_empty() {
             return None;
         }
         Some(Self {
             inbox,
             urls,
+            quic_addresses: Vec::new(),
             node_id,
         })
+    }
+
+    /// Endereços `host:porta` do endpoint QUIC do gateway. Eles são separados
+    /// das URLs HTTP para que o callback nunca tente transformar `http://...`
+    /// em destino UDP.
+    pub fn with_quic_addresses(mut self, addresses: Vec<String>) -> Self {
+        self.quic_addresses = addresses;
+        self
     }
 
     pub fn ticket_for_hops(&self, expected_hops: usize) -> Ticket {
@@ -339,6 +440,7 @@ impl DirectReply {
     pub fn reply_to(&self, ticket: &str) -> Value {
         json!({
             "urls": self.urls,
+            "quic_addresses": self.quic_addresses,
             "ticket": ticket,
             "node_id": self.node_id,
         })
@@ -366,9 +468,12 @@ impl DirectReply {
 fn transport_receipt(hop_index: usize, sent: &crate::relay::SentFrame) -> Value {
     json!({
         "hop_index": hop_index,
-        "transport": sent.transport.as_str(),
+        "transport": sent.telemetry_transport().as_str(),
         "transport_fallback": sent.transport_fallback,
+        "transport_fallback_reason": sent.transport_fallback_reason,
         "round_trip_ms": sent.round_trip_ms,
+        "processing_ms": sent.meta.get("processing_ms").cloned().unwrap_or(json!(0)),
+        "transport_rtt_us": sent.transport_rtt_us,
         "bytes_sent": sent.bytes_sent,
         "bytes_received": sent.bytes_received,
         "tls": sent.tls,
@@ -507,19 +612,21 @@ pub async fn handle_remote_stream_result(inbox: &ReplyInbox, body: Bytes) -> Res
 }
 
 /// Espera o resultado e executa uma ação síncrona quando o ack da cabeça
-/// chega. Se o resultado chegar primeiro, ele é liberado sem esperar a
-/// telemetria atrasada.
+/// chega. Se o resultado chegar primeiro, o ack continua em uma tarefa
+/// destacada: ele é liberado sem esperar, mas a evidência do primeiro hop não
+/// é perdida quando a resposta da cauda vence a resposta HTTP da cabeça.
 pub async fn await_result_with_ack<F, C>(
     ack: F,
     ticket: &mut Ticket,
     head_label: &str,
-    mut on_ack: C,
+    on_ack: C,
 ) -> Result<Value>
 where
-    F: Future<Output = Result<crate::relay::SentFrame>>,
-    C: FnMut(&crate::relay::SentFrame),
+    F: Future<Output = Result<crate::relay::SentFrame>> + Send + 'static,
+    C: FnOnce(&crate::relay::SentFrame) + Send + 'static,
 {
-    tokio::pin!(ack);
+    let mut ack = Box::pin(ack);
+    let mut on_ack = Some(on_ack);
     let deadline = tokio::time::sleep(DIRECT_REPLY_DEADLINE);
     tokio::pin!(deadline);
     let mut acked = false;
@@ -528,6 +635,13 @@ where
         tokio::select! {
             biased;
             got = &mut ticket.rx => {
+                if let Some(on_ack) = on_ack.take() {
+                    tokio::spawn(async move {
+                        if let Ok(frame) = ack.await {
+                            on_ack(&frame);
+                        }
+                    });
+                }
                 return got.map_err(|_| anyhow!("resultado direto perdido antes de chegar"));
             }
             sent = &mut ack, if !acked => {
@@ -538,10 +652,16 @@ where
                     // um cluster meio atualizado funcionando mesmo se a
                     // negociação de capacidade escapar.
                     Ok(frame) if frame.meta.get("token_id").is_some() => {
-                        on_ack(&frame);
+                        if let Some(on_ack) = on_ack.take() {
+                            on_ack(&frame);
+                        }
                         return Ok(frame.meta)
                     }
-                    Ok(frame) => on_ack(&frame),
+                    Ok(frame) => {
+                        if let Some(on_ack) = on_ack.take() {
+                            on_ack(&frame);
+                        }
+                    }
                     Err(e) => return Err(e),
                 }
             }
@@ -611,6 +731,180 @@ pub async fn deliver_stream_batch(
     deliver_meta_at(http, reply_to, REMOTE_STREAM_RESULT_PATH, meta).await
 }
 
+/// Recebe um callback remoto dentro do canal persistente `/v1/link`. O frame
+/// interno é um batch de um item só para que o próprio protocolo carregue a
+/// rota e mantenha a correlação do canal; o item contém a mesma metadata que o
+/// endpoint HTTP por callback receberia.
+pub async fn handle_remote_stream_link(inbox: &ReplyInbox, body: Bytes) -> Response {
+    let (header, mut items) = match crate::wire::decode_batch_items(&body) {
+        Ok(value) => value,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, format!("quadro inválido: {error}")).into_response()
+        }
+    };
+    if header.kind != REMOTE_STREAM_RESULT_PATH || items.len() != 1 {
+        return (
+            StatusCode::BAD_REQUEST,
+            "quadro de retorno remoto deve conter um item",
+        )
+            .into_response();
+    }
+    let mut meta = items.remove(0).meta;
+    let Some(ticket) = meta
+        .get("ticket")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return (StatusCode::BAD_REQUEST, "lote sem ticket").into_response();
+    };
+    meta["stream_batch_bytes"] = json!(body.len());
+    if inbox.deliver_stream(&ticket, meta).await {
+        (StatusCode::OK, "ok").into_response()
+    } else {
+        (StatusCode::GONE, "stream desconhecido").into_response()
+    }
+}
+
+/// Entrega callbacks do `remote-stream` por um canal persistente. A primeira
+/// falha desativa o canal para o restante deste stream e marca cada callback
+/// seguinte como fallback explícito para HTTP(S) por requisição. Um ACK 410 é
+/// diferente: ele prova que o gateway cancelou o ticket, então o produtor
+/// remoto recebe `GatewayGone` e para em vez de continuar gerando. Isso mantém
+/// o caminho normal livre de request/reply por token sem transformar uma queda
+/// transitória em uma tempestade de tentativas de abertura.
+pub struct RemoteStreamDelivery {
+    http: crate::peer_client::PeerClients,
+    reply_to: Value,
+    persistent_failure: Option<String>,
+    callback_status: Option<crate::link::CallbackStatus>,
+}
+
+impl RemoteStreamDelivery {
+    pub fn new(http: crate::peer_client::PeerClients, reply_to: Value) -> Self {
+        Self {
+            http,
+            reply_to,
+            persistent_failure: None,
+            callback_status: None,
+        }
+    }
+
+    pub async fn deliver(&mut self, meta: Value) -> Delivery {
+        let link_transport = if crate::peer_client::tls_ativo() {
+            "https-link"
+        } else {
+            "http"
+        };
+        if let Some(status) = &self.callback_status {
+            if status.gateway_gone() {
+                return Delivery::GatewayGone;
+            }
+            if status.transport_failed() {
+                self.persistent_failure = Some(format!(
+                    "{link_transport}: ACK assíncrono do callback falhou; usando {link_transport}"
+                ));
+                self.callback_status = None;
+            }
+        }
+        let Some(session_id) = meta
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|session_id| !session_id.trim().is_empty())
+        else {
+            warn!("callback de remote-stream sem session_id; recusando identidade sintética");
+            return Delivery::Failed;
+        };
+        let frame_id = meta
+            .get("stream_id")
+            .and_then(Value::as_str)
+            .zip(
+                meta.get("remote_stream_frame_index")
+                    .and_then(Value::as_u64),
+            )
+            .map(|(stream_id, index)| format!("{stream_id}:{index}"))
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let node_id = self.reply_to.get("node_id").and_then(Value::as_str);
+        let urls: Vec<String> = self
+            .reply_to
+            .get("urls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+
+        // QUIC is the authoritative preference for a new delivery. Do not
+        // silently keep using the persistent TCP link when the cluster opted
+        // into QUIC: otherwise the MTP/remote-stream trace would describe a
+        // different transport than the one the gateway requested.
+        if self.persistent_failure.is_none() && !self.http.effective_quic_enabled() {
+            let reason = match (node_id, urls.is_empty()) {
+                (None, _) => Some(format!("{link_transport}: reply_to sem node_id")),
+                (Some(_), true) => Some(format!("{link_transport}: reply_to sem endereço")),
+                (Some(node_id), false) => {
+                    let mut link_meta = meta.clone();
+                    link_meta["ticket"] =
+                        self.reply_to.get("ticket").cloned().unwrap_or(Value::Null);
+                    link_meta["remote_stream_transport"] =
+                        json!(if crate::peer_client::tls_ativo() {
+                            link_transport
+                        } else {
+                            "http"
+                        });
+                    link_meta["remote_stream_transport_fallback"] = json!(false);
+                    match crate::wire::encode_batch_items(
+                        REMOTE_STREAM_RESULT_PATH,
+                        &frame_id,
+                        &[crate::wire::BatchPayloadItem {
+                            item_id: frame_id.clone(),
+                            session_id: session_id.to_string(),
+                            meta: link_meta,
+                            tensor: None,
+                            dtype: crate::wire::WireDtype::F16,
+                        }],
+                    ) {
+                        Ok(body) => match crate::link::send_body_without_response_with_session(
+                            &self.http,
+                            node_id,
+                            "",
+                            &urls,
+                            &frame_id,
+                            Bytes::from(body),
+                            "remote-stream-return",
+                            meta.get("session_id").and_then(Value::as_str),
+                        )
+                        .await
+                        {
+                            Ok(status) => {
+                                self.callback_status = Some(status);
+                                return Delivery::Accepted;
+                            }
+                            Err(error) => Some(format!("{link_transport}: {error}")),
+                        },
+                        Err(error) => Some(format!("{link_transport}: frame inválido: {error}")),
+                    }
+                }
+            };
+            self.persistent_failure = reason;
+        }
+
+        let mut fallback_meta = meta;
+        let fallback_transport = if crate::peer_client::tls_ativo() {
+            "https"
+        } else {
+            "http"
+        };
+        fallback_meta["remote_stream_transport"] = json!(fallback_transport);
+        fallback_meta["remote_stream_transport_fallback"] = json!(true);
+        fallback_meta["remote_stream_transport_fallback_reason"] =
+            json!(self.persistent_failure.clone().unwrap_or_else(|| {
+                format!("{fallback_transport}: canal persistente indisponível")
+            }));
+        deliver_stream_batch(&self.http, &self.reply_to, fallback_meta).await
+    }
+}
+
 /// Entrega uma evidência de transporte pelo mesmo retorno autenticado do
 /// resultado. O POST é pequeno e fica fora dos bytes da travessia medida.
 pub async fn deliver_transport(
@@ -630,21 +924,14 @@ async fn deliver_meta_at(
     http: &crate::peer_client::PeerClients,
     reply_to: &Value,
     path: &str,
-    mut meta: Value,
+    meta: Value,
 ) -> Delivery {
     let Some(ticket) = reply_to.get("ticket").and_then(|v| v.as_str()) else {
         warn!("reply_to sem ticket — resultado direto descartado");
         return Delivery::Failed;
     };
-    meta["ticket"] = json!(ticket);
-
-    let body = match crate::wire::encode(&meta, None, crate::wire::WireDtype::F16) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            warn!("resultado direto não pôde ser codificado: {e}");
-            return Delivery::Failed;
-        }
-    };
+    let mut base_meta = meta;
+    base_meta["ticket"] = json!(ticket);
 
     let urls = reply_to
         .get("urls")
@@ -675,8 +962,17 @@ async fn deliver_meta_at(
         None => http.plain(),
     };
     let ordered = http.route_order(&route_key, &urls);
+    let quic_addresses: Vec<String> = reply_to
+        .get("quic_addresses")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
     let last_index = ordered.len().saturating_sub(1);
     let mut last = String::new();
+    let mut quic_failed = false;
     for (index, url) in ordered.into_iter().enumerate() {
         let target = format!("{url}{path}");
         // O último candidato ganha o teto longo: não há terceira via depois
@@ -686,6 +982,75 @@ async fn deliver_meta_at(
             LAST_DELIVERY_TIMEOUT
         } else {
             DELIVERY_TIMEOUT
+        };
+        if http.quic_enabled() && reply_to.get("node_id").and_then(Value::as_str).is_some() {
+            let attempt_meta = delivery_meta(
+                &base_meta,
+                path,
+                "quic",
+                quic_failed,
+                quic_failed.then_some(last.as_str()),
+                None,
+            );
+            let body = match encode_delivery_body(&attempt_meta) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    warn!("resultado direto não pôde ser codificado: {error}");
+                    return Delivery::Failed;
+                }
+            };
+            match http
+                .quic_post(
+                    reply_to
+                        .get("node_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown"),
+                    &url,
+                    &quic_addresses,
+                    path,
+                    body.clone(),
+                    None,
+                    ceiling,
+                )
+                .await
+            {
+                Ok(response) if response.status.is_success() => {
+                    http.remember_route_success(&route_key, &url);
+                    return Delivery::Accepted;
+                }
+                Ok(response) if response.status == StatusCode::GONE => {
+                    debug!("gateway já havia desistido do quadro entregue em {target}");
+                    return Delivery::GatewayGone;
+                }
+                Ok(response) => {
+                    quic_failed = true;
+                    debug!(
+                        "{target} respondeu {} via QUIC; tentando TCP",
+                        response.status
+                    );
+                }
+                Err(error) => {
+                    quic_failed = true;
+                    last = format!("{target} via QUIC: {error}");
+                    debug!("fallback QUIC para entrega direta: {last}");
+                }
+            }
+        }
+        let transport = tcp_transport_for_url(&url);
+        let attempt_meta = delivery_meta(
+            &base_meta,
+            path,
+            transport,
+            quic_failed,
+            quic_failed.then_some(last.as_str()),
+            None,
+        );
+        let body = match encode_delivery_body(&attempt_meta) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!("resultado direto não pôde ser codificado: {error}");
+                return Delivery::Failed;
+            }
         };
         let request = cliente
             .post(&target)
@@ -719,6 +1084,64 @@ async fn deliver_meta_at(
     }
     warn!("resultado direto não chegou ao gateway ({last})");
     Delivery::Failed
+}
+
+fn tcp_transport_for_url(url: &str) -> &'static str {
+    if url.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    }
+}
+
+fn encode_delivery_body(meta: &Value) -> Result<Vec<u8>> {
+    crate::wire::encode(meta, None, crate::wire::WireDtype::F16).map_err(|error| anyhow!("{error}"))
+}
+
+/// Anexa ao quadro o transporte que será efetivamente usado nesta tentativa.
+/// A metadata é codificada novamente por tentativa para que um fallback QUIC
+/// -> TCP nunca seja publicado como QUIC no trace do gateway.
+fn delivery_meta(
+    base: &Value,
+    path: &str,
+    transport: &str,
+    fallback: bool,
+    fallback_reason: Option<&str>,
+    rtt_ms: Option<u64>,
+) -> Value {
+    let mut meta = base.clone();
+    meta["delivery_transport"] = json!(transport);
+    meta["delivery_transport_fallback"] = json!(fallback);
+    if let Some(reason) = fallback_reason.filter(|reason| !reason.is_empty()) {
+        meta["delivery_transport_fallback_reason"] = json!(reason);
+    }
+    if path == RELAY_RESULT_PATH
+        && !meta
+            .get("transport_update")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        let mut observation = json!({
+            "transport": transport,
+            "transport_fallback": fallback,
+            "transport_fallback_reason": fallback_reason,
+        });
+        if let Some(rtt_ms) = rtt_ms {
+            observation["round_trip_ms"] = json!(rtt_ms);
+        }
+        meta["pipeline_return_transport"] = observation;
+    }
+    if path == REMOTE_STREAM_RESULT_PATH {
+        meta["remote_stream_transport"] = json!(transport);
+        meta["remote_stream_transport_fallback"] = json!(fallback);
+        if let Some(reason) = fallback_reason.filter(|reason| !reason.is_empty()) {
+            meta["remote_stream_transport_fallback_reason"] = json!(reason);
+        }
+        if let Some(rtt_ms) = rtt_ms {
+            meta["remote_stream_transport_rtt_ms"] = json!(rtt_ms);
+        }
+    }
+    meta
 }
 
 /// Entrega uma falha no lugar do resultado, para que o gateway nomeie o nó que
@@ -808,13 +1231,81 @@ pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::re
     hop["client_decode_ms"] = json!(sent.client_decode_ms);
     hop["tls"] = json!(sent.tls);
     hop["tls_handshake_ms"] = json!(sent.tls_handshake_ms);
-    hop["transport"] = json!(sent.transport.as_str());
+    hop["transport_rtt_us"] = json!(sent.transport_rtt_us);
+    hop["transport"] = json!(sent.telemetry_transport().as_str());
     hop["transport_fallback"] = json!(sent.transport_fallback);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn ack_410_do_callback_para_o_stream_sem_fallback() {
+        use axum::{routing::post, Router};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new()
+            .route(
+                crate::link::LINK_PATH,
+                post(|body: axum::body::Body| async move {
+                    crate::link::serve(body, |_path, _body| async move {
+                        Ok(Response::builder()
+                            .status(StatusCode::GONE)
+                            .body(axum::body::Body::from("stream desconhecido"))
+                            .unwrap())
+                    })
+                }),
+            )
+            .layer(axum::extract::DefaultBodyLimit::disable());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).tcp_nodelay(true).await;
+        });
+
+        let url = format!("http://{addr}");
+        let reply_to = json!({
+            "ticket": "gone-ticket",
+            "node_id": "gateway-gone",
+            "urls": [url],
+        });
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(5));
+        let mut delivery = RemoteStreamDelivery::new(clients, reply_to);
+        let first = json!({
+            "session_id": "session-gone",
+            "stream_id": "stream-gone",
+            "remote_stream_frame_index": 0,
+            "accepted": [{"token_id": 1, "text": "x"}],
+        });
+
+        assert_eq!(delivery.deliver(first).await, Delivery::Accepted);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if delivery
+                    .callback_status
+                    .as_ref()
+                    .is_some_and(crate::link::CallbackStatus::gateway_gone)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("o ACK 410 deve chegar ao emissor");
+
+        assert_eq!(
+            delivery
+                .deliver(json!({
+                    "session_id": "session-gone",
+                    "stream_id": "stream-gone",
+                    "remote_stream_frame_index": 1,
+                    "accepted": [{"token_id": 2, "text": "y"}],
+                }))
+                .await,
+            Delivery::GatewayGone
+        );
+    }
 
     #[tokio::test]
     async fn a_blackholed_reply_address_is_tried_only_once_across_stream_batches() {
@@ -984,6 +1475,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resposta_direta_prefere_quic_no_canal_de_retorno() {
+        use axum::{body::Bytes, routing::post, Router};
+        use tokio::sync::oneshot;
+
+        let identity = crate::identity::Identity::generate();
+        let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let router = Router::new().route(
+            RELAY_RESULT_PATH,
+            post(|_body: Bytes| async { StatusCode::OK }),
+        );
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let server_config = crate::quic::server_config(&identity).unwrap();
+        let server = tokio::spawn(async move {
+            crate::quic::serve(port, router, server_config, async move {
+                let _ = stop_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let http = crate::peer_client::PeerClients::new(Duration::from_secs(5));
+        http.set_quic(true);
+        let reply_to = json!({
+            "ticket": "quic-return-ticket",
+            "node_id": identity.node_id.0,
+            "urls": [format!("http://127.0.0.1:{port}")],
+            "quic_addresses": [format!("127.0.0.1:{port}")],
+        });
+        assert!(deliver_result(&http, &reply_to, json!({"done": true})).await);
+
+        stop_tx.send(()).unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_delivered_result_reaches_the_ticket_that_asked_for_it() {
         let inbox = ReplyInbox::new();
         let mut ticket = inbox.register();
@@ -997,7 +1525,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_result_does_not_wait_for_late_transport_receipts() {
+    async fn a_result_does_not_wait_but_late_transport_receipts_close_the_trace() {
         let inbox = ReplyInbox::new();
         let mut ticket = inbox.register_with_expected_transport(2);
         let id = ticket.id().to_string();
@@ -1006,16 +1534,96 @@ mod tests {
         let got = (&mut ticket.rx).await.expect("resultado");
         assert_eq!(got["transport_trace_complete"], false);
         assert!(got["transport_traversals"].as_array().unwrap().is_empty());
-        assert!(!inbox.record_transport(
+        assert!(inbox.record_transport(
             &id,
             1,
             json!({"hop_index": 1, "transport": "https", "round_trip_ms": 23})
         ));
-        assert!(!inbox.record_transport(
+        assert!(inbox.record_transport(
             &id,
             0,
             json!({"hop_index": 0, "transport": "libp2p-tunnel", "round_trip_ms": 11})
         ));
+        let snapshot = inbox.trace_snapshot(&id).expect("snapshot atualizado");
+        assert_eq!(snapshot["transport_trace_complete"], true);
+        assert_eq!(snapshot["transport_traversals"][0]["hop_index"], 0);
+        assert_eq!(snapshot["transport_traversals"][1]["hop_index"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_result_first_keeps_the_head_ack_for_transport_reconciliation() {
+        let inbox = ReplyInbox::new();
+        let mut ticket = inbox.register_with_expected_transport(1);
+        let ticket_id = ticket.id().to_string();
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let notify_on_ack = notify.clone();
+        let inbox_for_ack = inbox.clone();
+        let ticket_for_ack = ticket_id.clone();
+        let ack = async move {
+            tokio::task::yield_now().await;
+            Ok(crate::relay::SentFrame {
+                meta: json!({"accepted": true}),
+                tensor: None,
+                round_trip_ms: 17,
+                bytes_sent: 100,
+                bytes_received: 20,
+                hidden_state_bytes_sent: 0,
+                hidden_state_bytes_received: 0,
+                hidden_state_dtype: crate::wire::WireDtype::F16,
+                client_encode_ms: 1,
+                response_headers_ms: 2,
+                response_body_ms: 3,
+                client_decode_ms: 4,
+                connection_state: crate::peer_client::ConnectionState::Unknown,
+                tls: false,
+                tls_handshake_ms: 0,
+                transport_rtt_us: None,
+                transport: crate::relay::InferenceTransport::Libp2pTunnel,
+                transport_fallback: false,
+                transport_fallback_reason: None,
+                profiling_spans: Vec::new(),
+            })
+        };
+        let deliver_inbox = inbox.clone();
+        let deliver_ticket = ticket_id.clone();
+        tokio::spawn(async move {
+            deliver_inbox.deliver(&deliver_ticket, json!({"token_id": 7}));
+        });
+
+        let got =
+            await_result_with_ack(ack, &mut ticket, "head", move |sent| {
+                assert_eq!(sent.round_trip_ms, 17);
+                assert!(inbox_for_ack.record_transport(
+                    &ticket_for_ack,
+                    0,
+                    transport_receipt(0, sent),
+                ));
+                notify_on_ack.notify_one();
+            })
+            .await
+            .expect("resultado direto");
+        assert_eq!(got["token_id"], 7);
+        assert_eq!(got["transport_trace_complete"], false);
+
+        tokio::time::timeout(Duration::from_secs(1), notify.notified())
+            .await
+            .expect("ACK tardio processado");
+        let snapshot = inbox
+            .trace_snapshot(&ticket_id)
+            .expect("snapshot atualizado");
+        assert_eq!(snapshot["transport_trace_complete"], true);
+        assert_eq!(snapshot["transport_traversals"][0]["round_trip_ms"], 17);
+    }
+
+    #[test]
+    fn duplicate_transport_receipts_are_not_counted_twice() {
+        let inbox = ReplyInbox::new();
+        let ticket = inbox.register_with_expected_transport(1);
+        let id = ticket.id().to_string();
+        let receipt = json!({"hop_index": 0, "transport": "https", "round_trip_ms": 23});
+
+        assert!(inbox.record_transport(&id, 0, receipt.clone()));
+        assert!(!inbox.record_transport(&id, 0, receipt));
     }
 
     #[tokio::test]
@@ -1108,6 +1716,37 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_persistent_remote_stream_frame_reaches_its_ticket() {
+        let inbox = ReplyInbox::new();
+        let mut ticket = inbox.register_stream();
+        let body = crate::wire::encode_batch_items(
+            REMOTE_STREAM_RESULT_PATH,
+            "stream-1:0",
+            &[crate::wire::BatchPayloadItem {
+                item_id: "stream-1:0".into(),
+                session_id: "session-1".into(),
+                meta: json!({
+                    "ticket": ticket.id(),
+                    "accepted": [{"token_id": 4, "text": "ok", "token_index": 0}],
+                    "done": true,
+                }),
+                tensor: None,
+                dtype: crate::wire::WireDtype::F16,
+            }],
+        )
+        .expect("frame persistente codificável");
+
+        let response = handle_remote_stream_link(&inbox, Bytes::from(body)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let received = ticket.recv().await.expect("frame recebido");
+        assert_eq!(received["accepted"][0]["token_id"], 4);
+        assert_eq!(
+            received["stream_batch_bytes"].as_u64().unwrap_or(0) > 0,
+            true
+        );
+    }
+
     /// O guarda tem que limpar o inbox sozinho: o caminho de erro e o de prazo
     /// estourado saem por `return`, e um ticket esquecido segura memória por
     /// requisição perdida.
@@ -1178,8 +1817,7 @@ mod tests {
             "loopback não alcança outra máquina: {urls:?}"
         );
         assert!(
-            DirectReply::new(ReplyInbox::new(), urls, "n1".into())
-                .is_none(),
+            DirectReply::new(ReplyInbox::new(), urls, "n1".into()).is_none(),
             "sem endereço utilizável o plano tem que cair no anel"
         );
 
@@ -1214,10 +1852,14 @@ mod tests {
             response_headers_ms: 4,
             response_body_ms: 5,
             client_decode_ms: 6,
+            connection_state: crate::peer_client::ConnectionState::Unknown,
             tls: false,
             tls_handshake_ms: 0,
+            transport_rtt_us: None,
             transport: crate::relay::InferenceTransport::Libp2pTunnel,
             transport_fallback: false,
+            transport_fallback_reason: None,
+            profiling_spans: Vec::new(),
         };
 
         attach_transport(&mut hops, 1, &sent);

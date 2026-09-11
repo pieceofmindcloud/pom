@@ -66,6 +66,8 @@ adminAuthority.title,Network administration,Administração da rede
 app.topbarFailed,The top bar failed. The rest of the interface is still available.,A barra superior falhou. O resto da interface continua.
 canvas.autoLayout,Arrange by layer order (keeps what you dragged),Organizar pela ordem das camadas (mantém o que você arrastou)
 canvas.fit,Fit to network,Ajustar à rede
+canvas.gateway,Gateway,Gateway
+canvas.gatewayReturn,return leg,perna de retorno
 canvas.inFlight,{count} in flight,{count} em voo
 canvas.layers,layers,camadas
 canvas.layersAllGpu,{count} on GPU,{count} na GPU
@@ -80,17 +82,36 @@ canvas.meterUnknown,unknown,desconhecido
 canvas.noCapacity,No inference capacity announced yet.,Nenhuma capacidade de inferência anunciada ainda.
 canvas.noModel,No model deployed,Nenhum modelo implantado
 canvas.openDetails,Double-click to open this machine''s details,Duplo clique abre os detalhes desta máquina
+canvas.pipelineCostBreakdown,network {network} ms · compute {compute} ms,rede {network} ms · compute {compute} ms
+canvas.pipelineRouteCount,"{count} route{count, plural, =1 {} other {s}}","{count} rota{count, plural, =1 {} other {s}}"
+canvas.pipelineTotal,Pipeline total: {ms} ms,Total do pipeline: {ms} ms
+canvas.pipelineTotalLabel,cycle cost,custo do ciclo
+canvas.pipelineTotalUnknown,not measured,não medido
 canvas.resetLayout,"Reset the arrangement, including what you dragged","Redefinir o arranjo, inclusive o que você arrastou"
 canvas.vramTotal,VRAM · {count} GPUs,VRAM · {count} GPUs
 canvas.zoomIn,Zoom in,Aumentar zoom
 canvas.zoomOut,Zoom out,Diminuir zoom
+chat.aiTab,AI,IA
 chat.ask,Ask the network anything,Pergunte alguma coisa à rede
 chat.askDetail,Messages travel through machines in Dashboard order and return token by token.,As mensagens percorrem as máquinas na ordem do Painel e voltam token a token.
+chat.attach,Attach file,Anexar ficheiro
+chat.attachmentAlt,Sent image: {name},Imagem enviada: {name}
+chat.attachmentThumbnail,Thumbnail of {name},Miniatura de {name}
+chat.attachmentTooLarge,Attachment too large,Anexo grande demais
+chat.attachmentTooLargeDetail,"This attachment is {bytes} bytes, above the available context of {context} tokens.","Este anexo tem {bytes} bytes e excede o contexto disponível de {context} tokens."
+chat.attachments,Attached files,Arquivos anexados
 chat.composerHint,"Enter sends, Shift+Enter adds a line.","Enter envia, Shift+Enter quebra a linha."
 chat.copyError,Copy error,Copiar erro
+chat.coverageUnavailable,coverage unavailable,cobertura indisponível
 chat.delete,Delete {title},Apagar {title}
+chat.dictationStart,Start dictation,Iniciar ditado
+chat.dictationStop,Stop dictation,Parar ditado
+chat.dropHint,Drop a file,Solte um ficheiro
+chat.dropRejectedDetail,No file was found in the drop.,Nenhum ficheiro foi encontrado no descarte.
 chat.emptyResponse,The network replied without any tokens. Check the Dashboard to make sure layer coverage is complete.,A rede respondeu sem nenhum token. Confira no Painel se a cobertura de camadas está fechada.
 chat.errorCopied,Copied,Copiado
+chat.filePrompt,"File {name}:\n{content}","Arquivo {name}:\n{content}"
+chat.fileRejected,File rejected,Ficheiro recusado
 chat.generationSpeed,Generation,Geração
 chat.headAlternatives,Other heads,Outras cabeças
 chat.headCandidateCount,"{count} candidate{count, plural, =1 {} other {s}}","{count} candidata{count, plural, =1 {} other {s}}"
@@ -116,6 +137,8 @@ chat.headSelected,Selected entry,Entrada selecionada
 chat.headUnavailable,Head selection unavailable,Escolha da cabeça indisponível
 chat.headUnavailableDetail,"This node could not read the current head candidates. Inference remains protected until a fresh choice is available.","Este nó não conseguiu ler as candidatas atuais à cabeça. A inferência fica protegida até haver uma escolha fresca."
 chat.history,Conversation history,Histórico de conversas
+chat.imageRejected,Image rejected,Imagem recusada
+chat.imageVisionUnavailable,This model does not support vision,este modelo não tem visão
 chat.incomplete,incomplete coverage,cobertura incompleta
 chat.interrupted,Interrupted.,Interrompido.
 chat.keyRejected,The connection key was rejected,A chave de conexão foi recusada
@@ -126,6 +149,7 @@ chat.message,"{count, plural, =1 {message} other {messages}}","{count, plural, =
 chat.model,Model,Modelo
 chat.modelAtStart,model used at conversation start: {model},modelo usado no início da conversa: {model}
 chat.modelChanged,model changed to {model},modelo alterado para {model}
+chat.networkTab,Network,Rede
 chat.new,New chat,Conversa nova
 chat.newShort,New,Nova
 chat.noModel,The network is not serving any model,A rede não está servindo nenhum modelo
@@ -136,12 +160,16 @@ chat.placeholder,Write to the network…,Escreva para a rede…
 chat.prefillSpeed,Prefill,Pré-processamento
 chat.promptTokensUnit,prompt tokens,tokens do prompt
 chat.rateUnavailable,not measurable,não mensurável
+chat.removeAttachment,Remove {name},Remover {name}
 chat.renameAria,Conversation name,Nome da conversa
 chat.renameHint,Click to rename this conversation,Clique para renomear esta conversa
 chat.send,Send,Enviar
 chat.serverError,Server error,Erro do servidor
 chat.speedUnit,tok/s,tok/s
 chat.stop,Stop,Parar
+chat.surfaceLabel,Chat surface,Superfície do chat
+chat.telemetry.accumulatedCompute,Accumulated peer compute,Compute acumulado dos peers
+chat.telemetry.accumulatedTransport,Accumulated transport,Transporte acumulado
 chat.telemetry.analysis,Execution analysis,Análise da execução
 chat.telemetry.analysis.backendDetail,Most measured processing time is inside llama_decode rather than transport or queue wait.,"A maior parte do tempo medido está dentro do llama_decode, não no transporte ou na fila."
 chat.telemetry.analysis.backendNextStep,"Compare model quantisation, GPU offload and batch settings on this node.","Compare quantização, offload para GPU e configurações de batch neste nó."
@@ -159,6 +187,9 @@ chat.telemetry.analysis.pipelineTitle,Pipeline transport or residual transfer do
 chat.telemetry.analysis.queueDetail,A large mutex wait means another request was decoding on the same node.,Uma espera grande no mutex significa que outra requisição estava decodificando no mesmo nó.
 chat.telemetry.analysis.queueNextStep,Reduce concurrent requests on this node or add capacity.,Reduza a concorrência neste nó ou adicione capacidade.
 chat.telemetry.analysis.queueTitle,The inference engine is busy,O motor de inferência está ocupado
+chat.telemetry.analysis.remoteTelemetryIncompleteDetail,"The response is complete, but distributed spans are still collecting or missing. The available wall-clock gap is not classified as outside-node time.","A resposta está completa, mas os spans distribuídos ainda estão sendo coletados ou estão ausentes. A diferença do relógio ponta a ponta não é classificada como tempo fora do nó."
+chat.telemetry.analysis.remoteTelemetryIncompleteNextStep,"Wait for trace reconciliation or inspect the missing peer and transport receipts before diagnosing a bottleneck.","Aguarde a reconciliação do trace ou confira o peer ausente e os recibos de transporte antes de diagnosticar um gargalo."
+chat.telemetry.analysis.remoteTelemetryIncompleteTitle,Distributed telemetry is incomplete,A telemetria distribuída está incompleta
 chat.telemetry.analysis.tpDetail,The measured TP collective wait is a large part of decode. The hop is waiting for activation reductions between ranks.,A espera medida das coletivas TP ocupa grande parte do decode. O hop está aguardando as reduções de ativações entre os ranks.
 chat.telemetry.analysis.tpNextStep,"Check RTT, route, tunnel fallback and the number of reductions per token. This is not weight traffic.","Confira RTT, fallback para túnel e a quantidade de reduções por token. Pesos não estão trafegando."
 chat.telemetry.analysis.tpTitle,Tensor-parallel network wait dominates,A espera de rede do TP domina
@@ -169,13 +200,19 @@ chat.telemetry.backendRow,backend: decode call {enqueue} ms · completion {compl
 chat.telemetry.bytesHeader,bytes,bytes
 chat.telemetry.calls,calls,chamadas
 chat.telemetry.capacity,Capacity,Capacidade
+chat.telemetry.clientTtft,Client TTFT,TTFT do cliente
 chat.telemetry.configIntent,Configured intent,Intenção configurada
 chat.telemetry.configOff,off,desligado
 chat.telemetry.configOn,on,ligado
+chat.telemetry.connectionSummary,connections: {fresh} new · {reused} reused · {unknown} unknown,conexões: {fresh} novas · {reused} reutilizadas · {unknown} desconhecidas
 chat.telemetry.cpu,CPU: {count} cores,CPU: {count} núcleos
 chat.telemetry.cpuBackedLayers,CPU-backed layers: {count},Camadas com peso em CPU: {count}
+chat.telemetry.criticalPath,Critical path,Caminho crítico
 chat.telemetry.currentPath,current state: selected path: {value},estado atual: caminho selecionado: {value}
 chat.telemetry.decode,decode,decode
+chat.telemetry.decodeCoverage,Decode spans observed / expected,Spans de decode observados / esperados
+chat.telemetry.decodeSummary,decode calls: {calls} · tokens: {tokens} · tokens/call: {perCall},chamadas de decode: {calls} · tokens: {tokens} · tokens/chamada: {perCall}
+chat.telemetry.distributedTitle,Distributed execution,Execução distribuída
 chat.telemetry.effectivePlacement,Effective layer placement,Colocação efetiva das camadas
 chat.telemetry.engine,engine: {value},motor: {value}
 chat.telemetry.engineHeader,engine,motor
@@ -183,11 +220,16 @@ chat.telemetry.engineLlamaCpp,llama.cpp,llama.cpp
 chat.telemetry.engineMismatch,path/engine mismatch,divergência caminho/motor
 chat.telemetry.engineMixed,mixed,misto
 chat.telemetry.engineMoe,MoE engine,motor MoE
+chat.telemetry.engineTtft,Engine TTFT,TTFT do motor
 chat.telemetry.engineUnknown,unknown,desconhecido
 chat.telemetry.engineWait,engine wait {ms} ms,espera do motor {ms} ms
 chat.telemetry.environmentPathMismatch,Current state differs from this execution: current {current}; observed {observed}.,O estado atual diverge desta execução: atual {current}; observado {observed}.
 chat.telemetry.environmentScopeExplain,Environment values are a current /health snapshot; the execution path is recorded by each hop.,Os valores do ambiente são um snapshot atual de /health; o caminho desta execução é registrado por cada hop.
 chat.telemetry.environmentTitle,Pipeline machines,Máquinas do pipeline
+chat.telemetry.firstTokenClient,first token at client: {value},primeiro token no cliente: {value}
+chat.telemetry.firstTokenEngine,first token from engine: {value},primeiro token no motor: {value}
+chat.telemetry.firstTokenNode,node serialization: {value},serialização no nó: {value}
+chat.telemetry.firstTokenTransport,node to gateway: {value},nó até gateway: {value}
 chat.telemetry.fitMemory,Fit memory: {value},Ajuste à memória: {value}
 chat.telemetry.footnote,"""Gateway"" is the work of the gateway alone (encode + decode the frame). ""Backend"" is the node''s llama_decode; the detail line also shows completion measured by llama_synchronize, which includes already-queued output transfers - not pure kernel time. ""Residual"" is the hidden-state read that forces GPU to CPU. ""Transport"" is the round trip outside the node handler, not pure packet latency. ""Engine wait"" is time spent waiting on the llama_context mutex, which is unsafe for concurrent use: two requests on the same node decode one at a time, and this is the queue. Wait larger than backend means busy node, not slow node. POM_PROFILE_SYNC is shown per machine in the environment section.","""Gateway"" é só o trabalho do gateway (codificar + decodificar o frame). ""Backend"" é o llama_decode do nó; a linha detalhada mostra também a conclusão medida por llama_synchronize, que inclui transferências de saída já enfileiradas - não é tempo puro de kernel. ""Residual"" é a leitura do estado oculto que força GPU -> CPU. ""Transporte"" é a ida e volta fora do handler do nó, não latência de pacote pura. ""Espera do motor"" é o tempo parado no mutex do llama_context, que não é seguro para uso concorrente: duas requisições no mesmo nó decodificam uma de cada vez, e esta é a fila. Espera maior que o backend significa nó ocupado, não nó lento. POM_PROFILE_SYNC aparece por máquina na seção de ambiente."
 chat.telemetry.gatewayHeader,gateway,gateway
@@ -196,11 +238,13 @@ chat.telemetry.gpu,GPU: {value},GPU: {value}
 chat.telemetry.gpuBackedLayers,GPU-backed layers: {count},Camadas com peso em GPU: {count}
 chat.telemetry.hiddenState,hidden state: {sent} sent / {received} received · {dtype},estado oculto: {sent} enviados / {received} recebidos · {dtype}
 chat.telemetry.hop,hop,hop
+chat.telemetry.integrity,integrity: {duplicates} duplicate · {late} late · {orphan} orphan spans,integridade: {duplicates} duplicados · {late} tardios · {orphan} spans órfãos
 chat.telemetry.legacyBoth,both,as duas
 chat.telemetry.legacyDecodeRow,decode/token p50 {decodeP50} ms · p95 {decodeP95} ms · gateway: encode {encode} ms · to headers {headers} ms · body {body} ms · decode {decode} ms,decode/token p50 {decodeP50} ms · p95 {decodeP95} ms · gateway: codificar {encode} ms · até headers {headers} ms · corpo {body} ms · decodificar {decode} ms
 chat.telemetry.legacyNodeRow,"node: frame {frame} ms · prepare {prepare} ms · queue {queue} ms · setup {setup} ms · frame out {frameOut} ms{__notZero_unattributed, select, false {} other { · unattributed {unattributed} ms}}","nó: frame {frame} ms · preparar {prepare} ms · fila {queue} ms · setup {setup} ms · frame out {frameOut} ms{__notZero_unattributed, select, false {} other { · não atribuído {unattributed} ms}}"
 chat.telemetry.legacyNote,"legacy telemetry: this run was recorded before the phase split, so the numbers above sum prefill and decode ({prefillCalls} prefill + {decodeCalls} tokens) and cannot be separated now.","telemetria antiga: esta execução foi gravada antes da separação por fase, então os números acima somam prefill e decode ({prefillCalls} prefill + {decodeCalls} tokens) e não dá para separá-los agora."
 chat.telemetry.machineCount,"{count} machine{count, plural, =1 {} other {s}}","{count}{count, plural, =1 { máquina} other { máquinas}}"
+chat.telemetry.missingPeers,Missing peers: {peers},Peers ausentes: {peers}
 chat.telemetry.mixedLayers,Mixed layers: {count},Camadas mistas: {count}
 chat.telemetry.moeExecutor,MoE executor: {value},executor MoE: {value}
 chat.telemetry.moeExecutorReason,MoE executor reason: {reason},motivo do executor MoE: {reason}
@@ -212,13 +256,20 @@ chat.telemetry.networkTotalMissing,Observed network time: not available for this
 chat.telemetry.networkUnavailable,Directional RTT unavailable,RTT direcional indisponível
 chat.telemetry.noEdges,"This execution used one peer, so there are no inter-peer edges to measure.","Esta execução usou uma máquina, então não há arestas entre peers para medir."
 chat.telemetry.noMeasurement,not measured,não medido
-chat.telemetry.nodeRow,node: frame {frame} ms · prepare {prepare} ms · queue {queue} ms · engine wait {engineWait} ms · setup {setup} ms · frame out {frameOut} ms,nó: frame {frame} ms · preparar {prepare} ms · fila {queue} ms · espera do motor {engineWait} ms · setup {setup} ms · frame out {frameOut} ms
+chat.telemetry.nodeResidual,node residual {ms} ms,residual do nó {ms} ms
+chat.telemetry.nodeRow,node: frame {frame} ms · prepare {prepare} ms · queue {queue} ms · engine wait {engineWait} ms · setup {setup} ms · MTP draft {mtpDraft} ms · frame out {frameOut} ms,nó: frame {frame} ms · preparar {prepare} ms · fila {queue} ms · espera do motor {engineWait} ms · draft MTP {mtpDraft} ms · setup {setup} ms · frame out {frameOut} ms
 chat.telemetry.notInformed,not informed,não informado
+chat.telemetry.notMeasured,not measured,não medido
 chat.telemetry.observedPath,this execution: selected path: {value},nesta execução: caminho selecionado: {value}
 chat.telemetry.offloadKqv,KV offload request: {value},Pedido de offload KV: {value}
+chat.telemetry.outsideAccounted,outside node accounted,fora do nó atribuído
+chat.telemetry.outsideTotal,outside node total,total fora do nó
+chat.telemetry.outsideUnaccounted,outside node unaccounted,fora do nó não atribuído
 chat.telemetry.overlap,"prefill pipeline: depth {depth}/{limit}, {chunks} chunk(s) overlapped","pipeline do prefill: profundidade {depth}/{limit}, {chunks} pedaço(s) sobrepostos"
+chat.telemetry.overlapMeasured,Measured overlap,Overlap medido
 chat.telemetry.pathMixed,mixed paths,caminhos mistos
 chat.telemetry.pathNotReported,not reported,não informado
+chat.telemetry.peersCoverage,Peers reported / expected,Peers reportados / esperados
 chat.telemetry.phase,phase,fase
 chat.telemetry.phasePath,selected path: {value},caminho selecionado: {value}
 chat.telemetry.pipelineRttExplain,Each value is measured from the origin peer to the destination peer. It is not the gateway card RTT.,Cada valor é medido do peer de origem até o peer de destino. Não é o RTT do card do gateway.
@@ -229,11 +280,19 @@ chat.telemetry.prefill,prefill,prefill
 chat.telemetry.prefillMs,{ms} ms prefill,{ms} ms prefill
 chat.telemetry.prefixCandidate,{count} prefix candidate,{count} candidatos no prefixo
 chat.telemetry.prefixStatus,prefix: {status},prefixo: {status}
+chat.telemetry.principalBottleneck,Principal bottleneck,Gargalo principal
 chat.telemetry.profileSync,POM_PROFILE_SYNC: {state},POM_PROFILE_SYNC: {state}
 chat.telemetry.profileSyncActive,active,ativo
 chat.telemetry.profileSyncOff,off,desligado
 chat.telemetry.profileSyncUnknown,not informed,não informado
 chat.telemetry.ram,RAM: {available} available / {total} total,RAM: {available} disponível / {total} total
+chat.telemetry.remoteStreamCompute,remote compute total {total} ms · p50 {p50} ms · p95 {p95} ms,compute remoto total {total} ms · p50 {p50} ms · p95 {p95} ms
+chat.telemetry.remoteStreamFrames,frames received / sent {received} / {sent} · bytes {bytes},frames recebidos / enviados {received} / {sent} · bytes {bytes}
+chat.telemetry.remoteStreamLatency,frame latency first / p50 / p95 / max {first} / {p50} / {p95} / {max} ms,latência de frame primeira / p50 / p95 / máxima {first} / {p50} / {p95} / {max} ms
+chat.telemetry.remoteStreamTitle,Remote stream,Remote stream
+chat.telemetry.remoteStreamTokenDelivery,token delivery interval samples {samples} · p50/p95/p99/max {p50}/{p95}/{p99}/{max} ms,amostras do intervalo de entrega de tokens {samples} · p50/p95/p99/máximo {p50}/{p95}/{p99}/{max} ms
+chat.telemetry.remoteStreamWait,stream wait total {total} ms · p50 {p50} ms · p95 {p95} ms,espera do stream total {total} ms · p50 {p50} ms · p95 {p95} ms
+chat.telemetry.remoteStreamWaitSplit,producer total/p95 {producerTotal}/{producerP95} ms · channel send total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · queued token total/p95 {queueTotal}/{queueP95} ms · prior delivery total/p95 {deliveryTotal}/{deliveryP95} ms,produção total/p95 {producerTotal}/{producerP95} ms · envio ao canal total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · token na fila total/p95 {queueTotal}/{queueP95} ms · entrega anterior total/p95 {deliveryTotal}/{deliveryP95} ms
 chat.telemetry.requestedGpuLayers,Requested GPU layers (intent): {count},Camadas GPU pedidas (intenção): {count}
 chat.telemetry.residualHeader,residual,residual
 chat.telemetry.rttTotal,Aggregate execution RTT: {ms} ms,RTT agregado da execução: {ms} ms
@@ -243,8 +302,25 @@ chat.telemetry.runtimeNotLoaded,Effective state unavailable: {reason},Estado efe
 chat.telemetry.samplingHeader,sampling,sampling
 chat.telemetry.samplingRow,sampling: access {access} ms · clone {clone} ms · penalty {penalty} ms · softmax {softmax} ms · top-k {topK} ms · top-p {topP} ms · selection {selection} ms · text {text} ms,sampling: acesso {access} ms · clone {clone} ms · penalidade {penalty} ms · softmax {softmax} ms · top-k {topK} ms · top-p {topP} ms · seleção {selection} ms · texto {text} ms
 chat.telemetry.selectedPath,selected path: {value},caminho selecionado: {value}
+chat.telemetry.serverTtft,Server TTFT,TTFT do servidor
 chat.telemetry.sessions,Sessions: {count},Sessões: {count}
 chat.telemetry.snapshotMissing,The environment snapshot was not captured for this execution.,O snapshot do ambiente não foi capturado nesta execução.
+chat.telemetry.spanFirstTokenReturn,first-token return,retorno do primeiro token
+chat.telemetry.spanOrchestration,orchestration,orquestração
+chat.telemetry.spanPipelineSelection,pipeline selection,seleção da pipeline
+chat.telemetry.spanRouteResolution,route resolution,resolução da rota
+chat.telemetry.spanSessionAcquire,session acquire,aquisição da sessão
+chat.telemetry.spanUnknown,{name},{name}
+chat.telemetry.spanValidation,validation,validação
+chat.telemetry.status.collecting,collecting,coletando
+chat.telemetry.status.complete,complete,completa
+chat.telemetry.status.incomplete,incomplete,incompleta
+chat.telemetry.status.response_complete,response complete,resposta completa
+chat.telemetry.status.timeout,timeout,expirada
+chat.telemetry.statusLabel,Trace status: {status},Estado do trace: {status}
+chat.telemetry.streamingSummary,stream: {chunks} chunks · first chunk -> [DONE]: {duration} · last token -> [DONE]: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk,stream: {chunks} chunks · primeiro chunk -> [DONE]: {duration} · último token -> [DONE]: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk
+chat.telemetry.timelineTitle,Execution timeline,Linha do tempo da execução
+chat.telemetry.timelineUnavailable,Detailed spans are not available for this trace. The missing time remains unaccounted.,Spans detalhados indisponíveis para este trace. O tempo ausente continua não atribuído.
 chat.telemetry.title,Execution telemetry,Telemetria da execução
 chat.telemetry.tlsIdle,channel: no calls in this phase,canal: nenhuma chamada nesta fase
 chat.telemetry.tlsOff,channel: in the clear,canal: texto claro
@@ -264,13 +340,17 @@ chat.telemetry.tpReduces,reduces / expected,reduções / esperado
 chat.telemetry.tpTitle,Tensor parallelism collectives,Coletivas do tensor parallelism
 chat.telemetry.tpTunnel,tunnel {calls} · fallback {fallback},túnel {calls} · fallback {fallback}
 chat.telemetry.tpWait,TP wait,espera TP
+chat.telemetry.traceMissing,trace not reported,trace não informado
 chat.telemetry.transportFallbackTotal,fallback total {calls},fallback total {calls}
 chat.telemetry.transportHeader,transport,transporte
+chat.telemetry.transportHttpsFallback,"HTTPS fallback: {calls, plural, =0 {0 times} one {1 time} other {# times}} · reason(s): {reasons}","fallback para HTTPS: {calls, plural, =0 {0 vezes} one {1 vez} other {# vezes}} · motivo(s): {reasons}"
 chat.telemetry.transportMissing,transport traversal: not measured,travessia de transporte: não medida
-chat.telemetry.transportSummary,{transport}: {calls} calls · sent {sent} · received {received} · RTT min/median/p95/max {min}/{median}/{p95}/{max} ms · fallback {fallback},{transport}: {calls} chamadas · enviados {sent} · recebidos {received} · RTT mínimo/mediana/p95/máximo {min}/{median}/{p95}/{max} ms · fallback {fallback}
+chat.telemetry.transportSummary,{transport}: {calls} calls · sent {sent} · received {received} · execution RTT min/median/p95/max {min}/{median}/{p95}/{max} ms · network RTT {netMin}/{netMedian}/{netP95}/{netMax} ms · fallback {fallback},{transport}: {calls} chamadas · enviados {sent} · recebidos {received} · RTT de execução mínimo/mediana/p95/máximo {min}/{median}/{p95}/{max} ms · RTT de rede mínimo/mediana/p95/máximo {netMin}/{netMedian}/{netP95}/{netMax} ms · fallback {fallback}
 chat.telemetry.transportSwitch,transport switch {from} -> {to} ({calls}),troca de transporte {from} -> {to} ({calls})
 chat.telemetry.transportTraceIncomplete,Transport trace incomplete: the result arrived before every traversal receipt.,Telemetria de transporte incompleta: o resultado chegou antes de todas as travessias.
 chat.telemetry.transportValue,transport: {value},transporte: {value}
+chat.telemetry.trueResidual,True residual,Residual verdadeiro
+chat.telemetry.unaccounted,unaccounted,não atribuído
 chat.telemetry.unattributed,unattributed {ms} ms,não atribuído {ms} ms
 chat.telemetry.unknownLayers,Unclassified layers: {count},Camadas não classificadas: {count}
 chat.thinking,Thinking,Pensamento
@@ -281,6 +361,9 @@ chat.tokensPerSecondUnit,tokens/s,tokens/s
 chat.tokensUnit,tokens,tokens
 chat.totalTime,End-to-end total,Total ponta a ponta
 chat.ttft,First token (TTFT),Primeiro token (TTFT)
+chat.ttftClient,Client first token,Primeiro token no cliente
+chat.ttftPipeline,Pipeline first token,Primeiro token do pipeline
+chat.ttftServer,Server TTFT,TTFT do servidor
 cluster.peerCount,"{count, plural, one {{count} node} other {{count} nodes}}","{count, plural, one {{count} nó} other {{count} nós}}"
 common.cancel,Cancel,Cancelar
 common.close,Close,Fechar
@@ -312,13 +395,17 @@ dashboard.faOnAuto,on (auto),ligado (auto)
 dashboard.file,File,Arquivo
 dashboard.flow,Flow,Fluxo
 dashboard.free,free,livres
+dashboard.gpuPower,Power,Potência
 dashboard.gpuProcesses,GPU processes,Processos na GPU
 dashboard.gpuTemperature,"GPU temperature{__truthy_label, select, false {} other { · {label}}}","Temperatura da GPU{__truthy_label, select, false {} other { · {label}}}"
+dashboard.gpuUsage,Usage,Uso
+dashboard.gpus,GPUs,GPUs
 dashboard.groupDeployed,In the active deployment,Na implantação ativa
 dashboard.groupDeployedDetail,"In pipeline order, serving {model}.","Na ordem do pipeline, servindo {model}."
 dashboard.groupOutside,Elsewhere on the network,No resto da rede
 dashboard.groupOutsideDetail,Connected machines with no slice in the active deployment.,Máquinas conectadas e sem fatia na implantação ativa.
 dashboard.here,here,aqui
+dashboard.hideProperties,Hide deployment properties,Ocultar propriedades da implantação
 dashboard.inFlight,In flight,Em voo
 dashboard.inFlightUnavailable,in-flight count unavailable,carga em voo indisponível
 dashboard.incompletePipeline,pipeline incomplete,pipeline incompleto
@@ -334,6 +421,7 @@ dashboard.leftNodeDetail,It stopped announcing. Rejoin from that machine''s own 
 dashboard.load,Load · {count} cores,Carga · {count} núcleos
 dashboard.loadParams,llama.cpp load parameters,Parâmetros de carga do llama.cpp
 dashboard.localDataUnavailable,This node's live data is unavailable,Os dados ao vivo deste nó estão indisponíveis
+dashboard.localIdle,idle - model unloaded,ocioso - modelo descarregado
 dashboard.localLoad,Requests on this node,Pedidos neste nó
 dashboard.localLoadDetail,current in-flight requests,requisições em voo agora
 dashboard.localModelUnavailable,The model served by this node is unavailable,O modelo servido por este nó está indisponível
@@ -413,12 +501,19 @@ dashboard.updateRestart,Update and restart,Atualizar e reiniciar
 dashboard.updateTitle,Update this machine?,Atualizar esta máquina?
 dashboard.updateWarning,It stops if there are uncommitted changes or the repository is on another branch. An open cargo build is serialized with this one and the binary is replaced.,"Para se houver alterações não commitadas ou se o repositório estiver em outro branch. Um cargo build aberto é serializado com este, e o binário é substituído."
 dashboard.usedOf,{used} of {total},{used} de {total}
+dashboard.versionProperties,Deployment version properties,Propriedades da versão da implantação
 dashboard.vram,VRAM · {name},VRAM · {name}
 dashboard.wiredMemory,Wired memory (Metal buffers),Memória wired (buffers do Metal)
 deploy.addNode,Add,Adicionar
+deploy.addNodeCacheK,KV cache K,Cache KV K
+deploy.addNodeCacheV,KV cache V,Cache KV V
+deploy.addNodeKvPlacement,KV cache location,Local do cache KV
+deploy.addNodeLoading,Loading this machine catalog…,Carregando o catálogo desta máquina…
 deploy.addNodeMachine,Machine,Máquina
+deploy.addNodeMachineOptions,Machine options,Opções da máquina
 deploy.addNodeSlice,Slice,Fatia
 deploy.addNodeTitle,Add a machine to this model,Somar uma máquina a este modelo
+deploy.addNodeWhole,Whole model,Modelo inteiro
 deploy.adminOnlyAdd,Only the administrator can add a machine to a deployment.,Somente o administrador pode adicionar uma máquina à implantação.
 deploy.advancedDetail,"Each request accepts up to {prompt} prompt tokens, in chunks of {chunk}. More is rejected before reaching llama.cpp.","Cada requisição aceita até {prompt} tokens de prompt, em pedaços de {chunk}. Passar disso é recusado antes de chegar ao llama.cpp."
 deploy.allRanges,"All ranges available in the cluster, including ones from different slicing runs. Select the ones to launch and choose each destination.","Todas as faixas que existem no cluster, inclusive as de fatiamentos diferentes. Marque as que devem subir e escolha o destino de cada uma."
@@ -492,6 +587,8 @@ deploy.knob.hidden_state_dtypeF16,f16 - 2 bytes per value,f16 - 2 bytes por valo
 deploy.knob.hidden_state_dtypeF8,f8 - 1 byte per value,f8 - 1 byte por valor
 deploy.knob.hidden_state_dtypeHint,Controls the bytes sent between inference peers. f16 is the default; f8 uses one byte per value and requires every selected peer to advertise support.,Controla os bytes enviados entre peers de inferência. f16 é o padrão; f8 usa um byte por valor e exige que todos os peers selecionados anunciem suporte.
 deploy.knob.hidden_state_dtypeUnavailable,f8 unavailable: ,f8 indisponível: 
+deploy.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
+deploy.knob.idle_minutesHint,"Minutes without a request before this peer unloads its model.","Minutos sem requisição antes de este peer descarregar o modelo."
 deploy.knob.max_new_tokens,Max new tokens,Máx. tokens novos
 deploy.knob.max_new_tokensHint,"Ceiling for one leg of the gateway''s continuation loop, not for the request. The client''s max_tokens is what actually bounds a response and produces finish_reason length.","Teto de uma perna do laço de continuação do gateway, não da requisição. Quem limita a resposta e produz finish_reason length é o max_tokens do cliente."
 deploy.knob.max_sessions,Concurrent requests,Requisições simultâneas
@@ -606,6 +703,12 @@ deploy.tpWorkers,Workers,Workers
 deploy.tpWorkersHint,Hold Ctrl/Cmd to pick several. Only machines that already have the model are listed.,Segure Ctrl/Cmd para marcar vários. Só aparecem máquinas que já têm o modelo.
 deploy.transferNote,"Copies use the same transport as Transfers, with resume and MD5 verification. Progress remains in the bell and comes from nodes, so closing this tab does not interrupt anything.","As cópias usam o mesmo transporte da tela de Transferências, com retomada e conferência de MD5. O progresso fica no sino e vem dos nós, então fechar esta aba não interrompe nada."
 deploy.unknownModelSize,model size unknown,tamanho do modelo desconhecido
+deploy.unloadIfIdle,Unload if idle,Descarregar se ocioso
+deploy.unloadIfIdleHint,"Unload this peer's model after the configured period without requests. The deployment stays active and reloads on the next request.","Descarrega o modelo deste peer depois do período configurado sem requisições. A implantação continua ativa e recarrega na próxima requisição."
+deploy.vision,Vision,Visão
+deploy.visionHint,"Loads the projector on the pipeline head so it can turn images into hidden state for the following shards.","Carrega o projetor na cabeça do pipeline para transformar imagens em estado oculto para as fatias seguintes."
+deploy.visionToggle,Enable vision,Ativar visão
+deploy.visionUnavailable,"Vision unavailable: no mmproj was found for this sliced model.","Visão indisponível: nenhum mmproj foi encontrado para este modelo fatiado."
 deploy.wholeAria,Whole model,Modelo inteiro
 deploy.wholeDetail,Un-sliced models that a cluster machine already has.,Modelos não fatiados que alguma máquina do cluster já tem.
 deploy.wholeEmpty,No whole model on the network,Nenhum modelo inteiro na rede
@@ -628,14 +731,14 @@ deploymentLogs.copyFailed,Could not copy logs.,Não foi possível copiar os logs
 deploymentLogs.copyLogs,Copy logs,Copiar logs
 deploymentLogs.disableAutoScroll,Disable automatic scrolling,Desligar rolagem automática
 deploymentLogs.dropped,{count} lines dropped before delivery,{count} linhas descartadas antes do envio
-deploymentLogs.emptyHint,Turn on process logs from Preferences on the main node.,Ligue os logs de processo em Preferências no nó principal.
+deploymentLogs.emptyHint,Logs appear when an authorized peer sends data to this local replica.,Os logs aparecem quando um peer autorizado envia dados para esta réplica local.
 deploymentLogs.emptyTitle,No process logs yet,Nenhum log de processo ainda
 deploymentLogs.enableAutoScroll,Enable automatic scrolling,Ligar rolagem automática
 deploymentLogs.filterLabel,Filter by deployment,Filtrar por implantação
 deploymentLogs.live,Live,Ao vivo
 deploymentLogs.logsCopied,Logs copied,Logs copiados
 deploymentLogs.offline,Offline,Indisponível
-deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached the main node.,A consola do processo do cluster. As linhas aparecem na ordem em que chegaram ao principal.
+deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached this local replica.,A consola do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.
 deploymentLogs.title,Deployment logs,Logs da implantação
 deployments.actions,Actions,Ações
 deployments.activateFailed,Could not make it the default,Não deu para tornar padrão
@@ -650,6 +753,7 @@ deployments.emptyTitle,Nothing deployed yet,Nada implantado ainda
 deployments.expandVersions,Show versions,Ver versões
 deployments.id,Id,Id
 deployments.idle,Not serving,Fora do ar
+deployments.kind.mixed,Mixed whole + slices,Misto: inteiro + fatias
 deployments.kind.shards,Slices,Fatias
 deployments.kind.tensor_parallel,Tensor parallel,Tensor parallel
 deployments.kind.whole,Whole model,Modelo inteiro
@@ -661,7 +765,9 @@ deployments.machine,Machine,Máquina
 deployments.machines,Machines,Máquinas
 deployments.makeDefault,Make default,Tornar padrão
 deployments.model,Model,Modelo
+deployments.noAir,Not serving,Fora do ar
 deployments.nodeCount,"{count, plural, one {{count} machine} other {{count} machines}}","{count, plural, one {{count} máquina} other {{count} máquinas}}"
+deployments.peerIdle,Idle,Ocioso
 deployments.perMachine,Per machine,Por máquina
 deployments.redeploy,Re-deploy,Reimplantar
 deployments.redeployAction,Reload with these settings,Recarregar com estes valores
@@ -740,6 +846,7 @@ inspector.inferenceModeHint,"Which engine runs the forward pass. The choice reac
 inspector.knob.cycle_detection_max_window_tokens,Cycle: maximum window,Ciclo: janela máxima
 inspector.knob.cycle_detection_min_window_tokens,Cycle: minimum window,Ciclo: janela mínima
 inspector.knob.cycle_detection_repetitions,Cycle: repetitions,Ciclo: repetições
+inspector.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 inspector.knob.max_new_tokens,Max. tokens,Máx. tokens
 inspector.knob.max_sessions,Sessions,Sessões
 inspector.knob.mtp_draft_tokens,MTP draft tokens,Tokens rascunhados pelo MTP
@@ -777,6 +884,7 @@ jobs.sliceModel,Slice a model,Fatiar um modelo
 jobs.started,started,começou
 jobs.subtitle,"Progress belongs to the node, not the browser: reloading or closing this tab does not interrupt the work.","O progresso é do nó, não do navegador: recarregar a página não perde nada, e fechar a aba não interrompe nada."
 jobs.title,Slicing in progress,Fatiamentos em andamento
+keys.actions,Actions,Ações
 keys.active,active,ativo
 keys.adminAccess,Administration routes (/admin/*) and cluster configuration on this node and its peers.,As rotas de administração (/admin/*) e de configuração de cluster deste nó e dos peers.
 keys.allNetwork,Entire network,Toda a rede
@@ -813,6 +921,7 @@ keys.nodeHint,Shows where calls came from. It does not restrict the token to tha
 keys.openaiAccess,"OpenAI-compatible routes (/v1), so chat works without creating a token.","As rotas compatíveis com OpenAI (/v1), para que o chat funcione sem criar token."
 keys.purpose,Purpose,Para que serve
 keys.purposeHint,Appears on the Logs screen for every request.,Aparece na tela de Logs em todas as requisições.
+keys.purposePlaceholder,"opencode, dashboard, CI...","opencode, painel, CI..."
 keys.refresh,Refresh,Atualizar
 keys.revoke,Revoke {label},Revogar {label}
 keys.revokeConfirm,Revoke,Revogar
@@ -827,10 +936,12 @@ keys.rotated,Key rotated,Chave trocada
 keys.rotatedDetail,Other nodes need the new key to keep communicating with this one.,Os outros nós precisam da nova para continuar conversando com este.
 keys.rotationWarning,Changing the key here updates only this machine. The others keep the old key until updated and stop accepting calls from this one.,Trocar a chave aqui muda só esta máquina. As outras continuam com a antiga até serem atualizadas e param de aceitar as chamadas desta.
 keys.show,Show {label},Mostrar {label}
+keys.status,Status,Status
 keys.title,API keys,API keys
 keys.tokenCount,"{count}{count, plural, =1 { token} other { tokens}}","{count}{count, plural, =1 { token} other { tokens}}"
 keys.tokenLabel,token {label},token {label}
 keys.tokenSubtitle,One token per node or harness. Every request made with a token is attributed to it on the Logs screen.,Um token por nó ou harness. Toda requisição com token fica atribuída a ele na tela de Logs.
+keys.tokenValue,Token,Token
 keys.tokensCoexist,Tokens coexist: creating one does not revoke earlier tokens.,Tokens convivem: criar um novo não revoga os anteriores.
 keys.unnamed,unnamed,sem nome
 models.architecture,Architecture,Arquitetura
@@ -861,6 +972,8 @@ models.size,Size,Tamanho
 models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
 nav.administration,Administration,Administração
+nav.administrativePreferences,Administrative preferences,Preferências administrativas
+nav.administrators,Administrators,Administradores
 nav.apiKeys,API keys,API keys
 nav.chat,Chat,Chat
 nav.connectionKeys,Connection keys,Chaves de conexão
@@ -876,16 +989,29 @@ nav.logs,Logs,Logs
 nav.modelFolders,Storage,Armazenamento
 nav.models,Models,Modelos
 nav.network,Network,Rede
+nav.networkChat,Network Chat,Chat da rede
+nav.networkInfo,Network information,Informações da rede
+nav.networkParticipants,Network participants,Participantes da rede
 nav.preferences,Preferences,Preferências
+nav.publicNetworks,Public networks,Redes públicas
 nav.remoteModels,Find HF models,Encontrar Modelos HF
+nav.requestLogs,Request logs,Logs de requisições
 nav.sendFile,Send a file,Enviar um arquivo
 nav.settings,Settings,Configurações
 nav.setupWizard,Setup wizard,Wizard de configuração
 nav.shards,Shards,Fatias
+nav.shareNetwork,Share network access,Compartilhar acesso à rede
+nav.sharing,Sharing,Compartilhamento
 nav.sliceModels,Slice models,Fatiar modelos
 nav.statistics,Statistics,Estatísticas
+nav.storage,Storage,Armazenamento
 nav.transfers,Transfers,Transferências
 nav.trustAnchor,Trust root,Raiz de confiança
+nav.trustMachine,This machine,Esta máquina
+network.accessAnyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança
+network.accessAuthorized,Authorized people,Pessoas autorizadas
+network.accessLocalOnly,This machine only,Apenas esta máquina
+network.accessPolicy,Who can access,Quem pode acessar
 network.addrEffective,Currently advertising,Anunciando agora
 network.addrHint,"Leave empty to auto-detect (a peer-observed public address, else this machine''s local network address).","Deixe vazio para detectar automaticamente (um endereço público observado via libp2p, senão o endereço de rede local desta máquina)."
 network.addrLabel,Pinned address,Endereço fixado
@@ -909,37 +1035,88 @@ network.blockFailed,The node was not blocked,O nó não foi bloqueado
 network.blockTitle,Block {hostname}?,Bloquear {hostname}?
 network.blocked,Node blocked,Nó bloqueado
 network.blockedLabel,blocked,bloqueado
+network.channels,Discord or Telegram,Discord ou Telegram
+network.chooseCity,Choose a city,Escolha uma cidade
+network.chooseCountry,Choose a country,Escolha um país
+network.city,City,Cidade
+network.cityRequired,Required for a public network,Obrigatório para uma rede pública
 network.connected,connected,conectado
+network.connectionKey,Connection key,Chave de conexão
+network.copied,Copied,Copiado
+network.copy,Copy,Copiar
+network.country,Country,País
+network.countryCode,Country code,Código do país
+network.countryCodeHint,Use the two-letter country code,Use o código de duas letras do país
+network.countryRequired,Required for a public network,Obrigatório para uma rede pública
+network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
+network.download,Download,Baixar
+network.geoLabel,Discovery label,Rótulo de descoberta
 network.here,here,aqui
 network.identityNote,"A machine''s identity is its node_id, stored in .pom-node.key. Removing that file makes a new machine to other peers, and the block no longer applies.","A identidade de uma máquina é o node_id, guardado em .pom-node.key. Apagar esse arquivo cria uma máquina nova aos olhos dos outros peers, e o bloqueio deixa de valer."
 network.inferPromotionDetail,This node sees only itself on the network. Promote it when you want it to share its hardware.,Este nó enxerga somente a si mesmo na rede. Promova-o quando quiser que ele compartilhe o hardware.
 network.inferRequestDetail,This node can request access to the network. A principal or secondary administrator must approve the request from the notification bell.,Este nó pode pedir acesso à rede. O principal ou um admin secundário precisa aprovar o pedido pelo sino de notificações.
+network.infoSave,Save network details,Salvar detalhes da rede
+network.infoSaveFailed,Could not save network details,Não foi possível salvar os detalhes da rede
+network.infoSaved,Network details saved,Detalhes da rede salvos
+network.infoSavedDetail,Peers will receive the new information and public discovery will be refreshed.,Os peers receberão as novas informações e a descoberta pública será atualizada.
 network.knownCount,"{count}{count, plural, =1 { known node} other { known nodes}}","{count}{count, plural, =1 { nó conhecido} other { nós conhecidos}}"
 network.knownDetail,Blocking a node applies to this process. It is no longer accepted in the handshake.,Bloquear um nó vale para este processo: ele deixa de ser aceito no handshake.
 network.leave,Leave network,Sair da rede
 network.listFailed,Could not load the node list,A lista de nós não veio
+network.location,Location,Localização
+network.locationCoordinates,"{latitude}, {longitude}","{latitude}, {longitude}"
 network.logsDisable,Turn logs off,Desligar logs
 network.logsDisabled,Process logs turned off,Logs de processo desligados
 network.logsEnable,Turn logs on,Ligar logs
 network.logsEnabled,Process logs turned on,Logs de processo ligados
 network.logsFailed,Could not change the process log policy,Não deu para mudar a política de logs de processo
-network.logsHowItWorks,Every node sends only to the main node over a separate libp2p protocol. The main node stores arrival order and deployment id in SQLite.,Cada nó envia somente ao principal por um protocolo libp2p separado. O principal grava a ordem de chegada e o deploy_id no SQLite.
+network.logsHowItWorks,Every node sends a copy to each admin over a separate libp2p protocol. Each admin stores arrival order and deployment id in its local SQLite.,Cada nó envia uma cópia para cada admin por um protocolo libp2p separado. Cada admin grava a ordem de chegada e o deploy_id no próprio SQLite local.
 network.logsNotAuthority,"Only the main node decides this, and the decision applies to the whole cluster.","Só o nó principal decide isso, e a decisão vale para o cluster inteiro."
 network.logsOff,paused,pausada
 network.logsOn,collecting,coletando
 network.logsPropagates,No restart needed. Other nodes confirm the policy with the main node before adopting it.,Não precisa reiniciar. Os demais nós confirmam a política com o principal antes de adotar.
 network.logsState,Cluster collection,Coleta do cluster
-network.logsSubtitle,"When on, this node reports its process log to the main node. The bounded queue drops lines under pressure so inference is never held up.","Ligado, este nó envia seu log de processo ao principal. A fila limitada descarta linhas sob pressão para nunca segurar a inferência."
+network.logsSubtitle,"When on, this node reports its process log to every admin replica. The bounded queue drops lines under pressure so inference is never held up.","Ligado, este nó envia seu log de processo para cada réplica admin. A fila limitada descarta linhas sob pressão para nunca segurar a inferência."
 network.logsTitle,Process logs between nodes,Logs de processo entre nós
+network.metricsEyebrow,Network health,Saúde da rede
+network.metricsLatency,Average latency,Latência média
+network.metricsModels,Served models,Modelos servidos
+network.metricsNodes,Nodes,Nós
+network.metricsSubtitle,Calculated from the live data this node can currently read.,Calculado a partir dos dados ao vivo que esta máquina consegue ler.
+network.metricsTitle,Network metrics,Métricas da rede
+network.metricsVram,Total VRAM,VRAM total
+network.networkChatDisable,Turn network chat off,Desligar Chat da rede
+network.networkChatDisabled,Network chat turned off,Chat da rede desligado
+network.networkChatEnable,Turn network chat on,Ligar Chat da rede
+network.networkChatEnabled,Network chat turned on,Chat da rede ligado
+network.networkChatFailed,Could not change the network chat policy,Não foi possível mudar a política do Chat da rede
+network.networkChatHowItWorks,"Messages and files travel through the libp2p swarm and are validated by the main node.","Mensagens e arquivos viajam pelo enxame libp2p e são validados pelo nó principal."
+network.networkChatNotAuthority,"Only the main node decides this, and the decision is confirmed by the network.","Somente o nó principal decide isso, e a decisão é confirmada pela rede."
+network.networkChatOff,disabled,desligado
+network.networkChatOn,enabled,ligado
+network.networkChatPropagates,No restart needed. Other nodes confirm the policy with an authenticated read.,Não é preciso reiniciar. Os outros nós confirmam a política por uma leitura autenticada.
+network.networkChatState,Network chat,Chat da rede
+network.networkChatSubtitle,A low-priority conversation channel for the participants in this network.,Um canal de conversa de baixa prioridade para os participantes desta rede.
+network.networkChatTitle,Network chat,Chat da rede
+network.networkInfoEditSubtitle,These details are shared with every peer. You can edit them because this node is an authorized administrator.,Estas informações são compartilhadas com todos os peers. Você pode editá-las porque este nó é um administrador autorizado.
+network.networkInfoEyebrow,Network information,Informações da rede
+network.networkInfoReadOnlySubtitle,"These details are shared with every peer. This view is read-only on this node.","Estas informações são compartilhadas com todos os peers. Neste nó, a visualização é somente leitura."
+network.networkInfoTitle,About this network,Sobre esta rede
 network.noAddress,no address,sem endereço
 network.noNodes,No known nodes,Nenhum nó conhecido
 network.noNodesDetail,"Not even this machine appears, which usually means it has not announced itself yet.","Nem esta máquina aparece, o que normalmente quer dizer que ela ainda não está anunciando."
 network.nodePromoted,Node promoted,Node promovido
 network.nodePromotedDetail,The administrator profile is now active on the selected machine.,O perfil Administrador agora está ativo na máquina selecionada.
+network.notAvailable,Not available,Indisponível
+network.notProvided,Not provided,Não informado
+network.notPublished,Not published,Não publicado
 network.offlineDetail,Off the network: stopped announcing and forgot known peers.,Fora da rede: parou de anunciar e esqueceu os peers que conhecia.
 network.onlineDetail,"On the network, announcing every five seconds.","Na rede, anunciando a cada cinco segundos."
 network.operationFailed,The node did not accept the operation,A operação não foi aceita pelo nó
+network.organization,Organization,Organização
+network.participantsSubtitle,Known machines in this network and their current reachability.,Máquinas conhecidas nesta rede e a conectividade atual.
+network.participantsTitle,Network participants,Participantes da rede
 network.portValues,P2P {p2p} · gateway {gateway} · inference {inference},P2P {p2p} · gateway {gateway} · inferência {inference}
 network.ports,Ports,Portas
 network.profile,Profile,Perfil
@@ -950,6 +1127,24 @@ network.promoteSelf,Become a node,Promover a node
 network.promoted,Node profile enabled,Perfil node ativado
 network.promotedDetail,This machine now shares its hardware with the network.,Esta máquina agora compartilha o hardware com a rede.
 network.promotionFailed,The profile promotion was refused,A promoção de perfil foi recusada
+network.publicInfoPropagation,Changing these details updates the public directory and shares the new network card with connected peers.,Alterar estes dados atualiza o diretório público e compartilha o novo cartão da rede com os peers conectados.
+network.publicName,Public name,Nome público
+network.publicNameRequired,Required for a public network,Obrigatório para uma rede pública
+network.publicNoConnectionKey,"This is a public network, so there is no shared connection key to distribute.","Esta é uma rede pública, então não existe chave de conexão compartilhada para distribuir."
+network.quicDisable,Turn QUIC off,Desligar QUIC
+network.quicDisabled,QUIC turned off,QUIC desligado
+network.quicEnable,Turn QUIC on,Ligar QUIC
+network.quicEnabled,QUIC turned on,QUIC ligado
+network.quicFailed,Could not change the QUIC policy,Não deu para mudar a política de QUIC
+network.quicHowItWorks,"When on, new inference hops prefer HTTP/3 over QUIC. QUIC always includes TLS 1.3 and falls back to HTTP or HTTPS if a peer cannot use it.","Ligado, novos hops de inferência preferem HTTP/3 sobre QUIC. QUIC sempre inclui TLS 1.3 e recua para HTTP ou HTTPS se um peer não puder usá-lo."
+network.quicNotAuthority,Only the main node decides this preference.,Só o nó principal decide esta preferência.
+network.quicOff,disabled,desligado
+network.quicOn,HTTP/3 over QUIC,HTTP/3 sobre QUIC
+network.quicPropagates,No restart needed. Peers adopt the preference after confirming it with the main node.,Não precisa reiniciar. Os peers adotam a preferência depois de confirmá-la com o principal.
+network.quicState,Transport,Transporte
+network.quicSubtitle,"Prefer HTTP/3 for inference hops while keeping HTTP/HTTPS fallback available.","Preferir HTTP/3 nos hops de inferência mantendo o fallback HTTP/HTTPS disponível."
+network.quicTitle,QUIC transport,Transporte QUIC
+network.readOnly,Read-only,Somente leitura
 network.rejoin,Rejoin network,Voltar para a rede
 network.relinquishNode,Become an infer node,Virar um nó infer
 network.relinquishNodeDescription,"New inference is routed away first. In-flight inference finishes. Then this node becomes infer and releases its slice. If no other node can serve that same slice, the range becomes uncovered and generations that need it fail clearly.","A inferência nova será encaminhada para outro nó primeiro. A inferência em curso termina. Depois este nó vira infer e libera sua fatia. Se nenhum outro nó puder servir essa mesma fatia, a faixa ficará descoberta e as gerações que precisarem dela falharão claramente."
@@ -962,6 +1157,13 @@ network.requestNodePending,Request pending,Pedido pendente
 network.requestNodeRejected,The node request was rejected,O pedido para virar node foi recusado
 network.requestNodeSent,Request sent to the administrators,Pedido enviado aos administradores
 network.role,Role,Papel
+network.rules,Network rules,Regras da rede
+network.shareEyebrow,Share network access,Compartilhar acesso à rede
+network.shareLoading,Loading the sharing materials,Carregando os materiais para compartilhar
+network.shareSubtitle,Download the trust document for any network. Private networks also have a connection key.,Baixe o documento de confiança de qualquer rede. Redes privadas também têm uma chave de conexão.
+network.shareTitle,Give another node what it needs,Entregue a outro nó o que ele precisa
+network.sharingSubtitle,"Trust root, this machine, and connection key in one place.","Raiz de confiança, esta máquina e chave de conexão em um só lugar."
+network.sharingTitle,Sharing,Compartilhamento
 network.subtitle,Which machines this node sees and which it refuses to serve.,"Quem este nó enxerga, e quem ele se recusa a atender."
 network.thermalCooldownLabel,Cooldown (seconds),Tempo de resfriamento (segundos)
 network.thermalHint,Automatic recovery starts only when all GPU readings are known and safe.,A retomada automática só começa quando todas as leituras das GPUs são conhecidas e seguras.
@@ -989,10 +1191,40 @@ network.tlsPropagates,No restart needed. The other nodes confirm the change with
 network.tlsState,Cluster,Cluster
 network.tlsSubtitle,"When on, every HTTP call between peers goes over TLS, and each node''s certificate is verified against the node_id the cluster already knows.","Ligado, todo HTTP entre peers vai por TLS, e o certificado de cada nó é conferido contra o node_id que o cluster já conhece."
 network.tlsTitle,Encryption between nodes,Criptografia entre nós
+network.trustDocument,Trust document,Documento de confiança
 network.unblock,Unblock,Liberar
 network.unblockFailed,The node was not unblocked,O nó não foi liberado
 network.unblocked,Node unblocked,Nó liberado
 network.verified,verified,verificado
+network.visibility,Visibility,Visibilidade
+network.visibilityLocal,Local only,Apenas local
+network.visibilityPrivate,Private network,Rede privada
+network.visibilityPublic,Public network,Rede pública
+networkChat.attach,Attach a file,Anexar arquivo
+networkChat.disabledDetail,The main node has disabled this channel for the whole network.,O nó principal desativou este canal para toda a rede.
+networkChat.disabledTitle,Network chat is disabled,Chat da rede está desligado
+networkChat.download,Download file,Baixar arquivo
+networkChat.downloadFailed,Could not download the file,Não foi possível baixar o arquivo
+networkChat.emptyDetail,Start a conversation with the participants in this network.,Comece uma conversa com os participantes desta rede.
+networkChat.emptyTitle,No messages yet,Nenhuma mensagem ainda
+networkChat.fileLimit,"Files are limited to 8 MiB.","Arquivos são limitados a 8 MiB."
+networkChat.fileTooLarge,File is too large,Arquivo grande demais
+networkChat.hideOnline,Hide online,Ocultar online
+networkChat.hint,"Enter sends. Files are sent through the libp2p network.","Enter envia. Arquivos são enviados pela rede libp2p."
+networkChat.loadFailed,Could not load the network chat,Não foi possível carregar o Chat da rede
+networkChat.loading,Loading network chat,Carregando o Chat da rede
+networkChat.noParticipants,No online participants,Nenhum participante online
+networkChat.nodeLabel,Node,Nó
+networkChat.online,online,online
+networkChat.participants,{count} online,{count} online
+networkChat.placeholder,Write to the network…,Escreva para a rede…
+networkChat.send,Send,Enviar
+networkChat.sendFailed,Could not send the network chat action,Não foi possível enviar a ação do Chat da rede
+networkChat.showOnline,See online,Ver online
+networkChat.subtitle,Conversation between the nodes,Conversa entre os nós
+networkChat.title,Network chat,Chat da rede
+networkChat.typing,{node} is typing…,{node} está digitando…
+networkChat.unread,{count} unread network chat messages,{count} mensagens não lidas no Chat da rede
 notFound.back,Back to dashboard,Voltar ao painel
 notFound.detail,The address does not match any screen in this app.,O endereço digitado não corresponde a nenhuma tela deste aplicativo.
 notFound.title,This page does not exist,Esta tela não existe
@@ -1112,12 +1344,57 @@ preferences.accessTokenLabel,Administrative access token,Token de acesso adminis
 preferences.accessTokenRegenerate,Generate a new token,Gerar novo token
 preferences.accessTokenTitle,Administrative access token,Token de acesso administrativo
 preferences.accessTokenUnavailable,Token unavailable,Token indisponível
+preferences.adminSubtitle,Cluster-wide controls reserved for the network authority.,Controles da rede reservados à autoridade administrativa.
+preferences.adminTitle,Administrative preferences,Preferências administrativas.
 preferences.portInvalid,Enter a port between 1 and 65535.,Informe uma porta entre 1 e 65535.
+preferences.storageOpen,Open storage,Abrir armazenamento
+preferences.storageSubtitle,Model storage is managed on its dedicated screen.,O armazenamento de modelos é gerenciado na tela própria.
+preferences.storageTitle,Storage,Armazenamento
 preferences.subtitle,Local protection and model-provider credentials for this node.,Proteção local e credenciais de provedor deste nó.
 preferences.title,Preferences,Preferências
 profile.admin,Administrator,Administrador
 profile.infer,infer,infer
 profile.node,node,node
+publicNetworks.action,Action,Ação
+publicNetworks.address,Address,Endereço
+publicNetworks.allCities,All cities,Todas as cidades
+publicNetworks.allCountries,All countries,Todos os países
+publicNetworks.checking,Checking reachability,Verificando alcance
+publicNetworks.city,City,Cidade
+publicNetworks.country,Country,País
+publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is confirmed when you join.,Aqui aparecem apenas dados públicos. A confiança é conferida quando você entra.
+publicNetworks.discoveredTitle,Networks found,Redes encontradas
+publicNetworks.distance,{value} km away,{value} km de distância
+publicNetworks.emptyDetail,Keep POM open on a network or try again in a moment. Public networks announce themselves through the existing discovery layer.,Deixe o POM aberto em uma rede ou tente novamente em instantes. Redes públicas se anunciam pela camada de descoberta existente.
+publicNetworks.emptyTitle,No public networks found,Não encontramos redes públicas
+publicNetworks.failed,Could not load public networks,Não foi possível carregar as redes públicas
+publicNetworks.fingerprint,Fingerprint,Impressão digital
+publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
+publicNetworks.join,Open joining,Entrar na rede
+publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
+publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
+publicNetworks.joinFailed,Could not start joining this network,Não foi possível iniciar a entrada nesta rede
+publicNetworks.joinTitle,Join {name}?,Entrar em {name}?
+publicNetworks.latency,Average latency,Latência média
+publicNetworks.location,Country / city,País / cidade
+publicNetworks.locationNote,"If you allow location access, nearby networks appear first. Only an approximate network location is shown.","Se você permitir o acesso à localização, as redes próximas aparecem primeiro. Apenas uma localização aproximada da rede é mostrada."
+publicNetworks.models,Served models,Modelos servidos
+publicNetworks.name,Public name,Nome público
+publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pública corresponde a estes filtros
+publicNetworks.noMatchesDetail,Try another country or city.,Tente outro país ou cidade.
+publicNetworks.nodes,Nodes,Nós
+publicNetworks.organization,Organization,Organização
+publicNetworks.pkarr,pkarr,pkarr
+publicNetworks.reachable,Reachable,Alcançável
+publicNetworks.refresh,Refresh,Atualizar
+publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
+publicNetworks.subtitle,Find public POM networks discovered through pkarr and choose one to join.,Encontre redes públicas do POM descobertas via pkarr e escolha uma para entrar.
+publicNetworks.title,Public networks,Redes públicas
+publicNetworks.unavailable,Not available,Indisponível
+publicNetworks.unknownCity,Unknown city,Cidade desconhecida
+publicNetworks.unknownCountry,Unknown country,País desconhecido
+publicNetworks.unreachable,Not reachable,Inacessível
+publicNetworks.vram,Total VRAM,VRAM total
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
 release.failed,The shard is still loaded,A fatia continua carregada
@@ -1250,6 +1527,189 @@ setup.subtitle,This machine is not part of a network yet. Choose its role to beg
 setup.title,Initial setup,Configuração inicial
 setup.wherePrincipal,Where the principal is,Onde fica o principal
 setup.wherePrincipalDetail,Ask the person who configured the first machine for both values.,Peça os dois valores a quem configurou a primeira máquina.
+setupWizard.accessPolicy,Who can access this network?,Quem pode acessar esta rede?
+setupWizard.accessPolicyHint,The trust root is still required to enter.,A raiz de confiança ainda é necessária para entrar.
+setupWizard.admin,Administrator,Administrador
+setupWizard.adminDetail,Create a network and decide how other machines may join.,Crie uma rede e decida como outras máquinas podem entrar.
+setupWizard.adminExposure,Interface exposure,Exposição da interface
+setupWizard.adminExposureHint,Choose whether the admin screen is reachable only here or from other machines on the network.,Escolha se a tela administrativa ficará acessível só aqui ou também por outras máquinas da rede.
+setupWizard.adminExposureLocalhost,Only this machine,Apenas esta máquina
+setupWizard.adminExposureNetwork,This network,Esta rede
+setupWizard.adminToken,Administrative access token,Token de acesso administrativo
+setupWizard.adminTokenDetail,This generated token lets an administrator open the interface. Save it in a password manager.,Este token gerado permite que um administrador abra a interface. Salve-o em um gerenciador de senhas.
+setupWizard.adminTokenFailed,The administrative token could not be generated,O token administrativo não pôde ser gerado
+setupWizard.adminTokenMissing,The token will be generated here,O token será gerado aqui
+setupWizard.advertiseAddress,Address this machine will announce,Endereço que esta máquina anunciará
+setupWizard.advertiseAddressHint,Use a stable public host and port when this machine is behind a router.,Use um host e uma porta públicos estáveis quando esta máquina estiver atrás de um roteador.
+setupWizard.advertiseAddressPlaceholder,example.com:8080,exemplo.com:8080
+setupWizard.anchorFailed,The trust root could not be created,Não foi possível criar a raiz de confiança
+setupWizard.anyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança
+setupWizard.authorizedPeople,People approved by the administrator,Pessoas aprovadas pelo administrador
+setupWizard.available,available,disponíveis
+setupWizard.bootstrapAddress,Network address,Endereço da rede
+setupWizard.bootstrapAddressHint,Use the administrator's P2P address so this node can find the network.,Use o endereço P2P do administrador para este nó encontrar a rede.
+setupWizard.bootstrapPlaceholder,example.com:42777,exemplo.com:42777
+setupWizard.channels,Discord or Telegram channels,Canais do Discord ou Telegram
+setupWizard.checkConfig,Initial configuration ready,Configuração inicial pronta
+setupWizard.checkCuda,CUDA working,CUDA funcionando
+setupWizard.checkGpu,GPU detected,GPU detectada
+setupWizard.checkIpv6,Public IPv6 enabled,IPv6 público habilitado
+setupWizard.checkP2p,P2P discovery working,Descoberta P2P funcionando
+setupWizard.checkVulkan,Vulkan working,Vulkan funcionando
+setupWizard.chooseCity,Choose a city,Escolha uma cidade
+setupWizard.chooseCountry,Choose a country,Escolha um país
+setupWizard.city,City,Cidade
+setupWizard.cityHint,Choose a city or enter another one when it is missing.,Escolha uma cidade ou digite outra se ela não estiver na lista.
+setupWizard.connectionSecret,Connection secret,Segredo de conexão
+setupWizard.connectionSecretHint,Only needed for private or local networks.,Necessário apenas em redes privadas ou locais.
+setupWizard.copied,Copied,Copiado
+setupWizard.copy,Copy,Copiar
+setupWizard.country,Country,País
+setupWizard.countryHint,Use the reference list so public networks can be grouped consistently.,Use a lista de referência para agrupar redes públicas de forma consistente.
+setupWizard.cpu,CPU,CPU
+setupWizard.cpuReserve,CPU available for the system,CPU disponível para o sistema
+setupWizard.cpuReserveDetail,More means POM yields more often to other work.,Mais significa que o POM cede mais vezes a outras tarefas.
+setupWizard.cpuValue,{count} logical cores,{count} núcleos lógicos
+setupWizard.cudaAvailable,CUDA ready,CUDA disponível
+setupWizard.description,Description,Descrição
+setupWizard.discoveryAvailable,Discovery ready,Descoberta disponível
+setupWizard.diskAvailable,{value} GB available,{value} GB disponíveis
+setupWizard.diskTotal,{value} GB total,{value} GB no total
+setupWizard.download,Download,Baixar
+setupWizard.edit,Edit,Editar
+setupWizard.fingerprint,Fingerprint,Impressão digital
+setupWizard.fingerprintCalculated,Calculated from the document,Calculada a partir do documento
+setupWizard.fingerprintEntered,Fingerprint entered,Impressão digital informada
+setupWizard.fingerprintHint,Compare the calculated fingerprint with the value you received separately.,Compare a impressão digital calculada com o valor que você recebeu separadamente.
+setupWizard.fingerprintInvite,Send this fingerprint through a separate channel so invitees can compare it with the document they received.,Envie esta impressão digital por um canal separado para que as pessoas convidadas possam compará-la com o documento recebido.
+setupWizard.fingerprintMissing,Fingerprint missing,Impressão digital ausente
+setupWizard.fingerprintPlaceholder,The fingerprint appears after you paste the document.,A impressão digital aparece depois que você cola o documento.
+setupWizard.fingerprintWaiting,Paste a valid document to calculate its fingerprint.,Cole um documento válido para calcular a impressão digital.
+setupWizard.finish,Save and restart,Salvar e reiniciar
+setupWizard.generated,Generated,Gerado
+setupWizard.gpu,GPU,GPU
+setupWizard.gpuDetected,GPU detected,GPU detectada
+setupWizard.gpuMaxNote,GPU capacity is always offered at its maximum. You only choose how much RAM and CPU to keep for the system.,A capacidade da GPU é sempre oferecida no máximo. Você só escolhe quanta RAM e CPU manter para o sistema.
+setupWizard.hardwareDetail,These readings describe what this machine can share right now.,Estas informações mostram o que esta máquina pode compartilhar agora.
+setupWizard.hardwareTitle,This is what POM found,Isso foi o que o POM encontrou
+setupWizard.hardwareUnavailable,Hardware detection is not available yet.,A detecção de hardware ainda não está disponível.
+setupWizard.healthDetail,These are general checks only. Model inference is checked after the node joins the network.,Estas são apenas verificações gerais. A inferência do modelo será verificada depois que o nó entrar na rede.
+setupWizard.healthFailed,The general checks could not run,Não foi possível executar as verificações gerais
+setupWizard.healthModelLater,The model check happens after setup so a missing model never blocks first access.,A verificação do modelo acontece depois da configuração para que um modelo ausente nunca bloqueie o primeiro acesso.
+setupWizard.healthTitle,A quick check before restart,Uma verificação rápida antes de reiniciar
+setupWizard.infer,Inference node,Nó de inferência
+setupWizard.inferDetail,Use this machine to send prompts through a trusted network.,Use esta máquina para enviar prompts por uma rede confiável.
+setupWizard.installedHere,Already on this machine,Já está nesta máquina
+setupWizard.inviteDetail,Share the trust document and public key. Keep the fingerprint available through a separate channel.,Compartilhe o documento de confiança e a chave pública. Envie a impressão digital por um canal separado.
+setupWizard.inviteTitle,Your network is ready to invite people,Sua rede está pronta para convidar pessoas
+setupWizard.loadFailed,The setup information could not be loaded,Não foi possível carregar as informações da configuração inicial
+setupWizard.localOnly,Only this local network,Apenas esta rede local
+setupWizard.locationAsking,Asking for permission to use this machine's approximate location...,Pedindo permissão para usar a localização aproximada desta máquina...
+setupWizard.locationDenied,Location permission was not granted. The network can still be published.,A permissão de localização não foi concedida. A rede ainda poderá ser publicada.
+setupWizard.locationDetail,Choose a country and city for quick filtering. Your browser location adds the fine-grained distance estimate.,Escolha um país e uma cidade para o filtro rápido. A localização do navegador acrescenta a distância precisa.
+setupWizard.locationIdle,Location will help order nearby networks.,A localização ajudará a ordenar as redes próximas.
+setupWizard.locationPanelDetail,Country and city are useful even when browser location is unavailable.,País e cidade continuam úteis mesmo quando a localização do navegador não está disponível.
+setupWizard.locationPanelTitle,Where is this node?,Onde este nó está?
+setupWizard.locationPrivacy,Only the approximate coordinates you approve are saved with this node.,Somente as coordenadas aproximadas que você aprovar serão salvas neste nó.
+setupWizard.locationPrompt,"POM can save this machine's approximate location so nearby networks and peers are easier to find.","O POM pode salvar a localização aproximada desta máquina para facilitar encontrar redes e peers próximos."
+setupWizard.locationSaved,Location saved for nearby network ordering.,Localização salva para ordenar redes próximas.
+setupWizard.locationTitle,Help POM find nearby peers,Ajude o POM a encontrar peers próximos
+setupWizard.locationUnavailable,Location is unavailable. The network can still be published.,A localização não está disponível. A rede ainda poderá ser publicada.
+setupWizard.manualCity,City name,Nome da cidade
+setupWizard.manualCityHint,This name will be used in the geographic discovery label.,Este nome será usado no rótulo geográfico de descoberta.
+setupWizard.memory,Memory,Memória
+setupWizard.modelDetail,Local models are ready now. Reference models from Hugging Face are suggestions for later download.,Modelos locais já estão prontos. Modelos de referência do Hugging Face são sugestões para baixar depois.
+setupWizard.modelLabel,Model,Modelo
+setupWizard.modelLater,Choose a model later,Escolher um modelo depois
+setupWizard.modelSelectionOptional,This step is optional. You can start without selecting a model.,Este passo é opcional. Você pode começar sem escolher um modelo.
+setupWizard.modelTitle,Choose a starting model,Escolha um modelo inicial
+setupWizard.modelsFolder,Models folder,Pasta de modelos
+setupWizard.modelsFolderHint,Default: ~/.pom/models, Padrão: ~/.pom/models
+setupWizard.networkDetail,People should understand what they are joining before they receive an invitation.,As pessoas devem entender em que estão entrando antes de receber um convite.
+setupWizard.networkIdentity,Network details,Detalhes da rede
+setupWizard.networkIdentityDetail,These details are shown to people discovering the public network.,Estes detalhes aparecem para quem descobrir a rede pública.
+setupWizard.networkKind,What kind of network are you joining?,Que tipo de rede você está entrando?
+setupWizard.networkKindHint,Public means no shared secret. Private means the administrator also gives you one.,Pública significa sem segredo compartilhado. Privada significa que o administrador também fornecerá um.
+setupWizard.networkLabel,Network,Rede
+setupWizard.networkTitle,Give this network a clear identity,Dê uma identidade clara a esta rede
+setupWizard.noGpu,No GPU detected,Nenhuma GPU detectada
+setupWizard.noModelSelected,No model selected,Nenhum modelo selecionado
+setupWizard.noModels,No model was found yet. You can choose one after setup.,Nenhum modelo foi encontrado ainda. Você poderá escolher um depois da configuração.
+setupWizard.node,Network node,Nó da rede
+setupWizard.nodeDetail,Share this machine's resources with a network you already trust.,Compartilhe os recursos desta máquina com uma rede em que você confia.
+setupWizard.nodeName,Name this node,Nomeie este nó
+setupWizard.nodeNameHint,This is how the machine appears to people in the network.,É assim que esta máquina aparecerá para as pessoas na rede.
+setupWizard.notAvailable,Not available,Não disponível
+setupWizard.ok,OK,OK
+setupWizard.organization,Organization,Organização
+setupWizard.otherCity,Another city,Outra cidade
+setupWizard.pasteTrust,Confirm the network before joining,Confirme a rede antes de entrar
+setupWizard.pasteTrustDetail,Get the document and a separate fingerprint message from the administrator.,Receba o documento e uma mensagem separada com a impressão digital do administrador.
+setupWizard.privateInternet,Private over the internet,Privada pela internet
+setupWizard.profileLabel,Role,Função
+setupWizard.publicGeoRequired,Public networks need a country and city so nearby people can filter them quickly.,Redes públicas precisam de país e cidade para que pessoas próximas possam filtrá-las rapidamente.
+setupWizard.publicInternet,Public over the internet,Pública pela internet
+setupWizard.publicKey,Generated public key,Chave pública gerada
+setupWizard.publicName,Public network name,Nome público da rede
+setupWizard.publicNameHint,This name also identifies the trust root.,Este nome também identifica a raiz de confiança.
+setupWizard.ramReserve,RAM available for the system,RAM disponível para o sistema
+setupWizard.ramReserveDetail,More means more room for your other apps.,Mais significa mais espaço para seus outros aplicativos.
+setupWizard.recommended,Recommended,Recomendado
+setupWizard.referenceHuggingFace,Hugging Face reference,Referência do Hugging Face
+setupWizard.resourcesDetail,The default keeps a comfortable margin for your desktop while sharing the rest with the network.,O padrão mantém uma margem confortável para o seu computador e compartilha o restante com a rede.
+setupWizard.resourcesLabel,Resources,Recursos
+setupWizard.resourcesTitle,How much should POM leave for the system?,Quanto o POM deve deixar para o sistema?
+setupWizard.reviewDetail,Review the essentials once. POM will save the configuration and restart this node.,Revise o essencial uma vez. O POM salvará a configuração e reiniciará este nó.
+setupWizard.reviewNote,The trust document is stored separately from pom.json so changing the profile cannot create authority.,O documento de confiança fica separado do pom.json para que mudar a função não crie autoridade.
+setupWizard.reviewTitle,Everything looks ready,Está tudo pronto
+setupWizard.roleHint,You can change the machine role later from the administration screens.,Você poderá mudar o papel da máquina depois pelas telas de administração.
+setupWizard.rules,Network rules,Regras da rede
+setupWizard.saveFailed,The configuration was not saved,A configuração não foi salva
+setupWizard.savedDetail,This node is restarting with its new identity. The interface will return automatically.,Este nó está reiniciando com sua nova identidade. A interface voltará automaticamente.
+setupWizard.savedTitle,Configuration saved,Configuração salva
+setupWizard.securityDetail,Protect the interface and make the node-to-node connection policy explicit.,Proteja a interface e deixe clara a política de conexão entre nós.
+setupWizard.securityTitle,Secure this network,Proteja esta rede
+setupWizard.shardSpace,Disk space to share,Espaço em disco para compartilhar
+setupWizard.shardSpaceHint,This is the maximum space POM may use for model slices.,Este é o espaço máximo que o POM poderá usar para fatias de modelos.
+setupWizard.shardsFolder,Shared slices folder,Pasta de fatias compartilhadas
+setupWizard.shardsFolderHint,Default: ~/.pom/models_sliced, Padrão: ~/.pom/models_sliced
+setupWizard.stepHardware,Your machine,Sua máquina
+setupWizard.stepHealth,Checks,Verificações
+setupWizard.stepInvite,Invite,Convite
+setupWizard.stepLocation,Location,Localização
+setupWizard.stepModel,Model,Modelo
+setupWizard.stepNetwork,Network,Rede
+setupWizard.stepProfile,Role,Função
+setupWizard.stepResources,Resources,Recursos
+setupWizard.stepReview,Review,Revisão
+setupWizard.stepSecurity,Security,Segurança
+setupWizard.stepStorage,Storage,Armazenamento
+setupWizard.stepTrust,Trust,Confiança
+setupWizard.storageDetail,The defaults use your home folder so setup stays predictable and easy to back up.,Os padrões usam sua pasta pessoal para manter a configuração previsível e fácil de salvar.
+setupWizard.storageLabel,Shared disk space,Espaço em disco compartilhado
+setupWizard.storagePaths,Storage paths,Caminhos de armazenamento
+setupWizard.storagePathsDetail,You can change these later in Settings.,Você poderá mudar estes caminhos depois em Configurações.
+setupWizard.storageTitle,Where should models and shared slices live?,Onde devem ficar os modelos e as fatias compartilhadas?
+setupWizard.thermalDetail,A limit around 85°C is a comfortable target. POM stops using the GPU before it stays too hot.,Um limite perto de 85°C é um alvo confortável. O POM para de usar a GPU antes que ela fique quente demais.
+setupWizard.thermalLimit,GPU temperature limit,Limite de temperatura da GPU
+setupWizard.tlsDetail,Optional extra encryption for control links. Libp2p already protects peer connections.,Criptografia extra opcional para os links de controle. O libp2p já protege as conexões entre nós.
+setupWizard.tlsPublicRequired,Extra encryption is optional on public networks.,A criptografia extra é opcional em redes públicas.
+setupWizard.tlsRequired,Encrypt connections between nodes (optional),Criptografar conexões entre nós (opcional)
+setupWizard.trustDocument,Trust document,Documento de confiança
+setupWizard.trustDocumentHint,Paste the complete JSON document from the administrator or upload trust.json.,Cole o documento JSON completo enviado pelo administrador ou envie o trust.json.
+setupWizard.trustFilename,Save the document as {filename},Salve o documento como {filename}
+setupWizard.trustLabel,Trust root,Raiz de confiança
+setupWizard.trustPrivateDetail,Private networks use the trust root and one shared connection secret.,Redes privadas usam a raiz de confiança e um único segredo compartilhado.
+setupWizard.trustPublicDetail,Public networks do not use a shared secret. The trust document authenticates control between machines.,Redes públicas não usam segredo compartilhado. O documento de confiança autentica o controle entre as máquinas.
+setupWizard.trustTitle,Bring the network's trust root,Traga a raiz de confiança da rede
+setupWizard.uploadTrust,Upload trust.json,Enviar trust.json
+setupWizard.uploadingTrust,Reading file...,Lendo arquivo...
+setupWizard.visibility,Who can find this network?,Quem pode encontrar esta rede?
+setupWizard.visibilityHint,Public networks use signed control and no shared secret.,Redes públicas usam controle assinado e não têm segredo compartilhado.
+setupWizard.vulkanAvailable,Vulkan ready,Vulkan disponível
+setupWizard.welcomeDetail,POM will ask one clear question at a time and save a real configuration at the end.,O POM fará uma pergunta clara por vez e salvará uma configuração real no final.
+setupWizard.welcomeEyebrow,Your first step,Seu primeiro passo
+setupWizard.welcomeTitle,Let us set up this machine,Vamos configurar esta máquina
 shards.complete,covers model,cobre o modelo
 shards.empty,No shards on this machine,Nenhuma fatia nesta máquina
 shards.emptyDetail,Shards appear here after local slicing or an accepted transfer. They are stored in the configured shard folder.,Fatias aparecem aqui depois de um fatiamento local ou de uma transferência aceita. Elas são gravadas na pasta de fatias configurada.
@@ -1277,6 +1737,11 @@ sidebar.build,build,build
 sidebar.buildTitle,Commit this node''s binary was built from. Compare it across cards to see whether every node runs the same version.,Commit de que o binário deste nó foi compilado. Compare entre os cards para ver se todos os nós estão na mesma versão.
 sidebar.collapse,Minimize menu,Minimizar menu
 sidebar.expand,Expand menu,Expandir menu
+sidebar.leaveNetworkConfirm,Leave network,Sair da rede
+sidebar.leaveNetworkDescription,"This removes the trust document and private network secret from this node, keeps local preferences, and restarts the first-access setup.","Isso remove o documento de confiança e o segredo privado da rede deste nó, preserva as preferências locais e reinicia a configuração inicial."
+sidebar.leaveNetworkFailed,The node could not leave the network,Não foi possível sair da rede
+sidebar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
+sidebar.thisNetwork,this network,esta rede
 slice.actualSize,Actual size,Peso real
 slice.add,Add another shard,Mais uma fatia
 slice.complete,full model covered,modelo inteiro coberto
@@ -1349,8 +1814,9 @@ tokenLogs.allLoaded,All requests loaded,Todas as requisições foram carregadas
 tokenLogs.allNodes,All nodes,Todos os nós
 tokenLogs.apiKey,API key identity,Identidade da API key
 tokenLogs.apiKeyPlaceholder,"label, id or node","rótulo, id ou nó"
+tokenLogs.applyFilters,Apply filters,Aplicar filtros
 tokenLogs.averageInference,Average inference,Tempo médio de inferência
-tokenLogs.averageTokPerSec,Average tokens/s,Média de fichas/s
+tokenLogs.averageTokPerSec,Average tokens/s,Média de Tokens/s
 tokenLogs.averageTtft,Average TTFT,TTFT médio
 tokenLogs.byNode,By network node,Por nó da rede
 tokenLogs.byToken,By API token,Por API token
@@ -1389,7 +1855,8 @@ tokenLogs.inspectorTelemetry,TELEMETRY,TELEMETRIA
 tokenLogs.inspectorTitle,Request inspector,Inspetor de requisição
 tokenLogs.loadingMore,Loading more,Carregando mais
 tokenLogs.model,Model,Modelo
-tokenLogs.modelSpeedSubtitle,"Mean total generation speed, in tokens per second.","Velocidade média total de geração, em fichas por segundo."
+tokenLogs.modelPlaceholder,model name,nome do modelo
+tokenLogs.modelSpeedSubtitle,"Mean total generation speed, in tokens per second.","Velocidade média total de geração, em Tokens por segundo."
 tokenLogs.newPrompt,New prompt,Prompt novo
 tokenLogs.noHops,No hops recorded yet.,Nenhum salto registrado ainda.
 tokenLogs.noPipeline,no pipeline,sem pipeline
@@ -1429,7 +1896,7 @@ tokenLogs.statsSubtitle,Aggregated request usage across the network.,Consumo agr
 tokenLogs.statsTab,STATISTICS,ESTATÍSTICAS
 tokenLogs.statsTerminalStates,Terminal states,Estados terminais
 tokenLogs.statsTitle,Statistics,Estatísticas
-tokenLogs.statsTokensSubtitle,Input and output tokens recorded by the audit trail.,Fichas de entrada e saída registradas na auditoria.
+tokenLogs.statsTokensSubtitle,Input and output tokens recorded by the audit trail.,Tokens de entrada e saída registradas na auditoria.
 tokenLogs.status,Status,Estado
 tokenLogs.statusAbandoned,client left,cliente saiu
 tokenLogs.statusCompleted,completed,concluída
@@ -1446,10 +1913,12 @@ tokenLogs.token,Token,Token
 tokenLogs.tokens,Tokens,Tokens
 tokenLogs.tokensPerSecondUnit,tokens/s,tokens/s
 tokenLogs.total,total {value},total {value}
-tokenLogs.totalInputTokens,Input tokens,Fichas de entrada
-tokenLogs.totalOutputTokens,Output tokens,Fichas de saída
+tokenLogs.totalInputTokens,Input tokens,Tokens de entrada
+tokenLogs.totalOutputTokens,Output tokens,Tokens de saída
 tokenLogs.ttft,TTFT {value},TTFT {value}
 tokenLogs.unavailable,not available,indisponível
+tokenLogs.user,User,Usuário
+tokenLogs.userPlaceholder,API key label,rótulo da API key
 topbar.apiTitle,OpenAI-compatible API served by this node,API compatível com OpenAI servida por este nó
 topbar.closeMenu,Close menu,Fechar menu
 topbar.layers,{covered}/{total} layers,{covered}/{total} camadas
@@ -1457,6 +1926,7 @@ topbar.leaveDescription,"The node stops announcing, forgets known peers, and unl
 topbar.leaveDetail,"Unloads the model, stops announcing, and forgets peers.","Descarrega o modelo, para de anunciar e esquece os peers."
 topbar.leaveFailed,The node remains on the network,O nó continua na rede
 topbar.leaveNetwork,Leave network,Sair da rede
+topbar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
 topbar.leaveTitle,Remove this node from the network?,Tirar este nó da rede?
 topbar.left,Node left the network,Nó fora da rede
 topbar.leftDetail,It stopped announcing and forgot its peers. Rejoin from the Network screen.,Parou de anunciar e esqueceu os peers. Reconecte pela aba Rede.
@@ -1519,13 +1989,16 @@ trustAnchor.copy,Copy,Copiar
 trustAnchor.documentHint,Paste the whole content of {file} from the administrator node.,Cole o conteúdo inteiro do {file} vindo do nó administrador.
 trustAnchor.documentLabel,Signed chain,Cadeia assinada
 trustAnchor.documentPlaceholder,Paste the file content here,Cole aqui o conteúdo do arquivo
+trustAnchor.fingerprintCalculated,Calculated from the document,Calculada a partir do documento
+trustAnchor.fingerprintConfirm,I confirm that I checked this fingerprint against the trusted channel,Confirmo que conferi esta impressão digital pelo canal confiável
 trustAnchor.fingerprintFootnote,The fingerprint is public and grants nothing on its own. Carry it to the other node and type it there by hand: it is the check that anchors the trust.,A impressão digital é pública e não concede nada sozinha. Leve-a ao outro nó e digite-a lá à mão: é a conferência que ancora a confiança.
 trustAnchor.fingerprintLabel,Anchor fingerprint (SHA-256),Impressão digital da âncora (SHA-256)
+trustAnchor.fingerprintWaiting,Paste a valid document to calculate its fingerprint.,Cole um documento válido para calcular a impressão digital.
 trustAnchor.installAction,Install trust root,Instalar a raiz de confiança
 trustAnchor.installCaution,"Installing is only possible from this machine, and only once.","Instalar só é possível a partir desta máquina, e só uma vez."
 trustAnchor.installEyebrow,Receive the root,Receber a raiz
 trustAnchor.installFailed,The trust root could not be installed.,Não foi possível instalar a raiz de confiança.
-trustAnchor.installSubtitle,"Copy {file} from the administrator node through a channel you trust, paste it here and type the fingerprint you read there.","Copie o {file} do nó administrador por um canal seu, cole aqui e digite a impressão digital que leu lá."
+trustAnchor.installSubtitle,"Copy {file} from the administrator node through a channel you trust, paste it here and confirm the fingerprint calculated from it.","Copie o {file} do nó administrador por um canal seu, cole aqui e confirme a impressão digital calculada a partir dele."
 trustAnchor.installTitle,Install the chain from the administrator,Instalar a cadeia vinda do administrador
 trustAnchor.installed,Trust root installed,Raiz de confiança instalada
 trustAnchor.installedDetail,This node now checks administrative commands against the anchored chain.,Este nó passa a conferir os comandos administrativos contra a cadeia ancorada.

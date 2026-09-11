@@ -14,6 +14,10 @@ vi.mock("../lib/queries", () => ({
   useNode: () => ({ data: sidebarNodeData }),
 }));
 
+vi.mock("../lib/networkChatUnread", () => ({
+  useNetworkChatUnread: () => ({ unreadCount: 2 }),
+}));
+
 vi.mock("../lib/theme", () => ({
   useTheme: () => ({ theme: "dark", toggle: vi.fn() }),
 }));
@@ -150,6 +154,7 @@ describe("Sidebar", () => {
     expect(screen.getByText("Implantar na rede")).toBeTruthy();
     expect(screen.getByText("Histórico")).toBeTruthy();
     expect(screen.getByText("Logs")).toBeTruthy();
+    expect(screen.getByTestId("network-chat-unread").textContent).toBe("2");
   });
 
   it("mostra o estado TLS junto às bandeiras e sem texto visível", () => {
@@ -209,7 +214,7 @@ describe("Sidebar", () => {
     const activeButton = screen.getAllByRole("button", { name: /Conversa ativa/ })
       .find((button) => button.getAttribute("aria-pressed") === "true");
     expect(activeButton).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Rede" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Documentação" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Configurações" })).toBeTruthy();
     expect(screen.queryByText("Painel")).toBeNull();

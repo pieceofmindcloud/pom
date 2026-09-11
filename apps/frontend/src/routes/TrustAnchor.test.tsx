@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { webcrypto } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import type { TrustAnchorView } from "../lib/types";
+import { fingerprintFromTrustDocument } from "../lib/trustFingerprint";
+
+vi.stubGlobal("crypto", webcrypto);
 
 const install = vi.fn();
 const anchorQuery = {
@@ -25,7 +29,7 @@ class FakeApiError extends Error {
 
 vi.mock("../lib/api", () => ({ ApiError: FakeApiError }));
 vi.mock("../lib/adminAuthority", () => ({ trustAnchorApi: { install: (...args: unknown[]) => install(...args) } }));
-vi.mock("../lib/queries", () => ({ useTrustAnchor: () => anchorQuery }));
+vi.mock("../lib/queries", () => ({ useTrustAnchor: () => anchorQuery, useNode: () => ({ data: undefined }) }));
 vi.mock("../lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), fromError: vi.fn() }),
 }));
@@ -63,6 +67,7 @@ afterEach(() => {
 });
 
 const FINGERPRINT = "a".repeat(64);
+const CHAIN = JSON.stringify({ anchor: { principal: { pubkey: "public-key-from-admin" } } });
 
 describe("TrustAnchor", () => {
   it("mostra a impressão digital e o estado de um nó ancorado, sem formulário", () => {
@@ -86,39 +91,39 @@ describe("TrustAnchor", () => {
     expect(screen.queryByTestId("anchor-document")).toBeNull();
   });
 
-  it("um nó por ancorar mostra o estado e o formulário, sem impressão digital", () => {
+  it("um nó por ancorar mostra o estado e o formulário, sem fingerprint calculada ainda", () => {
     mount(view());
 
     expect(screen.getByTestId("anchor-state").textContent).toContain("Por ancorar");
     expect(screen.queryByTestId("anchor-fingerprint")).toBeNull();
     expect(screen.getByTestId("anchor-document")).toBeTruthy();
-    expect(screen.getByTestId("anchor-typed-fingerprint")).toBeTruthy();
+    expect(screen.getByTestId("anchor-fingerprint-confirm")).toBeTruthy();
   });
 
-  /** O campo é o que valida o arquivo: pré-preenchê-lo anularia a conferência. */
-  it("nunca pré-preenche a impressão digital a partir do conteúdo colado", () => {
+  it("calcula a impressão digital do documento e deixa a conferência explícita", async () => {
     mount(view());
     const chain = screen.getByTestId("anchor-document") as HTMLTextAreaElement;
-    const typed = screen.getByTestId("anchor-typed-fingerprint") as HTMLInputElement;
 
     fireEvent.change(chain, {
-      target: { value: JSON.stringify({ anchor: { fingerprint: FINGERPRINT } }) },
+      target: { value: CHAIN },
     });
 
-    expect(typed.value).toBe("");
+    const fingerprint = await fingerprintFromTrustDocument(CHAIN);
+    await waitFor(() => expect(screen.getByTestId("anchor-calculated-fingerprint").textContent?.replace(/\s/g, "")).toBe(fingerprint));
+    expect((screen.getByTestId("anchor-fingerprint-confirm") as HTMLInputElement).checked).toBe(false);
   });
 
-  it("envia o que o operador digitou, sem tocar no valor", async () => {
+  it("envia a fingerprint calculada depois da confirmação do operador", async () => {
     install.mockResolvedValue({ anchored: true, fingerprint: FINGERPRINT });
     mount(view());
 
-    fireEvent.change(screen.getByTestId("anchor-document"), { target: { value: "{\"a\":1}" } });
-    fireEvent.change(screen.getByTestId("anchor-typed-fingerprint"), {
-      target: { value: FINGERPRINT },
-    });
+    fireEvent.change(screen.getByTestId("anchor-document"), { target: { value: CHAIN } });
+    const fingerprint = await fingerprintFromTrustDocument(CHAIN);
+    await waitFor(() => expect(screen.getByTestId("anchor-calculated-fingerprint")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("anchor-fingerprint-confirm"));
     fireEvent.click(screen.getByRole("button", { name: /Instalar a raiz/i }));
 
-    await waitFor(() => expect(install).toHaveBeenCalledWith("{\"a\":1}", FINGERPRINT));
+    await waitFor(() => expect(install).toHaveBeenCalledWith(CHAIN, fingerprint));
     await waitFor(() => expect(anchorQuery.refetch).toHaveBeenCalled());
   });
 
@@ -130,10 +135,9 @@ describe("TrustAnchor", () => {
     );
     mount(view());
 
-    fireEvent.change(screen.getByTestId("anchor-document"), { target: { value: "{}" } });
-    fireEvent.change(screen.getByTestId("anchor-typed-fingerprint"), {
-      target: { value: "b".repeat(64) },
-    });
+    fireEvent.change(screen.getByTestId("anchor-document"), { target: { value: CHAIN } });
+    await waitFor(() => expect(screen.getByTestId("anchor-calculated-fingerprint")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("anchor-fingerprint-confirm"));
     fireEvent.click(screen.getByRole("button", { name: /Instalar a raiz/i }));
 
     const refusal = await screen.findByTestId("anchor-refusal");
@@ -146,8 +150,9 @@ describe("TrustAnchor", () => {
     );
     mount(view());
 
-    fireEvent.change(screen.getByTestId("anchor-document"), { target: { value: "{}" } });
-    fireEvent.change(screen.getByTestId("anchor-typed-fingerprint"), { target: { value: "x" } });
+    fireEvent.change(screen.getByTestId("anchor-document"), { target: { value: CHAIN } });
+    await waitFor(() => expect(screen.getByTestId("anchor-calculated-fingerprint")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("anchor-fingerprint-confirm"));
     fireEvent.click(screen.getByRole("button", { name: /Instalar a raiz/i }));
 
     const refusal = await screen.findByTestId("anchor-refusal");

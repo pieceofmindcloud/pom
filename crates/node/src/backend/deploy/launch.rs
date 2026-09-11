@@ -55,6 +55,11 @@ pub(super) async fn deploy_endpoint(
         &pairwise_rtt,
         layer_options,
     );
+    if req.vision && plan.mmproj_path.is_none() {
+        return bad(json!({
+            "error": "este modelo não tem visão: nenhum mmproj foi encontrado ao lado do GGUF"
+        }));
+    }
 
     // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
     // sobre a varredura fresca, então também re-valida aqui — não confia no
@@ -99,7 +104,14 @@ pub(super) async fn deploy_endpoint(
     let ranges: Vec<(String, u32, u32, Option<u32>)> = if !plan.tp_targets.is_empty() {
         plan.tp_targets
             .iter()
-            .map(|t| (t.target_node_id.clone(), t.start_layer, t.end_layer, Some(t.rank)))
+            .map(|t| {
+                (
+                    t.target_node_id.clone(),
+                    t.start_layer,
+                    t.end_layer,
+                    Some(t.rank),
+                )
+            })
             .collect()
     } else {
         plan.steps
@@ -152,7 +164,7 @@ pub(super) async fn deploy_endpoint(
     let reused = matches!(record_plan, RecordPlan::ReuseVersion(_));
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, params, identity, record_plan, &id).await {
+        match run(state, plan, params, identity, record_plan, req.vision, &id).await {
             Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
             Err(e) => {
                 warn!("implantação falhou: {e}");
@@ -508,6 +520,10 @@ pub(super) fn launch_targets(
                     },
                     &membros,
                 )),
+                mmproj_path: (target.rank == 0)
+                    .then(|| held.mmproj_path.clone())
+                    .flatten(),
+                use_mmproj: false,
             });
         }
         return Ok(targets);
@@ -585,6 +601,18 @@ pub(super) fn launch_targets(
                 peer_index,
                 peer_count,
                 tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
+                mmproj_path: if step.start_layer == 0 {
+                    target_machine.and_then(|machine| {
+                        step.parts.first().and_then(|part| {
+                            machine
+                                .holds_ready(part.start_layer, part.end_layer)
+                                .and_then(|shard| shard.mmproj_path.clone())
+                        })
+                    })
+                } else {
+                    None
+                },
+                use_mmproj: false,
             });
             continue;
         }
@@ -616,6 +644,10 @@ pub(super) fn launch_targets(
             peer_index,
             peer_count,
             tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
+            mmproj_path: (step.start_layer == 0)
+                .then(|| held.mmproj_path.clone())
+                .flatten(),
+            use_mmproj: false,
         });
     }
 
@@ -654,6 +686,8 @@ pub(super) fn launch_targets(
                 peer_index: None,
                 peer_count: None,
                 tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &membros)),
+                mmproj_path: None,
+                use_mmproj: false,
             });
         }
     }
@@ -734,20 +768,28 @@ pub(super) async fn whole_layer_options_for_plan(
                 reason: Some(format!("não foi possível falar com {}", machine.label())),
             });
         };
-        let key = state.auth.read().await.connection_key.clone();
-        let response = client
-            .post(format!("{base}/api/ui/model-layer-options"))
-            .bearer_auth(key)
-            .json(&crate::webui::ModelLayerOptionsRequest { path })
-            .timeout(PEER_TIMEOUT * 4)
-            .send()
+        let request_body = crate::webui::ModelLayerOptionsRequest { path };
+        let response = match state
+            .control_json_request(
+                client
+                    .post(format!("{base}/api/ui/model-layer-options"))
+                    .timeout(PEER_TIMEOUT * 4),
+                "/api/ui/model-layer-options",
+                &request_body,
+            )
             .await
-            .map_err(|error| {
+        {
+            Ok(request) => request.send().await.map_err(|error| {
                 format!(
                     "não foi possível ler as regras de fatiamento em {}: {error}",
                     machine.label()
                 )
-            });
+            }),
+            Err(error) => Err(format!(
+                "não foi possível assinar as regras de fatiamento em {}: {error}",
+                machine.label()
+            )),
+        };
         let response = match response {
             Ok(response) => response,
             Err(error) => {
@@ -882,11 +924,13 @@ pub(super) fn add_virtual_whole_slices(
             continue;
         }
         source.held.push(HeldShard {
+            kind: HeldKind::Shard,
             start_layer,
             end_layer,
             total_layers: Some(options.total_layers),
             name: format!("{group} L{start_layer}-{end_layer}"),
             path: whole.path.clone(),
+            mmproj_path: whole.mmproj_path.clone(),
             size_bytes,
             sha256: None,
             pom_id: None,
@@ -924,20 +968,27 @@ pub(super) async fn materialize_slices_on_peer(
         .peer_http
         .for_peer(source_node_id)
         .map_err(|error| format!("sem cliente para {}: {error}", peer.hostname))?;
-    let key = state.auth.read().await.connection_key.clone();
-    let response = client
-        .post(format!("{base}/api/ui/slice-ranges"))
-        .bearer_auth(key)
-        .timeout(Duration::from_secs(3600))
-        .json(request)
-        .send()
+    let request = state
+        .control_json_request(
+            client
+                .post(format!("{base}/api/ui/slice-ranges"))
+                .timeout(Duration::from_secs(3600)),
+            "/api/ui/slice-ranges",
+            request,
+        )
         .await
         .map_err(|error| {
             format!(
-                "não foi possível fatiar o modelo em {}: {error}",
+                "não foi possível assinar o fatiamento em {}: {error}",
                 peer.hostname
             )
         })?;
+    let response = request.send().await.map_err(|error| {
+        format!(
+            "não foi possível fatiar o modelo em {}: {error}",
+            peer.hostname
+        )
+    })?;
     let status = response.status();
     let body: serde_json::Value = response.json().await.map_err(|error| {
         format!(
@@ -982,15 +1033,21 @@ pub(super) async fn model_identity_on_peer(
         .peer_http
         .for_peer(node_id)
         .map_err(|e| format!("sem cliente para {node_id}: {e}"))?;
-    let key = state.auth.read().await.connection_key.clone();
-    let response = client
-        .post(format!("{base}/api/ui/model-identity"))
-        .bearer_auth(key)
-        .timeout(PEER_TIMEOUT)
-        .json(&crate::webui::ModelIdentityRequest {
-            path: path.to_string(),
-            hash,
-        })
+    let request_body = crate::webui::ModelIdentityRequest {
+        path: path.to_string(),
+        hash,
+    };
+    let request = state
+        .control_json_request(
+            client
+                .post(format!("{base}/api/ui/model-identity"))
+                .timeout(PEER_TIMEOUT),
+            "/api/ui/model-identity",
+            &request_body,
+        )
+        .await
+        .map_err(|e| format!("não foi possível assinar a identidade em {node_id}: {e}"))?;
+    let response = request
         .send()
         .await
         .map_err(|e| format!("não foi possível consultar a identidade em {node_id}: {e}"))?;
@@ -1131,11 +1188,21 @@ pub(super) async fn peer_node_snapshot(
         .peer_http
         .for_peer(&peer.node_id)
         .map_err(|e| format!("sem cliente para {}: {e}", peer.hostname))?;
-    let key = state.auth.read().await.connection_key.clone();
-    let response = client
-        .get(format!("{base}/api/ui/node"))
-        .bearer_auth(key)
-        .timeout(PEER_TIMEOUT)
+    let request = state
+        .control_get_request(
+            client
+                .get(format!("{base}/api/ui/node"))
+                .timeout(PEER_TIMEOUT),
+            "/api/ui/node",
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "não foi possível assinar a leitura de {}: {e}",
+                peer.hostname
+            )
+        })?;
+    let response = request
         .send()
         .await
         .map_err(|e| format!("{} não respondeu: {e}", peer.hostname))?;
@@ -1399,4 +1466,3 @@ pub(super) enum RecordPlan {
     /// anexa - ou reativa - uma versão neste registro.
     ReuseVersion(Box<crate::deployment::Deployment>),
 }
-

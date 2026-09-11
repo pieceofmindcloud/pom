@@ -23,11 +23,13 @@ import { useI18n } from "../i18n/provider";
 export function RemoveNode({
   nodeId,
   group,
+  deployId,
   range,
   existingRanges,
 }: {
   nodeId: string;
   group: string;
+  deployId?: string;
   range: [number, number];
   /** Faixas dos *outros* peers que servem este modelo. */
   existingRanges: [number, number][];
@@ -43,7 +45,7 @@ export function RemoveNode({
   async function remove() {
     setBusy(true);
     try {
-      const r = await removeNode(nodeId, group);
+      const r = await removeNode(nodeId, group, deployId);
       if (r.uncovered_layers.length > 0) {
         toast.warning(
           t("deploy.removeNodeTitle"),

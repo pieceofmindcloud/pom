@@ -1,0 +1,679 @@
+//! Canal global de conversa sobre o enxame libp2p.
+//!
+//! Os tipos e limites ficam neste módulo para que o protocolo, o gateway e a
+//! interface compartilhem a mesma fronteira. O worker do swarm é adicionado
+//! depois da validação destes contratos; nada aqui depende do túnel de
+//! inferência.
+
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use futures::prelude::*;
+use libp2p::{request_response, StreamProtocol};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
+
+pub const NETWORK_CHAT_PROTOCOL: &str = "/pom/network-chat/1.0.0";
+pub const NETWORK_CHAT_ROOM: &str = "network";
+
+#[derive(Debug, Clone, Copy)]
+pub struct NetworkChatLimits;
+
+impl NetworkChatLimits {
+    pub const FRAME_BYTES: usize = 12 * 1024 * 1024;
+    pub const TEXT_BYTES: usize = 8 * 1024;
+    pub const FILE_BYTES: usize = 8 * 1024 * 1024;
+    pub const NAME_BYTES: usize = 255;
+    pub const ROOM_BYTES: usize = 128;
+    pub const NODE_ID_BYTES: usize = 128;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChatAction {
+    Text {
+        message_id: String,
+        room_id: String,
+        sender_node_id: String,
+        recipient_node_id: Option<String>,
+        text: String,
+        sent_at: DateTime<Utc>,
+    },
+    File {
+        message_id: String,
+        room_id: String,
+        sender_node_id: String,
+        recipient_node_id: Option<String>,
+        file_name: String,
+        mime_type: String,
+        data: Vec<u8>,
+        sent_at: DateTime<Utc>,
+    },
+    Typing {
+        message_id: String,
+        room_id: String,
+        sender_node_id: String,
+        recipient_node_id: Option<String>,
+        is_typing: bool,
+        sent_at: DateTime<Utc>,
+    },
+}
+
+impl ChatAction {
+    pub fn text_message(
+        room_id: impl Into<String>,
+        sender_node_id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self::Text {
+            message_id: uuid::Uuid::new_v4().simple().to_string(),
+            room_id: room_id.into(),
+            sender_node_id: sender_node_id.into(),
+            recipient_node_id: None,
+            text: text.into(),
+            sent_at: Utc::now(),
+        }
+    }
+
+    pub fn sender_node_id(&self) -> &str {
+        match self {
+            Self::Text { sender_node_id, .. }
+            | Self::File { sender_node_id, .. }
+            | Self::Typing { sender_node_id, .. } => sender_node_id,
+        }
+    }
+
+    pub fn room_id(&self) -> &str {
+        match self {
+            Self::Text { room_id, .. }
+            | Self::File { room_id, .. }
+            | Self::Typing { room_id, .. } => room_id,
+        }
+    }
+
+    pub fn message_id(&self) -> &str {
+        match self {
+            Self::Text { message_id, .. }
+            | Self::File { message_id, .. }
+            | Self::Typing { message_id, .. } => message_id,
+        }
+    }
+
+    pub fn recipient_node_id(&self) -> Option<&str> {
+        match self {
+            Self::Text {
+                recipient_node_id, ..
+            }
+            | Self::File {
+                recipient_node_id, ..
+            }
+            | Self::Typing {
+                recipient_node_id, ..
+            } => recipient_node_id.as_deref(),
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Text { .. } => "text",
+            Self::File { .. } => "file",
+            Self::Typing { .. } => "typing",
+        }
+    }
+
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text { text, .. } => Some(text),
+            Self::File { .. } | Self::Typing { .. } => None,
+        }
+    }
+
+    pub fn is_typing(&self) -> bool {
+        matches!(
+            self,
+            Self::Typing {
+                is_typing: true,
+                ..
+            }
+        )
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.message_id().is_empty()
+            || self.message_id().len() > NetworkChatLimits::NODE_ID_BYTES
+        {
+            return Err("message_id_invalid");
+        }
+        if self.room_id().is_empty() || self.room_id().len() > NetworkChatLimits::ROOM_BYTES {
+            return Err("room_too_large");
+        }
+        if self.sender_node_id().is_empty()
+            || self.sender_node_id().len() > NetworkChatLimits::NODE_ID_BYTES
+        {
+            return Err("sender_node_id_invalid");
+        }
+        match self {
+            Self::Text { text, .. } if text.len() > NetworkChatLimits::TEXT_BYTES => {
+                Err("text_too_large")
+            }
+            Self::File { file_name, .. } if file_name.is_empty() => Err("file_name_empty"),
+            Self::File {
+                file_name, data, ..
+            } if file_name.len() > NetworkChatLimits::NAME_BYTES => Err("file_name_too_large"),
+            Self::File { data, .. } if data.len() > NetworkChatLimits::FILE_BYTES => {
+                Err("file_too_large")
+            }
+            Self::Text { .. } | Self::File { .. } | Self::Typing { .. } => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatRequest {
+    pub action: ChatAction,
+    /// Credencial do cliente. O principal valida este campo no frame original;
+    /// uma retransmissão o deixa vazio para não espalhar segredo pela rede.
+    pub api_key: String,
+    #[serde(default)]
+    pub relayed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatResponse {
+    pub accepted: bool,
+    pub error: Option<String>,
+}
+
+impl ChatResponse {
+    pub fn accepted() -> Self {
+        Self {
+            accepted: true,
+            error: None,
+        }
+    }
+
+    pub fn rejected(error: impl Into<String>) -> Self {
+        Self {
+            accepted: false,
+            error: Some(error.into()),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ChatOutbound {
+    pub request: ChatRequest,
+    pub reply: oneshot::Sender<ChatResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatEvent {
+    pub message_id: String,
+    pub room_id: String,
+    pub sender_node_id: String,
+    pub recipient_node_id: Option<String>,
+    pub kind: String,
+    pub text: Option<String>,
+    pub file_name: Option<String>,
+    pub mime_type: Option<String>,
+    pub file_data: Vec<u8>,
+    pub sent_at: String,
+}
+
+impl ChatEvent {
+    pub fn from_action(action: &ChatAction) -> Self {
+        match action {
+            ChatAction::Text {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                text,
+                sent_at,
+            } => Self {
+                message_id: message_id.clone(),
+                room_id: room_id.clone(),
+                sender_node_id: sender_node_id.clone(),
+                recipient_node_id: recipient_node_id.clone(),
+                kind: "text".into(),
+                text: Some(text.clone()),
+                file_name: None,
+                mime_type: None,
+                file_data: Vec::new(),
+                sent_at: sent_at.to_rfc3339(),
+            },
+            ChatAction::File {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                file_name,
+                mime_type,
+                data,
+                sent_at,
+            } => Self {
+                message_id: message_id.clone(),
+                room_id: room_id.clone(),
+                sender_node_id: sender_node_id.clone(),
+                recipient_node_id: recipient_node_id.clone(),
+                kind: "file".into(),
+                text: None,
+                file_name: Some(file_name.clone()),
+                mime_type: Some(mime_type.clone()),
+                file_data: data.clone(),
+                sent_at: sent_at.to_rfc3339(),
+            },
+            ChatAction::Typing {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                is_typing,
+                sent_at,
+            } => Self {
+                message_id: message_id.clone(),
+                room_id: room_id.clone(),
+                sender_node_id: sender_node_id.clone(),
+                recipient_node_id: recipient_node_id.clone(),
+                kind: if *is_typing {
+                    "typing"
+                } else {
+                    "typing_stopped"
+                }
+                .into(),
+                text: None,
+                file_name: None,
+                mime_type: None,
+                file_data: Vec::new(),
+                sent_at: sent_at.to_rfc3339(),
+            },
+        }
+    }
+}
+
+impl From<crate::db::NetworkChatMessageRecord> for ChatEvent {
+    fn from(message: crate::db::NetworkChatMessageRecord) -> Self {
+        Self {
+            message_id: message.message_id,
+            room_id: message.room_id,
+            sender_node_id: message.sender_node_id,
+            recipient_node_id: message.recipient_node_id,
+            kind: message.kind,
+            text: message.text,
+            file_name: message.file_name,
+            mime_type: message.mime_type,
+            file_data: message.file_data,
+            sent_at: message.sent_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RateWindow {
+    started: Instant,
+    count: u16,
+    typing_started: Instant,
+    typing_count: u16,
+}
+
+#[derive(Debug)]
+enum PersistCommand {
+    Action(ChatAction),
+}
+
+/// Estado do canal. O envio para o swarm é sempre `try_send`; o serviço não
+/// conhece nem compartilha a fila de frames de inferência.
+pub struct NetworkChat {
+    database: Arc<crate::db::PomDb>,
+    auth: Arc<RwLock<crate::config::Config>>,
+    outbound: mpsc::Sender<ChatOutbound>,
+    dropped: AtomicU64,
+    enabled: std::sync::atomic::AtomicBool,
+    live: broadcast::Sender<ChatEvent>,
+    writer: std::sync::mpsc::SyncSender<PersistCommand>,
+    rate: Mutex<HashMap<String, RateWindow>>,
+    typing: Mutex<HashMap<String, (ChatEvent, Instant)>>,
+}
+
+impl NetworkChat {
+    pub fn new(
+        database: Arc<crate::db::PomDb>,
+        auth: Arc<RwLock<crate::config::Config>>,
+        enabled: bool,
+    ) -> (Arc<Self>, mpsc::Receiver<ChatOutbound>) {
+        let (outbound, receiver) = mpsc::channel(32);
+        let (writer, persist_rx) = std::sync::mpsc::sync_channel(256);
+        let writer_database = database.clone();
+        std::thread::Builder::new()
+            .name("pom-network-chat-writer".into())
+            .spawn(move || {
+                while let Ok(PersistCommand::Action(action)) = persist_rx.recv() {
+                    if let Err(error) = writer_database.append_network_chat(&action) {
+                        eprintln!("network chat persistence failed: {error:#}");
+                    }
+                }
+            })
+            .ok();
+        let (live, _) = broadcast::channel(256);
+        (
+            Arc::new(Self {
+                database,
+                auth,
+                outbound,
+                dropped: AtomicU64::new(0),
+                enabled: std::sync::atomic::AtomicBool::new(enabled),
+                live,
+                writer,
+                rate: Mutex::new(HashMap::new()),
+                typing: Mutex::new(HashMap::new()),
+            }),
+            receiver,
+        )
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Release);
+    }
+
+    pub async fn node_is_blocked(&self, node_id: &str) -> bool {
+        self.auth
+            .read()
+            .await
+            .blocked_nodes
+            .iter()
+            .any(|blocked| blocked == node_id)
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<ChatEvent> {
+        self.live.subscribe()
+    }
+
+    pub fn typing_snapshot(&self) -> Vec<ChatEvent> {
+        let now = Instant::now();
+        let mut typing = self.typing.lock().expect("network chat typing lock");
+        typing.retain(|_, (_, seen)| now.duration_since(*seen) < Duration::from_secs(3));
+        typing.values().map(|(event, _)| event.clone()).collect()
+    }
+
+    pub async fn submit(&self, request: ChatRequest) -> Result<ChatResponse> {
+        let (reply, receiver) = oneshot::channel();
+        self.outbound
+            .try_send(ChatOutbound { request, reply })
+            .map_err(|_| {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                anyhow::anyhow!("fila do Chat da rede está cheia")
+            })?;
+        tokio::time::timeout(Duration::from_secs(5), receiver)
+            .await
+            .context("tempo esgotado aguardando o principal")?
+            .context("principal encerrou o envio do Chat da rede")
+    }
+
+    pub fn history(&self, room_id: &str, limit: usize) -> Result<Vec<ChatEvent>> {
+        Ok(self
+            .database
+            .network_chat_messages(room_id, limit)?
+            .into_iter()
+            .map(ChatEvent::from)
+            .collect())
+    }
+
+    /// Valida a ação original no principal. O `transport_node_id` já foi
+    /// amarrado pelo PeerId no discovery, então a API key não pode ser usada
+    /// por outro nó apenas trocando o campo JSON.
+    pub async fn validate_original(
+        &self,
+        action: &ChatAction,
+        api_key: &str,
+        transport_node_id: &str,
+    ) -> Result<()> {
+        if !self.enabled() {
+            anyhow::bail!("network_chat_disabled")
+        }
+        action.validate().map_err(|error| anyhow::anyhow!(error))?;
+        if api_key.is_empty() {
+            anyhow::bail!("api_key_missing")
+        }
+        if action.sender_node_id() != transport_node_id {
+            anyhow::bail!("sender_node_id_mismatch")
+        }
+        let key = self
+            .database
+            .api_key_for_token(api_key)?
+            .ok_or_else(|| anyhow::anyhow!("api_key_invalid"))?;
+        if !key.active || key.node_id != action.sender_node_id() {
+            anyhow::bail!("api_key_invalid")
+        }
+        let blocked = self.auth.read().await.blocked_nodes.clone();
+        let origin = if key.origin_node_id.is_empty() {
+            &key.node_id
+        } else {
+            &key.origin_node_id
+        };
+        if blocked
+            .iter()
+            .any(|node| node == origin || node == &key.node_id)
+        {
+            anyhow::bail!("node_blocked")
+        }
+        if !self.rate_allows(
+            action.sender_node_id(),
+            matches!(action, ChatAction::Typing { .. }),
+        ) {
+            anyhow::bail!("rate_limited")
+        }
+        Ok(())
+    }
+
+    pub fn accept(&self, action: ChatAction) -> Result<bool> {
+        if !self.enabled() {
+            return Ok(false);
+        }
+        action.validate().map_err(|error| anyhow::anyhow!(error))?;
+        if matches!(action, ChatAction::Typing { .. }) {
+            let event = ChatEvent::from_action(&action);
+            let mut typing = self.typing.lock().expect("network chat typing lock");
+            if action.is_typing() {
+                typing.insert(
+                    action.sender_node_id().to_string(),
+                    (event.clone(), Instant::now()),
+                );
+            } else {
+                typing.remove(action.sender_node_id());
+            }
+            let _ = self.live.send(event);
+            return Ok(true);
+        }
+        self.writer
+            .try_send(PersistCommand::Action(action.clone()))
+            .map_err(|_| {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                anyhow::anyhow!("fila de persistência do Chat da rede está cheia")
+            })?;
+        let _ = self.live.send(ChatEvent::from_action(&action));
+        Ok(true)
+    }
+
+    fn rate_allows(&self, node_id: &str, typing: bool) -> bool {
+        let now = Instant::now();
+        let mut windows = self.rate.lock().expect("network chat rate lock");
+        let window = windows.entry(node_id.to_string()).or_insert(RateWindow {
+            started: now,
+            count: 0,
+            typing_started: now,
+            typing_count: 0,
+        });
+        if now.duration_since(window.started) >= Duration::from_secs(10) {
+            window.started = now;
+            window.count = 0;
+        }
+        if now.duration_since(window.typing_started) >= Duration::from_secs(1) {
+            window.typing_started = now;
+            window.typing_count = 0;
+        }
+        if typing {
+            if window.typing_count >= 8 {
+                return false;
+            }
+            window.typing_count += 1;
+            true
+        } else {
+            if window.count >= 20 {
+                return false;
+            }
+            window.count += 1;
+            true
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NetworkChatCodec;
+
+async fn read_msg<T, R>(io: &mut R) -> std::io::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+    R: AsyncRead + Unpin + Send,
+{
+    let mut len_buf = [0_u8; 4];
+    io.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > NetworkChatLimits::FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "network chat frame exceeds the size bound",
+        ));
+    }
+    let mut data = vec![0_u8; len];
+    io.read_exact(&mut data).await?;
+    serde_json::from_slice(&data)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))
+}
+
+async fn write_msg<T, W>(io: &mut W, message: &T) -> std::io::Result<()>
+where
+    T: Serialize,
+    W: AsyncWrite + Unpin + Send,
+{
+    let data = serde_json::to_vec(message)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+    if data.len() > NetworkChatLimits::FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "network chat frame exceeds the size bound",
+        ));
+    }
+    io.write_all(&(data.len() as u32).to_be_bytes()).await?;
+    io.write_all(&data).await
+}
+
+#[async_trait]
+impl request_response::Codec for NetworkChatCodec {
+    type Protocol = StreamProtocol;
+    type Request = ChatRequest;
+    type Response = ChatResponse;
+
+    async fn read_request<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+    ) -> std::io::Result<Self::Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        read_msg(io).await
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+    ) -> std::io::Result<Self::Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        read_msg(io).await
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        request: Self::Request,
+    ) -> std::io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        write_msg(io, &request).await
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        response: Self::Response,
+    ) -> std::io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        write_msg(io, &response).await
+    }
+}
+
+pub fn network_chat_behaviour() -> request_response::Behaviour<NetworkChatCodec> {
+    request_response::Behaviour::new(
+        [(
+            StreamProtocol::new(NETWORK_CHAT_PROTOCOL),
+            request_response::ProtocolSupport::Full,
+        )],
+        request_response::Config::default().with_request_timeout(Duration::from_secs(5)),
+    )
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub struct ChatQueue {
+    sender: mpsc::Sender<ChatAction>,
+    dropped: std::sync::Arc<AtomicU64>,
+}
+
+#[cfg(test)]
+impl ChatQueue {
+    pub fn with_capacity(capacity: usize) -> (Self, mpsc::Receiver<ChatAction>) {
+        let (sender, receiver) = mpsc::channel(capacity);
+        (
+            Self {
+                sender,
+                dropped: std::sync::Arc::new(AtomicU64::new(0)),
+            },
+            receiver,
+        )
+    }
+
+    pub fn try_push(&self, action: ChatAction) -> bool {
+        match self.sender.try_send(action) {
+            Ok(()) => true,
+            Err(_) => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        }
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}

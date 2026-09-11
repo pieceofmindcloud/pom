@@ -59,23 +59,54 @@ struct TlsReply {
 ///
 /// Erro aqui é `Err`, e o chamador **mantém o valor local** - ver o parágrafo
 /// sobre fail-closed no topo do módulo.
-pub async fn fetch_from_principal(
+pub(crate) async fn fetch_from_principal(
     clients: &PeerClients,
     principal_id: &str,
     base_url: &str,
     connection_key: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+    authority_principal: &crate::admin_trust::AuthorityPrincipal,
+    trust: &crate::admin_trust::AdminTrust,
 ) -> Result<bool> {
-    let http = clients.for_peer(principal_id)?;
-    let resp = http
-        .get(format!("{base_url}{TLS_POLICY_PATH}"))
-        .bearer_auth(connection_key)
-        .timeout(crate::webui::PEER_TIMEOUT)
-        .send()
+    fetch_from_principal_candidates(
+        clients,
+        principal_id,
+        &[base_url.to_string()],
+        connection_key,
+        signing_key,
+        authority_principal,
+        trust,
+    )
+    .await
+}
+
+pub(crate) async fn fetch_from_principal_candidates(
+    clients: &PeerClients,
+    principal_id: &str,
+    base_urls: &[String],
+    connection_key: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+    authority_principal: &crate::admin_trust::AuthorityPrincipal,
+    trust: &crate::admin_trust::AdminTrust,
+) -> Result<bool> {
+    let headers = crate::gateway::GatewayState::signed_control_headers_for(
+        signing_key,
+        authority_principal.clone(),
+        trust,
+        "GET",
+        TLS_POLICY_PATH,
+        &[],
+    )?;
+    let resp = clients
+        .get_internal_from_candidates(
+            principal_id,
+            base_urls,
+            TLS_POLICY_PATH,
+            connection_key,
+            &headers,
+        )
         .await
         .context("não deu para falar com o principal")?;
-    if !resp.status().is_success() {
-        anyhow::bail!("principal respondeu {}", resp.status());
-    }
     let body: TlsReply = resp
         .json()
         .await
@@ -105,11 +136,14 @@ pub fn adopt_or_keep(local: bool, fetched: Result<bool>) -> PolicyOutcome {
 /// por canal autenticado, e só então grava. O booleano anunciado é usado
 /// **apenas** para saber por qual esquema discar a sonda - ver a nota no
 /// `handle_message` do `network.rs`.
-pub fn spawn_ratchet(
+pub(crate) fn spawn_ratchet(
     net: std::sync::Arc<crate::network::Network>,
     clients: std::sync::Arc<PeerClients>,
     auth: std::sync::Arc<tokio::sync::RwLock<crate::config::Config>>,
     tls_server: Option<crate::serve::TlsServer>,
+    signing_key: std::sync::Arc<ed25519_dalek::SigningKey>,
+    authority_principal: crate::admin_trust::AuthorityPrincipal,
+    trust: std::sync::Arc<crate::admin_trust::AdminTrust>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
     net.set_tls_probe(tx);
@@ -123,26 +157,34 @@ pub fn spawn_ratchet(
             else {
                 continue;
             };
-            let Some(porta) = peer.gateway_port else {
+            let candidates = peer.gateway_candidates_with_tls(anunciado);
+            if candidates.is_empty() {
                 warn!("principal {principal} não anuncia porta de gateway; política de TLS não pôde ser confirmada");
                 continue;
-            };
-            let base = crate::peer_client::peer_base_url(
-                &crate::network::ip_host(&peer.addr),
-                porta,
-                anunciado,
-            );
+            }
 
             let (local, chave) = {
                 let cfg = auth.read().await;
-                (cfg.tls_required, cfg.connection_key.clone())
+                (
+                    cfg.tls_required,
+                    crate::auth::internal_node_token(&cfg).unwrap_or_default(),
+                )
             };
             // A sonda precisa falar o esquema que a URL diz, e o cache local
             // ainda está na política antiga. Um cliente próprio evita empurrar
             // a política nova para o cache antes de ela ser confirmada.
             let sonda = PeerClients::new(std::time::Duration::from_secs(10));
             sonda.set_tls(anunciado);
-            let buscado = fetch_from_principal(&sonda, &principal, &base, &chave).await;
+            let buscado = fetch_from_principal_candidates(
+                &sonda,
+                &principal,
+                &candidates,
+                &chave,
+                &signing_key,
+                &authority_principal,
+                &trust,
+            )
+            .await;
 
             if let PolicyOutcome::Adopt(valor) = adopt_or_keep(local, buscado) {
                 {

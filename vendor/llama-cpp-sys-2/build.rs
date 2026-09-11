@@ -619,6 +619,17 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LLAMA_LIB_PROFILE");
     println!("cargo:rerun-if-env-changed=LLAMA_BUILD_SHARED_LIBS");
     println!("cargo:rerun-if-env-changed=LLAMA_STATIC_CRT");
+    for variable in [
+        "CMAKE_C_COMPILER_LAUNCHER",
+        "CMAKE_CXX_COMPILER_LAUNCHER",
+        "CMAKE_CUDA_COMPILER_LAUNCHER",
+        "CMAKE_Vulkan_LIBRARY",
+    ] {
+        println!("cargo:rerun-if-env-changed={variable}");
+    }
+    for variable in ["Vulkan_LIBRARY", "VULKAN_SDK"] {
+        println!("cargo:rerun-if-env-changed={variable}");
+    }
 
     debug_log!("TARGET: {}", target_triple);
     debug_log!("CARGO_MANIFEST_DIR: {}", manifest_dir);
@@ -871,7 +882,9 @@ fn main() {
     );
     config.define("LLAMA_CURL", "OFF");
 
-    // Pass CMAKE_ environment variables down to CMake
+    // Pass CMAKE_ environment variables down to CMake. The launcher variables
+    // above are declared explicitly as rerun inputs because `define` only
+    // creates CMake cache entries and does not make Cargo observe the env vars.
     for (key, value) in env::vars() {
         if key.starts_with("CMAKE_") {
             config.define(&key, &value);
@@ -1188,6 +1201,22 @@ fn main() {
                 // Resolved from the device's libvulkan.so at load time.
                 println!("cargo:rustc-link-lib=vulkan");
             }
+            TargetOs::Apple(AppleVariant::MacOS) => {
+                // CMake links the static ggml-vulkan objects, so the final Rust
+                // binary also needs the Vulkan loader. Homebrew and the Vulkan
+                // SDK expose it as libvulkan.dylib rather than a framework.
+                let search_dir = env::var_os("CMAKE_Vulkan_LIBRARY")
+                    .or_else(|| env::var_os("Vulkan_LIBRARY"))
+                    .map(PathBuf::from)
+                    .and_then(|path| path.parent().map(Path::to_path_buf))
+                    .or_else(|| {
+                        env::var_os("VULKAN_SDK").map(|sdk| PathBuf::from(sdk).join("lib"))
+                    });
+                if let Some(search_dir) = search_dir {
+                    println!("cargo:rustc-link-search=native={}", search_dir.display());
+                }
+                println!("cargo:rustc-link-lib=dylib=vulkan");
+            }
             _ => (),
         }
     }
@@ -1323,7 +1352,9 @@ fn main() {
             .include(llama_src.join("include"))
             .include(llama_src.join("ggml/include"))
             .include(llama_src.join("common"))
+            .include(llama_src.join("vendor/hash"))
             .include(llama_src.join("vendor"))
+            .file(llama_src.join("vendor/hash/hash.cpp"))
             .flag_if_supported("-std=c++17")
             .flag_if_supported("-Wno-cast-qual")
             .pic(true);
@@ -1354,6 +1385,13 @@ fn main() {
         }
 
         mtmd_build.compile("mtmd");
+
+        // hash.cpp is C++, but the bundled SHA-256 implementation must keep
+        // its C symbol name for the wrapper's extern "C" declaration.
+        cc::Build::new()
+            .include(llama_src.join("vendor/hash"))
+            .file(llama_src.join("vendor/hash/sha256/sha256.c"))
+            .compile("mtmd_sha256");
     }
 
     // Search paths

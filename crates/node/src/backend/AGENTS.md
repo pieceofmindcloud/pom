@@ -19,13 +19,22 @@ The gateway keeps the pipeline transport separate from the administrative
 surface. `/api/ui/**` and `/admin/**` plus the static UI surface pass through
 the same boundary: localhost mode checks the real peer address, network mode
 checks a server-side `HttpOnly` session minted from `X-POM-Access-Token`, and
-the `connection_key` remains a separate node-to-node credential. The client
+the `connection_key` remains the private-network transport credential. Public
+network control calls carry an Ed25519-signed `x-pom-control-signature`
+envelope whose issuer must be a current authority in the trust chain. The client
 inference routes (`/api/generate`, `/v1/models`, `/v1/chat/completions`,
 `/v1/completions` and `/v1/messages`) accept only active inference API keys.
 The gateway callbacks `/v1/relay-result` and `/v1/remote-stream-result` use
-the per-frame `Ticket` in the body and no client API key. The separate
-inference listener accepts only `connection_key` plus the internal marker and
-remains dual-stack. `/health`, `/peers` and `/handshake` remain dual-stack.
+the per-frame `Ticket` in the body and no client API key. The gateway also
+serves `/v1/link` for the persistent full-duplex return of `remote-stream`;
+its callback frame is authenticated per envelope and falls back to
+`/v1/remote-stream-result` only after an explicit transport failure. The separate
+inference listener accepts the connection key on private networks; public
+networks use TLS transport without a shared secret. A public node keeps a
+local `connection_key` for the browser/admin boundary, but it is never
+shared with peers or used for public admission. Inference frames are not
+wrapped in control signatures. `/health`, `/peers` and `/handshake` remain
+dual-stack.
 
 Before that exposure check, `gateway::require_admin_for_surface` consults the
 single `webui/routes/mod.rs` data table with the request method and the
@@ -40,6 +49,14 @@ legitimate pipeline control call; the handler still verifies the signed admin
 mutation where authority changes. Setup and the separate inference listener
 are marked out of scope in the table and are not silently treated as gateway
 routes.
+
+O gateway registra atividade por peer em `reqlog::RequestActivity` e o gateway
+de geração dispara `reload_model` em paralelo para os peers ociosos da pipeline
+planejada. O evento é uma barreira idempotente: peer pronto retorna, peer
+iniciando é aguardado e peer ocioso carrega o runtime remoto. A espera da
+rodada tem teto de 15 minutos, para uma carga fria concluir sem deixar a
+requisição pendurada indefinidamente; o descarregamento continua sendo
+avaliado pelo monitor já existente.
 
 `POST /api/ui/network/advertise-addr` é `InferNodeAdmin` porque atualiza
 somente o endereço anunciado deste processo e não recebe alvo nem repassa a
@@ -86,8 +103,12 @@ profile policy remains the effective authorization boundary.
   one cannot hide a valid one; a valid API key still supplies its non-secret
   `Caller`. Uma chave desconhecida é consultada no principal pelo canal interno
   autenticado e falha fechada em timeout ou erro. A porta de inferência não
-  usa esse fluxo: ela exige a `connection_key` compartilhada e o marcador
-  interno, enquanto os callbacks de resultado validam o `Ticket` por quadro.
+  usa a `connection_key` compartilhada somente em redes privadas; em redes
+  públicas exige transporte TLS e o marcador interno, enquanto os callbacks de
+  resultado validam o `Ticket` por quadro.
+- `/handshake` é a prova de admissão da descoberta privada. A comparação exige
+  que a chave configurada e a recebida sejam ambas não vazias; chave vazia
+  nunca transforma um processo de setup em membro do enxame.
 - `gateway/` - módulo dividido em estado/seleção, budgets e tipos de geração,
   geração, snapshots/planejamento, HTTP e testes: `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
@@ -105,9 +126,13 @@ profile policy remains the effective authorization boundary.
 - `db.rs` - único armazenamento SQLite local: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
-  conversas e linhas do log de processo por `deploy_id`. Os logs preservam a
-  ordem de chegada no principal, guardam o timestamp de origem só como dado
-  informativo e acumulam descartes da fila limitada. O histórico identifica
+  conversas e linhas do log de processo por `deploy_id`. Cada admin efetivo
+  mantém sua própria réplica dos logs e da auditoria. Os logs preservam a
+  ordem de chegada nesta réplica, guardam o timestamp de origem só como dado
+  informativo e acumulam descartes da fila limitada. `try_prune_cluster_logs`
+  apaga somente `cluster_logs`, em transações `BEGIN IMMEDIATE` de até 256
+  linhas numa conexão com timeout zero; contenda encerra a rodada e o WAL é
+  truncado depois de uma exclusão. O histórico identifica
   modelos inteiros pelo caminho local, sem
   hashear os pesos durante o registro do catálogo; hashes de conteúdo ficam
   nas fronteiras explícitas de implantação, fatiamento e transferência.
@@ -142,6 +167,13 @@ profile policy remains the effective authorization boundary.
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`). A
+  cluster view transporta `SystemLoad.gpus[].power_watts` como telemetria
+  opcional, mantendo `null` quando o sistema não expõe consumo da placa.
+  leitura `/api/ui/network/geo-reference` entrega a referência SQLite de
+  países e cidades para os selects da UI e é `InferNodeAdmin`; não cria nem
+  altera dados de rede. `GET /api/ui/deployments` é `NodeAdmin` para permitir
+  que node veja o inspetor somente leitura, enquanto mutações e ações de
+  implantação continuam sob a política administrativa existente.
   superfície de autoridade expõe o contrato de apresentação em
   `/api/ui/network/admin-authority`; pedidos infer-to-node e descida
   node-to-infer usam `/api/ui/network/request-node` e
@@ -161,13 +193,13 @@ profile policy remains the effective authorization boundary.
   cadeia colada. A validação e a conferência são as de `admin_trust`
   (`parse_transported`, `fingerprint_matches`, `adopt_anchor`), as mesmas que
   `pom admin-anchor` usa: não existe segunda política.
-  `GET /api/ui/infer/heads?model=...` é a única leitura dedicada ao perfil
-  infer: entrega apenas as candidatas de layer zero e a escolha do planejador,
-  sem peers gerais nem ações de controle. A carga de cada candidata vem do
-  próprio `/api/ui/node` e fica `null` quando o relatório não chega, para que a
-  UI mostre indisponível em vez de zero. A validade do RTT é de cinco minutos;
-  valores vencidos aparecem como diagnóstico, mas não entram na seleção da
-  geração.
+  `GET /api/ui/infer/heads?model=...` é a única leitura dedicada das cabeças
+  de layer zero: entrega as candidatas e a escolha do planejador, sem peers
+  gerais nem ações de controle. A rota é `InferNodeAdmin`, portanto admin e
+  infer podem lê-la. A carga de cada candidata vem do próprio `/api/ui/node` e
+  fica `null` quando o relatório não chega, para que a UI mostre indisponível
+  em vez de zero. A validade do RTT é de cinco minutos; valores vencidos
+  aparecem como diagnóstico, mas não entram na seleção da geração.
   `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
@@ -214,6 +246,9 @@ profile policy remains the effective authorization boundary.
   `RuntimeParams.fit_memory_margin_mb` is also persisted and controls the
   per-device safety reserve used by llama.cpp's automatic layer fit (default
   256 MiB).
+  `RuntimeParams.unload_if_idle` and `idle_minutes` are persisted with each
+  deployment; the runtime applies them independently on each peer and the
+  registry reports `idle` while a live peer has released its model.
   `/api/ui/peer/:node_id/runtime` forwards the inference `/health` unchanged,
   including `mtp_ready`, `mtp_allocation` and `mtp_unavailable_reason`, so the
   dashboard can distinguish MTP in VRAM, MTP in RAM, a model without `nextn`,
@@ -284,6 +319,28 @@ profile policy remains the effective authorization boundary.
   (`commit_active_nodes`) e publica; `job.outputs` leva o resultado por
   máquina. Tensor Parallelism ainda usa o caminho antigo
   (`run_redeploy_in_place` → `reconfigure_one`, sem unload).
+- `POST /api/ui/deploy/node/options` revarre o catálogo real do
+  `target_node_id` e devolve somente as faixas fatiadas e o GGUF inteiro
+  materializados nessa máquina, além dos defaults locais de GPU/KV. A tela não
+  usa o plano antigo como fallback quando já conhece o grupo do modelo.
+  `POST /api/ui/deploy/node` valida novamente essa
+  opção no alvo, aplica `cache_type_k`/`cache_type_v` pela API local ou remota e
+  lança somente a máquina escolhida. Quando há `deploy_id`, a operação anexa
+  uma versão de topologia e muda `kind` para `mixed` quando uma cabeça whole e
+  uma fatiada passam a coexistir. `POST /api/ui/deploy/node/remove` descarrega
+  somente o alvo e anexa uma versão com as máquinas restantes; remoção parcial
+  mantém o registro servindo, enquanto a última grava uma versão vazia e o
+  deixa fora da seleção de deployments ativos. O snapshot vazio é encaminhado
+  aos peers que já conheceram o deployment para retirar a máquina removida sem
+  tocar a inferência dos demais.
+- `gateway/generation.rs` - `log_early_outcome` garante que toda requisição
+  aceita deixe **exatamente uma** linha de desfecho. As saídas antecipadas de
+  `generate_stream_inner` (cancelamento antes do início, orçamento de prompt,
+  nenhum pipeline válido, visão sem projetor) eram mudas: o registo mostrava o
+  pedido a chegar e o ajuste do limite de saída, e depois nada - nem
+  `Pipeline planejado`, nem erro. Para o cliente isso é um pedido pendurado, e
+  foi o que pôs um agente em recuo exponencial a repetir o mesmo pedido em
+  produção a 2026-09-08.
 - `profile.rs` - `NodeProfile` is the durable product profile and the one source
   for network visibility and profile transitions. The web UI serializes it
   through `GET /api/ui/node`. Infer nodes can read a local-only network view
@@ -374,10 +431,18 @@ profile policy remains the effective authorization boundary.
   interruptor. A concatenação dos fragmentos é sempre a string que o caminho
   não-streaming produziria, e o prefixo transmitido só cresce - não existe
   desenviar um fragmento SSE.
+  O Chat pode enviar `inference_head` com um `node_id` de layer 0; o gateway
+  valida a candidata viva, fixa essa cabeça no planejador e a repete em
+  `x_pom.source`/trace, sem reescolher por RTT ou carga.
   A capacidade publicada em `/v1/models` e usada por
-  `request_output_limit_for_model` é a menor `RuntimeCapacity` entre todos os
-  peers vivos do modelo/implantação. O runtime só anuncia esse valor depois do
-  `/health` efetivo; apply, erro e unload retiram a capacidade durante restart.
+  `request_output_limit_for_model` é a menor `RuntimeCapacity` entre os peers
+  da pipeline escolhida para o modelo/implantação. Um peer ocioso nessa
+  pipeline é acordado pelo evento `reload_model` em paralelo aos demais peers
+  ociosos antes do primeiro prefill; a barreira espera `/health` por até 15
+  minutos e falha explicitamente se o peer não voltar. Um peer vivo de rota
+  alternativa não bloqueia a requisição. O runtime só
+  anuncia esse valor depois do `/health` efetivo; apply, erro e unload retiram
+  a capacidade durante restart.
 - `messages.rs` - Anthropic Messages API (`/v1/messages`), same output-limit
   and finish-reason rules, with `x_pom.output_limits` and
   `x_pom.continuation_legs` on blocking responses and the final streaming
@@ -387,7 +452,9 @@ profile policy remains the effective authorization boundary.
   lado, inclusive lendo o SSE byte a byte. Prova que a saída volta inteira, que
   a costura não aparece como `finish_reason` intermediário nem como segundo
   `[DONE]`, que a chamada de ferramenta chega com JSON completo, e que o teto
-  absoluto para um modelo em laço.
+  absoluto para um modelo em laço. A prova de fragmentação não depende de uma
+  fração fixa do relógio de parede, pois o scheduler e o agrupamento do socket
+  não fazem parte do contrato do SSE.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
 - `admin.rs` - control plane do operador: nós, bloqueio, chaves e autoridade.
@@ -401,22 +468,33 @@ profile policy remains the effective authorization boundary.
   não transformar timeout em falso replay administrativo. O testkit de admin
   sobe dois listeners TCP locais e prova promoção e recusa ponta a ponta.
 - `reqlog.rs` - persistent SQLite audit trail. `AuditLog` enqueues best-effort
-  writes on a dedicated bounded thread, executadas pelo `PomDb` compartilhado;
+  writes on a dedicated bounded thread, replica eventos `begin` e `complete`
+  aos admins efetivos por libp2p e executa as escritas no `PomDb` compartilhado;
   `AuditDb` cria o schema e o índice FTS5 somente no adaptador de teste,
   abre requests em `in_progress`, completa a mesma linha, marca registros
   antigos como `incomplete` e serve consultas autenticadas paginadas mais
-  estatísticas no servidor. Falha de enfileiramento ou gravação registra
+  estatísticas no servidor. As consultas aceitam `node_id`, identidade de API
+  key, rótulo de usuário, modelo, prompt e intervalo de entrada; o usuário é o
+  rótulo humano da API key porque a auditoria não armazena uma conta separada.
+  Falha de enfileiramento ou gravação registra
   sempre a operação e o request id. Pedidos, conversas e auditoria ficam no
   mesmo `pom.db`; permissões do banco e dos sidecars WAL/SHM são aplicadas no
-  arranque.
+  arranque. Filtros de usuário e modelo vazios são ignorados antes da consulta
+  SQL, preservando a busca ampla quando o campo não foi preenchido.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
   e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
   `peer_http.plain()`.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
-  request e serve TLS ou texto claro na mesma porta. `TlsServer` (certificado, modo estrito, duração do
-  último handshake). Ver `docs/subsystems/rede-p2p.md`, seção 5.
+  request e serve TLS ou texto claro na mesma porta TCP. O endpoint HTTP/3
+  recebe configuração QUIC separada e sobe na porta UDP dedicada anunciada,
+  mesmo quando o TCP está em HTTP puro; `TlsServer` cobre somente o certificado
+  TCP, modo estrito e duração do último handshake. Ver
+  `docs/subsystems/rede-p2p.md`, seção 5.
+- `models::OllamaClient::is_available` é apenas uma sonda opcional do
+  `/health`: tem limite próprio de 500 ms e não herda os 300 s da geração, para
+  que um Ollama frio ou ausente nunca esconda o readiness do gateway.
 - `session.rs` - `POST /handshake` usa um desafio Ed25519 em duas etapas. Uma
   requisição sem `nonce` e `signature` é recusada com HTTP 403
   `challenge_required` e recebe um nonce hexadecimal aleatório de 32 bytes. O
@@ -428,11 +506,31 @@ profile policy remains the effective authorization boundary.
 
 ## Key functions and routes
 
+### Chat da rede
+
+`GatewayState.network_chat` expõe o serviço libp2p do Chat da rede. `webui`
+serve `GET/POST /api/ui/network-chat` para a interface, persistência e ações
+com API key. `POST /api/ui/network/chat` grava no principal real; quando a
+interface está num admin secundário, a rota encaminha a mutação autenticada
+para esse principal. A rota de política entre nós é
+`GET /api/cluster/network-chat`, e o probe só trata como principal a
+`authority_pubkey` confirmada pelo `AdminTrust`, não o perfil anunciado.
+Os GETs de política (`/api/cluster/tls`, `/api/cluster/logs` e
+`/api/cluster/network-chat`) exigem `InternalNodeAuth`: `connection_key` mais
+`x-pom-internal-node: 1`; não são superfície de token humano.
+O backend não retransmite pela HTTP UI: a ação entra na fila limitada do
+`NetworkChat` e o swarm valida e encaminha por `discovery.rs`. O snapshot não
+repete bytes de arquivo em cada polling; `GET /api/ui/network-chat/file/:message_id`
+faz o download autenticado do blob persistido.
+
 - `gateway/` - `GatewayState` (network, ollama, default_model,
   local_assignment, loads, http, runtime, gateway_port, auth, transfers,
   reply_inbox); `FromRef<GatewayState> for AuthState`; `peers_visible_to_cluster`
   filters blocked nodes; `ready_for_pipeline` health-checks each peer's
-  `inference_url()/health` (10s timeout) before planning; `all_peers` appends
+  `inference_url()/health` before planning, with the `ADMISSION_PROBE_TIMEOUT`
+  of 300ms and an `AdmissionHealth` quarantine for whoever fails - a single
+  unreachable announcer used to cost every inference 2,005ms, the
+  `peer_client::CONNECT_TIMEOUT`, because `join_all` waits for the slowest; `all_peers` appends
   the local node with `self_dial_host` (advertised > local IP > loopback) and
   advertises `relay/v2-direct` in the capability list alongside
   `inference/frame-v1-batch`, `transport/link-v1`, `relay/v1-chain` and
@@ -446,7 +544,11 @@ profile policy remains the effective authorization boundary.
   `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - `n_ctx` is the
   complete window for each session; `max_sessions` multiplies the runtime KV
   reservation, and `n_batch` deliberately does NOT appear (prefill chunks the
-  prompt); `generate_stream_with_stops`
+  prompt); `prompt_budget_error_of(n_ctx, max_new_tokens, prompt)` is the pure
+  refusal shared by both admission paths, and a gateway with no local model
+  admits against the peer's announced `RuntimeCapacity` before any health probe
+  - without it a 30k-char prompt reached the peer's decode and aborted the
+  whole process on CUDA OOM (ksia, 2026-09-08), see `inferencia.md` §9; `generate_stream_with_stops`
   builds a `crate::direct::DirectReply` from `reply_inbox` +
   `self_reply_urls(self_reply_hosts(), gateway_port)` and hands `direct` to the
   prefill and decode executors, so the tail can answer this node directly
@@ -458,24 +560,33 @@ profile policy remains the effective authorization boundary.
   budget; a chunk that fails after earlier chunks were accepted is rebuilt from
   chunk 0 because the lost response makes partial KV removal unsafe, while the
   ring stays serialized by its nested response contract; the request trace
-  reports pipeline depth, prefix reuse and transport per traversal;
+  reports pipeline depth, prefix reuse and transport per traversal. It also
+  carries distributed telemetry status, peer/span coverage and bounded
+  `remote-stream` frame aggregates. The normal stream return uses the
+  persistent `/v1/link` channel; a transport failure falls back to the HTTP
+  callback and is counted with an explicit reason. A response may reach the client while
+  transport receipts remain pending; this is represented as
+  `response_complete` until the retained trace is complete, not as an
+  invented `unaccounted` duration;
   MTP on a sliced plan (`mtp_enabled` + `plan.supports_mtp()` + >= 2 hops):
-  the tail produces `next_draft` and the remote head installs it in the next
-  internal `step` metadata before continuing its owned loop. The existing
-  callback carries that draft and explicit `speculated`, `speculation_active`
-  and `speculation_disabled_reason` fields in the same frame; the gateway uses
-  the state for telemetry and does not reinject a draft in remote-stream mode.
-  The legacy direct path keeps the gateway-side store and injection. A remote
-  stream stops MTP only when `speculation_active` is false, while the legacy
-  path stops when the head refuses a sent draft or the tail returns no draft;
-  both paths continue with `prefill::step` and a named reason;
+  the remote-stream selector deliberately omits the synchronous `nextn` draft
+  because it would block every producer callback, recording
+  `remote_stream_sliced_mtp_disabled`; the legacy direct path keeps the
+  gateway-side store and injection. The callback still carries explicit
+  `speculated`, `speculation_active` and `speculation_disabled_reason` fields
+  when that path is selected. Both paths continue with `prefill::step` and a
+  named reason when speculation is unavailable;
   the gateway still chooses the pipeline replica per session. Continuous
   batching is owned by the inference process at that replica, not by a global
   gateway queue, so changing replicas mid-session would lose the local KV;
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
   /`Failed`; `GenSummary` also carries `GenerationTimings` aggregated over the
   full pipeline: TTFT, prompt-token prefill speed, output-token generation
-  speed from the first token, and end-to-end total. The historical
+  speed from the first token, and end-to-end total. The summary trace carries
+  the same `trace_id` used by the audit, local gateway spans, separate
+  optional outside-node total/accounted/unaccounted values only when an
+  explicit residual is measured, cold/warm state, connection reuse counts and
+  first-token boundaries. The historical
   `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops` collapses it. The terminal event
   (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
   (`rewind_sessions` or `release_sessions`) has finished, because a chat sends
@@ -487,22 +598,29 @@ profile policy remains the effective authorization boundary.
   reason for the request to fail. A peer that reports an unknown session also
   triggers that same single cold retry, even when the original request did not
   use prefix reuse, because a later chunk cannot be reconstructed from hidden
-  state alone. When the stream receiver closes,
-  `generate_stream_with_stops` cancels the prefill's local HTTP future and prevents the
-  next retry, hop or chunk; already accepted peer frames are cleaned up by the
-  normal session release. `start_gateway` registers
+  state alone. When the stream receiver closes, the event pump observes
+  `Sender::closed()` even though the generation keeps a sender clone for
+  end-of-turn bookkeeping, and cancels the local HTTP future before the next
+  retry, hop or chunk. The remote-stream callback propagates an asynchronous
+  `410 Gone` ACK as `GatewayGone`, so an abandoned remote producer stops too;
+  already accepted peer frames are cleaned up by the normal session release.
+  `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
-  `POST /handshake` (session::handle_handshake), `POST /v1/relay-result` and
-  `POST /v1/remote-stream-result`
+  `POST /handshake` (session::handle_handshake), `POST /v1/relay-result`,
+  `POST /v1/remote-stream-result` and `POST /v1/link`
   (`crate::direct::RELAY_RESULT_PATH`, 1 MB body limit, no client API-key auth -
-  the per-frame `Ticket` is the credential; handler `handle_relay_result`
-  delivers into `reply_inbox`); it serves with
+  the per-frame `Ticket` is the credential; the callback handlers deliver into
+  `reply_inbox`, while `/v1/link` keeps the response body streaming and checks
+  the internal node credential for each frame); it serves with
   `axum::serve(...).tcp_nodelay(true)` because Nagle delayed the small SSE
   writes. `#[cfg(test)] mod testkit` is the shared scaffold for route tests - a
   whole `GatewayState` with the peer table seeded by hand; its network socket
   is loopback-only and nothing touches the LAN: `peer(node_id, hostname, gateway_port)` builds a loopback
-  `PeerInfo`, `state_with(node_id, peers)` the state, `body_of(response)` the
-  JSON body (used by the transfer, deploy and webui tests).
+  `PeerInfo`, `state_with(node_id, peers)` the state, and
+  `state_with_secondary_admin(node_id, peers)` a state whose trust document
+  names another node as primary and carries one signed secondary grant;
+  `body_of(response)` extracts the JSON body (used by the transfer, deploy and
+  webui tests).
 - `gateway/` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
   número. `leg` é o `max_new_tokens` da implantação: o teto de **uma** geração
   de backend, escolha do operador, que a decisão do produto proíbe levantar.
@@ -553,13 +671,17 @@ profile policy remains the effective authorization boundary.
   `usage.prompt_tokens_details.cached_tokens` reports the prompt tokens the
   pipeline did not reprocess, read from the trace - the executed number, not the
   cache's choice; `approx_tokens` = chars/4; `model_ids` comes only from live
-  peer announcements (never the stale CLI default); model objects include both
+  peer announcements (never the stale CLI default), and keeps an `idle` deployment
+  selectable while its weights are unloaded; an unready non-idle peer without
+  `runtime_capacity` still hides the model until `/health` confirms it; model objects include both
   OpenAI and Anthropic discovery fields; `resolve_model` maps unknown names to
   the active model;
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;
   `chat_message_json` (flat content + `tool_calls` array),
   `apply_scan_events_openai` (tool_call deltas), `chunk_json` (+
   `x_pom` extension with source/tps/duration/partial/trace/finish_reason/stop_sequence),
+  including semantic pipeline/server/client TTFT and distributed telemetry
+  completeness when the backend provides them,
   `cors_headers` (allow `*`). Routes: `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - `messages.rs` - Anthropic `POST /v1/messages` (+ OPTIONS) and
@@ -578,7 +700,8 @@ profile policy remains the effective authorization boundary.
   `model-metadata` (POST, lê e publica somente o cabeçalho do modelo selecionado
   enquanto o restante do catálogo ainda está em background),
   `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
-  `models/delete` (POST), `cluster` (GET), `cluster/models`
+  `models/delete` (POST), `cluster` (GET), `chat/capabilities` (GET, modelo
+  ativo, visão e cobertura do Chat), `cluster/models`
   (GET), `peer/:node_id/runtime` (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
   `model-layer-options` (POST, cortes reais do GGUF) e `slice-ranges` (POST,
   materialização local de faixas escolhidas a partir de um modelo inteiro),
@@ -586,8 +709,16 @@ profile policy remains the effective authorization boundary.
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
   (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (GET autenticado),
   `network/rtt` (GET autenticado, relatório direcional deste nó),
-  `chat/telemetry` (POST autenticado, coleta os relatórios direcionais dos
-  peers selecionados para o trace e não altera o planner), `requests` (GET ->
+  `chat/telemetry` (POST autenticado, deriva transporte e RTT das pernas
+  direcionais de `pipeline_cycle` no trace da execução identificada, ou da
+  última execução concluída no Painel; sem `execution_id`, também enumera todas
+  as rotas completas do modelo ativo, consulta as sondas direcionais frescas do
+  gateway e dos peers, soma Gateway -> cabeça -> ... -> cauda -> Gateway e
+  ordena por custo agregado e `node_id`; também devolve `pipeline_cost` quando
+  a decomposição observada de rede e compute existe; os RTTs da execução
+  preferem a medida de fio (`net_rtt_median_ms`) e só recuam para o RTT de
+  execução em traces antigos),
+  `requests` (GET ->
   `crate::reqlog::list_requests`; `chat/history` (GET/POST/DELETE autenticado,
   transcriptos normalizados em `pom.db`); `requests/stats` (GET ->
   `crate::reqlog::stats_requests`). `leave_network` now takes an optional
@@ -614,13 +745,13 @@ profile policy remains the effective authorization boundary.
   seleção que ainda não tem suas faixas resolvidas; em TP ele verifica cada
   rank selecionado. Enriquecimento de outro modelo, peer silencioso ou campo
   ausente em peer antigo não bloqueia. `merge_parts`
-  (arquivo temporário com sufixo único, rename
-  at the end; reuses an already-complete output, preserves the source
+  (arquivo temporário com sufixo único, `read_layout` validado antes do rename
+  e de `finalize_run`; reuses an already-complete output, preserves the source
   `pom_id`, and invalidates the catalog),
-  `run_apply`/`run_slice`/`release_slice`, and `get_setup_key`/`save_setup`
-  which are deliberately NOT registered here - the setup mode router in
-  `main.rs` serves them only while there is no `pom.json` (they cannot be
-  authenticated and would rotate the connection key on a configured node).
+  `run_apply`/`run_slice`/`release_slice`, and the setup handlers for hardware,
+  models, trust-anchor, health and save, which are deliberately NOT registered
+  here - the setup mode router in `main.rs` serves them only while there is no
+  `pom.json`.
   Os testes que chamam `apply_cluster_policy` também seguram
   `peer_client::POLITICA_GLOBAL`, porque o esquema TLS global é compartilhado
   por toda a suíte.
@@ -684,7 +815,8 @@ profile policy remains the effective authorization boundary.
 - `deploy/` - `overlapping_layers`, `split_position`. Routes: `POST
   /api/ui/deploy/plan` (read-only, cheap), `POST /api/ui/deploy` (re-surveys
   the cluster, refuses on `plan.blocked` or empty steps), `POST
-  /api/ui/deploy/node`, `POST /api/ui/deploy/node/remove`, `POST
+  /api/ui/deploy/node/options`, `POST /api/ui/deploy/node`, `POST
+  /api/ui/deploy/node/remove`, `POST
   /api/ui/undeploy` (take a whole pipeline out of the air). The planner is a
   suggestion; the operator's `selection` in the request is authoritative.
   Rules from the architecture: pipeline order = layer order (layer 0 takes
@@ -781,6 +913,21 @@ profile policy remains the effective authorization boundary.
   a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
   `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
+  Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
+  `/api/setup/geo-reference`,
+  `/api/setup/admin-anchor/preview`, `/api/setup/admin-token`, `/api/setup/trust-anchor`,
+  `/api/setup/health` and `/api/setup/save` on its loopback-only router. Saving
+  installs the trust document, persists network details in both `pom.json` and
+  `pom.db`, and respawns. `setup_pending` keeps the router active after leaving
+  a network while preserving local hardware preferences. The setup
+  anchor preview returns a private connection key only for local/private
+  visibility; the admin access token is persisted only for network exposure.
+  `GET /api/public/network(s)` exposes public network metadata, including the
+  signed trust document and a P2P bootstrap address for the no-secret join
+  flow, and gathers live records through the existing pkarr-backed discovery
+  table. Public records carry the canonical country/city label as pkarr TXT
+  metadata; the local geo cache supports `geo_prefix` and `geo_suffix`
+  candidate filtering.
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,
@@ -789,6 +936,18 @@ profile policy remains the effective authorization boundary.
   `/api/ui/network/request-node` and `/api/ui/network/relinquish-node`.
   Internal profile mutations carry signed authority commands; a promotion
   delivers and validates the complete trust document at the target.
+- `webui/network.rs` - `GET /api/ui/network/info` entrega o bloco `network`
+  salvo no banco para todos os perfis, com `can_edit` derivado da cadeia de
+  autoridade. `POST /api/ui/network/settings` é exclusivo do administrador,
+  grava `pom.json` e SQLite, atualiza o rótulo geo do pkarr e envia a nova
+  configuração em um envelope assinado aos peers. O envelope leva a
+  `connection_key` somente como segredo de transporte de redes privadas; em uma
+  rede pública o valor local do admin não entra no envelope. A mutação remota
+  exige a assinatura da autoridade. `GET
+  /api/ui/network/trust-share` entrega ao administrador a raiz de confiança
+  para cópia ou download e, quando aplicável, a chave de conexão. `GET
+  /api/ui/network/geo-reference` entrega países e cidades da referência local
+  para os selects da tela, sem expor uma mutação de banco.
 - `devupdate.rs` - `ENV_GATE=POM_DEV_UPDATE`, `ENV_FEATURES=
   POM_BUILD_FEATURES`; `enabled()` = env `== "1"`; `gate_rejection` 403
   when closed. Routes `POST /api/ui/dev/update` (preflight: refuses non-main
@@ -800,13 +959,14 @@ profile policy remains the effective authorization boundary.
   restarting - `runtime.rs` owns that lifecycle (apply writes `Pending`, the
   `/health` watcher promotes to `Serving`); a `devupdate` write could only
   lie.
-- `auth.rs` - `ConnectionAuth` reads only `authorization` (Bearer prefix
-  optional), compares to `connection_key`; `InternalNodeAuth` adds the private
-  marker used by admin synchronization. `ApiKeyAuth` accepts `authorization`
-  or `x-api-key`, but only for an active API key, and `api_key_identity`
-  supplies the stable non-secret id used by the audit trail. `internal_node_token`
-  chooses the shared `connection_key` for internal inference calls; client API
-  keys never cross that boundary.
+- `auth.rs` - `ConnectionAuth` accepts the private connection key or a signed
+  control envelope; `InternalNodeAuth` verifies envelope metadata and resolves
+  its issuer against the local authority or a live peer. The gateway middleware
+  hashes the actual body before a mutating handler runs. `ApiKeyAuth` accepts
+  `authorization` or `x-api-key`, but only for an active API key, and
+  `api_key_identity` supplies the stable non-secret id used by the audit trail.
+  `internal_node_token` remains the private-network credential for inference
+  transport; client API keys never cross that boundary.
   `AuthRejection`: MissingHeader=401, InvalidKey=403.
 - `reqlog.rs` - `AuditLog::begin` records the exact prompt, request body,
   resolved model, entry node, API-key identity and arrival time before
@@ -872,10 +1032,25 @@ profile policy remains the effective authorization boundary.
   `peer_without_sliced_mtp_wire` when a peer lacks the MTP wire capability.
   `routing_contract` capability types.
 - Who calls it: `crate::main` (`start_gateway` spawns the router, `warm_catalog`
-  runs at startup, setup mode mounts only `webui::get_setup_key`/`save_setup`);
+  runs at startup, setup mode mounts only the dedicated `/api/setup/*` handlers);
   the frontend bundle in `apps/frontend/dist` hits `/api/ui/*`; harnesses hit
   `/v1/*` (OpenAI/Anthropic) and `POST /api/generate`; peers call each other's
   gateway HTTP for transfers, deploy forwarding, and cancel notices.
+
+### Visão na implantação e no chat
+
+`deploy::Plan.mmproj_path` vem do catálogo do modelo inteiro ou do
+`ShardSet.mmproj_path` da rodada fatiada. `DeployRequest.vision` só habilita o
+projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
+`webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
+`openai` extrai imagens base64 dos pedidos multimodais. A recusa de imagem sem
+projetor e a mensagem para o usuário precisam permanecer alinhadas.
+O Chat consulta `GET /api/ui/chat/capabilities`, uma rota comum que agrega o
+modelo ativo, a cobertura e o `mmproj_path` da cabeça da implantação sem expor
+topologia ao perfil `infer`. A resposta usa `supported`, `unsupported` ou
+`unavailable` para visão e cobertura completa, incompleta ou indisponível;
+recusa de autorização nunca é convertida em vazio. Visão é propriedade do
+modelo servido, não privilégio do perfil.
 
 ## Maintaining this file
 

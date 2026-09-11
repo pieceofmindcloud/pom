@@ -3,24 +3,26 @@ import { motion } from "framer-motion";
 import {
   LayoutGrid,
   MemoryStick,
+  PanelRightClose,
   Plus,
   Route as RouteIcon,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { LayerRibbon, PipelineRail } from "../components/PipelineRail";
 import { PeerDetailCard } from "../components/PeerDetailCard";
+import { DeploymentInspector } from "../components/DeploymentInspector";
+import { DeploymentLogDock } from "../components/DeploymentLogDock";
 import { UndeployPipeline } from "../components/UndeployPipeline";
 import { AddNodeDialog } from "../components/AddNodeDialog";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
 import { Button, Empty, ErrorState, Footnote, Panel, Skeleton } from "../components/ui";
-import { api } from "../lib/api";
 import { canSeePeerDetails } from "../lib/access";
 import { isServing, layerRange, num, pct, since } from "../lib/format";
 import { networkPeers } from "../lib/networkPeers";
-import { useCluster, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
+import { useCluster, useDeployments, useInvalidate, useNetworkRtt, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
-import type { DeployPlan, PeerView } from "../lib/types";
+import type { PeerView } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 type View = "minima" | "estendida";
@@ -83,9 +85,9 @@ function ClusterStat({
     iris: "text-iris",
   }[tone];
   return (
-    <div className="min-w-0 px-5 py-4">
-      <div className="eyebrow mb-1.5">{label}</div>
-      <div className={clsx("font-display text-xl font-bold tracking-tight", color)}>
+    <div className="min-w-0 px-3 py-2">
+      <div className="eyebrow mb-1">{label}</div>
+      <div className={clsx("font-display text-lg font-bold tracking-tight", color)}>
         {value}
       </div>
       {detail && <div className="mt-0.5 truncate text-xs text-muted">{detail}</div>}
@@ -133,11 +135,10 @@ export function Dashboard() {
   const [view, setView] = useState<View>("minima");
   const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  // As fatias oferecidas vêm do plano do próprio nó, não de um palpite da
-  // tela: é ele quem sabe o que existe em disco em cada máquina.
-  const [addSlices, setAddSlices] = useState<{ start_layer: number; end_layer: number; label: string }[]>([]);
+  const [showProperties, setShowProperties] = useState(true);
   const cluster = useCluster();
   const node = useNode();
+  const deployments = useDeployments();
   const invalidateAll = useInvalidate();
   const { profile } = useProfile();
   const isAdmin = profile === "admin";
@@ -153,6 +154,23 @@ export function Dashboard() {
     ? networkPeers(c)
     : { pipeline: [] as PeerView[], others: [] as PeerView[] };
   const group = c?.active_model ?? "";
+  const modelDeployments = deployments.data?.deployments.filter(
+    (row) => row.deployment.model.label === group,
+  ) ?? [];
+  // A principal may have old and current copies of the same model in its
+  // local history. The API marks the current one explicitly; taking the first
+  // row made the properties toggle depend on deploy_id ordering and could
+  // leave `activeVersion` empty for an otherwise valid deployment.
+  const activeDeployment = modelDeployments.find((row) => row.is_default && row.serving)?.deployment
+    ?? modelDeployments.find((row) => row.serving)?.deployment
+    ?? modelDeployments.find((row) => row.is_default)?.deployment
+    ?? modelDeployments[0]?.deployment;
+  const activeVersion = activeDeployment?.versions.find(
+    (version) => version.version === activeDeployment.active_version,
+  ) ?? activeDeployment?.versions.at(-1);
+  const activeDeployId =
+    activeDeployment?.deploy_id
+    ?? peers.find((peer) => peer.node?.config?.deploy_id)?.node?.config?.deploy_id;
   const rttNodeIds = useMemo(() => {
     if (!c) return [];
     return Array.from(new Set(
@@ -160,28 +178,8 @@ export function Dashboard() {
         .flatMap((edge) => [edge.from_node_id, edge.to_node_id]),
     )).sort();
   }, [c]);
-  const networkRtt = useNetworkRtt(rttNodeIds, c != null);
+  const networkRtt = useNetworkRtt(rttNodeIds, c != null && Boolean(c.active_model));
 
-  useEffect(() => {
-    if (!adding || !group) return;
-    let live = true;
-    void api
-      .post<DeployPlan>("/api/ui/deploy/plan", { group })
-      .then((plan) => {
-        if (!live) return;
-        setAddSlices(
-          plan.steps.map((step) => ({
-            start_layer: step.start_layer,
-            end_layer: step.end_layer,
-            label: layerRange(step.start_layer, step.end_layer),
-          })),
-        );
-      })
-      .catch(() => setAddSlices([]));
-    return () => {
-      live = false;
-    };
-  }, [adding, group]);
   const serving = peers.filter((p) => isServing(p.node?.status.state)).length;
   const inFlightKnown = peers.every((p) => p.load != null);
   const inFlight = inFlightKnown ? peers.reduce((sum, p) => sum + (p.load ?? 0), 0) : null;
@@ -236,12 +234,14 @@ export function Dashboard() {
   const localModelDetail = localNode == null
     ? t("dashboard.localDataUnavailable")
     : localModel
-      ? isServing(localNode.status.state) ? t("dashboard.localServing") : t("dashboard.notServing")
+      ? localNode.status.state === "idle"
+        ? t("dashboard.localIdle")
+        : isServing(localNode.status.state) ? t("dashboard.localServing") : t("dashboard.notServing")
       : t("dashboard.localNoSliceDetail");
   const localLoad = localNode && typeof localNode.load === "number" ? localNode.load : null;
 
   return <div className="flex h-full min-h-0 flex-col bg-ink">
-    <div className="relative z-30 flex shrink-0 flex-wrap items-stretch justify-between gap-2 border-b border-line bg-surface/95 px-3 py-2 shadow-panel backdrop-blur-md">
+    <div data-testid="dashboard-toolbar" className="relative z-30 flex shrink-0 flex-wrap items-stretch justify-between gap-2 border-b border-line bg-surface/95 px-3 py-1 shadow-panel backdrop-blur-md">
       <div className="grid min-w-0 flex-1 grid-cols-2 divide-x divide-y divide-line rounded-lg border border-line bg-raised/75 sm:flex sm:divide-y-0">
         {isAdmin ? (
           <>
@@ -280,7 +280,11 @@ export function Dashboard() {
                 soma uma máquina à pipeline, a outra desfaz a pipeline inteira. Só
                 aparece quando há uma no ar - um botão que só sabe recusar é ruído. */}
             {undeployTargets.length > 0 && (
-              <UndeployPipeline group={group} targets={undeployTargets} />
+              <UndeployPipeline
+                group={group}
+                deployId={activeDeployId}
+                targets={undeployTargets}
+              />
             )}
           </>
         )}
@@ -288,10 +292,12 @@ export function Dashboard() {
       </div>
     </div>
 
-    {!detailed || view === "minima" ? (
-      <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} /></div>
-    ) : (
-      <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+    <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {!detailed || view === "minima" ? (
+          <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} rttMeasurements={networkRtt.data?.measurements} pipelineCost={networkRtt.data?.pipeline_cost ? { legsMs: networkRtt.data.pipeline_cost.legs_ms, computeMs: networkRtt.data.pipeline_cost.compute_ms } : undefined} pipelineRoutes={networkRtt.data?.pipeline_routes?.map((route) => ({ nodeIds: route.node_ids, legsMs: route.legs_ms, computeMs: null, rttMs: route.rtt_ms }))} propertiesOpen={showProperties} onToggleProperties={activeVersion ? () => setShowProperties((value) => !value) : undefined} /></div>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {c.peers.length === 0 ? (
           <Panel><Empty icon={<MemoryStick className="h-5 w-5" />} title={t("dashboard.noMachines")}>{t("dashboard.noMachinesDetail")}</Empty></Panel>
         ) : (
@@ -326,19 +332,25 @@ export function Dashboard() {
           </div>
         )}
         <Footnote icon={<Zap className="h-3.5 w-3.5" />} className="mt-5">{t("dashboard.sampled", { time: since(node.data?.system.sampled_at) })}</Footnote>
-      </div>
-    )}
+          </div>
+        )}
 
-    {/* Keep the former execution-order rail available for a later surface; the
-        graph above is now the primary operational view. */}
-    <div className="hidden" aria-hidden="true"><LayerRibbon cluster={c} /><PipelineRail cluster={c} selected={selected} onSelect={setSelected} /></div>
+        {/* Keep the former execution-order rail available for a later surface; the
+            graph above is now the primary operational view. */}
+        <div className="hidden" aria-hidden="true"><LayerRibbon cluster={c} /><PipelineRail cluster={c} selected={selected} onSelect={setSelected} /></div>
+        {isAdmin && <DeploymentLogDock />}
+      </div>
+
+      {activeVersion && showProperties && <aside className="hidden min-h-0 w-[21rem] shrink-0 overflow-y-auto border-l border-line bg-surface/80 lg:block" aria-label={t("dashboard.versionProperties")}><div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-3 py-2"><div className="min-w-0"><p className="eyebrow">{t("dashboard.versionProperties")}</p><p className="truncate font-mono text-[0.68rem] text-muted">v{activeVersion.version} · {activeDeployment?.deploy_id.slice(0, 8)}</p></div><button type="button" aria-label={t("dashboard.hideProperties")} onClick={() => setShowProperties(false)} className="rounded p-1 text-muted hover:text-fg"><PanelRightClose className="h-3.5 w-3.5" /></button></div><DeploymentInspector value={activeVersion.params} readOnly showInferenceMode showHiddenStateDtype={activeVersion.params.hidden_state_dtype != null} /></aside>}
+    </div>
 
     {isAdmin && (
       <AddNodeDialog
         open={adding}
         group={group}
+        deployId={activeDeployId}
         peers={c.peers.map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
-        slices={addSlices}
+        slices={[]}
         existingRanges={peers.map((p) => [p.start_layer, p.end_layer] as [number, number])}
         onClose={() => setAdding(false)}
         onDone={() => invalidateAll()}

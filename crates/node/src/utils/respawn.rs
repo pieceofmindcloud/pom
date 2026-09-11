@@ -8,6 +8,9 @@
 //! que preserva `POM_CONFIG` e `POM_NODE_KEY` de cada nó de uma
 //! máquina com vários.
 
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 static ARGV: OnceLock<Vec<String>> = OnceLock::new();
@@ -37,16 +40,58 @@ pub fn respawn_self() -> std::io::Error {
         Ok(p) => p,
         Err(e) => return e,
     };
-    match std::process::Command::new(exe)
+
+    let log_path = crate::config::project_root().join("pom.log");
+    let mut log = match OpenOptions::new().create(true).append(true).open(&log_path) {
+        Ok(file) => file,
+        Err(error) => return error,
+    };
+    if let Err(error) = writeln!(
+        log,
+        "\n--- respawn solicitado pelo processo {} ---",
+        std::process::id()
+    ) {
+        return error;
+    }
+    let stderr = match log.try_clone() {
+        Ok(file) => file,
+        Err(error) => return error,
+    };
+
+    let mut command = Command::new(exe);
+    command
         .args(original_argv())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr));
+    detach_from_parent_session(&mut command);
+
+    match command.spawn() {
         Ok(_) => std::process::exit(0),
         Err(e) => e,
     }
 }
+
+/// O wizard é salvo a partir de um processo que pode estar ligado a um
+/// terminal ou supervisor. O filho precisa sobreviver ao encerramento desse
+/// grupo, e os descritores precisam ir para um arquivo que permita diagnosticar
+/// falhas logo no arranque.
+#[cfg(unix)]
+fn detach_from_parent_session(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn detach_from_parent_session(_command: &mut Command) {}
 
 #[cfg(test)]
 mod tests {

@@ -1,7 +1,7 @@
 /**
  * Peers de mentira com a forma inteira que o nó serve.
  *
- * Um objeto parcial passa pelo `?.` de um componente e explode no seguinte —
+ * Um objeto parcial passa pelo `?.` de um componente e explode no seguinte -
  * `node` sem `status`, por exemplo, derruba o canvas na chave de layout. Aqui
  * o padrão é completo e o teste sobrescreve só o campo de que fala.
  *
@@ -37,6 +37,7 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     short_id: "a",
     hostname: "salem",
     profile: "node",
+    network_name: "",
     connection_key: "",
     authority_level: null,
     authority_fingerprint: null,
@@ -68,8 +69,12 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     effective_address: "10.0.0.1:42777",
     tls_required: false,
     tls_authority: false,
+    quic_enabled: false,
+    quic_authority: false,
     cluster_logs_enabled: false,
     cluster_logs_authority: false,
+    network_chat_enabled: false,
+    network_chat_authority: false,
     ...over,
   };
 }

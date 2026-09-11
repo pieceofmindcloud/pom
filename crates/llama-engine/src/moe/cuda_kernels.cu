@@ -656,6 +656,46 @@ __device__ float k_dot_q4_k(
     return result;
 }
 
+__device__ float k_dot_q5_k(
+    const uint8_t *matrix,
+    int row,
+    int columns,
+    const float *input
+) {
+    constexpr int block_bytes = 176;
+    const int row_bytes = (columns / 256) * block_bytes;
+    const uint8_t *encoded = matrix + row * row_bytes;
+    float result = 0.0f;
+    for (int block = 0; block < columns / 256; ++block) {
+        const uint8_t *packed = encoded + block * block_bytes;
+        const float d = k_f16(k_u16(packed));
+        const float minimum = k_f16(k_u16(packed + 2));
+        const uint8_t *scales = packed + 4;
+        const uint8_t *high = packed + 16;
+        const uint8_t *quants = packed + 48;
+        for (int chunk = 0; chunk < 4; ++chunk) {
+            const uint8_t *values = quants + chunk * 32;
+            const uint32_t scale_index = static_cast<uint32_t>(chunk * 2);
+            const float scale0 = d * k_q4_scale(scale_index, scales, false);
+            const float scale1 = d * k_q4_scale(scale_index + 1, scales, false);
+            const float min0 = minimum * k_q4_scale(scale_index, scales, true);
+            const float min1 = minimum * k_q4_scale(scale_index + 1, scales, true);
+            const uint8_t mask_low = static_cast<uint8_t>(1u << (chunk * 2));
+            const uint8_t mask_high = static_cast<uint8_t>(2u << (chunk * 2));
+            const int input_base = block * 256 + chunk * 64;
+            for (int lane = 0; lane < 32; ++lane) {
+                const float low_bits = static_cast<float>(values[lane] & 0x0f) +
+                    ((high[lane] & mask_low) != 0 ? 16.0f : 0.0f);
+                const float high_bits = static_cast<float>(values[lane] >> 4) +
+                    ((high[lane] & mask_high) != 0 ? 16.0f : 0.0f);
+                result += input[input_base + lane] * (scale0 * low_bits - min0);
+                result += input[input_base + lane + 32] * (scale1 * high_bits - min1);
+            }
+        }
+    }
+    return result;
+}
+
 __device__ float k_dot_q6_k(
     const uint8_t *matrix,
     int row,
@@ -828,6 +868,36 @@ __device__ float k_value_q4_k(
     return scale * static_cast<float>(quantized) - min;
 }
 
+__device__ float k_value_q5_k(
+    const uint8_t *matrix,
+    int row,
+    int column,
+    int columns
+) {
+    constexpr int block_bytes = 176;
+    const int block = column / 256;
+    const int offset = column % 256;
+    const int chunk = offset / 64;
+    const int within_chunk = offset % 64;
+    const int lane = within_chunk % 32;
+    const bool high_nibble = within_chunk >= 32;
+    const int scale_index = chunk * 2 + (high_nibble ? 1 : 0);
+    const int row_bytes = (columns / 256) * block_bytes;
+    const uint8_t *packed = matrix + row * row_bytes + block * block_bytes;
+    const float d = k_f16(k_u16(packed));
+    const float minimum = k_f16(k_u16(packed + 2));
+    const uint8_t *scales = packed + 4;
+    const uint8_t *high = packed + 16;
+    const uint8_t *values = packed + 48 + chunk * 32;
+    const float scale = d * k_q4_scale(scale_index, scales, false);
+    const float min = minimum * k_q4_scale(scale_index, scales, true);
+    const uint8_t mask = static_cast<uint8_t>((high_nibble ? 2u : 1u) << (chunk * 2));
+    const float quantized =
+        static_cast<float>(high_nibble ? values[lane] >> 4 : values[lane] & 0x0f) +
+        ((high[lane] & mask) != 0 ? 16.0f : 0.0f);
+    return scale * quantized - min;
+}
+
 __device__ float k_value(
     uint32_t dtype,
     const uint8_t *matrix,
@@ -838,6 +908,7 @@ __device__ float k_value(
     if (dtype == 10) return k_value_q2_k(matrix, row, column, columns);
     if (dtype == 11) return k_value_q3_k(matrix, row, column, columns);
     if (dtype == 12) return k_value_q4_k(matrix, row, column, columns);
+    if (dtype == 13) return k_value_q5_k(matrix, row, column, columns);
     return k_value_q6_k(matrix, row, column, columns);
 }
 
@@ -854,8 +925,11 @@ __device__ float k_dot(
     if (dtype == 11) {
         return k_dot_q3_k(matrix, row, columns, input);
     }
-    return dtype == 12
-        ? k_dot_q4_k(matrix, row, columns, input)
+    if (dtype == 12) {
+        return k_dot_q4_k(matrix, row, columns, input);
+    }
+    return dtype == 13
+        ? k_dot_q5_k(matrix, row, columns, input)
         : k_dot_q6_k(matrix, row, columns, input);
 }
 
@@ -866,13 +940,14 @@ bool kquant_payload_geometry(
     std::size_t *gate_up_bytes,
     std::size_t *total_bytes
 ) {
-    if ((dtype != 10 && dtype != 11 && dtype != 12 && dtype != 14) ||
+    if ((dtype != 10 && dtype != 11 && dtype != 12 && dtype != 13 && dtype != 14) ||
         hidden_width == 0 || intermediate_width == 0 ||
         hidden_width % 256 != 0 || intermediate_width % 256 != 0 ||
         gate_up_bytes == nullptr || total_bytes == nullptr) {
         return false;
     }
-    const std::size_t block_bytes = dtype == 10 ? 84 : dtype == 11 ? 110 : dtype == 12 ? 144 : 210;
+    const std::size_t block_bytes = dtype == 10 ? 84 : dtype == 11 ? 110 :
+        dtype == 12 ? 144 : dtype == 13 ? 176 : 210;
     const std::size_t hidden_blocks = hidden_width / 256;
     const std::size_t intermediate_blocks = intermediate_width / 256;
     if (hidden_blocks > std::numeric_limits<std::size_t>::max() / block_bytes ||
@@ -1049,6 +1124,36 @@ __device__ float iq_dot(
     return result;
 }
 
+__device__ float q4_0_value(const uint8_t *encoded, int column) {
+    constexpr int block_elements = 32;
+    constexpr int block_bytes = 18;
+    const uint8_t *block = encoded + (column / block_elements) * block_bytes;
+    const int within = column % block_elements;
+    const uint8_t packed = block[2 + (within % 16)];
+    const uint8_t nibble = within < 16 ? packed & 0x0f : packed >> 4;
+    const float scale = __half2float(__ushort_as_half(
+        static_cast<uint16_t>(block[0]) |
+        (static_cast<uint16_t>(block[1]) << 8)));
+    return scale * (static_cast<float>(nibble) - 8.0f);
+}
+
+__device__ float q4_0_dot(
+    const uint8_t *matrix,
+    int row,
+    int columns,
+    const float *input
+) {
+    constexpr int block_elements = 32;
+    constexpr int block_bytes = 18;
+    const int row_bytes = (columns / block_elements) * block_bytes;
+    const uint8_t *encoded = matrix + row * row_bytes;
+    float result = 0.0f;
+    for (int index = 0; index < columns; ++index) {
+        result += q4_0_value(encoded, index) * input[index];
+    }
+    return result;
+}
+
 __device__ float heterogeneous_quant_dot(
     const CudaHeterogeneousTensor &tensor,
     int row,
@@ -1057,7 +1162,11 @@ __device__ float heterogeneous_quant_dot(
     float scale,
     float input_scale
 ) {
-    if (tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 || tensor.dtype == 14) {
+    if (tensor.dtype == 2) {
+        return q4_0_dot(tensor.data, row, columns, input) * scale * input_scale;
+    }
+    if (tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 ||
+        tensor.dtype == 13 || tensor.dtype == 14) {
         return k_dot(tensor.dtype, tensor.data, row, columns, input) * scale * input_scale;
     }
     if (tensor.dtype == 39) {
@@ -1368,13 +1477,18 @@ __device__ float heterogeneous_quant_partial_dot(
     float scale,
     float input_scale
 ) {
-    if (tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 || tensor.dtype == 14 ||
+    if (tensor.dtype == 2 || tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 ||
+        tensor.dtype == 13 || tensor.dtype == 14 ||
         tensor.dtype == 18 || tensor.dtype == 21 || tensor.dtype == 22 ||
         tensor.dtype == 23 || tensor.dtype == 39) {
         float value = 0.0f;
         for (int column = threadIdx.x; column < tensor.columns; column += blockDim.x) {
             float weight;
-            if (tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 || tensor.dtype == 14) {
+            if (tensor.dtype == 2) {
+                const std::size_t row_bytes = (tensor.columns / 32) * 18;
+                weight = q4_0_value(tensor.data + row * row_bytes, column);
+            } else if (tensor.dtype == 10 || tensor.dtype == 11 || tensor.dtype == 12 ||
+                       tensor.dtype == 13 || tensor.dtype == 14) {
                 weight = k_value(tensor.dtype, tensor.data, row, column, tensor.columns);
             } else if (tensor.dtype == 39) {
                 const std::size_t row_bytes = (tensor.columns / 32) * 17;
@@ -1981,7 +2095,7 @@ extern "C" int pom_moe_kquant_forward_route_batch_resident(
         timing->kernel_launches = 4;
         timing->sync_count = 1;
     }
-    if ((dtype != 10 && dtype != 11 && dtype != 12 && dtype != 14) ||
+    if ((dtype != 10 && dtype != 11 && dtype != 12 && dtype != 13 && dtype != 14) ||
         payloads == nullptr || payload_lengths == nullptr ||
         token_ids == nullptr || weights == nullptr || token_offsets == nullptr ||
         hidden == nullptr || output == nullptr || payload_count == 0 || token_count == 0 ||
@@ -2665,8 +2779,7 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
     if (experts == nullptr || token_ids == nullptr || weights == nullptr ||
         token_offsets == nullptr || hidden == nullptr || output == nullptr ||
         expert_count == 0 || token_count == 0 || hidden_width == 0 ||
-        intermediate_width == 0 || hidden_width % 256 != 0 ||
-        intermediate_width % 256 != 0 || token_offsets_len != token_count + 1 ||
+        intermediate_width == 0 || token_offsets_len != token_count + 1 ||
         hidden_len != token_count * hidden_width || output_len != hidden_len ||
         token_offsets[0] != 0 || token_offsets[token_count] != expert_count ||
         (activation != 1 && activation != 2)) {
@@ -2674,15 +2787,18 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
     }
 
     const auto valid_dtype = [](uint32_t dtype) {
-        return dtype == 10 || dtype == 11 || dtype == 12 || dtype == 14 || dtype == 18 || dtype == 21 ||
+        return dtype == 2 || dtype == 10 || dtype == 11 || dtype == 12 || dtype == 13 || dtype == 14 || dtype == 18 || dtype == 21 ||
             dtype == 22 || dtype == 23 || dtype == 39;
     };
     const auto row_bytes = [&](uint32_t dtype, std::size_t columns) -> std::size_t {
+        if (dtype == 2) {
+            return (columns / 32) * 18;
+        }
         if (dtype == 39) {
             return (columns / 32) * 17;
         }
         const std::size_t block_bytes = dtype == 10 ? 84 : dtype == 11 ? 110 :
-            dtype == 12 ? 144 : dtype == 14 ? 210 : dtype == 18 ? 98 :
+            dtype == 12 ? 144 : dtype == 13 ? 176 : dtype == 14 ? 210 : dtype == 18 ? 98 :
             dtype == 21 ? 110 : dtype == 22 ? 82 : 136;
         return (columns / 256) * block_bytes;
     };
@@ -2691,7 +2807,8 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
                                   std::size_t columns) {
         if (tensor.data == nullptr || !valid_dtype(tensor.dtype) ||
             tensor.rows != rows || tensor.columns != columns ||
-            columns == 0 || columns % 256 != 0 ||
+            columns == 0 ||
+            ((tensor.dtype == 2 || tensor.dtype == 39) ? columns % 32 != 0 : columns % 256 != 0) ||
             !std::isfinite(tensor.scale) || !std::isfinite(tensor.input_scale) ||
             !std::isfinite(tensor.secondary_scale) ||
             !std::isfinite(tensor.secondary_input_scale)) {
@@ -3899,7 +4016,7 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         timing->sync_count = 1;
     }
     if (pipeline == nullptr ||
-        (dtype != 10 && dtype != 11 && dtype != 12 && dtype != 14) ||
+        (dtype != 10 && dtype != 11 && dtype != 12 && dtype != 13 && dtype != 14) ||
         payloads == nullptr || payload_lengths == nullptr || token_ids == nullptr ||
         weights == nullptr || token_offsets == nullptr || hidden == nullptr ||
         output == nullptr || payload_count == 0 || token_count == 0 ||
@@ -3998,7 +4115,7 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         result = cuda_status(cudaEventRecord(start));
         if (result != 0) goto finish;
     }
-    if (dtype == 10 || dtype == 11 || dtype == 12 || dtype == 14) {
+    if (dtype == 10 || dtype == 11 || dtype == 12 || dtype == 13 || dtype == 14) {
         kquant_gate_up_cooperative_route_kernel<<<
             2 * intermediate_i * pair_count, block_size>>>(
                 dtype, pipeline->d_payloads, pipeline->d_token_ids, pair_count,
@@ -4016,7 +4133,7 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         block_size>>>(pipeline->d_gate_up, pair_count, intermediate_i, pipeline->d_activated);
     result = cuda_status(cudaGetLastError());
     if (result != 0) goto finish;
-    if (dtype == 10 || dtype == 11 || dtype == 12 || dtype == 14) {
+    if (dtype == 10 || dtype == 11 || dtype == 12 || dtype == 13 || dtype == 14) {
         kquant_down_cooperative_route_kernel<<<hidden_i * pair_count, block_size>>>(
             dtype, pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
             expected_gate_up_bytes, pipeline->d_activated, pipeline->d_pair_output);

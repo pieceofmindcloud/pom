@@ -144,7 +144,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(ticket.recv().await.unwrap()["accepted"][0]["token_id"], 1234);
+        assert_eq!(
+            ticket.recv().await.unwrap()["accepted"][0]["token_id"],
+            1234
+        );
     }
 
     #[tokio::test]
@@ -312,14 +315,8 @@ mod tests {
             auth.admin_exposure = crate::config::AdminExposure::Network;
         }
         let app = Router::new()
-            .route(
-                "/api/ui/deployments",
-                get(|| async { StatusCode::OK }),
-            )
-            .route(
-                "/api/ui/stop-inference",
-                get(|| async { StatusCode::OK }),
-            )
+            .route("/api/ui/deployments", get(|| async { StatusCode::OK }))
+            .route("/api/ui/stop-inference", get(|| async { StatusCode::OK }))
             .with_state(state.clone())
             .layer(middleware::from_fn_with_state(
                 state,
@@ -349,11 +346,93 @@ mod tests {
                 .extensions_mut()
                 .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
             assert_eq!(
-                app.clone().oneshot(internal_request).await.unwrap().status(),
+                app.clone()
+                    .oneshot(internal_request)
+                    .await
+                    .unwrap()
+                    .status(),
                 StatusCode::OK,
                 "authenticated node request must reach {path}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn policy_gets_accept_peer_auth_and_reject_bare_connection_key() {
+        let state = testkit::state_with("principal", vec![]).await;
+        state.network.set_cluster_logs_enabled(true);
+        state.network.set_network_chat_enabled(true);
+        let app = Router::new()
+            .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
+            .route(
+                crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
+                get(cluster_logs_policy),
+            )
+            .route(
+                crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH,
+                get(network_chat_policy),
+            )
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_for_surface,
+            ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(2));
+        let base = format!("http://{address}");
+        assert!(!crate::tls_policy::fetch_from_principal_candidates(
+            &clients,
+            "principal",
+            std::slice::from_ref(&base),
+            "chave",
+            state.authority_signing_key.as_ref(),
+            &state.authority_principal,
+            state.admin_trust.as_ref(),
+        )
+        .await
+        .unwrap());
+        assert!(crate::cluster_logs_policy::fetch_from_principal_candidates(
+            &clients,
+            "principal",
+            std::slice::from_ref(&base),
+            "chave",
+            state.authority_signing_key.as_ref(),
+            &state.authority_principal,
+            state.admin_trust.as_ref(),
+        )
+        .await
+        .unwrap());
+        assert!(crate::network_chat_policy::fetch_from_principal_candidates(
+            &clients,
+            "principal",
+            std::slice::from_ref(&base),
+            "chave",
+            state.authority_signing_key.as_ref(),
+            &state.authority_principal,
+            state.admin_trust.as_ref(),
+        )
+        .await
+        .unwrap());
+
+        for path in [
+            crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH,
+            crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH,
+        ] {
+            let bare = clients
+                .plain()
+                .get(format!("{base}{path}"))
+                .bearer_auth("chave")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(bare.status(), StatusCode::FORBIDDEN, "path={path}");
+        }
+        server.abort();
     }
 
     #[tokio::test]
@@ -486,6 +565,7 @@ mod tests {
     /// anúncio já carrega o endereço novo.
     #[tokio::test]
     async fn an_infer_node_can_save_its_own_address_and_announce_it_next() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
         let state = testkit::state_with("infer-node", vec![]).await;
         {
             let mut auth = state.auth.write().await;
@@ -639,7 +719,10 @@ mod tests {
                 .await
                 .unwrap();
             let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["error"], "só um administrador tira outra máquina da rede");
+            assert_eq!(
+                body["error"],
+                "só um administrador tira outra máquina da rede"
+            );
         }
     }
 
@@ -672,7 +755,10 @@ mod tests {
         let response = app.clone().oneshot(without).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
-            response.headers().get(crate::auth::ADMIN_ERROR_HEADER).unwrap(),
+            response
+                .headers()
+                .get(crate::auth::ADMIN_ERROR_HEADER)
+                .unwrap(),
             crate::auth::ADMIN_ERROR_MISSING_TOKEN
         );
 
@@ -686,7 +772,10 @@ mod tests {
         let response = app.oneshot(wrong).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
-            response.headers().get(crate::auth::ADMIN_ERROR_HEADER).unwrap(),
+            response
+                .headers()
+                .get(crate::auth::ADMIN_ERROR_HEADER)
+                .unwrap(),
             crate::auth::ADMIN_ERROR_INVALID_TOKEN
         );
     }
@@ -1303,6 +1392,66 @@ mod tests {
     }
 
     #[test]
+    fn prompt_over_capacity_is_rejected_without_local_runtime_config() {
+        let prompt = "a".repeat(30_289);
+        let error = prompt_budget_error_of(7_000, 200, &prompt)
+            .expect("um prompt acima da capacidade do peer precisa ser recusado");
+
+        assert!(error.contains("Prompt grande demais"));
+        assert!(error.contains("~10097"));
+        assert!(error.contains("limite de 6800"));
+        assert!(error.contains("Aumente n_ctx"));
+    }
+
+    /// Reprodução do defeito de 2026-09-08 na ksia, ponta a ponta: um gateway
+    /// **sem modelo local** recebe um prompt de 30 mil caracteres para um
+    /// modelo que só o peer serve. Antes, a admissão só existia quando havia
+    /// config local, o prompt seguia para o prefill e o decode do peer abortava
+    /// o processo inteiro em `ggml-cuda.cu` com `CUDA error: out of memory`.
+    /// Agora a capacidade anunciada pelo peer recusa antes de qualquer peso ser
+    /// tocado, e o nó continua de pé.
+    #[tokio::test]
+    async fn gateway_sem_modelo_local_recusa_prompt_acima_da_capacidade_do_peer() {
+        let mut peer = testkit::peer("peer-gpu", "ksia", 39_991);
+        peer.model = "ornith".into();
+        peer.inference_port = Some(39_992);
+        peer.total_layers = 32;
+        peer.end_layer = 31;
+        let state = testkit::state_with("gateway", vec![peer]).await;
+        assert!(
+            state.runtime.config().await.is_none(),
+            "este gateway não pode ter modelo local, senão o teste cobre o caminho antigo"
+        );
+
+        let error = crate::gateway::generate_blocking_with_stops(
+            "/api/generate",
+            crate::reqlog::Caller::operator(),
+            crate::gateway::GenerationInput {
+                state,
+                inference_token: "test-api-key".into(),
+                model: "ornith".into(),
+                prompt: "a".repeat(30_289),
+                images: Vec::new(),
+                chat_template: false,
+                budget: crate::gateway::OutputBudget::single(200),
+                stops: Vec::new(),
+                cache_key: None,
+                preferred_head: None,
+                request_details: serde_json::json!({}),
+                trace_id: None,
+            },
+        )
+        .await
+        .expect_err("um prompt acima da capacidade do peer precisa ser recusado");
+
+        assert!(
+            error.contains("Prompt grande demais"),
+            "a recusa precisa ser a mensagem acionável, e não uma falha de transporte: {error}"
+        );
+        assert!(error.contains("Aumente n_ctx"), "{error}");
+    }
+
+    #[test]
     fn rate_is_zero_for_an_instant_generation() {
         assert_eq!(rate(10, 0.0), 0.0);
         assert!((rate(10, 2.0) - 5.0).abs() < 1e-9);
@@ -1321,6 +1470,15 @@ mod tests {
         assert_eq!(timings.generation_tokens_per_sec, Some(25.0));
         assert_eq!(timings.total_ms, 2_000);
         assert_eq!(timings.total_tokens_per_sec, 10.0);
+    }
+
+    #[test]
+    fn timing_metrics_reserves_independent_server_engine_and_client_ttft() {
+        let timings = timing_metrics(2_000, 1_200, 1_000, 500, 20);
+
+        assert_eq!(timings.server_ttft_ms, None);
+        assert_eq!(timings.engine_ttft_ms, None);
+        assert_eq!(timings.client_ttft_ms, None);
     }
 
     #[test]
@@ -1458,13 +1616,16 @@ mod budget_tests {
         assert!(limit
             .rejection_reason()
             .unwrap()
-            .contains("todos os peers vivos"));
+            .contains("todos os peers da pipeline planejada"));
     }
 
     #[tokio::test]
     async fn a_live_peer_without_capacity_blocks_model_specific_requests() {
         let mut peer = crate::gateway::testkit::peer("n1", "n1", 8080);
         peer.model = "qwen".into();
+        peer.inference_port = Some(8181);
+        peer.end_layer = 31;
+        peer.total_layers = 32;
         peer.runtime_capacity = None;
         let state = crate::gateway::testkit::state_with("self", vec![peer]).await;
 
@@ -1477,7 +1638,68 @@ mod budget_tests {
         assert!(limit
             .rejection_reason()
             .unwrap()
-            .contains("confirmada por todos"));
+            .contains("pipeline planejada"));
+    }
+
+    #[tokio::test]
+    async fn capacity_gate_ignores_an_unplanned_peer_without_capacity() {
+        let mut ready = crate::gateway::testkit::peer("a-ready", "ready", 8080);
+        ready.model = "qwen".into();
+        ready.inference_port = Some(8182);
+        ready.start_layer = 0;
+        ready.end_layer = 31;
+        ready.total_layers = 32;
+        ready.runtime_capacity = Some(RuntimeCapacity {
+            n_ctx: 8_192,
+            max_new_tokens: 256,
+        });
+
+        let mut alternative = crate::gateway::testkit::peer("z-alternative", "alternative", 8081);
+        alternative.model = "qwen".into();
+        alternative.inference_port = Some(8183);
+        alternative.start_layer = 0;
+        alternative.end_layer = 31;
+        alternative.total_layers = 32;
+        alternative.runtime_capacity = None;
+
+        let state = crate::gateway::testkit::state_with("self", vec![ready, alternative]).await;
+        let (_, pending) = state.runtime_capacity_for_model(Some("qwen")).await;
+
+        assert!(
+            !pending,
+            "a route not selected by the planner cannot block the request"
+        );
+    }
+
+    #[tokio::test]
+    async fn capacity_gate_does_not_block_an_idle_peer_selected_by_the_pipeline() {
+        let mut head = crate::gateway::testkit::peer("head", "head", 8080);
+        head.model = "qwen".into();
+        head.inference_port = Some(8184);
+        head.start_layer = 0;
+        head.end_layer = 15;
+        head.total_layers = 32;
+        head.runtime_capacity = Some(RuntimeCapacity {
+            n_ctx: 8_192,
+            max_new_tokens: 256,
+        });
+
+        let mut tail = crate::gateway::testkit::peer("tail", "tail", 8081);
+        tail.model = "qwen".into();
+        tail.inference_port = Some(8185);
+        tail.start_layer = 16;
+        tail.end_layer = 31;
+        tail.total_layers = 32;
+        tail.idle = true;
+        tail.runtime_capacity = None;
+
+        let state = crate::gateway::testkit::state_with("self", vec![head, tail]).await;
+        let (_, pending) = state.runtime_capacity_for_model(Some("qwen")).await;
+
+        assert!(
+            !pending,
+            "idle planned peers are woken by generation before inference"
+        );
     }
 
     /// O laço tem que ficar dentro do orçamento total mesmo quando a perna não
@@ -1536,6 +1758,7 @@ mod budget_tests {
         NodeConfig {
             deploy_id: String::new(),
             model_path: String::new(),
+            mmproj_path: None,
             model_label: String::new(),
             deployment_name: String::new(),
             start_layer: 0,
@@ -1583,6 +1806,8 @@ mod budget_tests {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
             tp: None,
             speculative_k: 4,
             speculative_lookup_window: 3,
@@ -1652,6 +1877,7 @@ mod remote_stream_selection_tests {
                 node_id: node_id.into(),
                 inference_url: "http://127.0.0.1:8181".into(),
                 inference_candidates: Vec::new(),
+                quic_addr_candidates: Vec::new(),
                 start_layer: 0,
                 end_layer: 31,
                 exec_start: 0,
@@ -1695,6 +1921,7 @@ mod remote_stream_selection_tests {
             node_id: "remote-tail".into(),
             inference_url: "http://127.0.0.1:8182".into(),
             inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
             start_layer: 32,
             end_layer: 63,
             exec_start: 32,
@@ -1707,7 +1934,7 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn stream_de_dois_hops_inicia_mtp_na_cabeca_remota() {
+    fn stream_remoto_de_dois_hops_desliga_mtp_sincrono_por_ciclo() {
         let mut multi = plan(
             "remote-head",
             [
@@ -1723,6 +1950,7 @@ mod remote_stream_selection_tests {
             node_id: "remote-tail".into(),
             inference_url: "http://127.0.0.1:8182".into(),
             inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
             start_layer: 32,
             end_layer: 63,
             exec_start: 32,
@@ -1735,17 +1963,101 @@ mod remote_stream_selection_tests {
         let speculate = remote_stream_speculation(
             &multi,
             true,
-            true,
+            false,
             4,
             3,
             4,
             crate::prefill::DraftSource::Lookup,
-        )
-        .expect("MTP fatiado deve entrar no stream remoto");
+        );
+        assert!(speculate.is_none());
+    }
 
+    #[test]
+    fn stream_remoto_desliga_mtp_fatiado_mas_preserva_o_caminho_legado() {
+        assert!(disable_sliced_mtp_for_remote_stream(true, true));
+        assert!(!disable_sliced_mtp_for_remote_stream(false, true));
+        assert!(!disable_sliced_mtp_for_remote_stream(true, false));
+
+        let legacy = remote_stream_speculation(
+            &multi_plan_with_mtp(),
+            true,
+            true,
+            4,
+            3,
+            4,
+            crate::prefill::DraftSource::Mtp,
+        )
+        .expect("o caminho legado deve continuar elegível a MTP");
+        assert_eq!(legacy.source, crate::infer_server::DraftSource::Mtp);
+        assert_eq!(legacy.k, 4);
+    }
+
+    fn multi_plan_with_mtp() -> PipelinePlan {
+        let mut multi = plan(
+            "remote-head",
+            [
+                vec![crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into()],
+                mtp_capabilities(),
+            ]
+            .concat(),
+        );
+        multi.steps[0]
+            .inference_frame_capabilities
+            .extend(mtp_capabilities());
+        multi.steps.push(crate::pipeline::PipelineStep {
+            node_id: "remote-tail".into(),
+            inference_url: "http://127.0.0.1:8182".into(),
+            inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
+            start_layer: 32,
+            end_layer: 63,
+            exec_start: 32,
+            exec_end: 63,
+            inference_frame_capabilities: mtp_capabilities(),
+            libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
+        });
+        multi
+    }
+
+    #[test]
+    fn remote_stream_mtp_fatiado_e_omitido_por_cadencia_explicita() {
+        let multi = multi_plan_with_mtp();
+        let disabled = disable_sliced_mtp_for_remote_stream(true, true);
+        assert!(disabled);
+        assert!(remote_stream_speculation(
+            &multi,
+            true,
+            !disabled,
+            4,
+            3,
+            4,
+            crate::prefill::DraftSource::Mtp,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn remote_stream_de_um_hop_preserva_mtp_do_modelo_inteiro() {
+        let single = plan("remote-head", mtp_capabilities());
+        let speculate = remote_stream_speculation(
+            &single,
+            true,
+            true,
+            4,
+            3,
+            4,
+            crate::prefill::DraftSource::Mtp,
+        )
+        .expect("MTP do modelo inteiro não depende de draft fatiado");
         assert_eq!(speculate.source, crate::infer_server::DraftSource::Mtp);
-        assert_eq!(speculate.k, 4);
-        assert!(speculate.draft.is_none());
+    }
+
+    #[test]
+    fn gateway_sem_runtime_local_usa_capacidade_mtp_remota() {
+        assert!(mtp_enabled_for_plan(None, true));
+        assert!(!mtp_enabled_for_plan(None, false));
+        assert!(!mtp_enabled_for_plan(Some(false), true));
     }
 
     #[test]
@@ -1758,6 +2070,7 @@ mod remote_stream_selection_tests {
             speculated: false,
             speculation_active: true,
             speculation_disabled_reason: None,
+            speculation_disabled_detail: None,
             next_draft: Some(vec![5, 6]),
             trace: crate::prefill::RequestTrace::new("qwen", &[("remote-head", 0, 31)]),
         };
@@ -1782,6 +2095,7 @@ mod remote_stream_selection_tests {
             node_id: "remote-tail".into(),
             inference_url: "http://127.0.0.1:8182".into(),
             inference_candidates: Vec::new(),
+            quic_addr_candidates: Vec::new(),
             start_layer: 32,
             end_layer: 63,
             exec_start: 32,
@@ -1819,6 +2133,7 @@ mod peer_visibility_tests {
             node_id: id.into(),
             pubkey: String::new(),
             authority_pubkey: String::new(),
+            cluster_id: None,
             addr: "127.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -1829,8 +2144,10 @@ mod peer_visibility_tests {
             last_seen: chrono::Utc::now(),
             ollama_port: None,
             inference_port: Some(8181),
+            inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(8090),
+            gateway_quic_port: None,
             profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
             capabilities: Vec::new(),
@@ -1841,6 +2158,7 @@ mod peer_visibility_tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         }
     }
 
@@ -1874,15 +2192,37 @@ mod peer_visibility_tests {
         let mut stalled = peer("stalled");
         stalled.inference_port = Some(stalled_port);
 
+        let health = super::AdmissionHealth::default();
+        let clientes = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
         let reachable = ready_for_pipeline(
-            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
-            vec![healthy, stalled],
+            &clientes,
+            &health,
+            vec![healthy.clone(), stalled.clone()],
             Duration::from_millis(25),
         )
         .await;
 
         assert_eq!(reachable.len(), 1);
         assert_eq!(reachable[0].node_id, "healthy");
+
+        // A defesa tem que continuar de pé na requisição seguinte: o peer que
+        // reprovou fica fora, agora sem custar sequer a sonda.
+        let inicio = std::time::Instant::now();
+        let reachable = ready_for_pipeline(
+            &clientes,
+            &health,
+            vec![healthy, stalled],
+            Duration::from_millis(25),
+        )
+        .await;
+        let em_quarentena = inicio.elapsed();
+
+        assert_eq!(reachable.len(), 1);
+        assert_eq!(reachable[0].node_id, "healthy");
+        assert!(
+            em_quarentena < Duration::from_millis(25),
+            "peer em quarentena voltou a ser sondado: {em_quarentena:?}"
+        );
     }
 
     #[tokio::test]
@@ -1908,6 +2248,105 @@ mod peer_visibility_tests {
     }
 }
 
+#[cfg(test)]
+mod replicated_admin_logs_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn secondary_lista_replicas_locais_sem_principal() {
+        let state = testkit::secondary_admin_state("secondary").await;
+        assert!(state.network.peers.read().await.is_empty());
+
+        assert!(state.cluster_logs.try_ingest_remote(crate::cluster_logs::LogBatch {
+            source_node_id: "worker".into(),
+            entries: vec![crate::cluster_logs::LogEntry {
+                node_id: "worker".into(),
+                node_name: "worker-1".into(),
+                deploy_id: "deploy-1".into(),
+                origin_at: "2026-09-11T12:00:00Z".into(),
+                level: "INFO".into(),
+                target: "worker::test".into(),
+                message: "processo iniciou".into(),
+            }],
+            dropped: 0,
+        }));
+
+        let request = crate::reqlog::AuditRequest {
+            id: "request-1".into(),
+            received_at: "2026-09-11T12:00:00Z".into(),
+            route: "/v1/chat/completions".into(),
+            model: "model".into(),
+            caller: crate::reqlog::Caller::operator(),
+            entry_node_id: "worker".into(),
+            prompt: "hello".into(),
+            request_details: serde_json::json!({"stream": false}),
+        };
+        let completion = crate::reqlog::AuditCompletion {
+            completed_at: "2026-09-11T12:00:01Z".into(),
+            result: Some("world".into()),
+            telemetry: None,
+            timings: None,
+            source: "distributed".into(),
+            hops: vec!["worker".into()],
+            prompt_tokens: Some(1),
+            completion_tokens: Some(1),
+            duration_ms: Some(1000),
+            status: crate::reqlog::AuditStatus::Ok,
+            error: None,
+        };
+        assert!(state.audit.try_ingest_remote(crate::reqlog::AuditEvent::Complete {
+            id: request.id.clone(),
+            completion,
+        }));
+        assert!(state
+            .audit
+            .try_ingest_remote(crate::reqlog::AuditEvent::Begin(request)));
+
+        state.cluster_logs.flush();
+        state.audit.flush();
+        let logs = state
+            .cluster_logs
+            .list(Some("deploy-1"), Some(10))
+            .await
+            .expect("logs locais");
+        let requests = state
+            .audit
+            .list(crate::reqlog::AuditQuery::default())
+            .await
+            .expect("auditoria local");
+
+        assert_eq!(logs.entries.len(), 1);
+        assert_eq!(logs.entries[0].message, "processo iniciou");
+        assert_eq!(requests.entries.len(), 1);
+        assert_eq!(requests.entries[0].id, "request-1");
+        assert_eq!(requests.entries[0].status, "ok");
+    }
+
+    #[tokio::test]
+    async fn secondary_admin_can_open_both_log_surfaces() {
+        let state = testkit::secondary_admin_state("secondary").await;
+        let app = Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(
+                state,
+                require_admin_for_surface,
+            ));
+        for path in ["/api/ui/cluster-logs", "/api/ui/requests"] {
+            let mut request = Request::get(path)
+                .header("authorization", "Bearer chave")
+                .body(axum::body::Body::empty())
+                .expect("requisição de teste");
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "rota={path}");
+        }
+    }
+}
+
 /// Um nó de verdade, montado à mão, para os testes que exercitam rotas.
 ///
 /// Existe porque três módulos precisavam do mesmo andaime — `transfer`,
@@ -1923,12 +2362,18 @@ pub(crate) mod testkit {
 
     /// Um peer alcançável no `gateway_port` dado, na loopback.
     pub(crate) fn peer(node_id: &str, hostname: &str, gateway_port: u16) -> PeerInfo {
+        let authority_pubkey = hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                .verifying_key()
+                .as_bytes(),
+        );
         PeerInfo {
             deploy_id: String::new(),
             tls: false,
             node_id: node_id.into(),
             pubkey: "pk".into(),
-            authority_pubkey: String::new(),
+            authority_pubkey,
+            cluster_id: None,
             addr: format!("127.0.0.1:{gateway_port}"),
             addr_candidates: Vec::new(),
             model: String::new(),
@@ -1939,8 +2384,10 @@ pub(crate) mod testkit {
             last_seen: chrono::Utc::now(),
             ollama_port: None,
             inference_port: None,
+            inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(gateway_port),
+            gateway_quic_port: None,
             profile: crate::profile::NodeProfile::Node,
             hostname: hostname.into(),
             capabilities: Vec::new(),
@@ -1948,18 +2395,69 @@ pub(crate) mod testkit {
             disk_total_mb: 0,
             disk_free_mb: 0,
             api_keys_active: 0,
-            libp2p_peer_id: None,
+            libp2p_peer_id: Some("peer-eu".into()),
             tp: None,
             runtime_capacity: Some(RuntimeCapacity {
                 n_ctx: 8_192,
                 max_new_tokens: 256,
             }),
+            idle: false,
         }
     }
 
     /// Este nó, com `peers` já na tabela.
     pub(crate) async fn state_with(node_id: &str, peers: Vec<PeerInfo>) -> GatewayState {
         state_named(node_id, "", peers).await
+    }
+
+    /// Um estado cujo nó local é admin secundário de uma cadeia real de teste.
+    /// A âncora pertence a outro nó e a concessão local é assinada pelo
+    /// principal antes de ser aplicada, então mudar apenas `profile` não pode
+    /// transformar este estado em principal.
+    pub(crate) async fn state_with_secondary_admin(
+        node_id: &str,
+        peers: Vec<PeerInfo>,
+    ) -> GatewayState {
+        let mut state = state_with(node_id, peers).await;
+        let primary_signing_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "primary",
+            "peer-primary",
+            &primary_signing_key,
+        );
+        let secondary = state.authority_principal.clone();
+        let admin_trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "test-cluster",
+            primary.clone(),
+            &primary_signing_key,
+        )
+        .expect("concessão raiz de teste");
+        let grant = admin_trust
+            .signed_secondary_grant(&primary_signing_key, secondary.clone(), &primary.node_id)
+            .expect("concessão secundária de teste");
+        admin_trust
+            .apply_secondary_grant(grant, &secondary, crate::profile::NodeProfile::Node)
+            .expect("aplicação da concessão secundária de teste");
+
+        *state
+            .network
+            .authority_pubkey
+            .write()
+            .expect("chave de autoridade do testkit") = secondary.pubkey.clone();
+        state
+            .network
+            .set_profile(crate::profile::NodeProfile::Admin);
+        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
+        state.admin_trust = Arc::new(admin_trust);
+        state.cluster_logs.set_admin_receiver(true);
+        state.audit.set_admin_receiver(true);
+        state
+    }
+
+    /// Um admin secundário com uma cadeia de confiança válida, usado para
+    /// provar que as leituras dependem da réplica local e não do principal.
+    pub(crate) async fn secondary_admin_state(node_id: &str) -> GatewayState {
+        state_with_secondary_admin(node_id, vec![]).await
     }
 
     /// O mesmo, com um **nome anunciado** — o que `node_name` do `pom.json`
@@ -2005,6 +2503,43 @@ pub(crate) mod testkit {
             &authority_signing_key,
         )
         .expect("concessão raiz de teste");
+        let auth = Arc::new(RwLock::new(Config {
+            gpus: None,
+            thermal: Default::default(),
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
+            profile: crate::profile::NodeProfile::Node,
+            setup_pending: false,
+            tls_required: false,
+            quic_enabled: false,
+            cluster_logs_enabled: false,
+            network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
+            node_name: None,
+            huggingface_token: None,
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
+            connection_key: "chave".into(),
+            gateway_port: 8080,
+            admin_exposure: Default::default(),
+            admin_access_token: None,
+            p2p_port: 42777,
+            inference_port: None,
+            bootstrap_nodes: vec![],
+            advertise_addr: None,
+            api_keys: vec![],
+            blocked_nodes: vec![],
+            model_dirs: None,
+            shard_dir: None,
+            shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+            network: Default::default(),
+            resources: Default::default(),
+            setup_model: None,
+        }));
+        let (network_chat, _) =
+            crate::network_chat::NetworkChat::new(database.clone(), auth.clone(), false);
         GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new("http://127.0.0.1:1")),
@@ -2016,39 +2551,13 @@ pub(crate) mod testkit {
             peer_http: Arc::new(crate::peer_client::PeerClients::new(
                 std::time::Duration::from_secs(600),
             )),
+            admission_health: Default::default(),
             runtime: NodeRuntime::new(net, assignment),
             cycle_config: crate::cycle::CycleConfig::default(),
             audit: crate::reqlog::AuditLog::new(database.clone()),
             database,
             gateway_port: 8080,
-            auth: Arc::new(RwLock::new(Config {
-                gpus: None,
-                thermal: Default::default(),
-                cache_type_k: crate::config::KvCacheType::F16,
-                cache_type_v: crate::config::KvCacheType::F16,
-                profile: crate::profile::NodeProfile::Node,
-                tls_required: false,
-                cluster_logs_enabled: false,
-                node_name: None,
-                huggingface_token: None,
-                slot_save_path: None,
-                slot_persist_prefix_cache: false,
-                slot_auto_max_bytes: None,
-                slot_auto_ttl_secs: None,
-                connection_key: "chave".into(),
-                gateway_port: 8080,
-                admin_exposure: Default::default(),
-                admin_access_token: None,
-                p2p_port: 42777,
-                inference_port: None,
-                bootstrap_nodes: vec![],
-                advertise_addr: None,
-                api_keys: vec![],
-                blocked_nodes: vec![],
-                model_dirs: None,
-                shard_dir: None,
-                shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
-            })),
+            auth,
             admin_trust: Arc::new(admin_trust),
             authority_signing_key: Arc::new(authority_signing_key),
             authority_principal,
@@ -2057,11 +2566,15 @@ pub(crate) mod testkit {
             reply_inbox: crate::direct::ReplyInbox::new(),
             tunnel_tx: None,
             tls_server: None,
+            quic_server: None,
+            quic_port: None,
             cluster_logs,
+            network_chat,
             cluster_cache: Arc::new(Mutex::new(Default::default())),
             model_service: Arc::new(crate::model_provider_backend::ModelService::new(Arc::new(
                 crate::huggingface::HuggingFaceProvider::new(),
             ))),
+            pkarr_publisher: None,
         }
     }
 
@@ -2071,6 +2584,7 @@ pub(crate) mod testkit {
         crate::runtime::NodeConfig {
             deploy_id: String::new(),
             model_path: String::new(),
+            mmproj_path: None,
             model_label: "lab".into(),
             deployment_name: "lab".into(),
             start_layer: 0,
@@ -2118,6 +2632,8 @@ pub(crate) mod testkit {
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
             mtp_cpu_fallback_enabled: true,
+            unload_if_idle: false,
+            idle_minutes: 60,
             tp: None,
             speculative_k: 4,
             speculative_lookup_window: 3,

@@ -1,5 +1,41 @@
 use super::*;
 
+#[derive(Debug)]
+pub struct MultimodalDecode {
+    /// Number of physical token/embedding cells written to the KV cache.
+    pub n_tokens: usize,
+    /// Logical position immediately after the multimodal chunks.
+    pub n_past: u32,
+    /// One `[t, y, x, z]` tuple for every physical cell when the model uses
+    /// M-RoPE. The llama.cpp embedding batch stores these as four contiguous
+    /// sections, which the hidden-state path reconstructs below.
+    pub mrope_positions: Option<Vec<[u32; 4]>>,
+    pub timings: DecodeTimings,
+}
+
+fn write_mrope_position(
+    storage: &mut [sys::llama_pos],
+    total_tokens: usize,
+    row: usize,
+    position: [u32; 4],
+) -> Result<()> {
+    if storage.len() != total_tokens.saturating_mul(4) || row >= total_tokens {
+        bail!("buffer de posições M-RoPE inconsistente");
+    }
+    let position = position
+        .map(|coordinate| {
+            sys::llama_pos::try_from(coordinate)
+                .map_err(|_| anyhow::anyhow!("posição M-RoPE excede o limite do llama.cpp"))
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+    storage[row] = position[0];
+    storage[total_tokens + row] = position[1];
+    storage[2 * total_tokens + row] = position[2];
+    storage[3 * total_tokens + row] = position[3];
+    Ok(())
+}
+
 impl LlmEngine {
     /// Escolhe o modelo que pode respaldar o contexto MTP.
     ///
@@ -364,6 +400,7 @@ impl LlmEngine {
             buf: None,
             expected_tokens: 0,
             max_microbatch_tokens: effective_n_ubatch(cfg) as usize,
+            allow_physical_chunks: false,
             n_embd,
             expected_floats: None,
             layout: None,
@@ -371,7 +408,12 @@ impl LlmEngine {
             last_shape: None,
             last_strides: None,
             last_nbytes: None,
+            capture_requested_at: None,
+            ready_wait_us: 0,
             copy_us: 0,
+            postprocess_us: 0,
+            copy_bytes: 0,
+            copy_calls: 0,
         }));
         let capture_ok = if cfg.need_embeddings {
             // Target tensor: l_out-<last_layer_index> of this slice.
@@ -480,6 +522,16 @@ impl LlmEngine {
             (None, None, None)
         };
         let mtp_allocation = mtp.as_ref().map(|drafter| drafter.allocation());
+        let vision = match cfg.mmproj_path.as_deref() {
+            Some(path) => match VisionContext::load(path, model, cfg) {
+                Ok(vision) => Some(vision),
+                Err(error) => {
+                    unsafe { sys::llama_free(ctx) };
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
 
         Ok(LlmEngine {
             loaded,
@@ -498,6 +550,7 @@ impl LlmEngine {
             effective_n_ubatch: effective_n_ubatch(cfg),
             cparams_snapshot,
             moe_external_executor: cfg.moe_external_executor,
+            vision,
             mtp,
             mtp_unavailable_reason,
             mtp_initial_context_error,
@@ -564,6 +617,11 @@ impl LlmEngine {
         unsafe { sys::llama_n_batch(self.ctx) }
     }
 
+    /// O projector foi carregado neste contexto e pode receber imagens.
+    pub fn vision_enabled(&self) -> bool {
+        self.vision.is_some()
+    }
+
     pub fn offload_kqv(&self) -> bool {
         // The setting is immutable for this context and carried in the engine
         // configuration only during construction. Keep a copy visible through
@@ -582,6 +640,212 @@ impl LlmEngine {
     /// Quantos blocos esta fatia carregou.
     pub fn n_layer(&self) -> u32 {
         unsafe { sys::llama_model_n_layer(self.loaded.model) as u32 }
+    }
+
+    /// Tokeniza texto e imagens pelo projector e avalia todos os chunks no
+    /// mesmo cache KV. O retorno preserva a contagem de células físicas e a
+    /// posição lógica efetiva, que pode divergir em modelos M-RoPE. Quando a
+    /// entrada usa M-RoPE, também devolve uma posição de quatro eixos para
+    /// cada célula física, para que o POM possa encaminhar o estado oculto sem
+    /// reduzir as duas contagens a uma só.
+    pub fn decode_multimodal(
+        &mut self,
+        prompt: &str,
+        images: &[Vec<u8>],
+        n_past: u32,
+        seq_id: u32,
+        logits_last: bool,
+    ) -> Result<MultimodalDecode> {
+        self.ensure_moe_executor_ready()?;
+        let vision_ctx = self
+            .vision
+            .as_ref()
+            .map(|vision| vision.ctx)
+            .ok_or_else(|| anyhow::anyhow!("este modelo não tem visão"))?;
+        let prompt =
+            CString::new(prompt).map_err(|_| anyhow::anyhow!("o prompt multimodal contém NUL"))?;
+        let mut bitmaps = Vec::with_capacity(images.len());
+        for image in images {
+            let wrapper = unsafe {
+                sys::mtmd_helper_bitmap_init_from_buf(
+                    vision_ctx,
+                    image.as_ptr(),
+                    image.len(),
+                    false,
+                )
+            };
+            if wrapper.bitmap.is_null() {
+                bail!("não foi possível decodificar uma imagem recebida");
+            }
+            bitmaps.push(wrapper);
+        }
+        struct BitmapCleanup(Vec<sys::mtmd_helper_bitmap_wrapper>);
+        impl Drop for BitmapCleanup {
+            fn drop(&mut self) {
+                for bitmap in self.0.drain(..) {
+                    unsafe {
+                        if !bitmap.video_ctx.is_null() {
+                            sys::mtmd_helper_video_free(bitmap.video_ctx);
+                        }
+                        if !bitmap.bitmap.is_null() {
+                            sys::mtmd_bitmap_free(bitmap.bitmap);
+                        }
+                    }
+                }
+            }
+        }
+        let bitmaps = BitmapCleanup(bitmaps);
+        let bitmap_ptrs = bitmaps
+            .0
+            .iter()
+            .map(|bitmap| bitmap.bitmap as *const sys::mtmd_bitmap)
+            .collect::<Vec<_>>();
+        let text = sys::mtmd_input_text {
+            text: prompt.as_ptr(),
+            text_len: prompt.as_bytes().len(),
+            add_special: n_past == 0,
+            parse_special: true,
+        };
+        let chunks = unsafe { sys::mtmd_input_chunks_init() };
+        if chunks.is_null() {
+            bail!("mtmd não conseguiu criar os chunks multimodais");
+        }
+        struct ChunksCleanup(*mut sys::mtmd_input_chunks);
+        impl Drop for ChunksCleanup {
+            fn drop(&mut self) {
+                unsafe { sys::mtmd_input_chunks_free(self.0) };
+            }
+        }
+        let chunks = ChunksCleanup(chunks);
+        let tokenized = unsafe {
+            sys::mtmd_tokenize(
+                vision_ctx,
+                chunks.0,
+                &text,
+                bitmap_ptrs.as_ptr() as *mut *const sys::mtmd_bitmap,
+                bitmap_ptrs.len(),
+            )
+        };
+        if tokenized != 0 {
+            bail!("mtmd não conseguiu tokenizar a mensagem multimodal (rc={tokenized})");
+        }
+        let n_tokens = unsafe { sys::mtmd_helper_get_n_tokens(chunks.0) };
+        let mrope_positions = self.multimodal_mrope_positions(chunks.0, n_past)?;
+        let mut new_n_past = n_past as sys::llama_pos;
+        self.reset_capture_slot_with_physical_chunks(n_tokens, true);
+        let started = Instant::now();
+        self.begin_moe_callback();
+        let rc = unsafe {
+            sys::mtmd_helper_eval_chunks(
+                vision_ctx,
+                self.ctx,
+                chunks.0,
+                n_past as sys::llama_pos,
+                seq_id as sys::llama_seq_id,
+                self.n_batch() as i32,
+                logits_last,
+                &mut new_n_past,
+            )
+        };
+        if rc != 0 {
+            bail!("mtmd falhou ao avaliar a mensagem multimodal (rc={rc})");
+        }
+        let mut timings = DecodeTimings {
+            enqueue_us: started.elapsed().as_micros() as u64,
+            ..Default::default()
+        };
+        self.record_capture_timings(&mut timings);
+        if profile_backend_sync_enabled() {
+            let sync_started = Instant::now();
+            unsafe { sys::llama_synchronize(self.ctx) };
+            timings.backend_completion_us = sync_started.elapsed().as_micros() as u64;
+        }
+        self.finish_moe_callback(&mut timings)?;
+        let n_past = u32::try_from(new_n_past)
+            .map_err(|_| anyhow::anyhow!("mtmd retornou uma posição lógica inválida"))?;
+        Ok(MultimodalDecode {
+            n_tokens,
+            n_past,
+            mrope_positions,
+            timings,
+        })
+    }
+
+    /// Converte os chunks do mtmd para a representação que atravessa o POM.
+    ///
+    /// `mtmd_helper_get_n_tokens` conta células que serão escritas no KV,
+    /// enquanto `mtmd_input_chunk_get_n_pos` conta posições lógicas. Em
+    /// M-RoPE uma imagem tem várias células por posição temporal, por isso o
+    /// POM não pode reconstruir os eixos apenas a partir de `n_tokens`.
+    fn multimodal_mrope_positions(
+        &self,
+        chunks: *const sys::mtmd_input_chunks,
+        start_pos: u32,
+    ) -> Result<Option<Vec<[u32; 4]>>> {
+        let rope_type = unsafe { sys::llama_model_rope_type(self.loaded.model) };
+        if rope_type != sys::LLAMA_ROPE_TYPE_MROPE && rope_type != sys::LLAMA_ROPE_TYPE_IMROPE {
+            return Ok(None);
+        }
+
+        let mut logical_pos = start_pos;
+        let mut positions = Vec::new();
+        let chunk_count = unsafe { sys::mtmd_input_chunks_size(chunks) };
+        for index in 0..chunk_count {
+            let chunk = unsafe { sys::mtmd_input_chunks_get(chunks, index) };
+            if chunk.is_null() {
+                bail!("mtmd retornou um chunk multimodal nulo");
+            }
+            let n_tokens = unsafe { sys::mtmd_input_chunk_get_n_tokens(chunk) };
+            let n_pos = unsafe { sys::mtmd_input_chunk_get_n_pos(chunk) };
+            let n_pos = u32::try_from(n_pos)
+                .map_err(|_| anyhow::anyhow!("mtmd retornou uma posição de chunk inválida"))?;
+            let image = unsafe { sys::mtmd_input_chunk_get_tokens_image(chunk) };
+            if image.is_null() {
+                for offset in 0..n_tokens {
+                    let position = logical_pos
+                        .checked_add(u32::try_from(offset).map_err(|_| {
+                            anyhow::anyhow!("chunk multimodal excede o limite de posições")
+                        })?)
+                        .ok_or_else(|| anyhow::anyhow!("posição multimodal excede o limite"))?;
+                    positions.push([position, position, position, 0]);
+                }
+            } else {
+                let mut image_positions = vec![
+                    sys::mtmd_decoder_pos {
+                        t: 0,
+                        x: 0,
+                        y: 0,
+                        z: 0,
+                    };
+                    n_tokens
+                ];
+                unsafe {
+                    sys::mtmd_helper_image_get_decoder_pos(
+                        image,
+                        logical_pos as sys::llama_pos,
+                        image_positions.as_mut_ptr(),
+                    );
+                }
+                positions.extend(
+                    image_positions
+                        .into_iter()
+                        .map(|position| [position.t, position.y, position.x, position.z]),
+                );
+            }
+            logical_pos = logical_pos
+                .checked_add(n_pos)
+                .ok_or_else(|| anyhow::anyhow!("posição multimodal excede o limite"))?;
+        }
+
+        let expected_tokens = unsafe { sys::mtmd_helper_get_n_tokens(chunks) };
+        if positions.len() != expected_tokens {
+            bail!(
+                "mtmd retornou {} células, mas a tabela M-RoPE tem {} posições",
+                expected_tokens,
+                positions.len()
+            );
+        }
+        Ok(Some(positions))
     }
 
     /// Em qual bloco desta fatia a próxima decodificação deve ser capturada.
@@ -1051,6 +1315,16 @@ impl LlmEngine {
             } else {
                 feature_shape = Some(&entry.shape[1..]);
             }
+            if let Some(positions) = &entry.mrope_positions {
+                if positions.len() != entry.descriptor.tokens {
+                    bail!(
+                        "item {} declara {} células, mas recebeu {} posições M-RoPE",
+                        entry.descriptor.item_id,
+                        entry.descriptor.tokens,
+                        positions.len()
+                    );
+                }
+            }
         }
 
         let n = i32::try_from(layout.total_tokens())
@@ -1059,7 +1333,25 @@ impl LlmEngine {
         let input_width_i32 = i32::try_from(input_width)
             .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
         let enqueue_started = Instant::now();
-        self.reset_capture_slot(layout.total_tokens());
+        let has_mrope_positions = entries.iter().any(|entry| entry.mrope_positions.is_some());
+        self.reset_capture_slot_with_physical_chunks(layout.total_tokens(), has_mrope_positions);
+        let mut flattened_positions = has_mrope_positions
+            .then(|| vec![0 as sys::llama_pos; layout.total_tokens().saturating_mul(4)]);
+        if let Some(storage) = flattened_positions.as_mut() {
+            let mut row = 0usize;
+            for entry in entries {
+                for offset in 0..entry.descriptor.tokens {
+                    let scalar_position = entry.descriptor.pos + offset as u32;
+                    let position = entry
+                        .mrope_positions
+                        .as_ref()
+                        .map(|positions| positions[offset])
+                        .unwrap_or([scalar_position, scalar_position, scalar_position, 0]);
+                    write_mrope_position(storage, layout.total_tokens(), row, position)?;
+                    row += 1;
+                }
+            }
+        }
         let mut batch = unsafe { sys::llama_batch_init(n, input_width_i32, 1) };
         batch.n_tokens = n;
         batch.token = ptr::null_mut();
@@ -1074,7 +1366,10 @@ impl LlmEngine {
                     end - start,
                 );
                 for offset in 0..entry.descriptor.tokens {
-                    *batch.pos.add(row) = (entry.descriptor.pos + offset as u32) as i32;
+                    let scalar_position = entry.descriptor.pos + offset as u32;
+                    if flattened_positions.is_none() {
+                        *batch.pos.add(row) = scalar_position as sys::llama_pos;
+                    }
                     *batch.n_seq_id.add(row) = 1;
                     *(*batch.seq_id.add(row)).add(0) = entry.descriptor.seq_id as i32;
                     *batch.logits.add(row) =
@@ -1087,8 +1382,13 @@ impl LlmEngine {
                 }
             }
         }
+        let scalar_positions = batch.pos;
+        if let Some(storage) = flattened_positions.as_mut() {
+            batch.pos = storage.as_mut_ptr();
+        }
         self.begin_moe_callback();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        batch.pos = scalar_positions;
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode (hidden batch) failed rc={rc}");
@@ -1097,16 +1397,42 @@ impl LlmEngine {
     }
 
     pub(super) fn reset_capture_slot(&self, n_tokens: usize) {
+        self.reset_capture_slot_with_physical_chunks(n_tokens, false);
+    }
+
+    pub(super) fn reset_capture_slot_with_physical_chunks(
+        &self,
+        n_tokens: usize,
+        allow_physical_chunks: bool,
+    ) {
         let mut capture = self.capture.lock().unwrap();
         capture.buf = None;
         capture.expected_tokens = n_tokens;
         capture.expected_floats = None;
         capture.layout = None;
+        capture.allow_physical_chunks = allow_physical_chunks;
         capture.error = None;
         capture.last_shape = None;
         capture.last_strides = None;
         capture.last_nbytes = None;
+        capture.capture_requested_at = None;
+        capture.ready_wait_us = 0;
         capture.copy_us = 0;
+        capture.postprocess_us = 0;
+        capture.copy_bytes = 0;
+        capture.copy_calls = 0;
+    }
+
+    fn record_capture_timings(&self, timings: &mut DecodeTimings) {
+        let capture = self.capture.lock().unwrap();
+        let metrics = capture.metrics();
+        timings.residual_capture_ready_wait_us = metrics.ready_wait_us;
+        timings.residual_capture_copy_us = metrics.copy_us;
+        timings.residual_capture_postprocess_us = metrics.postprocess_us;
+        timings.residual_capture_bytes = metrics.copy_bytes;
+        timings.residual_capture_copies = metrics.copy_calls;
+        timings.residual_capture_d2h_sync_us =
+            metrics.ready_wait_us.saturating_add(metrics.copy_us);
     }
 
     pub(super) fn finish_batch(
@@ -1140,9 +1466,9 @@ impl LlmEngine {
         let residual = residual.map(|captured| captured.values);
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
-            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
+        self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
@@ -1276,9 +1602,9 @@ impl LlmEngine {
 
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
-            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
+        self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
@@ -1303,11 +1629,40 @@ impl LlmEngine {
         logits_all: bool,
         tokens: Option<&[i32]>,
     ) -> Result<DecodeTimings> {
+        self.decode_hidden_with_positions(
+            hidden, shape, n_tokens, pos_offset, seq_id, logits_all, tokens, None,
+        )
+    }
+
+    /// Decode hidden states while preserving the physical-to-logical position
+    /// map of an M-RoPE multimodal batch. `llama_batch.pos` normally has one
+    /// scalar per embedding cell; for M-RoPE it instead points at four
+    /// contiguous position sections, just as the mtmd helper builds its
+    /// embedding batch internally.
+    pub fn decode_hidden_with_positions(
+        &mut self,
+        hidden: &[f32],
+        shape: &TensorShape,
+        n_tokens: usize,
+        pos_offset: u32,
+        seq_id: u32,
+        logits_all: bool,
+        tokens: Option<&[i32]>,
+        mrope_positions: Option<&[[u32; 4]]>,
+    ) -> Result<DecodeTimings> {
         self.ensure_moe_executor_ready()?;
+        if let Some(positions) = mrope_positions {
+            if positions.len() != n_tokens {
+                bail!(
+                    "estado oculto declara {n_tokens} células, mas recebeu {} posições M-RoPE",
+                    positions.len()
+                );
+            }
+        }
         // Zera o buffer, e não só o cronômetro: agora que a captura
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
-        self.reset_capture_slot(n_tokens);
+        self.reset_capture_slot_with_physical_chunks(n_tokens, mrope_positions.is_some());
         let enqueue_started = Instant::now();
         let input_width = validate_hidden_tensor(
             hidden.len(),
@@ -1322,6 +1677,15 @@ impl LlmEngine {
             .map_err(|_| anyhow::anyhow!("hidden state excede o limite de tokens do llama.cpp"))?;
         let input_width_i32 = i32::try_from(input_width)
             .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
+        let mut mrope_batch_positions = if let Some(positions) = mrope_positions {
+            let mut storage = vec![0 as sys::llama_pos; n_tokens.saturating_mul(4)];
+            for (row, &position) in positions.iter().enumerate() {
+                write_mrope_position(&mut storage, n_tokens, row, position)?;
+            }
+            Some(storage)
+        } else {
+            None
+        };
         let mut batch = unsafe { sys::llama_batch_init(n, input_width_i32, 1) };
         batch.n_tokens = n;
         batch.token = ptr::null_mut(); // signals embedding mode
@@ -1332,7 +1696,9 @@ impl LlmEngine {
             std::ptr::copy_nonoverlapping(hidden.as_ptr(), embd_ptr, hidden.len());
 
             for i in 0..n_tokens {
-                *batch.pos.add(i) = (pos_offset as i32) + i as i32;
+                if mrope_batch_positions.is_none() {
+                    *batch.pos.add(i) = (pos_offset as i32) + i as i32;
+                }
                 *batch.n_seq_id.add(i) = 1;
                 *(*batch.seq_id.add(i)).add(0) = seq_id as i32;
                 *batch.logits.add(i) = if logits_all || i == n_tokens - 1 {
@@ -1343,7 +1709,12 @@ impl LlmEngine {
             }
         }
 
+        let scalar_positions = batch.pos;
+        if let Some(storage) = mrope_batch_positions.as_mut() {
+            batch.pos = storage.as_mut_ptr();
+        }
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        batch.pos = scalar_positions;
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode (hidden) failed rc={rc}");
@@ -1396,9 +1767,9 @@ impl LlmEngine {
         }
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
-            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
+        self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
@@ -1553,7 +1924,10 @@ impl LlmEngine {
             )
         };
         if written == 0 {
-            bail!("llama_state_seq_save_file devolveu 0 para {}", path.display());
+            bail!(
+                "llama_state_seq_save_file devolveu 0 para {}",
+                path.display()
+            );
         }
         Ok(written)
     }

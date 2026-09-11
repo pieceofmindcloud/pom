@@ -2,13 +2,13 @@ pub(crate) use crate::auth::AuthState;
 pub(crate) use crate::model::LayerAssignment;
 pub(crate) use crate::network::{Network, PeerInfo, RuntimeCapacity};
 pub(crate) use crate::ollama::OllamaClient;
-pub(crate) use crate::pipeline::{plan_pipeline_with_rtt, LoadTracker, PipelinePlan};
+pub(crate) use crate::pipeline::{LoadTracker, PipelinePlan};
 pub(crate) use crate::runtime::NodeRuntime;
 pub(crate) use crate::{admin, session};
 pub(crate) use anyhow::Result;
 pub(crate) use axum::{
     body::Bytes,
-    extract::{FromRequestParts, Request, State},
+    extract::{FromRequestParts, Query, Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -22,22 +22,21 @@ pub(crate) use tokio::sync::{mpsc, Mutex};
 pub(crate) use tracing::{debug, info, warn};
 pub(crate) use uuid::Uuid;
 
-
-#[path = "state.rs"]
-mod state;
 #[path = "budget.rs"]
 mod budget;
 #[path = "generation.rs"]
 mod generation;
 #[path = "http.rs"]
 mod http;
+#[path = "state.rs"]
+mod state;
 #[path = "tests.rs"]
 mod tests;
 
-pub(super) use state::*;
 pub(super) use budget::*;
 pub(super) use generation::*;
 pub(super) use http::*;
+pub(super) use state::*;
 
 #[cfg(test)]
 pub(crate) use tests::testkit;

@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use futures::FutureExt;
 use routing_contract::ModelCapability;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::panic::AssertUnwindSafe;
@@ -39,6 +40,15 @@ pub const DISCOVERY_SWEEP_TICKS: u64 = 6;
 /// amplificação: a resposta a um `PeerRequest` são `Announce` e `PeerList`, e
 /// nenhuma das duas provoca outro `PeerRequest`.
 pub const SWEEP_FANOUT: usize = 3;
+
+#[cfg(not(test))]
+const ADMISSION_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[cfg(test)]
+const ADMISSION_TIMEOUT: Duration = Duration::from_millis(200);
+
+const ADMISSION_CACHE_TTL: Duration = Duration::from_secs(30);
+const REJECTED_ADMISSION_CACHE_TTL: Duration = Duration::from_secs(5);
 
 /// De quanto em quanto tempo, no máximo, se repergunta o endereço de um peer
 /// ilegível.
@@ -138,14 +148,26 @@ struct NetworkInit {
     bootstrap_nodes: Vec<String>,
     ollama_port: Option<u16>,
     inference_port: Option<u16>,
+    inference_quic_port: Option<u16>,
     gateway_port: Option<u16>,
+    gateway_quic_port: Option<u16>,
+}
+
+struct PeerAdmission {
+    auth: crate::auth::AuthState,
+    trust: Arc<crate::admin_trust::AdminTrust>,
+}
+
+struct AdmissionCacheEntry {
+    allowed: bool,
+    expires_at: Instant,
 }
 
 /// Message types exchanged between nodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum P2PMessage {
-        /// Node announces itself and its layer assignment
+    /// Node announces itself and its layer assignment
     Announce {
         node_id: String,
         pubkey: String,
@@ -174,6 +196,9 @@ pub enum P2PMessage {
         ollama_port: Option<u16>,
         #[serde(default)]
         inference_port: Option<u16>,
+        /// Dedicated UDP port for this node's inference HTTP/3 endpoint.
+        #[serde(default)]
+        inference_quic_port: Option<u16>,
         /// Inference capabilities this peer can receive. The current product
         /// exposes the canonical batch frame only after inference is ready.
         #[serde(default)]
@@ -182,6 +207,9 @@ pub enum P2PMessage {
         /// running an older build parseable.
         #[serde(default)]
         gateway_port: Option<u16>,
+        /// Dedicated UDP port for this node's gateway HTTP/3 endpoint.
+        #[serde(default)]
+        gateway_quic_port: Option<u16>,
         #[serde(default)]
         profile: crate::profile::NodeProfile,
         /// Se este nó fala TLS com os peers.
@@ -191,6 +219,9 @@ pub enum P2PMessage {
         /// a ele seria oferecer o rebaixamento que o TLS existe para impedir.
         #[serde(default)]
         tls: bool,
+        /// Gatilho da catraca autenticada da política QUIC.
+        #[serde(default)]
+        quic: bool,
         #[serde(default)]
         hostname: String,
         /// Full inventory for new peers. The legacy model/range fields remain
@@ -218,6 +249,16 @@ pub enum P2PMessage {
         /// Gatilho para a catraca autenticada da coleta de logs.
         #[serde(default)]
         cluster_logs_enabled: bool,
+        /// Modelo descarregado por idle, mantendo a implantação anunciada.
+        #[serde(default)]
+        idle: bool,
+        /// Gatilho para a catraca autenticada do Chat da rede.
+        #[serde(default)]
+        network_chat_enabled: bool,
+        /// Identificador da cadeia de confiança do enxame público.
+        /// O valor sozinho não autentica o peer.
+        #[serde(default)]
+        cluster_id: Option<String>,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -238,6 +279,10 @@ pub struct PeerInfo {
     pub pubkey: String,
     #[serde(default)]
     pub authority_pubkey: String,
+    /// Cadeia de confiança alegada pelo peer. Só é aceita junto com a tupla
+    /// de autoridade validada localmente.
+    #[serde(default)]
+    pub cluster_id: Option<String>,
     pub addr: String,
     /// Todos os enderecos em que este peer pode ser encontrado.
     ///
@@ -264,12 +309,18 @@ pub struct PeerInfo {
     /// Used by the gateway pipeline to POST hidden states.
     #[serde(default)]
     pub inference_port: Option<u16>,
+    /// Dedicated UDP port for this peer's inference HTTP/3 endpoint.
+    #[serde(default)]
+    pub inference_quic_port: Option<u16>,
     #[serde(default)]
     pub inference_frame_capabilities: Vec<String>,
     /// Port serving this peer's HTTP API and web UI, so the dashboard can pull
     /// load figures straight from each peer.
     #[serde(default)]
     pub gateway_port: Option<u16>,
+    /// Dedicated UDP port for this peer's gateway HTTP/3 endpoint.
+    #[serde(default)]
+    pub gateway_quic_port: Option<u16>,
     #[serde(default)]
     pub profile: crate::profile::NodeProfile,
     /// Ver `P2PMessage::Announce::tls`: gatilho para a catraca, nunca valor.
@@ -297,6 +348,9 @@ pub struct PeerInfo {
     /// `None` não é zero: significa que a capacidade ainda não foi provada.
     #[serde(default)]
     pub runtime_capacity: Option<RuntimeCapacity>,
+    /// O peer está vivo e anunciado, mas sem os pesos na memória.
+    #[serde(default)]
+    pub idle: bool,
 }
 
 /// Extract the host part of an addr string for use in HTTP URLs.
@@ -426,7 +480,14 @@ fn announce_addresses(
     local: Vec<crate::addrs::LocalAddr>,
     port: u16,
 ) -> (String, Vec<String>) {
-    let addr = choose_announce_addr(pinned.clone(), observed.clone(), local.clone(), port);
+    // An explicit pin is an operator contract, not just a preference. Keep it
+    // exclusive so the UDP announce, libp2p tunnel address book, and gateway
+    // replies cannot leak LAN, Docker, or stale interface addresses alongside
+    // the configured Tailscale endpoint.
+    if let Some(pinned) = pinned {
+        return (pinned.clone(), vec![pinned]);
+    }
+    let addr = choose_announce_addr(None, observed.clone(), local.clone(), port);
     let candidates =
         local_candidates_by_preference(pinned.as_deref().map(ip_host), observed.as_deref(), local)
             .into_iter()
@@ -468,10 +529,10 @@ impl PeerInfo {
             .map(|port| format!("http://{}:{}", ip_host(&self.addr), port))
     }
 
-    /// Acrescenta o endereco de onde o pacote realmente veio.
-    ///
-    /// Nao substitui: um caminho que funcionou nao invalida os outros, e e este
-    /// o unico candidato que enxerga NAT.
+    /// Acrescenta o endereco de onde o pacote realmente veio quando a origem
+    /// ainda e a unica pista. Um `Announce` com `addr_candidates` explicitos
+    /// continua sendo a autoridade, para nao reintroduzir LAN ou bridge junto
+    /// de um `advertise_addr` fixado.
     pub fn merge_observed(&mut self, observado: &str) {
         if !self.addr_candidates.iter().any(|c| c == observado) {
             self.addr_candidates.push(observado.to_string());
@@ -503,6 +564,24 @@ impl PeerInfo {
             }
         }
         addresses
+    }
+
+    /// Canonical libp2p endpoint for a peer. Libp2p identify exposes every
+    /// listen interface, while the pipeline must dial the endpoint selected
+    /// by the peer's Announce. Keep the multi-address fallback policy for UDP
+    /// control traffic, but use one announced endpoint for the tunnel.
+    pub fn libp2p_dialable_addrs(&self) -> Vec<String> {
+        is_valid_destination(&self.addr)
+            .then_some(self.addr.as_str())
+            .or_else(|| {
+                self.addr_candidates
+                    .iter()
+                    .find(|address| is_valid_destination(address))
+                    .map(String::as_str)
+            })
+            .map(str::to_owned)
+            .into_iter()
+            .collect()
     }
 
     /// URLs do servidor de inferencia, uma por candidato.
@@ -551,6 +630,19 @@ impl PeerInfo {
         self.inference_candidates().into_iter().next()
     }
 
+    /// Endereços `host:porta` do endpoint QUIC de inferência, construídos a
+    /// partir do endereço público anunciado pelo peer e da porta UDP dedicada.
+    /// Este caminho não lê nem faz parse de `inference_url`.
+    pub fn quic_addr_candidates(&self) -> Vec<String> {
+        let Some(port) = self.inference_quic_port else {
+            return Vec::new();
+        };
+        self.dialable_addrs()
+            .into_iter()
+            .map(|address| format!("{}:{port}", ip_host(&address)))
+            .collect()
+    }
+
     /// Base URL of this peer's HTTP API / web UI.
     ///
     /// É o **primeiro** candidato, não o único. Quem tem como tentar mais de
@@ -575,6 +667,15 @@ impl PeerInfo {
     /// Painel, o `deploy` e a transferência sem para onde cair, mesmo com um
     /// endereço vivo já anunciado em `addr_candidates`.
     pub fn gateway_candidates(&self) -> Vec<String> {
+        self.gateway_candidates_with_tls(crate::peer_client::tls_ativo())
+    }
+
+    /// URLs do gateway usando explicitamente o esquema de um anúncio.
+    ///
+    /// As catracas de TLS, logs e Chat consultam o principal antes de adotar o
+    /// valor anunciado localmente, então não podem depender da flag global que
+    /// ainda está em processo de confirmação.
+    pub fn gateway_candidates_with_tls(&self, tls: bool) -> Vec<String> {
         let Some(porta) = self.gateway_port else {
             return Vec::new();
         };
@@ -585,12 +686,7 @@ impl PeerInfo {
             if !is_valid_destination(a) {
                 continue;
             }
-            let url = format!(
-                "{}://{}:{}",
-                crate::peer_client::peer_scheme(),
-                ip_host(a),
-                porta
-            );
+            let url = crate::peer_client::peer_base_url(&ip_host(a), porta, tls);
             if !urls.contains(&url) {
                 urls.push(url);
             }
@@ -614,8 +710,19 @@ pub struct Network {
     pub ollama_port: Option<u16>,
     /// Port of the local llama-cpp-python inference server.
     pub inference_port: Option<u16>,
+    /// Dedicated UDP port of the local inference HTTP/3 endpoint.
+    pub inference_quic_port: Option<u16>,
     /// Port of this node's HTTP API / web UI.
     pub gateway_port: Option<u16>,
+    /// Dedicated UDP port of the local gateway HTTP/3 endpoint.
+    pub gateway_quic_port: Option<u16>,
+    /// Anúncios públicos que ainda não provaram pertencimento à rede local.
+    ///
+    /// Esta tabela é deliberadamente separada de `peers`: candidatos públicos
+    /// podem ser consultados pelo diretório e pelo pkarr, mas nunca entram no
+    /// Painel, no planejamento de pipeline ou em qualquer superfície de
+    /// controle de membro antes da admissão normal.
+    public_discovery: Arc<RwLock<HashMap<String, PeerInfo>>>,
     /// Advertised in every `Announce` so peers can name this machine without a
     /// second HTTP round-trip.
     pub profile: Arc<std::sync::RwLock<crate::profile::NodeProfile>>,
@@ -642,6 +749,7 @@ pub struct Network {
     /// Capacidade que o último `/health` local confirmou. Fit de memória pode
     /// reduzir o contexto efetivo depois que o llama.cpp carrega o GGUF.
     runtime_capacity: std::sync::RwLock<RuntimeCapacityState>,
+    idle: AtomicBool,
     socket: Arc<UdpSocket>,
     #[cfg(test)]
     test_panic_on_next_message: AtomicBool,
@@ -688,6 +796,10 @@ pub struct Network {
     /// anunciar a capability antes disso faria um peer enviar v3 para uma
     /// porta que só sabe responder o protocolo antigo.
     batching_ready: Arc<AtomicBool>,
+    /// Catraca de admissão. Ausente apenas no `testkit` legado; processos
+    /// reais sempre a configuram antes de iniciar a Network.
+    admission: Option<Arc<PeerAdmission>>,
+    admission_cache: std::sync::RwLock<HashMap<String, AdmissionCacheEntry>>,
     /// Este nó tem `--slot-save-path` configurado e serve `POST
     /// /v1/session/slot`. Vira verdadeiro no `apply` de uma implantação e volta
     /// a falso ao parar; o gateway exige a cap de todos os hops antes de
@@ -705,12 +817,23 @@ pub struct Network {
     /// configuração nem a chave de conexão - quem sabe buscar e gravar é a task
     /// montada no `main.rs`. Ver `tls_policy`.
     tls_probe: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
+    /// Canal da catraca autenticada da política QUIC.
+    quic_probe: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
     /// Canal da catraca autenticada da política de logs.
     cluster_logs_probe:
         std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
     /// Política local de captura de logs. O valor do anúncio é gatilho, nunca
     /// é adotado diretamente.
     cluster_logs_enabled: Arc<AtomicBool>,
+    /// Política local do canal global de conversa. O booleano anunciado é
+    /// apenas gatilho; a fonte é a leitura autenticada no principal.
+    network_chat_probe:
+        std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
+    network_chat_enabled: Arc<AtomicBool>,
+    /// Public key of the authority whose authenticated policy is authoritative.
+    /// The profile in an Announce is not enough: a secondary admin also has
+    /// `profile: admin`, but must never become a policy source.
+    policy_principal_pubkey: std::sync::RwLock<Option<String>>,
     /// Evita repetir no gossip um aviso permanente, como o broadcast global
     /// indisponível dentro de um container.
     broadcast_warning_logged: AtomicBool,
@@ -749,7 +872,7 @@ struct Rediscovery {
 /// o gossip e a TUI seguiam saudáveis, e a única pista era um socket com a fila
 /// de recepção cheia. O id vem da rede: qualquer coisa que o outro lado mande
 /// tem que ser tratada como texto arbitrário, não como um SHA256 de 64 hexas.
-fn short(id: &str) -> &str {
+pub(crate) fn short(id: &str) -> &str {
     let mut fim = id.len().min(12);
     while fim > 0 && !id.is_char_boundary(fim) {
         fim -= 1;
@@ -955,7 +1078,9 @@ impl Network {
                 bootstrap_nodes,
                 ollama_port,
                 inference_port,
+                inference_quic_port: None,
                 gateway_port,
+                gateway_quic_port: None,
             },
         )
         .await
@@ -1022,7 +1147,9 @@ impl Network {
                 bootstrap_nodes,
                 ollama_port,
                 inference_port,
+                inference_quic_port: None,
                 gateway_port,
+                gateway_quic_port: None,
             },
         ))
     }
@@ -1052,7 +1179,9 @@ impl Network {
                 bootstrap_nodes,
                 ollama_port,
                 inference_port,
+                inference_quic_port: None,
                 gateway_port,
+                gateway_quic_port: None,
             },
         ))
     }
@@ -1075,12 +1204,16 @@ impl Network {
             bootstrap_nodes: init.bootstrap_nodes,
             ollama_port: init.ollama_port,
             inference_port: init.inference_port,
+            inference_quic_port: init.inference_quic_port,
             gateway_port: init.gateway_port,
+            gateway_quic_port: init.gateway_quic_port,
+            public_discovery: Arc::new(RwLock::new(HashMap::new())),
             profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Node)),
             hostname: String::new(),
             advertise_addr: std::sync::RwLock::new(None),
             tp: std::sync::RwLock::new(None),
             runtime_capacity: std::sync::RwLock::new(RuntimeCapacityState::default()),
+            idle: AtomicBool::new(false),
             socket: Arc::new(socket),
             #[cfg(test)]
             test_panic_on_next_message: AtomicBool::new(false),
@@ -1091,11 +1224,17 @@ impl Network {
             libp2p_tunnel_ready: AtomicBool::new(false),
             mtp_ready: Arc::new(AtomicBool::new(false)),
             batching_ready: Arc::new(AtomicBool::new(false)),
+            admission: None,
+            admission_cache: std::sync::RwLock::new(HashMap::new()),
             slot_persist_ready: Arc::new(AtomicBool::new(false)),
             tls: Arc::new(AtomicBool::new(false)),
             tls_probe: std::sync::RwLock::new(None),
+            quic_probe: std::sync::RwLock::new(None),
             cluster_logs_probe: std::sync::RwLock::new(None),
             cluster_logs_enabled: Arc::new(AtomicBool::new(false)),
+            network_chat_probe: std::sync::RwLock::new(None),
+            network_chat_enabled: Arc::new(AtomicBool::new(false)),
+            policy_principal_pubkey: std::sync::RwLock::new(None),
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
             rediscovery: std::sync::RwLock::new(HashMap::new()),
@@ -1103,13 +1242,26 @@ impl Network {
     }
 
     /// Label this node carries in its announces.
-    pub fn with_identity(
-        mut self,
-        profile: crate::profile::NodeProfile,
-        hostname: String,
-    ) -> Self {
+    pub fn with_identity(mut self, profile: crate::profile::NodeProfile, hostname: String) -> Self {
         *self.profile.write().expect("profile lock") = profile;
         self.hostname = hostname;
+        self
+    }
+
+    /// Configura a prova de pertencimento antes de iniciar as tasks de
+    /// descoberta. Um processo em produção nunca usa o modo aberto do
+    /// `testkit`: sem chave privada válida ou cadeia pública ancorada, a
+    /// admissão recusa o peer.
+    pub(crate) fn with_admission(
+        mut self,
+        auth: crate::auth::AuthState,
+        trust: Arc<crate::admin_trust::AdminTrust>,
+    ) -> Self {
+        self.admission = Some(Arc::new(PeerAdmission { auth, trust }));
+        self.admission_cache
+            .write()
+            .expect("admission cache lock")
+            .clear();
         self
     }
 
@@ -1146,6 +1298,15 @@ impl Network {
     /// Pin the address peers should reach this node at, at construction time.
     pub fn with_advertise_addr(self, raw: Option<String>) -> Self {
         self.set_advertise_addr(raw.as_deref());
+        self
+    }
+
+    /// Configura as portas UDP dedicadas do HTTP/3 antes de o nó entrar no
+    /// cluster. Elas são anunciadas junto do endereço público, nunca
+    /// inferidas a partir da URL TCP de inferência.
+    pub fn with_quic_ports(mut self, inference: Option<u16>, gateway: Option<u16>) -> Self {
+        self.inference_quic_port = inference;
+        self.gateway_quic_port = gateway;
         self
     }
 
@@ -1245,16 +1406,37 @@ impl Network {
     /// frente, mas um nó atrás de NAT ainda conserva seu fallback público.
     pub fn self_addr_candidates(&self) -> Vec<String> {
         let porta = self.bind_addr.port();
-        let pinned = self.advertised_host();
+        let pinned = self
+            .advertise_addr
+            .read()
+            .expect("advertise_addr lock")
+            .clone();
+        if let Some(pinned) = pinned {
+            return vec![pinned];
+        }
         let observed = self.observed_addr();
-        local_candidates_by_preference(
-            pinned.as_deref(),
-            observed.as_deref(),
-            crate::addrs::local_addrs(),
-        )
-        .into_iter()
-        .map(|ip| host_port(&ip, porta))
-        .collect()
+        local_candidates_by_preference(None, observed.as_deref(), crate::addrs::local_addrs())
+            .into_iter()
+            .map(|ip| host_port(&ip, porta))
+            .collect()
+    }
+
+    fn quic_addr_candidates_for(&self, port: Option<u16>) -> Vec<String> {
+        let Some(port) = port else {
+            return Vec::new();
+        };
+        self.self_addr_candidates()
+            .into_iter()
+            .map(|address| format!("{}:{port}", ip_host(&address)))
+            .collect()
+    }
+
+    pub fn inference_quic_addr_candidates(&self) -> Vec<String> {
+        self.quic_addr_candidates_for(self.inference_quic_port)
+    }
+
+    pub fn gateway_quic_addr_candidates(&self) -> Vec<String> {
+        self.quic_addr_candidates_for(self.gateway_quic_port)
     }
 
     /// What this node puts in `Announce.addr`.
@@ -1396,6 +1578,7 @@ impl Network {
             node_id: self.node_id.clone(),
             pubkey: self.pubkey.clone(),
             authority_pubkey: self.authority_pubkey(),
+            cluster_id: self.cluster_id(),
             addr,
             addr_candidates,
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
@@ -1407,6 +1590,7 @@ impl Network {
             timestamp: Utc::now(),
             ollama_port: self.ollama_port,
             inference_port: self.inference_port,
+            inference_quic_port: self.inference_quic_port,
             // Keep this list in sync with the other two `Announce` builders
             // (gateway.rs, infer_server.rs) and with the capability constants
             // in routing/pipeline.rs (`CAP_RELAY_CHAIN`, `CAP_SPECULATE_LOOKUP`,
@@ -1443,8 +1627,10 @@ impl Network {
                 caps
             },
             gateway_port: self.gateway_port,
+            gateway_quic_port: self.gateway_quic_port,
             profile: self.profile(),
             tls: self.tls_enabled(),
+            quic: crate::peer_client::quic_ativo(),
             hostname: self.hostname.clone(),
             capabilities: assignment
                 .map(|a| {
@@ -1467,6 +1653,8 @@ impl Network {
                 .expect("runtime capacity lock")
                 .capacity,
             cluster_logs_enabled: self.cluster_logs_enabled(),
+            idle: self.is_idle(),
+            network_chat_enabled: self.network_chat_enabled(),
         }
     }
 
@@ -1484,6 +1672,14 @@ impl Network {
         self.detached.load(Ordering::Relaxed)
     }
 
+    pub fn is_idle(&self) -> bool {
+        self.idle.load(Ordering::Relaxed)
+    }
+
+    pub fn set_idle(&self, idle: bool) {
+        self.idle.store(idle, Ordering::Relaxed);
+    }
+
     /// Called once `Discovery::new` has actually succeeded (or failed) —
     /// see the field's own doc comment for why this is tracked separately
     /// from `libp2p_peer_id`.
@@ -1493,6 +1689,12 @@ impl Network {
 
     pub fn libp2p_tunnel_ready(&self) -> bool {
         self.libp2p_tunnel_ready.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn cluster_id(&self) -> Option<String> {
+        self.admission
+            .as_ref()
+            .and_then(|admission| admission.trust.cluster_id())
     }
 
     /// A alça que o servidor de inferência escreve quando (não) conseguiu
@@ -1586,6 +1788,12 @@ impl Network {
         }
     }
 
+    pub fn set_quic_probe(&self, tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>) {
+        if let Ok(mut slot) = self.quic_probe.write() {
+            *slot = Some(tx);
+        }
+    }
+
     pub fn cluster_logs_enabled(&self) -> bool {
         self.cluster_logs_enabled.load(Ordering::Acquire)
     }
@@ -1596,12 +1804,94 @@ impl Network {
         self.cluster_logs_enabled.store(enabled, Ordering::Release);
     }
 
-    pub fn set_cluster_logs_probe(
-        &self,
-        tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>,
-    ) {
+    pub fn set_cluster_logs_probe(&self, tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>) {
         if let Ok(mut slot) = self.cluster_logs_probe.write() {
             *slot = Some(tx);
+        }
+    }
+
+    pub fn network_chat_enabled(&self) -> bool {
+        self.network_chat_enabled.load(Ordering::Acquire)
+    }
+
+    /// A política só muda pela interface do principal ou pela resposta
+    /// autenticada da catraca. Nunca pelo booleano recebido no gossip.
+    pub fn set_network_chat_enabled(&self, enabled: bool) {
+        self.network_chat_enabled.store(enabled, Ordering::Release);
+    }
+
+    pub fn set_network_chat_probe(&self, tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>) {
+        if let Ok(mut slot) = self.network_chat_probe.write() {
+            *slot = Some(tx);
+        }
+    }
+
+    /// Identifica o principal real para as catracas de política. O valor vem
+    /// da cadeia administrativa local, nunca de um campo não autenticado do
+    /// gossip.
+    pub fn set_policy_principal_pubkey(&self, pubkey: impl Into<String>) {
+        let pubkey = pubkey.into();
+        if let Ok(mut current) = self.policy_principal_pubkey.write() {
+            *current = (!pubkey.is_empty()).then_some(pubkey);
+        }
+    }
+
+    pub fn trigger_quic_probe(
+        &self,
+        node_id: &str,
+        authority_pubkey: &str,
+        announced: bool,
+        tls: bool,
+    ) {
+        let from_principal = self
+            .policy_principal_pubkey
+            .read()
+            .ok()
+            .and_then(|current| current.as_deref().map(|key| key == authority_pubkey))
+            .unwrap_or(false);
+        if let crate::quic_policy::PolicyOutcome::Fetch { principal } =
+            crate::quic_policy::on_announce(
+                crate::peer_client::quic_ativo(),
+                announced,
+                from_principal,
+                node_id,
+            )
+        {
+            if let Ok(slot) = self.quic_probe.read() {
+                if let Some(tx) = slot.as_ref() {
+                    // O valor anunciado continua sendo só o gatilho. A task
+                    // da política busca o valor no endpoint autenticado do
+                    // principal antes de o adotar.
+                    let _ = tx.send((principal, tls));
+                }
+            }
+        }
+    }
+
+    pub fn trigger_network_chat_probe(
+        &self,
+        node_id: &str,
+        authority_pubkey: &str,
+        announced: bool,
+        tls: bool,
+    ) {
+        if let crate::network_chat_policy::PolicyOutcome::Fetch { principal } =
+            crate::network_chat_policy::on_announce(
+                self.network_chat_enabled(),
+                announced,
+                self.policy_principal_pubkey
+                    .read()
+                    .ok()
+                    .and_then(|current| current.as_deref().map(|key| key == authority_pubkey))
+                    .unwrap_or(false),
+                node_id,
+            )
+        {
+            if let Ok(slot) = self.network_chat_probe.read() {
+                if let Some(tx) = slot.as_ref() {
+                    let _ = tx.send((principal, tls));
+                }
+            }
         }
     }
 
@@ -1611,7 +1901,7 @@ impl Network {
     pub fn trigger_cluster_logs_probe(
         &self,
         node_id: &str,
-        profile: crate::profile::NodeProfile,
+        authority_pubkey: &str,
         announced: bool,
         tls: bool,
     ) {
@@ -1619,7 +1909,11 @@ impl Network {
             crate::cluster_logs_policy::on_announce(
                 self.cluster_logs_enabled(),
                 announced,
-                profile == crate::profile::NodeProfile::Admin,
+                self.policy_principal_pubkey
+                    .read()
+                    .ok()
+                    .and_then(|current| current.as_deref().map(|key| key == authority_pubkey))
+                    .unwrap_or(false),
                 node_id,
             )
         {
@@ -1631,18 +1925,33 @@ impl Network {
         }
     }
 
-    /// Retorna somente o principal conhecido e seu endereço libp2p. Um nó
-    /// nunca escolhe outro nó comum como próximo salto de logs.
-    pub async fn principal_peer(&self) -> Option<(libp2p::PeerId, Vec<String>)> {
+    /// Retorna todos os peers admin vivos e seus endereços libp2p. A lista é
+    /// usada para replicar dados locais em cada autoridade, não só no
+    /// principal.
+    pub async fn admin_peers(&self) -> Vec<(libp2p::PeerId, Vec<String>)> {
         let peers = self.peers.read().await;
         peers
             .values()
             .filter(|peer| {
                 peer.is_alive() && peer.profile == crate::profile::NodeProfile::Admin
             })
+            .filter_map(|peer| {
+                let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
+                Some((peer_id, peer.libp2p_dialable_addrs()))
+            })
+            .collect()
+    }
+
+    /// Retorna o principal conhecido e seu endereço libp2p para os fluxos que
+    /// ainda precisam de um único próximo salto, como o Chat da rede.
+    pub async fn principal_peer(&self) -> Option<(libp2p::PeerId, Vec<String>)> {
+        let peers = self.peers.read().await;
+        peers
+            .values()
+            .filter(|peer| peer.is_alive() && peer.profile == crate::profile::NodeProfile::Admin)
             .find_map(|peer| {
                 let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
-                Some((peer_id, peer.dialable_addrs()))
+                Some((peer_id, peer.libp2p_dialable_addrs()))
             })
     }
 
@@ -1739,9 +2048,7 @@ impl Network {
                 .filter(|(_, p)| p.is_alive() && !p.dialable_addrs().is_empty())
                 .collect();
             v.sort_by(|a, b| a.0.cmp(b.0));
-            v.into_iter()
-                .map(|(_, p)| p.dialable_addrs())
-                .collect()
+            v.into_iter().map(|(_, p)| p.dialable_addrs()).collect()
         };
         if targets.is_empty() {
             return Ok(0);
@@ -2102,10 +2409,13 @@ impl Network {
                 timestamp,
                 ollama_port,
                 inference_port,
+                inference_quic_port,
                 inference_frame_capabilities,
                 gateway_port,
+                gateway_quic_port,
                 profile,
                 tls,
+                quic,
                 hostname,
                 capabilities,
                 disk_total_mb,
@@ -2114,6 +2424,9 @@ impl Network {
                 tp,
                 runtime_capacity,
                 cluster_logs_enabled,
+                idle,
+                network_chat_enabled,
+                cluster_id,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -2134,6 +2447,7 @@ impl Network {
                     node_id: node_id.clone(),
                     pubkey,
                     authority_pubkey,
+                    cluster_id,
                     addr: peer_addr.clone(),
                     addr_candidates,
                     model: model.clone(),
@@ -2144,8 +2458,10 @@ impl Network {
                     last_seen: timestamp,
                     ollama_port,
                     inference_port,
+                    inference_quic_port,
                     inference_frame_capabilities,
                     gateway_port,
+                    gateway_quic_port,
                     profile,
                     tls,
                     hostname,
@@ -2157,7 +2473,20 @@ impl Network {
                     libp2p_peer_id,
                     tp,
                     runtime_capacity,
+                    idle,
                 };
+
+                self.remember_public_discovery_peer(&peer).await;
+                if !self.admit_peer(&peer).await {
+                    debug!(
+                        "Announce de {} descartado: peer sem prova de pertencimento",
+                        short(&peer.node_id)
+                    );
+                    return;
+                }
+                if self.admission.is_some() {
+                    peer.connection_verified = true;
+                }
 
                 let is_new = {
                     let peers = self.peers.read().await;
@@ -2211,18 +2540,29 @@ impl Network {
                     }
                 }
 
+                self.trigger_quic_probe(&peer.node_id, &peer.authority_pubkey, quic, tls);
+
                 self.trigger_cluster_logs_probe(
                     &peer.node_id,
-                    peer.profile,
+                    &peer.authority_pubkey,
                     cluster_logs_enabled,
                     tls,
                 );
+                self.trigger_network_chat_probe(
+                    &peer.node_id,
+                    &peer.authority_pubkey,
+                    network_chat_enabled,
+                    tls,
+                );
 
-                // O endereço de onde o pacote veio é o único comprovadamente
-                // funcional neste instante. O anúncio pode ter sido montado
-                // antes de uma rotação de IPv6 temporário, então guardar só o
-                // `addr` anunciado conserva justamente o cadáver que falhou.
-                peer.merge_observed(&src.to_string());
+                // A origem UDP é um fallback útil somente para anúncios sem
+                // candidatos, como os de binários antigos. Quando há uma
+                // lista explícita, ela é a autoridade: acrescentar a origem
+                // aqui reintroduziria exatamente o endereço LAN que um
+                // `advertise_addr` pinado deve conter.
+                if peer.addr_candidates.is_empty() {
+                    peer.merge_observed(&src.to_string());
+                }
 
                 let address_changed = {
                     let peers = self.peers.read().await;
@@ -2234,8 +2574,7 @@ impl Network {
                     self.routes.invalidate(&node_id);
                 }
 
-                let mut peers = self.peers.write().await;
-                peers.insert(node_id, peer);
+                self.insert_admitted_peer(peer).await;
             }
 
             P2PMessage::PeerRequest { from } => {
@@ -2265,11 +2604,24 @@ impl Network {
             }
 
             P2PMessage::PeerList { peers } => {
-                let mut known = self.peers.write().await;
                 for mut peer in peers {
                     if peer.node_id == self.node_id || peer.dialable_addr().is_none() {
                         continue;
                     }
+
+                    self.remember_public_discovery_peer(&peer).await;
+                    if !self.admit_peer(&peer).await {
+                        debug!(
+                            "PeerList descartou {}: peer sem prova de pertencimento",
+                            short(&peer.node_id)
+                        );
+                        continue;
+                    }
+                    if self.admission.is_some() {
+                        peer.connection_verified = true;
+                    }
+
+                    let mut known = self.peers.write().await;
 
                     let Some(previous) = known.get(&peer.node_id) else {
                         info!(
@@ -2303,11 +2655,13 @@ impl Network {
                     // que roda sozinho, isso é um cadáver novo por rotação.
                     // Quem já provou que o endereço não atende não o traz de
                     // volta.
-                    for addr in &previous.addr_candidates {
-                        if self.routes.host_is_discredited(&peer.node_id, addr) {
-                            continue;
+                    if peer.addr_candidates.is_empty() {
+                        for addr in &previous.addr_candidates {
+                            if self.routes.host_is_discredited(&peer.node_id, addr) {
+                                continue;
+                            }
+                            peer.merge_observed(addr);
                         }
-                        peer.merge_observed(addr);
                     }
                     peer.connection_verified = connection_verified;
                     peer.api_keys_active = api_keys_active;
@@ -2358,6 +2712,10 @@ impl Network {
             peers.retain(|_, p| p.is_alive());
             mortos
         };
+        self.public_discovery
+            .write()
+            .await
+            .retain(|_, peer| peer.is_alive());
         if mortos.is_empty() {
             return;
         }
@@ -2372,8 +2730,231 @@ impl Network {
         info!("🧹 Removed {} timed-out peers", mortos.len());
     }
 
-    /// Insert or update a peer discovered via libp2p (gossipsub / mDNS).
-    pub async fn insert_peer(&self, peer: PeerInfo) {
+    fn admission_cache_key(&self, peer: &PeerInfo, connection_key: &str) -> String {
+        format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            peer.node_id,
+            peer.pubkey,
+            peer.authority_pubkey,
+            peer.addr,
+            peer.addr_candidates.join(","),
+            peer.gateway_port.unwrap_or_default(),
+            hex::encode(Sha256::digest(connection_key.as_bytes()))
+        )
+    }
+
+    fn legacy_identity_matches(node_id: &str, pubkey: &str) -> bool {
+        let Ok(bytes) = hex::decode(pubkey) else {
+            return false;
+        };
+        hex::encode(Sha256::digest(bytes)).eq_ignore_ascii_case(node_id)
+    }
+
+    fn authority_peer_id_matches(peer: &PeerInfo) -> bool {
+        let Some(peer_id) = peer.libp2p_peer_id.as_deref() else {
+            return false;
+        };
+        let Ok(bytes) = hex::decode(&peer.authority_pubkey) else {
+            return false;
+        };
+        let Ok(public) = libp2p::identity::ed25519::PublicKey::try_from_bytes(&bytes) else {
+            return false;
+        };
+        let public = libp2p::identity::PublicKey::from(public);
+        libp2p::PeerId::from_public_key(&public).to_string() == peer_id
+    }
+
+    fn public_peer_is_admitted(
+        peer: &PeerInfo,
+        admission: &PeerAdmission,
+        access_policy: crate::config::NetworkAccessPolicy,
+    ) -> bool {
+        if !Self::legacy_identity_matches(&peer.node_id, &peer.pubkey)
+            || !Self::authority_peer_id_matches(peer)
+        {
+            return false;
+        }
+        let Some(cluster_id) = peer.cluster_id.as_deref() else {
+            return false;
+        };
+        let Some(peer_id) = peer.libp2p_peer_id.as_deref() else {
+            return false;
+        };
+        // `anyone_with_anchor`: o operador declarou que qualquer nó que segura a
+        // âncora correspondente participa. Um worker comum nunca recebe
+        // concessão de autoridade, então `admits_participant` o recusaria. Aqui a
+        // barra é uma âncora local válida para o `cluster_id` anunciado, somada
+        // ao vínculo de identidade já conferido acima (node_id ↔ pubkey ↔ chave
+        // de autoridade ↔ PeerId, e o Announce do gossip vem assinado por esse
+        // PeerId). As políticas mais estritas continuam exigindo concessão.
+        if matches!(
+            access_policy,
+            crate::config::NetworkAccessPolicy::AnyoneWithAnchor
+        ) {
+            return admission.trust.anchors_cluster(cluster_id);
+        }
+        let principal = crate::admin_trust::AuthorityPrincipal {
+            node_id: peer.node_id.clone(),
+            peer_id: peer_id.to_string(),
+            pubkey: peer.authority_pubkey.clone(),
+        };
+        admission.trust.admits_participant(cluster_id, &principal)
+    }
+
+    fn admission_urls(&self, peer: &PeerInfo) -> Vec<String> {
+        let Some(port) = peer.gateway_port else {
+            return Vec::new();
+        };
+        let mut addresses = vec![peer.addr.as_str()];
+        addresses.extend(peer.addr_candidates.iter().map(String::as_str));
+        let mut urls = Vec::new();
+        for address in addresses {
+            if !is_valid_destination(address) {
+                continue;
+            }
+            let url = format!(
+                "{}/handshake",
+                crate::peer_client::peer_base_url(ip_host(address), port, self.tls_enabled())
+            );
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        urls
+    }
+
+    async fn private_peer_is_admitted(&self, peer: &PeerInfo, connection_key: &str) -> bool {
+        if !Self::legacy_identity_matches(&peer.node_id, &peer.pubkey) {
+            return false;
+        }
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(ADMISSION_TIMEOUT)
+            .timeout(ADMISSION_TIMEOUT);
+        if self.tls_enabled() {
+            let Ok(config) = crate::tls::client_config(&peer.node_id) else {
+                return false;
+            };
+            builder = builder.use_preconfigured_tls(config);
+        }
+        let Ok(client) = builder.build() else {
+            return false;
+        };
+        let body = serde_json::json!({
+            "node_id": self.node_id,
+            "pubkey": self.pubkey,
+            "connection_key": connection_key,
+            "nonce": null,
+            "signature": null,
+        });
+        for url in self.admission_urls(peer) {
+            let Ok(response) = client.post(&url).json(&body).send().await else {
+                continue;
+            };
+            let status = response.status();
+            let Ok(body) = response.json::<serde_json::Value>().await else {
+                continue;
+            };
+            if body.get("approved").and_then(serde_json::Value::as_bool) == Some(true)
+                || (status == reqwest::StatusCode::FORBIDDEN
+                    && body.get("reason").and_then(serde_json::Value::as_str)
+                        == Some("challenge_required"))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Confere pertencimento antes de qualquer efeito derivado do peer.
+    ///
+    /// A resposta `challenge_required` do handshake já prova a chave
+    /// compartilhada; concluir a assinatura do nonce seria uma prova de
+    /// identidade adicional, não necessária para a admissão privada atual.
+    pub(crate) async fn admit_peer(&self, peer: &PeerInfo) -> bool {
+        let Some(admission) = self.admission.as_ref() else {
+            return true;
+        };
+        let (connection_key, is_public_network, access_policy) = {
+            let config = admission.auth.read().await;
+            (
+                config.connection_key.clone(),
+                config.network.visibility == crate::config::NetworkVisibility::Public,
+                config.network.access_policy,
+            )
+        };
+        if is_public_network {
+            return Self::public_peer_is_admitted(peer, admission, access_policy);
+        }
+        if connection_key.is_empty() {
+            return false;
+        }
+
+        let cache_key = self.admission_cache_key(peer, &connection_key);
+        if let Ok(cache) = self.admission_cache.read() {
+            if let Some(entry) = cache.get(&cache_key) {
+                if entry.expires_at > Instant::now() {
+                    return entry.allowed;
+                }
+            }
+        }
+        let allowed = self.private_peer_is_admitted(peer, &connection_key).await;
+        if let Ok(mut cache) = self.admission_cache.write() {
+            cache.insert(
+                cache_key,
+                AdmissionCacheEntry {
+                    allowed,
+                    expires_at: Instant::now()
+                        + if allowed {
+                            ADMISSION_CACHE_TTL
+                        } else {
+                            REJECTED_ADMISSION_CACHE_TTL
+                        },
+                },
+            );
+        }
+        allowed
+    }
+
+    /// A rede pública tem uma porta de descoberta aberta, mas isso não é uma
+    /// concessão para participar do enxame. Guardamos somente candidatos que
+    /// conseguem provar a ligação entre identidade, chave de autoridade e
+    /// PeerId. A cadeia de confiança continua sendo exigida por
+    /// `admit_peer` antes de qualquer efeito de membro.
+    fn is_public_discovery_candidate(peer: &PeerInfo) -> bool {
+        peer.gateway_port.is_some()
+            && peer
+                .cluster_id
+                .as_deref()
+                .is_some_and(|cluster| !cluster.trim().is_empty())
+            && Self::legacy_identity_matches(&peer.node_id, &peer.pubkey)
+            && Self::authority_peer_id_matches(peer)
+    }
+
+    /// Keep a public announcement available to the public-network directory
+    /// without adding it to the admitted peer table.
+    pub(crate) async fn remember_public_discovery_peer(&self, peer: &PeerInfo) {
+        if peer.node_id == self.node_id || !Self::is_public_discovery_candidate(peer) {
+            return;
+        }
+        self.public_discovery
+            .write()
+            .await
+            .insert(peer.node_id.clone(), peer.clone());
+    }
+
+    /// Candidates that are still fresh enough to be probed by the public
+    /// directory. They are intentionally not returned by `alive_peers`.
+    pub(crate) async fn public_discovered_peers(&self) -> Vec<PeerInfo> {
+        self.public_discovery
+            .read()
+            .await
+            .values()
+            .filter(|peer| peer.is_alive())
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) async fn insert_admitted_peer(&self, mut peer: PeerInfo) {
         if peer.dialable_addr().is_none() {
             debug!(
                 "ignorando peer {} sem endereço UDP discável",
@@ -2384,6 +2965,9 @@ impl Network {
         let node_id = peer.node_id.clone();
         if node_id == self.node_id {
             return;
+        }
+        if self.admission.is_some() {
+            peer.connection_verified = true;
         }
         let (is_new, address_changed) = {
             let peers = self.peers.read().await;
@@ -2405,6 +2989,19 @@ impl Network {
             self.routes.invalidate(&node_id);
         }
         self.peers.write().await.insert(node_id, peer);
+    }
+
+    /// Insert or update a peer discovered via libp2p (gossipsub / mDNS).
+    pub async fn insert_peer(&self, peer: PeerInfo) {
+        self.remember_public_discovery_peer(&peer).await;
+        if !self.admit_peer(&peer).await {
+            debug!(
+                "peer {} recusado pela catraca de admissão",
+                short(&peer.node_id)
+            );
+            return;
+        }
+        self.insert_admitted_peer(peer).await;
     }
 
     pub async fn peer_count(&self) -> usize {
@@ -2463,7 +3060,17 @@ mod tests {
         let net = Network::testkit("n".into(), "p".into(), vec![], None, Some(8181), Some(8080))
             .await
             .unwrap()
-            .with_identity(crate::profile::NodeProfile::Admin, "macbook".into());
+            .with_identity(crate::profile::NodeProfile::Admin, "macbook".into())
+            .with_quic_ports(Some(8182), Some(8081));
+        net.set_advertise_addr(Some("198.51.100.9:8080"));
+        assert_eq!(
+            net.inference_quic_addr_candidates(),
+            vec!["198.51.100.9:8182"]
+        );
+        assert_eq!(
+            net.gateway_quic_addr_candidates(),
+            vec!["198.51.100.9:8081"]
+        );
 
         let asgn = LayerAssignment {
             deploy_id: String::new(),
@@ -2506,6 +3113,8 @@ mod tests {
             // um carregasse, a virada chegaria por um caminho e não pelo outro,
             // e o cluster ficaria meio cifrado sem ninguém notar.
             assert_eq!(gossip["tls"], false);
+            assert_eq!(gossip["inference_quic_port"], 8182);
+            assert_eq!(gossip["gateway_quic_port"], 8081);
             assert_eq!(gossip["hostname"], "macbook");
         }
 
@@ -2516,6 +3125,16 @@ mod tests {
             serde_json::from_slice(&net.gossip_announce_bytes(None).unwrap()).unwrap();
         assert_eq!(udp["tls"], true);
         assert_eq!(gossip["tls"], true);
+
+        // O estado de ociosidade também precisa ser idêntico nos dois
+        // transportes: um peer não pode parecer `serving` pela LAN e `idle`
+        // pelo gossipsub.
+        net.set_idle(true);
+        let udp: serde_json::Value = serde_json::to_value(net.self_announce(None)).unwrap();
+        let gossip: serde_json::Value =
+            serde_json::from_slice(&net.gossip_announce_bytes(None).unwrap()).unwrap();
+        assert_eq!(udp["idle"], true);
+        assert_eq!(gossip["idle"], true);
     }
 
     #[tokio::test]
@@ -2558,6 +3177,55 @@ mod tests {
             net.broadcast_addr,
             SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT)
         );
+    }
+
+    #[tokio::test]
+    async fn secondary_authority_is_not_mistaken_for_the_primary() {
+        let net = Network::testkit(
+            "local".into(),
+            "pk".into(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("socket UDP em porta efêmera");
+        let (probe, mut received) = tokio::sync::mpsc::unbounded_channel();
+        net.set_policy_principal_pubkey("primary-key");
+        net.set_cluster_logs_probe(probe);
+
+        net.trigger_cluster_logs_probe("secondary", "secondary-key", true, false);
+        assert!(received.try_recv().is_err());
+        net.trigger_cluster_logs_probe("primary", "primary-key", true, false);
+        assert_eq!(received.recv().await.unwrap().0, "primary");
+    }
+
+    #[tokio::test]
+    async fn admin_peers_returns_all_live_admin_destinations() {
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+            .await
+            .expect("socket UDP em porta efêmera");
+        let mut first = dummy_peer("admin-a", "127.0.0.1:8081");
+        first.authority_pubkey = "authority-a".into();
+        first.profile = crate::profile::NodeProfile::Admin;
+        first.gateway_port = Some(8081);
+        first.libp2p_peer_id = Some(libp2p::PeerId::random().to_string());
+        let mut second = dummy_peer("admin-b", "127.0.0.1:8082");
+        second.authority_pubkey = "authority-b".into();
+        second.profile = crate::profile::NodeProfile::Admin;
+        second.gateway_port = Some(8082);
+        second.libp2p_peer_id = Some(libp2p::PeerId::random().to_string());
+        let ordinary = dummy_peer("node-c", "127.0.0.1:8083");
+        {
+            let mut peers = net.peers.write().await;
+            peers.insert(first.node_id.clone(), first);
+            peers.insert(second.node_id.clone(), second);
+            peers.insert(ordinary.node_id.clone(), ordinary);
+        }
+
+        let peers = net.admin_peers().await;
+        assert_eq!(peers.len(), 2);
     }
 
     #[tokio::test]
@@ -2808,6 +3476,41 @@ mod tests {
         assert_eq!(net.announce_addr(), "198.51.100.9:42777");
     }
 
+    #[test]
+    fn a_pinned_address_replaces_local_announce_candidates() {
+        let local = vec![
+            crate::addrs::LocalAddr {
+                ip: "192.168.100.210".into(),
+                interface: Some("en0".into()),
+                deprecated: false,
+                temporary: false,
+            },
+            crate::addrs::LocalAddr {
+                ip: "172.17.0.1".into(),
+                interface: Some("docker0".into()),
+                deprecated: false,
+                temporary: false,
+            },
+        ];
+
+        let (addr, candidates) =
+            announce_addresses(Some("100.122.132.97:42777".into()), None, local, 42777);
+
+        assert_eq!(addr, "100.122.132.97:42777");
+        assert_eq!(candidates, vec!["100.122.132.97:42777"]);
+    }
+
+    #[test]
+    fn libp2p_dial_uses_addr_canonico_e_ignora_candidatos_legados() {
+        let mut peer = peer_com_candidatos(vec!["192.168.100.210:42777", "172.17.0.1:42777"]);
+        peer.addr = "100.122.132.97:42777".into();
+
+        assert_eq!(
+            peer.libp2p_dialable_addrs(),
+            vec!["100.122.132.97:42777".to_string()]
+        );
+    }
+
     /// A peer on the same LAN, or a NAT that rewrote to another private
     /// range, is not evidence of a real public IP — must not overwrite the
     /// sentinel with something equally useless.
@@ -2915,6 +3618,7 @@ mod tests {
             node_id: "n".into(),
             pubkey: "p".into(),
             authority_pubkey: String::new(),
+            cluster_id: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -2925,7 +3629,9 @@ mod tests {
             last_seen: Utc::now(),
             ollama_port: None,
             inference_port: Some(8181),
+            inference_quic_port: Some(8182),
             gateway_port: Some(8090),
+            gateway_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
@@ -2937,10 +3643,15 @@ mod tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         };
         assert_eq!(
             peer.inference_url().as_deref(),
             Some("http://[2804:d55:5579:1000:89f3:3f94:7c07:e183]:8181")
+        );
+        assert_eq!(
+            peer.quic_addr_candidates(),
+            vec!["[2804:d55:5579:1000:89f3:3f94:7c07:e183]:8182"]
         );
         assert_eq!(
             peer.gateway_url().as_deref(),
@@ -2958,6 +3669,7 @@ mod tests {
             node_id: "7b09e99c538b0f79daf0cf9111d9e5e912094c7c999273b8d2df3a446f6630ec".into(),
             pubkey: "a".repeat(64),
             authority_pubkey: String::new(),
+            cluster_id: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
             addr_candidates: Vec::new(),
             model: "qwen35".into(),
@@ -2968,7 +3680,9 @@ mod tests {
             last_seen: Utc::now(),
             ollama_port: None,
             inference_port: Some(8181),
+            inference_quic_port: None,
             gateway_port: Some(8090),
+            gateway_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             profile: crate::profile::NodeProfile::Admin,
             hostname: "ksia".into(),
@@ -2980,6 +3694,7 @@ mod tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         };
 
         for count in [0usize, 1, 2, 3, 5, 12] {
@@ -3045,6 +3760,7 @@ mod tests {
             node_id: "n1".into(),
             pubkey: "p".into(),
             authority_pubkey: String::new(),
+            cluster_id: None,
             addr: "192.168.1.9:42777".into(),
             addr_candidates: candidatos.into_iter().map(String::from).collect(),
             model: "qwen35".into(),
@@ -3055,8 +3771,10 @@ mod tests {
             last_seen: Utc::now(),
             ollama_port: None,
             inference_port: Some(8181),
+            inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             gateway_port: Some(8080),
+            gateway_quic_port: None,
             profile: crate::profile::NodeProfile::Node,
             hostname: "h".into(),
             capabilities: Vec::new(),
@@ -3067,6 +3785,7 @@ mod tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         }
     }
 
@@ -3122,11 +3841,11 @@ mod tests {
         );
     }
 
-    /// Um candidato que ninguem desacreditou continua herdado: e o endereco
-    /// observado, o unico que enxerga NAT, e quem anuncia nao tem como saber
-    /// dele. A poda e por prova de falha, nao por desconfianca.
+    /// Uma lista explicita anunciada pelo peer substitui a fotografia anterior;
+    /// não se herda endereço observado, porque isso reintroduziria LAN, bridge
+    /// ou um endereço antigo que o operador já deixou de anunciar.
     #[tokio::test]
-    async fn gossip_still_keeps_a_candidate_nobody_discredited() {
+    async fn gossip_drops_an_observed_candidate_when_the_peer_announces_a_set() {
         let net = Network::new("local".into(), "pubkey".into(), 0, vec![], None, None, None)
             .await
             .unwrap();
@@ -3154,18 +3873,14 @@ mod tests {
         .await;
 
         let guardado = net.peers.read().await["peer"].clone();
-        assert!(
-            guardado.addr_candidates.iter().any(|c| c == observado),
-            "o endereco observado tem de sobreviver ao gossip: {:?}",
-            guardado.addr_candidates
-        );
+        assert_eq!(guardado.addr_candidates, vec![anunciado]);
     }
 
-    /// O endereço efetivo que chega no socket é evidência de alcance atual.
-    /// Não basta guardar apenas o `addr` que o peer escolheu no anúncio, pois
-    /// IPv6 temporário pode trocar entre a montagem do anúncio e a entrega.
+    /// Quando o peer envia candidatos explícitos, a origem efetiva do pacote
+    /// não entra na lista: ela pode ser LAN, bridge ou outro endereço que não
+    /// seja o `advertise_addr` que o peer quer publicar.
     #[tokio::test]
-    async fn an_announce_keeps_the_address_seen_on_the_wire_as_a_candidate() {
+    async fn an_announce_does_not_add_the_socket_source_to_an_explicit_set() {
         let net = Network::new(
             "local".into(),
             "pubkey".into(),
@@ -3186,6 +3901,7 @@ mod tests {
                 node_id: "peer".into(),
                 pubkey: "peer-key".into(),
                 authority_pubkey: String::new(),
+                cluster_id: None,
                 addr: stale.into(),
                 addr_candidates: vec![stale.into()],
                 model: "qwen".into(),
@@ -3197,10 +3913,13 @@ mod tests {
                 timestamp: Utc::now(),
                 ollama_port: None,
                 inference_port: Some(8181),
+                inference_quic_port: None,
                 inference_frame_capabilities: Vec::new(),
                 gateway_port: Some(8080),
+                gateway_quic_port: None,
                 profile: crate::profile::NodeProfile::Node,
                 tls: false,
+                quic: false,
                 hostname: "salem".into(),
                 capabilities: Vec::new(),
                 disk_total_mb: 0,
@@ -3208,7 +3927,9 @@ mod tests {
                 libp2p_peer_id: None,
                 tp: None,
                 runtime_capacity: None,
+                idle: false,
                 cluster_logs_enabled: false,
+                network_chat_enabled: false,
             },
             current.parse().unwrap(),
             &assignment,
@@ -3217,13 +3938,7 @@ mod tests {
 
         let peers = net.peers.read().await;
         let peer = peers.get("peer").expect("o anúncio deve criar o peer");
-        assert!(
-            peer.addr_candidates
-                .iter()
-                .any(|candidate| candidate == current),
-            "o endereço observado no socket foi perdido: {:?}",
-            peer.addr_candidates
-        );
+        assert_eq!(peer.addr_candidates, vec![stale]);
     }
 
     /// `gateway_url()` era so `peer.addr`, entao o plano de controle tinha um
@@ -3504,6 +4219,7 @@ mod tests {
             node_id: node_id.into(),
             pubkey: "p".into(),
             authority_pubkey: String::new(),
+            cluster_id: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),
             model: String::new(),
@@ -3514,8 +4230,10 @@ mod tests {
             last_seen: Utc::now(),
             ollama_port: None,
             inference_port: None,
+            inference_quic_port: None,
             inference_frame_capabilities: Vec::new(),
             gateway_port: None,
+            gateway_quic_port: None,
             profile: crate::profile::NodeProfile::Node,
             hostname: String::new(),
             capabilities: Vec::new(),
@@ -3526,7 +4244,411 @@ mod tests {
             libp2p_peer_id: None,
             tp: None,
             runtime_capacity: None,
+            idle: false,
         }
+    }
+
+    fn admission_config(
+        key: &str,
+        visibility: crate::config::NetworkVisibility,
+    ) -> crate::auth::AuthState {
+        use crate::config::Config;
+        Arc::new(RwLock::new(Config {
+            profile: crate::profile::NodeProfile::Node,
+            setup_pending: false,
+            connection_key: key.into(),
+            gateway_port: 8080,
+            admin_exposure: Default::default(),
+            admin_access_token: None,
+            p2p_port: 42777,
+            inference_port: None,
+            bootstrap_nodes: vec![],
+            advertise_addr: None,
+            network: crate::config::NetworkSettings {
+                visibility,
+                ..Default::default()
+            },
+            api_keys: vec![],
+            blocked_nodes: vec![],
+            tls_required: false,
+            quic_enabled: false,
+            cluster_logs_enabled: false,
+            network_chat_enabled: false,
+            cluster_logs_min_level: Default::default(),
+            model_dirs: None,
+            shard_dir: None,
+            shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
+            resources: Default::default(),
+            setup_model: None,
+            gpus: None,
+            thermal: Default::default(),
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
+            node_name: None,
+            huggingface_token: None,
+            slot_save_path: None,
+            slot_persist_prefix_cache: false,
+            slot_auto_max_bytes: None,
+            slot_auto_ttl_secs: None,
+        }))
+    }
+
+    fn admission_peer(gateway_port: u16) -> PeerInfo {
+        let identity = crate::identity::Identity::generate();
+        let node_id = identity.node_id.0.clone();
+        let pubkey = identity.public_key_hex();
+        PeerInfo {
+            node_id,
+            pubkey,
+            authority_pubkey: String::new(),
+            cluster_id: None,
+            addr: "127.0.0.1:42777".into(),
+            addr_candidates: vec!["127.0.0.1:42777".into()],
+            model: String::new(),
+            deploy_id: String::new(),
+            start_layer: 0,
+            end_layer: 0,
+            total_layers: 0,
+            memory_mb: 0.0,
+            last_seen: Utc::now(),
+            ollama_port: None,
+            inference_port: None,
+            inference_quic_port: None,
+            inference_frame_capabilities: Vec::new(),
+            gateway_port: Some(gateway_port),
+            gateway_quic_port: None,
+            profile: crate::profile::NodeProfile::Node,
+            tls: false,
+            hostname: String::new(),
+            capabilities: Vec::new(),
+            connection_verified: false,
+            disk_total_mb: 0,
+            disk_free_mb: 0,
+            api_keys_active: 0,
+            libp2p_peer_id: None,
+            tp: None,
+            runtime_capacity: None,
+            idle: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn private_admission_rejects_wrong_key_and_accepts_the_shared_key() {
+        let remote = admission_config("correct", crate::config::NetworkVisibility::Private);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gateway_port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/handshake",
+                axum::routing::post(crate::session::handle_handshake),
+            )
+            .with_state(remote);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let identity = crate::identity::Identity::generate();
+        let wrong = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config("wrong", crate::config::NetworkVisibility::Private),
+            Arc::new(crate::admin_trust::AdminTrust::empty()),
+        );
+        wrong.insert_peer(admission_peer(gateway_port)).await;
+        assert_eq!(wrong.peer_count().await, 0);
+
+        let valid = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config("correct", crate::config::NetworkVisibility::Private),
+            Arc::new(crate::admin_trust::AdminTrust::empty()),
+        );
+        valid.insert_peer(admission_peer(gateway_port)).await;
+        assert_eq!(valid.peer_count().await, 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn public_admission_rejects_unknown_without_trust_and_accepts_anchored_principal() {
+        let identity = crate::identity::Identity::generate();
+        let node_id = identity.node_id.0.clone();
+        let pubkey = identity.public_key_hex();
+        let unknown = Network::testkit(node_id.clone(), pubkey.clone(), vec![], None, None, None)
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config("", crate::config::NetworkVisibility::Public),
+                Arc::new(crate::admin_trust::AdminTrust::empty()),
+            );
+        unknown.insert_peer(admission_peer(8080)).await;
+        assert_eq!(unknown.peer_count().await, 0);
+
+        let assignment = Arc::new(RwLock::new(None));
+        let announce: P2PMessage = serde_json::from_value(serde_json::json!({
+            "type": "Announce",
+            "node_id": "unknown",
+            "pubkey": "not-a-node-key",
+            "addr": "127.0.0.1:42777",
+            "model": "qwen",
+            "start_layer": 0,
+            "end_layer": 1,
+            "total_layers": 2,
+            "memory_mb": 0.0,
+            "timestamp": Utc::now(),
+        }))
+        .unwrap();
+        unknown
+            .handle_message(announce, "127.0.0.1:42777".parse().unwrap(), &assignment)
+            .await;
+        assert_eq!(unknown.peer_count().await, 0);
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let mut seed = signing_key.to_bytes();
+        let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..]).unwrap();
+        let peer_id = libp2p_keypair.public().to_peer_id().to_string();
+        let mut peer = admission_peer(8080);
+        let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            peer.node_id.clone(),
+            peer_id.clone(),
+            &signing_key,
+        );
+        let path =
+            std::env::temp_dir().join(format!("pom-admission-{}.json", uuid::Uuid::new_v4()));
+        let trust = crate::admin_trust::AdminTrust::bootstrap_primary(
+            &path,
+            "cluster",
+            principal.clone(),
+            &signing_key,
+        )
+        .unwrap();
+        let trusted = Network::testkit(node_id, pubkey, vec![], None, None, None)
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config(
+                    "local-admin-credential",
+                    crate::config::NetworkVisibility::Public,
+                ),
+                Arc::new(trust),
+            );
+        peer.authority_pubkey = principal.pubkey;
+        peer.libp2p_peer_id = Some(peer_id);
+        peer.cluster_id = Some("cluster".into());
+        trusted.insert_peer(peer).await;
+        assert_eq!(trusted.peer_count().await, 1);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn admission_config_with_policy(
+        key: &str,
+        visibility: crate::config::NetworkVisibility,
+        access_policy: crate::config::NetworkAccessPolicy,
+    ) -> crate::auth::AuthState {
+        let state = admission_config(key, visibility);
+        state
+            .try_write()
+            .expect("fresh admission config lock is uncontended")
+            .network
+            .access_policy = access_policy;
+        state
+    }
+
+    /// Um worker co-locado só tem a âncora e a `connection_key`, nunca uma
+    /// concessão de autoridade. Sob `anyone_with_anchor` o Announce dele — com a
+    /// identidade amarrada (node_id ↔ pubkey ↔ chave de autoridade ↔ PeerId) e o
+    /// `cluster_id` da âncora local — basta para entrar em `peers`. Foi isto que
+    /// `6c3b19db` quebrou: só o primário/secundário passava.
+    #[tokio::test]
+    async fn public_anyone_with_anchor_admits_anchored_worker_without_grant() {
+        let local = crate::identity::Identity::generate();
+
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "admin-node",
+            "admin-peer",
+            &primary_key,
+        );
+        let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "cluster",
+            primary,
+            &primary_key,
+        )
+        .unwrap();
+
+        // Peer worker: chave de autoridade própria, distinta do primário.
+        let worker_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut seed = worker_key.to_bytes();
+        let worker_peer_id = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
+            .unwrap()
+            .public()
+            .to_peer_id()
+            .to_string();
+        let mut worker = admission_peer(8081);
+        worker.authority_pubkey = hex::encode(worker_key.verifying_key().as_bytes());
+        worker.libp2p_peer_id = Some(worker_peer_id);
+        worker.cluster_id = Some("cluster".into());
+
+        let net = Network::testkit(
+            local.node_id.0.clone(),
+            local.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config_with_policy(
+                "shared",
+                crate::config::NetworkVisibility::Public,
+                crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            ),
+            Arc::new(trust),
+        );
+        net.insert_peer(worker.clone()).await;
+        assert_eq!(net.peer_count().await, 1);
+    }
+
+    /// A relaxação vale só para `anyone_with_anchor`. Com `authorized` (padrão) o
+    /// mesmo worker sem concessão continua fora, e um `cluster_id` que não é o da
+    /// âncora nunca entra sob nenhuma política.
+    #[tokio::test]
+    async fn public_authorized_still_requires_a_grant_and_anchor_rejects_wrong_cluster() {
+        let local = crate::identity::Identity::generate();
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+
+        let worker_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut seed = worker_key.to_bytes();
+        let worker_peer_id = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
+            .unwrap()
+            .public()
+            .to_peer_id()
+            .to_string();
+        let mut worker = admission_peer(8081);
+        worker.authority_pubkey = hex::encode(worker_key.verifying_key().as_bytes());
+        worker.libp2p_peer_id = Some(worker_peer_id);
+        worker.cluster_id = Some("cluster".into());
+
+        let build = |cluster: Option<&'static str>| {
+            let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "cluster",
+                crate::admin_trust::AuthorityPrincipal::from_signing_key(
+                    "admin-node",
+                    "admin-peer",
+                    &primary_key,
+                ),
+                &primary_key,
+            )
+            .unwrap();
+            let mut peer = worker.clone();
+            peer.cluster_id = cluster.map(str::to_string);
+            (trust, peer)
+        };
+
+        // authorized + worker sem concessão => recusado.
+        let (trust, peer) = build(Some("cluster"));
+        let net = Network::testkit(
+            local.node_id.0.clone(),
+            local.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config_with_policy(
+                "shared",
+                crate::config::NetworkVisibility::Public,
+                crate::config::NetworkAccessPolicy::Authorized,
+            ),
+            Arc::new(trust),
+        );
+        net.insert_peer(peer).await;
+        assert_eq!(net.peer_count().await, 0);
+
+        // anyone_with_anchor + cluster_id que não é o da âncora => recusado.
+        let (trust, peer) = build(Some("outro-enxame"));
+        let net = Network::testkit(
+            local.node_id.0.clone(),
+            local.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config_with_policy(
+                "shared",
+                crate::config::NetworkVisibility::Public,
+                crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            ),
+            Arc::new(trust),
+        );
+        net.insert_peer(peer).await;
+        assert_eq!(net.peer_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn public_directory_keeps_unadmitted_public_candidates_out_of_pipeline() {
+        let identity = crate::identity::Identity::generate();
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config("", crate::config::NetworkVisibility::Public),
+            Arc::new(crate::admin_trust::AdminTrust::empty()),
+        );
+
+        let mut peer = admission_peer(8080);
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut seed = signing_key.to_bytes();
+        let peer_id = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..])
+            .unwrap()
+            .public()
+            .to_peer_id()
+            .to_string();
+        let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            peer.node_id.clone(),
+            peer_id.clone(),
+            &signing_key,
+        );
+        peer.authority_pubkey = principal.pubkey;
+        peer.libp2p_peer_id = Some(peer_id);
+        peer.cluster_id = Some("public-network".into());
+
+        assert!(!network.admit_peer(&peer).await);
+        network.remember_public_discovery_peer(&peer).await;
+
+        assert_eq!(network.peer_count().await, 0);
+        assert_eq!(network.public_discovered_peers().await.len(), 1);
     }
 
     /// A descoberta transitiva era de tiro único: `PeerRequest` só saía no

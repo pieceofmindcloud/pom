@@ -10,9 +10,10 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
 - `pipeline.rs` - `LoadTracker`/`LoadGuard` (contagem RAII de requisições em
   voo por peer), `PipelineStep`/`PipelinePlan`/`PipelineEdge`, `plan_pipeline`
   (greedy) e `resolve_step_url` (endereço por hop, por sessão). Cada
-  `PipelineStep` preserva os candidatos HTTP e UDP do hop; os transportes
-  tentam a lista com memória de falha expirável em vez de tratar `addr` como
-  verdade permanente.
+  `PipelineStep` preserva os candidatos HTTP e os destinos `host:porta` da
+  porta UDP QUIC anunciada do hop; os transportes tentam a lista com memória de
+  falha expirável em vez de tratar `addr` como verdade permanente. O destino
+  QUIC nunca é derivado da `inference_url`.
 
 ## Funções-chave
 
@@ -24,11 +25,16 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   Empates finais usam `node_id` para manter o plano determinístico. **Exclui
   workers de tensor parallelism** (`PeerInfo::is_tp_worker`): só o primary de
   um grupo entra na cadeia. Devolve `None` no primeiro buraco executável.
+- `plan_pipeline_with_rtt_from_head` - mesma cobertura e escolha dos estágios
+  seguintes, mas honra um `node_id` explícito para a etapa L0 quando ele é uma
+  cabeça viva do modelo. Uma escolha inválida falha fechada, sem voltar ao
+  score, e `PipelinePlan::hop_chain` passa a provar essa cabeça na telemetria.
 - `plan_pipeline` - chama a variante acima sem medições de RTT.
 - `model_pipeline_candidates` e `model_head_candidates` - o primeiro aplica o
-  filtro de modelo, implantação, liveness e primary; o segundo recorta somente
-  as faixas que começam em L0 para a visão limitada do perfil infer. Nenhum
-  deles publica a topologia completa.
+  filtro de modelo, implantação e liveness; o segundo recorta somente as
+  faixas que começam em L0 para a visão limitada do perfil infer. Um deployment
+  misto pode, portanto, expor simultaneamente a cabeça do GGUF inteiro e a
+  cabeça de fatias. Nenhum deles publica a topologia completa.
 - `PipelineStep::exec_start`/`exec_end` - faixa que o hop executa, distinta da
   faixa que ele carregou; `PipelineEdge` só existe quando essas sub-faixas são
   contíguas.

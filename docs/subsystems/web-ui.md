@@ -41,6 +41,10 @@ altura o painel encolhe para o que cabe; a largura de 390 é fixa. O botão
 nativo uma janela redimensionável de 1120 x 880 points, maior que o painel nos
 dois eixos. No navegador comum esse botão não é renderizado.
 
+O bundle instala também o menu comum do aplicativo macOS no AppKit, com Sobre e
+Sair. A ação Sair chama o encerramento padrão do aplicativo e termina o processo
+inteiro, incluindo o serviço Tokio que fica na thread de fundo.
+
 Quem escolhe as medidas e o endereço é o Rust (`macos_status.rs`), que os
 entrega ao Objective-C no arranque: o lado nativo não conhece a configuração do
 nó, e duplicar os números nos dois lados seria convite a desencontro.
@@ -134,8 +138,17 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
   dono de um stream vivo e do scroll; desmontar para animar derrubaria tokens);
-  `/admin-ui/chat` é o alias compacto usado pelo app de barra do macOS e renderiza
-  o mesmo Chat sem o chrome administrativo
+  `/network-chat` é o Chat da rede em página própria, com o mesmo padrão visual
+  do Chat de IA e segue o fim do histórico quando a pessoa está no rodapé;
+  `/admin-ui/chat` é o alias compacto usado pelo app de barra do macOS e
+  renderiza o mesmo Chat sem o chrome administrativo. As duas superfícies
+  exibem `ChatSurfaceTabs`, que permite alternar entre `/chat` e
+  `/network-chat` nos dois sentidos.
+  A entrada `Chat da rede` mostra o número de mensagens recebidas desde a
+  última leitura e entrar na tela zera o badge. Em viewport mobile, os usuários
+  online começam ocultos e aparecem pelo botão `Ver online`. As abas IA/REDE
+  são a primeira faixa do conteúdo das duas telas de chat, acima do cabeçalho e
+  da conversa.
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; e
   `/modelos/fatiar` -> SliceModels, com o painel de jobs e progresso de
   fatiamento embutido
@@ -150,24 +163,39 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   leitura, com os parâmetros com que aquela versão subiu
 - `/implantacoes/logs` -> DeploymentLogs, consola terminal do log de processo de
   todo o cluster, em ordem de chegada ao principal e com filtro por `deploy_id`;
-  não confundir com a auditoria de requisições em `/logs`
+  não confundir com a auditoria de requisições em `/logs`. O histórico é
+  limitado no principal aos últimos sete dias ou 500.000 registros, o que
+  ocorrer primeiro; `cluster_logs_min_level` em `pom.json` controla o nível
+  mínimo capturado e assume `info`.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
   requisições paginadas por scroll infinito e inspetor JSON
-- `/estatisticas` -> Statistics, tela própria dos agregados da auditoria;
+- `/estatisticas` -> Statistics, tela full-bleed própria dos agregados da
+  auditoria, com um único título e filtros de usuário, API key, modelo, nó,
+  prompt e intervalo de datas;
   `/logs/estatisticas` redireciona para a rota nova
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
-- `/setup` -> `SetupWizard`, protótipo navegável do primeiro acesso, **em tela
-  inteira**: sem Sidebar e sem Topbar, como o `Setup` do bootstrap. O
-  assistente guia a configuração do zero, e o menu ao lado convidava a sair
-  pelo meio para uma tela que ainda não faz sentido. Em um nó já configurado, a
-  rota continua disponível para rever os seis caminhos; em modo setup, a
-  decisão de `/api/ui/node` retorna antes e mantém `Setup`, o bootstrap real
-  que escolhe `admin`, `node` ou `infer` e gera a chave de conexão.
-- `/config/rede` -> NetworkSettings; `/config/preferencias` -> Preferences;
-  `/config/keys/api` -> TokenKeys;
-  `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
-  (`/config/pastas` continua como alias)
+- `/redes-publicas` -> PublicNetworks, catálogo full-bleed de redes públicas
+  descobertas pela camada pkarr. A tabela agrupa por país/cidade e ordena pela
+  distância aproximada autorizada no navegador; mostra as métricas calculadas
+  quando o cluster local corresponde à rede e marca como indisponível o que o
+  catálogo público não fornece. O botão de entrada reaproveita a tela de
+  confiança sem segredo de rede pública.
+- `/setup` -> `Setup`, o wizard real do primeiro acesso, **em tela inteira**:
+  sem Sidebar e sem Topbar, como o bootstrap. Ele mostra hardware antes das
+  decisões de capacidade e modelo e conduz `admin`, `node` ou `infer` até o
+  save. No admin, a exposição da interface na rede é a única opção que gera
+  token administrativo; a criptografia TLS entre peers é opcional e começa
+  desligada. A tela de convite baixa o arquivo da raiz com o nome retornado por
+  `admin_trust_filename` e mostra a chave de conexão apenas em redes local ou
+  privadas. `SetupWizard.tsx` continua sendo apenas o mock de referência visual.
+- `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
+  participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
+  `/config/preferencias/admin` -> preferências administrativas;
+  `/config/confianca` reúne esta máquina, compartilhamento e chaves de conexão;
+  `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
+  (`/config/pastas` continua como alias). O wizard de configuração não aparece
+  no menu, embora sua rota de teste continue disponível.
 - `*` -> NotFound
 
 No perfil `infer`, a Sidebar deixa de ser uma lista de telas: `ChatSessionList`
@@ -182,20 +210,24 @@ projeção normal de `NAV`.
 
 ### Wizard de primeiro acesso
 
-`routes/SetupWizard.tsx` mantém uma máquina de estados local, com histórico para
-voltar em qualquer etapa. O cabeçalho usa o mesmo lockup, tokens, tipografia,
-painéis e ações do restante da interface. Os caminhos Quick Start, máquinas
-próprias, rede de empresa, contribuição, rede de IA e configuração avançada
-compartilham o resumo final, mas exibem apenas as decisões relevantes de cada
-perfil. Hardware, nós encontrados, modelos, redes públicas, capabilities e
-checagens de saúde vêm de `routes/setupWizardMocks.ts`, separados dos tipos em
-`routes/setupWizardTypes.ts` para uma futura troca por respostas do backend.
+`routes/Setup.tsx` é o wizard real, servido pelo router loopback
+`/api/setup/*`. Ele detecta hardware antes das decisões, pede localização
+país/cidade para todos os perfis, persiste a localização aproximada autorizada
+e usa etapas diferentes para `admin`, `node` e `infer`: admin cria a raiz,
+configura a rede e convida; node escolhe RAM, CPU, disco de fatias e proteção
+térmica; infer só confirma a confiança e entra. País e cidade são obrigatórios
+para rede pública e opcionais, mas persistidos, para local/private. A cidade
+manual é válida quando a referência SQLite não a contém.
 
-O wizard não grava configuração, baixa modelos, convida usuários, cria chaves,
-mede a máquina nem conecta uma rede. Essas telas são estados visuais do
-protótipo e exibem a preparação para as superfícies reais. O link de
-Configurações usa a mesma entrada `/setup`, então a experiência permanece
-revisável depois do primeiro acesso sem interferir no bootstrap de um nó novo.
+O passo de modelos combina o catálogo local com referências do Hugging Face,
+sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como
+padrões. O convite do admin mostra e baixa a raiz `.pom.trust.json`, a chave
+pública, a fingerprint calculada e a chave de conexão apenas quando a rede é
+local/private. A verificação final cobre GPU, backend disponível, configuração,
+descoberta P2P e IPv6 público; a inferência do modelo fica para depois.
+
+`routes/SetupWizard.tsx` e `components/setup-wizard/*` continuam sendo apenas o
+mock de referência visual. Não são usados pelo primeiro acesso real.
 
 ### Modelos remotos
 
@@ -260,14 +292,18 @@ indisponível, não zero. A política fica escrita na tela: cobertura primeiro, 
 RTT fresco e carga, e empate por id. RTT sem medição fresca aparece como fallback, e um modelo sem cabeça
 ou sem caminho completo produz um aviso legível em vez de uma falha crua. Esse
 recorte não abre a lista geral de peers nem oferece autoridade de controle.
+Ao trocar o combo, o Chat envia o `node_id` escolhido como `inference_head` na
+próxima requisição; a pipeline e a telemetria usam essa cabeça, em vez de
+reaplicar o score de RTT/carga.
 
 `Logs` consulta `GET /api/ui/requests` com a chave de conexão do operador. A
 barra compacta aplica filtros por identidade não secreta da API key, texto do
 prompt, nó e período, lista primeiro as entradas mais recentes em páginas e
 carrega a próxima quando o sentinela entra na viewport. A tela de estatísticas
-consulta `GET /api/ui/requests/stats`, que agrega no servidor por token, nó,
-dia, modelo e peer, além de tokens de entrada/saída, inferência, TTFT, cache de
-prefixo e estados terminais. Clicar em qualquer área não interativa da linha
+consulta `GET /api/ui/requests/stats`, que aceita os mesmos filtros, incluindo o
+rótulo de usuário e o modelo, e agrega no servidor por token, nó, dia e peer,
+além de tokens de entrada/saída, inferência, TTFT, cache de prefixo e estados
+terminais. Clicar em qualquer área não interativa da linha
   abre o inspetor, preserva a lupa e destaca a linha selecionada com cor de
   acento distinta do hover. O cabeçalho do inspetor repete os detalhes da linha.
   ENVIADO separa prompt novo e contexto anterior em duas superfícies Markdown
@@ -356,21 +392,19 @@ a âncora costuma ser um `node` ou um `infer`. Por isso `/config/confianca` não
 está em `RESTRICTED` (`lib/access.ts`), aparece no menu de Configurações e é
 promovida ao menu principal do `infer`.
 
-A **Sidebar** traz, junto das bandeiras de idioma, o selo de criptografia do
-cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em `aqua` quando a política
-está ligada e `ShieldOff` em `amber` quando não. Ele é só ícone, mas o link para
-`/config/preferencias` conserva o significado em `aria-label` e `title`. O dado sai do
-`useNode()`, que já é polled: nenhuma chamada nova. **Um selo que sumisse quando
-o TLS caísse seria pior que nenhum**: a ausência se lê como "a tela não mostra
-isso", não como "está em texto claro" - por isso os dois estados têm formas e
-cores diferentes.
+O `admin` recebe na Sidebar, junto das bandeiras de idioma, o selo de
+criptografia do cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em
+`aqua` quando a política está ligada e `ShieldOff` em `amber` quando não. Ele
+é só ícone, mas o link para `/config/preferencias/admin` conserva o significado
+em `aria-label` e `title`. Node e infer não renderizam esse selo, conforme a
+regra de apresentação dos perfis. O dado sai do `useNode()`, que já é polled:
+nenhuma chamada nova.
 
-Na tela `TokenKeys`, o perfil `infer` vê apenas as chaves ativas do próprio
-nó, não escolhe outro nó e não oferece revogação manual. Gerar uma nova chave usa
-o endpoint atual e, em seguida, revoga a anterior; a semântica da vista é uma
-chave ativa por nó, com a nova substituindo a anterior. Esse fluxo ainda não é
-uma garantia do servidor nem uma operação atômica: o escopo e a autorização da
-credencial aguardam `rdma-perfis-escopo-backend`.
+Na tela `TokenKeys`, node e infer veem apenas as chaves do próprio nó, não
+escolhem outro nó e mantêm a criação vinculada a essa identidade. O admin pode
+escolher o nó ao criar, vê seus tokens completos e recebe os tokens de outros
+nós mascarados. Os tokens do admin ficam primeiro na tabela. No infer, gerar
+uma nova chave usa o endpoint atual e, em seguida, revoga a anterior.
 
 Sidebar e Topbar vivem em `ErrorBoundary` próprio, então uma tela quebrada não
 derruba o menu. O **cabeçalho** da Sidebar traz só o lockup da marca, numa faixa de borda a
@@ -438,25 +472,50 @@ primeiro abre a interface administrativa, enquanto a segunda autentica nós e
 clientes da pipeline. Chamadas de controle entre nós usam a segunda com um
 marcador interno próprio, que o navegador nunca envia.
 
-`GET /api/ui/node` devolve a `connection_key` do cluster depois da catraca, e o
-`useNode()` guarda a chave em `localStorage` (`codai.connectionKey`) para
-assinar somente as requisições administrativas com `Authorization: Bearer
-<key>`. A inferência usa exclusivamente a API key dedicada `pom-[node_id]`,
+`GET /api/ui/node` devolve a `connection_key` somente para redes privadas, depois
+da catraca. A inferência usa exclusivamente a API key dedicada `pom-[node_id]`,
 obtida em `POST /api/ui/chat-key` e enviada como `X-API-Key` em cada chamada
 `/api/generate` ou `/v1`. Se ela for revogada, a próxima tentativa cria uma
-substituta e repete a mensagem uma única vez. `POST
-/api/setup/key` e `/api/setup/save` **não** estão no router normal de
-propósito: só o modo setup (sem `pom.json`) as serve, porque `GET
-/api/setup/key` rotacionaria a credencial num nó já configurado.
-/api/setup/key` rotacionaria a credencial num nó já configurado. A mesma
-resposta publica `addr_candidates`, `libp2p_peer_id` e as capabilities do
-túnel, usados pelo deploy TP para transportar o endereço correto até cada
-rank.
+substituta e repete a mensagem uma única vez. O primeiro acesso usa o router
+de setup (sem `pom.json`), que serve hardware, modelos, prévia da raiz
+administrativa, token administrativo, instalação da raiz, verificações e `POST /api/setup/save`. O save
+instala a raiz de confiança separada e grava `pom.json` antes do respawn. O
+respawn cria uma sessão independente em Unix, herda os argumentos originais e
+redireciona stdout/stderr para `<project_root>/pom.log`, para que uma falha de
+arranque após o save fique diagnosticável. A sugestão de `advertise_addr` usa
+a enumeração real das interfaces: IPv6 global não temporário primeiro, depois
+IPv4; ela é apenas uma sugestão editável e o anúncio continua redetectando os
+endereços em cada ciclo. A resposta de nó configurado publica
+`addr_candidates`, `libp2p_peer_id` e as
+capabilities do túnel, usados pelo deploy TP para transportar o endereço correto
+até cada rank.
+
+`GET /api/public/networks` lista metadados de redes públicas conhecidos pela
+descoberta pkarr existente. O label geo canônico (`com.<país>.<cidade>.<node>`)
+é campo do registro, nunca a chave pkarr. O índice local persiste labels já
+observados e aceita `geo_prefix`/`geo_suffix`, permitindo filtrar candidatos
+antes das sondas HTTP. A página `/redes-publicas` é full-bleed, como Logs, e
+mostra uma tabela com nome, organização, país/cidade, label, nós, latência,
+VRAM, modelos e endereço. As métricas do cluster local são calculadas de
+`ClusterView` quando a rede corresponde; os demais campos aparecem como
+indisponíveis porque o catálogo público atual não os fornece. O documento de
+confiança não é publicado por esta lista; o operador recebe-o do responsável
+da rede por um canal próprio.
 
 O **perfil** da interface (*Menu e rotas*) não entra nesta conta: ele é escolha
 local do navegador e não vale como credencial. As rotas administrativas usam a
 chave de conexão; `/api/generate` e `/v1` usam exclusivamente a API key
 dedicada de inferência, seja qual for o perfil na tela.
+
+O Chat da rede gera ids de mensagem e digitação com `src/lib/id.ts`. Ele usa
+`crypto.getRandomValues` quando `crypto.randomUUID` não existe, portanto o
+composer continua funcionando na implantação HTTP da LAN, sem depender de
+secure context. A janela de mensagens segue novas entradas quando está próxima
+do fim; ao rolar para cima, preserva a posição até a pessoa retornar ao rodapé.
+
+O Dashboard mantém os indicadores e ações na barra superior compacta. Quando há
+uma implantação ativa, o botão de propriedades é apenas um ícone dentro do
+mapa, no canto superior direito, alinhado aos controles de zoom e Fit.
 
 ## Janelas modais: portal e pilha de Esc
 
@@ -500,6 +559,20 @@ do distintivo de MTP: liberar memória (`ReleaseSlice`, só na própria máquina
 sempre) e atualizar/reiniciar quando o peer anuncia `dev_update`. Estavam
 espalhadas pelo pé do card, uma por seção, e reiniciar uma máquina era rolar
 até o fim de tudo o que ela reporta.
+
+O diálogo `AddNodeDialog` consulta `POST /api/ui/deploy/node/options` depois de
+cada troca de máquina. Assim, o seletor mostra as fatias e o modelo inteiro
+que o alvo realmente tem, além dos controles de camadas na GPU, localização
+do cache KV e tipos K/V daquela máquina. Confirmar chama
+`POST /api/ui/deploy/node` somente no alvo e preserva a inferência dos outros
+peers. Com um `deploy_id` ativo, a alteração cria uma nova versão; selecionar
+um GGUF inteiro ao lado de fatias produz o rótulo `mixed` no Histórico e duas
+cabeças de entrada possíveis.
+
+`RemoveNode` também recebe o `deploy_id`. A remoção parcial cria uma versão com
+as máquinas restantes e mantém a implantação ativa. A última remoção cria uma
+versão vazia, que permanece no Histórico para auditoria, mas deixa de aparecer
+como implantação servindo.
 
 O card é denso de propósito, para caber numa tela: o que é útil sem precisar
 estar sempre visível mora num `[i]` (a razão de "sem fatia", o aviso do
@@ -548,28 +621,40 @@ Quando a configuração da máquina pediu MTP, o mesmo card mostra se a cabeça
 "MTP indisponível" e o `mtp_unavailable_reason` retornado pelo `/health`; o
 operador não precisa inferir a degradação pela ausência de logs.
 
-## Configurações / Preferências: proteção local
+## Configurações / Rede e Preferências
 
-`/config/preferencias` monta a fronteira de exposição administrativa, o painel
-de TLS entre nós, o `ThermalPanel` e o `HuggingFaceSettingsPanel`. A exposição
-é persistida no `pom.json`: localhost é o padrão instalado, e a rede gera um
-token separado da `connection_key`, mostrado somente depois da autenticação.
-Trocar para localhost limpa o token; regenerá-lo invalida o anterior. A porta
-é validada antes de salvar e uma colisão é informada sem iniciar em outra
-porta. O primeiro painel lê e grava a política térmica em `GET/POST
-/api/ui/thermal`; o último lê e grava a credencial opcional em
-`/api/ui/model-provider/config`. `/config/rede` fica concentrada em membership,
-endereços e nós conhecidos.
+`/config/rede` concentra as Informações da Rede: nome público, organização,
+descrição, regras, canais, visibilidade e localização. Node e infer recebem
+leitura somente, enquanto admin pode editar. País e cidade são selects
+alimentados por `GET /api/ui/network/geo-reference`, que lê as tabelas locais
+`geo_countries` e `geo_cities`; o código do país não é mostrado. A mesma tela
+calcula nós, latência média, VRAM conhecida e modelos do `ClusterView`.
+`/config/rede/participantes` reaproveita o card de nós conhecidos e fica
+disponível para admin e node.
+
+`/config/confianca` reúne esta máquina, compartilhamento da rede e chaves de
+conexão. `/config/preferencias` monta a exposição administrativa, o
+`ThermalPanel`, o `HuggingFaceSettingsPanel` e o link para armazenamento.
+`/config/preferencias/admin` mantém as preferências administrativas de TLS,
+QUIC, logs de processo entre nós e chat da rede. A separação reorganiza as
+mesmas operações e conserva a autorização existente.
+
+A exposição é persistida no `pom.json`: localhost é o padrão instalado, e a
+rede gera um token separado da `connection_key`, mostrado somente depois da
+autenticação. Trocar para localhost limpa o token; regenerá-lo invalida o
+anterior. A porta é validada antes de salvar e uma colisão é informada sem
+iniciar em outra porta. O `ThermalPanel` lê e grava a política em
+`GET/POST /api/ui/thermal`; o painel de Hugging Face usa
+`/api/ui/model-provider/config`.
 
 
 ## Configurações / Preferências: quando usar TLS entre nós
 
 O painel "Criptografia entre nós" (`TlsPanel`, em `routes/Preferences.tsx`)
 mostra o estado do cluster e, **só no nó principal**, o interruptor que o vira.
-Nos demais ele aparece desabilitado, com um rodapé dizendo que a decisão é do
-principal e vale para a rede inteira. O estado continua visível em todo nó de
-propósito: esconder o painel faria o operador de um nó comum não ter onde ver se
-o tráfego da máquina dele está cifrado.
+Ele pertence à rota de preferências administrativas; node e infer não recebem
+o painel nem o ícone de TLS na Sidebar. O estado continua sendo decidido pelo
+principal e vale para a rede inteira.
 
 A autoridade que vale é a do servidor - `POST /api/ui/network/tls` responde 403
 fora do principal (ver `api-http.md`). A tela usa `NodeInfo.tls_authority` só
@@ -579,35 +664,76 @@ Virar não pede reinício e vale nos dois sentidos; o toast diz que os demais n�
 adotam em poucos segundos, que é o ciclo de gossip mais a busca autenticada da
 catraca (ver `rede-p2p.md`, seção 5).
 
+## Configurações / Preferências administrativas: transporte QUIC
+
+O painel "Transporte QUIC" (`QuicPanel`) fica ao lado do TLS na rota
+administrativa. O interruptor fica desabilitado fora do principal; o servidor
+também responde 403 se outro nó tentar
+`POST /api/ui/network/quic`. A alteração não reinicia o modelo: novos hops
+preferem HTTP/3 sobre QUIC, e uma falha cai para o HTTP/HTTPS da política TLS.
+O card de telemetria mostra `http`, `https` ou `quic` conforme o transporte que
+realmente carregou cada hop, além de marcar o fallback.
+
 ## Logs de processo da implantação
 
 `DeploymentLogs.tsx`, em `/implantacoes/logs`, é a consola terminal do processo
 do cluster e não a auditoria de requisições de `/logs`. O fundo preto e a fonte
 monoespaçada deixam cada linha com o nome da máquina, nível e horário de origem;
-as linhas chegam do principal já na ordem de chegada e a tela consulta novos
-lotes a cada segundo. O seletor de implantação envia `deploy_id`, permitindo
-abrir os mesmos logs a partir de uma implantação no Histórico.
+as linhas vêm da réplica local do admin na ordem de chegada e a tela consulta
+novos lotes a cada segundo. O seletor de implantação envia `deploy_id`,
+permitindo abrir os mesmos logs a partir de uma implantação no Histórico.
 
 `Preferences.tsx` mostra o painel "Logs do cluster" junto do TLS. O interruptor
 fica desabilitado fora do principal e o backend também rejeita a operação nesses
-nós. O estado e a autoridade vêm de `GET /api/ui/node`; a alteração usa
+nós. A leitura dos logs fica disponível a qualquer admin efetivo porque a cópia
+é local. O estado e a autoridade vêm de `GET /api/ui/node`; a alteração usa
 `POST /api/ui/network/logs` e não exige reinício. O contador de entradas
 descartadas pela fila limitada aparece acima do terminal, para a tela não
 apresentar uma visão incompleta como se fosse o fluxo integral.
+
+No Dashboard, o admin pode abrir `DeploymentLogDock` no rodapé. A barra
+recolhida ocupa uma única linha; aberta, cresce para cima até metade do painel,
+consulta `GET /api/ui/cluster-logs` em tempo real e acompanha o fim enquanto o
+leitor permanece no final. A versão ativa da implantação fica disponível num
+inspetor à direita, somente leitura, usando `DeploymentInspector` e os mesmos
+campos da configuração original. Node também pode ler as versões por
+`GET /api/ui/deployments`, mas continua sem as ações administrativas.
 
 ## Chat
 
 `src/routes/Chat.tsx` fala com o cluster por `POST /v1/chat/completions` com
 `stream: true`, igual a qualquer harness - o que aparece ali é o que um
 harness receberia. O histórico é do navegador (`chatStore`, `localStorage`,
-cap 50 sessões, sincronizado entre abas), não do nó. Três coisas a conversa
-guarda além das falas:
+cap 50 sessões, sincronizado entre abas), não do nó. O `ChatSessionProvider`
+também mantém o stream e grava a resposta parcial a cada delta, por isso sair
+da rota não interrompe a geração: ao voltar, a conversa mostra o texto já
+recebido e o estado ao vivo. Só o botão de parar ou o envio de uma nova
+mensagem aborta o pedido anterior. Três coisas a conversa guarda além das falas:
+
+- O único campo de ficheiro lê `GET /api/ui/chat/capabilities`, que agrega a
+  cabeça ativa e a cobertura sem reutilizar a topologia que o perfil `infer` não
+  pode consultar. Ele aceita qualquer tipo de ficheiro, botão e arrastar e
+  largar. Imagens exigem `vision: supported`; `unsupported` mantém o modelo sem
+  visão e `unavailable` informa que a leitura foi recusada ou não pôde terminar,
+  sem inventar um modelo vazio. Imagens são redimensionadas no navegador para no
+  máximo 2048 px no lado maior, preservando a proporção, antes de virar base64
+  no pedido, e aparecem inteiras na bolha da fala com legenda e alt.
+- O lote é recusado antes do envio quando o tamanho bruto ultrapassa o contexto
+  efetivo do modelo: primeiro `context_length` de `/v1/models`, depois `n_ctx`
+  do nó ativo, com a estimativa conservadora de quatro bytes por token. O
+  conteúdo textual e as partes multimodais ficam em `requestContent`, para o
+  histórico reenviar o mesmo pedido estruturado. Cada anexo pendente pode ser
+  removido sem apagar o rascunho.
+- O botão de microfone só aparece quando existe `SpeechRecognition` ou
+  `webkitSpeechRecognition`; a transcrição usa o locale da interface quando
+  possível e entra diretamente no campo de texto.
 
 `ChatSessionProvider` compartilha a sessão ativa e as ações entre o Chat e a
 Sidebar. No `infer`, a Sidebar usa `ChatSessionList` como menu principal: a
 lista de histórico tem rolagem interna limitada ao espaço disponível, destaca
 a conversa ativa e deixa `Conversa nova` fixa acima dela. Trocar ou apagar uma
-sessão aborta uma geração em andamento antes de mudar a tela.
+sessão não aborta uma geração em andamento; apagar a sessão apenas impede que
+o stream termine recriando-a.
 
 Esse menu é visto de **toda** rota, então escolher uma conversa ou começar uma
 nova **navega para `/chat`** além de trocar a sessão ativa. Sem isso, o clique
@@ -622,6 +748,11 @@ navegador.
   de entrada quando o turno reaproveitou o prefixo do turno anterior
   (`trace.cached_tokens`); é o que o pipeline **executou**, não o que o cache
   escolheu, e some quando não houve reuso - ver `inferencia.md`, seção 3.1.
+  A mesma seção mostra o `trace_id`, perfil, estado cold/warm, timeline dos
+  spans locais, `outside_node_total_ms`, `outside_node_accounted_ms` e
+  `outside_node_unaccounted_ms`. O gargalo principal é destacado somente
+  entre medidas presentes; tempo que não chegou a uma fronteira permanece
+  explicitamente como não atribuído.
 - **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
   `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
   embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids
@@ -634,8 +765,13 @@ navegador.
 entre pedaços; `finishChatStream` grava o resumo de TTFT, velocidade de
 pré-processamento do prompt, velocidade de geração da saída e total ponta a
 ponta, além do trace por hop. O Chat mostra essas quatro linhas no resumo da
-resposta e deixa explícito quando uma taxa não é mensurável, como no reuso total
-do prefixo ou numa resposta de um token.
+resposta, além de `server_ttft_ms`, `engine_ttft_ms` e `client_ttft_ms`, e deixa
+explícito quando uma taxa não é mensurável, como no reuso total do prefixo ou
+numa resposta de um token. Durante o SSE, o navegador mede primeiro chunk,
+primeiro token, duração, fim do último token, chunks e bytes com
+`performance.now()`; o `Date.now()` anexado ao recebimento serve apenas para
+correlação com os wall timestamps dos peers. Nenhum relógio de máquinas
+diferentes é subtraído.
 Se `/v1/chat/completions` enviar um frame SSE com o envelope de erro OpenAI,
 `streamErrorMessage` preserva a mensagem real mesmo quando já há texto na
 resposta; ela aparece em um bloco que quebra linhas, permite seleção e oferece
@@ -906,9 +1042,15 @@ impressão digital é só modelo + conjunto de faixas.
   escolha, tentar incluir uma segunda mostra um aviso e preserva a máquina
   escolhida. No Tensor, somente peers que estão no mapa entram como
   primary/worker, mesmo que outros tenham o modelo.
-  GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; os
-  RTTs vêm do survey direcional do planner e não são substituídos pela medição
-  HTTP do gateway. Uma GPU ausente aparece como `sem GPU`, sem barra
+  GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; o
+  mapa do Painel mostra o último RTT e transporte efetivos observados na
+  execução de inferência para cada aresta e, no Gateway, todas as rotas
+  completas do modelo com o RTT agregado de cada perna, inclusive o retorno.
+  As rotas aparecem do menor custo ao maior, com o id dos nós como desempate;
+  uma implantação de modelo inteiro com um único head também é consultada,
+  mesmo sem aresta no grafo. O
+  survey direcional do planner continua reservado à escolha de rota e não é
+  exibido como se fosse a execução. Uma GPU ausente aparece como `sem GPU`, sem barra
   indeterminada. Em Completa, todos os peers entram no canvas e na lista de
   candidatos nos modos de fatias e Tensor; modelo inteiro mantém a restrição de
   uma máquina. A cobertura fica reduzida no rodapé junto da barra de peers.
@@ -951,8 +1093,10 @@ impressão digital é só modelo + conjunto de faixas.
   máquina, mas mantém `blocked` para gaps globais, sobreposição e outros
   problemas reais; `whyNot` põe a razão em uma linha ao lado do botão, inclusive
   nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
-  mostra apenas hops entre estágios consecutivos, com RTT direcional e rolagem
-  interna em viewport estreito para não cortar cards nem criar overflow na página.
+  mostra hops consecutivos somente para frente, acrescenta um Gateway virtual
+  no fim com a perna de retorno e exibe todas as rotas candidatas, destacando no
+  total a de menor RTT. A rolagem interna em viewport estreito não
+  corta cards nem cria overflow na página.
 - **Implantações** (`Deployments`): uma linha por `deploy_id`, "no ar" separado
   de "padrão", ordenada pela criação. Cada linha expande e lista as versões
   daquele `deploy_id` (o histórico de `RuntimeParams` já rodados sob o mesmo
@@ -975,6 +1119,21 @@ impressão digital é só modelo + conjunto de faixas.
   Peers da mesma máquina compartilham o hostname, então o destino e a etiqueta
   de disponibilidade levam o começo do `node_id` quando o nome se repete
   (`uniqueName`, `routes/Shards.tsx`).
+
+### Informações da rede e materiais de entrada
+
+`/config/rede` busca `GET /api/ui/network/info` e mostra o mesmo cartão para
+todos os perfis. Node e infer veem nome, descrição, regras, organização,
+canais, visibilidade, país, cidade e localização em modo somente leitura. O
+administrador autorizado edita esses campos e salva em
+`POST /api/ui/network/settings`; o backend grava a configuração local,
+propaga a mutação assinada aos peers e republica o rótulo geo público.
+
+O mesmo administrador tem, nessa tela, os controles de copiar e baixar o
+documento `.pom-admin-trust.json`. Em rede local ou privada também aparece a
+chave de conexão para copiar ou baixar. O wizard real oferece os mesmos
+materiais na etapa de convite. `SetupWizard.tsx` continua sendo apenas o
+protótipo visual e não participa dessas chamadas.
 
 ## Defeitos anotados
 

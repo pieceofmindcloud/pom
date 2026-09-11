@@ -1,13 +1,23 @@
 use super::*;
+use serde_json::Value;
+use std::collections::HashSet;
 
 /// Prompt tokens pushed through the pipeline per round trip.
 ///
 /// The chunk is the unit of retry and the unit of memory, so it wants to be
 /// small; it is also one round trip per peer, so it wants to be large. 512
-/// tokens is 8 MiB of f16 hidden state per hop — about a second on the link
+/// tokens is 8 MiB of f16 hidden state per hop - about a second on the link
 /// this cluster actually has, which keeps a retry cheap while leaving the
 /// per-chunk overhead well under the transfer time it covers.
 pub const DEFAULT_CHUNK_TOKENS: u32 = 512;
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
 
 /// Maximum number of generated tokens the remote emitter drains from its
 /// queue in one callback. This is a cap, not a target: a token is sent as soon
@@ -242,7 +252,14 @@ pub struct TlsHop {
 pub struct TransportTrace {
     pub transport: crate::relay::InferenceTransport,
     pub fallback: bool,
+    /// Wall-clock do chamador: enfileirar o frame até a resposta chegar.
+    /// **Inclui** o nó remoto rodando o handler de step/prefill.
     pub round_trip_ms: u64,
+    /// `round_trip_ms` menos o `processing_ms` que o nó remoto reportou de si:
+    /// o custo de transporte de fio, sem o compute do outro lado. É o número
+    /// que o card de telemetria deve mostrar por perna - um `round_trip` cheio
+    /// nunca chega perto do RTT de rede medido em 0,5 ms entre nós co-locados.
+    pub network_ms: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
 }
@@ -314,6 +331,394 @@ impl RttDistribution {
     }
 }
 
+/// Quantis do ciclo observado pelo gateway entre solicitar uma rodada de
+/// decode e entregar o primeiro token confirmado ao cliente. O reservatório é
+/// usado apenas no modo normal para manter o custo limitado; os spans por
+/// estágio continuam opt-in no profiling.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct TokenCycleTelemetry {
+    pub samples: u64,
+    pub p50_ms: u64,
+    pub p95_ms: u64,
+    pub p99_ms: u64,
+    pub max_ms: u64,
+    #[serde(skip)]
+    distribution: RttDistribution,
+}
+
+impl TokenCycleTelemetry {
+    pub(super) fn record(&mut self, value: u64) {
+        self.distribution.record(value);
+        self.refresh();
+    }
+
+    pub(super) fn merge(&mut self, other: &Self) {
+        self.distribution.merge(&other.distribution);
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
+        self.samples = self.distribution.seen;
+        self.p50_ms = self.distribution.percentile(50);
+        self.p95_ms = self.distribution.percentile(95);
+        self.p99_ms = self.distribution.percentile(99);
+        self.max_ms = self.distribution.max_ms;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples == 0
+    }
+}
+
+/// Agregados baratos do caminho de callbacks. Os quantis usam o mesmo
+/// reservoir limitado das travessias comuns, portanto não há vetor por token
+/// no modo normal.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct RemoteStreamTelemetry {
+    pub open_ms: Option<u64>,
+    pub lifetime_ms: Option<u64>,
+    pub frames_sent: u64,
+    pub frames_received: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub first_frame_latency_ms: Option<u64>,
+    pub frame_latency_min_ms: u64,
+    pub frame_latency_p50_ms: u64,
+    pub frame_latency_p95_ms: u64,
+    pub frame_latency_p99_ms: u64,
+    pub frame_latency_max_ms: u64,
+    pub remote_compute_total_ms: u64,
+    pub remote_compute_min_ms: u64,
+    pub remote_compute_p50_ms: u64,
+    pub remote_compute_p95_ms: u64,
+    pub remote_compute_p99_ms: u64,
+    pub remote_compute_max_ms: u64,
+    pub remote_stream_wait_total_ms: u64,
+    pub remote_stream_wait_p50_ms: u64,
+    pub remote_stream_wait_p95_ms: u64,
+    /// Espera entre o início do ciclo e o token ficar pronto no produtor.
+    /// Mede compute/produção ainda em andamento, sem chamá-la de fila.
+    pub remote_stream_producer_wait_total_ms: u64,
+    pub remote_stream_producer_wait_p50_ms: u64,
+    pub remote_stream_producer_wait_p95_ms: u64,
+    /// Tempo em que o produtor aguardou um permit do canal limitado depois
+    /// de concluir a produção do token. Zero prova que não houve
+    /// contrapressão do `Sender` nesta execução.
+    pub remote_stream_channel_send_wait_total_ms: u64,
+    pub remote_stream_channel_send_wait_p50_ms: u64,
+    pub remote_stream_channel_send_wait_p95_ms: u64,
+    /// Wall time spent in the producer's nested hop before its token became
+    /// ready. It includes downstream compute and transport, so it is the
+    /// producer's legitimate cycle time rather than local queueing.
+    pub remote_stream_downstream_wait_total_ms: u64,
+    pub remote_stream_downstream_wait_p50_ms: u64,
+    pub remote_stream_downstream_wait_p95_ms: u64,
+    /// Tempo em que o token já pronto permaneceu no canal antes do emitter.
+    /// Pode incluir backpressure quando o canal limitado está cheio.
+    pub remote_stream_queue_wait_total_ms: u64,
+    pub remote_stream_queue_wait_p50_ms: u64,
+    pub remote_stream_queue_wait_p95_ms: u64,
+    /// Time spent awaiting the callback delivery that preceded this batch.
+    /// The first batch is zero and the final callback has no following batch
+    /// to carry its duration.
+    pub remote_stream_delivery_total_ms: u64,
+    pub remote_stream_delivery_p50_ms: u64,
+    pub remote_stream_delivery_p95_ms: u64,
+    /// Intervalo observado no gateway entre lotes de tokens recebidos. Em um
+    /// lote de um token, é o ciclo de entrega por token; lotes maiores são
+    /// contados como um ciclo, sem inventar intervalos internos.
+    pub token_delivery_interval_min_ms: u64,
+    pub token_delivery_interval_p50_ms: u64,
+    pub token_delivery_interval_p95_ms: u64,
+    pub token_delivery_interval_p99_ms: u64,
+    pub token_delivery_interval_max_ms: u64,
+    pub token_delivery_interval_samples: u64,
+    #[serde(skip)]
+    frame_latency: RttDistribution,
+    #[serde(skip)]
+    remote_compute: RttDistribution,
+    #[serde(skip)]
+    wait: RttDistribution,
+    #[serde(skip)]
+    producer_wait: RttDistribution,
+    #[serde(skip)]
+    channel_send_wait: RttDistribution,
+    #[serde(skip)]
+    downstream_wait: RttDistribution,
+    #[serde(skip)]
+    queue_wait: RttDistribution,
+    #[serde(skip)]
+    delivery: RttDistribution,
+    #[serde(skip)]
+    token_delivery_interval: RttDistribution,
+}
+
+impl RemoteStreamTelemetry {
+    pub(super) fn open(&mut self, duration_ms: u64) {
+        self.open_ms = Some(duration_ms);
+    }
+
+    pub(super) fn record_batch(&mut self, meta: &serde_json::Value) {
+        let bytes = meta
+            .get("stream_batch_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        self.frames_received = self.frames_received.saturating_add(1);
+        self.frames_sent = self.frames_sent.max(
+            meta.get("remote_stream_frames_sent")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(self.frames_received),
+        );
+        self.bytes_received = self.bytes_received.saturating_add(bytes);
+        self.bytes_sent = self.bytes_sent.saturating_add(bytes);
+        if let Some(lifetime) = meta
+            .get("remote_stream_lifetime_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.lifetime_ms = Some(self.lifetime_ms.unwrap_or(0).max(lifetime));
+        }
+        if let Some(value) = meta
+            .get("remote_stream_first_frame_latency_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.first_frame_latency_ms.get_or_insert(value);
+        }
+        if let Some(value) = meta
+            .get("remote_stream_frame_latency_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.frame_latency.record(value);
+        }
+        let compute = meta
+            .get("remote_stream_remote_compute_ms")
+            .and_then(serde_json::Value::as_u64)
+            .or_else(|| {
+                meta.get("processing_ms")
+                    .and_then(serde_json::Value::as_u64)
+            })
+            .unwrap_or(0);
+        self.remote_compute_total_ms = self.remote_compute_total_ms.saturating_add(compute);
+        self.remote_compute.record(compute);
+        if let Some(value) = meta
+            .get("remote_stream_wait_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_wait_total_ms =
+                self.remote_stream_wait_total_ms.saturating_add(value);
+            self.wait.record(value);
+        }
+        if let Some(value) = meta
+            .get("remote_stream_producer_wait_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_producer_wait_total_ms = self
+                .remote_stream_producer_wait_total_ms
+                .saturating_add(value);
+            self.producer_wait.record(value);
+        }
+        if let Some(value) = meta
+            .get("remote_stream_channel_send_wait_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_channel_send_wait_total_ms = self
+                .remote_stream_channel_send_wait_total_ms
+                .saturating_add(value);
+            self.channel_send_wait.record(value);
+        }
+        if let Some(value) = meta
+            .get("remote_stream_downstream_wait_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_downstream_wait_total_ms = self
+                .remote_stream_downstream_wait_total_ms
+                .saturating_add(value);
+            self.downstream_wait.record(value);
+        }
+        if let Some(value) = meta
+            .get("remote_stream_queue_wait_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_queue_wait_total_ms =
+                self.remote_stream_queue_wait_total_ms.saturating_add(value);
+            self.queue_wait.record(value);
+        }
+        if let Some(value) = meta
+            .get("remote_stream_delivery_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.remote_stream_delivery_total_ms =
+                self.remote_stream_delivery_total_ms.saturating_add(value);
+            self.delivery.record(value);
+        }
+        self.refresh_percentiles();
+    }
+
+    pub(super) fn record_token_delivery_interval(&mut self, value: u64) {
+        self.token_delivery_interval.record(value);
+        self.refresh_percentiles();
+    }
+
+    pub(super) fn merge(&mut self, other: &Self) {
+        self.open_ms = self.open_ms.or(other.open_ms);
+        self.lifetime_ms = match (self.lifetime_ms, other.lifetime_ms) {
+            (Some(current), Some(next)) => Some(current.max(next)),
+            (current, next) => current.or(next),
+        };
+        self.frames_sent = self.frames_sent.max(other.frames_sent);
+        self.frames_received = self.frames_received.saturating_add(other.frames_received);
+        self.bytes_sent = self.bytes_sent.saturating_add(other.bytes_sent);
+        self.bytes_received = self.bytes_received.saturating_add(other.bytes_received);
+        self.first_frame_latency_ms = self.first_frame_latency_ms.or(other.first_frame_latency_ms);
+        self.remote_compute_total_ms = self
+            .remote_compute_total_ms
+            .saturating_add(other.remote_compute_total_ms);
+        self.remote_stream_wait_total_ms = self
+            .remote_stream_wait_total_ms
+            .saturating_add(other.remote_stream_wait_total_ms);
+        self.remote_stream_producer_wait_total_ms = self
+            .remote_stream_producer_wait_total_ms
+            .saturating_add(other.remote_stream_producer_wait_total_ms);
+        self.remote_stream_channel_send_wait_total_ms = self
+            .remote_stream_channel_send_wait_total_ms
+            .saturating_add(other.remote_stream_channel_send_wait_total_ms);
+        self.remote_stream_downstream_wait_total_ms = self
+            .remote_stream_downstream_wait_total_ms
+            .saturating_add(other.remote_stream_downstream_wait_total_ms);
+        self.remote_stream_queue_wait_total_ms = self
+            .remote_stream_queue_wait_total_ms
+            .saturating_add(other.remote_stream_queue_wait_total_ms);
+        self.remote_stream_delivery_total_ms = self
+            .remote_stream_delivery_total_ms
+            .saturating_add(other.remote_stream_delivery_total_ms);
+        self.frame_latency.merge(&other.frame_latency);
+        self.remote_compute.merge(&other.remote_compute);
+        self.wait.merge(&other.wait);
+        self.producer_wait.merge(&other.producer_wait);
+        self.channel_send_wait.merge(&other.channel_send_wait);
+        self.queue_wait.merge(&other.queue_wait);
+        self.token_delivery_interval
+            .merge(&other.token_delivery_interval);
+        self.refresh_percentiles();
+    }
+
+    fn refresh_percentiles(&mut self) {
+        self.frame_latency_min_ms = self.frame_latency.min_ms;
+        self.frame_latency_p50_ms = self.frame_latency.percentile(50);
+        self.frame_latency_p95_ms = self.frame_latency.percentile(95);
+        self.frame_latency_p99_ms = self.frame_latency.percentile(99);
+        self.frame_latency_max_ms = self.frame_latency.max_ms;
+        self.remote_compute_min_ms = self.remote_compute.min_ms;
+        self.remote_compute_p50_ms = self.remote_compute.percentile(50);
+        self.remote_compute_p95_ms = self.remote_compute.percentile(95);
+        self.remote_compute_p99_ms = self.remote_compute.percentile(99);
+        self.remote_compute_max_ms = self.remote_compute.max_ms;
+        self.remote_stream_wait_p50_ms = self.wait.percentile(50);
+        self.remote_stream_wait_p95_ms = self.wait.percentile(95);
+        self.remote_stream_producer_wait_p50_ms = self.producer_wait.percentile(50);
+        self.remote_stream_producer_wait_p95_ms = self.producer_wait.percentile(95);
+        self.remote_stream_channel_send_wait_p50_ms = self.channel_send_wait.percentile(50);
+        self.remote_stream_channel_send_wait_p95_ms = self.channel_send_wait.percentile(95);
+        self.remote_stream_downstream_wait_p50_ms = self.downstream_wait.percentile(50);
+        self.remote_stream_downstream_wait_p95_ms = self.downstream_wait.percentile(95);
+        self.remote_stream_queue_wait_p50_ms = self.queue_wait.percentile(50);
+        self.remote_stream_queue_wait_p95_ms = self.queue_wait.percentile(95);
+        self.remote_stream_delivery_p50_ms = self.delivery.percentile(50);
+        self.remote_stream_delivery_p95_ms = self.delivery.percentile(95);
+        self.token_delivery_interval_min_ms = self.token_delivery_interval.min_ms;
+        self.token_delivery_interval_p50_ms = self.token_delivery_interval.percentile(50);
+        self.token_delivery_interval_p95_ms = self.token_delivery_interval.percentile(95);
+        self.token_delivery_interval_p99_ms = self.token_delivery_interval.percentile(99);
+        self.token_delivery_interval_max_ms = self.token_delivery_interval.max_ms;
+        self.token_delivery_interval_samples = self.token_delivery_interval.seen;
+    }
+}
+
+/// Span detalhado opt-in. Os timestamps são relativos ao domínio monotônico
+/// do peer que os produziu, nunca diferenças entre relógios de máquinas.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct TelemetrySpan {
+    pub trace_id: String,
+    pub request_id: String,
+    pub pipeline_id: String,
+    pub peer_id: String,
+    pub span_id: String,
+    pub parent_span_id: Option<String>,
+    /// Nomeia a fronteira observada. A duração só é interpretável junto com
+    /// este nome: eventos como `client-emit` podem ter duração zero, enquanto
+    /// `transport-round-trip` cobre uma chamada completa.
+    pub name: String,
+    pub phase: Phase,
+    pub token_index: Option<u64>,
+    pub start_ns: u64,
+    pub end_ns: u64,
+    pub duration_ns: u64,
+    pub transport: Option<String>,
+    pub clock_domain: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TelemetrySummary {
+    pub status: String,
+    /// A resposta pode ter sido liberada enquanto os recibos remotos ainda
+    /// estão no caminho. Isso separa o fim da geração do fim da coleta.
+    pub response_complete: bool,
+    pub expected_peers: u32,
+    pub reported_peers: u32,
+    pub missing_peers: Vec<String>,
+    pub expected_decode_spans: u64,
+    pub reported_decode_spans: u64,
+    /// False when direct per-frame mode has observations but no expected
+    /// total. The frontend must not render that state as `N/0 · 100%`.
+    pub decode_span_expectation_available: bool,
+    pub completeness_percent: f64,
+    pub duplicate_spans: u64,
+    pub late_spans: u64,
+    pub orphan_spans: u64,
+    pub wall_clock_ms: Option<u64>,
+    pub critical_path_ms: Option<u64>,
+    pub accumulated_compute_ms: u64,
+    pub accumulated_transport_ms: u64,
+    pub overlap_ms: Option<u64>,
+    pub true_residual_ms: Option<u64>,
+    pub remote_stream: RemoteStreamTelemetry,
+}
+
+impl Default for TelemetrySummary {
+    fn default() -> Self {
+        Self {
+            status: "collecting".into(),
+            response_complete: false,
+            expected_peers: 0,
+            reported_peers: 0,
+            missing_peers: Vec::new(),
+            expected_decode_spans: 0,
+            reported_decode_spans: 0,
+            decode_span_expectation_available: false,
+            completeness_percent: 0.0,
+            duplicate_spans: 0,
+            late_spans: 0,
+            orphan_spans: 0,
+            wall_clock_ms: None,
+            critical_path_ms: None,
+            accumulated_compute_ms: 0,
+            accumulated_transport_ms: 0,
+            overlap_ms: None,
+            true_residual_ms: None,
+            remote_stream: RemoteStreamTelemetry::default(),
+        }
+    }
+}
+
+pub(super) fn profile_sync_enabled() -> bool {
+    // The fleet already enables detailed backend profiling with this flag.
+    // Reuse that single policy instead of creating a second environment
+    // variable for the same profiling mode. The backend's own default remains
+    // independent: spans are opt-in so normal inference keeps aggregates only.
+    std::env::var("POM_PROFILE_SYNC")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 pub(super) fn reservoir_slot(seen: u64) -> usize {
     seen.wrapping_mul(6_364_136_223_846_793_005)
         .wrapping_add(1_442_695_040_888_963_407)
@@ -326,13 +731,24 @@ pub struct TransportSummaryEntry {
     pub calls: u32,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    /// RTT cheio, incluindo o compute do nó remoto. Mantido para o total de
+    /// RTT de execução e compatibilidade com o front antigo.
     pub rtt_min_ms: u64,
     pub rtt_median_ms: u64,
     pub rtt_p95_ms: u64,
     pub rtt_max_ms: u64,
+    /// RTT só de transporte: `round_trip - processing_ms` remoto. É o que a
+    /// perna do card deve exibir; sem ele um link QUIC entre nós co-locados
+    /// aparecia com ~76 ms de "RTT" que era compute do outro lado.
+    pub net_rtt_min_ms: u64,
+    pub net_rtt_median_ms: u64,
+    pub net_rtt_p95_ms: u64,
+    pub net_rtt_max_ms: u64,
     pub fallback_calls: u32,
     #[serde(skip)]
     pub(super) rtt: RttDistribution,
+    #[serde(skip)]
+    pub(super) net_rtt: RttDistribution,
 }
 
 impl TransportSummaryEntry {
@@ -346,8 +762,13 @@ impl TransportSummaryEntry {
             rtt_median_ms: 0,
             rtt_p95_ms: 0,
             rtt_max_ms: 0,
+            net_rtt_min_ms: 0,
+            net_rtt_median_ms: 0,
+            net_rtt_p95_ms: 0,
+            net_rtt_max_ms: 0,
             fallback_calls: 0,
             rtt: RttDistribution::default(),
+            net_rtt: RttDistribution::default(),
         }
     }
 
@@ -359,6 +780,7 @@ impl TransportSummaryEntry {
             self.fallback_calls = self.fallback_calls.saturating_add(1);
         }
         self.rtt.record(trace.round_trip_ms);
+        self.net_rtt.record(trace.network_ms);
         self.refresh_percentiles();
     }
 
@@ -368,6 +790,7 @@ impl TransportSummaryEntry {
         self.bytes_received = self.bytes_received.saturating_add(other.bytes_received);
         self.fallback_calls = self.fallback_calls.saturating_add(other.fallback_calls);
         self.rtt.merge(&other.rtt);
+        self.net_rtt.merge(&other.net_rtt);
         self.refresh_percentiles();
     }
 
@@ -376,6 +799,10 @@ impl TransportSummaryEntry {
         self.rtt_median_ms = self.rtt.percentile(50);
         self.rtt_p95_ms = self.rtt.percentile(95);
         self.rtt_max_ms = self.rtt.max_ms;
+        self.net_rtt_min_ms = self.net_rtt.min_ms;
+        self.net_rtt_median_ms = self.net_rtt.percentile(50);
+        self.net_rtt_p95_ms = self.net_rtt.percentile(95);
+        self.net_rtt_max_ms = self.net_rtt.max_ms;
     }
 }
 
@@ -478,18 +905,129 @@ impl TransportSummary {
     }
 }
 
-impl TransportTrace {
-    pub(super) fn from_sent(sent: &crate::relay::SentFrame) -> Self {
+/// Uma perna observada do ciclo lógico do pipeline.
+///
+/// `from_node_id -> to_node_id` é a direção da travessia que foi observada no
+/// executor. O valor continua sendo a duração da operação de transporte
+/// observada (a distribuição antiga de RTT), não uma metade inferida de um
+/// relógio de ida e volta. O mapa usa cada perna uma vez, portanto não soma um
+/// retorno inexistente entre peers de avanço.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PipelineCycleLeg {
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub transport_summary: TransportSummary,
+}
+
+impl PipelineCycleLeg {
+    fn new(from_node_id: &str, to_node_id: &str, trace: TransportTrace) -> Self {
+        let mut transport_summary = TransportSummary::default();
+        transport_summary.record(trace);
         Self {
-            transport: sent.transport,
+            from_node_id: from_node_id.to_owned(),
+            to_node_id: to_node_id.to_owned(),
+            transport_summary,
+        }
+    }
+
+    fn record(&mut self, trace: TransportTrace) {
+        self.transport_summary.record(trace);
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.transport_summary.merge(&other.transport_summary);
+    }
+}
+
+/// Decomposição agregada do ciclo, separada por workload para que prefill não
+/// altere o RTT mostrado para decode. No modo normal guarda apenas contadores,
+/// histogramas e uma entrada por perna, sem span por token.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PipelineCycleTelemetry {
+    pub prefill: Vec<PipelineCycleLeg>,
+    pub decode: Vec<PipelineCycleLeg>,
+}
+
+impl PipelineCycleTelemetry {
+    fn legs_mut(&mut self, phase: Phase) -> &mut Vec<PipelineCycleLeg> {
+        match phase {
+            Phase::Prefill => &mut self.prefill,
+            Phase::Decode => &mut self.decode,
+        }
+    }
+
+    fn record(
+        &mut self,
+        phase: Phase,
+        from_node_id: &str,
+        to_node_id: &str,
+        trace: TransportTrace,
+    ) {
+        let legs = self.legs_mut(phase);
+        if let Some(leg) = legs
+            .iter_mut()
+            .find(|leg| leg.from_node_id == from_node_id && leg.to_node_id == to_node_id)
+        {
+            leg.record(trace);
+        } else {
+            legs.push(PipelineCycleLeg::new(from_node_id, to_node_id, trace));
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        for (current, next) in [&mut self.prefill, &mut self.decode]
+            .into_iter()
+            .zip([&other.prefill, &other.decode])
+        {
+            for leg in next {
+                if let Some(existing) = current.iter_mut().find(|candidate| {
+                    candidate.from_node_id == leg.from_node_id
+                        && candidate.to_node_id == leg.to_node_id
+                }) {
+                    existing.merge(leg);
+                } else {
+                    current.push(leg.clone());
+                }
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.prefill.is_empty() && self.decode.is_empty()
+    }
+}
+
+impl TransportTrace {
+    fn measured_network_ms(transport_rtt_us: Option<u64>) -> Option<u64> {
+        transport_rtt_us.map(|microseconds| microseconds.saturating_add(999) / 1_000)
+    }
+
+    pub(super) fn from_sent(sent: &crate::relay::SentFrame) -> Self {
+        let processing_ms = sent
+            .meta
+            .get("processing_ms")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        Self {
+            transport: sent.telemetry_transport(),
             fallback: sent.transport_fallback,
             round_trip_ms: sent.round_trip_ms,
+            network_ms: Self::measured_network_ms(sent.transport_rtt_us)
+                .unwrap_or_else(|| sent.round_trip_ms.saturating_sub(processing_ms)),
             bytes_sent: sent.bytes_sent,
             bytes_received: sent.bytes_received,
         }
     }
 
     pub(super) fn from_json(entry: &serde_json::Value) -> Self {
+        let get = |key: &str| entry.get(key).and_then(|value| value.as_u64()).unwrap_or(0);
+        let round_trip_ms = get("round_trip_ms");
+        let processing_ms = get("processing_ms");
+        let measured_network_ms = Self::measured_network_ms(
+            entry
+                .get("transport_rtt_us")
+                .and_then(|value| value.as_u64()),
+        );
         Self {
             transport: entry
                 .get("transport")
@@ -500,18 +1038,11 @@ impl TransportTrace {
                 .get("transport_fallback")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false),
-            round_trip_ms: entry
-                .get("round_trip_ms")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0),
-            bytes_sent: entry
-                .get("bytes_sent")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0),
-            bytes_received: entry
-                .get("bytes_received")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0),
+            round_trip_ms,
+            network_ms: measured_network_ms
+                .unwrap_or_else(|| round_trip_ms.saturating_sub(processing_ms)),
+            bytes_sent: get("bytes_sent"),
+            bytes_received: get("bytes_received"),
         }
     }
 }
@@ -535,6 +1066,11 @@ pub struct PhaseTrace {
     /// phase that mixed formats, which is intentionally visible as unknown.
     pub hidden_state_dtype: Option<WireDtype>,
     pub calls: u32,
+    /// Quantos eventos de decode foram representados pelos agregados desta
+    /// fase. Em chamadas comuns vale um; um lote remote-stream pode carregar
+    /// vários tokens sem transformar o contador de chamadas em contador de
+    /// tokens.
+    pub reported_spans: u64,
     pub client_encode_ms: u64,
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
@@ -550,6 +1086,13 @@ pub struct PhaseTrace {
     /// Quase sempre zero: o handshake acontece uma vez por conexão e as
     /// conexões ficam no pool. É custo de estabelecimento, não custo por token.
     pub tls_handshake_ms: u64,
+    /// Contagem do estado do pool reqwest observado nesta fase.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub connection_new_calls: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub connection_reused_calls: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub connection_unknown_calls: u32,
     /// Distribuição limitada das chamadas que cruzaram este hop.
     ///
     /// Min/max são exatos. Depois de 1.024 amostras, os quantis usam um
@@ -559,12 +1102,22 @@ pub struct PhaseTrace {
     pub node_frame_decode_ms: f64,
     pub node_input_prepare_ms: f64,
     pub node_queue_ms: f64,
+    /// Subconjunto da fila que ficou aguardando seleção/admissão do scheduler.
+    /// Normalmente coincide com `node_queue_ms`; a separação existe para
+    /// nomear a carência de reclamação de sessões retidas sem subtrair tempos.
+    pub node_scheduler_wait_ms: f64,
+    /// Motivos observados para a espera do scheduler nesta fase.
+    pub scheduler_wait_reasons: Vec<String>,
     /// Espera pelo mutex do motor no nó: o preço de outra requisição estar
     /// decodificando ali. É o que separa "o nó é lento" de "o nó está ocupado".
     pub node_lock_wait_ms: f64,
     pub node_setup_ms: f64,
     pub node_decode_ms: f64,
-    /// Time to hand the batch to the backend — not the time it ran.
+    /// Tempo medido do bloco `nextn`, fora de `node_decode_ms` e antes da
+    /// serialização da resposta. Quando presente, explica a produção MTP que
+    /// um ciclo de remote-stream aguarda legitimamente.
+    pub node_mtp_draft_ms: f64,
+    /// Time to hand the batch to the backend - not the time it ran.
     pub node_backend_enqueue_ms: f64,
     /// Queued backend work plus already-queued output transfer, measured with
     /// `llama_synchronize`. A zero value means no completion duration was
@@ -590,6 +1143,8 @@ pub struct PhaseTrace {
     pub node_token_text_ms: f64,
     pub node_sampling_ms: f64,
     pub node_encode_ms: f64,
+    pub node_first_token_produced_ms: f64,
+    pub node_first_token_serialized_ms: f64,
     /// Percentiles over the peer's own `decode_ms`, per call in this phase.
     pub node_p50_ms: f64,
     pub node_p95_ms: f64,
@@ -618,6 +1173,14 @@ pub struct PhaseTrace {
 }
 
 impl PhaseTrace {
+    pub(super) fn record_connection_state(&mut self, state: crate::peer_client::ConnectionState) {
+        match state {
+            crate::peer_client::ConnectionState::New => self.connection_new_calls += 1,
+            crate::peer_client::ConnectionState::Reused => self.connection_reused_calls += 1,
+            crate::peer_client::ConnectionState::Unknown => self.connection_unknown_calls += 1,
+        }
+    }
+
     pub(super) fn record_transport(&mut self, transport: TransportTrace) {
         self.transport_summary.record(transport);
     }
@@ -635,7 +1198,11 @@ impl PhaseTrace {
         tls: TlsHop,
         node: &serde_json::Value,
     ) {
-        let node_ms = |key: &str| node[key].as_f64().unwrap_or(0.0);
+        let node_ms = |key: &str| {
+            node.get(key)
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0)
+        };
         let node_decode_ms = node_ms("decode_ms");
         let selected_path = node
             .get("selected_path")
@@ -702,6 +1269,7 @@ impl PhaseTrace {
         self.bytes_sent += bytes_sent;
         self.bytes_received += bytes_received;
         self.calls += 1;
+        self.reported_spans = self.reported_spans.saturating_add(1);
         self.client_encode_ms += client_encode_ms;
         self.response_headers_ms += response_headers_ms;
         self.response_body_ms += response_body_ms;
@@ -713,9 +1281,20 @@ impl PhaseTrace {
         self.node_frame_decode_ms += node_ms("frame_decode_ms");
         self.node_input_prepare_ms += node_ms("input_prepare_ms");
         self.node_queue_ms += node_ms("queue_ms");
+        self.node_scheduler_wait_ms += node_ms("scheduler_wait_ms");
+        if let Some(reason) = node.get("scheduler_wait_reason").and_then(Value::as_str) {
+            if !self
+                .scheduler_wait_reasons
+                .iter()
+                .any(|seen| seen == reason)
+            {
+                self.scheduler_wait_reasons.push(reason.to_owned());
+            }
+        }
         self.node_lock_wait_ms += node_ms("lock_wait_ms");
         self.node_setup_ms += node_ms("setup_ms");
         self.node_decode_ms += node_decode_ms;
+        self.node_mtp_draft_ms += node_ms("mtp_draft_ms");
         self.node_backend_enqueue_ms += node_ms("backend_enqueue_ms");
         self.node_backend_completion_ms += node_ms("backend_completion_ms");
         self.node_moe_forward_ms += node_ms("moe_forward_ms");
@@ -731,6 +1310,12 @@ impl PhaseTrace {
         self.node_token_text_ms += node_ms("token_text_ms");
         self.node_sampling_ms += node_ms("sampling_ms");
         self.node_encode_ms += node_ms("encode_ms");
+        self.node_first_token_produced_ms = self
+            .node_first_token_produced_ms
+            .max(node_ms("first_token_produced_ms"));
+        self.node_first_token_serialized_ms = self
+            .node_first_token_serialized_ms
+            .max(node_ms("first_token_serialized_ms"));
 
         self.record_node_sample(node_decode_ms);
         self.observe_path(selected_path);
@@ -846,19 +1431,34 @@ impl PhaseTrace {
             self.observe_hidden_dtype(dtype);
         }
         self.calls += next.calls;
+        self.reported_spans = self.reported_spans.saturating_add(next.reported_spans);
         self.client_encode_ms += next.client_encode_ms;
         self.response_headers_ms += next.response_headers_ms;
         self.response_body_ms += next.response_body_ms;
         self.client_decode_ms += next.client_decode_ms;
         self.tls_calls += next.tls_calls;
         self.tls_handshake_ms += next.tls_handshake_ms;
+        self.connection_new_calls += next.connection_new_calls;
+        self.connection_reused_calls += next.connection_reused_calls;
+        self.connection_unknown_calls += next.connection_unknown_calls;
         self.transport_summary.merge(&next.transport_summary);
         self.node_frame_decode_ms += next.node_frame_decode_ms;
         self.node_input_prepare_ms += next.node_input_prepare_ms;
         self.node_queue_ms += next.node_queue_ms;
+        self.node_scheduler_wait_ms += next.node_scheduler_wait_ms;
+        for reason in &next.scheduler_wait_reasons {
+            if !self
+                .scheduler_wait_reasons
+                .iter()
+                .any(|seen| seen == reason)
+            {
+                self.scheduler_wait_reasons.push(reason.clone());
+            }
+        }
         self.node_lock_wait_ms += next.node_lock_wait_ms;
         self.node_setup_ms += next.node_setup_ms;
         self.node_decode_ms += next.node_decode_ms;
+        self.node_mtp_draft_ms += next.node_mtp_draft_ms;
         self.node_backend_enqueue_ms += next.node_backend_enqueue_ms;
         self.node_backend_completion_ms += next.node_backend_completion_ms;
         self.node_residual_capture_d2h_sync_ms += next.node_residual_capture_d2h_sync_ms;
@@ -873,6 +1473,12 @@ impl PhaseTrace {
         self.node_token_text_ms += next.node_token_text_ms;
         self.node_sampling_ms += next.node_sampling_ms;
         self.node_encode_ms += next.node_encode_ms;
+        self.node_first_token_produced_ms = self
+            .node_first_token_produced_ms
+            .max(next.node_first_token_produced_ms);
+        self.node_first_token_serialized_ms = self
+            .node_first_token_serialized_ms
+            .max(next.node_first_token_serialized_ms);
         for &sample in &next.node_samples_ms {
             self.record_node_sample(sample);
         }
@@ -932,8 +1538,209 @@ pub struct HopTrace {
     pub decode: PhaseTrace,
 }
 
+/// Estado de aquecimento observado por esta execução. `Unknown` é deliberado:
+/// um peer antigo ou uma fronteira que não expõe o estado não deve virar
+/// `cold` por inferência.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RequestState {
+    Cold,
+    Warm,
+    #[default]
+    Unknown,
+}
+
+/// Span fechado medido em um único host.
+///
+/// `started_at_ms` é wall clock apenas para correlação. `start_offset_ms` e
+/// `duration_ms` vêm de `Instant` no mesmo host. Nunca se subtraem offsets de
+/// máquinas diferentes. O `parallel_group` permite que a UI explique
+/// sobreposição; o cálculo de caminho crítico usa a união dos intervalos.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TraceSpan {
+    pub name: String,
+    pub span_id: String,
+    pub parent_span_id: Option<String>,
+    pub host: String,
+    pub started_at_ms: u64,
+    pub start_offset_ms: u64,
+    pub duration_ms: u64,
+    pub parallel_group: Option<String>,
+}
+
+impl TraceSpan {
+    pub fn new(
+        name: impl Into<String>,
+        host: impl Into<String>,
+        parent_span_id: Option<String>,
+        started_at_ms: u64,
+        start_offset_ms: u64,
+        duration_ms: u64,
+        parallel_group: Option<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            span_id: uuid::Uuid::new_v4().simple().to_string(),
+            parent_span_id,
+            host: host.into(),
+            started_at_ms,
+            start_offset_ms,
+            duration_ms,
+            parallel_group,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        name: &str,
+        host: &str,
+        start_offset_ms: u64,
+        duration_ms: u64,
+        parallel_group: Option<&str>,
+    ) -> Self {
+        Self {
+            name: name.to_owned(),
+            span_id: format!("test-{name}"),
+            parent_span_id: None,
+            host: host.to_owned(),
+            started_at_ms: 0,
+            start_offset_ms,
+            duration_ms,
+            parallel_group: parallel_group.map(str::to_owned),
+        }
+    }
+}
+
+/// Marcos observáveis do primeiro token. Cada timestamp é local ao host que
+/// o registrou; os campos de duração só são preenchidos quando o mesmo host
+/// consegue medir ambas as pontas.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct FirstTokenTrace {
+    pub engine_produced_at_ms: Option<u64>,
+    pub node_serialized_at_ms: Option<u64>,
+    pub node_sent_at_ms: Option<u64>,
+    pub coordinator_received_at_ms: Option<u64>,
+    pub gateway_stream_at_ms: Option<u64>,
+    pub client_received_at_ms: Option<u64>,
+    pub engine_ttft_ms: Option<u64>,
+    pub node_serialized_ms: Option<u64>,
+    pub node_to_gateway_ms: Option<u64>,
+    pub gateway_to_client_ms: Option<u64>,
+}
+
+impl FirstTokenTrace {
+    fn is_empty(&self) -> bool {
+        self.engine_produced_at_ms.is_none()
+            && self.node_serialized_at_ms.is_none()
+            && self.node_sent_at_ms.is_none()
+            && self.coordinator_received_at_ms.is_none()
+            && self.gateway_stream_at_ms.is_none()
+            && self.client_received_at_ms.is_none()
+            && self.engine_ttft_ms.is_none()
+            && self.node_serialized_ms.is_none()
+            && self.node_to_gateway_ms.is_none()
+            && self.gateway_to_client_ms.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct StreamingTrace {
+    pub time_to_first_chunk_ms: Option<u64>,
+    pub time_to_first_token_ms: Option<u64>,
+    pub stream_duration_ms: Option<u64>,
+    pub time_last_token_to_response_end_ms: Option<u64>,
+    pub chunks: u64,
+    pub bytes: u64,
+    pub tokens_per_chunk: Option<f64>,
+}
+
+impl StreamingTrace {
+    fn is_empty(&self) -> bool {
+        self.time_to_first_chunk_ms.is_none()
+            && self.time_to_first_token_ms.is_none()
+            && self.stream_duration_ms.is_none()
+            && self.time_last_token_to_response_end_ms.is_none()
+            && self.chunks == 0
+            && self.bytes == 0
+            && self.tokens_per_chunk.is_none()
+    }
+}
+
+/// União dos intervalos observados em um host. Abrange spans inclusivos e
+/// paralelos uma vez só, por isso não confunde soma de trabalho com caminho
+/// crítico.
+pub fn critical_path_ms(spans: &[TraceSpan], host: &str) -> u64 {
+    let mut intervals: Vec<_> = spans
+        .iter()
+        .filter(|span| span.host == host && span.duration_ms > 0)
+        .map(|span| {
+            (
+                span.start_offset_ms,
+                span.start_offset_ms.saturating_add(span.duration_ms),
+            )
+        })
+        .collect();
+    intervals.sort_unstable_by_key(|(start, _)| *start);
+
+    let mut covered_until = 0;
+    let mut covered: u64 = 0;
+    for (start, end) in intervals {
+        if end <= covered_until {
+            continue;
+        }
+        if start >= covered_until {
+            covered = covered.saturating_add(end.saturating_sub(start));
+        } else {
+            covered = covered.saturating_add(end.saturating_sub(covered_until));
+        }
+        covered_until = end;
+    }
+    covered
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestTrace {
+    pub trace_id: String,
+    pub profile: crate::telemetry::Profile,
+    pub request_state: RequestState,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<TraceSpan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outside_node_total_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outside_node_accounted_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outside_node_unaccounted_ms: Option<u64>,
+    #[serde(skip_serializing_if = "FirstTokenTrace::is_empty")]
+    pub first_token: FirstTokenTrace,
+    #[serde(skip_serializing_if = "StreamingTrace::is_empty")]
+    pub streaming: StreamingTrace,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_ttft_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine_ttft_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_ttft_ms: Option<u64>,
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub decode_calls: u64,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub generated_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_per_decode_call: Option<f64>,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub connection_new_calls: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub connection_reused_calls: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub connection_unknown_calls: u32,
+    /// Quantas travessias terminaram em HTTPS depois que um transporte
+    /// persistente/túnel falhou. Não é inferido pelo nome do transporte: só é
+    /// incrementado quando a camada de transporte carrega a razão explícita.
+    pub https_fallback_calls: u64,
+    /// Razões limitadas, preservadas para explicar por que o caminho normal
+    /// não foi usado. Uma entrada pode aparecer mais de uma vez se a mesma
+    /// aresta cair em vários tokens.
+    pub https_fallback_reasons: Vec<String>,
     pub model: String,
     pub input_tokens: u32,
     /// Quantos dos `input_tokens` a cabeça **não** reprocessou porque já
@@ -973,6 +1780,25 @@ pub struct RequestTrace {
     /// nesta requisição. `<= prefill_max_inflight_chunks`; `1` quando a
     /// sobreposição não pegou (prompt de um pedaço só, janela em 1, modo anel).
     pub prefill_pipeline_depth_max: u32,
+    /// Estado da própria coleta. `wall_clock_ms` é uma duração medida pelo
+    /// gateway; campos de overlap/residual só são preenchidos quando há
+    /// intervalos temporais explícitos, nunca por subtração de somatórios.
+    pub telemetry: TelemetrySummary,
+    /// Spans de frame e eventos por token somente quando
+    /// `POM_PROFILE_SYNC=1` está ativo. Um evento de token tem duração zero
+    /// quando o lote não traz intervalos individuais, em vez de repetir o
+    /// custo do lote como se cada token tivesse sido medido separadamente.
+    pub profiling_spans: Option<Vec<TelemetrySpan>>,
+    /// Distribuição barata do ciclo de uma rodada até a entrega no cliente.
+    /// Diferente de `profiling_spans`, existe também no modo normal para
+    /// revelar p95/p99 e propagação de jitter sem alocar um span por token.
+    #[serde(skip_serializing_if = "TokenCycleTelemetry::is_empty")]
+    pub token_cycle: TokenCycleTelemetry,
+    /// Pernas direcionais do ciclo lógico observadas no caminho direto. Inclui
+    /// a entrada do gateway, as transições de avanço e o retorno final quando
+    /// o recibo da entrega chegou ao gateway.
+    #[serde(skip_serializing_if = "PipelineCycleTelemetry::is_empty")]
+    pub pipeline_cycle: PipelineCycleTelemetry,
     /// Tokens draft que o caminho MTP propôs nesta requisição, somados entre
     /// todos os hops e steps.
     pub mtp_draft_tokens_proposed: u64,
@@ -982,13 +1808,120 @@ pub struct RequestTrace {
     pub mtp_draft_tokens_rejected: u64,
     /// `accepted / proposed`; nulo quando a requisição não propôs tokens MTP.
     pub mtp_acceptance_rate: Option<f64>,
+    #[serde(skip)]
+    expected_decode_spans: u64,
+    #[serde(skip)]
+    remote_stream_frame_ids: HashSet<String>,
+    #[serde(skip)]
+    profiling_span_ids: HashSet<String>,
+    #[serde(skip)]
+    profiling_token_index: u64,
+    #[serde(skip)]
+    profiling_token_indices_absolute: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
     Prefill,
     Decode,
+}
+
+/// Contexto de uma amostra detalhada. O contexto só existe quando o modo de
+/// profiling foi explicitamente pedido e há índice de token para correlacionar
+/// os peers. `Instant` nunca atravessa a wire: cada span publica offsets no
+/// domínio monotônico local, preservando a impossibilidade de subtrair relógios
+/// de máquinas diferentes.
+#[derive(Debug, Clone)]
+pub struct TelemetryContext {
+    pub trace_id: String,
+    pub request_id: String,
+    pub pipeline_id: String,
+    pub peer_id: String,
+    pub phase: Phase,
+    pub token_index: u64,
+    pub origin: Instant,
+    pub transport: Option<String>,
+}
+
+impl TelemetryContext {
+    pub fn from_meta(
+        meta: &serde_json::Value,
+        peer_id: impl Into<String>,
+        phase: Phase,
+        origin: Instant,
+        transport: Option<String>,
+    ) -> Option<Self> {
+        if !profile_sync_enabled() {
+            return None;
+        }
+        Some(Self {
+            trace_id: meta
+                .get("trace_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned(),
+            request_id: meta
+                .get("request_id")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| meta.get("session_id").and_then(serde_json::Value::as_str))
+                .unwrap_or("unknown")
+                .to_owned(),
+            pipeline_id: meta
+                .get("pipeline_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned(),
+            peer_id: peer_id.into(),
+            phase,
+            token_index: meta
+                .get("telemetry_token_index")
+                .and_then(serde_json::Value::as_u64)?,
+            origin,
+            transport,
+        })
+    }
+
+    pub fn span(
+        &self,
+        name: &str,
+        start: Instant,
+        end: Instant,
+        parent_span_id: Option<String>,
+        transport: Option<String>,
+    ) -> TelemetrySpan {
+        let start_ns = start
+            .saturating_duration_since(self.origin)
+            .as_nanos()
+            .min(u64::MAX as u128) as u64;
+        let end_ns = end
+            .saturating_duration_since(self.origin)
+            .as_nanos()
+            .min(u64::MAX as u128) as u64;
+        let duration_ns = end
+            .saturating_duration_since(start)
+            .as_nanos()
+            .min(u64::MAX as u128) as u64;
+        TelemetrySpan {
+            trace_id: self.trace_id.clone(),
+            request_id: self.request_id.clone(),
+            pipeline_id: self.pipeline_id.clone(),
+            peer_id: self.peer_id.clone(),
+            span_id: format!(
+                "{}:{}:{}:{}",
+                self.peer_id, self.token_index, name, start_ns
+            ),
+            parent_span_id,
+            name: name.to_owned(),
+            phase: self.phase,
+            token_index: Some(self.token_index),
+            start_ns,
+            end_ns,
+            duration_ns,
+            transport: transport.or_else(|| self.transport.clone()),
+            clock_domain: "peer-monotonic".into(),
+        }
+    }
 }
 
 /// A request descriptor used before a hop is packed into `frame/v1-batch`.
@@ -1062,6 +1995,7 @@ impl BatchRoute {
 }
 
 pub(super) const TRACE_ISSUE_LIMIT: usize = 32;
+const TELEMETRY_DEDUPE_WINDOW: usize = 1_024;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -1103,8 +2037,37 @@ impl TraceIssue {
 }
 
 impl RequestTrace {
+    #[cfg(test)]
     pub fn new(model: impl Into<String>, steps: &[(&str, u32, u32)]) -> Self {
+        Self::new_with_trace_id(uuid::Uuid::new_v4().simple().to_string(), model, steps)
+    }
+
+    pub fn new_with_trace_id(
+        trace_id: impl Into<String>,
+        model: impl Into<String>,
+        steps: &[(&str, u32, u32)],
+    ) -> Self {
         Self {
+            trace_id: trace_id.into(),
+            profile: crate::telemetry::Profile::current(),
+            request_state: RequestState::Unknown,
+            spans: Vec::new(),
+            outside_node_total_ms: None,
+            outside_node_accounted_ms: None,
+            outside_node_unaccounted_ms: None,
+            first_token: FirstTokenTrace::default(),
+            streaming: StreamingTrace::default(),
+            server_ttft_ms: None,
+            engine_ttft_ms: None,
+            client_ttft_ms: None,
+            decode_calls: 0,
+            generated_tokens: 0,
+            tokens_per_decode_call: None,
+            connection_new_calls: 0,
+            connection_reused_calls: 0,
+            connection_unknown_calls: 0,
+            https_fallback_calls: 0,
+            https_fallback_reasons: Vec::new(),
             model: model.into(),
             input_tokens: 0,
             cached_tokens: 0,
@@ -1123,10 +2086,19 @@ impl RequestTrace {
             prefill_max_inflight_chunks: 1,
             prefill_overlapped_chunks: 0,
             prefill_pipeline_depth_max: 0,
+            telemetry: TelemetrySummary::default(),
+            profiling_spans: profile_sync_enabled().then(Vec::new),
+            token_cycle: TokenCycleTelemetry::default(),
+            pipeline_cycle: PipelineCycleTelemetry::default(),
             mtp_draft_tokens_proposed: 0,
             mtp_draft_tokens_accepted: 0,
             mtp_draft_tokens_rejected: 0,
             mtp_acceptance_rate: None,
+            expected_decode_spans: 0,
+            remote_stream_frame_ids: HashSet::new(),
+            profiling_span_ids: HashSet::new(),
+            profiling_token_index: 0,
+            profiling_token_indices_absolute: false,
             hops: steps
                 .iter()
                 .map(|(node_id, start_layer, end_layer)| HopTrace {
@@ -1146,6 +2118,68 @@ impl RequestTrace {
         } else {
             self.dropped_issues += 1;
         }
+    }
+
+    #[cfg(test)]
+    pub fn record_span(&mut self, span: TraceSpan) {
+        if !self.profile.collects_spans() {
+            return;
+        }
+        self.spans.push(span);
+        self.refresh_outside_node_accounting();
+    }
+
+    pub fn set_accounted_spans(&mut self, spans: Vec<TraceSpan>) {
+        if !self.profile.collects_spans() {
+            self.spans.clear();
+            self.outside_node_accounted_ms = None;
+            self.outside_node_unaccounted_ms = None;
+            return;
+        }
+        self.spans = spans;
+        self.refresh_outside_node_accounting();
+    }
+
+    #[cfg(test)]
+    pub fn set_outside_node_total_ms(&mut self, total_ms: u64) {
+        self.outside_node_total_ms = Some(total_ms);
+        self.refresh_outside_node_accounting();
+    }
+
+    pub fn set_generated_tokens(&mut self, tokens: u32) {
+        self.generated_tokens = tokens;
+        self.refresh_decode_counters();
+    }
+
+    /// `decode_calls` é **derivado dos saltos**, não um contador próprio.
+    ///
+    /// O laço de continuação do gateway funde o traço de cada perna no traço
+    /// base (`merge`), e a fusão sempre soube juntar `PhaseTrace::calls` mas
+    /// nunca carregou um contador solto: o resumo dizia "não medido" enquanto a
+    /// tabela por salto mostrava 111 chamadas na mesma execução. Derivar remove
+    /// a chance de as duas divergirem outra vez.
+    ///
+    /// É o **máximo** entre os saltos, não a soma: uma rodada de decode toca
+    /// cada salto uma vez, então somar multiplicaria as rodadas pelo tamanho do
+    /// pipeline e `tokens_per_decode_call` - o rendimento da especulação -
+    /// cairia por esse mesmo fator.
+    pub(super) fn refresh_decode_counters(&mut self) {
+        self.decode_calls = self
+            .hops
+            .iter()
+            .map(|hop| hop.decode.calls as u64)
+            .max()
+            .unwrap_or(0);
+        self.tokens_per_decode_call = (self.decode_calls > 0)
+            .then(|| self.generated_tokens as f64 / self.decode_calls as f64);
+    }
+
+    fn refresh_outside_node_accounting(&mut self) {
+        let accounted = critical_path_ms(&self.spans, "gateway");
+        self.outside_node_accounted_ms = self.outside_node_total_ms.map(|_| accounted);
+        self.outside_node_unaccounted_ms = self
+            .outside_node_total_ms
+            .map(|total| total.saturating_sub(accounted));
     }
 
     pub(super) fn record_prefix_decision(&mut self, meta: &serde_json::Value, requested: bool) {
@@ -1186,12 +2220,16 @@ impl RequestTrace {
     }
 
     pub fn from_plan(model: &str, plan: &PipelinePlan) -> Self {
+        Self::from_plan_with_trace_id(&uuid::Uuid::new_v4().simple().to_string(), model, plan)
+    }
+
+    pub fn from_plan_with_trace_id(trace_id: &str, model: &str, plan: &PipelinePlan) -> Self {
         let steps: Vec<_> = plan
             .steps
             .iter()
             .map(|step| (step.node_id.as_str(), step.start_layer, step.end_layer))
             .collect();
-        Self::new(model, &steps)
+        Self::new_with_trace_id(trace_id, model, &steps)
     }
 
     pub fn record_hop(
@@ -1209,6 +2247,22 @@ impl RequestTrace {
         tls: TlsHop,
         node: &serde_json::Value,
     ) {
+        let first_token_produced_ms = node
+            .get("first_token_produced_ms")
+            .and_then(|value| value.as_f64())
+            .filter(|value| *value > 0.0);
+        let first_token_serialized_ms = node
+            .get("first_token_serialized_ms")
+            .and_then(|value| value.as_f64())
+            .filter(|value| *value > 0.0);
+        let first_token_produced_at_ms = node
+            .get("first_token_produced_at_ms")
+            .and_then(|value| value.as_u64())
+            .filter(|value| *value > 0);
+        let first_token_serialized_at_ms = node
+            .get("first_token_serialized_at_ms")
+            .and_then(|value| value.as_u64())
+            .filter(|value| *value > 0);
         let Some(entry) = self.hops.get_mut(hop) else {
             return;
         };
@@ -1228,7 +2282,28 @@ impl RequestTrace {
             tls,
             node,
         );
+        if phase == Phase::Decode {
+            self.refresh_decode_counters();
+        }
+        let has_first_token_marker = first_token_produced_ms.is_some()
+            || first_token_serialized_ms.is_some()
+            || first_token_produced_at_ms.is_some()
+            || first_token_serialized_at_ms.is_some();
+        if self.engine_ttft_ms.is_none() && has_first_token_marker {
+            self.engine_ttft_ms = first_token_produced_ms.map(|value| value.round() as u64);
+            self.first_token.engine_ttft_ms = self.engine_ttft_ms;
+            self.first_token.node_serialized_ms =
+                first_token_serialized_ms.map(|value| value.round() as u64);
+            self.first_token.node_to_gateway_ms = Some(
+                round_trip_ms
+                    .saturating_sub(processing_ms)
+                    .saturating_sub(client_decode_ms),
+            );
+            self.first_token.engine_produced_at_ms = first_token_produced_at_ms;
+            self.first_token.node_serialized_at_ms = first_token_serialized_at_ms;
+        }
         self.record_mtp_counts(node);
+        self.record_profiling_spans_from_json(node);
         self.total_bytes_sent += bytes_sent;
         self.total_bytes_received += bytes_received;
     }
@@ -1278,8 +2353,24 @@ impl RequestTrace {
                 on: sent.tls,
                 handshake_ms: sent.tls_handshake_ms,
             },
-            &sent.meta["node_timings"],
+            sent.meta
+                .get("node_timings")
+                .unwrap_or(&serde_json::Value::Null),
         );
+        if let Some(measured_network_ms) =
+            TransportTrace::measured_network_ms(sent.transport_rtt_us)
+        {
+            if let Some(entry) = self.hops.get_mut(hop) {
+                let slot = match phase {
+                    Phase::Prefill => &mut entry.prefill,
+                    Phase::Decode => &mut entry.decode,
+                };
+                slot.network_ms = slot
+                    .network_ms
+                    .saturating_sub(sent.round_trip_ms.saturating_sub(processing_ms))
+                    .saturating_add(measured_network_ms);
+            }
+        }
         self.record_hidden_state(
             hop,
             phase,
@@ -1287,6 +2378,18 @@ impl RequestTrace {
             sent.hidden_state_bytes_received,
             Some(sent.hidden_state_dtype),
         );
+        self.record_connection_state(hop, phase, sent.connection_state);
+        self.record_https_fallback(
+            sent.transport_fallback,
+            sent.transport_fallback_reason.as_deref(),
+        );
+        for span in &sent.profiling_spans {
+            if let Ok(value) = serde_json::to_value(span) {
+                self.record_profiling_spans_from_json(&json!({
+                    "profiling_spans": [value]
+                }));
+            }
+        }
     }
 
     pub(super) fn record_transport(&mut self, hop: usize, phase: Phase, transport: TransportTrace) {
@@ -1298,8 +2401,325 @@ impl RequestTrace {
             Phase::Decode => entry.decode.record_transport(transport),
         }
     }
+
+    /// Registra uma travessia no ciclo em sua direção real. A amostra é
+    /// agregada por aresta e transporte, sem alocar um span por token no modo
+    /// normal.
+    pub(super) fn record_cycle_transport(
+        &mut self,
+        phase: Phase,
+        from_node_id: &str,
+        to_node_id: &str,
+        transport: TransportTrace,
+    ) {
+        self.pipeline_cycle
+            .record(phase, from_node_id, to_node_id, transport);
+    }
+
+    /// Registra a última perna, que não pertence a nenhum `HopTrace`: a cauda
+    /// entrega o resultado ao gateway por uma operação separada.
+    pub(super) fn record_cycle_return(
+        &mut self,
+        phase: Phase,
+        from_node_id: &str,
+        transport: TransportTrace,
+    ) {
+        self.record_cycle_transport(phase, from_node_id, "gateway", transport);
+    }
+
+    /// Registra a travessia de controle que abriu um `remote-stream` sem
+    /// contá-la como decode. O ACK confirma a abertura do stream, mas não é
+    /// um span de token e não pode inflar a completude observada.
+    pub(super) fn record_control_transport(
+        &mut self,
+        hop: usize,
+        phase: Phase,
+        transport: TransportTrace,
+        bytes_sent: u64,
+        bytes_received: u64,
+    ) {
+        self.record_transport(hop, phase, transport);
+        self.total_bytes_sent = self.total_bytes_sent.saturating_add(bytes_sent);
+        self.total_bytes_received = self.total_bytes_received.saturating_add(bytes_received);
+    }
+
+    pub(super) fn record_transport_fallback_from_sent(&mut self, sent: &crate::relay::SentFrame) {
+        self.record_https_fallback(
+            sent.transport_fallback,
+            sent.transport_fallback_reason.as_deref(),
+        );
+    }
+
+    pub(super) fn record_remote_stream_open(&mut self, duration_ms: u64) {
+        self.telemetry.remote_stream.open(duration_ms);
+    }
+
+    pub(crate) fn record_token_cycle(&mut self, duration_ms: u64) {
+        self.token_cycle.record(duration_ms);
+    }
+
+    pub(super) fn record_remote_stream_token_delivery_interval(&mut self, duration_ms: u64) {
+        self.telemetry
+            .remote_stream
+            .record_token_delivery_interval(duration_ms);
+    }
+
+    /// Recebe spans detalhados anexados a uma resposta de peer. O ID é a
+    /// unidade de deduplicação porque o mesmo span pode aparecer no
+    /// `node_timings` e também numa entrada borbulhada de `hop_timings`.
+    pub(super) fn record_profiling_spans_from_json(&mut self, value: &serde_json::Value) {
+        let Some(incoming) = value
+            .get("profiling_spans")
+            .and_then(serde_json::Value::as_array)
+        else {
+            return;
+        };
+        if self.profiling_spans.is_none() {
+            return;
+        }
+        for raw in incoming {
+            if self
+                .profiling_spans
+                .as_ref()
+                .is_some_and(|spans| spans.len() >= TELEMETRY_SAMPLE_LIMIT)
+            {
+                break;
+            }
+            let Ok(span) = serde_json::from_value::<TelemetrySpan>(raw.clone()) else {
+                continue;
+            };
+            if self.profiling_span_ids.insert(span.span_id.clone()) {
+                if let Some(target) = self.profiling_spans.as_mut() {
+                    target.push(span);
+                }
+            }
+        }
+    }
+
+    /// Registra um callback sem transformar seus agregados em uma segunda
+    /// resposta. IDs repetidos são ignorados no merge; uma ordem diferente da
+    /// chegada continua válida. A janela é limitada para que a deduplicação
+    /// não transforme a telemetria em memória por requisição.
+    pub(super) fn record_remote_stream_batch(&mut self, meta: &serde_json::Value) -> bool {
+        let frame_id = meta
+            .get("stream_id")
+            .and_then(|value| value.as_str())
+            .zip(
+                meta.get("remote_stream_frame_index")
+                    .and_then(|value| value.as_u64()),
+            )
+            .map(|(stream, index)| format!("{stream}:{index}"));
+        if let Some(frame_id) = frame_id {
+            if self.remote_stream_frame_ids.contains(&frame_id) {
+                self.telemetry.duplicate_spans = self.telemetry.duplicate_spans.saturating_add(1);
+                return false;
+            }
+            if self.remote_stream_frame_ids.len() >= TELEMETRY_DEDUPE_WINDOW {
+                self.remote_stream_frame_ids.clear();
+            }
+            self.remote_stream_frame_ids.insert(frame_id);
+        }
+
+        let accepted = meta
+            .get("accepted")
+            .and_then(|value| value.as_array())
+            .map_or(0, Vec::len) as u64;
+        self.expected_decode_spans = self
+            .expected_decode_spans
+            .saturating_add(accepted.saturating_mul(self.hops.len() as u64));
+        self.telemetry.remote_stream.record_batch(meta);
+        self.record_https_fallback(
+            meta.get("remote_stream_transport_fallback")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            meta.get("remote_stream_transport_fallback_reason")
+                .and_then(serde_json::Value::as_str),
+        );
+        self.record_profiling_spans_from_json(meta);
+
+        if self.profiling_spans.is_none() {
+            return true;
+        }
+        if self
+            .profiling_spans
+            .as_ref()
+            .is_some_and(|spans| spans.len() >= TELEMETRY_SAMPLE_LIMIT)
+        {
+            return true;
+        }
+        let explicit_token_start = meta
+            .get("accepted")
+            .and_then(|value| value.as_array())
+            .and_then(|values| values.first())
+            .and_then(|value| value.get("token_index"))
+            .and_then(|value| value.as_u64());
+        let token_start = explicit_token_start.unwrap_or(self.profiling_token_index);
+        if explicit_token_start.is_some() {
+            self.profiling_token_indices_absolute = true;
+            self.profiling_token_index = self
+                .profiling_token_index
+                .max(token_start.saturating_add(accepted));
+        } else {
+            self.profiling_token_index = self.profiling_token_index.saturating_add(accepted);
+        }
+        let spans = self
+            .profiling_spans
+            .as_mut()
+            .expect("profiling_spans checked above");
+        let frame_index = meta
+            .get("remote_stream_frame_index")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(spans.len() as u64);
+        let end_ms = meta
+            .get("remote_stream_lifetime_ms")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let duration_ms = meta
+            .get("remote_stream_frame_latency_ms")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let end_ns = end_ms.saturating_mul(1_000_000);
+        let duration_ns = duration_ms.saturating_mul(1_000_000);
+        let string_field = |key: &str, fallback: &str| {
+            meta.get(key)
+                .and_then(|value| value.as_str())
+                .unwrap_or(fallback)
+                .to_owned()
+        };
+        let peer_id = self
+            .hops
+            .first()
+            .map(|hop| hop.node_id.clone())
+            .unwrap_or_else(|| "unknown".into());
+        let stream_id = string_field("stream_id", "unknown");
+        let frame_span_id = format!("remote-stream-{stream_id}-frame-{frame_index}");
+        spans.push(TelemetrySpan {
+            trace_id: string_field("trace_id", "remote-stream"),
+            request_id: string_field("request_id", "unknown"),
+            pipeline_id: string_field("pipeline_id", "unknown"),
+            peer_id,
+            span_id: frame_span_id.clone(),
+            parent_span_id: None,
+            name: "remote-stream-frame".into(),
+            phase: Phase::Decode,
+            token_index: None,
+            start_ns: end_ns.saturating_sub(duration_ns),
+            end_ns,
+            duration_ns,
+            transport: Some("remote-stream".into()),
+            clock_domain: "peer-monotonic".into(),
+        });
+        for offset in 0..accepted {
+            if spans.len() >= TELEMETRY_SAMPLE_LIMIT {
+                break;
+            }
+            spans.push(TelemetrySpan {
+                trace_id: string_field("trace_id", "remote-stream"),
+                request_id: string_field("request_id", "unknown"),
+                pipeline_id: string_field("pipeline_id", "unknown"),
+                peer_id: self
+                    .hops
+                    .first()
+                    .map(|hop| hop.node_id.clone())
+                    .unwrap_or_else(|| "unknown".into()),
+                span_id: format!("remote-stream-{stream_id}-token-{}", token_start + offset),
+                parent_span_id: Some(frame_span_id.clone()),
+                name: "token".into(),
+                phase: Phase::Decode,
+                token_index: Some(token_start + offset),
+                // The callback identifies token membership and order, but the
+                // batch does not contain a per-token compute interval. Keep
+                // this as an event span instead of fabricating a duration.
+                start_ns: end_ns,
+                end_ns,
+                duration_ns: 0,
+                transport: Some("remote-stream".into()),
+                clock_domain: "peer-monotonic".into(),
+            });
+        }
+        true
+    }
+
+    pub fn refresh_telemetry(&mut self, wall_clock_ms: u64) {
+        let expected_peers = self.hops.len() as u32;
+        let decode_tracking = self.expected_decode_spans > 0
+            || self.hops.iter().any(|hop| hop.decode.reported_spans > 0);
+        let reported_peers = self
+            .hops
+            .iter()
+            .filter(|hop| {
+                if decode_tracking {
+                    hop.decode.reported_spans > 0
+                } else {
+                    hop.prefill.calls > 0
+                }
+            })
+            .count() as u32;
+        let missing_peers = self
+            .hops
+            .iter()
+            .filter(|hop| {
+                if decode_tracking {
+                    hop.decode.reported_spans == 0
+                } else {
+                    hop.prefill.calls == 0
+                }
+            })
+            .map(|hop| hop.node_id.clone())
+            .collect::<Vec<_>>();
+        let reported_decode_spans = self
+            .hops
+            .iter()
+            .map(|hop| hop.decode.reported_spans)
+            .sum::<u64>();
+        let expected_decode_spans = self.expected_decode_spans;
+        let completeness_percent = if expected_decode_spans > 0 {
+            (reported_decode_spans as f64 / expected_decode_spans as f64 * 100.0).min(100.0)
+        } else if expected_peers > 0 {
+            reported_peers as f64 / expected_peers as f64 * 100.0
+        } else {
+            100.0
+        };
+        // A result can win the race before the independent transport receipts
+        // reach the inbox. This is a pending transport reconciliation, not a
+        // missing peer/span: the distributed span collection can already be
+        // complete and must not downgrade the diagnosis to "incomplete".
+        let spans_complete = missing_peers.is_empty()
+            && (expected_decode_spans == 0 || reported_decode_spans >= expected_decode_spans);
+        self.telemetry.status = if spans_complete && self.complete {
+            "complete"
+        } else if self.complete {
+            "response_complete"
+        } else {
+            "incomplete"
+        }
+        .into();
+        self.telemetry.response_complete = self.complete;
+        self.telemetry.expected_peers = expected_peers;
+        self.telemetry.reported_peers = reported_peers;
+        self.telemetry.missing_peers = missing_peers;
+        self.telemetry.expected_decode_spans = expected_decode_spans;
+        self.telemetry.reported_decode_spans = reported_decode_spans;
+        self.telemetry.decode_span_expectation_available = expected_decode_spans > 0;
+        self.telemetry.completeness_percent = completeness_percent;
+        self.telemetry.wall_clock_ms = Some(wall_clock_ms);
+        self.telemetry.critical_path_ms = Some(wall_clock_ms);
+        self.telemetry.accumulated_compute_ms = self
+            .hops
+            .iter()
+            .flat_map(|hop| [&hop.prefill, &hop.decode])
+            .map(|phase| phase.processing_ms)
+            .sum();
+        self.telemetry.accumulated_transport_ms = self
+            .hops
+            .iter()
+            .flat_map(|hop| [&hop.prefill, &hop.decode])
+            .map(|phase| phase.network_ms)
+            .sum();
+    }
+
     /// Same accumulation as `record_hop`, reading the numbers from one
-    /// `hop_timings` array entry instead of taking them as call arguments —
+    /// `hop_timings` array entry instead of taking them as call arguments -
     /// this is what lets ring mode reconstruct the identical trace hub mode
     /// builds live, from the array that bubbled back through the relay
     /// chain (`relay::bubble_hop_timings`) instead of from calls this
@@ -1321,8 +2741,38 @@ impl RequestTrace {
                 on: entry.get("tls").and_then(|v| v.as_bool()).unwrap_or(false),
                 handshake_ms: get("tls_handshake_ms"),
             },
-            &entry["node_timings"],
+            entry
+                .get("node_timings")
+                .unwrap_or(&serde_json::Value::Null),
         );
+        if let Some(measured_network_ms) = TransportTrace::measured_network_ms(
+            entry
+                .get("transport_rtt_us")
+                .and_then(|value| value.as_u64()),
+        ) {
+            if let Some(entry) = self.hops.get_mut(hop) {
+                let slot = match phase {
+                    Phase::Prefill => &mut entry.prefill,
+                    Phase::Decode => &mut entry.decode,
+                };
+                slot.network_ms = slot
+                    .network_ms
+                    .saturating_sub(get("round_trip_ms").saturating_sub(get("processing_ms")))
+                    .saturating_add(measured_network_ms);
+            }
+        }
+        let represented_spans = get("span_count");
+        if represented_spans > 1 {
+            if let Some(hop_entry) = self.hops.get_mut(hop) {
+                let slot = match phase {
+                    Phase::Prefill => &mut hop_entry.prefill,
+                    Phase::Decode => &mut hop_entry.decode,
+                };
+                slot.reported_spans = slot
+                    .reported_spans
+                    .saturating_add(represented_spans.saturating_sub(1));
+            }
+        }
         let dtype = entry
             .get("hidden_state_dtype")
             .and_then(|value| value.as_str())
@@ -1334,8 +2784,41 @@ impl RequestTrace {
             get("hidden_state_bytes_received"),
             dtype,
         );
+        if let Some(connection_state) = entry
+            .get("connection_state")
+            .and_then(|value| value.as_str())
+        {
+            let state = match connection_state {
+                "new" => crate::peer_client::ConnectionState::New,
+                "reused" => crate::peer_client::ConnectionState::Reused,
+                _ => crate::peer_client::ConnectionState::Unknown,
+            };
+            self.record_connection_state(hop, phase, state);
+        }
         if entry.get("transport").is_some() {
             self.record_transport(hop, phase, TransportTrace::from_json(entry));
+        }
+        self.record_https_fallback(
+            entry
+                .get("transport_fallback")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            entry
+                .get("transport_fallback_reason")
+                .and_then(|value| value.as_str()),
+        );
+        self.record_profiling_spans_from_json(entry);
+    }
+
+    fn record_https_fallback(&mut self, fallback: bool, reason: Option<&str>) {
+        if !fallback {
+            return;
+        }
+        self.https_fallback_calls = self.https_fallback_calls.saturating_add(1);
+        if let Some(reason) = reason.filter(|reason| !reason.is_empty()) {
+            if self.https_fallback_reasons.len() < TRACE_ISSUE_LIMIT {
+                self.https_fallback_reasons.push(reason.to_owned());
+            }
         }
     }
 
@@ -1368,6 +2851,26 @@ impl RequestTrace {
         }
     }
 
+    fn record_connection_state(
+        &mut self,
+        hop: usize,
+        phase: Phase,
+        state: crate::peer_client::ConnectionState,
+    ) {
+        let Some(entry) = self.hops.get_mut(hop) else {
+            return;
+        };
+        match phase {
+            Phase::Prefill => entry.prefill.record_connection_state(state),
+            Phase::Decode => entry.decode.record_connection_state(state),
+        }
+        match state {
+            crate::peer_client::ConnectionState::New => self.connection_new_calls += 1,
+            crate::peer_client::ConnectionState::Reused => self.connection_reused_calls += 1,
+            crate::peer_client::ConnectionState::Unknown => self.connection_unknown_calls += 1,
+        }
+    }
+
     pub fn merge(&mut self, other: &RequestTrace) {
         self.total_bytes_sent += other.total_bytes_sent;
         self.total_bytes_received += other.total_bytes_received;
@@ -1382,6 +2885,83 @@ impl RequestTrace {
             .saturating_add(other.mtp_draft_tokens_rejected);
         self.refresh_mtp_acceptance_rate();
         self.transport_trace_complete &= other.transport_trace_complete;
+        self.token_cycle.merge(&other.token_cycle);
+        self.pipeline_cycle.merge(&other.pipeline_cycle);
+        self.connection_new_calls += other.connection_new_calls;
+        self.connection_reused_calls += other.connection_reused_calls;
+        self.connection_unknown_calls += other.connection_unknown_calls;
+        self.https_fallback_calls = self
+            .https_fallback_calls
+            .saturating_add(other.https_fallback_calls);
+        for reason in &other.https_fallback_reasons {
+            if self.https_fallback_reasons.len() >= TRACE_ISSUE_LIMIT {
+                break;
+            }
+            self.https_fallback_reasons.push(reason.clone());
+        }
+        if self.engine_ttft_ms.is_none() {
+            self.engine_ttft_ms = other.engine_ttft_ms;
+            self.first_token = other.first_token.clone();
+        }
+        self.telemetry.late_spans = self
+            .telemetry
+            .late_spans
+            .saturating_add(other.telemetry.late_spans);
+        self.telemetry.orphan_spans = self
+            .telemetry
+            .orphan_spans
+            .saturating_add(other.telemetry.orphan_spans);
+        self.telemetry.duplicate_spans = self
+            .telemetry
+            .duplicate_spans
+            .saturating_add(other.telemetry.duplicate_spans);
+        let mut merge_remote = true;
+        for frame_id in &other.remote_stream_frame_ids {
+            if self.remote_stream_frame_ids.contains(frame_id) {
+                self.telemetry.duplicate_spans = self.telemetry.duplicate_spans.saturating_add(1);
+                merge_remote = false;
+            } else {
+                if self.remote_stream_frame_ids.len() >= TELEMETRY_DEDUPE_WINDOW {
+                    self.remote_stream_frame_ids.clear();
+                }
+                self.remote_stream_frame_ids.insert(frame_id.clone());
+            }
+        }
+        if merge_remote {
+            self.expected_decode_spans = self
+                .expected_decode_spans
+                .saturating_add(other.expected_decode_spans);
+            self.telemetry
+                .remote_stream
+                .merge(&other.telemetry.remote_stream);
+            let token_offset = self.profiling_token_index;
+            let mut incoming = Vec::new();
+            if let Some(next) = &other.profiling_spans {
+                let remaining = self.profiling_spans.as_ref().map_or(0, |current| {
+                    TELEMETRY_SAMPLE_LIMIT.saturating_sub(current.len())
+                });
+                for mut span in next.iter().take(remaining).cloned() {
+                    if !other.profiling_token_indices_absolute {
+                        if let Some(token_index) = span.token_index.as_mut() {
+                            *token_index = token_index.saturating_add(token_offset);
+                        }
+                    }
+                    if self.profiling_span_ids.insert(span.span_id.clone()) {
+                        incoming.push(span);
+                    }
+                }
+            }
+            if let Some(current) = self.profiling_spans.as_mut() {
+                current.extend(incoming);
+            }
+            self.profiling_token_indices_absolute |= other.profiling_token_indices_absolute;
+            let next_index = if other.profiling_token_indices_absolute {
+                other.profiling_token_index
+            } else {
+                other.profiling_token_index.saturating_add(token_offset)
+            };
+            self.profiling_token_index = self.profiling_token_index.max(next_index);
+        }
         if self.prefix_reuse_status.is_none() {
             self.prefix_reuse_status = other.prefix_reuse_status.clone();
         }
@@ -1397,6 +2977,7 @@ impl RequestTrace {
             current.prefill.merge(&next.prefill);
             current.decode.merge(&next.decode);
         }
+        self.refresh_decode_counters();
     }
 }
 
@@ -1420,9 +3001,11 @@ pub(super) fn head_prefill_meta(
     chat_template: bool,
     reuse_prefix: bool,
     start_pos: Option<u32>,
+    trace_id: Option<&str>,
 ) -> serde_json::Value {
-    json!({
+    let mut meta = json!({
         "session_id": session_id,
+        "pipeline_session": true,
         "chunk_index": chunk_index,
         "chunk_size": chunk_size,
         "is_last": is_last,
@@ -1431,7 +3014,27 @@ pub(super) fn head_prefill_meta(
         "chat_template": chat_template,
         "reuse_prefix": reuse_prefix,
         "start_pos": start_pos,
-    })
+    });
+    if let Some(trace_id) = trace_id {
+        meta["trace_id"] = json!(trace_id);
+    }
+    meta
+}
+
+/// Codifica as imagens somente no primeiro quadro enviado à cabeça. O projector
+/// é executado ali; os demais peers recebem apenas o estado oculto.
+pub(super) fn add_images_to_head_meta(
+    mut meta: serde_json::Value,
+    images: Option<&[Vec<u8>]>,
+) -> serde_json::Value {
+    if let Some(images) = images.filter(|images| !images.is_empty()) {
+        use base64::Engine as _;
+        meta["images"] = json!(images
+            .iter()
+            .map(|image| base64::engine::general_purpose::STANDARD.encode(image))
+            .collect::<Vec<_>>());
+    }
+    meta
 }
 
 /// Posições de prefill são absolutas na sessão, não são deriváveis do índice

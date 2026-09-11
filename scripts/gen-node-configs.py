@@ -14,7 +14,7 @@ partir um cluster existente ao meio.
 
 Uso:
     scripts/gen-node-configs.py [--base pom.json] [--nodes 5] [--force]
-        [--advertise-addr HOST]
+        [--advertise-addr HOST[:PORT]]
 """
 
 from __future__ import annotations
@@ -37,10 +37,44 @@ def porta_inferencia(n: int) -> int:
     return INFERENCE.get(n, INFERENCE_BASE + n - 1)
 
 
+def _advertise_host_with_node_port(config: dict, advertise_addr: str) -> str:
+    """Use the config's p2p port when the override carries an explicit port.
+
+    ``advertise_addr`` is also the UDP endpoint from which libp2p derives its
+    TCP endpoint. A full override is therefore a host base: each generated
+    process keeps its own already assigned port. Applying the same full
+    endpoint to every process makes all peers announce one socket and hides
+    the other nodes behind it.
+    """
+    node_port = config.get("p2p_port")
+    if not isinstance(node_port, int) or not 1 <= node_port <= 65535:
+        return advertise_addr
+
+    raw = advertise_addr.strip()
+    if raw.startswith("["):
+        close = raw.find("]")
+        if close <= 1 or not raw[close + 1 :].startswith(":"):
+            return advertise_addr
+        host = raw[: close + 1]
+        port = raw[close + 2 :]
+    elif raw.count(":") == 1:
+        host, port = raw.rsplit(":", 1)
+    else:
+        return advertise_addr
+
+    if not host or not port.isdigit() or not 1 <= int(port) <= 65535:
+        return advertise_addr
+    return f"{host}:{node_port}"
+
+
 def config_com_advertise_addr(config: dict, advertise_addr: str) -> dict:
-    """Atualiza somente o endereco anunciado, preservando o restante da config."""
+    """Atualiza só o endpoint anunciado, preservando o restante da config.
+
+    When a full endpoint is supplied, its host is shared but its port is
+    specific to the process described by this config.
+    """
     updated = dict(config)
-    updated["advertise_addr"] = advertise_addr
+    updated["advertise_addr"] = _advertise_host_with_node_port(config, advertise_addr)
     return updated
 
 

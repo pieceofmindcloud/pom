@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { edgeStyle, isControlTarget, ModelNetworkCanvas } from "./ModelNetworkCanvas";
+import type { PipelineCycleCost, PipelineRouteCost } from "./PipelineGatewayNode";
 import { LocaleProvider } from "../i18n/provider";
 import type { ChatTelemetryRtt, ClusterView } from "../lib/types";
 import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../test/fixtures";
@@ -32,12 +33,25 @@ describe("edgeStyle", () => {
 
 const cluster = fakeCluster([fakeSlicePeer("a", 0, 15), fakeSlicePeer("b", 16, 31)]);
 
-function mount(view: ClusterView = cluster, rttMeasurements: ChatTelemetryRtt[] = []) {
+function mount(
+  view: ClusterView = cluster,
+  rttMeasurements: ChatTelemetryRtt[] = [],
+  pipelineCost?: PipelineCycleCost,
+  properties?: { open: boolean; onToggle: () => void },
+  pipelineRoutes?: PipelineRouteCost[],
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
-      <ModelNetworkCanvas cluster={view} rttMeasurements={rttMeasurements} />
+      <ModelNetworkCanvas
+        cluster={view}
+        rttMeasurements={rttMeasurements}
+        pipelineCost={pipelineCost}
+        pipelineRoutes={pipelineRoutes}
+        propertiesOpen={properties?.open}
+        onToggleProperties={properties?.onToggle}
+      />
       </LocaleProvider>
     </QueryClientProvider>,
   );
@@ -67,6 +81,90 @@ describe("ModelNetworkCanvas: RTT das arestas", () => {
     }]);
 
     expect(screen.getByText("RTT 7.4 ms")).toBeTruthy();
+  });
+
+  it("desenha o retorno do último peer para o gateway sem arestas reversas", () => {
+    const view = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      fakeSlicePeer("b", 16, 31),
+      fakeSlicePeer("c", 32, 47),
+    ]);
+    view.routing_edges = [
+      { from_node_id: "a", to_node_id: "b", model_id: "qwen35", from_end_layer: 15, to_start_layer: 16 },
+      { from_node_id: "b", to_node_id: "c", model_id: "qwen35", from_end_layer: 31, to_start_layer: 32 },
+      { from_node_id: "c", to_node_id: "b", model_id: "qwen35", from_end_layer: 47, to_start_layer: 16 },
+    ];
+
+    const { container } = mount(view, [
+      { from_node_id: "a", to_node_id: "b", rtt_ms: 30, transport: "https" },
+      { from_node_id: "b", to_node_id: "c", rtt_ms: 31, transport: "https" },
+      { from_node_id: "c", to_node_id: "gateway", rtt_ms: 29, transport: "https" },
+    ]);
+
+    expect(screen.getByRole("heading", { name: "Gateway" })).toBeTruthy();
+    expect(container.querySelectorAll('svg[aria-hidden="true"] path[marker-end]').length).toBe(3);
+    expect(screen.getByText("RTT 29.0 ms")).toBeTruthy();
+    expect(screen.queryByText("RTT 31.0 ms")).toBeTruthy();
+    const gateway = screen.getByRole("heading", { name: "Gateway" }).closest("article") as HTMLElement;
+    const lastPeer = Array.from(container.querySelectorAll("h3")).find((heading) => heading.textContent === "c")?.closest("article") as HTMLElement;
+    expect(parseFloat(gateway.style.left)).toBeGreaterThan(parseFloat(lastPeer.style.left));
+  });
+
+  it("mostra no gateway o custo completo das pernas e do compute", () => {
+    const view = fakeCluster([
+      fakeSlicePeer("a", 0, 15),
+      fakeSlicePeer("b", 16, 31),
+      fakeSlicePeer("c", 32, 47),
+    ]);
+    const cost: PipelineCycleCost = {
+      legsMs: [20, 30, 31, 29],
+      computeMs: 40,
+    };
+
+    mount(view, [], cost);
+
+    expect(screen.getByText("Total do pipeline: 150.0 ms")).toBeTruthy();
+    expect(screen.getByText("rede 110.0 ms · compute 40.0 ms")).toBeTruthy();
+  });
+
+  it("mostra todas as rotas de cabeca, ordenadas pelo RTT agregado", () => {
+    const view = fakeCluster([
+      fakeSlicePeer("head-fast", 0, 15),
+      fakeSlicePeer("head-slow", 0, 15),
+      fakeSlicePeer("tail", 16, 31),
+    ]);
+    view.routing_edges = [
+      { from_node_id: "head-fast", to_node_id: "tail", model_id: "qwen35", from_end_layer: 15, to_start_layer: 16 },
+      { from_node_id: "head-slow", to_node_id: "tail", model_id: "qwen35", from_end_layer: 15, to_start_layer: 16 },
+    ];
+
+    mount(view, [], undefined, undefined, [
+      { nodeIds: ["head-fast", "tail", "gateway"], legsMs: [4, 12, 3], computeMs: null },
+      { nodeIds: ["head-slow", "tail", "gateway"], legsMs: [18, 12, 3], computeMs: null },
+    ]);
+
+    const gateway = screen.getByRole("heading", { name: "Gateway" }).closest("article") as HTMLElement;
+    expect(gateway.textContent).not.toContain("não medido");
+    expect(gateway.textContent).toMatch(/head-fast.*19\.0 ms/);
+    expect(gateway.textContent).toMatch(/head-slow.*33\.0 ms/);
+    expect(gateway.textContent?.indexOf("head-fast")).toBeLessThan(gateway.textContent?.indexOf("head-slow") ?? -1);
+  });
+});
+
+describe("ModelNetworkCanvas: propriedades da implantação", () => {
+  afterEach(cleanup);
+
+  it("mantém o toggle compacto dentro do mapa", () => {
+    const onToggle = vi.fn();
+    const { container } = mount(cluster, [], undefined, { open: true, onToggle });
+    const canvas = container.querySelector("section");
+    const button = screen.getByRole("button", { name: "Ocultar propriedades da implantação" });
+
+    expect(button.textContent).toBe("");
+    expect(button.className).toContain("w-8");
+    expect(button.closest("section")).toBe(canvas);
+    fireEvent.click(button);
+    expect(onToggle).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -135,6 +233,7 @@ describe("ModelNetworkCanvas: temperatura", () => {
             vram_used_mb: null,
             vram_used_pct: null,
             utilization_pct: null,
+            power_watts: null,
             temperature_c: null,
           }],
         },
@@ -397,8 +496,8 @@ describe("ModelNetworkCanvas: máquina com mais de uma GPU", () => {
         system: fakeSystem({
           gpu_kind: "nvidia",
           gpus: [
-            { index: 0, name: "RTX 5090", vendor: "nvidia", vram_total_mb: 32768, vram_used_mb: 8192, vram_used_pct: 25, utilization_pct: 30, temperature_c: 61 },
-            { index: 1, name: "RTX 3090", vendor: "nvidia", vram_total_mb: 24576, vram_used_mb: 4096, vram_used_pct: 16, utilization_pct: 10, temperature_c: 78 },
+            { index: 0, name: "RTX 5090", vendor: "nvidia", vram_total_mb: 32768, vram_used_mb: 8192, vram_used_pct: 25, utilization_pct: 30, power_watts: null, temperature_c: 61 },
+            { index: 1, name: "RTX 3090", vendor: "nvidia", vram_total_mb: 24576, vram_used_mb: 4096, vram_used_pct: 16, utilization_pct: 10, power_watts: null, temperature_c: 78 },
           ],
         }),
       }),
@@ -418,5 +517,54 @@ describe("ModelNetworkCanvas: máquina com mais de uma GPU", () => {
     expect(screen.getByText(/78,0 °C/)).toBeTruthy();
     expect(screen.getByText("RTX 5090")).toBeTruthy();
     expect(screen.getByText("RTX 3090")).toBeTruthy();
+  });
+});
+
+describe("ModelNetworkCanvas: arrumação do card menor", () => {
+  afterEach(cleanup);
+
+  it("agrupa memória, carga e VRAM antes das linhas de GPU", () => {
+    const view = fakeCluster([
+      fakeSlicePeer("compact", 0, 15, {
+        load: 2,
+        node: fakeNode({
+          node_id: "compact",
+          short_id: "compact",
+          hostname: "compact-node",
+          status: { state: "ready", detail: "servindo", reported_gpu_layers: 16 } as never,
+          system: fakeSystem({
+            gpu_kind: "nvidia",
+            gpus: [{
+              index: 0,
+              name: "RTX A",
+              vendor: "nvidia",
+              vram_total_mb: 8192,
+              vram_used_mb: 2048,
+              vram_used_pct: 25,
+              utilization_pct: 30,
+              temperature_c: 61,
+              power_watts: 250,
+            } as never],
+          }),
+        }),
+      }),
+    ]);
+
+    const { container } = mount(view);
+    const card = container.querySelector("h3")?.closest("article") as HTMLElement;
+    const meters = screen.getByTestId("machine-meter-group");
+    const memory = screen.getByText("Memória");
+    const load = screen.getByText("Carga");
+    const gpu = screen.getByText(/61,0 °C/);
+    const status = screen.getByTestId("machine-status");
+    const layers = screen.getByTestId("machine-layers");
+
+    expect(meters.querySelectorAll('[aria-label]')).toHaveLength(3);
+    expect(memory.compareDocumentPosition(load) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(load.compareDocumentPosition(gpu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(status.parentElement).toBe(layers.parentElement);
+    expect(status.compareDocumentPosition(layers) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(layers.className).toContain("text-[9px]");
+    expect(card.className).toContain("p-3");
   });
 });

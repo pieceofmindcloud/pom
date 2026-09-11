@@ -11,6 +11,7 @@ function gpu(over: Partial<GpuStat>): GpuStat {
     vram_used_mb: 4096,
     vram_used_pct: 16.7,
     utilization_pct: 10,
+    power_watts: null,
     temperature_c: 50,
     ...over,
   };

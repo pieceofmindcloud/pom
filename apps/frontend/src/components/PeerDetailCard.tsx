@@ -14,9 +14,9 @@
  */
 import clsx from "clsx";
 import { motion } from "framer-motion";
-import { ChevronRight, RefreshCw } from "lucide-react";
-import { useState, type ReactNode } from "react";
-import { Confirm, Modal } from "./Confirm";
+import { ChevronRight } from "lucide-react";
+import { type ReactNode } from "react";
+import { Modal } from "./Confirm";
 import { GpuTemperature } from "./GpuTemperature";
 import { MachineIcon, gpuDisplayName, machineKind } from "./MachineIcon";
 import { trackOf } from "./PipelineRail";
@@ -25,7 +25,6 @@ import { RemoveNode } from "./RemoveNode";
 import { LeaveNode } from "./LeaveNode";
 import { isCpuBuffer, ModelPlacementSection } from "./ModelPlacement";
 import { Badge, Button, Dot, InfoTip, KeyValue, Meter } from "./ui";
-import { devUpdate } from "../lib/api";
 import {
   isServing,
   layerRange,
@@ -35,65 +34,10 @@ import {
   serverStateTone,
 } from "../lib/format";
 import { hasSlice } from "../lib/networkPeers";
-import { useInvalidate, usePeerRuntime } from "../lib/queries";
-import { useToast } from "../lib/toast";
-import type { DiskStat, PeerLoadParams, PeerRuntimeHealth, PeerView } from "../lib/types";
+import { usePeerRuntime } from "../lib/queries";
+import type { DiskStat, GpuStat, PeerLoadParams, PeerRuntimeHealth, PeerView, ThermalPolicy } from "../lib/types";
+import { temperatureBand } from "../lib/thermal";
 import { useI18n } from "../i18n/provider";
-
-/** O botão de atualizar e reiniciar, só visível quando o peer aceita o pedido. */
-function UpdateNode({
-  nodeId,
-  hostname,
-  isSelf,
-}: {
-  nodeId: string;
-  hostname: string;
-  isSelf: boolean;
-}) {
-  const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const toast = useToast();
-  const invalidate = useInvalidate();
-
-  async function run() {
-    setBusy(true);
-    try {
-      await devUpdate(isSelf ? undefined : nodeId);
-      toast.success(t("dashboard.updateNode", { hostname }), t("dashboard.updateDetail"));
-      invalidate();
-    } catch (e) {
-      toast.fromError(t("dashboard.updateFailed", { hostname }), e);
-    } finally {
-      setBusy(false);
-      setOpen(false);
-    }
-  }
-
-  return (
-    <>
-      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-        <RefreshCw className="h-3.5 w-3.5" />
-        {t("dashboard.updateRestart")}
-      </Button>
-      <Confirm
-        open={open}
-        busy={busy}
-        tone="primary"
-        title={t("dashboard.updateTitle")}
-        confirmLabel={t("dashboard.updateRestart")}
-        onCancel={() => setOpen(false)}
-        onConfirm={() => void run()}
-        description={
-          <>
-            <p>{t("dashboard.updateDescription")}</p>
-            <p className="mt-2 text-xs text-faint">{t("dashboard.updateWarning")}</p>
-          </>
-        }
-      />
-    </>
-  );
-}
 
 /**
  * Um bloco que se abre. `<details>` porque a semântica já existe no navegador:
@@ -317,6 +261,63 @@ function DiskMeter({ disk, label }: { disk: DiskStat; label: string }) {
   );
 }
 
+function GpuTelemetryRow({
+  gpu,
+  label,
+  policy,
+}: {
+  gpu: GpuStat;
+  label: string;
+  policy?: ThermalPolicy;
+}) {
+  const { t } = useI18n();
+  const band = temperatureBand(gpu.temperature_c, policy ?? FALLBACK_THERMAL_POLICY);
+  const temperatureLabel = {
+    unknown: t("dashboard.temperatureSensorUnavailable"),
+    normal: t("dashboard.temperatureNormal"),
+    attention: t("dashboard.temperatureAttention"),
+    critical: t("dashboard.temperatureCritical"),
+  }[band];
+  const temperature = band === "unknown"
+    ? temperatureLabel
+    : `${num(gpu.temperature_c, 1)} °C · ${temperatureLabel}`;
+  const tone = {
+    unknown: "neutral",
+    normal: "aqua",
+    attention: "amber",
+    critical: "rose",
+  }[band] as "neutral" | "aqua" | "amber" | "rose";
+
+  return (
+    <div
+      data-testid="gpu-telemetry-row"
+      className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-x-2 rounded-lg border border-line bg-raised/60 px-2 py-1.5 text-[0.66rem]"
+      aria-label={`${label}: ${temperature}`}
+    >
+      <span className="min-w-0 truncate text-faint" title={label}>{label}</span>
+      <span className="whitespace-nowrap font-mono text-muted">
+        <span className="mr-1 text-faint">{t("dashboard.gpuUsage")}</span>
+        {gpu.utilization_pct == null ? num(null) : `${num(gpu.utilization_pct)}%`}
+      </span>
+      <Badge tone={tone} className="whitespace-nowrap px-1.5 py-0 text-[0.58rem]">
+        {temperature}
+      </Badge>
+      <span className="whitespace-nowrap font-mono text-muted">
+        <span className="mr-1 text-faint">{t("dashboard.gpuPower")}</span>
+        {gpu.power_watts == null || !Number.isFinite(gpu.power_watts)
+          ? num(null)
+          : `${num(gpu.power_watts)} W`}
+      </span>
+    </div>
+  );
+}
+
+const FALLBACK_THERMAL_POLICY: ThermalPolicy = {
+  limit_c: 85,
+  hysteresis_c: 8,
+  cooldown_secs: 30,
+};
+
 export function PeerDetailCard({
   peer,
   index,
@@ -337,7 +338,7 @@ export function PeerDetailCard({
   const kind = machineKind(system);
   const cfg = n?.config;
   const serving = isServing(n?.status.state);
-  const hasGpu = system != null && system.gpu_kind !== "none" && system.gpus.length > 0;
+  const hasGpu = system != null && system.gpu_kind !== "none";
   // Só as que reportam VRAM: memória unificada cai no ramo `unified` abaixo,
   // que mede outra coisa (wired), e uma barra sem valor viraria animação de
   // "carregando" para sempre.
@@ -492,6 +493,7 @@ export function PeerDetailCard({
                 <RemoveNode
                   nodeId={peer.node_id}
                   group={group}
+                  deployId={peer.node?.config?.deploy_id || undefined}
                   range={range}
                   existingRanges={otherRanges}
                 />
@@ -501,17 +503,64 @@ export function PeerDetailCard({
                 hostname={n?.hostname || peer.short_id}
                 isSelf={peer.is_self}
               />
-              {n?.dev_update && (
-                <UpdateNode
-                  nodeId={peer.node_id}
-                  hostname={n.hostname || peer.short_id}
-                  isSelf={peer.is_self}
-                />
-              )}
             </div>
           </div>
 
           <div className="grid gap-2.5 px-3 py-2.5 sm:grid-cols-2">
+            {hasGpu && (
+              <section data-testid="gpu-telemetry-section" className="min-w-0 sm:col-span-2">
+                <div className="mb-1.5 flex items-center gap-1">
+                  <span className="eyebrow">{t("dashboard.gpus")}</span>
+                  {system?.gpu_note && (
+                    <InfoTip label={t("dashboard.gpus")} message={system.gpu_note} />
+                  )}
+                </div>
+                {system?.gpus.length ? (
+                  <div className="grid min-w-0 gap-1.5">
+                    {system.gpus.map((g) => (
+                      <GpuTelemetryRow
+                        key={g.index}
+                        gpu={g}
+                        policy={n?.thermal}
+                        label={gpuDisplayName(g, system.gpus)}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {vramGpus.length > 0 && (
+                  <div className="mt-1.5 grid min-w-0 gap-1.5 sm:grid-cols-2">
+                    {vramGpus.map((g) => (
+                      <Meter
+                        compact
+                        key={g.index}
+                        label={t("dashboard.vram", { name: gpuDisplayName(g, system?.gpus ?? []) })}
+                        value={g.vram_used_pct ?? null}
+                        tone={(g.vram_used_pct ?? 0) > 88 ? "rose" : "lime"}
+                        detail={t("dashboard.usedOf", {
+                          used: megabytes(g.vram_used_mb),
+                          total: megabytes(g.vram_total_mb),
+                        })}
+                      />
+                    ))}
+                  </div>
+                )}
+                {system?.gpu_kind === "unified" && (
+                  <div className="mt-1.5">
+                    <Meter
+                      compact
+                      label={t("dashboard.wiredMemory")}
+                      value={
+                        system.wired_mb != null && system.ram.total_mb > 0
+                          ? (system.wired_mb / system.ram.total_mb) * 100
+                          : null
+                      }
+                      tone="sky"
+                      detail={system.wired_mb != null ? megabytes(system.wired_mb) : "—"}
+                    />
+                  </div>
+                )}
+              </section>
+            )}
             <Meter
               compact
               label="RAM"
@@ -532,84 +581,6 @@ export function PeerDetailCard({
                   : "—"
               }
             />
-            {vramGpus.length > 0 ? (
-              // Uma barra por placa: numa máquina com Radeon e NVIDIA juntas,
-              // mostrar só `gpus[0]` escondia metade do hardware de quem decide
-              // onde implantar.
-              vramGpus.map((g) => (
-                <Meter
-                  compact
-                  key={g.index}
-                  label={t("dashboard.vram", { name: gpuDisplayName(g, system?.gpus ?? []) })}
-                  value={g.vram_used_pct ?? null}
-                  tone={(g.vram_used_pct ?? 0) > 88 ? "rose" : "lime"}
-                  detail={t("dashboard.usedOf", {
-                    used: megabytes(g.vram_used_mb),
-                    total: megabytes(g.vram_total_mb),
-                  })}
-                />
-              ))
-            ) : system?.gpu_kind === "unified" ? (
-              // Only macOS/Apple Silicon ever reports `wired_mb` — `sysmon.rs`
-              // hardcodes it to `None` on every other platform. Gating this on
-              // `gpu_kind` (instead of showing it whenever there's no VRAM to
-              // show) matters: `value={null}` drives `Progress` into its
-              // indeterminate/looping animation, meant for "still loading" —
-              // not "will never have a value on this platform." A Linux node
-              // (bare metal or in a container) with no NVIDIA GPU fell into
-              // this branch and bounced forever, since nothing was ever going
-              // to populate `wired_mb` for it.
-              <Meter
-                compact
-                label={t("dashboard.wiredMemory")}
-                value={
-                  system?.wired_mb != null && system.ram.total_mb > 0
-                    ? (system.wired_mb / system.ram.total_mb) * 100
-                    : null
-                }
-                tone="sky"
-                detail={system?.wired_mb != null ? megabytes(system.wired_mb) : "—"}
-              />
-            ) : (
-              <Meter compact label={t("dashboard.noGpu")} value={0} tone="sky" detail="—" />
-            )}
-            {hasGpu && (
-              <div className="min-w-0 sm:col-span-2">
-                <div className="mb-1.5 flex items-center gap-1">
-                  <span className="eyebrow">{t("dashboard.gpuTemperature")}</span>
-                  {/* O aviso do sysmon sobre o que estes números significam
-                      nesta plataforma era um parágrafo permanente no card;
-                      agora é o `[i]` de quem tem a dúvida. */}
-                  {system?.gpu_note && (
-                    <InfoTip label={t("dashboard.gpuTemperature")} message={system.gpu_note} />
-                  )}
-                </div>
-                {/* Uma placa por linha: em duas colunas o nome da placa, com o
-                    índice que a distingue da irmã, não cabia ao lado do selo de
-                    temperatura e saía cortado. */}
-                <div className="grid gap-1.5">
-                  {system?.gpus.map((g) => (
-                    <GpuTemperature
-                      key={g.index}
-                      gpuKind={system?.gpu_kind ?? "none"}
-                      temperature={g.temperature_c}
-                      policy={n?.thermal}
-                      label={gpuDisplayName(g, system?.gpus ?? [])}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-            {/* Uma barra por partição montada: a máquina que guarda os GGUF num
-                segundo disco aparecia como um volume só, e quem decide onde cabe
-                um arquivo de 40 GB não via o disco onde ele caberia. */}
-            {disks.map((disk) => (
-              <DiskMeter
-                key={disk.mount_point + disk.device}
-                disk={disk}
-                label={t("dashboard.disk", { path: disk.mount_point || "—" })}
-              />
-            ))}
             <Meter
               compact
               label={t("dashboard.load", { count: system?.cpu_count ?? "—" })}
@@ -621,6 +592,15 @@ export function PeerDetailCard({
               tone="iris"
               detail={system ? system.load_avg.map((l) => num(l, 2)).join(" · ") : "—"}
             />
+            <div className="grid min-w-0 gap-x-3 gap-y-2 sm:col-span-2 sm:grid-cols-2">
+              {disks.map((disk) => (
+                <DiskMeter
+                  key={disk.mount_point + disk.device}
+                  disk={disk}
+                  label={t("dashboard.disk", { path: disk.mount_point || "—" })}
+                />
+              ))}
+            </div>
           </div>
 
           <dl className="grid gap-x-3 gap-y-2 border-t border-line px-3 py-2.5 sm:grid-cols-3">

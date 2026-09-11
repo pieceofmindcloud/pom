@@ -59,12 +59,21 @@ vi.mock("../lib/api", async (importOriginal) => {
   };
 });
 
+vi.mock("../lib/imageResize", () => ({
+  resizeImageForVision: async () => "data:image/jpeg;base64,ZmFrZQ==",
+}));
+
 /**
  * Um laço de render trava o worker para sempre - o defeito original queimava
  * 100% de CPU sem nunca devolver -, e teste que não termina não avisa ninguém.
  * O corte transforma a regressão numa falha legível.
  */
 const loop = vi.hoisted(() => ({ renders: 0, limit: 400, tripped: false }));
+
+const chatScenario = vi.hoisted(() => ({
+  cluster: null as unknown,
+  capabilities: null as unknown,
+}));
 
 /**
  * `usePeerRuntimes` devolve um array novo a cada chamada de propósito: é o que
@@ -75,7 +84,9 @@ const loop = vi.hoisted(() => ({ renders: 0, limit: 400, tripped: false }));
 vi.mock("../lib/queries", () => ({
   useAdminSurface: () => ({ data: "available", isLoading: false, isError: false }),
   useNode: () => ({ data: nodeData, isLoading: false, isError: false }),
-  useCluster: () => ({ data: null }),
+  useCluster: () => ({ data: chatScenario.cluster }),
+  useNetworkChat: () => ({ data: { messages: [] }, isSuccess: true }),
+  useChatCapabilities: () => ({ data: chatScenario.capabilities }),
   useInvalidate: () => vi.fn(),
   useServableModels: () => ({ data: [{ id: "qwen" }] }),
   useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
@@ -124,6 +135,8 @@ afterEach(() => {
   window.localStorage.clear();
   loop.renders = 0;
   loop.tripped = false;
+  chatScenario.cluster = null;
+  chatScenario.capabilities = null;
 });
 
 describe("navegação depois do chat", () => {
@@ -155,6 +168,109 @@ describe("navegação depois do chat", () => {
     await screen.findByPlaceholderText("Escreva para a rede…");
     expect(screen.getAllByTestId("chat-session-list")).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Conversa nova" })).toHaveLength(1);
-    expect(screen.getByRole("link", { name: "Rede" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();
   });
+
+  it("mostra o alvo de largada, identifica o formato e remove o anexo sem apagar o rascunho", async () => {
+    mount();
+
+    const composer = await screen.findByRole("textbox");
+    const dropTarget = screen.getByRole("group", { name: "Campo de mensagem" });
+    act(() => {
+      fireEvent.change(composer, { target: { value: "texto antes do anexo" } });
+      fireEvent.dragEnter(dropTarget, {
+        dataTransfer: { types: ["Files"], files: [] },
+      });
+    });
+    expect(screen.getByText("Solte um ficheiro")).toBeTruthy();
+
+    const file = new File(["{\"ok\":true}"], "dados.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => "{\"ok\":true}" });
+    act(() => {
+      fireEvent.drop(dropTarget, {
+        dataTransfer: { types: ["Files"], files: [file] },
+      });
+    });
+
+    expect(await screen.findByText("dados.json")).toBeTruthy();
+    expect(screen.getByLabelText("Formato JSON")).toBeTruthy();
+    expect(screen.queryByText("Solte um ficheiro")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remover dados.json" }));
+    expect(screen.queryByText("dados.json")).toBeNull();
+    expect((composer as HTMLTextAreaElement).value).toBe("texto antes do anexo");
+  });
+
+  it("aceita uma largada de qualquer tipo de ficheiro", async () => {
+    mount();
+
+    const dropTarget = await screen.findByRole("group", { name: "Campo de mensagem" });
+    const file = new File([new Uint8Array([0, 1, 2])], "dados.bin", { type: "application/octet-stream" });
+    Object.defineProperty(file, "text", { value: async () => "AAEC" });
+    fireEvent.drop(dropTarget, {
+      dataTransfer: { types: ["Files"], files: [file] },
+    });
+
+    expect(await screen.findByText("dados.bin")).toBeTruthy();
+  });
+
+  it.each(["admin", "node", "infer"] as const)(
+    "recusa imagem largada quando o modelo não tem visão no perfil %s",
+    async (profile) => {
+      mount(profile);
+
+      const dropTarget = await screen.findByRole("group", { name: "Campo de mensagem" });
+      const file = new File(["fake"], "foto.png", { type: "image/png" });
+      fireEvent.drop(dropTarget, {
+        dataTransfer: { types: ["Files"], files: [file] },
+      });
+
+      expect(await screen.findByText("este modelo não tem visão")).toBeTruthy();
+    },
+  );
+
+  it.each(["node", "infer"] as const)(
+    "libera anexo de imagem no perfil %s quando a rede agregada confirma visão e cobertura",
+    async (profile) => {
+      chatScenario.cluster = {
+        active_model: "qwen",
+        complete: false,
+        model_inventory: [],
+        peers: [],
+      };
+      chatScenario.capabilities = { vision: "supported", coverage: "complete" };
+
+      mount(profile);
+
+      expect(await screen.findByRole("button", { name: "Anexar ficheiro" })).toBeTruthy();
+      expect(screen.queryByText("cobertura incompleta")).toBeNull();
+
+      const dropTarget = screen.getByRole("group", { name: "Campo de mensagem" });
+      const file = new File(["fake"], "foto.png", { type: "image/png" });
+      fireEvent.drop(dropTarget, {
+        dataTransfer: { types: ["Files"], files: [file] },
+      });
+
+      expect(await screen.findByText("foto.png")).toBeTruthy();
+      expect(screen.queryByText("este modelo não tem visão")).toBeNull();
+    },
+  );
+
+  it("mostra indisponível quando a leitura agregada é recusada, sem inventar cobertura vazia",
+    async () => {
+      chatScenario.cluster = {
+        active_model: "qwen",
+        complete: false,
+        model_inventory: [],
+        peers: [],
+      };
+      chatScenario.capabilities = { vision: "unavailable", coverage: "unavailable" };
+
+      mount("infer");
+
+      expect(await screen.findByText("cobertura indisponível")).toBeTruthy();
+      expect(screen.queryByText("cobertura incompleta")).toBeNull();
+      expect(screen.getByRole("button", { name: "Anexar ficheiro" })).toBeTruthy();
+    },
+  );
 });

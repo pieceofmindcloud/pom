@@ -82,6 +82,8 @@ pub enum DeploymentKind {
     Whole,
     /// Um modelo dividido por tensor parallelism entre um primary e K workers.
     TensorParallel,
+    /// Um deployment com uma rota de modelo inteiro e outra de fatias.
+    Mixed,
 }
 
 /// Que modelo esta implantação serve.
@@ -246,7 +248,9 @@ impl Deployment {
 
     /// A versão que está no ar.
     pub fn active(&self) -> Option<&DeploymentVersion> {
-        self.versions.iter().find(|v| v.version == self.active_version)
+        self.versions
+            .iter()
+            .find(|v| v.version == self.active_version)
     }
 
     /// Escreve `self.nodes` de volta no snapshot da versão ativa. Usado depois
@@ -341,6 +345,34 @@ impl Deployment {
         alvo
     }
 
+    /// Anexa uma versão mesmo quando os parâmetros não mudaram.
+    ///
+    /// Alterações de topologia, como adicionar ou remover uma máquina, são
+    /// eventos de histórico por si só. Reusar a versão por igualdade de
+    /// parâmetros apagaria justamente o conjunto de máquinas que a operação
+    /// mudou.
+    pub fn append_version(
+        &mut self,
+        params: crate::webui::RuntimeParams,
+        nodes: Vec<DeploymentNode>,
+        created_by: impl Into<String>,
+    ) -> u32 {
+        self.ensure_versions();
+        let agora = chrono::Utc::now().to_rfc3339();
+        let numero = self.versions.iter().map(|v| v.version).max().unwrap_or(0) + 1;
+        self.versions.push(DeploymentVersion {
+            version: numero,
+            created_at: agora.clone(),
+            created_by: created_by.into(),
+            params,
+            nodes,
+        });
+        self.active_version = numero;
+        self.activated_at = agora;
+        self.sync_active_nodes();
+        numero
+    }
+
     /// As faixas dos nós cobrem `0..total_layers` sem buraco?
     ///
     /// Num grupo de tensor parallelism todo mundo cobre o modelo inteiro, então
@@ -357,10 +389,10 @@ impl Deployment {
         faixas.sort_unstable();
         let mut proxima = 0u32;
         for (inicio, fim) in faixas {
-            if inicio != proxima {
+            if inicio > proxima {
                 return false;
             }
-            proxima = fim + 1;
+            proxima = proxima.max(fim.saturating_add(1));
         }
         proxima == self.model.total_layers
     }
@@ -378,7 +410,11 @@ impl Deployment {
         if self.model.label.trim().is_empty() {
             bail!("implantação sem rótulo de modelo");
         }
-        if self.nodes.is_empty() {
+        if self.nodes.is_empty()
+            && self
+                .active()
+                .is_none_or(|version| !version.nodes.is_empty())
+        {
             bail!("implantação sem nós");
         }
         for n in &self.nodes {
@@ -462,7 +498,7 @@ pub fn matching_shape<'a>(
 pub fn active<'a>(deployments: &'a [Deployment], label: &str) -> Option<&'a Deployment> {
     deployments
         .iter()
-        .filter(|d| d.model.label == label)
+        .filter(|d| d.model.label == label && !d.nodes.is_empty())
         .max_by(|a, b| {
             a.activated_at
                 .cmp(&b.activated_at)
@@ -785,6 +821,59 @@ mod tests {
         assert_eq!(d.active_version, 2);
         assert_eq!(d.nodes, nodes_v2);
         assert_eq!(d.active().unwrap().params.n_ctx, 16384);
+    }
+
+    #[test]
+    fn append_version_registra_mudanca_de_topologia_mesmo_com_params_iguais() {
+        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        let params = d.active().unwrap().params.clone();
+        let nodes = vec![no("n1", 0, 31, 0, 1), no("n2", 0, 31, 0, 1)];
+
+        let version = d.append_version(params.clone(), nodes.clone(), "operador");
+
+        assert_eq!(version, 2);
+        assert_eq!(d.active_version, 2);
+        assert_eq!(d.nodes, nodes);
+        assert_eq!(d.versions.len(), 2);
+        assert_eq!(d.versions[1].params, params);
+        assert_eq!(d.versions[1].created_by, "operador");
+    }
+
+    #[test]
+    fn deployment_misto_cobre_as_duas_cabecas_e_a_ultima_remocao_eh_valida() {
+        let mut d = implantacao(
+            "d-aaaaaaaa",
+            "m",
+            vec![no("fatias", 0, 15, 0, 2), no("cauda", 16, 31, 1, 2)],
+        );
+        d.kind = DeploymentKind::Mixed;
+        let whole = no("inteiro", 0, 31, 0, 1);
+
+        let version = d.append_version(
+            d.active().unwrap().params.clone(),
+            vec![whole, d.nodes[0].clone(), d.nodes[1].clone()],
+            "operador",
+        );
+        assert_eq!(version, 2);
+        assert!(d.covers_the_model());
+
+        let version = d.append_version(
+            d.active().unwrap().params.clone(),
+            vec![d.nodes[0].clone(), d.nodes[1].clone()],
+            "operador",
+        );
+        assert_eq!(version, 3);
+        assert!(d.validate().is_ok());
+    }
+
+    #[test]
+    fn deployment_sem_maquinas_soh_fica_inativo_na_selecao_padrao() {
+        let mut d = implantacao("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
+        d.append_version(d.active().unwrap().params.clone(), Vec::new(), "operador");
+
+        assert!(d.nodes.is_empty());
+        assert!(d.validate().is_ok());
+        assert!(active(&[d], "m").is_none());
     }
 
     #[test]

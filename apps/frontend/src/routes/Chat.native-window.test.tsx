@@ -33,7 +33,9 @@ describe("controle de janela maior do chat nativo", () => {
       </LocaleProvider>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /janela maior/i }));
+    const button = screen.getByRole("button", { name: /janela maior/i });
+    expect(button.textContent).toBe("");
+    fireEvent.click(button);
     expect(postMessage).toHaveBeenCalledWith("open");
   });
 });

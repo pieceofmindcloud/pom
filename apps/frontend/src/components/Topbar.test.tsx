@@ -8,8 +8,8 @@
  * como "o cluster está em texto claro".
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { ProfileProvider } from "../lib/profile";
@@ -52,6 +52,25 @@ function mountTopbar(profile: "admin" | "node" | "infer") {
         </MemoryRouter>
       </LocaleProvider>
     </QueryClientProvider>,
+  );
+}
+
+function mountTopbarWithRoutes() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <LocaleProvider initialLocale="pt-BR">
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ProfileProvider initialProfile="admin">
+            <Topbar />
+            <Routes>
+              <Route path="/chat" element={<p>chat</p>} />
+              <Route path="/modelos/remotos" element={<p>remotos</p>} />
+            </Routes>
+          </ProfileProvider>
+        </MemoryRouter>
+      </LocaleProvider>
+    </QueryClientProvider>
   );
 }
 
@@ -99,5 +118,43 @@ describe("perfil na toolbar", () => {
     expect(screen.getByTestId("node-profile").textContent).toBe("infer");
     expect(screen.queryByText(/perfil em visualização/i)).toBeNull();
     expect(screen.queryByRole("button", { name: /administrador|node|infer/i })).toBeNull();
+  });
+
+  it("mostra Larger Window na toolbar nativa quando o WebKit oferece a ponte", () => {
+    nodeData = fakeNode({ profile: "admin" });
+    Object.defineProperty(window, "webkit", {
+      configurable: true,
+      value: { messageHandlers: { pomOpenWindow: { postMessage: vi.fn() } } },
+    });
+    mountTopbar("admin");
+
+    expect(screen.getByRole("button", { name: /janela maior/i })).toBeTruthy();
+    delete (window as Window & { webkit?: unknown }).webkit;
+  });
+
+  it("oculta o indicador TLS e o hash do build fora do admin", () => {
+    nodeData = fakeNode({ profile: "infer", build_commit: "abc123" });
+    mountTopbar("infer");
+
+    expect(screen.queryByTestId("tls-indicator")).toBeNull();
+    expect(screen.queryByText("abc123")).toBeNull();
+  });
+});
+
+describe("menu mobile", () => {
+  afterEach(cleanup);
+
+  it("fecha o drawer ao navegar e permite reabri-lo na tela seguinte", () => {
+    mountTopbarWithRoutes();
+
+    fireEvent.click(screen.getByRole("button", { name: "Abrir menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Modelos" }));
+    fireEvent.click(screen.getByRole("link", { name: "Encontrar Modelos HF" }));
+
+    expect(screen.getByText("remotos")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Fechar menu" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Abrir menu" }));
+    expect(screen.getByRole("button", { name: "Fechar menu" })).toBeTruthy();
   });
 });

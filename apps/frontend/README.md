@@ -87,6 +87,13 @@ que está sendo usado. Há teste disso em `src/network.rs`
 Um nó destacado mostra "Fora da rede" em Configurações › Rede, com um botão
 "Voltar para a rede" que chama `/api/ui/rejoin`.
 
+A navegação principal separa Rede de Configurações. Rede contém Informações,
+Participantes, Administradores, Compartilhamento e API Keys. Configurações
+mantém Preferências, Armazenamento e Preferências Administrativas. A tela de
+Compartilhamento reúne a raiz de confiança, os dados desta máquina e a chave
+de conexão. Em Redes públicas, cada endereço publicado mostra o resultado de
+um probe curto em `/health`, com cache de 30 segundos e atualização manual.
+
 As preferências locais ficam em Configurações › Preferências: exposição da
 interface administrativa, porta do gateway, TLS entre nós, proteção térmica da
 GPU e credencial opcional do Hugging Face. A exposição começa em localhost;

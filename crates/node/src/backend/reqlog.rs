@@ -6,27 +6,74 @@
 
 use crate::auth::ConnectionAuth;
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use rusqlite::{params, params_from_iter, types::Value, Connection, Row};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use futures::prelude::*;
+use libp2p::{request_response, PeerId, StreamProtocol};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{mpsc, Arc};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc, Arc, Mutex, RwLock,
+};
 use std::thread;
+use std::time::Instant;
 use tracing::{error, warn};
 
 const WRITER_QUEUE_CAPACITY: usize = 4096;
 const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 1000;
 const STALE_AFTER_MINUTES: i64 = 15;
+const AUDIT_LOG_PROTOCOL: &str = "/pom/request-audit/1.0.0";
+pub const AUDIT_TRANSPORT_QUEUE_CAPACITY: usize = 256;
+const MAX_AUDIT_PAYLOAD_BYTES: usize = 1024 * 1024;
+const MAX_REMOTE_AUDIT_IDS: usize = 8192;
+
+/// Monotonic request activity shared by the gateway and the local inference
+/// server. The idle policy reads this atomically from the existing monitor;
+/// it never starts a timer or does I/O in the inference path.
+#[derive(Debug, Default)]
+pub struct RequestActivity {
+    last_ms: AtomicU64,
+}
+
+impl RequestActivity {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn mark_now(&self) {
+        self.mark_at(monotonic_ms());
+    }
+
+    pub fn mark_at(&self, timestamp_ms: u64) {
+        self.last_ms.store(timestamp_ms, Ordering::Relaxed);
+    }
+
+    pub fn is_idle(&self, idle_minutes: u32) -> bool {
+        self.is_idle_at(monotonic_ms(), idle_minutes)
+    }
+
+    pub fn is_idle_at(&self, now_ms: u64, idle_minutes: u32) -> bool {
+        now_ms.saturating_sub(self.last_ms.load(Ordering::Relaxed))
+            >= u64::from(idle_minutes).saturating_mul(60_000)
+    }
+}
+
+fn monotonic_ms() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
 
 /// Identity of the credential, without its secret value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Caller {
     pub key_id: String,
     pub key_label: String,
@@ -51,7 +98,7 @@ impl Caller {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditRequest {
     pub id: String,
     pub received_at: String,
@@ -63,7 +110,8 @@ pub struct AuditRequest {
     pub request_details: JsonValue,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum AuditStatus {
     Ok,
     Partial,
@@ -84,7 +132,7 @@ impl AuditStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditCompletion {
     pub completed_at: String,
     pub result: Option<String>,
@@ -127,7 +175,10 @@ pub struct Entry {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AuditQuery {
     pub node_id: Option<String>,
+    /// Human-readable API key label used as the request user.
+    pub user: Option<String>,
     pub api_key: Option<String>,
+    pub model: Option<String>,
     pub prompt: Option<String>,
     #[serde(rename = "from")]
     pub received_from: Option<String>,
@@ -195,6 +246,130 @@ pub struct AuditStats {
     pub storage: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AuditEvent {
+    Begin(AuditRequest),
+    Complete {
+        id: String,
+        completion: AuditCompletion,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditResponse {
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuditOutbound {
+    pub peer_id: PeerId,
+    pub addr_candidates: Vec<String>,
+    pub event: AuditEvent,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AuditCodec;
+
+async fn read_audit_msg<T, R>(io: &mut R) -> std::io::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+    R: AsyncRead + Unpin + Send,
+{
+    let mut len_buf = [0_u8; 4];
+    io.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_AUDIT_PAYLOAD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "request audit frame exceeds the size bound",
+        ));
+    }
+    let mut data = vec![0_u8; len];
+    io.read_exact(&mut data).await?;
+    serde_json::from_slice(&data)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))
+}
+
+async fn write_audit_msg<T, W>(io: &mut W, message: &T) -> std::io::Result<()>
+where
+    T: Serialize,
+    W: AsyncWrite + Unpin + Send,
+{
+    let data = serde_json::to_vec(message)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+    if data.len() > MAX_AUDIT_PAYLOAD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "request audit frame exceeds the size bound",
+        ));
+    }
+    io.write_all(&(data.len() as u32).to_be_bytes()).await?;
+    io.write_all(&data).await
+}
+
+#[async_trait]
+impl request_response::Codec for AuditCodec {
+    type Protocol = StreamProtocol;
+    type Request = AuditEvent;
+    type Response = AuditResponse;
+
+    async fn read_request<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+    ) -> std::io::Result<Self::Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        read_audit_msg(io).await
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+    ) -> std::io::Result<Self::Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        read_audit_msg(io).await
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        request: Self::Request,
+    ) -> std::io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        write_audit_msg(io, &request).await
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        response: Self::Response,
+    ) -> std::io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        write_audit_msg(io, &response).await
+    }
+}
+
+pub fn audit_behaviour() -> request_response::Behaviour<AuditCodec> {
+    request_response::Behaviour::new(
+        [(
+            StreamProtocol::new(AUDIT_LOG_PROTOCOL),
+            request_response::ProtocolSupport::Full,
+        )],
+        request_response::Config::default().with_request_timeout(std::time::Duration::from_secs(3)),
+    )
+}
+
 enum Command {
     Begin(AuditRequest),
     Complete {
@@ -205,11 +380,20 @@ enum Command {
     Flush(mpsc::Sender<()>),
 }
 
+#[derive(Default)]
+struct RemoteAuditState {
+    begun: HashSet<String>,
+    completions_waiting_for_begin: HashMap<String, AuditCompletion>,
+}
+
 /// Handle shared by gateway tasks and the authenticated query route.
 #[derive(Clone)]
 pub struct AuditLog {
     database: Arc<crate::db::PomDb>,
     sender: mpsc::SyncSender<Command>,
+    replication_sender: Arc<RwLock<Option<tokio::sync::mpsc::Sender<AuditEvent>>>>,
+    admin_receiver: Arc<std::sync::atomic::AtomicBool>,
+    remote_state: Arc<Mutex<RemoteAuditState>>,
 }
 
 impl AuditLog {
@@ -224,12 +408,70 @@ impl AuditLog {
         {
             error!(error = %e, "não foi possível iniciar o escritor da auditoria");
         }
-        Arc::new(Self { database, sender })
+        Arc::new(Self {
+            database,
+            sender,
+            replication_sender: Arc::new(RwLock::new(None)),
+            admin_receiver: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            remote_state: Arc::new(Mutex::new(RemoteAuditState::default())),
+        })
+    }
+
+    /// Enable local persistence of audit events received from peers. This is
+    /// set only after the authenticated admin-trust document identifies the
+    /// local node as primary or secondary.
+    pub fn set_admin_receiver(&self, enabled: bool) {
+        self.admin_receiver
+            .store(enabled, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Start the ordered fanout of local audit events to every live admin
+    /// peer. The worker preserves begin/complete order per source process and
+    /// uses the same bounded transport discipline as process logs.
+    pub fn start_replication(
+        &self,
+        network: Arc<crate::network::Network>,
+        outbound: tokio::sync::mpsc::Sender<AuditOutbound>,
+    ) {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(AUDIT_TRANSPORT_QUEUE_CAPACITY);
+        if let Ok(mut slot) = self.replication_sender.write() {
+            *slot = Some(sender);
+        }
+        tokio::spawn(async move {
+            while let Some(event) = receiver.recv().await {
+                for (peer_id, addr_candidates) in network.admin_peers().await {
+                    if outbound
+                        .try_send(AuditOutbound {
+                            peer_id,
+                            addr_candidates,
+                            event: event.clone(),
+                        })
+                        .is_err()
+                    {
+                        warn!(%peer_id, "envio de auditoria para admin perdido por fila cheia");
+                    }
+                }
+            }
+        });
+    }
+
+    fn replicate(&self, event: AuditEvent) {
+        let sender = self
+            .replication_sender
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone());
+        if let Some(sender) = sender {
+            if let Err(error) = sender.try_send(event) {
+                warn!(error = %error, "evento de auditoria não entrou na fila de réplica");
+            }
+        }
     }
 
     /// Queue the initial row without waiting for SQLite or the filesystem.
     pub fn begin(&self, request: AuditRequest) {
         let request_id = request.id.clone();
+        let replication = AuditEvent::Begin(request.clone());
         if let Err(e) = self.sender.try_send(Command::Begin(request)) {
             error!(
                 operation = "iniciar auditoria",
@@ -238,11 +480,16 @@ impl AuditLog {
                 "operação de auditoria perdida antes da gravação"
             );
         }
+        self.replicate(replication);
     }
 
     /// Queue completion data for the same request id.
     pub fn complete(&self, id: String, completion: AuditCompletion) {
         let request_id = id.clone();
+        let replication = AuditEvent::Complete {
+            id: id.clone(),
+            completion: completion.clone(),
+        };
         if let Err(e) = self.sender.try_send(Command::Complete { id, completion }) {
             error!(
                 operation = "concluir auditoria",
@@ -250,6 +497,61 @@ impl AuditLog {
                 error = %e,
                 "operação de auditoria perdida antes da gravação"
             );
+        }
+        self.replicate(replication);
+    }
+
+    /// Persist a remote event locally without re-replicating it. A completion
+    /// can arrive before its begin because each peer has an independent swarm
+    /// queue, so it is held briefly until the matching begin is observed.
+    pub fn try_ingest_remote(&self, event: AuditEvent) -> bool {
+        if !self
+            .admin_receiver
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        let mut state = match self.remote_state.lock() {
+            Ok(state) => state,
+            Err(_) => return false,
+        };
+        match event {
+            AuditEvent::Begin(request) => {
+                let id = request.id.clone();
+                if state.begun.contains(&id) {
+                    return true;
+                }
+                if state.begun.len() >= MAX_REMOTE_AUDIT_IDS {
+                    if let Some(oldest) = state.begun.iter().next().cloned() {
+                        state.begun.remove(&oldest);
+                    }
+                }
+                let completed = state.completions_waiting_for_begin.remove(&id);
+                state.begun.insert(id.clone());
+                if self.sender.try_send(Command::Begin(request)).is_err() {
+                    return false;
+                }
+                if let Some(completion) = completed {
+                    let _ = self
+                        .sender
+                        .try_send(Command::Complete { id, completion });
+                }
+                true
+            }
+            AuditEvent::Complete { id, completion } => {
+                if !state.begun.remove(&id) {
+                    if state.completions_waiting_for_begin.len() >= MAX_REMOTE_AUDIT_IDS {
+                        if let Some(oldest) = state.completions_waiting_for_begin.keys().next().cloned() {
+                            state.completions_waiting_for_begin.remove(&oldest);
+                        }
+                    }
+                    state.completions_waiting_for_begin.insert(id, completion);
+                    return true;
+                }
+                self.sender
+                    .try_send(Command::Complete { id, completion })
+                    .is_ok()
+            }
         }
     }
 
@@ -264,6 +566,34 @@ impl AuditLog {
         .context("aguardar consulta do banco de auditoria")?
     }
 
+    /// Read the completed trace for one request without putting SQLite work in
+    /// the HTTP or inference executor.
+    pub async fn telemetry(&self, id: &str) -> Result<Option<JsonValue>> {
+        let database = self.database.clone();
+        let id = id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            database.with_write("consultar telemetria", |connection| {
+                AuditDb::from_shared(connection).telemetry(&id)
+            })
+        })
+        .await
+        .context("aguardar consulta da telemetria")?
+    }
+
+    /// Read recent completed traces for the dashboard. The caller filters them
+    /// against the requested topology and can skip a trace for another model.
+    pub async fn recent_telemetries(&self, limit: usize) -> Result<Vec<JsonValue>> {
+        let database = self.database.clone();
+        let limit = limit.clamp(1, 100);
+        tokio::task::spawn_blocking(move || {
+            database.with_write("consultar última telemetria", |connection| {
+                AuditDb::from_shared(connection).recent_telemetries(limit)
+            })
+        })
+        .await
+        .context("aguardar consulta da última telemetria")?
+    }
+
     pub async fn stats(&self, query: AuditQuery) -> Result<AuditStats> {
         let database = self.database.clone();
         tokio::task::spawn_blocking(move || {
@@ -276,7 +606,7 @@ impl AuditLog {
     }
 
     #[cfg(test)]
-    fn flush(&self) {
+    pub(crate) fn flush(&self) {
         let (sender, receiver) = mpsc::channel();
         self.sender
             .send(Command::Flush(sender))
@@ -483,6 +813,36 @@ impl<C: ConnectionAccess> AuditDb<C> {
             params![format!("-{STALE_AFTER_MINUTES} minutes")],
         )?;
         Ok(())
+    }
+
+    fn telemetry(&mut self, id: &str) -> Result<Option<JsonValue>> {
+        let raw: Option<String> = self
+            .connection()
+            .query_row(
+                "SELECT telemetry FROM audit_requests WHERE id = ? AND status IN ('ok', 'partial', 'incomplete')",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(raw.and_then(|value| serde_json::from_str(&value).ok()))
+    }
+
+    fn recent_telemetries(&mut self, limit: usize) -> Result<Vec<JsonValue>> {
+        let mut statement = self.connection().prepare(
+            "SELECT telemetry
+             FROM audit_requests
+             WHERE telemetry IS NOT NULL AND status IN ('ok', 'partial', 'incomplete')
+             ORDER BY completed_at DESC, id DESC
+             LIMIT ?",
+        )?;
+        let rows = statement.query_map(params![limit as i64], |row| row.get::<_, String>(0))?;
+        let mut traces = Vec::new();
+        for row in rows {
+            if let Ok(trace) = serde_json::from_str(&row?) {
+                traces.push(trace);
+            }
+        }
+        Ok(traces)
     }
 
     pub fn list(&mut self, query: &AuditQuery) -> Result<AuditList> {
@@ -838,12 +1198,28 @@ fn where_clause(query: &AuditQuery) -> (String, Vec<Value>) {
         values.push(Value::Text(node_id.into()));
         values.push(Value::Text(node_id.into()));
     }
+    if let Some(user) = query
+        .user
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        clauses.push("api_key_label LIKE ?");
+        values.push(Value::Text(format!("%{}%", user.trim())));
+    }
     if let Some(api_key) = query.api_key.as_deref().filter(|value| !value.is_empty()) {
         clauses.push("(api_key_id LIKE ? OR api_key_label LIKE ? OR api_key_node_id LIKE ?)");
         let pattern = format!("%{api_key}%");
         values.push(Value::Text(pattern.clone()));
         values.push(Value::Text(pattern.clone()));
         values.push(Value::Text(pattern));
+    }
+    if let Some(model) = query
+        .model
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        clauses.push("model LIKE ?");
+        values.push(Value::Text(format!("%{}%", model.trim())));
     }
     if let Some(prompt) = query
         .prompt
@@ -936,7 +1312,11 @@ pub struct LogQuery {
     #[serde(default)]
     pub node_id: Option<String>,
     #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub prompt: Option<String>,
     #[serde(rename = "from", default)]
@@ -958,7 +1338,9 @@ pub async fn list_requests(
 ) -> impl IntoResponse {
     let query = AuditQuery {
         node_id: query.node_id,
+        user: query.user,
         api_key: query.api_key,
+        model: query.model,
         prompt: query.prompt,
         received_from: query.received_from,
         received_to: query.received_to,
@@ -987,7 +1369,9 @@ pub async fn stats_requests(
 ) -> impl IntoResponse {
     let query = AuditQuery {
         node_id: query.node_id,
+        user: query.user,
         api_key: query.api_key,
+        model: query.model,
         prompt: query.prompt,
         received_from: query.received_from,
         received_to: query.received_to,
@@ -1010,6 +1394,17 @@ pub async fn stats_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_activity_marks_and_compares_idle_without_a_timer() {
+        let activity = RequestActivity::new();
+        activity.mark_at(1_000);
+
+        assert!(!activity.is_idle_at(60_999, 1));
+        assert!(activity.is_idle_at(61_000, 1));
+        activity.mark_at(61_001);
+        assert!(!activity.is_idle_at(61_001, 1));
+    }
 
     fn request(id: &str, key_id: &str, prompt: &str) -> AuditRequest {
         AuditRequest {
@@ -1083,6 +1478,11 @@ mod tests {
             after.entries[0].completed_at.as_deref(),
             Some("2026-08-26T12:00:01Z")
         );
+        assert_eq!(
+            db.telemetry("req-1").unwrap(),
+            Some(json!({ "tokens_per_sec": 12.5 }))
+        );
+        assert_eq!(db.telemetry("does-not-exist").unwrap(), None);
     }
 
     #[test]
@@ -1145,6 +1545,38 @@ mod tests {
             .unwrap();
         assert_eq!(by_prompt.total, 1);
         assert_eq!(by_prompt.entries[0].id, "req-finance");
+    }
+
+    #[test]
+    fn searches_by_user_label_and_model() {
+        let mut db = AuditDb::open(Connection::open_in_memory().unwrap()).unwrap();
+        let mut finance = request("req-finance", "key-finance", "relatorio");
+        finance.model = "llama-3".into();
+        finance.caller.key_label = "financeiro".into();
+        db.begin(&finance).unwrap();
+
+        let mut support = request("req-support", "key-support", "atendimento");
+        support.model = "qwen".into();
+        support.caller.key_label = "suporte".into();
+        db.begin(&support).unwrap();
+
+        let by_user = db
+            .list(&AuditQuery {
+                user: Some("finance".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_user.total, 1);
+        assert_eq!(by_user.entries[0].id, "req-finance");
+
+        let by_model = db
+            .stats(&AuditQuery {
+                model: Some("llama".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_model.total, 1);
+        assert_eq!(by_model.by_model["llama-3"].requests, 1);
     }
 
     #[test]
@@ -1247,6 +1679,54 @@ mod tests {
         assert_eq!(entries.total, 200);
         assert_eq!(entries.entries.len(), 200);
 
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[tokio::test]
+    async fn local_audit_events_are_fanned_out_to_admin_peers() {
+        let network = crate::network::Network::testkit(
+            "worker".into(),
+            "pk".into(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("rede de teste");
+        let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);
+        admin.profile = crate::profile::NodeProfile::Admin;
+        admin.libp2p_peer_id = Some(PeerId::random().to_string());
+        network
+            .peers
+            .write()
+            .await
+            .insert(admin.node_id.clone(), admin);
+
+        let path = std::env::temp_dir().join(format!(
+            "pom-audit-replication-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let database = Arc::new(crate::db::PomDb::open(&path).expect("banco de teste"));
+        let audit = AuditLog::new(database);
+        let (outbound, mut received) = tokio::sync::mpsc::channel(4);
+        audit.start_replication(Arc::new(network), outbound);
+        audit.begin(request("replicated-request", "key", "replicar"));
+
+        let message = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            received.recv(),
+        )
+        .await
+        .expect("fanout de auditoria no prazo")
+        .expect("evento para admin secundário");
+        match message.event {
+            AuditEvent::Begin(request) => assert_eq!(request.id, "replicated-request"),
+            AuditEvent::Complete { .. } => panic!("início esperado antes da conclusão"),
+        }
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));

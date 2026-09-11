@@ -156,6 +156,9 @@ pub struct DeployRequest {
     /// workers extraem o próprio shard de tensor.
     #[serde(default)]
     pub tp: Option<TpLaunch>,
+    /// Start the selected model with its catalogued mmproj projector.
+    #[serde(default)]
+    pub vision: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -198,4 +201,3 @@ pub(super) fn effective_params_for_kind(kind: DeployKind, params: &RuntimeParams
     }
     effective
 }
-

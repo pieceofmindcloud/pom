@@ -27,6 +27,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::Engine as _;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -84,8 +85,17 @@ pub enum Content {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentPart {
+    #[serde(rename = "type", default)]
+    pub kind: Option<String>,
     #[serde(default)]
     pub text: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<ImageUrl>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrl {
+    pub url: String,
 }
 
 impl Content {
@@ -99,6 +109,40 @@ impl Content {
                 .join("\n"),
             Content::Null => String::new(),
         }
+    }
+
+    fn has_images(&self) -> bool {
+        matches!(self, Content::Parts(parts) if parts.iter().any(|part| part.image_url.is_some()))
+    }
+
+    fn prompt_parts(&self) -> Result<(String, Vec<Vec<u8>>), String> {
+        let Content::Parts(parts) = self else {
+            return Ok((self.as_text(), Vec::new()));
+        };
+        let mut text = String::new();
+        let mut images = Vec::new();
+        for part in parts {
+            if let Some(value) = part.text.as_deref() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(value);
+            }
+            if let Some(image) = part.image_url.as_ref() {
+                let Some((prefix, encoded)) = image.url.split_once(",") else {
+                    return Err("imagem deve ser um data URL base64".to_string());
+                };
+                if !prefix.starts_with("data:image/") || !prefix.contains(";base64") {
+                    return Err("imagem deve ser um data URL base64".to_string());
+                }
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|error| format!("imagem base64 inválida: {error}"))?;
+                text.push_str("<__media__>");
+                images.push(bytes);
+            }
+        }
+        Ok((text, images))
     }
 }
 
@@ -144,6 +188,7 @@ impl ChatMessage {
     /// reach the model on replay.
     fn is_empty(&self) -> bool {
         self.content.as_text().trim().is_empty()
+            && !self.content.has_images()
             && self.tool_calls.as_ref().is_none_or(|c| c.is_empty())
     }
 
@@ -151,8 +196,14 @@ impl ChatMessage {
     /// exact shape the model itself emits, so replayed history stays
     /// self-consistent with what it wrote.
     fn rendered_body(&self) -> String {
+        self.rendered_body_with_images()
+            .map(|(body, _)| body)
+            .unwrap_or_default()
+    }
+
+    fn rendered_body_with_images(&self) -> Result<(String, Vec<Vec<u8>>), String> {
         let mut parts = Vec::new();
-        let text = self.content.as_text();
+        let (text, images) = self.content.prompt_parts()?;
         if !text.trim().is_empty() {
             parts.push(text);
         }
@@ -165,7 +216,7 @@ impl ChatMessage {
                 }
             }
         }
-        parts.join("\n")
+        Ok((parts.join("\n"), images))
     }
 }
 
@@ -187,6 +238,10 @@ pub struct ChatRequest {
     pub tools: Vec<ChatToolDef>,
     #[serde(default)]
     pub stop: Option<StopInput>,
+    /// Optional explicit layer-0 peer chosen by the Chat UI. It is ignored
+    /// when the peer is not a live head for the requested model.
+    #[serde(default)]
+    pub inference_head: Option<String>,
 }
 
 /// OpenAI wraps each tool in `{"type":"function","function":{...}}`, unlike
@@ -297,23 +352,49 @@ pub fn conversation_cache_key(messages: &[ChatMessage], tools: &[ToolDef]) -> St
 ///
 /// Cliente que queira o texto cru, sem rótulo nenhum, tem `/v1/completions` e
 /// `POST /api/generate`, que passam o prompt adiante intocado.
+#[allow(dead_code)]
 pub fn render_prompt(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
+    render_prompt_with_images(messages, tools)
+        .map(|(prompt, _)| prompt)
+        .unwrap_or_default()
+}
+
+/// Renderiza o prompt e extrai as imagens em bytes para o projector. O texto
+/// usa o marcador oficial do mtmd no mesmo lugar de cada `image_url`.
+pub fn render_prompt_with_images(
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+) -> Result<(String, Vec<Vec<u8>>), String> {
     let non_empty: Vec<&ChatMessage> = messages.iter().filter(|m| !m.is_empty()).collect();
 
     let tools_block = render_tools_block(tools);
 
     let mut system: Vec<String> = Vec::new();
     let mut turns: Vec<String> = Vec::new();
+    let mut images = Vec::new();
 
     for m in &non_empty {
         match m.role.as_str() {
-            "system" | "developer" => system.push(m.content.as_text()),
-            "assistant" => turns.push(format!("Assistant: {}", m.rendered_body())),
-            "tool" | "function" => {
-                let text = m.content.as_text();
-                turns.push(format!("User: <tool_response>\n{text}\n</tool_response>"));
+            "system" | "developer" => {
+                let (text, mut media) = m.rendered_body_with_images()?;
+                system.push(text);
+                images.append(&mut media);
             }
-            _ => turns.push(format!("User: {}", m.content.as_text())),
+            "assistant" => {
+                let (text, mut media) = m.rendered_body_with_images()?;
+                turns.push(format!("Assistant: {text}"));
+                images.append(&mut media);
+            }
+            "tool" | "function" => {
+                let (text, mut media) = m.rendered_body_with_images()?;
+                turns.push(format!("User: <tool_response>\n{text}\n</tool_response>"));
+                images.append(&mut media);
+            }
+            _ => {
+                let (text, mut media) = m.rendered_body_with_images()?;
+                turns.push(format!("User: {text}"));
+                images.append(&mut media);
+            }
         }
     }
 
@@ -331,7 +412,18 @@ pub fn render_prompt(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
         out.push_str("\n\n");
     }
     out.push_str(&turns.join("\n\n"));
-    out
+    Ok((out, images))
+}
+
+pub(crate) fn image_vision_error(
+    images: &[Vec<u8>],
+    mmproj_path: Option<&str>,
+) -> Option<&'static str> {
+    if !images.is_empty() && mmproj_path.is_none() {
+        Some("este modelo não tem visão")
+    } else {
+        None
+    }
 }
 
 /// Rough token count for the `usage` block.
@@ -405,6 +497,11 @@ fn model_object(
 /// `<modelo>@<deploy_id>`. É o que dá ao cliente como escolher **qual**
 /// implantação atende quando o mesmo modelo está no ar mais de uma vez; o nome
 /// pelado continua valendo e vai para a que quem monta o pipeline escolher.
+///
+/// Um peer ocioso não tem `runtime_capacity` enquanto os pesos estão fora da
+/// memória, mas continua sendo uma implantação servível: a geração o acorda
+/// depois de planejar a rota. Só um peer que não está ocioso e ainda não
+/// confirmou `/health` deve esconder o modelo do catálogo.
 fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
     let alive_models: std::collections::BTreeSet<String> = peers
         .iter()
@@ -417,7 +514,7 @@ fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
             peers
                 .iter()
                 .filter(|p| p.is_alive() && p.model == *model)
-                .all(|p| p.runtime_capacity.is_some())
+                .all(|p| p.runtime_capacity.is_some() || p.idle)
         })
         .collect();
     let deployments: std::collections::BTreeSet<(String, String)> = peers
@@ -429,7 +526,7 @@ fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
         let ready = peers
             .iter()
             .filter(|p| p.is_alive() && p.model == model && p.deploy_id == deploy_id)
-            .all(|p| p.runtime_capacity.is_some());
+            .all(|p| p.runtime_capacity.is_some() || p.idle);
         if ready {
             ids.push(format!("{model}@{deploy_id}"));
         }
@@ -528,7 +625,11 @@ async fn chat_completions(
         .into_iter()
         .map(ChatToolDef::into_tool_def)
         .collect();
-    let prompt = render_prompt(&req.messages, &tools);
+    let preferred_head = req.inference_head.clone();
+    let (prompt, images) = match render_prompt_with_images(&req.messages, &tools) {
+        Ok(rendered) => rendered,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
     // Chaveia o cache de prefixo pelas mensagens, não pelo texto renderizado -
     // ver `conversation_cache_key`.
     let cache_key = conversation_cache_key(&req.messages, &tools);
@@ -578,12 +679,14 @@ async fn chat_completions(
             "/v1/chat/completions",
             model,
             prompt,
+            images,
             budget,
             id,
             created,
             Mode::Chat,
             stops,
             Some(cache_key),
+            preferred_head.clone(),
             request_details.clone(),
             output_limit,
         )
@@ -595,6 +698,7 @@ async fn chat_completions(
             "/v1/chat/completions",
             model,
             prompt,
+            images,
             budget,
             id,
             created,
@@ -602,6 +706,7 @@ async fn chat_completions(
             Mode::Chat,
             stops,
             Some(cache_key),
+            preferred_head,
             request_details,
             output_limit,
         )
@@ -647,12 +752,14 @@ async fn completions(
             "/v1/completions",
             model,
             req.prompt,
+            Vec::new(),
             budget,
             id,
             created,
             Mode::Completion,
             stops,
             // Completion crua não tem conversa: o prefixo é o próprio texto.
+            None,
             None,
             request_details.clone(),
             output_limit,
@@ -665,12 +772,14 @@ async fn completions(
             "/v1/completions",
             model,
             req.prompt,
+            Vec::new(),
             budget,
             id,
             created,
             prompt_tokens,
             Mode::Completion,
             stops,
+            None,
             None,
             request_details,
             output_limit,
@@ -727,6 +836,7 @@ async fn blocking_response(
     route: &'static str,
     model: String,
     prompt: String,
+    images: Vec<Vec<u8>>,
     budget: crate::gateway::OutputBudget,
     id: String,
     created: i64,
@@ -734,6 +844,7 @@ async fn blocking_response(
     mode: Mode,
     stops: Vec<String>,
     cache_key: Option<String>,
+    preferred_head: Option<String>,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
 ) -> Response {
@@ -741,14 +852,17 @@ async fn blocking_response(
         route,
         caller,
         GenerationInput {
+            trace_id: Some(id.clone()),
             state,
             inference_token,
             model: model.clone(),
             prompt,
+            images,
             chat_template: mode.applies_chat_template(),
             budget,
             stops,
             cache_key,
+            preferred_head,
             request_details,
         },
     )
@@ -929,12 +1043,14 @@ fn stream_response(
     route: &'static str,
     model: String,
     prompt: String,
+    images: Vec<Vec<u8>>,
     budget: crate::gateway::OutputBudget,
     id: String,
     created: i64,
     mode: Mode,
     stops: Vec<String>,
     cache_key: Option<String>,
+    preferred_head: Option<String>,
     request_details: serde_json::Value,
     output_limit: OutputTokenLimit,
 ) -> Response {
@@ -943,14 +1059,17 @@ fn stream_response(
         route,
         caller,
         GenerationInput {
+            trace_id: Some(id.clone()),
             state,
             inference_token,
             model: model.clone(),
             prompt,
+            images,
             chat_template: mode.applies_chat_template(),
             budget,
             stops,
             cache_key,
+            preferred_head,
             request_details,
         },
         tx,
@@ -1399,6 +1518,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn image_is_rejected_when_the_served_model_has_no_mmproj() {
+        assert_eq!(
+            image_vision_error(&[vec![0xFF, 0xD8]], None),
+            Some("este modelo não tem visão")
+        );
+        assert_eq!(
+            image_vision_error(&[vec![0xFF, 0xD8]], Some("mmproj.gguf")),
+            None
+        );
+        assert_eq!(image_vision_error(&[], None), None);
+    }
+
     // ── Escolha de implantação ───────────────────────────────────────────────
 
     /// Cada implantação aparece na lista com o próprio sufixo, para o cliente
@@ -1443,6 +1575,53 @@ mod tests {
         let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
 
         assert!(model_ids(&state).await.is_empty());
+    }
+
+    /// An idle deployment remains a valid selector even though unloading the
+    /// weights clears its runtime capacity. The request must resolve the
+    /// deployment before the generation path can wake its peers.
+    #[tokio::test]
+    async fn idle_deployment_remains_resolvable_by_model_name() {
+        let mut head = crate::gateway::testkit::peer("head", "head", 8080);
+        head.model = "ornith-35b".into();
+        head.deploy_id = "d-idle1234".into();
+        head.inference_port = Some(8181);
+        head.start_layer = 0;
+        head.end_layer = 15;
+        head.total_layers = 32;
+        head.runtime_capacity = None;
+        head.idle = true;
+
+        let mut tail = crate::gateway::testkit::peer("tail", "tail", 8081);
+        tail.model = "ornith-35b".into();
+        tail.deploy_id = "d-idle1234".into();
+        tail.inference_port = Some(8182);
+        tail.start_layer = 16;
+        tail.end_layer = 31;
+        tail.total_layers = 32;
+        tail.runtime_capacity = None;
+        tail.idle = true;
+
+        let state = crate::gateway::testkit::state_with("gateway", vec![head, tail]).await;
+
+        let ids = model_ids(&state).await;
+        assert!(ids.contains(&"ornith-35b".to_string()), "{ids:?}");
+        assert!(
+            ids.contains(&"ornith-35b@d-idle1234".to_string()),
+            "{ids:?}"
+        );
+        assert_eq!(
+            resolve_model(&state, "ornith-35b".into()).await,
+            "ornith-35b"
+        );
+
+        let limit = state
+            .request_output_limit_for_model(Some("ornith-35b"), 32, "oi")
+            .await;
+        assert!(
+            limit.rejection_reason().is_none(),
+            "a gateway must let an idle deployment reach reload_model: {limit:?}"
+        );
     }
 
     /// Pedir uma implantação que ninguém anuncia **não** pode cair calado na
@@ -1557,6 +1736,7 @@ mod tests {
                     },
                 }],
                 stop: None,
+                inference_head: None,
             }),
         )
         .await;
@@ -1681,6 +1861,7 @@ mod tests {
                 max_completion_tokens: None,
                 tools: Vec::new(),
                 stop: None,
+                inference_head: None,
             }),
         )
         .await;
@@ -1831,6 +2012,7 @@ mod tests {
                 max_completion_tokens: None,
                 tools: Vec::new(),
                 stop: None,
+                inference_head: None,
             }),
         )
         .await;
@@ -1854,6 +2036,7 @@ mod tests {
                 max_completion_tokens: None,
                 tools: Vec::new(),
                 stop: None,
+                inference_head: None,
             }),
         )
         .await;
@@ -1899,6 +2082,7 @@ mod tests {
                 max_completion_tokens: None,
                 tools: Vec::new(),
                 stop: None,
+                inference_head: None,
             }),
         )
         .await
@@ -2022,10 +2206,14 @@ mod tests {
             role: "user".into(),
             content: Content::Parts(vec![
                 ContentPart {
+                    kind: Some("text".into()),
                     text: Some("linha 1".into()),
+                    image_url: None,
                 },
                 ContentPart {
+                    kind: Some("text".into()),
                     text: Some("linha 2".into()),
+                    image_url: None,
                 },
             ]),
             tool_calls: None,

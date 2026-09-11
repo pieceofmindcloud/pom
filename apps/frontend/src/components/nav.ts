@@ -2,7 +2,6 @@ import {
   BookOpen,
   Boxes,
   ChartNoAxesColumn,
-  Fingerprint,
   FolderTree,
   Gauge,
   Globe2,
@@ -112,46 +111,25 @@ export const NAV: NavSection[] = [
     footerProfiles: ["infer"],
   },
   {
+    labelKey: "nav.network",
+    icon: Network,
+    children: [
+      { labelKey: "nav.networkInfo", to: "/config/rede", icon: Network },
+      { labelKey: "nav.networkParticipants", to: "/config/rede/participantes", icon: Network },
+      { labelKey: "nav.administrators", to: "/config/administracao", icon: ShieldCheck },
+      { labelKey: "nav.sharing", to: "/config/compartilhamento", icon: ShieldCheck },
+      { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
+    ],
+  },
+  {
     labelKey: "nav.settings",
     icon: Settings,
     footerProfiles: ["infer"],
-    footerTo: "/config/keys/api",
+    footerTo: "/config/preferencias",
     children: [
-      {
-        labelKey: "nav.network",
-        to: "/config/rede",
-        icon: Network,
-        promoteProfiles: ["infer"],
-        children: [
-          { labelKey: "nav.networkInfo", to: "/config/rede", icon: Network },
-          { labelKey: "nav.networkParticipants", to: "/config/rede/participantes", icon: Network },
-        ],
-      },
-      { labelKey: "nav.administration", to: "/config/administracao", icon: ShieldCheck },
-      // Promovida para o `infer` porque ancorar a confiança é o trabalho que
-      // vem antes de haver autoridade, e um nó de inferência também recebe a
-      // âncora. Ver o cabeçalho de `routes/TrustAnchor.tsx`.
-      {
-        labelKey: "nav.trustAnchor",
-        to: "/config/confianca",
-        icon: Fingerprint,
-        promoteProfiles: ["infer"],
-        children: [
-          { labelKey: "nav.trustMachine", to: "/config/confianca#machine", icon: Fingerprint },
-          { labelKey: "nav.shareNetwork", to: "/config/confianca#share", icon: ShieldCheck },
-          { labelKey: "nav.connectionKeys", to: "/config/confianca#keys", icon: KeyRound },
-        ],
-      },
-      {
-        labelKey: "nav.preferences",
-        to: "/config/preferencias",
-        icon: SlidersHorizontal,
-        children: [
-          { labelKey: "nav.storage", to: "/config/armazenamento", icon: FolderTree },
-        ],
-      },
+      { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
+      { labelKey: "nav.storage", to: "/config/armazenamento", icon: FolderTree },
       { labelKey: "nav.administrativePreferences", to: "/config/preferencias/admin", icon: SlidersHorizontal },
-      { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
     ],
   },
 ];

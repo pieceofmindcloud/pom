@@ -969,6 +969,7 @@ models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
 nav.administration,Administration,Administração
 nav.administrativePreferences,Administrative preferences,Preferências administrativas
+nav.administrators,Administrators,Administradores
 nav.apiKeys,API keys,API keys
 nav.chat,Chat,Chat
 nav.connectionKeys,Connection keys,Chaves de conexão
@@ -996,6 +997,7 @@ nav.settings,Settings,Configurações
 nav.setupWizard,Setup wizard,Wizard de configuração
 nav.shards,Shards,Fatias
 nav.shareNetwork,Share network access,Compartilhar acesso à rede
+nav.sharing,Sharing,Compartilhamento
 nav.sliceModels,Slice models,Fatiar modelos
 nav.statistics,Statistics,Estatísticas
 nav.storage,Storage,Armazenamento
@@ -1156,6 +1158,8 @@ network.shareEyebrow,Share network access,Compartilhar acesso à rede
 network.shareLoading,Loading the sharing materials,Carregando os materiais para compartilhar
 network.shareSubtitle,Download the trust document for any network. Private networks also have a connection key.,Baixe o documento de confiança de qualquer rede. Redes privadas também têm uma chave de conexão.
 network.shareTitle,Give another node what it needs,Entregue a outro nó o que ele precisa
+network.sharingSubtitle,"Trust root, this machine, and connection key in one place.","Raiz de confiança, esta máquina e chave de conexão em um só lugar."
+network.sharingTitle,Sharing,Compartilhamento
 network.subtitle,Which machines this node sees and which it refuses to serve.,"Quem este nó enxerga, e quem ele se recusa a atender."
 network.thermalCooldownLabel,Cooldown (seconds),Tempo de resfriamento (segundos)
 network.thermalHint,Automatic recovery starts only when all GPU readings are known and safe.,A retomada automática só começa quando todas as leituras das GPUs são conhecidas e seguras.
@@ -1348,6 +1352,7 @@ publicNetworks.action,Action,Ação
 publicNetworks.address,Address,Endereço
 publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
+publicNetworks.checking,Checking reachability,Verificando alcance
 publicNetworks.city,City,Cidade
 publicNetworks.country,Country,País
 publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is confirmed when you join.,Aqui aparecem apenas dados públicos. A confiança é conferida quando você entra.
@@ -1373,13 +1378,15 @@ publicNetworks.noMatchesDetail,Try another country or city.,Tente outro país ou
 publicNetworks.nodes,Nodes,Nós
 publicNetworks.organization,Organization,Organização
 publicNetworks.pkarr,pkarr,pkarr
+publicNetworks.reachable,Reachable,Alcançável
 publicNetworks.refresh,Refresh,Atualizar
-publicNetworks.securityNote,The signed trust document is public metadata; the setup still asks you to confirm its calculated fingerprint.,O documento de confiança assinado é um dado público; o setup ainda pede que você confirme a impressão digital calculada.
+publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
 publicNetworks.subtitle,Find public POM networks discovered through pkarr and choose one to join.,Encontre redes públicas do POM descobertas via pkarr e escolha uma para entrar.
 publicNetworks.title,Public networks,Redes públicas
 publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida
 publicNetworks.unknownCountry,Unknown country,País desconhecido
+publicNetworks.unreachable,Not reachable,Inacessível
 publicNetworks.vram,Total VRAM,VRAM total
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
@@ -1565,7 +1572,6 @@ setupWizard.download,Download,Baixar
 setupWizard.edit,Edit,Editar
 setupWizard.fingerprint,Fingerprint,Impressão digital
 setupWizard.fingerprintCalculated,Calculated from the document,Calculada a partir do documento
-setupWizard.fingerprintConfirm,I checked this fingerprint against the separate value the administrator gave me.,Conferi esta impressão digital com o valor separado que o administrador me passou.
 setupWizard.fingerprintEntered,Fingerprint entered,Impressão digital informada
 setupWizard.fingerprintHint,Compare the calculated fingerprint with the value you received separately.,Compare a impressão digital calculada com o valor que você recebeu separadamente.
 setupWizard.fingerprintInvite,Send this fingerprint through a separate channel so invitees can compare it with the document they received.,Envie esta impressão digital por um canal separado para que as pessoas convidadas possam compará-la com o documento recebido.
@@ -1683,12 +1689,14 @@ setupWizard.tlsDetail,Optional extra encryption for control links. Libp2p alread
 setupWizard.tlsPublicRequired,Extra encryption is optional on public networks.,A criptografia extra é opcional em redes públicas.
 setupWizard.tlsRequired,Encrypt connections between nodes (optional),Criptografar conexões entre nós (opcional)
 setupWizard.trustDocument,Trust document,Documento de confiança
-setupWizard.trustDocumentHint,Copy the complete JSON document from the administrator.,Cole o documento JSON completo enviado pelo administrador.
+setupWizard.trustDocumentHint,Paste the complete JSON document from the administrator or upload trust.json.,Cole o documento JSON completo enviado pelo administrador ou envie o trust.json.
 setupWizard.trustFilename,Save the document as {filename},Salve o documento como {filename}
 setupWizard.trustLabel,Trust root,Raiz de confiança
 setupWizard.trustPrivateDetail,Private networks use the trust root and one shared connection secret.,Redes privadas usam a raiz de confiança e um único segredo compartilhado.
 setupWizard.trustPublicDetail,Public networks do not use a shared secret. The trust document authenticates control between machines.,Redes públicas não usam segredo compartilhado. O documento de confiança autentica o controle entre as máquinas.
 setupWizard.trustTitle,Bring the network's trust root,Traga a raiz de confiança da rede
+setupWizard.uploadTrust,Upload trust.json,Enviar trust.json
+setupWizard.uploadingTrust,Reading file...,Lendo arquivo...
 setupWizard.visibility,Who can find this network?,Quem pode encontrar esta rede?
 setupWizard.visibilityHint,Public networks use signed control and no shared secret.,Redes públicas usam controle assinado e não têm segredo compartilhado.
 setupWizard.vulkanAvailable,Vulkan ready,Vulkan disponível
@@ -1975,7 +1983,7 @@ trustAnchor.documentHint,Paste the whole content of {file} from the administrato
 trustAnchor.documentLabel,Signed chain,Cadeia assinada
 trustAnchor.documentPlaceholder,Paste the file content here,Cole aqui o conteúdo do arquivo
 trustAnchor.fingerprintCalculated,Calculated from the document,Calculada a partir do documento
-trustAnchor.fingerprintConfirm,I checked this fingerprint against the separate value the administrator gave me.,Conferi esta impressão digital com o valor separado que o administrador me passou.
+trustAnchor.fingerprintConfirm,I confirm that I checked this fingerprint against the trusted channel,Confirmo que conferi esta impressão digital pelo canal confiável
 trustAnchor.fingerprintFootnote,The fingerprint is public and grants nothing on its own. Carry it to the other node and type it there by hand: it is the check that anchors the trust.,A impressão digital é pública e não concede nada sozinha. Leve-a ao outro nó e digite-a lá à mão: é a conferência que ancora a confiança.
 trustAnchor.fingerprintLabel,Anchor fingerprint (SHA-256),Impressão digital da âncora (SHA-256)
 trustAnchor.fingerprintWaiting,Paste a valid document to calculate its fingerprint.,Cole um documento válido para calcular a impressão digital.

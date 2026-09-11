@@ -47,6 +47,8 @@ const INFER_ROUTES = [
   "/documentacao",
   "/config/keys/api",
   "/config/rede",
+  "/config/compartilhamento",
+  "/config/preferencias",
   // Ancorar a confiança precede a autoridade e não é privilégio de perfil
   // nenhum: um `infer` também recebe a âncora do admin. A trava dessa tela é
   // do servidor (loopback, nó por ancorar, impressão digital conferida).
@@ -55,6 +57,7 @@ const INFER_ROUTES = [
 
 const INFER_DENIED_ROUTES = [
   "/config/rede/participantes",
+  "/config/preferencias/admin",
 ] as const;
 
 /** `/implantarx` não está sob `/implantar`. */

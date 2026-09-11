@@ -96,7 +96,7 @@ function FingerprintBlock({ fingerprint }: { fingerprint: string }) {
   );
 }
 
-export function TrustAnchor() {
+export function TrustAnchor({ sharing = false }: { sharing?: boolean }) {
   const { t } = useI18n();
   const anchor = useTrustAnchor();
   const node = useNode();
@@ -169,7 +169,7 @@ export function TrustAnchor() {
   if (anchor.isLoading) {
     return (
       <>
-        <PageHeader title={t("trustAnchor.pageTitle")} subtitle={t("trustAnchor.pageSubtitle")} />
+        <PageHeader title={t(sharing ? "network.sharingTitle" : "trustAnchor.pageTitle")} subtitle={t(sharing ? "network.sharingSubtitle" : "trustAnchor.pageSubtitle")} />
         <div className="space-y-5" aria-label={t("trustAnchor.pageLoading")}>
           <Skeleton className="h-44 w-full" />
         </div>
@@ -180,7 +180,7 @@ export function TrustAnchor() {
   if (anchor.isError || !anchor.data) {
     return (
       <>
-        <PageHeader title={t("trustAnchor.pageTitle")} subtitle={t("trustAnchor.pageSubtitle")} />
+        <PageHeader title={t(sharing ? "network.sharingTitle" : "trustAnchor.pageTitle")} subtitle={t(sharing ? "network.sharingSubtitle" : "trustAnchor.pageSubtitle")} />
         <ErrorState
           title={t("trustAnchor.pageFailed")}
           error={anchor.error}
@@ -214,7 +214,7 @@ export function TrustAnchor() {
 
   return (
     <>
-      <PageHeader title={t("trustAnchor.pageTitle")} subtitle={t("trustAnchor.pageSubtitle")} />
+      <PageHeader title={t(sharing ? "network.sharingTitle" : "trustAnchor.pageTitle")} subtitle={t(sharing ? "network.sharingSubtitle" : "trustAnchor.pageSubtitle")} />
       <div className="space-y-5">
         <section id="machine" className="scroll-mt-6">
         <Panel>

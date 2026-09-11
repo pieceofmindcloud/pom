@@ -93,8 +93,9 @@ desenhado**, porque uma vista só não é uma escolha.
   leitura, com os parâmetros da versão escolhida
 - `/implantacoes/logs` -> DeploymentLogs, consola terminal dos logs de processo
   do cluster, em ordem de chegada no principal e filtrável por `deploy_id`
-- `/setup` -> SetupWizard, **fora da moldura**: sem Sidebar nem Topbar, como o
-  `Setup` do primeiro arranque (`isWizard` no `App.tsx` devolve antes do shell)
+- `/setup` -> Setup, o wizard real de primeiro arranque, **fora da moldura**:
+  sem Sidebar nem Topbar. `SetupWizard` continua sendo uma referência visual
+  mock, não a tela usada quando o nó está em modo setup.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> Logs, tela full-bleed da auditoria SQLite com barra compacta de
   filtros, tabela densa, scroll infinito e inspetor com Markdown renderizado,
@@ -103,23 +104,15 @@ desenhado**, porque uma vista só não é uma escolha.
   filtros de usuário, API key, modelo, nó, prompt e intervalo de datas.
   `/logs/estatisticas` redireciona para a rota nova.
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
-- `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista
-  de participantes disponível para `admin` e `node`; `/config/administracao` -> AdminAuthority,
-  which shows the principal, secondary administrators and the promotion chain.
-  Only the principal gets promotion, demotion and resignation controls; pending
-  authority offers use the activity bell. `/config/confianca` -> TrustAnchor,
-  a raiz de confiança desta máquina: impressão digital da âncora, estado
-  ancorado/por ancorar e, num nó ainda sem raiz, o formulário que instala a
-  cadeia trazida do admin. **Aberta aos três perfis de propósito** - antes de
-  ancorar, um `profile: admin` não tem capacidade efetiva de admin, e quem
-  recebe a âncora costuma ser `node` ou `infer`; a trava é do servidor
-  (loopback real, nó por ancorar, impressão digital conferida).
-  `/config/preferencias` -> Preferences com exposição, Hugging Face, proteção
-  térmica e link para armazenamento; `/config/preferencias/admin` -> as
-  preferências administrativas de TLS, QUIC, logs e chat da rede;
-  `/config/keys/api` -> TokenKeys em tabela full-bleed; a raiz de confiança
-  contém máquina, compartilhamento e chaves de conexão;
-  `/config/armazenamento` -> ModelPaths
+- `/config/rede` -> NetworkSettings; a seção principal Rede também reúne
+  `/config/rede/participantes`, `/config/administracao` (Administradores),
+  `/config/compartilhamento` (TrustAnchor com máquina, raiz e chave de conexão)
+  e `/config/keys/api`. A rota antiga `/config/confianca` continua como alias
+  compatível da tela da raiz de confiança.
+- `/config/preferencias` -> Preferences com exposição, Hugging Face e proteção
+  térmica; `/config/armazenamento` -> ModelPaths; `/config/preferencias/admin`
+  -> preferências administrativas de TLS, QUIC, logs e chat da rede. Estes são
+  os três itens que permanecem na seção principal Configurações.
 - `*` -> NotFound
 
 Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-fade wrapper; chat and dashboard get overflow-hidden main, the rest scroll.
@@ -148,6 +141,10 @@ de nomes usado pelo painel e mantém o histórico no fim enquanto a pessoa não
 rolou para cima. `Preferences.tsx` expõe a política de chat da rede somente ao
 administrador. `PublicNetworks.tsx` deriva os combos de país e cidade dos
 metadados públicos recebidos, mantendo a cidade limitada ao país selecionado.
+Cada endereço publicado também recebe uma verificação `/health` no navegador,
+com timeout curto, cache de 30 segundos e nova tentativa apenas por atualização
+explícita; o resultado verde/vermelho representa alcançabilidade observada, não
+uma alteração no endereço que o pkarr publicou.
 
 ## Links
 

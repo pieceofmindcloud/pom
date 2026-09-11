@@ -424,6 +424,16 @@ SQLite de países e cidades para os selects da tela. A UI nunca guarda a chave
 de conexão no cache: os materiais de compartilhamento são buscados pelo admin
 somente em `/api/ui/network/trust-share`.
 
+### publicReachability.ts
+
+`usePublicAddressReachability` consulta o `/health` do endereço publicado no
+navegador. O resultado usa `reachable` para resposta observada, `unreachable`
+para erro ou timeout de 1,8 s e `checking` durante a primeira consulta. O
+cache compartilhado dura 30 s e uma nova tentativa só é forçada pelo botão de
+atualização da tela de Redes públicas; trocar filtros não gera carga adicional.
+O `mode: no-cors` permite reconhecer resposta opaca cross-origin, sem tentar
+ler o corpo nem alterar o endereço publicado.
+
 ### networkPeers.ts
 The panel asks two questions, and the screen needs both: "who serves the
 active model, in execution order" and "who is on the network" - the second

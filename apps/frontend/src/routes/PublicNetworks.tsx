@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, Globe2, RefreshCw, ShieldCheck } from "lucide-react";
+import { ArrowRight, CircleCheck, CircleX, Globe2, LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react";
 import { Confirm } from "../components/Confirm";
 import { Button, ErrorState, PageHeader, Select, Skeleton } from "../components/ui";
 import { api } from "../lib/api";
 import { networkStats, type NetworkStats } from "../lib/networkStats";
+import { usePublicAddressReachability, type PublicReachability } from "../lib/publicReachability";
 import { useCluster } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
@@ -44,10 +45,12 @@ export function PublicNetworks() {
   const [joining, setJoining] = useState(false);
   const [countryFilter, setCountryFilter] = useState("");
   const [cityFilter, setCityFilter] = useState("");
+  const [reachabilityRefreshKey, setReachabilityRefreshKey] = useState(0);
 
   async function load() {
     setRefreshing(true);
     setError(null);
+    setReachabilityRefreshKey((value) => value + 1);
     try {
       const discovered = await api.get<PublicNetwork[]>("/api/public/networks", { auth: false });
       setNetworks(discovered);
@@ -160,7 +163,7 @@ export function PublicNetworks() {
             </label>
           </div>
         </div>
-        {error ? <div className="px-5 py-5"><ErrorState title={t("publicNetworks.failed")} error={error} onRetry={() => void load()} /></div> : networks === null ? <div className="space-y-3 px-5 py-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div> : filteredNetworks.length === 0 ? <div className="px-5 py-12 text-center"><Globe2 className="mx-auto h-7 w-7 text-faint" /><p className="mt-3 text-sm font-medium text-fg">{t(networks.length === 0 ? "publicNetworks.emptyTitle" : "publicNetworks.noMatches")}</p><p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-muted">{t(networks.length === 0 ? "publicNetworks.emptyDetail" : "publicNetworks.noMatchesDetail")}</p></div> : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[1100px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{["name", "organization", "location", "geoLabel", "nodes", "latency", "vram", "models", "action"].map((column) => <th key={column} className="border-b border-line px-4 py-3 font-medium">{t(`publicNetworks.${column}`)}</th>)}</tr></thead><tbody className="divide-y divide-line">{orderedNetworks.map((network) => <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} distance={distanceKm(network.location, viewerLocation)} stats={localNetwork?.fingerprint === network.fingerprint ? metrics : null} joining={joining && joinTarget?.cluster_id === network.cluster_id} onJoin={() => setJoinTarget(network)} t={t} />)}</tbody></table></div>}
+        {error ? <div className="px-5 py-5"><ErrorState title={t("publicNetworks.failed")} error={error} onRetry={() => void load()} /></div> : networks === null ? <div className="space-y-3 px-5 py-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div> : filteredNetworks.length === 0 ? <div className="px-5 py-12 text-center"><Globe2 className="mx-auto h-7 w-7 text-faint" /><p className="mt-3 text-sm font-medium text-fg">{t(networks.length === 0 ? "publicNetworks.emptyTitle" : "publicNetworks.noMatches")}</p><p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-muted">{t(networks.length === 0 ? "publicNetworks.emptyDetail" : "publicNetworks.noMatchesDetail")}</p></div> : <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-[1200px] w-full border-collapse text-left text-xs"><thead className="sticky top-0 z-10 bg-raised text-[0.66rem] uppercase tracking-[0.12em] text-faint"><tr>{["name", "organization", "location", "geoLabel", "address", "nodes", "latency", "vram", "models", "action"].map((column) => <th key={column} className="border-b border-line px-4 py-3 font-medium">{t(`publicNetworks.${column}`)}</th>)}</tr></thead><tbody className="divide-y divide-line">{orderedNetworks.map((network) => <NetworkRow key={`${network.cluster_id}:${network.fingerprint}`} network={network} distance={distanceKm(network.location, viewerLocation)} stats={localNetwork?.fingerprint === network.fingerprint ? metrics : null} joining={joining && joinTarget?.cluster_id === network.cluster_id} onJoin={() => setJoinTarget(network)} t={t} refreshKey={reachabilityRefreshKey} />)}</tbody></table></div>}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 px-1 py-3 text-xs leading-relaxed text-faint"><span>{t("publicNetworks.locationNote")}</span><span className="flex items-center gap-2"><ShieldCheck className="h-3.5 w-3.5 shrink-0" />{t("publicNetworks.securityNote")}</span></div>
       <Confirm open={joinTarget !== null} title={t("publicNetworks.joinTitle", { name: joinTarget?.name ?? "" })} description={t("publicNetworks.joinDetail")} confirmLabel={t("publicNetworks.joinConfirm")} busy={joining} onConfirm={() => joinTarget && void join(joinTarget)} onCancel={() => !joining && setJoinTarget(null)} />
@@ -168,11 +171,22 @@ export function PublicNetworks() {
   );
 }
 
-function NetworkRow({ network, distance, stats, joining, onJoin, t }: { network: PublicNetwork; distance: number | null; stats: NetworkStats | null; joining: boolean; onJoin: () => void; t: (key: string, values?: Record<string, string | number>) => string }) {
+function NetworkRow({ network, distance, stats, joining, onJoin, t, refreshKey }: { network: PublicNetwork; distance: number | null; stats: NetworkStats | null; joining: boolean; onJoin: () => void; t: (key: string, values?: Record<string, string | number>) => string; refreshKey: number }) {
   const unavailable = t("publicNetworks.unavailable");
   const location = [network.country_name || network.country_code, network.city].filter(Boolean).join(" / ") || unavailable;
   const models = stats?.models.length ? stats.models.join(", ") : unavailable;
-  return <tr className="align-top transition-colors hover:bg-raised/45"><td className="max-w-[15rem] px-4 py-3.5"><div className="flex items-center gap-2"><span className="font-medium text-fg">{network.name || network.cluster_id}</span>{distance !== null && <span className="whitespace-nowrap text-[0.65rem] text-lime">{t("publicNetworks.distance", { value: distance.toFixed(0) })}</span>}</div><p className="mt-1 break-all font-mono text-[0.64rem] text-faint">{network.fingerprint}</p></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[15rem] break-all px-4 py-3.5 font-mono text-[0.68rem] text-muted">{network.geo_label || unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.averageLatencyMs != null ? `${stats.averageLatencyMs.toFixed(1)} ms` : unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5"><Button size="sm" variant="primary" loading={joining} disabled={joining} onClick={onJoin} icon={<ArrowRight className="h-3.5 w-3.5" />}>{t("publicNetworks.join")}</Button></td></tr>;
+  const reachability = usePublicAddressReachability(network.address, refreshKey);
+  return <tr className="align-top transition-colors hover:bg-raised/45"><td className="max-w-[15rem] px-4 py-3.5"><div className="flex items-center gap-2"><span className="font-medium text-fg">{network.name || network.cluster_id}</span>{distance !== null && <span className="whitespace-nowrap text-[0.65rem] text-lime">{t("publicNetworks.distance", { value: distance.toFixed(0) })}</span>}</div><p className="mt-1 break-all font-mono text-[0.64rem] text-faint">{network.fingerprint}</p></td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{network.organization || unavailable}</td><td className="max-w-[13rem] px-4 py-3.5 text-muted">{location}</td><td className="max-w-[15rem] break-all px-4 py-3.5 font-mono text-[0.68rem] text-muted">{network.geo_label || unavailable}</td><td className="max-w-[18rem] px-4 py-3.5"><ReachabilityIndicator id={network.fingerprint} address={network.address} status={reachability} t={t} /></td><td className="px-4 py-3.5 font-mono text-muted">{stats ? stats.nodeCount : unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.averageLatencyMs != null ? `${stats.averageLatencyMs.toFixed(1)} ms` : unavailable}</td><td className="px-4 py-3.5 font-mono text-muted">{stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : unavailable}</td><td className="max-w-[18rem] px-4 py-3.5 text-muted">{models}</td><td className="px-4 py-3.5"><Button size="sm" variant="primary" loading={joining} disabled={joining} onClick={onJoin} icon={<ArrowRight className="h-3.5 w-3.5" />}>{t("publicNetworks.join")}</Button></td></tr>;
+}
+
+function ReachabilityIndicator({ id, address, status, t }: { id: string; address: string; status: PublicReachability; t: (key: string) => string }) {
+  const content = status === "reachable"
+    ? <CircleCheck className="h-4 w-4 shrink-0 text-lime" aria-hidden="true" />
+    : status === "unreachable"
+      ? <CircleX className="h-4 w-4 shrink-0 text-rose" aria-hidden="true" />
+      : <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-amber" aria-hidden="true" />;
+  const label = status === "reachable" ? t("publicNetworks.reachable") : status === "unreachable" ? t("publicNetworks.unreachable") : t("publicNetworks.checking");
+  return <div data-testid={`public-network-reachability-${id}`} data-reachability={status} className="flex min-w-0 items-start gap-2" title={label}><span className="mt-0.5">{content}</span><span className="min-w-0"><span className="block truncate font-mono text-[0.68rem] text-fg">{address}</span><span className={status === "reachable" ? "text-[0.68rem] text-lime" : status === "unreachable" ? "text-[0.68rem] text-rose" : "text-[0.68rem] text-amber"}>{label}</span></span></div>;
 }
 
 function distanceKm(location: PublicNetwork["location"], viewer: ViewerLocation | null): number | null {

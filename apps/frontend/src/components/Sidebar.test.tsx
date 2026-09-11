@@ -209,7 +209,7 @@ describe("Sidebar", () => {
     const activeButton = screen.getAllByRole("button", { name: /Conversa ativa/ })
       .find((button) => button.getAttribute("aria-pressed") === "true");
     expect(activeButton).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Rede" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Documentação" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Configurações" })).toBeTruthy();
     expect(screen.queryByText("Painel")).toBeNull();

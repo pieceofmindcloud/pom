@@ -6,8 +6,8 @@
  * O percurso começa pela máquina, porque essa é a primeira resposta útil para
  * quem ainda não sabe o que o POM pode compartilhar.
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Copy, Cpu, Database, Download, Landmark, LocateFixed, MapPin, Monitor, Server, ShieldCheck, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { Check, Copy, Cpu, Database, Download, Landmark, LocateFixed, MapPin, Monitor, Server, ShieldCheck, Sparkles, Upload } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { WizardLayout, ContinueButton } from "../components/setup-wizard/WizardLayout";
 import type { WizardStage } from "./setupWizardTypes";
@@ -128,14 +128,13 @@ interface HealthResponse {
   public_ipv6_enabled: boolean;
 }
 
-interface SetupState {
+export interface SetupState {
   profile: SetupProfile | null;
   bootstrap: string;
   connectionKey: string;
   advertiseAddr: string;
   trustDocument: string;
   trustFingerprint: string;
-  trustConfirmed: boolean;
   adminAccessToken: string;
   adminExposure: AdminExposure;
   tlsRequired: boolean;
@@ -170,7 +169,6 @@ const INITIAL: SetupState = {
   advertiseAddr: "",
   trustDocument: "",
   trustFingerprint: "",
-  trustConfirmed: false,
   network: {
     public_name: "",
     organization: "",
@@ -260,7 +258,6 @@ export function Setup() {
         bootstrap: network.bootstrap_address ?? "",
         trustDocument: network.trust_document ?? "",
         trustFingerprint: "",
-        trustConfirmed: false,
         network: {
           ...current.network,
           public_name: network.name ?? network.cluster_id ?? "",
@@ -296,7 +293,6 @@ export function Setup() {
       update({
         trustDocument: preview.document,
         trustFingerprint: preview.fingerprint,
-        trustConfirmed: true,
         adminAccessToken: "",
         connectionKey: setup.network.visibility === "public" ? "" : preview.private_connection_key ?? "",
       });
@@ -558,19 +554,21 @@ function SecurityScreen({ setup, onExposureChange, update, t }: { setup: SetupSt
   return <Intro eyebrow={t("setupWizard.stepSecurity")} title={t("setupWizard.securityTitle")} detail={t("setupWizard.securityDetail")}><Panel><PanelHeader title={t("setupWizard.securityTitle")} subtitle={t("setupWizard.securityDetail")} /><div className="space-y-5 px-5 py-5"><Field label={t("setupWizard.adminExposure")} hint={t("setupWizard.adminExposureHint")}><Select value={setup.adminExposure} onChange={(event) => void onExposureChange(event.target.value as AdminExposure)}><option value="localhost">{t("setupWizard.adminExposureLocalhost")}</option><option value="network">{t("setupWizard.adminExposureNetwork")}</option></Select></Field>{networkExposure && <Field label={t("setupWizard.adminToken")} hint={t("setupWizard.adminTokenDetail")}><Input readOnly value={setup.adminAccessToken} placeholder={t("setupWizard.adminTokenMissing")} className="font-mono" /></Field>}<label className="flex items-start gap-3 rounded-lg border border-line bg-raised px-3 py-3 text-sm text-fg"><input type="checkbox" checked={setup.tlsRequired} onChange={(event) => update({ tlsRequired: event.target.checked })} className="mt-0.5 h-4 w-4 accent-iris" /><span><span className="block font-medium">{t("setupWizard.tlsRequired")}</span><span className="mt-1 block text-xs leading-relaxed text-faint">{t("setupWizard.tlsDetail")}</span></span></label></div></Panel></Intro>;
 }
 
-function TrustScreen({ setup, update, updateNetwork, t }: { setup: SetupState; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
+export function TrustScreen({ setup, update, updateNetwork, t }: { setup: SetupState; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
   const publicNetwork = setup.network.visibility === "public";
   const [fingerprintPending, setFingerprintPending] = useState(false);
+  const [trustFileName, setTrustFileName] = useState("");
+  const [uploading, setUploading] = useState(false);
   useEffect(() => {
     let cancelled = false;
     if (!setup.trustDocument.trim()) {
-      update({ trustFingerprint: "", trustConfirmed: false });
+      update({ trustFingerprint: "" });
       return;
     }
     setFingerprintPending(true);
     void fingerprintFromTrustDocument(setup.trustDocument).then((fingerprint) => {
       if (cancelled) return;
-      update({ trustFingerprint: fingerprint ?? "", trustConfirmed: false });
+      update({ trustFingerprint: fingerprint ?? "" });
       setFingerprintPending(false);
     });
     return () => {
@@ -578,7 +576,30 @@ function TrustScreen({ setup, update, updateNetwork, t }: { setup: SetupState; u
     };
   }, [setup.trustDocument]);
 
-  return <Intro eyebrow={t("setupWizard.stepTrust")} title={t("setupWizard.trustTitle")} detail={t(publicNetwork ? "setupWizard.trustPublicDetail" : "setupWizard.trustPrivateDetail")}><Panel><PanelHeader title={t("setupWizard.pasteTrust")} subtitle={t("setupWizard.pasteTrustDetail")} /><div className="space-y-4 px-5 py-5"><Field label={t("setupWizard.networkKind")} hint={t("setupWizard.networkKindHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : "authorized" })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option></Select></Field><Field label={t("setupWizard.trustDocument")} hint={t("setupWizard.trustDocumentHint")}><textarea autoFocus value={setup.trustDocument} onChange={(event) => update({ trustDocument: event.target.value, trustConfirmed: false })} className="min-h-44 w-full min-w-0 resize-y rounded-lg border border-line bg-ink px-3 py-2 font-mono text-xs text-fg outline-none transition-colors focus:border-iris focus:ring-2 focus:ring-iris/25" /></Field><div className="rounded-lg border border-line bg-raised px-3 py-3"><p className="text-xs font-medium uppercase tracking-[0.14em] text-faint">{t("setupWizard.fingerprintCalculated")}</p>{fingerprintPending ? <p className="mt-2 text-sm text-muted">{t("setupWizard.fingerprintWaiting")}</p> : setup.trustFingerprint ? <code className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{groupFingerprint(setup.trustFingerprint)}</code> : <p className="mt-2 text-sm text-muted">{t("setupWizard.fingerprintWaiting")}</p>}<label className="mt-3 flex items-start gap-3 text-sm text-fg"><input type="checkbox" checked={setup.trustConfirmed} disabled={!setup.trustFingerprint || fingerprintPending} onChange={(event) => update({ trustConfirmed: event.target.checked })} className="mt-0.5 h-4 w-4 accent-iris" /><span>{t("setupWizard.fingerprintConfirm")}</span></label></div>{!publicNetwork && <Field label={t("setupWizard.connectionSecret")} hint={t("setupWizard.connectionSecretHint")}><Input type="password" value={setup.connectionKey} onChange={(event) => update({ connectionKey: event.target.value })} /></Field>}<Field label={t("setupWizard.bootstrapAddress")} hint={t("setupWizard.bootstrapAddressHint")}><Input value={setup.bootstrap} onChange={(event) => update({ bootstrap: event.target.value })} placeholder={t("setupWizard.bootstrapPlaceholder")} /></Field></div></Panel></Intro>;
+  async function readTrustFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    try {
+      update({ trustDocument: await readTextFile(file) });
+      setTrustFileName(file.name);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return <Intro eyebrow={t("setupWizard.stepTrust")} title={t("setupWizard.trustTitle")} detail={t(publicNetwork ? "setupWizard.trustPublicDetail" : "setupWizard.trustPrivateDetail")}><Panel><PanelHeader title={t("setupWizard.pasteTrust")} subtitle={t("setupWizard.pasteTrustDetail")} /><div className="space-y-4 px-5 py-5"><Field label={t("setupWizard.networkKind")} hint={t("setupWizard.networkKindHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : "authorized" })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option></Select></Field><Field label={t("setupWizard.trustDocument")} hint={t("setupWizard.trustDocumentHint")}><textarea data-testid="trust-document-textarea" autoFocus value={setup.trustDocument} onChange={(event) => update({ trustDocument: event.target.value })} className="min-h-44 w-full min-w-0 resize-y rounded-lg border border-line bg-ink px-3 py-2 font-mono text-xs text-fg outline-none transition-colors focus:border-iris focus:ring-2 focus:ring-iris/25" /><div className="mt-2 flex flex-wrap items-center gap-3"><label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-line bg-raised px-3 py-2 text-xs font-medium text-fg transition-colors hover:border-line-strong"><Upload className="h-3.5 w-3.5 text-iris" /><span>{uploading ? t("setupWizard.uploadingTrust") : t("setupWizard.uploadTrust")}</span><input data-testid="trust-document-file" type="file" accept=".json,application/json" className="sr-only" onChange={(event) => void readTrustFile(event)} /></label>{trustFileName && <span className="max-w-full truncate text-xs text-muted">{trustFileName}</span>}</div></Field><div className="rounded-lg border border-line bg-raised px-3 py-3"><p className="text-xs font-medium uppercase tracking-[0.14em] text-faint">{t("setupWizard.fingerprintCalculated")}</p>{fingerprintPending ? <p className="mt-2 text-sm text-muted">{t("setupWizard.fingerprintWaiting")}</p> : setup.trustFingerprint ? <code className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{groupFingerprint(setup.trustFingerprint)}</code> : <p className="mt-2 text-sm text-muted">{t("setupWizard.fingerprintWaiting")}</p>}</div>{!publicNetwork && <Field label={t("setupWizard.connectionSecret")} hint={t("setupWizard.connectionSecretHint")}><Input type="password" value={setup.connectionKey} onChange={(event) => update({ connectionKey: event.target.value })} /></Field>}<Field label={t("setupWizard.bootstrapAddress")} hint={t("setupWizard.bootstrapAddressHint")}><Input value={setup.bootstrap} onChange={(event) => update({ bootstrap: event.target.value })} placeholder={t("setupWizard.bootstrapPlaceholder")} /></Field></div></Panel></Intro>;
+}
+
+function readTextFile(file: File): Promise<string> {
+  if (typeof file.text === "function") return file.text();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("could not read file"));
+    reader.readAsText(file);
+  });
 }
 
 function InviteScreen({ anchor, visibility, connectionKey, t }: { anchor: AnchorPreview | null; visibility: NetworkVisibility; connectionKey: string; t: (key: string, values?: Record<string, string | number>) => string }) {
@@ -655,7 +676,7 @@ function clusterIdFromDocument(document: string): string {
 }
 
 function isReadyToSave(setup: SetupState): boolean {
-  if (!setup.profile || !setup.trustDocument.trim() || !setup.trustFingerprint.trim() || !setup.trustConfirmed) return false;
+  if (!setup.profile || !setup.trustDocument.trim() || !setup.trustFingerprint.trim()) return false;
   if (setup.profile !== "admin" && setup.network.visibility !== "public" && !setup.connectionKey.trim()) return false;
   if (setup.profile === "admin" && (!setup.network.public_name.trim() || !setup.advertiseAddr.trim() || (setup.network.visibility === "public" && (!setup.network.country_code.trim() || !setup.network.city.trim())) || (setup.adminExposure === "network" && !setup.adminAccessToken.trim()))) return false;
   return true;
@@ -669,7 +690,7 @@ function canContinue(stage: WizardStage, setup: SetupState): boolean {
     return Boolean(setup.adminExposure !== "network" || setup.adminAccessToken.trim());
   }
   if (stage === "setup-trust") {
-    return Boolean(setup.trustFingerprint.trim() && setup.trustConfirmed && (setup.network.visibility !== "public" || (setup.network.country_code.trim() && setup.network.city.trim())) && (setup.network.visibility === "public" || setup.connectionKey.trim()));
+    return Boolean(setup.trustFingerprint.trim() && (setup.network.visibility !== "public" || (setup.network.country_code.trim() && setup.network.city.trim())) && (setup.network.visibility === "public" || setup.connectionKey.trim()));
   }
   return true;
 }

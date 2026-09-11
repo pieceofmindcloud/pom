@@ -146,6 +146,11 @@ Per-file list:
   tabela marca as entradas que vão para o rodapé do `infer` e promove a rede
   para o menu principal; `navForProfile` e `navFooterForProfile` são suas duas
   projeções. Testes em `nav.test.ts`.
+  A seção principal Rede contém Informações, Participantes, Administradores,
+  Compartilhamento e API Keys. Configurações contém somente Preferências,
+  Armazenamento e Preferências Administrativas; Compartilhamento é a tela única
+  que reutiliza `TrustAnchor` para raiz de confiança, esta máquina e chave de
+  conexão.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
   mobile drawer in `Topbar`). `SidebarContent` lê `useProfile()` e renderiza
   `navForProfile(profile)`, não `NAV` cru. `Section`/`Leaf` render it with an animated

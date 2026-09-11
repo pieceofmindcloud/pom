@@ -167,7 +167,7 @@ describe("navegação depois do chat", () => {
     await screen.findByPlaceholderText("Escreva para a rede…");
     expect(screen.getAllByTestId("chat-session-list")).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Conversa nova" })).toHaveLength(1);
-    expect(screen.getByRole("link", { name: "Rede" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Rede" })).toBeTruthy();
   });
 
   it("mostra o alvo de largada, identifica o formato e remove o anexo sem apagar o rascunho", async () => {

@@ -31,8 +31,10 @@ Per-file list:
 
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
   padrão de Logs: tabela rolável com nome público, organização, localização,
-  label geo-hierárquico, nós, latência, VRAM, modelos e ação de entrada. Usa
-  `/api/public/networks`; métricas agregadas só aparecem quando o cluster local
+  label geo-hierárquico, endereço publicado com indicador de alcançabilidade,
+  nós, latência, VRAM, modelos e ação de entrada. Usa `/api/public/networks`;
+  o indicador consulta `/health` no navegador com timeout de 1,8 s e cache de
+  30 s, sem alterar a publicação pkarr. Métricas agregadas só aparecem quando o cluster local
   corresponde à rede exibida, pois o catálogo público atual não as fornece.
   Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um
   país, o combo de cidade mostra apenas as cidades daquele país.
@@ -418,13 +420,12 @@ Per-file list:
   administrators, promotion chain and resignation eligibility. Its mutations
   are isolated in `lib/adminAuthority.ts`; pending principal-transfer and
   infer-to-node offers are answered by `Notifications`.
-- `TrustAnchor.tsx` - a raiz de confiança da máquina, os dois lados de ancorar
+- `TrustAnchor.tsx` - a raiz de confiança da máquina e os dois lados de ancorar
   a autoridade, atrás de `GET/POST /api/ui/network/trust-anchor`. Mostra a
   impressão digital da âncora em grupos de oito com botão de cópia, e o estado
   **ancorado** ou **por ancorar** num relance. Num nó ainda sem raiz, mostra o
-  formulário que cola a cadeia assinada e recebe a impressão digital **digitada
-  à mão** - o campo nunca é pré-preenchido a partir do conteúdo colado, porque
-  é ele que valida o arquivo. Fora do loopback o formulário dá lugar à
+  formulário que cola a cadeia assinada, calcula a impressão digital e mantém a
+  confirmação explícita da conferência pelo canal confiável. Fora do loopback o formulário dá lugar à
   explicação; a decisão continua sendo do servidor, que devolve um `reason`
   estável (`not_loopback`, `already_anchored`, `invalid_document`,
   `fingerprint_mismatch`, `install_failed`) para a tela traduzir a recusa em
@@ -459,9 +460,9 @@ Per-file list:
   trust-root flow. Public networks use signed control without a shared secret;
   private networks also carry one connection secret. The node saves config and
   trust root, respawns and the screen reloads. It reuses `WizardLayout` but is
-  separate from the mock-only `SetupWizard.tsx`. The joining screen derives the
-  anchor fingerprint from the pasted document and asks the operator to confirm
-  it against a separate channel; it never asks the operator to retype it. The
+  separate from the mock-only `SetupWizard.tsx`. The joining screen accepts the
+  trust document by paste or `.json` upload, derives the anchor fingerprint and
+  no longer asks for an extra confirmation checkbox. The
   administrator invitation downloads the actual trust filename returned by the
   server and copies a connection secret only for local/private networks. An
   admin token is generated only when the interface is exposed to the network;

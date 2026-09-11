@@ -147,6 +147,7 @@ export const routeLoaders = {
   networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
   adminAuthority: () => import("./routes/AdminAuthority").then(({ AdminAuthority }) => AdminAuthority),
   trustAnchor: () => import("./routes/TrustAnchor").then(({ TrustAnchor }) => TrustAnchor),
+  networkSharing: () => import("./routes/NetworkSharing").then(({ NetworkSharing }) => NetworkSharing),
   preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
@@ -181,6 +182,7 @@ const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
 const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
 const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
+const NetworkSharing = lazyRoute(routeLoaders.networkSharing);
 const Preferences = lazyRoute(routeLoaders.preferences);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
@@ -407,6 +409,7 @@ export default function App() {
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
                         <Route path="/config/rede/participantes" element={<Page><NetworkParticipants /></Page>} />
                         <Route path="/config/administracao" element={<Page><AdminAuthority /></Page>} />
+                        <Route path="/config/compartilhamento" element={<Page><NetworkSharing /></Page>} />
                         <Route path="/config/confianca" element={<Page><TrustAnchor /></Page>} />
                         <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
                         <Route path="/config/preferencias/admin" element={<Page><Preferences administrative /></Page>} />

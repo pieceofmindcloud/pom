@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
+import { resetPublicAddressReachabilityCache } from "../lib/publicReachability";
 import { PublicNetworks } from "./PublicNetworks";
 
 const mocks = vi.hoisted(() => ({
@@ -72,7 +73,16 @@ const networks = [
   },
 ];
 
+const publicHealth = vi.fn();
+
 beforeEach(() => {
+  publicHealth.mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input);
+    return url.includes("sao-paulo")
+      ? Promise.reject(new TypeError("network timeout"))
+      : Promise.resolve(new Response("ok", { status: 200 }));
+  });
+  vi.stubGlobal("fetch", publicHealth);
   mocks.get.mockImplementation((path: string) =>
     path === "/api/public/networks" ? Promise.resolve(networks) : Promise.reject(new Error("no local network")),
   );
@@ -80,7 +90,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetPublicAddressReachabilityCache();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("PublicNetworks", () => {
@@ -107,5 +119,23 @@ describe("PublicNetworks", () => {
       expect(screen.queryByText("Rede Curitiba")).toBeNull();
       expect(screen.getByText("Rede São Paulo")).toBeTruthy();
     });
+  });
+
+  it("mostra a alcançabilidade atual do endereço publicado", async () => {
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("public-network-reachability-fingerprint-curitiba").getAttribute("data-reachability")).toBe("reachable");
+      expect(screen.getByTestId("public-network-reachability-fingerprint-sao-paulo").getAttribute("data-reachability")).toBe("unreachable");
+    });
+
+    expect(publicHealth).toHaveBeenCalledWith(
+      "https://curitiba.example/health",
+      expect.objectContaining({ mode: "no-cors" }),
+    );
   });
 });

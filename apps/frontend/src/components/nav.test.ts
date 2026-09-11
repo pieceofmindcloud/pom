@@ -96,14 +96,28 @@ describe("navForProfile", () => {
     ]);
   });
 
-  it("mantém a hierarquia de configurações e poda rotas aninhadas restritas", () => {
+  it("mantém Rede e Configurações como menus principais", () => {
     const settings = navForProfile("node").find((section) => section.labelKey === "nav.settings");
-    const network = settings?.children?.find((child) => child.labelKey === "nav.network");
+    const network = navForProfile("node").find((section) => section.labelKey === "nav.network");
     expect(network?.children?.map((child) => child.to)).toEqual([
       "/config/rede",
       "/config/rede/participantes",
+      "/config/administracao",
+      "/config/compartilhamento",
+      "/config/keys/api",
     ]);
-    expect(settings?.children?.map((child) => child.labelKey)).toContain("nav.administrativePreferences");
+    expect(network?.children?.map((child) => child.labelKey)).toEqual([
+      "nav.networkInfo",
+      "nav.networkParticipants",
+      "nav.administrators",
+      "nav.sharing",
+      "nav.apiKeys",
+    ]);
+    expect(settings?.children?.map((child) => child.to)).toEqual([
+      "/config/preferencias",
+      "/config/armazenamento",
+      "/config/preferencias/admin",
+    ]);
 
     const inferSettings = navForProfile("infer");
     expect(inferSettings.some((section) => section.labelKey === "nav.network")).toBe(true);
@@ -115,23 +129,20 @@ describe("navForProfile", () => {
       "nav.publicNetworks",
       "nav.networkChat",
       "nav.network",
-      // Ancorar a confiança precede a autoridade: o infer também recebe a
-      // âncora, então a tela não pode depender de um perfil.
-      "nav.trustAnchor",
     ]);
     expect(navFooterForProfile("infer").map((item) => [item.labelKey, item.to])).toEqual([
       ["nav.documentation", "/documentacao"],
-      ["nav.settings", "/config/keys/api"],
+      ["nav.settings", "/config/preferencias"],
     ]);
   });
 
-  it("oferece a raiz de confiança aos três perfis", () => {
+  it("oferece o compartilhamento aos três perfis", () => {
     for (const profile of ["admin", "node", "infer"] as const) {
       const destinos = navForProfile(profile).flatMap((section) => [
         section.to,
         ...(section.children ?? []).map((child) => child.to),
       ]);
-      expect(destinos).toContain("/config/confianca");
+      expect(destinos).toContain("/config/compartilhamento");
     }
   });
 

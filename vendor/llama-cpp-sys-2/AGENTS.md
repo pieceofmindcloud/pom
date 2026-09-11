@@ -12,8 +12,12 @@ repositório, e a pasta que ele aponta (`/llama.cpp/`) está no `.gitignore`. O
 `build.rs` detecta um symlink quebrado ou a representação textual que o Git
 usa no Windows e prepara automaticamente um clone raso da branch
 `pom-tensor-parallel` de `pereirajair/llama.cpp` antes de caminhar pelos
-arquivos nativos. O fork continua fora do histórico deste repositório e o
-script não altera arquivos dentro de um checkout já existente.
+arquivos nativos. Em Windows, ele remove o symlink ou arquivo-placeholder e
+instala o clone como um diretório real em `vendor/llama-cpp-sys-2/llama.cpp`;
+isso evita que o `WalkDir` dependa de um reparse point criado pelo checkout.
+Em Unix, o clone continua sendo instalado no destino relativo do symlink. O
+fork continua fora do histórico deste repositório e o script não altera
+arquivos dentro de um checkout já existente.
 
 Se o download automático falhar, o erro informa o comando completo para
 preparar `vendor/llama-cpp-sys-2/llama.cpp` manualmente. Também é possível usar

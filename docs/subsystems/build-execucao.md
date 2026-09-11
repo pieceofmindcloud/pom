@@ -455,11 +455,19 @@ livre é capturada antes do contexto seco, pois os buffers de estado recorrente
 são reais mesmo com `no_alloc=true`. O projeto não versiona o conteúdo apontado
 pelo symlink, então atualizar o fork é parte da atualização da dependência.
 
-No Windows o checkout pode materializar o symlink como um arquivo de texto. O
-`build.rs` reconhece essa forma e instala o clone diretamente no caminho que o
-Cargo lê (`<manifest_dir>/llama.cpp`). Se o clone não puder ser baixado, o erro
-lista o comando completo para a preparação manual, em vez de deixar o
-`NotFound` cru do `walkdir`.
+No Windows o checkout pode materializar o symlink como um arquivo de texto ou
+um reparse point. O `build.rs` não segue essa entrada: remove o placeholder e
+instala o clone diretamente no caminho que o Cargo lê
+(`<manifest_dir>/llama.cpp`). Isso deixa um diretório real para o `WalkDir` e
+evita `PermissionDenied` no entry de profundidade zero. Em Unix, o clone é
+instalado no destino relativo do symlink, preservando o layout versionado. Se
+o clone não puder ser baixado, o erro lista o comando completo para a
+preparação manual, em vez de deixar o `NotFound` cru do `walkdir`.
+
+Antes do build nativo, `release-windows.yml` compila e executa
+`vendor/llama-cpp-sys-2/src/build_support.rs` com o `rustc` do runner. Esse
+smoke test confirma no próprio Windows que um symlink versionado não vira a
+raiz percorrida pelo `WalkDir` e que o destino Unix continua preservado.
 
 ### Preparar um worktree local
 

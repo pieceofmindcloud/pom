@@ -1,12 +1,16 @@
 use std::env;
 use std::num::NonZeroUsize;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr as _;
 
 use cmake::Config;
 use glob::glob;
 use walkdir::DirEntry;
+
+#[path = "src/build_support.rs"]
+mod build_support;
+use build_support::{clone_destination, destination_can_be_replaced, source_can_be_used_directly};
 
 fn cuda_graphs_enabled(value: Option<&str>) -> bool {
     value.is_some_and(|value| {
@@ -19,30 +23,6 @@ fn cuda_graphs_enabled(value: Option<&str>) -> bool {
 
 const DEFAULT_LLAMA_CPP_REPOSITORY: &str = "https://github.com/pereirajair/llama.cpp.git";
 const DEFAULT_LLAMA_CPP_REF: &str = "pom-tensor-parallel";
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
-        }
-    }
-    normalized
-}
-
-fn clone_destination(manifest_dir: &Path, source: &Path, symlink_target: Option<&Path>) -> PathBuf {
-    let Some(target) = symlink_target else {
-        return source.to_path_buf();
-    };
-    let base = source.parent().unwrap_or(manifest_dir);
-    normalize_path(&base.join(target))
-}
 
 fn missing_llama_source_error(source: &Path) -> String {
     format!(
@@ -85,7 +65,14 @@ fn source_symlink_target(source: &Path) -> Result<Option<PathBuf>, String> {
 
 fn ensure_llama_source(manifest_dir: &Path) -> Result<PathBuf, String> {
     let source = manifest_dir.join("llama.cpp");
-    if source.join("ggml").is_dir() {
+    let symlink_target = source_symlink_target(&source)?;
+    // Windows checkouts may leave the versioned symlink as a reparse point or
+    // a text placeholder. WalkDir must receive a real directory on that host.
+    if source_can_be_used_directly(
+        source.join("ggml").is_dir(),
+        symlink_target.is_some(),
+        cfg!(windows),
+    ) {
         return Ok(source);
     }
 
@@ -112,9 +99,18 @@ fn ensure_llama_source(manifest_dir: &Path) -> Result<PathBuf, String> {
         ));
     }
 
-    let symlink_target = source_symlink_target(&source)?;
-    let destination = clone_destination(manifest_dir, &source, symlink_target.as_deref());
-    if destination.exists() && !destination.join("ggml").is_dir() {
+    let destination = clone_destination(
+        manifest_dir,
+        &source,
+        symlink_target.as_deref(),
+        cfg!(windows),
+    );
+    // A Windows placeholder at the versioned path is safe to replace; an
+    // incomplete checkout anywhere else must remain operator-managed.
+    if destination.exists()
+        && !destination.join("ggml").is_dir()
+        && !destination_can_be_replaced(&destination, &source, cfg!(windows))
+    {
         return Err(format!(
             "o caminho de llama.cpp em {} está incompleto: falta o diretório `ggml`.\n\
              Não será sobrescrito automaticamente. Remova esse checkout ou use\n\
@@ -195,13 +191,17 @@ fn ensure_llama_source(manifest_dir: &Path) -> Result<PathBuf, String> {
         ));
     }
 
-    if symlink_target.is_none() && source.exists() {
-        std::fs::remove_file(&source).map_err(|error| {
-            format!(
-                "não foi possível substituir o arquivo de symlink {}: {error}",
-                source.display()
-            )
-        })?;
+    if destination == source {
+        if let Ok(metadata) = std::fs::symlink_metadata(&source) {
+            if metadata.file_type().is_symlink() || metadata.is_file() {
+                std::fs::remove_file(&source).map_err(|error| {
+                    format!(
+                        "não foi possível substituir o arquivo de symlink {}: {error}",
+                        source.display()
+                    )
+                })?;
+            }
+        }
     }
     std::fs::rename(&temporary, &destination).map_err(|error| {
         let _ = std::fs::remove_dir_all(&temporary);
@@ -1694,8 +1694,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{clone_destination, cuda_graphs_enabled, missing_llama_source_error};
-    use std::path::Path;
+    use super::{cuda_graphs_enabled, missing_llama_source_error};
 
     #[test]
     fn cuda_graphs_are_opt_in() {
@@ -1704,17 +1703,6 @@ mod tests {
         assert!(!cuda_graphs_enabled(Some("off")));
         assert!(cuda_graphs_enabled(Some("1")));
         assert!(cuda_graphs_enabled(Some(" On ")));
-    }
-
-    #[test]
-    fn broken_symlink_clones_into_its_target() {
-        let manifest_dir = Path::new("/worktree/vendor/llama-cpp-sys-2");
-        let source = manifest_dir.join("llama.cpp");
-
-        assert_eq!(
-            clone_destination(manifest_dir, &source, Some(Path::new("../../llama.cpp"))),
-            Path::new("/worktree/llama.cpp")
-        );
     }
 
     #[test]

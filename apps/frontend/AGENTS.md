@@ -80,6 +80,10 @@ desenhado**, porque uma vista só não é uma escolha.
 
 - `/` -> Dashboard
 - `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens); `/network-chat` -> NetworkChat, página própria com o mesmo padrão visual do chat de IA, com cabeçalho full-bleed alinhado às outras telas e acompanhamento automático do fim do histórico
+- A Sidebar consulta o snapshot do Chat da rede em segundo plano para exibir
+  mensagens não lidas; abrir `/network-chat` marca o snapshot atual como lido.
+  No celular, a lista de usuários online permanece fechada até `Ver online` ser
+  acionado.
 - `/admin-ui/chat` -> Chat compacto para o painel nativo da barra de status do macOS; mantém somente a tela de chat, com layout `h-full min-h-0 overflow-hidden`, e o botão de janela maior só aparece quando o WebKit nativo fornece a ponte `pomOpenWindow`.
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels (busca,
   detalhes e downloads persistidos no nó); `/modelos/fatiar` -> SliceModels, que também

@@ -39,6 +39,7 @@ import type {
   Job,
   NodeInfo,
   NetworkInfoView,
+  NetworkChatSnapshot,
   GeoReferenceResponse,
   NetworkOffer,
   PathsResponse,
@@ -83,6 +84,7 @@ export const keys = {
   adminAuthority: ["admin-authority"] as const,
   trustAnchor: ["trust-anchor"] as const,
   networkInfo: ["network-info"] as const,
+  networkChat: ["network-chat"] as const,
   geoReference: ["geo-reference"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
@@ -227,6 +229,20 @@ export function useCluster() {
     queryKey: keys.cluster,
     queryFn: () => api.getConditional<ClusterView>("/api/ui/cluster", { auth: false }),
     refetchInterval: 5000,
+  });
+}
+
+/**
+ * Shared network-chat snapshot for the chat page and its navigation badge.
+ * Keeping one query source means a message received off the chat screen is
+ * visible to the menu without mounting the chat route.
+ */
+export function useNetworkChat() {
+  return useQuery({
+    queryKey: keys.networkChat,
+    queryFn: () => api.get<NetworkChatSnapshot>("/api/ui/network-chat"),
+    refetchInterval: 1200,
+    retry: false,
   });
 }
 

@@ -144,6 +144,11 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   renderiza o mesmo Chat sem o chrome administrativo. As duas superfícies
   exibem `ChatSurfaceTabs`, que permite alternar entre `/chat` e
   `/network-chat` nos dois sentidos.
+  A entrada `Chat da rede` mostra o número de mensagens recebidas desde a
+  última leitura e entrar na tela zera o badge. Em viewport mobile, os usuários
+  online começam ocultos e aparecem pelo botão `Ver online`. As abas IA/REDE
+  são a primeira faixa do conteúdo das duas telas de chat, acima do cabeçalho e
+  da conversa.
 - `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; e
   `/modelos/fatiar` -> SliceModels, com o painel de jobs e progresso de
   fatiamento embutido

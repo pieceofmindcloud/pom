@@ -28,6 +28,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `downloadNetworkChatFile` - fetches a persisted network-chat file only when
   the operator asks to download it, so regular history polling carries metadata
   but not repeated file bytes.
+- `networkChatUnread.ts` - mantém o marcador local do último snapshot lido,
+  conta apenas mensagens recebidas depois dele e expõe o hook de polling usado
+  pelo badge da Sidebar; abrir o Chat da rede grava o snapshot como lido.
 - `id.ts` - gera ids compactos no formato UUID sem depender de
   `crypto.randomUUID`, que não existe no contexto HTTP da LAN; usa
   `getRandomValues` quando disponível e mantém um fallback para ids não
@@ -103,6 +106,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   a libp2p probe as inference telemetry.
   `useInferenceHeads` polls the model head view every 15 s for every profile;
   this is a capability slice, not a general peer list.
+  `useNetworkChat` polls the authenticated network-chat snapshot so the Sidebar
+  can show unread messages while the chat route está desmontada.
   `useClusterLogs` lê o log de processo do principal, opcionalmente filtrado
   por `deploy_id`, e atualiza a consola a cada segundo.
   `useGeoReference` consulta `/api/ui/network/geo-reference` para preencher os

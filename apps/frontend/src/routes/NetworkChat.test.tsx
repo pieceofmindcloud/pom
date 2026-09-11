@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useCallback, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { NetworkChat } from "./NetworkChat";
@@ -17,6 +18,20 @@ vi.mock("../lib/api", () => ({
 vi.mock("../lib/queries", () => ({
   useNode: () => ({ data: { node_id: "node-local" } }),
   useCluster: () => ({ data: { peers: [{ node_id: "node-peer", short_id: "node-peer", node: { hostname: "salem" } }] } }),
+  useNetworkChat: () => {
+    const [data, setData] = useState<unknown>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const refetch = useCallback(async () => {
+      const next = await mocks.get();
+      setData(next);
+      setIsLoading(false);
+      return { data: next };
+    }, []);
+    useEffect(() => {
+      void refetch();
+    }, [refetch]);
+    return { data, isLoading, error: null, refetch };
+  },
 }));
 vi.mock("../lib/toast", () => ({
   useToast: () => mocks.toast,
@@ -99,8 +114,7 @@ describe("NetworkChat", () => {
         },
       ],
     };
-    mocks.get.mockReset();
-    mocks.get.mockResolvedValueOnce(enabledSnapshot).mockResolvedValue(nextSnapshot);
+    mocks.get.mockReset().mockResolvedValueOnce(enabledSnapshot).mockResolvedValue(nextSnapshot);
     mount();
 
     const messages = await screen.findByTestId("network-chat-messages");
@@ -151,5 +165,18 @@ describe("NetworkChat", () => {
 
     expect(await screen.findByText("Chat da rede está desligado")).toBeTruthy();
     expect(screen.queryByPlaceholderText("Escreva para a rede…")).toBeNull();
+  });
+
+  it("mantém os participantes ocultos no mobile até a pessoa pedir a lista", async () => {
+    mount();
+
+    const toggle = await screen.findByRole("button", { name: "Ver online" });
+    const participants = screen.getByRole("complementary").parentElement;
+    expect(participants?.className).toContain("hidden");
+
+    fireEvent.click(toggle);
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(participants?.className).toContain("block");
   });
 });

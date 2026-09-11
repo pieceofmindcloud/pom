@@ -217,15 +217,8 @@ export function Topbar() {
       </header>
 
       {/* Menu on narrow screens. The sidebar is the same component. */}
-      <AnimatePresence>
-        {drawer && (
-          <motion.div
-            className="fixed inset-0 z-50 lg:hidden"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-          >
+      {drawer && (
+        <div className="fixed inset-0 z-50 lg:hidden">
             <div
               className="absolute inset-0 bg-black/55 backdrop-blur-[2px]"
               onClick={() => setDrawer(false)}
@@ -246,9 +239,8 @@ export function Topbar() {
               </button>
               <SidebarContent onNavigate={() => setDrawer(false)} />
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+        </div>
+      )}
     </>
   );
 }

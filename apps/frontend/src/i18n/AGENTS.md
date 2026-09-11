@@ -111,9 +111,9 @@ Chat capability read is refused or cannot be completed. It must not be replaced
 with the incomplete or empty-coverage message.
 
 The `networkChat.*` messages cover the separate Network chat surface, including
-the disabled state, participants, files and typing indicator. They must remain
-paired in both CSV locale columns because this route is reachable from the same
-AI chat shell.
+the disabled state, participants, files, typing indicator, mobile online-list
+toggle and unread badge. They must remain paired in both CSV locale columns
+because this route is reachable from the same AI chat shell.
 
 As chaves `network.networkInfo*`, `network.share*`, `network.publicName*`,
 `network.visibility*`, `network.access*` e os campos geográficos cobrem a tela

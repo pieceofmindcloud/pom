@@ -85,6 +85,7 @@ vi.mock("../lib/queries", () => ({
   useAdminSurface: () => ({ data: "available", isLoading: false, isError: false }),
   useNode: () => ({ data: nodeData, isLoading: false, isError: false }),
   useCluster: () => ({ data: chatScenario.cluster }),
+  useNetworkChat: () => ({ data: { messages: [] }, isSuccess: true }),
   useChatCapabilities: () => ({ data: chatScenario.capabilities }),
   useInvalidate: () => vi.fn(),
   useServableModels: () => ({ data: [{ id: "qwen" }] }),

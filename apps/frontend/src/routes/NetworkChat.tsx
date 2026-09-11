@@ -2,17 +2,17 @@ import { Download, FileUp, Send, Users, Wifi, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatSurfaceTabs } from "../components/ChatSurfaceTabs";
 import { Button, Empty, Input, PageHeader } from "../components/ui";
-import { api, downloadNetworkChatFile, postNetworkChat } from "../lib/api";
+import { downloadNetworkChatFile, postNetworkChat } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
 import { randomId } from "../lib/id";
-import { useCluster, useNode } from "../lib/queries";
+import { useCluster, useNetworkChat, useNode } from "../lib/queries";
+import { markNetworkChatRead } from "../lib/networkChatUnread";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import type {
   NetworkChatEvent,
   NetworkChatParticipant,
   NetworkChatRequest,
-  NetworkChatSnapshot,
 } from "../lib/types";
 
 const ROOM_ID = "network";
@@ -133,8 +133,9 @@ export function NetworkChat() {
   const node = useNode();
   const cluster = useCluster();
   const toast = useToast();
+  const networkChat = useNetworkChat();
   const localNodeId = node.data?.node_id ?? "";
-  const [snapshot, setSnapshot] = useState<NetworkChatSnapshot | null>(null);
+  const snapshot = networkChat.data ?? null;
   const nodeName = useMemo(() => {
     const names = new Map<string, string>();
     for (const peer of cluster.data?.peers ?? []) {
@@ -149,29 +150,25 @@ export function NetworkChat() {
     return (id: string) => names.get(id) || shortNodeId(id);
   }, [cluster.data?.peers, localNodeId, node.data?.hostname, snapshot?.participants]);
   const [draft, setDraft] = useState("");
-  const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [showParticipants, setShowParticipants] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const autoFollow = useRef(true);
   const typingTimer = useRef<number | undefined>(undefined);
   const typingActive = useRef(false);
 
+  useEffect(() => {
+    if (networkChat.error) toast.fromError(t("networkChat.loadFailed"), networkChat.error);
+  }, [networkChat.error, t, toast]);
+
   const refresh = useCallback(async () => {
-    try {
-      setSnapshot(await api.get<NetworkChatSnapshot>("/api/ui/network-chat"));
-    } catch (error) {
-      toast.fromError(t("networkChat.loadFailed"), error);
-    } finally {
-      setLoading(false);
-    }
-  }, [t, toast]);
+    await networkChat.refetch();
+  }, [networkChat.refetch]);
 
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 1200);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+    if (snapshot?.messages.length) markNetworkChatRead(snapshot.messages);
+  }, [snapshot?.messages]);
 
   useEffect(() => () => {
     if (typingTimer.current !== undefined) window.clearTimeout(typingTimer.current);
@@ -263,7 +260,7 @@ export function NetworkChat() {
     }
   }, [latestMessageId, messages.length]);
 
-  if (loading && !snapshot) {
+  if (networkChat.isLoading && !snapshot) {
     return (
       <div className="flex h-full min-h-0 flex-col bg-ink">
         <ChatSurfaceTabs />
@@ -298,7 +295,22 @@ export function NetworkChat() {
       <PageHeader
         title={t("networkChat.title")}
         subtitle={t("networkChat.subtitle")}
-        actions={<span className="inline-flex items-center gap-1.5 rounded-full border border-aqua/30 bg-aqua/10 px-2.5 py-1 text-xs text-aqua"><Wifi className="h-3.5 w-3.5" />{t("networkChat.online")}</span>}
+        actions={(
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-aqua/30 bg-aqua/10 px-2.5 py-1 text-xs text-aqua">
+              <Wifi className="h-3.5 w-3.5" />{t("networkChat.online")}
+            </span>
+            <button
+              type="button"
+              aria-expanded={showParticipants}
+              onClick={() => setShowParticipants((visible) => !visible)}
+              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-raised px-2.5 py-1 text-xs text-muted transition-colors hover:border-line-strong hover:text-fg lg:hidden"
+            >
+              <Users className="h-3.5 w-3.5" />
+              {showParticipants ? t("networkChat.hideOnline") : t("networkChat.showOnline")}
+            </button>
+          </div>
+        )}
         className="!mb-0 shrink-0 border-b border-line bg-surface/75 px-3 py-3 sm:px-4"
       />
       <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_15rem]">
@@ -335,7 +347,9 @@ export function NetworkChat() {
             <p className="mt-2 text-[0.68rem] text-faint">{t("networkChat.hint")}</p>
           </div>
         </div>
-        <ParticipantList participants={snapshot?.participants ?? []} nodeName={nodeName} />
+        <div className={showParticipants ? "block lg:block" : "hidden lg:block"}>
+          <ParticipantList participants={snapshot?.participants ?? []} nodeName={nodeName} />
+        </div>
       </div>
     </div>
   );

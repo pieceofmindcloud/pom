@@ -10,6 +10,7 @@ import { navFooterForProfile, navForProfile, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
 import { useProfile } from "../lib/profile";
 import { useOptionalChatSessionController } from "../lib/chatStore";
+import { useNetworkChatUnread } from "../lib/networkChatUnread";
 import { useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
 import { TlsChip } from "./TlsIndicator";
@@ -162,6 +163,23 @@ function leafHoldsPath(leaf: NonNullable<NavSection["children"]>[number], pathna
     || (leaf.children ?? []).some((child) => leafHoldsPath(child, pathname));
 }
 
+function UnreadBadge({ count, compact = false }: { count: number; compact?: boolean }) {
+  const { t } = useI18n();
+  if (count < 1) return null;
+  return (
+    <span
+      data-testid="network-chat-unread"
+      aria-label={t("networkChat.unread", { count })}
+      className={clsx(
+        "shrink-0 rounded-full bg-iris px-1.5 text-center text-[0.65rem] font-semibold leading-5 text-ink",
+        compact ? "absolute -right-1 -top-1 min-w-4 leading-4" : "ml-auto min-w-5",
+      )}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
 function sectionHoldsPath(section: NavSection, pathname: string) {
   return (section.to ? pathname === section.to || pathname.startsWith(`${section.to}/`) : false)
     || (section.children ?? []).some((child) => leafHoldsPath(child, pathname));
@@ -250,9 +268,11 @@ function FlyoutLeaf({
 function CollapsedSection({
   section,
   onNavigate,
+  badge,
 }: {
   section: NavSection;
   onNavigate?: () => void;
+  badge?: number;
 }) {
   const { t } = useI18n();
   const { pathname } = useLocation();
@@ -278,6 +298,7 @@ function CollapsedSection({
               />
             )}
             <Icon className={clsx("relative h-[1.05rem] w-[1.05rem]", isActive && "text-iris")} />
+            <UnreadBadge count={badge ?? 0} compact />
           </span>
         )}
       </NavLink>
@@ -318,10 +339,12 @@ function Section({
   section,
   onNavigate,
   collapsed,
+  badge,
 }: {
   section: NavSection;
   onNavigate?: () => void;
   collapsed: boolean;
+  badge?: number;
 }) {
   const { t } = useI18n();
   const { pathname } = useLocation();
@@ -333,7 +356,7 @@ function Section({
   const expanded = open || holdsPath;
   const Icon = section.icon;
 
-  if (collapsed) return <CollapsedSection section={section} onNavigate={onNavigate} />;
+  if (collapsed) return <CollapsedSection section={section} onNavigate={onNavigate} badge={badge} />;
 
   if (section.to) {
     return (
@@ -357,6 +380,7 @@ function Section({
               className={clsx("relative h-[1.05rem] w-[1.05rem] shrink-0", isActive && "text-iris")}
             />
             <span className="relative truncate">{t(section.labelKey)}</span>
+            <UnreadBadge count={badge ?? 0} />
           </span>
         )}
       </NavLink>
@@ -410,9 +434,11 @@ function Section({
 function InferenceMainMenu({
   onNavigate,
   collapsed,
+  unreadCount,
 }: {
   onNavigate?: () => void;
   collapsed: boolean;
+  unreadCount: number;
 }) {
   const { session, sessions, selectSession, startNew, deleteSession } =
     useOptionalChatSessionController() ?? {
@@ -470,6 +496,7 @@ function InferenceMainMenu({
             section={section}
             onNavigate={onNavigate}
             collapsed={collapsed}
+            badge={section.to === "/network-chat" ? unreadCount : undefined}
           />
         ))}
       </div>
@@ -489,11 +516,12 @@ export function SidebarContent({
   // O menu segue o perfil: o que este perfil não abre também não é oferecido.
   // Ver `navForProfile` e a tabela em `lib/access.ts`.
   const { profile } = useProfile();
+  const { unreadCount } = useNetworkChatUnread(false);
   return (
     <>
       <SidebarBrand collapsed={collapsed} onToggle={onToggle} />
       {profile === "infer" ? (
-        <InferenceMainMenu onNavigate={onNavigate} collapsed={collapsed} />
+        <InferenceMainMenu onNavigate={onNavigate} collapsed={collapsed} unreadCount={unreadCount} />
       ) : (
         /* O menu existente permanece intocado para administrador e node. */
         <nav
@@ -503,7 +531,13 @@ export function SidebarContent({
           )}
         >
           {navForProfile(profile).map((s) => (
-            <Section key={s.labelKey} section={s} onNavigate={onNavigate} collapsed={collapsed} />
+            <Section
+              key={s.labelKey}
+              section={s}
+              onNavigate={onNavigate}
+              collapsed={collapsed}
+              badge={s.to === "/network-chat" ? unreadCount : undefined}
+            />
           ))}
         </nav>
       )}

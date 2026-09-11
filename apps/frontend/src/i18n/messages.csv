@@ -1205,6 +1205,7 @@ networkChat.emptyDetail,Start a conversation with the participants in this netwo
 networkChat.emptyTitle,No messages yet,Nenhuma mensagem ainda
 networkChat.fileLimit,"Files are limited to 8 MiB.","Arquivos são limitados a 8 MiB."
 networkChat.fileTooLarge,File is too large,Arquivo grande demais
+networkChat.hideOnline,Hide online,Ocultar online
 networkChat.hint,"Enter sends. Files are sent through the libp2p network.","Enter envia. Arquivos são enviados pela rede libp2p."
 networkChat.loadFailed,Could not load the network chat,Não foi possível carregar o Chat da rede
 networkChat.loading,Loading network chat,Carregando o Chat da rede
@@ -1215,9 +1216,11 @@ networkChat.participants,{count} online,{count} online
 networkChat.placeholder,Write to the network…,Escreva para a rede…
 networkChat.send,Send,Enviar
 networkChat.sendFailed,Could not send the network chat action,Não foi possível enviar a ação do Chat da rede
+networkChat.showOnline,See online,Ver online
 networkChat.subtitle,Conversation between the nodes,Conversa entre os nós
 networkChat.title,Network chat,Chat da rede
 networkChat.typing,{node} is typing…,{node} está digitando…
+networkChat.unread,{count} unread network chat messages,{count} mensagens não lidas no Chat da rede
 notFound.back,Back to dashboard,Voltar ao painel
 notFound.detail,The address does not match any screen in this app.,O endereço digitado não corresponde a nenhuma tela deste aplicativo.
 notFound.title,This page does not exist,Esta tela não existe

@@ -107,7 +107,10 @@ Per-file list:
   secure-context-only `crypto.randomUUID` API. The message viewport follows new
   messages while it is near the bottom, and the page uses the full-bleed
   `PageHeader` pattern instead of a rounded outer panel. Também renderiza
-  `ChatSurfaceTabs`, que retorna ao Chat de IA sem depender da Sidebar.
+  `ChatSurfaceTabs`, que retorna ao Chat de IA sem depender da Sidebar. No
+  celular, participantes ficam ocultos até o botão `Ver online` ser acionado;
+  a entrada da Sidebar recebe o contador de mensagens não lidas e a abertura
+  da rota marca o snapshot atual como lido.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG

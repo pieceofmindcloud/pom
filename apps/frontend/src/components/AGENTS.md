@@ -127,7 +127,8 @@ Per-file list:
   acessível e no tooltip.
 - `ChatSurfaceTabs.tsx` - abas de rota compartilhadas por `Chat` e
   `NetworkChat`. Mantém `/chat` e `/network-chat` acessíveis nos dois sentidos,
-  com o estado ativo derivado do pathname.
+  com o estado ativo derivado do pathname; é a primeira faixa visual das duas
+  telas, antes do cabeçalho e do conteúdo rolável.
 - `nav.ts` - `NAV`: the menu as data. A seção Implantações usa `Rocket` (era
   `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e Logs possui
   folhas separadas para requisições e implantação; Network Chat é uma entrada
@@ -179,6 +180,8 @@ Per-file list:
   API keys, enquanto a coluna principal é substituída por `ChatSessionList` e
   o link da rede. O histórico mantém o botão de nova conversa e a rede fora da
   área rolável, para uma lista longa não empurrar nenhuma ação para fora.
+  A entrada `Chat da rede` mostra o contador de mensagens recebidas desde o
+  último marcador local de leitura; abrir a tela do chat atualiza esse marcador.
   Como esse menu é visto de toda rota, escolher uma conversa ou começar uma
   nova também **navega para `/chat`**: sem isso, o clique feito das
   configurações ou da documentação só trocava a sessão ativa e deixava a tela
@@ -196,7 +199,9 @@ Per-file list:
   coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela
   maior, the bell (`Notifications`) and `NodeActions` for unloading this
   node's slice. Mobile drawer renders `SidebarContent` inside an animated
-  panel. A ação de sair da rede não fica exposta no menu.
+  panel whose fixed backdrop unmounts synchronously when navigation closes it,
+  so an invisible exit layer never blocks the next hamburger click. A ação de
+  sair da rede não fica exposta no menu.
 - `Notifications.tsx` — The activity bell: counts running slicing jobs
   (`useJobs`), transfers worth notifying (`useTransfers` +
   `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars

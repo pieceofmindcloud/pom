@@ -188,9 +188,9 @@ Per-file list:
   `../components/{LayerRibbon,PipelineRail,PeerDetailCard,UndeployPipeline,AddNodeDialog,ModelNetworkCanvas,ui}`,
   `../lib/api`, `../lib/networkPeers`, `../lib/queries`, `../lib/types`
   (`PeerView`, `DeployPlan`). The per-machine actions that used to live here
-  moved to `PeerDetailCard`: update-and-restart (`UpdateNode`, dev-only when the
-  peer advertises `dev_update`), `RemoveNode` (out of the model, only when
-  serving a slice) and `LeaveNode` (out of the whole network, always). Next to
+  moved to `PeerDetailCard`: `RemoveNode` (out of the model, only when serving
+  a slice) and `LeaveNode` (out of the whole network, always). The
+  development-only update-and-restart action is not rendered in the card. Next to
   "Adicionar nó" there is a `UndeployPipeline` button for an administrator
   when a model is live - `undeployTargets` is the list the confirmation shows
   (peers on `group` with `total_layers > 0`, sorted by start layer); the node

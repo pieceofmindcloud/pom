@@ -23,6 +23,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   cobrem `unloadIfIdle`, minutos de ociosidade e o status `idle`. Os filtros de
   Redes públicas e Estatísticas mantêm as opções e rótulos em inglês e pt-BR
   aqui, sem strings hard-coded nas rotas.
+  As métricas do card de máquina usam aqui os rótulos de GPUs, uso e potência
+  para manter o detalhe disponível nas duas línguas.
 - O grupo `adminAuthority.*` cobre a tela do principal e as vistas somente
   leitura de admins secundários e nós: roster, cadeia de promoções, sucessor,
   recusas concretas, confirmações e resultado das ações. O grupo

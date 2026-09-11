@@ -9,7 +9,7 @@ describe("networkStats", () => {
       node: fakeNode({
         node_id: "a",
         system: fakeSystem({
-          gpus: [{ index: 0, name: "GPU A", vendor: "nvidia", vram_total_mb: 8192, vram_used_mb: 0, vram_used_pct: 0, utilization_pct: 0, temperature_c: 50 }],
+          gpus: [{ index: 0, name: "GPU A", vendor: "nvidia", vram_total_mb: 8192, vram_used_mb: 0, vram_used_pct: 0, utilization_pct: 0, power_watts: null, temperature_c: 50 }],
         }),
       }),
     });
@@ -19,7 +19,7 @@ describe("networkStats", () => {
       node: fakeNode({
         node_id: "b",
         system: fakeSystem({
-          gpus: [{ index: 0, name: "GPU B", vendor: "nvidia", vram_total_mb: 4096, vram_used_mb: 0, vram_used_pct: 0, utilization_pct: 0, temperature_c: 50 }],
+          gpus: [{ index: 0, name: "GPU B", vendor: "nvidia", vram_total_mb: 4096, vram_used_mb: 0, vram_used_pct: 0, utilization_pct: 0, power_watts: null, temperature_c: 50 }],
         }),
       }),
     });

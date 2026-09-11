@@ -80,7 +80,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   o card em miniatura do Fluxo mostra - antes ele lia só `gpus[0]` e metade do
   hardware de uma caixa com duas placas sumia da tela. Testes em `gpu.test.ts`.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
-- `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
+- `networkLayout.ts` - posições dos nós do canvas persistidas por impressão
+  digital da implantação; `CARD_HEIGHT` mantém a altura reduzida do card
+  compacto sincronizada com seus medidores agrupados.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
 - `networkStats.ts` - agrega somente dados presentes no `ClusterView`: nós,
   RTT médio, VRAM conhecida e modelos servidos. Cada métrica permanece nula
@@ -174,6 +176,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   complete deployed route and its aggregate network RTT for the Dashboard's
   Gateway card. The observed cost is optional because an asynchronous return
   callback may not expose a sender-side RTT.
+  `GpuStat.power_watts` é telemetria opcional: o card de detalhes mostra o
+  valor quando NVIDIA ou AMD expõe a potência da placa e mantém desconhecido
+  quando não há essa leitura.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

@@ -63,8 +63,12 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   injetada por `node` (`sysmon::set_disk_root`). Cada família de GPU tem a
   própria leitura - `nvidia-smi`, sysfs do `amdgpu` + `/proc/<pid>/fdinfo`, e
   `ioreg -c AGXAccelerator` no Apple Silicon -, e o que uma plataforma não
-  informa fica `None` em vez de virar zero. `disk` é o volume do projeto;
-  `disks` é toda partição montada. Detalhe por plataforma em
+  informa fica `None` em vez de virar zero. NVIDIA e AMD também publicam
+  `power_watts` quando o driver oferece a leitura no mesmo caminho da GPU;
+  Apple continua explicitamente sem esse dado. Montagens de infraestrutura do
+  macOS e equivalentes (`/boot/efi`, `/boot`, `/efi`) são retiradas de `disks`,
+  enquanto volumes de dados permanecem. `disk` é o volume do projeto;
+  `disks` é toda partição montada relevante. Detalhe por plataforma em
   `docs/subsystems/operacao.md` ("Monitor de carga").
 - `lib.rs` - re-exporta `KvCacheType`, `DEFAULT_FIT_MEMORY_MARGIN_MB` e
   `llama_cpp_sys_2` (para `node` alcançar a FFI crua sem redeclarar a dep).

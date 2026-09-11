@@ -395,8 +395,11 @@ dashboard.faOnAuto,on (auto),ligado (auto)
 dashboard.file,File,Arquivo
 dashboard.flow,Flow,Fluxo
 dashboard.free,free,livres
+dashboard.gpuPower,Power,Potência
 dashboard.gpuProcesses,GPU processes,Processos na GPU
 dashboard.gpuTemperature,"GPU temperature{__truthy_label, select, false {} other { · {label}}}","Temperatura da GPU{__truthy_label, select, false {} other { · {label}}}"
+dashboard.gpuUsage,Usage,Uso
+dashboard.gpus,GPUs,GPUs
 dashboard.groupDeployed,In the active deployment,Na implantação ativa
 dashboard.groupDeployedDetail,"In pipeline order, serving {model}.","Na ordem do pipeline, servindo {model}."
 dashboard.groupOutside,Elsewhere on the network,No resto da rede

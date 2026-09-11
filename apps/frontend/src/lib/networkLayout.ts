@@ -33,7 +33,7 @@ export function deploymentLayoutKey(model: string, peers: DeploymentPeer[]) {
 
 /** Medidas do card em `ModelNetworkCanvas`. Mudou lá, muda aqui. */
 export const CARD_WIDTH = 264;
-export const CARD_HEIGHT = 228;
+export const CARD_HEIGHT = 204;
 export const GATEWAY_WIDTH = 196;
 export const GATEWAY_HEIGHT = 132;
 const GAP_X = 92;

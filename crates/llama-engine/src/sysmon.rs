@@ -126,6 +126,8 @@ pub struct GpuStat {
     pub vram_used_pct: Option<f64>,
     /// GPU core utilisation, when the platform reports it.
     pub utilization_pct: Option<f64>,
+    /// Board power draw, when the platform reports it.
+    pub power_watts: Option<f64>,
     pub temperature_c: Option<f64>,
 }
 
@@ -328,6 +330,32 @@ const PSEUDO_FILESYSTEMS: &[&str] = &[
     "devfs", "devtmpfs", "tmpfs", "overlay", "squashfs", "efivarfs", "udev", "none", "map", "shm",
 ];
 
+/// Montagens de infraestrutura não são discos úteis para quem opera o POM.
+///
+/// A lista é aplicada à saída comum de `df` para Linux e macOS. Volumes de
+/// dados continuam visíveis, incluindo `/System/Volumes/Data`; no Windows a
+/// enumeração segue limitada ao volume do projeto pelo caminho nativo.
+fn is_user_data_mount(mount_point: &str) -> bool {
+    let mount = mount_point.trim_end_matches('/').to_ascii_lowercase();
+    if mount == "/boot" || mount == "/efi" || mount == "/boot/efi" {
+        return false;
+    }
+    if mount.starts_with("/boot/efi/") || mount.starts_with("/efi/") {
+        return false;
+    }
+    if let Some(suffix) = mount.strip_prefix("/system/volumes/") {
+        return suffix == "data";
+    }
+    if let Some(suffix) = mount.strip_prefix("/volumes/") {
+        let volume = suffix.split('/').next().unwrap_or_default();
+        return !matches!(
+            volume,
+            "preboot" | "vm" | "recovery" | "update" | "hardware" | "iscpreboot" | "xarts"
+        );
+    }
+    true
+}
+
 /// Uma linha do `df -k -P`, lida da direita para a esquerda.
 ///
 /// Da direita porque só o **fim** da linha tem posição garantida: o POSIX fixa
@@ -371,6 +399,9 @@ fn parse_df_all(output: &str) -> Vec<DiskStat> {
         }
         let head = disk.device.split_whitespace().next().unwrap_or_default();
         if PSEUDO_FILESYSTEMS.contains(&head) {
+            continue;
+        }
+        if !is_user_data_mount(&disk.mount_point) {
             continue;
         }
         if out.iter().any(|seen| seen.mount_point == disk.mount_point) {
@@ -667,6 +698,7 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
                     vram_used_mb: stats.in_use_memory_mb,
                     vram_used_pct: None,
                     utilization_pct: stats.utilization_pct,
+                    power_watts: None,
                     temperature_c: None,
                 }],
                 Vec::new(),
@@ -744,7 +776,7 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
     let out = command_output(
         "nvidia-smi",
         vec![
-            "--query-gpu=index,name,pci.bus_id,memory.total,memory.used,utilization.gpu,temperature.gpu".into(),
+            "--query-gpu=index,name,pci.bus_id,memory.total,memory.used,utilization.gpu,temperature.gpu,power.draw".into(),
             "--format=csv,noheader,nounits".into(),
         ],
     )
@@ -756,7 +788,7 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
     let mut gpus = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let f: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-        if f.len() < 7 {
+        if f.len() < 8 {
             continue;
         }
         let total: f64 = f[3].parse().unwrap_or(0.0);
@@ -774,6 +806,7 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
                 None
             },
             utilization_pct: f[5].parse().ok(),
+            power_watts: f[7].parse().ok(),
             temperature_c: f[6].parse().ok(),
         });
     }
@@ -899,6 +932,7 @@ async fn amd_sysfs(
             utilization_pct: read(dev.join("gpu_busy_percent"))
                 .await
                 .and_then(|v| v.parse::<f64>().ok()),
+            power_watts: amd_power_watts(&dev).await,
             temperature_c: amd_temperature(&dev).await,
         });
     }
@@ -1021,6 +1055,26 @@ async fn amd_temperature(device: &std::path::Path) -> Option<f64> {
         if let Ok(raw) = tokio::fs::read_to_string(entry.path().join("temp1_input")).await {
             if let Ok(milli) = raw.trim().parse::<f64>() {
                 return Some(milli / 1000.0);
+            }
+        }
+    }
+    None
+}
+
+/// Consumo da placa AMD no mesmo hwmon que publica a temperatura.
+///
+/// O driver costuma expor `power1_average` em microwatts, mas algumas versões
+/// só oferecem `power1_input`. Se nenhuma existir, o painel mantém o consumo
+/// desconhecido em vez de tratar uma leitura ausente como zero.
+#[cfg(target_os = "linux")]
+async fn amd_power_watts(device: &std::path::Path) -> Option<f64> {
+    let mut hwmon = tokio::fs::read_dir(device.join("hwmon")).await.ok()?;
+    while let Ok(Some(entry)) = hwmon.next_entry().await {
+        for field in ["power1_average", "power1_input"] {
+            if let Ok(raw) = tokio::fs::read_to_string(entry.path().join(field)).await {
+                if let Ok(microwatts) = raw.trim().parse::<f64>() {
+                    return Some(microwatts / 1_000_000.0);
+                }
             }
         }
     }
@@ -1527,6 +1581,7 @@ mod gpu_selection_tests {
             vram_used_mb: None,
             vram_used_pct: None,
             utilization_pct: None,
+            power_watts: None,
             temperature_c: None,
         }
     }
@@ -1712,6 +1767,10 @@ mod gpu_selection_tests {
              /dev/nvme0n1p2 500000 100000 400000 20% /\n\
              devfs 0 0 0 100% /dev\n\
              tmpfs 16000 0 16000 0% /dev/shm\n\
+             /dev/disk3s1s2 500000 100000 400000 20% /System/Volumes/Preboot\n\
+             /dev/disk3s1s3 500000 100000 400000 20% /System/Volumes/VM\n\
+             /dev/disk3s1s4 500000 100000 400000 20% /System/Volumes/Update/mnt1\n\
+             /dev/nvme0n1p1 500000 100000 400000 20% /boot/efi\n\
              /dev/sda1 2000000 1000000 1000000 50% /dados\n\
              /dev/sda1 2000000 1000000 1000000 50% /dados\n";
         let disks = parse_df_all(saida);
@@ -1723,6 +1782,14 @@ mod gpu_selection_tests {
             vec!["/", "/dados"]
         );
         assert_eq!(disks[1].device, "/dev/sda1");
+    }
+
+    #[test]
+    fn monta_de_dados_do_macos_continua_visivel() {
+        assert!(is_user_data_mount("/System/Volumes/Data"));
+        assert!(is_user_data_mount("/Volumes/External"));
+        assert!(!is_user_data_mount("/System/Volumes/iSCPreboot"));
+        assert!(!is_user_data_mount("/Volumes/Recovery"));
     }
 
     /// A GPU da Apple não tem VRAM para medir, mas publica uso e memória em

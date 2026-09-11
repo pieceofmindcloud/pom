@@ -636,6 +636,7 @@ mod capacity_preview_tests {
             vram_used_mb: Some(used_mb),
             vram_used_pct: None,
             utilization_pct: None,
+            power_watts: None,
             temperature_c: None,
         }
     }

@@ -233,6 +233,7 @@ describe("ModelNetworkCanvas: temperatura", () => {
             vram_used_mb: null,
             vram_used_pct: null,
             utilization_pct: null,
+            power_watts: null,
             temperature_c: null,
           }],
         },
@@ -495,8 +496,8 @@ describe("ModelNetworkCanvas: máquina com mais de uma GPU", () => {
         system: fakeSystem({
           gpu_kind: "nvidia",
           gpus: [
-            { index: 0, name: "RTX 5090", vendor: "nvidia", vram_total_mb: 32768, vram_used_mb: 8192, vram_used_pct: 25, utilization_pct: 30, temperature_c: 61 },
-            { index: 1, name: "RTX 3090", vendor: "nvidia", vram_total_mb: 24576, vram_used_mb: 4096, vram_used_pct: 16, utilization_pct: 10, temperature_c: 78 },
+            { index: 0, name: "RTX 5090", vendor: "nvidia", vram_total_mb: 32768, vram_used_mb: 8192, vram_used_pct: 25, utilization_pct: 30, power_watts: null, temperature_c: 61 },
+            { index: 1, name: "RTX 3090", vendor: "nvidia", vram_total_mb: 24576, vram_used_mb: 4096, vram_used_pct: 16, utilization_pct: 10, power_watts: null, temperature_c: 78 },
           ],
         }),
       }),
@@ -516,5 +517,54 @@ describe("ModelNetworkCanvas: máquina com mais de uma GPU", () => {
     expect(screen.getByText(/78,0 °C/)).toBeTruthy();
     expect(screen.getByText("RTX 5090")).toBeTruthy();
     expect(screen.getByText("RTX 3090")).toBeTruthy();
+  });
+});
+
+describe("ModelNetworkCanvas: arrumação do card menor", () => {
+  afterEach(cleanup);
+
+  it("agrupa memória, carga e VRAM antes das linhas de GPU", () => {
+    const view = fakeCluster([
+      fakeSlicePeer("compact", 0, 15, {
+        load: 2,
+        node: fakeNode({
+          node_id: "compact",
+          short_id: "compact",
+          hostname: "compact-node",
+          status: { state: "ready", detail: "servindo", reported_gpu_layers: 16 } as never,
+          system: fakeSystem({
+            gpu_kind: "nvidia",
+            gpus: [{
+              index: 0,
+              name: "RTX A",
+              vendor: "nvidia",
+              vram_total_mb: 8192,
+              vram_used_mb: 2048,
+              vram_used_pct: 25,
+              utilization_pct: 30,
+              temperature_c: 61,
+              power_watts: 250,
+            } as never],
+          }),
+        }),
+      }),
+    ]);
+
+    const { container } = mount(view);
+    const card = container.querySelector("h3")?.closest("article") as HTMLElement;
+    const meters = screen.getByTestId("machine-meter-group");
+    const memory = screen.getByText("Memória");
+    const load = screen.getByText("Carga");
+    const gpu = screen.getByText(/61,0 °C/);
+    const status = screen.getByTestId("machine-status");
+    const layers = screen.getByTestId("machine-layers");
+
+    expect(meters.querySelectorAll('[aria-label]')).toHaveLength(3);
+    expect(memory.compareDocumentPosition(load) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(load.compareDocumentPosition(gpu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(status.parentElement).toBe(layers.parentElement);
+    expect(status.compareDocumentPosition(layers) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(layers.className).toContain("text-[9px]");
+    expect(card.className).toContain("p-3");
   });
 });

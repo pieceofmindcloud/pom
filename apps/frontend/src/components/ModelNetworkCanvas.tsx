@@ -65,7 +65,7 @@ function Meter({ label, used, total, unknown = false, detail }: { label: string;
   const percent = used != null && total != null && total > 0 ? Math.min(100, (used / total) * 100) : null;
   const tone = percent != null && percent >= 90 ? "bg-rose" : percent != null && percent >= 70 ? "bg-amber" : "bg-aqua";
   const value = detail ?? (unknown || percent == null ? t("canvas.meterUnknown") : `${used!.toFixed(1)} / ${total!.toFixed(1)} GiB`);
-  return <div className="mt-2">
+  return <div>
     <div className="mb-1 flex justify-between gap-2 text-[9px] uppercase tracking-[0.12em] text-faint"><span>{label}</span><span className="normal-case tracking-normal text-muted">{value}</span></div>
     <div className={clsx("h-1.5 overflow-hidden rounded-full bg-line", (unknown || percent == null) && "bg-[repeating-linear-gradient(135deg,transparent_0,transparent_4px,rgba(124,135,165,.3)_4px,rgba(124,135,165,.3)_6px)]")} aria-label={`${label}: ${value}`}>
       {percent != null && <div className={clsx("h-full rounded-full", tone)} style={{ width: `${percent}%` }} />}
@@ -157,20 +157,26 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
     onDoubleClick={(event) => { if (onOpen && !isControlTarget(event.target)) onOpen(); }}
     /* Sem detalhe a abrir, o card não anuncia um duplo clique que não acontece. */
     title={onOpen ? t("canvas.openDetails") : undefined}
-    className={clsx("absolute select-none rounded-xl border bg-ink/95 p-3.5 shadow-panel backdrop-blur transition-[box-shadow,border-color]", dragging ? "cursor-grabbing border-iris shadow-lift" : "cursor-grab border-line-strong hover:border-iris/55 hover:shadow-lift", unread && "opacity-75")}
+    className={clsx("absolute select-none rounded-xl border bg-ink/95 p-3 shadow-panel backdrop-blur transition-[box-shadow,border-color]", dragging ? "cursor-grabbing border-iris shadow-lift" : "cursor-grab border-line-strong hover:border-iris/55 hover:shadow-lift", unread && "opacity-75")}
     style={{ left: position.left, top: position.top, width: CARD_WIDTH, minHeight: CARD_HEIGHT, touchAction: "none" }}
   >
-    <div className="absolute inset-x-3.5 top-0 h-px bg-iris/70" />
+    <div className="absolute inset-x-3 top-0 h-px bg-iris/70" />
     <div className="flex items-start justify-between gap-3">
       <div className="flex min-w-0 items-center gap-2">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-raised"><MachineIcon system={system} size="sm" /></span>
         <div className="min-w-0"><h3 className="truncate text-sm font-semibold text-fg">{hostname}</h3><p className="truncate text-[10px] text-faint">{kind.label}</p></div>
       </div>
-      <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted"><Dot tone={rediscovering ? "amber" : unreachable ? "rose" : serverStateTone(range.node?.status.state)} pulse={rediscovering || (serving && !unread)} />{rediscovering ? t("pipeline.rediscovering") : unreachable ? "timeout" : serverStateLabel(range.node?.status.state)}</span>
+      <div className="flex shrink-0 flex-col items-end gap-0.5">
+        <span data-testid="machine-status" className="flex items-center gap-1.5 text-[11px] text-muted"><Dot tone={rediscovering ? "amber" : unreachable ? "rose" : serverStateTone(range.node?.status.state)} pulse={rediscovering || (serving && !unread)} />{rediscovering ? t("pipeline.rediscovering") : unreachable ? "timeout" : serverStateLabel(range.node?.status.state)}</span>
+        <span data-testid="machine-layers" className="font-mono text-[9px] font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>
+      </div>
     </div>
-    <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load != null && range.load > 0 && <span className="font-mono text-[10px] text-amber">{t("canvas.inFlight", { count: range.load })}</span>}</div>
+    <div data-testid="machine-meter-group" className="mt-2 space-y-1.5">
+      <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
+      <Meter label={t("canvas.load")} used={range.load} total={8} detail={range.load == null ? t("canvas.meterUnknown") : t("canvas.inFlight", { count: range.load })} />
+      <Meter label={gpus.length > 1 ? t("canvas.vramTotal", { count: gpus.length }) : "VRAM"} used={vramUsed} total={vramTotal} unknown={vramTotal == null} />
+    </div>
     {placement && <LayerPlacementMeter placement={placement} />}
-    <Meter label={gpus.length > 1 ? t("canvas.vramTotal", { count: gpus.length }) : "VRAM"} used={vramUsed} total={vramTotal} unknown={vramTotal == null} />
     {gpus.length > 0 ? (
       gpus.map((g) => (
         <GpuTemperature
@@ -190,8 +196,6 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
         compact
       />
     )}
-    <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
-    <Meter label={t("canvas.load")} used={range.load} total={8} detail={range.load == null ? t("canvas.meterUnknown") : t("canvas.inFlight", { count: range.load })} />
   </article>;
 }
 

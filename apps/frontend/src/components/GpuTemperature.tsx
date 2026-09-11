@@ -48,7 +48,7 @@ export function GpuTemperature({
   return (
     <div
       className={compact
-        ? "mt-2 flex items-center justify-between gap-2 text-[10px]"
+        ? "flex items-center justify-between gap-2 text-[9px]"
         // Duas placas cabem lado a lado num card de máquina, e o nome delas
         // pode carregar o índice que as distingue: o aperto de antes cortava
         // "GeForce RTX 5060 Ti #0" em "GeForce RT…".
@@ -59,7 +59,7 @@ export function GpuTemperature({
         <Thermometer className="h-3.5 w-3.5 shrink-0" />
         <span className="truncate">{label ?? t("dashboard.gpuTemperature")}</span>
       </span>
-      <Badge tone={toneByBand[band]} className="shrink-0 px-1.5 py-0 text-[0.65rem]">
+      <Badge tone={toneByBand[band]} className="shrink-0 px-1.5 py-0 text-[0.58rem]">
         {value}
       </Badge>
     </div>

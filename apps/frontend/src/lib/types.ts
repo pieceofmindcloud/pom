@@ -26,6 +26,7 @@ export interface GpuStat {
   vram_used_mb: number | null;
   vram_used_pct: number | null;
   utilization_pct: number | null;
+  power_watts: number | null;
   temperature_c: number | null;
 }
 

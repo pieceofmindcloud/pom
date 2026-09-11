@@ -232,8 +232,9 @@ Per-file list:
   imports it); only `trackOf` (the repeating color palette, `TRACKS`) is still
   exported, reused by `PeerDetailCard`, `Dashboard` and `DeployModel`.
   Currently rendered hidden on Dashboard.
-- `ModelNetworkCanvas.tsx` — The primary operational view: a pan/zoom SVG graph
-  of nodes (range cards with VRAM/RAM/load/temperature meters when a GPU exists) and curved edges, driven by
+- `ModelNetworkCanvas.tsx` - A visão operacional principal: um grafo SVG com
+  pan/zoom de nós (cards de faixa com medidores agrupados de RAM/carga/VRAM,
+  seguidos pelas temperaturas compactas quando há GPU) e arestas curvas, guiado por
   `graphFromCluster` (`../lib/networkGraph`). Edges have three states via
   `edgeStyle` (principal / paralela / inativa) from `cluster.routing_edges` and
   `cluster.candidate_edges` (replicas = ready alternate routes). Positions are
@@ -267,7 +268,7 @@ Per-file list:
   do Painel e pelo mapa de implantação. No Painel ele também identifica o
   transporte efetivo (`HTTP`, `HTTPS` ou `QUIC`) observado na execução; quando
   a medição ainda não existe, conserva `RTT -` em vez de usar a sonda libp2p.
-- `PeerDetailCard.tsx` — The card of one machine, in the same drawing for every
+- `PeerDetailCard.tsx` - The card of one machine, in the same drawing for every
   machine. It lives outside `Dashboard` because it shows in two places: the
   details tab stacks one card per machine (`networkPeers` splits the whole
   network into the active deployment first, in layer order, then the rest), and
@@ -293,16 +294,19 @@ Per-file list:
   como beco sem saída mandava o utilizador procurar um defeito inexistente. Ver
   `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder".
   `PipelineRail` e `ModelNetworkCanvas` fazem a mesma distinção.
-  `UpdateNode` (update+restart, dev-only via
-  `POM_DEV_UPDATE`), `RemoveNode`, `LeaveNode` and `ReleaseSlice` all
-  render from here now - e todos numa **barra de ferramentas no topo do
-  card**, junto do distintivo de MTP, em vez de espalhados pelo pé: reiniciar
-  uma máquina era rolar até o fim de tudo o que ela reporta. O card é denso de
+  `RemoveNode`, `LeaveNode` e `ReleaseSlice` renderizam daqui - todos em uma
+  **barra de ferramentas no topo do card**, ao lado do distintivo de MTP, em
+  vez de espalhados pelo rodapé. `RemoveNode` libera a fatia do modelo desta
+  máquina e a mantém no cluster; `LeaveNode` a remove da rede inteira, então
+  as duas ações permanecem visíveis. A ação de atualização e reinício, exclusiva
+  de desenvolvimento, não é renderizada. O card é denso de
   propósito (`compact` em `Meter`/`KeyValue`, seções `px-3 py-2.5`) para caber
   numa tela; o que é útil sem precisar estar sempre visível vive num `InfoTip`
   (a razão de "sem fatia", o `gpu_note`, a nota do fit, caminho do modelo, pid
   e reinícios), e "Parâmetros de carga do llama.cpp" e "Processos na GPU" são
-  `<details>` fechados. Os discos são **um medidor por partição montada**
+  `<details>` fechados. A sequência das métricas segue o mesmo padrão do card
+  compacto: telemetria da GPU (uso, temperatura e watts opcionais em uma linha
+  por GPU), RAM, carga e discos. Os discos são **um medidor por partição montada**
   (`system.disks`), com recuo para `system.disk` num nó que ainda não publique
   a lista. `PeerPlacement` (interno) é a única parte do card que
   faz uma chamada extra: monta só com a máquina servindo, e o `enabled` do
@@ -310,7 +314,8 @@ Per-file list:
   Quando a configuração pediu MTP, o mesmo card também mostra
   `mtp_ready`/`mtp_allocation`/`mtp_unavailable_reason` do runtime, incluindo o
   local medido do contexto e a razão da falha de anexação. A seção térmica mostra uma linha por GPU e declara temperatura
-  desconhecida quando o driver não fornece leitura.
+  desconhecida quando o driver não fornece leitura; a potência permanece
+  desconhecida quando a plataforma não publica watts.
 - `ModelPlacement.tsx` - a seção "Como o modelo foi carregado": a tira de
   camadas (uma célula por bloco, verde na GPU, âmbar dividida, cinza na CPU),
   os totais de peso por lado, onde o cache KV ficou e a cabeça de saída.

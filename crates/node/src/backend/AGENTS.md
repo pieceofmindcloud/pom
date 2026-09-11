@@ -167,6 +167,8 @@ profile policy remains the effective authorization boundary.
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`). A
+  cluster view transporta `SystemLoad.gpus[].power_watts` como telemetria
+  opcional, mantendo `null` quando o sistema não expõe consumo da placa.
   leitura `/api/ui/network/geo-reference` entrega a referência SQLite de
   países e cidades para os selects da UI e é `InferNodeAdmin`; não cria nem
   altera dados de rede. `GET /api/ui/deployments` é `NodeAdmin` para permitir

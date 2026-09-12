@@ -240,4 +240,21 @@ describe("NetworkSettings", () => {
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/leave"));
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/network/leave");
   });
+
+  it("deixa um node sair mesmo sem autoridade e sem modelo carregado", async () => {
+    queryMocks.node.data.profile = "node";
+    queryMocks.node.data.authority_level = null;
+    queryMocks.networkInfo.data.can_edit = false;
+    vi.clearAllMocks();
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Sair da rede" }));
+
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/leave"));
+  });
 });

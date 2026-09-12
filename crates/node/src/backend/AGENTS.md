@@ -729,7 +729,10 @@ faz o download autenticado do blob persistido.
   `LeaveRequest { node_id }`: absent (or this node's own id) keeps the old
   behavior - this node detaches; a peer's id is **forwarded** to that peer's
   same route (`forward_leave`, same pattern as `dev/update` - the panel only
-  talks to its own node, and only the owner of a process can detach it). Also
+  talks to its own node, and only the owner of a process can detach it). The
+  local leave stops the runtime and detaches the network without consulting
+  model config, health or readiness, so a node can use it after repeated load
+  failures. Also
   the job store (`Job`, `JOB_RETENTION=600s`,
   `jobs()`/`new_job`/`set_job`/`set_job_progress`),
   catalog caching (`CachedCatalog`, `warm_catalog` called at startup,

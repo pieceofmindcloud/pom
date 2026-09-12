@@ -1175,7 +1175,10 @@ chama `POST /api/ui/network/leave`, que revoga a confiança local, prepara o
 `pom.json` para o setup e reinicia este nó; depois a interface volta para
 `/setup`. Ela é deliberadamente diferente de `Sair da rede`, no painel
 `Esta máquina`, que chama `POST /api/ui/leave` e apenas tira a máquina do
-cluster sem apagar sua configuração local.
+cluster sem apagar sua configuração local. Essa ação também fica disponível
+para um perfil node sem autoridade administrativa e não depende de modelo
+carregado ou estado Ready: o handler para o runtime, limpa o journal da
+implantação e desanuncia a máquina antes de responder.
 
 ## Defeitos anotados
 

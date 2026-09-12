@@ -2,12 +2,16 @@
 //!
 //! O processo continua sendo o mesmo binário Rust que serve o gateway. Tao
 //! entrega a janela Win32, Wry usa o WebView2 instalado pelo Windows e
-//! `tray-icon` registra o menu da bandeja. Não há console, Electron ou processo
-//! auxiliar: `main.rs` declara `windows_subsystem = "windows"` no alvo Windows.
+//! `tray-icon` registra o menu da bandeja. Não há console nem Electron: o
+//! processo filho nativo é acompanhado por um supervisor leve no mesmo
+//! executável. `main.rs` declara `windows_subsystem = "windows"` no alvo
+//! Windows.
 
 pub const TRAY_SHOW_ID: &str = "pom.show";
 pub const TRAY_QUIT_ID: &str = "pom.quit";
 pub const WINDOW_SIZE: (f64, f64) = (1120.0, 880.0);
+pub const SUPERVISED_CHILD_ENV: &str = "POM_WINDOWS_SUPERVISED_CHILD";
+pub const CRASH_RELAUNCH_DELAY_SECS: u64 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WindowAction {
@@ -28,12 +32,20 @@ pub fn menu_action(id: &str) -> Option<WindowAction> {
     }
 }
 
+/// Só uma saída bem-sucedida representa `Sair` na camada supervisora.
+/// `None` cobre encerramento por exceção ou sinal, que deve ser relançado.
+pub fn should_relaunch(exit_code: Option<i32>) -> bool {
+    exit_code != Some(0)
+}
+
 #[cfg(windows)]
 mod native {
     use super::{close_action, menu_action, WindowAction, TRAY_QUIT_ID, TRAY_SHOW_ID, WINDOW_SIZE};
     use anyhow::{anyhow, Context, Result};
     use image::load_from_memory;
+    use std::process::Command as ProcessCommand;
     use std::thread;
+    use std::time::Duration;
     use tao::dpi::LogicalSize;
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -66,6 +78,37 @@ mod native {
     where
         F: FnOnce() -> Result<()> + Send + 'static,
     {
+        if std::env::var_os(super::SUPERVISED_CHILD_ENV).is_none() {
+            drop(service);
+            return run_supervisor();
+        }
+        run_child(port, service)
+    }
+
+    fn run_supervisor() -> Result<()> {
+        let executable = std::env::current_exe().context("não foi possível localizar o pom.exe")?;
+        let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+        loop {
+            let status = ProcessCommand::new(&executable)
+                .args(&args)
+                .env(super::SUPERVISED_CHILD_ENV, "1")
+                .status()
+                .with_context(|| format!("não foi possível iniciar {}", executable.display()))?;
+            if !super::should_relaunch(status.code()) {
+                return Ok(());
+            }
+            tracing::error!(
+                exit_code = ?status.code(),
+                "POM encerrou sem saída do usuário; relançando o processo Windows"
+            );
+            thread::sleep(Duration::from_secs(super::CRASH_RELAUNCH_DELAY_SECS));
+        }
+    }
+
+    fn run_child<F>(port: u16, service: F) -> Result<()>
+    where
+        F: FnOnce() -> Result<()> + Send + 'static,
+    {
         let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
         let service_proxy = event_loop.create_proxy();
         let service = thread::spawn(move || {
@@ -79,7 +122,7 @@ mod native {
             .with_inner_size(LogicalSize::new(WINDOW_SIZE.0, WINDOW_SIZE.1))
             .build(&event_loop)
             .map_err(|error| anyhow!("não deu para abrir a janela Windows: {error}"))?;
-        let _webview = WebViewBuilder::new()
+        let webview = WebViewBuilder::new()
             .with_url(crate::gateway_url(port))
             .build(&window)
             .context("não deu para iniciar o WebView2; confirme que o runtime está instalado")?;
@@ -91,7 +134,7 @@ mod native {
             .context("não deu para adicionar Restaurar ao menu da bandeja")?;
         menu.append(&quit_item)
             .context("não deu para adicionar Sair ao menu da bandeja")?;
-        let _tray = TrayIconBuilder::new()
+        let tray = TrayIconBuilder::new()
             .with_tooltip("POM")
             .with_menu(Box::new(menu))
             .with_icon(tray_icon()?)
@@ -135,6 +178,15 @@ mod native {
             }
         });
 
+        // Desregistre o callback antes de destruir a bandeja e libere os
+        // objetos na ordem inversa da criação. `process::exit` sem esse trecho
+        // deixava a classe Win32 do WebView2 viva e produzia ERROR 1412 no
+        // teardown, mascarando a causa real de uma queda do serviço.
+        MenuEvent::set_event_handler::<fn(MenuEvent)>(None);
+        drop(tray);
+        drop(webview);
+        drop(window);
+
         if user_quit {
             // Assim como o Sair do AppKit, não aguardamos um servidor Tokio
             // sem canal cooperativo: terminar o processo encerra o serviço e
@@ -171,5 +223,12 @@ mod tests {
     fn janela_do_shell_tem_tamanho_de_desktop() {
         assert!(WINDOW_SIZE.0 > 1000.0);
         assert!(WINDOW_SIZE.1 > 800.0);
+    }
+
+    #[test]
+    fn supervisor_so_relanca_saida_anormal() {
+        assert!(!should_relaunch(Some(0)));
+        assert!(should_relaunch(Some(1)));
+        assert!(should_relaunch(None));
     }
 }

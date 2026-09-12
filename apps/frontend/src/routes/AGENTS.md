@@ -61,7 +61,9 @@ Per-file list:
   informações também oferece `Esquecer rede`, que pede confirmação e chama
   `POST /api/ui/network/leave` para limpar a configuração local e reiniciar no
   setup; isso é separado de `Sair da rede`, que chama `/api/ui/leave` e apenas
-  desliga a máquina do cluster.
+  desliga a máquina do cluster. O botão continua disponível para o perfil
+  `node` mesmo sem autoridade administrativa, sem modelo carregado ou sem
+  estado `Ready`; o handler local não consulta a saúde da implantação.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage

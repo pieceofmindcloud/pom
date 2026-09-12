@@ -3,7 +3,7 @@
 //! A atribuição de modelo vive só em memória (é decisão de projeto: quem manda
 //! é o plano de implantação, não um arquivo esquecido no disco). Uma queda,
 //! porém, não é uma mudança de intenção — é a mesma intenção com o processo
-//! novo. Então a fatia é anotada em disco e consumida no arranque seguinte.
+//! novo. Então a fatia é anotada em disco e permanece até a confirmação.
 //!
 //! **A anotação vale como retomável se e somente se a fatia foi vista
 //! carregada e servindo.** Daí ela carregar um [`SliceState`]: quem escreve
@@ -14,7 +14,7 @@
 //! Confundir os dois é um laço infinito, não um detalhe: uma fatia que não cabe
 //! na memória mata o processo antes de carregar, o Docker religa o container, e
 //! uma anotação otimista faz o nó tentar a mesma fatia para sempre. O contador
-//! `MAX_RESTARTS` não protege disso — é de memória e morre com o processo.
+//! um contador apenas em memória não protege disso - ele morre com o processo.
 //! Reproduzido em `data/pom-reinicio-infinito-carga/`.
 
 use crate::runtime::NodeConfig;
@@ -28,7 +28,8 @@ use std::path::{Path, PathBuf};
 pub enum SliceState {
     /// Aplicada, ainda não vista carregada uma única vez.
     Pending,
-    /// O `/health` do servidor de inferência respondeu `model_loaded`.
+    /// O watcher confirmou `model_loaded` em sondagens consecutivas de
+    /// `/health`, depois da janela mínima de estabilidade.
     ///
     /// É o padrão porque um arquivo escrito antes de 2026-08-15 não tem o
     /// campo, e naquele formato só a rota de reinício escrevia — num nó que
@@ -44,9 +45,17 @@ pub enum SliceState {
 struct Annotation {
     #[serde(default)]
     state: SliceState,
+    /// Tentativa da implantação que ainda não chegou ao `/health`.
+    /// Anotações antigas sem este campo contam como a primeira tentativa.
+    #[serde(default)]
+    attempts: u32,
     #[serde(flatten)]
     slice: NodeConfig,
 }
+
+/// Limite persistente compartilhado pelo journal e pelo supervisor em memória.
+/// Dez já é o limite usado pelo supervisor para falhas da mesma geração.
+pub const MAX_AUTOMATIC_ATTEMPTS: u32 = 10;
 
 /// O que o arranque encontrou anotado.
 ///
@@ -60,10 +69,8 @@ pub enum LastSlice {
     Serving(NodeConfig),
     /// O nó volta anunciado e ocioso, sem recarregar antes da primeira chamada.
     Idle(NodeConfig),
-    /// Anotada no `apply` e nunca vista carregada. Não se retoma: foi o laço
-    /// infinito de 2026-08-15, em que uma fatia que não cabia na memória
-    /// ressuscitava a cada religada do container.
-    NeverLoaded(NodeConfig),
+    /// Anotada antes da implantação e ainda não confirmada pelo `/health`.
+    Pending { cfg: NodeConfig, attempts: u32 },
 }
 
 /// Onde este nó anota a sua fatia.
@@ -88,10 +95,39 @@ pub fn save(cfg: &NodeConfig, state: SliceState) -> Result<()> {
 fn save_at(p: &Path, cfg: &NodeConfig, state: SliceState) -> Result<()> {
     let anot = Annotation {
         state,
+        attempts: (state == SliceState::Pending).then_some(1).unwrap_or(0),
         slice: cfg.clone(),
     };
-    std::fs::write(p, serde_json::to_string_pretty(&anot)?)
-        .with_context(|| format!("não deu para gravar {}", p.display()))
+    write_annotation(p, &anot)
+}
+
+fn write_annotation(p: &Path, annotation: &Annotation) -> Result<()> {
+    let raw = serde_json::to_string_pretty(annotation)?;
+    let tmp = p.with_file_name(format!(
+        ".{}.tmp-{}",
+        p.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("last-slice"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, raw).with_context(|| format!("não deu para gravar {}", tmp.display()))?;
+    // Windows não substitui o destino existente com rename. A tentativa
+    // normal é atômica; só removemos o destino se a plataforma exigir.
+    if let Err(error) = std::fs::rename(&tmp, p) {
+        #[cfg(windows)]
+        {
+            let _ = std::fs::remove_file(p);
+            std::fs::rename(&tmp, p).with_context(|| {
+                format!("não deu para substituir {} depois de {error}", p.display())
+            })?;
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error).with_context(|| format!("não deu para substituir {}", p.display()));
+        }
+    }
+    Ok(())
 }
 
 /// Esquece a fatia anotada.
@@ -106,28 +142,100 @@ pub fn clear() {
 
 fn clear_at(p: &Path) {
     let _ = std::fs::remove_file(p);
+    let _ = std::fs::remove_file(disable_path(p));
 }
 
-/// Lê a fatia anotada e apaga o arquivo.
-pub fn take() -> LastSlice {
-    take_from(&path())
+fn disable_path(p: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.disabled", p.display()))
 }
 
-fn take_from(p: &Path) -> LastSlice {
-    let Ok(raw) = std::fs::read_to_string(p) else {
-        return LastSlice::Nothing;
-    };
-    // Apaga antes de aplicar: um arquivo que não parseia, ou uma fatia que o
-    // nó não consegue mais servir, não pode reaparecer a cada arranque.
+/// Impede qualquer retomada automática até uma nova implantação explícita.
+/// Serve também quando o processo principal está sendo relançado por fora.
+pub fn force_disable() -> Result<()> {
+    force_disable_at(&path())
+}
+
+fn force_disable_at(p: &Path) -> Result<()> {
     let _ = std::fs::remove_file(p);
-    let Ok(anot) = serde_json::from_str::<Annotation>(&raw) else {
+    std::fs::write(disable_path(p), "manual\n").with_context(|| {
+        format!(
+            "não deu para criar o bloqueio {}",
+            disable_path(p).display()
+        )
+    })
+}
+
+pub fn auto_resume_disabled() -> bool {
+    disable_path(&path()).exists()
+}
+
+/// Inicia uma implantação explícita e registra a primeira tentativa antes de
+/// qualquer chamada ao supervisor ou ao servidor nativo.
+pub fn begin_new_attempt(cfg: &NodeConfig) -> Result<u32> {
+    begin_new_attempt_at(&path(), cfg)
+}
+
+fn begin_new_attempt_at(p: &Path, cfg: &NodeConfig) -> Result<u32> {
+    let _ = std::fs::remove_file(disable_path(p));
+    let annotation = Annotation {
+        state: SliceState::Pending,
+        attempts: 1,
+        slice: cfg.clone(),
+    };
+    write_annotation(p, &annotation)?;
+    Ok(annotation.attempts)
+}
+
+/// Registra a retomada de uma implantação que sobreviveu a um reinício.
+pub fn resume_attempt(cfg: &NodeConfig) -> Result<u32> {
+    resume_attempt_at(&path(), cfg)
+}
+
+fn resume_attempt_at(p: &Path, cfg: &NodeConfig) -> Result<u32> {
+    let attempts = match read_annotation(p) {
+        Some(annotation) if annotation.state == SliceState::Pending => {
+            annotation.attempts.max(1).saturating_add(1)
+        }
+        _ => 1,
+    };
+    let annotation = Annotation {
+        state: SliceState::Pending,
+        attempts,
+        slice: cfg.clone(),
+    };
+    write_annotation(p, &annotation)?;
+    Ok(attempts)
+}
+
+/// Informa se o número da tentativa ainda está dentro do orçamento automático.
+pub const fn should_resume(attempts: u32) -> bool {
+    attempts <= MAX_AUTOMATIC_ATTEMPTS
+}
+
+/// Lê a fatia anotada sem consumir o journal.
+pub fn inspect() -> LastSlice {
+    inspect_at(&path())
+}
+
+fn inspect_at(p: &Path) -> LastSlice {
+    let Some(anot) = read_annotation(p) else {
         return LastSlice::Nothing;
     };
     match anot.state {
         SliceState::Serving => LastSlice::Serving(anot.slice),
         SliceState::Idle => LastSlice::Idle(anot.slice),
-        SliceState::Pending => LastSlice::NeverLoaded(anot.slice),
+        SliceState::Pending => LastSlice::Pending {
+            cfg: anot.slice,
+            attempts: anot.attempts.max(1),
+        },
     }
+}
+
+fn read_annotation(p: &Path) -> Option<Annotation> {
+    let Ok(raw) = std::fs::read_to_string(p) else {
+        return None;
+    };
+    serde_json::from_str::<Annotation>(&raw).ok()
 }
 
 #[cfg(test)]
@@ -153,22 +261,22 @@ mod tests {
         );
     }
 
-    /// `take` é consumo: um arquivo órfão de um restart que deu errado não pode
-    /// ficar ressuscitando fatia velha a cada arranque.
+    /// A leitura não consome o journal: uma queda entre a leitura e o início
+    /// da tentativa precisa continuar contabilizável no arranque seguinte.
     #[test]
-    fn take_le_uma_vez_e_apaga() {
-        let dir = tmp("take-uma-vez");
+    fn inspect_preserva_o_journal() {
+        let dir = tmp("inspect-preserva");
         let f = dir.join("cfg.json.last-slice.json");
         save_at(&f, &sample(), SliceState::Serving).unwrap();
 
         assert!(
-            matches!(take_from(&f), LastSlice::Serving(_)),
-            "a primeira leitura devolve a fatia"
+            matches!(inspect_at(&f), LastSlice::Serving(_)),
+            "a leitura devolve a fatia"
         );
-        assert!(!f.exists(), "e apaga o arquivo");
+        assert!(f.exists(), "a leitura não pode apagar o journal");
         assert!(
-            matches!(take_from(&f), LastSlice::Nothing),
-            "a segunda não devolve nada"
+            matches!(inspect_at(&f), LastSlice::Serving(_)),
+            "a leitura seguinte ainda devolve a mesma fatia"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -191,7 +299,7 @@ mod tests {
         save_at(&f, &sample(), SliceState::Pending).unwrap(); // apply
         save_at(&f, &sample(), SliceState::Serving).unwrap(); // /health: model_loaded
 
-        match take_from(&f) {
+        match inspect_at(&f) {
             LastSlice::Serving(cfg) => assert_eq!(cfg.model_label, "qwen35"),
             _ => panic!("uma fatia vista servindo tem que voltar servindo"),
         }
@@ -205,8 +313,8 @@ mod tests {
         let f = dir.join("cfg.json.last-slice.json");
         save_at(&f, &sample(), SliceState::Idle).unwrap();
 
-        assert!(matches!(take_from(&f), LastSlice::Idle(cfg) if cfg.model_label == "qwen35"));
-        assert!(!f.exists());
+        assert!(matches!(inspect_at(&f), LastSlice::Idle(cfg) if cfg.model_label == "qwen35"));
+        assert!(f.exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -221,7 +329,7 @@ mod tests {
 
         assert!(!f.exists(), "parar de propósito esquece");
         assert!(
-            matches!(take_from(&f), LastSlice::Nothing),
+            matches!(inspect_at(&f), LastSlice::Nothing),
             "e o arranque seguinte nao ressuscita"
         );
 
@@ -241,16 +349,18 @@ mod tests {
         let f = dir.join("cfg.json.last-slice.json");
         save_at(&f, &sample(), SliceState::Pending).unwrap();
 
-        match take_from(&f) {
-            LastSlice::NeverLoaded(cfg) => assert_eq!(cfg.model_label, "qwen35"),
+        match inspect_at(&f) {
+            LastSlice::Pending { cfg, attempts } => {
+                assert_eq!(cfg.model_label, "qwen35");
+                assert_eq!(attempts, 1);
+            }
             LastSlice::Serving(_) => panic!("uma fatia que nunca carregou não pode ser retomada"),
             LastSlice::Idle(_) => panic!("uma fatia pendente não pode ser ociosa"),
             LastSlice::Nothing => panic!("a razão da falha se perdeu: o operador fica sem saber"),
         }
-        assert!(!f.exists(), "e o arquivo sai do disco na leitura");
         assert!(
-            matches!(take_from(&f), LastSlice::Nothing),
-            "o arranque seguinte não encontra mais nada — o laço morre aqui"
+            f.exists(),
+            "o journal precisa sobreviver ao próximo arranque"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -269,8 +379,11 @@ mod tests {
         nova.end_layer = 15;
         save_at(&f, &nova, SliceState::Pending).unwrap();
 
-        match take_from(&f) {
-            LastSlice::NeverLoaded(cfg) => assert_eq!(cfg.start_layer, 8),
+        match inspect_at(&f) {
+            LastSlice::Pending { cfg, attempts } => {
+                assert_eq!(cfg.start_layer, 8);
+                assert_eq!(attempts, 1);
+            }
             _ => panic!("a fatia nova nunca carregou; a velha já não é servida"),
         }
 
@@ -288,10 +401,70 @@ mod tests {
         std::fs::write(&f, serde_json::to_string(&sample()).unwrap()).unwrap();
 
         assert!(
-            matches!(take_from(&f), LastSlice::Serving(_)),
+            matches!(inspect_at(&f), LastSlice::Serving(_)),
             "o formato antigo é uma fatia que estava no ar"
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reinicios_de_uma_fatia_pendente_sao_contados_e_bloqueados_no_limite() {
+        let dir = tmp("tentativas-persistentes");
+        let f = dir.join("cfg.json.last-slice.json");
+        let cfg = sample();
+
+        assert_eq!(begin_new_attempt_at(&f, &cfg).unwrap(), 1);
+        for expected in 2..=MAX_AUTOMATIC_ATTEMPTS {
+            assert_eq!(resume_attempt_at(&f, &cfg).unwrap(), expected);
+        }
+
+        assert!(should_resume(MAX_AUTOMATIC_ATTEMPTS));
+        assert!(!should_resume(MAX_AUTOMATIC_ATTEMPTS + 1));
+        assert!(
+            matches!(inspect_at(&f), LastSlice::Pending { attempts, .. } if attempts == MAX_AUTOMATIC_ATTEMPTS)
+        );
+        assert!(
+            f.exists(),
+            "o bloqueio precisa sobreviver ao próximo arranque"
+        );
+
+        clear_at(&f);
+        assert!(matches!(inspect_at(&f), LastSlice::Nothing));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sucesso_do_health_zera_a_contagem_e_autoriza_nova_retomada() {
+        let dir = tmp("tentativa-sucesso");
+        let f = dir.join("cfg.json.last-slice.json");
+        let cfg = sample();
+
+        begin_new_attempt_at(&f, &cfg).unwrap();
+        resume_attempt_at(&f, &cfg).unwrap();
+        save_at(&f, &cfg, SliceState::Serving).unwrap();
+
+        assert!(matches!(inspect_at(&f), LastSlice::Serving(_)));
+        assert_eq!(begin_new_attempt_at(&f, &cfg).unwrap(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bloqueio_manual_impede_retomada_ate_nova_implantacao() {
+        let dir = tmp("bloqueio-manual");
+        let f = dir.join("cfg.json.last-slice.json");
+        save_at(&f, &sample(), SliceState::Pending).unwrap();
+
+        force_disable_at(&f).unwrap();
+        assert!(!f.exists());
+        assert!(disable_path(&f).exists());
+
+        begin_new_attempt_at(&f, &sample()).unwrap();
+        assert!(f.exists());
+        assert!(!disable_path(&f).exists());
+
+        clear_at(&f);
         std::fs::remove_dir_all(&dir).ok();
     }
 

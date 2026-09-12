@@ -113,7 +113,12 @@ impl Drop for MtpDrafter {
     fn drop(&mut self) {
         unsafe {
             if !self.ctx.is_null() {
+                // The callback userdata belongs to the parent engine. Clear
+                // the native hook before freeing this context so a destructor
+                // or an in-flight backend teardown cannot call a dead Arc.
+                sys::llama_set_moe_ffn_callback(self.ctx, None, ptr::null_mut());
                 sys::llama_free(self.ctx);
+                self.ctx = ptr::null_mut();
             }
         }
     }

@@ -18,7 +18,15 @@ use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
 
 /// Give up restarting a crash-looping inference server after this many tries.
-const MAX_RESTARTS: u32 = 10;
+/// The same budget is persisted by `lastslice` so a process crash cannot reset it.
+const MAX_RESTARTS: u32 = crate::lastslice::MAX_AUTOMATIC_ATTEMPTS;
+/// Um único /health só prova que uma resposta foi montada. O crash do
+/// Windows aconteceu no mesmo instante em que essa resposta virou
+/// model_loaded, então a anotação persistente só pode ser promovida depois
+/// de duas sondagens consecutivas. Com o intervalo de 3 s do watcher, isso
+/// deixa passar o primeiro retorno e uma janela curta de estabilidade sem
+/// inventar um novo timeout de produto.
+const HEALTH_CONFIRMATION_POLLS: u32 = 2;
 /// Largest context the product exposes. Larger allocations can exhaust a node
 /// before llama.cpp can report a useful error, so keep the operator-facing
 /// contract explicit.
@@ -782,7 +790,7 @@ impl NodeRuntime {
                     self.note_request();
                     // Keep the operation lock while transitioning Idle ->
                     // Starting so concurrent requests cannot duplicate a load.
-                    self.apply_locked(cfg).await?;
+                    self.apply_locked(cfg, true).await?;
                     true
                 }
                 ServerState::Ready | ServerState::Starting => false,
@@ -977,10 +985,18 @@ impl NodeRuntime {
     /// server, re-announce the new layer range, start the new server.
     pub async fn apply(&self, cfg: NodeConfig) -> Result<()> {
         let _operation = self.operation.lock().await;
-        self.apply_locked(cfg).await
+        self.apply_locked(cfg, true).await
     }
 
-    async fn apply_locked(&self, mut cfg: NodeConfig) -> Result<()> {
+    /// Retoma uma fatia que o journal marcou como pendente depois de um crash.
+    /// O chamador já incrementou a tentativa no disco; este caminho não pode
+    /// resetá-la para 1 antes de iniciar o servidor nativo.
+    pub async fn apply_after_restart(&self, cfg: NodeConfig) -> Result<()> {
+        let _operation = self.operation.lock().await;
+        self.apply_locked(cfg, false).await
+    }
+
+    async fn apply_locked(&self, mut cfg: NodeConfig, persist_attempt: bool) -> Result<()> {
         if let Some(auth) = &self.auth {
             let installation = auth.read().await;
             cfg.cache_type_k = installation.cache_type_k;
@@ -1002,6 +1018,14 @@ impl NodeRuntime {
             return Ok(());
         }
         self.thermal.lock().await.recovery = None;
+
+        if persist_attempt {
+            let attempt = crate::lastslice::begin_new_attempt(&cfg)?;
+            info!(
+                attempt,
+                "implantação persistida antes de iniciar o servidor"
+            );
+        }
 
         let profile = ModelProfile::guess_from_name(&cfg.model_path);
         let assignment = cfg.to_assignment(&profile);
@@ -1054,22 +1078,6 @@ impl NodeRuntime {
         // Let peers know immediately instead of waiting for the next gossip tick.
         if let Err(e) = self.net.announce(Some(&assignment)).await {
             warn!("announce após reconfiguração falhou: {e}");
-        }
-
-        // Anotada já aqui porque um processo que morre de segfault não executa
-        // código nenhum, e sem anotação toda queda tirava o nó do cluster para
-        // sempre - o Docker religava o container e ele voltava sem fatia,
-        // abrindo um buraco de camadas que só aparecia na requisição seguinte,
-        // como "Gap at layer N".
-        //
-        // Mas anotada como `Pending`, e não como servindo: neste ponto o modelo
-        // não carregou uma única vez. Anotar aqui o que só o `/health` sabe era
-        // o laço infinito de 2026-08-15 - uma fatia grande demais matava o
-        // processo antes de carregar, o Docker religava, e o arranque
-        // ressuscitava a mesma fatia para sempre. Quem promove a `Serving` é
-        // `spawn_health_watch`.
-        if let Err(e) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Pending) {
-            warn!("não deu para anotar a fatia aplicada: {e}");
         }
 
         self.spawn_supervisor(cfg, generation, reuse_weights);
@@ -1167,7 +1175,7 @@ impl NodeRuntime {
                 policy.cooldown_secs
             ),
         );
-        self.apply_locked(cfg).await
+        self.apply_locked(cfg, true).await
     }
 
     async fn clear_active_for_thermal(
@@ -1238,10 +1246,10 @@ impl NodeRuntime {
     /// fatia nenhuma, e esta é a máquina cuja última tentativa derrubou o
     /// processo. É o que o operador precisa ler para saber que tem de dar
     /// menos camadas a ela.
-    pub async fn note_unloadable_slice(&self, cfg: &NodeConfig) {
+    pub async fn note_unloadable_slice(&self, cfg: &NodeConfig, attempts: u32) {
         let detail = format!(
-            "a fatia {} {}-{} não chegou a carregar na tentativa anterior e não foi restaurada",
-            cfg.model_label, cfg.start_layer, cfg.end_layer
+            "a fatia {} {}-{} não chegou a carregar: falhou {} tentativas consecutivas antes de /health e foi bloqueada; desimplante ou aplique novamente manualmente",
+            cfg.model_label, cfg.start_layer, cfg.end_layer, attempts
         );
         warn!("⚠️  {detail}");
         *self.status.write().await = RuntimeStatus::new(ServerState::Disabled, detail);
@@ -1288,6 +1296,15 @@ impl NodeRuntime {
                 if *gen_rx.borrow() != generation {
                     return; // superseded by a newer configuration
                 }
+                if crate::lastslice::auto_resume_disabled() {
+                    let detail =
+                        "retomada automática bloqueada por undeploy; aguardando implantação manual";
+                    append_log(port, detail);
+                    status
+                        .set(ServerState::Disabled, detail.to_string(), restarts)
+                        .await;
+                    return;
+                }
                 // A cada tentativa, não só antes do laço: quem segura a porta
                 // pode ter aparecido depois, ou não ter morrido na primeira
                 // investida. Limpar uma vez só fazia as outras nove tentativas
@@ -1300,6 +1317,22 @@ impl NodeRuntime {
                     );
                     sleep(Duration::from_secs(5)).await;
                     if *gen_rx.borrow() != generation {
+                        return;
+                    }
+                    let Ok(attempt) = crate::lastslice::resume_attempt(&cfg) else {
+                        let detail = "não foi possível persistir a retomada da implantação; servidor bloqueado";
+                        append_log(port, detail);
+                        status
+                            .set(ServerState::Failed, detail.to_string(), restarts)
+                            .await;
+                        return;
+                    };
+                    if !crate::lastslice::should_resume(attempt) {
+                        let detail = format!(
+                            "desistiu depois de {attempt} tentativas persistentes; desimplante ou aplique novamente manualmente"
+                        );
+                        append_log(port, &detail);
+                        status.set(ServerState::Failed, detail, restarts).await;
                         return;
                     }
                 }
@@ -1380,17 +1413,17 @@ impl NodeRuntime {
                         if restarts >= MAX_RESTARTS {
                             // Uma fatia que chegou a servir (e por isso está
                             // anotada como `Serving`) e depois quebrou
-                            // MAX_RESTARTS vezes seguidas não pode voltar no
-                            // próximo arranque: o orçamento de tentativas é de
-                            // memória e não atravessa um reinício.
-                            crate::lastslice::clear();
+                            // O journal pendente permanece no disco. Se o
+                            // processo principal cair agora, o próximo
+                            // arranque verá o mesmo limite e não tentará de
+                            // novo até o operador intervir.
                             let detail = match &porta_presa {
                                 Some(motivo) => {
-                                    format!(
-                                        "desistiu depois de {MAX_RESTARTS} tentativas: {motivo}"
-                                    )
+                                    format!("desistiu depois de {MAX_RESTARTS} tentativas persistentes: {motivo}")
                                 }
-                                None => format!("encerrou {MAX_RESTARTS}x: {e}"),
+                                None => {
+                                    format!("encerrou {MAX_RESTARTS}x: {e}; implantação bloqueada")
+                                }
                             };
                             append_log(port, &detail);
                             status.set(ServerState::Failed, detail, restarts).await;
@@ -1422,6 +1455,7 @@ impl NodeRuntime {
 
         tokio::spawn(async move {
             let url = format!("http://127.0.0.1:{port}/health");
+            let mut healthy_polls = 0;
             loop {
                 sleep(Duration::from_secs(3)).await;
                 if *gen_rx.borrow() != generation {
@@ -1429,12 +1463,15 @@ impl NodeRuntime {
                 }
 
                 let Ok(resp) = http.get(&url).send().await else {
+                    healthy_polls = 0;
                     continue;
                 };
                 if !resp.status().is_success() {
+                    healthy_polls = 0;
                     continue;
                 }
                 let Ok(body) = resp.json::<serde_json::Value>().await else {
+                    healthy_polls = 0;
                     continue;
                 };
                 if *gen_rx.borrow() != generation {
@@ -1445,6 +1482,18 @@ impl NodeRuntime {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
                 {
+                    healthy_polls = 0;
+                    continue;
+                }
+
+                healthy_polls += 1;
+                if healthy_polls < HEALTH_CONFIRMATION_POLLS {
+                    append_log(
+                        port,
+                        &format!(
+                            "modelo respondeu model_loaded; aguardando estabilidade ({healthy_polls}/{HEALTH_CONFIRMATION_POLLS})"
+                        ),
+                    );
                     continue;
                 }
 
@@ -1481,8 +1530,10 @@ impl NodeRuntime {
                 }
 
                 // O único ponto do código que prova que a fatia está no ar:
-                // `/health` respondeu `model_loaded`. Só daqui em diante ela
-                // pode ser retomada num arranque seguinte.
+                // `/health` respondeu `model_loaded` em sondagens
+                // consecutivas. Um primeiro retorno não basta: a confirmação
+                // de carregamento pode ser justamente o caminho que derruba
+                // o processo nativo.
                 if let Err(e) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Serving)
                 {
                     warn!("não deu para anotar a fatia servida: {e}");
@@ -2015,10 +2066,17 @@ mod tests {
         let anotacao = crate::lastslice::path();
         std::fs::remove_file(&anotacao).ok();
 
+        let health_polls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let health_release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let health_polls_server = health_polls.clone();
+        let health_release_server = health_release.clone();
         let app = axum::Router::new().route(
             "/health",
-            axum::routing::get(|| async {
-                axum::Json(serde_json::json!({ "model_loaded": true }))
+            axum::routing::get(move || {
+                let poll = health_polls_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let model_loaded =
+                    poll == 0 || health_release_server.load(std::sync::atomic::Ordering::SeqCst);
+                async move { axum::Json(serde_json::json!({ "model_loaded": model_loaded })) }
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2040,7 +2098,28 @@ mod tests {
         crate::lastslice::save(&c, crate::lastslice::SliceState::Pending).unwrap();
         rt.spawn_health_watch(c, 0);
 
-        // O watch dorme 3 s antes da primeira sondagem.
+        // Aguarde a primeira sondagem real, em vez de depender do scheduler
+        // entregar exatamente o intervalo de 3 s. O primeiro retorno ainda
+        // não pode limpar a tentativa: é a janela do crash observado.
+        for _ in 0..60 {
+            if health_polls.load(std::sync::atomic::Ordering::SeqCst) >= 1 {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            health_polls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "o watcher precisa ter feito a primeira sondagem"
+        );
+        assert!(
+            matches!(
+                crate::lastslice::inspect(),
+                crate::lastslice::LastSlice::Pending { .. }
+            ),
+            "um único model_loaded não confirma a implantação"
+        );
+        health_release.store(true, std::sync::atomic::Ordering::SeqCst);
+
         for _ in 0..40 {
             sleep(Duration::from_millis(250)).await;
             if rt.status().await.state == ServerState::Ready {
@@ -2055,7 +2134,7 @@ mod tests {
         );
         assert!(
             matches!(
-                crate::lastslice::take(),
+                crate::lastslice::inspect(),
                 crate::lastslice::LastSlice::Serving(_)
             ),
             "uma fatia vista carregada tem que voltar no próximo arranque"
@@ -2080,7 +2159,8 @@ mod tests {
         );
         let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
 
-        rt.note_unloadable_slice(&cfg()).await;
+        rt.note_unloadable_slice(&cfg(), crate::lastslice::MAX_AUTOMATIC_ATTEMPTS)
+            .await;
 
         let s = rt.status().await;
         assert_eq!(s.state, ServerState::Disabled, "o nó não serve nada");

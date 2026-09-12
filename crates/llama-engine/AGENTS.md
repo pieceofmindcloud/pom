@@ -85,6 +85,12 @@ vive nele), `inference/executor.rs`, `models/splitter.rs` (usa `gguf` e, nos
 testes, `llama_engine::llama_cpp_sys_2`), e todo o resto do pipeline
 (`infer_server.rs`, `prefill.rs`, `direct.rs`, `runtime.rs`, ...).
 
+O ciclo de vida nativo deve ser encerrado na ordem inversa da criação:
+contextos MTP e Vision liberam callbacks antes de llama_free, e o callback
+MoE do engine principal é limpo antes de qualquer userdata compartilhado cair.
+Essa regra fica implementada nos Drop de LlmEngine e MtpDrafter; alterá-la
+exige revisar a fronteira FFI e testar a destruição de gerações compatíveis.
+
 ### Visão
 
 `llm::VisionContext` usa o `mtmd` já fornecido pelo llama.cpp para carregar o

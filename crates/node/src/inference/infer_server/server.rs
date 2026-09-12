@@ -1160,6 +1160,16 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
             moe_telemetry.as_ref(),
             s.moe_fallback_reason.as_deref(),
         );
+    // Keep the native diagnostics as named boundaries. If a Windows native
+    // access violation happens while `/health` is being assembled, the last
+    // marker identifies which FFI snapshot crossed the bad pointer boundary.
+    tracing::debug!("health native snapshot: load_params begin");
+    let load_params = s.engine.load_params();
+    tracing::debug!("health native snapshot: load_params done; placement begin");
+    let placement = s.engine.placement();
+    tracing::debug!("health native snapshot: placement done; context_memory begin");
+    let context_memory = s.engine.context_memory();
+    tracing::debug!("health native snapshot: context_memory done");
     Json(json!({
         "status": "ok",
         "model_loaded": true,
@@ -1207,14 +1217,14 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
         // operador comparar o nó com uma linha de comando do `llama-cli`.
         // Lido do contexto vivo, não do `EngineConfig` - ver
         // `LlmEngine::load_params`.
-        "load_params": s.engine.load_params(),
+        "load_params": load_params,
         "profile_sync_enabled": crate::llm::profile_backend_sync_enabled(),
         // Onde as camadas e o cache KV ficaram de verdade, direto do
         // llama.cpp. `null` quando a ponte não respondeu - a interface diz
         // que não sabe, em vez de derivar um mapa de `n_gpu_layers`, que
         // erraria sempre que um override de buffer type entrasse.
-        "placement": s.engine.placement(),
-        "context_memory": s.engine.context_memory(),
+        "placement": placement,
+        "context_memory": context_memory,
         "inference_frame_capabilities": caps,
         "scheduler": scheduler.stats.json(&scheduler.config),
         // Diagnóstico puro — `llama_memory_can_shift`, o K-shift do

@@ -384,6 +384,13 @@ impl LlmEngine {
 
 impl Drop for LlmEngine {
     fn drop(&mut self) {
+        // Destrua primeiro os objetos que podem carregar callbacks ou apontar
+        // para os pesos/contexto. O caminho explícito `unload` já faz isso,
+        // mas `Drop` também pode ser alcançado por um erro durante a
+        // inicialização do servidor.
+        self.mtp = None;
+        self.vision = None;
+        self.moe_callback = None;
         // Só o contexto: os pesos são de `LoadedModel`, liberados quando o
         // último contexto que os usa sai de cena. Liberar o modelo aqui, com um
         // irmão ainda vivo, seria use-after-free.
@@ -391,9 +398,9 @@ impl Drop for LlmEngine {
             if !self.ctx.is_null() {
                 sys::llama_set_moe_ffn_callback(self.ctx, None, ptr::null_mut());
                 sys::llama_free(self.ctx);
+                self.ctx = ptr::null_mut();
             }
         }
-        self.moe_callback = None;
     }
 }
 

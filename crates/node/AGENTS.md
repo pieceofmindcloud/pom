@@ -96,11 +96,12 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    flag ou default 8181.
 4. `--list-models` imprime perfis + modelos do Ollama e sai.
 5. **Sem `--model`** → `start_gateway_only`: P2P + todas as rotas no ar, sem
-   modelo; restaura a fatia anotada (`lastslice::take()`) **se** a anotação
-   estiver `Serving` (a única que o `/health` do servidor viu carregada) e
-   serve. `NeverLoaded` → `note_unloadable_slice` (o nó sobe vazio e diz por
-   quê). É o caminho normal do produto. O flag `--no-default-relays` também é
-   respeitado neste caminho ao montar a rede, evitando que um gateway local de
+   modelo; inspeciona o journal persistente da fatia e restaura somente
+   `Serving` ou `Idle`. Uma fatia `Pending` conta tentativas no disco e,
+   depois de `MAX_AUTOMATIC_ATTEMPTS=10`, sobe vazia com
+   `note_unloadable_slice`. É o caminho normal do produto. O flag
+   `--no-default-relays` também é respeitado neste caminho ao montar a rede,
+   evitando que um gateway local de
    teste disque relays públicos por engano.
 6. **Com `--model`**: exige `--memory` (a menos que `--inference-port` esteja
    setado). Resolução do perfil, nesta ordem: `ModelProfile::find` (nome do
@@ -121,8 +122,8 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    `--no-discovery` → `detach`.
 10. Faixa de camadas, por precedência: `--start-layer/--end-layer` → nome do
     arquivo (`parse_layers_from_filename`, ex. `qwen_0_15.gguf`) →
-    `calculate_assignment` (gap-filling). `lastslice::take()` é consumido
-    apenas no caminho sem `--model`; aqui ele só limpa o arquivo órfão.
+    `calculate_assignment` (gap-filling). O journal é lido por
+    `lastslice::inspect()` e só é removido por uma decisão explícita.
 11. Antes de restaurar ou aplicar um modelo, inicia o monitor térmico do
     `NodeRuntime`; com `--inference-port`, monta `runtime::NodeConfig` e chama
     `NodeRuntime::apply` (sobe o servidor de inferência Rust **em-processo** e
@@ -177,6 +178,11 @@ enquanto `Abrir POM` restaura e `Sair do POM` termina o processo inteiro.
 `start_setup_mode` e `start_gateway_only` estão em `main.rs` (não num módulo
 separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do
 `--ollama-url` e a anuncia **sempre**, com ou sem `--gateway`.
+
+No Windows, o processo pai supervisiona o filho nativo: uma saída anormal
+relança o POM, mas `Sair do POM` retorna código zero e não relança.
+`pom undeploy` grava um bloqueio persistente para impedir retomadas
+automáticas de uma implantação problemática.
 
 ## src/ subpastas
 

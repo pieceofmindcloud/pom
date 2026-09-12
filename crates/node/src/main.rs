@@ -183,6 +183,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Block automatic model restoration until the next explicit deployment.
+    #[command(name = "undeploy")]
+    Undeploy,
+
     /// Create or install the operator-anchored administrator trust file.
     #[command(name = "admin-anchor")]
     AdminAnchor {
@@ -467,6 +471,11 @@ fn main() -> Result<()> {
 
 fn run_command(command: &Command) -> Result<()> {
     match command {
+        Command::Undeploy => {
+            lastslice::force_disable()?;
+            info!("retomada automática de implantação bloqueada");
+            Ok(())
+        }
         Command::AdminAnchor {
             cluster_id,
             fingerprint,
@@ -1110,7 +1119,9 @@ async fn async_main(
     // chamada, um nó que sempre sobe com `--model` deixaria um
     // `*.last-slice.json` órfão no disco para sempre, escrito por uma rota de
     // restart que nunca seria lida de volta.
-    let _ = lastslice::take();
+    // Uma intenção explícita de linha de comando substitui qualquer journal
+    // de uma implantação anterior.
+    lastslice::clear();
 
     // ── HTTP API server - every node serves it ───────────────────────────────
     // Bind before scheduling the model load. A model, fit, or runtime lock is
@@ -2100,31 +2111,57 @@ async fn start_gateway_only(
     let gateway_task = tokio::spawn(async move { start_gateway(gw_state, gateway_port).await });
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
-    // nova: o nó volta servindo o que servia. Só aqui, porque este é o
-    // caminho sem `--model`: quando a linha de comando pede um modelo, essa é
-    // a intenção explícita e não deve ser sobreposta por uma fatia velha.
-    match lastslice::take() {
-        lastslice::LastSlice::Serving(cfg) => {
-            let label = cfg.model_label.clone();
-            let (a, b) = (cfg.start_layer, cfg.end_layer);
-            match node_runtime.apply(cfg).await {
-                Ok(()) => info!("↩️  fatia restaurada após reinício: {label} {a}-{b}"),
-                Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+    // nova: o nó volta servindo o que servia. O journal não é consumido antes
+    // de a tentativa ser persistida novamente, porque um crash nativo pode
+    // acontecer entre a leitura e o início do carregamento.
+    if lastslice::auto_resume_disabled() {
+        warn!("retomada automática bloqueada por comando undeploy");
+    } else {
+        match lastslice::inspect() {
+            lastslice::LastSlice::Serving(cfg) => {
+                let label = cfg.model_label.clone();
+                let (a, b) = (cfg.start_layer, cfg.end_layer);
+                match lastslice::resume_attempt(&cfg) {
+                    Ok(attempt) if lastslice::should_resume(attempt) => {
+                        match node_runtime.apply_after_restart(cfg).await {
+                            Ok(()) => info!(
+                                "↩️  fatia restaurada após reinício: {label} {a}-{b} (tentativa {attempt})"
+                            ),
+                            Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+                        }
+                    }
+                    Ok(attempt) => node_runtime.note_unloadable_slice(&cfg, attempt).await,
+                    Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+                }
             }
+            lastslice::LastSlice::Idle(cfg) => {
+                let label = cfg.model_label.clone();
+                let (a, b) = (cfg.start_layer, cfg.end_layer);
+                node_runtime.restore_idle(cfg).await;
+                info!("↩️  fatia ociosa restaurada após reinício: {label} {a}-{b}");
+            }
+            lastslice::LastSlice::Pending { cfg, attempts } => {
+                if attempts >= lastslice::MAX_AUTOMATIC_ATTEMPTS {
+                    node_runtime.note_unloadable_slice(&cfg, attempts).await;
+                } else {
+                    match lastslice::resume_attempt(&cfg) {
+                        Ok(attempt) if lastslice::should_resume(attempt) => {
+                            match node_runtime.apply_after_restart(cfg).await {
+                                Ok(()) => {
+                                    info!(
+                                        "↩️  retomando implantação pendente na tentativa {attempt}"
+                                    )
+                                }
+                                Err(e) => warn!("não deu para retomar a implantação pendente: {e}"),
+                            }
+                        }
+                        Ok(attempt) => node_runtime.note_unloadable_slice(&cfg, attempt).await,
+                        Err(e) => warn!("não deu para persistir a retomada da implantação: {e}"),
+                    }
+                }
+            }
+            lastslice::LastSlice::Nothing => {}
         }
-        lastslice::LastSlice::Idle(cfg) => {
-            let label = cfg.model_label.clone();
-            let (a, b) = (cfg.start_layer, cfg.end_layer);
-            node_runtime.restore_idle(cfg).await;
-            info!("↩️  fatia ociosa restaurada após reinício: {label} {a}-{b}");
-        }
-        // A fatia foi aplicada e o processo morreu antes de ela carregar uma
-        // única vez. Retomá-la é o laço infinito: a mesma fatia derruba o
-        // processo, o Docker religa o container, e assim para sempre. O nó
-        // sobe vazio - mas dizendo por quê, senão o operador não tem como
-        // saber que a máquina não aguentou a fatia que recebeu.
-        lastslice::LastSlice::NeverLoaded(cfg) => node_runtime.note_unloadable_slice(&cfg).await,
-        lastslice::LastSlice::Nothing => {}
     }
 
     gateway_task.await??;
@@ -2227,7 +2264,7 @@ mod main_tests {
             .find("Bind the gateway before restoring a persisted slice")
             .expect("o caminho sem --model precisa iniciar o gateway");
         let restore = source[gateway..]
-            .find("match lastslice::take()")
+            .find("match lastslice::inspect()")
             .map(|offset| gateway + offset)
             .expect("o caminho sem --model precisa tratar a fatia persistida");
         assert!(

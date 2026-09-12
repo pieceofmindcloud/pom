@@ -49,9 +49,18 @@ pub(crate) fn source_can_be_used_directly(
     has_ggml && !(is_windows && is_symlink)
 }
 
+pub(crate) fn source_parent(source: &Path) -> PathBuf {
+    source
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{clone_destination, destination_can_be_replaced, source_can_be_used_directly};
+    use super::{
+        clone_destination, destination_can_be_replaced, source_can_be_used_directly, source_parent,
+    };
     use std::path::Path;
 
     #[test]
@@ -105,5 +114,13 @@ mod tests {
         assert!(!source_can_be_used_directly(true, true, true));
         assert!(source_can_be_used_directly(true, false, true));
         assert!(source_can_be_used_directly(true, true, false));
+    }
+
+    #[test]
+    fn external_source_parent_is_include_root_for_versioned_paths() {
+        assert_eq!(
+            source_parent(Path::new("/worktree/.ci-cache/llama.cpp")),
+            Path::new("/worktree/.ci-cache")
+        );
     }
 }

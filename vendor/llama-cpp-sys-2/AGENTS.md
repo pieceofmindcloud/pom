@@ -40,6 +40,13 @@ mesma árvore, inclusive quando o Windows materializa o symlink em
 `vendor/llama-cpp-sys-2/llama.cpp`. Esse metadado só expõe o caminho; não copia
 nem altera o fork.
 
+Os wrappers C/C++ mantêm includes com o prefixo histórico `llama.cpp/...`.
+Quando `LLAMA_SOURCE` aponta para uma árvore externa, o `build.rs` adiciona o
+diretório pai dela aos includes do bindgen e da ponte C++, além dos includes
+específicos de `include/` e `ggml/include/`. Assim o cache externo de CI não
+precisa substituir o symlink versionado para que `llama.h`, `ggml` e os
+headers internos sejam encontrados.
+
 O `build.rs` força o reconfigure do CMake a cada execução. Isso é intencional:
 o fork coleta os arquivos de `src/models` com `file(GLOB ...)`, enquanto Docker
 e Cargo podem reutilizar o diretório `target/` e o `CMakeCache.txt`. Sem o

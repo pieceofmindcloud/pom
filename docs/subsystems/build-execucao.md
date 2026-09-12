@@ -140,13 +140,12 @@ recebe `LLAMA_SOURCE` para usar esse diretório; assim o `git clean` do
 `actions/checkout` não transforma o clone vendorizado em uma dependência
 implícita do estado anterior do runner.
 
-Os wrappers do `llama-cpp-sys-2` ainda usam includes com o prefixo
-`llama.cpp/...`, por compatibilidade com o symlink versionado. Para que o
-checkout externo cacheado preserve essa convenção, o `build.rs` adiciona o pai
-de `LLAMA_SOURCE` ao include path do bindgen e da ponte C++, além dos diretórios
-`include/` e `ggml/include/`. O cache, portanto, não é restaurado sobre
-`vendor/llama-cpp-sys-2/llama.cpp`, evitando conflito com o placeholder que o
-checkout Windows materializa.
+Os wrappers do `llama-cpp-sys-2` usam includes relativos à raiz real do
+checkout, e o `build.rs` adiciona essa raiz ao include path do bindgen e da
+ponte C++, além dos diretórios `include/` e `ggml/include/`. O cache, portanto,
+não é restaurado sobre `vendor/llama-cpp-sys-2/llama.cpp`, evitando conflito
+com o placeholder que o checkout Windows materializa. O mesmo caminho funciona
+no checkout vendorizado local, em `LLAMA_SOURCE` e dentro do Dockerfile.
 
 Os workflows também ativam `mozilla-actions/sccache-action` com o backend do
 cache do GitHub. `RUSTC_WRAPPER`, os três launchers do CMake e `CCACHE` apontam

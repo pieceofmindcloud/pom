@@ -1,7 +1,7 @@
 #pragma once
 
-#include "llama.cpp/include/llama.h"
-#include "llama.cpp/ggml/include/ggml-backend.h"
+#include "llama.h"
+#include "ggml-backend.h"
 
 #include <stdbool.h>
 #include <stddef.h>

@@ -11,7 +11,7 @@ use walkdir::DirEntry;
 #[path = "src/build_support.rs"]
 mod build_support;
 use build_support::{
-    clone_destination, destination_can_be_replaced, source_can_be_used_directly, source_parent,
+    clone_destination, destination_can_be_replaced, source_can_be_used_directly, source_root,
 };
 
 fn cuda_graphs_enabled(value: Option<&str>) -> bool {
@@ -616,7 +616,7 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("Failed to get CARGO_MANIFEST_DIR");
     let llama_src =
         ensure_llama_source(Path::new(&manifest_dir)).unwrap_or_else(|error| panic!("{error}"));
-    let llama_parent = source_parent(&llama_src);
+    let llama_include_root = source_root(&llama_src);
     // O `llama-engine` também inspeciona o checkout para gerar sua lista MTP.
     // O metadado mantém os dois build scripts no caminho exato escolhido aqui,
     // inclusive o caminho materializado no Windows e um `LLAMA_SOURCE` explícito.
@@ -690,10 +690,10 @@ fn main() {
     // Bindings
     let mut bindings_builder = bindgen::Builder::default()
         .header("wrapper.h")
-        // The wrapper keeps the historical `llama.cpp/...` include spelling.
-        // Include the checkout parent so it works for an external LLAMA_SOURCE
-        // as well as for the versioned symlink path.
-        .clang_arg(format!("-I{}", llama_parent.display()))
+        // The wrappers include paths relative to the selected checkout root,
+        // so this works for both the versioned symlink and an external
+        // LLAMA_SOURCE used by CI.
+        .clang_arg(format!("-I{}", llama_include_root.display()))
         .clang_arg(format!("-I{}", llama_src.join("include").display()))
         .clang_arg(format!("-I{}", llama_src.join("ggml/include").display()))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
@@ -856,8 +856,7 @@ fn main() {
         common_wrapper_build
             .cpp(true)
             .file("wrapper_common.cpp")
-            .include(&llama_parent)
-            .include(&llama_src)
+            .include(&llama_include_root)
             .include(llama_src.join("common"))
             .include(llama_src.join("include"))
             .include(llama_src.join("ggml/include"))

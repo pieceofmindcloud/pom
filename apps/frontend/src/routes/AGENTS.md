@@ -31,6 +31,12 @@ Per-file list:
   habilitar o salvamento; não confundir com o protótipo
   `SetupWizard.tsx`.
 
+  Redes públicas exigem também pelo menos um ingresso do diretório federado,
+  informado como URLs HTTP(S) separadas por vírgula. Um nó privado pode manter
+  esses ingressos para consultar o catálogo por saída; o join público encerra a
+  sessão privada antes de reconfigurar o nó, sem suporte a duas redes P2P
+  simultâneas no v1.
+
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
   padrão de Logs: tabela rolável com nome público, organização, localização,
   label geo-hierárquico, endereço publicado com indicador de alcançabilidade,

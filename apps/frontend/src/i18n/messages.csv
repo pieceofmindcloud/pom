@@ -1660,6 +1660,9 @@ setupWizard.publicInternet,Public over the internet,Pública pela internet
 setupWizard.publicKey,Generated public key,Chave pública gerada
 setupWizard.publicName,Public network name,Nome público da rede
 setupWizard.publicNameHint,This name also identifies the trust root.,Este nome também identifica a raiz de confiança.
+setupWizard.publicDirectory,Federated directory ingresses,Ingressos do diretório federado
+setupWizard.publicDirectoryHint,Enter one or more HTTP(S) URLs separated by commas. A private node only needs outbound access to list public networks.,Informe uma ou mais URLs HTTP(S) separadas por vírgulas. Um nó privado precisa apenas de saída para listar redes públicas.
+setupWizard.publicDirectoryPlaceholder,https://directory.example,https://diretorio.exemplo
 setupWizard.ramReserve,RAM available for the system,RAM disponível para o sistema
 setupWizard.ramReserveDetail,More means more room for your other apps.,Mais significa mais espaço para seus outros aplicativos.
 setupWizard.recommended,Recommended,Recomendado

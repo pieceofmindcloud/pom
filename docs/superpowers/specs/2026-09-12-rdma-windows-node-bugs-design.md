@@ -36,42 +36,86 @@ ambiente explicitamente registrada antes da alteração correspondente.
    registro público; a tela `apps/frontend/src/routes/PublicNetworks.tsx`
    exibe o resultado. A implementação atual consulta pkarr por chave somente
    para candidatos entregues por UDP/libp2p ou cache, não enumera o DHT.
-   Parsing, transporte e firewall não serão misturados na mesma hipótese.
+   `crates/node/src/network/public_directory.rs` implementa o novo protocolo
+   de registros federados. Parsing, transporte e firewall não serão misturados
+   na mesma hipótese.
 
-## Proposta para o diretório global de redes públicas
+## Protocolo federado para o diretório global de redes públicas
 
-O item 3 escolhido pelo captain exige uma fronteira nova, independente da
-descoberta P2P direta. A proposta para decisão é um protocolo de registros
-assinados, com serviço de diretório replicado:
+O captain escolheu federação desde a primeira versão. Nenhuma réplica é uma
+autoridade POM e nenhuma delas é obrigatória para a segurança ou para a
+conectividade P2P. As réplicas são ingressos de transporte que podem ser
+operados por organizações diferentes.
 
-- O nó publica um anúncio assinado pela chave de autoridade já usada no
-  registro pkarr. O anúncio contém identidade da rede, nome público, endpoint(s),
-  metadados mínimos, versão do protocolo, `issued_at` e expiração. O diretório
-  valida formato, assinatura e limites, mas não vira autoridade de confiança.
-- O diretório POM opera uma API HTTPS de escrita e múltiplas réplicas de
-  leitura. O cliente recebe uma lista de URLs de bootstrap, consulta as réplicas
-  em paralelo, faz união por identidade do registro e rejeita assinatura,
-  cluster ou expiração inválidos localmente. Assim, uma réplica fora do ar não
-  impede a listagem e uma réplica comprometida não pode forjar uma rede.
-- O cliente mantém cache local de anúncios assinados com expiração. A consulta
-  inicial não depende de UDP, libp2p, relay, DHT ou conectividade IPv6 do nó
-  publicado. Depois da listagem, a conexão de dados ainda exige que algum
-  endpoint anunciado seja roteável, por IPv4, Tailscale ou outro transporte
-  suportado.
-- A publicação usa idempotência por `(authority_pubkey, sequence)` e pode ser
-  repetida em todas as réplicas. O armazenamento é um log de anúncios com
-  tombstone/expiração, permitindo replicação e auditoria sem guardar segredo de
-  usuário. As réplicas podem ser distribuídas por operadores diferentes se o
-  protocolo de sincronização for aberto.
+### Registro e consenso
 
-Há uma decisão arquitetural real antes de codar: começar com um serviço
-replicado operado pela POM, com protocolo extensível para federação futura, ou
-definir desde já um diretório descentralizado/federado com regras de descoberta,
-replicação e prevenção de spam. A primeira opção reduz a superfície inicial e
-evita ponto único de falha por múltiplas réplicas, mas mantém dependência
-operacional da POM. A segunda reduz dependência de uma operadora, porém exige
-definir consenso, bootstrap, moderação, retenção e identidade de instâncias.
-Não será escolhida silenciosamente.
+- Cada publicação é um registro completo assinado por Ed25519 pela autoridade
+  do nó publicador. A chave, `cluster_id`, fingerprint da âncora, documento de
+  confiança, endpoint, localização e ingressos conhecidos ficam dentro da
+  carga assinada. O `discovered_via` é anotação local e não entra na assinatura.
+- A identidade lógica de uma versão é `(publisher_pubkey, sequence)`. Para o
+  mesmo publicador, a maior sequência vence. Um conflito artificial na mesma
+  sequência é resolvido pelo menor hash da carga assinada, de forma
+  determinística. Réplicas e clientes fazem merge idempotente e podam versões
+  vencidas.
+- Esse é o consenso escolhido para o diretório v1: convergência eventual por
+  merge determinístico, sem líder, quorum ou bloqueio de publicação. A
+  assinatura impede falsificação e a regra de sequência impede que uma cópia
+  atrasada regrida o anúncio. Não há consenso BFT nem eleição de réplicas nesta
+  versão, porque uma réplica nunca autoriza a rede nem participa da admissão.
+- Um nó publica em todos os ingressos configurados e consulta todos em
+  paralelo. O cache local também é mesclado. Assim, réplicas que não se veem
+  diretamente convergem quando publicadores ou leitores carregam registros
+  entre elas, sem ponto único de falha.
+
+### Bootstrap e disponibilidade
+
+- O operador informa uma lista de URLs HTTP(S) de ingressos no wizard, separada
+  por vírgulas, ou pela variável `POM_PUBLIC_DIRECTORY` em instalação sem UI.
+  A lista é deduplicada e limitada a 16 URLs. Os registros carregam a lista de
+  ingressos que o publicador conhece para que um join possa conservar o
+  bootstrap federado.
+- Um nó privado pode consultar o diretório por conexões de saída HTTP(S), mesmo
+  continuando privado. Isso exige apenas que a política de rede local permita
+  saída até pelo menos uma réplica. Não há exigência de IPv6 público, porta de
+  entrada, relay ou descoberta P2P para listar redes públicas.
+- O nó privado não publica registros e, para preservar isolamento, sua tela de
+  redes públicas não usa candidatos UDP/libp2p/pkarr da rede privada. Ela usa
+  apenas o cache assinado e os ingressos configurados.
+- A conexão de dados depois da listagem é outra etapa: o endpoint anunciado
+  ainda precisa ser alcançável por IPv4, Tailscale ou outro transporte
+  suportado. O diretório não promete que um endereço IPv6 anunciado tenha rota.
+
+### Respostas explícitas às perguntas de segurança
+
+- Um nó privado pode listar redes públicas. O mínimo é saída HTTP(S) para uma
+  réplica configurada, ou um cache local ainda vigente. Nenhuma conexão de
+  entrada é necessária.
+- O v1 não mantém rede privada e rede pública simultaneamente no mesmo
+  processo. O usuário pode consultar a lista enquanto está privado, mas o join
+  chama o fluxo de saída da rede atual e substitui a configuração antes de
+  entrar na pública. Essa é uma escolha deliberada de isolamento, não uma
+  limitação escondida do wizard.
+- A rede pública nunca recebe a chave, os bootstrap addresses ou anúncios da
+  rede privada. O diretório carrega apenas registros que o publicador escolheu
+  assinar. O caminho de consulta usa HTTP(S) de metadados e não injeta os
+  endereços retornados em um swarm privado. Como só existe uma rede P2P ativa,
+  não há uma interface pública paralela para encaminhar até a privada. O
+  firewall continua sendo defesa adicional, não a única barreira.
+
+### Anti-spam, retenção e segurança
+
+- Toda carga exige assinatura Ed25519 válida e uma prova de trabalho de 16 bits
+  sobre a carga completa. O custo é pago pelo publicador, não por quem lista.
+  O servidor também limita tamanho dos campos e aceita no máximo uma versão
+  vigente por publicador.
+- Ao aceitar ou servir um registro, a réplica confere a cadeia de confiança,
+  `cluster_id` e fingerprint. Uma assinatura válida nunca transforma uma raiz
+  de outro cluster em raiz local.
+- O TTL máximo é de 7 dias. Registros expirados ou mais antigos que 7 dias são
+  removidos do cache, e cada cache tem limite de 1024 registros. Isso define a
+  política de retenção e limita crescimento e replay sem criar tombstones
+  permanentes.
 
 ## Critérios de saída
 
@@ -83,5 +127,5 @@ Não será escolhida silenciosamente.
   descreve o comportamento entregue em pt-BR.
 - A necessidade de validação Windows real permanece explícita quando não for
   possível simular o ambiente nesta máquina.
-- O diretório global permanece sem implementação até a decisão sobre operação
-  replicada pela POM versus federação/descentralização.
+- O diretório global implementado segue as escolhas federadas acima. Não há
+  dependência de um serviço central da POM.

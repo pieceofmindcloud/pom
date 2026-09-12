@@ -25,6 +25,7 @@ interface PublicNetwork {
   access_policy: "authorized" | "anyone_with_anchor" | "local_only";
   location: { latitude: number; longitude: number; accuracy_m?: number } | null;
   discovered_via: string;
+  directory_replicas?: string[];
 }
 
 interface ViewerLocation {

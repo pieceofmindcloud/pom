@@ -152,6 +152,12 @@ com timeout curto, cache de 30 segundos e nova tentativa apenas por atualizaçã
 explícita; o resultado verde/vermelho representa alcançabilidade observada, não
 uma alteração no endereço que o pkarr publicou.
 
+O catálogo público agora vem de ingressos federados configurados no primeiro
+acesso. O wizard salva URLs HTTP(S) separadas por vírgulas em `publicDirectory`;
+elas são somente saída de metadados e não abrem a rede privada para peers
+públicos. Um join público substitui a rede atual, pois o runtime mantém uma só
+sessão P2P por processo.
+
 ## Links
 
 - Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, deployments, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, network/info, network/geo-reference, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.

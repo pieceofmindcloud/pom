@@ -38,6 +38,7 @@ pub struct SetupHardwareResponse {
     pub shard_dir: String,
     pub node_name: Option<String>,
     pub network: crate::config::NetworkSettings,
+    pub public_directory: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -124,7 +125,7 @@ fn connection_key_after_setup(existing: &str, supplied: &str) -> String {
     }
 }
 
-async fn setup_hardware(config: AuthState) -> SetupHardwareResponse {
+async fn setup_hardware(config: AuthState, public_directory: Vec<String>) -> SetupHardwareResponse {
     let system = sysmon::sample().await;
     let gpu_detected = !system.gpus.is_empty();
     let cuda_available = cfg!(feature = "cuda")
@@ -185,11 +186,21 @@ async fn setup_hardware(config: AuthState) -> SetupHardwareResponse {
         shard_dir: cfg.shard_dir_path().to_string_lossy().into_owned(),
         node_name: cfg.node_name.clone(),
         network: cfg.network.clone(),
+        public_directory,
     }
 }
 
-pub async fn get_setup_hardware(State(config): State<AuthState>) -> impl IntoResponse {
-    Json(setup_hardware(config).await)
+pub async fn get_setup_hardware(State(state): State<SetupState>) -> impl IntoResponse {
+    let public_directory = state
+        .database
+        .public_directory_settings()
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .effective_with_env()
+        .map(|settings| settings.replicas)
+        .unwrap_or_default();
+    Json(setup_hardware(state.config, public_directory).await)
 }
 
 pub async fn get_setup_geo_reference(State(state): State<SetupState>) -> Response {
@@ -321,7 +332,7 @@ pub async fn get_setup_health(
     State(config): State<AuthState>,
     Json(request): Json<SetupHealthRequest>,
 ) -> impl IntoResponse {
-    let hardware = setup_hardware(config).await;
+    let hardware = setup_hardware(config, Vec::new()).await;
     Json(SetupHealthResponse {
         gpu_detected: hardware.gpu_detected,
         cuda_working: hardware.cuda_available,
@@ -369,6 +380,8 @@ pub struct SaveSetupRequest {
     pub setup_model: Option<String>,
     #[serde(default)]
     pub node_name: String,
+    #[serde(default)]
+    pub public_directory: Vec<String>,
 }
 
 pub async fn install_setup_trust_anchor(
@@ -415,6 +428,32 @@ pub async fn save_setup(
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": error.to_string() })),
+        )
+            .into_response();
+    }
+    let public_directory = match crate::public_directory::PublicDirectorySettings::from_urls(
+        req.public_directory.iter(),
+    )
+    .and_then(|settings| settings.effective_with_env())
+    {
+        Ok(settings) => settings,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("ingresso do diretório público inválido: {error:#}") })),
+            )
+                .into_response();
+        }
+    };
+    if network.visibility == crate::config::NetworkVisibility::Public
+        && public_directory.replicas.is_empty()
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "reason": "public_directory_required",
+                "error": "redes públicas exigem pelo menos um ingresso do diretório federado"
+            })),
         )
             .into_response();
     }
@@ -598,6 +637,12 @@ pub async fn save_setup(
         Ok(()) => {
             if let Err(error) = state.database.save_network_settings(&network_for_db) {
                 warn!("não foi possível salvar os detalhes da rede no banco: {error:#}");
+            }
+            if let Err(error) = state
+                .database
+                .save_public_directory_settings(&public_directory)
+            {
+                warn!("não foi possível salvar os ingressos do diretório público: {error:#}");
             }
             // Trigger restart: spawn a new instance and exit.
             // The new instance will find the config file and start in full mode.

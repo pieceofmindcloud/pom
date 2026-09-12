@@ -81,8 +81,9 @@ em campo. A seção 2.1.1 registra a regressão de endereço anunciada de
 2026-09-04, a reaplicação da rota morta por lote e a memória de falha que a
 corrige.
 `api-http.md` registra também que o endereço anunciado é uma mutação local
-disponível a todo perfil e que o fallback da interface não intercepta métodos
-de rotas administrativas concretas. `implantacao.md` e `inferencia.md` mantêm
+disponível a todo perfil, que o diretório público federado aceita somente
+registros assinados e que o fallback da interface não intercepta métodos de
+rotas administrativas concretas. `implantacao.md` e `inferencia.md` mantêm
 o contrato de que deployments `idle` continuam selecionáveis pelo nome, mesmo
 sem capacidade efetiva anunciada, para que a primeira requisição possa acordá-los.
 

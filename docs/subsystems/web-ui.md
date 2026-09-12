@@ -235,6 +235,10 @@ público também é obrigatório para rede pública em todos os perfis e aparece
 passo de confiança de node/infer antes do salvamento. A cidade manual é válida
 quando a referência SQLite não a contém.
 
+O wizard também pede pelo menos um ingresso HTTP(S) do diretório federado,
+separado por vírgulas, para uma rede pública. Um nó privado pode conservar
+esses ingressos para listar o catálogo por saída.
+
 O passo de modelos combina o catálogo local com referências do Hugging Face,
 sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como
 padrões. O convite do admin mostra e baixa a raiz `.pom.trust.json`, a chave
@@ -506,8 +510,8 @@ endereços em cada ciclo. A resposta de nó configurado publica
 capabilities do túnel, usados pelo deploy TP para transportar o endereço correto
 até cada rank.
 
-`GET /api/public/networks` lista metadados de redes públicas conhecidos pela
-descoberta pkarr existente. O label geo canônico (`com.<país>.<cidade>.<node>`)
+`GET /api/public/networks` combina cache e ingressos do diretório federado com
+a descoberta pkarr quando a rede ativa é pública. O label geo canônico (`com.<país>.<cidade>.<node>`)
 é campo do registro, nunca a chave pkarr. O índice local persiste labels já
 observados e aceita `geo_prefix`/`geo_suffix`, permitindo filtrar candidatos
 antes das sondas HTTP. A página `/redes-publicas` é full-bleed, como Logs, e
@@ -515,12 +519,12 @@ mostra uma tabela com nome, organização, país/cidade, label, nós, latência,
 VRAM, modelos e endereço. As métricas do cluster local são calculadas de
 `ClusterView` quando a rede corresponde; os demais campos aparecem como
 indisponíveis porque o catálogo público atual não os fornece. O documento de
-confiança não é publicado por esta lista; o operador recebe-o do responsável
-da rede por um canal próprio. A lista não enumera chaves arbitrárias do DHT:
-cada registro precisa primeiro chegar como candidato pela descoberta UDP/libp2p
-ou pela tabela local. Portanto um nó novo precisa de um bootstrap ou de uma
-conectividade comum com o nó que publicou o anúncio; um endereço IPv6 apenas
-presente na interface, mas sem rota externa, não satisfaz essa condição.
+confiança viaja dentro do registro federado assinado para o join sem segredo.
+Um nó privado consulta o diretório por saída HTTP(S), mas não usa o swarm
+privado para buscar candidatos. O endereço listado ainda pode ser inalcançável,
+por exemplo quando é IPv6 anunciado sem rota externa. Entrar numa rede pública
+encerra a rede privada atual; duas redes P2P simultâneas não são suportadas no
+v1.
 
 O **perfil** da interface (*Menu e rotas*) não entra nesta conta: ele é escolha
 local do navegador e não vale como credencial. As rotas administrativas usam a

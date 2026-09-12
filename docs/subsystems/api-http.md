@@ -39,6 +39,12 @@ provar a identidade do peer.
   `POST /v1/remote-stream-result` (`direct::REMOTE_STREAM_RESULT_PATH`, o
   callback HTTPS de fallback do transporte remoto) e `POST /v1/link` (canal
   persistente full-duplex do retorno remoto, sem limite de corpo externo).
+- **Diretório público federado** (`gateway/http.rs`): `GET` e `POST
+  /api/public/directory/records` são ingressos públicos de metadados. O GET
+  entrega registros assinados e o POST aceita somente registros com assinatura,
+  prova de trabalho, cadeia de confiança e principal compatíveis. O cache local
+  é limitado e expirado; nenhuma dessas rotas carrega bootstrap ou credenciais
+  de rede privada.
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,

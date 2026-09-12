@@ -15,6 +15,12 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .route("/api/access", get(admin_access_status))
         .route("/api/public/network", get(public_network))
         .route("/api/public/networks", get(public_networks))
+        .route(
+            "/api/public/directory/records",
+            get(public_directory_records)
+                .post(accept_public_directory_record)
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024)),
+        )
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
         .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
@@ -136,6 +142,8 @@ pub(crate) struct PublicNetworkView {
     pub access_policy: crate::config::NetworkAccessPolicy,
     pub location: Option<crate::config::NetworkLocation>,
     pub discovered_via: String,
+    #[serde(default)]
+    pub directory_replicas: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -162,6 +170,10 @@ fn matches_geo_label(label: &str, query: &PublicNetworksQuery) -> bool {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .is_none_or(|suffix| label.ends_with(suffix))
+}
+
+fn allow_public_p2p_discovery(visibility: crate::config::NetworkVisibility) -> bool {
+    visibility == crate::config::NetworkVisibility::Public
 }
 
 fn endpoint_for_public_network(state: &GatewayState) -> String {
@@ -197,6 +209,338 @@ fn bootstrap_for_public_network(state: &GatewayState) -> String {
         })
 }
 
+fn directory_settings(state: &GatewayState) -> crate::public_directory::PublicDirectorySettings {
+    state
+        .database
+        .public_directory_settings()
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .effective_with_env()
+        .unwrap_or_default()
+}
+
+fn directory_network_from_view(
+    view: &PublicNetworkView,
+) -> crate::public_directory::PublicDirectoryNetwork {
+    crate::public_directory::PublicDirectoryNetwork {
+        cluster_id: view.cluster_id.clone(),
+        name: view.name.clone(),
+        fingerprint: view.fingerprint.clone(),
+        address: view.address.clone(),
+        bootstrap_address: view.bootstrap_address.clone(),
+        trust_document: view.trust_document.clone(),
+        organization: view.organization.clone(),
+        description: view.description.clone(),
+        country_code: view.country_code.clone(),
+        country_name: view.country_name.clone(),
+        city: view.city.clone(),
+        geo_label: view.geo_label.clone(),
+        access_policy: view.access_policy,
+        location: view.location.clone(),
+        directory_replicas: view.directory_replicas.clone(),
+    }
+}
+
+fn view_from_directory_network(
+    network: crate::public_directory::PublicDirectoryNetwork,
+) -> PublicNetworkView {
+    PublicNetworkView {
+        cluster_id: network.cluster_id,
+        name: network.name,
+        fingerprint: network.fingerprint,
+        address: network.address,
+        bootstrap_address: network.bootstrap_address,
+        trust_document: network.trust_document,
+        organization: network.organization,
+        description: network.description,
+        country_code: network.country_code,
+        country_name: network.country_name,
+        city: network.city,
+        geo_label: network.geo_label,
+        access_policy: network.access_policy,
+        location: network.location,
+        discovered_via: "directory".to_string(),
+        directory_replicas: network.directory_replicas,
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PublicDirectoryRecordsResponse {
+    version: u32,
+    records: Vec<crate::public_directory::SignedPublicDirectoryRecord>,
+}
+
+fn directory_records_url(base: &str) -> String {
+    format!(
+        "{}/api/public/directory/records",
+        base.trim_end_matches('/')
+    )
+}
+
+fn validate_public_directory_semantics(
+    record: &crate::public_directory::SignedPublicDirectoryRecord,
+) -> Result<()> {
+    let document = crate::admin_trust::parse_transported(&record.network.trust_document)
+        .map_err(|error| anyhow::anyhow!("cadeia pública inválida: {error:#}"))?;
+    if document.anchor.cluster_id != record.network.cluster_id
+        || crate::admin_trust::anchor_fingerprint(&document) != record.network.fingerprint
+    {
+        return Err(anyhow::anyhow!(
+            "o registro não corresponde à raiz de confiança anunciada"
+        ));
+    }
+    if document.primary.pubkey != record.publisher_pubkey {
+        return Err(anyhow::anyhow!(
+            "somente o principal da rede pode publicar seu registro"
+        ));
+    }
+    Ok(())
+}
+
+async fn read_directory_records(
+    state: &GatewayState,
+) -> Vec<crate::public_directory::SignedPublicDirectoryRecord> {
+    let settings = directory_settings(state);
+    let client = state.peer_http.plain();
+    let responses = futures::future::join_all(settings.replicas.into_iter().map(|base| {
+        let client = client.clone();
+        async move {
+            let response = client
+                .get(directory_records_url(&base))
+                .timeout(Duration::from_secs(3))
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            response
+                .json::<PublicDirectoryRecordsResponse>()
+                .await
+                .ok()
+                .filter(|payload| {
+                    payload.version == crate::public_directory::PUBLIC_DIRECTORY_VERSION
+                })
+                .map(|payload| payload.records)
+        }
+    }))
+    .await;
+
+    let now = crate::public_directory::current_time_secs()
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+    let mut records = state
+        .database
+        .public_directory_records()
+        .unwrap_or_default();
+    let mut changed = false;
+    let mut learned = Vec::new();
+    for incoming in responses.into_iter().flatten().flatten() {
+        if let Err(error) = validate_public_directory_semantics(&incoming) {
+            warn!("registro do diretório federado recusado: {error:#}");
+            continue;
+        }
+        let learned_record = incoming.clone();
+        match crate::public_directory::merge_record(&mut records, incoming, now) {
+            Ok(crate::public_directory::MergeOutcome::Inserted)
+            | Ok(crate::public_directory::MergeOutcome::Replaced) => {
+                changed = true;
+                learned.push(learned_record);
+            }
+            Ok(_) => {}
+            Err(error) => warn!("registro do diretório federado recusado: {error:#}"),
+        }
+    }
+    let before = records.len();
+    crate::public_directory::prune_records(&mut records, now);
+    records.retain(|record| {
+        if record.validate(now).is_err() || validate_public_directory_semantics(record).is_err() {
+            changed = true;
+            false
+        } else {
+            true
+        }
+    });
+    changed |= before != records.len();
+    if changed {
+        if let Err(error) = state.database.save_public_directory_records(&records) {
+            warn!("não foi possível salvar o cache do diretório federado: {error:#}");
+        }
+    }
+    replicate_directory_records(state, learned).await;
+    records
+}
+
+async fn replicate_directory_records(
+    state: &GatewayState,
+    records: Vec<crate::public_directory::SignedPublicDirectoryRecord>,
+) {
+    if records.is_empty() {
+        return;
+    }
+    let settings = directory_settings(state);
+    let client = state.peer_http.plain();
+    let sends = futures::future::join_all(settings.replicas.into_iter().flat_map(|base| {
+        let client = client.clone();
+        records.iter().cloned().map(move |record| {
+            let client = client.clone();
+            let url = directory_records_url(&base);
+            async move {
+                client
+                    .post(url)
+                    .json(&record)
+                    .timeout(Duration::from_secs(3))
+                    .send()
+                    .await
+            }
+        })
+    }))
+    .await;
+    let failures = sends.iter().filter(|result| result.is_err()).count();
+    if failures > 0 {
+        warn!(
+            "{} publicação(ões) de anti-entropia do diretório federado falharam",
+            failures
+        );
+    }
+}
+
+async fn publish_local_directory_record(state: &GatewayState) -> Result<()> {
+    let settings = directory_settings(state);
+    if settings.replicas.is_empty() {
+        return Ok(());
+    }
+    if state.auth.read().await.profile != crate::profile::NodeProfile::Admin {
+        return Ok(());
+    }
+    let Some(local) = local_public_network(state).await else {
+        return Ok(());
+    };
+    let now = crate::public_directory::current_time_secs()?;
+    let mut records = state.database.public_directory_records()?;
+    let desired = directory_network_from_view(&local);
+    let publisher = hex::encode(state.authority_signing_key.verifying_key().as_bytes());
+    if records.iter().any(|record| {
+        record.publisher_pubkey == publisher
+            && record.network == desired
+            && record.expires_at
+                > now + crate::public_directory::PUBLIC_DIRECTORY_MAX_RECORD_TTL_SECS / 3
+            && record.validate(now).is_ok()
+    }) {
+        return Ok(());
+    }
+    let sequence = records
+        .iter()
+        .filter(|record| record.publisher_pubkey == publisher)
+        .map(|record| record.sequence)
+        .max()
+        .unwrap_or(0)
+        .max(crate::public_directory::next_sequence()?.saturating_sub(1))
+        .saturating_add(1);
+    let record = crate::public_directory::SignedPublicDirectoryRecord::sign(
+        &state.authority_signing_key,
+        sequence,
+        now,
+        desired,
+    )?;
+    let _ = crate::public_directory::merge_record(&mut records, record.clone(), now)?;
+    state.database.save_public_directory_records(&records)?;
+
+    let client = state.peer_http.plain();
+    let sends = futures::future::join_all(settings.replicas.into_iter().map(|base| {
+        let client = client.clone();
+        let record = record.clone();
+        async move {
+            client
+                .post(directory_records_url(&base))
+                .json(&record)
+                .timeout(Duration::from_secs(3))
+                .send()
+                .await
+        }
+    }))
+    .await;
+    for result in sends {
+        if let Err(error) = result {
+            warn!("não foi possível publicar no ingresso do diretório federado: {error}");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn spawn_public_directory_republisher(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(30 * 60));
+        ticker.tick().await;
+        loop {
+            if let Err(error) = publish_local_directory_record(&state).await {
+                warn!("publicação no diretório federado falhou: {error:#}");
+            }
+            ticker.tick().await;
+        }
+    });
+}
+
+async fn public_directory_records(State(state): State<GatewayState>) -> impl IntoResponse {
+    let now = crate::public_directory::current_time_secs()
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+    let mut records = state
+        .database
+        .public_directory_records()
+        .unwrap_or_default();
+    crate::public_directory::prune_records(&mut records, now);
+    records.retain(|record| {
+        record.validate(now).is_ok() && validate_public_directory_semantics(record).is_ok()
+    });
+    if let Err(error) = state.database.save_public_directory_records(&records) {
+        warn!("não foi possível podar o cache do diretório federado: {error:#}");
+    }
+    Json(PublicDirectoryRecordsResponse {
+        version: crate::public_directory::PUBLIC_DIRECTORY_VERSION,
+        records,
+    })
+}
+
+pub(super) async fn accept_public_directory_record(
+    State(state): State<GatewayState>,
+    Json(record): Json<crate::public_directory::SignedPublicDirectoryRecord>,
+) -> Response {
+    let now = crate::public_directory::current_time_secs()
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+    if let Err(error) = validate_public_directory_semantics(&record) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )
+            .into_response();
+    }
+    let mut records = state
+        .database
+        .public_directory_records()
+        .unwrap_or_default();
+    match crate::public_directory::merge_record(&mut records, record, now) {
+        Ok(outcome) => {
+            if let Err(error) = state.database.save_public_directory_records(&records) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("não foi possível persistir o registro: {error:#}") }))).into_response();
+            }
+            let status = match outcome {
+                crate::public_directory::MergeOutcome::Inserted => StatusCode::CREATED,
+                _ => StatusCode::OK,
+            };
+            (
+                status,
+                Json(serde_json::json!({ "accepted": true, "outcome": format!("{outcome:?}") })),
+            )
+                .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "accepted": false, "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView> {
     let (visibility, configured_network) = {
         let config = state.auth.read().await;
@@ -214,6 +558,7 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
     let document = state.admin_trust.document();
     let fingerprint = crate::admin_trust::anchor_fingerprint(&document);
     let trust_document = serde_json::to_string_pretty(&document).ok()?;
+    let directory_replicas = directory_settings(state).replicas;
     Some(PublicNetworkView {
         cluster_id: document.anchor.cluster_id.clone(),
         name: network.public_name.clone(),
@@ -237,6 +582,7 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
                 accuracy_m: None,
             }),
         discovered_via: "pkarr".to_string(),
+        directory_replicas,
     })
 }
 
@@ -249,10 +595,9 @@ pub(super) async fn public_network(State(state): State<GatewayState>) -> impl In
     }
 }
 
-/// Return the local public network and public networks visible through live
-/// pkarr-backed peers. The peer records are already the result of the existing
-/// discovery layer, so this endpoint does not introduce a second discovery
-/// protocol or change the P2P wire format.
+/// Return local, federated-directory, and live pkarr-backed public networks.
+/// The directory is an independent locator: a node can list a signed public
+/// record even when the advertised IPv6 address cannot be dialed directly.
 pub(super) async fn public_networks(
     State(state): State<GatewayState>,
     Query(query): Query<PublicNetworksQuery>,
@@ -272,14 +617,38 @@ pub(super) async fn public_networks(
         }
     }
 
+    if let Err(error) = publish_local_directory_record(&state).await {
+        warn!("não foi possível atualizar o registro local do diretório federado: {error:#}");
+    }
+    let directory_records = read_directory_records(&state).await;
+    for record in directory_records {
+        let network = view_from_directory_network(record.network);
+        if has_geo_filter && !matches_geo_label(&network.geo_label, &query) {
+            continue;
+        }
+        if !networks
+            .iter()
+            .any(|known: &PublicNetworkView| known.fingerprint == network.fingerprint)
+        {
+            networks.push(network);
+        }
+    }
+
     let mut geo_cache = state
         .database
         .public_network_geo_cache()
         .unwrap_or_default();
-    let mut candidates = state.network.alive_peers().await;
-    for peer in state.network.public_discovered_peers().await {
-        if !candidates.iter().any(|known| known.node_id == peer.node_id) {
-            candidates.push(peer);
+    let visibility = state.auth.read().await.network.visibility;
+    let mut candidates = if allow_public_p2p_discovery(visibility) {
+        state.network.alive_peers().await
+    } else {
+        Vec::new()
+    };
+    if allow_public_p2p_discovery(visibility) {
+        for peer in state.network.public_discovered_peers().await {
+            if !candidates.iter().any(|known| known.node_id == peer.node_id) {
+                candidates.push(peer);
+            }
         }
     }
     let pkarr = state.pkarr_publisher.as_ref();
@@ -667,4 +1036,22 @@ pub(super) async fn handle_health(State(state): State<GatewayState>) -> Json<Hea
         default_model: state.active_model().await,
         runtime_capacity: state.network.runtime_capacity(),
     })
+}
+
+#[cfg(test)]
+mod public_directory_isolation_tests {
+    use super::allow_public_p2p_discovery;
+
+    #[test]
+    fn private_and_local_nodes_never_use_their_p2p_swarm_as_public_directory() {
+        assert!(!allow_public_p2p_discovery(
+            crate::config::NetworkVisibility::Private
+        ));
+        assert!(!allow_public_p2p_discovery(
+            crate::config::NetworkVisibility::Local
+        ));
+        assert!(allow_public_p2p_discovery(
+            crate::config::NetworkVisibility::Public
+        ));
+    }
 }

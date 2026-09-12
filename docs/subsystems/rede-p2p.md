@@ -450,6 +450,31 @@ resolve apenas candidatos já aprendidos pela descoberta UDP/libp2p ou pelo cach
 local. Assim, um endereço IPv6 global anunciado sem rota externa não basta para
 um nó novo descobrir a rede.
 
+### Diretório federado de redes públicas
+
+O catálogo global separado do swarm vive em `public_directory.rs`. O principal
+de uma rede pública assina um registro com endpoint, documento de confiança,
+localização e ingressos conhecidos. O registro carrega `version`, `sequence`,
+`issued_at`, `expires_at` e um nonce de prova de trabalho de 16 bits. A
+identidade lógica é `(publisher_pubkey, sequence)`; o merge mantém a maior
+sequência e resolve conflito idêntico de forma determinística pelo menor hash.
+
+Cada nó pode configurar até 16 ingressos HTTP(S) em `POM_PUBLIC_DIRECTORY` ou
+no wizard. O publicador envia seu registro a todos os ingressos, e um leitor
+consulta todos em paralelo e grava o merge no `pom.db`. Uma réplica é transporte,
+não raiz de confiança: assinatura Ed25519, cadeia de confiança, cluster e
+fingerprint são validados pelo leitor e pelo ingresso. Registros expiram em
+sete dias e o cache mantém no máximo 1024 itens.
+
+Um nó privado pode consultar o catálogo por saída HTTP(S), sem IPv6 público,
+porta de entrada ou relay. Para manter isolamento, ele não consulta candidatos
+UDP/libp2p/pkarr do próprio swarm privado e não publica registro público. O
+runtime v1 mantém uma só rede P2P por processo: entrar numa pública substitui a
+rede privada antes de reiniciar. Assim um peer público não recebe bootstrap ou
+endereços privados e não há interface pública paralela para encaminhar até a
+rede privada. A alcançabilidade do endpoint listado continua sendo uma
+propriedade separada, verificada pelo navegador e dependente da rota real.
+
 ## 4. Identidade
 
 `Identity` (`identity.rs`) é um par Ed25519 de longa duração, vivendo em

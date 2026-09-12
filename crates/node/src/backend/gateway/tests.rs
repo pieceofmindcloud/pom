@@ -2348,6 +2348,92 @@ mod replicated_admin_logs_tests {
             assert_eq!(response.status(), StatusCode::OK, "rota={path}");
         }
     }
+
+    #[tokio::test]
+    async fn private_node_lists_a_federated_record_without_private_p2p_candidates() {
+        let state = testkit::state_with("private-node", vec![]).await;
+        state.auth.write().await.network.visibility = crate::config::NetworkVisibility::Private;
+        let trust_document = serde_json::to_string(&state.admin_trust.document())
+            .expect("documento de teste deve serializar");
+        let network = crate::public_directory::PublicDirectoryNetwork {
+            cluster_id: "test-cluster".into(),
+            name: "Rede federada".into(),
+            fingerprint: crate::admin_trust::anchor_fingerprint(&state.admin_trust.document()),
+            address: "203.0.113.10:8080".into(),
+            bootstrap_address: "203.0.113.10:42777".into(),
+            trust_document,
+            organization: "Teste".into(),
+            description: "Registro remoto".into(),
+            country_code: "BR".into(),
+            country_name: "Brasil".into(),
+            city: "Curitiba".into(),
+            geo_label: "br.curitiba".into(),
+            access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            location: None,
+            directory_replicas: Vec::new(),
+        };
+        let record = crate::public_directory::SignedPublicDirectoryRecord::sign(
+            &state.authority_signing_key,
+            1,
+            crate::public_directory::current_time_secs().unwrap(),
+            network.clone(),
+        )
+        .expect("registro de teste deve ser assinado");
+        let attacker = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let forged = crate::public_directory::SignedPublicDirectoryRecord::sign(
+            &attacker,
+            1,
+            crate::public_directory::current_time_secs().unwrap(),
+            network,
+        )
+        .expect("registro forjado deve ter uma prova de trabalho válida");
+        let response = accept_public_directory_record(State(state.clone()), Json(forged)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(state
+            .database
+            .public_directory_records()
+            .unwrap()
+            .is_empty());
+
+        let payload = serde_json::json!({
+            "version": crate::public_directory::PUBLIC_DIRECTORY_VERSION,
+            "records": [record],
+        });
+        let replica = Router::new()
+            .route(
+                "/api/public/directory/records",
+                get(move || async move { Json(payload) }),
+            )
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, replica).await.unwrap();
+        });
+        state
+            .database
+            .save_public_directory_settings(
+                &crate::public_directory::PublicDirectorySettings::from_urls([format!(
+                    "http://{address}"
+                )])
+                .unwrap(),
+            )
+            .unwrap();
+
+        let response = public_networks(State(state.clone()), Query(PublicNetworksQuery::default()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let networks: Vec<PublicNetworkView> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(networks.len(), 1);
+        assert_eq!(networks[0].name, "Rede federada");
+        assert_eq!(networks[0].discovered_via, "directory");
+        assert_eq!(state.database.public_directory_records().unwrap().len(), 1);
+        server.abort();
+    }
 }
 
 /// Um nó de verdade, montado à mão, para os testes que exercitam rotas.

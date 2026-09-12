@@ -928,13 +928,15 @@ faz o download autenticado do blob persistido.
   visibility; the admin access token is persisted only for network exposure.
   `GET /api/public/network(s)` exposes public network metadata, including the
   signed trust document and a P2P bootstrap address for the no-secret join
-  flow, and gathers live records through the existing pkarr-backed discovery
-  table. Public records carry the canonical country/city label as pkarr TXT
-  metadata; the local geo cache supports `geo_prefix` and `geo_suffix`
-  candidate filtering. It cannot enumerate arbitrary pkarr keys: a fresh admin
-  must first receive a candidate through UDP/libp2p or use a configured
-  bootstrap. A global IPv6 address that is present locally but not externally
-  routable does not provide that discovery path.
+  flow. `GET/POST /api/public/directory/records` is the federated directory
+  ingress: records are checked locally for Ed25519 signature, proof of work,
+  trust-root consistency and expiry before entering the bounded SQLite cache.
+  A node publishes to every configured ingress and queries all of them in
+  parallel. Private nodes use this outbound HTTP path but skip private-swarm
+  UDP/libp2p/pkarr candidates, so a public peer cannot learn or dial private
+  peers through the listing feature. Direct pkarr discovery remains available
+  only while the active network is public; it still cannot enumerate arbitrary
+  pkarr keys or make an unroutable IPv6 address reachable.
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,

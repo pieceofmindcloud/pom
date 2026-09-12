@@ -118,6 +118,8 @@ pub(crate) mod profile;
 #[cfg(test)]
 #[path = "profile_tests.rs"]
 mod profile_tests;
+#[path = "network/public_directory.rs"]
+mod public_directory;
 #[path = "network/quic.rs"]
 pub mod quic;
 #[path = "network/quic_policy.rs"]
@@ -1190,6 +1192,7 @@ async fn async_main(
             pkarr_publisher: pkarr_publisher.clone(),
         };
         let gw_port = gateway_port;
+        crate::gateway::spawn_public_directory_republisher(gw_state.clone());
         tokio::spawn(async move {
             if let Err(e) = start_gateway(gw_state, gw_port).await {
                 error!("HTTP API server error: {}", e);
@@ -2093,6 +2096,7 @@ async fn start_gateway_only(
         "Gateway running at http://localhost:{} (model not yet configured)",
         gateway_port
     );
+    crate::gateway::spawn_public_directory_republisher(gw_state.clone());
     let gateway_task = tokio::spawn(async move { start_gateway(gw_state, gateway_port).await });
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção

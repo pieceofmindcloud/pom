@@ -62,6 +62,11 @@ jobs:
       # Rust no PDB final; /Zi cobre as pontes C++ e o llama.cpp, e /DEBUG:FULL
       # faz o linker preservar o CodeView no mesmo pom.exe que vai para o ZIP.
       CARGO_PROFILE_RELEASE_DEBUG: "2"
+      # O profile release normal usa lto=fat e codegen-units=1. Com símbolos
+      # completos isso estoura a memória do linker no runner Windows padrão;
+      # este build é diagnóstico e pode sacrificar otimização por estabilidade.
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
       RUSTFLAGS: "-C link-arg=/DEBUG:FULL"
       CFLAGS: /Zi
       CXXFLAGS: /Zi

@@ -49,6 +49,10 @@ legitimate pipeline control call; the handler still verifies the signed admin
 mutation where authority changes. Setup and the separate inference listener
 are marked out of scope in the table and are not silently treated as gateway
 routes.
+Os testes do gateway cobrem essa diferença por método: `GET /api/ui/deployments`
+é leitura `NodeAdmin`, enquanto as ações de implantação e parada permanecem
+`AdminOnly`; chamadas internas autenticadas continuam independentes do perfil
+local do receptor.
 
 O gateway registra atividade por peer em `reqlog::RequestActivity` e o gateway
 de geração dispara `reload_model` em paralelo para os peers ociosos da pipeline

@@ -163,6 +163,13 @@ inválido. Isso mantém `--list-models` saindo sozinho sem engolir erros. Fora d
 entrada continua um CLI Tokio normal, sem nenhuma dependência de interface
 gráfica.
 
+No Windows, `main.rs` marca o executável com `windows_subsystem = "windows"`
+para que o processo não crie um console. `windows_status.rs` move o serviço
+Tokio para uma thread de fundo e conduz a janela Tao na thread principal; Wry
+carrega o `/admin-ui/chat` no WebView2 instalado pelo sistema e `tray-icon`
+registra o menu da área de notificação. Fechar a janela esconde-a na bandeja,
+enquanto `Abrir POM` restaura e `Sair do POM` termina o processo inteiro.
+
 `start_setup_mode` e `start_gateway_only` estão em `main.rs` (não num módulo
 separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do
 `--ollama-url` e a anuncia **sempre**, com ou sem `--gateway`.
@@ -201,6 +208,8 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
 - `macos_status.rs` e `macos_status.m` - ponte específica de macOS para o item
   de barra, o popover compacto e a janela WebKit; não carregam credenciais nem
   implementam uma API paralela.
+- `windows_status.rs` - janela WebView2 e bandeja Windows, com a política
+  testável de fechar para a área de notificação e sair de verdade.
 
 `profile.rs` é a fonte única do perfil persistido do nó (`admin`, `node` ou
 `infer`) e das capacidades de visibilidade/promoção e gestão de implantação.

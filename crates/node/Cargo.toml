@@ -78,6 +78,15 @@ routing-contract = { path = "../routing-contract" }
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
+[target.'cfg(windows)'.dependencies]
+# O shell nativo Windows usa WebView2 (runtime do sistema), sem Electron nem
+# um segundo processo de navegador. Tao mantém a janela e o loop Win32; tray-icon
+# instala o ícone e o menu na área de notificação.
+image = { version = "0.25", default-features = false, features = ["png"] }
+tao = { version = "0.37", default-features = false, features = ["rwh_06"] }
+tray-icon = { version = "0.25", default-features = false }
+wry = { version = "0.57", default-features = false }
+
 # Só compila `src/macos_status.m`, a ponte AppKit/WebKit do item de barra de
 # status. Como o `winresource` acima, o `cfg` aqui é do host.
 [target.'cfg(target_os = "macos")'.build-dependencies]

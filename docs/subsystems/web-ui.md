@@ -54,6 +54,20 @@ encerrar o processo. Assim `macos_status.rs` consegue esperar a thread de
 serviço e devolver ao shell a mensagem e o código de saída de uma configuração
 inválida, em vez de sair silenciosamente com status 0.
 
+### Janela e bandeja do Windows
+
+No Windows, o mesmo binário usa `windows_subsystem = "windows"`, então a
+interface não abre um console separado. `crates/node/src/windows_status.rs`
+cria uma janela Tao e um WebView2 real via Wry, carregando o mesmo
+`/admin-ui/chat` e a porta escolhida pelo Rust. O ícone da área de notificação
+usa a arte POM embutida no binário; o menu `Abrir POM` restaura e foca a janela.
+
+O X da janela não encerra o processo: ele a esconde na bandeja, mantendo o
+gateway e a sessão administrativa ativos, como o item de status do macOS. O
+menu `Sair do POM` é a saída terminal e encerra o processo inteiro. O runtime
+WebView2 é uma dependência instalada no Windows, não um executável auxiliar
+distribuído pelo POM.
+
 O endereço é `http://127.0.0.1:<gateway_port>/admin-ui/chat`, com a porta do
 `pom.json`, o `--gateway-port` como fallback e 8080 como default - o painel
 nunca crava 8080. Os dois WebViews usam

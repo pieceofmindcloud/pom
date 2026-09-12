@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 /// Commit this binary was built from, stamped by `build.rs`.
 pub const BUILD_COMMIT: &str = env!("POM_BUILD_COMMIT");
 
@@ -160,6 +162,7 @@ mod transfer;
 mod webapp;
 #[path = "backend/webui/mod.rs"]
 mod webui;
+mod windows_status;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -410,11 +413,11 @@ struct Args {
 ///
 /// No macOS a thread principal pertence ao AppKit: `NSApplication` só aceita
 /// ser conduzida a partir dela, e é ela que atende o item da barra de status.
-/// Por isso o serviço é movido para uma thread de fundo com o seu próprio
-/// runtime, e a principal fica no laço de eventos nativo. Nas outras
-/// plataformas nada disso existe e o runtime é construído aqui mesmo, de modo
-/// que quem corre o binário num servidor Linux não ganha dependência de
-/// interface gráfica.
+/// No Windows, o Tao e a bandeja têm a mesma exigência de thread de UI. Por
+/// isso o serviço é movido para uma thread de fundo com o seu próprio runtime,
+/// e a principal fica no laço de eventos nativo. Nas outras plataformas nada
+/// disso existe e o runtime é construído aqui mesmo, de modo que quem corre o
+/// binário num servidor Linux não ganha dependência de interface gráfica.
 fn main() -> Result<()> {
     respawn::remember_argv(std::env::args().collect());
     let (log_capture, log_receiver) =
@@ -436,7 +439,7 @@ fn main() -> Result<()> {
         return run_command(command);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let gateway_port = configured_gateway_port(&args);
 
     let service = move || {
@@ -451,7 +454,12 @@ fn main() -> Result<()> {
         return macos_status::run(gateway_port, service);
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        return windows_status::run(gateway_port, service);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     service()
 }
 
@@ -573,17 +581,17 @@ fn anchor_admin(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn gateway_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/admin-ui/chat")
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
     config_port.unwrap_or(cli_port)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn configured_gateway_port(args: &Args) -> u16 {
     let persisted = config::Config::load()
         .ok()
@@ -2123,14 +2131,45 @@ async fn start_gateway_only(
 mod main_tests {
     use super::*;
 
-    #[cfg(target_os = "macos")]
+    #[test]
+    fn o_binario_windows_e_um_app_gui_e_o_shell_tem_tray_webview_e_saida() {
+        let main_source = include_str!("main.rs");
+        let shell_source = include_str!("windows_status.rs");
+
+        assert!(
+            main_source.contains("#![cfg_attr(windows, windows_subsystem = \"windows\")]"),
+            "o executável Windows não pode alocar um console próprio"
+        );
+        assert!(
+            shell_source.contains("WebViewBuilder"),
+            "o shell Windows precisa criar um WebView nativo"
+        );
+        assert!(
+            shell_source.contains("TrayIconBuilder"),
+            "o shell Windows precisa instalar um ícone na bandeja"
+        );
+        assert!(
+            shell_source.contains("MenuEvent::set_event_handler"),
+            "o shell Windows precisa encaminhar os cliques do menu ao loop nativo"
+        );
+        assert!(
+            shell_source.contains("WindowAction::HideToTray"),
+            "fechar a janela deve mantê-la disponível na bandeja"
+        );
+        assert!(
+            shell_source.contains("WindowAction::Quit"),
+            "o menu da bandeja precisa ter uma saída terminal"
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn menu_bar_chat_url_uses_loopback_and_gateway_port() {
         assert_eq!(gateway_url(8080), "http://127.0.0.1:8080/admin-ui/chat");
         assert_eq!(gateway_url(8090), "http://127.0.0.1:8090/admin-ui/chat");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn persisted_gateway_port_wins_over_cli_fallback() {
         assert_eq!(select_gateway_port(Some(9123), 8080), 9123);

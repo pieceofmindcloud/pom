@@ -1160,6 +1160,13 @@ chave de conexão para copiar ou baixar. O wizard real oferece os mesmos
 materiais na etapa de convite. `SetupWizard.tsx` continua sendo apenas o
 protótipo visual e não participa dessas chamadas.
 
+O painel também expõe `Esquecer rede`, com confirmação destrutiva. Essa ação
+chama `POST /api/ui/network/leave`, que revoga a confiança local, prepara o
+`pom.json` para o setup e reinicia este nó; depois a interface volta para
+`/setup`. Ela é deliberadamente diferente de `Sair da rede`, no painel
+`Esta máquina`, que chama `POST /api/ui/leave` e apenas tira a máquina do
+cluster sem apagar sua configuração local.
+
 ## Defeitos anotados
 
 - `AddNodeDialog` re-semeia as escolhas **na transição para aberto**, não a cada

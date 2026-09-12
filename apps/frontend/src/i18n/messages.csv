@@ -1053,6 +1053,12 @@ network.countryRequired,Required for a public network,Obrigatório para uma rede
 network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
 network.download,Download,Baixar
+network.forgetNetwork,Forget network,Esquecer rede
+network.forgetNetworkDescription,"This permanently removes this node's local network configuration and trust root, then restarts the node and opens setup again. It does not remove another machine from the cluster.","Esta ação irreversível apaga a configuração local e a raiz de confiança deste nó, reinicia o nó e abre o setup novamente. Ela não tira outra máquina do cluster."
+network.forgetNetworkFailed,Could not forget the local network configuration,Não foi possível esquecer a configuração local da rede
+network.forgetNetworkStarted,Local network reset started,Limpeza local da rede iniciada
+network.forgetNetworkStartedDetail,The node is restarting and will open setup again.,O nó está reiniciando e abrirá o setup novamente.
+network.forgetNetworkTitle,Forget the local network configuration?,Esquecer a configuração local?
 network.geoLabel,Discovery label,Rótulo de descoberta
 network.here,here,aqui
 network.identityNote,"A machine''s identity is its node_id, stored in .pom-node.key. Removing that file makes a new machine to other peers, and the block no longer applies.","A identidade de uma máquina é o node_id, guardado em .pom-node.key. Apagar esse arquivo cria uma máquina nova aos olhos dos outros peers, e o bloqueio deixa de valer."

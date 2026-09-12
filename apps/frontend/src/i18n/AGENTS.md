@@ -126,6 +126,9 @@ As chaves `network.networkInfo*`, `network.share*`, `network.publicName*`,
 de informações da rede e o compartilhamento da confiança. Cada nova chave
 desse fluxo precisa continuar presente nas colunas `en` e `pt-BR` do CSV;
 textos de documento e de chave são dados do servidor, não mensagens de locale.
+As chaves `network.forgetNetwork*` nomeiam a confirmação e o resultado da
+limpeza local da rede; elas não devem ser confundidas com `network.leave`, que
+tira a máquina do cluster sem apagar sua configuração.
 As chaves `publicNetworks.*`, `network.metrics*`, `network.participants*`,
 `keys.*`, `preferences.admin*` e `nav.*` cobrem a reorganização das telas,
 incluindo estados de métrica indisponível, os estados reachable/unreachable do

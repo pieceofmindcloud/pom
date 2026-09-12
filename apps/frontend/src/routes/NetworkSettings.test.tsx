@@ -195,4 +195,49 @@ describe("NetworkSettings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Salvar detalhes da rede" }));
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
   });
+
+  it("separa esquecer a configuração local de sair do cluster", async () => {
+    queryMocks.node.data.profile = "admin";
+    queryMocks.node.data.authority_level = "primary";
+    queryMocks.networkInfo.data.can_edit = true;
+    vi.clearAllMocks();
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: "Sair da rede" })).toBeTruthy();
+    const esquecer = screen.getByRole("button", { name: "Esquecer rede" });
+    fireEvent.click(esquecer);
+
+    const dialog = screen.getByRole("dialog", { name: "Esquecer a configuração local?" });
+    expect(dialog.textContent).toMatch(/apaga a configuração local.*reinicia o nó/i);
+    expect(vi.mocked(api.post)).not.toHaveBeenCalled();
+
+    const confirma = screen.getAllByRole("button", { name: "Esquecer rede" });
+    fireEvent.click(confirma[confirma.length - 1]);
+
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/leave"));
+    expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/leave");
+  });
+
+  it("mantém Sair da rede como saída da máquina do cluster", async () => {
+    queryMocks.node.data.profile = "admin";
+    queryMocks.node.data.authority_level = "primary";
+    queryMocks.networkInfo.data.can_edit = true;
+    vi.clearAllMocks();
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Sair da rede" }));
+
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/leave"));
+    expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/network/leave");
+  });
 });

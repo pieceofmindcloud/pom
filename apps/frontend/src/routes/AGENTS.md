@@ -49,7 +49,11 @@ Per-file list:
   País e cidade usam a referência de geografia do nó em selects, sem expor o
   código do país. A tela também agrega nós, latência média, VRAM e modelos
   conhecidos. A lista de participantes foi movida para a rota
-  `/config/rede/participantes`, apenas para `admin` e `node`.
+  `/config/rede/participantes`, apenas para `admin` e `node`. O painel de
+  informações também oferece `Esquecer rede`, que pede confirmação e chama
+  `POST /api/ui/network/leave` para limpar a configuração local e reiniciar no
+  setup; isso é separado de `Sair da rede`, que chama `/api/ui/leave` e apenas
+  desliga a máquina do cluster.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage

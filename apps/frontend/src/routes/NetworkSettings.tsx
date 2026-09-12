@@ -12,6 +12,7 @@ import {
   Radio,
   Save,
   ShieldOff,
+  Trash2,
   Undo2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -70,6 +71,8 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
   const [nodeRequestLoaded, setNodeRequestLoaded] = useState(false);
   const [relinquishConfirm, setRelinquishConfirm] = useState(false);
   const [relinquishing, setRelinquishing] = useState(false);
+  const [forgetNetworkConfirm, setForgetNetworkConfirm] = useState(false);
+  const [forgettingNetwork, setForgettingNetwork] = useState(false);
 
   const [advertiseAddr, setAdvertiseAddr] = useState("");
   const [addrSaving, setAddrSaving] = useState(false);
@@ -205,6 +208,20 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
     }
   }
 
+  async function forgetNetwork() {
+    setForgettingNetwork(true);
+    try {
+      await api.post("/api/ui/network/leave");
+      toast.success(t("network.forgetNetworkStarted"), t("network.forgetNetworkStartedDetail"));
+      window.setTimeout(() => window.location.assign("/setup"), 1500);
+    } catch (e) {
+      toast.fromError(t("network.forgetNetworkFailed"), e);
+    } finally {
+      setForgettingNetwork(false);
+      setForgetNetworkConfirm(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -273,8 +290,10 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
             geo={geoReference.data}
             editable={networkEditable}
             saving={networkSaving}
+            forgetting={forgettingNetwork}
             onChange={setNetworkDraft}
             onSave={() => void saveNetworkInfo()}
+            onForgetNetwork={() => setForgetNetworkConfirm(true)}
             t={t}
           />
         )}
@@ -386,6 +405,16 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
         onConfirm={() => void relinquishNode()}
         onCancel={() => setRelinquishConfirm(false)}
       />
+      <Confirm
+        open={forgetNetworkConfirm}
+        title={t("network.forgetNetworkTitle")}
+        description={t("network.forgetNetworkDescription")}
+        confirmLabel={t("network.forgetNetwork")}
+        tone="danger"
+        busy={forgettingNetwork}
+        onConfirm={() => void forgetNetwork()}
+        onCancel={() => setForgetNetworkConfirm(false)}
+      />
     </>
   );
 }
@@ -428,18 +457,22 @@ function NetworkInfoPanel({
   draft,
   editable,
   saving,
+  forgetting,
   geo,
   onChange,
   onSave,
+  onForgetNetwork,
   t,
 }: {
   info: NetworkInfoView | undefined;
   draft: NetworkSettingsData;
   editable: boolean;
   saving: boolean;
+  forgetting: boolean;
   geo: GeoReferenceResponse | undefined;
   onChange: (next: NetworkSettingsData) => void;
   onSave: () => void;
+  onForgetNetwork: () => void;
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
   const update = (patch: Partial<NetworkSettingsData>) => onChange({ ...draft, ...patch });
@@ -453,7 +486,19 @@ function NetworkInfoPanel({
         eyebrow={t("network.networkInfoEyebrow")}
         title={t("network.networkInfoTitle")}
         subtitle={editable ? t("network.networkInfoEditSubtitle") : t("network.networkInfoReadOnlySubtitle")}
-        actions={editable ? <Button variant="primary" icon={<Save className="h-3.5 w-3.5" />} loading={saving} onClick={onSave}>{t("network.infoSave")}</Button> : <Badge tone="neutral">{t("network.readOnly")}</Badge>}
+        actions={
+          <>
+            <Button
+              variant="danger"
+              icon={<Trash2 className="h-3.5 w-3.5" />}
+              loading={forgetting}
+              onClick={onForgetNetwork}
+            >
+              {t("network.forgetNetwork")}
+            </Button>
+            {editable ? <Button variant="primary" icon={<Save className="h-3.5 w-3.5" />} loading={saving} onClick={onSave}>{t("network.infoSave")}</Button> : <Badge tone="neutral">{t("network.readOnly")}</Badge>}
+          </>
+        }
       />
       {editable ? (
         <div className="grid min-w-0 gap-4 px-5 py-5 md:grid-cols-2">

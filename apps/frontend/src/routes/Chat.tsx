@@ -24,7 +24,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
 import { ChatSessionList } from "../components/ChatSessionList";
 import { ChatSurfaceTabs } from "../components/ChatSurfaceTabs";
@@ -198,7 +198,7 @@ export function ChatError({ message }: { message: string }) {
   );
 }
 
-export function Bubble({
+export const Bubble = memo(function Bubble({
   message,
   streaming,
   onAnalyze,
@@ -286,7 +286,7 @@ export function Bubble({
       )}
     </motion.div>
   );
-}
+});
 
 /**
  * The conversation's name, edited where it is read.

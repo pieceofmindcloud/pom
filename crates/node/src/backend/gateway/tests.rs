@@ -323,7 +323,9 @@ mod tests {
                 require_admin_for_surface,
             ));
 
-        for path in ["/api/ui/deployments", "/api/ui/stop-inference"] {
+        // A leitura de deployments é NodeAdmin; a ação abaixo continua
+        // AdminOnly e é o caso que verifica a separação de autoridade.
+        for path in ["/api/ui/stop-inference"] {
             let mut browser_request = Request::get(path)
                 .header("authorization", "Bearer connection-secret")
                 .body(axum::body::Body::empty())
@@ -538,7 +540,7 @@ mod tests {
                 &[Infer, Node, Admin],
             ),
             // O que não foi tocado continua onde estava.
-            ("GET", "/api/ui/deployments", &[Admin]),
+            ("GET", "/api/ui/deployments", &[Node, Admin]),
             ("GET", "/api/ui/models", &[Node, Admin]),
         ];
 

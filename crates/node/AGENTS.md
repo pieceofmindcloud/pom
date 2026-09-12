@@ -142,7 +142,11 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
     de inferência e só envia lotes ao principal. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
     UDP, com ou sem assignment) + diala `--pkarr-peers` + pkarr initial publish e republish a
-    cada 30 min.
+    cada 30 min. O Mainline DHT usado pelo pkarr mantém um ator em thread própria;
+    no Windows o timeout ocioso de leitura do socket aparece como WSAETIMEDOUT
+    (10060) a cada 50 ms na dependência, e `application_log_filter` oculta
+    somente esse aviso esperado. Ele não bloqueia o runtime da UI nem o
+    carregamento do modelo.
 14. Loop da TUI: limpa a tela a cada `--refresh`, imprime assignment, mapa de
     camadas, peers, health, aviso de buraco anterior.
 
@@ -162,6 +166,13 @@ precisa propagar a mensagem e o código de saída de falhas como `pom.json`
 inválido. Isso mantém `--list-models` saindo sozinho sem engolir erros. Fora do macOS o ponto de
 entrada continua um CLI Tokio normal, sem nenhuma dependência de interface
 gráfica.
+
+No Windows, `main.rs` marca o executável com `windows_subsystem = "windows"`
+para que o processo não crie um console. `windows_status.rs` move o serviço
+Tokio para uma thread de fundo e conduz a janela Tao na thread principal; Wry
+carrega o `/admin-ui/chat` no WebView2 instalado pelo sistema e `tray-icon`
+registra o menu da área de notificação. Fechar a janela esconde-a na bandeja,
+enquanto `Abrir POM` restaura e `Sair do POM` termina o processo inteiro.
 
 `start_setup_mode` e `start_gateway_only` estão em `main.rs` (não num módulo
 separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do
@@ -201,6 +212,8 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
 - `macos_status.rs` e `macos_status.m` - ponte específica de macOS para o item
   de barra, o popover compacto e a janela WebKit; não carregam credenciais nem
   implementam uma API paralela.
+- `windows_status.rs` - janela WebView2 e bandeja Windows, com a política
+  testável de fechar para a área de notificação e sair de verdade.
 
 `profile.rs` é a fonte única do perfil persistido do nó (`admin`, `node` ou
 `infer`) e das capacidades de visibilidade/promoção e gestão de implantação.

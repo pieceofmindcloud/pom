@@ -49,6 +49,10 @@ legitimate pipeline control call; the handler still verifies the signed admin
 mutation where authority changes. Setup and the separate inference listener
 are marked out of scope in the table and are not silently treated as gateway
 routes.
+Os testes do gateway cobrem essa diferença por método: `GET /api/ui/deployments`
+é leitura `NodeAdmin`, enquanto as ações de implantação e parada permanecem
+`AdminOnly`; chamadas internas autenticadas continuam independentes do perfil
+local do receptor.
 
 O gateway registra atividade por peer em `reqlog::RequestActivity` e o gateway
 de geração dispara `reload_model` em paralelo para os peers ociosos da pipeline
@@ -927,7 +931,10 @@ faz o download autenticado do blob persistido.
   flow, and gathers live records through the existing pkarr-backed discovery
   table. Public records carry the canonical country/city label as pkarr TXT
   metadata; the local geo cache supports `geo_prefix` and `geo_suffix`
-  candidate filtering.
+  candidate filtering. It cannot enumerate arbitrary pkarr keys: a fresh admin
+  must first receive a candidate through UDP/libp2p or use a configured
+  bootstrap. A global IPv6 address that is present locally but not externally
+  routable does not provide that discovery path.
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,

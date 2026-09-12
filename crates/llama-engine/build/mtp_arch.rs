@@ -15,6 +15,17 @@ const GENERATED_FILE: &str = "mtp_graph_architectures.rs";
 const MIN_EXPECTED_MTP_ARCHITECTURES: usize = 13;
 const MTP_GRAPH_TYPE: &str = "LLM_GRAPH_TYPE_DECODER_MTP";
 
+pub(crate) fn llama_cpp_source(
+    workspace_root: &Path,
+    prepared_source: Option<&Path>,
+    source_override: Option<&Path>,
+) -> PathBuf {
+    prepared_source
+        .or(source_override)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| workspace_root.join("vendor/llama-cpp-sys-2/llama.cpp"))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Token {
     Identifier(String),
@@ -23,7 +34,7 @@ enum Token {
 }
 
 pub(crate) fn generate(llama_cpp_root: &Path, out_dir: &Path) {
-    ensure_llama_cpp_root(llama_cpp_root).unwrap_or_else(|error| panic!("{error}"));
+    ensure_llama_cpp_root(llama_cpp_root).unwrap_or_else(|error| panic!("{}", error));
 
     let source_root = llama_cpp_root.join("src");
     let models_root = source_root.join("models");
@@ -79,7 +90,7 @@ fn read_model_sources(models_root: &Path) -> Vec<(PathBuf, String)> {
         .map(|entry| {
             entry
                 .unwrap_or_else(|error| {
-                    panic!("não foi possível ler uma entrada de models: {error}")
+                    panic!("não foi possível ler uma entrada de models: {}", error)
                 })
                 .path()
         })
@@ -489,15 +500,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn usa_o_checkout_vendorizado_por_padrao() {
+        let workspace_root = Path::new(r"D:\a\rdma-p2p\rdma-p2p");
+
+        assert_eq!(
+            llama_cpp_source(workspace_root, None, None),
+            workspace_root
+                .join("vendor")
+                .join("llama-cpp-sys-2")
+                .join("llama.cpp")
+        );
+    }
+
+    #[test]
+    fn respeita_llama_source_explicito() {
+        let workspace_root = Path::new(r"D:\a\rdma-p2p\rdma-p2p");
+        let override_source = Path::new(r"E:\forks\llama.cpp");
+
+        assert_eq!(
+            llama_cpp_source(workspace_root, None, Some(override_source)),
+            override_source
+        );
+    }
+
+    #[test]
+    fn usa_a_fonte_preparada_pela_dependencia() {
+        let workspace_root = Path::new(r"D:\a\rdma-p2p\rdma-p2p");
+        let prepared_source = Path::new(r"D:\a\rdma-p2p\rdma-p2p\vendor\llama-cpp-sys-2\llama.cpp");
+        let source_override = Path::new(r"E:\forks\llama.cpp");
+
+        assert_eq!(
+            llama_cpp_source(workspace_root, Some(prepared_source), Some(source_override)),
+            prepared_source
+        );
+    }
+
+    #[test]
     fn llama_cpp_ausente_falha_de_forma_ruidosa() {
         let error = ensure_llama_cpp_root(Path::new("/caminho/que/nao/existe/llama.cpp"))
             .expect_err("um fork ausente não pode gerar uma lista vazia");
 
-        assert!(error.contains("llama.cpp não encontrado"), "erro: {error}");
+        assert!(
+            error.contains("llama.cpp não encontrado"),
+            "erro: {}",
+            error
+        );
     }
 
     fn fixture_sources() -> Vec<(PathBuf, String)> {
-        [
+        IntoIterator::into_iter([
             ("bailingmoe3.cpp", "bailingmoe3", "BAILINGMOE3"),
             ("cohere2moe.cpp", "cohere2moe", "COHERE2MOE"),
             ("deepseek2.cpp", "deepseek2", "DEEPSEEK2"),
@@ -511,8 +562,7 @@ mod tests {
             ("qwen35moe.cpp", "qwen35moe", "QWEN35MOE"),
             ("qwen3next.cpp", "qwen3next", "QWEN3NEXT"),
             ("step35.cpp", "step35", "STEP35"),
-        ]
-        .into_iter()
+        ])
         .map(|(file, class, _)| {
             (
                 PathBuf::from(file),
@@ -636,7 +686,7 @@ mod tests {
         let error = extract_mtp_architectures(&sources, fixture_dispatch(), fixture_names())
             .expect_err("uma verificação fora do grafo não deve ser associada por arquivo");
 
-        assert!(error.contains("build_arch_graph"), "erro: {error}");
+        assert!(error.contains("build_arch_graph"), "erro: {}", error);
     }
 
     #[test]
@@ -647,7 +697,7 @@ mod tests {
         )
         .expect_err("uma classe repetida no dispatch é ambígua");
 
-        assert!(error.contains("mais de uma vez"), "erro: {error}");
+        assert!(error.contains("mais de uma vez"), "erro: {}", error);
     }
 
     #[test]
@@ -655,7 +705,7 @@ mod tests {
         let error =
             extract_mtp_architectures(&[], "", "").expect_err("lista vazia não pode ser aceita");
 
-        assert!(error.contains("nenhuma"), "erro: {error}");
+        assert!(error.contains("nenhuma"), "erro: {}", error);
     }
 
     #[test]
@@ -667,6 +717,6 @@ mod tests {
         ])
         .expect_err("a antiga lista de três arquiteturas é pequena demais");
 
-        assert!(error.contains("suspeita"), "erro: {error}");
+        assert!(error.contains("suspeita"), "erro: {}", error);
     }
 }

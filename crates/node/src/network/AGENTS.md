@@ -346,7 +346,12 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `resolve_peers`/`resolve_one` - resolve chaves `pk:` em `ResolvedPeer`
   (multiaddr + faixa de camadas + `is_relay` + rótulo geo); falha vira `None`,
   nunca erro. O gateway mantém um índice local dos rótulos observados para
-  filtrar consultas públicas por prefixo/sufixo antes de sondar peers.
+  filtrar consultas públicas por prefixo/sufixo antes de sondar peers. Isso não
+  enumera o DHT: `/api/public/networks` só pode resolver candidatos que já
+  chegaram por UDP/libp2p ou estão no cache local. O Mainline usado por pkarr
+  mantém um ator em thread própria e usa UDP IPv4; no Windows seu timeout de
+  leitura de 50 ms vira WSAETIMEDOUT (10060), um resultado ocioso esperado que
+  o filtro de logs do binário rebaixa sem esconder erros reais.
 - `detect_local_ip` - IP de saída por socket UDP conectado a 8.8.8.8:80 (nada é
   enviado).
 

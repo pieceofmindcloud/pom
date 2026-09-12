@@ -56,8 +56,15 @@ cargo test               # testes do nó
   fallback; macOS usa a descrição Metal e depois `system_profiler`.
 - O provider Hugging Face é HTTP nativo em Rust (`reqwest`): o build do POM não
   instala `hf`, Python ou outro runtime externo.
-- O `build.rs` lê o checkout local de `llama.cpp` em modo somente leitura para
-  gerar `OUT_DIR/mtp_graph_architectures.rs`. O extrator percorre as
+- O `crates/llama-engine/build.rs` lê, em modo somente leitura, o mesmo checkout
+  preparado pelo `vendor/llama-cpp-sys-2/build.rs` para gerar
+  `OUT_DIR/mtp_graph_architectures.rs`. O primeiro caminho é o metadado Cargo
+  `DEP_LLAMA_LLAMA_SOURCE`, publicado depois que a dependência escolhe a fonte;
+  há fallback para `LLAMA_SOURCE` e depois para
+  `vendor/llama-cpp-sys-2/llama.cpp`. No Windows esse é o diretório real
+  instalado pelo preparo anterior, não a pasta `llama.cpp` ignorada na raiz;
+  Cargo executa o build script da dependência antes do build script do crate que
+  gera a lista. O extrator percorre as
   verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em `src/models`, cruza
   cada classe com o dispatch de `src/llama-model.cpp` e usa a tabela
   `LLM_ARCH_NAMES` de `src/llama-arch.cpp` para obter a cadeia comparada ao
@@ -114,6 +121,43 @@ rm -rf "$HOME/.cache/sccache"
 O `.cargo/config.toml` não define os wrappers: isso manteria um wrapper
 obrigatório em máquinas sem sccache e não permitiria selecionar explicitamente
 o servidor/socket compartilhado.
+
+### Cache no GitHub Actions
+
+Os três workflows de release (`.github/workflows/release-{linux,macos,windows}.yml`)
+resolvem o SHA atual da branch `pom-tensor-parallel` antes do build. O checkout
+do fork fica em `.ci-cache/llama.cpp`, fora do symlink versionado, e é guardado
+por `actions/cache` com a chave:
+
+```text
+llama-source-v1-<sistema>-<arquitetura>-<sha-do-fork>
+```
+
+Depois do restore, o passo de preparo confirma com `git rev-parse` que o
+checkout tem exatamente esse SHA. Em cache miss, ele faz o clone raso e recusa
+continuar se a branch tiver avançado entre a resolução e o clone. O build
+recebe `LLAMA_SOURCE` para usar esse diretório; assim o `git clean` do
+`actions/checkout` não transforma o clone vendorizado em uma dependência
+implícita do estado anterior do runner.
+
+Os workflows também ativam `mozilla-actions/sccache-action` com o backend do
+cache do GitHub. `RUSTC_WRAPPER`, os três launchers do CMake e `CCACHE` apontam
+para `sccache`, então o mesmo cache content-addressed cobre as unidades Rust,
+C/C++ do llama.cpp e a ponte CUDA quando houver CUDA. No Windows, onde o runner
+é efêmero, `Swatinem/rust-cache` continua cobrindo `~/.cargo` e `target/`; sua
+chave adicional inclui o SHA do fork e `hashFiles('**/Cargo.lock')`. Linux e
+macOS usam runners self-hosted persistentes e mantêm o target local, enquanto o
+`sccache` cobre recompilações entre revisões e worktrees.
+
+Essa combinação invalida o checkout quando o fork muda, invalida o cache do
+Cargo quando o lockfile muda e deixa o próprio `sccache` separar compiladores,
+flags e conteúdo-fonte. O primeiro build de uma chave continua pagando clone,
+configure e compilação; nos seguintes, a expectativa é evitar os minutos das
+unidades C/C++ e Rust inalteradas. O link final, especialmente o LTO de
+release, continua sendo executado e por isso o ganho não é o tempo total do
+build. A estratégia foi validada offline por inspeção dos workflows, do
+`vendor/llama-cpp-sys-2/build.rs` e das chaves; nenhuma execução do workflow foi
+disparada.
 
 ### Por que não há `LLAMA_CPP_LIB_DIR`
 
@@ -247,7 +291,7 @@ os três saem do mesmo `brand.json` (`app_icons`):
 
 | Sistema | Arquivo | Como entra |
 |---|---|---|
-| Windows | `assets/brand/pom.ico` | recurso **dentro do `.exe`**, gravado por `crates/node/build.rs` (`embed_windows_icon`, via `winresource`). O `cfg(windows)` ali é do host: o release compila o alvo Windows num runner Windows. Cruzar de Linux sai sem ícone, em silêncio, em vez de quebrar o build. |
+| Windows | `assets/brand/pom.ico` | recurso **dentro do `.exe`**, gravado por `crates/node/build.rs` (`embed_windows_icon`, via `winresource`). O `cfg(windows)` ali é do host: o release compila o alvo Windows num runner Windows. Cruzar de Linux sai sem ícone, em silêncio, em vez de quebrar o build. O binário usa `windows_subsystem = "windows"`; `crates/node/src/windows_status.rs` abre `/admin-ui/chat` no WebView2 e mantém a janela acessível pela área de notificação. |
 | macOS | `assets/brand/pom.icns` + `assets/brand/macos/pom-status-template{,@2x,@3x}.png` | quem mostra o ícone é o bundle, não o binário: `scripts/make-macos-app.sh` monta `POM.app` em volta do executável já compilado (Info.plist, `LSUIElement`, ícone do Finder em `Resources/` e a template image do `NSStatusItem`, gerada por `scripts/derive-macos-status-icon.py`). O binário liga a ponte AppKit/WebKit só nesse alvo - `cc` é build-dependency apenas para host macOS; o release roda o script e leva o `.app` no pacote do macOS. |
 | Linux | `assets/brand/linux/hicolor/**` + `pom.desktop` | árvore `hicolor` de 16 a 512 e a entrada `.desktop`, empacotadas em `share/` no tarball. Instalar é copiar para `~/.local/share/{icons,applications}`. |
 
@@ -419,7 +463,7 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_BUILD_FEATURES` | Features com que a máquina compila no devupdate (`cuda`/`metal`); sem ela a ksia perde a GPU no primeiro clique. |
 | `POM_CUDA_GRAPHS` | `=1`, `true`, `yes` ou `on` habilita CUDA Graphs no build CUDA. O padrão é desligado para reduzir o risco de OOM no lançamento do grafo. É uma opção de compilação, então exige reconstruir o binário. |
 | `POM_BUILD_COMMIT` | Commit carimbado pelo `build.rs` (usado pelo build-docker.sh; `.dockerignore` corta `.git/`). |
-| `LLAMA_SOURCE` | Checkout local de `llama.cpp` já preparado; precisa conter `ggml` e evita copiar o fork para o worktree. |
+| `LLAMA_SOURCE` | Checkout local de `llama.cpp` já preparado; precisa conter `ggml`, é normalizado para caminho absoluto e evita copiar o fork para o worktree. |
 | `POM_LLAMA_CPP_REPOSITORY` / `POM_LLAMA_CPP_REF` | Remoto e branch usados pela preparação automática quando o fork está ausente. Os padrões são o fork público e `pom-tensor-parallel`. |
 | `POM_LLAMA_CPP_AUTOCLONE` | Use `=0` para impedir o download automático e receber somente a mensagem com o procedimento manual. |
 | `VITE_API_TARGET` | Alvo do proxy do dev server da UI (padrão `http://127.0.0.1:8080`). |

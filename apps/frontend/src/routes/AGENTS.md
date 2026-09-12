@@ -26,7 +26,9 @@ Per-file list:
   a rede, node escolhe RAM/CPU e espaço de fatias, e infer apenas instala a
   raiz de confiança. Todos os perfis registram localização, e a seleção de
   país/cidade vem da referência SQLite do nó; rede pública exige os dois. As
-  telas conversam com `/api/setup/*`; não confundir com o protótipo
+  telas conversam com `/api/setup/*`; quando node ou infer escolhem rede
+  pública, o último passo também exige e mostra o nome público antes de
+  habilitar o salvamento; não confundir com o protótipo
   `SetupWizard.tsx`.
 
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
@@ -49,7 +51,11 @@ Per-file list:
   País e cidade usam a referência de geografia do nó em selects, sem expor o
   código do país. A tela também agrega nós, latência média, VRAM e modelos
   conhecidos. A lista de participantes foi movida para a rota
-  `/config/rede/participantes`, apenas para `admin` e `node`.
+  `/config/rede/participantes`, apenas para `admin` e `node`. O painel de
+  informações também oferece `Esquecer rede`, que pede confirmação e chama
+  `POST /api/ui/network/leave` para limpar a configuração local e reiniciar no
+  setup; isso é separado de `Sair da rede`, que chama `/api/ui/leave` e apenas
+  desliga a máquina do cluster.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage
@@ -531,8 +537,9 @@ Key logic carriers:
   before the placeholder reply, streams deltas into `consumeChatDelta` (keeps
   reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
   measures browser-local first chunk/token and delivery timing, and persists
-  the partial session after every delta. Route unmounts do not abort it;
-  `stopStream` and a new message do.
+  the partial session on a 50 ms scheduler while the stream is active. The
+  final or interrupted state is flushed immediately. Route unmounts do not
+  abort it; `stopStream` and a new message do.
 - `components/ExecutionTelemetry.tsx` (`ExecutionTelemetry`) - the
   closed-by-default telemetry card shared by Chat and Logs: per-hop
   prefill/decode phases, selected

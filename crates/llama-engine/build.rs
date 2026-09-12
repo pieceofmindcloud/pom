@@ -18,7 +18,15 @@ fn main() {
 
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
     println!("cargo:rerun-if-changed=build/mtp_arch.rs");
-    mtp_arch::generate(&root.join("llama.cpp"), &out_dir);
+    println!("cargo:rerun-if-env-changed=LLAMA_SOURCE");
+    let prepared_source = std::env::var_os("DEP_LLAMA_LLAMA_SOURCE").map(PathBuf::from);
+    let source_override = std::env::var_os("LLAMA_SOURCE").map(PathBuf::from);
+    let llama_cpp_root = mtp_arch::llama_cpp_source(
+        &root,
+        prepared_source.as_deref(),
+        source_override.as_deref(),
+    );
+    mtp_arch::generate(&llama_cpp_root, &out_dir);
     build_mtp_shim();
     build_moe_cuda();
 }

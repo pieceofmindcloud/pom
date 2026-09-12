@@ -51,7 +51,9 @@ remain local until the deploy preflight.
   loopback `/api/setup/*` backend. `routes/SetupWizard.tsx` and
   `components/setup-wizard/*` are visual mock references only. The live wizard
   also owns the country/city location step, hardware-first order, profile
-  branches, and the restart after save.
+  branches, and the restart after save. A public `node` or `infer` enters the
+  public network name in the trust step because the backend requires that
+  field for every public-network save, not only for `admin`.
 
 ### App.tsx route table
 

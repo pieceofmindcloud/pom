@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn changing_visibility_never_removes_the_internal_credential() {
+    async fn changing_visibility_preserves_the_internal_credential() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
         let state = state_with("admin", vec![]).await;
         let config_path = std::env::temp_dir().join(format!(
@@ -329,7 +329,10 @@ mod tests {
             .expect("transição para rede pública");
         let public_config = state.auth.read().await;
         assert_eq!(public_config.connection_key, "chave");
-        assert_eq!(crate::auth::internal_node_token(&public_config), None);
+        assert_eq!(
+            crate::auth::internal_node_token(&public_config).as_deref(),
+            Some("chave")
+        );
         drop(public_config);
 
         apply_network_settings_with_key(&state, private, false, None)

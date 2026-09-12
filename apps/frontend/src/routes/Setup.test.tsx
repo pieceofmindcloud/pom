@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { useState } from "react";
 import { LocaleProvider } from "../i18n/provider";
-import { TrustScreen, type SetupState } from "./Setup";
+import { canContinue, isReadyToSave, TrustScreen, type SetupState } from "./Setup";
 
 const initialSetup: SetupState = {
   profile: "infer",
@@ -39,9 +39,9 @@ const initialSetup: SetupState = {
   setupModel: "",
 };
 
-function mount() {
+function mount(value: SetupState = initialSetup) {
   function Harness() {
-    const [setup, setSetup] = useState(initialSetup);
+    const [setup, setSetup] = useState(value);
     return (
       <TrustScreen
         setup={setup}
@@ -73,5 +73,41 @@ describe("TrustScreen", () => {
 
     expect(await screen.findByDisplayValue(document)).toBeTruthy();
     expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("pede o nome público no próprio passo de confiança", () => {
+    mount({
+      ...initialSetup,
+      profile: "node",
+      network: {
+        ...initialSetup.network,
+        visibility: "public",
+        country_code: "BR",
+        city: "Curitiba",
+      },
+    });
+
+    expect(screen.getByTestId("public-network-name")).toBeTruthy();
+  });
+
+  it("não libera o último passo público sem nome da rede", () => {
+    const setup: SetupState = {
+      ...initialSetup,
+      profile: "infer",
+      trustDocument: "{}",
+      trustFingerprint: "fingerprint",
+      network: {
+        ...initialSetup.network,
+        visibility: "public",
+        country_code: "BR",
+        city: "Curitiba",
+      },
+    };
+
+    expect(canContinue("setup-trust", setup)).toBe(false);
+    expect(isReadyToSave(setup)).toBe(false);
+    const named = { ...setup, network: { ...setup.network, public_name: "Rede Curitiba" } };
+    expect(canContinue("setup-trust", named)).toBe(true);
+    expect(isReadyToSave(named)).toBe(true);
   });
 });

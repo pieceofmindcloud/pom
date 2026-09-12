@@ -136,6 +136,8 @@ export const turnsOnly = (messages: ChatMessage[]) =>
 const STORAGE = storageKey("chat.sessions");
 /** Sessions kept before the oldest is dropped, so storage cannot grow forever. */
 const MAX_SESSIONS = 50;
+/** Keep streaming progress visible without making every token a React commit. */
+const STREAM_UPDATE_INTERVAL_MS = 50;
 
 function read(): ChatSession[] {
   try {
@@ -153,6 +155,40 @@ function write(sessions: ChatSession[]) {
   } catch {
     /* quota exhausted — the transcript is not worth breaking the screen over */
   }
+}
+
+function createStreamUpdateScheduler(publish: () => void) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let dirty = false;
+
+  const flush = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (!dirty) return;
+    dirty = false;
+    publish();
+  };
+
+  return {
+    schedule() {
+      dirty = true;
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        timer = null;
+        if (!dirty) return;
+        dirty = false;
+        publish();
+      }, STREAM_UPDATE_INTERVAL_MS);
+    },
+    flush,
+    cancel() {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      dirty = false;
+    },
+  };
 }
 
 export const newId = () =>
@@ -293,7 +329,16 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
 
     void (async () => {
       let live = options.session;
-      const patchReply = (patch: Partial<ChatMessage>) => {
+      const publish = () => {
+        if (streamAbort.current !== controller) return;
+        if (activeSessionId.current === options.session.id) setSession(live);
+        // A route can disappear while the response is arriving. Persisting the
+        // partial transcript here lets the next mount render exactly what was
+        // already received, even before the stream finishes.
+        upsert(live);
+      };
+      const scheduler = createStreamUpdateScheduler(publish);
+      const patchReply = (patch: Partial<ChatMessage>, immediate = false) => {
         live = {
           ...live,
           messages: live.messages.map((message) =>
@@ -303,11 +348,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
         // A new message owns the controller from this point on. Do not let a
         // late delta from the aborted request overwrite its newer transcript.
         if (streamAbort.current !== controller) return;
-        if (activeSessionId.current === options.session.id) setSession(live);
-        // A route can disappear while the response is arriving. Persisting the
-        // partial transcript here lets the next mount render exactly what was
-        // already received, even before the stream finishes.
-        upsert(live);
+        if (immediate) scheduler.flush();
+        else scheduler.schedule();
       };
 
       try {
@@ -391,11 +433,11 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
             timings: streamed.timings,
             trace: streamed.trace,
             source: typeof finalMetrics.source === "string" ? finalMetrics.source : undefined,
-          });
+          }, true);
         } else {
           streamed = finishChatStream(streamed);
         }
-        patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
+        patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined }, true);
         if (streamAbort.current === controller && streamed.trace) {
           setLastStreamResult({
             sessionId: options.session.id,
@@ -405,25 +447,26 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
           });
         }
         if (!streamed.content && !streamed.reasoning && !streamed.error) {
-          patchReply({ error: options.emptyResponseMessage });
+          patchReply({ error: options.emptyResponseMessage }, true);
         }
       } catch (error) {
         if (controller.signal.aborted) {
-          patchReply({ error: options.interruptedMessage });
+          patchReply({ error: options.interruptedMessage }, true);
         } else {
           const detail = error instanceof Error ? error.message : String(error);
-          patchReply({ error: detail });
+          patchReply({ error: detail }, true);
           if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
             options.onUnauthorized?.();
           }
         }
       } finally {
         if (streamAbort.current === controller) {
+          scheduler.flush();
+          if (!deletedStreamSessions.current.delete(live.id)) upsert(live);
           streamAbort.current = null;
           setStreamingSessionId(null);
-        }
-        if (streamAbort.current === controller && !deletedStreamSessions.current.delete(live.id)) {
-          upsert(live);
+        } else {
+          scheduler.cancel();
         }
       }
     })();

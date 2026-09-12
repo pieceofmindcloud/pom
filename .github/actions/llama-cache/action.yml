@@ -1,0 +1,48 @@
+name: Cache llama.cpp source
+description: Resolve, restore and validate the llama.cpp branch checkout
+inputs:
+  source-dir:
+    description: Directory where the shallow llama.cpp checkout is kept
+    required: false
+    default: .ci-cache/llama.cpp
+outputs:
+  sha:
+    description: Resolved commit of the pom-tensor-parallel branch
+    value: ${{ steps.llama-ref.outputs.sha }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve llama.cpp revision
+      id: llama-ref
+      shell: bash
+      run: |
+        set -euo pipefail
+        sha="$(git ls-remote https://github.com/pereirajair/llama.cpp.git refs/heads/pom-tensor-parallel | cut -f1)"
+        test -n "$sha"
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+    - name: Cache llama.cpp checkout
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.source-dir }}
+        key: llama-source-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.llama-ref.outputs.sha }}
+
+    - name: Prepare llama.cpp checkout
+      shell: bash
+      env:
+        LLAMA_SHA: ${{ steps.llama-ref.outputs.sha }}
+        LLAMA_SOURCE_DIR: ${{ inputs.source-dir }}
+      run: |
+        set -euo pipefail
+        source_dir="$LLAMA_SOURCE_DIR"
+        current_sha=""
+        if [ -d "$source_dir/.git" ]; then
+          current_sha="$(git -C "$source_dir" rev-parse HEAD 2>/dev/null || true)"
+        fi
+        if [ "$current_sha" != "$LLAMA_SHA" ]; then
+          rm -rf "$source_dir"
+          mkdir -p "$(dirname "$source_dir")"
+          git clone --depth 1 --branch pom-tensor-parallel \
+            https://github.com/pereirajair/llama.cpp.git "$source_dir"
+          test "$(git -C "$source_dir" rev-parse HEAD)" = "$LLAMA_SHA"
+        fi

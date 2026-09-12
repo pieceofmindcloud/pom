@@ -54,6 +54,20 @@ encerrar o processo. Assim `macos_status.rs` consegue esperar a thread de
 serviço e devolver ao shell a mensagem e o código de saída de uma configuração
 inválida, em vez de sair silenciosamente com status 0.
 
+### Janela e bandeja do Windows
+
+No Windows, o mesmo binário usa `windows_subsystem = "windows"`, então a
+interface não abre um console separado. `crates/node/src/windows_status.rs`
+cria uma janela Tao e um WebView2 real via Wry, carregando o mesmo
+`/admin-ui/chat` e a porta escolhida pelo Rust. O ícone da área de notificação
+usa a arte POM embutida no binário; o menu `Abrir POM` restaura e foca a janela.
+
+O X da janela não encerra o processo: ele a esconde na bandeja, mantendo o
+gateway e a sessão administrativa ativos, como o item de status do macOS. O
+menu `Sair do POM` é a saída terminal e encerra o processo inteiro. O runtime
+WebView2 é uma dependência instalada no Windows, não um executável auxiliar
+distribuído pelo POM.
+
 O endereço é `http://127.0.0.1:<gateway_port>/admin-ui/chat`, com a porta do
 `pom.json`, o `--gateway-port` como fallback e 8080 como default - o painel
 nunca crava 8080. Os dois WebViews usam
@@ -216,8 +230,10 @@ país/cidade para todos os perfis, persiste a localização aproximada autorizad
 e usa etapas diferentes para `admin`, `node` e `infer`: admin cria a raiz,
 configura a rede e convida; node escolhe RAM, CPU, disco de fatias e proteção
 térmica; infer só confirma a confiança e entra. País e cidade são obrigatórios
-para rede pública e opcionais, mas persistidos, para local/private. A cidade
-manual é válida quando a referência SQLite não a contém.
+para rede pública e opcionais, mas persistidos, para local/private. O nome
+público também é obrigatório para rede pública em todos os perfis e aparece no
+passo de confiança de node/infer antes do salvamento. A cidade manual é válida
+quando a referência SQLite não a contém.
 
 O passo de modelos combina o catálogo local com referências do Hugging Face,
 sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como
@@ -500,7 +516,11 @@ VRAM, modelos e endereço. As métricas do cluster local são calculadas de
 `ClusterView` quando a rede corresponde; os demais campos aparecem como
 indisponíveis porque o catálogo público atual não os fornece. O documento de
 confiança não é publicado por esta lista; o operador recebe-o do responsável
-da rede por um canal próprio.
+da rede por um canal próprio. A lista não enumera chaves arbitrárias do DHT:
+cada registro precisa primeiro chegar como candidato pela descoberta UDP/libp2p
+ou pela tabela local. Portanto um nó novo precisa de um bootstrap ou de uma
+conectividade comum com o nó que publicou o anúncio; um endereço IPv6 apenas
+presente na interface, mas sem rota externa, não satisfaz essa condição.
 
 O **perfil** da interface (*Menu e rotas*) não entra nesta conta: ele é escolha
 local do navegador e não vale como credencial. As rotas administrativas usam a
@@ -705,10 +725,12 @@ campos da configuração original. Node também pode ler as versões por
 `stream: true`, igual a qualquer harness - o que aparece ali é o que um
 harness receberia. O histórico é do navegador (`chatStore`, `localStorage`,
 cap 50 sessões, sincronizado entre abas), não do nó. O `ChatSessionProvider`
-também mantém o stream e grava a resposta parcial a cada delta, por isso sair
-da rota não interrompe a geração: ao voltar, a conversa mostra o texto já
-recebido e o estado ao vivo. Só o botão de parar ou o envio de uma nova
-mensagem aborta o pedido anterior. Três coisas a conversa guarda além das falas:
+também mantém o stream e acumula os deltas em memória, publicando e persistindo
+o parcial em uma janela de 50 ms e fazendo flush imediato no fim ou na
+interrupção. Assim sair da rota não interrompe a geração: ao voltar, a conversa
+mostra o texto já recebido e o estado ao vivo sem forçar um re-render por token.
+Só o botão de parar ou o envio de uma nova mensagem aborta o pedido anterior.
+Três coisas a conversa guarda além das falas:
 
 - O único campo de ficheiro lê `GET /api/ui/chat/capabilities`, que agrega a
   cabeça ativa e a cobertura sem reutilizar a topologia que o perfil `infer` não
@@ -1143,6 +1165,13 @@ documento `.pom-admin-trust.json`. Em rede local ou privada também aparece a
 chave de conexão para copiar ou baixar. O wizard real oferece os mesmos
 materiais na etapa de convite. `SetupWizard.tsx` continua sendo apenas o
 protótipo visual e não participa dessas chamadas.
+
+O painel também expõe `Esquecer rede`, com confirmação destrutiva. Essa ação
+chama `POST /api/ui/network/leave`, que revoga a confiança local, prepara o
+`pom.json` para o setup e reinicia este nó; depois a interface volta para
+`/setup`. Ela é deliberadamente diferente de `Sair da rede`, no painel
+`Esta máquina`, que chama `POST /api/ui/leave` e apenas tira a máquina do
+cluster sem apagar sua configuração local.
 
 ## Defeitos anotados
 

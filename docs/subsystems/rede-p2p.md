@@ -440,6 +440,16 @@ pkarr; `--pkarr-peers` são chaves a resolver e dialar no arranque;
 `detect_local_ip` descobre o IP de saída com um socket UDP conectado a
 `8.8.8.8:80` sem enviar nada.
 
+O DHT Mainline do cliente pkarr é UDP IPv4 e roda em um ator de thread própria.
+No Windows, quando não há resposta, o timeout de leitura de 50 ms é reportado
+pela dependência como WSAETIMEDOUT (10060); isso é polling ocioso, não um retry
+do QUIC ou do carregamento do modelo, e o ator não compartilha o loop da UI.
+O binário filtra esse aviso esperado, mantendo erros reais. O endpoint
+`/api/public/networks` não consegue enumerar registros arbitrários do DHT:
+resolve apenas candidatos já aprendidos pela descoberta UDP/libp2p ou pelo cache
+local. Assim, um endereço IPv6 global anunciado sem rota externa não basta para
+um nó novo descobrir a rede.
+
 ## 4. Identidade
 
 `Identity` (`identity.rs`) é um par Ed25519 de longa duração, vivendo em

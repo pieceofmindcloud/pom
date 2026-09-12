@@ -230,8 +230,10 @@ país/cidade para todos os perfis, persiste a localização aproximada autorizad
 e usa etapas diferentes para `admin`, `node` e `infer`: admin cria a raiz,
 configura a rede e convida; node escolhe RAM, CPU, disco de fatias e proteção
 térmica; infer só confirma a confiança e entra. País e cidade são obrigatórios
-para rede pública e opcionais, mas persistidos, para local/private. A cidade
-manual é válida quando a referência SQLite não a contém.
+para rede pública e opcionais, mas persistidos, para local/private. O nome
+público também é obrigatório para rede pública em todos os perfis e aparece no
+passo de confiança de node/infer antes do salvamento. A cidade manual é válida
+quando a referência SQLite não a contém.
 
 O passo de modelos combina o catálogo local com referências do Hugging Face,
 sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como
@@ -514,7 +516,11 @@ VRAM, modelos e endereço. As métricas do cluster local são calculadas de
 `ClusterView` quando a rede corresponde; os demais campos aparecem como
 indisponíveis porque o catálogo público atual não os fornece. O documento de
 confiança não é publicado por esta lista; o operador recebe-o do responsável
-da rede por um canal próprio.
+da rede por um canal próprio. A lista não enumera chaves arbitrárias do DHT:
+cada registro precisa primeiro chegar como candidato pela descoberta UDP/libp2p
+ou pela tabela local. Portanto um nó novo precisa de um bootstrap ou de uma
+conectividade comum com o nó que publicou o anúncio; um endereço IPv6 apenas
+presente na interface, mas sem rota externa, não satisfaz essa condição.
 
 O **perfil** da interface (*Menu e rotas*) não entra nesta conta: ele é escolha
 local do navegador e não vale como credencial. As rotas administrativas usam a

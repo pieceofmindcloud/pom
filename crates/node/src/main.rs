@@ -423,7 +423,7 @@ fn main() -> Result<()> {
     let (log_capture, log_receiver) =
         cluster_logs::LogCapture::new(cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
     tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(application_log_filter())
         .with(tracing_subscriber::fmt::layer().with_target(false))
         .with(cluster_logs::CaptureLayer::new(log_capture.clone()))
         .init();
@@ -2127,6 +2127,24 @@ async fn start_gateway_only(
     Ok(())
 }
 
+/// Mainline polls its IPv4 UDP socket with a 50 ms read timeout. Windows
+/// reports that expected idle result as WSAETIMEDOUT (10060), and Mainline's
+/// socket layer logs it at WARN on every poll. The DHT actor has its own
+/// thread, so this is not an application retry loop, but the warning storm
+/// makes a healthy node look stuck and can flood the local/cluster log queues.
+/// Keep genuine Mainline errors visible while hiding only this expected poll
+/// timeout.
+fn application_log_filter() -> EnvFilter {
+    const MAINLINE_SOCKET_TARGET: &str = "mainline::rpc::socket";
+    EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"))
+        .add_directive(
+            format!("{MAINLINE_SOCKET_TARGET}=error")
+                .parse()
+                .expect("diretiva de log Mainline válida"),
+        )
+}
+
 #[cfg(test)]
 mod main_tests {
     use super::*;
@@ -2266,6 +2284,16 @@ mod main_tests {
         assert_eq!(
             pkarr_multiaddr_for_advertise(Some("2001:db8::1"), None, 42777),
             "/ip6/2001:db8::1/tcp/52777"
+        );
+    }
+
+    #[test]
+    fn mainline_socket_timeouts_are_not_application_warnings() {
+        assert!(
+            application_log_filter()
+                .to_string()
+                .contains("mainline::rpc::socket=error"),
+            "timeouts de leitura do socket DHT devem ser silenciosos no log da aplicação"
         );
     }
 }

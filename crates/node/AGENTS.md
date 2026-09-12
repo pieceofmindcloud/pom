@@ -142,7 +142,11 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
     de inferência e só envia lotes ao principal. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
     UDP, com ou sem assignment) + diala `--pkarr-peers` + pkarr initial publish e republish a
-    cada 30 min.
+    cada 30 min. O Mainline DHT usado pelo pkarr mantém um ator em thread própria;
+    no Windows o timeout ocioso de leitura do socket aparece como WSAETIMEDOUT
+    (10060) a cada 50 ms na dependência, e `application_log_filter` oculta
+    somente esse aviso esperado. Ele não bloqueia o runtime da UI nem o
+    carregamento do modelo.
 14. Loop da TUI: limpa a tela a cada `--refresh`, imprime assignment, mapa de
     camadas, peers, health, aviso de buraco anterior.
 

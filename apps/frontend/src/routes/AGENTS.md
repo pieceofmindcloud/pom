@@ -26,7 +26,9 @@ Per-file list:
   a rede, node escolhe RAM/CPU e espaço de fatias, e infer apenas instala a
   raiz de confiança. Todos os perfis registram localização, e a seleção de
   país/cidade vem da referência SQLite do nó; rede pública exige os dois. As
-  telas conversam com `/api/setup/*`; não confundir com o protótipo
+  telas conversam com `/api/setup/*`; quando node ou infer escolhem rede
+  pública, o último passo também exige e mostra o nome público antes de
+  habilitar o salvamento; não confundir com o protótipo
   `SetupWizard.tsx`.
 
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo

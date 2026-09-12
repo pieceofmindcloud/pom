@@ -931,7 +931,10 @@ faz o download autenticado do blob persistido.
   flow, and gathers live records through the existing pkarr-backed discovery
   table. Public records carry the canonical country/city label as pkarr TXT
   metadata; the local geo cache supports `geo_prefix` and `geo_suffix`
-  candidate filtering.
+  candidate filtering. It cannot enumerate arbitrary pkarr keys: a fresh admin
+  must first receive a candidate through UDP/libp2p or use a configured
+  bootstrap. A global IPv6 address that is present locally but not externally
+  routable does not provide that discovery path.
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,

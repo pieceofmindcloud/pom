@@ -47,6 +47,12 @@ selecionada. Assim o mesmo contrato funciona no cache externo de CI, no
 symlink versionado e em `LLAMA_SOURCE`, inclusive para o wrapper mtmd e os
 headers internos.
 
+No Windows, `canonicalize()` pode devolver o prefixo estendido `\\?\`. Esse
+prefixo continua sendo usado pelo bindgen e pelo CMake, que o aceitam. Antes de
+chamar `cc::Build`, o `build.rs` remove o prefixo dos diretórios e arquivos
+entregues ao `cl.exe`; o MSVC recebe caminhos `D:\...` ou UNC convencionais no
+`/I`, inclusive quando a origem veio de `.ci-cache`.
+
 O `build.rs` força o reconfigure do CMake a cada execução. Isso é intencional:
 o fork coleta os arquivos de `src/models` com `file(GLOB ...)`, enquanto Docker
 e Cargo podem reutilizar o diretório `target/` e o `CMakeCache.txt`. Sem o

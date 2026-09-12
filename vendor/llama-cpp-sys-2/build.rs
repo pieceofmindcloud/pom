@@ -11,7 +11,7 @@ use walkdir::DirEntry;
 #[path = "src/build_support.rs"]
 mod build_support;
 use build_support::{
-    clone_destination, destination_can_be_replaced, source_can_be_used_directly,
+    cc_path, clone_destination, destination_can_be_replaced, source_can_be_used_directly,
     source_include_dirs, source_root,
 };
 
@@ -611,6 +611,7 @@ fn main() {
 
     let (target_os, target_triple) =
         parse_target_os().unwrap_or_else(|t| panic!("Failed to parse target os {t}"));
+    let target_is_windows = matches!(&target_os, TargetOs::Windows(_));
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let target_dir = get_cargo_target_dir().unwrap();
@@ -799,7 +800,7 @@ fn main() {
 
         // Use cc crate to get compiler with proper environment setup
         let mut build = cc::Build::new();
-        build.file(&dummy_c);
+        build.file(cc_path(&dummy_c, target_is_windows));
 
         // Get the actual compiler command cc would use
         let compiler = build.try_get_compiler().unwrap();
@@ -862,9 +863,11 @@ fn main() {
             .flag_if_supported("-std=c++17")
             .pic(true);
 
-        common_wrapper_build.include(&llama_include_root);
+        // Clang and CMake accept Windows extended paths, but some MSVC
+        // versions reject the same `\\?\` prefix in `/I` arguments.
+        common_wrapper_build.include(cc_path(&llama_include_root, target_is_windows));
         for include_dir in source_include_dirs(&llama_src) {
-            common_wrapper_build.include(include_dir);
+            common_wrapper_build.include(cc_path(&include_dir, target_is_windows));
         }
 
         if matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc)) {
@@ -1369,17 +1372,25 @@ fn main() {
         let mut mtmd_build = cc::Build::new();
         mtmd_build
             .cpp(true)
-            .include(&mtmd_src)
-            .include(&llama_src)
-            .include(llama_src.join("include"))
-            .include(llama_src.join("ggml/include"))
-            .include(llama_src.join("common"))
-            .include(llama_src.join("vendor/hash"))
-            .include(llama_src.join("vendor"))
-            .file(llama_src.join("vendor/hash/hash.cpp"))
             .flag_if_supported("-std=c++17")
             .flag_if_supported("-Wno-cast-qual")
             .pic(true);
+
+        for include_dir in [
+            mtmd_src.clone(),
+            llama_src.clone(),
+            llama_src.join("include"),
+            llama_src.join("ggml/include"),
+            llama_src.join("common"),
+            llama_src.join("vendor/hash"),
+            llama_src.join("vendor"),
+        ] {
+            mtmd_build.include(cc_path(&include_dir, target_is_windows));
+        }
+        mtmd_build.file(cc_path(
+            &llama_src.join("vendor/hash/hash.cpp"),
+            target_is_windows,
+        ));
 
         if matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc)) {
             mtmd_build.flag("/std:c++17");
@@ -1400,7 +1411,7 @@ fn main() {
                     if filename == "mtmd-cli.cpp" || filename == "deprecation-warning.cpp" {
                         continue;
                     }
-                    mtmd_build.file(&path);
+                    mtmd_build.file(cc_path(&path, target_is_windows));
                 }
                 Err(e) => println!("cargo:warning=mtmd glob error: {}", e),
             }
@@ -1411,8 +1422,11 @@ fn main() {
         // hash.cpp is C++, but the bundled SHA-256 implementation must keep
         // its C symbol name for the wrapper's extern "C" declaration.
         cc::Build::new()
-            .include(llama_src.join("vendor/hash"))
-            .file(llama_src.join("vendor/hash/sha256/sha256.c"))
+            .include(cc_path(&llama_src.join("vendor/hash"), target_is_windows))
+            .file(cc_path(
+                &llama_src.join("vendor/hash/sha256/sha256.c"),
+                target_is_windows,
+            ))
             .compile("mtmd_sha256");
     }
 

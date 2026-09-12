@@ -53,6 +53,22 @@ pub(crate) fn source_root(source: &Path) -> PathBuf {
     source.to_path_buf()
 }
 
+pub(crate) fn cc_path(path: &Path, is_windows: bool) -> PathBuf {
+    if !is_windows {
+        return path.to_path_buf();
+    }
+
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+
+    path.to_path_buf()
+}
+
 pub(crate) fn source_include_dirs(source: &Path) -> [PathBuf; 6] {
     [
         source.join("include"),
@@ -67,7 +83,7 @@ pub(crate) fn source_include_dirs(source: &Path) -> [PathBuf; 6] {
 #[cfg(test)]
 mod tests {
     use super::{
-        clone_destination, destination_can_be_replaced, source_can_be_used_directly,
+        cc_path, clone_destination, destination_can_be_replaced, source_can_be_used_directly,
         source_include_dirs, source_root,
     };
     use std::path::Path;
@@ -157,5 +173,28 @@ mod tests {
         ] {
             assert!(include_dirs.contains(&source.join(relative)));
         }
+    }
+
+    #[test]
+    fn msvc_path_drops_extended_drive_prefix() {
+        assert_eq!(
+            cc_path(Path::new(r"\\?\D:\a\rdma-p2p\include"), true),
+            Path::new(r"D:\a\rdma-p2p\include"),
+        );
+    }
+
+    #[test]
+    fn msvc_path_converts_extended_unc_prefix() {
+        assert_eq!(
+            cc_path(Path::new(r"\\?\UNC\build\share\include"), true),
+            Path::new(r"\\build\share\include"),
+        );
+    }
+
+    #[test]
+    fn non_windows_path_is_unchanged() {
+        let path = Path::new("/worktree/.ci-cache/llama.cpp/include");
+
+        assert_eq!(cc_path(path, false), path);
     }
 }

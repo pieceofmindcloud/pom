@@ -11,7 +11,8 @@ use walkdir::DirEntry;
 #[path = "src/build_support.rs"]
 mod build_support;
 use build_support::{
-    clone_destination, destination_can_be_replaced, source_can_be_used_directly, source_root,
+    clone_destination, destination_can_be_replaced, source_can_be_used_directly,
+    source_include_dirs, source_root,
 };
 
 fn cuda_graphs_enabled(value: Option<&str>) -> bool {
@@ -690,12 +691,10 @@ fn main() {
     // Bindings
     let mut bindings_builder = bindgen::Builder::default()
         .header("wrapper.h")
-        // The wrappers include paths relative to the selected checkout root,
-        // so this works for both the versioned symlink and an external
-        // LLAMA_SOURCE used by CI.
+        // The wrappers use leaf header names. The explicit source subdirectories
+        // below work for both the versioned symlink and an external LLAMA_SOURCE
+        // used by CI, including the mtmd-only wrapper.
         .clang_arg(format!("-I{}", llama_include_root.display()))
-        .clang_arg(format!("-I{}", llama_src.join("include").display()))
-        .clang_arg(format!("-I{}", llama_src.join("ggml/include").display()))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .derive_partialeq(true)
         .allowlist_function("ggml_.*")
@@ -705,6 +704,10 @@ fn main() {
         .allowlist_function("llama_.*")
         .allowlist_type("llama_.*")
         .prepend_enum_name(false);
+
+    for include_dir in source_include_dirs(&llama_src) {
+        bindings_builder = bindings_builder.clang_arg(format!("-I{}", include_dir.display()));
+    }
 
     // The `llama_rs_*` symbols are emitted by `wrapper_common.cpp`, which is
     // only compiled (and only has its header included from `wrapper.h`) when
@@ -856,13 +859,13 @@ fn main() {
         common_wrapper_build
             .cpp(true)
             .file("wrapper_common.cpp")
-            .include(&llama_include_root)
-            .include(llama_src.join("common"))
-            .include(llama_src.join("include"))
-            .include(llama_src.join("ggml/include"))
-            .include(llama_src.join("vendor"))
             .flag_if_supported("-std=c++17")
             .pic(true);
+
+        common_wrapper_build.include(&llama_include_root);
+        for include_dir in source_include_dirs(&llama_src) {
+            common_wrapper_build.include(include_dir);
+        }
 
         if matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc)) {
             common_wrapper_build.flag("/std:c++17");

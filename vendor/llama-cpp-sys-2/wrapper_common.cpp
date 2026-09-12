@@ -12,22 +12,22 @@
 #include <unordered_map>
 #include <vector>
 
-#include "common/common.h"
+#include "common.h"
 // Cabeçalhos internos: `llama_model` (`tensors_by_name`, `dev_layer`), o
 // `llama-ext.h` de estágio (`llama_get_memory_breakdown`) e o `llama_context`
 // (`get_cparams`, o Flash Attention resolvido). Nada disso está no `llama.h`
 // público, e é justamente o que responde onde cada camada ficou e com que
 // parâmetros o contexto ficou de pé.
-#include "src/llama-ext.h"
-#include "src/llama-context.h"
-#include "src/llama-model.h"
-#include "ggml/include/ggml-backend.h"
-#include "ggml/include/ggml-cpu.h"
-#include "common/fit.h"
-#include "common/log.h"
-#include "common/json-schema-to-grammar.h"
-#include "common/speculative.h"
-#include "include/llama.h"
+#include "llama-ext.h"
+#include "llama-context.h"
+#include "llama-model.h"
+#include "ggml-backend.h"
+#include "ggml-cpu.h"
+#include "fit.h"
+#include "log.h"
+#include "json-schema-to-grammar.h"
+#include "speculative.h"
+#include "llama.h"
 #include "wrapper_utils.h"
 
 #include <nlohmann/json.hpp>

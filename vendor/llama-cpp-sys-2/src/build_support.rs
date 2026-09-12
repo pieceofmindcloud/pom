@@ -53,10 +53,22 @@ pub(crate) fn source_root(source: &Path) -> PathBuf {
     source.to_path_buf()
 }
 
+pub(crate) fn source_include_dirs(source: &Path) -> [PathBuf; 6] {
+    [
+        source.join("include"),
+        source.join("ggml/include"),
+        source.join("src"),
+        source.join("common"),
+        source.join("tools/mtmd"),
+        source.join("vendor"),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        clone_destination, destination_can_be_replaced, source_can_be_used_directly, source_root,
+        clone_destination, destination_can_be_replaced, source_can_be_used_directly,
+        source_include_dirs, source_root,
     };
     use std::path::Path;
 
@@ -119,5 +131,31 @@ mod tests {
             source_root(Path::new("/worktree/.ci-cache/llama.cpp")),
             Path::new("/worktree/.ci-cache/llama.cpp")
         );
+    }
+
+    #[test]
+    fn mtmd_wrapper_uses_an_explicit_include_directory() {
+        let wrapper = include_str!("../wrapper_mtmd.h");
+
+        assert!(!wrapper.contains("\"tools/mtmd/"));
+        assert!(wrapper.contains("\"mtmd.h\""));
+        assert!(wrapper.contains("\"mtmd-helper.h\""));
+    }
+
+    #[test]
+    fn wrapper_include_directories_cover_all_source_subdirectories() {
+        let source = Path::new("/worktree/.ci-cache/llama.cpp");
+        let include_dirs = source_include_dirs(source);
+
+        for relative in [
+            "include",
+            "ggml/include",
+            "src",
+            "common",
+            "tools/mtmd",
+            "vendor",
+        ] {
+            assert!(include_dirs.contains(&source.join(relative)));
+        }
     }
 }

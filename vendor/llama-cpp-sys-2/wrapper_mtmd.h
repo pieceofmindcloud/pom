@@ -1,2 +1,2 @@
-#include "tools/mtmd/mtmd.h"
-#include "tools/mtmd/mtmd-helper.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"

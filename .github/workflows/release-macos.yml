@@ -28,10 +28,25 @@ jobs:
   build:
     name: macOS arm64 (Metal)
     runs-on: [self-hosted, macOS, ARM64, macbook]
+    env:
+      LLAMA_SOURCE: ${{ github.workspace }}/.ci-cache/llama.cpp
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+      CMAKE_CUDA_COMPILER_LAUNCHER: sccache
+      CCACHE: sccache
     steps:
       - uses: actions/checkout@v4
 
+      - name: Preparar/cachear checkout do llama.cpp
+        id: llama-cache
+        uses: ./.github/actions/llama-cache
+
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Ativar cache de compilação
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       # Sem `Swatinem/rust-cache`: ele existe para devolver o `target/` a um
       # runner que nasce vazio. Aqui o workspace é o mesmo entre execuções, o

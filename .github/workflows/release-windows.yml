@@ -50,12 +50,29 @@ jobs:
     name: Windows x86_64 (CPU)
     needs: ui
     runs-on: windows-2022
+    env:
+      LLAMA_SOURCE: ${{ github.workspace }}/.ci-cache/llama.cpp
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+      CMAKE_CUDA_COMPILER_LAUNCHER: sccache
+      CCACHE: sccache
     steps:
       - uses: actions/checkout@v4
 
+      - name: Preparar/cachear checkout do llama.cpp
+        id: llama-cache
+        uses: ./.github/actions/llama-cache
+
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Ativar cache de compilação
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: llama-${{ steps.llama-cache.outputs.sha }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Validar destino do autoclone no Windows
         shell: pwsh

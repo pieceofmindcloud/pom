@@ -122,6 +122,43 @@ O `.cargo/config.toml` não define os wrappers: isso manteria um wrapper
 obrigatório em máquinas sem sccache e não permitiria selecionar explicitamente
 o servidor/socket compartilhado.
 
+### Cache no GitHub Actions
+
+Os três workflows de release (`.github/workflows/release-{linux,macos,windows}.yml`)
+resolvem o SHA atual da branch `pom-tensor-parallel` antes do build. O checkout
+do fork fica em `.ci-cache/llama.cpp`, fora do symlink versionado, e é guardado
+por `actions/cache` com a chave:
+
+```text
+llama-source-v1-<sistema>-<arquitetura>-<sha-do-fork>
+```
+
+Depois do restore, o passo de preparo confirma com `git rev-parse` que o
+checkout tem exatamente esse SHA. Em cache miss, ele faz o clone raso e recusa
+continuar se a branch tiver avançado entre a resolução e o clone. O build
+recebe `LLAMA_SOURCE` para usar esse diretório; assim o `git clean` do
+`actions/checkout` não transforma o clone vendorizado em uma dependência
+implícita do estado anterior do runner.
+
+Os workflows também ativam `mozilla-actions/sccache-action` com o backend do
+cache do GitHub. `RUSTC_WRAPPER`, os três launchers do CMake e `CCACHE` apontam
+para `sccache`, então o mesmo cache content-addressed cobre as unidades Rust,
+C/C++ do llama.cpp e a ponte CUDA quando houver CUDA. No Windows, onde o runner
+é efêmero, `Swatinem/rust-cache` continua cobrindo `~/.cargo` e `target/`; sua
+chave adicional inclui o SHA do fork e `hashFiles('**/Cargo.lock')`. Linux e
+macOS usam runners self-hosted persistentes e mantêm o target local, enquanto o
+`sccache` cobre recompilações entre revisões e worktrees.
+
+Essa combinação invalida o checkout quando o fork muda, invalida o cache do
+Cargo quando o lockfile muda e deixa o próprio `sccache` separar compiladores,
+flags e conteúdo-fonte. O primeiro build de uma chave continua pagando clone,
+configure e compilação; nos seguintes, a expectativa é evitar os minutos das
+unidades C/C++ e Rust inalteradas. O link final, especialmente o LTO de
+release, continua sendo executado e por isso o ganho não é o tempo total do
+build. A estratégia foi validada offline por inspeção dos workflows, do
+`vendor/llama-cpp-sys-2/build.rs` e das chaves; nenhuma execução do workflow foi
+disparada.
+
 ### Por que não há `LLAMA_CPP_LIB_DIR`
 
 O build nativo do llama.cpp não é apenas um arquivo `.a` isolado. O

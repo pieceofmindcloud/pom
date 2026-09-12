@@ -53,7 +53,7 @@ pub(crate) fn source_root(source: &Path) -> PathBuf {
     source.to_path_buf()
 }
 
-pub(crate) fn cc_path(path: &Path, is_windows: bool) -> PathBuf {
+pub(crate) fn build_tool_path(path: &Path, is_windows: bool) -> PathBuf {
     if !is_windows {
         return path.to_path_buf();
     }
@@ -83,8 +83,8 @@ pub(crate) fn source_include_dirs(source: &Path) -> [PathBuf; 6] {
 #[cfg(test)]
 mod tests {
     use super::{
-        cc_path, clone_destination, destination_can_be_replaced, source_can_be_used_directly,
-        source_include_dirs, source_root,
+        build_tool_path, clone_destination, destination_can_be_replaced,
+        source_can_be_used_directly, source_include_dirs, source_root,
     };
     use std::path::Path;
 
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn msvc_path_drops_extended_drive_prefix() {
         assert_eq!(
-            cc_path(Path::new(r"\\?\D:\a\rdma-p2p\include"), true),
+            build_tool_path(Path::new(r"\\?\D:\a\rdma-p2p\include"), true),
             Path::new(r"D:\a\rdma-p2p\include"),
         );
     }
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn msvc_path_converts_extended_unc_prefix() {
         assert_eq!(
-            cc_path(Path::new(r"\\?\UNC\build\share\include"), true),
+            build_tool_path(Path::new(r"\\?\UNC\build\share\include"), true),
             Path::new(r"\\build\share\include"),
         );
     }
@@ -195,6 +195,6 @@ mod tests {
     fn non_windows_path_is_unchanged() {
         let path = Path::new("/worktree/.ci-cache/llama.cpp/include");
 
-        assert_eq!(cc_path(path, false), path);
+        assert_eq!(build_tool_path(path, false), path);
     }
 }

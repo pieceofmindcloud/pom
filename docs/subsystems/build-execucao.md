@@ -148,11 +148,12 @@ diretórios `include/`, `ggml/include/`, `src/`, `common/`, `tools/mtmd/` e
 checkout Windows materializa. O mesmo caminho funciona no checkout vendorizado
 local, em `LLAMA_SOURCE` e dentro do Dockerfile.
 
-No Windows, `canonicalize()` pode devolver o prefixo estendido `\\?\`. Esse
-prefixo continua sendo usado pelo bindgen e pelo CMake, que o aceitam. Antes de
-chamar `cc::Build`, o `build.rs` remove o prefixo dos diretórios e arquivos
-entregues ao `cl.exe`; o MSVC recebe caminhos `D:\...` ou UNC convencionais no
-`/I`, inclusive quando a origem veio de `.ci-cache`.
+No Windows, `canonicalize()` pode devolver o prefixo estendido `\\?\`. O
+bindgen aceita esse caminho, mas CMake/MSBuild e algumas versões do MSVC não.
+Antes de entregar a origem, os diretórios ou os arquivos a `cmake::Config` ou
+`cc::Build`, o `build.rs` remove o prefixo; os caminhos chegam aos compiladores
+como `D:\...` ou UNC convencionais, inclusive quando a origem veio de
+`.ci-cache`.
 
 Os workflows também ativam `mozilla-actions/sccache-action` com o backend do
 cache do GitHub. `RUSTC_WRAPPER`, os três launchers do CMake e `CCACHE` apontam

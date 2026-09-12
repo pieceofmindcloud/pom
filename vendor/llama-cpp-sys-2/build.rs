@@ -11,7 +11,7 @@ use walkdir::DirEntry;
 #[path = "src/build_support.rs"]
 mod build_support;
 use build_support::{
-    cc_path, clone_destination, destination_can_be_replaced, source_can_be_used_directly,
+    build_tool_path, clone_destination, destination_can_be_replaced, source_can_be_used_directly,
     source_include_dirs, source_root,
 };
 
@@ -800,7 +800,7 @@ fn main() {
 
         // Use cc crate to get compiler with proper environment setup
         let mut build = cc::Build::new();
-        build.file(cc_path(&dummy_c, target_is_windows));
+        build.file(build_tool_path(&dummy_c, target_is_windows));
 
         // Get the actual compiler command cc would use
         let compiler = build.try_get_compiler().unwrap();
@@ -865,9 +865,9 @@ fn main() {
 
         // Clang and CMake accept Windows extended paths, but some MSVC
         // versions reject the same `\\?\` prefix in `/I` arguments.
-        common_wrapper_build.include(cc_path(&llama_include_root, target_is_windows));
+        common_wrapper_build.include(build_tool_path(&llama_include_root, target_is_windows));
         for include_dir in source_include_dirs(&llama_src) {
-            common_wrapper_build.include(cc_path(&include_dir, target_is_windows));
+            common_wrapper_build.include(build_tool_path(&include_dir, target_is_windows));
         }
 
         if matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc)) {
@@ -885,7 +885,10 @@ fn main() {
 
     // Build with Cmake
 
-    let mut config = Config::new(&llama_src);
+    // Bindgen accepts the Windows extended path, but the CMake crate forwards
+    // its source path to CMake/MSBuild, which may not accept the `\\?\` prefix.
+    let cmake_source = build_tool_path(&llama_src, target_is_windows);
+    let mut config = Config::new(&cmake_source);
 
     // Would require extra source files to pointlessly
     // be included in what's uploaded to and downloaded from
@@ -1385,9 +1388,9 @@ fn main() {
             llama_src.join("vendor/hash"),
             llama_src.join("vendor"),
         ] {
-            mtmd_build.include(cc_path(&include_dir, target_is_windows));
+            mtmd_build.include(build_tool_path(&include_dir, target_is_windows));
         }
-        mtmd_build.file(cc_path(
+        mtmd_build.file(build_tool_path(
             &llama_src.join("vendor/hash/hash.cpp"),
             target_is_windows,
         ));
@@ -1411,7 +1414,7 @@ fn main() {
                     if filename == "mtmd-cli.cpp" || filename == "deprecation-warning.cpp" {
                         continue;
                     }
-                    mtmd_build.file(cc_path(&path, target_is_windows));
+                    mtmd_build.file(build_tool_path(&path, target_is_windows));
                 }
                 Err(e) => println!("cargo:warning=mtmd glob error: {}", e),
             }
@@ -1422,8 +1425,11 @@ fn main() {
         // hash.cpp is C++, but the bundled SHA-256 implementation must keep
         // its C symbol name for the wrapper's extern "C" declaration.
         cc::Build::new()
-            .include(cc_path(&llama_src.join("vendor/hash"), target_is_windows))
-            .file(cc_path(
+            .include(build_tool_path(
+                &llama_src.join("vendor/hash"),
+                target_is_windows,
+            ))
+            .file(build_tool_path(
                 &llama_src.join("vendor/hash/sha256/sha256.c"),
                 target_is_windows,
             ))

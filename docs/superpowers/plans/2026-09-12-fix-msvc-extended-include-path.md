@@ -46,15 +46,15 @@ Add assertions for drive paths, UNC paths, and unchanged Unix paths:
 
 ```rust
 assert_eq!(
-    cc_path(Path::new(r"\\?\D:\a\rdma-p2p\include"), true),
+    build_tool_path(Path::new(r"\\?\D:\a\rdma-p2p\include"), true),
     Path::new(r"D:\a\rdma-p2p\include"),
 );
 assert_eq!(
-    cc_path(Path::new(r"\\?\UNC\build\share\include"), true),
+    build_tool_path(Path::new(r"\\?\UNC\build\share\include"), true),
     Path::new(r"\\build\share\include"),
 );
 assert_eq!(
-    cc_path(Path::new("/worktree/.ci-cache/llama.cpp/include"), false),
+    build_tool_path(Path::new("/worktree/.ci-cache/llama.cpp/include"), false),
     Path::new("/worktree/.ci-cache/llama.cpp/include"),
 );
 ```
@@ -63,7 +63,7 @@ assert_eq!(
 
 Run `rustc --test vendor/llama-cpp-sys-2/src/build_support.rs -o /tmp/rdma-build-support-msvc-red && /tmp/rdma-build-support-msvc-red`.
 
-Expected: failure because `cc_path` does not yet exist.
+Expected: failure because `build_tool_path` does not yet exist.
 
 ### Task 3: Normalize every `cc::Build` path
 
@@ -71,7 +71,7 @@ Expected: failure because `cc_path` does not yet exist.
 - Modify: `vendor/llama-cpp-sys-2/src/build_support.rs`
 - Modify: `vendor/llama-cpp-sys-2/build.rs`
 
-- [x] **Step 1: Implement `cc_path(path, is_windows) -> PathBuf`**
+- [x] **Step 1: Implement `build_tool_path(path, is_windows) -> PathBuf`**
 
 Strip `\\?\` from drive-letter paths, convert `\\?\UNC\server\share` to `\\server\share`, and return non-Windows or already-normal paths unchanged.
 

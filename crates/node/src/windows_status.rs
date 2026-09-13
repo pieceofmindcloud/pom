@@ -46,7 +46,10 @@ pub fn should_relaunch(exit_code: Option<i32>) -> bool {
 
 #[cfg(windows)]
 mod native {
-    use super::{close_action, menu_action, WindowAction, TRAY_QUIT_ID, TRAY_SHOW_ID, WINDOW_SIZE};
+    use super::{
+        close_action, menu_action, wait_for_gateway_ready, WindowAction, TRAY_QUIT_ID,
+        TRAY_SHOW_ID, WINDOW_SIZE,
+    };
     use anyhow::{anyhow, Context, Result};
     use image::load_from_memory;
     use std::process::Command as ProcessCommand;

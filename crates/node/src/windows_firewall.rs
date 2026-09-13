@@ -278,8 +278,7 @@ pub(crate) fn run_elevated_helper(_p2p_port: u16) -> Result<()> {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use std::ffi::OsString;
-    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::ffi::OsStrExt;
     use windows::core::{BSTR, GUID, PCWSTR};
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::NetworkManagement::WindowsFirewall::{
@@ -423,7 +422,8 @@ mod platform {
     }
 
     fn wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
-        OsString::from(value.as_ref())
+        value
+            .as_ref()
             .encode_wide()
             .chain(std::iter::once(0))
             .collect()

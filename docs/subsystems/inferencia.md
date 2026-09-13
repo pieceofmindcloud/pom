@@ -188,7 +188,11 @@ aceitação da especulação - pelo tamanho do pipeline.
 
 `ready_for_pipeline` continua confirmando, por requisição, que cada peer
 anunciado responde `/health` antes de entrar no plano - a defesa contra um
-anunciante UDP velho. O que mudou é o preço. O prazo é o
+anunciante UDP velho. A resposta traz a identidade executável
+(`model_label`/`deploy_id`) e a faixa (`start_layer`/`end_layer`/`total_layers`),
+que substituem a fotografia P2P enquanto o próximo `Announce` ainda está em
+trânsito. Assim, uma implantação nova não falha com um buraco de cobertura só
+porque o gossip chegou depois da carga local. O que mudou é o preço. O prazo é o
 `ADMISSION_PROBE_TIMEOUT` de 300 ms, não o `CONNECT_TIMEOUT` de 2 s do cliente
 geral, e quem reprova entra em quarentena por `ADMISSION_FAILURE_COOLDOWN`
 (`AdmissionHealth`, em `gateway/state.rs`), ficando fora do plano sem voltar a
@@ -1850,8 +1854,10 @@ aí o gateway falha (ver seção 7). `LoadTracker::acquire` devolve um `LoadGuar
 RAII que decrementa no drop: o balanço de carga nunca fica preso num erro.
 
 - `ready_for_pipeline` (gateway) sonda `/health` de cada peer com timeout de
-  10 s **antes** de planejar - um anúncio UDP velho não pode envenenar o plano
-  nem deixar requisição esperando por um hop que não serve mais HTTP.
+  300 ms **antes** de planejar - um anúncio UDP velho não pode envenenar o
+  plano nem deixar requisição esperando por um hop que não serve mais HTTP. A
+  mesma resposta atualiza a identidade e a faixa executável quando o gossip
+  ainda não propagou o `Announce` mais recente.
 - `resolve_step_url` escolhe o endereço de cada hop por ordem: rota medida na
   `RouteTable` (se ainda for candidato anunciado) → `inference_url` (endereço
   observado, o único comprovado antes da primeira sonda) → primeiro candidato.

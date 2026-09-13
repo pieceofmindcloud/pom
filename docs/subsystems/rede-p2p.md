@@ -236,12 +236,15 @@ Hoje:
   para sempre seria repor o aviso desonesto com outra palavra. Uma leitura bem
   sucedida (`Network::note_peer_read`) encerra a busca, para que a próxima
   rotação comece do zero.
-- A cobertura sai do gossip, não da leitura, então um par ilegível continua
+- A cobertura do Painel sai do gossip, então um par ilegível continua
   contribuindo camadas - e é honesto que continue, porque o servidor de
   inferência dele pode estar perfeito e só o endereço de controle é que morreu.
-  O que não pode é ficar invisível: `model_inventory[].unreadable_nodes` nomeia
-  esses pares, e a tela tira o verde de "completo" enquanto a lista não estiver
-  vazia.
+  Na admissão de uma requisição, porém, o gateway também lê a faixa atual do
+  `/health` do infer server. Essa leitura pode corrigir a fotografia P2P
+  atrasada para o planejamento, sem tornar o `/health` fonte de verdade da
+  cobertura visual. O que não pode é ficar invisível:
+  `model_inventory[].unreadable_nodes` nomeia esses pares, e a tela tira o
+  verde de "completo" enquanto a lista não estiver vazia.
 - `cleanup_dead_peers` chama `RouteTable::forget` no peer que expirou, para que
   um nó que volta com o mesmo endereço não nasça desacreditado.
 

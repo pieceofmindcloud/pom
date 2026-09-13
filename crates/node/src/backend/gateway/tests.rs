@@ -2179,7 +2179,15 @@ mod peer_visibility_tests {
         let healthy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let healthy_port = healthy_listener.local_addr().unwrap().port();
         tokio::spawn(async move {
-            let app = axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "status": "ok",
+                        "model_loaded": true,
+                    }))
+                }),
+            );
             axum::serve(healthy_listener, app).await.unwrap();
         });
 
@@ -2225,6 +2233,60 @@ mod peer_visibility_tests {
         assert!(
             em_quarentena < Duration::from_millis(25),
             "peer em quarentena voltou a ser sondado: {em_quarentena:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_health_probe_refreshes_stale_layer_coverage_before_planning() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "status": "ok",
+                        "model_loaded": true,
+                        "model_label": "qwen35",
+                        "deploy_id": "d-1234abcd",
+                        "start_layer": 0,
+                        "end_layer": 31,
+                        "total_layers": 32,
+                    }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // The network announcement still carries the old one-layer slice, as
+        // can happen between apply and the next authenticated announce. The
+        // inference server already knows the complete current assignment.
+        let mut stale = peer("qwen-head");
+        stale.model = "old-model".into();
+        stale.deploy_id = "d-old0000".into();
+        stale.start_layer = 0;
+        stale.end_layer = 0;
+        stale.total_layers = 32;
+        stale.inference_port = Some(port);
+
+        let health = super::AdmissionHealth::default();
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let reachable =
+            ready_for_pipeline(&clients, &health, vec![stale], Duration::from_millis(100)).await;
+
+        let peers = reachable;
+        assert_eq!(peers[0].end_layer, 31);
+        let plan = crate::pipeline::plan_pipeline(
+            &peers,
+            "qwen35",
+            Some("d-1234abcd"),
+            32,
+            &crate::pipeline::LoadTracker::new(),
+        )
+        .await;
+        assert!(
+            plan.is_some(),
+            "a cobertura confirmada pelo health deve planejar"
         );
     }
 

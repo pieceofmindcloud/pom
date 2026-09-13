@@ -33,6 +33,7 @@ impl InferState {
             end_layer: cfg.end_layer,
             total_layers: cfg.total_layers,
             model_label: cfg.model_label.clone(),
+            deploy_id: cfg.deploy_id.clone(),
             model_path: cfg.model_path.clone(),
             slot_dir: cfg
                 .slot_save_path
@@ -1170,11 +1171,9 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
     tracing::debug!("health native snapshot: placement done; context_memory begin");
     let context_memory = s.engine.context_memory();
     tracing::debug!("health native snapshot: context_memory done");
-    Json(json!({
+    let mut body = json!({
         "status": "ok",
         "model_loaded": true,
-        "start_layer": s.start_layer,
-        "end_layer": s.end_layer,
         "original_block_count": s.original_block_count,
         "selected_path": s.inference_path.as_str(),
         "moe_requested": moe_requested,
@@ -1243,8 +1242,16 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
         // JSON, para não segurar o lock do motor em leitura de disco.
         "slot_persist_enabled": s.slot_dir.is_some(),
         "slot_count": slot_count,
-    }))
-    .into_response()
+    });
+    // Keep the identity fields separate from the large diagnostic object. A
+    // direct addition to the json! tree would exceed the macro recursion limit
+    // and would make this readiness contract depend on compiler settings.
+    body["model_label"] = Value::String(s.model_label.clone());
+    body["deploy_id"] = Value::String(s.deploy_id.clone());
+    body["start_layer"] = Value::from(s.start_layer);
+    body["end_layer"] = Value::from(s.end_layer);
+    body["total_layers"] = Value::from(s.total_layers);
+    Json(body).into_response()
 }
 
 // ── /v1/tp/reduce ────────────────────────────────────────────────────────────

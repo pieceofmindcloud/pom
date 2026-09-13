@@ -544,7 +544,10 @@ faz o download autenticado do blob persistido.
   `inference_url()/health` before planning, with the `ADMISSION_PROBE_TIMEOUT`
   of 300ms and an `AdmissionHealth` quarantine for whoever fails - a single
   unreachable announcer used to cost every inference 2,005ms, the
-  `peer_client::CONNECT_TIMEOUT`, because `join_all` waits for the slowest; `all_peers` appends
+  `peer_client::CONNECT_TIMEOUT`, because `join_all` waits for the slowest. A
+  successful health response also refreshes the model label, deployment id and
+  layer range from the inference process, so a P2P announcement still in flight
+  cannot make a newly loaded pipeline look incomplete; `all_peers` appends
   the local node with `self_dial_host` (advertised > local IP > loopback) and
   advertises `relay/v2-direct` in the capability list alongside
   `inference/frame-v1-batch`, `transport/link-v1`, `relay/v1-chain` and

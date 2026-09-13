@@ -619,6 +619,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `spawn_health_watch` também publica no `Network` o `RuntimeCapacity` efetivo
   (`n_ctx`, `max_new_tokens`); apply, erro, stop e unload térmico removem esse
   valor até o próximo runtime pronto.
+  O endpoint `/health` também devolve `model_label`, `deploy_id`,
+  `start_layer`, `end_layer` e `total_layers`. O gateway usa esses campos como
+  a fotografia executável mais recente durante a admissão, corrigindo uma
+  cobertura P2P atrasada antes de chamar o planejador.
   Os testes de `runtime.rs` usam `Network::testkit`, com socket e destino UDP
   presos à loopback, para que anúncios de readiness nunca alcancem a LAN.
 - `spec_lab.rs` (614, `#![cfg(test)]`) - a bancada da especulação:

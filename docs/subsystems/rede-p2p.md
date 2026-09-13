@@ -358,8 +358,12 @@ publica somente medições frescas em `GET /api/ui/network/rtt`, autenticado pel
 chave de conexão. `snapshot_with_age` preserva a idade para diagnóstico e
 `fresh_snapshot` é a fonte da seleção. O gateway agrega os relatórios e só usa
 a medição de `A -> B` na aresta `A -> B`. Se o peer não oferece o túnel, o
-relatório pode marcar `direct-health` como fallback. Nenhuma latência de outro
-peer é transitiva ou reaproveitada como se fosse a aresta real.
+relatório pode marcar `direct-health` como fallback. O RTT é renovado a cada
+120 s, independentemente da re-medida de endereçamento de 5 min. Se um peer
+anuncia o túnel, mas o swarm ainda não está pronto para responder, a própria
+rota HTTP de inferência continua como fallback `direct-health`; a capability
+anunciada não faz a medição desaparecer. Nenhuma latência de outro peer é
+transitiva ou reaproveitada como se fosse a aresta real.
 
 O anúncio P2P continua sendo capacidade de dados: `capabilities` informa
 modelo/faixa e `runtime_capacity` informa `n_ctx` e `max_new_tokens` apenas
@@ -587,6 +591,13 @@ verifier carrega qual node_id esperar e é fixado na construção. Sem TLS volta
 ser um só, que é o comportamento anterior. O esquema das URLs (`http`/`https`)
 sai de um estado global do processo, `peer_client::tls_ativo`, porque é
 propriedade do nó e não da conexão.
+
+Os clientes HTTP de peer ativam `TCP_NODELAY` em todos os caminhos TCP, claros,
+TLS e sondas. Isso evita que requests pequenos de inferência paguem a combinação
+de Nagle com delayed ACK do sistema operacional. O `PeerClients` claro é
+compartilhado e o cliente TLS é cacheado por `node_id`; as chamadas de
+`for_peer` reutilizam o pool interno do reqwest em vez de criarem um cliente por
+frame.
 
 **Isso vale para o plano de controle também, não só para a inferência.** A
 primeira versão converteu o caminho de inferência e o de transferência e deixou

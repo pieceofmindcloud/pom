@@ -2341,7 +2341,7 @@ impl Network {
                                 .inference_frame_capabilities
                                 .iter()
                                 .any(|cap| cap == crate::pipeline::CAP_LIBP2P_TUNNEL);
-                        let measured =
+                        let tunnel_rtt =
                             match (has_tunnel, peer_id, crate::infer_tunnel::tunnel_sender()) {
                                 (true, Some(peer_id), Some(sender)) => {
                                     crate::infer_tunnel::measure_rtt(
@@ -2354,29 +2354,26 @@ impl Network {
                                 _ => None,
                             };
 
-                        if let Some(rtt_ms) = measured {
-                            net_routes.rtts.remember(&peer.node_id, rtt_ms, "libp2p");
-                        } else if !has_tunnel {
-                            // Peers antigos não anunciam o túnel. O health
-                            // HTTP é o fallback de compatibilidade e fica
-                            // explicitamente marcado como tal.
-                            if let Some((_, route)) = net_routes
+                        // A capability anunciada não garante que o swarm local
+                        // ainda esteja pronto. Se a medição pelo túnel falhar,
+                        // mede a própria rota HTTP de inferência como fallback.
+                        // Isso também renova o direct-health a cada intervalo
+                        // de RTT, sem esperar o intervalo mais lento de rota.
+                        let direct_health_rtt = if tunnel_rtt.is_none() {
+                            net_routes
                                 .routes
-                                .snapshot()
-                                .into_iter()
-                                .find(|(node_id, _)| node_id == &peer.node_id)
-                            {
-                                net_routes.rtts.remember(
-                                    &peer.node_id,
-                                    route.rtt_ms,
-                                    "direct-health",
-                                );
-                            } else {
-                                net_routes.rtts.mark_failure(&peer.node_id);
-                            }
+                                .measure_current_peer(&clientes, &peer.node_id)
+                                .await
                         } else {
-                            // Não substitui uma medição libp2p ausente pela
-                            // latência observada pelo gateway ou por outro nó.
+                            None
+                        };
+
+                        if let Some((rtt_ms, transport)) = crate::route::escolher_rtt(
+                            tunnel_rtt,
+                            direct_health_rtt,
+                        ) {
+                            net_routes.rtts.remember(&peer.node_id, rtt_ms, transport);
+                        } else {
                             net_routes.rtts.mark_failure(&peer.node_id);
                         }
                     }

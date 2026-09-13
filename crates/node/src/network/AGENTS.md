@@ -96,7 +96,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   sem TLS permanecem explicitamente desconhecidos. `effective_quic_enabled`
   combina a flag do pool com a preferência global confirmada pelo principal,
   para que clientes lazy criados antes da propagação não desviem inferência
-  para o túnel.
+  para o túnel. Todos os clientes HTTP de peer ativam `TCP_NODELAY`, inclusive
+  as sondas e clientes TLS, para que requests pequenos de decode não combinem
+  Nagle com delayed ACK do sistema operacional. O `reqwest::Client` compartilhado
+  e o cache por `node_id` também preservam o pool de conexões; `for_peer` não
+  cria um cliente novo a cada frame.
 - `quic.rs` - cliente e servidor HTTP/3 sobre Quinn. O pool mantém uma conexão
   QUIC por peer e endereço anunciado, usa o mesmo pinning Ed25519 da conexão
   TCP e deixa o endpoint UDP pronto na porta dedicada anunciada
@@ -348,7 +352,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `RttTable` - guarda `target_node_id`, `rtt_ms` e `transport` localmente;
   `libp2p` é a medição normal e `direct-health` identifica o fallback de sonda.
   `fresh_snapshot` é a única fonte de RTT para seleção; `snapshot_with_age`
-  conserva a idade para diagnósticos. O endpoint autenticado
+  conserva a idade para diagnósticos. A renovação acontece a cada 120 s,
+  independentemente da re-medida de endereçamento de 5 min. Se o peer anuncia
+  o túnel mas o swarm ainda não está pronto, a sonda HTTP da rota de inferência
+  continua sendo um fallback `direct-health`, em vez de apagar a medição.
+  O endpoint autenticado
   `/api/ui/network/rtt` publica só medições frescas com `source_node_id`.
 
 `pkarr_node.rs`:

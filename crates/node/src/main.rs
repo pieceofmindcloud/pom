@@ -1234,6 +1234,7 @@ async fn async_main(
             pkarr_publisher: pkarr_publisher.clone(),
         };
         let gw_port = gateway_port;
+        crate::webui::spawn_network_settings_ratchet(gw_state.clone());
         crate::gateway::spawn_public_directory_republisher(gw_state.clone());
         tokio::spawn(async move {
             if let Err(e) =
@@ -2145,6 +2146,7 @@ async fn start_gateway_only(
         "Gateway running at http://localhost:{} (model not yet configured)",
         gateway_port
     );
+    crate::webui::spawn_network_settings_ratchet(gw_state.clone());
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
     let gateway_task = tokio::spawn(async move {
         crate::gateway::start_gateway_with_ready(gw_state, gateway_port, gateway_ready).await

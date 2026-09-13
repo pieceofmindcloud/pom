@@ -43,6 +43,10 @@ pub(crate) async fn start_gateway_with_ready(
             crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH,
             get(network_chat_policy),
         )
+        .route(
+            crate::webui::NETWORK_SETTINGS_POLICY_PATH,
+            get(crate::webui::network_settings_policy),
+        )
         .route("/handshake", post(session::handle_handshake))
         // Onde a cauda de um pipeline entrega o resultado. A rota é interna ao
         // pipeline: o Ticket é a credencial por quadro.

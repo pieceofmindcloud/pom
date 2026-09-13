@@ -215,6 +215,14 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias). O wizard de configuração não aparece
   no menu, embora sua rota de teste continue disponível.
+
+Em uma rede pública, `NetworkSettings` local é uma réplica read-only para
+`node` e `infer`. O diretório de entrada carrega apenas os dados necessários
+para descobrir a rede; depois que o `Announce` autenticado do principal chega,
+o backend busca o documento completo, incluindo nome, organização, descrição,
+regras, canais e visibilidade. A tela não deve tratar capacidades anunciadas
+durante o boot como pipeline pronta: o catálogo só marca cobertura completa
+quando cada peer confirmou `/health` ou está `idle`.
 - `*` -> NotFound
 
 No perfil `infer`, a Sidebar deixa de ser uma lista de telas: `ChatSessionList`

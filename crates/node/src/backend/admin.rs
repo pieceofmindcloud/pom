@@ -434,6 +434,19 @@ async fn require_signed_admin(
     })
 }
 
+/// A public-network node may mint exactly one class of key without being an
+/// administrator: its own browser/chat key. The key is still carried over a
+/// signed control request, so the primary can bind it to the authenticated
+/// node identity without granting that node any administrative mutation.
+fn is_self_owned_chat_key(key: &ApiKey, issuer: &AuthorityPrincipal) -> bool {
+    key.active
+        && !key.id.trim().is_empty()
+        && !key.key.trim().is_empty()
+        && key.node_id == issuer.node_id
+        && key.origin_node_id == issuer.node_id
+        && key.label == format!("pom-{}", issuer.node_id)
+}
+
 #[derive(Debug, Serialize)]
 struct AuthorityMemberView {
     node_id: String,
@@ -867,7 +880,11 @@ async fn internal_upsert_api_key(
     State(state): State<crate::gateway::GatewayState>,
     Json(key): Json<ApiKey>,
 ) -> impl IntoResponse {
-    if !require_signed_admin(&state, &auth).await || key.key.is_empty() || key.id.is_empty() {
+    let admin = require_signed_admin(&state, &auth).await;
+    let self_owned_chat_key = auth
+        .principal()
+        .is_some_and(|issuer| is_self_owned_chat_key(&key, issuer));
+    if !(admin || self_owned_chat_key) || key.key.is_empty() || key.id.is_empty() {
         return StatusCode::FORBIDDEN.into_response();
     }
     match state.database.insert_api_key(&key) {
@@ -1892,6 +1909,88 @@ mod tests {
             .api_keys
             .iter()
             .any(|key| key.id == key_id && !key.active));
+    }
+
+    #[test]
+    fn a_node_can_register_only_its_own_chat_key() {
+        let issuer = AuthorityPrincipal {
+            node_id: "worker".into(),
+            peer_id: "peer-worker".into(),
+            pubkey: "pub-worker".into(),
+        };
+        let own = ApiKey {
+            id: "chat-id".into(),
+            key: "sk-chat".into(),
+            label: "pom-worker".into(),
+            node_id: "worker".into(),
+            origin_node_id: "worker".into(),
+            active: true,
+            created_at: String::new(),
+        };
+        assert!(is_self_owned_chat_key(&own, &issuer));
+
+        let mut other_node = own.clone();
+        other_node.node_id = "other".into();
+        other_node.origin_node_id = "other".into();
+        other_node.label = "pom-other".into();
+        assert!(!is_self_owned_chat_key(&other_node, &issuer));
+
+        let mut inactive = own;
+        inactive.active = false;
+        assert!(!is_self_owned_chat_key(&inactive, &issuer));
+    }
+
+    #[tokio::test]
+    async fn a_non_admin_chat_key_is_accepted_only_for_the_authenticated_node() {
+        let state = crate::gateway::testkit::state_with("admin", vec![]).await;
+        let issuer = AuthorityPrincipal {
+            node_id: "worker".into(),
+            peer_id: "peer-worker".into(),
+            pubkey: "pub-worker".into(),
+        };
+        let key = ApiKey {
+            id: "chat-id".into(),
+            key: "sk-chat".into(),
+            label: "pom-worker".into(),
+            node_id: "worker".into(),
+            origin_node_id: "worker".into(),
+            active: true,
+            created_at: String::new(),
+        };
+
+        let response = internal_upsert_api_key(
+            InternalNodeAuth {
+                principal: Some(issuer.clone()),
+            },
+            State(state.clone()),
+            Json(key.clone()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            state
+                .database
+                .api_key_for_token(&key.key)
+                .unwrap()
+                .map(|stored| stored.node_id),
+            Some("worker".into())
+        );
+
+        let mut forged = key;
+        forged.node_id = "other".into();
+        forged.origin_node_id = "other".into();
+        forged.label = "pom-other".into();
+        let response = internal_upsert_api_key(
+            InternalNodeAuth {
+                principal: Some(issuer),
+            },
+            State(state),
+            Json(forged),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

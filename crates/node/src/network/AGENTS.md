@@ -141,6 +141,13 @@ fallback continua em `addr_candidates` + `RouteTable`.
   dele muda a política autoritativa. A retransmissão do Chat da rede é estrela:
   o principal valida API key ativa e `blocked_nodes` antes de enviar a outros
   `node_id`.
+- `NetworkSettings` tem a mesma fronteira de autoridade, mas com leitura
+  explícita: depois do primeiro `Announce` autenticado do principal,
+  `Network::handle_message` acorda a catraca de `GET /api/cluster/network-settings`.
+  O gateway assina a consulta, persiste o documento completo no nó read-only e
+  nunca envia a `connection_key` quando a rede é pública. O subconjunto do
+  diretório público continua sendo apenas convite e descoberta, não fonte de
+  verdade dos metadados.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health`, histerese contra troca de rota por ruído e invalidação imediata
   quando o peer muda seus endereços anunciados. Guarda também a **memória de

@@ -113,6 +113,13 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 `connection_verified` e `api_keys_active`. `PeerInfo::is_alive()` compara
 `last_seen` com `PEER_TIMEOUT_SECS` (30 s).
 
+O `Announce` não é fonte de verdade para os metadados da rede. Depois de
+validar que o emissor é o principal ancorado, o nó dispara uma leitura
+assinada de `/api/cluster/network-settings` e persiste o `NetworkSettings`
+completo para a tela de Informações da rede. Em rede pública a resposta não
+leva a `connection_key`; o registro público continua limitado ao convite e à
+descoberta.
+
 ### Ciclo de vida
 
 1. **Bind:** `Network::new` monta um socket dual-stack `[::]:<porta>` à mão com

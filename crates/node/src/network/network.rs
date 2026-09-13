@@ -830,6 +830,13 @@ pub struct Network {
     network_chat_probe:
         std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
     network_chat_enabled: Arc<AtomicBool>,
+    /// A UI de um nó precisa do documento completo de `NetworkSettings`, mas
+    /// o diretório público só carrega o subconjunto necessário para entrar na
+    /// rede. Este flag faz o primeiro Announce autenticado do principal
+    /// disparar a busca do documento completo.
+    network_settings_probe:
+        std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
+    network_settings_sync_needed: AtomicBool,
     /// Public key of the authority whose authenticated policy is authoritative.
     /// The profile in an Announce is not enough: a secondary admin also has
     /// `profile: admin`, but must never become a policy source.
@@ -1234,6 +1241,8 @@ impl Network {
             cluster_logs_enabled: Arc::new(AtomicBool::new(false)),
             network_chat_probe: std::sync::RwLock::new(None),
             network_chat_enabled: Arc::new(AtomicBool::new(false)),
+            network_settings_probe: std::sync::RwLock::new(None),
+            network_settings_sync_needed: AtomicBool::new(true),
             policy_principal_pubkey: std::sync::RwLock::new(None),
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
@@ -1826,6 +1835,45 @@ impl Network {
         }
     }
 
+    pub fn set_network_settings_probe(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>,
+    ) {
+        if let Ok(mut slot) = self.network_settings_probe.write() {
+            *slot = Some(tx);
+        }
+    }
+
+    pub fn mark_network_settings_synced(&self) {
+        self.network_settings_sync_needed
+            .store(false, Ordering::Release);
+    }
+
+    pub(crate) fn trigger_network_settings_probe(
+        &self,
+        node_id: &str,
+        authority_pubkey: &str,
+        tls: bool,
+    ) {
+        if !self.network_settings_sync_needed.load(Ordering::Acquire) {
+            return;
+        }
+        let from_principal = self
+            .policy_principal_pubkey
+            .read()
+            .ok()
+            .and_then(|current| current.as_deref().map(|key| key == authority_pubkey))
+            .unwrap_or(false);
+        if !from_principal {
+            return;
+        }
+        if let Ok(slot) = self.network_settings_probe.read() {
+            if let Some(tx) = slot.as_ref() {
+                let _ = tx.send((node_id.to_string(), tls));
+            }
+        }
+    }
+
     /// Identifica o principal real para as catracas de política. O valor vem
     /// da cadeia administrativa local, nunca de um campo não autenticado do
     /// gossip.
@@ -1965,6 +2013,8 @@ impl Network {
     /// Rejoin: start announcing again and go looking for the bootstrap nodes.
     pub async fn rejoin(&self, assignment: Option<&LayerAssignment>) -> Result<()> {
         self.detached.store(false, Ordering::Relaxed);
+        self.network_settings_sync_needed
+            .store(true, Ordering::Release);
         info!("🔌 Nó voltando para a rede");
         self.bootstrap_discovery().await?;
         self.announce(assignment).await
@@ -2554,6 +2604,7 @@ impl Network {
                     network_chat_enabled,
                     tls,
                 );
+                self.trigger_network_settings_probe(&peer.node_id, &peer.authority_pubkey, tls);
 
                 // A origem UDP é um fallback útil somente para anúncios sem
                 // candidatos, como os de binários antigos. Quando há uma

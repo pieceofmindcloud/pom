@@ -197,6 +197,12 @@ profile policy remains the effective authorization boundary.
   cadeia colada. A validação e a conferência são as de `admin_trust`
   (`parse_transported`, `fingerprint_matches`, `adopt_anchor`), as mesmas que
   `pom admin-anchor` usa: não existe segunda política.
+  `POST /api/ui/chat-key` é permitido a `node` porque cria somente a chave
+  local `pom-<node_id>` e a registra no principal pela rota interna assinada;
+  a exceção não permite criar, revogar ou validar chaves de terceiros.
+  A leitura `/api/cluster/network-settings` é interna e somente leitura: um
+  nó adota do principal o documento completo de `NetworkSettings`, inclusive
+  visibilidade e metadados, depois do primeiro `Announce` autenticado.
   `GET /api/ui/infer/heads?model=...` é a única leitura dedicada das cabeças
   de layer zero: entrega as candidatas e a escolha do planejador, sem peers
   gerais nem ações de controle. A rota é `InferNodeAdmin`, portanto admin e
@@ -222,6 +228,10 @@ profile policy remains the effective authorization boundary.
   `/api/ui/node`. Leitura remota ausente ou inválida permanece `null`, porque
   o zero do tracker local significa apenas que nenhuma requisição passou por
   este gateway.
+  `model_inventory[].complete` e `/api/ui/chat/capabilities` só confirmam uma
+  pipeline quando cada peer contribuinte tem `runtime_capacity` confirmado
+  pelo `/health` ou está `idle`; capacidades de gossip durante o boot ficam
+  visíveis como cobertura, mas não são apresentadas como prontas.
   Endereços IPv6 temporários rodam sozinhos: ver `docs/subsystems/rede-p2p.md`,
   "Endereço que deixou de responder".
   `plan` reads the GGUF header from the node that owns `model_path` and, when

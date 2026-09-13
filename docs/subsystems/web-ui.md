@@ -79,6 +79,11 @@ indisponibilidade com botão de repetir, em vez de deixar o painel vazio. Os
 textos dessa página ficam em
 `assets/brand/macos/{en,pt-BR}.lproj/Localizable.strings`.
 
+No Windows, o serviço Tokio envia um sinal depois de o listener do gateway
+aceitar a porta; `windows_status.rs` só então constrói o WebView2. Isso evita
+que um arranque lento, especialmente com `RUST_LOG=debug`, abra a página antes
+de o gateway estar escutando e deixe `ERR_CONNECTION_REFUSED` preso na janela.
+
 O ícone do item é uma **template image**: o AppKit descarta a cor e pinta o
 canal alfa com a cor da barra, o que resolve tema claro e escuro de uma só vez.
 Por isso ele não pode ser a marca como ela é - `pom-icon-src.png` é um quadrado
@@ -502,7 +507,11 @@ administrativa, token administrativo, instalação da raiz, verificações e `PO
 instala a raiz de confiança separada e grava `pom.json` antes do respawn. O
 respawn cria uma sessão independente em Unix, herda os argumentos originais e
 redireciona stdout/stderr para `<project_root>/pom.log`, para que uma falha de
-arranque após o save fique diagnosticável. A sugestão de `advertise_addr` usa
+arranque após o save fique diagnosticável. No Windows o binário não cria
+console, então o tracing também abre `<project_root>/pom.log` diretamente; a
+redireção PowerShell `*> arquivo` não é a fonte confiável nesse modo. Para a
+reprodução nativa, use `RUST_LOG=debug` e recolha esse `pom.log` junto com
+`infer_server_<porta>.log`. A sugestão de `advertise_addr` usa
 a enumeração real das interfaces: IPv6 global não temporário primeiro, depois
 IPv4; ela é apenas uma sugestão editável e o anúncio continua redetectando os
 endereços em cada ciclo. A resposta de nó configurado publica

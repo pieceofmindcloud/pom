@@ -96,7 +96,16 @@ Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
 | `llama_rs_get_devices` | os handles elegíveis na mesma ordem padrão que o llama.cpp usaria |
 | `llama_rs_get_device_memory` | o livre e o total atuais dos dispositivos escolhidos pelo posicionamento padrão, na mesma ordem do `common_fit_params` |
 | `llama_rs_benchmark_device` | uma pontuação de um grafo GGML genérico, com cache por handle no processo; zero significa velocidade indeterminável |
-| `llama_rs_backend_devices_json` | descricao e `device_id` PCI dos dispositivos registrados pelos backends Vulkan, Metal, CUDA e CPU |
+| `llama_rs_backend_devices_json` | descricao e `device_id` PCI dos dispositivos registrados pelos backends Vulkan, Metal, CUDA e CPU; nomes e descricoes nulos viram texto vazio, `device_id` ausente continua `null` |
+
+Os snapshots de `placement`, `context_memory` e `backend_devices` são
+diagnósticos pós-carga e não podem derrubar o processo por metadado incompleto
+de um backend. O wrapper converte nomes e descrições C nulos para rótulos locais
+antes de criar `std::string` ou JSON; a fronteira é deliberadamente defensiva
+porque `strlen(nullptr)` em Windows aparece como `ucrtbase!strlen`, sem panic
+Rust. A implementação de `wrapper_common.cpp` mantém essa conversão em helpers
+únicos e a auditoria de todos os `wrapper*.cpp/.h` deve ser repetida quando uma
+nova API do backend passar a alimentar JSON.
 
 `llama_rs_benchmark_device` usa somente a interface pública de backend do GGML
 para executar uma multiplicação matriz-vetor pequena. O POM chama a medição no

@@ -170,10 +170,13 @@ gráfica.
 
 No Windows, `main.rs` marca o executável com `windows_subsystem = "windows"`
 para que o processo não crie um console. `windows_status.rs` move o serviço
-Tokio para uma thread de fundo e conduz a janela Tao na thread principal; Wry
-carrega o `/admin-ui/chat` no WebView2 instalado pelo sistema e `tray-icon`
-registra o menu da área de notificação. Fechar a janela esconde-a na bandeja,
-enquanto `Abrir POM` restaura e `Sair do POM` termina o processo inteiro.
+Tokio para uma thread de fundo, espera o sinal enviado depois do bind do
+gateway e só então conduz a janela Tao na thread principal; Wry carrega o
+`/admin-ui/chat` no WebView2 instalado pelo sistema e `tray-icon` registra o
+menu da área de notificação. O tracing também grava `<project_root>/pom.log`,
+porque a redireção de stdout/stderr do PowerShell não é confiável para um
+binário GUI. Fechar a janela esconde-a na bandeja, enquanto `Abrir POM`
+restaura e `Sair do POM` termina o processo inteiro.
 
 `start_setup_mode` e `start_gateway_only` estão em `main.rs` (não num módulo
 separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do

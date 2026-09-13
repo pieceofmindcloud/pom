@@ -13,6 +13,12 @@ pub const WINDOW_SIZE: (f64, f64) = (1120.0, 880.0);
 pub const SUPERVISED_CHILD_ENV: &str = "POM_WINDOWS_SUPERVISED_CHILD";
 pub const CRASH_RELAUNCH_DELAY_SECS: u64 = 1;
 
+fn wait_for_gateway_ready(receiver: &std::sync::mpsc::Receiver<()>) -> Result<(), String> {
+    receiver
+        .recv()
+        .map_err(|_| "o serviço Windows terminou antes de o gateway ficar pronto".to_string())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WindowAction {
     ShowWindow,
@@ -74,7 +80,7 @@ mod native {
         window.set_focus();
     }
 
-    pub fn run<F>(port: u16, service: F) -> Result<()>
+    pub fn run<F>(port: u16, service: F, gateway_ready: std::sync::mpsc::Receiver<()>) -> Result<()>
     where
         F: FnOnce() -> Result<()> + Send + 'static,
     {
@@ -82,7 +88,7 @@ mod native {
             drop(service);
             return run_supervisor();
         }
-        run_child(port, service)
+        run_child(port, service, gateway_ready)
     }
 
     fn run_supervisor() -> Result<()> {
@@ -105,7 +111,11 @@ mod native {
         }
     }
 
-    fn run_child<F>(port: u16, service: F) -> Result<()>
+    fn run_child<F>(
+        port: u16,
+        service: F,
+        gateway_ready: std::sync::mpsc::Receiver<()>,
+    ) -> Result<()>
     where
         F: FnOnce() -> Result<()> + Send + 'static,
     {
@@ -116,6 +126,16 @@ mod native {
             let _ = service_proxy.send_event(UserEvent::ServiceStopped);
             result
         });
+
+        // The service binds the gateway before sending this signal. Creating
+        // WebView2 before that point turns a slow debug startup into a local
+        // ERR_CONNECTION_REFUSED page, which is especially confusing because
+        // the server is still healthy and about to listen.
+        if wait_for_gateway_ready(&gateway_ready).is_err() {
+            return service
+                .join()
+                .map_err(|_| anyhow!("thread do serviço Windows terminou em pânico"))?;
+        }
 
         let window = WindowBuilder::new()
             .with_title("POM")
@@ -230,5 +250,26 @@ mod tests {
         assert!(!should_relaunch(Some(0)));
         assert!(should_relaunch(Some(1)));
         assert!(should_relaunch(None));
+    }
+
+    #[test]
+    fn shell_aguarda_o_sinal_de_gateway_pronto_antes_da_webview() {
+        let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(0);
+        let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(0);
+        let (finished_sender, finished_receiver) = std::sync::mpsc::sync_channel(0);
+        let waiter = std::thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            wait_for_gateway_ready(&ready_receiver).unwrap();
+            finished_sender.send(()).unwrap();
+        });
+
+        started_receiver.recv().unwrap();
+        assert!(matches!(
+            finished_receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        ready_sender.send(()).unwrap();
+        finished_receiver.recv().unwrap();
+        waiter.join().unwrap();
     }
 }

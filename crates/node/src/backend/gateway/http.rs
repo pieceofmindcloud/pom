@@ -2,7 +2,17 @@ use super::*;
 
 // ── Server startup ────────────────────────────────────────────────────────────
 
+pub(crate) type GatewayReadySender = std::sync::mpsc::SyncSender<()>;
+
 pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
+    start_gateway_with_ready(state, port, None).await
+}
+
+pub(crate) async fn start_gateway_with_ready(
+    state: GatewayState,
+    port: u16,
+    ready: Option<GatewayReadySender>,
+) -> Result<()> {
     crate::config::validate_gateway_port(port)?;
     let warm = state.clone();
     let tls_server = state.tls_server.clone();
@@ -81,6 +91,9 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
     crate::webui::warm_catalog(warm);
 
     let listener = crate::infer_server::bind_dual_stack(port).await?;
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
     info!(
         "🌐 Interface e API em http://localhost:{port}  \
          — UI /  ·  OpenAI /v1/chat/completions  ·  Anthropic /v1/messages  ·  \

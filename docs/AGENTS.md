@@ -68,6 +68,9 @@ reduzir suas camadas. `implantacao.md` também documenta a
 seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
 completa, além da prévia analítica de capacidade sem chamada ao fit nativo.
+`superpowers/plans/2026-09-12-windows-crash-root-cause.md` registra o
+rastreamento da confirmação `model_loaded`, as fronteiras nativas do `/health`
+e as evidências que ainda precisam de reprodução real no Windows.
 `web-ui.md` descreve também a escolha de exposição administrativa, o token
 humano separado da `connection_key`, a autoridade do perfil `admin` sobre
 adicionar máquina e desimplantar e a orientação de TLS em Preferências. A

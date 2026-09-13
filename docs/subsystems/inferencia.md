@@ -509,6 +509,15 @@ sabe em vez de inventar um mapa. Quem os mostra é o card de máquina do Painel,
 que os busca por `/api/ui/peer/:node_id/runtime` só com o card aberto - ver
 `api-http.md` e `web-ui.md`.
 
+Esses snapshots são executados dentro do `GET /health`, depois de o modelo ser
+carregado e antes de a resposta `model_loaded` chegar ao watcher do processo.
+O mesmo wrapper também serve a lista de devices usada pelo sysmon e pelo
+catálogo. Em `llama_rs_backend_devices_json`,
+`ggml_backend_reg_name(reg)` pode ser nulo em uma máquina CPU-only; o wrapper
+normaliza esse nome, além das descrições e dos nomes de device/buffer, antes de
+construir strings ou JSON. Assim, metadado incompleto não converte
+`strlen(nullptr)` em crash no Windows e o health continua sendo observacional.
+
 ## 1. Os modos de execução
 
 O prefill acontece em `inference/prefill.rs` (`run`); no decode, o gateway

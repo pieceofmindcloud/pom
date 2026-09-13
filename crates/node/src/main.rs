@@ -170,11 +170,13 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use clap::Subcommand;
 use discovery::Discovery;
-use gateway::{start_gateway, GatewayState};
+use gateway::GatewayState;
 use memory::load_layer_memory;
 use model::{calculate_assignment, parse_memory, ModelProfile};
 use network::Network;
 use ollama::OllamaClient;
+#[cfg(windows)]
+use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
@@ -428,6 +430,22 @@ fn main() -> Result<()> {
     respawn::remember_argv(std::env::args().collect());
     let (log_capture, log_receiver) =
         cluster_logs::LogCapture::new(cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
+
+    #[cfg(windows)]
+    {
+        let writer = windows_diagnostic_log_writer();
+        tracing_subscriber::registry()
+            .with(application_log_filter())
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_target(false)
+                    .with_writer(writer),
+            )
+            .with(cluster_logs::CaptureLayer::new(log_capture.clone()))
+            .init();
+    }
+
+    #[cfg(not(windows))]
     tracing_subscriber::registry()
         .with(application_log_filter())
         .with(tracing_subscriber::fmt::layer().with_target(false))
@@ -448,25 +466,30 @@ fn main() -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let gateway_port = configured_gateway_port(&args);
 
-    let service = move || {
+    let service = move |gateway_ready: Option<gateway::GatewayReadySender>| {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(async_main(args, log_capture, log_receiver))
+        runtime.block_on(async_main(args, log_capture, log_receiver, gateway_ready))
     };
 
     #[cfg(target_os = "macos")]
     {
-        return macos_status::run(gateway_port, service);
+        return macos_status::run(gateway_port, move || service(None));
     }
 
     #[cfg(target_os = "windows")]
     {
-        return windows_status::run(gateway_port, service);
+        let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
+        return windows_status::run(
+            gateway_port,
+            move || service(Some(gateway_ready)),
+            gateway_ready_rx,
+        );
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    service()
+    service(None)
 }
 
 fn run_command(command: &Command) -> Result<()> {
@@ -614,6 +637,7 @@ async fn async_main(
     args: Args,
     log_capture: Arc<cluster_logs::LogCapture>,
     log_receiver: tokio::sync::mpsc::Receiver<cluster_logs::LogEntry>,
+    gateway_ready: Option<gateway::GatewayReadySender>,
 ) -> Result<()> {
     info!(
         "Project root: {} (config: {})",
@@ -645,7 +669,13 @@ async fn async_main(
         let gateway_port = existing_config
             .as_ref()
             .map_or(args.gateway_port, |config| config.gateway_port);
-        start_setup_mode(gateway_port, existing_config, database.clone()).await?;
+        start_setup_mode(
+            gateway_port,
+            existing_config,
+            database.clone(),
+            gateway_ready,
+        )
+        .await?;
         return Ok(());
     }
 
@@ -747,6 +777,7 @@ async fn async_main(
             !args.no_cycle_detection,
             cluster_logs,
             audit,
+            gateway_ready,
         )
         .await;
     }
@@ -1205,7 +1236,9 @@ async fn async_main(
         let gw_port = gateway_port;
         crate::gateway::spawn_public_directory_republisher(gw_state.clone());
         tokio::spawn(async move {
-            if let Err(e) = start_gateway(gw_state, gw_port).await {
+            if let Err(e) =
+                gateway::start_gateway_with_ready(gw_state, gw_port, gateway_ready).await
+            {
                 error!("HTTP API server error: {}", e);
             }
         });
@@ -1442,6 +1475,7 @@ async fn start_setup_mode(
     gateway_port: u16,
     preserved: Option<config::Config>,
     database: Arc<db::PomDb>,
+    gateway_ready: Option<gateway::GatewayReadySender>,
 ) -> Result<()> {
     use crate::config::Config;
     use crate::webui;
@@ -1524,6 +1558,9 @@ async fn start_setup_mode(
     info!("Setup page available at http://localhost:{}", gateway_port);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    if let Some(ready) = gateway_ready {
+        let _ = ready.send(());
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -1866,8 +1903,9 @@ async fn start_gateway_only(
     cycle_detection_enabled: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     audit: Arc<reqlog::AuditLog>,
+    gateway_ready: Option<gateway::GatewayReadySender>,
 ) -> Result<()> {
-    use crate::gateway::{start_gateway, GatewayState};
+    use crate::gateway::GatewayState;
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
@@ -2108,7 +2146,9 @@ async fn start_gateway_only(
         gateway_port
     );
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
-    let gateway_task = tokio::spawn(async move { start_gateway(gw_state, gateway_port).await });
+    let gateway_task = tokio::spawn(async move {
+        crate::gateway::start_gateway_with_ready(gw_state, gateway_port, gateway_ready).await
+    });
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
     // nova: o nó volta servindo o que servia. O journal não é consumido antes
@@ -2186,6 +2226,51 @@ fn application_log_filter() -> EnvFilter {
         )
 }
 
+fn windows_diagnostic_log_filename() -> &'static str {
+    "pom.log"
+}
+
+#[cfg(windows)]
+enum WindowsDiagnosticLogWriter {
+    File(std::fs::File),
+    Stderr(std::io::Stderr),
+}
+
+#[cfg(windows)]
+impl std::io::Write for WindowsDiagnosticLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::File(file) => file.write(bytes),
+            Self::Stderr(stderr) => stderr.write(bytes),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::File(file) => file.flush(),
+            Self::Stderr(stderr) => stderr.flush(),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_diagnostic_log_writer() -> std::sync::Mutex<WindowsDiagnosticLogWriter> {
+    use std::fs::OpenOptions;
+
+    let path = config::project_root().join(windows_diagnostic_log_filename());
+    let writer = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => WindowsDiagnosticLogWriter::File(file),
+        Err(error) => {
+            eprintln!(
+                "não foi possível abrir o log Windows em {}: {error}",
+                path.display()
+            );
+            WindowsDiagnosticLogWriter::Stderr(std::io::stderr())
+        }
+    };
+    std::sync::Mutex::new(writer)
+}
+
 #[cfg(test)]
 mod main_tests {
     use super::*;
@@ -2239,6 +2324,11 @@ mod main_tests {
     fn gateway_only_honors_the_default_relay_switch() {
         assert!(gateway_only_use_default_relays(false));
         assert!(!gateway_only_use_default_relays(true));
+    }
+
+    #[test]
+    fn diagnostico_do_app_gui_tem_arquivo_estavel() {
+        assert_eq!(windows_diagnostic_log_filename(), "pom.log");
     }
 
     #[test]

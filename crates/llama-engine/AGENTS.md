@@ -26,6 +26,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   capacidade dos vetores entregues ao C; quantas placas existem é
   `fit_device_count`, e é ela que posiciona a reserva de KV do contexto MTP na
   última placa **real** - ver `docs/subsystems/inferencia.md`, seção do fit.
+  Os snapshots nativos usados por `/health` passam pelo
+  `wrapper_common.cpp`; eles devem tratar qualquer nome/descrição C nulo antes
+  de chegar a `std::string` ou JSON, pois essa falha pode virar
+  `strlen(nullptr)` no runtime C do Windows.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   O `build.rs` lê o mesmo checkout preparado pelo `llama-cpp-sys-2`, recebido

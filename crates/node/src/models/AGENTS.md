@@ -105,8 +105,9 @@ transferência.
 - `provider.rs` - contrato `ModelProvider`, tipos comuns de descoberta,
   download, progresso, licença, armazenamento e manifesto.
 - `ollama.rs` - cliente opcional do Ollama; geração mantém o timeout longo do
-  backend, mas `is_available` usa uma sonda de 500 ms para o `/health` não
-  ficar preso enquanto o catálogo frio é enriquecido.
+  backend. `is_available` devolve o último valor em cache imediatamente e
+  agenda uma sonda de 500 ms no máximo a cada 15 s, para o `/health` não abrir
+  uma conexão ao serviço opcional em cada requisição.
 - `huggingface.rs` - implementação `HuggingFaceProvider` por HTTP nativo, com
   validação de entradas, retomada por faixa, cache próprio e manifesto local.
 

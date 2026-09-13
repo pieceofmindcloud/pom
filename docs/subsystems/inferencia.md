@@ -1875,8 +1875,10 @@ O gateway **só tem o caminho do pipeline**. `generate_stream_with_stops` falha 
 responde 503 com "Start peers with --inference-port." e `source: "none"`.
 
 Não existe fallback para Ollama: `OllamaClient` só resolve modelos
-(`/api/tags`) e alimenta o campo `ollama_available` do `/health`. Um prompt sem
-pipeline válido **não** cai no Ollama local nem de peer - a requisição falha.
+(`/api/tags`) e alimenta o campo `ollama_available` do `/health`. Esse campo
+usa o último valor em cache e agenda uma sonda de 500 ms no máximo a cada 15 s;
+o `/health` não espera uma conexão ao serviço opcional. Um prompt sem pipeline
+válido **não** cai no Ollama local nem de peer - a requisição falha.
 (Documentação antiga descrevia um fallback de três níveis; era estado anterior
 do código, corrigido em 2026-08-15.)
 

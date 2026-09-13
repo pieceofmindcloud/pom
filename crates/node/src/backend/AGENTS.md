@@ -507,8 +507,9 @@ profile policy remains the effective authorization boundary.
   TCP, modo estrito e duração do último handshake. Ver
   `docs/subsystems/rede-p2p.md`, seção 5.
 - `models::OllamaClient::is_available` é apenas uma sonda opcional do
-  `/health`: tem limite próprio de 500 ms e não herda os 300 s da geração, para
-  que um Ollama frio ou ausente nunca esconda o readiness do gateway.
+  `/health`: devolve o último valor e agenda em background uma checagem de
+  500 ms no máximo a cada 15 s. Não herda os 300 s da geração, e um Ollama frio
+  ou ausente nunca segura a resposta do gateway.
 - `session.rs` - `POST /handshake` usa um desafio Ed25519 em duas etapas. Uma
   requisição sem `nonce` e `signature` é recusada com HTTP 403
   `challenge_required` e recebe um nonce hexadecimal aleatório de 32 bytes. O

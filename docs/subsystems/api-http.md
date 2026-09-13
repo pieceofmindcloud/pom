@@ -303,9 +303,10 @@ não estão no router principal e só existem antes da configuração inicial.
 - **`GET /health`** - `status`, `ollama_available`, `peer_count`,
   `pipeline_peers` (com `inference_port`), `default_model` e
   `runtime_capacity` (`n_ctx`, `max_new_tokens`) quando o runtime local já
-  respondeu `model_loaded`. A sonda opcional de Ollama tem teto de 500 ms, então
-  um Ollama ausente ou o enriquecimento frio do catálogo não bloqueia a resposta
-  do gateway. Na porta de inferência, a resposta também publica
+  respondeu `model_loaded`. `ollama_available` usa o último valor em cache e
+  agenda uma sonda opcional de 500 ms no máximo a cada 15 s, então um Ollama
+  ausente ou o enriquecimento frio do catálogo não bloqueia a resposta do
+  gateway. Na porta de inferência, a resposta também publica
   `model_label`, `deploy_id`, `start_layer`, `end_layer` e `total_layers`, além de
   `n_ubatch_effective`, `mtp_ready` e `mtp_unavailable_reason`; este último
   explica por que o contexto MTP pedido não foi anexado. `load_params` traz os

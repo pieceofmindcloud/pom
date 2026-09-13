@@ -18,7 +18,8 @@ medidas em campo.
   (qualquer nome contendo `qwen` vira `qwen35`). O planejador
   (`routing/pipeline.rs`) só encadeia peers com `model` idêntico - shards com
   rótulos diferentes nunca formam pipeline.
-- **Portas:** UDP P2P `--port` (42777), libp2p TCP = UDP + 10000 (52777),
+- **Portas:** UDP P2P `--port` (42777), QUIC de inferência UDP = P2P + 1000
+  (43777), QUIC do gateway UDP = P2P + 2000 (44777), libp2p TCP = UDP + 10000 (52777),
   gateway HTTP `--gateway-port` (8080, servido por *todos* os nós), inference
   server `--inference-port` (8181). Máquinas distintas podem usar os mesmos
   números.

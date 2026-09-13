@@ -13,6 +13,7 @@ use h3_quinn::Connection as H3Connection;
 use http::{Request, StatusCode};
 use quinn;
 use std::collections::HashMap;
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -435,8 +436,15 @@ pub async fn serve(
     config: Arc<quinn::ServerConfig>,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
-    let endpoint =
-        quinn::Endpoint::server(config.as_ref().clone(), format!("[::]:{port}").parse()?)?;
+    let socket = bind_quic_socket(format!("[::]:{port}").parse()?)?;
+    let runtime = quinn::default_runtime()
+        .ok_or_else(|| anyhow!("runtime QUIC assíncrono não está disponível"))?;
+    let endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(config.as_ref().clone()),
+        socket,
+        runtime,
+    )?;
     info!(port, "endpoint QUIC HTTP/3 bound on [::]:{port}");
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
@@ -575,6 +583,28 @@ fn quic_socket_addr(advertised_host: &str, quic_port: u16) -> Result<SocketAddr>
     Ok(SocketAddr::new(host, quic_port))
 }
 
+/// Bind the server socket with IPv6 dual-stack explicitly enabled.
+///
+/// Quinn's client constructor already applies `IPV6_V6ONLY=0` for an IPv6
+/// wildcard, but `Endpoint::server` delegates to `std::net::UdpSocket::bind`.
+/// Windows leaves that socket IPv6-only by default, so an endpoint bound to
+/// `[::]` would silently reject every IPv4 peer. Keeping the socket family as
+/// IPv6 and clearing `only_v6` preserves both IPv6 and IPv4-mapped traffic on
+/// every platform.
+fn bind_quic_socket(addr: SocketAddr) -> io::Result<std::net::UdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(addr),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    if addr.is_ipv6() {
+        socket.set_only_v6(false)?;
+    }
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    Ok(socket.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,6 +660,15 @@ mod tests {
             "[2001:db8::42]:8182".parse().unwrap()
         );
         assert!(quic_socket_addr("http://[2001:db8::42]:8181", 8182).is_err());
+    }
+
+    #[test]
+    fn socket_servidor_ipv6_wildcard_aceita_ipv4() {
+        let socket = bind_quic_socket("[::]:0".parse().unwrap()).unwrap();
+        assert!(
+            !socket2::SockRef::from(&socket).only_v6().unwrap(),
+            "o socket QUIC do servidor precisa ser dual-stack"
+        );
     }
 
     #[test]

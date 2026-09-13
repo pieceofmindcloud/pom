@@ -728,6 +728,11 @@ são publicadas no `Announce` como `inference_quic_port` e `gateway_quic_port`. 
 público anunciado pelo peer, incluindo a forma com IPv6 entre colchetes; nunca
 extrai um destino UDP de `inference_url` nem tenta a porta TCP.
 
+O servidor faz bind em `[::]` com `IPV6_V6ONLY=0` configurado explicitamente
+via `socket2` antes de ser entregue ao Quinn. Isso preserva IPv4 e IPv6 no mesmo
+endpoint em Windows, Linux e macOS; não há um bind alternativo exclusivo para
+IPv4. O cliente do Quinn já configura a mesma opção no socket IPv6 wildcard.
+
 O endpoint QUIC é criado pela identidade do nó, independentemente de
 `tls_required` ou do `announced_tls` usado apenas para consultar a política no
 principal. Quinn negocia TLS 1.3 próprio e o cliente fixa o certificado Ed25519

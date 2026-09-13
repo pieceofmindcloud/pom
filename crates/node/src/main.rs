@@ -164,6 +164,10 @@ mod transfer;
 mod webapp;
 #[path = "backend/webui/mod.rs"]
 mod webui;
+pub(crate) mod windows_firewall;
+#[cfg(test)]
+#[path = "windows_firewall_tests.rs"]
+mod windows_firewall_tests;
 mod windows_status;
 
 use anyhow::{bail, Context, Result};
@@ -226,6 +230,11 @@ enum Command {
                   and coordinates with peers to cover the full model."
 )]
 struct Args {
+    /// Internal elevated child used by the Windows firewall permission flow.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    windows_firewall_helper: Option<u16>,
+
     #[command(subcommand)]
     command: Option<Command>,
 
@@ -459,6 +468,10 @@ fn main() -> Result<()> {
     tp::install_probe();
 
     let args = Args::parse();
+    #[cfg(windows)]
+    if let Some(port) = args.windows_firewall_helper {
+        return windows_firewall::run_elevated_helper(port);
+    }
     if let Some(command) = args.command.as_ref() {
         return run_command(command);
     }
@@ -1234,6 +1247,7 @@ async fn async_main(
             pkarr_publisher: pkarr_publisher.clone(),
         };
         let gw_port = gateway_port;
+        crate::windows_firewall::spawn_startup_check(database.clone(), net.bind_addr.port());
         crate::webui::spawn_network_settings_ratchet(gw_state.clone());
         crate::gateway::spawn_public_directory_republisher(gw_state.clone());
         tokio::spawn(async move {
@@ -2113,7 +2127,7 @@ async fn start_gateway_only(
             ..crate::cycle::CycleConfig::default()
         },
         audit,
-        database,
+        database: database.clone(),
         gateway_port,
         auth: auth_state,
         admin_trust,
@@ -2146,6 +2160,7 @@ async fn start_gateway_only(
         "Gateway running at http://localhost:{} (model not yet configured)",
         gateway_port
     );
+    crate::windows_firewall::spawn_startup_check(database.clone(), net.bind_addr.port());
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
     let gateway_task = tokio::spawn(async move {

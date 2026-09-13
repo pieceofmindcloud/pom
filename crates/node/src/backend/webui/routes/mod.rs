@@ -157,6 +157,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::InferNodeAdmin,
     },
     RouteRule {
+        prefix: "/api/ui/network/firewall",
+        method: None,
+        scope: RouteScope::InferNodeAdmin,
+    },
+    RouteRule {
         prefix: "/api/ui/network/geo-reference",
         method: Some(Method::GET),
         scope: RouteScope::InferNodeAdmin,
@@ -527,6 +532,10 @@ mod policy_tests {
         );
         assert_eq!(
             scope_of("/api/ui/network/geo-reference"),
+            RouteScope::InferNodeAdmin
+        );
+        assert_eq!(
+            scope_of("/api/ui/network/firewall"),
             RouteScope::InferNodeAdmin
         );
         assert_eq!(scope_of("/api/ui/deployments"), RouteScope::NodeAdmin);

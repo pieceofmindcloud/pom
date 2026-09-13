@@ -20,6 +20,11 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   auditoria persistente, `arc-swap` para snapshots lock-free do contexto de
   captura de logs, `h3`/`h3-quinn`/`quinn` para o HTTP/3 opcional dos hops de
   inferência, `routing-contract` (path).
+- No Windows, `windows_firewall.rs` usa COM `INetFwPolicy2` num helper elevado
+  por UAC para manter quatro regras inbound idempotentes: UDP P2P, UDP QUIC de
+  inferência, UDP QUIC do gateway e TCP libp2p. O pedido automático ocorre uma
+  vez por porta efetiva e fica no `local_settings` de `pom.db`; a UI oferece
+  retry sem bloquear o nó ou `Sair da rede`.
 - O provider Hugging Face usa HTTP nativo via `reqwest`; não há executável `hf`,
   runtime Python ou instalação externa no caminho normal.
 - `build = "build.rs"`.
@@ -177,6 +182,11 @@ menu da área de notificação. O tracing também grava `<project_root>/pom.log`
 porque a redireção de stdout/stderr do PowerShell não é confiável para um
 binário GUI. Fechar a janela esconde-a na bandeja, enquanto `Abrir POM`
 restaura e `Sair do POM` termina o processo inteiro.
+
+O servidor QUIC mantém o bind em `[::]`, mas cria o `UdpSocket` com
+`socket2::Socket::set_only_v6(false)` antes de entregá-lo ao Quinn. Assim o
+mesmo endpoint aceita IPv4 e IPv6 no Windows, Linux e macOS; o construtor de
+cliente do Quinn já aplica a mesma opção.
 
 `start_setup_mode` e `start_gateway_only` estão em `main.rs` (não num módulo
 separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do

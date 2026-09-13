@@ -604,6 +604,31 @@ impl PomDb {
         self.save_setting("network_settings", settings)
     }
 
+    pub fn windows_firewall_setup(&self) -> Result<Option<crate::windows_firewall::SetupRecord>> {
+        self.with_read("ler estado do firewall do Windows", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_json FROM local_settings WHERE setting_key = 'windows_firewall_setup'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            value
+                .map(|value| {
+                    serde_json::from_str(&value)
+                        .context("interpretar estado do firewall do Windows")
+                })
+                .transpose()
+        })
+    }
+
+    pub fn save_windows_firewall_setup(
+        &self,
+        record: &crate::windows_firewall::SetupRecord,
+    ) -> Result<()> {
+        self.save_setting("windows_firewall_setup", record)
+    }
+
     pub fn public_directory_settings(
         &self,
     ) -> Result<Option<crate::public_directory::PublicDirectorySettings>> {

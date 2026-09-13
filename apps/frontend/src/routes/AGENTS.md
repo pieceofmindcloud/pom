@@ -64,6 +64,10 @@ Per-file list:
   desliga a máquina do cluster. O botão continua disponível para o perfil
   `node` mesmo sem autoridade administrativa, sem modelo carregado ou sem
   estado `Ready`; o handler local não consulta a saúde da implantação.
+  No Windows, quando suportado, a mesma tela mostra o estado das quatro regras
+  de firewall derivadas da porta P2P efetiva e oferece `Tentar novamente` após
+  uma recusa do UAC; essa ação é independente da implantação e da saída da
+  rede.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage

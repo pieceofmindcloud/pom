@@ -1053,6 +1053,17 @@ network.countryRequired,Required for a public network,Obrigatório para uma rede
 network.description,Description,Descrição
 network.detached,Disconnected from network,Fora da rede
 network.download,Download,Baixar
+network.firewallEyebrow,Windows Firewall,Firewall do Windows
+network.firewallLastError,Windows did not confirm the requested firewall rules. You can try again or continue without QUIC.,O Windows não confirmou as regras de firewall solicitadas. Você pode tentar de novo ou continuar sem QUIC.
+network.firewallNeeded,Some POM ports are not allowed yet.,Algumas portas do POM ainda não estão liberadas.
+network.firewallPortSummary,"POM needs these inbound ports: {ports}.","O POM precisa destas portas de entrada: {ports}."
+network.firewallReady,All POM network ports are allowed.,Todas as portas de rede do POM estão liberadas.
+network.firewallRetry,Try again,Tentar novamente
+network.firewallRetryFailed,Could not request the Windows Firewall permission.,Não foi possível pedir a permissão do Firewall do Windows.
+network.firewallRetrying,Firewall permission request finished.,O pedido de permissão do firewall terminou.
+network.firewallSubtitle,The first attempt asks Windows for administrator permission. Refusing it does not stop this node.,A primeira tentativa pede permissão de administrador ao Windows. Recusar não interrompe este nó.
+network.firewallTitle,Allow POM network traffic,Libere o tráfego de rede do POM
+network.firewallUacDetail,"Approve the Windows prompt once to allow discovery, QUIC and libp2p traffic.","Aprove o pedido do Windows uma vez para liberar descoberta, QUIC e tráfego libp2p."
 network.forgetNetwork,Forget network,Esquecer rede
 network.forgetNetworkDescription,"This permanently removes this node's local network configuration and trust root, then restarts the node and opens setup again. It does not remove another machine from the cluster.","Esta ação irreversível apaga a configuração local e a raiz de confiança deste nó, reinicia o nó e abre o setup novamente. Ela não tira outra máquina do cluster."
 network.forgetNetworkFailed,Could not forget the local network configuration,Não foi possível esquecer a configuração local da rede
@@ -1655,14 +1666,14 @@ setupWizard.pasteTrust,Confirm the network before joining,Confirme a rede antes 
 setupWizard.pasteTrustDetail,Get the document and a separate fingerprint message from the administrator.,Receba o documento e uma mensagem separada com a impressão digital do administrador.
 setupWizard.privateInternet,Private over the internet,Privada pela internet
 setupWizard.profileLabel,Role,Função
+setupWizard.publicDirectory,Federated directory ingresses,Ingressos do diretório federado
+setupWizard.publicDirectoryHint,Enter one or more HTTP(S) URLs separated by commas. A private node only needs outbound access to list public networks.,Informe uma ou mais URLs HTTP(S) separadas por vírgulas. Um nó privado precisa apenas de saída para listar redes públicas.
+setupWizard.publicDirectoryPlaceholder,https://directory.example,https://diretorio.exemplo
 setupWizard.publicGeoRequired,Public networks need a country and city so nearby people can filter them quickly.,Redes públicas precisam de país e cidade para que pessoas próximas possam filtrá-las rapidamente.
 setupWizard.publicInternet,Public over the internet,Pública pela internet
 setupWizard.publicKey,Generated public key,Chave pública gerada
 setupWizard.publicName,Public network name,Nome público da rede
 setupWizard.publicNameHint,This name also identifies the trust root.,Este nome também identifica a raiz de confiança.
-setupWizard.publicDirectory,Federated directory ingresses,Ingressos do diretório federado
-setupWizard.publicDirectoryHint,Enter one or more HTTP(S) URLs separated by commas. A private node only needs outbound access to list public networks.,Informe uma ou mais URLs HTTP(S) separadas por vírgulas. Um nó privado precisa apenas de saída para listar redes públicas.
-setupWizard.publicDirectoryPlaceholder,https://directory.example,https://diretorio.exemplo
 setupWizard.ramReserve,RAM available for the system,RAM disponível para o sistema
 setupWizard.ramReserveDetail,More means more room for your other apps.,Mais significa mais espaço para seus outros aplicativos.
 setupWizard.recommended,Recommended,Recomendado

@@ -12,6 +12,14 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
         .route("/api/ui/network/info", get(network_info))
+        .route(
+            "/api/ui/network/firewall",
+            get(crate::windows_firewall::status),
+        )
+        .route(
+            "/api/ui/network/firewall/retry",
+            post(crate::windows_firewall::retry),
+        )
         .route("/api/ui/network/geo-reference", get(geo_reference))
         .route("/api/ui/chat/telemetry", post(chat_telemetry))
         .route(

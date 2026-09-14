@@ -79,7 +79,7 @@ como `primary` na config de inferência montada pela linha de comando),
 `--inference-port`, `--n-gpu-layers` (0), `--n-ctx` (8192 por sessão), `--n-batch` (512),
 `--max-new-tokens` (512), `--max-sessions` (1), `--kv-cache-ram`,
 `--prefill-chunk-tokens` (512), `--temperature`/`--top-p`/`--top-k`/
-`--repeat-penalty`/`--repeat-last-n`, `--no-cycle-detection`, `--no-thinking`, `--single-peer`,
+`--repeat-penalty`/`--repeat-last-n`, `--cycle-detection` (desligado por padrão), `--no-thinking`, `--single-peer`,
 `--pkarr-peers`, `--public-addr`, `--relay-peers`, `--serve-relay`,
 `--no-default-relays`, `--no-discovery`.
 

@@ -287,7 +287,7 @@ mod tests {
             p.fit_memory_margin_mb,
             crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB
         );
-        assert!(p.cycle_detection_enabled);
+        assert!(!p.cycle_detection_enabled);
         assert_eq!(
             p.cycle_detection_min_window_tokens,
             crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS

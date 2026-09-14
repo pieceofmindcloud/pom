@@ -318,7 +318,7 @@ export function RuntimeParamsForm({
           hint={t("deploy.noEmbeddingsHint")}
         />
         <Switch
-          checked={value.cycle_detection_enabled ?? true}
+          checked={value.cycle_detection_enabled ?? false}
           onChange={(v) => onChange({ ...value, cycle_detection_enabled: v })}
           disabled={disabled}
           label={t("deploy.cycleDetection")}
@@ -348,7 +348,7 @@ export function RuntimeParamsForm({
         />
       </div>
 
-      {(value.cycle_detection_enabled ?? true) && (
+      {(value.cycle_detection_enabled ?? false) && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {CYCLE_KNOBS.map((k) => numeric(k))}
         </div>

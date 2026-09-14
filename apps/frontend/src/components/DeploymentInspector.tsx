@@ -368,7 +368,7 @@ export function DeploymentInspector({
     );
   }
 
-  const cycleOn = value.cycle_detection_enabled ?? true;
+  const cycleOn = value.cycle_detection_enabled ?? false;
   const speculativeOn = value.speculative_decoding_enabled ?? false;
   const mtpOn = value.mtp_enabled ?? false;
 

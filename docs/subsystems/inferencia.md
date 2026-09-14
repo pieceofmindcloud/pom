@@ -1498,8 +1498,9 @@ no quadro final e `x_pom.partial` fica verdadeiro; os motivos padrão dos
 provedores continuam compatíveis (`stop` e `end_turn`). Não há truncamento
 silencioso nem nova inferência.
 
-O operador pode desligar o comportamento com `--no-cycle-detection` no processo
-ou desmarcando `cycle_detection_enabled` na configuração de implantação. Os
+Desligado por padrão; o operador liga o comportamento com `--cycle-detection`
+no processo ou marcando `cycle_detection_enabled` na configuração de
+implantação. Os
 campos `cycle_detection_min_window_tokens`,
 `cycle_detection_max_window_tokens` e `cycle_detection_repetitions` ajustam a
 política pelos parâmetros de runtime da tela de implantação e são propagados a

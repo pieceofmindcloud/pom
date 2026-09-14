@@ -78,8 +78,8 @@ pub struct RuntimeParams {
     pub repeat_penalty: f32,
     #[serde(default = "d_repeat_last_n")]
     pub repeat_last_n: u32,
-    /// Detector conservador de ciclos; fica ligado por padrão e pode ser
-    /// desligado sem alterar os parâmetros do sampler.
+    /// Detector conservador de ciclos; fica desligado por padrão e pode ser
+    /// ligado sem alterar os parâmetros do sampler.
     #[serde(default = "d_cycle_detection_enabled")]
     pub cycle_detection_enabled: bool,
     #[serde(default = "d_cycle_detection_min_window_tokens")]
@@ -174,7 +174,7 @@ pub(super) fn d_repeat_last_n() -> u32 {
     64
 }
 pub(super) fn d_cycle_detection_enabled() -> bool {
-    true
+    false
 }
 pub(super) fn d_cycle_detection_min_window_tokens() -> u32 {
     crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS

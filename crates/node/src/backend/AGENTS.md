@@ -662,8 +662,8 @@ faz o download autenticado do blob persistido.
   gateway. Ele exige três janelas canônicas, trata sufixos numéricos de
   identificadores como a mesma estrutura e preserva números de dados. Quando
   confirma, termina sem pedir outra ficha, libera a sessão e publica
-  `finish_reason: "cycle"` e `partial: true`; o limite pode ser desligado em
-  `RuntimeParams` ou com `--no-cycle-detection`.
+  `finish_reason: "cycle"` e `partial: true`; desligado por padrão, o
+  detector é ligado em `RuntimeParams` ou com `--cycle-detection`.
   **O total é inviolável.** Nada o ultrapassa, nem uma chamada de ferramenta
   aberta no token do corte - houve aqui uma folga que ultrapassava o teto, e
   ela foi removida porque nenhum dos dois

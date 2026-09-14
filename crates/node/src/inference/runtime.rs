@@ -414,7 +414,7 @@ fn default_offload_kqv() -> bool {
 }
 
 fn default_cycle_detection_enabled() -> bool {
-    true
+    false
 }
 fn default_cycle_detection_min_window_tokens() -> u32 {
     crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS

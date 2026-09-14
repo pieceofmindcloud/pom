@@ -453,10 +453,10 @@ O procedimento de subida está em `operacao.md`.
   `POM_BENCH_MODEL` fixa um modelo somente quando desejado. Para a origem da
   salem, exporte `SALEM_PASS` sem gravar a senha em arquivo.
 
-O detector conservador de ciclos vem ligado por padrão em cada processo. Para
-manter o comportamento anterior, o operador pode iniciar um nó com
-`--no-cycle-detection`; os limites da janela e o número de repetições são
-parâmetros de runtime persistidos pela tela de implantação.
+O detector conservador de ciclos vem desligado por padrão em cada processo. O
+operador liga o comportamento iniciando um nó com `--cycle-detection`; os
+limites da janela e o número de repetições são parâmetros de runtime
+persistidos pela tela de implantação.
 
 Não existe `pom-ksia.sh` em lugar nenhum do repositório (nem em histórico de
 git); a referência a ele no plano da etapa não corresponde a artefato

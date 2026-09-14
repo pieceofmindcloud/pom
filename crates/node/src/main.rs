@@ -368,9 +368,9 @@ struct Args {
     #[arg(long, default_value = "64")]
     repeat_last_n: u32,
 
-    /// Disable the conservative cycle detector for this node.
+    /// Enable the conservative cycle detector for this node (off by default).
     #[arg(long)]
-    no_cycle_detection: bool,
+    cycle_detection: bool,
 
     /// Disable Qwen3.5 thinking mode (injects empty <think></think> block).
     #[arg(long)]
@@ -787,7 +787,7 @@ async fn async_main(
             args.no_default_relays,
             args.advertise_addr.clone(),
             args.public_addr.clone(),
-            !args.no_cycle_detection,
+            args.cycle_detection,
             cluster_logs,
             audit,
             gateway_ready,
@@ -1218,7 +1218,7 @@ async fn async_main(
             admission_health: Default::default(),
             runtime: node_runtime.clone(),
             cycle_config: crate::cycle::CycleConfig {
-                enabled: !args.no_cycle_detection,
+                enabled: args.cycle_detection,
                 ..crate::cycle::CycleConfig::default()
             },
             audit: audit.clone(),
@@ -1305,7 +1305,7 @@ async fn async_main(
             top_k: args.top_k,
             repeat_penalty: args.repeat_penalty,
             repeat_last_n: args.repeat_last_n,
-            cycle_detection_enabled: !args.no_cycle_detection,
+            cycle_detection_enabled: args.cycle_detection,
             cycle_detection_min_window_tokens: cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
             cycle_detection_max_window_tokens: cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
             cycle_detection_repetitions: cycle::DEFAULT_CYCLE_REPETITIONS,
@@ -2396,6 +2396,18 @@ mod main_tests {
             advertised_ollama_port(&args.ollama_url),
             "a flag não pode mudar o que se anuncia"
         );
+    }
+
+    /// Sem nenhuma flag de CLI, o detector de ciclos fica desligado - o padrão
+    /// pedido pelo produto. `--cycle-detection` é o interruptor explícito para
+    /// ligá-lo.
+    #[test]
+    fn cycle_detection_is_off_by_default_from_cli_args() {
+        let args = Args::parse_from(["pom"]);
+        assert!(!args.cycle_detection);
+
+        let with_flag = Args::parse_from(["pom", "--cycle-detection"]);
+        assert!(with_flag.cycle_detection);
     }
 
     /// `--advertise-addr` é mais específico que `--public-addr`, e os dois

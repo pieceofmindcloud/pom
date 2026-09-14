@@ -60,7 +60,14 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 vi.mock("../lib/imageResize", () => ({
-  resizeImageForVision: async () => "data:image/jpeg;base64,ZmFrZQ==",
+  resizeImageForVision: async () => ({
+    data: "data:image/jpeg;base64,ZmFrZQ==",
+    size: 4,
+    width: 1,
+    height: 1,
+    resized: false,
+  }),
+  ImageResizeLimitError: class ImageResizeLimitError extends Error {},
 }));
 
 /**

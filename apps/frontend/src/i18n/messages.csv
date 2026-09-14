@@ -118,6 +118,7 @@ chat.ask,Ask the network anything,Pergunte alguma coisa à rede
 chat.askDetail,Messages travel through machines in Dashboard order and return token by token.,As mensagens percorrem as máquinas na ordem do Painel e voltam token a token.
 chat.attach,Attach file,Anexar ficheiro
 chat.attachmentAlt,Sent image: {name},Imagem enviada: {name}
+chat.attachmentResized,Resized automatically,Redimensionada automaticamente
 chat.attachmentThumbnail,Thumbnail of {name},Miniatura de {name}
 chat.attachmentTooLarge,Attachment too large,Anexo grande demais
 chat.attachmentTooLargeDetail,"This attachment is {bytes} bytes, above the available context of {context} tokens.","Este anexo tem {bytes} bytes e excede o contexto disponível de {context} tokens."
@@ -159,6 +160,7 @@ chat.headSelected,Selected entry,Entrada selecionada
 chat.headUnavailable,Head selection unavailable,Escolha da cabeça indisponível
 chat.headUnavailableDetail,"This node could not read the current head candidates. Inference remains protected until a fresh choice is available.","Este nó não conseguiu ler as candidatas atuais à cabeça. A inferência fica protegida até haver uma escolha fresca."
 chat.history,Conversation history,Histórico de conversas
+chat.imageContextTooSmallDetail,"The image is still too large for the available context after reduction.",A imagem ainda é grande demais para o contexto disponível mesmo após a redução.
 chat.imageRejected,Image rejected,Imagem recusada
 chat.imageVisionUnavailable,This model does not support vision,este modelo não tem visão
 chat.incomplete,incomplete coverage,cobertura incompleta

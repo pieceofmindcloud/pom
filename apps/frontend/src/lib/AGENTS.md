@@ -372,9 +372,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### Anexos
 
 `imageResize.ts` reduz imagens para no máximo 2048 px no lado maior e preserva
-a proporção antes de montar o pedido multimodal. `chatStore` preserva as partes
-estruturadas do pedido para que anexos de imagem e de outros tipos sobrevivam ao
-histórico; o Chat aplica o limite de contexto antes de aceitar o lote.
+a proporção antes de montar o pedido multimodal. Quando há contexto conhecido,
+o orçamento é 90% de `context_length * 4` bytes, menos os anexos já presentes;
+a qualidade JPEG e o lado maior descem iterativamente até 512 px. O resultado
+carrega tamanho e a flag `resized`, para a tela avisar o operador. `chatStore`
+preserva as partes estruturadas do pedido para que anexos de imagem e de outros
+tipos sobrevivam ao histórico; texto e arquivos ainda são recusados quando
+ultrapassam o orçamento, mas imagem só falha se nem a miniatura mínima couber.
 
 ### chatStream.ts
 - `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).

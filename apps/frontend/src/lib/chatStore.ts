@@ -43,6 +43,7 @@ export interface ChatAttachment {
   data: string;
   mediaType?: string;
   size?: number;
+  resized?: boolean;
 }
 
 export interface ChatMessage {
@@ -57,7 +58,7 @@ export interface ChatMessage {
    */
   role: "user" | "assistant" | "event";
   content: string;
-  /** Files shown in the user bubble, including the original image data. */
+  /** Files shown in the user bubble, including the image data sent to vision. */
   attachments?: ChatAttachment[];
   /** Content sent to the model when the visible bubble is a compact summary. */
   requestContent?: ChatRequestContent;

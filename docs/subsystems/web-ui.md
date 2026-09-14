@@ -766,21 +766,25 @@ Três coisas a conversa guarda além das falas:
   pode consultar. Ele aceita qualquer tipo de ficheiro, botão e arrastar e
   largar. Imagens exigem `vision: supported`; `unsupported` mantém o modelo sem
   visão e `unavailable` informa que a leitura foi recusada ou não pôde terminar,
-  sem inventar um modelo vazio. Imagens são redimensionadas no navegador para no
-  máximo 2048 px no lado maior, preservando a proporção, antes de virar base64
-  no pedido, e aparecem inteiras na bolha da fala com legenda e alt.
+  sem inventar um modelo vazio. Imagens são redimensionadas no navegador para
+  caber no orçamento efetivo antes de virar base64 no pedido: a estimativa
+  mantém quatro bytes por token, reserva 10% para segurança e tenta qualidade
+  JPEG e resolução até 2048 px no lado maior, sem passar de 512 px em imagens
+  normais. A proporção é preservada, e a bolha e o anexo pendente mostram
+  "Redimensionada automaticamente" quando a imagem foi alterada.
 - O botão `Think` usa o campo `thinking` da mesma leitura de capabilities e só
   aparece quando o `no_thinking` global da cabeça está desligado. A escolha é
   enviada como `thinking_enabled` em cada chamada de Chat e fica no
   `ChatSession` persistido em `localStorage`, portanto continua entre mensagens
   da mesma conversa até o usuário mudar o toggle. A cabeça ainda impõe o
   desligamento global, mesmo que uma sessão antiga carregue `true`.
-- O lote é recusado antes do envio quando o tamanho bruto ultrapassa o contexto
-  efetivo do modelo: primeiro `context_length` de `/v1/models`, depois `n_ctx`
-  do nó ativo, com a estimativa conservadora de quatro bytes por token. O
-  conteúdo textual e as partes multimodais ficam em `requestContent`, para o
-  histórico reenviar o mesmo pedido estruturado. Cada anexo pendente pode ser
-  removido sem apagar o rascunho.
+- Arquivos de texto continuam sendo recusados antes do envio quando o tamanho
+  estimado ultrapassa o contexto efetivo do modelo: primeiro `context_length`
+  de `/v1/models`, depois `n_ctx` do nó ativo. Imagens usam o mesmo orçamento,
+  mas são reduzidas antes da validação; só uma imagem que não caiba nem em
+  512 px gera recusa. O conteúdo textual e as partes multimodais ficam em
+  `requestContent`, para o histórico reenviar o mesmo pedido estruturado. Cada
+  anexo pendente pode ser removido sem apagar o rascunho.
 - O botão de microfone só aparece quando existe `SpeechRecognition` ou
   `webkitSpeechRecognition`; a transcrição usa o locale da interface quando
   possível e entra diretamente no campo de texto.

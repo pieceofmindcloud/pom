@@ -169,7 +169,7 @@ describe("telemetria do rodapé atualiza sem F5", () => {
       expect(screen.getByText("gateway-1")).toBeTruthy();
       expect(screen.getByText("gateway-2")).toBeTruthy();
       expect(screen.getByText("12,5 ms")).toBeTruthy();
-      expect(screen.getByText("25 ms")).toBeTruthy();
+      expect(screen.getAllByText("25 ms").length).toBeGreaterThan(0);
     }, { timeout: 2000 });
   });
 });

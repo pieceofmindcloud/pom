@@ -27,6 +27,9 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   aqui, sem strings hard-coded nas rotas.
   As métricas do card de máquina usam aqui os rótulos de GPUs, uso e potência
   para manter o detalhe disponível nas duas línguas.
+- As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem
+  o aviso de miniaturização automática de imagens e a recusa rara quando o
+  contexto não comporta nem a resolução mínima.
 - As mensagens `chat.thinkToggle` e `chat.thinkToggleHint` nomeiam o controle
   persistente de thinking do Chat nas duas línguas.
 - O grupo `adminAuthority.*` cobre a tela do principal e as vistas somente

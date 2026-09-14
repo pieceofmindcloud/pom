@@ -647,8 +647,11 @@ indisponibilidade sem checkbox morto, e a escolha segue para a implantação.
 campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
 visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens
 exigem visão disponível; outros tipos são convertidos para texto no pedido.
-A soma dos anexos é validada contra o contexto efetivo do modelo, usando
-`context_length` de `/v1/models` ou o `n_ctx` local como fallback. A visão e a
+A imagem recebe o orçamento efetivo do modelo, usando `context_length` de
+`/v1/models` ou o `n_ctx` local como fallback, com quatro bytes por token e
+margem de segurança de 10%. Qualidade JPEG e resolução descem até 512 px,
+preservando a proporção; a etiqueta `Redimensionada automaticamente` fica no
+anexo quando isso ocorreu. A visão e a
 cobertura do Chat vêm de
 `GET /api/ui/chat/capabilities`, uma leitura agregada da implantação que também
 funciona nos perfis `node` e `infer`; recusa ou falha fica como indisponível,

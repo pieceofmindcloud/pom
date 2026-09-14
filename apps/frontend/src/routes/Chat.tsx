@@ -46,7 +46,11 @@ import {
   type ChatRequestPart,
   type ChatSession,
 } from "../lib/chatStore";
-import { resizeImageForVision } from "../lib/imageResize";
+import {
+  imageBudgetBytes,
+  ImageResizeLimitError,
+  resizeImageForVision,
+} from "../lib/imageResize";
 import { ms, num } from "../lib/format";
 import type { GenerationTimings, RequestTrace } from "../lib/chatStream";
 import {
@@ -260,8 +264,13 @@ export function Bubble({
                 alt={t("chat.attachmentAlt", { name: attachment.name })}
                 className="max-h-[28rem] max-w-full rounded-xl border border-line object-contain"
               />
-              <figcaption className="mt-1.5 truncate text-[0.7rem] text-faint" title={attachment.name}>
-                {attachment.name}
+              <figcaption className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[0.7rem] text-faint" title={attachment.name}>
+                <span className="min-w-0 truncate">{attachment.name}</span>
+                {attachment.resized && (
+                  <span className="shrink-0 rounded border border-amber/25 bg-amber/[0.08] px-1 py-0.5 text-[0.62rem] text-amber" title={t("chat.attachmentResized")}>
+                    {t("chat.attachmentResized")}
+                  </span>
+                )}
               </figcaption>
             </figure>
           ) : (
@@ -612,39 +621,51 @@ function ChatScreen() {
 
   async function addFiles(files: FileList | File[]) {
     const selectedFiles = Array.from(files);
-    const contextBytes = contextLength != null ? contextLength * 4 : undefined;
     const currentBytes = attachments.reduce((total, attachment) => total + estimatedAttachmentBytes(attachment), 0);
-    const selectedBytes = selectedFiles.reduce((total, file) => total + file.size, 0);
-    if (contextBytes != null && currentBytes + selectedBytes > contextBytes) {
-      toast.error(
-        t("chat.attachmentTooLarge"),
-        t("chat.attachmentTooLargeDetail", {
-          bytes: currentBytes + selectedBytes,
-          context: contextLength ?? 0,
-        }),
-      );
-      return;
-    }
-
     const added: ChatAttachment[] = [];
-    for (const file of selectedFiles) {
+    for (const [index, file] of selectedFiles.entries()) {
+      const usedBytes = currentBytes + added.reduce((total, attachment) => total + estimatedAttachmentBytes(attachment), 0);
       if (file.type.startsWith("image/")) {
         if (!visionAvailable) {
           toast.error(t("chat.imageRejected"), t("chat.imageVisionUnavailable"));
           continue;
         }
         try {
+          const remainingImages = selectedFiles
+            .slice(index)
+            .filter((selectedFile) => selectedFile.type.startsWith("image/")).length;
+          const availableBytes = contextLength == null
+            ? undefined
+            : Math.floor(imageBudgetBytes(contextLength, usedBytes) / Math.max(1, remainingImages));
+          const image = await resizeImageForVision(file, availableBytes);
           added.push({
             id: newId(),
             name: file.name,
             kind: "image",
-            data: await resizeImageForVision(file),
-            mediaType: file.type,
-            size: file.size,
+            data: image.data,
+            mediaType: image.data.startsWith("data:image/jpeg") ? "image/jpeg" : file.type,
+            size: image.size,
+            resized: image.resized,
           });
         } catch (error) {
-          toast.error(t("chat.imageRejected"), error instanceof Error ? error.message : String(error));
+          const detail = error instanceof ImageResizeLimitError
+            ? t("chat.imageContextTooSmallDetail", { context: contextLength ?? 0 })
+            : error instanceof Error ? error.message : String(error);
+          toast.error(t("chat.imageRejected"), detail);
         }
+        continue;
+      }
+      if (
+        contextLength != null
+        && usedBytes + file.size > imageBudgetBytes(contextLength)
+      ) {
+        toast.error(
+          t("chat.attachmentTooLarge"),
+          t("chat.attachmentTooLargeDetail", {
+            bytes: usedBytes + file.size,
+            context: contextLength,
+          }),
+        );
         continue;
       }
       if (isTextFile(file)) {
@@ -1039,6 +1060,11 @@ function ChatScreen() {
                       </span>
                     )}
                     <span className="max-w-[16rem] truncate" title={attachment.name}>{attachment.name}</span>
+                    {attachment.resized && (
+                      <span className="shrink-0 rounded border border-amber/25 bg-amber/[0.08] px-1 py-0.5 text-[0.62rem] text-amber" title={t("chat.attachmentResized")}>
+                        {t("chat.attachmentResized")}
+                      </span>
+                    )}
                     <button
                       type="button"
                       aria-label={t("chat.removeAttachment", { name: attachment.name })}

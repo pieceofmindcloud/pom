@@ -802,6 +802,10 @@ navegador.
   `outside_node_unaccounted_ms`. O gargalo principal é destacado somente
   entre medidas presentes; tempo que não chegou a uma fronteira permanece
   explicitamente como não atribuído.
+  No fim do stream, o `Bubble` usa temporariamente o trace de `telemetryCapture`
+  quando a captura final chega antes da atualização imutável da mensagem. Depois
+  que o histórico recebe `message.trace`, ele continua sendo a fonte preferida;
+  essa transição mantém o rodapé visível sem recarregar a página.
 - **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
   `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
   embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids

@@ -94,6 +94,10 @@ Per-file list:
   while the request trace shows the executed engine and mixed/mismatch flags.
   The runtime record keeps stable identity between unchanged polls so the
   telemetry snapshot cannot trigger a render loop that freezes navigation.
+  At the end of a stream, `telemetryCapture.trace` is also passed to `Bubble`
+  while the immutable transcript patch is settling; `message.trace` remains
+  the preferred value once it is available, so the footer does not depend on
+  a reload to mount.
   O perfil `infer` oculta desta tela a origem, os resumos de tempo e
   throughput e o painel detalhado de telemetria; isso é apresentação, não
   autorização.

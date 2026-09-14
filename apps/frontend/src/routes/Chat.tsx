@@ -203,16 +203,20 @@ export function Bubble({
   onAnalyze,
   analysisDisabled = false,
   telemetryEnvironment,
+  telemetryTrace,
 }: {
   message: ChatMessage;
   streaming: boolean;
   onAnalyze?: (trace: RequestTrace) => void;
   analysisDisabled?: boolean;
   telemetryEnvironment?: ExecutionTelemetryEnvironment;
+  /** The final stream capture can arrive one render before the transcript patch. */
+  telemetryTrace?: RequestTrace;
 }) {
   const { t } = useI18n();
   const { profile } = useProfile();
   const showTelemetry = profile !== "infer";
+  const trace = message.trace ?? telemetryTrace;
   if (message.role === "event") return <EventMark message={message} />;
   const isUser = message.role === "user";
   return (
@@ -269,10 +273,10 @@ export function Bubble({
               <span>{t("chat.legacyTotalSpeed", { value: num(message.tokensPerSecond, 1) })}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${ms(message.durationMs)}`}</span>
             </div>
           )}
-          {showTelemetry && message.trace && (
+          {showTelemetry && trace && (
             <div className="mt-2">
               <ExecutionTelemetry
-                trace={message.trace}
+                trace={trace}
                 timings={message.timings}
                 source={message.source}
                 environment={telemetryEnvironment}
@@ -941,6 +945,7 @@ function ChatScreen() {
                       streaming={streaming && m.id === session.messages[session.messages.length - 1]?.id}
                       onAnalyze={analyzeTrace}
                       analysisDisabled={streaming || !model}
+                      telemetryTrace={telemetryCapture?.messageId === m.id ? telemetryCapture.trace : undefined}
                       telemetryEnvironment={telemetryCapture?.messageId === m.id ? telemetryEnvironment : telemetrySnapshots[m.id]}
                     />
                   ))}

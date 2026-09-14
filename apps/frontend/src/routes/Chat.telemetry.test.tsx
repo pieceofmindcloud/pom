@@ -373,6 +373,8 @@ describe("ExecutionTelemetry", () => {
 });
 
 describe("telemetria no chat por perfil", () => {
+  afterEach(cleanup);
+
   const tracedMessage: ChatMessage = {
     id: "assistant-1",
     role: "assistant",
@@ -417,6 +419,20 @@ describe("telemetria no chat por perfil", () => {
 
     expect(screen.getAllByText("pipeline:abc→def").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Primeiro token/).length).toBeGreaterThan(0);
+  });
+
+  it("renderiza o trace capturado enquanto a mensagem ainda não recebeu o campo trace", () => {
+    mount(
+      <ProfileProvider initialProfile="admin">
+        <Bubble
+          message={{ ...tracedMessage, source: undefined, timings: undefined, trace: undefined }}
+          telemetryTrace={trace}
+          streaming={false}
+        />
+      </ProfileProvider>,
+    );
+
+    expect(screen.getByText(/Telemetria da execução/)).toBeTruthy();
   });
 });
 

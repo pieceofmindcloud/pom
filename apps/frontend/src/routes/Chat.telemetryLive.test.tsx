@@ -114,6 +114,13 @@ describe("telemetria do rodapé atualiza sem F5", () => {
 
     await screen.findByText("oi", { selector: "p" });
 
+    // The final capture must mount the footer even if the transcript patch and
+    // lastStreamResult are observed in separate React commits.
+    await waitFor(
+      () => expect(screen.getByText(/Telemetria da execução/)).toBeTruthy(),
+      { timeout: 2000 },
+    );
+
     // The network RTT query resolves ~30ms after the stream ends. Without a
     // remount, this text must appear once the query settles.
     await waitFor(

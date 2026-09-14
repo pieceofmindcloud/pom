@@ -30,16 +30,32 @@ const trace = {
   ],
 };
 
+const timings = {
+  pipeline_first_token_ms: 80,
+  ttft_ms: 80,
+  prefill_ms: 50,
+  prefill_tokens: 10,
+  prefill_tokens_per_sec: 200,
+  generation_ms: 150,
+  generation_tokens: 3,
+  generation_tokens_per_sec: 20,
+  total_ms: 230,
+  total_tokens_per_sec: 13,
+};
+
+let streamIndex = 0;
+
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
   return {
     ...actual,
     // eslint-disable-next-line require-yield
     streamSse: async function* () {
-      yield JSON.stringify({ choices: [{ delta: { content: "oi" } }] });
+      const index = ++streamIndex;
+      yield JSON.stringify({ choices: [{ delta: { content: index === 1 ? "oi" : `resposta ${index}` } }] });
       yield JSON.stringify({
         choices: [{ delta: {} }],
-        x_pom: { trace, source: "gateway" },
+        x_pom: { trace, timings, source: `gateway-${index}` },
       });
       yield "[DONE]";
     },
@@ -60,15 +76,16 @@ vi.mock("../lib/queries", () => ({
   }),
   useServableModels: () => ({ data: [{ id: "qwen", context_length: 4 }] }),
   useInferenceHeads: () => ({ data: undefined, isLoading: false, isError: false }),
-  useChatTelemetryNetwork: (_nodeIds: string[], enabled: boolean) => {
+  useChatTelemetryNetwork: (_nodeIds: string[], enabled: boolean, _messageId?: string) => {
     const [data, setData] = useState<unknown>(undefined);
     useEffect(() => {
       if (!enabled) return;
+      const rtt = streamIndex === 1 ? 12.5 : 25;
       const timer = setTimeout(() => {
-        setData({ measurements: [{ from_node_id: "abcdef0123456789", to_node_id: "fedcba9876543210", rtt_ms: 12.5, transport: "libp2p" }] });
+        setData({ measurements: [{ from_node_id: "abcdef0123456789", to_node_id: "fedcba9876543210", rtt_ms: rtt, transport: "libp2p" }] });
       }, 30);
       return () => clearTimeout(timer);
-    }, [enabled]);
+    }, [enabled, _messageId]);
     return { data, isLoading: !data, isError: false };
   },
   usePeerRuntimes: () => [],
@@ -98,6 +115,7 @@ function mountChat() {
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+  streamIndex = 0;
 });
 
 describe("telemetria do rodapé atualiza sem F5", () => {
@@ -127,5 +145,31 @@ describe("telemetria do rodapé atualiza sem F5", () => {
       () => expect(screen.getByText(/12,5|12\.5/)).toBeTruthy(),
       { timeout: 2000 },
     );
+  });
+
+  it("mantém resumo, card e ambiente de cada resposta anterior", async () => {
+    mountChat();
+
+    const composer = await screen.findByRole("textbox");
+    const send = async (content: string, reply: string) => {
+      act(() => {
+        fireEvent.change(composer, { target: { value: content } });
+        fireEvent.click(screen.getByRole("button", { name: /enviar/i }));
+      });
+      await screen.findByText(reply, { selector: "p" });
+    };
+
+    await send("primeira", "oi");
+    await waitFor(() => expect(screen.getByText("12,5 ms")).toBeTruthy(), { timeout: 2000 });
+    await send("segunda", "resposta 2");
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Telemetria da execução/)).toHaveLength(2);
+      expect(screen.getAllByText("Geração")).toHaveLength(2);
+      expect(screen.getByText("gateway-1")).toBeTruthy();
+      expect(screen.getByText("gateway-2")).toBeTruthy();
+      expect(screen.getByText("12,5 ms")).toBeTruthy();
+      expect(screen.getByText("25 ms")).toBeTruthy();
+    }, { timeout: 2000 });
   });
 });

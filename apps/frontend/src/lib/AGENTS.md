@@ -43,7 +43,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   choice. `ChatSessionProvider` shares the active
   session and selection/new/delete actions between `Chat` and the infer Sidebar,
   and owns the active stream so route unmounts preserve live partial replies.
-  Direct Chat consumers get an isolated provider wrapper.
+  Direct Chat consumers get an isolated provider wrapper. The terminal
+  `ChatStreamResult` retains trace, generation timings and source so Chat can
+  associate the complete telemetry capture with the specific reply while the
+  persisted message patch settles.
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
   `stream_duration_ms` is measured locally from the first SSE data frame to
   receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
@@ -359,7 +362,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   recreating it.
   `startStream` also carries the optional Chat `inference_head` selection in
   the OpenAI-compatible request body and sends the conversation's
-  `thinkingEnabled` value as `thinking_enabled`.
+  `thinkingEnabled` value as `thinking_enabled`. The terminal result retains
+  the same trace, timings and source metadata for the message-level Chat
+  telemetry snapshot.
 - `turnsOnly(messages)` - drops `role: "event"` entries (model-change marks) before the transcript travels in a request.
 - `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.

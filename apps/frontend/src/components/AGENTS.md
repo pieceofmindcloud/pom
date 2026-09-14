@@ -100,6 +100,9 @@ Per-file list:
   amostras, os quantis do intervalo de entrega de tokens do `remote-stream`,
   separando produção, downstream, reserva do canal, fila e callback anterior;
   o detalhe por nó também mostra o custo síncrono do draft MTP quando presente.
+  `TimingSummary` fica fora do `<details>` fechado para manter tokens/s, TTFT,
+  tempo de rede e total visíveis. O Chat fornece trace, timings e origem por
+  mensagem, então a mesma captura permanece disponível em mensagens anteriores.
   O resumo por transporte diferencia RTT de execução, que inclui processamento
   remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
   medição da conexão quando disponível.

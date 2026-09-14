@@ -94,10 +94,12 @@ Per-file list:
   while the request trace shows the executed engine and mixed/mismatch flags.
   The runtime record keeps stable identity between unchanged polls so the
   telemetry snapshot cannot trigger a render loop that freezes navigation.
-  At the end of a stream, `telemetryCapture.trace` is also passed to `Bubble`
-  while the immutable transcript patch is settling; `message.trace` remains
-  the preferred value once it is available, so the footer does not depend on
-  a reload to mount.
+  At the end of a stream, `telemetryCapture` carries the trace, timings and
+  source to `Bubble` while the immutable transcript patch is settling;
+  `telemetrySnapshots` keeps that complete capture keyed by message id, and
+  `message.trace`/`message.timings` remain the preferred values once available.
+  The quick timing summary stays outside the closed details card, so every
+  assistant message keeps its summary and full telemetry without a reload.
   O perfil `infer` oculta desta tela a origem, os resumos de tempo e
   throughput e o painel detalhado de telemetria; isso é apresentação, não
   autorização.
@@ -574,7 +576,10 @@ Key logic carriers:
   optional TP collective table, aggregate transport identity, execution RTT and
   measured network RTT distributions, bytes with fallback and switch counts,
   prefix reuse counters, overlap counters and a pure diagnosis card. The
-  request summary also shows TTFT, prompt-token prefill rate, output-token generation rate and end-to-end total, including an explicit unavailable state when a rate has no measurable interval. The AI action sends
+  request summary stays visible before the closed details card and shows TTFT,
+  prompt-token prefill rate, output-token generation rate, observed network RTT
+  and end-to-end total, including an explicit unavailable state when a rate has
+  no measurable interval. The AI action sends
   both tables as private request content, while the initial model is shown as
   a non-turn mark before chat messages.
 - `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime

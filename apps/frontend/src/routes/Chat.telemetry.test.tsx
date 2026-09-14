@@ -178,6 +178,26 @@ describe("ExecutionTelemetry", () => {
     expect(screen.getByText("10,0 s · 2,0 tokens/s")).toBeTruthy();
   });
 
+  it("mantém o resumo rápido fora do accordion fechado", () => {
+    const timings: GenerationTimings = {
+      pipeline_first_token_ms: 2400,
+      ttft_ms: 2400,
+      prefill_ms: 2000,
+      prefill_tokens: 100,
+      prefill_tokens_per_sec: 50,
+      generation_ms: 7600,
+      generation_tokens: 20,
+      generation_tokens_per_sec: 20 / 7.6,
+      total_ms: 10000,
+      total_tokens_per_sec: 2,
+    };
+
+    mount(<ExecutionTelemetry trace={trace} timings={timings} />);
+
+    expect(screen.getByText("Geração").closest("details")).toBeNull();
+    expect(screen.getByText("50,0 tokens/s · 100 tokens do prompt")).toBeTruthy();
+  });
+
   it("gives each hop one prefill row and one decode row", () => {
     mount(<ExecutionTelemetry trace={trace} source="pipeline:abc→def" />);
 

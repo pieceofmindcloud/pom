@@ -804,10 +804,13 @@ navegador.
   `outside_node_unaccounted_ms`. O gargalo principal é destacado somente
   entre medidas presentes; tempo que não chegou a uma fronteira permanece
   explicitamente como não atribuído.
-  No fim do stream, o `Bubble` usa temporariamente o trace de `telemetryCapture`
-  quando a captura final chega antes da atualização imutável da mensagem. Depois
-  que o histórico recebe `message.trace`, ele continua sendo a fonte preferida;
-  essa transição mantém o rodapé visível sem recarregar a página.
+  No fim do stream, o `Bubble` usa temporariamente o trace, timings e origem de
+  `telemetryCapture` quando a captura final chega antes da atualização imutável
+  da mensagem. `telemetrySnapshots` guarda a captura completa por `messageId`,
+  então mensagens anteriores continuam com seu próprio resumo rápido e card
+  fechado. Depois que o histórico recebe `message.trace` e `message.timings`,
+  eles continuam sendo a fonte preferida; essa transição mantém o rodapé visível
+  sem recarregar a página.
 - **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
   `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
   embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids
@@ -819,10 +822,12 @@ navegador.
 `chatStream` separa `<think>` do conteúdo visível sem vazar o delimitador
 entre pedaços; `finishChatStream` grava o resumo de TTFT, velocidade de
 pré-processamento do prompt, velocidade de geração da saída e total ponta a
-ponta, além do trace por hop. O Chat mostra essas quatro linhas no resumo da
-resposta, além de `server_ttft_ms`, `engine_ttft_ms` e `client_ttft_ms`, e deixa
-explícito quando uma taxa não é mensurável, como no reuso total do prefixo ou
-numa resposta de um token. Durante o SSE, o navegador mede primeiro chunk,
+  ponta, além do trace por hop. O Chat mostra essas linhas no resumo da
+  resposta, além de `server_ttft_ms`, `engine_ttft_ms`, `client_ttft_ms` e o
+  tempo de rede observado, antes do card fechado. O resumo fica visível sem
+  expandir a telemetria e deixa explícito quando uma taxa não é mensurável,
+  como no reuso total do prefixo ou numa resposta de um token. Durante o SSE,
+  o navegador mede primeiro chunk,
 primeiro token, duração, fim do último token, chunks e bytes com
 `performance.now()`; o `Date.now()` anexado ao recebimento serve apenas para
 correlação com os wall timestamps dos peers. Nenhum relógio de máquinas

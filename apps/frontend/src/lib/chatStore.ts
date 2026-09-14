@@ -124,6 +124,8 @@ export interface ChatStreamResult {
   sessionId: string;
   messageId: string;
   trace: RequestTrace;
+  timings?: GenerationTimings;
+  source?: string;
   cluster: ClusterView | null;
 }
 
@@ -443,6 +445,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
             sessionId: options.session.id,
             messageId: options.replyId,
             trace: streamed.trace,
+            timings: streamed.timings,
+            source: streamed.source,
             cluster: options.cluster,
           });
         }

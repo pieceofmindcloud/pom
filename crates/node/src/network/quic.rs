@@ -118,7 +118,12 @@ struct QuicSession {
 pub struct ClientPool {
     endpoint: Arc<tokio::sync::OnceCell<quinn::Endpoint>>,
     sessions: Arc<tokio::sync::Mutex<HashMap<String, Arc<QuicSession>>>>,
-    failed_until: Arc<tokio::sync::Mutex<HashMap<String, Instant>>>,
+    /// Motivo guardado junto do prazo: uma tentativa em quarentena reporta
+    /// "em quarentena" sozinho, escondendo o erro original que quarentenou o
+    /// endpoint (foi o caso do "invalid authority" na telemetria da ksia -
+    /// só a primeira tentativa mostrava a causa real, as 113 seguintes só
+    /// diziam "em quarentena").
+    failed_until: Arc<tokio::sync::Mutex<HashMap<String, (Instant, String)>>>,
 }
 
 impl ClientPool {
@@ -155,8 +160,8 @@ impl ClientPool {
         let fallback_deadline = Instant::now() + QUIC_FALLBACK_BUDGET;
         for advertised in quic_addresses {
             let key = format!("{peer_id}@{}", advertised.trim());
-            if self.is_quic_quarantined(&key).await {
-                last_error = anyhow!("{advertised}: endpoint QUIC em quarentena");
+            if let Some(reason) = self.quic_quarantine_reason(&key).await {
+                last_error = anyhow!("{advertised}: endpoint QUIC em quarentena ({reason})");
                 continue;
             }
             if remaining_budget(fallback_deadline).is_none() {
@@ -186,7 +191,7 @@ impl ClientPool {
                 Err(error) => {
                     last_error = anyhow!("{advertised}: {error}");
                     self.sessions.lock().await.remove(&key);
-                    self.quarantine_quic(&key).await;
+                    self.quarantine_quic(&key, error.to_string()).await;
                 }
             }
         }
@@ -359,24 +364,26 @@ impl ClientPool {
         Ok(session)
     }
 
-    async fn is_quic_quarantined(&self, key: &str) -> bool {
+    /// `Some(motivo)` quando `key` está em quarentena - o motivo é o erro
+    /// original que causou a quarentena, não o texto "em quarentena".
+    async fn quic_quarantine_reason(&self, key: &str) -> Option<String> {
         let now = Instant::now();
         let mut failed_until = self.failed_until.lock().await;
-        match failed_until.get(key).copied() {
-            Some(until) if until > now => true,
+        match failed_until.get(key) {
+            Some((until, reason)) if *until > now => Some(reason.clone()),
             Some(_) => {
                 failed_until.remove(key);
-                false
+                None
             }
-            None => false,
+            None => None,
         }
     }
 
-    async fn quarantine_quic(&self, key: &str) {
+    async fn quarantine_quic(&self, key: &str, reason: String) {
         self.failed_until
             .lock()
             .await
-            .insert(key.to_owned(), Instant::now() + QUIC_FAILURE_QUARANTINE);
+            .insert(key.to_owned(), (Instant::now() + QUIC_FAILURE_QUARANTINE, reason));
     }
 }
 
@@ -537,19 +544,23 @@ async fn serve_connection(connection: quinn::Connection, router: axum::Router) -
 fn authority(base_url: &str) -> Result<String> {
     let parsed = url::Url::parse(base_url)?;
     let host = parsed
-        .host_str()
+        .host()
         .ok_or_else(|| anyhow!("URL QUIC sem host"))?;
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL QUIC sem porta"))?;
-    Ok(format!(
-        "{}:{port}",
-        if host.contains(':') {
-            format!("[{host}]")
-        } else {
-            host.to_string()
-        }
-    ))
+    // `Url::host_str()` já devolve hosts IPv6 colchetados (`[::1]`); só
+    // `Url::host()` distingue a variante, então colchetar de novo em cima de
+    // `host_str()` sempre que ele "contém `:`" duplicava os colchetes em
+    // qualquer host IPv6 (`[[::1]]`) e o `http::Uri`/`Authority` rejeitava a
+    // string resultante como "invalid authority" - o motivo dominante dos
+    // fallbacks QUIC->HTTP num cluster IPv6. `url::Host` não tem essa
+    // ambiguidade: `Ipv6` já é o endereço nu.
+    Ok(match host {
+        url::Host::Ipv6(addr) => format!("[{addr}]:{port}"),
+        url::Host::Ipv4(addr) => format!("{addr}:{port}"),
+        url::Host::Domain(domain) => format!("{domain}:{port}"),
+    })
 }
 
 async fn resolve_addr(advertised: &str) -> Result<SocketAddr> {
@@ -660,6 +671,29 @@ mod tests {
             "[2001:db8::42]:8182".parse().unwrap()
         );
         assert!(quic_socket_addr("http://[2001:db8::42]:8181", 8182).is_err());
+    }
+
+    /// Regressão do bug de produção salem->ksia: `Url::host_str()` já devolve
+    /// hosts IPv6 colchetados, então colchetar de novo produzia
+    /// `[[::]]:porta`, que o `http::Uri`/`Authority` rejeita como "invalid
+    /// authority" - a causa raiz dos 114 fallbacks QUIC->HTTP na telemetria.
+    #[test]
+    fn authority_nao_colcheta_host_ipv6_duas_vezes() {
+        let a = authority("https://[2804:d55:5579:1000:e6c8:310f:1a19:6e92]:43777").unwrap();
+        assert_eq!(a, "[2804:d55:5579:1000:e6c8:310f:1a19:6e92]:43777");
+        a.parse::<http::uri::Authority>()
+            .expect("authority precisa parsear como Authority válida");
+
+        // IPv4 e hostname DNS continuam funcionando (casos que já passavam).
+        assert_eq!(authority("https://192.168.1.5:8181").unwrap(), "192.168.1.5:8181");
+        assert_eq!(
+            authority("https://peer.example.com:8181").unwrap(),
+            "peer.example.com:8181"
+        );
+        assert_eq!(
+            authority("https://peer.example.com").unwrap(),
+            "peer.example.com:443"
+        );
     }
 
     #[test]

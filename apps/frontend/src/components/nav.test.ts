@@ -102,6 +102,7 @@ describe("navForProfile", () => {
     expect(network?.children?.map((child) => child.to)).toEqual([
       "/config/rede",
       "/config/rede/participantes",
+      "/config/minha-maquina",
       "/config/administracao",
       "/config/compartilhamento",
       "/config/keys/api",
@@ -109,6 +110,7 @@ describe("navForProfile", () => {
     expect(network?.children?.map((child) => child.labelKey)).toEqual([
       "nav.networkInfo",
       "nav.networkParticipants",
+      "nav.myMachine",
       "nav.administrators",
       "nav.sharing",
       "nav.apiKeys",

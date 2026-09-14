@@ -50,24 +50,30 @@ Per-file list:
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
 - `NetworkSettings.tsx` - Mantém o retrato operacional da rede separado das
-  preferências locais. Node e infer recebem uma leitura somente leitura com
-  nome, descrição, regras, organização, canais, visibilidade e localização;
-  um administrador autorizado pode editar o bloco completo. A edição grava
-  no nó, propaga o envelope assinado aos peers e atualiza a descoberta pública.
-  País e cidade usam a referência de geografia do nó em selects, sem expor o
-  código do país. A tela também agrega nós, latência média, VRAM e modelos
-  conhecidos. A lista de participantes foi movida para a rota
-  `/config/rede/participantes`, apenas para `admin` e `node`. O painel de
-  informações também oferece `Esquecer rede`, que pede confirmação e chama
-  `POST /api/ui/network/leave` para limpar a configuração local e reiniciar no
-  setup; isso é separado de `Sair da rede`, que chama `/api/ui/leave` e apenas
-  desliga a máquina do cluster. O botão continua disponível para o perfil
-  `node` mesmo sem autoridade administrativa, sem modelo carregado ou sem
-  estado `Ready`; o handler local não consulta a saúde da implantação.
-  No Windows, quando suportado, a mesma tela mostra o estado das quatro regras
-  de firewall derivadas da porta P2P efetiva e oferece `Tentar novamente` após
-  uma recusa do UAC; essa ação é independente da implantação e da saída da
-  rede.
+  preferências locais **e** da identidade desta máquina, que vive em
+  `MyMachine.tsx` (rota `/config/minha-maquina`). Node e infer recebem uma
+  leitura somente leitura com nome, descrição, regras, organização, canais,
+  visibilidade e localização; um administrador autorizado pode editar o bloco
+  completo. A edição grava no nó, propaga o envelope assinado aos peers e
+  atualiza a descoberta pública. País e cidade usam a referência de geografia
+  do nó em selects, sem expor o código do país. A tela também agrega nós,
+  latência média, VRAM e modelos conhecidos. A lista de participantes foi
+  movida para a rota `/config/rede/participantes`, apenas para `admin` e
+  `node`. O painel de informações também oferece `Esquecer rede`, que pede
+  confirmação e chama `POST /api/ui/network/leave` para limpar a configuração
+  local e reiniciar no setup - continua aqui porque é sobre a rede, não sobre
+  esta máquina. No Windows, quando suportado, a mesma tela mostra o estado das
+  quatro regras de firewall derivadas da porta P2P efetiva e oferece `Tentar
+  novamente` após uma recusa do UAC; essa ação é independente da implantação.
+- `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
+  própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
+  saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,
+  portas, perfil, autoridade efetiva, e `Sair da rede`/`Voltar para a rede` via
+  `POST /api/ui/leave`/`/api/ui/rejoin` - abdicação, não privilégio, disponível
+  a todo perfil) e "Endereço anunciado" (`POST /api/ui/network/advertise-addr`,
+  mostra o endereço efetivo usado pelos peers). `Sair da rede` aqui é diferente
+  de `Esquecer rede` em `NetworkSettings.tsx`: um desliga a máquina do cluster,
+  o outro apaga a configuração local e reinicia no setup.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage

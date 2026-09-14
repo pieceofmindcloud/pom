@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, CircleCheck, CircleX, Globe2, LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react";
+import { ArrowRight, CircleCheck, CircleX, Globe2, LoaderCircle, RefreshCw, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { Confirm } from "../components/Confirm";
 import { Button, ErrorState, PageHeader, Select, Skeleton } from "../components/ui";
 import { api } from "../lib/api";
@@ -185,9 +185,22 @@ function ReachabilityIndicator({ id, address, status, t }: { id: string; address
     ? <CircleCheck className="h-4 w-4 shrink-0 text-lime" aria-hidden="true" />
     : status === "unreachable"
       ? <CircleX className="h-4 w-4 shrink-0 text-rose" aria-hidden="true" />
-      : <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-amber" aria-hidden="true" />;
-  const label = status === "reachable" ? t("publicNetworks.reachable") : status === "unreachable" ? t("publicNetworks.unreachable") : t("publicNetworks.checking");
-  return <div data-testid={`public-network-reachability-${id}`} data-reachability={status} className="flex min-w-0 items-start gap-2" title={label}><span className="mt-0.5">{content}</span><span className="min-w-0"><span className="block truncate font-mono text-[0.68rem] text-fg">{address}</span><span className={status === "reachable" ? "text-[0.68rem] text-lime" : status === "unreachable" ? "text-[0.68rem] text-rose" : "text-[0.68rem] text-amber"}>{label}</span></span></div>;
+      : status === "ipv6-unavailable"
+        ? <ShieldQuestion className="h-4 w-4 shrink-0 text-amber" aria-hidden="true" />
+        : <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-amber" aria-hidden="true" />;
+  const label = status === "reachable"
+    ? t("publicNetworks.reachable")
+    : status === "unreachable"
+      ? t("publicNetworks.unreachable")
+      : status === "ipv6-unavailable"
+        ? t("publicNetworks.ipv6Unavailable")
+        : t("publicNetworks.checking");
+  const textClass = status === "reachable"
+    ? "text-[0.68rem] text-lime"
+    : status === "unreachable"
+      ? "text-[0.68rem] text-rose"
+      : "text-[0.68rem] text-amber";
+  return <div data-testid={`public-network-reachability-${id}`} data-reachability={status} className="flex min-w-0 items-start gap-2" title={label}><span className="mt-0.5">{content}</span><span className="min-w-0"><span className="block truncate font-mono text-[0.68rem] text-fg">{address}</span><span className={textClass}>{label}</span></span></div>;
 }
 
 function distanceKm(location: PublicNetwork["location"], viewer: ViewerLocation | null): number | null {

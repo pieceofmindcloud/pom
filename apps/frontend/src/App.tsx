@@ -145,6 +145,7 @@ export const routeLoaders = {
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
+  myMachine: () => import("./routes/MyMachine").then(({ MyMachine }) => MyMachine),
   adminAuthority: () => import("./routes/AdminAuthority").then(({ AdminAuthority }) => AdminAuthority),
   trustAnchor: () => import("./routes/TrustAnchor").then(({ TrustAnchor }) => TrustAnchor),
   networkSharing: () => import("./routes/NetworkSharing").then(({ NetworkSharing }) => NetworkSharing),
@@ -180,6 +181,7 @@ const Statistics = lazyRoute(routeLoaders.statistics);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
+const MyMachine = lazyRoute(routeLoaders.myMachine);
 const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
 const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
 const NetworkSharing = lazyRoute(routeLoaders.networkSharing);
@@ -408,6 +410,7 @@ export default function App() {
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
                         <Route path="/config/rede/participantes" element={<Page><NetworkParticipants /></Page>} />
+                        <Route path="/config/minha-maquina" element={<Page><MyMachine /></Page>} />
                         <Route path="/config/administracao" element={<Page><AdminAuthority /></Page>} />
                         <Route path="/config/compartilhamento" element={<Page><NetworkSharing /></Page>} />
                         <Route path="/config/confianca" element={<Page><TrustAnchor /></Page>} />

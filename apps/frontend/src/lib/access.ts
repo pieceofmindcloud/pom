@@ -47,6 +47,7 @@ const INFER_ROUTES = [
   "/documentacao",
   "/config/keys/api",
   "/config/rede",
+  "/config/minha-maquina",
   "/config/compartilhamento",
   "/config/preferencias",
   // Ancorar a confiança precede a autoridade e não é privilégio de perfil

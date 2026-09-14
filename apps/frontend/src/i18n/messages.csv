@@ -973,6 +973,8 @@ models.sendAria,Send {name},Enviar {name}
 models.size,Size,Tamanho
 models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
+myMachine.subtitle,This machine's identity in the cluster and the address it advertises to peers.,A identidade desta máquina no cluster e o endereço que ela anuncia aos peers.
+myMachine.title,My machine,Minha máquina
 nav.administration,Administration,Administração
 nav.administrativePreferences,Administrative preferences,Preferências administrativas
 nav.administrators,Administrators,Administradores
@@ -990,6 +992,7 @@ nav.inProgress,In progress,Em andamento
 nav.logs,Logs,Logs
 nav.modelFolders,Storage,Armazenamento
 nav.models,Models,Modelos
+nav.myMachine,My machine,Minha máquina
 nav.network,Network,Rede
 nav.networkChat,Network Chat,Chat da rede
 nav.networkInfo,Network information,Informações da rede
@@ -1389,6 +1392,7 @@ publicNetworks.emptyTitle,No public networks found,Não encontramos redes públi
 publicNetworks.failed,Could not load public networks,Não foi possível carregar as redes públicas
 publicNetworks.fingerprint,Fingerprint,Impressão digital
 publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
+publicNetworks.ipv6Unavailable,IPv6 unavailable on this machine,IPv6 indisponível nesta máquina
 publicNetworks.join,Open joining,Entrar na rede
 publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
 publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."

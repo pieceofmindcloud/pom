@@ -201,7 +201,7 @@ describe("NetworkSettings", () => {
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
   });
 
-  it("separa esquecer a configuração local de sair do cluster", async () => {
+  it("separa esquecer a configuração local (continua aqui) de sair do cluster (agora em Minha Máquina)", async () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     queryMocks.networkInfo.data.can_edit = true;
@@ -213,7 +213,7 @@ describe("NetworkSettings", () => {
       </LocaleProvider>,
     );
 
-    expect(screen.getByRole("button", { name: "Sair da rede" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sair da rede" })).toBeNull();
     const esquecer = screen.getByRole("button", { name: "Esquecer rede" });
     fireEvent.click(esquecer);
 
@@ -226,41 +226,6 @@ describe("NetworkSettings", () => {
 
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/leave"));
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/leave");
-  });
-
-  it("mantém Sair da rede como saída da máquina do cluster", async () => {
-    queryMocks.node.data.profile = "admin";
-    queryMocks.node.data.authority_level = "primary";
-    queryMocks.networkInfo.data.can_edit = true;
-    vi.clearAllMocks();
-
-    render(
-      <LocaleProvider initialLocale="pt-BR">
-        <NetworkSettings />
-      </LocaleProvider>,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Sair da rede" }));
-
-    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/leave"));
-    expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/network/leave");
-  });
-
-  it("deixa um node sair mesmo sem autoridade e sem modelo carregado", async () => {
-    queryMocks.node.data.profile = "node";
-    queryMocks.node.data.authority_level = null;
-    queryMocks.networkInfo.data.can_edit = false;
-    vi.clearAllMocks();
-
-    render(
-      <LocaleProvider initialLocale="pt-BR">
-        <NetworkSettings />
-      </LocaleProvider>,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Sair da rede" }));
-
-    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/leave"));
   });
 
   it("mostra o estado do firewall no Windows e oferece retry", async () => {

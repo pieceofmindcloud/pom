@@ -44,6 +44,9 @@ O fluxo incremental de topologia de deployments, incluindo o modo misto e as
 versões criadas ao adicionar ou remover máquinas, é detalhado em
 `subsystems/implantacao.md`, `subsystems/api-http.md` e `subsystems/web-ui.md`.
 
+O plano da correção do reload após idle-unload está em
+`superpowers/plans/2026-09-14-reload-idle-runtime-v2.md`.
+
 ## subsystems/
 
 Os guias permanentes do runtime ficam em `docs/subsystems/`. `rede-p2p.md`

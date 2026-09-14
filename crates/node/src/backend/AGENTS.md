@@ -62,6 +62,13 @@ rodada tem teto de 15 minutos, para uma carga fria concluir sem deixar a
 requisição pendurada indefinidamente; o descarregamento continua sendo
 avaliado pelo monitor já existente.
 
+O `serve_with_quic` encerra o endpoint HTTP/3 com um canal one-shot, para que
+um pedido de parada emitido antes do primeiro poll da task não seja perdido.
+Depois da drenagem TCP, ele aguarda o endpoint QUIC por no máximo 2 s e aborta
+a task se o transporte não fechar; assim o supervisor do runtime não fica
+preso em `endpoint.wait_idle()` durante um reload. O supervisor tem 5 s no
+total para concluir a geração anterior.
+
 `POST /api/ui/network/advertise-addr` é `InferNodeAdmin` porque atualiza
 somente o endereço anunciado deste processo e não recebe alvo nem repassa a
 chamada. As rotas administrativas com parâmetro de nó usam a sintaxe `:id`

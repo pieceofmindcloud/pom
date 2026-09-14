@@ -418,6 +418,10 @@ paralelo aos outros peers ociosos. Essa chamada usa `connection_key` e o
 marcador interno, e só ordena a carga local de cada destinatário. Não há
 conexão síncrona adicional no hop normal de inferência nem timer para decidir a
 ociosidade; a decisão usa a atividade local registrada e o monitor existente.
+O encerramento do endpoint QUIC de uma geração é um sinal one-shot local, sem
+confirmação ou barreira entre peers. Ele aguarda no máximo 2 s pelo transporte
+e aborta a task se o endpoint não fechar, para que o reload não fique preso por
+uma notificação perdida ou por `endpoint.wait_idle()`.
   Requisições recebidas pelo túnel são encaminhadas ao servidor de inferência
   local em uma task separada. O loop do swarm continua drenando GossipSub,
   respostas TP e eventos de conexão enquanto um prefill, decode ou redução TP

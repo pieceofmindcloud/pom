@@ -151,6 +151,14 @@ liberação FFI do modelo roda fora do executor async em `spawn_blocking`; o
 gateway e o `/health` continuam responsivos durante esse intervalo. O status
 volta a `serving` quando o `/health` confirma o modelo carregado. `idle` é por
 peer, não por deployment: uma máquina ociosa não muda o estado das demais.
+O sinal de encerramento do endpoint HTTP/3 é one-shot e persiste mesmo se a
+task QUIC ainda não tiver feito o primeiro poll. Depois da drenagem, o servidor
+espera no máximo 2 s pelo endpoint QUIC e aborta a task se necessário; o
+supervisor tem um teto adicional de 5 s. Se a limpeza da geração anterior
+não terminar nesse prazo, o reload falha sem iniciar outra geração e conserva o
+handle para uma tentativa posterior, evitando sobreposição de recursos nativos.
+O anúncio imediato da faixa é best-effort e tem teto de 1 s, sem atrasar a
+subida local quando DNS ou UDP não respondem.
 
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 

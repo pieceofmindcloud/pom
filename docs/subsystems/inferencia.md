@@ -2094,6 +2094,12 @@ Na transição, o runtime aguarda o supervisor da geração anterior terminar o
 encerramento do servidor e a liberação FFI do modelo antes de ligar a nova
 porta. Essa liberação usa `spawn_blocking`, portanto `health` e as demais rotas
 HTTP não ficam presas a `llama_free`.
+O encerramento do endpoint QUIC usa um canal one-shot, não um aviso que possa
+ser perdido antes do primeiro poll, e tem prazo de 2 s. A espera do supervisor
+tem prazo de 5 s; se a geração antiga não terminar, a nova não é iniciada e o
+handle continua registrado para nova tentativa. O anúncio imediato da faixa é
+best-effort e tem prazo de 1 s, portanto falha de DNS ou de UDP não impede o
+servidor local de começar.
 Sem peer correspondente, a configuração local continua sendo fallback para
 rotas sem implantação.
 

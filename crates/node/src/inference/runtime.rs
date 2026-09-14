@@ -20,6 +20,21 @@ use tracing::{info, warn};
 /// Give up restarting a crash-looping inference server after this many tries.
 /// The same budget is persisted by `lastslice` so a process crash cannot reset it.
 const MAX_RESTARTS: u32 = crate::lastslice::MAX_AUTOMATIC_ATTEMPTS;
+/// Um supervisor antigo não pode bloquear indefinidamente a primeira
+/// requisição depois de um unload. O limite cobre o encerramento gracioso do
+/// transporte e dá ao `spawn_blocking` uma janela curta para a limpeza nativa;
+/// se ele estourar, a task é mantida joinable e a nova geração não começa.
+/// Cinco segundos cobrem a drenagem TCP de 3 s e o fechamento QUIC de 2 s sem
+/// transformar uma falha de transporte em espera de dezenas de segundos.
+const SUPERVISOR_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+
+/// O anúncio é apenas uma atualização de descoberta: uma falha não pode
+/// impedir o servidor local de voltar a atender. O prazo cobre resolução DNS
+/// e os envios UDP aos endereços conhecidos sem deixar o reload preso. Um
+/// segundo é curto em relação ao caminho de fallback QUIC de 300 ms, mas deixa
+/// margem para um lookup local sem afetar um anúncio saudável.
+const ANNOUNCE_DEADLINE: Duration = Duration::from_secs(1);
+
 /// Um único /health só prova que uma resposta foi montada. O crash do
 /// Windows aconteceu no mesmo instante em que essa resposta virou
 /// model_loaded, então a anotação persistente só pode ser promovida depois
@@ -766,11 +781,32 @@ impl NodeRuntime {
             .take()
     }
 
-    async fn wait_for_supervisor(supervisor: Option<tokio::task::JoinHandle<()>>) {
-        if let Some(supervisor) = supervisor {
-            if let Err(error) = supervisor.await {
+    async fn wait_for_supervisor(
+        supervisor: Option<tokio::task::JoinHandle<()>>,
+    ) -> (Option<tokio::task::JoinHandle<()>>, Result<()>) {
+        Self::wait_for_supervisor_with_timeout(supervisor, SUPERVISOR_SHUTDOWN_DEADLINE).await
+    }
+
+    async fn wait_for_supervisor_with_timeout(
+        supervisor: Option<tokio::task::JoinHandle<()>>,
+        deadline: Duration,
+    ) -> (Option<tokio::task::JoinHandle<()>>, Result<()>) {
+        let Some(mut supervisor) = supervisor else {
+            return (None, Ok(()));
+        };
+
+        match tokio::time::timeout(deadline, &mut supervisor).await {
+            Ok(Ok(())) => (None, Ok(())),
+            Ok(Err(error)) => {
                 warn!("supervisor anterior terminou de forma inesperada: {error}");
+                (None, Ok(()))
             }
+            Err(_) => (
+                Some(supervisor),
+                Err(anyhow::anyhow!(
+                    "supervisor anterior não encerrou em {deadline:?}"
+                )),
+            ),
         }
     }
 
@@ -982,7 +1018,18 @@ impl NodeRuntime {
         let generation = *self.generation.borrow() + 1;
         self.generation.send_replace(generation);
 
-        Self::wait_for_supervisor(previous_supervisor).await;
+        let (pending_supervisor, wait_result) =
+            Self::wait_for_supervisor(previous_supervisor).await;
+        if let Some(supervisor) = pending_supervisor {
+            *self
+                .supervisor
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
+            if let Err(error) = wait_result {
+                warn!("não deu para parar o servidor de inferência: {error}");
+                return;
+            }
+        }
 
         *self.config.write().await = None;
         *self.assignment.write().await = None;
@@ -1090,7 +1137,16 @@ impl NodeRuntime {
         let generation = *self.generation.borrow() + 1;
         self.generation.send_replace(generation);
 
-        Self::wait_for_supervisor(previous_supervisor).await;
+        let (pending_supervisor, wait_result) =
+            Self::wait_for_supervisor(previous_supervisor).await;
+        if let Some(supervisor) = pending_supervisor {
+            *self
+                .supervisor
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
+        }
+        wait_result?;
+        info!("supervisor anterior encerrado; preparando nova geração");
 
         *self.config.write().await = Some(cfg.clone());
         *self.assignment.write().await = Some(assignment.clone());
@@ -1103,11 +1159,18 @@ impl NodeRuntime {
         // `/health` do processo novo responder `model_loaded`.
         self.net.set_runtime_generation(generation);
 
-        // Let peers know immediately instead of waiting for the next gossip tick.
-        if let Err(e) = self.net.announce(Some(&assignment)).await {
-            warn!("announce após reconfiguração falhou: {e}");
+        // Let peers know immediately instead of waiting for the next gossip
+        // tick. Discovery is best effort, so a dead hostname or a stalled
+        // socket must not keep the local reload from starting the server.
+        match tokio::time::timeout(ANNOUNCE_DEADLINE, self.net.announce(Some(&assignment))).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => warn!("announce após reconfiguração falhou: {error}"),
+            Err(_) => warn!(
+                "announce após reconfiguração excedeu {ANNOUNCE_DEADLINE:?}; seguindo localmente"
+            ),
         }
 
+        info!("anúncio da nova geração concluído; iniciando supervisor");
         self.spawn_supervisor(cfg, generation, reuse_weights);
         Ok(())
     }
@@ -1882,7 +1945,16 @@ mod tests {
         // teste seguinte.
         let generation = *rt.generation.borrow() + 1;
         rt.generation.send_replace(generation);
-        NodeRuntime::wait_for_supervisor(rt.take_supervisor()).await;
+        let (pending_supervisor, wait_result) = NodeRuntime::wait_for_supervisor_with_timeout(
+            rt.take_supervisor(),
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            pending_supervisor.is_none(),
+            "supervisor da porta presa terminou"
+        );
+        wait_result.unwrap();
 
         let log = log_file_path(port);
         let conteudo = std::fs::read_to_string(&log).unwrap_or_default();
@@ -1920,12 +1992,36 @@ mod tests {
             terminou_no_supervisor.store(true, std::sync::atomic::Ordering::Release);
         });
 
-        NodeRuntime::wait_for_supervisor(Some(supervisor)).await;
+        let (pending_supervisor, wait_result) = NodeRuntime::wait_for_supervisor_with_timeout(
+            Some(supervisor),
+            Duration::from_millis(100),
+        )
+        .await;
+        assert!(pending_supervisor.is_none());
+        wait_result.unwrap();
 
         assert!(
             terminou.load(std::sync::atomic::Ordering::Acquire),
             "a próxima geração só pode começar depois da limpeza da anterior"
         );
+    }
+
+    #[tokio::test]
+    async fn supervisor_pendente_tem_limite_e_fica_joinable() {
+        let supervisor = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        let (pending_supervisor, wait_result) = NodeRuntime::wait_for_supervisor_with_timeout(
+            Some(supervisor),
+            Duration::from_millis(100),
+        )
+        .await;
+        let mut pending_supervisor = pending_supervisor.expect("o supervisor deve ser preservado");
+        assert!(wait_result.is_err());
+
+        pending_supervisor.abort();
+        assert!(pending_supervisor.await.is_err());
     }
 
     /// A TUI mostra o estado do servidor, não um rótulo fixo.

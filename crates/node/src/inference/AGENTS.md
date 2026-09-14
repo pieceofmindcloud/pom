@@ -1191,7 +1191,9 @@ falha de transporte.
 - `NodeRuntime::supervisor` - mantém o `JoinHandle` da geração atual. Ao
   aplicar ou recarregar, a geração recebe o sinal de parada e o runtime aguarda
   o supervisor concluir `serve_with_quic`, a limpeza FFI e a liberação da porta
-  antes de iniciar outro servidor.
+  antes de iniciar outro servidor. Essa espera tem teto de 5 s; se estourar,
+  preserva o handle e recusa iniciar a geração nova, para não sobrepor um
+  `llama_free` ainda em andamento.
 - `infer_server::run_native_cleanup` - executa `LlmEngine::unload` em
   `spawn_blocking`; `llama_free` e os destrutores nativos não podem bloquear a
   thread que atende o gateway ou as sondagens de `/health`.

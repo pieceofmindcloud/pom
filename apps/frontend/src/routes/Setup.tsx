@@ -61,6 +61,7 @@ interface HardwareResponse {
   shard_dir: string;
   node_name: string | null;
   network: SetupState["network"];
+  public_directory: string[];
 }
 
 interface GeoCityReference {
@@ -107,6 +108,7 @@ interface PublicJoinPayload {
   bootstrap_address?: string;
   trust_document?: string;
   access_policy?: AccessPolicy;
+  directory_replicas?: string[];
 }
 
 interface AnchorPreview {
@@ -131,6 +133,7 @@ interface HealthResponse {
 export interface SetupState {
   profile: SetupProfile | null;
   bootstrap: string;
+  publicDirectory: string;
   connectionKey: string;
   advertiseAddr: string;
   trustDocument: string;
@@ -165,6 +168,7 @@ export interface SetupState {
 const INITIAL: SetupState = {
   profile: null,
   bootstrap: "",
+  publicDirectory: "",
   connectionKey: "",
   advertiseAddr: "",
   trustDocument: "",
@@ -236,6 +240,7 @@ export function Setup() {
           nodeName: detected.node_name ?? current.nodeName,
           network: { ...current.network, ...detected.network },
           advertiseAddr: current.advertiseAddr || detected.suggested_advertise_addr || "",
+          publicDirectory: detected.public_directory.join(", "),
         }));
       })
       .catch((error) => {
@@ -256,6 +261,7 @@ export function Setup() {
       setSetup((current) => ({
         ...current,
         bootstrap: network.bootstrap_address ?? "",
+        publicDirectory: network.directory_replicas?.join(", ") ?? current.publicDirectory,
         trustDocument: network.trust_document ?? "",
         trustFingerprint: "",
         network: {
@@ -340,6 +346,7 @@ export function Setup() {
       await api.post("/api/setup/save", {
         profile: setup.profile,
         bootstrap: setup.bootstrap.trim(),
+        public_directory: setup.publicDirectory.split(",").map((value) => value.trim()).filter(Boolean),
         connection_key: setup.connectionKey.trim(),
         advertise_addr: setup.advertiseAddr.trim(),
         cluster_id: clusterIdFromDocument(setup.trustDocument) || setup.network.public_name.trim(),
@@ -546,7 +553,7 @@ function StorageScreen({ setup, update, models, t }: { setup: SetupState; update
 
 function NetworkScreen({ setup, update, updateNetwork, t }: { setup: SetupState; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
   const publicNetwork = setup.network.visibility === "public";
-  return <Intro eyebrow={t("setupWizard.stepNetwork")} title={t("setupWizard.networkTitle")} detail={t("setupWizard.networkDetail")}><Panel><PanelHeader title={t("setupWizard.networkIdentity")} subtitle={t("setupWizard.networkIdentityDetail")} /><div className="grid gap-4 px-5 py-5 md:grid-cols-2"><Field label={t("setupWizard.publicName")} hint={t("setupWizard.publicNameHint")}><Input autoFocus value={setup.network.public_name} onChange={(event) => updateNetwork({ public_name: event.target.value })} /></Field><Field label={t("setupWizard.organization")}><Input value={setup.network.organization} onChange={(event) => updateNetwork({ organization: event.target.value })} /></Field><TextAreaField label={t("setupWizard.description")} value={setup.network.description} onChange={(value) => updateNetwork({ description: value })} /><TextAreaField label={t("setupWizard.rules")} value={setup.network.rules} onChange={(value) => updateNetwork({ rules: value })} /><TextAreaField label={t("setupWizard.channels")} value={setup.network.channels} onChange={(value) => updateNetwork({ channels: value })} /><Field label={t("setupWizard.visibility")} hint={t("setupWizard.visibilityHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : setup.network.access_policy })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option><option value="local">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.accessPolicy")} hint={t("setupWizard.accessPolicyHint")}><Select value={setup.network.access_policy} onChange={(event) => updateNetwork({ access_policy: event.target.value as AccessPolicy })}><option value="authorized">{t("setupWizard.authorizedPeople")}</option><option value="anyone_with_anchor">{t("setupWizard.anyoneWithAnchor")}</option><option value="local_only">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.advertiseAddress")} hint={t("setupWizard.advertiseAddressHint")}><Input value={setup.advertiseAddr} placeholder={t("setupWizard.advertiseAddressPlaceholder")} onChange={(event) => update({ advertiseAddr: event.target.value })} /></Field>{publicNetwork && <div className="md:col-span-2 rounded-lg border border-aqua/25 bg-aqua/7 px-3 py-3 text-sm text-muted"><p>{t("setupWizard.publicGeoRequired")}</p></div>}</div></Panel></Intro>;
+  return <Intro eyebrow={t("setupWizard.stepNetwork")} title={t("setupWizard.networkTitle")} detail={t("setupWizard.networkDetail")}><Panel><PanelHeader title={t("setupWizard.networkIdentity")} subtitle={t("setupWizard.networkIdentityDetail")} /><div className="grid gap-4 px-5 py-5 md:grid-cols-2"><Field label={t("setupWizard.publicName")} hint={t("setupWizard.publicNameHint")}><Input autoFocus value={setup.network.public_name} onChange={(event) => updateNetwork({ public_name: event.target.value })} /></Field><Field label={t("setupWizard.organization")}><Input value={setup.network.organization} onChange={(event) => updateNetwork({ organization: event.target.value })} /></Field><TextAreaField label={t("setupWizard.description")} value={setup.network.description} onChange={(value) => updateNetwork({ description: value })} /><TextAreaField label={t("setupWizard.rules")} value={setup.network.rules} onChange={(value) => updateNetwork({ rules: value })} /><TextAreaField label={t("setupWizard.channels")} value={setup.network.channels} onChange={(value) => updateNetwork({ channels: value })} /><Field label={t("setupWizard.visibility")} hint={t("setupWizard.visibilityHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : setup.network.access_policy })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option><option value="local">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.accessPolicy")} hint={t("setupWizard.accessPolicyHint")}><Select value={setup.network.access_policy} onChange={(event) => updateNetwork({ access_policy: event.target.value as AccessPolicy })}><option value="authorized">{t("setupWizard.authorizedPeople")}</option><option value="anyone_with_anchor">{t("setupWizard.anyoneWithAnchor")}</option><option value="local_only">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.advertiseAddress")} hint={t("setupWizard.advertiseAddressHint")}><Input value={setup.advertiseAddr} placeholder={t("setupWizard.advertiseAddressPlaceholder")} onChange={(event) => update({ advertiseAddr: event.target.value })} /></Field>{publicNetwork && <><Field label={t("setupWizard.publicDirectory")} hint={t("setupWizard.publicDirectoryHint")}><Input required data-testid="public-directory" value={setup.publicDirectory} placeholder={t("setupWizard.publicDirectoryPlaceholder")} onChange={(event) => update({ publicDirectory: event.target.value })} /></Field><div className="md:col-span-2 rounded-lg border border-aqua/25 bg-aqua/7 px-3 py-3 text-sm text-muted"><p>{t("setupWizard.publicGeoRequired")}</p></div></>}</div></Panel></Intro>;
 }
 
 function SecurityScreen({ setup, onExposureChange, update, t }: { setup: SetupState; onExposureChange: (exposure: AdminExposure) => Promise<void>; update: (patch: Partial<SetupState>) => void; t: (key: string) => string }) {
@@ -589,7 +596,7 @@ export function TrustScreen({ setup, update, updateNetwork, t }: { setup: SetupS
     }
   }
 
-  return <Intro eyebrow={t("setupWizard.stepTrust")} title={t("setupWizard.trustTitle")} detail={t(publicNetwork ? "setupWizard.trustPublicDetail" : "setupWizard.trustPrivateDetail")}><Panel><PanelHeader title={t("setupWizard.pasteTrust")} subtitle={t("setupWizard.pasteTrustDetail")} /><div className="space-y-4 px-5 py-5"><Field label={t("setupWizard.networkKind")} hint={t("setupWizard.networkKindHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : "authorized" })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option></Select></Field>{publicNetwork && <Field label={t("setupWizard.publicName")} hint={t("setupWizard.publicNameHint")}><Input required data-testid="public-network-name" value={setup.network.public_name} onChange={(event) => updateNetwork({ public_name: event.target.value })} /></Field>}<Field label={t("setupWizard.trustDocument")} hint={t("setupWizard.trustDocumentHint")}><textarea data-testid="trust-document-textarea" autoFocus value={setup.trustDocument} onChange={(event) => update({ trustDocument: event.target.value })} className="min-h-44 w-full min-w-0 resize-y rounded-lg border border-line bg-ink px-3 py-2 font-mono text-xs text-fg outline-none transition-colors focus:border-iris focus:ring-2 focus:ring-iris/25" /><div className="mt-2 flex flex-wrap items-center gap-3"><label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-line bg-raised px-3 py-2 text-xs font-medium text-fg transition-colors hover:border-line-strong"><Upload className="h-3.5 w-3.5 text-iris" /><span>{uploading ? t("setupWizard.uploadingTrust") : t("setupWizard.uploadTrust")}</span><input data-testid="trust-document-file" type="file" accept=".json,application/json" className="sr-only" onChange={(event) => void readTrustFile(event)} /></label>{trustFileName && <span className="max-w-full truncate text-xs text-muted">{trustFileName}</span>}</div></Field><div className="rounded-lg border border-line bg-raised px-3 py-3"><p className="text-xs font-medium uppercase tracking-[0.14em] text-faint">{t("setupWizard.fingerprintCalculated")}</p>{fingerprintPending ? <p className="mt-2 text-sm text-muted">{t("setupWizard.fingerprintWaiting")}</p> : setup.trustFingerprint ? <code className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{groupFingerprint(setup.trustFingerprint)}</code> : <p className="mt-2 text-sm text-muted">{t("setupWizard.fingerprintWaiting")}</p>}</div>{!publicNetwork && <Field label={t("setupWizard.connectionSecret")} hint={t("setupWizard.connectionSecretHint")}><Input type="password" value={setup.connectionKey} onChange={(event) => update({ connectionKey: event.target.value })} /></Field>}<Field label={t("setupWizard.bootstrapAddress")} hint={t("setupWizard.bootstrapAddressHint")}><Input value={setup.bootstrap} onChange={(event) => update({ bootstrap: event.target.value })} placeholder={t("setupWizard.bootstrapPlaceholder")} /></Field></div></Panel></Intro>;
+  return <Intro eyebrow={t("setupWizard.stepTrust")} title={t("setupWizard.trustTitle")} detail={t(publicNetwork ? "setupWizard.trustPublicDetail" : "setupWizard.trustPrivateDetail")}><Panel><PanelHeader title={t("setupWizard.pasteTrust")} subtitle={t("setupWizard.pasteTrustDetail")} /><div className="space-y-4 px-5 py-5"><Field label={t("setupWizard.networkKind")} hint={t("setupWizard.networkKindHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : "authorized" })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option></Select></Field>{publicNetwork && <><Field label={t("setupWizard.publicName")} hint={t("setupWizard.publicNameHint")}><Input required data-testid="public-network-name" value={setup.network.public_name} onChange={(event) => updateNetwork({ public_name: event.target.value })} /></Field><Field label={t("setupWizard.publicDirectory")} hint={t("setupWizard.publicDirectoryHint")}><Input required data-testid="public-directory-trust" value={setup.publicDirectory} placeholder={t("setupWizard.publicDirectoryPlaceholder")} onChange={(event) => update({ publicDirectory: event.target.value })} /></Field></>}<Field label={t("setupWizard.trustDocument")} hint={t("setupWizard.trustDocumentHint")}><textarea data-testid="trust-document-textarea" autoFocus value={setup.trustDocument} onChange={(event) => update({ trustDocument: event.target.value })} className="min-h-44 w-full min-w-0 resize-y rounded-lg border border-line bg-ink px-3 py-2 font-mono text-xs text-fg outline-none transition-colors focus:border-iris focus:ring-2 focus:ring-iris/25" /><div className="mt-2 flex flex-wrap items-center gap-3"><label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-line bg-raised px-3 py-2 text-xs font-medium text-fg transition-colors hover:border-line-strong"><Upload className="h-3.5 w-3.5 text-iris" /><span>{uploading ? t("setupWizard.uploadingTrust") : t("setupWizard.uploadTrust")}</span><input data-testid="trust-document-file" type="file" accept=".json,application/json" className="sr-only" onChange={(event) => void readTrustFile(event)} /></label>{trustFileName && <span className="max-w-full truncate text-xs text-muted">{trustFileName}</span>}</div></Field><div className="rounded-lg border border-line bg-raised px-3 py-3"><p className="text-xs font-medium uppercase tracking-[0.14em] text-faint">{t("setupWizard.fingerprintCalculated")}</p>{fingerprintPending ? <p className="mt-2 text-sm text-muted">{t("setupWizard.fingerprintWaiting")}</p> : setup.trustFingerprint ? <code className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{groupFingerprint(setup.trustFingerprint)}</code> : <p className="mt-2 text-sm text-muted">{t("setupWizard.fingerprintWaiting")}</p>}</div>{!publicNetwork && <Field label={t("setupWizard.connectionSecret")} hint={t("setupWizard.connectionSecretHint")}><Input type="password" value={setup.connectionKey} onChange={(event) => update({ connectionKey: event.target.value })} /></Field>}<Field label={t("setupWizard.bootstrapAddress")} hint={t("setupWizard.bootstrapAddressHint")}><Input value={setup.bootstrap} onChange={(event) => update({ bootstrap: event.target.value })} placeholder={t("setupWizard.bootstrapPlaceholder")} /></Field></div></Panel></Intro>;
 }
 
 function readTextFile(file: File): Promise<string> {
@@ -677,7 +684,7 @@ function clusterIdFromDocument(document: string): string {
 
 export function isReadyToSave(setup: SetupState): boolean {
   if (!setup.profile || !setup.trustDocument.trim() || !setup.trustFingerprint.trim()) return false;
-  if (setup.network.visibility === "public" && (!setup.network.public_name.trim() || !setup.network.country_code.trim() || !setup.network.city.trim())) return false;
+  if (setup.network.visibility === "public" && (!setup.network.public_name.trim() || !setup.network.country_code.trim() || !setup.network.city.trim() || !setup.publicDirectory.trim())) return false;
   if (setup.profile !== "admin" && setup.network.visibility !== "public" && !setup.connectionKey.trim()) return false;
   if (setup.profile === "admin" && (!setup.network.public_name.trim() || !setup.advertiseAddr.trim() || (setup.adminExposure === "network" && !setup.adminAccessToken.trim()))) return false;
   return true;
@@ -685,13 +692,13 @@ export function isReadyToSave(setup: SetupState): boolean {
 
 export function canContinue(stage: WizardStage, setup: SetupState): boolean {
   if (stage === "setup-network" && setup.profile === "admin") {
-    return Boolean(setup.network.public_name.trim() && setup.advertiseAddr.trim() && (setup.network.visibility !== "public" || (setup.network.country_code.trim() && setup.network.city.trim())));
+    return Boolean(setup.network.public_name.trim() && setup.advertiseAddr.trim() && (setup.network.visibility !== "public" || (setup.network.country_code.trim() && setup.network.city.trim() && setup.publicDirectory.trim())));
   }
   if (stage === "setup-security" && setup.profile === "admin") {
     return Boolean(setup.adminExposure !== "network" || setup.adminAccessToken.trim());
   }
   if (stage === "setup-trust") {
-    return Boolean(setup.trustFingerprint.trim() && (setup.network.visibility !== "public" || (setup.network.public_name.trim() && setup.network.country_code.trim() && setup.network.city.trim())) && (setup.network.visibility === "public" || setup.connectionKey.trim()));
+    return Boolean(setup.trustFingerprint.trim() && (setup.network.visibility !== "public" || (setup.network.public_name.trim() && setup.network.country_code.trim() && setup.network.city.trim() && setup.publicDirectory.trim())) && (setup.network.visibility === "public" || setup.connectionKey.trim()));
   }
   return true;
 }

@@ -265,6 +265,26 @@ export interface NetworkInfoView {
   can_edit: boolean;
 }
 
+export type FirewallProtocol = "Udp" | "Tcp";
+
+export interface FirewallRuleStatus {
+  kind: string;
+  protocol: FirewallProtocol;
+  port: number;
+  allowed: boolean;
+}
+
+export interface WindowsFirewallStatus {
+  supported: boolean;
+  p2p_port: number;
+  rules: FirewallRuleStatus[];
+  all_allowed: boolean;
+  automatic_attempted: boolean;
+  can_retry: boolean;
+  last_error: string | null;
+  in_progress: boolean;
+}
+
 export interface GeoCityReference {
   id: string;
   name: string;

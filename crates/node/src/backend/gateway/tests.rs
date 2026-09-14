@@ -2179,7 +2179,15 @@ mod peer_visibility_tests {
         let healthy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let healthy_port = healthy_listener.local_addr().unwrap().port();
         tokio::spawn(async move {
-            let app = axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "status": "ok",
+                        "model_loaded": true,
+                    }))
+                }),
+            );
             axum::serve(healthy_listener, app).await.unwrap();
         });
 
@@ -2225,6 +2233,60 @@ mod peer_visibility_tests {
         assert!(
             em_quarentena < Duration::from_millis(25),
             "peer em quarentena voltou a ser sondado: {em_quarentena:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_health_probe_refreshes_stale_layer_coverage_before_planning() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "status": "ok",
+                        "model_loaded": true,
+                        "model_label": "qwen35",
+                        "deploy_id": "d-1234abcd",
+                        "start_layer": 0,
+                        "end_layer": 31,
+                        "total_layers": 32,
+                    }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // The network announcement still carries the old one-layer slice, as
+        // can happen between apply and the next authenticated announce. The
+        // inference server already knows the complete current assignment.
+        let mut stale = peer("qwen-head");
+        stale.model = "old-model".into();
+        stale.deploy_id = "d-old0000".into();
+        stale.start_layer = 0;
+        stale.end_layer = 0;
+        stale.total_layers = 32;
+        stale.inference_port = Some(port);
+
+        let health = super::AdmissionHealth::default();
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let reachable =
+            ready_for_pipeline(&clients, &health, vec![stale], Duration::from_millis(100)).await;
+
+        let peers = reachable;
+        assert_eq!(peers[0].end_layer, 31);
+        let plan = crate::pipeline::plan_pipeline(
+            &peers,
+            "qwen35",
+            Some("d-1234abcd"),
+            32,
+            &crate::pipeline::LoadTracker::new(),
+        )
+        .await;
+        assert!(
+            plan.is_some(),
+            "a cobertura confirmada pelo health deve planejar"
         );
     }
 
@@ -2347,6 +2409,92 @@ mod replicated_admin_logs_tests {
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK, "rota={path}");
         }
+    }
+
+    #[tokio::test]
+    async fn private_node_lists_a_federated_record_without_private_p2p_candidates() {
+        let state = testkit::state_with("private-node", vec![]).await;
+        state.auth.write().await.network.visibility = crate::config::NetworkVisibility::Private;
+        let trust_document = serde_json::to_string(&state.admin_trust.document())
+            .expect("documento de teste deve serializar");
+        let network = crate::public_directory::PublicDirectoryNetwork {
+            cluster_id: "test-cluster".into(),
+            name: "Rede federada".into(),
+            fingerprint: crate::admin_trust::anchor_fingerprint(&state.admin_trust.document()),
+            address: "203.0.113.10:8080".into(),
+            bootstrap_address: "203.0.113.10:42777".into(),
+            trust_document,
+            organization: "Teste".into(),
+            description: "Registro remoto".into(),
+            country_code: "BR".into(),
+            country_name: "Brasil".into(),
+            city: "Curitiba".into(),
+            geo_label: "br.curitiba".into(),
+            access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            location: None,
+            directory_replicas: Vec::new(),
+        };
+        let record = crate::public_directory::SignedPublicDirectoryRecord::sign(
+            &state.authority_signing_key,
+            1,
+            crate::public_directory::current_time_secs().unwrap(),
+            network.clone(),
+        )
+        .expect("registro de teste deve ser assinado");
+        let attacker = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let forged = crate::public_directory::SignedPublicDirectoryRecord::sign(
+            &attacker,
+            1,
+            crate::public_directory::current_time_secs().unwrap(),
+            network,
+        )
+        .expect("registro forjado deve ter uma prova de trabalho válida");
+        let response = accept_public_directory_record(State(state.clone()), Json(forged)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(state
+            .database
+            .public_directory_records()
+            .unwrap()
+            .is_empty());
+
+        let payload = serde_json::json!({
+            "version": crate::public_directory::PUBLIC_DIRECTORY_VERSION,
+            "records": [record],
+        });
+        let replica = Router::new()
+            .route(
+                "/api/public/directory/records",
+                get(move || async move { Json(payload) }),
+            )
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, replica).await.unwrap();
+        });
+        state
+            .database
+            .save_public_directory_settings(
+                &crate::public_directory::PublicDirectorySettings::from_urls([format!(
+                    "http://{address}"
+                )])
+                .unwrap(),
+            )
+            .unwrap();
+
+        let response = public_networks(State(state.clone()), Query(PublicNetworksQuery::default()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let networks: Vec<PublicNetworkView> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(networks.len(), 1);
+        assert_eq!(networks[0].name, "Rede federada");
+        assert_eq!(networks[0].discovered_via, "directory");
+        assert_eq!(state.database.public_directory_records().unwrap().len(), 1);
+        server.abort();
     }
 }
 

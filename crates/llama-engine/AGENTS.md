@@ -26,6 +26,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   capacidade dos vetores entregues ao C; quantas placas existem é
   `fit_device_count`, e é ela que posiciona a reserva de KV do contexto MTP na
   última placa **real** - ver `docs/subsystems/inferencia.md`, seção do fit.
+  Os snapshots nativos usados por `/health` passam pelo
+  `wrapper_common.cpp`; eles devem tratar qualquer nome/descrição C nulo antes
+  de chegar a `std::string` ou JSON, pois essa falha pode virar
+  `strlen(nullptr)` no runtime C do Windows.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   O `build.rs` lê o mesmo checkout preparado pelo `llama-cpp-sys-2`, recebido
@@ -84,6 +88,12 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
 vive nele), `inference/executor.rs`, `models/splitter.rs` (usa `gguf` e, nos
 testes, `llama_engine::llama_cpp_sys_2`), e todo o resto do pipeline
 (`infer_server.rs`, `prefill.rs`, `direct.rs`, `runtime.rs`, ...).
+
+O ciclo de vida nativo deve ser encerrado na ordem inversa da criação:
+contextos MTP e Vision liberam callbacks antes de llama_free, e o callback
+MoE do engine principal é limpo antes de qualquer userdata compartilhado cair.
+Essa regra fica implementada nos Drop de LlmEngine e MtpDrafter; alterá-la
+exige revisar a fronteira FFI e testar a destruição de gerações compatíveis.
 
 ### Visão
 

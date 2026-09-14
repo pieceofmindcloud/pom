@@ -564,6 +564,10 @@ pub(crate) struct InferState {
     /// Rótulo técnico do modelo servido, compartilhado por todos os peers da
     /// mesma implantação. Identidade do snapshot de KV.
     pub(super) model_label: String,
+    /// Identidade da implantação anunciada junto com o modelo, quando existe.
+    /// O gateway usa o campo do `/health` para corrigir uma fotografia P2P
+    /// atrasada antes de planejar uma requisição.
+    pub(super) deploy_id: String,
     /// Caminho do GGUF carregado neste peer. Identidade do snapshot de KV.
     pub(super) model_path: String,
     /// Diretório de snapshots de KV cache (`Config::slot_save_path`), ou `None`

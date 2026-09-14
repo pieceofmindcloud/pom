@@ -692,12 +692,21 @@ precisa saber:
   `set_job_progress`, `invalidate_catalog`, outcome `reused`/`gerado`).
 
 Aplicada, a fatia é anotada em `<config>.last-slice.json` como `pending` pelo
-`runtime::apply` - e só vira `serving` quando o `/health` do servidor de
-inferência responde `model_loaded` (`spawn_health_watch`). Quando o monitor de
-ociosidade descarrega o modelo, anota `idle` e mantém a implantação ativa para
-que `reload_model` possa restaurá-la. É esse estado que decide o que um
-reinício retoma (`serving` ou `idle`), não o `apply`. Ver
-`fatiamento.md` seção 6 e o `AGENTS.md` de `inference/`.
+`runtime::apply`. O watcher só promove para `serving` após duas sondagens
+consecutivas de `/health` com `model_loaded`; um primeiro retorno não limpa
+o journal, pois a queda nativa pode ocorrer nessa confirmação. Quando o monitor
+de ociosidade descarrega o modelo, anota `idle` e mantém a implantação ativa
+para que `reload_model` possa restaurá-la. O journal conta tentativas
+pendentes entre processos e bloqueia a retomada automática em
+`MAX_AUTOMATIC_ATTEMPTS=10`. É esse estado que decide o que um reinício
+retoma (`serving` ou `idle`), não o `apply`. Ver `fatiamento.md` seção 6
+e o `AGENTS.md` de `inference/`.
+
+O caminho `POST /api/ui/leave` é uma operação de controle independente do
+modelo: qualquer perfil pode tirar a própria máquina da rede, mesmo com runtime
+vazio, `Starting` ou `Failed`. Ele para o runtime, limpa o journal e
+desanuncia o nó. Isso é diferente de `POST /api/ui/network/leave`, que apaga
+a confiança local e volta ao setup.
 
 `/api/ui/plan` (`plan_split_endpoint`) planeja por orçamento do cluster e **delega**
 ao peer dono do GGUF quando `layout_node_id` aponta para outra máquina: limpa o

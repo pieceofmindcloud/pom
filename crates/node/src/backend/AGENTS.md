@@ -197,6 +197,12 @@ profile policy remains the effective authorization boundary.
   cadeia colada. A validação e a conferência são as de `admin_trust`
   (`parse_transported`, `fingerprint_matches`, `adopt_anchor`), as mesmas que
   `pom admin-anchor` usa: não existe segunda política.
+  `POST /api/ui/chat-key` é permitido a `node` porque cria somente a chave
+  local `pom-<node_id>` e a registra no principal pela rota interna assinada;
+  a exceção não permite criar, revogar ou validar chaves de terceiros.
+  A leitura `/api/cluster/network-settings` é interna e somente leitura: um
+  nó adota do principal o documento completo de `NetworkSettings`, inclusive
+  visibilidade e metadados, depois do primeiro `Announce` autenticado.
   `GET /api/ui/infer/heads?model=...` é a única leitura dedicada das cabeças
   de layer zero: entrega as candidatas e a escolha do planejador, sem peers
   gerais nem ações de controle. A rota é `InferNodeAdmin`, portanto admin e
@@ -222,6 +228,10 @@ profile policy remains the effective authorization boundary.
   `/api/ui/node`. Leitura remota ausente ou inválida permanece `null`, porque
   o zero do tracker local significa apenas que nenhuma requisição passou por
   este gateway.
+  `model_inventory[].complete` e `/api/ui/chat/capabilities` só confirmam uma
+  pipeline quando cada peer contribuinte tem `runtime_capacity` confirmado
+  pelo `/health` ou está `idle`; capacidades de gossip durante o boot ficam
+  visíveis como cobertura, mas não são apresentadas como prontas.
   Endereços IPv6 temporários rodam sozinhos: ver `docs/subsystems/rede-p2p.md`,
   "Endereço que deixou de responder".
   `plan` reads the GGUF header from the node that owns `model_path` and, when
@@ -497,8 +507,9 @@ profile policy remains the effective authorization boundary.
   TCP, modo estrito e duração do último handshake. Ver
   `docs/subsystems/rede-p2p.md`, seção 5.
 - `models::OllamaClient::is_available` é apenas uma sonda opcional do
-  `/health`: tem limite próprio de 500 ms e não herda os 300 s da geração, para
-  que um Ollama frio ou ausente nunca esconda o readiness do gateway.
+  `/health`: devolve o último valor e agenda em background uma checagem de
+  500 ms no máximo a cada 15 s. Não herda os 300 s da geração, e um Ollama frio
+  ou ausente nunca segura a resposta do gateway.
 - `session.rs` - `POST /handshake` usa um desafio Ed25519 em duas etapas. Uma
   requisição sem `nonce` e `signature` é recusada com HTTP 403
   `challenge_required` e recebe um nonce hexadecimal aleatório de 32 bytes. O
@@ -534,7 +545,10 @@ faz o download autenticado do blob persistido.
   `inference_url()/health` before planning, with the `ADMISSION_PROBE_TIMEOUT`
   of 300ms and an `AdmissionHealth` quarantine for whoever fails - a single
   unreachable announcer used to cost every inference 2,005ms, the
-  `peer_client::CONNECT_TIMEOUT`, because `join_all` waits for the slowest; `all_peers` appends
+  `peer_client::CONNECT_TIMEOUT`, because `join_all` waits for the slowest. A
+  successful health response also refreshes the model label, deployment id and
+  layer range from the inference process, so a P2P announcement still in flight
+  cannot make a newly loaded pipeline look incomplete; `all_peers` appends
   the local node with `self_dial_host` (advertised > local IP > loopback) and
   advertises `relay/v2-direct` in the capability list alongside
   `inference/frame-v1-batch`, `transport/link-v1`, `relay/v1-chain` and
@@ -608,7 +622,8 @@ faz o download autenticado do blob persistido.
   retry, hop or chunk. The remote-stream callback propagates an asynchronous
   `410 Gone` ACK as `GatewayGone`, so an abandoned remote producer stops too;
   already accepted peer frames are cleaned up by the normal session release.
-  `start_gateway` registers
+  `start_gateway` faz o bind do listener antes de sinalizar ao shell Windows
+  que o gateway está pronto, e então registra
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
   `POST /handshake` (session::handle_handshake), `POST /v1/relay-result`,
   `POST /v1/remote-stream-result` and `POST /v1/link`
@@ -729,7 +744,10 @@ faz o download autenticado do blob persistido.
   `LeaveRequest { node_id }`: absent (or this node's own id) keeps the old
   behavior - this node detaches; a peer's id is **forwarded** to that peer's
   same route (`forward_leave`, same pattern as `dev/update` - the panel only
-  talks to its own node, and only the owner of a process can detach it). Also
+  talks to its own node, and only the owner of a process can detach it). The
+  local leave stops the runtime and detaches the network without consulting
+  model config, health or readiness, so a node can use it after repeated load
+  failures. Also
   the job store (`Job`, `JOB_RETENTION=600s`,
   `jobs()`/`new_job`/`set_job`/`set_job_progress`),
   catalog caching (`CachedCatalog`, `warm_catalog` called at startup,
@@ -928,13 +946,15 @@ faz o download autenticado do blob persistido.
   visibility; the admin access token is persisted only for network exposure.
   `GET /api/public/network(s)` exposes public network metadata, including the
   signed trust document and a P2P bootstrap address for the no-secret join
-  flow, and gathers live records through the existing pkarr-backed discovery
-  table. Public records carry the canonical country/city label as pkarr TXT
-  metadata; the local geo cache supports `geo_prefix` and `geo_suffix`
-  candidate filtering. It cannot enumerate arbitrary pkarr keys: a fresh admin
-  must first receive a candidate through UDP/libp2p or use a configured
-  bootstrap. A global IPv6 address that is present locally but not externally
-  routable does not provide that discovery path.
+  flow. `GET/POST /api/public/directory/records` is the federated directory
+  ingress: records are checked locally for Ed25519 signature, proof of work,
+  trust-root consistency and expiry before entering the bounded SQLite cache.
+  A node publishes to every configured ingress and queries all of them in
+  parallel. Private nodes use this outbound HTTP path but skip private-swarm
+  UDP/libp2p/pkarr candidates, so a public peer cannot learn or dial private
+  peers through the listing feature. Direct pkarr discovery remains available
+  only while the active network is public; it still cannot enumerate arbitrary
+  pkarr keys or make an unroutable IPv6 address reachable.
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,

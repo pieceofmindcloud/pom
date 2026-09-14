@@ -240,6 +240,36 @@ mod dead_address_tests {
             "a cobertura tem de dizer de quem ela depende sem conseguir ler"
         );
     }
+
+    #[tokio::test]
+    async fn an_announced_model_is_not_complete_before_runtime_health() {
+        let (port, _) = live_node("macbook").await;
+        let mut p = peer("outro", "macbook", port);
+        p.model = "qwen".into();
+        p.start_layer = 0;
+        p.end_layer = 15;
+        p.total_layers = 16;
+        p.inference_port = Some(8181);
+        p.capabilities = vec![routing_contract::ModelCapability {
+            model_id: "qwen".into(),
+            start_layer: 0,
+            end_layer: 15,
+            total_layers: Some(16),
+            supports_inference: true,
+        }];
+        p.runtime_capacity = None;
+        let state = state_with("eu", vec![p]).await;
+
+        let body = body_of(cluster(HeaderMap::new(), State(state)).await).await;
+        let qwen = body["model_inventory"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["model_id"] == "qwen")
+            .expect("o modelo anunciado entra no inventário");
+        assert_eq!(qwen["covered_layers"], 16);
+        assert_eq!(qwen["complete"], false);
+    }
 }
 
 #[cfg(test)]
@@ -277,6 +307,22 @@ mod profile_network_tests {
         config.mmproj_path = Some("/models/mmproj-qwen.gguf".into());
         config.no_thinking = false;
         state.runtime.seed_config_for_test(config.clone()).await;
+        *state.local_assignment.write().await = Some(crate::model::LayerAssignment {
+            deploy_id: String::new(),
+            model: "qwen".into(),
+            total_layers: 32,
+            start_layer: 0,
+            end_layer: 15,
+            layers_count: 16,
+            memory_used_mb: 0.0,
+            memory_allocated_mb: 0.0,
+        });
+        state
+            .network
+            .set_runtime_capacity(Some(crate::network::RuntimeCapacity {
+                n_ctx: 8_192,
+                max_new_tokens: 256,
+            }));
         state.auth.write().await.profile = crate::profile::NodeProfile::Infer;
 
         let body = body_of(chat_capabilities(State(state.clone())).await.into_response()).await;
@@ -291,6 +337,21 @@ mod profile_network_tests {
 
         let cluster_body = body_of(cluster(HeaderMap::new(), State(state)).await).await;
         assert_eq!(cluster_body["peers"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn chat_does_not_advertise_an_unready_remote_model() {
+        let mut remote = peer("outro", "salem", 1);
+        remote.model = "qwen".into();
+        remote.start_layer = 0;
+        remote.end_layer = 15;
+        remote.total_layers = 16;
+        remote.runtime_capacity = None;
+        let mut state = state_with("eu", vec![remote]).await;
+        state.default_model = "qwen".into();
+
+        let body = body_of(chat_capabilities(State(state)).await.into_response()).await;
+        assert_eq!(body["coverage"], "unavailable");
     }
 
     #[tokio::test]

@@ -35,7 +35,7 @@ mod tests;
 
 pub(super) use budget::*;
 pub(super) use generation::*;
-pub(super) use http::*;
+pub(crate) use http::*;
 pub(super) use state::*;
 
 #[cfg(test)]

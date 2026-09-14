@@ -118,6 +118,8 @@ pub(crate) mod profile;
 #[cfg(test)]
 #[path = "profile_tests.rs"]
 mod profile_tests;
+#[path = "network/public_directory.rs"]
+mod public_directory;
 #[path = "network/quic.rs"]
 pub mod quic;
 #[path = "network/quic_policy.rs"]
@@ -162,17 +164,23 @@ mod transfer;
 mod webapp;
 #[path = "backend/webui/mod.rs"]
 mod webui;
+pub(crate) mod windows_firewall;
+#[cfg(test)]
+#[path = "windows_firewall_tests.rs"]
+mod windows_firewall_tests;
 mod windows_status;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use clap::Subcommand;
 use discovery::Discovery;
-use gateway::{start_gateway, GatewayState};
+use gateway::GatewayState;
 use memory::load_layer_memory;
 use model::{calculate_assignment, parse_memory, ModelProfile};
 use network::Network;
 use ollama::OllamaClient;
+#[cfg(windows)]
+use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
@@ -181,6 +189,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Block automatic model restoration until the next explicit deployment.
+    #[command(name = "undeploy")]
+    Undeploy,
+
     /// Create or install the operator-anchored administrator trust file.
     #[command(name = "admin-anchor")]
     AdminAnchor {
@@ -218,6 +230,11 @@ enum Command {
                   and coordinates with peers to cover the full model."
 )]
 struct Args {
+    /// Internal elevated child used by the Windows firewall permission flow.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    windows_firewall_helper: Option<u16>,
+
     #[command(subcommand)]
     command: Option<Command>,
 
@@ -422,6 +439,22 @@ fn main() -> Result<()> {
     respawn::remember_argv(std::env::args().collect());
     let (log_capture, log_receiver) =
         cluster_logs::LogCapture::new(cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
+
+    #[cfg(windows)]
+    {
+        let writer = windows_diagnostic_log_writer();
+        tracing_subscriber::registry()
+            .with(application_log_filter())
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_target(false)
+                    .with_writer(writer),
+            )
+            .with(cluster_logs::CaptureLayer::new(log_capture.clone()))
+            .init();
+    }
+
+    #[cfg(not(windows))]
     tracing_subscriber::registry()
         .with(application_log_filter())
         .with(tracing_subscriber::fmt::layer().with_target(false))
@@ -435,6 +468,10 @@ fn main() -> Result<()> {
     tp::install_probe();
 
     let args = Args::parse();
+    #[cfg(windows)]
+    if let Some(port) = args.windows_firewall_helper {
+        return windows_firewall::run_elevated_helper(port);
+    }
     if let Some(command) = args.command.as_ref() {
         return run_command(command);
     }
@@ -442,29 +479,39 @@ fn main() -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let gateway_port = configured_gateway_port(&args);
 
-    let service = move || {
+    let service = move |gateway_ready: Option<gateway::GatewayReadySender>| {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(async_main(args, log_capture, log_receiver))
+        runtime.block_on(async_main(args, log_capture, log_receiver, gateway_ready))
     };
 
     #[cfg(target_os = "macos")]
     {
-        return macos_status::run(gateway_port, service);
+        return macos_status::run(gateway_port, move || service(None));
     }
 
     #[cfg(target_os = "windows")]
     {
-        return windows_status::run(gateway_port, service);
+        let (gateway_ready, gateway_ready_rx) = std::sync::mpsc::sync_channel(1);
+        return windows_status::run(
+            gateway_port,
+            move || service(Some(gateway_ready)),
+            gateway_ready_rx,
+        );
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    service()
+    service(None)
 }
 
 fn run_command(command: &Command) -> Result<()> {
     match command {
+        Command::Undeploy => {
+            lastslice::force_disable()?;
+            info!("retomada automática de implantação bloqueada");
+            Ok(())
+        }
         Command::AdminAnchor {
             cluster_id,
             fingerprint,
@@ -603,6 +650,7 @@ async fn async_main(
     args: Args,
     log_capture: Arc<cluster_logs::LogCapture>,
     log_receiver: tokio::sync::mpsc::Receiver<cluster_logs::LogEntry>,
+    gateway_ready: Option<gateway::GatewayReadySender>,
 ) -> Result<()> {
     info!(
         "Project root: {} (config: {})",
@@ -634,7 +682,13 @@ async fn async_main(
         let gateway_port = existing_config
             .as_ref()
             .map_or(args.gateway_port, |config| config.gateway_port);
-        start_setup_mode(gateway_port, existing_config, database.clone()).await?;
+        start_setup_mode(
+            gateway_port,
+            existing_config,
+            database.clone(),
+            gateway_ready,
+        )
+        .await?;
         return Ok(());
     }
 
@@ -736,6 +790,7 @@ async fn async_main(
             !args.no_cycle_detection,
             cluster_logs,
             audit,
+            gateway_ready,
         )
         .await;
     }
@@ -1108,7 +1163,9 @@ async fn async_main(
     // chamada, um nó que sempre sobe com `--model` deixaria um
     // `*.last-slice.json` órfão no disco para sempre, escrito por uma rota de
     // restart que nunca seria lida de volta.
-    let _ = lastslice::take();
+    // Uma intenção explícita de linha de comando substitui qualquer journal
+    // de uma implantação anterior.
+    lastslice::clear();
 
     // ── HTTP API server - every node serves it ───────────────────────────────
     // Bind before scheduling the model load. A model, fit, or runtime lock is
@@ -1190,8 +1247,13 @@ async fn async_main(
             pkarr_publisher: pkarr_publisher.clone(),
         };
         let gw_port = gateway_port;
+        crate::windows_firewall::spawn_startup_check(database.clone(), net.bind_addr.port());
+        crate::webui::spawn_network_settings_ratchet(gw_state.clone());
+        crate::gateway::spawn_public_directory_republisher(gw_state.clone());
         tokio::spawn(async move {
-            if let Err(e) = start_gateway(gw_state, gw_port).await {
+            if let Err(e) =
+                gateway::start_gateway_with_ready(gw_state, gw_port, gateway_ready).await
+            {
                 error!("HTTP API server error: {}", e);
             }
         });
@@ -1428,6 +1490,7 @@ async fn start_setup_mode(
     gateway_port: u16,
     preserved: Option<config::Config>,
     database: Arc<db::PomDb>,
+    gateway_ready: Option<gateway::GatewayReadySender>,
 ) -> Result<()> {
     use crate::config::Config;
     use crate::webui;
@@ -1510,6 +1573,9 @@ async fn start_setup_mode(
     info!("Setup page available at http://localhost:{}", gateway_port);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    if let Some(ready) = gateway_ready {
+        let _ = ready.send(());
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -1852,8 +1918,9 @@ async fn start_gateway_only(
     cycle_detection_enabled: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     audit: Arc<reqlog::AuditLog>,
+    gateway_ready: Option<gateway::GatewayReadySender>,
 ) -> Result<()> {
-    use crate::gateway::{start_gateway, GatewayState};
+    use crate::gateway::GatewayState;
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
@@ -2060,7 +2127,7 @@ async fn start_gateway_only(
             ..crate::cycle::CycleConfig::default()
         },
         audit,
-        database,
+        database: database.clone(),
         gateway_port,
         auth: auth_state,
         admin_trust,
@@ -2093,34 +2160,65 @@ async fn start_gateway_only(
         "Gateway running at http://localhost:{} (model not yet configured)",
         gateway_port
     );
-    let gateway_task = tokio::spawn(async move { start_gateway(gw_state, gateway_port).await });
+    crate::windows_firewall::spawn_startup_check(database.clone(), net.bind_addr.port());
+    crate::webui::spawn_network_settings_ratchet(gw_state.clone());
+    crate::gateway::spawn_public_directory_republisher(gw_state.clone());
+    let gateway_task = tokio::spawn(async move {
+        crate::gateway::start_gateway_with_ready(gw_state, gateway_port, gateway_ready).await
+    });
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
-    // nova: o nó volta servindo o que servia. Só aqui, porque este é o
-    // caminho sem `--model`: quando a linha de comando pede um modelo, essa é
-    // a intenção explícita e não deve ser sobreposta por uma fatia velha.
-    match lastslice::take() {
-        lastslice::LastSlice::Serving(cfg) => {
-            let label = cfg.model_label.clone();
-            let (a, b) = (cfg.start_layer, cfg.end_layer);
-            match node_runtime.apply(cfg).await {
-                Ok(()) => info!("↩️  fatia restaurada após reinício: {label} {a}-{b}"),
-                Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+    // nova: o nó volta servindo o que servia. O journal não é consumido antes
+    // de a tentativa ser persistida novamente, porque um crash nativo pode
+    // acontecer entre a leitura e o início do carregamento.
+    if lastslice::auto_resume_disabled() {
+        warn!("retomada automática bloqueada por comando undeploy");
+    } else {
+        match lastslice::inspect() {
+            lastslice::LastSlice::Serving(cfg) => {
+                let label = cfg.model_label.clone();
+                let (a, b) = (cfg.start_layer, cfg.end_layer);
+                match lastslice::resume_attempt(&cfg) {
+                    Ok(attempt) if lastslice::should_resume(attempt) => {
+                        match node_runtime.apply_after_restart(cfg).await {
+                            Ok(()) => info!(
+                                "↩️  fatia restaurada após reinício: {label} {a}-{b} (tentativa {attempt})"
+                            ),
+                            Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+                        }
+                    }
+                    Ok(attempt) => node_runtime.note_unloadable_slice(&cfg, attempt).await,
+                    Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+                }
             }
+            lastslice::LastSlice::Idle(cfg) => {
+                let label = cfg.model_label.clone();
+                let (a, b) = (cfg.start_layer, cfg.end_layer);
+                node_runtime.restore_idle(cfg).await;
+                info!("↩️  fatia ociosa restaurada após reinício: {label} {a}-{b}");
+            }
+            lastslice::LastSlice::Pending { cfg, attempts } => {
+                if attempts >= lastslice::MAX_AUTOMATIC_ATTEMPTS {
+                    node_runtime.note_unloadable_slice(&cfg, attempts).await;
+                } else {
+                    match lastslice::resume_attempt(&cfg) {
+                        Ok(attempt) if lastslice::should_resume(attempt) => {
+                            match node_runtime.apply_after_restart(cfg).await {
+                                Ok(()) => {
+                                    info!(
+                                        "↩️  retomando implantação pendente na tentativa {attempt}"
+                                    )
+                                }
+                                Err(e) => warn!("não deu para retomar a implantação pendente: {e}"),
+                            }
+                        }
+                        Ok(attempt) => node_runtime.note_unloadable_slice(&cfg, attempt).await,
+                        Err(e) => warn!("não deu para persistir a retomada da implantação: {e}"),
+                    }
+                }
+            }
+            lastslice::LastSlice::Nothing => {}
         }
-        lastslice::LastSlice::Idle(cfg) => {
-            let label = cfg.model_label.clone();
-            let (a, b) = (cfg.start_layer, cfg.end_layer);
-            node_runtime.restore_idle(cfg).await;
-            info!("↩️  fatia ociosa restaurada após reinício: {label} {a}-{b}");
-        }
-        // A fatia foi aplicada e o processo morreu antes de ela carregar uma
-        // única vez. Retomá-la é o laço infinito: a mesma fatia derruba o
-        // processo, o Docker religa o container, e assim para sempre. O nó
-        // sobe vazio - mas dizendo por quê, senão o operador não tem como
-        // saber que a máquina não aguentou a fatia que recebeu.
-        lastslice::LastSlice::NeverLoaded(cfg) => node_runtime.note_unloadable_slice(&cfg).await,
-        lastslice::LastSlice::Nothing => {}
     }
 
     gateway_task.await??;
@@ -2143,6 +2241,51 @@ fn application_log_filter() -> EnvFilter {
                 .parse()
                 .expect("diretiva de log Mainline válida"),
         )
+}
+
+fn windows_diagnostic_log_filename() -> &'static str {
+    "pom.log"
+}
+
+#[cfg(windows)]
+enum WindowsDiagnosticLogWriter {
+    File(std::fs::File),
+    Stderr(std::io::Stderr),
+}
+
+#[cfg(windows)]
+impl std::io::Write for WindowsDiagnosticLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::File(file) => file.write(bytes),
+            Self::Stderr(stderr) => stderr.write(bytes),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::File(file) => file.flush(),
+            Self::Stderr(stderr) => stderr.flush(),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_diagnostic_log_writer() -> std::sync::Mutex<WindowsDiagnosticLogWriter> {
+    use std::fs::OpenOptions;
+
+    let path = config::project_root().join(windows_diagnostic_log_filename());
+    let writer = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => WindowsDiagnosticLogWriter::File(file),
+        Err(error) => {
+            eprintln!(
+                "não foi possível abrir o log Windows em {}: {error}",
+                path.display()
+            );
+            WindowsDiagnosticLogWriter::Stderr(std::io::stderr())
+        }
+    };
+    std::sync::Mutex::new(writer)
 }
 
 #[cfg(test)]
@@ -2201,6 +2344,11 @@ mod main_tests {
     }
 
     #[test]
+    fn diagnostico_do_app_gui_tem_arquivo_estavel() {
+        assert_eq!(windows_diagnostic_log_filename(), "pom.log");
+    }
+
+    #[test]
     fn cli_starts_the_gateway_before_scheduling_model_load() {
         let source = include_str!("main.rs");
         let gateway = source
@@ -2223,7 +2371,7 @@ mod main_tests {
             .find("Bind the gateway before restoring a persisted slice")
             .expect("o caminho sem --model precisa iniciar o gateway");
         let restore = source[gateway..]
-            .find("match lastslice::take()")
+            .find("match lastslice::inspect()")
             .map(|offset| gateway + offset)
             .expect("o caminho sem --model precisa tratar a fatia persistida");
         assert!(

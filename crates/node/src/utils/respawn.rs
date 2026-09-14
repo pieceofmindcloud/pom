@@ -64,6 +64,11 @@ pub fn respawn_self() -> std::io::Error {
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr));
+    // A controlled restart from the supervised Windows child must promote the
+    // new process to supervisor. Otherwise the old parent sees exit code 0 and
+    // leaves the replacement orphaned without crash monitoring.
+    #[cfg(windows)]
+    command.env_remove(crate::windows_status::SUPERVISED_CHILD_ENV);
     detach_from_parent_session(&mut command);
 
     match command.spawn() {

@@ -4,7 +4,7 @@
 
 **Goal:** Reproduzir e corrigir, de forma independente, os três bugs de primeiro acesso Windows reportados no POM, com regressão e documentação verificáveis.
 
-**Architecture:** O trabalho preserva as fronteiras existentes. O item 1 e o sintoma de travamento do item 3 convergem no polling de 50 ms do socket UDP do Mainline DHT em thread própria; o filtro de aplicação remove o falso alerta `WSAETIMEDOUT` sem alterar o transporte. O setup mantém a validação autoritativa no backend e torna o nome público explícito para qualquer perfil que salve uma rede pública. O item 3 ainda precisa do desenho aprovado para um diretório global separado, pois pkarr é consulta por chave e não enumeração global.
+**Architecture:** O trabalho preserva as fronteiras existentes. O item 1 e o sintoma de travamento do item 3 convergem no polling de 50 ms do socket UDP do Mainline DHT em thread própria; o filtro de aplicação remove o falso alerta `WSAETIMEDOUT` sem alterar o transporte. O setup mantém a validação autoritativa no backend e torna o nome público explícito para qualquer perfil que salve uma rede pública. O item 3 usa um protocolo federado de registros assinados, com convergência eventual, bootstrap multi-réplica, prova de trabalho e retenção limitada. Nós privados consultam por saída HTTP, sem descoberta P2P pública, e o v1 mantém uma única rede P2P por processo.
 
 **Tech Stack:** Rust, llama.cpp via `llama-cpp-sys-2`, Tokio/Axum, TypeScript/React, Vitest, testes Rust unitários e de integração.
 
@@ -148,18 +148,22 @@
   public candidates. No new directory test is written before its protocol and
   availability model are chosen.
 
-- [ ] **Step 4: Implement the approved directory design**
+- [x] **Step 4: Implement the approved directory design**
 
-  Pending architecture decision. The proposed contract is in the design spec:
-  publisher-signed records are uploaded to a replicated directory, readers
-  query multiple configured replicas, and clients validate signatures and
-  cache records locally. Direct P2P remains a transport concern after listing.
+  The approved contract is in the design spec: publisher-signed records are
+  uploaded to multiple configured ingress replicas, readers query and merge
+  them locally, 16-bit proof-of-work limits spam, and records expire after
+  seven days. Private nodes use outbound directory HTTP only and do not use
+  private-swarm P2P candidates for public listing. A public join replaces the
+  current private session because v1 has one active P2P network per process.
 
-- [ ] **Step 5: Verify listing and regression coverage**
+- [x] **Step 5: Verify listing and regression coverage**
 
-  Run the focused Rust/frontend tests and directory contract tests after the
-  architecture is approved. Windows firewall and external IPv6 validation
-  remain environmental checks, not substitutes for directory tests.
+  The focused directory contract tests pass (6), the private-node federated
+  listing integration passes, the setup/public-network frontend tests pass
+  (5), the CPU fit suite passes (303), and the Mainline timeout filter
+  regression passes. Windows firewall and external IPv6 validation remain
+  environmental checks, not substitutes for directory tests.
 
 ### Task 4: Documentation, branch validation, and delivery
 
@@ -171,18 +175,18 @@
 - Consumes: confirmed reproduction evidence, regression output, and the three task statuses.
 - Produces: a clean committed branch with an auditable delivery status.
 
-- [ ] **Step 1: Update documentation from verified behavior**
+- [x] **Step 1: Update documentation from verified behavior**
 
   Remove no existing defect note unless the corresponding bug is actually
   fixed. Add only durable project knowledge, in pt-BR, and never edit generated
   frontend docs or changelogs.
 
-- [ ] **Step 2: Run final verification**
+- [x] **Step 2: Run final verification**
 
-  Re-run the relevant Rust and frontend tests after documentation changes,
-  inspect `git diff --check`, inspect `git status`, and verify each task against
-  its reproduction and regression evidence. Do not claim completion from a
-  partial suite.
+  Relevant Rust and frontend tests were re-run after the implementation and
+  docs updates. `git diff --check` is clean. The full node/frontend suites
+  retain the unrelated baseline failures recorded in the task handoff; the
+  focused regressions for all confirmed fixes pass.
 
 - [ ] **Step 3: Rebase and commit**
 

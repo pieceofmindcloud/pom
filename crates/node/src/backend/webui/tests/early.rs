@@ -159,9 +159,18 @@ mod leave_tests {
         ] {
             let state = state_with("eu", vec![]).await;
             state.auth.write().await.profile = profile;
+            assert!(
+                state.runtime.config().await.is_none(),
+                "o teste começa sem modelo"
+            );
             let resp = leave_network(ConnectionAuth, State(state.clone()), None).await;
             assert_eq!(resp.status(), StatusCode::OK, "perfil={profile}");
             assert!(state.network.is_detached(), "perfil={profile}");
+            assert_eq!(
+                state.runtime.status().await.state,
+                crate::runtime::ServerState::Disabled,
+                "sair não pode depender de um servidor Ready, perfil={profile}"
+            );
         }
     }
 }

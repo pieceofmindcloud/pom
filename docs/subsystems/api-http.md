@@ -19,8 +19,11 @@ passa por este gateway). O gateway também registra `/v1/link` para o retorno
 full-duplex do `remote-stream`; os dois listeners usam o mesmo enquadramento,
 mas o callback persistente termina no `ReplyInbox` do gateway. O
 `/health` do servidor de inferência responde `model_loaded` (o que promove a
-anotação da fatia para `serving`, ver `fatiamento.md`) e expõe `kv_can_shift`,
-a condição de a cabeça rascunhar na decodificação especulativa.
+anotação da fatia para `serving`, ver `fatiamento.md`) e expõe a identidade
+executável `model_label`/`deploy_id` e sua faixa `start_layer`/`end_layer`/
+`total_layers`. O gateway usa essa faixa durante a admissão quando o anúncio
+P2P ainda está atrasado. O endpoint também expõe `kv_can_shift`, a condição de
+a cabeça rascunhar na decodificação especulativa.
 As rotas internas desse listener exigem a `connection_key` e
 `x-pom-internal-node: 1` em redes privadas; em redes públicas, HTTPS e QUIC
 podem usar o transporte seguro e o marcador, enquanto o fallback HTTP leva a
@@ -39,6 +42,12 @@ provar a identidade do peer.
   `POST /v1/remote-stream-result` (`direct::REMOTE_STREAM_RESULT_PATH`, o
   callback HTTPS de fallback do transporte remoto) e `POST /v1/link` (canal
   persistente full-duplex do retorno remoto, sem limite de corpo externo).
+- **Diretório público federado** (`gateway/http.rs`): `GET` e `POST
+  /api/public/directory/records` são ingressos públicos de metadados. O GET
+  entrega registros assinados e o POST aceita somente registros com assinatura,
+  prova de trabalho, cadeia de confiança e principal compatíveis. O cache local
+  é limitado e expirado; nenhuma dessas rotas carrega bootstrap ou credenciais
+  de rede privada.
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,
@@ -294,9 +303,11 @@ não estão no router principal e só existem antes da configuração inicial.
 - **`GET /health`** - `status`, `ollama_available`, `peer_count`,
   `pipeline_peers` (com `inference_port`), `default_model` e
   `runtime_capacity` (`n_ctx`, `max_new_tokens`) quando o runtime local já
-  respondeu `model_loaded`. A sonda opcional de Ollama tem teto de 500 ms, então
-  um Ollama ausente ou o enriquecimento frio do catálogo não bloqueia a resposta
-  do gateway. Na porta de inferência, a resposta também publica
+  respondeu `model_loaded`. `ollama_available` usa o último valor em cache e
+  agenda uma sonda opcional de 500 ms no máximo a cada 15 s, então um Ollama
+  ausente ou o enriquecimento frio do catálogo não bloqueia a resposta do
+  gateway. Na porta de inferência, a resposta também publica
+  `model_label`, `deploy_id`, `start_layer`, `end_layer` e `total_layers`, além de
   `n_ubatch_effective`, `mtp_ready` e `mtp_unavailable_reason`; este último
   explica por que o contexto MTP pedido não foi anexado. `load_params` traz os
   parâmetros de llama.cpp com que o contexto subiu - `n_ctx`, `n_ctx_seq`,

@@ -31,6 +31,12 @@ Per-file list:
   habilitar o salvamento; não confundir com o protótipo
   `SetupWizard.tsx`.
 
+  Redes públicas exigem também pelo menos um ingresso do diretório federado,
+  informado como URLs HTTP(S) separadas por vírgula. Um nó privado pode manter
+  esses ingressos para consultar o catálogo por saída; o join público encerra a
+  sessão privada antes de reconfigurar o nó, sem suporte a duas redes P2P
+  simultâneas no v1.
+
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
   padrão de Logs: tabela rolável com nome público, organização, localização,
   label geo-hierárquico, endereço publicado com indicador de alcançabilidade,
@@ -55,7 +61,13 @@ Per-file list:
   informações também oferece `Esquecer rede`, que pede confirmação e chama
   `POST /api/ui/network/leave` para limpar a configuração local e reiniciar no
   setup; isso é separado de `Sair da rede`, que chama `/api/ui/leave` e apenas
-  desliga a máquina do cluster.
+  desliga a máquina do cluster. O botão continua disponível para o perfil
+  `node` mesmo sem autoridade administrativa, sem modelo carregado ou sem
+  estado `Ready`; o handler local não consulta a saúde da implantação.
+  No Windows, quando suportado, a mesma tela mostra o estado das quatro regras
+  de firewall derivadas da porta P2P efetiva e oferece `Tentar novamente` após
+  uma recusa do UAC; essa ação é independente da implantação e da saída da
+  rede.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage

@@ -1189,8 +1189,12 @@ fn backend_gpu_devices() -> Vec<BackendGpu> {
         }
         let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
         llama_cpp_sys_2::llama_rs_string_free(raw);
-        serde_json::from_str(&text).unwrap_or_default()
+        parse_backend_gpu_devices(&text)
     }
+}
+
+fn parse_backend_gpu_devices(text: &str) -> Vec<BackendGpu> {
+    serde_json::from_str(text).unwrap_or_default()
 }
 
 static BACKEND_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -1447,6 +1451,52 @@ mod tests {
 
         assert_eq!(parse_current_process_gpu_memory_mb(output, 42), Some(730.0));
         assert_eq!(parse_current_process_gpu_memory_mb(output, 101), None);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn backend_inventory_cpu_only_serializa_metadados_sem_string_nula() {
+        // A enumeração é deliberadamente feita sem inicializar o backend: o
+        // sysmon chama esta função depois da inicialização normal, mas o
+        // registro de devices já é observável aqui e o teste não deve ligar
+        // Metal/CUDA de uma máquina de desenvolvimento.
+        let mut raw = ptr::null_mut();
+        let status = unsafe { llama_cpp_sys_2::llama_rs_backend_devices_json(&mut raw) };
+        assert_eq!(status, llama_cpp_sys_2::LLAMA_RS_STATUS_OK);
+        assert!(
+            !raw.is_null(),
+            "a serialização bem-sucedida deve devolver JSON"
+        );
+
+        let text = unsafe { CStr::from_ptr(raw).to_string_lossy().into_owned() };
+        unsafe { llama_cpp_sys_2::llama_rs_string_free(raw) };
+
+        let entries: serde_json::Value =
+            serde_json::from_str(&text).expect("a lista de devices deve ser JSON válido");
+        let entries = entries
+            .as_array()
+            .expect("a lista de devices deve ser um array");
+        for entry in entries {
+            assert!(
+                entry
+                    .get("backend")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some(),
+                "backend nulo ou não textual: {entry}"
+            );
+            assert!(
+                entry
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some(),
+                "description nula ou não textual: {entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn inventario_sem_gpu_preserva_lista_vazia() {
+        assert!(parse_backend_gpu_devices("[]").is_empty());
     }
 }
 

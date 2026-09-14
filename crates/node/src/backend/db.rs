@@ -604,6 +604,85 @@ impl PomDb {
         self.save_setting("network_settings", settings)
     }
 
+    pub fn windows_firewall_setup(&self) -> Result<Option<crate::windows_firewall::SetupRecord>> {
+        self.with_read("ler estado do firewall do Windows", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_json FROM local_settings WHERE setting_key = 'windows_firewall_setup'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            value
+                .map(|value| {
+                    serde_json::from_str(&value)
+                        .context("interpretar estado do firewall do Windows")
+                })
+                .transpose()
+        })
+    }
+
+    pub fn save_windows_firewall_setup(
+        &self,
+        record: &crate::windows_firewall::SetupRecord,
+    ) -> Result<()> {
+        self.save_setting("windows_firewall_setup", record)
+    }
+
+    pub fn public_directory_settings(
+        &self,
+    ) -> Result<Option<crate::public_directory::PublicDirectorySettings>> {
+        self.with_read("ler ingressos do diretório público", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_json FROM local_settings WHERE setting_key = 'public_directory_settings'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            value
+                .map(|value| {
+                    serde_json::from_str(&value)
+                        .context("interpretar ingressos do diretório público")
+                })
+                .transpose()
+        })
+    }
+
+    pub fn save_public_directory_settings(
+        &self,
+        settings: &crate::public_directory::PublicDirectorySettings,
+    ) -> Result<()> {
+        self.save_setting("public_directory_settings", settings)
+    }
+
+    pub fn public_directory_records(
+        &self,
+    ) -> Result<Vec<crate::public_directory::SignedPublicDirectoryRecord>> {
+        self.with_read("ler cache do diretório público", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_json FROM local_settings WHERE setting_key = 'public_directory_records'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            value
+                .map(|value| {
+                    serde_json::from_str(&value).context("interpretar cache do diretório público")
+                })
+                .transpose()
+                .map(|records| records.unwrap_or_default())
+        })
+    }
+
+    pub fn save_public_directory_records(
+        &self,
+        records: &[crate::public_directory::SignedPublicDirectoryRecord],
+    ) -> Result<()> {
+        self.save_setting("public_directory_records", records)
+    }
+
     pub fn public_network_geo_cache(&self) -> Result<Vec<PublicNetworkGeoCacheEntry>> {
         self.with_read("ler índice geo de redes públicas", |connection| {
             let value = connection
@@ -1174,7 +1253,7 @@ impl PomDb {
         })
     }
 
-    fn save_setting<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
+    fn save_setting<T: serde::Serialize + ?Sized>(&self, key: &str, value: &T) -> Result<()> {
         self.with_write("salvar configuração local", |connection| {
             connection.execute(
                 "INSERT INTO local_settings (setting_key, value_json) VALUES (?, ?)

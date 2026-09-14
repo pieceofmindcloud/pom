@@ -140,6 +140,21 @@ recebe `LLAMA_SOURCE` para usar esse diretório; assim o `git clean` do
 `actions/checkout` não transforma o clone vendorizado em uma dependência
 implícita do estado anterior do runner.
 
+Os wrappers do `llama-cpp-sys-2` usam nomes de headers sem prefixo de
+diretório. O `build.rs` adiciona explicitamente ao bindgen e à ponte C++ os
+diretórios `include/`, `ggml/include/`, `src/`, `common/`, `tools/mtmd/` e
+`vendor/` da árvore selecionada. O cache, portanto, não é restaurado sobre
+`vendor/llama-cpp-sys-2/llama.cpp`, evitando conflito com o placeholder que o
+checkout Windows materializa. O mesmo caminho funciona no checkout vendorizado
+local, em `LLAMA_SOURCE` e dentro do Dockerfile.
+
+No Windows, `canonicalize()` pode devolver o prefixo estendido `\\?\`. O
+bindgen aceita esse caminho, mas CMake/MSBuild e algumas versões do MSVC não.
+Antes de entregar a origem, os diretórios ou os arquivos a `cmake::Config` ou
+`cc::Build`, o `build.rs` remove o prefixo; os caminhos chegam aos compiladores
+como `D:\...` ou UNC convencionais, inclusive quando a origem veio de
+`.ci-cache`.
+
 Os workflows também ativam `mozilla-actions/sccache-action` com o backend do
 cache do GitHub. `RUSTC_WRAPPER`, os três launchers do CMake e `CCACHE` apontam
 para `sccache`, então o mesmo cache content-addressed cobre as unidades Rust,

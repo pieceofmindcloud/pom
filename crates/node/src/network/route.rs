@@ -358,6 +358,34 @@ impl RouteTable {
             t.remove(node_id);
         }
     }
+
+    /// Remede a rota atualmente escolhida sem reordenar os candidatos.
+    ///
+    /// A medição de endereçamento é deliberadamente mais lenta que a medição
+    /// de RTT usada pelo painel. Reusar `RouteChoice.rtt_ms` faria o RTT
+    /// continuar congelado até a próxima troca de rota; sondar a URL escolhida
+    /// mantém as duas cadências independentes.
+    pub async fn measure_current_peer(
+        &self,
+        clientes: &crate::peer_client::PeerClients,
+        node_id: &str,
+    ) -> Option<f64> {
+        let rota = self.resolve(node_id)?;
+        let http = clientes.probe().ok()?;
+        let inicio = Instant::now();
+        let resposta = tokio::time::timeout(
+            TIMEOUT_SONDA,
+            http.get(format!("{rota}/health")).send(),
+        )
+        .await;
+        match resposta {
+            Ok(Ok(response)) if response.status().is_success() => {
+                self.mark_success(node_id, &rota);
+                Some(inicio.elapsed().as_secs_f64() * 1000.0)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// O host de um endereço, seja ele URL (`http://[::1]:8080`) ou par
@@ -514,7 +542,25 @@ impl RttTable {
 }
 
 /// A medição direcional é renovada junto com a rota de endereçamento.
-pub const RTT_INTERVALO_MEDICAO: Duration = Duration::from_secs(300);
+pub const RTT_INTERVALO_MEDICAO: Duration = Duration::from_secs(120);
+
+/// Prefere o túnel quando ele respondeu, mas permite que um peer que anunciou
+/// a capability e esteja momentaneamente sem o swarm continue mensurável pelo
+/// `/health` direto. Antes, esse fallback só existia para peers que nunca
+/// anunciavam túnel, então a entrada de RTT era apagada a cada renovação.
+pub(crate) fn escolher_rtt(
+    tunnel_rtt_ms: Option<f64>,
+    direct_health_rtt_ms: Option<f64>,
+) -> Option<(f64, &'static str)> {
+    tunnel_rtt_ms
+        .filter(|rtt| rtt.is_finite() && *rtt >= 0.0)
+        .map(|rtt| (rtt, "libp2p"))
+        .or_else(|| {
+            direct_health_rtt_ms
+                .filter(|rtt| rtt.is_finite() && *rtt >= 0.0)
+                .map(|rtt| (rtt, "direct-health"))
+        })
+}
 
 #[cfg(test)]
 pub mod tests_support {
@@ -635,6 +681,15 @@ mod tests {
             ]
         );
         assert!(table.precisa_medir("peer-d"));
+    }
+
+    #[test]
+    fn direct_health_is_a_fallback_when_the_tunnel_measurement_is_unavailable() {
+        assert_eq!(
+            escolher_rtt(None, Some(3.5)),
+            Some((3.5, "direct-health"))
+        );
+        assert_eq!(escolher_rtt(Some(1.5), Some(3.5)), Some((1.5, "libp2p")));
     }
 
     #[test]
@@ -815,6 +870,20 @@ mod tests {
             Some(healthy_inference),
             "a sonda precisa medir a porta de inferência, não um gateway diferente"
         );
+    }
+
+    #[tokio::test]
+    async fn current_route_rtt_is_measured_without_replacing_the_route() {
+        let healthy = tests_support::health_server(0).await;
+        let tabela = RouteTable::new();
+        let http = crate::peer_client::PeerClients::new(Duration::from_secs(10));
+        tabela.measure_peer(&http, "n1", std::slice::from_ref(&healthy)).await;
+        let before = tabela.resolve("n1");
+
+        let rtt = tabela.measure_current_peer(&http, "n1").await;
+
+        assert!(rtt.is_some());
+        assert_eq!(tabela.resolve("n1"), before);
     }
 
     /// Um peer nunca medido nao resolve para nada - o chamador cai no

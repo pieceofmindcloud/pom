@@ -49,6 +49,7 @@ import type {
   RequestStats,
   TransferJob,
   TrustAnchorView,
+  WindowsFirewallStatus,
 } from "./types";
 
 /**
@@ -84,6 +85,7 @@ export const keys = {
   adminAuthority: ["admin-authority"] as const,
   trustAnchor: ["trust-anchor"] as const,
   networkInfo: ["network-info"] as const,
+  windowsFirewall: ["windows-firewall"] as const,
   networkChat: ["network-chat"] as const,
   geoReference: ["geo-reference"] as const,
   adminNodes: ["admin-nodes"] as const,
@@ -520,6 +522,15 @@ export function useNetworkInfo(enabled = true) {
   });
 }
 
+export function useWindowsFirewall(enabled = true) {
+  return useQuery({
+    queryKey: keys.windowsFirewall,
+    queryFn: () => api.get<WindowsFirewallStatus>("/api/ui/network/firewall"),
+    enabled,
+    refetchInterval: 5000,
+  });
+}
+
 export function useGeoReference(enabled = true) {
   return useQuery({
     queryKey: keys.geoReference,
@@ -710,6 +721,7 @@ export function invalidateAfterAction(qc: QueryClient) {
     keys.offers,
     keys.adminAuthority,
     keys.networkInfo,
+    keys.windowsFirewall,
     keys.adminNodes,
     keys.models,
     keys.remoteModelProviderStatus,

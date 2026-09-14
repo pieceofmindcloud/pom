@@ -8,6 +8,7 @@ import { canContinue, isReadyToSave, TrustScreen, type SetupState } from "./Setu
 const initialSetup: SetupState = {
   profile: "infer",
   bootstrap: "",
+  publicDirectory: "",
   connectionKey: "",
   advertiseAddr: "",
   trustDocument: "",
@@ -107,7 +108,10 @@ describe("TrustScreen", () => {
     expect(canContinue("setup-trust", setup)).toBe(false);
     expect(isReadyToSave(setup)).toBe(false);
     const named = { ...setup, network: { ...setup.network, public_name: "Rede Curitiba" } };
-    expect(canContinue("setup-trust", named)).toBe(true);
-    expect(isReadyToSave(named)).toBe(true);
+    expect(canContinue("setup-trust", named)).toBe(false);
+    expect(isReadyToSave(named)).toBe(false);
+    const bootstrapped = { ...named, publicDirectory: "https://directory.example" };
+    expect(canContinue("setup-trust", bootstrapped)).toBe(true);
+    expect(isReadyToSave(bootstrapped)).toBe(true);
   });
 });

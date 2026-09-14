@@ -11,6 +11,7 @@ use crate::config::{self, NetworkSettings, NetworkVisibility};
 use axum::extract::State;
 
 const NETWORK_SETTINGS_PATH: &str = "/api/internal/network/settings";
+pub(crate) const NETWORK_SETTINGS_POLICY_PATH: &str = "/api/cluster/network-settings";
 
 #[derive(Debug, Serialize)]
 pub struct NetworkInfoView {
@@ -35,6 +36,33 @@ pub(crate) async fn network_info(
     State(state): State<GatewayState>,
 ) -> Response {
     Json(network_info_view(&state).await).into_response()
+}
+
+/// Return the authoritative network document to a node that joined after the
+/// last admin edit. Public joins intentionally carry only directory metadata;
+/// this signed control read supplies the rest of the read-only UI state.
+pub(crate) async fn network_settings_policy(
+    _auth: InternalNodeAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    let (configured_network, connection_key) = {
+        let config = state.auth.read().await;
+        (config.network.clone(), config.connection_key.clone())
+    };
+    let network = state
+        .database
+        .network_settings()
+        .ok()
+        .flatten()
+        .unwrap_or(configured_network);
+    let connection_key = (network.visibility != NetworkVisibility::Public)
+        .then_some(connection_key)
+        .unwrap_or_default();
+    Json(NetworkSettingsEnvelope {
+        network,
+        connection_key,
+    })
+    .into_response()
 }
 
 /// A referência geográfica do setup também é necessária ao editor autenticado
@@ -233,6 +261,87 @@ pub(crate) async fn internal_network_settings(
     }
 }
 
+/// Ask the current principal for the complete network document after a node
+/// first sees its authenticated Announce. The task is deliberately attached
+/// to `GatewayState` so it can persist both Config and the local DB snapshot,
+/// exactly like the admin fan-out path.
+pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
+    state.network.set_network_settings_probe(tx);
+    tokio::spawn(async move {
+        let mut last_attempt: Option<(String, Instant)> = None;
+        while let Some((principal, announced_tls)) = rx.recv().await {
+            if last_attempt
+                .as_ref()
+                .is_some_and(|(previous, at)| previous == &principal && at.elapsed() < PEER_TIMEOUT)
+            {
+                continue;
+            }
+            last_attempt = Some((principal.clone(), Instant::now()));
+
+            let Some(peer) = state
+                .network
+                .alive_peers()
+                .await
+                .into_iter()
+                .find(|peer| peer.node_id == principal)
+            else {
+                continue;
+            };
+            let probe = crate::peer_client::PeerClients::new(PEER_TIMEOUT);
+            probe.set_tls(announced_tls);
+            let Ok(client) = probe.for_peer(&principal) else {
+                warn!(principal = %principal, "não foi possível criar cliente para sincronizar a rede");
+                continue;
+            };
+            let mut fetched = None;
+            for base in peer.gateway_candidates_with_tls(announced_tls) {
+                let Ok(request) = state
+                    .control_get_request(
+                        client.get(format!("{base}{NETWORK_SETTINGS_POLICY_PATH}")),
+                        NETWORK_SETTINGS_POLICY_PATH,
+                    )
+                    .await
+                else {
+                    continue;
+                };
+                let response = tokio::time::timeout(PEER_TIMEOUT, request.send()).await;
+                let Ok(Ok(response)) = response else {
+                    continue;
+                };
+                if !response.status().is_success() {
+                    continue;
+                }
+                if let Ok(envelope) = response.json::<NetworkSettingsEnvelope>().await {
+                    fetched = Some(envelope);
+                    break;
+                }
+            }
+
+            let Some(envelope) = fetched else {
+                warn!(principal = %principal, "não foi possível buscar os detalhes da rede no principal");
+                continue;
+            };
+            match apply_network_settings_with_key(
+                &state,
+                envelope.network,
+                false,
+                Some(&envelope.connection_key),
+            )
+            .await
+            {
+                Ok(_) => {
+                    state.network.mark_network_settings_synced();
+                    info!(principal = %principal, "detalhes completos da rede adotados do principal");
+                }
+                Err(error) => {
+                    warn!(principal = %principal, "detalhes da rede recebidos mas inválidos: {error}");
+                }
+            }
+        }
+    });
+}
+
 async fn network_info_view(state: &GatewayState) -> NetworkInfoView {
     let config = state.auth.read().await;
     let network = state
@@ -275,6 +384,43 @@ mod tests {
         assert_eq!(body["network"]["public_name"], "Rede Curitiba");
         assert_eq!(body["network"]["city"], "Curitiba");
         assert_eq!(body["can_edit"], false);
+    }
+
+    #[tokio::test]
+    async fn policy_read_returns_full_public_metadata_without_the_connection_key() {
+        let state = state_with("admin", vec![]).await;
+        let settings = NetworkSettings {
+            public_name: "Rede Curitiba".into(),
+            organization: "POM".into(),
+            description: "Inferência distribuída".into(),
+            rules: "Respeite a rede".into(),
+            channels: "Discord: pom".into(),
+            country_code: "BR".into(),
+            country_name: "Brasil".into(),
+            city: "Curitiba".into(),
+            visibility: NetworkVisibility::Public,
+            ..NetworkSettings::default()
+        };
+        state.database.save_network_settings(&settings).unwrap();
+
+        let response = network_settings_policy(
+            InternalNodeAuth {
+                principal: Some(state.authority_principal.clone()),
+            },
+            State(state),
+        )
+        .await;
+        let body = body_of(response).await;
+
+        assert_eq!(body["network"]["public_name"], "Rede Curitiba");
+        assert_eq!(body["network"]["organization"], "POM");
+        assert_eq!(body["network"]["description"], "Inferência distribuída");
+        assert_eq!(body["network"]["rules"], "Respeite a rede");
+        assert_eq!(body["network"]["channels"], "Discord: pom");
+        assert_eq!(body["network"]["visibility"], "public");
+        assert_eq!(body["network"]["country_name"], "Brasil");
+        assert_eq!(body["network"]["city"], "Curitiba");
+        assert_eq!(body["connection_key"], "");
     }
 
     #[tokio::test]

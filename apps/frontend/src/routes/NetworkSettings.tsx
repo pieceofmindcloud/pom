@@ -10,7 +10,10 @@ import {
   LogOut,
   Network,
   Radio,
+  RefreshCw,
   Save,
+  ShieldAlert,
+  ShieldCheck,
   ShieldOff,
   Trash2,
   Undo2,
@@ -38,11 +41,11 @@ import {
 import { api } from "../lib/api";
 import { adminAuthorityApi } from "../lib/adminAuthority";
 import { layerRange } from "../lib/format";
-import { useAdminNodes, useCluster, useInvalidate, useNetworkInfo, useNode } from "../lib/queries";
+import { useAdminNodes, useCluster, useInvalidate, useNetworkInfo, useNode, useWindowsFirewall } from "../lib/queries";
 import { useGeoReference } from "../lib/queries";
 import { networkStats } from "../lib/networkStats";
 import { useToast } from "../lib/toast";
-import type { AdminNode, ClusterView, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, NodeInfo } from "../lib/types";
+import type { AdminNode, ClusterView, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, NodeInfo, WindowsFirewallStatus } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 export function NetworkSettings({ participantsOnly = false }: { participantsOnly?: boolean }) {
@@ -50,6 +53,7 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
   const node = useNode();
   const cluster = useCluster();
   const networkInfo = useNetworkInfo(Boolean(node.data));
+  const firewall = useWindowsFirewall(Boolean(node.data));
   const geoReference = useGeoReference(Boolean(node.data));
   const isInfer = node.data?.profile === "infer";
   /*
@@ -79,6 +83,7 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
   const [addrLoaded, setAddrLoaded] = useState(false);
   const [networkDraft, setNetworkDraft] = useState<NetworkSettingsData | null>(null);
   const [networkSaving, setNetworkSaving] = useState(false);
+  const [firewallBusy, setFirewallBusy] = useState(false);
 
   useEffect(() => {
     if (!networkInfo.data || (networkDraft && networkEditable)) return;
@@ -127,6 +132,19 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
       toast.fromError(t("network.infoSaveFailed"), e);
     } finally {
       setNetworkSaving(false);
+    }
+  }
+
+  async function retryFirewall() {
+    setFirewallBusy(true);
+    try {
+      await api.post("/api/ui/network/firewall/retry");
+      await firewall.refetch();
+      toast.success(t("network.firewallRetrying"));
+    } catch (e) {
+      toast.fromError(t("network.firewallRetryFailed"), e);
+    } finally {
+      setFirewallBusy(false);
     }
   }
 
@@ -283,6 +301,15 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
           )}
         </Panel>
 
+        {firewall.data?.supported && (
+          <WindowsFirewallPanel
+            status={firewall.data}
+            busy={firewallBusy}
+            onRetry={() => void retryFirewall()}
+            t={t}
+          />
+        )}
+
         {networkDraft && (
           <NetworkInfoPanel
             info={networkInfo.data}
@@ -416,6 +443,66 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
         onCancel={() => setForgetNetworkConfirm(false)}
       />
     </>
+  );
+}
+
+function WindowsFirewallPanel({
+  status,
+  busy,
+  onRetry,
+  t,
+}: {
+  status: WindowsFirewallStatus;
+  busy: boolean;
+  onRetry: () => void;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  const ready = status.all_allowed;
+  return (
+    <Panel>
+      <PanelHeader
+        eyebrow={t("network.firewallEyebrow")}
+        title={t("network.firewallTitle")}
+        subtitle={t("network.firewallSubtitle")}
+        actions={
+          <Button
+            variant={ready ? "outline" : "primary"}
+            size="sm"
+            loading={busy || status.in_progress}
+            disabled={!status.can_retry}
+            icon={<RefreshCw className="h-3.5 w-3.5" />}
+            onClick={onRetry}
+          >
+            {t("network.firewallRetry")}
+          </Button>
+        }
+      />
+      <div className="space-y-3 px-5 py-4">
+        <div className="flex items-start gap-3">
+          {ready ? (
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+          ) : (
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+          )}
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-fg">
+              {ready ? t("network.firewallReady") : t("network.firewallNeeded")}
+            </p>
+            <p className="mt-1 text-sm leading-relaxed text-muted">
+              {t("network.firewallPortSummary", {
+                ports: status.rules.map((rule) => `${rule.protocol.toUpperCase()} ${rule.port}`).join(", "),
+              })}
+            </p>
+          </div>
+        </div>
+        {!ready && !status.automatic_attempted && (
+          <p className="text-sm text-muted">{t("network.firewallUacDetail")}</p>
+        )}
+        {status.last_error && (
+          <p className="text-sm text-rose">{t("network.firewallLastError")}</p>
+        )}
+      </div>
+    </Panel>
   );
 }
 

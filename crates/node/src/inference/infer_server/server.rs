@@ -33,6 +33,7 @@ impl InferState {
             end_layer: cfg.end_layer,
             total_layers: cfg.total_layers,
             model_label: cfg.model_label.clone(),
+            deploy_id: cfg.deploy_id.clone(),
             model_path: cfg.model_path.clone(),
             slot_dir: cfg
                 .slot_save_path
@@ -1160,11 +1161,19 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
             moe_telemetry.as_ref(),
             s.moe_fallback_reason.as_deref(),
         );
-    Json(json!({
+    // Keep the native diagnostics as named boundaries. If a Windows native
+    // access violation happens while `/health` is being assembled, the last
+    // marker identifies which FFI snapshot crossed the bad pointer boundary.
+    tracing::debug!("health native snapshot: load_params begin");
+    let load_params = s.engine.load_params();
+    tracing::debug!("health native snapshot: load_params done; placement begin");
+    let placement = s.engine.placement();
+    tracing::debug!("health native snapshot: placement done; context_memory begin");
+    let context_memory = s.engine.context_memory();
+    tracing::debug!("health native snapshot: context_memory done");
+    let mut body = json!({
         "status": "ok",
         "model_loaded": true,
-        "start_layer": s.start_layer,
-        "end_layer": s.end_layer,
         "original_block_count": s.original_block_count,
         "selected_path": s.inference_path.as_str(),
         "moe_requested": moe_requested,
@@ -1207,14 +1216,14 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
         // operador comparar o nó com uma linha de comando do `llama-cli`.
         // Lido do contexto vivo, não do `EngineConfig` - ver
         // `LlmEngine::load_params`.
-        "load_params": s.engine.load_params(),
+        "load_params": load_params,
         "profile_sync_enabled": crate::llm::profile_backend_sync_enabled(),
         // Onde as camadas e o cache KV ficaram de verdade, direto do
         // llama.cpp. `null` quando a ponte não respondeu - a interface diz
         // que não sabe, em vez de derivar um mapa de `n_gpu_layers`, que
         // erraria sempre que um override de buffer type entrasse.
-        "placement": s.engine.placement(),
-        "context_memory": s.engine.context_memory(),
+        "placement": placement,
+        "context_memory": context_memory,
         "inference_frame_capabilities": caps,
         "scheduler": scheduler.stats.json(&scheduler.config),
         // Diagnóstico puro — `llama_memory_can_shift`, o K-shift do
@@ -1233,8 +1242,16 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
         // JSON, para não segurar o lock do motor em leitura de disco.
         "slot_persist_enabled": s.slot_dir.is_some(),
         "slot_count": slot_count,
-    }))
-    .into_response()
+    });
+    // Keep the identity fields separate from the large diagnostic object. A
+    // direct addition to the json! tree would exceed the macro recursion limit
+    // and would make this readiness contract depend on compiler settings.
+    body["model_label"] = Value::String(s.model_label.clone());
+    body["deploy_id"] = Value::String(s.deploy_id.clone());
+    body["start_layer"] = Value::from(s.start_layer);
+    body["end_layer"] = Value::from(s.end_layer);
+    body["total_layers"] = Value::from(s.total_layers);
+    Json(body).into_response()
 }
 
 // ── /v1/tp/reduce ────────────────────────────────────────────────────────────

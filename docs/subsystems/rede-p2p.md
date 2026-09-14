@@ -113,6 +113,13 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 `connection_verified` e `api_keys_active`. `PeerInfo::is_alive()` compara
 `last_seen` com `PEER_TIMEOUT_SECS` (30 s).
 
+O `Announce` não é fonte de verdade para os metadados da rede. Depois de
+validar que o emissor é o principal ancorado, o nó dispara uma leitura
+assinada de `/api/cluster/network-settings` e persiste o `NetworkSettings`
+completo para a tela de Informações da rede. Em rede pública a resposta não
+leva a `connection_key`; o registro público continua limitado ao convite e à
+descoberta.
+
 ### Ciclo de vida
 
 1. **Bind:** `Network::new` monta um socket dual-stack `[::]:<porta>` à mão com
@@ -229,12 +236,15 @@ Hoje:
   para sempre seria repor o aviso desonesto com outra palavra. Uma leitura bem
   sucedida (`Network::note_peer_read`) encerra a busca, para que a próxima
   rotação comece do zero.
-- A cobertura sai do gossip, não da leitura, então um par ilegível continua
+- A cobertura do Painel sai do gossip, então um par ilegível continua
   contribuindo camadas - e é honesto que continue, porque o servidor de
   inferência dele pode estar perfeito e só o endereço de controle é que morreu.
-  O que não pode é ficar invisível: `model_inventory[].unreadable_nodes` nomeia
-  esses pares, e a tela tira o verde de "completo" enquanto a lista não estiver
-  vazia.
+  Na admissão de uma requisição, porém, o gateway também lê a faixa atual do
+  `/health` do infer server. Essa leitura pode corrigir a fotografia P2P
+  atrasada para o planejamento, sem tornar o `/health` fonte de verdade da
+  cobertura visual. O que não pode é ficar invisível:
+  `model_inventory[].unreadable_nodes` nomeia esses pares, e a tela tira o
+  verde de "completo" enquanto a lista não estiver vazia.
 - `cleanup_dead_peers` chama `RouteTable::forget` no peer que expirou, para que
   um nó que volta com o mesmo endereço não nasça desacreditado.
 
@@ -348,8 +358,12 @@ publica somente medições frescas em `GET /api/ui/network/rtt`, autenticado pel
 chave de conexão. `snapshot_with_age` preserva a idade para diagnóstico e
 `fresh_snapshot` é a fonte da seleção. O gateway agrega os relatórios e só usa
 a medição de `A -> B` na aresta `A -> B`. Se o peer não oferece o túnel, o
-relatório pode marcar `direct-health` como fallback. Nenhuma latência de outro
-peer é transitiva ou reaproveitada como se fosse a aresta real.
+relatório pode marcar `direct-health` como fallback. O RTT é renovado a cada
+120 s, independentemente da re-medida de endereçamento de 5 min. Se um peer
+anuncia o túnel, mas o swarm ainda não está pronto para responder, a própria
+rota HTTP de inferência continua como fallback `direct-health`; a capability
+anunciada não faz a medição desaparecer. Nenhuma latência de outro peer é
+transitiva ou reaproveitada como se fosse a aresta real.
 
 O anúncio P2P continua sendo capacidade de dados: `capabilities` informa
 modelo/faixa e `runtime_capacity` informa `n_ctx` e `max_new_tokens` apenas
@@ -449,6 +463,31 @@ O binário filtra esse aviso esperado, mantendo erros reais. O endpoint
 resolve apenas candidatos já aprendidos pela descoberta UDP/libp2p ou pelo cache
 local. Assim, um endereço IPv6 global anunciado sem rota externa não basta para
 um nó novo descobrir a rede.
+
+### Diretório federado de redes públicas
+
+O catálogo global separado do swarm vive em `public_directory.rs`. O principal
+de uma rede pública assina um registro com endpoint, documento de confiança,
+localização e ingressos conhecidos. O registro carrega `version`, `sequence`,
+`issued_at`, `expires_at` e um nonce de prova de trabalho de 16 bits. A
+identidade lógica é `(publisher_pubkey, sequence)`; o merge mantém a maior
+sequência e resolve conflito idêntico de forma determinística pelo menor hash.
+
+Cada nó pode configurar até 16 ingressos HTTP(S) em `POM_PUBLIC_DIRECTORY` ou
+no wizard. O publicador envia seu registro a todos os ingressos, e um leitor
+consulta todos em paralelo e grava o merge no `pom.db`. Uma réplica é transporte,
+não raiz de confiança: assinatura Ed25519, cadeia de confiança, cluster e
+fingerprint são validados pelo leitor e pelo ingresso. Registros expiram em
+sete dias e o cache mantém no máximo 1024 itens.
+
+Um nó privado pode consultar o catálogo por saída HTTP(S), sem IPv6 público,
+porta de entrada ou relay. Para manter isolamento, ele não consulta candidatos
+UDP/libp2p/pkarr do próprio swarm privado e não publica registro público. O
+runtime v1 mantém uma só rede P2P por processo: entrar numa pública substitui a
+rede privada antes de reiniciar. Assim um peer público não recebe bootstrap ou
+endereços privados e não há interface pública paralela para encaminhar até a
+rede privada. A alcançabilidade do endpoint listado continua sendo uma
+propriedade separada, verificada pelo navegador e dependente da rota real.
 
 ## 4. Identidade
 
@@ -552,6 +591,13 @@ verifier carrega qual node_id esperar e é fixado na construção. Sem TLS volta
 ser um só, que é o comportamento anterior. O esquema das URLs (`http`/`https`)
 sai de um estado global do processo, `peer_client::tls_ativo`, porque é
 propriedade do nó e não da conexão.
+
+Os clientes HTTP de peer ativam `TCP_NODELAY` em todos os caminhos TCP, claros,
+TLS e sondas. Isso evita que requests pequenos de inferência paguem a combinação
+de Nagle com delayed ACK do sistema operacional. O `PeerClients` claro é
+compartilhado e o cliente TLS é cacheado por `node_id`; as chamadas de
+`for_peer` reutilizam o pool interno do reqwest em vez de criarem um cliente por
+frame.
 
 **Isso vale para o plano de controle também, não só para a inferência.** A
 primeira versão converteu o caminho de inferência e o de transferência e deixou
@@ -681,6 +727,11 @@ efêmero) ou offset que estoura `u16` desligam o QUIC e mantêm o TCP. As portas
 são publicadas no `Announce` como `inference_quic_port` e `gateway_quic_port`. O cliente constrói `host:porta` a partir do endereço
 público anunciado pelo peer, incluindo a forma com IPv6 entre colchetes; nunca
 extrai um destino UDP de `inference_url` nem tenta a porta TCP.
+
+O servidor faz bind em `[::]` com `IPV6_V6ONLY=0` configurado explicitamente
+via `socket2` antes de ser entregue ao Quinn. Isso preserva IPv4 e IPv6 no mesmo
+endpoint em Windows, Linux e macOS; não há um bind alternativo exclusivo para
+IPv4. O cliente do Quinn já configura a mesma opção no socket IPv6 wildcard.
 
 O endpoint QUIC é criado pela identidade do nó, independentemente de
 `tls_required` ou do `announced_tls` usado apenas para consultar a política no

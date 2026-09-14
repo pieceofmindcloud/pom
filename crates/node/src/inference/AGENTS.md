@@ -604,8 +604,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `deployment_name` operacional separado de `model_label`, sobe e
   supervisa o servidor Rust embutido (`infer_server::run`), mantém um cache de
   pesos entre gerações compatíveis e mantém a anotação da fatia servida
-  (Pending → Serving via `/health`). `stop` limpa o cache; uma troca de fatia
-  ou de parâmetros de carregamento também o invalida.
+  (Pending → Serving após confirmação estável de `/health`). `stop` limpa o
+  cache e o journal; uma troca de fatia ou de parâmetros de carregamento também
+  o invalida.
   O runtime mantém o `pom.db` para as decisões do gateway; o servidor de
   inferência autentica saltos internos pela `connection_key` compartilhada em
   redes privadas e por TLS em redes públicas. Não consulta API keys de cliente.
@@ -613,10 +614,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   veio do deploy; `infer_server::run` a entrega ao seletor antes de carregar o
   modelo. O campo escolhido ainda não substitui a observação: a telemetria
   continua sendo a fonte de verdade sobre o motor executado e deixa divergência
-  visível. Depois de `/health` responder `model_loaded`,
+  visível. Depois de duas respostas consecutivas de `/health` com
+  `model_loaded`,
   `spawn_health_watch` também publica no `Network` o `RuntimeCapacity` efetivo
   (`n_ctx`, `max_new_tokens`); apply, erro, stop e unload térmico removem esse
   valor até o próximo runtime pronto.
+  O endpoint `/health` também devolve `model_label`, `deploy_id`,
+  `start_layer`, `end_layer` e `total_layers`. O gateway usa esses campos como
+  a fotografia executável mais recente durante a admissão, corrigindo uma
+  cobertura P2P atrasada antes de chamar o planejador.
   Os testes de `runtime.rs` usam `Network::testkit`, com socket e destino UDP
   presos à loopback, para que anúncios de readiness nunca alcancem a LAN.
 - `spec_lab.rs` (614, `#![cfg(test)]`) - a bancada da especulação:
@@ -1179,9 +1185,11 @@ falha de transporte.
   (`infer_server::run`); muda a config → reinicia o servidor. Anota a fatia em
   `models/lastslice.rs` como **Pending** - mas a anotação só diz o que o `apply`
   decidiu, não o que o servidor conseguiu carregar.
-- `spawn_health_watch` - o **único** ponto que prova a carga: quando `/health`
-  do servidor responde `model_loaded`, promove a anotação de Pending para
-  **Serving**. Só a anotação `Serving` autoriza retomar a fatia num reinício.
+- `spawn_health_watch` - o único ponto que promove a carga: depois de duas
+  sondagens consecutivas de `/health` com `model_loaded`, promove a anotação
+  de Pending para **Serving**. Um primeiro retorno não limpa o journal, pois a
+  queda do processo pode ocorrer exatamente ao construir essa resposta. Só a
+  anotação `Serving` autoriza retomar a fatia num reinício.
 - `note_unloadable_slice` - marca a fatia como não retomável e põe a razão no
   `status.detail` (o que o painel mostra); é o que um nó vazio diz em vez de
   calar - um nó vazio e calado é indistinguível de uma máquina que nunca
@@ -1202,12 +1210,12 @@ falha de transporte.
   captura: custa 7,8-8,2 ms/token contra 0,14-0,67 ms sem ele (medido
   2026-08-12); sem o callback, `hidden_state` recusa com "residual capture
   did not fire".
-- `MAX_RESTARTS=10`, `MAX_CONTEXT_TOKENS=250_000`. O contador é por processo
-  (ver `TODO.md`, item 15):
-  se a fatia não cabe na memória, o processo morre antes de carregar e o
-  `MAX_RESTARTS` morre junto - quem segura esse caso é a anotação (um processo
-  que desiste em `MAX_RESTARTS` apaga a anotação, e a `NeverLoaded` não
-  retoma).
+- `MAX_RESTARTS=10`, `MAX_CONTEXT_TOKENS=250_000`. O orçamento de reinícios
+  é persistido no journal `<config>.last-slice.json` e compartilhado com o
+  supervisor: se a fatia não cabe na memória ou cai durante a confirmação,
+  cada novo processo incrementa `Pending.attempts`. Ao atingir
+  `MAX_AUTOMATIC_ATTEMPTS`, o nó sobe sem modelo e deixa a razão em
+  `status.detail`; `pom undeploy` também grava um bloqueio persistente.
 
 `wire.rs`:
 - `BatchFrame`/`BatchItem` - `frame_version=1`, vários itens nomeados no mesmo

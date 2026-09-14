@@ -407,6 +407,7 @@ pub(super) fn is_pipeline_or_public_path(path: &str) -> bool {
         || path == crate::tls_policy::TLS_POLICY_PATH
         || path == crate::cluster_logs_policy::CLUSTER_LOGS_POLICY_PATH
         || path == crate::network_chat_policy::NETWORK_CHAT_POLICY_PATH
+        || path == crate::webui::NETWORK_SETTINGS_POLICY_PATH
         || path.starts_with("/api/internal/")
         || path.starts_with("/api/transfer/")
         || path.starts_with("/v1/")
@@ -664,6 +665,54 @@ pub(super) fn peers_visible_to_cluster(peers: Vec<PeerInfo>, blocked: &[String])
 /// Keep only peers whose actual inference endpoint can answer now. This is a
 /// per-request admission check: a stale UDP announcer must not poison the
 /// layer count or leave a request waiting for a hop that no longer serves HTTP.
+fn refresh_peer_from_health(peer: PeerInfo, body: &serde_json::Value) -> Option<PeerInfo> {
+    if body
+        .get("model_loaded")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return None;
+    }
+
+    let mut current = peer;
+    if let Some(model) = body
+        .get("model_label")
+        .and_then(serde_json::Value::as_str)
+        .filter(|model| !model.is_empty())
+    {
+        current.model = model.to_string();
+    }
+    if let Some(deploy_id) = body.get("deploy_id").and_then(serde_json::Value::as_str) {
+        current.deploy_id = deploy_id.to_string();
+    }
+
+    // The P2P announcement and the inference process are separate update
+    // streams. Once /health proves the current process is loaded, its range is
+    // the freshest executable topology available to this gateway.
+    let start = body
+        .get("start_layer")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    let end = body
+        .get("end_layer")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    let total = body
+        .get("total_layers")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    if let (Some(start), Some(end), Some(total)) = (start, end, total) {
+        if total == 0 || start > end || end >= total {
+            return None;
+        }
+        current.start_layer = start;
+        current.end_layer = end;
+        current.total_layers = total;
+    }
+
+    Some(current)
+}
+
 pub(super) async fn ready_for_pipeline(
     http: &crate::peer_client::PeerClients,
     health: &AdmissionHealth,
@@ -696,6 +745,17 @@ pub(super) async fn ready_for_pipeline(
             let url = format!("{base}/health");
             match tokio::time::timeout(timeout, cliente.get(url).send()).await {
                 Ok(Ok(response)) if response.status().is_success() => {
+                    let Ok(Ok(body)) =
+                        tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
+                    else {
+                        health.note_failure(&peer.node_id).await;
+                        return None;
+                    };
+                    let node_id = peer.node_id.clone();
+                    let Some(peer) = refresh_peer_from_health(peer, &body) else {
+                        health.note_failure(&node_id).await;
+                        return None;
+                    };
                     health.note_success(&peer.node_id).await;
                     Some(peer)
                 }

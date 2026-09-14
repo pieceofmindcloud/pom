@@ -96,7 +96,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   sem TLS permanecem explicitamente desconhecidos. `effective_quic_enabled`
   combina a flag do pool com a preferência global confirmada pelo principal,
   para que clientes lazy criados antes da propagação não desviem inferência
-  para o túnel.
+  para o túnel. Todos os clientes HTTP de peer ativam `TCP_NODELAY`, inclusive
+  as sondas e clientes TLS, para que requests pequenos de decode não combinem
+  Nagle com delayed ACK do sistema operacional. O `reqwest::Client` compartilhado
+  e o cache por `node_id` também preservam o pool de conexões; `for_peer` não
+  cria um cliente novo a cada frame.
 - `quic.rs` - cliente e servidor HTTP/3 sobre Quinn. O pool mantém uma conexão
   QUIC por peer e endereço anunciado, usa o mesmo pinning Ed25519 da conexão
   TCP e deixa o endpoint UDP pronto na porta dedicada anunciada
@@ -113,6 +117,12 @@ fallback continua em `addr_candidates` + `RouteTable`.
   para não repetir handshake a cada token; a sessão saudável é reutilizada.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
+- `public_directory.rs` - protocolo federado do catálogo público. Registros
+  completos são assinados pelo principal da rede, têm prova de trabalho de 16
+  bits, sequência monotônica, TTL de sete dias e merge determinístico. O cache
+  local aceita no máximo 1024 registros; réplicas são somente ingressos HTTP(S)
+  configuráveis e não autoridade. Um nó privado consulta esses ingressos por
+  saída, mas não usa seu swarm privado como descoberta pública.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
   `ServerCertVerifier` que confere `SHA256(pubkey) == node_id`. Nada vai para o
   disco; não há CA. Ver `docs/subsystems/rede-p2p.md`, seção 5.
@@ -135,6 +145,13 @@ fallback continua em `addr_candidates` + `RouteTable`.
   dele muda a política autoritativa. A retransmissão do Chat da rede é estrela:
   o principal valida API key ativa e `blocked_nodes` antes de enviar a outros
   `node_id`.
+- `NetworkSettings` tem a mesma fronteira de autoridade, mas com leitura
+  explícita: depois do primeiro `Announce` autenticado do principal,
+  `Network::handle_message` acorda a catraca de `GET /api/cluster/network-settings`.
+  O gateway assina a consulta, persiste o documento completo no nó read-only e
+  nunca envia a `connection_key` quando a rede é pública. O subconjunto do
+  diretório público continua sendo apenas convite e descoberta, não fonte de
+  verdade dos metadados.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health`, histerese contra troca de rota por ruído e invalidação imediata
   quando o peer muda seus endereços anunciados. Guarda também a **memória de
@@ -335,7 +352,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `RttTable` - guarda `target_node_id`, `rtt_ms` e `transport` localmente;
   `libp2p` é a medição normal e `direct-health` identifica o fallback de sonda.
   `fresh_snapshot` é a única fonte de RTT para seleção; `snapshot_with_age`
-  conserva a idade para diagnósticos. O endpoint autenticado
+  conserva a idade para diagnósticos. A renovação acontece a cada 120 s,
+  independentemente da re-medida de endereçamento de 5 min. Se o peer anuncia
+  o túnel mas o swarm ainda não está pronto, a sonda HTTP da rota de inferência
+  continua sendo um fallback `direct-health`, em vez de apagar a medição.
+  O endpoint autenticado
   `/api/ui/network/rtt` publica só medições frescas com `source_node_id`.
 
 `pkarr_node.rs`:

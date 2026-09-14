@@ -93,6 +93,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/cluster/network-settings",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
         prefix: "/api/internal/",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -148,6 +153,11 @@ const ROUTE_RULES: &[RouteRule] = &[
     },
     RouteRule {
         prefix: "/api/ui/network/info",
+        method: None,
+        scope: RouteScope::InferNodeAdmin,
+    },
+    RouteRule {
+        prefix: "/api/ui/network/firewall",
         method: None,
         scope: RouteScope::InferNodeAdmin,
     },
@@ -522,6 +532,10 @@ mod policy_tests {
         );
         assert_eq!(
             scope_of("/api/ui/network/geo-reference"),
+            RouteScope::InferNodeAdmin
+        );
+        assert_eq!(
+            scope_of("/api/ui/network/firewall"),
             RouteScope::InferNodeAdmin
         );
         assert_eq!(scope_of("/api/ui/deployments"), RouteScope::NodeAdmin);

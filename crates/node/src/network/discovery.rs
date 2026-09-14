@@ -731,6 +731,7 @@ async fn handle_event(
                     network_chat_enabled,
                     tls,
                 );
+                network.trigger_network_settings_probe(&node_id, &authority_pubkey, tls);
 
                 // Warm the connection ahead of ever needing the NAT-tunnel
                 // fallback: a relay reservation / DCuTR hole-punch has time

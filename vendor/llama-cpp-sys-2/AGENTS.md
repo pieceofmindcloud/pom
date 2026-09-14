@@ -40,6 +40,20 @@ mesma árvore, inclusive quando o Windows materializa o symlink em
 `vendor/llama-cpp-sys-2/llama.cpp`. Esse metadado só expõe o caminho; não copia
 nem altera o fork.
 
+Os wrappers C/C++ usam nomes de headers sem prefixo de diretório. O `build.rs`
+adiciona explicitamente ao bindgen e às pontes C++ os diretórios `include/`,
+`ggml/include/`, `src/`, `common/`, `tools/mtmd/` e `vendor/` da árvore
+selecionada. Assim o mesmo contrato funciona no cache externo de CI, no
+symlink versionado e em `LLAMA_SOURCE`, inclusive para o wrapper mtmd e os
+headers internos.
+
+No Windows, `canonicalize()` pode devolver o prefixo estendido `\\?\`. O
+bindgen aceita esse caminho, mas CMake/MSBuild e algumas versões do MSVC não.
+Antes de entregar a origem, os diretórios ou os arquivos a `cmake::Config` ou
+`cc::Build`, o `build.rs` remove o prefixo; os caminhos chegam aos compiladores
+como `D:\...` ou UNC convencionais, inclusive quando a origem veio de
+`.ci-cache`.
+
 O `build.rs` força o reconfigure do CMake a cada execução. Isso é intencional:
 o fork coleta os arquivos de `src/models` com `file(GLOB ...)`, enquanto Docker
 e Cargo podem reutilizar o diretório `target/` e o `CMakeCache.txt`. Sem o
@@ -82,7 +96,16 @@ Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
 | `llama_rs_get_devices` | os handles elegíveis na mesma ordem padrão que o llama.cpp usaria |
 | `llama_rs_get_device_memory` | o livre e o total atuais dos dispositivos escolhidos pelo posicionamento padrão, na mesma ordem do `common_fit_params` |
 | `llama_rs_benchmark_device` | uma pontuação de um grafo GGML genérico, com cache por handle no processo; zero significa velocidade indeterminável |
-| `llama_rs_backend_devices_json` | descricao e `device_id` PCI dos dispositivos registrados pelos backends Vulkan, Metal, CUDA e CPU |
+| `llama_rs_backend_devices_json` | descricao e `device_id` PCI dos dispositivos registrados pelos backends Vulkan, Metal, CUDA e CPU; nomes e descricoes nulos viram texto vazio, `device_id` ausente continua `null` |
+
+Os snapshots de `placement`, `context_memory` e `backend_devices` são
+diagnósticos pós-carga e não podem derrubar o processo por metadado incompleto
+de um backend. O wrapper converte nomes e descrições C nulos para rótulos locais
+antes de criar `std::string` ou JSON; a fronteira é deliberadamente defensiva
+porque `strlen(nullptr)` em Windows aparece como `ucrtbase!strlen`, sem panic
+Rust. A implementação de `wrapper_common.cpp` mantém essa conversão em helpers
+únicos e a auditoria de todos os `wrapper*.cpp/.h` deve ser repetida quando uma
+nova API do backend passar a alimentar JSON.
 
 `llama_rs_benchmark_device` usa somente a interface pública de backend do GGML
 para executar uma multiplicação matriz-vetor pequena. O POM chama a medição no

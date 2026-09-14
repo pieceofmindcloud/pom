@@ -20,6 +20,11 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   auditoria persistente, `arc-swap` para snapshots lock-free do contexto de
   captura de logs, `h3`/`h3-quinn`/`quinn` para o HTTP/3 opcional dos hops de
   inferência, `routing-contract` (path).
+- No Windows, `windows_firewall.rs` usa COM `INetFwPolicy2` num helper elevado
+  por UAC para manter quatro regras inbound idempotentes: UDP P2P, UDP QUIC de
+  inferência, UDP QUIC do gateway e TCP libp2p. O pedido automático ocorre uma
+  vez por porta efetiva e fica no `local_settings` de `pom.db`; a UI oferece
+  retry sem bloquear o nó ou `Sair da rede`.
 - O provider Hugging Face usa HTTP nativo via `reqwest`; não há executável `hf`,
   runtime Python ou instalação externa no caminho normal.
 - `build = "build.rs"`.
@@ -96,11 +101,12 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    flag ou default 8181.
 4. `--list-models` imprime perfis + modelos do Ollama e sai.
 5. **Sem `--model`** → `start_gateway_only`: P2P + todas as rotas no ar, sem
-   modelo; restaura a fatia anotada (`lastslice::take()`) **se** a anotação
-   estiver `Serving` (a única que o `/health` do servidor viu carregada) e
-   serve. `NeverLoaded` → `note_unloadable_slice` (o nó sobe vazio e diz por
-   quê). É o caminho normal do produto. O flag `--no-default-relays` também é
-   respeitado neste caminho ao montar a rede, evitando que um gateway local de
+   modelo; inspeciona o journal persistente da fatia e restaura somente
+   `Serving` ou `Idle`. Uma fatia `Pending` conta tentativas no disco e,
+   depois de `MAX_AUTOMATIC_ATTEMPTS=10`, sobe vazia com
+   `note_unloadable_slice`. É o caminho normal do produto. O flag
+   `--no-default-relays` também é respeitado neste caminho ao montar a rede,
+   evitando que um gateway local de
    teste disque relays públicos por engano.
 6. **Com `--model`**: exige `--memory` (a menos que `--inference-port` esteja
    setado). Resolução do perfil, nesta ordem: `ModelProfile::find` (nome do
@@ -121,8 +127,8 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    `--no-discovery` → `detach`.
 10. Faixa de camadas, por precedência: `--start-layer/--end-layer` → nome do
     arquivo (`parse_layers_from_filename`, ex. `qwen_0_15.gguf`) →
-    `calculate_assignment` (gap-filling). `lastslice::take()` é consumido
-    apenas no caminho sem `--model`; aqui ele só limpa o arquivo órfão.
+    `calculate_assignment` (gap-filling). O journal é lido por
+    `lastslice::inspect()` e só é removido por uma decisão explícita.
 11. Antes de restaurar ou aplicar um modelo, inicia o monitor térmico do
     `NodeRuntime`; com `--inference-port`, monta `runtime::NodeConfig` e chama
     `NodeRuntime::apply` (sobe o servidor de inferência Rust **em-processo** e
@@ -169,14 +175,27 @@ gráfica.
 
 No Windows, `main.rs` marca o executável com `windows_subsystem = "windows"`
 para que o processo não crie um console. `windows_status.rs` move o serviço
-Tokio para uma thread de fundo e conduz a janela Tao na thread principal; Wry
-carrega o `/admin-ui/chat` no WebView2 instalado pelo sistema e `tray-icon`
-registra o menu da área de notificação. Fechar a janela esconde-a na bandeja,
-enquanto `Abrir POM` restaura e `Sair do POM` termina o processo inteiro.
+Tokio para uma thread de fundo, espera o sinal enviado depois do bind do
+gateway e só então conduz a janela Tao na thread principal; Wry carrega o
+`/admin-ui/chat` no WebView2 instalado pelo sistema e `tray-icon` registra o
+menu da área de notificação. O tracing também grava `<project_root>/pom.log`,
+porque a redireção de stdout/stderr do PowerShell não é confiável para um
+binário GUI. Fechar a janela esconde-a na bandeja, enquanto `Abrir POM`
+restaura e `Sair do POM` termina o processo inteiro.
+
+O servidor QUIC mantém o bind em `[::]`, mas cria o `UdpSocket` com
+`socket2::Socket::set_only_v6(false)` antes de entregá-lo ao Quinn. Assim o
+mesmo endpoint aceita IPv4 e IPv6 no Windows, Linux e macOS; o construtor de
+cliente do Quinn já aplica a mesma opção.
 
 `start_setup_mode` e `start_gateway_only` estão em `main.rs` (não num módulo
 separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do
 `--ollama-url` e a anuncia **sempre**, com ou sem `--gateway`.
+
+No Windows, o processo pai supervisiona o filho nativo: uma saída anormal
+relança o POM, mas `Sair do POM` retorna código zero e não relança.
+`pom undeploy` grava um bloqueio persistente para impedir retomadas
+automáticas de uma implantação problemática.
 
 ## src/ subpastas
 

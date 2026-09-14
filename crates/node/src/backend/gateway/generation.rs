@@ -369,6 +369,9 @@ pub(super) async fn generate_stream_inner(
 
     let orchestration_started = Instant::now();
     let orchestration_wall = wall_clock_ms();
+    // O anúncio P2P pode chegar depois da carga local. A admissão devolve a
+    // fotografia executável do `/health` junto com cada peer, para que o
+    // planejador não transforme essa janela de propagação num buraco falso.
     let peers = ready_for_pipeline(
         &state.peer_http,
         &state.admission_health,

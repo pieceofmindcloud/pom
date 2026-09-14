@@ -12,22 +12,22 @@
 #include <unordered_map>
 #include <vector>
 
-#include "llama.cpp/common/common.h"
+#include "common.h"
 // Cabeçalhos internos: `llama_model` (`tensors_by_name`, `dev_layer`), o
 // `llama-ext.h` de estágio (`llama_get_memory_breakdown`) e o `llama_context`
 // (`get_cparams`, o Flash Attention resolvido). Nada disso está no `llama.h`
 // público, e é justamente o que responde onde cada camada ficou e com que
 // parâmetros o contexto ficou de pé.
-#include "llama.cpp/src/llama-ext.h"
-#include "llama.cpp/src/llama-context.h"
-#include "llama.cpp/src/llama-model.h"
-#include "llama.cpp/ggml/include/ggml-backend.h"
-#include "llama.cpp/ggml/include/ggml-cpu.h"
-#include "llama.cpp/common/fit.h"
-#include "llama.cpp/common/log.h"
-#include "llama.cpp/common/json-schema-to-grammar.h"
-#include "llama.cpp/common/speculative.h"
-#include "llama.cpp/include/llama.h"
+#include "llama-ext.h"
+#include "llama-context.h"
+#include "llama-model.h"
+#include "ggml-backend.h"
+#include "ggml-cpu.h"
+#include "fit.h"
+#include "log.h"
+#include "json-schema-to-grammar.h"
+#include "speculative.h"
+#include "llama.h"
 #include "wrapper_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -179,6 +179,17 @@ extern "C" int llama_rs_fit_params(
         log_level));
 }
 
+// Backend plugins expose metadata as borrowed C strings. The GGML interface
+// describes these values but does not make non-null a part of the ABI, and a
+// third-party/backend failure can therefore return nullptr. Passing such a
+// value to std::string or nlohmann::json calls strlen(nullptr) on Windows.
+// Health diagnostics must remain observational even when backend metadata is
+// incomplete: losing the label is preferable to taking down the node after a
+// successful model load.
+static const char * llama_rs_cstr_or(const char * value, const char * fallback) {
+    return value ? value : fallback;
+}
+
 static std::vector<ggml_backend_dev_t> llama_rs_default_devices() {
     // Keep this selection in lockstep with llama_prepare_model_devices: RPC
     // devices first, then discrete GPUs, then integrated GPUs only when there
@@ -189,6 +200,9 @@ static std::vector<ggml_backend_dev_t> llama_rs_default_devices() {
 
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (!dev) {
+            continue;
+        }
         switch (ggml_backend_dev_type(dev)) {
             case GGML_BACKEND_DEVICE_TYPE_CPU:
             case GGML_BACKEND_DEVICE_TYPE_ACCEL:
@@ -196,18 +210,18 @@ static std::vector<ggml_backend_dev_t> llama_rs_default_devices() {
 
             case GGML_BACKEND_DEVICE_TYPE_GPU: {
                 ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
-                if (std::string(ggml_backend_reg_name(reg)) == "RPC") {
+                if (reg && std::string(llama_rs_cstr_or(ggml_backend_reg_name(reg), "")) == "RPC") {
                     rpc_servers.push_back(dev);
                     break;
                 }
 
-                ggml_backend_dev_props props;
+                ggml_backend_dev_props props = {};
                 ggml_backend_dev_get_props(dev, &props);
                 const bool duplicate = std::any_of(
                     gpus.begin(),
                     gpus.end(),
                     [&props](ggml_backend_dev_t existing) {
-                        ggml_backend_dev_props existing_props;
+                        ggml_backend_dev_props existing_props = {};
                         ggml_backend_dev_get_props(existing, &existing_props);
                         return props.device_id && existing_props.device_id
                             && std::strcmp(props.device_id, existing_props.device_id) == 0;
@@ -394,11 +408,33 @@ static int llama_rs_tensor_block(const std::string & name) {
 // `map` ordenado só para a saída sair estável entre execuções.
 using llama_rs_buffer_bytes = std::map<std::string, size_t>;
 
+static const char * llama_rs_backend_name(ggml_backend_dev_t dev) {
+    return dev ? llama_rs_cstr_or(ggml_backend_dev_name(dev), "<unknown-device>") : "CPU";
+}
+
+static const char * llama_rs_backend_description(ggml_backend_dev_t dev) {
+    return dev
+        ? llama_rs_cstr_or(ggml_backend_dev_description(dev), "<unknown-description>")
+        : "CPU";
+}
+
+static const char * llama_rs_buffer_name(ggml_backend_buffer_t buffer) {
+    return buffer
+        ? llama_rs_cstr_or(ggml_backend_buffer_name(buffer), "<unknown-buffer>")
+        : "<unknown-buffer>";
+}
+
+static const char * llama_rs_buft_name(ggml_backend_buffer_type_t buft) {
+    return buft
+        ? llama_rs_cstr_or(ggml_backend_buft_name(buft), "<unknown-buffer-type>")
+        : "<unknown-buffer-type>";
+}
+
 static void llama_rs_account(llama_rs_buffer_bytes & into, const ggml_tensor * t) {
     if (!t || !t->buffer) {
         return;
     }
-    into[ggml_backend_buffer_name(t->buffer)] += ggml_nbytes(t);
+    into[llama_rs_buffer_name(t->buffer)] += ggml_nbytes(t);
 }
 
 static nlohmann::ordered_json llama_rs_buffers_json(const llama_rs_buffer_bytes & bytes) {
@@ -407,6 +443,21 @@ static nlohmann::ordered_json llama_rs_buffers_json(const llama_rs_buffer_bytes 
         out.push_back({{"buffer", name}, {"bytes", n}});
     }
     return out;
+}
+
+// Backend metadata is borrowed from llama.cpp. Keep the null-to-JSON policy in
+// one place so every field that is meant to be textual is safe even when a
+// backend returns incomplete properties. `device_id` is intentionally kept as
+// JSON null when absent because it is an optional identifier, not a label.
+static nlohmann::ordered_json llama_rs_backend_device_json(
+        const char * backend,
+        const char * description,
+        const char * device_id) {
+    return {
+        {"backend",     llama_rs_cstr_or(backend, "")},
+        {"description", llama_rs_cstr_or(description, "")},
+        {"device_id",   device_id ? nlohmann::ordered_json(device_id) : nullptr},
+    };
 }
 
 extern "C" llama_rs_status llama_rs_model_placement_json(const struct llama_model * model, char ** out_json) {
@@ -440,7 +491,7 @@ extern "C" llama_rs_status llama_rs_model_placement_json(const struct llama_mode
             ggml_backend_dev_t dev = model->dev_layer(il);
             layers.push_back({
                 {"layer",   il},
-                {"device",  dev ? ggml_backend_dev_name(dev) : "CPU"},
+                {"device",  llama_rs_backend_name(dev)},
                 {"buffers", llama_rs_buffers_json(per_layer[(size_t) il])},
             });
         }
@@ -453,8 +504,8 @@ extern "C" llama_rs_status llama_rs_model_placement_json(const struct llama_mode
                 continue;
             }
             devices.push_back({
-                {"name",        ggml_backend_dev_name(dev)},
-                {"description", ggml_backend_dev_description(dev)},
+                {"name",        llama_rs_backend_name(dev)},
+                {"description", llama_rs_backend_description(dev)},
             });
         }
 
@@ -465,7 +516,7 @@ extern "C" llama_rs_status llama_rs_model_placement_json(const struct llama_mode
             {"devices",              devices},
             {"layers",               layers},
             {"output", {
-                {"device",  dev_out ? ggml_backend_dev_name(dev_out) : "CPU"},
+                {"device",  llama_rs_backend_name(dev_out)},
                 {"buffers", llama_rs_buffers_json(other)},
             }},
             {"totals", llama_rs_buffers_json(totals)},
@@ -497,8 +548,8 @@ static nlohmann::ordered_json llama_rs_context_memory_value(
             }
         }
         buffers.push_back({
-            {"buffer",       ggml_backend_buft_name(buft)},
-            {"device",       dev ? ggml_backend_dev_name(dev) : "CPU"},
+            {"buffer",       llama_rs_buft_name(buft)},
+            {"device",       llama_rs_backend_name(dev)},
             {"host",         ggml_backend_buft_is_host(buft)},
             {"device_index", device_index >= 0 ? nlohmann::ordered_json(device_index) : nullptr},
             {"model",        data.model},
@@ -528,11 +579,10 @@ extern "C" llama_rs_status llama_rs_backend_devices_json(char ** out_json) {
             ggml_backend_dev_props props = {};
             ggml_backend_dev_get_props(dev, &props);
             ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
-            devices.push_back({
-                {"backend", reg ? ggml_backend_reg_name(reg) : ""},
-                {"description", props.description ? props.description : ""},
-                {"device_id", props.device_id ? props.device_id : nullptr},
-            });
+            devices.push_back(llama_rs_backend_device_json(
+                reg ? ggml_backend_reg_name(reg) : nullptr,
+                props.description,
+                props.device_id));
         }
 
         *out_json = llama_rs_dup_string(devices.dump());

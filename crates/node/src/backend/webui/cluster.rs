@@ -300,6 +300,15 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 || peer.node_id == self_id
         })
         .collect::<Vec<_>>();
+    let runtime_ready_by_node: HashMap<_, _> = peers
+        .iter()
+        .map(|peer| {
+            (
+                peer.node_id.clone(),
+                peer.runtime_capacity.is_some() || peer.idle,
+            )
+        })
+        .collect();
     let fingerprint = cluster_fingerprint(&state, &peers).await;
     let mut cache = state.cluster_cache.lock().await;
     if let Some(snapshot) = cache.get(&fingerprint, Instant::now(), CLUSTER_CACHE_TTL) {
@@ -507,6 +516,19 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 }
             }
             let covered_layers = coverage.iter().filter(|covered| **covered).count();
+            let runtime_ready = views
+                .iter()
+                .filter(|view| {
+                    view.capabilities
+                        .iter()
+                        .any(|capability| capability.model_id == model_id)
+                })
+                .all(|view| {
+                    runtime_ready_by_node
+                        .get(&view.node_id)
+                        .copied()
+                        .unwrap_or(false)
+                });
             let mut unreadable_nodes: Vec<String> = views
                 .iter()
                 .filter(|view| !view.is_self && (view.unreachable.is_some() || view.rediscovering))
@@ -523,7 +545,10 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 model_id,
                 total_layers,
                 covered_layers,
-                complete: total_layers > 0 && covered_layers == total_layers as usize,
+                complete: total_layers > 0
+                    && covered_layers == total_layers as usize
+                    && runtime_ready
+                    && unreadable_nodes.is_empty(),
                 coverage,
                 unreadable_nodes,
             }
@@ -634,6 +659,7 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
         .iter()
         .filter(|peer| {
             peer.is_alive()
+                && (peer.runtime_capacity.is_some() || peer.idle)
                 && ((peer.node_id == local_id
                     && local_config.as_ref().is_some_and(|config| {
                         config.start_layer == 0 && config.model_label == active_model

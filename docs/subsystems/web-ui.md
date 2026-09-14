@@ -79,6 +79,11 @@ indisponibilidade com botão de repetir, em vez de deixar o painel vazio. Os
 textos dessa página ficam em
 `assets/brand/macos/{en,pt-BR}.lproj/Localizable.strings`.
 
+No Windows, o serviço Tokio envia um sinal depois de o listener do gateway
+aceitar a porta; `windows_status.rs` só então constrói o WebView2. Isso evita
+que um arranque lento, especialmente com `RUST_LOG=debug`, abra a página antes
+de o gateway estar escutando e deixe `ERR_CONNECTION_REFUSED` preso na janela.
+
 O ícone do item é uma **template image**: o AppKit descarta a cor e pinta o
 canal alfa com a cor da barra, o que resolve tema claro e escuro de uma só vez.
 Por isso ele não pode ser a marca como ela é - `pom-icon-src.png` é um quadrado
@@ -210,6 +215,14 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias). O wizard de configuração não aparece
   no menu, embora sua rota de teste continue disponível.
+
+Em uma rede pública, `NetworkSettings` local é uma réplica read-only para
+`node` e `infer`. O diretório de entrada carrega apenas os dados necessários
+para descobrir a rede; depois que o `Announce` autenticado do principal chega,
+o backend busca o documento completo, incluindo nome, organização, descrição,
+regras, canais e visibilidade. A tela não deve tratar capacidades anunciadas
+durante o boot como pipeline pronta: o catálogo só marca cobertura completa
+quando cada peer confirmou `/health` ou está `idle`.
 - `*` -> NotFound
 
 No perfil `infer`, a Sidebar deixa de ser uma lista de telas: `ChatSessionList`
@@ -234,6 +247,10 @@ para rede pública e opcionais, mas persistidos, para local/private. O nome
 público também é obrigatório para rede pública em todos os perfis e aparece no
 passo de confiança de node/infer antes do salvamento. A cidade manual é válida
 quando a referência SQLite não a contém.
+
+O wizard também pede pelo menos um ingresso HTTP(S) do diretório federado,
+separado por vírgulas, para uma rede pública. Um nó privado pode conservar
+esses ingressos para listar o catálogo por saída.
 
 O passo de modelos combina o catálogo local com referências do Hugging Face,
 sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como
@@ -498,7 +515,11 @@ administrativa, token administrativo, instalação da raiz, verificações e `PO
 instala a raiz de confiança separada e grava `pom.json` antes do respawn. O
 respawn cria uma sessão independente em Unix, herda os argumentos originais e
 redireciona stdout/stderr para `<project_root>/pom.log`, para que uma falha de
-arranque após o save fique diagnosticável. A sugestão de `advertise_addr` usa
+arranque após o save fique diagnosticável. No Windows o binário não cria
+console, então o tracing também abre `<project_root>/pom.log` diretamente; a
+redireção PowerShell `*> arquivo` não é a fonte confiável nesse modo. Para a
+reprodução nativa, use `RUST_LOG=debug` e recolha esse `pom.log` junto com
+`infer_server_<porta>.log`. A sugestão de `advertise_addr` usa
 a enumeração real das interfaces: IPv6 global não temporário primeiro, depois
 IPv4; ela é apenas uma sugestão editável e o anúncio continua redetectando os
 endereços em cada ciclo. A resposta de nó configurado publica
@@ -506,8 +527,8 @@ endereços em cada ciclo. A resposta de nó configurado publica
 capabilities do túnel, usados pelo deploy TP para transportar o endereço correto
 até cada rank.
 
-`GET /api/public/networks` lista metadados de redes públicas conhecidos pela
-descoberta pkarr existente. O label geo canônico (`com.<país>.<cidade>.<node>`)
+`GET /api/public/networks` combina cache e ingressos do diretório federado com
+a descoberta pkarr quando a rede ativa é pública. O label geo canônico (`com.<país>.<cidade>.<node>`)
 é campo do registro, nunca a chave pkarr. O índice local persiste labels já
 observados e aceita `geo_prefix`/`geo_suffix`, permitindo filtrar candidatos
 antes das sondas HTTP. A página `/redes-publicas` é full-bleed, como Logs, e
@@ -515,12 +536,12 @@ mostra uma tabela com nome, organização, país/cidade, label, nós, latência,
 VRAM, modelos e endereço. As métricas do cluster local são calculadas de
 `ClusterView` quando a rede corresponde; os demais campos aparecem como
 indisponíveis porque o catálogo público atual não os fornece. O documento de
-confiança não é publicado por esta lista; o operador recebe-o do responsável
-da rede por um canal próprio. A lista não enumera chaves arbitrárias do DHT:
-cada registro precisa primeiro chegar como candidato pela descoberta UDP/libp2p
-ou pela tabela local. Portanto um nó novo precisa de um bootstrap ou de uma
-conectividade comum com o nó que publicou o anúncio; um endereço IPv6 apenas
-presente na interface, mas sem rota externa, não satisfaz essa condição.
+confiança viaja dentro do registro federado assinado para o join sem segredo.
+Um nó privado consulta o diretório por saída HTTP(S), mas não usa o swarm
+privado para buscar candidatos. O endereço listado ainda pode ser inalcançável,
+por exemplo quando é IPv6 anunciado sem rota externa. Entrar numa rede pública
+encerra a rede privada atual; duas redes P2P simultâneas não são suportadas no
+v1.
 
 O **perfil** da interface (*Menu e rotas*) não entra nesta conta: ele é escolha
 local do navegador e não vale como credencial. As rotas administrativas usam a
@@ -1171,7 +1192,10 @@ chama `POST /api/ui/network/leave`, que revoga a confiança local, prepara o
 `pom.json` para o setup e reinicia este nó; depois a interface volta para
 `/setup`. Ela é deliberadamente diferente de `Sair da rede`, no painel
 `Esta máquina`, que chama `POST /api/ui/leave` e apenas tira a máquina do
-cluster sem apagar sua configuração local.
+cluster sem apagar sua configuração local. Essa ação também fica disponível
+para um perfil node sem autoridade administrativa e não depende de modelo
+carregado ou estado Ready: o handler para o runtime, limpa o journal da
+implantação e desanuncia a máquina antes de responder.
 
 ## Defeitos anotados
 

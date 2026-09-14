@@ -58,6 +58,21 @@ jobs:
       CMAKE_CXX_COMPILER_LAUNCHER: sccache
       CMAKE_CUDA_COMPILER_LAUNCHER: sccache
       CCACHE: sccache
+      # Temporário para a reprodução do crash no Windows. Cargo grava símbolos
+      # Rust e C++ gravam CodeView nos objetos; /DEBUG:FULL faz o linker
+      # preservar os símbolos no pom.pdb que vai para o ZIP. /Z7 evita que os
+      # compiladores paralelos disputem um único vc140.pdb no runner.
+      CARGO_PROFILE_RELEASE_DEBUG: "2"
+      # O profile release normal usa lto=fat e codegen-units=1. Com símbolos
+      # completos isso estoura a memória do linker no runner Windows padrão;
+      # este build é diagnóstico e pode sacrificar otimização por estabilidade.
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      RUSTFLAGS: "-C link-arg=/DEBUG:FULL"
+      CFLAGS: /Z7
+      CXXFLAGS: /Z7
+      CMAKE_C_FLAGS: /Z7
+      CMAKE_CXX_FLAGS: /Z7
     steps:
       - uses: actions/checkout@v4
 
@@ -89,8 +104,17 @@ jobs:
         shell: bash
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
 
-      - name: Compilar
+      - name: Compilar com símbolos de debug temporários
         run: cargo build --release --locked
+
+      - name: Verificar PDB correspondente ao binário
+        shell: pwsh
+        run: |
+          $pdb = "target/release/pom.pdb"
+          if (-not (Test-Path $pdb)) {
+            throw "O build Windows não gerou $pdb"
+          }
+          Get-Item target/release/pom.exe, $pdb | Select-Object FullName, Length, LastWriteTime
 
       - uses: actions/download-artifact@v4
         with:
@@ -106,6 +130,7 @@ jobs:
         run: |
           nome="pom-${{ inputs.version }}-x86_64-pc-windows-msvc"
           cp target/release/pom.exe pacote/
+          cp target/release/pom.pdb pacote/
           cp README.md pacote/ 2>/dev/null || true
           mv pacote "$nome"
           7z a -tzip "$nome.zip" "$nome"

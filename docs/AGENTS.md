@@ -68,6 +68,9 @@ reduzir suas camadas. `implantacao.md` também documenta a
 seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
 completa, além da prévia analítica de capacidade sem chamada ao fit nativo.
+`superpowers/plans/2026-09-12-windows-crash-root-cause.md` registra o
+rastreamento da confirmação `model_loaded`, as fronteiras nativas do `/health`
+e as evidências que ainda precisam de reprodução real no Windows.
 `web-ui.md` descreve também a escolha de exposição administrativa, o token
 humano separado da `connection_key`, a autoridade do perfil `admin` sobre
 adicionar máquina e desimplantar e a orientação de TLS em Preferências. A
@@ -81,8 +84,9 @@ em campo. A seção 2.1.1 registra a regressão de endereço anunciada de
 2026-09-04, a reaplicação da rota morta por lote e a memória de falha que a
 corrige.
 `api-http.md` registra também que o endereço anunciado é uma mutação local
-disponível a todo perfil e que o fallback da interface não intercepta métodos
-de rotas administrativas concretas. `implantacao.md` e `inferencia.md` mantêm
+disponível a todo perfil, que o diretório público federado aceita somente
+registros assinados e que o fallback da interface não intercepta métodos de
+rotas administrativas concretas. `implantacao.md` e `inferencia.md` mantêm
 o contrato de que deployments `idle` continuam selecionáveis pelo nome, mesmo
 sem capacidade efetiva anunciada, para que a primeira requisição possa acordá-los.
 

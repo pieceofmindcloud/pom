@@ -601,6 +601,8 @@ fn anchor_admin(
             pending_transfer: None,
             completed_transfers: Vec::new(),
             replay: Vec::new(),
+            setup: None,
+            setup_signature: String::new(),
         };
         (document, true)
     };

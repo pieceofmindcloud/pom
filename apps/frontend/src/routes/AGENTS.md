@@ -23,19 +23,21 @@ Per-file list:
 
 - `Setup.tsx` - Wizard real de primeiro acesso. Começa pelo hardware e usa
   `setupWizardFlow.ts` para manter os percursos separados: administrador cria
-  a rede, node escolhe RAM/CPU e espaço de fatias, e infer apenas instala a
-  raiz de confiança. Todos os perfis registram localização, e a seleção de
-  país/cidade vem da referência SQLite do nó; rede pública exige os dois. As
-  telas conversam com `/api/setup/*`; quando node ou infer escolhem rede
-  pública, o último passo também exige e mostra o nome público antes de
-  habilitar o salvamento; não confundir com o protótipo
+  a rede, escolhe a identidade e informa o IPv6 anunciado na primeira tela;
+  node e infer importam a identidade completa da rede pelo trust document. O
+  caminho node/infer não mostra localização, nome público, endereço,
+  bootstrap ou ingressos do diretório: pede somente o arquivo de confiança e,
+  para redes privadas, a chave de conexão. O admin continua escolhendo
+  país/cidade pela referência SQLite; rede pública exige os dois. As telas
+  conversam com `/api/setup/*`; não confundir com o protótipo
   `SetupWizard.tsx`.
 
   Redes públicas exigem também pelo menos um ingresso do diretório federado,
-  informado como URLs HTTP(S) separadas por vírgula. Um nó privado pode manter
-  esses ingressos para consultar o catálogo por saída; o join público encerra a
-  sessão privada antes de reconfigurar o nó, sem suporte a duas redes P2P
-  simultâneas no v1.
+  informado pelo admin como URLs HTTP(S) separadas por vírgula. O admin grava
+  esses ingressos, o nome público, a política e o bootstrap no bloco `setup`
+  assinado dentro do `.pom-admin-trust.json`; o node apenas importa esse bloco.
+  O join público encerra a sessão privada antes de reconfigurar o nó, sem
+  suporte a duas redes P2P simultâneas no v1.
 
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
   padrão de Logs: tabela rolável com nome público, organização, localização,
@@ -503,21 +505,22 @@ Per-file list:
   friendly name and full path, but sends only the basename; the backend resolves
   it again and the receiver sees only an opaque grant.
 - `Setup.tsx` - First run (no `pom.json`): real wizard backed by
-  `/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
-  `/api/setup/health` and `/api/setup/save`. It shows hardware first, then
-  resource reserves, local and Hugging Face reference models, the standard
-  `~/.pom/models` and `~/.pom/models_sliced` paths, shared slice space and the
-  trust-root flow. Public networks use signed control without a shared secret;
-  private networks also carry one connection secret. The node saves config and
-  trust root, respawns and the screen reloads. It reuses `WizardLayout` but is
-  separate from the mock-only `SetupWizard.tsx`. The joining screen accepts the
-  trust document by paste or `.json` upload, derives the anchor fingerprint and
-  no longer asks for an extra confirmation checkbox. The
-  administrator invitation downloads the actual trust filename returned by the
-  server and copies a connection secret only for local/private networks. An
-  admin password is requested only when the interface is exposed to the network;
-  optional peer-link TLS starts disabled because libp2p already protects the
-  peer connection.
+  `/api/setup/hardware`, `/api/setup/geo-reference`,
+  `/api/setup/admin-anchor/preview`, `/api/setup/health` and
+  `/api/setup/save`. The hardware response includes the effective `p2p_port`,
+  so the first screen renders the IPv6 host and its configured port without a
+  frontend port constant. The admin preview signs the network identity,
+  announced address, bootstrap and public-directory replicas into the trust
+  document. A joining node accepts that document by paste or `.json` upload,
+  derives the anchor fingerprint and imports those values without asking for
+  another network form. Public networks use signed control without a shared
+  secret; private networks also carry one connection secret. The node saves
+  config and trust root, respawns and the screen reloads. The first machine
+  screen exposes the shared-disk capacity as a slider against detected free
+  space. The health checks and final summary are one `Revisão` step after the
+  invitation or trust import, rather than two wizard steps. It reuses
+  `WizardLayout` without a second product toolbar, but is separate from the
+  mock-only `SetupWizard.tsx`.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
   only shows the difference), with who is missing it. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and

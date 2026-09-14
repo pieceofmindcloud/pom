@@ -382,7 +382,11 @@ profile policy remains the effective authorization boundary.
   transcription - spaces, colons, case - never the value); `adopt_anchor`
   writes a transported chain onto a node that has none and refuses a node that
   already has one, because replacing a root is manual re-anchoring on the
-  machine (`--replace`), not an interface gesture.
+  machine (`--replace`), not an interface gesture. A chain created by first
+  access also carries a signed `setup` block with the network name, visibility,
+  access policy, geographic label, admin advertised address, bootstrap address
+  and federated-directory replicas, so a joining node does not retype network
+  identity data.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
   `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
   `launch.rs`, `lifecycle.rs`, `node.rs` e fragmentos de testes: survey de
@@ -954,8 +958,13 @@ faz o download autenticado do blob persistido.
   `/api/setup/health` and `/api/setup/save` on its loopback-only router. Saving
   installs the trust document, persists network details in both `pom.json` and
   `pom.db`, and respawns. `setup_pending` keeps the router active after leaving
-  a network while preserving local hardware preferences. The setup
-  anchor preview returns a private connection key only for local/private
+  a network while preserving local hardware preferences. The setup hardware
+  response returns the effective P2P port used to render the advertised IPv6;
+  the anchor preview signs the network setup metadata into the trust document.
+  The setup health response also reports the existing Windows firewall-rule
+  check; on Mac/Linux it reports whether the POM ports are locally available
+  for binding while no unified firewall API is available.
+  The preview returns a private connection key only for local/private
   visibility; the administrator chooses a password only for network exposure,
   and `pom.json` persists only its Argon2id hash. Localhost-only exposure has
   no administrative password.

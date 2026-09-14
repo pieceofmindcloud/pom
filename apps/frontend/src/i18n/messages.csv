@@ -1601,9 +1601,9 @@ setupWizard.adminToken,Administrative access token,Token de acesso administrativ
 setupWizard.adminTokenDetail,This generated token lets an administrator open the interface. Save it in a password manager.,Este token gerado permite que um administrador abra a interface. Salve-o em um gerenciador de senhas.
 setupWizard.adminTokenFailed,The administrative token could not be generated,O token administrativo não pôde ser gerado
 setupWizard.adminTokenMissing,The token will be generated here,O token será gerado aqui
-setupWizard.advertiseAddress,Address this machine will announce,Endereço que esta máquina anunciará
-setupWizard.advertiseAddressHint,Use a stable public host and port when this machine is behind a router.,Use um host e uma porta públicos estáveis quando esta máquina estiver atrás de um roteador.
-setupWizard.advertiseAddressPlaceholder,example.com:8080,exemplo.com:8080
+setupWizard.advertiseAddress,IPv6 address this machine will announce,Endereço IPv6 que esta máquina anunciará
+setupWizard.advertiseAddressHint,Use this machine's stable public IPv6. The POM port is added automatically.,Use o IPv6 público estável desta máquina. A porta do POM é adicionada automaticamente.
+setupWizard.advertiseAddressPlaceholder,2001:db8::1,2001:db8::1
 setupWizard.anchorFailed,The trust root could not be created,Não foi possível criar a raiz de confiança
 setupWizard.anyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança
 setupWizard.authorizedPeople,People approved by the administrator,Pessoas aprovadas pelo administrador
@@ -1614,6 +1614,8 @@ setupWizard.bootstrapPlaceholder,example.com:42777,exemplo.com:42777
 setupWizard.channels,Discord or Telegram channels,Canais do Discord ou Telegram
 setupWizard.checkConfig,Initial configuration ready,Configuração inicial pronta
 setupWizard.checkCuda,CUDA working,CUDA funcionando
+setupWizard.checkFirewall,Firewall ports allowed,Portas do firewall permitidas
+setupWizard.checkFirewallLocal,POM ports available locally,Portas do POM disponíveis localmente
 setupWizard.checkGpu,GPU detected,GPU detectada
 setupWizard.checkIpv6,Public IPv6 enabled,IPv6 público habilitado
 setupWizard.checkP2p,P2P discovery working,Descoberta P2P funcionando
@@ -1633,6 +1635,7 @@ setupWizard.cpuReserve,CPU available for the system,CPU disponível para o siste
 setupWizard.cpuReserveDetail,More means POM yields more often to other work.,Mais significa que o POM cede mais vezes a outras tarefas.
 setupWizard.cpuValue,{count} logical cores,{count} núcleos lógicos
 setupWizard.cudaAvailable,CUDA ready,CUDA disponível
+setupWizard.cudaInstallHint,Install the CUDA toolkit and restart POM to use this NVIDIA GPU.,Instale o toolkit CUDA e reinicie o POM para usar esta GPU NVIDIA.
 setupWizard.description,Description,Descrição
 setupWizard.discoveryAvailable,Discovery ready,Descoberta disponível
 setupWizard.diskAvailable,{value} GB available,{value} GB disponíveis
@@ -1651,9 +1654,7 @@ setupWizard.finish,Save and restart,Salvar e reiniciar
 setupWizard.generated,Generated,Gerado
 setupWizard.gpu,GPU,GPU
 setupWizard.gpuDetected,GPU detected,GPU detectada
-setupWizard.gpuMaxNote,GPU capacity is always offered at its maximum. You only choose how much RAM and CPU to keep for the system.,A capacidade da GPU é sempre oferecida no máximo. Você só escolhe quanta RAM e CPU manter para o sistema.
-setupWizard.hardwareDetail,These readings describe what this machine can share right now.,Estas informações mostram o que esta máquina pode compartilhar agora.
-setupWizard.hardwareTitle,This is what POM found,Isso foi o que o POM encontrou
+setupWizard.gpuUnavailable,No dedicated GPU detected,Nenhuma GPU dedicada detectada
 setupWizard.hardwareUnavailable,Hardware detection is not available yet.,A detecção de hardware ainda não está disponível.
 setupWizard.healthDetail,These are general checks only. Model inference is checked after the node joins the network.,Estas são apenas verificações gerais. A inferência do modelo será verificada depois que o nó entrar na rede.
 setupWizard.healthFailed,The general checks could not run,Não foi possível executar as verificações gerais
@@ -1699,8 +1700,7 @@ setupWizard.noModelSelected,No model selected,Nenhum modelo selecionado
 setupWizard.noModels,No model was found yet. You can choose one after setup.,Nenhum modelo foi encontrado ainda. Você poderá escolher um depois da configuração.
 setupWizard.node,Network node,Nó da rede
 setupWizard.nodeDetail,Share this machine's resources with a network you already trust.,Compartilhe os recursos desta máquina com uma rede em que você confia.
-setupWizard.nodeName,Name this node,Nomeie este nó
-setupWizard.nodeNameHint,This is how the machine appears to people in the network.,É assim que esta máquina aparecerá para as pessoas na rede.
+setupWizard.nodeName,Machine name,Nome da máquina
 setupWizard.notAvailable,Not available,Não disponível
 setupWizard.ok,OK,OK
 setupWizard.organization,Organization,Organização
@@ -1729,7 +1729,6 @@ setupWizard.resourcesTitle,How much should POM leave for the system?,Quanto o PO
 setupWizard.reviewDetail,Review the essentials once. POM will save the configuration and restart this node.,Revise o essencial uma vez. O POM salvará a configuração e reiniciará este nó.
 setupWizard.reviewNote,The trust document is stored separately from pom.json so changing the profile cannot create authority.,O documento de confiança fica separado do pom.json para que mudar a função não crie autoridade.
 setupWizard.reviewTitle,Everything looks ready,Está tudo pronto
-setupWizard.roleHint,You can change the machine role later from the administration screens.,Você poderá mudar o papel da máquina depois pelas telas de administração.
 setupWizard.rules,Network rules,Regras da rede
 setupWizard.saveFailed,The configuration was not saved,A configuração não foi salva
 setupWizard.savedDetail,This node is restarting with its new identity. The interface will return automatically.,Este nó está reiniciando com sua nova identidade. A interface voltará automaticamente.
@@ -1765,6 +1764,7 @@ setupWizard.tlsRequired,Encrypt connections between nodes (optional),Criptografa
 setupWizard.trustDocument,Trust document,Documento de confiança
 setupWizard.trustDocumentHint,Paste the complete JSON document from the administrator or upload trust.json.,Cole o documento JSON completo enviado pelo administrador ou envie o trust.json.
 setupWizard.trustFilename,Save the document as {filename},Salve o documento como {filename}
+setupWizard.trustJoinDetail,Import the trust file and enter the connection key supplied by the administrator.,Importe o arquivo de confiança e informe a chave de conexão fornecida pelo administrador.
 setupWizard.trustLabel,Trust root,Raiz de confiança
 setupWizard.trustPrivateDetail,Private networks use the trust root and one shared connection secret.,Redes privadas usam a raiz de confiança e um único segredo compartilhado.
 setupWizard.trustPublicDetail,Public networks do not use a shared secret. The trust document authenticates control between machines.,Redes públicas não usam segredo compartilhado. O documento de confiança autentica o controle entre as máquinas.
@@ -1774,9 +1774,9 @@ setupWizard.uploadingTrust,Reading file...,Lendo arquivo...
 setupWizard.visibility,Who can find this network?,Quem pode encontrar esta rede?
 setupWizard.visibilityHint,Public networks use signed control and no shared secret.,Redes públicas usam controle assinado e não têm segredo compartilhado.
 setupWizard.vulkanAvailable,Vulkan ready,Vulkan disponível
-setupWizard.welcomeDetail,POM will ask one clear question at a time and save a real configuration at the end.,O POM fará uma pergunta clara por vez e salvará uma configuração real no final.
+setupWizard.welcomeDetail,Let us set up this machine.,Vamos configurar esta máquina.
 setupWizard.welcomeEyebrow,Your first step,Seu primeiro passo
-setupWizard.welcomeTitle,Let us set up this machine,Vamos configurar esta máquina
+setupWizard.welcomeTitle,Welcome to POM,Bem-vindo ao POM
 shards.complete,covers model,cobre o modelo
 shards.empty,No shards on this machine,Nenhuma fatia nesta máquina
 shards.emptyDetail,Shards appear here after local slicing or an accepted transfer. They are stored in the configured shard folder.,Fatias aparecem aqui depois de um fatiamento local ou de uma transferência aceita. Elas são gravadas na pasta de fatias configurada.

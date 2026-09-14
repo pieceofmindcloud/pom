@@ -10,7 +10,10 @@ use crate::gateway::GatewayState;
 use anyhow::{anyhow, Result};
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{
+    net::{TcpListener, UdpSocket},
+    sync::Arc,
+};
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub enum SetupDecision {
@@ -68,6 +71,12 @@ pub struct FirewallStatus {
     pub in_progress: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SetupFirewallCheck {
+    pub supported: bool,
+    pub allowed: bool,
+}
+
 pub fn desired_rules(p2p_port: u16) -> Result<Vec<FirewallRuleSpec>, String> {
     let inference = p2p_port
         .checked_add(1000)
@@ -100,6 +109,34 @@ pub fn desired_rules(p2p_port: u16) -> Result<Vec<FirewallRuleSpec>, String> {
             port: libp2p,
         },
     ])
+}
+
+/// Check the ports while setup is still before the node's network listeners.
+/// Windows can inspect firewall rules directly; other platforms verify that
+/// the POM ports are locally available for binding.
+pub fn setup_check(database: &PomDb, p2p_port: u16) -> SetupFirewallCheck {
+    let status = status_for(database, p2p_port);
+    if status.supported {
+        return SetupFirewallCheck {
+            supported: true,
+            allowed: status.all_allowed,
+        };
+    }
+
+    let allowed = desired_rules(p2p_port)
+        .map(|rules| rules.iter().all(local_port_available))
+        .unwrap_or(false);
+    SetupFirewallCheck {
+        supported: false,
+        allowed,
+    }
+}
+
+fn local_port_available(rule: &FirewallRuleSpec) -> bool {
+    match rule.protocol {
+        FirewallProtocol::Udp => UdpSocket::bind(("0.0.0.0", rule.port)).is_ok(),
+        FirewallProtocol::Tcp => TcpListener::bind(("0.0.0.0", rule.port)).is_ok(),
+    }
 }
 
 pub fn should_auto_request(previous: Option<&SetupRecord>, retry: bool) -> bool {

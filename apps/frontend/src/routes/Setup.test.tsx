@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import React from "react";
 import { useState } from "react";
 import { LocaleProvider } from "../i18n/provider";
-import { canContinue, isReadyToSave, TrustScreen, type SetupState } from "./Setup";
+import { canContinue, createRandomNetworkName, diskSharePercent, formatAdvertiseAddress, isReadyToSave, ProfileScreen, ReviewScreen, TrustScreen, type SetupState } from "./Setup";
 
 const initialSetup: SetupState = {
   profile: "infer",
@@ -13,7 +14,7 @@ const initialSetup: SetupState = {
   advertiseAddr: "",
   trustDocument: "",
   trustFingerprint: "",
-  adminPassword: "",
+  adminAccessToken: "",
   adminExposure: "localhost",
   tlsRequired: false,
   nodeName: "node",
@@ -37,7 +38,6 @@ const initialSetup: SetupState = {
   shardDir: "",
   shardMaxGb: 20,
   thermalLimitC: 85,
-  setupModel: "",
 };
 
 function mount(value: SetupState = initialSetup) {
@@ -76,42 +76,124 @@ describe("TrustScreen", () => {
     expect(screen.queryByRole("checkbox")).toBeNull();
   });
 
-  it("pede o nome público no próprio passo de confiança", () => {
-    mount({
-      ...initialSetup,
-      profile: "node",
-      network: {
-        ...initialSetup.network,
-        visibility: "public",
-        country_code: "BR",
-        city: "Curitiba",
-      },
-    });
+  it("pede somente a raiz e a chave ao node", () => {
+    mount({ ...initialSetup, profile: "node" });
 
-    expect(screen.getByTestId("public-network-name")).toBeTruthy();
+    expect(screen.getByTestId("trust-document-file")).toBeTruthy();
+    expect(screen.getByTestId("connection-key-input")).toBeTruthy();
+    expect(screen.queryByTestId("public-network-name")).toBeNull();
+    expect(screen.queryByTestId("public-directory-trust")).toBeNull();
+    expect(screen.queryByLabelText("setupWizard.bootstrapAddress")).toBeNull();
   });
 
-  it("não libera o último passo público sem nome da rede", () => {
+  it("não pede identidade da rede para liberar o último passo do node", () => {
     const setup: SetupState = {
       ...initialSetup,
-      profile: "infer",
+      profile: "node",
       trustDocument: "{}",
       trustFingerprint: "fingerprint",
-      network: {
-        ...initialSetup.network,
-        visibility: "public",
-        country_code: "BR",
-        city: "Curitiba",
-      },
+      connectionKey: "secret",
     };
 
-    expect(canContinue("setup-trust", setup)).toBe(false);
-    expect(isReadyToSave(setup)).toBe(false);
-    const named = { ...setup, network: { ...setup.network, public_name: "Rede Curitiba" } };
-    expect(canContinue("setup-trust", named)).toBe(false);
-    expect(isReadyToSave(named)).toBe(false);
-    const bootstrapped = { ...named, publicDirectory: "https://directory.example" };
-    expect(canContinue("setup-trust", bootstrapped)).toBe(true);
-    expect(isReadyToSave(bootstrapped)).toBe(true);
+    expect(canContinue("setup-trust", setup)).toBe(true);
+    expect(isReadyToSave(setup)).toBe(true);
+  });
+});
+
+describe("first-page defaults", () => {
+  it("shows the shared-disk slider on the first machine screen", () => {
+    render(
+      <ProfileScreen
+        profile="admin"
+        setup={initialSetup}
+        hardware={{
+          system: {
+            hostname: "machine",
+            os: "macos",
+            arch: "arm64",
+            cpu_count: 10,
+            ram: { total_mb: 16384, available_mb: 8192 },
+            gpu_kind: "integrated",
+            gpus: [],
+            disk: { total_mb: 512000, free_mb: 256000 },
+          },
+          gpu_detected: false,
+          cuda_available: false,
+          vulkan_available: false,
+          backend: "Metal",
+          p2p_discovery_available: true,
+          public_ipv6_available: true,
+          p2p_port: 45123,
+          default_model_dir: "/models",
+          default_shard_dir: "/models_sliced",
+          shard_max_gb: 20,
+          ram_reserve_pct: 20,
+          cpu_reserve_pct: 20,
+          model_dirs: [],
+          shard_dir: "/models_sliced",
+          node_name: "machine",
+          network: initialSetup.network,
+          public_directory: [],
+        }}
+        onSelect={() => {}}
+        update={() => {}}
+        t={(key) => key}
+      />,
+    );
+
+    expect(screen.getByTestId("disk-share-slider")).toBeTruthy();
+    expect(screen.getByText("setupWizard.shardSpace")).toBeTruthy();
+    expect(screen.getByText("20 GB")).toBeTruthy();
+  });
+
+  it("requires the admin IPv6 before leaving the machine screen", () => {
+    expect(canContinue("setup-profile", { ...initialSetup, profile: "admin" })).toBe(false);
+    expect(canContinue("setup-profile", { ...initialSetup, profile: "admin", advertiseAddr: "[2001:db8::10]:42777" })).toBe(true);
+    expect(canContinue("setup-profile", { ...initialSetup, profile: "node" })).toBe(true);
+  });
+
+  it("creates a short editable public network name", () => {
+    expect(createRandomNetworkName(0.42)).toMatch(/^POM-[A-Z0-9]{5}$/);
+  });
+
+  it("represents shared disk space as a bounded fraction of free space", () => {
+    expect(diskSharePercent(20, 100)).toBe(20);
+    expect(diskSharePercent(200, 100)).toBe(100);
+    expect(diskSharePercent(-1, 100)).toBe(0);
+    expect(diskSharePercent(20, 0)).toBe(0);
+  });
+
+  it("formats an IPv6 address with the configured P2P port", () => {
+    expect(formatAdvertiseAddress("2001:db8::10", 45123)).toBe("[2001:db8::10]:45123");
+    expect(formatAdvertiseAddress("[2001:db8::10]:45123", 42777)).toBe("[2001:db8::10]:45123");
+    expect(formatAdvertiseAddress("", 45123)).toBe("");
+  });
+});
+
+describe("merged review", () => {
+  it("keeps the health checks and final summary in one screen", () => {
+    render(
+      <ReviewScreen
+        setup={{ ...initialSetup, profile: "node", trustFingerprint: "fingerprint" }}
+        health={{
+          gpu_detected: false,
+          cuda_working: false,
+          vulkan_working: false,
+          configuration_ready: true,
+          p2p_discovery_working: true,
+          public_ipv6_enabled: true,
+          firewall_allowed: true,
+          firewall_supported: false,
+        }}
+        hardware={null}
+        setStage={() => {}}
+        t={(key) => key}
+      />,
+    );
+
+    expect(screen.getByText("setupWizard.healthTitle")).toBeTruthy();
+    expect(screen.getByText("setupWizard.checkIpv6")).toBeTruthy();
+    expect(screen.getAllByText("setupWizard.reviewTitle")).toHaveLength(2);
+    expect(screen.getByText("setupWizard.trustLabel")).toBeTruthy();
   });
 });

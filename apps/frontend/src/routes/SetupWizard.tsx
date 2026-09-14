@@ -138,7 +138,7 @@ export function SetupWizard() {
     }
   }
 
-  return <WizardLayout stage={stage} steps={steps} canGoBack={history.length > 1} onBack={goBack} onExit={() => navigate("/")}>{screen()}</WizardLayout>;
+  return <WizardLayout stage={stage} steps={steps} canGoBack={history.length > 1} onBack={goBack}>{screen()}</WizardLayout>;
 }
 
 export { FLOW_STEPS };

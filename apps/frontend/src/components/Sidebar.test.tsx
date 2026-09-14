@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import React from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 import { ProfileProvider } from "../lib/profile";

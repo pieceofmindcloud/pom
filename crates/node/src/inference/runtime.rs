@@ -682,6 +682,10 @@ pub struct NodeRuntime {
     /// Serializes apply, manual unload and thermal unload so an operator action
     /// cannot race a temperature transition.
     operation: Mutex<()>,
+    /// Keeps the previous supervisor joinable until its inference server has
+    /// released the listener and native model resources. A reload must not
+    /// start a second generation while the first one is still unwinding.
+    supervisor: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     thermal: Arc<Mutex<ThermalRuntime>>,
 }
 
@@ -741,6 +745,7 @@ impl NodeRuntime {
             request_activity: crate::reqlog::RequestActivity::new(),
             status_changed: Arc::new(Notify::new()),
             operation: Mutex::new(()),
+            supervisor: std::sync::Mutex::new(None),
             thermal: Arc::new(Mutex::new(ThermalRuntime {
                 blocked: false,
                 recovery: None,
@@ -752,6 +757,21 @@ impl NodeRuntime {
     /// inferência da geração atual.
     pub fn load_tracker(&self) -> Arc<crate::pipeline::LoadTracker> {
         self.loads.clone()
+    }
+
+    fn take_supervisor(&self) -> Option<tokio::task::JoinHandle<()>> {
+        self.supervisor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+
+    async fn wait_for_supervisor(supervisor: Option<tokio::task::JoinHandle<()>>) {
+        if let Some(supervisor) = supervisor {
+            if let Err(error) = supervisor.await {
+                warn!("supervisor anterior terminou de forma inesperada: {error}");
+            }
+        }
     }
 
     /// Atomic activity marker used by the out-of-band idle evaluator.
@@ -958,8 +978,11 @@ impl NodeRuntime {
         let _operation = self.operation.lock().await;
         info!("parando servidor de inferencia neste no");
 
+        let previous_supervisor = self.take_supervisor();
         let generation = *self.generation.borrow() + 1;
         self.generation.send_replace(generation);
+
+        Self::wait_for_supervisor(previous_supervisor).await;
 
         *self.config.write().await = None;
         *self.assignment.write().await = None;
@@ -1054,8 +1077,11 @@ impl NodeRuntime {
             self.model_cache.clear();
         }
 
+        let previous_supervisor = self.take_supervisor();
+
         // Bumping the generation stops the previous supervisor, which kills its
-        // child on the way out.
+        // child on the way out. Join it before starting another generation so
+        // the old server has completed native cleanup and released its port.
         //
         // `send_replace`, not `send`: with no live receivers — the case on the
         // very first apply, before any supervisor exists — `send` reports an
@@ -1063,6 +1089,8 @@ impl NodeRuntime {
         // about to spawn would read a stale generation and exit immediately.
         let generation = *self.generation.borrow() + 1;
         self.generation.send_replace(generation);
+
+        Self::wait_for_supervisor(previous_supervisor).await;
 
         *self.config.write().await = Some(cfg.clone());
         *self.assignment.write().await = Some(assignment.clone());
@@ -1288,7 +1316,7 @@ impl NodeRuntime {
         let quic = self.quic.clone();
         let quic_port = self.quic_port;
 
-        tokio::spawn(async move {
+        let supervisor = tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;
             append_log(port, "supervisor iniciado");
             let mut restarts = 0u32;
@@ -1433,6 +1461,11 @@ impl NodeRuntime {
                 }
             }
         });
+
+        *self
+            .supervisor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
 
         self.spawn_health_watch(cfg_for_health, generation);
     }
@@ -1842,6 +1875,15 @@ mod tests {
             }
         }
 
+        // O supervisor continua sendo uma task viva enquanto percorre o
+        // orçamento de reinícios. Sinalize a geração e aguarde sua saída antes
+        // de devolver o ambiente global ao restante da suíte, senão uma
+        // tentativa atrasada pode escrever o journal usando o POM_HOME do
+        // teste seguinte.
+        let generation = *rt.generation.borrow() + 1;
+        rt.generation.send_replace(generation);
+        NodeRuntime::wait_for_supervisor(rt.take_supervisor()).await;
+
         let log = log_file_path(port);
         let conteudo = std::fs::read_to_string(&log).unwrap_or_default();
         std::env::remove_var("POM_HOME");
@@ -1866,6 +1908,23 @@ mod tests {
         assert!(
             conteudo.contains("supervisor iniciado"),
             "o arquivo de log tem que existir e ter as linhas do supervisor: {conteudo:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_reload_waits_for_previous_supervisor_to_finish() {
+        let terminou = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let terminou_no_supervisor = terminou.clone();
+        let supervisor = tokio::spawn(async move {
+            sleep(Duration::from_millis(40)).await;
+            terminou_no_supervisor.store(true, std::sync::atomic::Ordering::Release);
+        });
+
+        NodeRuntime::wait_for_supervisor(Some(supervisor)).await;
+
+        assert!(
+            terminou.load(std::sync::atomic::Ordering::Acquire),
+            "a próxima geração só pode começar depois da limpeza da anterior"
         );
     }
 

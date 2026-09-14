@@ -822,7 +822,9 @@ faz o download autenticado do blob persistido.
   modelos inteiros para deixar o `llama.cpp` ajustar camadas à memória livre;
   `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
   parallelism, que não suporta o fit automático em `split-mode tensor`.
-  `RuntimeParams.inference_mode` acompanha o pedido nos três tipos de deploy.
+  `RuntimeParams.inference_mode` acompanha o pedido nos três tipos de deploy
+  quando `POM_DESENV=1`; fora desse modo, `effective_params_for_kind` restaura
+  `Auto` junto com os demais campos de desenvolvimento.
   O survey leva `is_moe` do catálogo GGUF ao `DeployPlan`; somente metadata de
   experts identifica MoE. O plano expõe `inference_mode_supported` e
   `inference_mode_reason`: MoE em Tensor Parallelism é recusado explicitamente

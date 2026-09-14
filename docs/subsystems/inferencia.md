@@ -2090,6 +2090,10 @@ oculto até confirmar a saúde. Um peer ocioso escolhido pelo plano é acordado
 pelo evento `reload_model` em paralelo
 com os demais peers ociosos planejados e a requisição espera o novo `/health`
 por até 15 minutos; um peer vivo de rota alternativa não bloqueia a admissão.
+Na transição, o runtime aguarda o supervisor da geração anterior terminar o
+encerramento do servidor e a liberação FFI do modelo antes de ligar a nova
+porta. Essa liberação usa `spawn_blocking`, portanto `health` e as demais rotas
+HTTP não ficam presas a `llama_free`.
 Sem peer correspondente, a configuração local continua sendo fallback para
 rotas sem implantação.
 

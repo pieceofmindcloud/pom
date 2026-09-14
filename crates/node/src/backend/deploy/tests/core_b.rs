@@ -86,6 +86,11 @@
 
     #[test]
     fn inference_mode_round_trips_for_whole_shards_and_tensor_parallel() {
+        let expected_mode = if crate::pom_desenv_enabled() {
+            InferenceMode::Moe
+        } else {
+            InferenceMode::Auto
+        };
         for kind in [
             DeployKind::Whole,
             DeployKind::Shards,
@@ -100,7 +105,7 @@
             assert_eq!(request.params.inference_mode, InferenceMode::Moe);
             assert_eq!(
                 effective_params_for_kind(kind, &request.params).inference_mode,
-                InferenceMode::Moe
+                expected_mode
             );
         }
     }

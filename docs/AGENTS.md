@@ -150,6 +150,8 @@ acima em duas fases (A: rota dinamica em `crates/node/src/network/route.rs` e
 commit proprio. `2026-05-24-pkarr-discovery.md` e o par do design homonimo.
 O plano `2026-09-02-nome-comercial-gpu.md` cobre a resolucao de nomes de GPU
 pela descricao do backend, pela base do sistema e pelo identificador PCI.
+O plano `2026-09-14-reload-idle-runtime.md` registra a reprodução e a correção
+da limpeza nativa durante a recarga de um peer ocioso.
 
 ## Convencao de nomes - e a excecao
 

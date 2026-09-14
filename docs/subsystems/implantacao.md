@@ -145,9 +145,12 @@ reinicia a atividade. Envia em paralelo o evento autenticado `reload_model` a
 cada peer ocioso planejado; o evento é idempotente para uma segunda requisição
 que acorde a mesma máquina, e cada destinatário carrega sua própria fatia.
 Assim, a primeira requisição pode esperar a carga, mas os hops não são
-aquecidos sequencialmente nem ficam esperando uns pelos outros. O status volta
-a `serving` quando o `/health` confirma o modelo carregado. `idle` é por peer,
-não por deployment: uma máquina ociosa não muda o estado das demais.
+aquecidos sequencialmente nem ficam esperando uns pelos outros. O supervisor
+aguarda o encerramento completo da geração ociosa antes de iniciar a nova, e a
+liberação FFI do modelo roda fora do executor async em `spawn_blocking`; o
+gateway e o `/health` continuam responsivos durante esse intervalo. O status
+volta a `serving` quando o `/health` confirma o modelo carregado. `idle` é por
+peer, não por deployment: uma máquina ociosa não muda o estado das demais.
 
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 

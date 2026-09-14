@@ -207,6 +207,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   an authenticated operator back to the gate would only make them re-enter to
   see the same refusal.
 - `brand.ts` - the product identity on the screen side: `brand` (name, tagline, slug, logo/mark/favicon URLs) from the generated `src/brand/brand.json`, same source the binary embeds. `storageKey(name)` prefixes every `localStorage` key with the slug (`pom.theme`, `pom.locale`, `pom.connectionKey`, `pom.chat.sessions`, `pom.deploy.last`, `pom.network-layout`), which is what makes renaming the product one edit - and why a rename drops local preferences, deliberately: they belong to another product's keys.
+- `licenses.generated.ts` - catálogo estático gerado por
+  `apps/frontend/scripts/build-licenses.mjs`, com nome, versão, licença,
+  repositório e ecossistema das dependências diretas listadas em Sobre. Não
+  edite manualmente: após mudar manifests, rode `npm run licenses` em
+  `apps/frontend` e versione o resultado.
 - `setConnectionKey` / `getConnectionKey` - module-level credential persisted in `localStorage` key `codai.connectionKey`; seeded by `useNode()` from `GET /api/ui/node`. A changed key also clears conditional GET snapshots.
 - `ensureChatApiKey` / `forgetChatApiKey` - keep the UI-only `pom-[node_id]`
   key in memory and recreate it after revocation without exposing its value.

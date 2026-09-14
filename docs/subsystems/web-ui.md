@@ -211,6 +211,8 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
   participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
   `/config/preferencias/admin` -> preferências administrativas;
+  `/config/sobre` -> About, último item de Configurações, com a licença
+  provisória do POM e o catálogo de dependências diretas agrupado por licença;
   `/config/confianca` reúne esta máquina, compartilhamento e chaves de conexão;
   `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias). O wizard de configuração não aparece

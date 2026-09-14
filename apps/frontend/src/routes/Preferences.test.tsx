@@ -65,7 +65,7 @@ afterEach(() => {
 function mount(child: React.ReactNode) {
   return render(
     <LocaleProvider initialLocale="pt-BR">
-      <MemoryRouter>{child}</MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>{child}</MemoryRouter>
     </LocaleProvider>,
   );
 }

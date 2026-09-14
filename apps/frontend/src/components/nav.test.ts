@@ -56,6 +56,15 @@ describe("navigation structure", () => {
     ]);
   });
 
+  it("places About as the final Settings item", () => {
+    const settings = NAV.find((section) => section.labelKey === "nav.settings");
+
+    expect(settings?.children?.at(-1)).toMatchObject({
+      labelKey: "nav.about",
+      to: "/config/sobre",
+    });
+  });
+
   it("keeps network chat separate and removes wizard and connection keys from the menu", () => {
     expect(NAV.map((section) => section.labelKey)).toContain("nav.networkChat");
     expect(NAV.flatMap((section) => section.children ?? []).map((child) => child.labelKey)).not.toContain("nav.setupWizard");
@@ -119,6 +128,7 @@ describe("navForProfile", () => {
       "/config/preferencias",
       "/config/armazenamento",
       "/config/preferencias/admin",
+      "/config/sobre",
     ]);
 
     const inferSettings = navForProfile("infer");

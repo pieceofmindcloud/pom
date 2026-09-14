@@ -150,6 +150,7 @@ export const routeLoaders = {
   trustAnchor: () => import("./routes/TrustAnchor").then(({ TrustAnchor }) => TrustAnchor),
   networkSharing: () => import("./routes/NetworkSharing").then(({ NetworkSharing }) => NetworkSharing),
   preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
+  about: () => import("./routes/About").then(({ About }) => About),
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
   deployments: () => import("./routes/Deployments").then(({ Deployments }) => Deployments),
@@ -186,6 +187,7 @@ const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
 const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
 const NetworkSharing = lazyRoute(routeLoaders.networkSharing);
 const Preferences = lazyRoute(routeLoaders.preferences);
+const About = lazyRoute(routeLoaders.about);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
 const Deployments = lazyRoute(routeLoaders.deployments);
@@ -416,6 +418,7 @@ export default function App() {
                         <Route path="/config/confianca" element={<Page><TrustAnchor /></Page>} />
                         <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
                         <Route path="/config/preferencias/admin" element={<Page><Preferences administrative /></Page>} />
+                        <Route path="/config/sobre" element={<Page><About /></Page>} />
                         <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                         <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
                         <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />

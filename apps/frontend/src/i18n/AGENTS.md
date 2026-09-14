@@ -63,6 +63,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
 - O grupo `deploymentLogs.*` cobre o console de processo da réplica local:
   estado do auto-scroll, cópia das últimas 500 linhas, retorno da cópia, filtro
   e estados de coleta.
+- O grupo `about.*` cobre a tela Sobre: licença provisória do POM, contagem e
+  filtro do catálogo, rótulos de ecossistema, versão, repositório e estado vazio.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 Os identificadores oficiais de perfil são `admin`, `node` e `infer`. O rótulo

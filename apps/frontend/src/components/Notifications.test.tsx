@@ -26,7 +26,7 @@ vi.mock("../lib/toast", () => ({
 function renderNotifications(offers: NetworkOffer[]) {
   queryMocks.offers.data = { offers };
   return render(
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <LocaleProvider initialLocale="pt-BR">
         <Notifications />
       </LocaleProvider>

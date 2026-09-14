@@ -1,4 +1,22 @@
 key,en,pt-BR
+about.dependenciesCount,"Showing {visible} of {total} dependencies","Mostrando {visible} de {total} dependências"
+about.dependenciesSubtitle,"Direct frontend and Rust dependencies, grouped by their declared license.","Dependências diretas do frontend e do Rust, agrupadas pela licença declarada."
+about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
+about.ecosystem.frontend,Frontend,Frontend
+about.ecosystem.rust,Rust,Rust
+about.empty,No dependencies match this search.,Nenhuma dependência corresponde a esta busca.
+about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
+about.placeholderBody,"The POM software license has not been defined officially yet. This screen shows an example only.","A licença do software POM ainda não foi definida oficialmente. Esta tela mostra apenas um exemplo."
+about.placeholderLicense,Provisional license (example),Licença provisória (exemplo)
+about.placeholderLicenseText,"AGPL-3.0 + registered-trademark clause - subject to final definition","AGPL-3.0 + cláusula de marca registrada - sujeita à definição final"
+about.placeholderLicenseValue,AGPL-3.0 + registered-trademark clause,AGPL-3.0 + cláusula de marca registrada
+about.placeholderTitle,POM software license,Licença do software POM
+about.repository,Repository,Repositório
+about.searchLabel,Search dependencies,Buscar dependências
+about.searchPlaceholder,Search by package,Buscar por pacote
+about.subtitle,The software and libraries that make POM possible.,Os softwares e bibliotecas que tornam o POM possível.
+about.title,About,Sobre
+about.version,Version,Versão
 accessGate.eyebrow,Administrative surface,Superfície administrativa
 accessGate.invalid,That token was not accepted.,Esse token não foi aceito.
 accessGate.label,Administrative access token,Token de acesso administrativo
@@ -975,6 +993,7 @@ models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
 myMachine.subtitle,This machine's identity in the cluster and the address it advertises to peers.,A identidade desta máquina no cluster e o endereço que ela anuncia aos peers.
 myMachine.title,My machine,Minha máquina
+nav.about,About,Sobre
 nav.administration,Administration,Administração
 nav.administrativePreferences,Administrative preferences,Preferências administrativas
 nav.administrators,Administrators,Administradores

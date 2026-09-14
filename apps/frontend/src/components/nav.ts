@@ -6,6 +6,7 @@ import {
   Gauge,
   Globe2,
   History,
+  Info,
   KeyRound,
   Laptop,
   Layers,
@@ -132,6 +133,7 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
       { labelKey: "nav.storage", to: "/config/armazenamento", icon: FolderTree },
       { labelKey: "nav.administrativePreferences", to: "/config/preferencias/admin", icon: SlidersHorizontal },
+      { labelKey: "nav.about", to: "/config/sobre", icon: Info },
     ],
   },
 ];

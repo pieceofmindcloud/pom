@@ -174,6 +174,13 @@ Per-file list:
   while holding the selection, the two scroll containers, `?doc=`/`?guia=` deep
   links, search + clear, empty state. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
+- `About.tsx` - Tela informativa em `/config/sobre`, última folha de
+  Configurações. Mostra a licença do POM como placeholder visualmente marcado e
+  lista as dependências diretas do frontend e do workspace Rust agrupadas pela
+  licença declarada, com versão, ecossistema, filtro por texto e link do
+  repositório. O catálogo é `../lib/licenses.generated.ts`, gerado por
+  `scripts/build-licenses.mjs`; o teste em `About.test.tsx` cobre o placeholder,
+  os dois ecossistemas, os links e o filtro.
 - `Dashboard.tsx` — Cluster overview: the admin sees cluster
   coverage/machines/model/in-flight stats; node and infer see local model,
   slice and in-flight requests instead. For administrators, the deployment

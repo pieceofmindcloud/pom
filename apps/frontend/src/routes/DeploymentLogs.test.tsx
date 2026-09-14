@@ -83,7 +83,7 @@ describe("DeploymentLogs", () => {
 
   it("mantém a ordem de chegada e exibe o nome do nó", () => {
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
           <DeploymentLogs />
         </LocaleProvider>
@@ -102,7 +102,7 @@ describe("DeploymentLogs", () => {
   it("trata a réplica vazia como ausência de dados, não como bloqueio do secundário", () => {
     queryMocks.logs.data = { entries: [], dropped: 0 };
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
           <DeploymentLogs />
         </LocaleProvider>
@@ -116,7 +116,7 @@ describe("DeploymentLogs", () => {
 
   it("segue linhas novas no fim enquanto a rolagem automática está ligada", async () => {
     const { rerender } = render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
           <DeploymentLogs />
         </LocaleProvider>
@@ -139,7 +139,7 @@ describe("DeploymentLogs", () => {
       }],
     };
     rerender(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
           <DeploymentLogs />
         </LocaleProvider>
@@ -154,7 +154,7 @@ describe("DeploymentLogs", () => {
 
   it("para de perseguir o fim quando o leitor sobe e expõe o estado", async () => {
     const { rerender } = render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
           <DeploymentLogs />
         </LocaleProvider>
@@ -181,7 +181,7 @@ describe("DeploymentLogs", () => {
       }],
     };
     rerender(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
           <DeploymentLogs />
         </LocaleProvider>
@@ -206,7 +206,7 @@ describe("DeploymentLogs", () => {
       dropped: 0,
     };
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
           <DeploymentLogs />
         </LocaleProvider>
@@ -224,7 +224,7 @@ describe("DeploymentLogs", () => {
 
   it("mantém o layout normal fora da área preta do terminal", () => {
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
           <DeploymentLogs />
         </LocaleProvider>

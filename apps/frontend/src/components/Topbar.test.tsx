@@ -45,7 +45,7 @@ function mountTopbar(profile: "admin" | "node" | "infer") {
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
-        <MemoryRouter>
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <ProfileProvider initialProfile={profile}>
             <Topbar />
           </ProfileProvider>
@@ -60,7 +60,7 @@ function mountTopbarWithRoutes() {
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
-        <MemoryRouter initialEntries={["/chat"]}>
+        <MemoryRouter initialEntries={["/chat"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <ProfileProvider initialProfile="admin">
             <Topbar />
             <Routes>

@@ -143,8 +143,9 @@ Per-file list:
   para o menu principal; `navForProfile` e `navFooterForProfile` são suas duas
   projeções. Testes em `nav.test.ts`.
   A seção principal Rede contém Informações, Participantes, Minha Máquina,
-  Administradores, Compartilhamento e API Keys. Configurações contém somente Preferências,
-  Armazenamento e Preferências Administrativas; Compartilhamento é a tela única
+  Administradores, Compartilhamento e API Keys. Configurações contém Preferências,
+  Armazenamento, Preferências Administrativas e Sobre, sempre nesta ordem; Sobre
+  é a última folha e abre `/config/sobre`. Compartilhamento é a tela única
   que reutiliza `TrustAnchor` para raiz de confiança, esta máquina e chave de
   conexão.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the

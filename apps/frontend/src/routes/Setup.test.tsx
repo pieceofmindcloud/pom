@@ -13,7 +13,7 @@ const initialSetup: SetupState = {
   advertiseAddr: "",
   trustDocument: "",
   trustFingerprint: "",
-  adminAccessToken: "",
+  adminPassword: "",
   adminExposure: "localhost",
   tlsRequired: false,
   nodeName: "node",

@@ -118,7 +118,6 @@ interface AnchorPreview {
   public_key: string;
   trust_filename: string;
   private_connection_key?: string;
-  admin_access_token?: string;
 }
 
 interface HealthResponse {
@@ -138,7 +137,7 @@ export interface SetupState {
   advertiseAddr: string;
   trustDocument: string;
   trustFingerprint: string;
-  adminAccessToken: string;
+  adminPassword: string;
   adminExposure: AdminExposure;
   tlsRequired: boolean;
   nodeName: string;
@@ -194,7 +193,7 @@ const INITIAL: SetupState = {
   shardMaxGb: 20,
   thermalLimitC: 85,
   setupModel: "",
-  adminAccessToken: "",
+  adminPassword: "",
   adminExposure: "localhost",
   tlsRequired: false,
   nodeName: "",
@@ -299,7 +298,7 @@ export function Setup() {
       update({
         trustDocument: preview.document,
         trustFingerprint: preview.fingerprint,
-        adminAccessToken: "",
+        adminPassword: "",
         connectionKey: setup.network.visibility === "public" ? "" : preview.private_connection_key ?? "",
       });
       setStage("setup-security");
@@ -310,18 +309,8 @@ export function Setup() {
     }
   }
 
-  async function changeAdminExposure(exposure: AdminExposure) {
-    update({ adminExposure: exposure, adminAccessToken: exposure === "network" ? setup.adminAccessToken : "" });
-    if (exposure !== "network" || setup.adminAccessToken) return;
-    setBusy(true);
-    try {
-      const token = await api.post<{ token: string }>("/api/setup/admin-token", {}, { auth: false });
-      update({ adminAccessToken: token.token });
-    } catch (error) {
-      toast.fromError(t("setupWizard.adminTokenFailed"), error);
-    } finally {
-      setBusy(false);
-    }
+  function changeAdminExposure(exposure: AdminExposure) {
+    update({ adminExposure: exposure, adminPassword: exposure === "network" ? setup.adminPassword : "" });
   }
 
   async function runHealth() {
@@ -356,7 +345,7 @@ export function Setup() {
         resources: { ram_reserve_pct: setup.ramReservePct, cpu_reserve_pct: setup.cpuReservePct },
         thermal_limit_c: setup.thermalLimitC,
         admin_exposure: setup.adminExposure,
-        admin_access_token: setup.adminExposure === "network" ? setup.adminAccessToken : "",
+        admin_password: setup.adminExposure === "network" ? setup.adminPassword : "",
         tls_required: setup.tlsRequired,
         model_dirs: modelDirsForSave(setup.modelDirs, selectedLocalModel?.path),
         shard_dir: setup.shardDir.trim(),
@@ -453,7 +442,7 @@ function Screen({
   health: HealthResponse | null;
   update: (patch: Partial<SetupState>) => void;
   updateNetwork: (patch: Partial<SetupState["network"]>) => void;
-  onExposureChange: (exposure: AdminExposure) => Promise<void>;
+  onExposureChange: (exposure: AdminExposure) => void;
   setStage: (stage: WizardStage) => void;
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
@@ -540,7 +529,7 @@ function ResourcesScreen({ setup, hardware, profile, update, t }: { setup: Setup
 
 function ThermalSetting({ enabled, value, onChange, t }: { enabled: boolean; value: number; onChange: (value: number) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
   if (!enabled) return null;
-  return <Field label={t("setupWizard.thermalLimit")} hint={t("setupWizard.thermalDetail")}><div className="flex items-center gap-3"><Input type="number" min={50} max={120} step={1} value={value} onChange={(event) => onChange(Number(event.target.value) || 85)} /><span className="text-sm text-muted">°C</span></div></Field>;
+  return <Field label={t("setupWizard.thermalLimit")} hint={t("setupWizard.thermalDetail")}><div className="flex items-center gap-3"><Input type="number" min={70} max={150} step={1} value={value} onChange={(event) => onChange(Number(event.target.value) || 85)} /><span className="text-sm text-muted">°C</span></div></Field>;
 }
 
 function ModelScreen({ models, selected, onSelect, t }: { models: ModelsResponse | null; selected: string; onSelect: (model: string) => void; t: (key: string) => string }) {
@@ -556,9 +545,9 @@ function NetworkScreen({ setup, update, updateNetwork, t }: { setup: SetupState;
   return <Intro eyebrow={t("setupWizard.stepNetwork")} title={t("setupWizard.networkTitle")} detail={t("setupWizard.networkDetail")}><Panel><PanelHeader title={t("setupWizard.networkIdentity")} subtitle={t("setupWizard.networkIdentityDetail")} /><div className="grid gap-4 px-5 py-5 md:grid-cols-2"><Field label={t("setupWizard.publicName")} hint={t("setupWizard.publicNameHint")}><Input autoFocus value={setup.network.public_name} onChange={(event) => updateNetwork({ public_name: event.target.value })} /></Field><Field label={t("setupWizard.organization")}><Input value={setup.network.organization} onChange={(event) => updateNetwork({ organization: event.target.value })} /></Field><TextAreaField label={t("setupWizard.description")} value={setup.network.description} onChange={(value) => updateNetwork({ description: value })} /><TextAreaField label={t("setupWizard.rules")} value={setup.network.rules} onChange={(value) => updateNetwork({ rules: value })} /><TextAreaField label={t("setupWizard.channels")} value={setup.network.channels} onChange={(value) => updateNetwork({ channels: value })} /><Field label={t("setupWizard.visibility")} hint={t("setupWizard.visibilityHint")}><Select value={setup.network.visibility} onChange={(event) => updateNetwork({ visibility: event.target.value as NetworkVisibility, access_policy: event.target.value === "public" ? "anyone_with_anchor" : setup.network.access_policy })}><option value="private">{t("setupWizard.privateInternet")}</option><option value="public">{t("setupWizard.publicInternet")}</option><option value="local">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.accessPolicy")} hint={t("setupWizard.accessPolicyHint")}><Select value={setup.network.access_policy} onChange={(event) => updateNetwork({ access_policy: event.target.value as AccessPolicy })}><option value="authorized">{t("setupWizard.authorizedPeople")}</option><option value="anyone_with_anchor">{t("setupWizard.anyoneWithAnchor")}</option><option value="local_only">{t("setupWizard.localOnly")}</option></Select></Field><Field label={t("setupWizard.advertiseAddress")} hint={t("setupWizard.advertiseAddressHint")}><Input value={setup.advertiseAddr} placeholder={t("setupWizard.advertiseAddressPlaceholder")} onChange={(event) => update({ advertiseAddr: event.target.value })} /></Field>{publicNetwork && <><Field label={t("setupWizard.publicDirectory")} hint={t("setupWizard.publicDirectoryHint")}><Input required data-testid="public-directory" value={setup.publicDirectory} placeholder={t("setupWizard.publicDirectoryPlaceholder")} onChange={(event) => update({ publicDirectory: event.target.value })} /></Field><div className="md:col-span-2 rounded-lg border border-aqua/25 bg-aqua/7 px-3 py-3 text-sm text-muted"><p>{t("setupWizard.publicGeoRequired")}</p></div></>}</div></Panel></Intro>;
 }
 
-function SecurityScreen({ setup, onExposureChange, update, t }: { setup: SetupState; onExposureChange: (exposure: AdminExposure) => Promise<void>; update: (patch: Partial<SetupState>) => void; t: (key: string) => string }) {
+function SecurityScreen({ setup, onExposureChange, update, t }: { setup: SetupState; onExposureChange: (exposure: AdminExposure) => void; update: (patch: Partial<SetupState>) => void; t: (key: string) => string }) {
   const networkExposure = setup.adminExposure === "network";
-  return <Intro eyebrow={t("setupWizard.stepSecurity")} title={t("setupWizard.securityTitle")} detail={t("setupWizard.securityDetail")}><Panel><PanelHeader title={t("setupWizard.securityTitle")} subtitle={t("setupWizard.securityDetail")} /><div className="space-y-5 px-5 py-5"><Field label={t("setupWizard.adminExposure")} hint={t("setupWizard.adminExposureHint")}><Select value={setup.adminExposure} onChange={(event) => void onExposureChange(event.target.value as AdminExposure)}><option value="localhost">{t("setupWizard.adminExposureLocalhost")}</option><option value="network">{t("setupWizard.adminExposureNetwork")}</option></Select></Field>{networkExposure && <Field label={t("setupWizard.adminToken")} hint={t("setupWizard.adminTokenDetail")}><Input readOnly value={setup.adminAccessToken} placeholder={t("setupWizard.adminTokenMissing")} className="font-mono" /></Field>}<label className="flex items-start gap-3 rounded-lg border border-line bg-raised px-3 py-3 text-sm text-fg"><input type="checkbox" checked={setup.tlsRequired} onChange={(event) => update({ tlsRequired: event.target.checked })} className="mt-0.5 h-4 w-4 accent-iris" /><span><span className="block font-medium">{t("setupWizard.tlsRequired")}</span><span className="mt-1 block text-xs leading-relaxed text-faint">{t("setupWizard.tlsDetail")}</span></span></label></div></Panel></Intro>;
+  return <Intro eyebrow={t("setupWizard.stepSecurity")} title={t("setupWizard.securityTitle")} detail={t("setupWizard.securityDetail")}><Panel><PanelHeader title={t("setupWizard.securityTitle")} subtitle={t("setupWizard.securityDetail")} /><div className="space-y-5 px-5 py-5"><Field label={t("setupWizard.adminExposure")} hint={t("setupWizard.adminExposureHint")}><Select value={setup.adminExposure} onChange={(event) => onExposureChange(event.target.value as AdminExposure)}><option value="localhost">{t("setupWizard.adminExposureLocalhost")}</option><option value="network">{t("setupWizard.adminExposureNetwork")}</option></Select></Field>{networkExposure && <Field label={t("setupWizard.adminPassword")} hint={t("setupWizard.adminPasswordDetail")}><Input type="password" value={setup.adminPassword} placeholder={t("setupWizard.adminPasswordMissing")} autoComplete="new-password" onChange={(event) => update({ adminPassword: event.target.value })} /></Field>}<label className="flex items-start gap-3 rounded-lg border border-line bg-raised px-3 py-3 text-sm text-fg"><input type="checkbox" checked={setup.tlsRequired} onChange={(event) => update({ tlsRequired: event.target.checked })} className="mt-0.5 h-4 w-4 accent-iris" /><span><span className="block font-medium">{t("setupWizard.tlsRequired")}</span><span className="mt-1 block text-xs leading-relaxed text-faint">{t("setupWizard.tlsDetail")}</span></span></label></div></Panel></Intro>;
 }
 
 export function TrustScreen({ setup, update, updateNetwork, t }: { setup: SetupState; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
@@ -625,7 +614,7 @@ function HealthScreen({ health, hardware, t }: { health: HealthResponse | null; 
 
 function ReviewScreen({ setup, models, setStage, t }: { setup: SetupState; models: ModelsResponse | null; setStage: (stage: WizardStage) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
   const selected = models?.models.find((model) => model.id === setup.setupModel);
-  return <Intro eyebrow={t("setupWizard.stepReview")} title={t("setupWizard.reviewTitle")} detail={t("setupWizard.reviewDetail")}><Panel><SummaryRow label={t("setupWizard.profileLabel")} value={setup.profile ? t(`setupWizard.${setup.profile}`) : "-"} onEdit={() => setStage("setup-profile")} />{setup.profile !== "infer" && <SummaryRow label={t("setupWizard.resourcesLabel")} value={`${setup.ramReservePct}% RAM · ${setup.cpuReservePct}% CPU${setup.profile === "node" ? ` · ${setup.shardMaxGb} GB` : ""}`} onEdit={() => setStage("setup-resources")} />}{setup.profile === "admin" && <><SummaryRow label={t("setupWizard.modelLabel")} value={selected?.name ?? t("setupWizard.noModelSelected")} onEdit={() => setStage("setup-model")} /><SummaryRow label={t("setupWizard.storageLabel")} value={`${setup.shardMaxGb} GB`} onEdit={() => setStage("setup-storage")} /><SummaryRow label={t("setupWizard.networkLabel")} value={setup.network.public_name || "-"} onEdit={() => setStage("setup-network")} />{setup.adminExposure === "network" && <SummaryRow label={t("setupWizard.adminToken")} value={setup.adminAccessToken ? t("setupWizard.generated") : t("setupWizard.adminTokenMissing")} onEdit={() => setStage("setup-security")} />}</>}{setup.profile !== "admin" && <SummaryRow label={t("setupWizard.trustLabel")} value={setup.trustFingerprint ? t("setupWizard.fingerprintEntered") : t("setupWizard.fingerprintMissing")} onEdit={() => setStage("setup-trust")} />}</Panel><p className="mt-4 text-xs text-faint">{t("setupWizard.reviewNote")}</p></Intro>;
+  return <Intro eyebrow={t("setupWizard.stepReview")} title={t("setupWizard.reviewTitle")} detail={t("setupWizard.reviewDetail")}><Panel><SummaryRow label={t("setupWizard.profileLabel")} value={setup.profile ? t(`setupWizard.${setup.profile}`) : "-"} onEdit={() => setStage("setup-profile")} />{setup.profile !== "infer" && <SummaryRow label={t("setupWizard.resourcesLabel")} value={`${setup.ramReservePct}% RAM · ${setup.cpuReservePct}% CPU${setup.profile === "node" ? ` · ${setup.shardMaxGb} GB` : ""}`} onEdit={() => setStage("setup-resources")} />}{setup.profile === "admin" && <><SummaryRow label={t("setupWizard.modelLabel")} value={selected?.name ?? t("setupWizard.noModelSelected")} onEdit={() => setStage("setup-model")} /><SummaryRow label={t("setupWizard.storageLabel")} value={`${setup.shardMaxGb} GB`} onEdit={() => setStage("setup-storage")} /><SummaryRow label={t("setupWizard.networkLabel")} value={setup.network.public_name || "-"} onEdit={() => setStage("setup-network")} />{setup.adminExposure === "network" && <SummaryRow label={t("setupWizard.adminPassword")} value={setup.adminPassword ? t("setupWizard.passwordDefined") : t("setupWizard.passwordMissing")} onEdit={() => setStage("setup-security")} />}</>}{setup.profile !== "admin" && <SummaryRow label={t("setupWizard.trustLabel")} value={setup.trustFingerprint ? t("setupWizard.fingerprintEntered") : t("setupWizard.fingerprintMissing")} onEdit={() => setStage("setup-trust")} />}</Panel><p className="mt-4 text-xs text-faint">{t("setupWizard.reviewNote")}</p></Intro>;
 }
 
 function SavedScreen() {
@@ -686,7 +675,7 @@ export function isReadyToSave(setup: SetupState): boolean {
   if (!setup.profile || !setup.trustDocument.trim() || !setup.trustFingerprint.trim()) return false;
   if (setup.network.visibility === "public" && (!setup.network.public_name.trim() || !setup.network.country_code.trim() || !setup.network.city.trim() || !setup.publicDirectory.trim())) return false;
   if (setup.profile !== "admin" && setup.network.visibility !== "public" && !setup.connectionKey.trim()) return false;
-  if (setup.profile === "admin" && (!setup.network.public_name.trim() || !setup.advertiseAddr.trim() || (setup.adminExposure === "network" && !setup.adminAccessToken.trim()))) return false;
+  if (setup.profile === "admin" && (!setup.network.public_name.trim() || !setup.advertiseAddr.trim() || (setup.adminExposure === "network" && !setup.adminPassword.trim()) || setup.thermalLimitC < 70)) return false;
   return true;
 }
 
@@ -695,7 +684,7 @@ export function canContinue(stage: WizardStage, setup: SetupState): boolean {
     return Boolean(setup.network.public_name.trim() && setup.advertiseAddr.trim() && (setup.network.visibility !== "public" || (setup.network.country_code.trim() && setup.network.city.trim() && setup.publicDirectory.trim())));
   }
   if (stage === "setup-security" && setup.profile === "admin") {
-    return Boolean(setup.adminExposure !== "network" || setup.adminAccessToken.trim());
+    return Boolean(setup.adminExposure !== "network" || setup.adminPassword.trim());
   }
   if (stage === "setup-trust") {
     return Boolean(setup.trustFingerprint.trim() && (setup.network.visibility !== "public" || (setup.network.public_name.trim() && setup.network.country_code.trim() && setup.network.city.trim() && setup.publicDirectory.trim())) && (setup.network.visibility === "public" || setup.connectionKey.trim()));

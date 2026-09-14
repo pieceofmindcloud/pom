@@ -12,7 +12,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ## Per-file
 
 - `api.ts` - fetch wrapper over relative paths with same-origin credentials,
-  connection-key auth, administrative-token auth only for `/api/ui/**` and
+  connection-key auth, administrative-password auth only for `/api/ui/**` and
   `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
   registry actions (`listDeployments`, `redeployDeployment` - `{ params }` ou
   `{ version }` para reimplantar uma versão registrada -, `activateDeployment`),
@@ -306,10 +306,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   with the tab open, and a once-per-load probe would leave every screen
   printing the server's raw 401 with no way back to the gate.
 - `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
-- `useAdminAccess()` - public one-shot metadata for the administrative token
-  gate; it never receives the token.
-- `useAdminAccessInfo()` - authenticated administrative settings, including the
-  token only for the Preferences screen.
+- `useAdminAccess()` - public one-shot metadata for the administrative password
+  gate; it never receives the password.
+- `useAdminAccessInfo()` - authenticated administrative settings, exposing only
+  whether a password is configured to the Preferences screen.
 - `useNode()` - polls `/api/ui/node` every 4s after the admin gate, stores
   `connection_key`. That field is not decoration: it is what authenticates
   every later call that needs `ConnectionAuth` (`/admin/*`, `/api/ui/leave`).

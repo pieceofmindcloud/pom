@@ -150,10 +150,11 @@ quebra o produto inteiro.
   operador: autentica `/admin/*`, `/api/ui/{plan,apply,launch}` e a
   sincronização nó-a-nó. `POST /api/generate` e todas as rotas `/v1/` aceitam
   somente uma API key ativa. A superfície administrativa da UI usa sessão em memória com cookie
-  `HttpOnly`; o token humano não vai para storage nem URL. Em modo local, a
+  `HttpOnly`; a senha humana só fica na memória da aba e nunca vai para storage
+  nem URL. O nó persiste apenas seu hash Argon2id. Em modo local, a
   mesma fronteira cobre os ficheiros estáticos, mas nunca as rotas da pipeline.
   Sem `pom.json` o nó sobe em **modo setup**, que escolhe o perfil inicial
-  `admin`, `node` ou `infer` e gera essa chave quando necessário. O perfil
+  `admin`, `node` ou `infer` e gera a chave de conexão quando necessário. O perfil
   persistido e suas políticas ficam em `crates/node/src/profile.rs`; a chave
   continua sendo o mecanismo de autenticação. → `api-http.md`, `web-ui.md`
 - **Política de primeira versão.** O produto ainda não foi lançado. Portanto,

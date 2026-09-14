@@ -20,6 +20,10 @@ about.version,Version,Versão
 accessGate.eyebrow,Administrative surface,Superfície administrativa
 accessGate.invalid,That token was not accepted.,Esse token não foi aceito.
 accessGate.label,Administrative access token,Token de acesso administrativo
+accessGate.passwordInvalid,That password was not accepted.,Essa senha não foi aceita.
+accessGate.passwordLabel,Administrative access password,Senha de acesso administrativo
+accessGate.passwordSubtitle,This interface is exposed to the network. Enter the administrative access password to continue.,Esta interface está exposta à rede. Informe a senha de acesso administrativo para continuar.
+accessGate.passwordTitle,Administrative password required,Senha administrativa necessária
 accessGate.submit,Open interface,Abrir interface
 accessGate.subtitle,This interface is exposed to the network. Enter the administrative access token to continue.,Esta interface está exposta à rede. Informe o token de acesso administrativo para continuar.
 accessGate.title,Access token required,Token de acesso necessário
@@ -1207,9 +1211,11 @@ network.shareTitle,Give another node what it needs,Entregue a outro nó o que el
 network.sharingSubtitle,"Trust root, this machine, and connection key in one place.","Raiz de confiança, esta máquina e chave de conexão em um só lugar."
 network.sharingTitle,Sharing,Compartilhamento
 network.subtitle,Which machines this node sees and which it refuses to serve.,"Quem este nó enxerga, e quem ele se recusa a atender."
+network.thermalCooldownInvalid,The cooldown must be at most 60 seconds.,O tempo de resfriamento deve ser de no máximo 60 segundos.
 network.thermalCooldownLabel,Cooldown (seconds),Tempo de resfriamento (segundos)
 network.thermalHint,Automatic recovery starts only when all GPU readings are known and safe.,A retomada automática só começa quando todas as leituras das GPUs são conhecidas e seguras.
 network.thermalHysteresisLabel,Hysteresis (°C),Margem de segurança (°C)
+network.thermalLimitInvalid,The cutoff temperature must be at least 70 °C.,A temperatura de corte deve ser de pelo menos 70 °C.
 network.thermalLimitLabel,Unload above (°C),Desimplantar acima (°C)
 network.thermalResumeAt,Automatic recovery threshold: {value} °C,Limite de retomada automática: {value} °C
 network.thermalSave,Save thermal policy,Salvar política térmica
@@ -1370,6 +1376,12 @@ preferences.accessModeLocal,Only this computer,Somente este computador
 preferences.accessModeLocalHint,The administration surface accepts only localhost and does not ask for a password.,A superfície administrativa aceita somente localhost e não pede senha.
 preferences.accessModeNetwork,Local network (IPv4 / IPv6),Rede local (IPv4 / IPv6)
 preferences.accessModeNetworkHint,The administration surface accepts network connections and always asks for the access token.,A superfície administrativa aceita conexões da rede e sempre pede o token de acesso.
+preferences.accessModePasswordHint,The administration surface accepts network connections and always asks for the access password.,A superfície administrativa aceita conexões da rede e sempre pede a senha de acesso.
+preferences.accessPasswordCurrentLabel,Current password,Senha anterior
+preferences.accessPasswordHint,"The password is stored only as a one-way Argon2id hash and can never be recovered. Leave the new password empty to keep the current one.","A senha é armazenada somente como hash Argon2id de mão única e nunca pode ser recuperada. Deixe a nova senha vazia para manter a atual."
+preferences.accessPasswordNewLabel,New password,Nova senha
+preferences.accessPasswordRequired,Set a password before exposing the interface to the network.,Defina uma senha antes de expor a interface à rede.
+preferences.accessPasswordTitle,Administrative access password,Senha de acesso administrativo
 preferences.accessPortHint,The port must be between 1 and 65535 and available.,A porta precisa estar entre 1 e 65535 e disponível.
 preferences.accessPortLabel,Interface port,Porta da interface
 preferences.accessRestarting,The node is restarting on the new port.,O nó está reiniciando na nova porta.
@@ -1582,6 +1594,9 @@ setupWizard.adminExposure,Interface exposure,Exposição da interface
 setupWizard.adminExposureHint,Choose whether the admin screen is reachable only here or from other machines on the network.,Escolha se a tela administrativa ficará acessível só aqui ou também por outras máquinas da rede.
 setupWizard.adminExposureLocalhost,Only this machine,Apenas esta máquina
 setupWizard.adminExposureNetwork,This network,Esta rede
+setupWizard.adminPassword,Administrative access password,Senha de acesso administrativo
+setupWizard.adminPasswordDetail,Choose a password you can remember. It is stored only as a one-way Argon2id hash.,Escolha uma senha que você consiga lembrar. Ela é armazenada somente como hash Argon2id de mão única.
+setupWizard.adminPasswordMissing,Enter a password here,Informe uma senha aqui
 setupWizard.adminToken,Administrative access token,Token de acesso administrativo
 setupWizard.adminTokenDetail,This generated token lets an administrator open the interface. Save it in a password manager.,Este token gerado permite que um administrador abra a interface. Salve-o em um gerenciador de senhas.
 setupWizard.adminTokenFailed,The administrative token could not be generated,O token administrativo não pôde ser gerado
@@ -1690,6 +1705,8 @@ setupWizard.notAvailable,Not available,Não disponível
 setupWizard.ok,OK,OK
 setupWizard.organization,Organization,Organização
 setupWizard.otherCity,Another city,Outra cidade
+setupWizard.passwordDefined,Password defined,Senha definida
+setupWizard.passwordMissing,Password not defined,Senha não definida
 setupWizard.pasteTrust,Confirm the network before joining,Confirme a rede antes de entrar
 setupWizard.pasteTrustDetail,Get the document and a separate fingerprint message from the administrator.,Receba o documento e uma mensagem separada com a impressão digital do administrador.
 setupWizard.privateInternet,Private over the internet,Privada pela internet

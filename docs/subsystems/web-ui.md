@@ -107,7 +107,8 @@ omitem a seção de temperatura, enquanto uma GPU cujo sensor não responde most
 `GET/POST /api/ui/thermal` lê ou grava seus três valores.
 
 O painel de proteção térmica fica em Configurações > Preferências. O backend valida a
-política antes de persistir, e o runtime do próprio nó aplica a histerese e o
+política antes de persistir, exigindo corte mínimo de 70 °C e cooldown máximo de
+60 segundos, e o runtime do próprio nó aplica a histerese e o
 cooldown. Quando o modelo é pausado por calor, o estado do servidor aparece
 como "aguardando resfriar", distinto de peer indisponível ou falha.
 
@@ -203,8 +204,8 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/setup` -> `Setup`, o wizard real do primeiro acesso, **em tela inteira**:
   sem Sidebar e sem Topbar, como o bootstrap. Ele mostra hardware antes das
   decisões de capacidade e modelo e conduz `admin`, `node` ou `infer` até o
-  save. No admin, a exposição da interface na rede é a única opção que gera
-  token administrativo; a criptografia TLS entre peers é opcional e começa
+  save. No admin, a exposição da interface na rede é a única opção que pede
+  uma senha administrativa; a criptografia TLS entre peers é opcional e começa
   desligada. A tela de convite baixa o arquivo da raiz com o nome retornado por
   `admin_trust_filename` e mostra a chave de conexão apenas em redes local ou
   privadas. `SetupWizard.tsx` continua sendo apenas o mock de referência visual.
@@ -517,7 +518,7 @@ obtida em `POST /api/ui/chat-key` e enviada como `X-API-Key` em cada chamada
 `/api/generate` ou `/v1`. Se ela for revogada, a próxima tentativa cria uma
 substituta e repete a mensagem uma única vez. O primeiro acesso usa o router
 de setup (sem `pom.json`), que serve hardware, modelos, prévia da raiz
-administrativa, token administrativo, instalação da raiz, verificações e `POST /api/setup/save`. O save
+administrativa, senha administrativa, instalação da raiz, verificações e `POST /api/setup/save`. O save
 instala a raiz de confiança separada e grava `pom.json` antes do respawn. O
 respawn cria uma sessão independente em Unix, herda os argumentos originais e
 redireciona stdout/stderr para `<project_root>/pom.log`, para que uma falha de
@@ -687,9 +688,10 @@ QUIC, logs de processo entre nós e chat da rede. A separação reorganiza as
 mesmas operações e conserva a autorização existente.
 
 A exposição é persistida no `pom.json`: localhost é o padrão instalado, e a
-rede gera um token separado da `connection_key`, mostrado somente depois da
-autenticação. Trocar para localhost limpa o token; regenerá-lo invalida o
-anterior. A porta é validada antes de salvar e uma colisão é informada sem
+rede usa uma senha separada da `connection_key`; somente o hash Argon2id é
+persistido, e a senha anterior é exigida para trocá-la. Trocar para localhost
+limpa a senha. Um token antigo é migrado para Argon2id no primeiro carregamento,
+preservando seu valor como senha. A porta é validada antes de salvar e uma colisão é informada sem
 iniciar em outra porta. O `ThermalPanel` lê e grava a política em
 `GET/POST /api/ui/thermal`; o painel de Hugging Face usa
 `/api/ui/model-provider/config`.

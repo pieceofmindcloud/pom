@@ -162,7 +162,7 @@ export type AdminExposure = "localhost" | "network";
 /** Metadados públicos usados para decidir se a catraca deve aparecer. */
 export interface AdminAccessStatus {
   admin_exposure: AdminExposure;
-  requires_token: boolean;
+  requires_password: boolean;
   gateway_port: number;
 }
 
@@ -170,7 +170,8 @@ export interface AdminAccessStatus {
 export interface AdminAccessInfo {
   admin_exposure: AdminExposure;
   gateway_port: number;
-  access_token: string | null;
+  /** Only presence is exposed; the Argon2id hash never crosses the API. */
+  password_configured: boolean;
 }
 
 export interface NodeInfo {
@@ -195,8 +196,7 @@ export interface NodeInfo {
   p2p_port: number;
   gateway_port: number;
   admin_exposure: AdminExposure;
-  admin_access_token_configured: boolean;
-  admin_access_token_masked: string | null;
+  admin_password_configured: boolean;
   inference_port: number | null;
   config: NodeConfig | null;
   status: RuntimeStatus;

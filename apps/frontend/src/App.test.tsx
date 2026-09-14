@@ -6,7 +6,7 @@ import { LocaleProvider } from "./i18n/provider";
 import { ProfileProvider, type Profile } from "./lib/profile";
 
 const adminSurface = vi.hoisted(() => ({
-  value: "available" as "setup" | "available" | "requires-token" | "local-only",
+  value: "available" as "setup" | "available" | "requires-password" | "local-only",
 }));
 
 /**
@@ -130,14 +130,14 @@ describe("guarda de perfil por rota", () => {
   });
 
   it("renderiza um formulário reconhecível pelo gestor de senhas", () => {
-    adminSurface.value = "requires-token";
+    adminSurface.value = "requires-password";
     open("/", "admin");
 
     const form = screen.getByRole("button", { name: "Abrir interface" }).closest("form");
     expect(form).not.toBeNull();
     expect(form?.getAttribute("autocomplete")).toBe("on");
-    expect(form?.querySelector('input[name="username"]')).not.toBeNull();
-    const password = screen.getByLabelText("Token de acesso administrativo");
+    expect(form?.querySelector('input[name="username"]')).toBeNull();
+    const password = screen.getByLabelText("Senha de acesso administrativo");
     expect(password.getAttribute("type")).toBe("password");
     expect(password.getAttribute("autocomplete")).toBe("current-password");
     expect(screen.queryByRole("navigation")).toBeNull();

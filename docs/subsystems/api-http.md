@@ -129,7 +129,7 @@ usa `x-pom-control-signature`: um envelope Ed25519 cobre método, caminho,
 nonce, epoch e hash do corpo, e o emissor precisa ser uma autoridade vigente na
 cadeia. Os quadros de inferência ficam fora dessa assinatura e dependem do
 transporte TLS. `/api/setup/hardware`, `/api/setup/models`,
-`/api/setup/admin-anchor/preview`, `/api/setup/admin-token`, `/api/setup/trust-anchor`,
+`/api/setup/admin-anchor/preview`, `/api/setup/trust-anchor`,
 `/api/setup/health` e `/api/setup/save` só existem no router de primeiro acesso;
 `/api/setup/save` instala a raiz e o `pom.json` antes de reiniciar. As rotas da porta 8181
 (`/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/v1/session/*`,
@@ -220,7 +220,7 @@ A rota é `CommonOrInternal` na tabela de escopo, de propósito: um `profile:
 admin` **por ancorar** não passa em `AdminOnly`, que é exatamente o estado em
 que ele precisa ver a impressão digital, e quem recebe a âncora costuma ser um
 `node` ou um `infer`. Ela também não exige a `connection_key`: a fronteira
-continua sendo `AdminAuth` (loopback em modo local, token humano em modo de
+continua sendo `AdminAuth` (loopback em modo local, senha humana em modo de
 rede), e somar aquela credencial não protege contra a ameaça que a trava de
 loopback contém - quem alcança o navegador alcança o `localStorage` da mesma
 origem - enquanto deixaria a tela morta num navegador que ainda não a recebeu.
@@ -236,8 +236,9 @@ em inglês e português. Em `network`, a tela estática de login é pública, ma
 os dados administrativos exigem `X-POM-Access-Token` na primeira chamada; o
 servidor então emite uma sessão em memória identificada por cookie `HttpOnly`,
 `SameSite=Strict`, com validade de 8 horas e caminhos somente administrativos.
-O digest da sessão é invalidado ao regenerar o token ou voltar a localhost.
-O valor do token é comparado no servidor e nunca é substituído pela
+O digest da sessão é invalidado ao trocar a senha ou voltar a localhost.
+A senha é comparada no servidor com o hash Argon2id persistido, que nunca é
+retornado à interface, e nunca é substituída pela
 `connection_key`. Em rede pública, chamadas de controle entre nós usam somente
 o envelope assinado; em rede privada usam também o marcador interno junto da
 `connection_key`, sem abrir esse caminho para o navegador.
@@ -258,11 +259,11 @@ As rotas da pipeline não entram nessa fronteira: `/api/generate`, `/generate`,
 inferência em `--inference-port`, continuam acessíveis por IPv4 e IPv6 para
 que o HTTP de reserva do túnel libp2p não seja interrompido. `GET /api/access`
 é a única exceção pública da administração, pois informa apenas o modo, a
-necessidade de token e a porta para a tela decidir se deve mostrar a catraca.
+necessidade de senha e a porta para a tela decidir se deve mostrar a catraca.
 
 Em **modo setup** (sem `pom.json`), `main.rs` monta um router menor: as rotas
 `/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
-`/api/setup/admin-token`, `/api/setup/trust-anchor`, `/api/setup/health`, `/api/setup/save` e a UI. Elas
+`/api/setup/trust-anchor`, `/api/setup/health`, `/api/setup/save` e a UI. Elas
 não estão no router principal e só existem antes da configuração inicial.
 
 ## 2. Rotas por grupo
@@ -830,7 +831,8 @@ por libp2p; a consulta secundária não faz fallback para o principal.
 
 **`GET/POST /api/ui/thermal`** - exige `ConnectionAuth`. O GET devolve a
 política local `{ limit_c, hysteresis_c, cooldown_secs }`; o POST valida que o
-limite e a margem são finitos, positivos e formam uma histerese válida, grava a
+limite é de pelo menos 70 °C, que o cooldown não passa de 60 segundos, e que a
+margem é finita, positiva e forma uma histerese válida, grava a
 política no `pom.db` e devolve o valor efetivo. O runtime aplica a alteração
 sem reinício. `GET /api/ui/node` inclui a mesma política em `thermal`, junto
 com `system.gpus[].temperature_c`, que é `null` quando o driver não fornece a

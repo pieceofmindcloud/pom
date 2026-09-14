@@ -44,8 +44,7 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     p2p_port: 42777,
     gateway_port: 8080,
     admin_exposure: "localhost",
-    admin_access_token_configured: false,
-    admin_access_token_masked: null,
+    admin_password_configured: false,
     inference_port: 8181,
     config: null,
     status: {

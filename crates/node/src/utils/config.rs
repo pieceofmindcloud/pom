@@ -1,5 +1,6 @@
 // src/config.rs
 use anyhow::{Context, Result};
+use argon2::password_hash::PasswordHash;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::Write;
@@ -47,7 +48,7 @@ impl Default for AdminExposure {
 }
 
 impl AdminExposure {
-    pub fn requires_token(self) -> bool {
+    pub fn requires_password(self) -> bool {
         matches!(self, Self::Network)
     }
 }
@@ -202,7 +203,9 @@ pub struct Config {
     /// localhost, inclusive em configurações gravadas antes deste campo.
     #[serde(default)]
     pub admin_exposure: AdminExposure,
-    /// Credencial exclusiva da pessoa que abre a superfície administrativa.
+    /// Hash PHC Argon2id da senha da pessoa que abre a superfície administrativa.
+    /// O nome serializado permanece por compatibilidade com configurações
+    /// antigas, cujo token literal é migrado no primeiro `Config::load`.
     /// Não é a `connection_key`, que continua autenticando nós e pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_access_token: Option<String>,
@@ -542,9 +545,20 @@ impl Config {
 
     pub fn load() -> Result<Self> {
         let path = Self::config_path();
+        Self::load_from(&path)
+    }
+
+    fn load_from(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config at {:?}", path))?;
-        parse_config(&content, &path)
+        let mut config = parse_config(&content, &path)?;
+        let (admin_access_token, migrated) =
+            migrate_admin_access_token(config.admin_access_token.clone())?;
+        if migrated {
+            config.admin_access_token = admin_access_token;
+            config.write_to(&path)?;
+        }
+        Ok(config)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -554,6 +568,15 @@ impl Config {
 
     fn write_to(&self, path: &Path) -> Result<()> {
         let mut value = serde_json::to_value(self)?;
+        // Keep the file safe even if a caller hands this writer a legacy
+        // literal. Normal startup migrates before this point, but enforcing
+        // the invariant at the serialization boundary prevents a plaintext
+        // administrative credential from being written by any future path.
+        if self.admin_access_token.is_some() {
+            let (admin_access_token, _) =
+                migrate_admin_access_token(self.admin_access_token.clone())?;
+            value["admin_access_token"] = serde_json::to_value(admin_access_token)?;
+        }
         if path.exists() {
             let old = std::fs::read_to_string(path)
                 .with_context(|| format!("Failed to read existing config at {:?}", path))?;
@@ -818,6 +841,30 @@ fn parse_config(content: &str, path: &Path) -> Result<Config> {
     })
 }
 
+/// Convert the pre-password credential on first load. Older configurations
+/// stored the literal administrative token in this field; current
+/// configurations store only an Argon2id PHC string. A missing value remains
+/// missing, so a fresh local-only setup still has no password.
+fn migrate_admin_access_token(value: Option<String>) -> Result<(Option<String>, bool)> {
+    let Some(value) = value else {
+        return Ok((None, false));
+    };
+    if value.is_empty() {
+        return Ok((None, true));
+    }
+    if let Ok(parsed) = PasswordHash::new(&value) {
+        if parsed.algorithm.as_str() == "argon2id"
+            && parsed.version.is_some()
+            && !parsed.params.is_empty()
+            && parsed.salt.is_some()
+            && parsed.hash.is_some()
+        {
+            return Ok((Some(value), false));
+        }
+    }
+    crate::auth::hash_admin_password(&value).map(|hash| (Some(hash), true))
+}
+
 #[cfg(test)]
 mod tests {
     /// A peer address with no port is what produces `invalid port value` — the
@@ -849,6 +896,76 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn migrates_the_legacy_admin_token_into_a_password_hash() {
+        let (migrated, changed) = migrate_admin_access_token(Some("legacy-admin-token".into()))
+            .expect("migrar o token legado");
+
+        let migrated = migrated.expect("hash migrado");
+        assert!(changed);
+        assert!(migrated.starts_with("$argon2id$"));
+        assert!(crate::auth::verify_admin_password(
+            &migrated,
+            "legacy-admin-token"
+        ));
+        assert!(!migrated.contains("legacy-admin-token"));
+    }
+
+    #[test]
+    fn invalid_argon2id_prefix_is_migrated_as_a_legacy_token() {
+        let legacy = "$argon2id$not-a-complete-phc";
+        let (migrated, changed) = migrate_admin_access_token(Some(legacy.into()))
+            .expect("migrar o token legado com prefixo ambíguo");
+
+        let migrated = migrated.expect("hash migrado");
+        assert!(changed);
+        assert!(crate::auth::verify_admin_password(&migrated, legacy));
+        assert!(!migrated.contains(legacy));
+    }
+
+    #[test]
+    fn config_load_migrates_legacy_admin_token_on_disk() {
+        let legacy = "legacy-admin-token-loaded-from-disk";
+        let path = std::env::temp_dir().join(format!(
+            "pom-config-admin-migration-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("relógio do sistema")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "profile": "admin",
+                "admin_access_token": legacy,
+            })
+            .to_string(),
+        )
+        .expect("escrever configuração legada");
+
+        let config = Config::load_from(&path).expect("carregar configuração legada");
+        let hash = config
+            .admin_access_token
+            .as_deref()
+            .expect("token legado migrado");
+        assert!(crate::auth::verify_admin_password(hash, legacy));
+        assert!(hash.starts_with("$argon2id$"));
+
+        let persisted = std::fs::read_to_string(&path).expect("ler configuração migrada");
+        assert!(!persisted.contains(legacy));
+        assert!(persisted.contains("$argon2id$"));
+
+        std::fs::remove_file(path).expect("remover configuração temporária");
+    }
+
+    #[test]
+    fn absent_admin_token_stays_without_a_password() {
+        let (migrated, changed) = migrate_admin_access_token(None).expect("ler ausência");
+        assert!(migrated.is_none());
+        assert!(!changed);
+    }
 
     #[test]
     fn database_directory_uses_volume_override_and_project_fallback() {
@@ -1127,7 +1244,8 @@ mod tests {
             slot_auto_ttl_secs: None,
         };
         cfg.admin_exposure = AdminExposure::Network;
-        cfg.admin_access_token = Some("admin_super_secret".into());
+        let admin_password_hash = crate::auth::hash_admin_password("admin_super_secret").unwrap();
+        cfg.admin_access_token = Some(admin_password_hash.clone());
 
         std::fs::write(
             &path,
@@ -1144,7 +1262,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["huggingface_token"], "hf_legacy");
         assert!(!format!("{cfg:?}").contains("admin_super_secret"));
-        assert_eq!(saved["admin_access_token"], "admin_super_secret");
+        assert_eq!(saved["admin_access_token"], admin_password_hash);
         let _ = std::fs::remove_file(path);
     }
 

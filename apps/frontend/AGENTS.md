@@ -45,8 +45,8 @@ remain local until the deploy preflight.
 - `index.css` - design tokens and global styles (see below).
 - `App.tsx` - shell and route table (see below); after setup detection it probes
   the public administrative exposure and gates the whole shell with the human
-  access token only when needed. The real login is a browser-recognized form;
-  the token stays in module memory and the server-side `HttpOnly` session is
+  access password only when needed. The real login is a browser-recognized form;
+  the password stays in module memory and the server-side `HttpOnly` session is
   what survives a reload. This gate is only a UI flow: the server remains the
   authorization boundary.
 
@@ -170,7 +170,8 @@ sessão P2P por processo.
   `HttpOnly` admin session. Administrative requests use the cluster connection
   key, while `/v1/*` chat requests use the dedicated `pom-[node_id]` API key
   created by `/api/ui/chat-key`; a rejected key is replaced once before
-  retrying. The human access token is never persisted by the browser.
+  retrying. The human access password is never persisted by the browser, and
+  the node stores only its Argon2id hash.
 - The node serves `dist/` from disk per request; `POM_UI_DIST` overrides the directory (used by the Docker image).
 
 ## Pendências

@@ -30,7 +30,7 @@
 //! **Por que a chave de conexão não é exigida aqui.** As rotas vizinhas de
 //! autoridade a exigem; estas não, de propósito. A fronteira continua sendo a
 //! mesma de toda a superfície administrativa (`require_admin_for_surface` ->
-//! `AdminAuth`: loopback em modo local, token humano em modo de rede). Somar
+//! `AdminAuth`: loopback em modo local, senha humana em modo de rede). Somar
 //! aquela credencial não protege contra a ameaça que a trava de loopback
 //! existe para conter - quem alcança o navegador no loopback alcança o
 //! `localStorage` da mesma origem, onde ela está - e custa exatamente o que
@@ -353,7 +353,7 @@ mod tests {
 
     /// A trava é o endereço real do socket, e não `admin_exposure`: aqui a
     /// superfície administrativa está deliberadamente aberta à rede, o
-    /// requisitante traz o token humano correto - e a instalação continua
+    /// requisitante traz a senha humana correta - e a instalação continua
     /// recusada. Usar a exposição configurada como trava seria um buraco.
     #[tokio::test]
     async fn a_ancora_nao_e_instalada_de_fora_do_loopback() {
@@ -361,7 +361,8 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("token-do-operador".into());
+            cfg.admin_access_token =
+                Some(crate::auth::hash_admin_password("token-do-operador").unwrap());
         }
         let (document, fingerprint) = cadeia_do_admin();
 

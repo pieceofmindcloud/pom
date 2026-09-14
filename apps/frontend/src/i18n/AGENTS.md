@@ -16,7 +16,9 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
 ## Per-file
 
 - `messages.csv` - fonte única das mensagens, ordenada por chave para diffs
-  estáveis. Textos simples permanecem literais; interpolação usa `{name}` e
+  estáveis. Textos simples permanecem literais; mensagens da senha administrativa
+  explicam que só o hash Argon2id é persistido e nunca carregam um segredo real;
+  interpolação usa `{name}` e
   lógica usa `plural`, `select` e seletores exatos ICU. Valores internos de
   `select` são preparados apenas pelo carregador para preservar condicionais
   de truthiness que existiam no código antigo. As chaves de deployment também

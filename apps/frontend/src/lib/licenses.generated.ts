@@ -171,6 +171,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "rust"
   },
   {
+    "name": "argon2",
+    "version": "0.5.3",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/RustCrypto/password-hashes/tree/master/argon2",
+    "ecosystem": "rust"
+  },
+  {
     "name": "async-trait",
     "version": "0.1.89",
     "license": "MIT OR Apache-2.0",

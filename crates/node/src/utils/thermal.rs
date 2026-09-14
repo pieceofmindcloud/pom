@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_LIMIT_C: f64 = 85.0;
 pub const DEFAULT_HYSTERESIS_C: f64 = 8.0;
 pub const DEFAULT_COOLDOWN_SECS: u64 = 30;
+pub const MIN_LIMIT_C: f64 = 70.0;
+pub const MAX_COOLDOWN_SECS: u64 = 60;
 
 fn default_limit_c() -> f64 {
     DEFAULT_LIMIT_C
@@ -44,8 +46,8 @@ impl ThermalPolicy {
     }
 
     pub fn validate(self) -> anyhow::Result<()> {
-        if !self.limit_c.is_finite() || self.limit_c <= 0.0 || self.limit_c > 150.0 {
-            anyhow::bail!("o limite térmico precisa estar entre 0 e 150 °C");
+        if !self.limit_c.is_finite() || self.limit_c < MIN_LIMIT_C || self.limit_c > 150.0 {
+            anyhow::bail!("o limite térmico precisa estar entre 70 e 150 °C");
         }
         if !self.hysteresis_c.is_finite()
             || self.hysteresis_c <= 0.0
@@ -55,6 +57,9 @@ impl ThermalPolicy {
         }
         if self.cooldown_secs == 0 {
             anyhow::bail!("o tempo de resfriamento precisa ser maior que zero");
+        }
+        if self.cooldown_secs > MAX_COOLDOWN_SECS {
+            anyhow::bail!("o tempo de resfriamento não pode passar de 60 segundos");
         }
         Ok(())
     }
@@ -256,5 +261,22 @@ mod tests {
         invalid = policy();
         invalid.cooldown_secs = 0;
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn politica_respeita_os_limites_de_integridade_da_rede() {
+        let mut valid = policy();
+        valid.limit_c = 70.0;
+        valid.cooldown_secs = 60;
+        assert!(valid.validate().is_ok());
+
+        valid.limit_c = 69.9;
+        assert!(valid.validate().is_err());
+
+        valid = policy();
+        valid.cooldown_secs = 60;
+        assert!(valid.validate().is_ok());
+        valid.cooldown_secs = 61;
+        assert!(valid.validate().is_err());
     }
 }

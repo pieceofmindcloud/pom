@@ -729,6 +729,10 @@ async fn async_main(
     app_config.thermal = database
         .thermal_policy()?
         .unwrap_or_else(crate::thermal::ThermalPolicy::default);
+    app_config
+        .thermal
+        .validate()
+        .context("validar política térmica persistida")?;
     app_config.huggingface_token = database.huggingface_token()?;
     config::validate_gateway_port(app_config.gateway_port)?;
     info!("Profile: {}", app_config.profile);
@@ -1571,10 +1575,6 @@ async fn start_setup_mode(
         .route(
             "/api/setup/admin-anchor/preview",
             axum::routing::post(webui::preview_setup_anchor),
-        )
-        .route(
-            "/api/setup/admin-token",
-            axum::routing::post(webui::generate_setup_admin_token),
         )
         .route(
             "/api/setup/trust-anchor",

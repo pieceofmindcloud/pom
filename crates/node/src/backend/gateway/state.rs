@@ -251,7 +251,7 @@ pub struct GatewayState {
     pub(crate) authority_signing_key: Arc<ed25519_dalek::SigningKey>,
     pub(crate) authority_principal: crate::admin_trust::AuthorityPrincipal,
     /// In-memory browser sessions. It is intentionally not persisted beside
-    /// the configuration and is bound to the current admin access token.
+    /// the configuration and is bound to the current admin password hash.
     pub(crate) admin_sessions: crate::auth::AdminSessionState,
     /// In-flight slice transfers and the offers waiting for an answer.
     pub transfers: crate::transfer::Transfers,
@@ -380,7 +380,7 @@ impl GatewayState {
 #[derive(Serialize)]
 pub(super) struct AdminAccessStatus {
     pub(super) admin_exposure: crate::config::AdminExposure,
-    pub(super) requires_token: bool,
+    pub(super) requires_password: bool,
     pub(super) gateway_port: u16,
 }
 
@@ -388,7 +388,7 @@ pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> im
     let cfg = state.auth.read().await;
     Json(AdminAccessStatus {
         admin_exposure: cfg.admin_exposure,
-        requires_token: cfg.admin_exposure.requires_token(),
+        requires_password: cfg.admin_exposure.requires_password(),
         gateway_port: cfg.gateway_port,
     })
 }
@@ -484,7 +484,7 @@ pub(crate) async fn require_admin_for_surface(
 
     let (mut parts, body) = request.into_parts();
     if is_public_ui_static_path(&path) {
-        let network_exposure = state.auth.read().await.admin_exposure.requires_token();
+        let network_exposure = state.auth.read().await.admin_exposure.requires_password();
         if network_exposure {
             return next.run(Request::from_parts(parts, body)).await;
         }

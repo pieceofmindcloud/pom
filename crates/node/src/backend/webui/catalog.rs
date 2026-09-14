@@ -37,8 +37,7 @@ pub struct NodeInfo {
     pub inference_frame_capabilities: Vec<String>,
     pub gateway_port: u16,
     pub admin_exposure: AdminExposure,
-    pub admin_access_token_configured: bool,
-    pub admin_access_token_masked: Option<String>,
+    pub admin_password_configured: bool,
     pub inference_port: Option<u16>,
     pub config: Option<NodeConfig>,
     pub status: RuntimeStatus,
@@ -101,8 +100,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         network_chat_authority,
         thermal,
         admin_exposure,
-        admin_access_token_configured,
-        admin_access_token_masked,
+        admin_password_configured,
     ) = {
         let cfg = state.auth.read().await;
         (
@@ -145,8 +143,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
             cfg.admin_exposure,
             cfg.admin_access_token
                 .as_deref()
-                .is_some_and(|token| !token.is_empty()),
-            cfg.admin_access_token.as_deref().map(mask_access_token),
+                .is_some_and(|hash| !hash.is_empty()),
         )
     };
     Json(NodeInfo {
@@ -191,8 +188,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         },
         gateway_port: state.gateway_port,
         admin_exposure,
-        admin_access_token_configured,
-        admin_access_token_masked,
+        admin_password_configured,
         inference_port: state.network.inference_port,
         config,
         status: state.runtime.status().await,
@@ -245,11 +241,6 @@ pub(super) async fn cluster_logs(
     }
 }
 
-pub(super) fn mask_access_token(token: &str) -> String {
-    let suffix = token.get(token.len().saturating_sub(4)..).unwrap_or("");
-    format!("••••••••{suffix}")
-}
-
 async fn local_is_primary(state: &GatewayState) -> bool {
     let profile = state.auth.read().await.profile;
     state
@@ -262,9 +253,9 @@ async fn local_is_primary(state: &GatewayState) -> bool {
 pub struct AdminAccessInfo {
     pub admin_exposure: AdminExposure,
     pub gateway_port: u16,
-    /// Só a superfície já autenticada recebe o token persistido. O endpoint
-    /// público `/api/access` informa apenas se a catraca está ligada.
-    pub access_token: Option<String>,
+    /// The hash is never returned. This flag lets the settings screen explain
+    /// whether a network exposure already has a password to protect it.
+    pub password_configured: bool,
 }
 
 pub(super) async fn admin_access_info(State(state): State<GatewayState>) -> Json<AdminAccessInfo> {
@@ -272,11 +263,11 @@ pub(super) async fn admin_access_info(State(state): State<GatewayState>) -> Json
     Json(AdminAccessInfo {
         admin_exposure: cfg.admin_exposure,
         gateway_port: cfg.gateway_port,
-        access_token: cfg
+        password_configured: cfg
             .admin_access_token
             .as_deref()
             .filter(|token| !token.is_empty())
-            .map(str::to_string),
+            .is_some(),
     })
 }
 
@@ -285,7 +276,30 @@ pub struct SaveAdminAccessRequest {
     pub admin_exposure: AdminExposure,
     pub gateway_port: u32,
     #[serde(default)]
-    pub regenerate_token: bool,
+    pub current_password: String,
+    #[serde(default)]
+    pub new_password: String,
+}
+
+/// Return the hash that should be persisted after an administrative password
+/// change. Keeping this rule pure makes the first definition and the guarded
+/// rotation independently testable, while the handler remains responsible for
+/// exposure and persistence.
+pub(crate) fn next_admin_password_hash(
+    existing_hash: Option<&str>,
+    current_password: &str,
+    new_password: &str,
+) -> anyhow::Result<Option<String>> {
+    let existing_hash = existing_hash.filter(|hash| !hash.is_empty());
+    if new_password.is_empty() {
+        return Ok(existing_hash.map(str::to_owned));
+    }
+    if let Some(existing_hash) = existing_hash {
+        if !crate::auth::verify_admin_password(existing_hash, current_password) {
+            anyhow::bail!("a senha anterior está incorreta");
+        }
+    }
+    crate::auth::hash_admin_password(new_password).map(Some)
 }
 
 /// Persiste a fronteira da interface administrativa. As rotas da pipeline não
@@ -312,22 +326,51 @@ pub(super) async fn save_admin_access(
             .into_response();
     }
 
-    let (restart, access_token, invalidate_sessions) = {
+    let existing_hash = state.auth.read().await.admin_access_token.clone();
+    let next_password_hash = if req.admin_exposure.requires_password() {
+        let current_password = req.current_password.clone();
+        let new_password = req.new_password.clone();
+        let existing_hash_for_task = existing_hash.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            next_admin_password_hash(
+                existing_hash_for_task.as_deref(),
+                &current_password,
+                &new_password,
+            )
+        })
+        .await;
+        let next = match result {
+            Ok(Ok(next)) => next,
+            Ok(Err(error)) => return bad_request(error.to_string()),
+            Err(error) => {
+                return bad_request(format!("não foi possível proteger a senha: {error}"))
+            }
+        };
+        if next.is_none() {
+            return bad_request(
+                "uma senha é obrigatória quando a interface aceita conexões da rede",
+            );
+        }
+        next
+    } else {
+        None
+    };
+
+    let (restart, password_configured, invalidate_sessions) = {
         let mut cfg = state.auth.write().await;
+        if cfg.admin_access_token != existing_hash {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "a preferência de senha mudou; tente novamente" })),
+            )
+                .into_response();
+        }
         let mut next = cfg.clone();
         next.admin_exposure = req.admin_exposure;
         next.gateway_port = port;
-
-        if req.admin_exposure.requires_token() {
-            let should_regenerate = req.regenerate_token
-                || next.admin_access_token.as_deref().is_none_or(str::is_empty);
-            if should_regenerate {
-                next.admin_access_token = Some(new_admin_access_token());
-            }
-        } else {
-            // Leaving the network invalidates the old credential immediately.
-            next.admin_access_token = None;
-        }
+        // Localhost mode deliberately has no password. Network mode receives
+        // the existing hash or the newly derived one, never plaintext.
+        next.admin_access_token = next_password_hash;
 
         if let Err(error) = next.save() {
             return bad_request(format!(
@@ -336,11 +379,11 @@ pub(super) async fn save_admin_access(
             ));
         }
         let restart = port != state.gateway_port;
-        let access_token = next.admin_access_token.clone();
+        let password_configured = next.admin_access_token.is_some();
         let invalidate_sessions = cfg.admin_exposure != next.admin_exposure
             || cfg.admin_access_token != next.admin_access_token;
         *cfg = next;
-        (restart, access_token, invalidate_sessions)
+        (restart, password_configured, invalidate_sessions)
     };
 
     if invalidate_sessions {
@@ -351,7 +394,7 @@ pub(super) async fn save_admin_access(
         exposure = ?req.admin_exposure,
         gateway_port = port,
         restart,
-        regenerated = req.regenerate_token,
+        password_changed = !req.new_password.is_empty(),
         "preferência de acesso administrativo atualizada pela interface"
     );
 
@@ -368,14 +411,9 @@ pub(super) async fn save_admin_access(
         "restart": restart,
         "admin_exposure": req.admin_exposure,
         "gateway_port": port,
-        "access_token": access_token,
+        "password_configured": password_configured,
     }))
     .into_response()
-}
-
-pub(crate) fn new_admin_access_token() -> String {
-    let raw = uuid::Uuid::new_v4().simple().to_string();
-    hex::encode(Sha256::digest(raw.as_bytes()))
 }
 
 // ── Model catalog ────────────────────────────────────────────────────────────
@@ -1420,6 +1458,31 @@ async fn live_peer_load(state: &GatewayState, peer: &PeerInfo) -> Option<u32> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn admin_password_can_be_defined_without_a_previous_password() {
+        let hash = next_admin_password_hash(None, "", "senha nova")
+            .expect("definir a senha")
+            .expect("hash da senha definida");
+
+        assert!(crate::auth::verify_admin_password(&hash, "senha nova"));
+        assert!(!hash.contains("senha nova"));
+    }
+
+    #[test]
+    fn changing_admin_password_requires_the_previous_password() {
+        let old_hash = crate::auth::hash_admin_password("senha antiga").expect("senha antiga");
+        assert!(next_admin_password_hash(Some(&old_hash), "errada", "senha nova").is_err());
+
+        let new_hash = next_admin_password_hash(Some(&old_hash), "senha antiga", "senha nova")
+            .expect("trocar a senha")
+            .expect("hash da senha nova");
+        assert!(crate::auth::verify_admin_password(&new_hash, "senha nova"));
+        assert!(!crate::auth::verify_admin_password(
+            &new_hash,
+            "senha antiga"
+        ));
+    }
 
     #[test]
     fn infer_load_stays_unknown_when_the_candidate_did_not_report_it() {

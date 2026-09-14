@@ -95,10 +95,11 @@ profile policy remains the effective authorization boundary.
 ## Files
 
 - `auth.rs` - auth extractors. `AdminAuth` protects the administrative surface
-  with the real peer address, a non-empty constant-time compared token, a
+  with the real peer address, an Argon2id-verified human password, a
   server-side in-memory session cookie, or the explicit internal-node channel.
-  Sessions use a cryptographically random identifier, bind to the current
-  token digest, expire after the single `ADMIN_SESSION_TTL` value and never
+  Passwords are never persisted in plaintext; sessions use a cryptographically
+  random identifier, bind to the current password hash, expire after the single
+  `ADMIN_SESSION_TTL` value and never
   persist in the browser or on disk. `ConnectionAuth` (connection-key bearer
   only), `InternalNodeAuth` (that key plus an internal marker), `ApiKeyAuth`
   (active inference API key only, from `authorization: Bearer` or `x-api-key`),
@@ -942,13 +943,15 @@ faz o download autenticado do blob persistido.
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
   Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
   `/api/setup/geo-reference`,
-  `/api/setup/admin-anchor/preview`, `/api/setup/admin-token`, `/api/setup/trust-anchor`,
+  `/api/setup/admin-anchor/preview`, `/api/setup/trust-anchor`,
   `/api/setup/health` and `/api/setup/save` on its loopback-only router. Saving
   installs the trust document, persists network details in both `pom.json` and
   `pom.db`, and respawns. `setup_pending` keeps the router active after leaving
   a network while preserving local hardware preferences. The setup
   anchor preview returns a private connection key only for local/private
-  visibility; the admin access token is persisted only for network exposure.
+  visibility; the administrator chooses a password only for network exposure,
+  and `pom.json` persists only its Argon2id hash. Localhost-only exposure has
+  no administrative password.
   `GET /api/public/network(s)` exposes public network metadata, including the
   signed trust document, Markdown description/rules/channels and a P2P
   bootstrap address for the no-secret join flow. `GET/POST

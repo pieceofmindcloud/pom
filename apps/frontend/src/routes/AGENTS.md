@@ -482,14 +482,14 @@ Per-file list:
   vez de repetir o texto do servidor. Vive fora do gate de perfil - ver o
   cabeçalho do arquivo e `lib/access.ts`. Teste: `TrustAnchor.test.tsx`.
 - `Preferences.tsx` - Local settings screen under Configurações: owns the
-  administrative exposure mode and gateway port, displays the generated access
-  token only in network mode, and saves them to `pom.json` through
+  administrative exposure mode and gateway port, accepts a password only in
+  network mode, and saves its Argon2id hash to `pom.json` through
   `POST /api/ui/access`. It also mounts `TlsPanel`, which moves the cluster TLS
   choice out of Network and explains when it is useful, plus `ThermalPanel` and
   `HuggingFaceSettingsPanel`. Também monta o interruptor de logs do cluster,
   disponível apenas ao principal e aplicado em tempo real, e `QuicPanel`, que
   alterna a preferência HTTP/3 em `POST /api/ui/network/quic` com o mesmo
-  controle de autoridade. The access token is a human credential and is not the
+  controle de autoridade. The access password is a human credential and is not the
   cluster `connection_key`. A rota `/config/preferencias/admin` renderiza
   somente TLS, QUIC, logs de processo entre nós e chat da rede; a rota normal
   mantém exposição, Hugging Face, proteção térmica e o link de armazenamento.
@@ -504,7 +504,7 @@ Per-file list:
   it again and the receiver sees only an opaque grant.
 - `Setup.tsx` - First run (no `pom.json`): real wizard backed by
   `/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
-  `/api/setup/admin-token`, `/api/setup/health` and `/api/setup/save`. It shows hardware first, then
+  `/api/setup/health` and `/api/setup/save`. It shows hardware first, then
   resource reserves, local and Hugging Face reference models, the standard
   `~/.pom/models` and `~/.pom/models_sliced` paths, shared slice space and the
   trust-root flow. Public networks use signed control without a shared secret;
@@ -515,7 +515,7 @@ Per-file list:
   no longer asks for an extra confirmation checkbox. The
   administrator invitation downloads the actual trust filename returned by the
   server and copies a connection secret only for local/private networks. An
-  admin token is generated only when the interface is exposed to the network;
+  admin password is requested only when the interface is exposed to the network;
   optional peer-link TLS starts disabled because libp2p already protects the
   peer connection.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen

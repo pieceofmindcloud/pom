@@ -220,7 +220,8 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("person-secret".into());
+            cfg.admin_access_token =
+                Some(crate::auth::hash_admin_password("person-secret").unwrap());
         }
         let app: Router = Router::new()
             .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
@@ -738,7 +739,8 @@ mod tests {
             let mut auth = state.auth.write().await;
             auth.profile = crate::profile::NodeProfile::Node;
             auth.admin_exposure = crate::config::AdminExposure::Network;
-            auth.admin_access_token = Some("person-secret".into());
+            auth.admin_access_token =
+                Some(crate::auth::hash_admin_password("person-secret").unwrap());
         }
         let app = Router::new()
             .merge(crate::webui::routes())
@@ -878,7 +880,8 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("person-secret".into());
+            cfg.admin_access_token =
+                Some(crate::auth::hash_admin_password("person-secret").unwrap());
         }
         let app: Router = Router::new()
             .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
@@ -935,7 +938,8 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("person-secret".into());
+            cfg.admin_access_token =
+                Some(crate::auth::hash_admin_password("person-secret").unwrap());
         }
         let app: Router = Router::new()
             .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
@@ -981,10 +985,12 @@ mod tests {
 
         let cookie = token_login(&app).await;
         assert_eq!(with_cookie(&app, &cookie).await, StatusCode::OK);
-        state.auth.write().await.admin_access_token = Some("new-secret".into());
+        state.auth.write().await.admin_access_token =
+            Some(crate::auth::hash_admin_password("new-secret").unwrap());
         assert_eq!(with_cookie(&app, &cookie).await, StatusCode::UNAUTHORIZED);
 
-        state.auth.write().await.admin_access_token = Some("person-secret".into());
+        state.auth.write().await.admin_access_token =
+            Some(crate::auth::hash_admin_password("person-secret").unwrap());
         let cookie = token_login(&app).await;
         state.auth.write().await.admin_exposure = crate::config::AdminExposure::Localhost;
         assert_eq!(with_cookie(&app, &cookie).await, StatusCode::FORBIDDEN);

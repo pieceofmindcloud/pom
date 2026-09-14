@@ -74,11 +74,6 @@ pub struct SetupAnchorPreview {
     pub private_connection_key: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct SetupAdminTokenResponse {
-    pub token: String,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct SetupAnchorPreviewRequest {
     pub cluster_id: String,
@@ -322,12 +317,6 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
     }
 }
 
-pub async fn generate_setup_admin_token() -> impl IntoResponse {
-    Json(SetupAdminTokenResponse {
-        token: crate::webui::new_admin_access_token(),
-    })
-}
-
 pub async fn get_setup_health(
     State(config): State<AuthState>,
     Json(request): Json<SetupHealthRequest>,
@@ -367,7 +356,7 @@ pub struct SaveSetupRequest {
     #[serde(default)]
     pub admin_exposure: crate::config::AdminExposure,
     #[serde(default)]
-    pub admin_access_token: String,
+    pub admin_password: String,
     #[serde(default)]
     pub tls_required: bool,
     #[serde(default)]
@@ -479,6 +468,22 @@ pub async fn save_setup(
             .into_response();
     }
 
+    let admin_password_hash = if profile == crate::profile::NodeProfile::Admin
+        && req.admin_exposure.requires_password()
+    {
+        let password = req.admin_password.clone();
+        match tokio::task::spawn_blocking(move || crate::auth::hash_admin_password(&password)).await
+        {
+            Ok(Ok(hash)) => Some(hash),
+            Ok(Err(error)) => return bad_request(error.to_string()),
+            Err(error) => {
+                return bad_request(format!("não foi possível proteger a senha: {error}"))
+            }
+        }
+    } else {
+        None
+    };
+
     let trust_document = if req.trust_document.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -564,13 +569,7 @@ pub async fn save_setup(
 
     if profile == crate::profile::NodeProfile::Admin {
         cfg.admin_exposure = req.admin_exposure;
-        cfg.admin_access_token = req.admin_exposure.requires_token().then(|| {
-            if req.admin_access_token.trim().is_empty() {
-                crate::webui::new_admin_access_token()
-            } else {
-                req.admin_access_token.trim().to_string()
-            }
-        });
+        cfg.admin_access_token = admin_password_hash;
     }
 
     let supplied_connection_key = req.connection_key.trim();

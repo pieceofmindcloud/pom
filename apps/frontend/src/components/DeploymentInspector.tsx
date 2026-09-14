@@ -29,7 +29,7 @@
  */
 import { useEffect, useState, type ReactNode } from "react";
 import { AlertTooltip, InfoTip, Input, Select } from "./ui";
-import { MTP_MIN_PROBABILITY, Tick } from "./RuntimeParamsForm";
+import { applyPomDesenvDefaults, MTP_MIN_PROBABILITY, Tick } from "./RuntimeParamsForm";
 import type {
   DeploymentCapabilities,
   InferenceMode,
@@ -232,6 +232,7 @@ export function DeploymentInspector({
   inferenceModeAlert,
   /** A precisão do estado oculto só existe quando o pipeline cruza máquinas. */
   showHiddenStateDtype = false,
+  pomDesenv = false,
 }: {
   value: RuntimeParams;
   onChange?: (next: RuntimeParams) => void;
@@ -243,6 +244,7 @@ export function DeploymentInspector({
   showInferenceMode?: boolean;
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
+  pomDesenv?: boolean;
 }) {
   const { t } = useI18n();
   /*
@@ -251,6 +253,7 @@ export function DeploymentInspector({
    * valor volta como número a cada tecla.
    */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const effectiveValue = applyPomDesenvDefaults(value, pomDesenv);
 
   /**
    * O rascunho vale enquanto ele **é** o valor - ou enquanto está vazio, que é
@@ -260,10 +263,10 @@ export function DeploymentInspector({
    */
   function shown(key: NumericKey): string {
     const draft = drafts[key];
-    if (draft !== undefined && (draft === "" || Number(draft) === value[key])) return draft;
-    return showNumber(value[key]);
+    if (draft !== undefined && (draft === "" || Number(draft) === effectiveValue[key])) return draft;
+    return showNumber(effectiveValue[key]);
   }
-  const set = (patch: Partial<RuntimeParams>) => onChange?.({ ...value, ...patch });
+  const set = (patch: Partial<RuntimeParams>) => onChange?.({ ...effectiveValue, ...patch });
 
   const hiddenStateCapability = capabilities?.hidden_state_f8;
   const f8Unavailable = hiddenStateCapability
@@ -277,10 +280,10 @@ export function DeploymentInspector({
    * apresentação e padrão da interface, não mudança de contrato.
    */
   useEffect(() => {
-    if (readOnly || !showInferenceMode) return;
-    if (value.inference_mode === "auto") set({ inference_mode: "dense" });
+    if (readOnly || !showInferenceMode || !pomDesenv) return;
+    if (effectiveValue.inference_mode === "auto") set({ inference_mode: "dense" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readOnly, showInferenceMode, value.inference_mode]);
+  }, [readOnly, showInferenceMode, pomDesenv, value.inference_mode]);
 
   function setKnob(key: NumericKey, text: string) {
     setDrafts((current) => ({ ...current, [key]: text }));
@@ -293,7 +296,7 @@ export function DeploymentInspector({
     return (
       <InspectorRow key={key} label={label} tip={t("deploy.knob." + key + "Hint")}>
         {readOnly ? (
-          <ReadValue>{value[key] == null ? "-" : showNumber(value[key])}</ReadValue>
+          <ReadValue>{effectiveValue[key] == null ? "-" : showNumber(effectiveValue[key])}</ReadValue>
         ) : (
           <Input
             aria-label={label}
@@ -368,9 +371,9 @@ export function DeploymentInspector({
     );
   }
 
-  const cycleOn = value.cycle_detection_enabled ?? false;
-  const speculativeOn = value.speculative_decoding_enabled ?? false;
-  const mtpOn = value.mtp_enabled ?? false;
+  const cycleOn = effectiveValue.cycle_detection_enabled ?? false;
+  const speculativeOn = effectiveValue.speculative_decoding_enabled ?? false;
+  const mtpOn = effectiveValue.mtp_enabled ?? false;
 
   return (
     <>
@@ -411,7 +414,7 @@ export function DeploymentInspector({
           key: "no_thinking",
           label: t("inspector.noThinking"),
           capability: capabilities?.no_thinking,
-          checked: value.no_thinking ?? false,
+          checked: effectiveValue.no_thinking ?? false,
           onToggle: (next) => set({ no_thinking: next }),
           tip: t("deploy.noThinkingHint"),
         })}
@@ -481,7 +484,7 @@ export function DeploymentInspector({
           label: t("inspector.noEmbeddings"),
           capability: capabilities?.no_embeddings,
           alwaysVisible: true,
-          checked: value.no_embeddings ?? false,
+          checked: effectiveValue.no_embeddings ?? false,
           onToggle: (next) => set({ no_embeddings: next }),
           tip: t("deploy.noEmbeddingsHint"),
         })}
@@ -489,7 +492,7 @@ export function DeploymentInspector({
           key: "fit_memory",
           label: t("inspector.fitMemory"),
           capability: capabilities?.fit_memory,
-          checked: value.fit_memory ?? true,
+          checked: effectiveValue.fit_memory ?? true,
           onToggle: (next) => set({ fit_memory: next }),
           tip: t("deploy.fitMemoryHint"),
         })}
@@ -511,12 +514,12 @@ export function DeploymentInspector({
               tip={t("deploy.knob.hidden_state_dtypeHint")}
             >
               {readOnly ? (
-                <ReadValue>{value.hidden_state_dtype ?? "f16"}</ReadValue>
+                <ReadValue>{effectiveValue.hidden_state_dtype ?? "f16"}</ReadValue>
               ) : (
                 <Select
                   aria-label={t("deploy.knob.hidden_state_dtype")}
                   name="hidden_state_dtype"
-                  value={value.hidden_state_dtype ?? "f16"}
+                  value={effectiveValue.hidden_state_dtype ?? "f16"}
                   onChange={(event) =>
                     set({ hidden_state_dtype: event.target.value as WireDtype })
                   }
@@ -539,7 +542,7 @@ export function DeploymentInspector({
         )}
       </Section>
 
-      <Section title={t("inspector.sectionPomDev")} tone="amber">
+      {pomDesenv && <Section title={t("inspector.sectionPomDev")} tone="amber">
         {showInferenceMode && (
           <InspectorRow
             label={t("inspector.inferenceMode")}
@@ -547,12 +550,12 @@ export function DeploymentInspector({
             alert={inferenceModeAlert ?? undefined}
           >
             {readOnly ? (
-              <ReadValue>{t("inspector.engine." + (value.inference_mode ?? "auto"))}</ReadValue>
+              <ReadValue>{t("inspector.engine." + (effectiveValue.inference_mode ?? "auto"))}</ReadValue>
             ) : (
               <Select
                 aria-label={t("inspector.inferenceMode")}
                 name="inference_mode"
-                value={value.inference_mode === "auto" ? "dense" : (value.inference_mode ?? "dense")}
+                value={effectiveValue.inference_mode === "auto" ? "dense" : (effectiveValue.inference_mode ?? "dense")}
                 onChange={(event) =>
                   set({ inference_mode: event.target.value as InferenceMode })
                 }
@@ -579,7 +582,7 @@ export function DeploymentInspector({
           key: "mtp_cpu_fallback_enabled",
           label: t("deploy.mtpCpuFallback"),
           alwaysVisible: true,
-          checked: value.mtp_cpu_fallback_enabled ?? true,
+          checked: effectiveValue.mtp_cpu_fallback_enabled ?? true,
           onToggle: (next) => set({ mtp_cpu_fallback_enabled: next }),
           tip: t("deploy.mtpCpuFallbackHint"),
         })}
@@ -587,12 +590,12 @@ export function DeploymentInspector({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),
           alwaysVisible: true,
-          checked: value.unload_if_idle ?? false,
+          checked: effectiveValue.unload_if_idle ?? false,
           onToggle: (next) => set({ unload_if_idle: next }),
           tip: t("deploy.unloadIfIdleHint"),
         })}
         {numeric("idle_minutes")}
-      </Section>
+      </Section>}
     </>
   );
 }

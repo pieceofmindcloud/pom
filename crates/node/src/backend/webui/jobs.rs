@@ -254,6 +254,28 @@ impl Default for RuntimeParams {
     }
 }
 
+impl RuntimeParams {
+    /// Remove all controls belonging to the development-only POM section when
+    /// the process was not explicitly started with `POM_DESENV=1`.
+    pub(crate) fn with_pom_desenv(self, enabled: bool) -> Self {
+        if enabled {
+            return self;
+        }
+        let defaults = Self::default();
+        Self {
+            inference_mode: defaults.inference_mode,
+            cycle_detection_enabled: defaults.cycle_detection_enabled,
+            cycle_detection_min_window_tokens: defaults.cycle_detection_min_window_tokens,
+            cycle_detection_max_window_tokens: defaults.cycle_detection_max_window_tokens,
+            cycle_detection_repetitions: defaults.cycle_detection_repetitions,
+            mtp_cpu_fallback_enabled: defaults.mtp_cpu_fallback_enabled,
+            unload_if_idle: defaults.unload_if_idle,
+            idle_minutes: defaults.idle_minutes,
+            ..self
+        }
+    }
+}
+
 /// Carry a running node's knobs over to whoever takes its slice.
 ///
 /// A handover that quietly reset the context window or the sampling would change

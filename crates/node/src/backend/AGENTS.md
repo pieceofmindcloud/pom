@@ -210,7 +210,10 @@ profile policy remains the effective authorization boundary.
   fica `null` quando o relatório não chega, para que a UI mostre indisponível
   em vez de zero. A validade do RTT é de cinco minutos; valores vencidos
   aparecem como diagnóstico, mas não entram na seleção da geração.
-  `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
+  `NodeInfo` carries the same thermal policy used by the runtime. It also
+  carries `pom_desenv`, which is true only for the exact startup environment
+  value `POM_DESENV=1`; every deploy boundary restores the development-only
+  runtime fields to `RuntimeParams::default()` when it is false. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
   `parts`. Jobs and the cluster view use conditional JSON responses:

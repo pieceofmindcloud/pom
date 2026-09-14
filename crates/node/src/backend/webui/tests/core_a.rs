@@ -333,6 +333,60 @@ mod tests {
     }
 
     #[test]
+    fn pom_desenv_disabled_restores_development_defaults_without_touching_runtime_knobs() {
+        let mut requested = RuntimeParams::default();
+        requested.n_ctx = 32768;
+        requested.inference_mode = InferenceMode::Moe;
+        requested.cycle_detection_enabled = true;
+        requested.cycle_detection_min_window_tokens = 7;
+        requested.cycle_detection_max_window_tokens = 9;
+        requested.cycle_detection_repetitions = 8;
+        requested.mtp_cpu_fallback_enabled = false;
+        requested.unload_if_idle = true;
+        requested.idle_minutes = 2;
+
+        let effective = requested.clone().with_pom_desenv(false);
+        let defaults = RuntimeParams::default();
+
+        assert_eq!(effective.n_ctx, requested.n_ctx);
+        assert_eq!(effective.inference_mode, defaults.inference_mode);
+        assert_eq!(
+            effective.cycle_detection_enabled,
+            defaults.cycle_detection_enabled
+        );
+        assert_eq!(
+            effective.cycle_detection_min_window_tokens,
+            defaults.cycle_detection_min_window_tokens
+        );
+        assert_eq!(
+            effective.cycle_detection_max_window_tokens,
+            defaults.cycle_detection_max_window_tokens
+        );
+        assert_eq!(
+            effective.cycle_detection_repetitions,
+            defaults.cycle_detection_repetitions
+        );
+        assert_eq!(
+            effective.mtp_cpu_fallback_enabled,
+            defaults.mtp_cpu_fallback_enabled
+        );
+        assert_eq!(effective.unload_if_idle, defaults.unload_if_idle);
+        assert_eq!(effective.idle_minutes, defaults.idle_minutes);
+    }
+
+    #[test]
+    fn pom_desenv_enabled_preserves_development_values() {
+        let mut requested = RuntimeParams::default();
+        requested.inference_mode = InferenceMode::Moe;
+        requested.cycle_detection_enabled = true;
+        requested.mtp_cpu_fallback_enabled = false;
+        requested.unload_if_idle = true;
+        requested.idle_minutes = 2;
+
+        assert_eq!(requested.clone().with_pom_desenv(true), requested);
+    }
+
+    #[test]
     fn params_accept_partial_overrides() {
         let p: RuntimeParams = serde_json::from_str(
             r#"{"n_ctx":250000,"no_thinking":false,"offload_kqv":false,"fit_memory":false,"fit_memory_margin_mb":512}"#,

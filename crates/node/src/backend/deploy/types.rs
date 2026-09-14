@@ -192,7 +192,7 @@ pub struct TpLaunch {
 }
 
 pub(super) fn effective_params_for_kind(kind: DeployKind, params: &RuntimeParams) -> RuntimeParams {
-    let mut effective = params.clone();
+    let mut effective = params.clone().with_pom_desenv(crate::pom_desenv_enabled());
     if kind == DeployKind::TensorParallel {
         // llama.cpp's common_fit_params explicitly refuses split-mode tensor.
         // Keep the plan honest and make the runtime safety belt independent of

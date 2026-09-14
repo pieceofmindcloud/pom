@@ -42,6 +42,9 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   um passo separado.
 - Lido em `main.rs:1` (`BUILD_COMMIT`) e exposto em `/api/ui/node` - é como se
   descobre um peer com binário velho sem shell na máquina.
+- `main.rs` lê `POM_DESENV` uma vez no startup; somente o valor exato `1` habilita
+  controles de desenvolvimento, e `NodeInfo.pom_desenv` publica essa decisão
+  para a interface.
 - O build nativo prepara automaticamente o fork de `llama.cpp` em um worktree
   novo, clonando a branch `pom-tensor-parallel` quando o symlink versionado
   aponta para uma árvore ausente. `LLAMA_SOURCE` permite reutilizar um checkout

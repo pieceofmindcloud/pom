@@ -78,6 +78,37 @@ export const MTP_KNOBS: Knob[] = [
   { key: "mtp_min_probability", min: 0, max: 1, step: 0.01 },
 ];
 
+export type PomDesenvParams = Pick<
+  RuntimeParams,
+  | "inference_mode"
+  | "cycle_detection_enabled"
+  | "cycle_detection_min_window_tokens"
+  | "cycle_detection_max_window_tokens"
+  | "cycle_detection_repetitions"
+  | "mtp_cpu_fallback_enabled"
+  | "unload_if_idle"
+  | "idle_minutes"
+>;
+
+/** Defaults used whenever the development-only controls are unavailable. */
+export const POM_DESENV_DEFAULTS: PomDesenvParams = {
+  inference_mode: "auto",
+  cycle_detection_enabled: false,
+  cycle_detection_min_window_tokens: 32,
+  cycle_detection_max_window_tokens: 512,
+  cycle_detection_repetitions: 3,
+  mtp_cpu_fallback_enabled: true,
+  unload_if_idle: false,
+  idle_minutes: 60,
+};
+
+export function applyPomDesenvDefaults(
+  value: RuntimeParams,
+  enabled: boolean,
+): RuntimeParams {
+  return enabled ? value : { ...value, ...POM_DESENV_DEFAULTS };
+}
+
 /**
  * A caixinha de marcar da tela de implantar, movida junto com o formulário para
  * que os dois lugares continuem com o mesmo desenho e a mesma semântica de
@@ -208,17 +239,20 @@ export function RuntimeParamsForm({
    */
   isTp = false,
   capabilities,
+  pomDesenv = false,
 }: {
   value: RuntimeParams;
   onChange: (next: RuntimeParams) => void;
   disabled?: boolean;
   isTp?: boolean;
   capabilities?: DeploymentCapabilities;
+  pomDesenv?: boolean;
 }) {
   const { t } = useI18n();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const effectiveValue = applyPomDesenvDefaults(value, pomDesenv);
   const hiddenStateCapability = capabilities?.hidden_state_f8;
-  const hiddenStateDtype = value.hidden_state_dtype ?? "f16";
+  const hiddenStateDtype = effectiveValue.hidden_state_dtype ?? "f16";
   const f8Unavailable = hiddenStateCapability
     ? hiddenStateCapability.state !== "supported"
     : false;
@@ -230,7 +264,7 @@ export function RuntimeParamsForm({
     setDrafts((d) => ({ ...d, [key]: text }));
     const n = Number(text);
     if (text !== "" && Number.isFinite(n)) {
-      onChange({ ...value, [key]: n });
+      onChange({ ...effectiveValue, [key]: n });
     }
   }
 
@@ -247,7 +281,7 @@ export function RuntimeParamsForm({
         max={k.max}
         step={k.step}
         disabled={disabled}
-        value={drafts[k.key] ?? String(value[k.key] ?? "")}
+        value={drafts[k.key] ?? String(effectiveValue[k.key] ?? "")}
         onChange={(e) => setKnob(k.key, e.target.value)}
         onBlur={() =>
           setDrafts((d) => {
@@ -276,7 +310,7 @@ export function RuntimeParamsForm({
             value={hiddenStateDtype}
             onChange={(event) =>
               onChange({
-                ...value,
+                ...effectiveValue,
                 hidden_state_dtype: event.target.value as WireDtype,
               })
             }
@@ -294,16 +328,16 @@ export function RuntimeParamsForm({
       <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
         <CapabilitySwitch
           capability={capabilities?.fit_memory}
-          checked={!isTp && (value.fit_memory ?? true)}
-          onChange={(v) => onChange({ ...value, fit_memory: v })}
+          checked={!isTp && (effectiveValue.fit_memory ?? true)}
+          onChange={(v) => onChange({ ...effectiveValue, fit_memory: v })}
           disabled={disabled || isTp}
           label={t("deploy.fitMemory")}
           hint={t(isTp ? "deploy.fitMemoryTpHint" : "deploy.fitMemoryHint")}
         />
         <CapabilitySwitch
           capability={capabilities?.no_thinking}
-          checked={value.no_thinking ?? true}
-          onChange={(v) => onChange({ ...value, no_thinking: v })}
+          checked={effectiveValue.no_thinking ?? true}
+          onChange={(v) => onChange({ ...effectiveValue, no_thinking: v })}
           disabled={disabled}
           label={t("deploy.noThinking")}
           hint={t("deploy.noThinkingHint")}
@@ -311,33 +345,35 @@ export function RuntimeParamsForm({
         <CapabilitySwitch
           capability={capabilities?.no_embeddings}
           alwaysVisible
-          checked={value.no_embeddings ?? false}
-          onChange={(v) => onChange({ ...value, no_embeddings: v })}
+          checked={effectiveValue.no_embeddings ?? false}
+          onChange={(v) => onChange({ ...effectiveValue, no_embeddings: v })}
           disabled={disabled}
           label={t("deploy.noEmbeddings")}
           hint={t("deploy.noEmbeddingsHint")}
         />
-        <Switch
-          checked={value.cycle_detection_enabled ?? false}
-          onChange={(v) => onChange({ ...value, cycle_detection_enabled: v })}
-          disabled={disabled}
-          label={t("deploy.cycleDetection")}
-          hint={t("deploy.cycleDetectionHint")}
-        />
+        {pomDesenv && (
+          <Switch
+            checked={effectiveValue.cycle_detection_enabled ?? false}
+            onChange={(v) => onChange({ ...effectiveValue, cycle_detection_enabled: v })}
+            disabled={disabled}
+            label={t("deploy.cycleDetection")}
+            hint={t("deploy.cycleDetectionHint")}
+          />
+        )}
         <CapabilitySwitch
           capability={capabilities?.speculative_decoding}
-          checked={value.speculative_decoding_enabled ?? false}
-          onChange={(v) => onChange({ ...value, speculative_decoding_enabled: v })}
+          checked={effectiveValue.speculative_decoding_enabled ?? false}
+          onChange={(v) => onChange({ ...effectiveValue, speculative_decoding_enabled: v })}
           disabled={disabled}
           label={t("deploy.speculative")}
           hint={t("deploy.speculativeHint")}
         />
         <CapabilitySwitch
           capability={capabilities?.mtp}
-          checked={value.mtp_enabled ?? false}
+          checked={effectiveValue.mtp_enabled ?? false}
           onChange={(v) =>
             onChange({
-              ...value,
+              ...effectiveValue,
               mtp_enabled: v,
               ...(v ? { mtp_min_probability: MTP_MIN_PROBABILITY } : {}),
             })
@@ -348,31 +384,33 @@ export function RuntimeParamsForm({
         />
       </div>
 
-      {(value.cycle_detection_enabled ?? false) && (
+      {pomDesenv && (effectiveValue.cycle_detection_enabled ?? false) && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {CYCLE_KNOBS.map((k) => numeric(k))}
         </div>
       )}
 
-      {(value.speculative_decoding_enabled ?? false) &&
+      {(effectiveValue.speculative_decoding_enabled ?? false) &&
         capabilities?.speculative_decoding?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {SPECULATIVE_KNOBS.map((k) => numeric(k))}
         </div>
       )}
 
-      {(value.mtp_enabled ?? false) &&
+      {(effectiveValue.mtp_enabled ?? false) &&
         capabilities?.mtp?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {MTP_KNOBS.map((k) => numeric(k))}
-          <CapabilitySwitch
-            alwaysVisible
-            checked={value.mtp_cpu_fallback_enabled ?? true}
-            onChange={(v) => onChange({ ...value, mtp_cpu_fallback_enabled: v })}
-            disabled={disabled}
-            label={t("deploy.mtpCpuFallback")}
-            hint={t("deploy.mtpCpuFallbackHint")}
-          />
+          {pomDesenv && (
+            <CapabilitySwitch
+              alwaysVisible
+              checked={effectiveValue.mtp_cpu_fallback_enabled ?? true}
+              onChange={(v) => onChange({ ...effectiveValue, mtp_cpu_fallback_enabled: v })}
+              disabled={disabled}
+              label={t("deploy.mtpCpuFallback")}
+              hint={t("deploy.mtpCpuFallbackHint")}
+            />
+          )}
         </div>
       )}
     </div>

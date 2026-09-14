@@ -423,7 +423,8 @@ pub(super) async fn add_node_endpoint(
                 .as_ref()
                 .and_then(|record| record.active().map(|version| version.params.clone()))
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .with_pom_desenv(crate::pom_desenv_enabled());
 
     // Re-varre em vez de confiar na tela: a previa pode ter um minuto, e uma
     // maquina que saiu nesse meio tempo receberia uma fatia.
@@ -671,13 +672,13 @@ pub(super) async fn remove_node_endpoint(
         {
             Ok(request) => request,
             Err(error) => {
-                return bad(json!({ "error": format!("não foi possível assinar: {error}") }))
+                return bad(json!({ "error": format!("não foi possível assinar: {error}") }));
             }
         };
         match request.send().await {
             Ok(r) if r.status().is_success() => {}
             Ok(r) => {
-                return bad(json!({ "error": format!("o peer recusou: HTTP {}", r.status()) }))
+                return bad(json!({ "error": format!("o peer recusou: HTTP {}", r.status()) }));
             }
             Err(e) => return bad(json!({ "error": format!("peer inacessivel: {e}") })),
         }
@@ -1095,7 +1096,7 @@ pub(super) async fn wait_for_transfers(
                         job.get("error")
                             .and_then(|e| e.as_str())
                             .unwrap_or("sem detalhe")
-                    ))
+                    ));
                 }
                 _ => {
                     let total = job

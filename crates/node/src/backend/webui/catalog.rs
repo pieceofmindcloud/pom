@@ -12,6 +12,8 @@ pub struct NodeInfo {
     /// Este nó aceita atualizar-se pela interface. A tela só desenha o botão
     /// quando isto é verdade, para nunca oferecer o que vai dar 403.
     pub dev_update: bool,
+    /// Controls whether development-only POM deployment settings are exposed.
+    pub pom_desenv: bool,
     pub profile: crate::profile::NodeProfile,
     /// Human-facing network name shown by the leave action in the main menu.
     pub network_name: String,
@@ -157,6 +159,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         hostname: state.network.hostname.clone(),
         build_commit: crate::BUILD_COMMIT.to_string(),
         dev_update: crate::devupdate::enabled(),
+        pom_desenv: crate::pom_desenv_enabled(),
         profile,
         network_name,
         connection_key,
@@ -988,7 +991,7 @@ pub(super) async fn save_paths(
         None => crate::storage::DEFAULT_SHARD_MAX_GB,
         Some(value) if value.is_finite() && value > 0.0 => value,
         Some(_) => {
-            return bad_request("o limite da pasta de modelos fatiados precisa ser maior que zero")
+            return bad_request("o limite da pasta de modelos fatiados precisa ser maior que zero");
         }
     };
 
@@ -1236,7 +1239,7 @@ async fn forward_network_chat_to_primary(
         Err(error) => {
             return bad_request(format!(
                 "não foi possível assinar a decisão do Chat: {error}"
-            ))
+            ));
         }
     };
     match request.send().await {

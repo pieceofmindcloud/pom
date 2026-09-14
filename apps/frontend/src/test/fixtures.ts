@@ -65,6 +65,7 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     active_model: "qwen35",
     build_commit: "abc1234",
     dev_update: false,
+    pom_desenv: false,
     advertise_addr: null,
     effective_address: "10.0.0.1:42777",
     tls_required: false,

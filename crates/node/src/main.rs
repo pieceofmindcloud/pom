@@ -3,6 +3,23 @@
 /// Commit this binary was built from, stamped by `build.rs`.
 pub const BUILD_COMMIT: &str = env!("POM_BUILD_COMMIT");
 
+/// Development-only controls are enabled only by an explicit process setting.
+pub(crate) const POM_DESENV_ENV: &str = "POM_DESENV";
+static POM_DESENV_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub(crate) fn pom_desenv_enabled_from(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+pub(crate) fn initialize_pom_desenv() -> bool {
+    *POM_DESENV_ENABLED
+        .get_or_init(|| pom_desenv_enabled_from(std::env::var(POM_DESENV_ENV).ok().as_deref()))
+}
+
+pub(crate) fn pom_desenv_enabled() -> bool {
+    initialize_pom_desenv()
+}
+
 #[path = "network/addrs.rs"]
 pub mod addrs;
 #[path = "backend/admin.rs"]
@@ -460,6 +477,9 @@ fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer().with_target(false))
         .with(cluster_logs::CaptureLayer::new(log_capture.clone()))
         .init();
+
+    let pom_desenv = initialize_pom_desenv();
+    info!("POM_DESENV habilitado: {pom_desenv}");
 
     // O `llama-engine` não conhece o layout do projeto nem a rede: injeta a raiz
     // que o `sysmon` mede e as funções de estado da coletiva TP que o `llm`
@@ -2408,6 +2428,21 @@ mod main_tests {
 
         let with_flag = Args::parse_from(["pom", "--cycle-detection"]);
         assert!(with_flag.cycle_detection);
+    }
+
+    #[test]
+    fn pom_desenv_accepts_only_exact_one() {
+        assert!(pom_desenv_enabled_from(Some("1")));
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("01"),
+            Some("1 "),
+        ] {
+            assert!(!pom_desenv_enabled_from(value));
+        }
     }
 
     /// `--advertise-addr` é mais específico que `--public-addr`, e os dois

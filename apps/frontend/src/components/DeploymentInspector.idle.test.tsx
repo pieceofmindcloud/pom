@@ -40,10 +40,11 @@ function mount(
   value = params,
   onChange = vi.fn(),
   vision?: { available: boolean; enabled: boolean; path?: string | null; onChange: (next: boolean) => void },
+  pomDesenv = true,
 ) {
-  render(
-    <LocaleProvider initialLocale="en">
-      <DeploymentInspector value={value} onChange={onChange} vision={vision} />
+    render(
+      <LocaleProvider initialLocale="en">
+      <DeploymentInspector value={value} onChange={onChange} vision={vision} pomDesenv={pomDesenv} />
     </LocaleProvider>,
   );
   return onChange;
@@ -60,6 +61,27 @@ describe("DeploymentInspector idle policy", () => {
     );
     expect(screen.getByRole("spinbutton", { name: "Idle time (minutes)" }).getAttribute("min"))
       .toBe("1");
+  });
+
+  it("removes the whole POM development section when the flag is off", () => {
+    mount(
+      {
+        ...params,
+        inference_mode: "moe",
+        cycle_detection_enabled: true,
+        mtp_cpu_fallback_enabled: false,
+        unload_if_idle: true,
+        idle_minutes: 2,
+      },
+      vi.fn(),
+      undefined,
+      false,
+    );
+
+    expect(screen.queryByText("POM settings (DEV)")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Unload if idle" })).toBeNull();
+    expect(screen.queryByRole("spinbutton", { name: "Idle time (minutes)" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Inference engine" })).toBeNull();
   });
 
   it("persists the toggle and the per-deployment timeout", () => {

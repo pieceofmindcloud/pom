@@ -295,6 +295,10 @@ uma vista reduzida para conversar com os modelos, ler a documentação, cuidar
 da própria API key e pedir entrada no processamento da rede.
 `GET /api/ui/node` é a fonte usada pelo browser e a toolbar mostra o rótulo
 pela i18n.
+O mesmo retrato traz `pom_desenv`, verdadeiro somente quando o processo foi
+iniciado com `POM_DESENV=1` exatamente. `DeployModel`, Histórico e a caixa de
+reimplantar escondem por completo `Configurações POM (DESENV)` quando a flag é
+falsa; nesse caso a UI e o backend usam os defaults dessa seção.
 
 No Dashboard, a leitura é separada por responsabilidade. O `admin` vê os
 agregados do cluster, como cobertura, máquinas, modelo ativo e carga em voo.
@@ -1009,8 +1013,11 @@ impressão digital é só modelo + conjunto de faixas.
   chunk de prefill, amostragem, cache K/V da instalação, desativar
   thinking/embeddings, especulativa e MTP), *Configurações POM* (motor de
   inferência, ajustar à memória, chunks em voo, juntar fatias vizinhas e
-  precisão do estado oculto) e *Configurações POM (DESENV)* (as três janelas do
-  detector de ciclo, o interruptor dele e o recuo do MTP para a RAM). O `[i]`
+  precisão do estado oculto) e *Configurações POM (DESENV)* (motor de
+  inferência, as três janelas do detector de ciclo, o interruptor dele e o
+  recuo do MTP para a RAM, além do descarregamento ocioso por peer). A seção
+  só aparece quando `NodeInfo.pom_desenv` está ligada; a ausência da flag faz a
+  interface remover seus controles do DOM. O `[i]`
   vem **antes** do nome, e não depois: com nomes de larguras diferentes, os
   ícones à direita do texto ficavam serrilhados, e antes do nome eles formam uma
   coluna reta do topo ao pé do painel. O combo do motor não oferece

@@ -211,6 +211,8 @@ export interface NodeInfo {
   build_commit: string;
   /** Este nó aceita atualizar-se pela interface (POM_DEV_UPDATE=1). */
   dev_update: boolean;
+  /** Se os controles POM exclusivos de desenvolvimento estão expostos. */
+  pom_desenv: boolean;
   /** Endereço fixado pelo operador. `null` quando nada foi fixado. */
   advertise_addr: string | null;
   /** O que este nó anuncia agora de fato (fixado, observado, ou o sentinela). */

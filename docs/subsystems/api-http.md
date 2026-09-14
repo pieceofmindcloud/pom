@@ -641,6 +641,13 @@ durável de conversas), `dev/update` +
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
+`GET /api/ui/node` inclui `pom_desenv`, a decisão capturada no startup: ela só
+é verdadeira quando `POM_DESENV` vale exatamente `1`. A ausência da variável,
+`0` e qualquer outro texto deixam a flag falsa. Quando falsa, os handlers de
+plan, deploy, apply, reconfigure e redeploy substituem os campos da seção
+`Configurações POM (DESENV)` pelos valores de `RuntimeParams::default()`,
+inclusive para clientes que tentem enviar esses campos diretamente.
+
 `GET /api/ui/infer/heads?model=<id>` é a leitura dedicada das cabeças de
 inferência, autorizada para os perfis `infer` e `admin`:
 retorna somente as máquinas vivas que anunciam uma faixa começando em L0 para
@@ -742,8 +749,9 @@ precisa de decisão de produto: `needs-decision: definir retenção e eventual
 expurgo por idade ou volume`.
 
 As rotas `POST /api/ui/deploy/plan` e `POST /api/ui/deploy` carregam
-`params.inference_mode` (`auto`, `dense` ou `moe`) para os três modos de
-execução: modelo inteiro, pipeline fatiado e Tensor Parallelism. O planner
+`params.inference_mode` (`auto`, `dense` ou `moe`) na seção de desenvolvimento,
+para os três modos de execução: modelo inteiro, pipeline fatiado e Tensor
+Parallelism. O planner
 também devolve `is_moe`, `inference_mode_supported` e
 `inference_mode_reason`. `is_moe` vem da metadata real de experts do GGUF,
 nunca do nome do arquivo. Em modelo denso a UI oculta a escolha; quando uma

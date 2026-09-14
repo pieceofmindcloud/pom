@@ -496,7 +496,9 @@ Key logic carriers:
   estado oculto só aparecem quando quem monta os passa. `VisionControl` segue
   a mesma fronteira: exibe e alterna o mmproj resolvido para modelos inteiros
   e fatias, ou mostra a indisponibilidade localizada quando a rodada fatiada
-  não tem projetor.
+  não tem projetor. A seção `Configurações POM (DESENV)` só é montada quando
+  `NodeInfo.pom_desenv` vem verdadeiro de `/api/ui/node`; quando a flag está
+  desligada, `applyPomDesenvDefaults` também limpa os campos antes de editar.
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
   inclui a profundidade do pipeline de prefill (`prefill_max_inflight_chunks`,
@@ -512,6 +514,8 @@ Key logic carriers:
   O seletor `hidden_state_dtype` mantém f16 como padrão e oferece f8 somente
   como escolha explícita; uma capability de peer comprovadamente incompatível
   desabilita a opção e exibe a razão devolvida pelo servidor.
+  `RuntimeParamsForm` recebe a mesma flag e oculta os controles de ciclo e
+  recuo MTP quando ela está desligada.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `PeerDetailCard.ContextReservationNotice` (PeerDetailCard.tsx) - when the

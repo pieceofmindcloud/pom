@@ -293,6 +293,8 @@ pub(super) async fn apply(
     State(state): State<GatewayState>,
     Json(req): Json<ApplyRequest>,
 ) -> Response {
+    let mut req = req;
+    req.params = req.params.with_pom_desenv(crate::pom_desenv_enabled());
     if req.params.no_embeddings {
         if let Err(reason) =
             crate::capabilities::validate_no_embeddings(&req.no_embeddings_evaluation(), true)

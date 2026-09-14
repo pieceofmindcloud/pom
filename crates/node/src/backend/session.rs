@@ -275,6 +275,7 @@ mod tests {
             cache_type_v: crate::config::KvCacheType::F16,
             profile: crate::profile::NodeProfile::Admin,
             setup_pending: false,
+            local_auto_discovery: false,
             tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,

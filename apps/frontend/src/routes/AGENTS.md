@@ -37,7 +37,14 @@ Per-file list:
   esses ingressos, o nome público, a política e o bootstrap no bloco `setup`
   assinado dentro do `.pom-admin-trust.json`; o node apenas importa esse bloco.
   O join público encerra a sessão privada antes de reconfigurar o nó, sem
-  suporte a duas redes P2P simultâneas no v1.
+  suporte a duas redes P2P simultâneas no v1. Na etapa de convite, a chave de
+  conexão fica em primeiro plano para redes privadas ou locais; o documento de
+  confiança começa recolhido, embora copiar e baixar continuem disponíveis no
+  cabeçalho do cartão. A etapa de descoberta local fica ativa somente durante
+  o setup: admin espera um nó e node/infer procuram um admin. O documento
+  público é oferecido primeiro; a chave só é entregue após o handshake de
+  prova efêmera. Fora do wizard, o interruptor vive em
+  `/config/preferencias/admin` e começa desligado.
 
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
   padrão de Logs: tabela rolável com nome público, organização, localização,
@@ -493,8 +500,9 @@ Per-file list:
   alterna a preferência HTTP/3 em `POST /api/ui/network/quic` com o mesmo
   controle de autoridade. The access password is a human credential and is not the
   cluster `connection_key`. A rota `/config/preferencias/admin` renderiza
-  somente TLS, QUIC, logs de processo entre nós e chat da rede; a rota normal
-  mantém exposição, Hugging Face, proteção térmica e o link de armazenamento.
+  somente TLS, QUIC, logs de processo entre nós e chat da rede, além do
+  interruptor de descoberta local, desligado por padrão; a rota normal mantém
+  exposição, Hugging Face, proteção térmica e o link de armazenamento.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e
@@ -520,7 +528,9 @@ Per-file list:
   space. The health checks and final summary are one `Revisão` step after the
   invitation or trust import, rather than two wizard steps. It reuses
   `WizardLayout` without a second product toolbar, but is separate from the
-  mock-only `SetupWizard.tsx`.
+  mock-only `SetupWizard.tsx`. The setup-only local discovery step lets an admin
+  wait and a node or infer search; the trust document is public, while the
+  connection key is delivered only after the ephemeral proof handshake.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
   only shows the difference), with who is missing it. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and

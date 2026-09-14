@@ -1057,6 +1057,19 @@ network.authority,Authority,Autoridade
 network.authority.primary,Primary administrator,Administrador principal
 network.authority.secondary,Secondary administrator,Administrador secundário
 network.authorityNone,No authority,Sem autoridade
+network.autoDiscoveryDisable,Turn local discovery off,Desligar descoberta local
+network.autoDiscoveryDisabled,Local discovery turned off,Descoberta local desligada
+network.autoDiscoveryEnable,Turn local discovery on,Ligar descoberta local
+network.autoDiscoveryEnabled,Local discovery turned on,Descoberta local ligada
+network.autoDiscoveryFailed,Could not change local discovery,Não foi possível mudar a descoberta local
+network.autoDiscoveryHowItWorks,"When enabled, the administrator answers the setup handshake on the local network. The connection key is sent only after the joining node proves possession of its ephemeral secret.","Quando ligada, a administradora responde ao handshake de configuração na rede local. A chave de conexão só é enviada depois que o nó que entra prova que possui o segredo efêmero."
+network.autoDiscoveryNotAuthority,Only the main administrator can change this.,Somente o administrador principal pode mudar isso.
+network.autoDiscoveryOff,disabled,desligada
+network.autoDiscoveryOn,enabled,ligada
+network.autoDiscoveryPropagates,This setting applies to this administrator and is off again after a fresh setup.,Esta configuração vale para esta administradora e volta a ficar desligada após uma nova configuração.
+network.autoDiscoveryState,Local discovery,Descoberta local
+network.autoDiscoverySubtitle,Let new machines join this network through a deliberate local handshake.,Permita que novas máquinas entrem nesta rede por um handshake local explícito.
+network.autoDiscoveryTitle,Automatic local discovery,Descoberta automática local
 network.away,away,ausente
 network.back,Back on the network,De volta à rede
 network.block,Block,Bloquear
@@ -1639,7 +1652,24 @@ setupWizard.cpuValue,{count} logical cores,{count} núcleos lógicos
 setupWizard.cudaAvailable,CUDA ready,CUDA disponível
 setupWizard.cudaInstallHint,Install the CUDA toolkit and restart POM to use this NVIDIA GPU.,Instale o toolkit CUDA e reinicie o POM para usar esta GPU NVIDIA.
 setupWizard.description,Description,Descrição
+setupWizard.discoveryAdminDetail,POM is listening on this local network only during the initial setup.,"Durante a configuração inicial, o POM escuta apenas nesta rede local."
+setupWizard.discoveryAdminSecurity,Only a node that completes the challenge can receive the connection secret.,Somente um nó que completa o desafio pode receber o segredo de conexão.
+setupWizard.discoveryAdminTitle,Wait for a nearby machine,Espere uma máquina próxima
 setupWizard.discoveryAvailable,Discovery ready,Descoberta disponível
+setupWizard.discoveryFailed,Local discovery could not start,Não foi possível iniciar a descoberta local
+setupWizard.discoveryFound,Network details received securely.,Detalhes da rede recebidos com segurança.
+setupWizard.discoveryManualFallback,No administrator was found yet. You can continue with the trust file.,Nenhum administrador foi encontrado ainda. Você pode continuar com o arquivo de confiança.
+setupWizard.discoveryManualHint,"If the administrator is not on this network, continue and import the trust file manually.","Se o administrador não estiver nesta rede, continue e importe o arquivo de confiança manualmente."
+setupWizard.discoveryNodeDetail,POM will look for an administrator that is actively sharing this network locally.,O POM vai procurar um administrador que esteja compartilhando esta rede localmente.
+setupWizard.discoveryNodeSecurity,The secret is encrypted for this setup and is never announced in the local broadcast.,O segredo é cifrado para esta configuração e nunca é anunciado no broadcast local.
+setupWizard.discoveryNodeTitle,Find an administrator nearby,Encontre um administrador próximo
+setupWizard.discoveryPanelDetail,The trust document is public; the connection secret is sent only after a private handshake.,O documento de confiança é público; o segredo de conexão só é enviado depois de um handshake privado.
+setupWizard.discoveryPanelTitle,Automatic local connection,Conexão local automática
+setupWizard.discoveryPeerCount,{count} machine(s) completed the local handshake.,{count} máquina(s) concluíram o handshake local.
+setupWizard.discoveryPeerCountDetail,This list updates while nearby nodes complete the secure exchange.,Esta lista é atualizada enquanto os nós próximos concluem a troca segura.
+setupWizard.discoveryPeerHandshake,Handshake complete,Handshake concluído
+setupWizard.discoverySearching,Looking for an administrator on this local network...,Procurando um administrador nesta rede local...
+setupWizard.discoveryWaiting,Waiting for a machine to join this local network...,Esperando uma máquina entrar nesta rede local...
 setupWizard.diskAvailable,{value} GB available,{value} GB disponíveis
 setupWizard.diskTotal,{value} GB total,{value} GB no total
 setupWizard.download,Download,Baixar
@@ -1662,10 +1692,11 @@ setupWizard.healthDetail,These are general checks only. Model inference is check
 setupWizard.healthFailed,The general checks could not run,Não foi possível executar as verificações gerais
 setupWizard.healthModelLater,The model check happens after setup so a missing model never blocks first access.,A verificação do modelo acontece depois da configuração para que um modelo ausente nunca bloqueie o primeiro acesso.
 setupWizard.healthTitle,A quick check before restart,Uma verificação rápida antes de reiniciar
+setupWizard.hideContents,Hide contents,Ocultar conteúdo
 setupWizard.infer,Inference node,Nó de inferência
 setupWizard.inferDetail,Use this machine to send prompts through a trusted network.,Use esta máquina para enviar prompts por uma rede confiável.
 setupWizard.installedHere,Already on this machine,Já está nesta máquina
-setupWizard.inviteDetail,Share the trust document and public key. Keep the fingerprint available through a separate channel.,Compartilhe o documento de confiança e a chave pública. Envie a impressão digital por um canal separado.
+setupWizard.inviteDetail,Save the trust document and connection secret for the people you will invite.,Salve o documento de confiança e o segredo de conexão para as pessoas que você vai convidar.
 setupWizard.inviteTitle,Your network is ready to invite people,Sua rede está pronta para convidar pessoas
 setupWizard.loadFailed,The setup information could not be loaded,Não foi possível carregar as informações da configuração inicial
 setupWizard.localOnly,Only this local network,Apenas esta rede local
@@ -1741,6 +1772,8 @@ setupWizard.shardSpace,Disk space to share,Espaço em disco para compartilhar
 setupWizard.shardSpaceHint,This is the maximum space POM may use for model slices.,Este é o espaço máximo que o POM poderá usar para fatias de modelos.
 setupWizard.shardsFolder,Shared slices folder,Pasta de fatias compartilhadas
 setupWizard.shardsFolderHint,Default: ~/.pom/models_sliced, Padrão: ~/.pom/models_sliced
+setupWizard.showContents,Show contents,Ver conteúdo
+setupWizard.stepDiscovery,Local discovery,Descoberta local
 setupWizard.stepHardware,Your machine,Sua máquina
 setupWizard.stepHealth,Checks,Verificações
 setupWizard.stepInvite,Invite,Convite

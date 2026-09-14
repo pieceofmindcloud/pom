@@ -14,6 +14,10 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/network/quic", post(save_quic))
         .route("/api/ui/network/logs", post(save_cluster_logs))
         .route("/api/ui/network/chat", post(save_network_chat))
+        .route(
+            "/api/ui/network/auto-discovery",
+            get(auto_discovery_status).post(save_auto_discovery),
+        )
         .route("/api/ui/cluster-logs", get(cluster_logs))
         .route(
             "/api/ui/deploy/capacity-preview",

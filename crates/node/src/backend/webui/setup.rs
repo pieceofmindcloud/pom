@@ -5,6 +5,7 @@ use super::*;
 pub struct SetupState {
     pub config: AuthState,
     pub database: Arc<crate::db::PomDb>,
+    pub local_discovery: Arc<crate::local_discovery::LocalDiscoveryRuntime>,
 }
 
 impl axum::extract::FromRef<SetupState> for AuthState {
@@ -69,7 +70,6 @@ pub struct SetupAnchorPreview {
     pub cluster_id: String,
     pub document: String,
     pub fingerprint: String,
-    pub public_key: String,
     pub trust_filename: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private_connection_key: Option<String>,
@@ -106,6 +106,25 @@ pub struct SetupHealthResponse {
     pub public_ipv6_enabled: bool,
     pub firewall_allowed: bool,
     pub firewall_supported: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetupAutoDiscoveryStartRequest {
+    pub trust_document: String,
+    #[serde(default)]
+    pub connection_key: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetupAutoDiscoveryStatus {
+    pub enabled: bool,
+    pub active: bool,
+    pub searching: bool,
+    pub found: bool,
+    pub port: u16,
+    pub peers: Vec<crate::local_discovery::LocalDiscoveryPeer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<crate::local_discovery::LocalDiscoveryResult>,
 }
 
 pub(crate) fn clamp_setup_percent(value: f64) -> f64 {
@@ -390,12 +409,11 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
         }
     };
     match crate::admin_trust::local_primary_document(cluster_id.to_string(), Some(metadata)) {
-        Ok((document, fingerprint, public_key)) => match serde_json::to_string_pretty(&document) {
+        Ok((document, fingerprint, _public_key)) => match serde_json::to_string_pretty(&document) {
             Ok(document) => Json(SetupAnchorPreview {
                 cluster_id: cluster_id.to_string(),
                 document,
                 fingerprint,
-                public_key,
                 trust_filename: crate::config::admin_trust_filename(),
                 private_connection_key: (request.visibility
                     != crate::config::NetworkVisibility::Public)
@@ -435,6 +453,73 @@ pub async fn get_setup_health(
         firewall_allowed: firewall.allowed,
         firewall_supported: firewall.supported,
     })
+}
+
+pub async fn get_setup_auto_discovery_status(State(state): State<SetupState>) -> impl IntoResponse {
+    let status = state.local_discovery.status().await;
+    Json(SetupAutoDiscoveryStatus {
+        enabled: status.enabled,
+        active: status.active,
+        searching: status.searching,
+        found: status.found,
+        port: status.port,
+        peers: status.peers,
+        result: state.local_discovery.peek_result().await,
+    })
+}
+
+pub async fn start_setup_auto_discovery(
+    State(state): State<SetupState>,
+    Json(request): Json<SetupAutoDiscoveryStartRequest>,
+) -> Response {
+    if state.config.read().await.profile != crate::profile::NodeProfile::Admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "somente o administrador cria a espera local" })),
+        )
+            .into_response();
+    }
+    if request.trust_document.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "o documento de confiança é obrigatório" })),
+        )
+            .into_response();
+    }
+    if let Err(error) = crate::admin_trust::parse_transported(&request.trust_document) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("raiz inválida: {error:#}") })),
+        )
+            .into_response();
+    }
+    match state
+        .local_discovery
+        .set_admin_material(true, request.trust_document, request.connection_key)
+        .await
+    {
+        Ok(()) => get_setup_auto_discovery_status(State(state)).await.into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("não foi possível iniciar a descoberta local: {error:#}") })),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn search_setup_auto_discovery(State(state): State<SetupState>) -> Response {
+    match state.local_discovery.begin_search().await {
+        Ok(request_id) => (
+            StatusCode::ACCEPTED,
+            Json(json!({ "request_id": request_id })),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("não foi possível procurar admins locais: {error:#}") })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Deserialize)]

@@ -465,6 +465,33 @@ impl AdminTrust {
             .clone()
     }
 
+    /// Completa uma cadeia primária antiga com os metadados que o wizard já
+    /// persistiu na configuração local. A operação só é permitida ao
+    /// principal vigente da própria cadeia, pois esses dados passam a fazer
+    /// parte do documento assinado que será transportado para novos nós.
+    pub(crate) fn ensure_setup_metadata(
+        &self,
+        setup: TrustNetworkMetadata,
+        signing_key: &SigningKey,
+        principal: &AuthorityPrincipal,
+    ) -> Result<AdminTrustDocument> {
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        if current.setup.is_some() {
+            return Ok(current.clone());
+        }
+        if current.anchor.principal != *principal || current.primary != *principal {
+            bail!("somente o principal vigente pode completar os metadados da rede");
+        }
+        if principal.verifying_key()? != signing_key.verifying_key() {
+            bail!("a chave local não corresponde ao principal vigente");
+        }
+        current.setup = Some(setup);
+        current.setup_signature = sign_bytes(signing_key, &setup_message(&current));
+        validate_document(&current)?;
+        persist_document(&current, self.path.as_deref())?;
+        Ok(current.clone())
+    }
+
     /// Consume a signed control command before its handler mutates anything.
     /// The nonce and command id are durable so retrying a captured envelope
     /// cannot replay a control action after a process restart.

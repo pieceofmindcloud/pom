@@ -7,7 +7,7 @@
  * quem ainda não sabe o que o POM pode compartilhar.
  */
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
-import { Check, Copy, Cpu, Database, Download, Landmark, LocateFixed, MapPin, Monitor, Server, ShieldCheck, Sparkles, Upload } from "lucide-react";
+import { Check, ChevronDown, Copy, Cpu, Database, Download, Landmark, LocateFixed, MapPin, Monitor, Server, ShieldCheck, Sparkles, Upload } from "lucide-react";
 import { WizardLayout, ContinueButton } from "../components/setup-wizard/WizardLayout";
 import type { WizardStage } from "./setupWizardTypes";
 import {
@@ -96,7 +96,6 @@ interface AnchorPreview {
   cluster_id: string;
   document: string;
   fingerprint: string;
-  public_key: string;
   trust_filename: string;
   private_connection_key?: string;
   admin_access_token?: string;
@@ -125,6 +124,28 @@ interface HealthResponse {
   public_ipv6_enabled: boolean;
   firewall_allowed: boolean;
   firewall_supported: boolean;
+}
+
+interface AutoDiscoveryResult {
+  request_id: string;
+  trust_document: string;
+  trust_fingerprint: string;
+  connection_key: string;
+}
+
+interface AutoDiscoveryPeer {
+  request_id: string;
+  address: string;
+}
+
+interface AutoDiscoveryStatus {
+  enabled: boolean;
+  active: boolean;
+  searching: boolean;
+  found: boolean;
+  port: number;
+  peers: AutoDiscoveryPeer[];
+  result?: AutoDiscoveryResult;
 }
 
 export interface SetupState {
@@ -405,7 +426,15 @@ export function Setup() {
       void prepareAnchor();
       return;
     }
-    if (stageNow === "setup-invite" || stageNow === "setup-trust") {
+    if (stageNow === "setup-invite") {
+      setStage("setup-discovery");
+      return;
+    }
+    if (stageNow === "setup-discovery" && setup.profile !== "admin") {
+      setStage("setup-trust");
+      return;
+    }
+    if (stageNow === "setup-discovery" || stageNow === "setup-trust") {
       void runHealth();
       return;
     }
@@ -480,6 +509,7 @@ function Screen({
     case "setup-network": return <NetworkScreen setup={setup} updateNetwork={updateNetwork} update={update} t={t} />;
     case "setup-trust": return <TrustScreen setup={setup} update={update} updateNetwork={updateNetwork} t={t} />;
     case "setup-invite": return <InviteScreen anchor={anchor} visibility={setup.network.visibility} connectionKey={setup.connectionKey} t={t} />;
+    case "setup-discovery": return <AutoDiscoveryScreen setup={setup} update={update} updateNetwork={updateNetwork} t={t} />;
     case "setup-review": return <ReviewScreen setup={setup} health={health} hardware={hardware} setStage={setStage} t={t} />;
     default: return null;
   }
@@ -619,9 +649,65 @@ function readTextFile(file: File): Promise<string> {
   });
 }
 
-function InviteScreen({ anchor, visibility, connectionKey, t }: { anchor: AnchorPreview | null; visibility: NetworkVisibility; connectionKey: string; t: (key: string, values?: Record<string, string | number>) => string }) {
+export function InviteScreen({ anchor, visibility, connectionKey, t }: { anchor: AnchorPreview | null; visibility: NetworkVisibility; connectionKey: string; t: (key: string, values?: Record<string, string | number>) => string }) {
   if (!anchor) return <Intro eyebrow={t("setupWizard.stepInvite")} title={t("setupWizard.inviteTitle")} detail={t("setupWizard.anchorFailed")} />;
-  return <Intro eyebrow={t("setupWizard.stepInvite")} title={t("setupWizard.inviteTitle")} detail={t("setupWizard.inviteDetail")}><div className="space-y-4"><CopyBlock label={t("setupWizard.trustDocument")} value={anchor.document} copyLabel={t("setupWizard.copy")} copied={t("setupWizard.copied")} downloadLabel={t("setupWizard.download")} downloadName={anchor.trust_filename} /><CopyBlock label={t("setupWizard.publicKey")} value={anchor.public_key} copyLabel={t("setupWizard.copy")} copied={t("setupWizard.copied")} />{visibility !== "public" && connectionKey && <CopyBlock label={t("setupWizard.connectionSecret")} value={connectionKey} copyLabel={t("setupWizard.copy")} copied={t("setupWizard.copied")} />}<div className="rounded-xl border border-aqua/35 bg-aqua/8 px-4 py-4"><p className="text-xs font-medium uppercase tracking-[0.14em] text-aqua">{t("setupWizard.fingerprint")}</p><code className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{anchor.fingerprint}</code><p className="mt-2 text-xs leading-relaxed text-muted">{t("setupWizard.fingerprintInvite")}</p></div><p className="text-xs text-faint">{t("setupWizard.trustFilename", { filename: anchor.trust_filename })}</p></div></Intro>;
+  return <Intro eyebrow={t("setupWizard.stepInvite")} title={t("setupWizard.inviteTitle")} detail={t("setupWizard.inviteDetail")}><div className="space-y-4">{visibility !== "public" && connectionKey && <CopyBlock featured label={t("setupWizard.connectionSecret")} subtitle={t("setupWizard.connectionSecretHint")} value={connectionKey} copyLabel={t("setupWizard.copy")} copied={t("setupWizard.copied")} /> }<CopyBlock collapsed expandLabel={t("setupWizard.showContents")} collapseLabel={t("setupWizard.hideContents")} label={t("setupWizard.trustDocument")} value={anchor.document} copyLabel={t("setupWizard.copy")} copied={t("setupWizard.copied")} downloadLabel={t("setupWizard.download")} downloadName={anchor.trust_filename} /><div className="rounded-xl border border-aqua/35 bg-aqua/8 px-4 py-4"><p className="text-xs font-medium uppercase tracking-[0.14em] text-aqua">{t("setupWizard.fingerprint")}</p><code className="mt-2 block break-words font-mono text-sm leading-6 text-fg">{anchor.fingerprint}</code><p className="mt-2 text-xs leading-relaxed text-muted">{t("setupWizard.fingerprintInvite")}</p></div><p className="text-xs text-faint">{t("setupWizard.trustFilename", { filename: anchor.trust_filename })}</p></div></Intro>;
+}
+
+export function AutoDiscoveryScreen({ setup, update, updateNetwork, t }: { setup: SetupState; update: (patch: Partial<SetupState>) => void; updateNetwork: (patch: Partial<SetupState["network"]>) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
+  const toast = useToast();
+  const [status, setStatus] = useState<AutoDiscoveryStatus | null>(null);
+  const started = useRef(false);
+  const isAdmin = setup.profile === "admin";
+
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    let cancelled = false;
+    let timer: number | undefined;
+    async function start() {
+      try {
+        if (isAdmin) {
+          await api.post("/api/setup/auto-discovery/start", { trust_document: setup.trustDocument, connection_key: setup.connectionKey }, { auth: false });
+        } else {
+          await api.post("/api/setup/auto-discovery/search", {}, { auth: false });
+        }
+        const poll = async () => {
+          if (cancelled) return;
+          try {
+            const next = await api.get<AutoDiscoveryStatus>("/api/setup/auto-discovery/status", { auth: false });
+            if (cancelled) return;
+            setStatus(next);
+            if (next.result) {
+              update({ trustDocument: next.result.trust_document, trustFingerprint: next.result.trust_fingerprint, connectionKey: next.result.connection_key });
+              applyTrustMetadata(next.result.trust_document);
+            }
+            if ((isAdmin && next.active) || (!isAdmin && !next.found && next.searching)) {
+              timer = window.setTimeout(() => void poll(), 700);
+            }
+          } catch (error) {
+            if (!cancelled) toast.fromError(t("setupWizard.discoveryFailed"), error);
+          }
+        };
+        await poll();
+      } catch (error) {
+        if (!cancelled) toast.fromError(t("setupWizard.discoveryFailed"), error);
+      }
+    }
+    void start();
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
+
+    function applyTrustMetadata(document: string) {
+      const metadata = trustNetworkMetadata(document);
+      if (!metadata) return;
+      updateNetwork({ public_name: metadata.public_name ?? "", organization: metadata.organization ?? "", visibility: metadata.visibility ?? "private", access_policy: metadata.access_policy ?? "anyone_with_anchor", country_code: metadata.country_code ?? "", country_name: metadata.country_name ?? "", city: metadata.city ?? "", geo_label: metadata.geo_label ?? "" });
+      update({ bootstrap: metadata.bootstrap_address ?? metadata.advertised_address ?? "", publicDirectory: metadata.directory_replicas?.join(", ") ?? "" });
+    }
+  }, [isAdmin, setup.connectionKey, setup.trustDocument, t, toast, update, updateNetwork]);
+
+  const peerCount = status?.peers.length ?? 0;
+  const found = isAdmin ? peerCount > 0 : Boolean(status?.found);
+  return <Intro eyebrow={t("setupWizard.stepDiscovery")} title={t(isAdmin ? "setupWizard.discoveryAdminTitle" : "setupWizard.discoveryNodeTitle")} detail={t(isAdmin ? "setupWizard.discoveryAdminDetail" : "setupWizard.discoveryNodeDetail")}><Panel><PanelHeader title={t("setupWizard.discoveryPanelTitle")} subtitle={t("setupWizard.discoveryPanelDetail")} /><div className="space-y-4 px-5 py-5"><div className={`rounded-xl border px-4 py-4 ${found ? "border-aqua/35 bg-aqua/8" : "border-line bg-raised"}`}><p className="text-sm font-medium text-fg">{found ? t("setupWizard.discoveryFound") : isAdmin ? t("setupWizard.discoveryWaiting") : status?.searching ? t("setupWizard.discoverySearching") : t("setupWizard.discoveryManualFallback")}</p><p className="mt-2 text-xs leading-relaxed text-muted">{isAdmin ? t("setupWizard.discoveryAdminSecurity") : t("setupWizard.discoveryNodeSecurity")}</p></div>{isAdmin && <div className="rounded-xl border border-line bg-surface px-4 py-4"><div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium text-fg">{t("setupWizard.discoveryPeerCount", { count: peerCount })}</p><p className="mt-1 text-xs text-muted">{t("setupWizard.discoveryPeerCountDetail")}</p></div><Badge tone={peerCount > 0 ? "aqua" : "neutral"}>{peerCount}</Badge></div>{peerCount > 0 && <ul className="mt-4 space-y-2 border-t border-line pt-3">{status?.peers.map((peer) => <li key={peer.request_id} className="flex min-w-0 items-center gap-3 rounded-lg border border-line bg-raised px-3 py-2.5"><Server className="h-4 w-4 shrink-0 text-aqua" /><span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{peer.address}</span><span className="shrink-0 text-[0.68rem] font-medium uppercase tracking-[0.12em] text-aqua">{t("setupWizard.discoveryPeerHandshake")}</span></li>)}</ul>}</div>}{!isAdmin && <p className="text-xs text-faint">{t("setupWizard.discoveryManualHint")}</p>}</div></Panel></Intro>;
 }
 
 export function ReviewScreen({ setup, health, hardware, setStage, t }: { setup: SetupState; health: HealthResponse | null; hardware: HardwareResponse | null; setStage: (stage: WizardStage) => void; t: (key: string, values?: Record<string, string | number>) => string }) {
@@ -646,8 +732,9 @@ function HardwareStat({ icon, label, value, detail }: { icon: ReactNode; label: 
   return <div className="min-w-0 bg-surface px-4 py-4"><div className="flex items-center gap-2 text-xs font-medium text-muted">{icon}<span>{label}</span></div><p className="mt-3 truncate font-display text-[0.95rem] font-semibold text-fg">{value}</p><p className="mt-1 text-xs text-faint">{detail}</p></div>;
 }
 
-function CopyBlock({ label, value, copyLabel, copied, downloadLabel, downloadName }: { label: string; value: string; copyLabel: string; copied: string; downloadLabel?: string; downloadName?: string }) {
+function CopyBlock({ label, value, copyLabel, copied, downloadLabel, downloadName, collapsed = false, expandLabel, collapseLabel, featured = false, subtitle }: { label: string; value: string; copyLabel: string; copied: string; downloadLabel?: string; downloadName?: string; collapsed?: boolean; expandLabel?: string; collapseLabel?: string; featured?: boolean; subtitle?: string }) {
   const [isCopied, setIsCopied] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
   async function copy() { try { await navigator.clipboard.writeText(value); setIsCopied(true); window.setTimeout(() => setIsCopied(false), 1800); } catch { /* o conteúdo continua selecionável */ } }
   function download() {
     if (!downloadName) return;
@@ -658,7 +745,8 @@ function CopyBlock({ label, value, copyLabel, copied, downloadLabel, downloadNam
     link.click();
     URL.revokeObjectURL(url);
   }
-  return <Panel><PanelHeader title={label} actions={<div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => void copy()} icon={isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}>{isCopied ? copied : copyLabel}</Button>{downloadName && downloadLabel && <Button size="sm" onClick={download} icon={<Download className="h-3.5 w-3.5" />}>{downloadLabel}</Button>}</div>} /><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-5 py-4 font-mono text-[0.7rem] leading-5 text-muted">{value}</pre></Panel>;
+  const content = <pre className={featured ? "max-h-48 overflow-auto whitespace-pre-wrap break-words bg-ink/35 px-5 py-5 font-mono text-base font-semibold leading-7 text-fg selection:bg-aqua/25" : "max-h-72 overflow-auto whitespace-pre-wrap break-words px-5 py-4 font-mono text-[0.7rem] leading-5 text-muted"}>{value}</pre>;
+  return <Panel className={featured ? "border-aqua/60 bg-aqua/8 shadow-lg" : undefined}><PanelHeader className={featured ? "border-aqua/30" : undefined} title={label} subtitle={subtitle} actions={<div className="flex flex-wrap gap-2"><Button variant={featured ? "primary" : "outline"} size="sm" onClick={() => void copy()} icon={isCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}>{isCopied ? copied : copyLabel}</Button>{downloadName && downloadLabel && <Button variant="outline" size="sm" onClick={download} icon={<Download className="h-3.5 w-3.5" />}>{downloadLabel}</Button>}</div>} />{collapsed ? <details><summary onClick={() => setIsExpanded((value) => !value)} className="flex cursor-pointer list-none items-center justify-between gap-3 border-t border-line px-5 py-3 text-sm font-medium text-fg outline-none transition-colors hover:text-aqua focus-visible:ring-2 focus-visible:ring-iris/50 [&::-webkit-details-marker]:hidden"><span>{isExpanded ? collapseLabel : expandLabel}</span><ChevronDown className={`h-4 w-4 shrink-0 text-muted transition-transform ${isExpanded ? "rotate-180" : ""}`} /></summary>{content}</details> : content}</Panel>;
 }
 
 function SummaryRow({ label, value, onEdit }: { label: string; value: string; onEdit: () => void }) {

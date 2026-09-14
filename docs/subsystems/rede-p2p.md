@@ -108,6 +108,12 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
   mas nenhum caminho do código emite hoje (o `Announce` de 5 s cumpre esse papel).
 - **`LocalDiscover`** - descoberta estilo mDNS na LAN. Igualmente só tem o lado
   de recebimento (responde com `PeerRequest`).
+- **`LocalAutoDiscovery`** - handshake explícito e temporário do primeiro setup.
+  `Probe` e `Offer` carregam apenas desafio, chaves efêmeras e o documento de
+  confiança público. `Proof` vincula o pedido às duas pontas; só depois dele o
+  admin envia `Secret`, cifrado com X25519 e ChaCha20-Poly1305, contendo a
+  `connection_key`. Não há resposta nem material sensível para uma escuta
+  passiva.
 
 `PeerInfo` espelha os campos do `Announce` mais `last_seen`,
 `connection_verified` e `api_keys_active`. `PeerInfo::is_alive()` compara
@@ -143,6 +149,13 @@ descoberta.
    transitivos fora da LAN; sem ele a descoberta seria um retrato do arranque.
 5. **Timeout (30 s):** `cleanup_dead_peers` remove peers com `last_seen` a mais
    de `PEER_TIMEOUT_SECS`.
+
+O serviço `LocalDiscoveryRuntime` não substitui o gossip normal. Durante o
+primeiro setup ele recebe `Probe` na porta UDP local e fica ativo somente até a
+configuração terminar. Depois do setup a configuração `local_auto_discovery`
+começa `false`; o administrador pode ligá-la manualmente em Preferências, e o
+processo mantém o trust document e a chave somente na memória enquanto estiver
+respondendo. Desligar limpa as sessões do handshake e o material sensível.
 
 ### Tratamento de `Announce` no recebimento
 

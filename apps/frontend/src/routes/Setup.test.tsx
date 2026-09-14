@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { useState } from "react";
 import { LocaleProvider } from "../i18n/provider";
-import { canContinue, createRandomNetworkName, diskSharePercent, formatAdvertiseAddress, isReadyToSave, ProfileScreen, ReviewScreen, TrustScreen, type SetupState } from "./Setup";
+import { ToastProvider } from "../lib/toast";
+import { api } from "../lib/api";
+import { AutoDiscoveryScreen, canContinue, createRandomNetworkName, diskSharePercent, formatAdvertiseAddress, InviteScreen, isReadyToSave, ProfileScreen, ReviewScreen, TrustScreen, type SetupState } from "./Setup";
 
 const initialSetup: SetupState = {
   profile: "infer",
@@ -60,7 +62,40 @@ function mount(value: SetupState = initialSetup) {
   );
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+
+describe("admin local discovery feedback", () => {
+  it("shows each peer after its handshake completes", async () => {
+    vi.spyOn(api, "post").mockResolvedValue({} as never);
+    vi.spyOn(api, "get").mockResolvedValue({
+      enabled: true,
+      active: true,
+      searching: false,
+      found: true,
+      port: 42778,
+      peers: [{ request_id: "request-1", address: "192.168.1.42:42778" }],
+    } as never);
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <ToastProvider>
+          <AutoDiscoveryScreen
+            setup={{ ...initialSetup, profile: "admin", trustDocument: "trust", connectionKey: "secret" }}
+            update={() => {}}
+            updateNetwork={() => {}}
+            t={(key) => key}
+          />
+        </ToastProvider>
+      </LocaleProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText("192.168.1.42:42778")).toBeTruthy());
+    expect(screen.getByText("setupWizard.discoveryPeerCount")).toBeTruthy();
+  });
+});
 
 describe("TrustScreen", () => {
   it("aceita trust.json por upload sem pedir confirmação manual", async () => {
@@ -195,5 +230,34 @@ describe("merged review", () => {
     expect(screen.getByText("setupWizard.checkIpv6")).toBeTruthy();
     expect(screen.getAllByText("setupWizard.reviewTitle")).toHaveLength(2);
     expect(screen.getByText("setupWizard.trustLabel")).toBeTruthy();
+  });
+});
+
+describe("network invitation", () => {
+  it("prioritizes the connection secret and collapses long materials", () => {
+    const view = render(
+      <InviteScreen
+        anchor={{
+          cluster_id: "cluster",
+          document: '{"setup":{"public_name":"POM"}}',
+          fingerprint: "fingerprint",
+          trust_filename: "trust.json",
+        }}
+        visibility="private"
+        connectionKey="connection-secret"
+        t={(key) => key}
+      />,
+    );
+
+    const details = view.container.querySelectorAll("details");
+    expect(details).toHaveLength(1);
+    expect(Array.from(details).every((detail) => !detail.open)).toBe(true);
+    expect(screen.queryByText("setupWizard.publicKey")).toBeNull();
+    expect(screen.getByText("connection-secret")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "setupWizard.download" })).toBeTruthy();
+
+    fireEvent.click(screen.getAllByText("setupWizard.showContents")[0]);
+    expect(details[0].open).toBe(true);
+    expect(screen.getByText("setupWizard.hideContents")).toBeTruthy();
   });
 });

@@ -77,6 +77,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   da cadeia em `admin_trust.rs`. O campo `idle` também é anunciado por peer
   para distinguir modelo descarregado de deployment fora do ar; ele não altera
   a regra de liveness.
+- `local_discovery.rs` - handshake UDP temporário da configuração inicial e
+  preferência administrativa de descoberta local. O admin anuncia somente o
+  documento público, recebe um `Proof` ligado ao desafio efêmero do nó e só
+  então envia o documento junto da `connection_key` cifrada. A preferência fica
+  desligada fora do wizard; o material sensível vive apenas em memória.
 - `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é

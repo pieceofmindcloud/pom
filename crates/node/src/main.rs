@@ -74,6 +74,11 @@ mod gateway;
 mod huggingface;
 #[path = "network/identity.rs"]
 mod identity;
+#[path = "network/local_discovery.rs"]
+mod local_discovery;
+#[cfg(test)]
+#[path = "network/local_discovery_tests.rs"]
+mod local_discovery_tests;
 #[path = "inference/infer_server/mod.rs"]
 mod infer_server;
 #[path = "network/infer_tunnel.rs"]
@@ -1002,6 +1007,7 @@ async fn async_main(
         primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
         network_chat_enabled: app_config.network_chat_enabled,
+        local_auto_discovery: app_config.local_auto_discovery,
         auth: auth_config.clone(),
         admin_trust: admin_trust.clone(),
         database: database.clone(),
@@ -1527,6 +1533,7 @@ async fn start_setup_mode(
     let config = Arc::new(RwLock::new(preserved.unwrap_or_else(|| Config {
         profile: crate::profile::NodeProfile::Admin,
         setup_pending: true,
+        local_auto_discovery: false,
         tls_required: false,
         quic_enabled: false,
         cluster_logs_enabled: false,
@@ -1564,6 +1571,22 @@ async fn start_setup_mode(
         slot_auto_ttl_secs: None,
     })));
 
+    let setup_p2p_port = config.read().await.p2p_port;
+    let setup_socket = tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], setup_p2p_port)))
+        .await
+        .with_context(|| format!("não foi possível abrir a descoberta local na porta {setup_p2p_port}"))?;
+    setup_socket.set_broadcast(true)?;
+    let local_discovery = crate::local_discovery::LocalDiscoveryRuntime::new(
+        Arc::new(setup_socket),
+        SocketAddr::from(([255, 255, 255, 255], setup_p2p_port)),
+    );
+    {
+        let discovery = local_discovery.clone();
+        tokio::spawn(async move {
+            discovery.run_receive_loop().await;
+        });
+    }
+
     // The same interface the configured node serves, so setup is not a second
     // look-and-feel to maintain. The app notices it is in setup mode because
     // `/api/ui/node` is not among the routes here.
@@ -1586,9 +1609,25 @@ async fn start_setup_mode(
             "/api/setup/health",
             axum::routing::post(webui::get_setup_health),
         )
+        .route(
+            "/api/setup/auto-discovery/status",
+            get(webui::get_setup_auto_discovery_status),
+        )
+        .route(
+            "/api/setup/auto-discovery/start",
+            axum::routing::post(webui::start_setup_auto_discovery),
+        )
+        .route(
+            "/api/setup/auto-discovery/search",
+            axum::routing::post(webui::search_setup_auto_discovery),
+        )
         .route("/api/setup/save", axum::routing::post(webui::save_setup))
         .merge(crate::webapp::routes())
-        .with_state(webui::SetupState { config, database })
+        .with_state(webui::SetupState {
+            config,
+            database,
+            local_discovery,
+        })
         .layer(tower_http::compression::CompressionLayer::new());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], gateway_port));
@@ -1690,6 +1729,7 @@ struct P2pStackArgs {
     primary_authority_pubkey: String,
     cluster_logs_enabled: bool,
     network_chat_enabled: bool,
+    local_auto_discovery: bool,
     auth: Arc<RwLock<config::Config>>,
     admin_trust: Arc<crate::admin_trust::AdminTrust>,
     database: Arc<db::PomDb>,
@@ -1832,6 +1872,11 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     net.set_tls(args.tls_required);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
     net.set_network_chat_enabled(args.network_chat_enabled);
+    if args.local_auto_discovery {
+        if let Err(error) = net.set_local_auto_discovery(true).await {
+            warn!("descoberta local não pôde ser habilitada na inicialização: {error:#}");
+        }
+    }
 
     if args.no_discovery {
         net.detach().await;
@@ -1986,6 +2031,7 @@ async fn start_gateway_only(
         primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
         network_chat_enabled: app_config.network_chat_enabled,
+        local_auto_discovery: app_config.local_auto_discovery,
         auth: auth_state.clone(),
         admin_trust: admin_trust.clone(),
         database: database.clone(),

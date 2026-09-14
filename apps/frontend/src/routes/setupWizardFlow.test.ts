@@ -13,6 +13,7 @@ describe("first-access wizard flow", () => {
   it("keeps the node path focused on hardware, shared capacity, and trust", () => {
     expect(ids("node")).toEqual([
       "setup-profile",
+      "setup-discovery",
       "setup-trust",
       "setup-review",
     ]);
@@ -24,6 +25,7 @@ describe("first-access wizard flow", () => {
   it("makes infer a short trust-only path after the hardware overview", () => {
     expect(ids("infer")).toEqual([
       "setup-profile",
+      "setup-discovery",
       "setup-trust",
       "setup-review",
     ]);
@@ -38,6 +40,7 @@ describe("first-access wizard flow", () => {
       "setup-location",
       "setup-network",
       "setup-invite",
+      "setup-discovery",
       "setup-review",
     ]);
     expect(setupProfileHasResources("admin")).toBe(true);

@@ -176,7 +176,8 @@ profile policy remains the effective authorization boundary.
   `mod.rs`, `routes/` (common, infer, node and admin), `catalog.rs`, `cluster.rs`, `params.rs`, `jobs.rs`,
   `jobs_apply.rs`, `slicing.rs`, `lifecycle.rs`, `setup.rs`, `trust.rs` and test fragments:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths, thermal policy (`GET/POST /api/ui/thermal`), cluster process
+  storage paths, thermal policy (`GET/POST /api/ui/thermal`), local auto-discovery
+  preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`). A
   cluster view transporta `SystemLoad.gpus[].power_watts` como telemetria
@@ -205,6 +206,11 @@ profile policy remains the effective authorization boundary.
   cadeia colada. A validação e a conferência são as de `admin_trust`
   (`parse_transported`, `fingerprint_matches`, `adopt_anchor`), as mesmas que
   `pom admin-anchor` usa: não existe segunda política.
+  `GET /api/ui/network/trust-share` serializa a cadeia local, inclusive o
+  bloco `setup` assinado pelo wizard. Se uma cadeia primária antiga não tiver
+  esse bloco, a rota recupera os dados persistidos em `pom.json`/`pom.db`,
+  assina-os com o principal local e grava a cadeia antes do download; uma
+  autoridade secundária não pode fabricar esses metadados.
   `POST /api/ui/chat-key` é permitido a `node` porque cria somente a chave
   local `pom-<node_id>` e a registra no principal pela rota interna assinada;
   a exceção não permite criar, revogar ou validar chaves de terceiros.
@@ -386,7 +392,9 @@ profile policy remains the effective authorization boundary.
   access also carries a signed `setup` block with the network name, visibility,
   access policy, geographic label, admin advertised address, bootstrap address
   and federated-directory replicas, so a joining node does not retype network
-  identity data.
+  identity data. `ensure_setup_metadata` repairs only a missing setup block
+  from the local administrator configuration, and only when the local
+  principal is the current primary.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
   `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
   `launch.rs`, `lifecycle.rs`, `node.rs` e fragmentos de testes: survey de

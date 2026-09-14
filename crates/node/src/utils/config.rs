@@ -195,6 +195,10 @@ pub struct Config {
     /// without booting the old network.
     #[serde(default)]
     pub setup_pending: bool,
+    /// Responder de bootstrap local. O wizard usa um listener transitório;
+    /// depois do setup esta preferência continua desligada até o admin ligar.
+    #[serde(default)]
+    pub local_auto_discovery: bool,
     #[serde(default)]
     pub connection_key: String,
     #[serde(default = "default_gateway_port")]
@@ -987,6 +991,7 @@ mod tests {
             cache_type_v: KvCacheType::F16,
             profile: crate::profile::NodeProfile::Admin,
             setup_pending: false,
+            local_auto_discovery: false,
             tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
@@ -1075,6 +1080,12 @@ mod tests {
     }
 
     #[test]
+    fn descoberta_local_fica_desligada_por_padrao() {
+        let config: Config = serde_json::from_str(r#"{"profile":"admin"}"#).unwrap();
+        assert!(!config.local_auto_discovery);
+    }
+
+    #[test]
     fn test_roundtrip_node_config() {
         let cfg = Config {
             gpus: None,
@@ -1083,6 +1094,7 @@ mod tests {
             cache_type_v: KvCacheType::F16,
             profile: crate::profile::NodeProfile::Node,
             setup_pending: false,
+            local_auto_discovery: false,
             tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,
@@ -1211,6 +1223,7 @@ mod tests {
         let mut cfg = Config {
             profile: crate::profile::NodeProfile::Node,
             setup_pending: false,
+            local_auto_discovery: false,
             connection_key: String::new(),
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
@@ -1331,6 +1344,7 @@ mod tests {
             cache_type_v: KvCacheType::F16,
             profile: crate::profile::NodeProfile::Admin,
             setup_pending: false,
+            local_auto_discovery: false,
             tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,

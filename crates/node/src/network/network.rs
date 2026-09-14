@@ -271,6 +271,11 @@ pub enum P2PMessage {
     },
     /// mDNS-style local broadcast
     LocalDiscover { from: String, port: u16 },
+    /// First-access LAN bootstrap. The payload never carries a connection key
+    /// before the encrypted Secret message that follows an accepted Proof.
+    LocalAutoDiscovery {
+        message: crate::local_discovery::LocalAutoDiscoveryMessage,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -751,6 +756,9 @@ pub struct Network {
     runtime_capacity: std::sync::RwLock<RuntimeCapacityState>,
     idle: AtomicBool,
     socket: Arc<UdpSocket>,
+    /// Shared first-access LAN handshake state. It uses this same UDP socket
+    /// so setup and configured runtime do not drift into separate protocols.
+    local_discovery: Arc<crate::local_discovery::LocalDiscoveryRuntime>,
     #[cfg(test)]
     test_panic_on_next_message: AtomicBool,
     /// Set while the operator has taken this node off the network.
@@ -930,6 +938,9 @@ fn message_context(msg: &P2PMessage) -> String {
         P2PMessage::LocalDiscover { from, port } => {
             format!("LocalDiscover from={} port={port}", short(from))
         }
+        P2PMessage::LocalAutoDiscovery { message } => {
+            format!("LocalAutoDiscovery {message:?}")
+        }
     }
 }
 
@@ -1076,11 +1087,18 @@ impl Network {
         inference_port: Option<u16>,
         gateway_port: Option<u16>,
     ) -> Result<Self> {
+        // Discovery follows the configured UDP port. The default remains
+        // DISCOVERY_PORT, but an isolated node must not broadcast to another
+        // node's listener when its port is overridden.
+        let discovery_port = if port == 0 { DISCOVERY_PORT } else { port };
         Self::new_with_broadcast_addr(
             node_id,
             pubkey,
             port,
-            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT),
+            SocketAddr::new(
+                IpAddr::V4(std::net::Ipv4Addr::BROADCAST),
+                discovery_port,
+            ),
             NetworkInit {
                 bootstrap_nodes,
                 ollama_port,
@@ -1201,6 +1219,11 @@ impl Network {
         socket: UdpSocket,
         init: NetworkInit,
     ) -> Self {
+        let socket = Arc::new(socket);
+        let local_discovery = crate::local_discovery::LocalDiscoveryRuntime::new(
+            socket.clone(),
+            broadcast_addr,
+        );
         Self {
             node_id,
             pubkey,
@@ -1221,7 +1244,8 @@ impl Network {
             tp: std::sync::RwLock::new(None),
             runtime_capacity: std::sync::RwLock::new(RuntimeCapacityState::default()),
             idle: AtomicBool::new(false),
-            socket: Arc::new(socket),
+            socket,
+            local_discovery,
             #[cfg(test)]
             test_panic_on_next_message: AtomicBool::new(false),
             detached: AtomicBool::new(false),
@@ -1272,6 +1296,44 @@ impl Network {
             .expect("admission cache lock")
             .clear();
         self
+    }
+
+    pub async fn set_local_auto_discovery(&self, enabled: bool) -> anyhow::Result<()> {
+        if !enabled {
+            self.local_discovery.disable().await;
+            return Ok(());
+        }
+        let Some(admission) = self.admission.as_ref() else {
+            anyhow::bail!("a descoberta local exige a admissão do nó");
+        };
+        if self.profile() != crate::profile::NodeProfile::Admin {
+            anyhow::bail!("somente o administrador pode habilitar a descoberta local");
+        }
+        let cfg = admission.auth.read().await;
+        let trust = admission.trust.document();
+        if trust.setup.is_none() {
+            anyhow::bail!(
+                "a descoberta local exige os dados iniciais da rede no documento de confiança"
+            );
+        }
+        let document = serde_json::to_string_pretty(&trust)?;
+        self.local_discovery
+            .set_admin_material(enabled, document, cfg.connection_key.clone())
+            .await
+    }
+
+    pub async fn local_auto_discovery_status(
+        &self,
+    ) -> crate::local_discovery::LocalDiscoveryStatus {
+        self.local_discovery.status().await
+    }
+
+    pub async fn begin_local_auto_discovery_search(&self) -> anyhow::Result<String> {
+        self.local_discovery.begin_search().await
+    }
+
+    pub(crate) fn local_discovery(&self) -> Arc<crate::local_discovery::LocalDiscoveryRuntime> {
+        self.local_discovery.clone()
     }
 
     pub fn with_authority_pubkey(self, pubkey: String) -> Self {
@@ -2745,6 +2807,10 @@ impl Network {
                     };
                     let _ = self.send_to(&req, &reply_addr).await;
                 }
+            }
+
+            P2PMessage::LocalAutoDiscovery { message } => {
+                self.local_discovery.handle(message, src).await;
             }
         }
     }
@@ -4304,6 +4370,7 @@ mod tests {
         Arc::new(RwLock::new(Config {
             profile: crate::profile::NodeProfile::Node,
             setup_pending: false,
+            local_auto_discovery: false,
             connection_key: key.into(),
             gateway_port: 8080,
             admin_exposure: Default::default(),

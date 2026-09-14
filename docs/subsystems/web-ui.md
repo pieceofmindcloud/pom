@@ -208,7 +208,10 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   uma senha administrativa; a criptografia TLS entre peers é opcional e começa
   desligada. A tela de convite baixa o arquivo da raiz com o nome retornado por
   `admin_trust_filename` e mostra a chave de conexão apenas em redes local ou
-  privadas. `SetupWizard.tsx` continua sendo apenas o mock de referência visual.
+  privadas. Durante o setup, uma etapa de descoberta local deixa o admin
+  esperando e faz node/infer procurarem um admin; a chave só chega depois do
+  handshake explícito. `SetupWizard.tsx` continua sendo apenas o mock de
+  referência visual.
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
   participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
   `/config/preferencias/admin` -> preferências administrativas;
@@ -257,9 +260,10 @@ esses ingressos para listar o catálogo por saída.
 
 O passo de modelos combina o catálogo local com referências do Hugging Face,
 sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como
-padrões. O convite do admin mostra e baixa a raiz `.pom.trust.json`, a chave
-pública, a fingerprint calculada e a chave de conexão apenas quando a rede é
-local/private. A verificação final cobre GPU, backend disponível, configuração,
+padrões. O convite do admin mostra e baixa a raiz `.pom.trust.json`, a
+fingerprint calculada e a chave de conexão apenas quando a rede é
+local/private. A chave pública não é exibida separadamente, pois já está na
+raiz. A verificação final cobre GPU, backend disponível, configuração,
 descoberta P2P e IPv6 público; a inferência do modelo fica para depois.
 
 `routes/SetupWizard.tsx` e `components/setup-wizard/*` continuam sendo apenas o
@@ -684,7 +688,7 @@ disponível para admin e node.
 conexão. `/config/preferencias` monta a exposição administrativa, o
 `ThermalPanel`, o `HuggingFaceSettingsPanel` e o link para armazenamento.
 `/config/preferencias/admin` mantém as preferências administrativas de TLS,
-QUIC, logs de processo entre nós e chat da rede. A separação reorganiza as
+QUIC, logs de processo entre nós, chat da rede e descoberta local. A separação reorganiza as
 mesmas operações e conserva a autorização existente.
 
 A exposição é persistida no `pom.json`: localhost é o padrão instalado, e a
@@ -1208,8 +1212,10 @@ propaga a mutação assinada aos peers e republica o rótulo geo público.
 O mesmo administrador tem, nessa tela, os controles de copiar e baixar o
 documento `.pom-admin-trust.json`. Em rede local ou privada também aparece a
 chave de conexão para copiar ou baixar. O wizard real oferece os mesmos
-materiais na etapa de convite. `SetupWizard.tsx` continua sendo apenas o
-protótipo visual e não participa dessas chamadas.
+materiais na etapa de convite, destacando a chave de conexão no primeiro
+cartão. O conteúdo bruto do trust e da chave pública começa recolhido, mas
+copiar e baixar continuam disponíveis sem expandir os cartões. `SetupWizard.tsx`
+continua sendo apenas o protótipo visual e não participa dessas chamadas.
 
 O painel também expõe `Esquecer rede`, com confirmação destrutiva. Essa ação
 chama `POST /api/ui/network/leave`, que revoga a confiança local, prepara o

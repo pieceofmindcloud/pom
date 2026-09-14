@@ -22,15 +22,20 @@ export function setupStepsFor(profile: SetupProfile | null): WizardStep[] {
     steps.push({ id: "setup-location", labelKey: "setupWizard.stepLocation" });
   }
   if (profile === "infer") {
+    steps.push({ id: "setup-discovery", labelKey: "setupWizard.stepDiscovery" });
     steps.push({ id: "setup-trust", labelKey: "setupWizard.stepTrust" });
   }
   if (profile === "admin") {
     steps.push(
       { id: "setup-network", labelKey: "setupWizard.stepNetwork" },
       { id: "setup-invite", labelKey: "setupWizard.stepInvite" },
+      { id: "setup-discovery", labelKey: "setupWizard.stepDiscovery" },
     );
   } else if (profile === "node") {
-    steps.push({ id: "setup-trust", labelKey: "setupWizard.stepTrust" });
+    steps.push(
+      { id: "setup-discovery", labelKey: "setupWizard.stepDiscovery" },
+      { id: "setup-trust", labelKey: "setupWizard.stepTrust" },
+    );
   }
   steps.push({ id: "setup-review", labelKey: "setupWizard.stepReview" });
   return steps;

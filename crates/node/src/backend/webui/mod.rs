@@ -140,6 +140,7 @@ pub(crate) fn conditional_json_with_version<T: Serialize>(
 
 #[path = "catalog.rs"]
 mod catalog_cache;
+mod auto_discovery;
 mod cluster;
 mod jobs;
 mod jobs_apply;
@@ -152,6 +153,7 @@ mod slicing;
 mod trust;
 
 pub use catalog_cache::*;
+pub use auto_discovery::*;
 pub use cluster::*;
 pub use jobs::*;
 pub use jobs_apply::*;

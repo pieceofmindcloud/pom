@@ -6,6 +6,7 @@ import { LocaleProvider } from "../i18n/provider";
 import { Preferences, ThermalPanel } from "./Preferences";
 
 const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
   post: vi.fn(),
   saveHuggingFaceToken: vi.fn(),
   invalidate: vi.fn(),
@@ -25,7 +26,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/api", () => ({
-  api: { post: mocks.post },
+  api: { get: mocks.get, post: mocks.post },
   setAdminAccessToken: mocks.setAdminAccessToken,
   clearAdminAccessToken: mocks.clearAdminAccessToken,
   saveHuggingFaceToken: (...args: unknown[]) => mocks.saveHuggingFaceToken(...args),
@@ -51,6 +52,7 @@ vi.mock("../lib/toast", () => ({
 
 afterEach(() => {
   cleanup();
+  mocks.get.mockReset();
   mocks.post.mockReset();
   mocks.saveHuggingFaceToken.mockReset();
   mocks.invalidate.mockReset();
@@ -58,9 +60,12 @@ afterEach(() => {
   mocks.fromError.mockReset();
   mocks.setAdminAccessToken.mockReset();
   mocks.clearAdminAccessToken.mockReset();
+  mocks.get.mockResolvedValue({ enabled: false, active: false, searching: false, found: false, port: 0 });
   mocks.node.tls_required = false;
   mocks.node.quic_enabled = false;
 });
+
+mocks.get.mockResolvedValue({ enabled: false, active: false, searching: false, found: false, port: 0 });
 
 function mount(child: React.ReactNode) {
   return render(
@@ -110,6 +115,18 @@ describe("Preferences", () => {
       expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/quic", {
         quic_enabled: true,
       });
+    });
+  });
+
+  it("mantém a descoberta local desligada e permite ativá-la pela preferência administrativa", async () => {
+    mocks.post.mockResolvedValue({ enabled: true, active: true, searching: false, found: false, port: 42777 });
+    mount(<Preferences administrative />);
+
+    await waitFor(() => expect(screen.getByText("Descoberta automática local")).toBeTruthy());
+    fireEvent.click(screen.getByRole("switch", { name: "Descoberta automática local" }));
+
+    await waitFor(() => {
+      expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/auto-discovery", { enabled: true });
     });
   });
 

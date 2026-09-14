@@ -130,7 +130,9 @@ nonce, epoch e hash do corpo, e o emissor precisa ser uma autoridade vigente na
 cadeia. Os quadros de inferência ficam fora dessa assinatura e dependem do
 transporte TLS. `/api/setup/hardware`, `/api/setup/models`,
 `/api/setup/admin-anchor/preview`, `/api/setup/trust-anchor`,
-`/api/setup/health` e `/api/setup/save` só existem no router de primeiro acesso;
+`/api/setup/health`, `/api/setup/auto-discovery/status`,
+`/api/setup/auto-discovery/start`, `/api/setup/auto-discovery/search` e
+`/api/setup/save` só existem no router de primeiro acesso;
 `/api/setup/save` instala a raiz e o `pom.json` antes de reiniciar. As rotas da porta 8181
 (`/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/v1/session/*`,
 `/v1/tp/reduce`, `/health`) ficam explicitamente fora do escopo desta política.
@@ -1043,7 +1045,25 @@ transporte. O receptor verifica a autoridade do emissor antes de persistir.
 `GET /api/ui/network/trust-share` é somente do administrador autorizado. Ele
 retorna o documento da raiz com o nome real do arquivo para download e inclui a
 `connection_key` apenas quando a rede é local ou privada. A raiz pode ser
-compartilhada em qualquer rede; redes públicas não distribuem segredo.
+compartilhada em qualquer rede; redes públicas não distribuem segredo. O
+documento é a cadeia assinada local, com os metadados `setup` capturados no
+wizard. Para uma cadeia primária antiga sem esse bloco, a rota recupera os
+campos de rede de `pom.json` e os ingressos do diretório de `pom.db`, assina e
+persiste o bloco antes de devolvê-lo. Se a autoridade local não puder
+reconstituir os dados, o download falha em vez de entregar uma raiz
+incompleta.
+
+O setup expõe a descoberta local no mesmo listener loopback, sem exigir sessão:
+`GET /api/setup/auto-discovery/status` lê o estado da etapa, enquanto o admin
+usa `POST /api/setup/auto-discovery/start` para manter a escuta inicial e node
+ou infer usa `POST /api/setup/auto-discovery/search` para procurar um admin.
+O datagrama público carrega apenas o trust document. O admin só responde ao
+`Proof` que liga o desafio às chaves efêmeras do mesmo pedido; então envia um
+`Secret` cifrado com X25519 e ChaCha20-Poly1305 contendo o documento e a
+`connection_key`. A preferência persistida `local_auto_discovery` começa
+`false` e a versão administrativa usa `GET/POST /api/ui/network/auto-discovery`;
+essa rota exige `AdminOnly`, nunca devolve a chave e desliga o material em
+memória quando recebe `enabled: false`.
 
 `gateway::testkit` (`#[cfg(test)]` em `gateway.rs`) monta um `GatewayState`
 inteiro com a tabela de peers semeada à mão: `peer(node_id, hostname,

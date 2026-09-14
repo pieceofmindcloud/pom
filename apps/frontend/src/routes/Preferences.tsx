@@ -2,7 +2,7 @@
  * Preferências locais deste nó: fronteira administrativa, TLS entre nós,
  * proteção térmica e credencial opcional do provedor Hugging Face.
  */
-import { Ban, Lock, MessagesSquare, ScrollText, ShieldCheck, ShieldOff, Thermometer, Zap } from "lucide-react";
+import { Ban, Lock, MessagesSquare, RadioTower, ScrollText, ShieldCheck, ShieldOff, Thermometer, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
@@ -244,6 +244,67 @@ export function NetworkChatPanel({
   );
 }
 
+type AutoDiscoveryStatus = {
+  enabled: boolean;
+  active: boolean;
+  searching: boolean;
+  found: boolean;
+  port: number;
+};
+
+export function AutoDiscoveryPanel({
+  status,
+  authority,
+  busy = false,
+  onToggle,
+}: {
+  status: AutoDiscoveryStatus;
+  authority: boolean;
+  busy?: boolean;
+  onToggle?: (next: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const enabled = status.enabled;
+  return (
+    <Panel>
+      <PanelHeader
+        title={t("network.autoDiscoveryTitle")}
+        subtitle={t("network.autoDiscoverySubtitle")}
+        actions={
+          <Button
+            variant={enabled ? "danger" : "primary"}
+            role="switch"
+            aria-label={t("network.autoDiscoveryTitle")}
+            aria-checked={enabled}
+            disabled={!authority || busy}
+            loading={busy}
+            icon={<RadioTower className="h-3.5 w-3.5" />}
+            onClick={() => onToggle?.(!enabled)}
+          >
+            {t(enabled ? "network.autoDiscoveryDisable" : "network.autoDiscoveryEnable")}
+          </Button>
+        }
+      />
+      <div className="space-y-3 px-5 py-4">
+        <KeyValue label={t("network.autoDiscoveryState")}>
+          <Badge tone={enabled ? "aqua" : "amber"}>
+            <RadioTower className="h-3.5 w-3.5" />
+            {t(enabled ? "network.autoDiscoveryOn" : "network.autoDiscoveryOff")}
+          </Badge>
+        </KeyValue>
+        <Footnote icon={<RadioTower className="h-3.5 w-3.5" />}>
+          {t("network.autoDiscoveryHowItWorks")}
+        </Footnote>
+        {!authority && (
+          <Footnote icon={<Ban className="h-3.5 w-3.5" />}>
+            {t("network.autoDiscoveryNotAuthority")}
+          </Footnote>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 function AdminAccessPanel() {
   const { t } = useI18n();
   const access = useAdminAccessInfo();
@@ -477,8 +538,36 @@ export function Preferences({ administrative = false }: { administrative?: boole
   const [quicSaving, setQuicSaving] = useState(false);
   const [logsSaving, setLogsSaving] = useState(false);
   const [networkChatSaving, setNetworkChatSaving] = useState(false);
+  const [autoDiscovery, setAutoDiscovery] = useState<AutoDiscoveryStatus>({
+    enabled: false,
+    active: false,
+    searching: false,
+    found: false,
+    port: 0,
+  });
+  const [autoDiscoveryLoaded, setAutoDiscoveryLoaded] = useState(!administrative);
+  const [autoDiscoverySaving, setAutoDiscoverySaving] = useState(false);
   const tlsRequired = node.data?.tls_required ?? false;
   const quicEnabled = node.data?.quic_enabled ?? false;
+
+  useEffect(() => {
+    if (!administrative || autoDiscoveryLoaded) return;
+    let cancelled = false;
+    void api.get<AutoDiscoveryStatus>("/api/ui/network/auto-discovery")
+      .then((status) => {
+        if (cancelled) return;
+        setAutoDiscovery(status);
+        setAutoDiscoveryLoaded(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setAutoDiscoveryLoaded(true);
+        toast.fromError(t("network.autoDiscoveryFailed"), error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [administrative, autoDiscoveryLoaded, t, toast]);
 
   async function saveThermal(next: ThermalPolicy) {
     setThermalSaving(true);
@@ -557,6 +646,25 @@ export function Preferences({ administrative = false }: { administrative?: boole
     }
   }
 
+  async function toggleAutoDiscovery(next: boolean) {
+    setAutoDiscoverySaving(true);
+    try {
+      const status = await api.post<AutoDiscoveryStatus>("/api/ui/network/auto-discovery", {
+        enabled: next,
+      });
+      setAutoDiscovery(status);
+      toast.success(
+        t(next ? "network.autoDiscoveryEnabled" : "network.autoDiscoveryDisabled"),
+        t("network.autoDiscoveryPropagates"),
+      );
+      invalidate();
+    } catch (error) {
+      toast.fromError(t("network.autoDiscoveryFailed"), error);
+    } finally {
+      setAutoDiscoverySaving(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -569,6 +677,7 @@ export function Preferences({ administrative = false }: { administrative?: boole
           {!tlsRequired && <QuicPanel enabled={quicEnabled} authority={node.data?.quic_authority ?? false} busy={quicSaving} onToggle={(next) => void toggleQuic(next)} />}
           <ClusterLogsPanel enabled={node.data?.cluster_logs_enabled ?? false} authority={node.data?.cluster_logs_authority ?? false} busy={logsSaving} onToggle={(next) => void toggleLogs(next)} />
           <NetworkChatPanel enabled={node.data?.network_chat_enabled ?? false} authority={node.data?.network_chat_authority ?? false} busy={networkChatSaving} onToggle={(next) => void toggleNetworkChat(next)} />
+          {autoDiscoveryLoaded && <AutoDiscoveryPanel status={autoDiscovery} authority={node.data?.tls_authority ?? false} busy={autoDiscoverySaving} onToggle={(next) => void toggleAutoDiscovery(next)} />}
         </> : <>
           <AdminAccessPanel />
           <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />

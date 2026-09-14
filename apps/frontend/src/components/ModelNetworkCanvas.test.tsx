@@ -211,6 +211,25 @@ describe("ModelNetworkCanvas: camadas na GPU e na CPU", () => {
     expect(screen.queryByText(/GPU ·/)).toBeNull();
     expect(screen.queryByText(/na GPU$/)).toBeNull();
   });
+
+  it("cala numa máquina sem GPU, mesmo com camadas relatadas na GPU", () => {
+    // O caso do captain: Windows sem placa nenhuma mostrando "25 na GPU" - o
+    // motor relatava o sentinela do pedido, não uma leitura real do hardware.
+    const peer = fakeSlicePeer("windows-no-gpu", 0, 63);
+    const cluster = fakeCluster([
+      {
+        ...peer,
+        node: {
+          ...peer.node!,
+          status: { ...peer.node!.status, reported_gpu_layers: 25 },
+          system: { ...peer.node!.system, gpu_kind: "none", gpus: [] },
+        },
+      },
+    ]);
+    mount(cluster);
+    expect(screen.queryByText(/GPU ·/)).toBeNull();
+    expect(screen.queryByText(/na GPU$/)).toBeNull();
+  });
 });
 
 describe("ModelNetworkCanvas: temperatura", () => {
@@ -523,7 +542,7 @@ describe("ModelNetworkCanvas: máquina com mais de uma GPU", () => {
 describe("ModelNetworkCanvas: arrumação do card menor", () => {
   afterEach(cleanup);
 
-  it("agrupa memória, carga e VRAM antes das linhas de GPU", () => {
+  it("ordena VRAM, camadas, memória e carga antes das linhas de GPU", () => {
     const view = fakeCluster([
       fakeSlicePeer("compact", 0, 15, {
         load: 2,
@@ -553,13 +572,17 @@ describe("ModelNetworkCanvas: arrumação do card menor", () => {
     const { container } = mount(view);
     const card = container.querySelector("h3")?.closest("article") as HTMLElement;
     const meters = screen.getByTestId("machine-meter-group");
+    const vram = screen.getByText("VRAM");
+    const layerBar = screen.getByText("camadas");
     const memory = screen.getByText("Memória");
     const load = screen.getByText("Carga");
     const gpu = screen.getByText(/61,0 °C/);
     const status = screen.getByTestId("machine-status");
     const layers = screen.getByTestId("machine-layers");
 
-    expect(meters.querySelectorAll('[aria-label]')).toHaveLength(3);
+    expect(meters.querySelectorAll('[aria-label]')).toHaveLength(4);
+    expect(vram.compareDocumentPosition(layerBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(layerBar.compareDocumentPosition(memory) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(memory.compareDocumentPosition(load) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(load.compareDocumentPosition(gpu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(status.parentElement).toBe(layers.parentElement);

@@ -3,8 +3,7 @@
 Reusable UI building blocks, split into two kinds. The small primitives live in
 `ui.tsx` (the design system: panels, buttons, inputs, badges, meters, states,
 formatters) and everything is composed from them. The bigger pieces are the
-app chrome (`Sidebar`/`Topbar`/`Notifications`/`nav.ts`), chat surface
-navigation (`ChatSurfaceTabs`), the cluster
+app chrome (`Sidebar`/`Topbar`/`Notifications`/`nav.ts`), the cluster
 visualizations (`PipelineRail`, `ModelNetworkCanvas`, `DeployNetworkCanvas`), and the dialogs/guards
 for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
@@ -125,10 +124,6 @@ Per-file list:
   WebKit `pomOpenWindow` está disponível; fica na toolbar do `Topbar`, não no
   corpo do Chat. É um controle icon-only: o nome completo permanece no nome
   acessível e no tooltip.
-- `ChatSurfaceTabs.tsx` - abas de rota compartilhadas por `Chat` e
-  `NetworkChat`. Mantém `/chat` e `/network-chat` acessíveis nos dois sentidos,
-  com o estado ativo derivado do pathname; é a primeira faixa visual das duas
-  telas, antes do cabeçalho e do conteúdo rolável.
 - `nav.ts` - `NAV`: the menu as data. A seção Implantações usa `Rocket` (era
   `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e Logs possui
   folhas separadas para requisições e implantação; Network Chat é uma entrada
@@ -485,10 +480,10 @@ Key logic carriers:
   somente leitura não há `<input>` desabilitado: há o valor escrito. Três
   categorias, e a fronteira entre elas é de quem é o parâmetro - *Configurações
   padrões* (o que o llama.cpp já tem, incluindo os combos de cache KV da
-  instalação), *Configurações POM* (motor, ajuste de memória, chunks em voo,
-  fusão de fatias, precisão do estado oculto) e *Configurações POM (DESENV)*
-  (detector de ciclo, recuo do MTP para a RAM e descarregamento ocioso por
-  peer). O `[i]` vem **antes** do nome,
+  instalação), *Configurações POM* (desativar embeddings, ajuste de memória,
+  chunks em voo, fusão de fatias, precisão do estado oculto) e *Configurações
+  POM (DESENV)* (motor de inferência, detector de ciclo, recuo do MTP para a
+  RAM e descarregamento ocioso por peer). O `[i]` vem **antes** do nome,
   numa coluna reta: depois de nomes de larguras diferentes ele saía serrilhado.
   O combo do motor não oferece "Automático" e assume `dense` ao montar - é
   apresentação, o backend continua aceitando os três modos. Números de ponto

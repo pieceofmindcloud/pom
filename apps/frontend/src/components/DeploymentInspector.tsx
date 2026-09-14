@@ -17,10 +17,10 @@
  * * *Configurações padrões* - o que o llama.cpp já tem: contexto, lote,
  *   amostragem, cache KV, e os interruptores de recurso do próprio motor.
  * * *Configurações POM* - o que existe porque a inferência é distribuída:
- *   motor, ajuste de memória, chunks de prefill em voo, fusão de fatias e a
- *   precisão do estado oculto entre peers.
- * * *Configurações POM (DESENV)* - o detector de ciclo e o recuo do MTP, que
- *   ainda estão sendo medidos.
+ *   desativar embeddings, ajuste de memória, chunks de prefill em voo, fusão
+ *   de fatias e a precisão do estado oculto entre peers.
+ * * *Configurações POM (DESENV)* - o motor de inferência, o detector de ciclo
+ *   e o recuo do MTP, que ainda estão sendo medidos.
  *
  * **O ícone de informação vem antes do nome**, e não depois: os nomes têm
  * larguras diferentes, e um `[i]` colado ao fim de cada um deixava a coluna de
@@ -416,15 +416,6 @@ export function DeploymentInspector({
           tip: t("deploy.noThinkingHint"),
         })}
         {toggle({
-          key: "no_embeddings",
-          label: t("inspector.noEmbeddings"),
-          capability: capabilities?.no_embeddings,
-          alwaysVisible: true,
-          checked: value.no_embeddings ?? false,
-          onToggle: (next) => set({ no_embeddings: next }),
-          tip: t("deploy.noEmbeddingsHint"),
-        })}
-        {toggle({
           key: "speculative_decoding_enabled",
           label: t("deploy.speculative"),
           capability: capabilities?.speculative_decoding,
@@ -485,32 +476,15 @@ export function DeploymentInspector({
       )}
 
       <Section title={t("inspector.sectionPom")} tone="aqua">
-        {showInferenceMode && (
-          <InspectorRow
-            label={t("inspector.inferenceMode")}
-            tip={t("inspector.inferenceModeHint")}
-            alert={inferenceModeAlert ?? undefined}
-          >
-            {readOnly ? (
-              <ReadValue>{t("inspector.engine." + (value.inference_mode ?? "auto"))}</ReadValue>
-            ) : (
-              <Select
-                aria-label={t("inspector.inferenceMode")}
-                name="inference_mode"
-                value={value.inference_mode === "auto" ? "dense" : (value.inference_mode ?? "dense")}
-                onChange={(event) =>
-                  set({ inference_mode: event.target.value as InferenceMode })
-                }
-                compact
-              >
-                {/* "Automático" continua existindo no backend; sai daqui porque
-                    a interface passou a decidir por llama.cpp. */}
-                <option value="dense">{t("inspector.engine.dense")}</option>
-                <option value="moe">{t("inspector.engine.moe")}</option>
-              </Select>
-            )}
-          </InspectorRow>
-        )}
+        {toggle({
+          key: "no_embeddings",
+          label: t("inspector.noEmbeddings"),
+          capability: capabilities?.no_embeddings,
+          alwaysVisible: true,
+          checked: value.no_embeddings ?? false,
+          onToggle: (next) => set({ no_embeddings: next }),
+          tip: t("deploy.noEmbeddingsHint"),
+        })}
         {toggle({
           key: "fit_memory",
           label: t("inspector.fitMemory"),
@@ -566,6 +540,32 @@ export function DeploymentInspector({
       </Section>
 
       <Section title={t("inspector.sectionPomDev")} tone="amber">
+        {showInferenceMode && (
+          <InspectorRow
+            label={t("inspector.inferenceMode")}
+            tip={t("inspector.inferenceModeHint")}
+            alert={inferenceModeAlert ?? undefined}
+          >
+            {readOnly ? (
+              <ReadValue>{t("inspector.engine." + (value.inference_mode ?? "auto"))}</ReadValue>
+            ) : (
+              <Select
+                aria-label={t("inspector.inferenceMode")}
+                name="inference_mode"
+                value={value.inference_mode === "auto" ? "dense" : (value.inference_mode ?? "dense")}
+                onChange={(event) =>
+                  set({ inference_mode: event.target.value as InferenceMode })
+                }
+                compact
+              >
+                {/* "Automático" continua existindo no backend; sai daqui porque
+                    a interface passou a decidir por llama.cpp. */}
+                <option value="dense">{t("inspector.engine.dense")}</option>
+                <option value="moe">{t("inspector.engine.moe")}</option>
+              </Select>
+            )}
+          </InspectorRow>
+        )}
         {CYCLE_KNOBS.map((key) => numeric(key))}
         {toggle({
           key: "cycle_detection_enabled",

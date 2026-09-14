@@ -11,6 +11,12 @@
  *
  * Sem o relato do motor a resposta é `null`, e a tela não mostra nada. Um
  * palpite aqui seria pior que o silêncio: diria "tudo na GPU" sem saber.
+ *
+ * Uma máquina sem GPU (`system.gpu_kind === "none"`) também responde `null`,
+ * mesmo que `reported_gpu_layers` traga um número: em máquinas Windows sem
+ * GPU o motor relatava camadas na GPU (o sentinela do pedido, não uma leitura
+ * real) e o card exibia algo como "25 na GPU" numa máquina que não tem placa
+ * nenhuma.
  */
 export interface LayerPlacement {
   /** Camadas que esta máquina serve. */
@@ -23,8 +29,9 @@ export function layerPlacement(
   startLayer: number | null | undefined,
   endLayer: number | null | undefined,
   reportedGpuLayers: number | null | undefined,
+  hasGpu: boolean,
 ): LayerPlacement | null {
-  if (startLayer == null || endLayer == null || reportedGpuLayers == null) return null;
+  if (!hasGpu || startLayer == null || endLayer == null || reportedGpuLayers == null) return null;
   const served = endLayer - startLayer + 1;
   if (!Number.isFinite(served) || served <= 0) return null;
   // Negativo é "todas" na convenção do llama.cpp - tratá-lo como zero diria

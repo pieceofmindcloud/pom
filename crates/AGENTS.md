@@ -39,7 +39,13 @@ small items moved with the engine and are re-exported by their old home:
 `runtime.rs`). `inference/tp.rs` stays in `node` (the collective is networked);
 `llm` reaches its decode-time state through `llama_engine::tp_probe`, which
 `node` fills in at startup (`tp::install_probe`). `sysmon` gets its disk root
-the same way (`sysmon::set_disk_root`).
+the same way (`sysmon::set_disk_root`), which is the project root and can
+legitimately be a network path (a shared folder holding config/models). On
+Windows, `sample_disk_at` refuses to measure a network path directly (UNC or a
+mapped drive letter, detected via `GetDriveTypeW`) and falls back to the local
+`%SystemDrive%` instead - otherwise every peer running its binary from the same
+share reported the disk of whichever machine hosts it, identical across the
+whole cluster.
 
 Note: **node does NOT depend on types or routing-base.** The `crate::config`
 references inside node (`main.rs`, `backend/*`, `network/identity.rs`, etc.) are its

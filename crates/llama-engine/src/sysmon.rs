@@ -53,6 +53,9 @@ mod win {
         pub ull_avail_extended_virtual: u64,
     }
 
+    /// `GetDriveTypeW` return value for a network share (winbase.h).
+    pub const DRIVE_REMOTE: u32 = 4;
+
     #[link(name = "kernel32")]
     extern "system" {
         pub fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
@@ -62,12 +65,39 @@ mod win {
             total_number_of_bytes: *mut u64,
             total_number_of_free_bytes: *mut u64,
         ) -> i32;
+        pub fn GetDriveTypeW(root_path_name: *const u16) -> u32;
     }
 
     /// Um caminho como o Win32 espera: UTF-16 terminado em zero.
     pub fn wide(path: &std::path::Path) -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
         path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    /// UNC (`\\server\share\...`) é sempre rede; uma letra de unidade também
+    /// pode ser rede quando é uma unidade mapeada (`net use Z: \\server\share`),
+    /// o que `GetDriveTypeW` é quem sabe dizer - o texto do caminho não distingue
+    /// uma unidade mapeada de uma unidade local.
+    pub fn is_network_path(path: &std::path::Path) -> bool {
+        let text = path.to_string_lossy();
+        if text.starts_with(r"\\") || text.starts_with("//") {
+            return true;
+        }
+        let Some(root) = path.ancestors().last() else {
+            return false;
+        };
+        // O componente raiz do Windows já vem como `C:\`, terminado em barra -
+        // exatamente o que `GetDriveTypeW` espera.
+        let root_wide = wide(root);
+        unsafe { GetDriveTypeW(root_wide.as_ptr()) == DRIVE_REMOTE }
+    }
+
+    /// A unidade local do sistema (`%SystemDrive%`, tipicamente `C:\`), usada
+    /// como âncora do disco quando o caminho pedido é de rede.
+    pub fn local_system_drive() -> std::path::PathBuf {
+        std::env::var("SystemDrive")
+            .map(|drive| std::path::PathBuf::from(format!("{drive}\\")))
+            .unwrap_or_else(|_| std::path::PathBuf::from(r"C:\"))
     }
 }
 
@@ -261,6 +291,24 @@ pub fn sample_disk_at(path: &Path) -> DiskStat {
     // Windows não tem `df`; o volume que contém o diretório responde direto.
     #[cfg(windows)]
     {
+        // O executável pode rodar a partir de uma pasta de rede compartilhada
+        // (caminho UNC ou uma letra de unidade mapeada), sem que isso seja uma
+        // cópia local. Medir esse volume relataria o disco da máquina que
+        // hospeda o compartilhamento, não o disco local da máquina rodando o
+        // processo - e todo peer apontando para a mesma pasta reportaria os
+        // mesmos números. Quando o caminho é de rede, a métrica volta para a
+        // unidade do sistema local (`%SystemDrive%`, tipicamente `C:`).
+        let probe = if win::is_network_path(probe) {
+            win::local_system_drive()
+        } else {
+            probe.to_path_buf()
+        };
+        let probe = probe.as_path();
+        let mount = if win::is_network_path(path) {
+            probe.to_string_lossy().to_string()
+        } else {
+            mount
+        };
         let path = win::wide(probe);
         let (mut free_caller, mut total, mut free_total) = (0u64, 0u64, 0u64);
         let ok = unsafe {
@@ -1434,6 +1482,24 @@ mod tests {
         if let Some(mb) = stats.in_use_memory_mb {
             assert!(mb >= 0.0);
         }
+    }
+
+    /// O caso do captain: o executável rodando de uma pasta de rede não pode
+    /// fazer todo peer relatar o disco da máquina que hospeda o
+    /// compartilhamento.
+    #[cfg(windows)]
+    #[test]
+    fn caminho_unc_e_reconhecido_como_rede() {
+        assert!(win::is_network_path(Path::new(
+            r"\\servidor\compartilhamento\pom.exe"
+        )));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unidade_local_do_sistema_nunca_fica_vazia() {
+        let drive = win::local_system_drive();
+        assert!(!drive.as_os_str().is_empty());
     }
 
     #[tokio::test]

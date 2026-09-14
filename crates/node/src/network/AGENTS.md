@@ -121,8 +121,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
   completos são assinados pelo principal da rede, têm prova de trabalho de 16
   bits, sequência monotônica, TTL de sete dias e merge determinístico. O cache
   local aceita no máximo 1024 registros; réplicas são somente ingressos HTTP(S)
-  configuráveis e não autoridade. Um nó privado consulta esses ingressos por
-  saída, mas não usa seu swarm privado como descoberta pública.
+  configuráveis e não autoridade. O registro assinado inclui descrição,
+  regras e canais em Markdown junto do convite. Um nó privado consulta esses
+  ingressos por saída, mas não usa seu swarm privado como descoberta pública.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
   `ServerCertVerifier` que confere `SHA256(pubkey) == node_id`. Nada vai para o
   disco; não há CA. Ver `docs/subsystems/rede-p2p.md`, seção 5.

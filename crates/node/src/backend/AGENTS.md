@@ -950,8 +950,9 @@ faz o download autenticado do blob persistido.
   anchor preview returns a private connection key only for local/private
   visibility; the admin access token is persisted only for network exposure.
   `GET /api/public/network(s)` exposes public network metadata, including the
-  signed trust document and a P2P bootstrap address for the no-secret join
-  flow. `GET/POST /api/public/directory/records` is the federated directory
+  signed trust document, Markdown description/rules/channels and a P2P
+  bootstrap address for the no-secret join flow. `GET/POST
+  /api/public/directory/records` is the federated directory
   ingress: records are checked locally for Ed25519 signature, proof of work,
   trust-root consistency and expiry before entering the bounded SQLite cache.
   A node publishes to every configured ingress and queries all of them in

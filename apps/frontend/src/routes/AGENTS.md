@@ -46,6 +46,9 @@ Per-file list:
   corresponde à rede exibida, pois o catálogo público atual não as fornece.
   Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um
   país, o combo de cidade mostra apenas as cidades daquele país.
+  O nome de cada rede abre um `Modal` com todo o registro público, incluindo
+  descrição, regras e o campo único de canais Discord ou Telegram renderizados
+  como Markdown; a confirmação de entrada continua sendo uma ação separada.
   O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
@@ -65,6 +68,9 @@ Per-file list:
   esta máquina. No Windows, quando suportado, a mesma tela mostra o estado das
   quatro regras de firewall derivadas da porta P2P efetiva e oferece `Tentar
   novamente` após uma recusa do UAC; essa ação é independente da implantação.
+  Descrição, regras e o campo único de canais Discord ou Telegram são editados
+  como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
+  mesmo renderer Markdown compartilhado pelo Chat.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,

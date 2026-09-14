@@ -1120,6 +1120,7 @@ network.logsPropagates,No restart needed. Other nodes confirm the policy with th
 network.logsState,Cluster collection,Coleta do cluster
 network.logsSubtitle,"When on, this node reports its process log to every admin replica. The bounded queue drops lines under pressure so inference is never held up.","Ligado, este nó envia seu log de processo para cada réplica admin. A fila limitada descarta linhas sob pressão para nunca segurar a inferência."
 network.logsTitle,Process logs between nodes,Logs de processo entre nós
+network.markdownPreview,Preview,Prévia
 network.metricsEyebrow,Network health,Saúde da rede
 network.metricsLatency,Average latency,Latência média
 network.metricsModels,Served models,Modelos servidos
@@ -1403,8 +1404,11 @@ publicNetworks.allCountries,All countries,Todos os países
 publicNetworks.checking,Checking reachability,Verificando alcance
 publicNetworks.city,City,Cidade
 publicNetworks.country,Country,País
+publicNetworks.detailsTitle,Details for {name},Detalhes de {name}
+publicNetworks.directoryReplicas,Directory replicas,Réplicas do diretório
 publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is confirmed when you join.,Aqui aparecem apenas dados públicos. A confiança é conferida quando você entra.
 publicNetworks.discoveredTitle,Networks found,Redes encontradas
+publicNetworks.discoveredVia,Discovered via,Descoberta via
 publicNetworks.distance,{value} km away,{value} km de distância
 publicNetworks.emptyDetail,Keep POM open on a network or try again in a moment. Public networks announce themselves through the existing discovery layer.,Deixe o POM aberto em uma rede ou tente novamente em instantes. Redes públicas se anunciam pela camada de descoberta existente.
 publicNetworks.emptyTitle,No public networks found,Não encontramos redes públicas
@@ -1425,6 +1429,7 @@ publicNetworks.name,Public name,Nome público
 publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pública corresponde a estes filtros
 publicNetworks.noMatchesDetail,Try another country or city.,Tente outro país ou cidade.
 publicNetworks.nodes,Nodes,Nós
+publicNetworks.openDetails,Open details for {name},Abrir detalhes de {name}
 publicNetworks.organization,Organization,Organização
 publicNetworks.pkarr,pkarr,pkarr
 publicNetworks.reachable,Reachable,Alcançável

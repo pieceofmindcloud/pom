@@ -19,6 +19,8 @@ import {
 import { useEffect, useState } from "react";
 import { Confirm } from "../components/Confirm";
 import { MachineIcon } from "../components/MachineIcon";
+import { Markdown } from "../components/Markdown";
+import { MarkdownField } from "../components/MarkdownField";
 import {
   Badge,
   Button,
@@ -464,14 +466,14 @@ function NetworkInfoPanel({
           <Field label={t("network.organization")}>
             <Input value={draft.organization} onChange={(event) => update({ organization: event.target.value })} />
           </Field>
-          <Field label={t("network.description")}>
-            <textarea value={draft.description} onChange={(event) => update({ description: event.target.value })} className="min-h-20 w-full min-w-0 resize-y rounded-lg border border-line bg-ink px-3 py-2 text-sm text-fg outline-none focus:border-iris focus:ring-2 focus:ring-iris/25" />
+          <Field label={t("network.description")} className="md:col-span-2">
+            <MarkdownField value={draft.description} onChange={(description) => update({ description })} previewTestId="markdown-preview-description" previewLabel={t("network.markdownPreview")} ariaLabel={t("network.description")} />
           </Field>
-          <Field label={t("network.rules")}>
-            <textarea value={draft.rules} onChange={(event) => update({ rules: event.target.value })} className="min-h-20 w-full min-w-0 resize-y rounded-lg border border-line bg-ink px-3 py-2 text-sm text-fg outline-none focus:border-iris focus:ring-2 focus:ring-iris/25" />
+          <Field label={t("network.rules")} className="md:col-span-2">
+            <MarkdownField value={draft.rules} onChange={(rules) => update({ rules })} previewTestId="markdown-preview-rules" previewLabel={t("network.markdownPreview")} ariaLabel={t("network.rules")} />
           </Field>
-          <Field label={t("network.channels")}>
-            <Input value={draft.channels} onChange={(event) => update({ channels: event.target.value })} />
+          <Field label={t("network.channels")} className="md:col-span-2">
+            <MarkdownField value={draft.channels} onChange={(channels) => update({ channels })} previewTestId="markdown-preview-channels" previewLabel={t("network.markdownPreview")} ariaLabel={t("network.channels")} />
           </Field>
           <Field label={t("network.visibility")}>
             <Select value={draft.visibility} onChange={(event) => update({ visibility: event.target.value as NetworkSettingsData["visibility"] })}>
@@ -517,9 +519,9 @@ function NetworkInfoPanel({
         <dl className="grid min-w-0 gap-x-6 gap-y-4 px-5 py-5 sm:grid-cols-2">
           <KeyValue label={t("network.publicName")}><span className="break-words">{draft.public_name || t("network.notProvided")}</span></KeyValue>
           <KeyValue label={t("network.organization")}><span className="break-words">{draft.organization || t("network.notProvided")}</span></KeyValue>
-          <KeyValue label={t("network.description")}><span className="break-words whitespace-pre-wrap">{draft.description || t("network.notProvided")}</span></KeyValue>
-          <KeyValue label={t("network.rules")}><span className="break-words whitespace-pre-wrap">{draft.rules || t("network.notProvided")}</span></KeyValue>
-          <KeyValue label={t("network.channels")}><span className="break-words">{draft.channels || t("network.notProvided")}</span></KeyValue>
+          <KeyValue label={t("network.description")}>{draft.description ? <Markdown>{draft.description}</Markdown> : <span>{t("network.notProvided")}</span>}</KeyValue>
+          <KeyValue label={t("network.rules")}>{draft.rules ? <Markdown>{draft.rules}</Markdown> : <span>{t("network.notProvided")}</span>}</KeyValue>
+          <KeyValue label={t("network.channels")}>{draft.channels ? <Markdown>{draft.channels}</Markdown> : <span>{t("network.notProvided")}</span>}</KeyValue>
           <KeyValue label={t("network.visibility")}><span>{visibilityLabel(draft.visibility, t)}</span></KeyValue>
           <KeyValue label={t("network.accessPolicy")}><span>{accessLabel(draft.access_policy, t)}</span></KeyValue>
           <KeyValue label={t("network.country")}><span>{draft.country_name || t("network.notProvided")}</span></KeyValue>

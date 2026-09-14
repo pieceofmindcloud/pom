@@ -468,7 +468,8 @@ um nó novo descobrir a rede.
 
 O catálogo global separado do swarm vive em `public_directory.rs`. O principal
 de uma rede pública assina um registro com endpoint, documento de confiança,
-localização e ingressos conhecidos. O registro carrega `version`, `sequence`,
+descrição, regras e canais em Markdown, localização e ingressos conhecidos. O
+registro carrega `version`, `sequence`,
 `issued_at`, `expires_at` e um nonce de prova de trabalho de 16 bits. A
 identidade lógica é `(publisher_pubkey, sequence)`; o merge mantém a maior
 sequência e resolve conflito idêntico de forma determinística pelo menor hash.

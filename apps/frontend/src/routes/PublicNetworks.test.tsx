@@ -28,7 +28,9 @@ const networks = [
     bootstrap_address: "https://curitiba.example/bootstrap",
     trust_document: "{}",
     organization: "Equipe Sul",
-    description: "",
+    description: "# Rede para colaborar\n\n**Bem-vindos**",
+    rules: "- Respeite os peers",
+    channels: "[Discord](https://discord.example/pom)",
     country_code: "BR",
     country_name: "Brasil",
     city: "Curitiba",
@@ -46,6 +48,8 @@ const networks = [
     trust_document: "{}",
     organization: "Equipe Sudeste",
     description: "",
+    rules: "",
+    channels: "",
     country_code: "BR",
     country_name: "Brasil",
     city: "São Paulo",
@@ -63,6 +67,8 @@ const networks = [
     trust_document: "{}",
     organization: "Equipe Europa",
     description: "",
+    rules: "",
+    channels: "",
     country_code: "PT",
     country_name: "Portugal",
     city: "Lisboa",
@@ -137,5 +143,23 @@ describe("PublicNetworks", () => {
       "https://curitiba.example/health",
       expect.objectContaining({ mode: "no-cors" }),
     );
+  });
+
+  it("abre os detalhes completos da rede pública ao clicar na linha", async () => {
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <PublicNetworks />
+      </LocaleProvider>,
+    );
+
+    const networkName = await screen.findByText("Rede Curitiba");
+    fireEvent.click(networkName);
+
+    const dialog = await screen.findByRole("dialog", { name: "Detalhes de Rede Curitiba" });
+    expect(within(dialog).getByRole("heading", { name: "Rede para colaborar" })).toBeTruthy();
+    expect(within(dialog).getByText("Respeite os peers")).toBeTruthy();
+    expect(within(dialog).getByRole("link", { name: "Discord" })).toBeTruthy();
+    expect(within(dialog).getByText("Equipe Sul")).toBeTruthy();
+    expect(within(dialog).getByText("fingerprint-curitiba")).toBeTruthy();
   });
 });

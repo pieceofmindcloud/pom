@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const PUBLIC_DIRECTORY_VERSION: u32 = 1;
+pub(crate) const PUBLIC_DIRECTORY_VERSION: u32 = 2;
 pub(crate) const PUBLIC_DIRECTORY_POW_BITS: u8 = 16;
 pub(crate) const PUBLIC_DIRECTORY_MAX_RECORD_TTL_SECS: i64 = 7 * 24 * 60 * 60;
 pub(crate) const PUBLIC_DIRECTORY_CLOCK_SKEW_SECS: i64 = 5 * 60;
@@ -93,6 +93,8 @@ pub(crate) struct PublicDirectoryNetwork {
     pub trust_document: String,
     pub organization: String,
     pub description: String,
+    pub rules: String,
+    pub channels: String,
     pub country_code: String,
     pub country_name: String,
     pub city: String,
@@ -338,6 +340,8 @@ impl PublicDirectoryNetwork {
             trust_document: "{}".to_string(),
             organization: "POM".to_string(),
             description: String::new(),
+            rules: String::new(),
+            channels: String::new(),
             country_code: "BR".to_string(),
             country_name: "Brasil".to_string(),
             city: "Curitiba".to_string(),

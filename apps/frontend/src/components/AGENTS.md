@@ -113,6 +113,10 @@ Per-file list:
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly
   commands). Used by `Chat`.
+- `MarkdownField.tsx` - editor compartilhado para metadados administráveis:
+  textarea com altura mínima confortável e prévia ao vivo usando `Markdown`.
+  A configuração da rede usa o mesmo campo para descrição, regras e canais;
+  o contrato continua sendo texto Markdown, não HTML.
 - `ChatSessionList.tsx` - shared conversation history list. The Chat screen
   uses the wide variant; the `infer` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,

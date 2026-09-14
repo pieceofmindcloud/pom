@@ -2426,6 +2426,8 @@ mod replicated_admin_logs_tests {
             trust_document,
             organization: "Teste".into(),
             description: "Registro remoto".into(),
+            rules: "- Respeite os peers".into(),
+            channels: "[Discord](https://discord.example/pom)".into(),
             country_code: "BR".into(),
             country_name: "Brasil".into(),
             city: "Curitiba".into(),
@@ -2492,6 +2494,11 @@ mod replicated_admin_logs_tests {
         let networks: Vec<PublicNetworkView> = serde_json::from_slice(&body).unwrap();
         assert_eq!(networks.len(), 1);
         assert_eq!(networks[0].name, "Rede federada");
+        assert_eq!(networks[0].rules, "- Respeite os peers");
+        assert_eq!(
+            networks[0].channels,
+            "[Discord](https://discord.example/pom)"
+        );
         assert_eq!(networks[0].discovered_via, "directory");
         assert_eq!(state.database.public_directory_records().unwrap().len(), 1);
         server.abort();

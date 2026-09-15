@@ -646,10 +646,12 @@ alheio (o painel só fala com o próprio nó).
 
 `GET /api/ui/node` inclui `pom_desenv`, a decisão capturada no startup: ela só
 é verdadeira quando `POM_DESENV` vale exatamente `1`. A ausência da variável,
-`0` e qualquer outro texto deixam a flag falsa. Quando falsa, os handlers de
-plan, deploy, apply, reconfigure e redeploy substituem os campos da seção
-`Configurações POM (DESENV)` pelos valores de `RuntimeParams::default()`,
-inclusive para clientes que tentem enviar esses campos diretamente.
+`0` e qualquer outro texto deixam a flag falsa. A flag controla somente a
+visibilidade dos controles no browser: os handlers de plan, deploy, apply,
+reconfigure e redeploy preservam os campos da seção `Configurações POM
+(DESENV)` recebidos no pedido, inclusive para clientes que não veem esses
+controles. Quando `inference_mode` não existe, `RuntimeParams` usa `dense`
+(`llama.cpp`) por padrão; `auto` é uma escolha explícita.
 
 `GET /api/ui/infer/heads?model=<id>` é a leitura dedicada das cabeças de
 inferência, autorizada para os perfis `infer` e `admin`:

@@ -4,9 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { AlertTooltip } from "./ui";
 import {
-  applyPomDesenvDefaults,
   CapabilitySwitch,
-  POM_DESENV_DEFAULTS,
   RuntimeParamsForm,
 } from "./RuntimeParamsForm";
 import type {
@@ -245,7 +243,7 @@ describe("CapabilitySwitch", () => {
 });
 
 describe("RuntimeParamsForm", () => {
-  it("oculta os controles de desenvolvimento e aplica defaults quando a flag está desligada", () => {
+  it("oculta os controles de desenvolvimento sem substituir seus valores recebidos", () => {
     const requested = {
       ...FORM_PARAMS,
       inference_mode: "moe" as const,
@@ -258,19 +256,6 @@ describe("RuntimeParamsForm", () => {
       unload_if_idle: true,
       idle_minutes: 2,
     };
-    const effective = applyPomDesenvDefaults(requested, false);
-
-    expect(effective).toMatchObject({
-      inference_mode: "auto",
-      cycle_detection_enabled: false,
-      cycle_detection_min_window_tokens: 32,
-      cycle_detection_max_window_tokens: 512,
-      cycle_detection_repetitions: 3,
-      mtp_cpu_fallback_enabled: true,
-      unload_if_idle: false,
-      idle_minutes: 60,
-    });
-
     const onChange = vi.fn();
     render(
       <LocaleProvider initialLocale="pt-BR">
@@ -282,7 +267,17 @@ describe("RuntimeParamsForm", () => {
     expect(screen.queryByRole("spinbutton", { name: /janela mínima/i })).toBeNull();
     expect(screen.queryByRole("checkbox", { name: /recuo.*MTP/i })).toBeNull();
     fireEvent.click(screen.getByRole("checkbox", { name: /embeddings/i }));
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining(POM_DESENV_DEFAULTS));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      inference_mode: "moe",
+      cycle_detection_enabled: true,
+      cycle_detection_min_window_tokens: 7,
+      cycle_detection_max_window_tokens: 9,
+      cycle_detection_repetitions: 8,
+      mtp_cpu_fallback_enabled: false,
+      unload_if_idle: true,
+      idle_minutes: 2,
+      no_embeddings: true,
+    }));
   });
 
   it("mantém os controles de desenvolvimento quando a flag está ligada", () => {

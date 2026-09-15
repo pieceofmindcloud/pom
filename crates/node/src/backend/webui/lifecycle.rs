@@ -144,7 +144,6 @@ pub(crate) async fn reconfigure_local(
     params: RuntimeParams,
     slice: Option<ReconfigureSlice>,
 ) -> Result<NodeConfig, String> {
-    let params = params.with_pom_desenv(crate::pom_desenv_enabled());
     let cfg = match slice {
         // Identidade dada: monta o `NodeConfig` a partir dela, sirva o nó algo
         // ou não. É o caminho do `redeploy` que descarrega tudo antes de subir.
@@ -886,8 +885,6 @@ pub(crate) async fn launch(
     State(state): State<GatewayState>,
     Json(req): Json<LaunchRequest>,
 ) -> Response {
-    let mut req = req;
-    req.params = req.params.with_pom_desenv(crate::pom_desenv_enabled());
     if req.targets.is_empty() {
         return bad_request("nenhum peer selecionado");
     }

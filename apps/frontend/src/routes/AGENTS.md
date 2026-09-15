@@ -605,9 +605,11 @@ Key logic carriers:
 - `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime
   knobs, including `prefill_max_inflight_chunks` (prefill pipeline depth, 1..8)
   and `fit_memory_margin_mb` (per-device VRAM safety reserve).
-  Both screens read `NodeInfo.pom_desenv` from `useNode`; the Deploy Studio,
-  history inspector and redeploy dialog fail closed, and redeploy requests use
-  the same defaults when the development flag is off.
+  As duas telas leem `NodeInfo.pom_desenv` de `useNode`; o Deploy Studio, o
+  inspetor do histórico e a caixa de reimplantação falham fechados. A flag só
+  esconde os controles de desenvolvimento locais; o estado de planejamento,
+  lançamento e reimplantação mantém os valores recebidos da implantação,
+  mesmo quando este nó não pode editá-los.
 - `DeployModel.rowsOf`/`sameRows` (DeployModel.tsx) — the selection model:
   merged steps expand back into per-slice rows and the planner answer is compared
   with the displayed rows after sorting by layer.

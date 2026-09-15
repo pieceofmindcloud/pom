@@ -2,14 +2,17 @@ use super::*;
 // ── Applying a configuration ─────────────────────────────────────────────────
 
 /// Which inference engine the operator asks the runtime to use for a model.
-/// `Auto` keeps the runtime's model-metadata decision; the explicit variants
-/// are persisted with the deployment so every peer receives the same choice.
+/// `Dense` é o padrão e `Auto` continua sendo uma escolha explícita guiada
+/// pela metadata; todas as variantes são persistidas com a implantação para
+/// que todos os peers recebam a mesma escolha.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InferenceMode {
+    /// llama.cpp é o padrão seguro do produto. Auto continua disponível quando
+    /// a seleção guiada pela metadata é pedida explicitamente.
     #[default]
-    Auto,
     Dense,
+    Auto,
     Moe,
 }
 
@@ -21,8 +24,8 @@ pub enum InferenceMode {
 /// verifica que uma reimplantação mudou alguma coisa.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeParams {
-    /// Engine preference. `Auto` is backwards-compatible and lets the runtime
-    /// choose from the actual GGUF metadata.
+    /// Preferência de motor. `Dense` seleciona llama.cpp por padrão; `Auto`
+    /// deixa um pedido explícito escolher pela metadata GGUF real.
     #[serde(default)]
     pub inference_mode: InferenceMode,
     #[serde(default = "d_gpu_layers")]
@@ -213,7 +216,7 @@ pub(super) fn d_idle_minutes() -> u32 {
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self {
-            inference_mode: InferenceMode::Auto,
+            inference_mode: InferenceMode::Dense,
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
@@ -250,28 +253,6 @@ impl Default for RuntimeParams {
             mtp_cpu_fallback_enabled: d_mtp_cpu_fallback_enabled(),
             unload_if_idle: false,
             idle_minutes: d_idle_minutes(),
-        }
-    }
-}
-
-impl RuntimeParams {
-    /// Remove all controls belonging to the development-only POM section when
-    /// the process was not explicitly started with `POM_DESENV=1`.
-    pub(crate) fn with_pom_desenv(self, enabled: bool) -> Self {
-        if enabled {
-            return self;
-        }
-        let defaults = Self::default();
-        Self {
-            inference_mode: defaults.inference_mode,
-            cycle_detection_enabled: defaults.cycle_detection_enabled,
-            cycle_detection_min_window_tokens: defaults.cycle_detection_min_window_tokens,
-            cycle_detection_max_window_tokens: defaults.cycle_detection_max_window_tokens,
-            cycle_detection_repetitions: defaults.cycle_detection_repetitions,
-            mtp_cpu_fallback_enabled: defaults.mtp_cpu_fallback_enabled,
-            unload_if_idle: defaults.unload_if_idle,
-            idle_minutes: defaults.idle_minutes,
-            ..self
         }
     }
 }

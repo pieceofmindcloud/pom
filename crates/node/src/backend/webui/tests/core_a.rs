@@ -319,9 +319,9 @@ mod tests {
     }
 
     #[test]
-    fn inference_mode_defaults_to_auto_and_round_trips() {
+    fn inference_mode_defaults_to_dense_and_round_trips() {
         let default: RuntimeParams = serde_json::from_str("{}").unwrap();
-        assert_eq!(default.inference_mode, InferenceMode::Auto);
+        assert_eq!(default.inference_mode, InferenceMode::Dense);
 
         let explicit: RuntimeParams = serde_json::from_value(serde_json::json!({
             "inference_mode": "moe"
@@ -330,60 +330,16 @@ mod tests {
         assert_eq!(explicit.inference_mode, InferenceMode::Moe);
         let encoded = serde_json::to_value(explicit).unwrap();
         assert_eq!(encoded["inference_mode"], "moe");
-    }
 
-    #[test]
-    fn pom_desenv_disabled_restores_development_defaults_without_touching_runtime_knobs() {
-        let mut requested = RuntimeParams::default();
-        requested.n_ctx = 32768;
-        requested.inference_mode = InferenceMode::Moe;
-        requested.cycle_detection_enabled = true;
-        requested.cycle_detection_min_window_tokens = 7;
-        requested.cycle_detection_max_window_tokens = 9;
-        requested.cycle_detection_repetitions = 8;
-        requested.mtp_cpu_fallback_enabled = false;
-        requested.unload_if_idle = true;
-        requested.idle_minutes = 2;
-
-        let effective = requested.clone().with_pom_desenv(false);
-        let defaults = RuntimeParams::default();
-
-        assert_eq!(effective.n_ctx, requested.n_ctx);
-        assert_eq!(effective.inference_mode, defaults.inference_mode);
+        let explicit_auto: RuntimeParams = serde_json::from_value(serde_json::json!({
+            "inference_mode": "auto"
+        }))
+        .unwrap();
+        assert_eq!(explicit_auto.inference_mode, InferenceMode::Auto);
         assert_eq!(
-            effective.cycle_detection_enabled,
-            defaults.cycle_detection_enabled
+            serde_json::to_value(explicit_auto).unwrap()["inference_mode"],
+            "auto"
         );
-        assert_eq!(
-            effective.cycle_detection_min_window_tokens,
-            defaults.cycle_detection_min_window_tokens
-        );
-        assert_eq!(
-            effective.cycle_detection_max_window_tokens,
-            defaults.cycle_detection_max_window_tokens
-        );
-        assert_eq!(
-            effective.cycle_detection_repetitions,
-            defaults.cycle_detection_repetitions
-        );
-        assert_eq!(
-            effective.mtp_cpu_fallback_enabled,
-            defaults.mtp_cpu_fallback_enabled
-        );
-        assert_eq!(effective.unload_if_idle, defaults.unload_if_idle);
-        assert_eq!(effective.idle_minutes, defaults.idle_minutes);
-    }
-
-    #[test]
-    fn pom_desenv_enabled_preserves_development_values() {
-        let mut requested = RuntimeParams::default();
-        requested.inference_mode = InferenceMode::Moe;
-        requested.cycle_detection_enabled = true;
-        requested.mtp_cpu_fallback_enabled = false;
-        requested.unload_if_idle = true;
-        requested.idle_minutes = 2;
-
-        assert_eq!(requested.clone().with_pom_desenv(true), requested);
     }
 
     #[test]

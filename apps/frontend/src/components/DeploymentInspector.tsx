@@ -27,9 +27,9 @@
  * ícones serrilhada. Antes do nome ela é uma coluna reta, do topo ao pé do
  * inspetor. É a mesma razão de o controle ter largura fixa à direita.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { AlertTooltip, InfoTip, Input, Select } from "./ui";
-import { applyPomDesenvDefaults, MTP_MIN_PROBABILITY, Tick } from "./RuntimeParamsForm";
+import { MTP_MIN_PROBABILITY, Tick } from "./RuntimeParamsForm";
 import type {
   DeploymentCapabilities,
   InferenceMode,
@@ -251,9 +251,8 @@ export function DeploymentInspector({
    * O texto meio digitado. Sem ele, apagar o "8192" para escrever "16384"
    * fazia o campo pular para zero no primeiro caractere apagado, porque o
    * valor volta como número a cada tecla.
-   */
+  */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const effectiveValue = applyPomDesenvDefaults(value, pomDesenv);
 
   /**
    * O rascunho vale enquanto ele **é** o valor - ou enquanto está vazio, que é
@@ -263,10 +262,10 @@ export function DeploymentInspector({
    */
   function shown(key: NumericKey): string {
     const draft = drafts[key];
-    if (draft !== undefined && (draft === "" || Number(draft) === effectiveValue[key])) return draft;
-    return showNumber(effectiveValue[key]);
+    if (draft !== undefined && (draft === "" || Number(draft) === value[key])) return draft;
+    return showNumber(value[key]);
   }
-  const set = (patch: Partial<RuntimeParams>) => onChange?.({ ...effectiveValue, ...patch });
+  const set = (patch: Partial<RuntimeParams>) => onChange?.({ ...value, ...patch });
 
   const hiddenStateCapability = capabilities?.hidden_state_f8;
   const f8Unavailable = hiddenStateCapability
@@ -274,16 +273,11 @@ export function DeploymentInspector({
     : false;
 
   /*
-   * `auto` sai da combo, então também não pode continuar sendo o valor
-   * escolhido: mostrar "llama.cpp" e enviar "auto" seria a tela mentindo sobre
-   * o que vai subir. O backend continua aceitando os três modos - isto é
-   * apresentação e padrão da interface, não mudança de contrato.
+   * `auto` não está mais na combo, mas pode chegar de uma API ou de uma
+   * implantação persistida. A apresentação cai visualmente em `dense` para
+   * manter a seleção válida, sem mutar o estado recebido; o backend continua
+   * aplicando a escolha explícita.
    */
-  useEffect(() => {
-    if (readOnly || !showInferenceMode || !pomDesenv) return;
-    if (effectiveValue.inference_mode === "auto") set({ inference_mode: "dense" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readOnly, showInferenceMode, pomDesenv, value.inference_mode]);
 
   function setKnob(key: NumericKey, text: string) {
     setDrafts((current) => ({ ...current, [key]: text }));
@@ -296,7 +290,7 @@ export function DeploymentInspector({
     return (
       <InspectorRow key={key} label={label} tip={t("deploy.knob." + key + "Hint")}>
         {readOnly ? (
-          <ReadValue>{effectiveValue[key] == null ? "-" : showNumber(effectiveValue[key])}</ReadValue>
+          <ReadValue>{value[key] == null ? "-" : showNumber(value[key])}</ReadValue>
         ) : (
           <Input
             aria-label={label}
@@ -371,9 +365,9 @@ export function DeploymentInspector({
     );
   }
 
-  const cycleOn = effectiveValue.cycle_detection_enabled ?? false;
-  const speculativeOn = effectiveValue.speculative_decoding_enabled ?? false;
-  const mtpOn = effectiveValue.mtp_enabled ?? false;
+  const cycleOn = value.cycle_detection_enabled ?? false;
+  const speculativeOn = value.speculative_decoding_enabled ?? false;
+  const mtpOn = value.mtp_enabled ?? false;
 
   return (
     <>
@@ -414,7 +408,7 @@ export function DeploymentInspector({
           key: "no_thinking",
           label: t("inspector.noThinking"),
           capability: capabilities?.no_thinking,
-          checked: effectiveValue.no_thinking ?? false,
+          checked: value.no_thinking ?? false,
           onToggle: (next) => set({ no_thinking: next }),
           tip: t("deploy.noThinkingHint"),
         })}
@@ -484,7 +478,7 @@ export function DeploymentInspector({
           label: t("inspector.noEmbeddings"),
           capability: capabilities?.no_embeddings,
           alwaysVisible: true,
-          checked: effectiveValue.no_embeddings ?? false,
+          checked: value.no_embeddings ?? false,
           onToggle: (next) => set({ no_embeddings: next }),
           tip: t("deploy.noEmbeddingsHint"),
         })}
@@ -492,7 +486,7 @@ export function DeploymentInspector({
           key: "fit_memory",
           label: t("inspector.fitMemory"),
           capability: capabilities?.fit_memory,
-          checked: effectiveValue.fit_memory ?? true,
+          checked: value.fit_memory ?? true,
           onToggle: (next) => set({ fit_memory: next }),
           tip: t("deploy.fitMemoryHint"),
         })}
@@ -514,12 +508,12 @@ export function DeploymentInspector({
               tip={t("deploy.knob.hidden_state_dtypeHint")}
             >
               {readOnly ? (
-                <ReadValue>{effectiveValue.hidden_state_dtype ?? "f16"}</ReadValue>
+                <ReadValue>{value.hidden_state_dtype ?? "f16"}</ReadValue>
               ) : (
                 <Select
                   aria-label={t("deploy.knob.hidden_state_dtype")}
                   name="hidden_state_dtype"
-                  value={effectiveValue.hidden_state_dtype ?? "f16"}
+                  value={value.hidden_state_dtype ?? "f16"}
                   onChange={(event) =>
                     set({ hidden_state_dtype: event.target.value as WireDtype })
                   }
@@ -550,12 +544,12 @@ export function DeploymentInspector({
             alert={inferenceModeAlert ?? undefined}
           >
             {readOnly ? (
-              <ReadValue>{t("inspector.engine." + (effectiveValue.inference_mode ?? "auto"))}</ReadValue>
+              <ReadValue>{t("inspector.engine." + (value.inference_mode ?? "dense"))}</ReadValue>
             ) : (
               <Select
                 aria-label={t("inspector.inferenceMode")}
                 name="inference_mode"
-                value={effectiveValue.inference_mode === "auto" ? "dense" : (effectiveValue.inference_mode ?? "dense")}
+                value={value.inference_mode === "auto" ? "dense" : (value.inference_mode ?? "dense")}
                 onChange={(event) =>
                   set({ inference_mode: event.target.value as InferenceMode })
                 }
@@ -582,7 +576,7 @@ export function DeploymentInspector({
           key: "mtp_cpu_fallback_enabled",
           label: t("deploy.mtpCpuFallback"),
           alwaysVisible: true,
-          checked: effectiveValue.mtp_cpu_fallback_enabled ?? true,
+          checked: value.mtp_cpu_fallback_enabled ?? true,
           onToggle: (next) => set({ mtp_cpu_fallback_enabled: next }),
           tip: t("deploy.mtpCpuFallbackHint"),
         })}
@@ -590,7 +584,7 @@ export function DeploymentInspector({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),
           alwaysVisible: true,
-          checked: effectiveValue.unload_if_idle ?? false,
+          checked: value.unload_if_idle ?? false,
           onToggle: (next) => set({ unload_if_idle: next }),
           tip: t("deploy.unloadIfIdleHint"),
         })}

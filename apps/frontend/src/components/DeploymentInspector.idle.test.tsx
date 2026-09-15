@@ -63,17 +63,21 @@ describe("DeploymentInspector idle policy", () => {
       .toBe("1");
   });
 
-  it("removes the whole POM development section when the flag is off", () => {
+  it("removes the whole POM development section without losing its values", () => {
+    const onChange = vi.fn();
     mount(
       {
         ...params,
         inference_mode: "moe",
         cycle_detection_enabled: true,
+        cycle_detection_min_window_tokens: 7,
+        cycle_detection_max_window_tokens: 9,
+        cycle_detection_repetitions: 8,
         mtp_cpu_fallback_enabled: false,
         unload_if_idle: true,
         idle_minutes: 2,
       },
-      vi.fn(),
+      onChange,
       undefined,
       false,
     );
@@ -82,6 +86,18 @@ describe("DeploymentInspector idle policy", () => {
     expect(screen.queryByRole("checkbox", { name: "Unload if idle" })).toBeNull();
     expect(screen.queryByRole("spinbutton", { name: "Idle time (minutes)" })).toBeNull();
     expect(screen.queryByRole("combobox", { name: "Inference engine" })).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Disable embeddings" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      inference_mode: "moe",
+      cycle_detection_enabled: true,
+      cycle_detection_min_window_tokens: 7,
+      cycle_detection_max_window_tokens: 9,
+      cycle_detection_repetitions: 8,
+      mtp_cpu_fallback_enabled: false,
+      unload_if_idle: true,
+      idle_minutes: 2,
+      no_embeddings: true,
+    }));
   });
 
   it("persists the toggle and the per-deployment timeout", () => {
@@ -91,7 +107,10 @@ describe("DeploymentInspector idle policy", () => {
       target: { value: "15" },
     });
 
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ unload_if_idle: true }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      inference_mode: "auto",
+      unload_if_idle: true,
+    }));
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ idle_minutes: 15 }));
   });
 

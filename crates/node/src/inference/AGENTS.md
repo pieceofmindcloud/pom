@@ -63,6 +63,10 @@ O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
 (`inference_server.py` de `old/python-inference/` é legado). Os caminhos
 normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção
 controlada, pois coordena seus ranks e seu túnel de transporte neste diretório.
+O campo `NodeConfig.inference_mode` seleciona `dense/llama.cpp`, `moe/q4_0` ou
+`auto` quando essa escolha foi pedida explicitamente; se o campo não existe, o
+padrão é `dense`. `POM_DESENV` não participa dessa seleção, pois só controla a
+visibilidade dos controles de implantação na UI local.
 
 ## Arquivos
 

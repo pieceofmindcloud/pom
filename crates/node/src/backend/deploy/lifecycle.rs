@@ -672,16 +672,6 @@ impl RedeployRequest {
                     .iter_mut()
                     .find(|ver| ver.version == active_version)
                     .expect("set_active_version garantiu a versão ativa");
-                version.params = version
-                    .params
-                    .clone()
-                    .with_pom_desenv(crate::pom_desenv_enabled());
-                for node in &mut version.nodes {
-                    node.config = node
-                        .config
-                        .clone()
-                        .with_pom_desenv(crate::pom_desenv_enabled());
-                }
                 (version.params.clone(), version.nodes.clone())
             };
             registro.nodes = nodes;
@@ -690,7 +680,6 @@ impl RedeployRequest {
         let Some(params) = self.params.clone() else {
             return Err("informe `version` ou `params`".to_string());
         };
-        let params = params.with_pom_desenv(crate::pom_desenv_enabled());
         let mut nodes = registro.nodes.clone();
         for n in &mut nodes {
             let mut cfg = params.clone();

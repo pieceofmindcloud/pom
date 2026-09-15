@@ -502,7 +502,9 @@ Key logic carriers:
   e fatias, ou mostra a indisponibilidade localizada quando a rodada fatiada
   não tem projetor. A seção `Configurações POM (DESENV)` só é montada quando
   `NodeInfo.pom_desenv` vem verdadeiro de `/api/ui/node`; quando a flag está
-  desligada, `applyPomDesenvDefaults` também limpa os campos antes de editar.
+  desligada, os controles somem, mas os valores recebidos continuam no estado
+  e seguem no pedido quando um controle visível é editado. O modo ausente é
+  apresentado como `dense` (`llama.cpp`).
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
   inclui a profundidade do pipeline de prefill (`prefill_max_inflight_chunks`,

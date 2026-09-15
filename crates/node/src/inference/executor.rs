@@ -9,9 +9,11 @@ use anyhow::{bail, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InferenceMode {
+    /// llama.cpp é o padrão seguro do produto; Auto continua sendo um modo
+    /// explícito.
     #[default]
-    Auto,
     Dense,
+    Auto,
     Moe,
 }
 
@@ -25,8 +27,9 @@ impl InferenceMode {
         }
     }
 
-    /// Read the product-derived `POM_INFERENCE_MODE` override. Absence means
-    /// automatic metadata classification, preserving the current behavior.
+    /// Read the product-derived `POM_INFERENCE_MODE` override for an explicit
+    /// `auto` request. Absence keeps that explicit request metadata-driven;
+    /// missing requests use the `Dense` default before reaching this method.
     pub fn from_env() -> Result<Self> {
         match crate::brand::env("INFERENCE_MODE") {
             Ok(value) if !value.trim().is_empty() => Self::parse(&value),

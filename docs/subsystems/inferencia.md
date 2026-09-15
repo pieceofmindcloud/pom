@@ -1338,7 +1338,8 @@ reinício, sem chamada manual:
 Antes de carregar os pesos, `executor::select` lê o cabeçalho GGUF. Só um
 `expert_count > 1` classifica o modelo como MoE. Em `auto`, qualquer modelo
 denso ou com metadados ausentes permanece em `dense/llama.cpp`. O campo
-persistido `NodeConfig.inference_mode` chega ao seletor antes da carga: uma
+persistido `NodeConfig.inference_mode` chega ao seletor antes da carga; quando
+o campo não é informado, o padrão persistido é `dense` (`llama.cpp`). Uma
 escolha explícita `dense` ou `moe` vence o ambiente derivado da marca
 `POM_INFERENCE_MODE`; em `auto`, esse ambiente ainda pode forçar um modo e, sem
 override, a metadata escolhe. `moe` recusa um GGUF denso com erro explícito.

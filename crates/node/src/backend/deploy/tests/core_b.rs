@@ -86,27 +86,26 @@
 
     #[test]
     fn inference_mode_round_trips_for_whole_shards_and_tensor_parallel() {
-        let expected_mode = if crate::pom_desenv_enabled() {
-            InferenceMode::Moe
-        } else {
-            InferenceMode::Auto
-        };
+        let mut requested = RuntimeParams::default();
+        requested.inference_mode = InferenceMode::Moe;
+        requested.cycle_detection_enabled = true;
+        requested.cycle_detection_min_window_tokens = 7;
+        requested.cycle_detection_max_window_tokens = 9;
+        requested.cycle_detection_repetitions = 8;
+        requested.mtp_cpu_fallback_enabled = false;
+        requested.unload_if_idle = true;
+        requested.idle_minutes = 2;
         for kind in [
             DeployKind::Whole,
             DeployKind::Shards,
             DeployKind::TensorParallel,
         ] {
-            let request: DeployRequest = serde_json::from_value(serde_json::json!({
-                "group": "model",
-                "kind": kind,
-                "params": { "inference_mode": "moe" }
-            }))
-            .unwrap();
-            assert_eq!(request.params.inference_mode, InferenceMode::Moe);
-            assert_eq!(
-                effective_params_for_kind(kind, &request.params).inference_mode,
-                expected_mode
-            );
+            let effective = effective_params_for_kind(kind, &requested);
+            let mut expected = requested.clone();
+            if kind == DeployKind::TensorParallel {
+                expected.fit_memory = false;
+            }
+            assert_eq!(effective, expected, "{kind:?} reescreveu o deploy");
         }
     }
 

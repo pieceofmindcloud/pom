@@ -305,7 +305,8 @@ pela i18n.
 O mesmo retrato traz `pom_desenv`, verdadeiro somente quando o processo foi
 iniciado com `POM_DESENV=1` exatamente. `DeployModel`, Histórico e a caixa de
 reimplantar escondem por completo `Configurações POM (DESENV)` quando a flag é
-falsa; nesse caso a UI e o backend usam os defaults dessa seção.
+falsa. Isso é somente visibilidade local: a UI e o backend preservam os valores
+da implantação recebidos pela rede, mesmo quando o nó não pode editá-los.
 
 No Dashboard, a leitura é separada por responsabilidade. O `admin` vê os
 agregados do cluster, como cobertura, máquinas, modelo ativo e carga em voo.
@@ -1034,7 +1035,8 @@ impressão digital é só modelo + conjunto de faixas.
   ícones à direita do texto ficavam serrilhados, e antes do nome eles formam uma
   coluna reta do topo ao pé do painel. O combo do motor não oferece
   "Automático" e assume `llama.cpp` ao montar - é escolha de apresentação; o
-  backend continua aceitando os três modos.
+  backend continua aceitando `auto` somente quando o pedido o informa
+  explicitamente. Sem valor, o padrão é `llama.cpp` (`dense`).
   Os cards são um **preview de como o sistema fica depois da implantação**, não
   do estado atual: cada GPU de cada máquina ganha uma barra de VRAM projetada
   (uso previsto contra o total, com o uso de agora como tracinho) que se
@@ -1069,9 +1071,11 @@ impressão digital é só modelo + conjunto de faixas.
   probabilidade mínima começa em `0,75`, mas continua sendo um campo editável
   pelo operador e o valor alterado segue no deploy. A seção
   **Motor de inferência** aparece somente quando a metadata real do GGUF
-  informa mais de um expert. Ela persiste `inference_mode` como `auto`,
-  `dense` ou `moe` e envia a escolha nos modos modelo inteiro, pipeline
-  fatiado e Tensor Parallelism. Em modelo denso a seção fica oculta. Se a
+  informa mais de um expert. A UI apresenta `dense` (llama.cpp) e `moe`, e
+  envia a escolha nos modos modelo inteiro, pipeline fatiado e Tensor
+  Parallelism. O backend também aceita `auto` somente quando ele chega como
+  escolha explícita de uma API ou implantação persistida. Em modelo denso a
+  seção fica oculta. Se a
   combinação escolhida não for suportada, o seletor continua visível com a
   razão explícita e o deploy fica bloqueado; a telemetria é a fonte de verdade
   sobre o motor executado. As demais opções condicionais recebem

@@ -31,7 +31,7 @@ import { useToast } from "../lib/toast";
 import { layerRange } from "../lib/format";
 import { Modal } from "../components/Confirm";
 import { DeploymentInspector } from "../components/DeploymentInspector";
-import { applyPomDesenvDefaults, RuntimeParamsForm } from "../components/RuntimeParamsForm";
+import { RuntimeParamsForm } from "../components/RuntimeParamsForm";
 import { UndeployPipeline } from "../components/UndeployPipeline";
 import {
   Badge,
@@ -98,9 +98,7 @@ function RedeployDialog({
     row.deployment.versions?.find(
       (v) => v.version === row.deployment.active_version,
     )?.params ?? first.config;
-  const [params, setParams] = useState<RuntimeParams>(() =>
-    applyPomDesenvDefaults({ ...activeParams }, pomDesenv),
-  );
+  const [params, setParams] = useState<RuntimeParams>(() => ({ ...activeParams }));
   const [perNode, setPerNode] = useState<
     Record<string, { n_gpu_layers?: number; offload_kqv?: boolean }>
   >(() =>
@@ -121,7 +119,7 @@ function RedeployDialog({
     setBusy(true);
     try {
       const res = await redeployDeployment(row.deployment.deploy_id, {
-        params: applyPomDesenvDefaults(params, pomDesenv),
+        params,
         per_node: perNode,
       });
       setJobId(res.job_id);

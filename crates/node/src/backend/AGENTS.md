@@ -226,8 +226,10 @@ profile policy remains the effective authorization boundary.
   aparecem como diagnóstico, mas não entram na seleção da geração.
   `NodeInfo` carries the same thermal policy used by the runtime. It also
   carries `pom_desenv`, which is true only for the exact startup environment
-  value `POM_DESENV=1`; every deploy boundary restores the development-only
-  runtime fields to `RuntimeParams::default()` when it is false. `slice/plan` and `slice` accept the
+  value `POM_DESENV=1`; this flag controls only local UI visibility, so every
+  deploy boundary preserves development-only runtime fields received in the
+  request. A missing inference mode uses `dense` (`llama.cpp`) by default.
+  `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
   `parts`. Jobs and the cluster view use conditional JSON responses:
@@ -843,8 +845,10 @@ faz o download autenticado do blob persistido.
   `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
   parallelism, que não suporta o fit automático em `split-mode tensor`.
   `RuntimeParams.inference_mode` acompanha o pedido nos três tipos de deploy
-  quando `POM_DESENV=1`; fora desse modo, `effective_params_for_kind` restaura
-  `Auto` junto com os demais campos de desenvolvimento.
+  independentemente de `POM_DESENV`; `effective_params_for_kind` só aplica a
+  regra estrutural de desligar `fit_memory` no Tensor Parallelism. O modo
+  ausente é `dense` (`llama.cpp`); `auto` só entra quando foi pedido
+  explicitamente.
   O survey leva `is_moe` do catálogo GGUF ao `DeployPlan`; somente metadata de
   experts identifica MoE. O plano expõe `inference_mode_supported` e
   `inference_mode_reason`: MoE em Tensor Parallelism é recusado explicitamente

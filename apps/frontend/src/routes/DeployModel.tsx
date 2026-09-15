@@ -80,7 +80,6 @@ import type {
   TpLaunch,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
-import { applyPomDesenvDefaults } from "../components/RuntimeParamsForm";
 
 const rangeKey = (start: number, end: number) => `${start}-${end}`;
 
@@ -763,12 +762,9 @@ export function DeployModel() {
     }));
   }, [p, tp, tpGroup]);
 
-  /** The settings in force: the operator's edit, or the node's own defaults. */
+  /** The settings in force: the operator's edit or the plan's received values. */
   const pomDesenv = node.data?.pom_desenv === true;
-  const eff: RuntimeParams = applyPomDesenvDefaults(
-    params ?? p?.params ?? ({} as RuntimeParams),
-    pomDesenv,
-  );
+  const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
   /** The server's GGUF metadata is the only source of truth for MoE. */
   const isMoePlan = p?.is_moe === true;
   /**

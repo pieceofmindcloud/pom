@@ -423,8 +423,7 @@ pub(super) async fn add_node_endpoint(
                 .as_ref()
                 .and_then(|record| record.active().map(|version| version.params.clone()))
         })
-        .unwrap_or_default()
-        .with_pom_desenv(crate::pom_desenv_enabled());
+        .unwrap_or_default();
 
     // Re-varre em vez de confiar na tela: a previa pode ter um minuto, e uma
     // maquina que saiu nesse meio tempo receberia uma fatia.

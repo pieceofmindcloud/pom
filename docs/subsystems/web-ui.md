@@ -254,9 +254,11 @@ público também é obrigatório para rede pública em todos os perfis e aparece
 passo de confiança de node/infer antes do salvamento. A cidade manual é válida
 quando a referência SQLite não a contém.
 
-O wizard também pede pelo menos um ingresso HTTP(S) do diretório federado,
-separado por vírgulas, para uma rede pública. Um nó privado pode conservar
-esses ingressos para listar o catálogo por saída.
+O wizard não exige ingresso HTTP(S) do diretório federado para uma rede pública.
+Quando configurados por `POM_PUBLIC_DIRECTORY` ou posteriormente na
+administração, eles são persistidos no documento de confiança e usados para
+publicar ou consultar o catálogo. Um nó privado pode conservar esses ingressos
+para listar o catálogo por saída.
 
 O passo de modelos combina o catálogo local com referências do Hugging Face,
 sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como

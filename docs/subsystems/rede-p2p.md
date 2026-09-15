@@ -155,7 +155,13 @@ primeiro setup ele recebe `Probe` na porta UDP local e fica ativo somente até a
 configuração terminar. Depois do setup a configuração `local_auto_discovery`
 começa `false`; o administrador pode ligá-la manualmente em Preferências, e o
 processo mantém o trust document e a chave somente na memória enquanto estiver
-respondendo. Desligar limpa as sessões do handshake e o material sensível.
+respondendo. O `Offer` expõe apenas o fingerprint e os metadados de tamanho do
+documento. Depois do `Proof`, o payload com trust document e `connection_key` é
+cifrado com ChaCha20-Poly1305 e enviado em fragmentos de no máximo 640 bytes,
+para que cada envelope UDP fique dentro do orçamento de 1200 bytes. O nó só
+remonta e valida o fingerprint depois de receber todos os fragmentos; o material
+aceito é limitado a 512 KiB. Desligar limpa as sessões do handshake e o material
+sensível.
 
 ### Tratamento de `Announce` no recebimento
 
@@ -492,7 +498,8 @@ identidade lógica é `(publisher_pubkey, sequence)`; o merge mantém a maior
 sequência e resolve conflito idêntico de forma determinística pelo menor hash.
 
 Cada nó pode configurar até 16 ingressos HTTP(S) em `POM_PUBLIC_DIRECTORY` ou
-no wizard. O publicador envia seu registro a todos os ingressos, e um leitor
+na administração. O wizard aceita uma lista vazia; o publicador envia seu
+registro a todos os ingressos configurados, e um leitor
 consulta todos em paralelo e grava o merge no `pom.db`. Uma réplica é transporte,
 não raiz de confiança: assinatura Ed25519, cadeia de confiança, cluster e
 fingerprint são validados pelo leitor e pelo ingresso. Registros expiram em

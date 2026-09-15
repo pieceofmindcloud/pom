@@ -2329,19 +2329,21 @@ mod replicated_admin_logs_tests {
         let state = testkit::secondary_admin_state("secondary").await;
         assert!(state.network.peers.read().await.is_empty());
 
-        assert!(state.cluster_logs.try_ingest_remote(crate::cluster_logs::LogBatch {
-            source_node_id: "worker".into(),
-            entries: vec![crate::cluster_logs::LogEntry {
-                node_id: "worker".into(),
-                node_name: "worker-1".into(),
-                deploy_id: "deploy-1".into(),
-                origin_at: "2026-09-11T12:00:00Z".into(),
-                level: "INFO".into(),
-                target: "worker::test".into(),
-                message: "processo iniciou".into(),
-            }],
-            dropped: 0,
-        }));
+        assert!(state
+            .cluster_logs
+            .try_ingest_remote(crate::cluster_logs::LogBatch {
+                source_node_id: "worker".into(),
+                entries: vec![crate::cluster_logs::LogEntry {
+                    node_id: "worker".into(),
+                    node_name: "worker-1".into(),
+                    deploy_id: "deploy-1".into(),
+                    origin_at: "2026-09-11T12:00:00Z".into(),
+                    level: "INFO".into(),
+                    target: "worker::test".into(),
+                    message: "processo iniciou".into(),
+                }],
+                dropped: 0,
+            }));
 
         let request = crate::reqlog::AuditRequest {
             id: "request-1".into(),
@@ -2366,10 +2368,12 @@ mod replicated_admin_logs_tests {
             status: crate::reqlog::AuditStatus::Ok,
             error: None,
         };
-        assert!(state.audit.try_ingest_remote(crate::reqlog::AuditEvent::Complete {
-            id: request.id.clone(),
-            completion,
-        }));
+        assert!(state
+            .audit
+            .try_ingest_remote(crate::reqlog::AuditEvent::Complete {
+                id: request.id.clone(),
+                completion,
+            }));
         assert!(state
             .audit
             .try_ingest_remote(crate::reqlog::AuditEvent::Begin(request)));

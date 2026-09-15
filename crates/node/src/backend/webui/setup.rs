@@ -162,12 +162,8 @@ fn trust_metadata_from_network(
         "o endereço anunciado da máquina é obrigatório"
     );
     let directory =
-        crate::public_directory::PublicDirectorySettings::from_urls(public_directory.iter())?;
-    anyhow::ensure!(
-        network.visibility != crate::config::NetworkVisibility::Public
-            || !directory.replicas.is_empty(),
-        "redes públicas exigem pelo menos um ingresso do diretório federado"
-    );
+        crate::public_directory::PublicDirectorySettings::from_urls(public_directory.iter())?
+            .effective_with_env()?;
     Ok(crate::admin_trust::TrustNetworkMetadata {
         public_name: network.public_name.trim().to_string(),
         organization: network.organization.trim().to_string(),
@@ -692,18 +688,6 @@ pub async fn save_setup(
                 .into_response();
         }
     };
-    if network.visibility == crate::config::NetworkVisibility::Public
-        && public_directory.replicas.is_empty()
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "reason": "public_directory_required",
-                "error": "redes públicas exigem pelo menos um ingresso do diretório federado"
-            })),
-        )
-            .into_response();
-    }
     network.geo_label = if network.country_code.is_empty() || network.city.is_empty() {
         String::new()
     } else {
@@ -1064,5 +1048,18 @@ mod tests {
         );
         let generated = connection_key_after_setup("", "");
         assert!(!generated.is_empty());
+    }
+
+    #[test]
+    fn public_network_metadata_allows_empty_manual_directory_replicas() {
+        let mut network = crate::config::NetworkSettings::default();
+        network.public_name = "POM-PUBLIC".into();
+        network.visibility = crate::config::NetworkVisibility::Public;
+        network.access_policy = crate::config::NetworkAccessPolicy::AnyoneWithAnchor;
+
+        let metadata = trust_metadata_from_network(&network, "[2001:db8::10]:42777", "", &[])
+            .expect("public setup may omit manual directory replicas");
+
+        assert!(metadata.directory_replicas.is_empty());
     }
 }

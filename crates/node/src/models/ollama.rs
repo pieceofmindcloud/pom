@@ -168,11 +168,8 @@ mod tests {
         let server_requests = requests.clone();
         let server = tokio::spawn(async move {
             loop {
-                let accepted = tokio::time::timeout(
-                    Duration::from_millis(250),
-                    listener.accept(),
-                )
-                .await;
+                let accepted =
+                    tokio::time::timeout(Duration::from_millis(250), listener.accept()).await;
                 let Ok(Ok((mut stream, _))) = accepted else {
                     break;
                 };
@@ -180,9 +177,7 @@ mod tests {
                 let mut request = [0u8; 1024];
                 let _ = stream.read(&mut request).await.unwrap();
                 stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    )
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                     .await
                     .unwrap();
             }

@@ -6,7 +6,7 @@ import { useState } from "react";
 import { LocaleProvider } from "../i18n/provider";
 import { ToastProvider } from "../lib/toast";
 import { api } from "../lib/api";
-import { AutoDiscoveryScreen, canContinue, createRandomNetworkName, diskSharePercent, formatAdvertiseAddress, InviteScreen, isReadyToSave, ProfileScreen, ReviewScreen, TrustScreen, type SetupState } from "./Setup";
+import { AutoDiscoveryScreen, canContinue, createRandomNetworkName, diskSharePercent, formatAdvertiseAddress, InviteScreen, isReadyToSave, NetworkScreen, ProfileScreen, ReviewScreen, TrustScreen, type SetupState } from "./Setup";
 
 const initialSetup: SetupState = {
   profile: "infer",
@@ -202,6 +202,29 @@ describe("first-page defaults", () => {
     expect(formatAdvertiseAddress("2001:db8::10", 45123)).toBe("[2001:db8::10]:45123");
     expect(formatAdvertiseAddress("[2001:db8::10]:45123", 42777)).toBe("[2001:db8::10]:45123");
     expect(formatAdvertiseAddress("", 45123)).toBe("");
+  });
+
+  it("does not require or render manual directory replicas for a public admin network", () => {
+    const setup: SetupState = {
+      ...initialSetup,
+      profile: "admin",
+      advertiseAddr: "[2001:db8::10]:42777",
+      trustDocument: "trust",
+      trustFingerprint: "fingerprint",
+      network: {
+        ...initialSetup.network,
+        public_name: "POM-PUBLIC",
+        visibility: "public",
+        country_code: "BR",
+        city: "Curitiba",
+      },
+    };
+
+    expect(canContinue("setup-network", setup)).toBe(true);
+    expect(isReadyToSave(setup)).toBe(true);
+
+    render(<NetworkScreen setup={setup} updateNetwork={() => {}} t={(key) => key} />);
+    expect(screen.queryByTestId("public-directory")).toBeNull();
   });
 });
 

@@ -97,8 +97,10 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
 2. Sem `pom.json`, ou com `Config.setup_pending`, → `start_setup_mode`: serve
    somente `/api/setup/*` para hardware, modelos, referência geo, raiz de
    confiança, verificações e save, além da UI (`webapp::routes`); gravar a
-   config respawna o processo. O modo setup preserva preferências locais após
-   sair da rede.
+   config respawna o processo. Sem config, a porta P2P do setup segue
+   `--port`, o que permite isolar um segundo nó local; com config pendente, a
+   porta persistida continua sendo a autoridade. O modo setup preserva
+   preferências locais após sair da rede.
 3. Com config: valida a porta da interface e faz o preflight de disponibilidade
    antes de carregar modelos; porta P2P/HTTP vêm da config; `inference_port` =
    flag ou default 8181.

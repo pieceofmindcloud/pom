@@ -74,11 +74,6 @@ mod gateway;
 mod huggingface;
 #[path = "network/identity.rs"]
 mod identity;
-#[path = "network/local_discovery.rs"]
-mod local_discovery;
-#[cfg(test)]
-#[path = "network/local_discovery_tests.rs"]
-mod local_discovery_tests;
 #[path = "inference/infer_server/mod.rs"]
 mod infer_server;
 #[path = "network/infer_tunnel.rs"]
@@ -90,6 +85,11 @@ mod link;
 #[cfg(test)]
 #[path = "inference/link_lab.rs"]
 mod link_lab;
+#[path = "network/local_discovery.rs"]
+mod local_discovery;
+#[cfg(test)]
+#[path = "network/local_discovery_tests.rs"]
+mod local_discovery_tests;
 #[cfg(target_os = "macos")]
 mod macos_status;
 #[path = "models/memory.rs"]
@@ -711,6 +711,7 @@ async fn async_main(
             .map_or(args.gateway_port, |config| config.gateway_port);
         start_setup_mode(
             gateway_port,
+            args.port,
             existing_config,
             database.clone(),
             gateway_ready,
@@ -1520,6 +1521,7 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
 
 async fn start_setup_mode(
     gateway_port: u16,
+    p2p_port: u16,
     preserved: Option<config::Config>,
     database: Arc<db::PomDb>,
     gateway_ready: Option<gateway::GatewayReadySender>,
@@ -1530,6 +1532,9 @@ async fn start_setup_mode(
     use std::net::SocketAddr;
 
     config::validate_gateway_port(gateway_port)?;
+    let setup_p2p_port = preserved
+        .as_ref()
+        .map_or(p2p_port, |config| config.p2p_port);
     let config = Arc::new(RwLock::new(preserved.unwrap_or_else(|| Config {
         profile: crate::profile::NodeProfile::Admin,
         setup_pending: true,
@@ -1549,7 +1554,7 @@ async fn start_setup_mode(
         gateway_port,
         admin_exposure: config::AdminExposure::Localhost,
         admin_access_token: None,
-        p2p_port: 42777,
+        p2p_port: setup_p2p_port,
         inference_port: None,
         bootstrap_nodes: vec![],
         advertise_addr: None,
@@ -1572,9 +1577,12 @@ async fn start_setup_mode(
     })));
 
     let setup_p2p_port = config.read().await.p2p_port;
-    let setup_socket = tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], setup_p2p_port)))
-        .await
-        .with_context(|| format!("não foi possível abrir a descoberta local na porta {setup_p2p_port}"))?;
+    let setup_socket =
+        tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], setup_p2p_port)))
+            .await
+            .with_context(|| {
+                format!("não foi possível abrir a descoberta local na porta {setup_p2p_port}")
+            })?;
     setup_socket.set_broadcast(true)?;
     let local_discovery = crate::local_discovery::LocalDiscoveryRuntime::new(
         Arc::new(setup_socket),

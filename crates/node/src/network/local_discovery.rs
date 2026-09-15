@@ -20,7 +20,15 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const SESSION_TTL: Duration = Duration::from_secs(20);
-pub const MAX_TRUST_DOCUMENT_BYTES: usize = 32 * 1024;
+/// Trust documents are transferred as authenticated fragments instead of a
+/// single UDP datagram. Keep a bounded upper limit so a forged offer cannot
+/// make the node retain unbounded state while still allowing real authority
+/// chains with history and replay records.
+pub const MAX_TRUST_DOCUMENT_BYTES: usize = 512 * 1024;
+const MAX_SECRET_CHUNK_BYTES: usize = 640;
+const MAX_SECRET_PAYLOAD_BYTES: usize = MAX_TRUST_DOCUMENT_BYTES + 1024;
+const MAX_SECRET_CHUNKS: usize =
+    (MAX_SECRET_PAYLOAD_BYTES + MAX_SECRET_CHUNK_BYTES - 1) / MAX_SECRET_CHUNK_BYTES;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum LocalAutoDiscoveryMessage {
@@ -35,7 +43,8 @@ pub enum LocalAutoDiscoveryMessage {
         request_id: String,
         admin_ephemeral_public: String,
         admin_nonce: String,
-        trust_document: String,
+        trust_document_bytes: u32,
+        trust_chunk_count: u16,
         trust_fingerprint: String,
     },
     Proof {
@@ -50,6 +59,8 @@ pub enum LocalAutoDiscoveryMessage {
     Secret {
         version: u8,
         request_id: String,
+        chunk_index: u16,
+        chunk_count: u16,
         nonce: String,
         ciphertext: String,
     },
@@ -84,6 +95,7 @@ struct AdminMaterial {
     trust_document: String,
     trust_fingerprint: String,
     connection_key: String,
+    secret_payload: Vec<u8>,
 }
 
 struct AdminSession {
@@ -104,6 +116,10 @@ struct SearchSession {
     admin_ephemeral_public: Option<PublicKey>,
     admin_nonce: Option<[u8; 16]>,
     offered_trust_fingerprint: Option<String>,
+    offered_trust_document_bytes: Option<usize>,
+    offered_secret_chunk_count: Option<u16>,
+    secret_nonce: Option<[u8; 12]>,
+    secret_chunks: HashMap<u16, Vec<u8>>,
     result: Option<LocalDiscoveryResult>,
     expires_at: Instant,
 }
@@ -151,17 +167,26 @@ impl LocalDiscoveryRuntime {
         let trust_document = trust_document.into();
         let connection_key = connection_key.into();
         if trust_document.len() > MAX_TRUST_DOCUMENT_BYTES {
-            bail!("o documento de confiança excede o limite da descoberta local");
+            bail!("o documento de confiança excede o limite da transferência local");
         }
         if !connection_key.is_empty() && trust_document.contains(&connection_key) {
             bail!("a chave de conexão não pode aparecer no documento de confiança");
         }
+        let secret_payload = serde_json::to_vec(&SecretPayload {
+            trust_document: trust_document.clone(),
+            connection_key: connection_key.clone(),
+        })?;
+        if secret_payload.len() > MAX_SECRET_PAYLOAD_BYTES {
+            bail!("o material da descoberta local excede o limite da transferência");
+        }
+        let _ = secret_chunk_count(secret_payload.len())?;
         let mut state = self.state.lock().await;
         state.admin = Some(AdminMaterial {
             enabled,
             trust_fingerprint: trust_fingerprint(&trust_document),
             trust_document,
             connection_key,
+            secret_payload,
         });
         state.admin_sessions.clear();
         state.peers.clear();
@@ -178,6 +203,7 @@ impl LocalDiscoveryRuntime {
             admin.connection_key.clear();
             admin.trust_document.clear();
             admin.trust_fingerprint.clear();
+            admin.secret_payload.clear();
         }
         state.admin_sessions.clear();
         state.peers.clear();
@@ -241,6 +267,10 @@ impl LocalDiscoveryRuntime {
                 admin_ephemeral_public: None,
                 admin_nonce: None,
                 offered_trust_fingerprint: None,
+                offered_trust_document_bytes: None,
+                offered_secret_chunk_count: None,
+                secret_nonce: None,
+                secret_chunks: HashMap::new(),
                 result: None,
                 expires_at: Instant::now() + state.session_ttl,
             });
@@ -305,6 +335,12 @@ impl LocalDiscoveryRuntime {
                 }
                 let trust_document = admin.trust_document.clone();
                 let trust_fingerprint = admin.trust_fingerprint.clone();
+                let Ok(trust_document_bytes) = u32::try_from(trust_document.len()) else {
+                    return responses;
+                };
+                let Ok(trust_chunk_count) = secret_chunk_count(admin.secret_payload.len()) else {
+                    return responses;
+                };
                 let session_ttl = state.session_ttl;
                 let (Some(node_ephemeral_public), Some(node_nonce)) = (
                     decode_array::<32>(&node_ephemeral_public),
@@ -336,7 +372,8 @@ impl LocalDiscoveryRuntime {
                         request_id,
                         admin_ephemeral_public: encode(admin_ephemeral_public.as_bytes()),
                         admin_nonce: encode(&admin_nonce),
-                        trust_document,
+                        trust_document_bytes,
+                        trust_chunk_count,
                         trust_fingerprint,
                     },
                 ));
@@ -346,7 +383,8 @@ impl LocalDiscoveryRuntime {
                 request_id,
                 admin_ephemeral_public,
                 admin_nonce,
-                trust_document,
+                trust_document_bytes,
+                trust_chunk_count,
                 trust_fingerprint: offered_fingerprint,
             } if version == PROTOCOL_VERSION => {
                 let Some(search) = state.search.as_mut() else {
@@ -355,9 +393,12 @@ impl LocalDiscoveryRuntime {
                 if search.request_id != request_id || search.expires_at <= now {
                     return responses;
                 }
-                if trust_document.len() > MAX_TRUST_DOCUMENT_BYTES
-                    || trust_document.is_empty()
-                    || offered_fingerprint != trust_fingerprint(&trust_document)
+                if trust_document_bytes == 0
+                    || trust_document_bytes as usize > MAX_TRUST_DOCUMENT_BYTES
+                    || trust_chunk_count == 0
+                    || trust_chunk_count as usize > MAX_SECRET_CHUNKS
+                    || hex::decode(&offered_fingerprint)
+                        .map_or(true, |fingerprint| fingerprint.len() != 32)
                 {
                     return responses;
                 }
@@ -380,6 +421,10 @@ impl LocalDiscoveryRuntime {
                 search.admin_ephemeral_public = Some(admin_ephemeral_public);
                 search.admin_nonce = Some(admin_nonce);
                 search.offered_trust_fingerprint = Some(offered_fingerprint);
+                search.offered_trust_document_bytes = Some(trust_document_bytes as usize);
+                search.offered_secret_chunk_count = Some(trust_chunk_count);
+                search.secret_nonce = None;
+                search.secret_chunks.clear();
                 responses.push((
                     source,
                     LocalAutoDiscoveryMessage::Proof {
@@ -431,25 +476,25 @@ impl LocalDiscoveryRuntime {
                 if !admin.enabled {
                     return responses;
                 }
-                let payload = SecretPayload {
-                    trust_document: admin.trust_document.clone(),
-                    connection_key: admin.connection_key.clone(),
-                };
-                let Ok(payload) = serde_json::to_vec(&payload) else {
-                    return responses;
-                };
+                let secret_payload = admin.secret_payload.clone();
                 let mut nonce = [0u8; 12];
                 OsRng.fill_bytes(&mut nonce);
                 let cipher = ChaCha20Poly1305::new((&key).into());
                 let Ok(ciphertext) = cipher.encrypt(
                     Nonce::from_slice(&nonce),
                     Payload {
-                        msg: &payload,
+                        msg: &secret_payload,
                         aad: &transcript,
                     },
                 ) else {
                     return responses;
                 };
+                let Ok(chunk_count) = secret_chunk_count(secret_payload.len()) else {
+                    return responses;
+                };
+                if ciphertext.chunks(MAX_SECRET_CHUNK_BYTES).len() != chunk_count as usize {
+                    return responses;
+                }
                 let peer = LocalDiscoveryPeer {
                     request_id: request_id.clone(),
                     address: source.to_string(),
@@ -459,19 +504,28 @@ impl LocalDiscoveryRuntime {
                     state.peers.remove(0);
                 }
                 state.peers.push(peer);
-                responses.push((
-                    source,
-                    LocalAutoDiscoveryMessage::Secret {
-                        version,
-                        request_id,
-                        nonce: encode(&nonce),
-                        ciphertext: encode(&ciphertext),
-                    },
-                ));
+                for (chunk_index, chunk) in ciphertext.chunks(MAX_SECRET_CHUNK_BYTES).enumerate() {
+                    let Ok(chunk_index) = u16::try_from(chunk_index) else {
+                        return responses;
+                    };
+                    responses.push((
+                        source,
+                        LocalAutoDiscoveryMessage::Secret {
+                            version,
+                            request_id: request_id.clone(),
+                            chunk_index,
+                            chunk_count,
+                            nonce: encode(&nonce),
+                            ciphertext: encode(chunk),
+                        },
+                    ));
+                }
             }
             LocalAutoDiscoveryMessage::Secret {
                 version,
                 request_id,
+                chunk_index,
+                chunk_count,
                 nonce,
                 ciphertext,
             } if version == PROTOCOL_VERSION => {
@@ -481,18 +535,48 @@ impl LocalDiscoveryRuntime {
                 if search.request_id != request_id || search.expires_at <= now {
                     return responses;
                 }
-                let (
-                    Some(admin_ephemeral_public),
-                    Some(admin_nonce),
-                    Some(nonce),
-                    Some(ciphertext),
-                ) = (
+                if search.offered_secret_chunk_count != Some(chunk_count)
+                    || chunk_count == 0
+                    || chunk_count as usize > MAX_SECRET_CHUNKS
+                    || chunk_index >= chunk_count
+                {
+                    return responses;
+                }
+                let Some(nonce) = decode_array::<12>(&nonce) else {
+                    return responses;
+                };
+                let Some(ciphertext) = decode(&ciphertext) else {
+                    return responses;
+                };
+                if ciphertext.is_empty() || ciphertext.len() > MAX_SECRET_CHUNK_BYTES {
+                    return responses;
+                }
+                if let Some(expected_nonce) = search.secret_nonce {
+                    if expected_nonce != nonce {
+                        return responses;
+                    }
+                } else {
+                    search.secret_nonce = Some(nonce);
+                }
+                search.secret_chunks.insert(chunk_index, ciphertext);
+                if search.secret_chunks.len() != chunk_count as usize {
+                    return responses;
+                }
+                let mut assembled_ciphertext = Vec::new();
+                for index in 0..chunk_count {
+                    let Some(chunk) = search.secret_chunks.get(&index) else {
+                        return responses;
+                    };
+                    assembled_ciphertext.extend_from_slice(chunk);
+                }
+                if assembled_ciphertext.len() > MAX_SECRET_PAYLOAD_BYTES + 16 {
+                    return responses;
+                }
+                let (Some(admin_ephemeral_public), Some(admin_nonce), Some(nonce)) = (
                     search.admin_ephemeral_public,
                     search.admin_nonce,
-                    decode_array::<12>(&nonce),
-                    decode(&ciphertext),
-                )
-                else {
+                    search.secret_nonce,
+                ) else {
                     return responses;
                 };
                 let key = shared_key(&search.node_secret, &admin_ephemeral_public);
@@ -507,7 +591,7 @@ impl LocalDiscoveryRuntime {
                 let Ok(plaintext) = cipher.decrypt(
                     Nonce::from_slice(&nonce),
                     Payload {
-                        msg: &ciphertext,
+                        msg: &assembled_ciphertext,
                         aad: &transcript,
                     },
                 ) else {
@@ -516,7 +600,9 @@ impl LocalDiscoveryRuntime {
                 let Ok(payload) = serde_json::from_slice::<SecretPayload>(&plaintext) else {
                     return responses;
                 };
-                if payload.trust_document.len() > MAX_TRUST_DOCUMENT_BYTES {
+                if payload.trust_document.len() > MAX_TRUST_DOCUMENT_BYTES
+                    || search.offered_trust_document_bytes != Some(payload.trust_document.len())
+                {
                     return responses;
                 }
                 let trust_fingerprint = trust_fingerprint(&payload.trust_document);
@@ -538,7 +624,14 @@ impl LocalDiscoveryRuntime {
     async fn send(&self, destination: SocketAddr, message: LocalAutoDiscoveryMessage) {
         let envelope = crate::network::P2PMessage::LocalAutoDiscovery { message };
         if let Ok(bytes) = serde_json::to_vec(&envelope) {
-            let _ = self.socket.send_to(&bytes, destination).await;
+            if bytes.len() <= crate::network::MAX_DATAGRAM_PAYLOAD {
+                let _ = self.socket.send_to(&bytes, destination).await;
+            } else {
+                tracing::warn!(
+                    bytes = bytes.len(),
+                    "discarding oversized local discovery datagram"
+                );
+            }
         }
     }
 
@@ -631,6 +724,17 @@ fn proof_for(key: &[u8; 32], transcript: &[u8]) -> String {
     message.extend_from_slice(key);
     message.extend_from_slice(transcript);
     hex::encode(Sha256::digest(message))
+}
+
+fn secret_chunk_count(payload_len: usize) -> Result<u16> {
+    let ciphertext_len = payload_len.checked_add(16).ok_or_else(|| {
+        anyhow::anyhow!("o material da descoberta local excede o limite da transferência")
+    })?;
+    let chunk_count = (ciphertext_len + MAX_SECRET_CHUNK_BYTES - 1) / MAX_SECRET_CHUNK_BYTES;
+    if chunk_count == 0 || chunk_count > MAX_SECRET_CHUNKS {
+        bail!("o material da descoberta local excede o limite da transferência");
+    }
+    Ok(u16::try_from(chunk_count)?)
 }
 
 #[cfg(test)]

@@ -373,11 +373,8 @@ impl RouteTable {
         let rota = self.resolve(node_id)?;
         let http = clientes.probe().ok()?;
         let inicio = Instant::now();
-        let resposta = tokio::time::timeout(
-            TIMEOUT_SONDA,
-            http.get(format!("{rota}/health")).send(),
-        )
-        .await;
+        let resposta =
+            tokio::time::timeout(TIMEOUT_SONDA, http.get(format!("{rota}/health")).send()).await;
         match resposta {
             Ok(Ok(response)) if response.status().is_success() => {
                 self.mark_success(node_id, &rota);
@@ -685,10 +682,7 @@ mod tests {
 
     #[test]
     fn direct_health_is_a_fallback_when_the_tunnel_measurement_is_unavailable() {
-        assert_eq!(
-            escolher_rtt(None, Some(3.5)),
-            Some((3.5, "direct-health"))
-        );
+        assert_eq!(escolher_rtt(None, Some(3.5)), Some((3.5, "direct-health")));
         assert_eq!(escolher_rtt(Some(1.5), Some(3.5)), Some((1.5, "libp2p")));
     }
 
@@ -877,7 +871,9 @@ mod tests {
         let healthy = tests_support::health_server(0).await;
         let tabela = RouteTable::new();
         let http = crate::peer_client::PeerClients::new(Duration::from_secs(10));
-        tabela.measure_peer(&http, "n1", std::slice::from_ref(&healthy)).await;
+        tabela
+            .measure_peer(&http, "n1", std::slice::from_ref(&healthy))
+            .await;
         let before = tabela.resolve("n1");
 
         let rtt = tabela.measure_current_peer(&http, "n1").await;

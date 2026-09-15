@@ -271,8 +271,9 @@ pub enum P2PMessage {
     },
     /// mDNS-style local broadcast
     LocalDiscover { from: String, port: u16 },
-    /// First-access LAN bootstrap. The payload never carries a connection key
-    /// before the encrypted Secret message that follows an accepted Proof.
+    /// First-access LAN bootstrap. The Offer carries only trust metadata; the
+    /// trust document and connection key are fragmented and encrypted only
+    /// after an accepted Proof.
     LocalAutoDiscovery {
         message: crate::local_discovery::LocalAutoDiscoveryMessage,
     },
@@ -970,7 +971,7 @@ fn peer_address_changed(previous: &PeerInfo, current: &PeerInfo) -> bool {
 /// reply into a silent black hole. 1200 is the conservative floor that IPv6
 /// itself guarantees (RFC 8200 requires links to carry 1280), minus headroom for
 /// the IPv6 + UDP headers.
-const MAX_DATAGRAM_PAYLOAD: usize = 1200;
+pub const MAX_DATAGRAM_PAYLOAD: usize = 1200;
 
 /// Split a peer list into datagrams that fit under [`MAX_DATAGRAM_PAYLOAD`].
 ///
@@ -1095,10 +1096,7 @@ impl Network {
             node_id,
             pubkey,
             port,
-            SocketAddr::new(
-                IpAddr::V4(std::net::Ipv4Addr::BROADCAST),
-                discovery_port,
-            ),
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), discovery_port),
             NetworkInit {
                 bootstrap_nodes,
                 ollama_port,
@@ -1220,10 +1218,8 @@ impl Network {
         init: NetworkInit,
     ) -> Self {
         let socket = Arc::new(socket);
-        let local_discovery = crate::local_discovery::LocalDiscoveryRuntime::new(
-            socket.clone(),
-            broadcast_addr,
-        );
+        let local_discovery =
+            crate::local_discovery::LocalDiscoveryRuntime::new(socket.clone(), broadcast_addr);
         Self {
             node_id,
             pubkey,
@@ -2042,9 +2038,7 @@ impl Network {
         let peers = self.peers.read().await;
         peers
             .values()
-            .filter(|peer| {
-                peer.is_alive() && peer.profile == crate::profile::NodeProfile::Admin
-            })
+            .filter(|peer| peer.is_alive() && peer.profile == crate::profile::NodeProfile::Admin)
             .filter_map(|peer| {
                 let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
                 Some((peer_id, peer.libp2p_dialable_addrs()))
@@ -2430,10 +2424,9 @@ impl Network {
                             None
                         };
 
-                        if let Some((rtt_ms, transport)) = crate::route::escolher_rtt(
-                            tunnel_rtt,
-                            direct_health_rtt,
-                        ) {
+                        if let Some((rtt_ms, transport)) =
+                            crate::route::escolher_rtt(tunnel_rtt, direct_health_rtt)
+                        {
                             net_routes.rtts.remember(&peer.node_id, rtt_ms, transport);
                         } else {
                             net_routes.rtts.mark_failure(&peer.node_id);
@@ -3295,16 +3288,9 @@ mod tests {
 
     #[tokio::test]
     async fn secondary_authority_is_not_mistaken_for_the_primary() {
-        let net = Network::testkit(
-            "local".into(),
-            "pk".into(),
-            vec![],
-            None,
-            None,
-            None,
-        )
-        .await
-        .expect("socket UDP em porta efêmera");
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+            .await
+            .expect("socket UDP em porta efêmera");
         let (probe, mut received) = tokio::sync::mpsc::unbounded_channel();
         net.set_policy_principal_pubkey("primary-key");
         net.set_cluster_logs_probe(probe);

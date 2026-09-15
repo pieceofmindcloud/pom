@@ -32,10 +32,11 @@ Per-file list:
   conversam com `/api/setup/*`; não confundir com o protótipo
   `SetupWizard.tsx`.
 
-  Redes públicas exigem também pelo menos um ingresso do diretório federado,
-  informado pelo admin como URLs HTTP(S) separadas por vírgula. O admin grava
-  esses ingressos, o nome público, a política e o bootstrap no bloco `setup`
-  assinado dentro do `.pom-admin-trust.json`; o node apenas importa esse bloco.
+  Ingressos do diretório federado são opcionais no wizard: o admin pode deixá-los
+  vazios e configurá-los por ambiente ou depois na administração. Quando
+  existem, o admin grava esses ingressos, o nome público, a política e o
+  bootstrap no bloco `setup` assinado dentro do `.pom-admin-trust.json`; o node
+  apenas importa esse bloco.
   O join público encerra a sessão privada antes de reconfigurar o nó, sem
   suporte a duas redes P2P simultâneas no v1. Na etapa de convite, a chave de
   conexão fica em primeiro plano para redes privadas ou locais; o documento de

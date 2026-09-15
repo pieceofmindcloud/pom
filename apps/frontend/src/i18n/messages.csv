@@ -1744,9 +1744,6 @@ setupWizard.pasteTrust,Confirm the network before joining,Confirme a rede antes 
 setupWizard.pasteTrustDetail,Get the document and a separate fingerprint message from the administrator.,Receba o documento e uma mensagem separada com a impressão digital do administrador.
 setupWizard.privateInternet,Private over the internet,Privada pela internet
 setupWizard.profileLabel,Role,Função
-setupWizard.publicDirectory,Federated directory ingresses,Ingressos do diretório federado
-setupWizard.publicDirectoryHint,Enter one or more HTTP(S) URLs separated by commas. A private node only needs outbound access to list public networks.,Informe uma ou mais URLs HTTP(S) separadas por vírgulas. Um nó privado precisa apenas de saída para listar redes públicas.
-setupWizard.publicDirectoryPlaceholder,https://directory.example,https://diretorio.exemplo
 setupWizard.publicGeoRequired,Public networks need a country and city so nearby people can filter them quickly.,Redes públicas precisam de país e cidade para que pessoas próximas possam filtrá-las rapidamente.
 setupWizard.publicInternet,Public over the internet,Pública pela internet
 setupWizard.publicKey,Generated public key,Chave pública gerada

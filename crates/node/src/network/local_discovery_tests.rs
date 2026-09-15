@@ -48,6 +48,49 @@ async fn complete_handshake_delivers_trust_and_connection_key() {
 }
 
 #[tokio::test]
+async fn large_private_trust_documents_are_fragmented_and_reassembled() {
+    let admin_socket = tokio::net::UdpSocket::bind(endpoint(0)).await.unwrap();
+    let node_socket = tokio::net::UdpSocket::bind(endpoint(0)).await.unwrap();
+    let admin = LocalDiscoveryRuntime::new(std::sync::Arc::new(admin_socket), endpoint(0));
+    let node = LocalDiscoveryRuntime::new(std::sync::Arc::new(node_socket), endpoint(0));
+    let trust_document = format!("{{\"private_setup\":\"{}\"}}", "x".repeat(40_000));
+
+    admin
+        .set_admin_material(true, trust_document.clone(), "secret-key")
+        .await
+        .expect("documentos privados maiores que um datagrama devem ser aceitos");
+
+    let request_id = node.begin_search().await.unwrap();
+    let probe = node.take_outbound_for_test().await.unwrap();
+    let admin_address = admin.local_addr().await;
+    admin
+        .handle_for_test(probe, endpoint(node.port().await))
+        .await;
+    let offer = admin.take_outbound_for_test().await.unwrap();
+    assert!(serialized_message_size(&offer) <= 1200);
+    node.handle_for_test(offer, admin_address).await;
+    let proof = node.take_outbound_for_test().await.unwrap();
+    admin
+        .handle_for_test(proof, endpoint(node.port().await))
+        .await;
+
+    let mut secret_messages = Vec::new();
+    while let Some(message) = admin.take_outbound_for_test().await {
+        assert!(serialized_message_size(&message) <= 1200);
+        secret_messages.push(message);
+    }
+    assert!(secret_messages.len() > 1);
+    for message in secret_messages {
+        node.handle_for_test(message, admin_address).await;
+    }
+
+    let result = node.peek_result().await.expect("handshake completo");
+    assert_eq!(result.request_id, request_id);
+    assert_eq!(result.connection_key, "secret-key");
+    assert_eq!(result.trust_document, trust_document);
+}
+
+#[tokio::test]
 async fn public_messages_never_contain_connection_key() {
     let admin = LocalDiscoveryRuntime::test_memory();
     admin
@@ -118,4 +161,12 @@ async fn expired_handshake_does_not_deliver_secret() {
 #[allow(dead_code)]
 fn assert_result_is_not_secretless(result: LocalDiscoveryResult) {
     assert!(!result.connection_key.is_empty());
+}
+
+fn serialized_message_size(message: &LocalAutoDiscoveryMessage) -> usize {
+    serde_json::to_vec(&crate::network::P2PMessage::LocalAutoDiscovery {
+        message: message.clone(),
+    })
+    .unwrap()
+    .len()
 }

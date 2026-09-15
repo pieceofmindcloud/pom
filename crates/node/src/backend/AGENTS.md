@@ -969,6 +969,8 @@ faz o download autenticado do blob persistido.
   a network while preserving local hardware preferences. The setup hardware
   response returns the effective P2P port used to render the advertised IPv6;
   the anchor preview signs the network setup metadata into the trust document.
+  Public-network setup accepts an empty federated-directory list; configured
+  environment or administration entries are still copied into that metadata.
   The setup health response also reports the existing Windows firewall-rule
   check; on Mac/Linux it reports whether the POM ports are locally available
   for binding while no unified firewall API is available.

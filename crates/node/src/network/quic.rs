@@ -380,10 +380,10 @@ impl ClientPool {
     }
 
     async fn quarantine_quic(&self, key: &str, reason: String) {
-        self.failed_until
-            .lock()
-            .await
-            .insert(key.to_owned(), (Instant::now() + QUIC_FAILURE_QUARANTINE, reason));
+        self.failed_until.lock().await.insert(
+            key.to_owned(),
+            (Instant::now() + QUIC_FAILURE_QUARANTINE, reason),
+        );
     }
 }
 
@@ -543,9 +543,7 @@ async fn serve_connection(connection: quinn::Connection, router: axum::Router) -
 
 fn authority(base_url: &str) -> Result<String> {
     let parsed = url::Url::parse(base_url)?;
-    let host = parsed
-        .host()
-        .ok_or_else(|| anyhow!("URL QUIC sem host"))?;
+    let host = parsed.host().ok_or_else(|| anyhow!("URL QUIC sem host"))?;
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL QUIC sem porta"))?;
@@ -685,7 +683,10 @@ mod tests {
             .expect("authority precisa parsear como Authority válida");
 
         // IPv4 e hostname DNS continuam funcionando (casos que já passavam).
-        assert_eq!(authority("https://192.168.1.5:8181").unwrap(), "192.168.1.5:8181");
+        assert_eq!(
+            authority("https://192.168.1.5:8181").unwrap(),
+            "192.168.1.5:8181"
+        );
         assert_eq!(
             authority("https://peer.example.com:8181").unwrap(),
             "peer.example.com:8181"

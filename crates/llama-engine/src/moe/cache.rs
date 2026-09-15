@@ -762,6 +762,22 @@ impl DeviceExpertCache {
         })
     }
 
+    /// Consulta a residência sem atualizar LRU nem os contadores de hit/miss.
+    ///
+    /// O planejador de coexecução usa esta operação para decidir a lane antes
+    /// de montar a rota. Criar um lease nessa etapa faria uma entrada ativa
+    /// parecer usada durante toda a medição, além de contar uma consulta que
+    /// não executou nenhum expert.
+    pub fn contains(&self, key: &ExpertKey) -> bool {
+        let shard = self.shard_for_key(key);
+        shard
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entries
+            .contains_key(key)
+    }
+
     pub fn stats(&self) -> DeviceCacheStats {
         self.aggregate_stats()
     }
@@ -1567,6 +1583,11 @@ mod tests {
         let device = leases.get(7).map(DeviceExpertLease::device_index).unwrap();
         assert_eq!(cache.device_index_for_key(&key), device);
         drop(leases);
+        let before_contains = cache.stats();
+        assert!(cache.contains(&key));
+        let after_contains = cache.stats();
+        assert_eq!(after_contains.hits, before_contains.hits);
+        assert_eq!(after_contains.misses, before_contains.misses);
         let hit = cache.lookup(&key).unwrap();
         assert_eq!(hit.device_index(), device);
         assert!(allocator0.uploads.load(Ordering::Relaxed) > 0);

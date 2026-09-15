@@ -61,6 +61,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   os metadados de memória. O caminho uniforme IQ3_XXS (dtype 18) também usa o
   pipeline persistente e kernels cooperativos; IQ e K compartilham buffers e
   o mesmo agrupamento por CUDA<n>, sem `cudaDeviceSynchronize` no hot path.
+  Quando há `<modelo>.cuda-profile.json` com um `BandwidthProfile`, o bloco
+  heterogêneo também divide misses entre lanes CPU e GPU e as executa em
+  paralelo, como o NVFP4. Sem sidecar, não inventa uma taxa de hardware e
+  mantém a política exclusivamente CUDA.
   Antes do forward heterogêneo, as specs de toda a rota são construídas em
   uma travessia do inventário da camada e os misses são carregados em uma
   thread por shard;

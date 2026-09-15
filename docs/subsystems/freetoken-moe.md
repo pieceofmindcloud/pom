@@ -2369,12 +2369,12 @@ canônico de cada tensor e chama a mesma admissão do caminho quente. O dispatch
 modelo ou versão de quantização. Em um GGUF heterogêneo, cada papel e dtype
 recebe a mesma chave e descriptor que o forward usa.
 
-O aquecimento é opt-in por `POM_MOE_WARMUP=1` (ou `true`). O padrão é
-priorizar a primeira requisição: a ordem dos experts no arquivo não é a ordem
-da rota real e o preenchimento especulativo pode ocupar o orçamento, gerar
-evictions e aumentar o TTFT. Em uma janela ociosa, o operador pode habilitá-lo
-explicitamente; `POM_MOE_WARMUP_MAX_MS` continua controlando o prazo, com
-30.000 ms como padrão.
+O aquecimento é padrão para restaurar a VRAM pré-aquecida. O operador pode
+desligá-lo explicitamente com `POM_MOE_WARMUP=0`, `false`, `off` ou `no` para
+medir uma rota fria; `POM_MOE_WARMUP_MAX_MS` continua controlando o prazo, com
+30.000 ms como padrão. A ordem dos experts no arquivo não é a ordem da rota
+real, portanto o orçamento limita o preenchimento e a primeira rota cancela o
+restante antes do forward.
 
 O limite continua sendo o orçamento de VRAM medido, incluindo a reserva de
 compute já reportada pelo `llama.cpp`. Quando a admissão devolve
@@ -2880,6 +2880,34 @@ sentido daquela execução não é uma medição válida de qualidade do modelo;
 ksia precisa repetir o mesmo prompt com o SHA que contém essa correção e esta
 otimização de lote. Este ambiente não possui `nvcc` nem GPU para medir a
 redução final de prefill/decode localmente.
+
+### Fase 5.14: warmup padrão e coexecução heterogênea medida - 2026-09-15
+
+Os logs da ksia confirmaram uma regressão de configuração: o processo que
+produziu a telemetria tinha `POM_MOE_WARMUP` ausente e, por isso, o warmup
+estava `disabled`. O comportamento agora volta a ser o pré-aquecimento padrão.
+`POM_MOE_WARMUP=0`, `false`, `off` ou `no` continua disponível para ensaios
+explicitamente frios. O warmup permanece limitado pelo orçamento independente
+de cada GPU; em uma 5060 Ti ele pode terminar com `budget-exhausted` antes de
+carregar todos os experts, porque o modelo inteiro não cabe na VRAM.
+
+O intervalo de aproximadamente cinco segundos não era timeout: no trace
+pareado, `node_lock_wait_ms`, fila, scheduler e transporte ficaram próximos de
+zero, enquanto `node_moe_forward_ms` consumiu praticamente todo o prefill. O
+executor heterogêneo passa agora a aceitar o mesmo `BandwidthProfile` medido
+que o NVFP4. Experts com todos os tensors residentes continuam na GPU; misses
+são divididos por expert entre rotas CPU e GPU, executadas em paralelo e
+somadas com a mesma largura de saída. A consulta de residência não cria lease
+nem toca LRU, para que o planejador não falsifique hits ou impeça eviction.
+
+O perfil só é aplicado quando existe o sidecar
+`<modelo>.cuda-profile.json` com o campo `bandwidth`. Sem esse arquivo, o
+runtime mantém a política exclusivamente CUDA e não inventa uma taxa para a
+placa. A telemetria passa a publicar a fração escolhida e as chamadas CPU do
+caminho heterogêneo, além de `cuda_device_calls` quando
+`POM_MOE_CUDA_PROFILE=1` estiver ativo. Na ksia, a validação deve repetir o
+mesmo prompt com o warmup padrão, gerar ou instalar o sidecar medido para este
+modelo e comparar prefill, decode, corretude textual e deltas de uploads.
 
 ## Defeitos anotados
 

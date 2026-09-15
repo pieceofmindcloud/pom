@@ -1485,6 +1485,10 @@ impl MoeRuntime {
                         Arc::clone(device_cache),
                     ))
                 });
+                #[cfg(feature = "cuda")]
+                let coexecution_profile = CudaTransferProfile::load_for_model(&path)
+                    .map_err(MoeRuntimeError::Block)?
+                    .and_then(|profile| profile.bandwidth);
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
                     #[cfg(feature = "cuda")]
@@ -1495,6 +1499,7 @@ impl MoeRuntime {
                             &model,
                             layer,
                             top_k,
+                            coexecution_profile,
                         )
                     } else {
                         HeterogeneousMoeBlock::new(Arc::clone(&cache), &model, layer, top_k)
@@ -1528,13 +1533,16 @@ impl MoeRuntime {
 
     #[cfg(feature = "cuda")]
     fn warmup_enabled() -> bool {
-        // O aquecimento percorre experts em ordem de arquivo, não em ordem de
-        // rota. Em um modelo grande isso pode ocupar todo o orçamento antes
-        // da primeira requisição e expulsar exatamente o working set que ela
-        // precisa. Latência da primeira requisição é a política padrão; o
-        // operador pode habilitar o preenchimento em uma janela ociosa.
-        std::env::var("POM_MOE_WARMUP")
-            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        // O carregamento inicial deve deixar a VRAM aquecida, como no caminho
+        // FreeToken. O orçamento medido ainda limita quantos experts cabem e
+        // a primeira rota cancela o restante antes de executar. O operador
+        // pode desligar explicitamente o aquecimento para uma medição fria.
+        !matches!(
+            std::env::var("POM_MOE_WARMUP")
+                .ok()
+                .map(|value| value.trim().to_ascii_lowercase()),
+            Some(value) if matches!(value.as_str(), "0" | "false" | "off" | "no")
+        )
     }
 
     #[cfg(feature = "cuda")]
@@ -1582,7 +1590,7 @@ impl MoeRuntime {
         if !Self::warmup_enabled() {
             tracing::debug!(
                 model = %self.model,
-                "aquecimento do cache MoE desabilitado; a primeira rota terá prioridade"
+                "aquecimento do cache MoE desabilitado explicitamente"
             );
             return;
         }
@@ -1849,6 +1857,14 @@ impl MoeRuntime {
                     diagnostics.host_expert_load_ms += host.expert_load_ms;
                     diagnostics.host_cache_admit_ms += host.cache_admit_ms;
                     diagnostics.host_aggregation_ms += host.aggregation_ms;
+                    diagnostics.cpu_expert_calls = diagnostics
+                        .cpu_expert_calls
+                        .saturating_add(host.cpu_expert_calls);
+                    diagnostics.coexecution_gpu_fraction = host.coexecution_gpu_fraction;
+                }
+                #[cfg(feature = "cuda")]
+                if let MoeBlock::Heterogeneous(block) = block {
+                    let host = block.host_diagnostics();
                     diagnostics.cpu_expert_calls = diagnostics
                         .cpu_expert_calls
                         .saturating_add(host.cpu_expert_calls);

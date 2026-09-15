@@ -585,10 +585,15 @@ visibilidade dos controles de implantação na UI local.
   atenção, demais camadas ou a amostragem do `LlmEngine`.
   Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` pode percorrer os
   payloads canônicos por camada, expert, papel e dtype em uma thread separada,
-  usando a mesma admissão do cache residente. O aquecimento é opt-in por
-  `POM_MOE_WARMUP=1` ou `true`; por padrão a primeira requisição tem prioridade,
-  pois a ordem do arquivo pode expulsar o working set real. O orçamento continua
-  derivado da memória livre e da reserva do compute buffer medido;
+  usando a mesma admissão do cache residente. O aquecimento é padrão e pode ser
+  desligado explicitamente por `POM_MOE_WARMUP=0`, `false`, `off` ou `no`. O
+  orçamento por placa continua derivado da memória livre e da reserva do
+  compute buffer medido; quando ele se esgota, o warmup termina com
+  `budget-exhausted`, pois não é possível manter todos os experts de um modelo
+  grande na VRAM. Se o modelo tiver um sidecar
+  `<modelo>.cuda-profile.json` com `bandwidth`, o bloco heterogêneo reaproveita
+  a mesma fração medida do FreeToken para executar misses em lanes CPU e GPU
+  sobrepostas; sem sidecar, não é fabricada uma constante de hardware.
   `warmup_status`, bytes, candidatos e erros chegam em
   `moe_executor_diagnostics`. O prazo é `POM_MOE_WARMUP_MAX_MS` (30 s por
   padrão) e `cancel_device_warmup` faz cancelamento cooperativo entre payloads.

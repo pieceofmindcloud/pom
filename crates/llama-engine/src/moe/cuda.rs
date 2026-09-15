@@ -1662,6 +1662,10 @@ impl HeterogeneousCudaExecutor {
         self.resident_cache.lookup(key)
     }
 
+    pub fn resident_contains(&self, key: &super::cache::ExpertKey) -> bool {
+        self.resident_cache.contains(key)
+    }
+
     /// Retorna a GPU escolhida pela mesma afinidade usada pela admissão.
     ///
     /// O bloco heterogêneo usa esta informação antes de carregar os bytes

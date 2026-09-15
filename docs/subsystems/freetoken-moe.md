@@ -2674,6 +2674,12 @@ para devolver o resultado ao callback, mas o `cudaDeviceSynchronize` adicional
 foi removido e o perfil publica `sync_count=0`. IQ3_XXS agora é elegível para a
 ponte CUDA e valida a geometria do payload antes do lançamento.
 
+No IQ3_XXS, as 128 lanes percorrem dois valores adjacentes de cada superbloco
+de 256 elementos. Isso reutiliza o `aux32`, o índice do codebook e os sinais
+para o par local, em vez de reconstruir esses metadados para colunas distantes.
+Os outros IQs mantêm o decoder cooperativo genérico até terem a mesma prova
+diferencial de layout.
+
 O cache não copia a fonte fria em hits: a admissão continua sendo por hash de
 modelo, camada e expert em shards independentes. Assim, uma segunda chamada
 reutiliza o mesmo handle em CUDA0 ou CUDA1. O warmup é cancelado quando a

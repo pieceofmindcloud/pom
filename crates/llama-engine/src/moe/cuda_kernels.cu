@@ -1173,6 +1173,66 @@ __device__ float iq_dot(
     return result;
 }
 
+// IQ3_XXS stores 256 values per superblock. The cooperative route kernel has
+// 128 lanes, so each lane can consume two adjacent values. Keeping the lane
+// mapping adjacent makes the q3/codebook metadata reusable and avoids the
+// scalar decoder recomputing the same aux32 and grid lookup for distant
+// columns. The result is a partial sum for the calling lane.
+__device__ float iq3xxs_cooperative_partial_dot(
+    const uint8_t *matrix,
+    int columns,
+    const float *input
+) {
+    constexpr int block_elements = 256;
+    constexpr int block_bytes = 98;
+    float result = 0.0f;
+    const int lane_pair = threadIdx.x * 2;
+    for (int block_index = 0; block_index < columns / block_elements; ++block_index) {
+        const uint8_t *block = matrix + block_index * block_bytes;
+        const uint8_t *q3 = block + 2;
+        const int group = lane_pair / 32;
+        const int in_group = lane_pair % 32;
+        const int il = in_group / 8;
+        const int element = in_group % 8;
+        const uint32_t aux32 = static_cast<uint32_t>(block[66 + group * 4]) |
+            (static_cast<uint32_t>(block[67 + group * 4]) << 8) |
+            (static_cast<uint32_t>(block[68 + group * 4]) << 16) |
+            (static_cast<uint32_t>(block[69 + group * 4]) << 24);
+        const float d = __half2float(__ushort_as_half(
+            static_cast<uint16_t>(block[0]) |
+            (static_cast<uint16_t>(block[1]) << 8))) *
+            (0.5f + static_cast<float>(aux32 >> 28)) * 0.5f;
+        const uint8_t signs = ksigns_iq2xs[(aux32 >> (7 * il)) & 127];
+        for (int offset = 0; offset < 2; ++offset) {
+            const int value_index = element + offset;
+            const uint8_t grid_index = q3[group * 8 + 2 * il + value_index / 4];
+            const uint32_t grid = iq3xxs_grid[grid_index];
+            const int shift = 8 * (value_index % 4);
+            const uint8_t code = static_cast<uint8_t>((grid >> shift) & 0xffu);
+            const int column = block_index * block_elements + lane_pair + offset;
+            result += d * static_cast<float>(code) *
+                ((signs & kmask_iq2xs[value_index]) != 0 ? -1.0f : 1.0f) * input[column];
+        }
+    }
+    return result;
+}
+
+__device__ float iq_cooperative_partial_dot(
+    uint32_t dtype,
+    const uint8_t *matrix,
+    int columns,
+    const float *input
+) {
+    if (dtype == 18) {
+        return iq3xxs_cooperative_partial_dot(matrix, columns, input);
+    }
+    float result = 0.0f;
+    for (int column = threadIdx.x; column < columns; column += blockDim.x) {
+        result += iq_value(dtype, matrix, column) * input[column];
+    }
+    return result;
+}
+
 __device__ float q4_0_value(const uint8_t *encoded, int column) {
     constexpr int block_elements = 32;
     constexpr int block_bytes = 18;
@@ -1544,10 +1604,7 @@ __global__ void iquant_gate_up_cooperative_route_kernel(
     const uint8_t *matrix = payloads[pair] + kScalarPayloadHeaderBytes;
     const uint8_t *encoded = matrix + static_cast<std::size_t>(row) * row_bytes;
     const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
-    float value = 0.0f;
-    for (int column = threadIdx.x; column < hidden; column += blockDim.x) {
-        value += iq_value(dtype, encoded, column) * input[column];
-    }
+    const float value = iq_cooperative_partial_dot(dtype, encoded, hidden, input);
     __shared__ float partials[128];
     partials[threadIdx.x] = value;
     __syncthreads();
@@ -1580,10 +1637,7 @@ __global__ void iquant_down_cooperative_route_kernel(
     const uint8_t *matrix = payloads[pair] + kScalarPayloadHeaderBytes + gate_up_len;
     const uint8_t *encoded = matrix + static_cast<std::size_t>(row) * row_bytes;
     const float *input = activated + static_cast<std::size_t>(pair) * intermediate;
-    float value = 0.0f;
-    for (int column = threadIdx.x; column < intermediate; column += blockDim.x) {
-        value += iq_value(dtype, encoded, column) * input[column];
-    }
+    const float value = iq_cooperative_partial_dot(dtype, encoded, intermediate, input);
     __shared__ float partials[128];
     partials[threadIdx.x] = value;
     __syncthreads();

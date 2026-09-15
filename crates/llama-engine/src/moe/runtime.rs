@@ -1509,6 +1509,17 @@ impl MoeRuntime {
     }
 
     #[cfg(feature = "cuda")]
+    fn warmup_enabled() -> bool {
+        // O aquecimento percorre experts em ordem de arquivo, não em ordem de
+        // rota. Em um modelo grande isso pode ocupar todo o orçamento antes
+        // da primeira requisição e expulsar exatamente o working set que ela
+        // precisa. Latência da primeira requisição é a política padrão; o
+        // operador pode habilitar o preenchimento em uma janela ociosa.
+        std::env::var("POM_MOE_WARMUP")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    }
+
+    #[cfg(feature = "cuda")]
     fn warmup_max_duration() -> Duration {
         const DEFAULT_MAX_MS: u64 = 30_000;
         match std::env::var("POM_MOE_WARMUP_MAX_MS") {
@@ -1547,6 +1558,13 @@ impl MoeRuntime {
         let Some(device_cache) = self.device_cache.clone() else {
             return;
         };
+        if !Self::warmup_enabled() {
+            tracing::debug!(
+                model = %self.model,
+                "aquecimento do cache MoE desabilitado; a primeira rota terá prioridade"
+            );
+            return;
+        }
         let options = DeviceWarmupOptions::new(Self::warmup_max_duration());
         let cancellation = Arc::clone(&options.cancellation);
         {

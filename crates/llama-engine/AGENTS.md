@@ -59,9 +59,16 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   os metadados de memória. O caminho uniforme IQ3_XXS (dtype 18) também usa o
   pipeline persistente e kernels cooperativos; IQ e K compartilham buffers e
   o mesmo agrupamento por CUDA<n>, sem `cudaDeviceSynchronize` no hot path.
-  No IQ3_XXS uma warp cobre o superbloco inteiro: cada lane processa os oito
-  valores de uma fatia `(group, il)` e a soma usa shuffle, sem uma árvore de
-  shared memory de quatro warps por linha.
+  No IQ3_XXS a entrada é quantizada para `block_q8_1` e o decoder nativo
+  `vec_dot_iq3_xxs_q8_1` do fork usa `dp4a`. As 32 lanes cobrem quatro
+  superblocos por warp, cada uma processando uma fatia q8 e avançando em
+  passos de quatro, sem uma árvore de shared memory por linha. Gate e up são
+  calculados na mesma warp e os buffers q8 de hidden e ativação ficam
+  residentes na pipeline persistente.
+  O caminho heterogêneo também usa os `vec_dot_*_q8_1` canônicos para Q4/K/IQ,
+  quantiza hidden e ativação em buffers persistentes e executa uma warp por
+  linha; isso é importante para GGUF como Mistral-Small, que combina dtypes
+  18, 22 e 23 nos papéis gate/up/down.
   Com o perfil CUDA, `cuda_device_calls` separa chamadas, experts e tempos por
   ordinal para distinguir bytes residentes de uso efetivo da placa.
   A cobertura CUDA por dtype e os números da ksia ficam em

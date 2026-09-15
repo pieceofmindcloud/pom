@@ -2361,13 +2361,20 @@ O cache de device começa vazio por desenho: a carga do modelo cria o
 selecionava um expert. Isso deixava a VRAM baixa após o carregamento e fazia as
 primeiras requisições pagarem a leitura do GGUF e o upload dos pesos.
 
-O `MoeRuntime` agora inicia, somente quando existe uma ponte CUDA para a fonte
-selecionada, uma thread de aquecimento assíncrona no carregamento do modelo.
-Ela percorre os experts por camada e índice, pede ao próprio loader o payload
+Quando existe uma ponte CUDA para a fonte selecionada, o `MoeRuntime` pode
+iniciar uma thread de aquecimento assíncrona no carregamento do modelo. Ela
+percorre os experts por camada e índice, pede ao próprio loader o payload
 canônico de cada tensor e chama a mesma admissão do caminho quente. O dispatch
 é por `MoeSource` e pelos metadados do tensor; não há ramo por arquitetura,
 modelo ou versão de quantização. Em um GGUF heterogêneo, cada papel e dtype
 recebe a mesma chave e descriptor que o forward usa.
+
+O aquecimento é opt-in por `POM_MOE_WARMUP=1` (ou `true`). O padrão é
+priorizar a primeira requisição: a ordem dos experts no arquivo não é a ordem
+da rota real e o preenchimento especulativo pode ocupar o orçamento, gerar
+evictions e aumentar o TTFT. Em uma janela ociosa, o operador pode habilitá-lo
+explicitamente; `POM_MOE_WARMUP_MAX_MS` continua controlando o prazo, com
+30.000 ms como padrão.
 
 O limite continua sendo o orçamento de VRAM medido, incluindo a reserva de
 compute já reportada pelo `llama.cpp`. Quando a admissão devolve
@@ -2376,10 +2383,9 @@ compute já reportada pelo `llama.cpp`. Quando a admissão devolve
 fora do aquecimento e continuam sujeitos ao LRU sob demanda. Ele não falha o
 carregamento por o modelo inteiro não caber.
 
-O prazo padrão é 30.000 ms e pode ser ajustado por
-`POM_MOE_WARMUP_MAX_MS`. A thread verifica o prazo e um `AtomicBool` antes de
-cada candidato; `MoeRuntime::cancel_device_warmup` permite cancelamento
-cooperativo sem remover entradas já admitidas. Logs de início e fim registram
+O prazo pode ser ajustado por `POM_MOE_WARMUP_MAX_MS`. A thread verifica o
+prazo e um `AtomicBool` antes de cada candidato; `MoeRuntime::cancel_device_warmup`
+permite cancelamento cooperativo sem remover entradas já admitidas. Logs de início e fim registram
 modelo, status, bytes admitidos e motivo de parada. A telemetria
 `moe_executor_diagnostics` publica `warmup_status`, candidatos visitados,
 experts admitidos, bytes residentes, duração e erro. Assim uma subida não fica
@@ -2654,24 +2660,27 @@ llama.cpp ou ao FreeToken.
 ### Fase 5.9: caminho efetivo IQ3_XXS e kernel cooperativo - 2026-09-15
 
 A telemetria do modelo `Mistral-Small-4-119B-2603-UD-IQ3_XXS-9c2b030b`
-mostrou `IQ3_XXS` (dtype GGML 18), não uma carga heterogênea. Por isso a
-otimização heterogênea da fase anterior não tocava o caminho medido: o
-`IqQuantCudaExecutor` ainda chamava `pom_moe_iquant_forward_route_batch_resident`,
-que fazia `cudaMalloc`/`cudaFree` e `cudaDeviceSynchronize` em cada chamada.
+mostrou os dtypes GGML `18`, `22` e `23` juntos. Isso significa que o modelo
+usa o `HeterogeneousCudaExecutor`, não o `IqQuantCudaExecutor` uniforme. A
+otimização heterogênea da fase anterior ainda deixava o dot product escalar:
+o `HeterogeneousRoutePipeline` atribuía uma linha a um bloco de 128 threads,
+e cada thread repetia o loop completo sobre as colunas.
 Além disso, cada thread do kernel IQ calculava sozinha o dot product completo
 de uma linha, repetindo o mesmo trabalho dentro do bloco. Esse era o custo
 local observado como `978-1495 ms` no prefill e `83-117 ms` por decode, não uma
 espera de fila: a telemetria do nó registrou fila e setup abaixo de 1 ms.
 
-O caminho IQ agora compartilha o mesmo workspace persistente por `(device,
-geometria)` usado pelos K-quants. O runtime cria um pipeline para cada shard
-`CUDA<n>` do cache residente, agrupa as rotas pelo ordinal e executa os grupos
-em paralelo; nenhum device é escolhido como `main_gpu` único pelo executor.
+O caminho IQ uniforme continua compartilhando o mesmo workspace persistente por
+`(device, geometria)` usado pelos K-quants. O runtime cria um pipeline para
+cada shard `CUDA<n>` do cache residente, agrupa as rotas pelo ordinal e executa
+os grupos em paralelo; nenhum device é escolhido como `main_gpu` único pelo
+executor.
 Os IQs genéricos atribuem uma linha a um bloco de 128 threads e reduzem os
 fragmentos do dot product em shared memory. Para o IQ3_XXS medido, cada linha
 usa uma única warp de 32 threads: cada lane processa os oito valores de uma
-fatia `(group, il)` e a soma usa shuffle. Isso reduz de quatro para uma warp o
-trabalho de coordenação da linha e elimina a árvore de shared memory, mantendo a sequência
+fatia `(group, il)` e a soma usa shuffle. Gate e up são calculados na mesma
+warp, reutilizando o hidden e reduzindo pela metade os blocos dessa etapa.
+Isso reduz de quatro para uma warp o trabalho de coordenação da linha e elimina a árvore de shared memory, mantendo a sequência
 gate/up, SiLU, down e agregação. O D2H síncrono continua sendo a barreira
 necessária para devolver o resultado ao callback, mas o
 `cudaDeviceSynchronize` adicional foi removido e o perfil publica
@@ -2706,6 +2715,43 @@ memória. A comparação contra `dense/llama.cpp` e contra FreeToken precisa ser
 repetida na ksia com o build CUDA novo: este worktree não possui `nvcc` nem
 GPU, então não há uma alegação local de throughput.
 
+### Fase 5.11: MMVQ q8 também no executor heterogêneo - 2026-09-15
+
+O JSON da telemetria fechou a causa do intervalo de cinco segundos. No prefill
+de 45 tokens, `node_moe_forward_ms=4706,821` dentro de
+`node_backend_enqueue_ms=4994,464`; `node_queue_ms=0,038`,
+`node_lock_wait_ms=0`, `node_scheduler_wait_ms=0,012`, rede `0 ms` e a cópia
+D2H `0,394 ms`. Portanto não havia um timeout de cinco segundos no pipeline.
+O campo `node_moe_forward_ms` é o callback externo síncrono que o llama.cpp
+espera terminar antes de devolver o prefill.
+
+O mesmo JSON mostra o custo que dominava esse callback: do fim do prefill ao
+fim do decode entraram mais `2406` misses/admissions, `2399` evictions e
+`10,5 GB` de uploads para os devices. O cache residente tinha aproximadamente
+`8,25 GB` em CUDA0 e `8,17 GB` em CUDA1, e o warmup já tinha admitido `3766`
+experts antes de atingir o orçamento. Isso é thrashing por working set, não
+fila de scheduler. Como os leases são liberados ao fim de cada camada e o
+decode visita novas rotas, uma nova requisição pode expulsar os experts usados
+no prefill; por isso repetir o prompt não garante hit. O `warmup_status` foi
+`budget-exhausted`, não `timed-out`, e o warmup é assíncrono, então seus
+`4726 ms` não representam uma espera bloqueante no decode.
+
+O pipeline heterogêneo agora quantiza hidden e ativação em `block_q8_1` usando
+buffers persistentes, chama os `vec_dot_*_q8_1` canônicos do fork para Q4/K/IQ
+e faz uma warp de 32 lanes por linha. Isso elimina os quatro warps redundantes
+do bloco escalar e usa dp4a também quando gate/up/down têm dtypes diferentes.
+O lançamento passa de quatro para seis kernels (duas quantizações, gate/up,
+ativação, down e agregação), sem `cudaDeviceSynchronize`; a cópia D2H continua
+sendo a barreira de conclusão.
+
+Para confirmar o restante na ksia, ligar `POM_MOE_CUDA_PROFILE=1` desde o
+arranque. O perfil deve mostrar `cuda_device_calls` para CUDA0 e CUDA1 e
+separar `kernel_ms` de `cuda_call_wall_ms`; os contadores cumulativos de cache
+devem ser comparados por delta entre prefill e decode. A otimização q8 reduz o
+compute do callback, mas não pode fazer caber em 16 GB um working set de
+experts maior que a VRAM: se os misses continuarem altos, o próximo ajuste é
+afinidade/prefetch por camada, não um timeout maior.
+
 ### Comparação isolada em uma máquina - 2026-09-15
 
 Uma execução real no nó `5b035803`, com duas RTX 5060 Ti e sem salto de
@@ -2732,6 +2778,35 @@ telemetria deve incluir `cuda_device_calls` e
 de scheduler já elimina timeouts como hipótese principal; a hipótese restante
 é o custo do callback por camada, das cópias host/device e do decoder IQ3_XXS
 customizado, a comparar com as chamadas CUDA otimizadas do caminho denso.
+
+### Fase 5.10: caminho IQ3_XXS alinhado ao MMVQ CUDA - 2026-09-15
+
+O decoder cooperativo anterior ainda fazia a aritmética do codebook em float.
+Isso divergia do caminho MMVQ do fork, que primeiro quantiza a ativação para
+`block_q8_1` e usa `vec_dot_iq3_xxs_q8_1` com `dp4a`. O pipeline IQ3_XXS agora
+mantém buffers q8 persistentes para hidden e ativação, quantiza cada linha em
+uma warp e usa o decoder canônico do checkout ativo do fork. Gate e up usam a
+mesma warp e down reutiliza a ativação q8. O `build.rs` inclui
+`ggml/src/ggml-cuda/vecdotq.cuh` do mesmo `LLAMA_SOURCE` usado pelo binding;
+nenhum arquivo do fork foi alterado.
+
+O mapeamento de lanes segue a fórmula MMVQ para IQ3_XXS: oito chunks q8 por
+superbloco, quatro superblocos cobertos em paralelo por warp, e cada lane
+avança de quatro em quatro superblocos. Isso evita deixar 24 lanes ociosas no
+dot product. As verificações de geometria e a capacidade persistente continuam
+impedindo overflow ou realocação no caminho estável.
+
+Duas medições posteriores na mesma máquina de duas RTX 5060 Ti confirmaram o
+perfil do gargalo antes desta otimização. Para 16 tokens de prompt e 15 de
+saída, o prefill levou `5323 ms` e o decode teve p50/p95 de `254,5/382,0 ms`.
+Para 45 tokens de prompt e 91 de saída, o prefill levou `4998 ms` e o decode
+teve p50/p95 de `277,1/470,7 ms`. Rede, fila e espera do mutex do motor ficaram
+em torno de `0-4 ms`, e o setup caiu de `152 ms` na primeira carga para menos
+de `1 ms` na seguinte. O prefill quase fixo perto de cinco segundos, mesmo com
+prompts de tamanhos diferentes, é trabalho de compute dos 36 callbacks, não
+timeout ou espera de transporte. O caminho q8/dp4a ataca justamente esse
+trabalho, mas a confirmação de throughput e de correção numérica precisa ser
+feita na ksia com `POM_MOE_CUDA_PROFILE=1`.
 
 ## Defeitos anotados
 

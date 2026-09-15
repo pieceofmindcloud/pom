@@ -28,14 +28,14 @@ fn main() {
     );
     mtp_arch::generate(&llama_cpp_root, &out_dir);
     build_mtp_shim();
-    build_moe_cuda();
+    build_moe_cuda(&llama_cpp_root);
 }
 
 /// Compila os kernels do executor MoE próprio quando o binário usa CUDA.
 ///
 /// O host continua em Rust e só chama a ABI C mínima exportada pelo arquivo
 /// CUDA. Não há Python, Triton ou processo externo no caminho de inferência.
-fn build_moe_cuda() {
+fn build_moe_cuda(llama_cpp_root: &Path) {
     if std::env::var_os("CARGO_FEATURE_CUDA").is_none() {
         return;
     }
@@ -75,6 +75,25 @@ fn build_moe_cuda() {
         "-O3",
         "--std=c++17",
     ]);
+    // The IQ3_XXS route reuses llama.cpp's canonical q8_1 vector-dot
+    // implementation (MMVQ/dp4a). Keep the include roots tied to the exact
+    // fork selected by DEP_LLAMA_LLAMA_SOURCE/LLAMA_SOURCE rather than to the
+    // ignored vendored checkout.
+    let ggml_root = llama_cpp_root.join("ggml");
+    for include in [ggml_root.join("include"), ggml_root.join("src")] {
+        compile.arg("-I");
+        compile.arg(include);
+    }
+    for dependency in [
+        "src/ggml-common.h",
+        "src/ggml-cuda/common.cuh",
+        "src/ggml-cuda/vecdotq.cuh",
+    ] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            ggml_root.join(dependency).display()
+        );
+    }
     if let Some(arch) = std::env::var_os("CUDAARCHS") {
         let arch = arch.to_string_lossy();
         let arch = arch.split(';').next().unwrap_or_default();

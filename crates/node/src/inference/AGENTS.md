@@ -583,14 +583,16 @@ visibilidade dos controles de implantação na UI local.
   vivem em `docs/subsystems/freetoken-moe.md`.
   O wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
   atenção, demais camadas ou a amostragem do `LlmEngine`.
-  Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` percorre os
+  Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` pode percorrer os
   payloads canônicos por camada, expert, papel e dtype em uma thread separada,
-  usando a mesma admissão do cache residente. O orçamento continua derivado da
-  memória livre e da reserva do compute buffer medido; `warmup_status`, bytes,
-  candidatos e erros chegam em `moe_executor_diagnostics`. O prazo é
-  `POM_MOE_WARMUP_MAX_MS` (30 s por padrão) e `cancel_device_warmup` faz
-  cancelamento cooperativo entre payloads. Fontes sem ponte device não aquecem
-  nem removem experts do llama.cpp.
+  usando a mesma admissão do cache residente. O aquecimento é opt-in por
+  `POM_MOE_WARMUP=1` ou `true`; por padrão a primeira requisição tem prioridade,
+  pois a ordem do arquivo pode expulsar o working set real. O orçamento continua
+  derivado da memória livre e da reserva do compute buffer medido;
+  `warmup_status`, bytes, candidatos e erros chegam em
+  `moe_executor_diagnostics`. O prazo é `POM_MOE_WARMUP_MAX_MS` (30 s por
+  padrão) e `cancel_device_warmup` faz cancelamento cooperativo entre payloads.
+  Fontes sem ponte device não aquecem nem removem experts do llama.cpp.
   A prova numérica `nvfp4_matches_llama_cpp_from_first_layer_and_stage` é
   ignorada por depender de GGUF real: com `POM_MOE_NUMERIC_MODEL` e
   `POM_MOE_NUMERIC_ACTIVATION`, ela compara camada a camada `gate`, `up`,

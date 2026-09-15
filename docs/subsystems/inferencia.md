@@ -483,13 +483,22 @@ impedir uma ordenação explícita insegura sem alterar a distribuição de mem�
 depois da sondagem.
 
 O executor externo de MoE é um callback de host, mas usa CUDA internamente.
-Todas as entradas da ponte fixam alocações, streams e eventos no CUDA 0, o
-dispositivo cujo orçamento o cache mede, e restauram o dispositivo corrente do
-thread ao sair. Sem essa guarda, o callback pode deixar o thread no CUDA 0 e a
-próxima espera do scheduler no backend CUDA 1 receber um stream ou evento no
-contexto corrente errado. As 59 divisões observadas com o hook são esperadas:
+Cada entrada da ponte recebe o ordinal da GPU da shard e fixa alocações, streams
+e eventos nessa placa, restaurando o dispositivo corrente do thread ao sair.
+Sem essa guarda, o callback pode deixar o thread em uma GPU e a próxima espera
+do scheduler em outra receber um stream ou evento no contexto corrente errado.
+O cache residente mede os compute buffers por `CUDA<n>`, mantém orçamento e LRU
+separados por placa e as rotas executam em paralelo os grupos de GPUs antes de
+somar os parciais. As 59 divisões observadas com o hook são esperadas:
 cada camada externalizada atravessa a operação customizada de host; reduzir
 esse número não corrige a afinidade nem substitui a sincronização correta.
+
+O aquecimento do cache é oportunista e cooperativo. Quando chega a primeira
+rota real, o runtime o cancela sem remover entradas já admitidas; assim a thread
+de aquecimento não pode expulsar o working set da requisição nem transformar
+uma segunda chamada em outra sequência de misses e uploads. O detalhe da causa
+confirmada e da correção fica em `docs/subsystems/freetoken-moe.md`, seção
+"Fase 5.7".
 
 A guarda também é a fronteira de degradação para o defeito observado em
 01/09/2026: a combinação Vulkan/CUDA mantém a ordem padrão do llama.cpp e não
@@ -1393,8 +1402,10 @@ delegam ao `LlmEngine`, então esta é uma ligação parcial do bloco, não um
 transformer MoE completo. Q4_0, NVFP4, K-quants e IQ-quants usam loaders
 próprios com validação da ordem GGUF `[input, output, experts]` antes do
 forward. Com a feature `cuda`, Q4_0 usa a ponte heterogênea CUDA e o cache
-residente; sem CUDA, o decoder CPU é uma escolha explícita na telemetria e no
-log de inicialização. O caminho CUDA continua reservado aos dtypes com ponte
+residente particionado por `CUDA0`, `CUDA1`, ...; cada shard recebe os experts
+por uma colocação estável e a rota junta os parciais das placas em paralelo.
+Sem CUDA, o decoder CPU é uma escolha explícita na telemetria e no log de
+inicialização. O caminho CUDA continua reservado aos dtypes com ponte
 validada, e não há fallback nativo silencioso quando a seleção MoE externa
 falha.
 

@@ -2549,6 +2549,57 @@ modelo, com os dtypes que a bloquearam; não há fallback nativo silencioso.
 Ainda não há prova CUDA nesta máquina, porque não existe compilador CUDA local;
 a prova diferencial e o E2E nos GGUF reais precisam ser executados na ksia.
 
+### Fase 5.7: cache residente e execução CUDA multi-GPU - 2026-09-15
+
+O diagnóstico do captain na ksia comparou `moe/q4_0` e
+`dense/llama.cpp` no mesmo nó `5b035803`, com duas RTX 5060 Ti. O MoE mediu
+`765 ms` p50 e `952 ms` p95 por chamada de decode, enquanto o denso mediu
+`52 ms` e `93 ms`. A contagem `36 GPU / 0 CPU / 0 mixed` não provava que o
+executor externo usava as duas placas: ela descrevia somente as camadas que o
+llama.cpp alocou.
+
+A causa raiz ficou confirmada no código próprio do POM, não no fork
+`vendor/llama-cpp-sys-2/llama.cpp`: `cuda_kernels.cu` fixava
+`kMoeCudaDevice = 0`, e todas as alocações, uploads, streams, eventos e
+liberações do executor usavam esse device. Além disso, `DeviceExpertCache`
+mantinha uma única conta de memória e um único allocator. O caminho denso, em
+contraste, passa a lista de devices e o `tensor_split` do `FitPlan` para
+`llama_model_params` antes de `llama_model_load_from_file`; o fork recebe essa
+configuração pelo caminho nativo, mas o executor MoE não a recebia.
+
+O conserto mantém a mesma topologia observada pelo contexto denso:
+
+- `cuda_compute_bytes_by_device` agrupa os compute buffers por `CUDA<n>` e
+  ignora `CUDA_Host`;
+- `DeviceExpertCache::new_sharded` cria um orçamento, LRU e allocator por placa.
+  O hash estável de modelo/camada/expert mantém todos os papéis do mesmo expert
+  na mesma GPU e os leases carregam o ordinal para a ponte CUDA;
+- as pipelines residentes e todas as entradas FFI recebem o ordinal explícito.
+  O RAII CUDA seleciona a placa para cada chamada e restaura o device anterior;
+- uma rota é agrupada por GPU, cada grupo roda em sua pipeline própria em
+  paralelo e os vetores completos são somados no host. Assim os experts
+  selecionados em placas diferentes não voltam a CUDA0 nem compartilham um
+  único mutex de pipeline.
+
+A segunda execução sem melhora também tinha uma causa de estado no caminho
+  externo. O orçamento agregado era aplicado a uma única placa, de modo que o
+  LRU expulsava experts residentes quando o working set não cabia na capacidade
+  de CUDA0, mesmo havendo VRAM livre na CUDA1. Em paralelo, o aquecimento
+  assíncrono continuava admitindo experts de camadas futuras e podia competir
+  com a primeira rota, causando misses, eviction e chamadas que não terminavam
+  no tempo esperado. O orçamento agora é por placa e a primeira rota real chama
+  `cancel_device_warmup`, preservando as entradas já admitidas e deixando o
+  working set da requisição controlar o cache. Hits posteriores retornam o
+  mesmo handle e o mesmo ordinal sem novo upload.
+
+Os testes de parser e cache cobrem a separação por `CUDA0`/`CUDA1`, a admissão
+em ambos os shards e a reutilização do device de uma chave. Neste worktree,
+`cargo test -p llama-engine` passou com `306` testes e `11` ignorados. Não há
+GPU NVIDIA nem `nvcc` local, então a prova física de duas placas, a medição de
+decode e a confirmação final da queda de 15x precisam ser repetidas pelo
+captain na ksia com o perfil CUDA ligado. O fork nativo não foi alterado nesta
+correção.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

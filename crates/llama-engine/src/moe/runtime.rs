@@ -89,6 +89,8 @@ pub struct MoeExecutorDiagnostics {
     pub device_cache_upload_bytes: u64,
     pub device_cache_upload_ms: f64,
     pub device_cache_resident_bytes: usize,
+    pub device_cache_devices: Vec<String>,
+    pub device_cache_resident_bytes_by_device: Vec<usize>,
     pub payload_validation_ms: f64,
     pub cuda_alloc_ms: f64,
     pub cuda_h2d_ms: f64,
@@ -401,20 +403,27 @@ fn log_moe_layer_input_diagnostic(
 }
 
 #[cfg(any(feature = "cuda", test))]
-fn require_cuda_compute_bytes(compute_bytes: Option<u64>) -> Result<u64, MoeRuntimeError> {
-    compute_bytes.filter(|bytes| *bytes > 0).ok_or_else(|| {
+fn require_cuda_compute_bytes(compute_bytes: Option<&[(u32, u64)]>) -> Result<(), MoeRuntimeError> {
+    compute_bytes
+        .filter(|devices| !devices.is_empty() && devices.iter().all(|(_, bytes)| *bytes > 0))
+        .ok_or_else(|| {
         MoeRuntimeError::Block(
-            "executor CUDA recusado: llama.cpp não reportou um compute buffer CUDA medido".into(),
+            "executor CUDA recusado: llama.cpp não reportou um compute buffer CUDA medido por dispositivo".into(),
         )
     })
+    .map(|_| ())
 }
 
 #[cfg(feature = "cuda")]
 fn create_measured_device_cache(
-    compute_bytes: Option<u64>,
+    compute_bytes: Option<&[(u32, u64)]>,
 ) -> Result<Arc<super::cache::DeviceExpertCache>, MoeRuntimeError> {
-    let compute_bytes = require_cuda_compute_bytes(compute_bytes)?;
-    super::cuda::create_device_cache(compute_bytes)
+    let compute_bytes = compute_bytes.ok_or_else(|| {
+        MoeRuntimeError::Block(
+            "executor CUDA recusado: llama.cpp não reportou compute buffers CUDA medidos por dispositivo".into(),
+        )
+    })?;
+    super::cuda::create_device_cache_for_devices(compute_bytes)
         .map_err(|error| MoeRuntimeError::Block(error.to_string()))
 }
 
@@ -890,10 +899,14 @@ impl MoeRuntime {
         experts: u32,
         top_k: usize,
         weights_bytes: u64,
-        cuda_compute_bytes: Option<u64>,
+        cuda_compute_bytes: Option<Vec<(u32, u64)>>,
     ) -> Result<Self, MoeRuntimeError> {
         #[cfg(not(feature = "cuda"))]
         let _ = cuda_compute_bytes;
+        #[cfg(feature = "cuda")]
+        let cuda_compute_bytes = cuda_compute_bytes.as_deref();
+        #[cfg(feature = "cuda")]
+        require_cuda_compute_bytes(cuda_compute_bytes)?;
         let cache = ExpertCache::measured_system(weights_bytes, 0, 0)?;
         let model = model.into();
         let detected = detect_expert_format(&path)?;
@@ -1717,6 +1730,12 @@ impl MoeRuntime {
                     diagnostics.device_cache_upload_bytes = device_cache.upload_bytes;
                     diagnostics.device_cache_upload_ms = device_cache.upload_ms;
                     diagnostics.device_cache_resident_bytes = device_cache.resident_bytes;
+                    diagnostics.device_cache_devices = device_cache.device_names();
+                    diagnostics.device_cache_resident_bytes_by_device = device_cache
+                        .per_device_stats()
+                        .into_iter()
+                        .map(|stats| stats.resident_bytes)
+                        .collect();
                     device_cache_recorded = true;
                 }
                 if let MoeBlock::Nvfp4(block) = block {
@@ -1896,6 +1915,13 @@ impl MoeRuntime {
                 )));
             }
         }
+
+        // O aquecimento é oportunista. Quando chega uma requisição real, ele
+        // precisa ceder o cache e a GPU para o working set dessa requisição;
+        // caso contrário, a thread de fundo pode continuar admitindo experts
+        // de camadas futuras e expulsar os experts usados no turno anterior.
+        #[cfg(feature = "cuda")]
+        self.cancel_device_warmup();
 
         log_moe_layer_input_diagnostic(
             &self.source,
@@ -2529,7 +2555,8 @@ mod tests {
         assert!(plan.enabled());
         assert_eq!(plan.layers, vec![1]);
         assert!(plan.reason.is_none());
-        let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
+        let runtime =
+            MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(vec![(0, 1_000_000)])).unwrap();
         assert_eq!(
             runtime.executor_telemetry().executor,
             MoeExecutorKind::CpuReference
@@ -2558,7 +2585,8 @@ mod tests {
                 std::process::id()
             ));
             write_k_source(&path, dtype, format);
-            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
+            let runtime =
+                MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(vec![(0, 1_000_000)])).unwrap();
             assert_eq!(runtime.layers(), 1, "formato {expected}");
             let output = runtime.forward_batch(0, &[1.0; 512], 2).unwrap();
             assert_eq!(output.len(), 512, "formato {expected}");
@@ -2585,7 +2613,8 @@ mod tests {
                 std::process::id()
             ));
             write_iq_source(&path, dtype, format, false);
-            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
+            let runtime =
+                MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(vec![(0, 1_000_000)])).unwrap();
             assert_eq!(runtime.layers(), 1, "formato {}", format.name());
             let output = runtime.forward_batch(0, &[1.0; 512], 2).unwrap();
             assert_eq!(output.len(), 512, "formato {}", format.name());
@@ -2602,7 +2631,8 @@ mod tests {
                 std::process::id()
             ));
             write_plain_source(&path, format, false);
-            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
+            let runtime =
+                MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(vec![(0, 1_000_000)])).unwrap();
             let output = runtime.forward_batch(0, &[1.0; 4], 2).unwrap();
             assert_eq!(output.len(), 4, "formato {}", format.name());
             std::fs::remove_file(path).unwrap();
@@ -2623,7 +2653,8 @@ mod tests {
                 std::process::id()
             ));
             write_legacy_source(&path, format, false);
-            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
+            let runtime =
+                MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(vec![(0, 1_000_000)])).unwrap();
             let output = runtime.forward_batch(0, &[1.0; 64], 2).unwrap();
             assert_eq!(output.len(), 64, "formato {}", format.name());
             std::fs::remove_file(path).unwrap();
@@ -2645,7 +2676,8 @@ mod tests {
                 std::process::id()
             ));
             write_low_bit_source(&path, format, false);
-            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
+            let runtime =
+                MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(vec![(0, 1_000_000)])).unwrap();
             let output = runtime.forward_batch(0, &[1.0; 512], 2).unwrap();
             assert_eq!(output.len(), 512, "formato {}", format.name());
             std::fs::remove_file(path).unwrap();

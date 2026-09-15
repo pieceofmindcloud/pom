@@ -153,6 +153,11 @@ visibilidade dos controles de implantação na UI local.
   vez de executar experts nativos e externos. O contexto MTP criado sobre o
   modelo metadata-only recebe o mesmo hook no `LlmEngine`; sem isso
   `llama_decode` do contexto `nextn` falha e a sessão perde MTP.
+  Para o executor MoE CUDA, o `infer_server` passa os compute buffers medidos
+  por ordinal ao runtime, que cria uma shard residente por `CUDA<n>` e publica
+  os dispositivos no diagnóstico. A primeira rota real cancela o aquecimento
+  oportunista para que ele não expulse o working set enquanto uma requisição
+  está em voo.
   O metadata do primeiro prefill também carrega `thinking_enabled`, a escolha
   por inferência do Chat. A cabeça combina esse valor com `no_thinking` antes
   do template e os caminhos hub, anel e direto o preservam nos relays.
@@ -407,11 +412,12 @@ visibilidade dos controles de implantação na UI local.
   Q2_K (10), Q3_K (11), Q4_K (12), Q5_K (13), Q6_K (14), IQ3_XXS (18),
   IQ3_S (21), IQ2_S (22), IQ4_XS (23) e MXFP4 (39). Q8_K (15) fica de fora
   por ser formato de ativação, nunca de peso de expert.
-  Todas as entradas FFI do executor externo fixam as alocações, streams e
-  eventos no CUDA 0, que é o dispositivo do orçamento do cache, e restauram o
-  dispositivo corrente do chamador ao retornar. Isso é obrigatório porque o
-  callback roda dentro do scheduler e pode ser seguido por uma cópia ou espera
-  do llama.cpp em outra GPU.
+  Todas as entradas FFI do executor externo recebem o ordinal da shard e fixam
+  alocações, streams e eventos nessa GPU, restaurando o dispositivo corrente do
+  chamador ao retornar. O cache mede cada `CUDA<n>` separadamente e as rotas
+  agregam em paralelo os parciais das placas envolvidas. Isso é obrigatório
+  porque o callback roda dentro do scheduler e pode ser seguido por uma cópia
+  ou espera do llama.cpp em outra GPU.
   A ponte heterogênea usa descritores por papel e dtype para esses formatos, sem
   converter a combinação para um dtype global. O hook comum recebe a rota do llama.cpp já
   em ordem token-major, a ordem física produzida por `ggml_get_rows`; `llm.rs`

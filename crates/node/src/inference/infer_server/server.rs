@@ -635,7 +635,7 @@ pub async fn run(
         let weights_bytes = std::fs::metadata(&cfg.model_path)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
-        let cuda_compute_bytes = engine.cuda_compute_bytes();
+        let cuda_compute_bytes = engine.cuda_compute_bytes_by_device();
         Some(Arc::new(
             crate::moe::runtime::MoeRuntime::open(
                 &cfg.model_path,
@@ -683,7 +683,11 @@ pub async fn run(
                 requested_n_gpu_layers = cfg.n_gpu_layers,
                 moe_executor = telemetry.executor.as_str(),
                 dtypes = ?telemetry.dtypes,
-                "executor MoE CUDA selecionado; experts serão admitidos no cache residente"
+                devices = ?telemetry
+                    .diagnostics
+                    .as_ref()
+                    .map(|diagnostics| &diagnostics.device_cache_devices),
+                "executor MoE CUDA selecionado; experts serão admitidos no cache residente particionado por GPU"
             );
         }
         runtime.start_device_warmup();

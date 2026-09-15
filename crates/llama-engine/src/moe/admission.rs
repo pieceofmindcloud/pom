@@ -90,9 +90,22 @@ pub fn device_cache_reserve_bytes(compute_bytes: u64) -> Option<u64> {
 /// `None`, para que o chamador recuse o executor residente em vez de assumir
 /// zero.
 pub fn cuda_compute_bytes_from_llama_memory(memory: &serde_json::Value) -> Option<u64> {
+    cuda_compute_bytes_by_device(memory).and_then(|devices| {
+        devices
+            .into_iter()
+            .try_fold(0u64, |total, (_, bytes)| total.checked_add(bytes))
+    })
+}
+
+/// Extrai os compute buffers CUDA indexados pelo ordinal real da placa.
+///
+/// O caminho denso do llama.cpp pode espalhar o contexto por `CUDA0`, `CUDA1`
+/// e assim por diante. O executor externo precisa manter essa mesma dimensão:
+/// um orçamento agregado faria o LRU admitir bytes em uma única placa mesmo
+/// quando o relatório já provou que há compute buffers em várias placas.
+pub fn cuda_compute_bytes_by_device(memory: &serde_json::Value) -> Option<Vec<(u32, u64)>> {
     let buffers = memory.get("buffers")?.as_array()?;
-    let mut total = 0u64;
-    let mut found = false;
+    let mut totals = std::collections::BTreeMap::<u32, u64>::new();
 
     for buffer in buffers {
         let name = buffer.get("buffer")?.as_str()?;
@@ -100,15 +113,22 @@ pub fn cuda_compute_bytes_from_llama_memory(memory: &serde_json::Value) -> Optio
             continue;
         }
         let device = buffer.get("device")?.as_str()?;
-        if !device.starts_with("CUDA") {
+        let Some(device_index) = device
+            .strip_prefix("CUDA")
+            .and_then(|index| index.parse::<u32>().ok())
+        else {
             return None;
-        }
+        };
         let compute = buffer.get("compute")?.as_u64()?;
-        total = total.checked_add(compute)?;
-        found |= compute > 0;
+        let total = totals.entry(device_index).or_default();
+        *total = total.checked_add(compute)?;
     }
 
-    found.then_some(total)
+    let devices = totals
+        .into_iter()
+        .filter(|(_, bytes)| *bytes > 0)
+        .collect::<Vec<_>>();
+    (!devices.is_empty()).then_some(devices)
 }
 
 impl MemoryAccount {
@@ -238,6 +258,22 @@ mod tests {
         });
 
         assert_eq!(cuda_compute_bytes_from_llama_memory(&memory), Some(1000));
+    }
+
+    #[test]
+    fn extrai_compute_cuda_separado_por_dispositivo() {
+        let memory = serde_json::json!({
+            "buffers": [
+                {"buffer": "CUDA0", "device": "CUDA0", "compute": 1000},
+                {"buffer": "CUDA1", "device": "CUDA1", "compute": 2000},
+                {"buffer": "CUDA_Host", "device": "CUDA0", "compute": 3000}
+            ]
+        });
+
+        assert_eq!(
+            cuda_compute_bytes_by_device(&memory),
+            Some(vec![(0, 1000), (1, 2000)])
+        );
     }
 
     #[test]

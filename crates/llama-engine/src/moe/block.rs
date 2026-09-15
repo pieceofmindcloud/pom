@@ -971,6 +971,10 @@ impl Q4_0MoeBlock {
         }
         cuda.run_route_batch_resident(
             &descriptors,
+            &leases
+                .iter()
+                .map(super::cache::DeviceExpertLease::device_index)
+                .collect::<Vec<_>>(),
             experts,
             token_ids,
             weights,
@@ -1355,11 +1359,13 @@ impl HeterogeneousMoeBlock {
 
         let mut descriptors = Vec::with_capacity(experts.len());
         let mut leases = Vec::new();
+        let mut device_indices = Vec::with_capacity(experts.len());
         for &expert in experts {
             let payloads = source
                 .load_expert_tensors(self.layer, expert)
                 .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
             let mut descriptor = CudaHeterogeneousExpert::default();
+            let mut expert_device_index = None;
             for payload in payloads {
                 let HeterogeneousTensorPayload {
                     role,
@@ -1381,6 +1387,16 @@ impl HeterogeneousMoeBlock {
                         .resident_admit(key, &bytes)
                         .map_err(|error| MoeBlockError::Executor(error.to_string()))?,
                 };
+                match expert_device_index {
+                    Some(expected) if expected != lease.device_index() => {
+                        return Err(MoeBlockError::Executor(format!(
+                            "expert heterogêneo {expert} foi particionado entre CUDA{expected} e CUDA{}",
+                            lease.device_index()
+                        )))
+                    }
+                    None => expert_device_index = Some(lease.device_index()),
+                    _ => {}
+                }
                 let tensor = CudaHeterogeneousTensor {
                     data: lease.handle() as *const u8,
                     bytes: lease.bytes(),
@@ -1408,11 +1424,18 @@ impl HeterogeneousMoeBlock {
                 }
                 leases.push(lease);
             }
+            let Some(device_index) = expert_device_index else {
+                return Err(MoeBlockError::Executor(format!(
+                    "expert heterogêneo {expert} não possui tensors"
+                )));
+            };
+            device_indices.push(device_index);
             descriptors.push(descriptor);
         }
         let output = cuda
             .run_route_batch_resident(
                 &descriptors,
+                &device_indices,
                 experts,
                 token_ids,
                 weights,

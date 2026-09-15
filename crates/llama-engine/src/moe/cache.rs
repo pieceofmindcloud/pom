@@ -8,8 +8,12 @@
 #[cfg(any(feature = "cuda", test))]
 use super::admission::CacheBudgetSnapshot;
 use super::admission::MemoryAccount;
+#[cfg(any(feature = "cuda", test))]
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt;
+#[cfg(any(feature = "cuda", test))]
+use std::hash::{Hash, Hasher};
 use std::io;
 #[cfg(any(feature = "cuda", test))]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -531,9 +535,41 @@ struct DeviceState {
 /// antes de passar o handle para um kernel.
 #[cfg(any(feature = "cuda", test))]
 pub struct DeviceExpertCache {
+    shards: Vec<DeviceCacheShard>,
+}
+
+#[cfg(any(feature = "cuda", test))]
+struct DeviceCacheShard {
+    device_index: u32,
     account: MemoryAccount,
     allocator: Arc<dyn DeviceAllocator>,
     state: Mutex<DeviceState>,
+}
+
+#[cfg(any(feature = "cuda", test))]
+fn aggregate_budget_snapshots(snapshots: &[CacheBudgetSnapshot]) -> CacheBudgetSnapshot {
+    let sum = |get: fn(&CacheBudgetSnapshot) -> u64| {
+        snapshots
+            .iter()
+            .try_fold(0u64, |total, snapshot| total.checked_add(get(snapshot)))
+    };
+    let sum_optional = |get: fn(&CacheBudgetSnapshot) -> Option<u64>| {
+        snapshots
+            .iter()
+            .try_fold(0u64, |total, snapshot| total.checked_add(get(snapshot)?))
+    };
+    CacheBudgetSnapshot {
+        baseline_free_bytes: sum(|snapshot| snapshot.baseline_free_bytes).unwrap_or(u64::MAX),
+        compute_bytes: sum(|snapshot| snapshot.compute_bytes).unwrap_or(u64::MAX),
+        weights_bytes: sum(|snapshot| snapshot.weights_bytes).unwrap_or(u64::MAX),
+        fixed_bytes: sum(|snapshot| snapshot.fixed_bytes).unwrap_or(u64::MAX),
+        reserve_bytes: sum(|snapshot| snapshot.reserve_bytes).unwrap_or(u64::MAX),
+        current_free_bytes: sum(|snapshot| snapshot.current_free_bytes).unwrap_or(u64::MAX),
+        resident_bytes: sum(|snapshot| snapshot.resident_bytes).unwrap_or(u64::MAX),
+        baseline_limit_bytes: sum_optional(|snapshot| snapshot.baseline_limit_bytes),
+        dynamic_limit_bytes: sum_optional(|snapshot| snapshot.dynamic_limit_bytes),
+        effective_limit_bytes: sum_optional(|snapshot| snapshot.effective_limit_bytes),
+    }
 }
 
 #[cfg(any(feature = "cuda", test))]
@@ -580,19 +616,91 @@ pub struct DeviceWarmupReport {
 #[cfg(any(feature = "cuda", test))]
 impl DeviceExpertCache {
     pub fn new(account: MemoryAccount, allocator: Arc<dyn DeviceAllocator>) -> Arc<Self> {
+        Self::new_sharded(vec![(0, account, allocator)])
+    }
+
+    /// Cria um cache particionado por dispositivo CUDA.
+    ///
+    /// Cada shard tem orçamento e LRU próprios, pois `cudaMemGetInfo` e os
+    /// handles de experts são específicos da placa. O hash ignora o formato
+    /// para que gate/up/down do mesmo expert heterogêneo permaneçam na mesma
+    /// GPU. A ordem recebida também é a ordem publicada nos diagnósticos.
+    pub fn new_sharded(shards: Vec<(u32, MemoryAccount, Arc<dyn DeviceAllocator>)>) -> Arc<Self> {
+        assert!(!shards.is_empty(), "cache de device precisa de um shard");
         Arc::new(Self {
-            account,
-            allocator,
-            state: Mutex::new(DeviceState {
-                entries: HashMap::new(),
-                clock: 0,
-                stats: DeviceCacheStats::default(),
-            }),
+            shards: shards
+                .into_iter()
+                .map(|(device_index, account, allocator)| DeviceCacheShard {
+                    device_index,
+                    account,
+                    allocator,
+                    state: Mutex::new(DeviceState {
+                        entries: HashMap::new(),
+                        clock: 0,
+                        stats: DeviceCacheStats::default(),
+                    }),
+                })
+                .collect(),
         })
     }
 
+    fn shard_for_key(&self, key: &ExpertKey) -> &DeviceCacheShard {
+        let mut hasher = DefaultHasher::new();
+        key.model.hash(&mut hasher);
+        key.layer.hash(&mut hasher);
+        key.expert.hash(&mut hasher);
+        let index = (hasher.finish() as usize) % self.shards.len();
+        &self.shards[index]
+    }
+
+    pub fn device_names(&self) -> Vec<String> {
+        self.shards
+            .iter()
+            .map(|shard| shard.allocator.device_name().to_owned())
+            .collect()
+    }
+
+    pub fn device_indices(&self) -> Vec<u32> {
+        self.shards.iter().map(|shard| shard.device_index).collect()
+    }
+
+    pub fn per_device_stats(&self) -> Vec<DeviceCacheStats> {
+        self.shards
+            .iter()
+            .map(|shard| {
+                shard
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .stats
+            })
+            .collect()
+    }
+
+    fn aggregate_stats(&self) -> DeviceCacheStats {
+        self.per_device_stats()
+            .into_iter()
+            .fold(DeviceCacheStats::default(), |mut total, stats| {
+                total.hits = total.hits.saturating_add(stats.hits);
+                total.misses = total.misses.saturating_add(stats.misses);
+                total.admissions = total.admissions.saturating_add(stats.admissions);
+                total.evictions = total.evictions.saturating_add(stats.evictions);
+                total.rejections = total.rejections.saturating_add(stats.rejections);
+                total.uploads = total.uploads.saturating_add(stats.uploads);
+                total.upload_bytes = total.upload_bytes.saturating_add(stats.upload_bytes);
+                total.upload_ms += stats.upload_ms;
+                total.resident_bytes = total.resident_bytes.saturating_add(stats.resident_bytes);
+                total.entries = total.entries.saturating_add(stats.entries);
+                total
+            })
+    }
+
     pub fn lookup(self: &Arc<Self>, key: &ExpertKey) -> Option<DeviceExpertLease> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let shard = self.shard_for_key(key);
+        let mut state = shard
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         state.clock = state.clock.saturating_add(1);
         let now = state.clock;
         let (handle, bytes) = {
@@ -605,16 +713,14 @@ impl DeviceExpertCache {
         Some(DeviceExpertLease {
             cache: Arc::clone(self),
             key: key.clone(),
+            device_index: shard.device_index,
             handle,
             bytes,
         })
     }
 
     pub fn stats(&self) -> DeviceCacheStats {
-        self.state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .stats
+        self.aggregate_stats()
     }
 
     /// Admite candidatos lazily até o orçamento, um prazo ou cancelamento.
@@ -656,7 +762,7 @@ impl DeviceExpertCache {
             report.stop = DeviceWarmupStop::BudgetExhausted;
             report.error = Some(
                 DeviceCacheError::BudgetExhausted {
-                    device: self.allocator.device_name().to_owned(),
+                    device: self.device_names().join(", "),
                     budget: initial_budget,
                 }
                 .to_string(),
@@ -720,16 +826,26 @@ impl DeviceExpertCache {
     }
 
     pub fn budget_snapshot(&self) -> Result<CacheBudgetSnapshot, DeviceCacheError> {
-        let device = self.allocator.device_name().to_owned();
-        let current_free =
-            self.allocator
-                .free_bytes()
-                .map_err(|error| DeviceCacheError::MemoryProbe {
-                    device,
-                    reason: error.to_string(),
-                })?;
-        let resident = self.stats().resident_bytes as u64;
-        Ok(self.account.budget_snapshot(current_free, resident))
+        let mut snapshots = Vec::with_capacity(self.shards.len());
+        for shard in &self.shards {
+            let device = shard.allocator.device_name().to_owned();
+            let current_free =
+                shard
+                    .allocator
+                    .free_bytes()
+                    .map_err(|error| DeviceCacheError::MemoryProbe {
+                        device,
+                        reason: error.to_string(),
+                    })?;
+            let resident = shard
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .stats
+                .resident_bytes as u64;
+            snapshots.push(shard.account.budget_snapshot(current_free, resident));
+        }
+        Ok(aggregate_budget_snapshots(&snapshots))
     }
 
     pub fn admit(
@@ -749,9 +865,13 @@ impl DeviceExpertCache {
         if payload.is_empty() {
             return Err(DeviceCacheError::EmptyExpert { key });
         }
+        let shard = self.shard_for_key(&key);
         let bytes = payload.len();
-        let device = self.allocator.device_name().to_owned();
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let device = shard.allocator.device_name().to_owned();
+        let mut state = shard
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         state.clock = state.clock.saturating_add(1);
         let now = state.clock;
 
@@ -764,6 +884,7 @@ impl DeviceExpertCache {
             return Ok(DeviceExpertLease {
                 cache: Arc::clone(self),
                 key,
+                device_index: shard.device_index,
                 handle,
                 bytes: resident_bytes,
             });
@@ -771,13 +892,14 @@ impl DeviceExpertCache {
 
         state.stats.misses = state.stats.misses.saturating_add(1);
         let current_free =
-            self.allocator
+            shard
+                .allocator
                 .free_bytes()
                 .map_err(|error| DeviceCacheError::MemoryProbe {
                     device: device.clone(),
                     reason: error.to_string(),
                 })?;
-        let budget = self
+        let budget = shard
             .account
             .budget_snapshot(current_free, state.stats.resident_bytes as u64);
         let limit = budget.effective_limit_bytes.unwrap_or(0);
@@ -829,7 +951,8 @@ impl DeviceExpertCache {
 
         let upload_started = Instant::now();
         let allocation =
-            self.allocator
+            shard
+                .allocator
                 .upload(payload)
                 .map_err(|reason| DeviceCacheError::Upload {
                     key: key.clone(),
@@ -839,7 +962,7 @@ impl DeviceExpertCache {
         if allocation.bytes() != bytes {
             return Err(DeviceCacheError::Upload {
                 key,
-                device: self.allocator.device_name().to_owned(),
+                device: shard.allocator.device_name().to_owned(),
                 reason: format!(
                     "backend alocou {} bytes para payload de {bytes}",
                     allocation.bytes()
@@ -864,13 +987,18 @@ impl DeviceExpertCache {
         Ok(DeviceExpertLease {
             cache: Arc::clone(self),
             key,
+            device_index: shard.device_index,
             handle,
             bytes,
         })
     }
 
     fn release(&self, key: &ExpertKey) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let shard = self.shard_for_key(key);
+        let mut state = shard
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if let Some(entry) = state.entries.get_mut(key) {
             entry.active = entry.active.saturating_sub(1);
         }
@@ -881,6 +1009,7 @@ impl DeviceExpertCache {
 pub struct DeviceExpertLease {
     cache: Arc<DeviceExpertCache>,
     key: ExpertKey,
+    device_index: u32,
     handle: usize,
     bytes: usize,
 }
@@ -893,6 +1022,10 @@ impl DeviceExpertLease {
 
     pub fn bytes(&self) -> usize {
         self.bytes
+    }
+
+    pub fn device_index(&self) -> u32 {
+        self.device_index
     }
 }
 
@@ -1102,6 +1235,50 @@ mod tests {
         assert_eq!(second.bytes(), 3);
         assert_eq!(allocator.uploads.load(Ordering::Relaxed), 1);
         assert_eq!(cache.stats().upload_bytes, 3);
+    }
+
+    #[test]
+    fn cache_device_distribui_experts_e_reutiliza_o_dispositivo_da_entrada() {
+        let allocator0 = FakeDeviceAllocator::new(100);
+        let allocator1 = FakeDeviceAllocator::new(100);
+        let account = |baseline| MemoryAccount {
+            baseline_free_bytes: baseline,
+            compute_bytes: 0,
+            weights_bytes: 0,
+            fixed_bytes: 0,
+            reserve_bytes: 0,
+        };
+        let cache = DeviceExpertCache::new_sharded(vec![
+            (
+                0,
+                account(100),
+                Arc::clone(&allocator0) as Arc<dyn DeviceAllocator>,
+            ),
+            (
+                1,
+                account(100),
+                Arc::clone(&allocator1) as Arc<dyn DeviceAllocator>,
+            ),
+        ]);
+
+        let leases = (0..32)
+            .map(|expert| {
+                cache
+                    .admit(ExpertKey::new("model", 0, expert, "q4_0"), &[1, 2, 3])
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(cache.device_names(), vec!["fake-device", "fake-device"]);
+        assert!(leases.iter().any(|lease| lease.device_index() == 0));
+        assert!(leases.iter().any(|lease| lease.device_index() == 1));
+
+        let key = ExpertKey::new("model", 0, 7, "q4_0");
+        let device = leases.get(7).map(DeviceExpertLease::device_index).unwrap();
+        drop(leases);
+        let hit = cache.lookup(&key).unwrap();
+        assert_eq!(hit.device_index(), device);
+        assert!(allocator0.uploads.load(Ordering::Relaxed) > 0);
+        assert!(allocator1.uploads.load(Ordering::Relaxed) > 0);
     }
 
     #[test]

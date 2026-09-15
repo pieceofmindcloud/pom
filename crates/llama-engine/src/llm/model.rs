@@ -356,9 +356,9 @@ impl LlmEngine {
         if let Some(state) = self.moe_callback.as_ref() {
             // O callback só é alcançado depois que o llama.cpp já construiu
             // e começou a avaliar o grafo. Ceder o cache nesse ponto deixava
-            // o warmup competir com o prefill: um upload podia segurar o
-            // shard enquanto a primeira rota esperava. O cancelamento é
-            // cooperativo e preserva os handles já residentes.
+            // o warmup competir com o prefill. O cancelamento é cooperativo,
+            // preserva os handles já residentes e impede que novos candidatos
+            // especulativos entrem enquanto a rota quente é montada.
             state.runtime.cancel_device_warmup();
             state.begin();
         }

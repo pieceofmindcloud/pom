@@ -659,6 +659,13 @@ impl DeviceExpertCache {
         &self.shards[index]
     }
 
+    /// Retorna o ordinal que receberá uma entrada sem tocar no estado do
+    /// cache. O executor usa a mesma afinidade antes de admitir vários
+    /// payloads, para que cada thread faça upload em uma GPU distinta.
+    pub fn device_index_for_key(&self, key: &ExpertKey) -> u32 {
+        self.shard_for_key(key).device_index
+    }
+
     pub fn device_names(&self) -> Vec<String> {
         self.shards
             .iter()
@@ -1294,6 +1301,7 @@ mod tests {
 
         let key = ExpertKey::new("model", 0, 7, "q4_0");
         let device = leases.get(7).map(DeviceExpertLease::device_index).unwrap();
+        assert_eq!(cache.device_index_for_key(&key), device);
         drop(leases);
         let hit = cache.lookup(&key).unwrap();
         assert_eq!(hit.device_index(), device);

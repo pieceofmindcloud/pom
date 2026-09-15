@@ -1569,6 +1569,15 @@ impl HeterogeneousCudaExecutor {
         self.resident_cache.lookup(key)
     }
 
+    /// Retorna a GPU escolhida pela mesma afinidade usada pela admissão.
+    ///
+    /// O bloco heterogêneo usa esta informação antes de carregar os bytes
+    /// frios para agrupar misses por shard e sobrepor uploads em GPUs
+    /// diferentes.
+    pub fn device_index_for_key(&self, key: &super::cache::ExpertKey) -> u32 {
+        self.resident_cache.device_index_for_key(key)
+    }
+
     pub fn resident_admit(
         &self,
         key: super::cache::ExpertKey,

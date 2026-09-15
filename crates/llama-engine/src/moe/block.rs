@@ -4,6 +4,8 @@
 //! A projeção do router pode vir do tensor GGUF local, sem mudar o wire entre
 //! peers; a atenção continua no runtime que entrega a ativação a esta fronteira.
 
+#[cfg(feature = "cuda")]
+use super::cache::DeviceExpertLease;
 use super::cache::{ExpertCache, ExpertKey};
 #[cfg(feature = "cuda")]
 use super::cuda::{CudaHeterogeneousExpert, CudaHeterogeneousTensor, CudaMoeError};
@@ -26,6 +28,8 @@ use super::format_q4_0::{Q4Error, Q4ExecuteError, Q4_0Executor, Q4_0Source};
 use super::router::{
     dispatch_route_parallel, dispatch_top_k, select_top_k, DispatchError, RouteError,
 };
+#[cfg(feature = "cuda")]
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -1374,16 +1378,92 @@ impl HeterogeneousMoeBlock {
             ));
         };
 
-        let mut descriptors = Vec::with_capacity(experts.len());
-        let mut leases = Vec::new();
-        let mut device_indices = Vec::with_capacity(experts.len());
+        // Primeiro resolvemos os hits e planejamos os misses. O caminho
+        // anterior carregava cada tensor no mesmo thread, mesmo quando os
+        // shards pertenciam a GPUs diferentes. Isso serializava dezenas de
+        // GB de H2D e deixava CUDA1 ociosa durante o upload para CUDA0.
+        //
+        // Mantemos uma fila por device: dentro de um shard o mutex do cache
+        // continua serializando admissão, eviction e atualização do LRU, mas
+        // uploads para GPUs distintas podem progredir em paralelo.
+        let mut resolved_experts = Vec::with_capacity(experts.len());
+        let mut pending_by_device: HashMap<u32, Vec<(ExpertKey, HeterogeneousTensorSpec)>> =
+            HashMap::new();
+        let mut pending_keys = HashSet::new();
         for &expert in experts {
             let specs = source
                 .expert_tensor_specs(self.layer, expert)
                 .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+            let mut resolved_specs = Vec::with_capacity(specs.len());
+            for spec in specs {
+                let key = ExpertKey::new(
+                    &self.model,
+                    self.layer,
+                    expert,
+                    format!("heterogeneous:{}:{}", spec.role.as_str(), spec.dtype),
+                );
+                let lease = cuda.resident_lookup(&key);
+                if lease.is_none() && pending_keys.insert(key.clone()) {
+                    let device_index = cuda.device_index_for_key(&key);
+                    pending_by_device
+                        .entry(device_index)
+                        .or_default()
+                        .push((key.clone(), spec));
+                }
+                resolved_specs.push((spec, key, lease));
+            }
+            resolved_experts.push(resolved_specs);
+        }
+
+        let admission_results = std::thread::scope(|scope| {
+            let handles = pending_by_device
+                .into_values()
+                .map(|pending| {
+                    scope.spawn(move || {
+                        pending
+                            .into_iter()
+                            .map(|(key, spec)| {
+                                let bytes = source
+                                    .load_expert_tensor(spec)
+                                    .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+                                cuda.resident_admit(key, &bytes)
+                                    .map_err(|error| MoeBlockError::Executor(error.to_string()))
+                            })
+                            .collect::<Result<Vec<DeviceExpertLease>, MoeBlockError>>()
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle.join().map_err(|_| {
+                        MoeBlockError::Executor(
+                            "thread de admissão CUDA MoE entrou em pânico".into(),
+                        )
+                    })?
+                })
+                .collect::<Result<Vec<Vec<DeviceExpertLease>>, MoeBlockError>>()
+        })?;
+        // Os leases de admissão ficam ativos enquanto montamos os descriptors
+        // e executamos o kernel. Assim um shard sob pressão não pode expulsar
+        // uma entrada recém-carregada antes de ela ser usada.
+        let _admitted_leases = admission_results.into_iter().flatten().collect::<Vec<_>>();
+
+        let mut descriptors = Vec::with_capacity(experts.len());
+        let mut leases = Vec::new();
+        let mut device_indices = Vec::with_capacity(experts.len());
+        for (expert, resolved_specs) in experts.iter().copied().zip(resolved_experts) {
             let mut descriptor = CudaHeterogeneousExpert::default();
             let mut expert_device_index = None;
-            for spec in specs {
+            for (spec, key, lease) in resolved_specs {
+                let lease = match lease {
+                    Some(lease) => lease,
+                    None => cuda.resident_lookup(&key).ok_or_else(|| {
+                        MoeBlockError::Executor(format!(
+                            "expert heterogêneo {expert} desapareceu do cache após admissão"
+                        ))
+                    })?,
+                };
                 let HeterogeneousTensorSpec {
                     role,
                     dtype,
@@ -1392,22 +1472,6 @@ impl HeterogeneousMoeBlock {
                     scales,
                     ..
                 } = spec;
-                let key = ExpertKey::new(
-                    &self.model,
-                    self.layer,
-                    expert,
-                    format!("heterogeneous:{}:{dtype}", role.as_str()),
-                );
-                let lease = match cuda.resident_lookup(&key) {
-                    Some(lease) => lease,
-                    None => {
-                        let bytes = source
-                            .load_expert_tensor(spec)
-                            .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
-                        cuda.resident_admit(key, &bytes)
-                            .map_err(|error| MoeBlockError::Executor(error.to_string()))?
-                    }
-                };
                 match expert_device_index {
                     Some(expected) if expected != lease.device_index() => {
                         return Err(MoeBlockError::Executor(format!(

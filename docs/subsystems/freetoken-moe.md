@@ -2752,6 +2752,24 @@ compute do callback, mas não pode fazer caber em 16 GB um working set de
 experts maior que a VRAM: se os misses continuarem altos, o próximo ajuste é
 afinidade/prefetch por camada, não um timeout maior.
 
+### Fase 5.12: admissões heterogêneas paralelas por GPU - 2026-09-15
+
+O caminho quente heterogêneo agora faz duas passagens sobre a rota. A primeira
+consulta o cache e agrupa cada miss pelo mesmo hash de afinidade que escolhe o
+shard. Uma thread por `CUDA<n>` lê os slices do mmap e faz os uploads em série
+naquela GPU; threads de shards diferentes trabalham em paralelo. A segunda
+passagem monta os descriptors somente depois de todas as admissões, mantendo
+os leases vivos durante o forward para impedir eviction prematura.
+
+Isso alinha a admissão ao agrupamento que já existia no kernel: o cache não
+escolhe mais uma única fila global para dezenas de GB de H2D. A mudança é
+somente no crate Rust e usa o allocator CUDA existente, que seleciona o ordinal
+explicitamente em cada upload; o fork do llama.cpp não foi alterado. O ganho
+de parede e a ocupação efetiva de cada placa ainda precisam ser medidos na
+ksia. Com `POM_MOE_CUDA_PROFILE=1`, comparar `device_cache_upload_ms` por delta
+com `cuda_device_calls` em `CUDA0` e `CUDA1`, sempre com `POM_MOE_WARMUP` ausente
+ou desabilitado para medir a rota fria sem poluição especulativa.
+
 ### Comparação isolada em uma máquina - 2026-09-15
 
 Uma execução real no nó `5b035803`, com duas RTX 5060 Ti e sem salto de

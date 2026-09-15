@@ -1535,7 +1535,7 @@ __global__ void quantize_q8_1_rows_kernel(
     }
     const float d = amax / 127.0f;
     const int8_t quantized = amax == 0.0f ? 0 : static_cast<int8_t>(roundf(value / d));
-    block_q8_1 *block = output[
+    block_q8_1 *block = &output[
         static_cast<std::size_t>(row) * blocks_per_row + column_block];
     block->qs[element] = quantized;
     if (element == 0) {

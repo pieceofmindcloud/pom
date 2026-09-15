@@ -190,7 +190,6 @@ impl ClientPool {
                 }
                 Err(error) => {
                     last_error = anyhow!("{advertised}: {error}");
-                    self.sessions.lock().await.remove(&key);
                     self.quarantine_quic(&key, error.to_string()).await;
                 }
             }
@@ -215,24 +214,70 @@ impl ClientPool {
     ) -> Result<QuicResponse> {
         let transport_timeout = transport_deadline(timeout);
         let request_deadline = Instant::now() + transport_timeout;
-        let session_timeout = remaining_budget(request_deadline)
-            .ok_or_else(|| anyhow!("deadline de transporte HTTP/3 expirou antes do handshake"))?;
-        let session = match tokio::time::timeout(
-            session_timeout,
-            self.session(key, peer_id, advertised, fallback_deadline),
-        )
-        .await
-        {
-            Ok(result) => result?,
-            Err(_) => {
-                return Err(anyhow!(
-                    "deadline de transporte HTTP/3 expirou durante o handshake"
-                ))
+        let mut retried_stale_session = false;
+        loop {
+            let session_timeout = remaining_budget(request_deadline).ok_or_else(|| {
+                anyhow!("deadline de transporte HTTP/3 expirou antes do handshake")
+            })?;
+            let (session, reused) = match tokio::time::timeout(
+                session_timeout,
+                self.session(key, peer_id, advertised, fallback_deadline),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    return Err(anyhow!(
+                        "deadline de transporte HTTP/3 expirou durante o handshake"
+                    ))
+                }
+            };
+            let result = self
+                .request_on_session(
+                    &session,
+                    base_url,
+                    path,
+                    content_type,
+                    authorization.clone(),
+                    session_id,
+                    body.clone(),
+                    timeout,
+                    request_deadline,
+                    fallback_deadline,
+                )
+                .await;
+            if result.is_ok() {
+                return result;
             }
-        };
+            self.discard_session(key, &session).await;
+            if reused && !retried_stale_session {
+                // A peer restart invalidates the cached connection, not the
+                // endpoint. Retry once immediately with a new handshake so a
+                // transient reset never reaches the inference fallback.
+                retried_stale_session = true;
+                continue;
+            }
+            return result;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn request_on_session(
+        &self,
+        session: &Arc<QuicSession>,
+        base_url: &str,
+        path: &str,
+        content_type: &str,
+        authorization: Option<String>,
+        session_id: Option<&str>,
+        body: Vec<u8>,
+        timeout: Duration,
+        request_deadline: Instant,
+        fallback_deadline: Instant,
+    ) -> Result<QuicResponse> {
         let operation_timeout = remaining_budget(request_deadline)
             .ok_or_else(|| anyhow!("deadline de transporte HTTP/3 expirou antes do stream"))?;
-        let result: Result<QuicResponse> = match tokio::time::timeout(operation_timeout, async {
+        match tokio::time::timeout(operation_timeout, async {
             let mut request_builder = Request::builder()
                 .method("POST")
                 .uri(format!("https://{}{}", authority(base_url)?, path))
@@ -301,13 +346,20 @@ impl ClientPool {
             Ok(result) => result,
             Err(_) => Err(anyhow!(
                 "deadline de transporte HTTP/3 expirou após {:?}",
-                transport_timeout
+                timeout.min(INFERENCE_TRANSPORT_DEADLINE)
             )),
-        };
-        if result.is_err() {
-            self.sessions.lock().await.remove(key);
         }
-        result
+    }
+
+    async fn discard_session(&self, key: &str, session: &Arc<QuicSession>) {
+        session.connection.close(0u32.into(), b"transport failure");
+        let mut sessions = self.sessions.lock().await;
+        if sessions
+            .get(key)
+            .is_some_and(|current| Arc::ptr_eq(current, session))
+        {
+            sessions.remove(key);
+        }
     }
 
     async fn session(
@@ -316,9 +368,9 @@ impl ClientPool {
         peer_id: &str,
         advertised: &str,
         fallback_deadline: Instant,
-    ) -> Result<Arc<QuicSession>> {
+    ) -> Result<(Arc<QuicSession>, bool)> {
         if let Some(session) = self.sessions.lock().await.get(key).cloned() {
-            return Ok(session);
+            return Ok((session, true));
         }
         let resolve_timeout = remaining_budget(fallback_deadline)
             .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do DNS"))?;
@@ -361,7 +413,7 @@ impl ClientPool {
             .lock()
             .await
             .insert(key.to_string(), session.clone());
-        Ok(session)
+        Ok((session, false))
     }
 
     /// `Some(motivo)` quando `key` está em quarentena - o motivo é o erro
@@ -773,6 +825,71 @@ mod tests {
         );
         stop_tx.send(()).unwrap();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cliente_reconecta_quic_depois_do_restart_do_peer() {
+        let identity = crate::identity::Identity::generate();
+        let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let router = Router::new().route(
+            "/restart",
+            post(|body: Bytes| async move { (StatusCode::OK, body) }),
+        );
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let config = server_config(&identity).unwrap();
+        let server = tokio::spawn(async move {
+            serve(port, router, config, async move {
+                let _ = stop_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let pool = ClientPool::new();
+        let peer_id = identity.node_id.0.clone();
+        async fn request(pool: &ClientPool, peer_id: &str, port: u16) -> Result<QuicResponse> {
+            pool.request(
+                peer_id,
+                &format!("http://127.0.0.1:{port}"),
+                &[format!("127.0.0.1:{port}")],
+                "/restart",
+                "application/octet-stream",
+                None,
+                None,
+                b"before-restart".to_vec(),
+                Duration::from_secs(3),
+            )
+            .await
+        }
+
+        request(&pool, &peer_id, port).await.unwrap();
+        stop_tx.send(()).unwrap();
+        server.await.unwrap();
+
+        let router = Router::new().route(
+            "/restart",
+            post(|body: Bytes| async move { (StatusCode::OK, body) }),
+        );
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let config = server_config(&identity).unwrap();
+        let server = tokio::spawn(async move {
+            serve(port, router, config, async move {
+                let _ = stop_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let result = request(&pool, &peer_id, port).await;
+        stop_tx.send(()).unwrap();
+        server.await.unwrap();
+
+        let response = result.expect("um restart remoto deve forçar um handshake QUIC novo");
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body, b"before-restart");
     }
 
     /// Um endpoint QUIC pode completar o handshake e aceitar o stream sem

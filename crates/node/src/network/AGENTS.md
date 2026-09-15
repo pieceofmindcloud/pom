@@ -123,6 +123,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   A descoberta de um endpoint QUIC morto compartilha um orçamento agregado de
   300 ms entre endereços, e a falha põe aquele endereço em quarentena por 5 s
   para não repetir handshake a cada token; a sessão saudável é reutilizada.
+  Se uma requisição falha numa sessão cacheada, como no `ApplicationClose`
+  causado pelo reinício do peer, o pool fecha e remove aquela instância e tenta
+  uma vez um handshake novo dentro do mesmo orçamento. A quarentena só registra
+  a falha final do endpoint. A remoção compara a instância cacheada para não
+  apagar uma conexão nova criada concorrentemente.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `public_directory.rs` - protocolo federado do catálogo público. Registros

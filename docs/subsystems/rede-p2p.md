@@ -768,7 +768,12 @@ escutando, a rota falhar ou responder 404/405, o relay cai para HTTP/HTTPS e
 marca `transport_fallback`; a descoberta compartilha um orçamento de 300 ms
 entre os endereços QUIC anunciados, em vez de serializar um timeout por
 endereço, e coloca um endpoint que falhou em quarentena por 5 s. Uma sessão
-saudável é reutilizada nos próximos frames. O túnel só é a última reserva
+saudável é reutilizada nos próximos frames. Se uma chamada falhar numa sessão
+cacheada, o cliente fecha e remove essa sessão e repete uma vez o pedido com um
+handshake novo dentro do orçamento existente. Assim, o `reset by peer` esperado
+quando o processo remoto reinicia não transforma uma conexão antiga em estado
+permanente. A quarentena continua valendo para a falha final do endpoint e dura
+5 s, evitando handshakes repetidos por token. O túnel só é a última reserva
 depois de uma falha de transporte também no caminho TCP.
 Cada tentativa completa de transporte, incluindo handshake, envio, headers e
 corpo, tem teto de 30 s; isso impede que um endpoint alcançável mas sem resposta

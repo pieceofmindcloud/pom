@@ -2125,7 +2125,13 @@ __global__ void heterogeneous_quant_down_route_kernel(
 using HeterogeneousVecDotQ8_1 = float (*) (
     const void * __restrict__, const block_q8_1 * __restrict__, const int &, const int &);
 
-static __device__ __forceinline__ HeterogeneousVecDotQ8_1 heterogeneous_vec_dot_q8_1(
+struct HeterogeneousQ8Layout {
+    int qk;
+    int qi;
+    int vdr;
+};
+
+static constexpr __device__ HeterogeneousVecDotQ8_1 heterogeneous_vec_dot_q8_1(
     uint32_t dtype) {
     switch (dtype) {
         case 2:  return vec_dot_q4_0_q8_1;
@@ -2143,13 +2149,7 @@ static __device__ __forceinline__ HeterogeneousVecDotQ8_1 heterogeneous_vec_dot_
     }
 }
 
-struct HeterogeneousQ8Layout {
-    int qk;
-    int qi;
-    int vdr;
-};
-
-static __device__ __forceinline__ HeterogeneousQ8Layout heterogeneous_q8_layout(
+static constexpr __device__ HeterogeneousQ8Layout heterogeneous_q8_layout(
     uint32_t dtype) {
     switch (dtype) {
         case 2:  return {QK4_0, QI4_0, VDR_Q4_0_Q8_1_MMVQ};
@@ -2167,16 +2167,15 @@ static __device__ __forceinline__ HeterogeneousQ8Layout heterogeneous_q8_layout(
     }
 }
 
-__device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1(
+__device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1_impl(
     const CudaHeterogeneousTensor &tensor,
     int row,
-    const block_q8_1 *input
+    const block_q8_1 *input,
+    HeterogeneousVecDotQ8_1 dot,
+    float scale,
+    float input_scale,
+    HeterogeneousQ8Layout layout
 ) {
-    const HeterogeneousVecDotQ8_1 dot = heterogeneous_vec_dot_q8_1(tensor.dtype);
-    const HeterogeneousQ8Layout layout = heterogeneous_q8_layout(tensor.dtype);
-    if (dot == nullptr || layout.qk == 0 || layout.qi == 0 || layout.vdr == 0) {
-        return 0.0f;
-    }
     const int lane = threadIdx.x;
     const int lanes_per_block = layout.qi / layout.vdr;
     const int blocks_per_iteration = layout.vdr * 32 / layout.qi;
@@ -2198,7 +2197,23 @@ __device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1(
     for (int offset = 16; offset > 0; offset >>= 1) {
         result += __shfl_down_sync(0xffffffffu, result, offset);
     }
-    return result * tensor.scale * tensor.input_scale;
+    return result * scale * input_scale;
+}
+
+__device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1(
+    const CudaHeterogeneousTensor &tensor,
+    int row,
+    const block_q8_1 *input,
+    float scale,
+    float input_scale
+) {
+    const HeterogeneousVecDotQ8_1 dot = heterogeneous_vec_dot_q8_1(tensor.dtype);
+    const HeterogeneousQ8Layout layout = heterogeneous_q8_layout(tensor.dtype);
+    if (dot == nullptr || layout.qk == 0 || layout.qi == 0 || layout.vdr == 0) {
+        return 0.0f;
+    }
+    return heterogeneous_quant_partial_dot_q8_1_impl(
+        tensor, row, input, dot, scale, input_scale, layout);
 }
 
 __global__ void heterogeneous_quant_gate_up_route_q8_kernel(
@@ -2220,11 +2235,17 @@ __global__ void heterogeneous_quant_gate_up_route_q8_kernel(
     float gate;
     float up;
     if (expert.gate_up.data != nullptr) {
-        gate = heterogeneous_quant_partial_dot_q8_1(expert.gate_up, row, input);
-        up = heterogeneous_quant_partial_dot_q8_1(expert.gate_up, row + intermediate, input);
+        gate = heterogeneous_quant_partial_dot_q8_1(
+            expert.gate_up, row, input,
+            expert.gate_up.scale, expert.gate_up.input_scale);
+        up = heterogeneous_quant_partial_dot_q8_1(
+            expert.gate_up, row + intermediate, input,
+            expert.gate_up.secondary_scale, expert.gate_up.secondary_input_scale);
     } else {
-        gate = heterogeneous_quant_partial_dot_q8_1(expert.gate, row, input);
-        up = heterogeneous_quant_partial_dot_q8_1(expert.up, row, input);
+        gate = heterogeneous_quant_partial_dot_q8_1(
+            expert.gate, row, input, expert.gate.scale, expert.gate.input_scale);
+        up = heterogeneous_quant_partial_dot_q8_1(
+            expert.up, row, input, expert.up.scale, expert.up.input_scale);
     }
     if (threadIdx.x == 0) {
         const int output_offset = pair * 2 * intermediate + row;
@@ -2247,7 +2268,9 @@ __global__ void heterogeneous_quant_down_route_q8_kernel(
     if (pair >= pair_count) return;
     const block_q8_1 *input = activated +
         static_cast<std::size_t>(pair) * (intermediate / QK8_1);
-    const float value = heterogeneous_quant_partial_dot_q8_1(experts[pair].down, row, input);
+    const CudaHeterogeneousTensor down = experts[pair].down;
+    const float value = heterogeneous_quant_partial_dot_q8_1(
+        down, row, input, down.scale, down.input_scale);
     if (threadIdx.x == 0) {
         pair_output[pair * hidden + row] = value;
     }

@@ -13,7 +13,7 @@ use super::cache::{CacheError, ExpertCache};
 #[cfg(feature = "cuda")]
 use super::cache::{DeviceWarmupOptions, DeviceWarmupReport, DeviceWarmupStop, ExpertKey};
 #[cfg(feature = "cuda")]
-use super::cuda::{CudaTransferProfile, HeterogeneousCudaExecutor};
+use super::cuda::{CudaMoeDeviceDiagnostics, CudaTransferProfile, HeterogeneousCudaExecutor};
 use super::format_heterogeneous::{HeterogeneousMoeSource, TensorRole};
 use super::format_iq_quants::{IqQuantFormat, IqQuantSource};
 use super::format_k_quants::{KQuantFormat, KQuantSource};
@@ -91,6 +91,11 @@ pub struct MoeExecutorDiagnostics {
     pub device_cache_resident_bytes: usize,
     pub device_cache_devices: Vec<String>,
     pub device_cache_resident_bytes_by_device: Vec<usize>,
+    /// Chamadas efetivamente executadas por ordinal CUDA. Resident bytes não
+    /// provam que uma placa participou da rota; estes contadores provam.
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub cuda_device_calls: Vec<CudaMoeDeviceDiagnostics>,
     pub payload_validation_ms: f64,
     pub cuda_alloc_ms: f64,
     pub cuda_h2d_ms: f64,
@@ -1743,6 +1748,21 @@ impl MoeRuntime {
                 diagnostics.cuda_call_wall_ms += cuda.cuda_call_wall_ms;
                 diagnostics.host_batch_prepare_ms += cuda.host_batch_prepare_ms;
                 diagnostics.host_result_copy_ms += cuda.host_result_copy_ms;
+                for device in cuda.device_calls {
+                    if let Some(existing) = diagnostics
+                        .cuda_device_calls
+                        .iter_mut()
+                        .find(|existing| existing.device_index == device.device_index)
+                    {
+                        existing.calls = existing.calls.saturating_add(device.calls);
+                        existing.expert_calls =
+                            existing.expert_calls.saturating_add(device.expert_calls);
+                        existing.kernel_ms += device.kernel_ms;
+                        existing.cuda_call_wall_ms += device.cuda_call_wall_ms;
+                    } else {
+                        diagnostics.cuda_device_calls.push(device);
+                    }
+                }
                 if !device_cache_recorded {
                     diagnostics.device_cache_hits = device_cache.hits;
                     diagnostics.device_cache_misses = device_cache.misses;
@@ -1770,6 +1790,9 @@ impl MoeRuntime {
                     diagnostics.coexecution_gpu_fraction = host.coexecution_gpu_fraction;
                 }
             }
+            diagnostics
+                .cuda_device_calls
+                .sort_by_key(|device| device.device_index);
         }
 
         diagnostics

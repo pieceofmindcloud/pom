@@ -183,7 +183,7 @@ pub struct CudaMoeCallTiming {
     pub buffer_switches: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Nvfp4CudaDiagnostics {
     pub calls: u64,
     pub kernel_launches: u64,
@@ -208,6 +208,18 @@ pub struct Nvfp4CudaDiagnostics {
     pub buffer_mask: u64,
     /// Quantidade de alternâncias entre slots observada pelo executor.
     pub buffer_switches: u64,
+    /// Medições separadas por ordinal CUDA. O cache residente mostra onde os
+    /// bytes estão; esta lista mostra em quais placas a rota realmente rodou.
+    pub device_calls: Vec<CudaMoeDeviceDiagnostics>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct CudaMoeDeviceDiagnostics {
+    pub device_index: u32,
+    pub calls: u64,
+    pub expert_calls: u64,
+    pub kernel_ms: f64,
+    pub cuda_call_wall_ms: f64,
 }
 
 impl Nvfp4CudaDiagnostics {
@@ -229,6 +241,33 @@ impl Nvfp4CudaDiagnostics {
         self.free_ms += call.free_ms;
         self.buffer_mask |= call.buffer_mask;
         self.buffer_switches = self.buffer_switches.saturating_add(call.buffer_switches);
+    }
+
+    pub fn add_device_call(
+        &mut self,
+        device_index: u32,
+        expert_calls: u64,
+        kernel_ms: f64,
+        cuda_call_wall_ms: f64,
+    ) {
+        let Some(device) = self
+            .device_calls
+            .iter_mut()
+            .find(|device| device.device_index == device_index)
+        else {
+            self.device_calls.push(CudaMoeDeviceDiagnostics {
+                device_index,
+                calls: 1,
+                expert_calls,
+                kernel_ms,
+                cuda_call_wall_ms,
+            });
+            return;
+        };
+        device.calls = device.calls.saturating_add(1);
+        device.expert_calls = device.expert_calls.saturating_add(expert_calls);
+        device.kernel_ms += kernel_ms;
+        device.cuda_call_wall_ms += cuda_call_wall_ms;
     }
 }
 
@@ -990,6 +1029,12 @@ impl PlainCudaExecutor {
                 .diagnostics
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_device_call(
+                group.device_index,
+                payloads.len() as u64,
+                timing.kernel_ms,
+                cuda_call_wall_ms,
+            );
             diagnostics.add_call(timing);
             diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
         }
@@ -1215,6 +1260,12 @@ impl KQuantCudaExecutor {
                 .diagnostics
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_device_call(
+                group.device_index,
+                payloads.len() as u64,
+                timing.kernel_ms,
+                cuda_call_wall_ms,
+            );
             diagnostics.add_call(timing);
             diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
         }
@@ -1434,6 +1485,12 @@ impl IqQuantCudaExecutor {
                 .diagnostics
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_device_call(
+                group.device_index,
+                payloads.len() as u64,
+                timing.kernel_ms,
+                cuda_call_wall_ms,
+            );
             diagnostics.add_call(timing);
             diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
         }
@@ -1708,6 +1765,12 @@ impl HeterogeneousCudaExecutor {
                 .diagnostics
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_device_call(
+                group.device_index,
+                experts.len() as u64,
+                timing.kernel_ms,
+                cuda_call_wall_ms,
+            );
             diagnostics.add_call(timing);
             diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
         }
@@ -1921,6 +1984,12 @@ impl Nvfp4CudaExecutor {
                 .diagnostics
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_device_call(
+                device_index,
+                payloads.len() as u64,
+                timing.kernel_ms,
+                cuda_call_wall_ms,
+            );
             diagnostics.add_call(timing);
             diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
         }
@@ -2018,6 +2087,12 @@ impl Nvfp4CudaExecutor {
                 .diagnostics
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_device_call(
+                group.device_index,
+                payloads.len() as u64,
+                timing.kernel_ms,
+                cuda_call_wall_ms,
+            );
             diagnostics.add_call(timing);
             diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
         }
@@ -4178,6 +4253,34 @@ mod tests {
         assert_eq!(total.transfer_span_ms, 110.0);
         assert_eq!(total.buffer_mask, 3);
         assert_eq!(total.buffer_switches, 2);
+    }
+
+    #[test]
+    fn diagnostico_cuda_separa_execucao_por_ordinal() {
+        let mut diagnostics = Nvfp4CudaDiagnostics::default();
+        diagnostics.add_device_call(1, 2, 3.0, 4.0);
+        diagnostics.add_device_call(0, 1, 5.0, 6.0);
+        diagnostics.add_device_call(1, 4, 7.0, 8.0);
+
+        assert_eq!(
+            diagnostics.device_calls,
+            vec![
+                CudaMoeDeviceDiagnostics {
+                    device_index: 1,
+                    calls: 2,
+                    expert_calls: 6,
+                    kernel_ms: 10.0,
+                    cuda_call_wall_ms: 12.0,
+                },
+                CudaMoeDeviceDiagnostics {
+                    device_index: 0,
+                    calls: 1,
+                    expert_calls: 1,
+                    kernel_ms: 5.0,
+                    cuda_call_wall_ms: 6.0,
+                },
+            ]
+        );
     }
 
     #[test]

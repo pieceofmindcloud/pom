@@ -57,6 +57,8 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   os metadados de memória. O caminho uniforme IQ3_XXS (dtype 18) também usa o
   pipeline persistente e kernels cooperativos; IQ e K compartilham buffers e
   o mesmo agrupamento por CUDA<n>, sem `cudaDeviceSynchronize` no hot path.
+  Com o perfil CUDA, `cuda_device_calls` separa chamadas, experts e tempos por
+  ordinal para distinguir bytes residentes de uso efetivo da placa.
   A cobertura CUDA por dtype e os números da ksia ficam em
   `docs/subsystems/freetoken-moe.md`.
 - `collective.rs` - `reduce_sum` + `ReduceBarrier` do tensor parallelism

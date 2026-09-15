@@ -2681,6 +2681,13 @@ primeira rota chega, evitando que a admissão concorrente expulse o working set;
 se os contadores por device ainda mostrarem uma única placa em uso, o próximo
 diagnóstico é a distribuição efetiva dos experts selecionados, não um timeout.
 
+Com `POM_MOE_CUDA_PROFILE=1`, `moe_executor_diagnostics.cuda_device_calls` agora
+registra por ordinal o número de chamadas, experts processados e tempo de
+kernel/parede. Esse campo deve ser comparado com
+`device_cache_resident_bytes_by_device`: bytes em uma placa sem chamadas
+indicam somente capacidade residente, enquanto chamadas em `CUDA0` e `CUDA1`
+confirmam participação efetiva da rota.
+
 Esta correção é código CUDA próprio em `cuda_kernels.cu`; não altera o fork do
 llama.cpp. O fork continua fornecendo o callback externo e os metadados de
 memória. A comparação contra `dense/llama.cpp` e contra FreeToken precisa ser

@@ -4,6 +4,7 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::testkit::body_of;
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
@@ -2322,6 +2323,7 @@ mod peer_visibility_tests {
 #[cfg(test)]
 mod replicated_admin_logs_tests {
     use super::*;
+    use crate::gateway::testkit::body_of;
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -2408,7 +2410,10 @@ mod replicated_admin_logs_tests {
                 state,
                 require_admin_for_surface,
             ));
-        for path in ["/api/ui/cluster-logs", "/api/ui/requests"] {
+        for (path, expected) in [
+            ("/api/ui/cluster-logs", StatusCode::OK),
+            ("/api/ui/requests", StatusCode::FORBIDDEN),
+        ] {
             let mut request = Request::get(path)
                 .header("authorization", "Bearer chave")
                 .body(axum::body::Body::empty())
@@ -2417,8 +2422,59 @@ mod replicated_admin_logs_tests {
                 .extensions_mut()
                 .insert(crate::serve::PeerAddr("127.0.0.1:1234".parse().unwrap()));
             let response = app.clone().oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "rota={path}");
+            assert_eq!(response.status(), expected, "rota={path}");
         }
+    }
+
+    #[tokio::test]
+    async fn enterprise_status_defaults_to_inactive_and_request_logs_are_gated() {
+        let state = testkit::state_with("enterprise-free", vec![]).await;
+        let app = Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state);
+
+        let status = app
+            .clone()
+            .oneshot(
+                Request::get("/api/ui/enterprise/status")
+                    .body(axum::body::Body::empty())
+                    .expect("status request"),
+            )
+            .await
+            .expect("status response");
+        assert_eq!(status.status(), StatusCode::OK);
+        let status: serde_json::Value = body_of(status).await;
+        assert_eq!(status["active"], false);
+        assert_eq!(status["state"], "needs_activation");
+        assert_eq!(status["manage_url"], "https://pieceofmind.cloud/enterprise");
+
+        let request_logs = app
+            .clone()
+            .oneshot(
+                Request::get("/api/ui/requests")
+                    .header("authorization", "Bearer chave")
+                    .body(axum::body::Body::empty())
+                    .expect("logs request"),
+            )
+            .await
+            .expect("logs response");
+        assert_eq!(request_logs.status(), StatusCode::FORBIDDEN);
+        let error: serde_json::Value = body_of(request_logs).await;
+        assert_eq!(error["code"], "enterprise_required");
+
+        let statistics = app
+            .oneshot(
+                Request::get("/api/ui/requests/stats")
+                    .header("authorization", "Bearer chave")
+                    .body(axum::body::Body::empty())
+                    .expect("statistics request"),
+            )
+            .await
+            .expect("statistics response");
+        assert_eq!(statistics.status(), StatusCode::FORBIDDEN);
+        let error: serde_json::Value = body_of(statistics).await;
+        assert_eq!(error["code"], "enterprise_required");
+        assert_eq!(error["manage_url"], "https://pieceofmind.cloud/enterprise");
     }
 
     #[tokio::test]
@@ -2724,6 +2780,7 @@ pub(crate) mod testkit {
             runtime: NodeRuntime::new(net, assignment),
             cycle_config: crate::cycle::CycleConfig::default(),
             audit: crate::reqlog::AuditLog::new(database.clone()),
+            enterprise: crate::enterprise::EnterpriseState::runtime(node_id),
             database,
             gateway_port: 8080,
             auth,

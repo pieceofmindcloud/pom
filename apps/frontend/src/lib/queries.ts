@@ -50,6 +50,7 @@ import type {
   TransferJob,
   TrustAnchorView,
   WindowsFirewallStatus,
+  EnterpriseStatus,
 } from "./types";
 
 /**
@@ -92,6 +93,7 @@ export const keys = {
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
   requestStats: ["request-stats"] as const,
+  enterpriseStatus: ["enterprise-status"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
   networkRtt: (nodeIds: string[]) => ["network-rtt", ...nodeIds] as const,
@@ -188,6 +190,38 @@ export function useAdminSurface() {
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
+}
+
+const inactiveEnterpriseStatus: EnterpriseStatus = {
+  active: false,
+  state: "needs_activation",
+  features: { request_logs: false, statistics: false },
+  manage_url: "https://pieceofmind.cloud/enterprise",
+  plugin_version: null,
+  lease_expires_at: null,
+};
+
+/** Public license state. A missing endpoint is treated as Free, fail-closed. */
+export function useEnterpriseStatus() {
+  const client = useQueryClient();
+  const query = useQuery<EnterpriseStatus>({
+    queryKey: keys.enterpriseStatus,
+    queryFn: () =>
+      optional(
+        api.get<EnterpriseStatus>("/api/ui/enterprise/status", { auth: false }),
+        inactiveEnterpriseStatus,
+      ),
+    retry: false,
+    refetchInterval: 30_000,
+  });
+
+  useEffect(() => {
+    if (query.data?.active) return;
+    void client.removeQueries({ queryKey: keys.requests });
+    void client.removeQueries({ queryKey: keys.requestStats });
+  }, [client, query.data?.active]);
+
+  return query;
 }
 
 /** Public metadata needed before the app knows whether to show the password gate. */

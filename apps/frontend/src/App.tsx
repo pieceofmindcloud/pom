@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { canAccessRoute, homeRoute } from "./lib/access";
+import { canAccessRoute, homeRoute, isEnterprisePath } from "./lib/access";
 import {
   api,
   clearAdminAccessToken,
@@ -10,7 +10,7 @@ import {
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
 import { ChatSessionProvider } from "./lib/chatStore";
-import { useAdminSurface } from "./lib/queries";
+import { useAdminSurface, useEnterpriseStatus } from "./lib/queries";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -96,6 +96,31 @@ function AdminLocalOnly() {
           <strong>127.0.0.1</strong> desta máquina, não pelo IP de rede nem pela internet.
         </p>
       </section>
+    </main>
+  );
+}
+
+function EnterpriseUnavailable({ manageUrl }: { manageUrl: string }) {
+  const { t } = useI18n();
+  return (
+    <main className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
+      <Panel className="w-full max-w-xl">
+        <PanelHeader
+          eyebrow={t("enterprise.eyebrow")}
+          title={t("enterprise.requiredTitle")}
+          subtitle={t("enterprise.requiredSubtitle")}
+        />
+        <div className="px-5 pb-5">
+          <a
+            href={manageUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex rounded-md bg-iris px-4 py-2 text-sm font-semibold text-ink transition-colors hover:bg-iris/80"
+          >
+            {t("enterprise.learnMore")}
+          </a>
+        </div>
+      </Panel>
     </main>
   );
 }
@@ -224,6 +249,7 @@ export default function App() {
   const { t } = useI18n();
   const location = useLocation();
   const { profile } = useProfile();
+  const enterpriseStatus = useEnterpriseStatus();
   /*
    * O guarda de perfil fica aqui, e não dentro de cada rota, porque aqui ele
    * é um só: `/chat` renderiza fora do `<Routes>` (ver abaixo), então um guarda
@@ -233,6 +259,13 @@ export default function App() {
    * Quem decide é `lib/access.ts`, a mesma tabela que filtra o menu.
    */
   const allowed = canAccessRoute(location.pathname, profile);
+  const enterprisePath = isEnterprisePath(location.pathname);
+  const enterpriseActive = Boolean(
+    enterpriseStatus.data?.active
+      && (location.pathname.startsWith("/logs")
+        ? enterpriseStatus.data.features.request_logs
+        : enterpriseStatus.data.features.statistics),
+  );
   const isChat = allowed && location.pathname === "/chat";
   const isEmbeddedChat = allowed && location.pathname === "/admin-ui/chat";
   // Screens that own the whole viewport and scroll inside themselves, instead
@@ -373,6 +406,8 @@ export default function App() {
                       <Forbidden />
                     </Page>
                   </div>
+                ) : enterprisePath && !enterpriseActive ? (
+                  <EnterpriseUnavailable manageUrl={enterpriseStatus.data?.manage_url ?? "https://pieceofmind.cloud/enterprise"} />
                 ) : isChat ? (
                   <Chat />
                 ) : (

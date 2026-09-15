@@ -258,6 +258,12 @@ libp2p separado do túnel de inferência. O `GatewayState` compartilha o serviç
 com as rotas `/api/ui/network-chat`; a política de cluster é aplicada pela
 catraca de `network_chat_policy`.
 
+`src/enterprise.rs` mantém o cliente mockável do servidor de licenças e o
+estado local de entitlement. O `GatewayState` expõe esse estado ao backend,
+enquanto `webui` publica `/api/ui/enterprise/status` e `reqlog` recusa os dados
+Enterprise sem entitlement. O host separado e suas fases pendentes estão em
+`docs/subsystems/licenciamento-enterprise.md`.
+
 ## Ligações
 
 - **Depende de**: `routing-contract`, `llama-engine` e `brand` (crates irmãos);
@@ -269,3 +275,10 @@ catraca de `network_chat_policy`.
 ## Defeitos anotados
 
 Nenhum em aberto nesta pasta.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

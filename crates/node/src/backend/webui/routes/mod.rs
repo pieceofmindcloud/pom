@@ -137,6 +137,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/ui/enterprise/status",
+        method: None,
+        scope: RouteScope::CommonOrInternal,
+    },
+    RouteRule {
         prefix: "/api/ui/cluster",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -518,6 +523,10 @@ mod policy_tests {
             RouteScope::AdminOnly
         );
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
+        assert_eq!(
+            scope_of("/api/ui/enterprise/status"),
+            RouteScope::CommonOrInternal
+        );
         assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);
         assert_eq!(
             scope_of("/api/ui/model-provider/status"),

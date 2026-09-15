@@ -519,7 +519,10 @@ profile policy remains the effective authorization boundary.
   sempre a operação e o request id. Pedidos, conversas e auditoria ficam no
   mesmo `pom.db`; permissões do banco e dos sidecars WAL/SHM são aplicadas no
   arranque. Filtros de usuário e modelo vazios são ignorados antes da consulta
-  SQL, preservando a busca ampla quando o campo não foi preenchido.
+  SQL, preservando a busca ampla quando o campo não foi preenchido. As rotas
+  `/api/ui/requests` e `/api/ui/requests/stats` são Enterprise e falham fechado
+  com `enterprise_required` sem entitlement; a extração do armazenamento para
+  o plugin ainda é uma pendência da Fase 3.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,

@@ -1336,6 +1336,22 @@ pub async fn list_requests(
     State(state): State<crate::gateway::GatewayState>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
+    if !state
+        .enterprise
+        .status()
+        .await
+        .is_feature_active(enterprise_protocol::EnterpriseFeature::RequestLogs)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "enterprise_required",
+                "error": "Logs de Requisições exigem uma licença Enterprise.",
+                "manage_url": enterprise_protocol::ENTERPRISE_MANAGE_URL,
+            })),
+        )
+            .into_response();
+    }
     let query = AuditQuery {
         node_id: query.node_id,
         user: query.user,
@@ -1367,6 +1383,22 @@ pub async fn stats_requests(
     State(state): State<crate::gateway::GatewayState>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
+    if !state
+        .enterprise
+        .status()
+        .await
+        .is_feature_active(enterprise_protocol::EnterpriseFeature::Statistics)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "enterprise_required",
+                "error": "Estatísticas exigem uma licença Enterprise.",
+                "manage_url": enterprise_protocol::ENTERPRISE_MANAGE_URL,
+            })),
+        )
+            .into_response();
+    }
     let query = AuditQuery {
         node_id: query.node_id,
         user: query.user,

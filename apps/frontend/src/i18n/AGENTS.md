@@ -77,6 +77,10 @@ visível do primeiro passa por `profile.admin`; os dois últimos permanecem
 minúsculos por decisão de produto. A toolbar, a tela de rede e o bootstrap
 usam essas chaves, nunca literais cravados nos componentes.
 
+O grupo `enterprise.*` cobre o estado de descoberta das telas de Logs de
+Requisições e Estatísticas. Essas telas continuam navegáveis sem licença para
+que o usuário veja o convite de ativação e o link de compra.
+
 ## Como editar mensagens
 
 - `SUPPORTED_LOCALES = ["en", "pt-BR"]`, e `Locale` continua sendo a união literal.

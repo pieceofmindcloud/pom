@@ -1,8 +1,11 @@
 [workspace]
 members = [
     "crates/brand",
+    "crates/enterprise-protocol",
+    "crates/enterprise-plugin-fixture",
     "crates/llama-engine",
     "crates/node",
+    "crates/plugin-host",
     "crates/routing-base",
     "crates/routing-contract",
     "crates/types",

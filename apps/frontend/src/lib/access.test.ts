@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canAccessRoute, canSeePeerDetails, homeRoute, routeProfiles } from "./access";
+import { canAccessRoute, canAccessEnterprise, canSeePeerDetails, homeRoute, routeProfiles } from "./access";
 
 describe("canAccessRoute", () => {
   it("deixa o administrador entrar nas telas de operação do cluster", () => {
@@ -8,10 +8,12 @@ describe("canAccessRoute", () => {
     }
   });
 
-  it("fecha implantar, implantações e logs para o perfil do nó", () => {
-    for (const path of ["/implantar", "/implantacoes", "/logs"]) {
+  it("fecha implantação para o perfil do nó, mas mantém as telas Enterprise navegáveis", () => {
+    for (const path of ["/implantar", "/implantacoes"]) {
       expect(canAccessRoute(path, "node")).toBe(false);
     }
+    expect(canAccessRoute("/logs", "node")).toBe(true);
+    expect(canAccessRoute("/estatisticas", "node")).toBe(true);
   });
 
   it("deixa passar toda rota que ninguém restringiu", () => {
@@ -29,7 +31,7 @@ describe("canAccessRoute", () => {
   it("casa por segmento, não por prefixo de texto", () => {
     expect(canAccessRoute("/implantarx", "node")).toBe(true);
     expect(canAccessRoute("/logs-antigos", "node")).toBe(true);
-    expect(canAccessRoute("/logs/qualquer-filha", "node")).toBe(false);
+    expect(canAccessRoute("/logs/qualquer-filha", "node")).toBe(true);
   });
 
   it("diz que uma rota livre não tem lista de perfis", () => {
@@ -65,9 +67,11 @@ describe("canAccessRoute", () => {
     expect(canAccessRoute("/config/rede", "infer")).toBe(true);
     expect(canAccessRoute("/documentacao", "infer")).toBe(true);
     expect(canAccessRoute("/config/confianca", "infer")).toBe(true);
-    for (const path of ["/", "/modelos", "/implantar", "/logs", "/config/keys/conexao", "/config/rede/participantes", "/config/preferencias/admin"]) {
+    for (const path of ["/", "/modelos", "/implantar", "/config/keys/conexao", "/config/rede/participantes", "/config/preferencias/admin"]) {
       expect(canAccessRoute(path, "infer")).toBe(false);
     }
+    expect(canAccessRoute("/logs", "infer")).toBe(true);
+    expect(canAccessRoute("/estatisticas", "infer")).toBe(true);
   });
 
   it("mantém participantes e preferências administrativas nos perfis atuais", () => {
@@ -90,5 +94,17 @@ describe("canAccessRoute", () => {
     expect(canSeePeerDetails("infer")).toBe(false);
     // O Painel em si continua aberto ao `node`: o que muda é a vista.
     expect(canAccessRoute("/", "node")).toBe(true);
+  });
+});
+
+describe("canAccessEnterprise", () => {
+  it("keeps request logs and statistics navigable when the lease is inactive", () => {
+    expect(canAccessEnterprise("/logs", false)).toBe(true);
+    expect(canAccessEnterprise("/estatisticas", false)).toBe(true);
+  });
+
+  it("keeps Enterprise routes available when the lease is active", () => {
+    expect(canAccessEnterprise("/logs", true)).toBe(true);
+    expect(canAccessEnterprise("/estatisticas", true)).toBe(true);
   });
 });

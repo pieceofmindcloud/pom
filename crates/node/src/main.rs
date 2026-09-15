@@ -66,6 +66,8 @@ mod direct_lab;
 mod discovery;
 #[path = "utils/display.rs"]
 mod display;
+#[path = "enterprise.rs"]
+mod enterprise;
 #[path = "inference/executor.rs"]
 mod executor;
 #[path = "backend/gateway/mod.rs"]
@@ -911,6 +913,7 @@ async fn async_main(
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
+    let enterprise = enterprise::EnterpriseState::runtime(&node_id);
 
     let pkarr_peer_keys: Vec<String> = args
         .pkarr_peers
@@ -1255,6 +1258,7 @@ async fn async_main(
                 ..crate::cycle::CycleConfig::default()
             },
             audit: audit.clone(),
+            enterprise: enterprise.clone(),
             database: database.clone(),
             gateway_port,
             quic_server: quic_config.clone(),
@@ -2203,6 +2207,7 @@ async fn start_gateway_only(
             ..crate::cycle::CycleConfig::default()
         },
         audit,
+        enterprise: enterprise::EnterpriseState::runtime(&node_id),
         database: database.clone(),
         gateway_port,
         auth: auth_state,

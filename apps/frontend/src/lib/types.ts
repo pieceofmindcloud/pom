@@ -174,6 +174,29 @@ export interface AdminAccessInfo {
   password_configured: boolean;
 }
 
+/** Licença Enterprise, consultada antes de renderizar dados de auditoria. */
+export type EnterpriseLicenseState =
+  | "needs_activation"
+  | "active"
+  | "degraded"
+  | "expired"
+  | "revoked"
+  | "unavailable";
+
+export interface EnterpriseFeatures {
+  request_logs: boolean;
+  statistics: boolean;
+}
+
+export interface EnterpriseStatus {
+  active: boolean;
+  state: EnterpriseLicenseState;
+  features: EnterpriseFeatures;
+  manage_url: string;
+  plugin_version: string | null;
+  lease_expires_at: string | null;
+}
+
 export interface NodeInfo {
   node_id: string;
   short_id: string;

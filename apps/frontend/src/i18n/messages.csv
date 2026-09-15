@@ -838,6 +838,10 @@ docs.section.subsystems,Subsystem docs,Docs de subsistema
 docs.selectAria,Open {title},Abrir {title}
 docs.tab.guides,Guides,Guias
 docs.tab.reference,Reference,Referência
+enterprise.eyebrow,Enterprise,Enterprise
+enterprise.learnMore,Learn about Enterprise,Conhecer o Enterprise
+enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
+enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
 errorBoundary.detail,"The rest of the interface is still available: use the menu to open another screen. If it happens again, the detail below is what the browser recorded.","O resto da interface continua de pé: use o menu para ir a outra tela. Se insistir, o detalhe abaixo é o que o navegador registrou."
 errorBoundary.retry,Try rendering again,Tentar montar de novo
 errorBoundary.title,This screen stopped working,Esta tela parou de funcionar

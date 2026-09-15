@@ -238,6 +238,8 @@ pub struct GatewayState {
     pub cycle_config: crate::cycle::CycleConfig,
     /// Durable audit trail for requests entering this gateway.
     pub audit: Arc<crate::reqlog::AuditLog>,
+    /// License and helper-host state for Enterprise-only request data.
+    pub(crate) enterprise: Arc<crate::enterprise::EnterpriseState>,
     /// Single durable store for local operational state.
     pub database: Arc<crate::db::PomDb>,
     /// HTTP port this node serves the API and UI on.

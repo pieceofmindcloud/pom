@@ -49,6 +49,8 @@ versões criadas ao adicionar ou remover máquinas, é detalhado em
 
 O plano da correção do reload após idle-unload está em
 `superpowers/plans/2026-09-14-reload-idle-runtime-v2.md`.
+O plano da correção do rollback recorrente Kimi-K3 está em
+`superpowers/plans/2026-09-15-hybrid-memory-decode-segv.md`.
 
 ## subsystems/
 
@@ -85,7 +87,8 @@ HTTP do túnel libp2p. O guia descreve como essa validação aparece na tela Imp
 apresenta hops e RTTs direcionais e como o perfil Inference reduz a vista sem
 criar autorização no backend. `inferencia.md` registra também
 as causas conhecidas de perda do estado de sessão, o estado de disponibilidade
-do MTP no `/health` e a tarefa de observabilidade recomendada para distingui-las
+do MTP no `/health`, o rollback por snapshots do Kimi-K3 e a tarefa de
+observabilidade recomendada para distingui-las
 em campo. A seção 2.1.1 registra a regressão de endereço anunciada de
 2026-09-04, a reaplicação da rota morta por lote e a memória de falha que a
 corrige.

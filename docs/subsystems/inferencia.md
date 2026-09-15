@@ -1874,6 +1874,34 @@ valores são iguais.
 - A fatia final é a única que carrega o bloco porque `splitter::split` zera
   `<arch>.nextn_predict_layers` fora dela - ver `docs/subsystems/fatiamento.md`.
 
+### 5.3 Estado recorrente do Kimi-K3
+
+O Kimi-K3 é híbrido: alterna camadas KDA recorrentes e MLA de atenção plena.
+Quando `n_rs_seq > 0`, o `llama_memory_hybrid` reserva snapshots por sequência
+e `init_batch` chama `llama_batch_allocr::split_equal` mantendo os
+`n_rs_seq + 1` tokens finais de cada sequência no mesmo ubatch. A posição do
+token pode estar próxima de `750000` sem estourar o cálculo do alocador: os
+índices e offsets desse caminho são de 64 bits. Um ubatch de `516` tokens com
+seis sequências também é uma geometria válida (`6 * 86`), produzida pela
+reserva retangular do grafo, não uma escrita 4 bytes além de um buffer de 512.
+
+O suporte a rollback precisa existir em duas camadas. O classificador nativo
+deve aceitar `LLM_ARCH_KIMI_K3`; caso contrário, `llama_init_from_model`
+silencia `n_rs_seq` para zero. Além disso, cada camada KDA deve gravar as
+`1 + n_rs_seq` janelas de convolução nos grupos de snapshot e executar a
+varredura por `build_recurrent_attn`, que restaura o estado correspondente à
+sequência e à posição. Gravar somente a última janela e copiar o estado final
+do `build_delta_net` deixa o cache híbrido incompatível com o rollback que o
+gateway faz depois de uma rodada especulativa. A falha pode aparecer mais
+tarde, durante a montagem de um ubatch, como o SIGSEGV em
+`llama_batch_allocr::ubatch_add`, embora a origem seja o estado recorrente
+incompleto.
+
+O teste nativo `test-hybrid-memory-batch-kimi-k3` gera um GGUF K3 mínimo e
+repete quatro decodes com seis sequências, `n_ctx=750000`, `n_ubatch=512` e
+rollback/replay de três tokens. `test-batch-alloc` cobre separadamente a
+geometria do alocador em contexto grande e formatos aleatórios de split.
+
 Quando o operador pede MTP e o contexto de rascunho não pode ser criado, o
 runtime mantém a inferência principal disponível, publica `mtp_ready=false` e
 `mtp_unavailable_reason` em `/health`, e a aba de detalhes do Painel mostra o

@@ -3,8 +3,7 @@
 Reusable UI building blocks, split into two kinds. The small primitives live in
 `ui.tsx` (the design system: panels, buttons, inputs, badges, meters, states,
 formatters) and everything is composed from them. The bigger pieces are the
-app chrome (`Sidebar`/`Topbar`/`Notifications`/`nav.ts`), chat surface
-navigation (`ChatSurfaceTabs`), the cluster
+app chrome (`Sidebar`/`Topbar`/`Notifications`/`nav.ts`), the cluster
 visualizations (`PipelineRail`, `ModelNetworkCanvas`, `DeployNetworkCanvas`), and the dialogs/guards
 for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
@@ -101,6 +100,9 @@ Per-file list:
   amostras, os quantis do intervalo de entrega de tokens do `remote-stream`,
   separando produção, downstream, reserva do canal, fila e callback anterior;
   o detalhe por nó também mostra o custo síncrono do draft MTP quando presente.
+  `TimingSummary` fica fora do `<details>` fechado para manter tokens/s, TTFT,
+  tempo de rede e total visíveis. O Chat fornece trace, timings e origem por
+  mensagem, então a mesma captura permanece disponível em mensagens anteriores.
   O resumo por transporte diferencia RTT de execução, que inclui processamento
   remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
   medição da conexão quando disponível.
@@ -111,6 +113,10 @@ Per-file list:
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly
   commands). Used by `Chat`.
+- `MarkdownField.tsx` - editor compartilhado para metadados administráveis:
+  textarea com altura mínima confortável e prévia ao vivo usando `Markdown`.
+  A configuração da rede usa o mesmo campo para descrição, regras e canais;
+  o contrato continua sendo texto Markdown, não HTML.
 - `ChatSessionList.tsx` - shared conversation history list. The Chat screen
   uses the wide variant; the `infer` Sidebar uses the compact variant. The
   list owns the bounded `overflow-y-auto` region, active `aria-pressed` state,
@@ -125,10 +131,6 @@ Per-file list:
   WebKit `pomOpenWindow` está disponível; fica na toolbar do `Topbar`, não no
   corpo do Chat. É um controle icon-only: o nome completo permanece no nome
   acessível e no tooltip.
-- `ChatSurfaceTabs.tsx` - abas de rota compartilhadas por `Chat` e
-  `NetworkChat`. Mantém `/chat` e `/network-chat` acessíveis nos dois sentidos,
-  com o estado ativo derivado do pathname; é a primeira faixa visual das duas
-  telas, antes do cabeçalho e do conteúdo rolável.
 - `nav.ts` - `NAV`: the menu as data. A seção Implantações usa `Rocket` (era
   `Boxes`, o mesmo ícone de Modelos), o Histórico usa `History` e Logs possui
   folhas separadas para requisições e implantação; Network Chat é uma entrada
@@ -147,9 +149,10 @@ Per-file list:
   tabela marca as entradas que vão para o rodapé do `infer` e promove a rede
   para o menu principal; `navForProfile` e `navFooterForProfile` são suas duas
   projeções. Testes em `nav.test.ts`.
-  A seção principal Rede contém Informações, Participantes, Administradores,
-  Compartilhamento e API Keys. Configurações contém somente Preferências,
-  Armazenamento e Preferências Administrativas; Compartilhamento é a tela única
+  A seção principal Rede contém Informações, Participantes, Minha Máquina,
+  Administradores, Compartilhamento e API Keys. Configurações contém Preferências,
+  Armazenamento, Preferências Administrativas e Sobre, sempre nesta ordem; Sobre
+  é a última folha e abre `/config/sobre`. Compartilhamento é a tela única
   que reutiliza `TrustAnchor` para raiz de confiança, esta máquina e chave de
   conexão.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
@@ -485,10 +488,10 @@ Key logic carriers:
   somente leitura não há `<input>` desabilitado: há o valor escrito. Três
   categorias, e a fronteira entre elas é de quem é o parâmetro - *Configurações
   padrões* (o que o llama.cpp já tem, incluindo os combos de cache KV da
-  instalação), *Configurações POM* (motor, ajuste de memória, chunks em voo,
-  fusão de fatias, precisão do estado oculto) e *Configurações POM (DESENV)*
-  (detector de ciclo, recuo do MTP para a RAM e descarregamento ocioso por
-  peer). O `[i]` vem **antes** do nome,
+  instalação), *Configurações POM* (desativar embeddings, ajuste de memória,
+  chunks em voo, fusão de fatias, precisão do estado oculto) e *Configurações
+  POM (DESENV)* (motor de inferência, detector de ciclo, recuo do MTP para a
+  RAM e descarregamento ocioso por peer). O `[i]` vem **antes** do nome,
   numa coluna reta: depois de nomes de larguras diferentes ele saía serrilhado.
   O combo do motor não oferece "Automático" e assume `dense` ao montar - é
   apresentação, o backend continua aceitando os três modos. Números de ponto
@@ -497,7 +500,11 @@ Key logic carriers:
   estado oculto só aparecem quando quem monta os passa. `VisionControl` segue
   a mesma fronteira: exibe e alterna o mmproj resolvido para modelos inteiros
   e fatias, ou mostra a indisponibilidade localizada quando a rodada fatiada
-  não tem projetor.
+  não tem projetor. A seção `Configurações POM (DESENV)` só é montada quando
+  `NodeInfo.pom_desenv` vem verdadeiro de `/api/ui/node`; quando a flag está
+  desligada, os controles somem, mas os valores recebidos continuam no estado
+  e seguem no pedido quando um controle visível é editado. O modo ausente é
+  apresentado como `dense` (`llama.cpp`).
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
   inclui a profundidade do pipeline de prefill (`prefill_max_inflight_chunks`,
@@ -513,6 +520,8 @@ Key logic carriers:
   O seletor `hidden_state_dtype` mantém f16 como padrão e oferece f8 somente
   como escolha explícita; uma capability de peer comprovadamente incompatível
   desabilita a opção e exibe a razão devolvida pelo servidor.
+  `RuntimeParamsForm` recebe a mesma flag e oculta os controles de ciclo e
+  recuo MTP quando ela está desligada.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `PeerDetailCard.ContextReservationNotice` (PeerDetailCard.tsx) - when the

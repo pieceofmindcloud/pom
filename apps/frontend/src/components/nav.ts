@@ -6,7 +6,9 @@ import {
   Gauge,
   Globe2,
   History,
+  Info,
   KeyRound,
+  Laptop,
   Layers,
   ListTree,
   MessagesSquare,
@@ -116,6 +118,7 @@ export const NAV: NavSection[] = [
     children: [
       { labelKey: "nav.networkInfo", to: "/config/rede", icon: Network },
       { labelKey: "nav.networkParticipants", to: "/config/rede/participantes", icon: Network },
+      { labelKey: "nav.myMachine", to: "/config/minha-maquina", icon: Laptop },
       { labelKey: "nav.administrators", to: "/config/administracao", icon: ShieldCheck },
       { labelKey: "nav.sharing", to: "/config/compartilhamento", icon: ShieldCheck },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
@@ -130,6 +133,7 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
       { labelKey: "nav.storage", to: "/config/armazenamento", icon: FolderTree },
       { labelKey: "nav.administrativePreferences", to: "/config/preferencias/admin", icon: SlidersHorizontal },
+      { labelKey: "nav.about", to: "/config/sobre", icon: Info },
     ],
   },
 ];

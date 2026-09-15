@@ -10,14 +10,11 @@ import {
 const ids = (profile: "admin" | "node" | "infer") => setupStepsFor(profile).map((step) => step.id);
 
 describe("first-access wizard flow", () => {
-  it("keeps the node path focused on hardware, resources, storage capacity, and trust", () => {
+  it("keeps the node path focused on hardware, shared capacity, and trust", () => {
     expect(ids("node")).toEqual([
       "setup-profile",
-      "setup-hardware",
-      "setup-location",
-      "setup-resources",
+      "setup-discovery",
       "setup-trust",
-      "setup-health",
       "setup-review",
     ]);
     expect(setupProfileHasResources("node")).toBe(true);
@@ -28,10 +25,8 @@ describe("first-access wizard flow", () => {
   it("makes infer a short trust-only path after the hardware overview", () => {
     expect(ids("infer")).toEqual([
       "setup-profile",
-      "setup-hardware",
-      "setup-location",
+      "setup-discovery",
       "setup-trust",
-      "setup-health",
       "setup-review",
     ]);
     expect(setupProfileUsesOnlyTrust("infer")).toBe(true);
@@ -42,19 +37,27 @@ describe("first-access wizard flow", () => {
   it("keeps the complete network-creation path for administrators", () => {
     expect(ids("admin")).toEqual([
       "setup-profile",
-      "setup-hardware",
       "setup-location",
-      "setup-resources",
-      "setup-model",
-      "setup-storage",
       "setup-network",
-      "setup-security",
       "setup-invite",
-      "setup-health",
+      "setup-discovery",
       "setup-review",
     ]);
     expect(setupProfileHasResources("admin")).toBe(true);
-    expect(setupProfileHasModelAndFolders("admin")).toBe(true);
-    expect(setupProfileHasShardSlider("admin")).toBe(false);
+    expect(setupProfileHasModelAndFolders("admin")).toBe(false);
+    expect(setupProfileHasShardSlider("admin")).toBe(true);
+  });
+
+  it("does not expose model, storage, or security screens for any profile", () => {
+    for (const profile of ["admin", "node", "infer"] as const) {
+      expect(ids(profile)).not.toEqual(expect.arrayContaining(["setup-model", "setup-storage", "setup-security"]));
+    }
+  });
+
+  it("labels the merged opening step as the machine overview", () => {
+    expect(setupStepsFor("admin")[0]).toEqual({
+      id: "setup-profile",
+      labelKey: "setupWizard.stepHardware",
+    });
   });
 });

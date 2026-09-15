@@ -94,7 +94,7 @@ function LayerPlacementMeter({ placement }: { placement: LayerPlacement }) {
   const value = onCpu
     ? t("canvas.layersSplit", { gpu, cpu })
     : t("canvas.layersAllGpu", { count: gpu });
-  return <div className="mt-2">
+  return <div>
     <div className="mb-1 flex justify-between gap-2 text-[9px] uppercase tracking-[0.12em] text-faint">
       <span>{t("canvas.layers")}</span>
       <span className={clsx("normal-case tracking-normal", onCpu ? "text-amber" : "text-muted")}>{value}</span>
@@ -143,10 +143,12 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
   const unread = unreachable || rediscovering;
   const kind = machineKind(system);
   // Reaproveita o que o `/api/ui/cluster` já traz: nenhuma chamada nova.
+  const hasGpu = system != null && system.gpu_kind !== "none";
   const placement = layerPlacement(
     range.start_layer,
     range.end_layer,
     range.node?.status.reported_gpu_layers,
+    hasGpu,
   );
   const { t } = useI18n();
   return <article
@@ -172,11 +174,11 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
       </div>
     </div>
     <div data-testid="machine-meter-group" className="mt-2 space-y-1.5">
+      <Meter label={gpus.length > 1 ? t("canvas.vramTotal", { count: gpus.length }) : "VRAM"} used={vramUsed} total={vramTotal} unknown={vramTotal == null} />
+      {placement && <LayerPlacementMeter placement={placement} />}
       <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
       <Meter label={t("canvas.load")} used={range.load} total={8} detail={range.load == null ? t("canvas.meterUnknown") : t("canvas.inFlight", { count: range.load })} />
-      <Meter label={gpus.length > 1 ? t("canvas.vramTotal", { count: gpus.length }) : "VRAM"} used={vramUsed} total={vramTotal} unknown={vramTotal == null} />
     </div>
-    {placement && <LayerPlacementMeter placement={placement} />}
     {gpus.length > 0 ? (
       gpus.map((g) => (
         <GpuTemperature

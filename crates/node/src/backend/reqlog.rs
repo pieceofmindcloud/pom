@@ -13,11 +13,11 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use futures::prelude::*;
+use libp2p::{request_response, PeerId, StreamProtocol};
 use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use futures::prelude::*;
-use libp2p::{request_response, PeerId, StreamProtocol};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -532,16 +532,16 @@ impl AuditLog {
                     return false;
                 }
                 if let Some(completion) = completed {
-                    let _ = self
-                        .sender
-                        .try_send(Command::Complete { id, completion });
+                    let _ = self.sender.try_send(Command::Complete { id, completion });
                 }
                 true
             }
             AuditEvent::Complete { id, completion } => {
                 if !state.begun.remove(&id) {
                     if state.completions_waiting_for_begin.len() >= MAX_REMOTE_AUDIT_IDS {
-                        if let Some(oldest) = state.completions_waiting_for_begin.keys().next().cloned() {
+                        if let Some(oldest) =
+                            state.completions_waiting_for_begin.keys().next().cloned()
+                        {
                             state.completions_waiting_for_begin.remove(&oldest);
                         }
                     }
@@ -1716,13 +1716,10 @@ mod tests {
         audit.start_replication(Arc::new(network), outbound);
         audit.begin(request("replicated-request", "key", "replicar"));
 
-        let message = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            received.recv(),
-        )
-        .await
-        .expect("fanout de auditoria no prazo")
-        .expect("evento para admin secundário");
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
+            .await
+            .expect("fanout de auditoria no prazo")
+            .expect("evento para admin secundário");
         match message.event {
             AuditEvent::Begin(request) => assert_eq!(request.id, "replicated-request"),
             AuditEvent::Complete { .. } => panic!("início esperado antes da conclusão"),

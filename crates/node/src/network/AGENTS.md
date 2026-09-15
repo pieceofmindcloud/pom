@@ -77,6 +77,14 @@ fallback continua em `addr_candidates` + `RouteTable`.
   da cadeia em `admin_trust.rs`. O campo `idle` também é anunciado por peer
   para distinguir modelo descarregado de deployment fora do ar; ele não altera
   a regra de liveness.
+- `local_discovery.rs` - handshake UDP temporário da configuração inicial e
+  preferência administrativa de descoberta local. O admin anuncia somente o
+  fingerprint e os metadados de tamanho do documento, recebe um `Proof` ligado
+  ao desafio efêmero do nó e só então envia o documento junto da
+  `connection_key` cifrada. O payload autenticado é fragmentado em blocos que
+  cabem no orçamento de 1200 bytes do UDP e remontado antes da validação do
+  fingerprint. A preferência fica desligada fora do wizard; o material sensível
+  vive apenas em memória e a transferência é limitada a 512 KiB.
 - `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
@@ -115,14 +123,20 @@ fallback continua em `addr_candidates` + `RouteTable`.
   A descoberta de um endpoint QUIC morto compartilha um orçamento agregado de
   300 ms entre endereços, e a falha põe aquele endereço em quarentena por 5 s
   para não repetir handshake a cada token; a sessão saudável é reutilizada.
+  Se uma requisição falha numa sessão cacheada, como no `ApplicationClose`
+  causado pelo reinício do peer, o pool fecha e remove aquela instância e tenta
+  uma vez um handshake novo dentro do mesmo orçamento. A quarentena só registra
+  a falha final do endpoint. A remoção compara a instância cacheada para não
+  apagar uma conexão nova criada concorrentemente.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `public_directory.rs` - protocolo federado do catálogo público. Registros
   completos são assinados pelo principal da rede, têm prova de trabalho de 16
   bits, sequência monotônica, TTL de sete dias e merge determinístico. O cache
   local aceita no máximo 1024 registros; réplicas são somente ingressos HTTP(S)
-  configuráveis e não autoridade. Um nó privado consulta esses ingressos por
-  saída, mas não usa seu swarm privado como descoberta pública.
+  configuráveis e não autoridade. O registro assinado inclui descrição,
+  regras e canais em Markdown junto do convite. Um nó privado consulta esses
+  ingressos por saída, mas não usa seu swarm privado como descoberta pública.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
   `ServerCertVerifier` que confere `SHA256(pubkey) == node_id`. Nada vai para o
   disco; não há CA. Ver `docs/subsystems/rede-p2p.md`, seção 5.

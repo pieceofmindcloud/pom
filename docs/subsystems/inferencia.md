@@ -261,6 +261,44 @@ mostra o valor efetivo. Isso resolve falta de VRAM para o cache; se os próprios
 pesos não couberem, ainda é necessário reduzir `n_gpu_layers` ou dividir o
 modelo entre máquinas.
 
+#### Limitação: KV em uma GPU diferente dos pesos
+
+O runtime não oferece hoje um campo `context_gpu` ou `kv_cache_gpu`. A API
+vendorizada do llama.cpp não tem esse grau de liberdade:
+
+- `llama_split_mode` documenta `layer` e `row` como divisões de camadas **e
+  KV** entre GPUs (`vendor/llama-cpp-sys-2/llama.cpp/include/llama.h:198-203`).
+  `tensor_split` altera a divisão do modelo, não cria uma divisão independente
+  para o cache.
+- `llama_context_params` expõe `type_k`, `type_v` e `offload_kqv`, mas não um
+  dispositivo ou buffer type para o KV (`vendor/llama-cpp-sys-2/llama.cpp/include/llama.h:421-468`).
+  `offload_kqv=false` é o único recuo de localização e escolhe CPU/RAM.
+- Na implementação nativa, cada camada de KV usa `model.dev_layer(il)` e o
+  buffer type desse dispositivo quando `offload_kqv` está ligado
+  (`vendor/llama-cpp-sys-2/llama.cpp/src/llama-kv-cache.cpp:210-223`).
+  `model.dev_layer` é definido pela mesma alocação de camadas que carrega os
+  pesos (`vendor/llama-cpp-sys-2/llama.cpp/src/llama-model.cpp:1363-1384`).
+- `llama_model_tensor_buft_override` pertence a `llama_model_params` e é
+  aplicado ao nome dos tensores durante o carregamento do modelo
+  (`vendor/llama-cpp-sys-2/llama.cpp/include/llama.h:302-322` e
+  `vendor/llama-cpp-sys-2/llama.cpp/src/llama-model-loader.cpp:1237-1254`).
+  Ele não alcança os tensores `cache_k_l*` e `cache_v_l*`, criados depois pelo
+  contexto.
+
+O wrapper do POM confirma a fronteira: `crates/llama-engine/src/llm/model.rs`
+passa `devices`, `tensor_split` e `tensor_buft_overrides` somente em
+`llama_model_params:429-447`, enquanto a criação do contexto só preenche
+`n_ctx`, `n_seq_max`, `kv_unified`, `offload_kqv` e os tipos K/V em
+`crates/llama-engine/src/llm/config.rs:1012-1022`. Não há uma API existente que
+permita apontar o cache do contexto para a Radeon mantendo os pesos na RTX.
+
+Assim, `split-mode layer`, `row` ou `tensor` pode usar as duas GPUs, mas muda a
+colocação dos pesos e do KV de forma conjunta. A alternativa disponível sem
+alterar o fork é `offload_kqv=false`, que conserva os pesos na GPU e leva o KV
+para a RAM, não para outra GPU. A investigação completa e o contrato proposto
+para uma futura alteração nativa estão em
+`docs/architecture/kv-cache-device-placement.md`.
+
 O tipo numérico do cache é uma configuração da instalação, no `pom.json`, e não
 uma escolha por máquina dentro de uma implantação:
 
@@ -1338,7 +1376,8 @@ reinício, sem chamada manual:
 Antes de carregar os pesos, `executor::select` lê o cabeçalho GGUF. Só um
 `expert_count > 1` classifica o modelo como MoE. Em `auto`, qualquer modelo
 denso ou com metadados ausentes permanece em `dense/llama.cpp`. O campo
-persistido `NodeConfig.inference_mode` chega ao seletor antes da carga: uma
+persistido `NodeConfig.inference_mode` chega ao seletor antes da carga; quando
+o campo não é informado, o padrão persistido é `dense` (`llama.cpp`). Uma
 escolha explícita `dense` ou `moe` vence o ambiente derivado da marca
 `POM_INFERENCE_MODE`; em `auto`, esse ambiente ainda pode forçar um modo e, sem
 override, a metadata escolhe. `moe` recusa um GGUF denso com erro explícito.
@@ -1498,8 +1537,9 @@ no quadro final e `x_pom.partial` fica verdadeiro; os motivos padrão dos
 provedores continuam compatíveis (`stop` e `end_turn`). Não há truncamento
 silencioso nem nova inferência.
 
-O operador pode desligar o comportamento com `--no-cycle-detection` no processo
-ou desmarcando `cycle_detection_enabled` na configuração de implantação. Os
+Desligado por padrão; o operador liga o comportamento com `--cycle-detection`
+no processo ou marcando `cycle_detection_enabled` na configuração de
+implantação. Os
 campos `cycle_detection_min_window_tokens`,
 `cycle_detection_max_window_tokens` e `cycle_detection_repetitions` ajustam a
 política pelos parâmetros de runtime da tela de implantação e são propagados a
@@ -2089,6 +2129,16 @@ oculto até confirmar a saúde. Um peer ocioso escolhido pelo plano é acordado
 pelo evento `reload_model` em paralelo
 com os demais peers ociosos planejados e a requisição espera o novo `/health`
 por até 15 minutos; um peer vivo de rota alternativa não bloqueia a admissão.
+Na transição, o runtime aguarda o supervisor da geração anterior terminar o
+encerramento do servidor e a liberação FFI do modelo antes de ligar a nova
+porta. Essa liberação usa `spawn_blocking`, portanto `health` e as demais rotas
+HTTP não ficam presas a `llama_free`.
+O encerramento do endpoint QUIC usa um canal one-shot, não um aviso que possa
+ser perdido antes do primeiro poll, e tem prazo de 2 s. A espera do supervisor
+tem prazo de 5 s; se a geração antiga não terminar, a nova não é iniciada e o
+handle continua registrado para nova tentativa. O anúncio imediato da faixa é
+best-effort e tem prazo de 1 s, portanto falha de DNS ou de UDP não impede o
+servidor local de começar.
 Sem peer correspondente, a configuração local continua sendo fallback para
 rotas sem implantação.
 

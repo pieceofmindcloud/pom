@@ -42,6 +42,11 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   um passo separado.
 - Lido em `main.rs:1` (`BUILD_COMMIT`) e exposto em `/api/ui/node` - é como se
   descobre um peer com binário velho sem shell na máquina.
+- `main.rs` lê `POM_DESENV` uma vez no startup; somente o valor exato `1` habilita
+  controles de desenvolvimento, e `NodeInfo.pom_desenv` publica essa decisão
+  para a interface. A flag só controla a visibilidade local: os handlers de
+  implantação preservam os valores de `RuntimeParams` recebidos pela rede, e
+  o modo ausente usa `dense` (`llama.cpp`) como padrão.
 - O build nativo prepara automaticamente o fork de `llama.cpp` em um worktree
   novo, clonando a branch `pom-tensor-parallel` quando o symlink versionado
   aponta para uma árvore ausente. `LLAMA_SOURCE` permite reutilizar um checkout
@@ -79,7 +84,7 @@ como `primary` na config de inferência montada pela linha de comando),
 `--inference-port`, `--n-gpu-layers` (0), `--n-ctx` (8192 por sessão), `--n-batch` (512),
 `--max-new-tokens` (512), `--max-sessions` (1), `--kv-cache-ram`,
 `--prefill-chunk-tokens` (512), `--temperature`/`--top-p`/`--top-k`/
-`--repeat-penalty`/`--repeat-last-n`, `--no-cycle-detection`, `--no-thinking`, `--single-peer`,
+`--repeat-penalty`/`--repeat-last-n`, `--cycle-detection` (desligado por padrão), `--no-thinking`, `--single-peer`,
 `--pkarr-peers`, `--public-addr`, `--relay-peers`, `--serve-relay`,
 `--no-default-relays`, `--no-discovery`.
 
@@ -94,8 +99,10 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
 2. Sem `pom.json`, ou com `Config.setup_pending`, → `start_setup_mode`: serve
    somente `/api/setup/*` para hardware, modelos, referência geo, raiz de
    confiança, verificações e save, além da UI (`webapp::routes`); gravar a
-   config respawna o processo. O modo setup preserva preferências locais após
-   sair da rede.
+   config respawna o processo. Sem config, a porta P2P do setup segue
+   `--port`, o que permite isolar um segundo nó local; com config pendente, a
+   porta persistida continua sendo a autoridade. O modo setup preserva
+   preferências locais após sair da rede.
 3. Com config: valida a porta da interface e faz o preflight de disponibilidade
    antes de carregar modelos; porta P2P/HTTP vêm da config; `inference_port` =
    flag ou default 8181.

@@ -12,7 +12,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ## Per-file
 
 - `api.ts` - fetch wrapper over relative paths with same-origin credentials,
-  connection-key auth, administrative-token auth only for `/api/ui/**` and
+  connection-key auth, administrative-password auth only for `/api/ui/**` and
   `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment
   registry actions (`listDeployments`, `redeployDeployment` - `{ params }` ou
   `{ version }` para reimplantar uma versão registrada -, `activateDeployment`),
@@ -43,7 +43,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   choice. `ChatSessionProvider` shares the active
   session and selection/new/delete actions between `Chat` and the infer Sidebar,
   and owns the active stream so route unmounts preserve live partial replies.
-  Direct Chat consumers get an isolated provider wrapper.
+  Direct Chat consumers get an isolated provider wrapper. The terminal
+  `ChatStreamResult` retains trace, generation timings and source so Chat can
+  associate the complete telemetry capture with the specific reply while the
+  persisted message patch settles.
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
   `stream_duration_ms` is measured locally from the first SSE data frame to
   receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
@@ -207,6 +210,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   an authenticated operator back to the gate would only make them re-enter to
   see the same refusal.
 - `brand.ts` - the product identity on the screen side: `brand` (name, tagline, slug, logo/mark/favicon URLs) from the generated `src/brand/brand.json`, same source the binary embeds. `storageKey(name)` prefixes every `localStorage` key with the slug (`pom.theme`, `pom.locale`, `pom.connectionKey`, `pom.chat.sessions`, `pom.deploy.last`, `pom.network-layout`), which is what makes renaming the product one edit - and why a rename drops local preferences, deliberately: they belong to another product's keys.
+- `licenses.generated.ts` - catálogo estático gerado por
+  `apps/frontend/scripts/build-licenses.mjs`, com nome, versão, licença,
+  repositório e ecossistema das dependências diretas listadas em Sobre. Não
+  edite manualmente: após mudar manifests, rode `npm run licenses` em
+  `apps/frontend` e versione o resultado.
 - `setConnectionKey` / `getConnectionKey` - module-level credential persisted in `localStorage` key `codai.connectionKey`; seeded by `useNode()` from `GET /api/ui/node`. A changed key also clears conditional GET snapshots.
 - `ensureChatApiKey` / `forgetChatApiKey` - keep the UI-only `pom-[node_id]`
   key in memory and recreate it after revocation without exposing its value.
@@ -298,10 +306,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   with the tab open, and a once-per-load probe would leave every screen
   printing the server's raw 401 with no way back to the gate.
 - `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
-- `useAdminAccess()` - public one-shot metadata for the administrative token
-  gate; it never receives the token.
-- `useAdminAccessInfo()` - authenticated administrative settings, including the
-  token only for the Preferences screen.
+- `useAdminAccess()` - public one-shot metadata for the administrative password
+  gate; it never receives the password.
+- `useAdminAccessInfo()` - authenticated administrative settings, exposing only
+  whether a password is configured to the Preferences screen.
 - `useNode()` - polls `/api/ui/node` every 4s after the admin gate, stores
   `connection_key`. That field is not decoration: it is what authenticates
   every later call that needs `ConnectionAuth` (`/admin/*`, `/api/ui/leave`).
@@ -354,7 +362,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   recreating it.
   `startStream` also carries the optional Chat `inference_head` selection in
   the OpenAI-compatible request body and sends the conversation's
-  `thinkingEnabled` value as `thinking_enabled`.
+  `thinkingEnabled` value as `thinking_enabled`. The terminal result retains
+  the same trace, timings and source metadata for the message-level Chat
+  telemetry snapshot.
 - `turnsOnly(messages)` - drops `role: "event"` entries (model-change marks) before the transcript travels in a request.
 - `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.
@@ -362,9 +372,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### Anexos
 
 `imageResize.ts` reduz imagens para no máximo 2048 px no lado maior e preserva
-a proporção antes de montar o pedido multimodal. `chatStore` preserva as partes
-estruturadas do pedido para que anexos de imagem e de outros tipos sobrevivam ao
-histórico; o Chat aplica o limite de contexto antes de aceitar o lote.
+a proporção antes de montar o pedido multimodal. Quando há contexto conhecido,
+o orçamento é 90% de `context_length * 4` bytes, menos os anexos já presentes;
+a qualidade JPEG e o lado maior descem iterativamente até 512 px. O resultado
+carrega tamanho e a flag `resized`, para a tela avisar o operador. `chatStore`
+preserva as partes estruturadas do pedido para que anexos de imagem e de outros
+tipos sobrevivam ao histórico; texto e arquivos ainda são recusados quando
+ultrapassam o orçamento, mas imagem só falha se nem a miniatura mínima couber.
 
 ### chatStream.ts
 - `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).

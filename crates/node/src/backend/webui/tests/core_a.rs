@@ -287,7 +287,7 @@ mod tests {
             p.fit_memory_margin_mb,
             crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB
         );
-        assert!(p.cycle_detection_enabled);
+        assert!(!p.cycle_detection_enabled);
         assert_eq!(
             p.cycle_detection_min_window_tokens,
             crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
@@ -319,9 +319,9 @@ mod tests {
     }
 
     #[test]
-    fn inference_mode_defaults_to_auto_and_round_trips() {
+    fn inference_mode_defaults_to_dense_and_round_trips() {
         let default: RuntimeParams = serde_json::from_str("{}").unwrap();
-        assert_eq!(default.inference_mode, InferenceMode::Auto);
+        assert_eq!(default.inference_mode, InferenceMode::Dense);
 
         let explicit: RuntimeParams = serde_json::from_value(serde_json::json!({
             "inference_mode": "moe"
@@ -330,6 +330,16 @@ mod tests {
         assert_eq!(explicit.inference_mode, InferenceMode::Moe);
         let encoded = serde_json::to_value(explicit).unwrap();
         assert_eq!(encoded["inference_mode"], "moe");
+
+        let explicit_auto: RuntimeParams = serde_json::from_value(serde_json::json!({
+            "inference_mode": "auto"
+        }))
+        .unwrap();
+        assert_eq!(explicit_auto.inference_mode, InferenceMode::Auto);
+        assert_eq!(
+            serde_json::to_value(explicit_auto).unwrap()["inference_mode"],
+            "auto"
+        );
     }
 
     #[test]

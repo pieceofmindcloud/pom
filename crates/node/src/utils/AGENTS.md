@@ -40,7 +40,8 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `<project_root>/pom.log` para que falhas logo após o reinício deixem rastro.
 - `sysmon.rs` - amostragem de RAM/VRAM/disco por plataforma, com cache.
 - `thermal.rs` - política de temperatura, histerese e cooldown como máquina de
-  estados pura, sem dependência de fornecedor ou hardware.
+  estados pura, sem dependência de fornecedor ou hardware. A validação exige
+  corte de no mínimo 70 °C e cooldown de no máximo 60 segundos.
 
 ## Funções-chave
 
@@ -65,7 +66,8 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   Unix), inclusive quando o arquivo já existia; o campo opcional
   `huggingface_token` é segredo e o `Debug` de `Config` o mascara. O runtime
   lê chaves, política térmica e token do `pom.db`, sem usar esses campos como
-  fallback.
+  fallback. Ao carregar, a credencial administrativa legada em texto é
+  migrada uma vez para hash Argon2id; o arquivo nunca persiste a senha pura.
 - `normalize_peer_addr` - completa a porta que falta em endereço digitado
   (IPv6 puro sem porta vira `invalid port value` no resolver, repetido para
   sempre no log); mantém o que está gravado igual ao que se imprime.

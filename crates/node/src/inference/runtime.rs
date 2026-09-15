@@ -20,6 +20,21 @@ use tracing::{info, warn};
 /// Give up restarting a crash-looping inference server after this many tries.
 /// The same budget is persisted by `lastslice` so a process crash cannot reset it.
 const MAX_RESTARTS: u32 = crate::lastslice::MAX_AUTOMATIC_ATTEMPTS;
+/// Um supervisor antigo não pode bloquear indefinidamente a primeira
+/// requisição depois de um unload. O limite cobre o encerramento gracioso do
+/// transporte e dá ao `spawn_blocking` uma janela curta para a limpeza nativa;
+/// se ele estourar, a task é mantida joinable e a nova geração não começa.
+/// Cinco segundos cobrem a drenagem TCP de 3 s e o fechamento QUIC de 2 s sem
+/// transformar uma falha de transporte em espera de dezenas de segundos.
+const SUPERVISOR_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+
+/// O anúncio é apenas uma atualização de descoberta: uma falha não pode
+/// impedir o servidor local de voltar a atender. O prazo cobre resolução DNS
+/// e os envios UDP aos endereços conhecidos sem deixar o reload preso. Um
+/// segundo é curto em relação ao caminho de fallback QUIC de 300 ms, mas deixa
+/// margem para um lookup local sem afetar um anúncio saudável.
+const ANNOUNCE_DEADLINE: Duration = Duration::from_secs(1);
+
 /// Um único /health só prova que uma resposta foi montada. O crash do
 /// Windows aconteceu no mesmo instante em que essa resposta virou
 /// model_loaded, então a anotação persistente só pode ser promovida depois
@@ -414,7 +429,7 @@ fn default_offload_kqv() -> bool {
 }
 
 fn default_cycle_detection_enabled() -> bool {
-    true
+    false
 }
 fn default_cycle_detection_min_window_tokens() -> u32 {
     crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
@@ -682,6 +697,10 @@ pub struct NodeRuntime {
     /// Serializes apply, manual unload and thermal unload so an operator action
     /// cannot race a temperature transition.
     operation: Mutex<()>,
+    /// Keeps the previous supervisor joinable until its inference server has
+    /// released the listener and native model resources. A reload must not
+    /// start a second generation while the first one is still unwinding.
+    supervisor: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     thermal: Arc<Mutex<ThermalRuntime>>,
 }
 
@@ -741,6 +760,7 @@ impl NodeRuntime {
             request_activity: crate::reqlog::RequestActivity::new(),
             status_changed: Arc::new(Notify::new()),
             operation: Mutex::new(()),
+            supervisor: std::sync::Mutex::new(None),
             thermal: Arc::new(Mutex::new(ThermalRuntime {
                 blocked: false,
                 recovery: None,
@@ -752,6 +772,42 @@ impl NodeRuntime {
     /// inferência da geração atual.
     pub fn load_tracker(&self) -> Arc<crate::pipeline::LoadTracker> {
         self.loads.clone()
+    }
+
+    fn take_supervisor(&self) -> Option<tokio::task::JoinHandle<()>> {
+        self.supervisor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+
+    async fn wait_for_supervisor(
+        supervisor: Option<tokio::task::JoinHandle<()>>,
+    ) -> (Option<tokio::task::JoinHandle<()>>, Result<()>) {
+        Self::wait_for_supervisor_with_timeout(supervisor, SUPERVISOR_SHUTDOWN_DEADLINE).await
+    }
+
+    async fn wait_for_supervisor_with_timeout(
+        supervisor: Option<tokio::task::JoinHandle<()>>,
+        deadline: Duration,
+    ) -> (Option<tokio::task::JoinHandle<()>>, Result<()>) {
+        let Some(mut supervisor) = supervisor else {
+            return (None, Ok(()));
+        };
+
+        match tokio::time::timeout(deadline, &mut supervisor).await {
+            Ok(Ok(())) => (None, Ok(())),
+            Ok(Err(error)) => {
+                warn!("supervisor anterior terminou de forma inesperada: {error}");
+                (None, Ok(()))
+            }
+            Err(_) => (
+                Some(supervisor),
+                Err(anyhow::anyhow!(
+                    "supervisor anterior não encerrou em {deadline:?}"
+                )),
+            ),
+        }
     }
 
     /// Atomic activity marker used by the out-of-band idle evaluator.
@@ -958,8 +1014,22 @@ impl NodeRuntime {
         let _operation = self.operation.lock().await;
         info!("parando servidor de inferencia neste no");
 
+        let previous_supervisor = self.take_supervisor();
         let generation = *self.generation.borrow() + 1;
         self.generation.send_replace(generation);
+
+        let (pending_supervisor, wait_result) =
+            Self::wait_for_supervisor(previous_supervisor).await;
+        if let Some(supervisor) = pending_supervisor {
+            *self
+                .supervisor
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
+            if let Err(error) = wait_result {
+                warn!("não deu para parar o servidor de inferência: {error}");
+                return;
+            }
+        }
 
         *self.config.write().await = None;
         *self.assignment.write().await = None;
@@ -1054,8 +1124,11 @@ impl NodeRuntime {
             self.model_cache.clear();
         }
 
+        let previous_supervisor = self.take_supervisor();
+
         // Bumping the generation stops the previous supervisor, which kills its
-        // child on the way out.
+        // child on the way out. Join it before starting another generation so
+        // the old server has completed native cleanup and released its port.
         //
         // `send_replace`, not `send`: with no live receivers — the case on the
         // very first apply, before any supervisor exists — `send` reports an
@@ -1063,6 +1136,17 @@ impl NodeRuntime {
         // about to spawn would read a stale generation and exit immediately.
         let generation = *self.generation.borrow() + 1;
         self.generation.send_replace(generation);
+
+        let (pending_supervisor, wait_result) =
+            Self::wait_for_supervisor(previous_supervisor).await;
+        if let Some(supervisor) = pending_supervisor {
+            *self
+                .supervisor
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
+        }
+        wait_result?;
+        info!("supervisor anterior encerrado; preparando nova geração");
 
         *self.config.write().await = Some(cfg.clone());
         *self.assignment.write().await = Some(assignment.clone());
@@ -1075,11 +1159,18 @@ impl NodeRuntime {
         // `/health` do processo novo responder `model_loaded`.
         self.net.set_runtime_generation(generation);
 
-        // Let peers know immediately instead of waiting for the next gossip tick.
-        if let Err(e) = self.net.announce(Some(&assignment)).await {
-            warn!("announce após reconfiguração falhou: {e}");
+        // Let peers know immediately instead of waiting for the next gossip
+        // tick. Discovery is best effort, so a dead hostname or a stalled
+        // socket must not keep the local reload from starting the server.
+        match tokio::time::timeout(ANNOUNCE_DEADLINE, self.net.announce(Some(&assignment))).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => warn!("announce após reconfiguração falhou: {error}"),
+            Err(_) => warn!(
+                "announce após reconfiguração excedeu {ANNOUNCE_DEADLINE:?}; seguindo localmente"
+            ),
         }
 
+        info!("anúncio da nova geração concluído; iniciando supervisor");
         self.spawn_supervisor(cfg, generation, reuse_weights);
         Ok(())
     }
@@ -1288,7 +1379,7 @@ impl NodeRuntime {
         let quic = self.quic.clone();
         let quic_port = self.quic_port;
 
-        tokio::spawn(async move {
+        let supervisor = tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;
             append_log(port, "supervisor iniciado");
             let mut restarts = 0u32;
@@ -1433,6 +1524,11 @@ impl NodeRuntime {
                 }
             }
         });
+
+        *self
+            .supervisor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
 
         self.spawn_health_watch(cfg_for_health, generation);
     }
@@ -1842,6 +1938,24 @@ mod tests {
             }
         }
 
+        // O supervisor continua sendo uma task viva enquanto percorre o
+        // orçamento de reinícios. Sinalize a geração e aguarde sua saída antes
+        // de devolver o ambiente global ao restante da suíte, senão uma
+        // tentativa atrasada pode escrever o journal usando o POM_HOME do
+        // teste seguinte.
+        let generation = *rt.generation.borrow() + 1;
+        rt.generation.send_replace(generation);
+        let (pending_supervisor, wait_result) = NodeRuntime::wait_for_supervisor_with_timeout(
+            rt.take_supervisor(),
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            pending_supervisor.is_none(),
+            "supervisor da porta presa terminou"
+        );
+        wait_result.unwrap();
+
         let log = log_file_path(port);
         let conteudo = std::fs::read_to_string(&log).unwrap_or_default();
         std::env::remove_var("POM_HOME");
@@ -1867,6 +1981,47 @@ mod tests {
             conteudo.contains("supervisor iniciado"),
             "o arquivo de log tem que existir e ter as linhas do supervisor: {conteudo:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn idle_reload_waits_for_previous_supervisor_to_finish() {
+        let terminou = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let terminou_no_supervisor = terminou.clone();
+        let supervisor = tokio::spawn(async move {
+            sleep(Duration::from_millis(40)).await;
+            terminou_no_supervisor.store(true, std::sync::atomic::Ordering::Release);
+        });
+
+        let (pending_supervisor, wait_result) = NodeRuntime::wait_for_supervisor_with_timeout(
+            Some(supervisor),
+            Duration::from_millis(100),
+        )
+        .await;
+        assert!(pending_supervisor.is_none());
+        wait_result.unwrap();
+
+        assert!(
+            terminou.load(std::sync::atomic::Ordering::Acquire),
+            "a próxima geração só pode começar depois da limpeza da anterior"
+        );
+    }
+
+    #[tokio::test]
+    async fn supervisor_pendente_tem_limite_e_fica_joinable() {
+        let supervisor = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        let (pending_supervisor, wait_result) = NodeRuntime::wait_for_supervisor_with_timeout(
+            Some(supervisor),
+            Duration::from_millis(100),
+        )
+        .await;
+        let mut pending_supervisor = pending_supervisor.expect("o supervisor deve ser preservado");
+        assert!(wait_result.is_err());
+
+        pending_supervisor.abort();
+        assert!(pending_supervisor.await.is_err());
     }
 
     /// A TUI mostra o estado do servidor, não um rótulo fixo.

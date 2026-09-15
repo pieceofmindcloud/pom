@@ -96,7 +96,9 @@ um probe curto em `/health`, com cache de 30 segundos e atualização manual.
 
 As preferências locais ficam em Configurações › Preferências: exposição da
 interface administrativa, porta do gateway, TLS entre nós, proteção térmica da
-GPU e credencial opcional do Hugging Face. A exposição começa em localhost;
+GPU e credencial opcional do Hugging Face. A seção também termina com Sobre,
+que lista as dependências diretas e suas licenças e destaca a licença provisória
+do POM. A exposição começa em localhost;
 quando passa para a rede, a tela mostra o token humano gerado e a API exige
 `X-POM-Access-Token`. A `connection_key` continua separada, para autenticar os
 nós e clientes da pipeline.

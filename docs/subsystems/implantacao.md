@@ -145,9 +145,20 @@ reinicia a atividade. Envia em paralelo o evento autenticado `reload_model` a
 cada peer ocioso planejado; o evento é idempotente para uma segunda requisição
 que acorde a mesma máquina, e cada destinatário carrega sua própria fatia.
 Assim, a primeira requisição pode esperar a carga, mas os hops não são
-aquecidos sequencialmente nem ficam esperando uns pelos outros. O status volta
-a `serving` quando o `/health` confirma o modelo carregado. `idle` é por peer,
-não por deployment: uma máquina ociosa não muda o estado das demais.
+aquecidos sequencialmente nem ficam esperando uns pelos outros. O supervisor
+aguarda o encerramento completo da geração ociosa antes de iniciar a nova, e a
+liberação FFI do modelo roda fora do executor async em `spawn_blocking`; o
+gateway e o `/health` continuam responsivos durante esse intervalo. O status
+volta a `serving` quando o `/health` confirma o modelo carregado. `idle` é por
+peer, não por deployment: uma máquina ociosa não muda o estado das demais.
+O sinal de encerramento do endpoint HTTP/3 é one-shot e persiste mesmo se a
+task QUIC ainda não tiver feito o primeiro poll. Depois da drenagem, o servidor
+espera no máximo 2 s pelo endpoint QUIC e aborta a task se necessário; o
+supervisor tem um teto adicional de 5 s. Se a limpeza da geração anterior
+não terminar nesse prazo, o reload falha sem iniciar outra geração e conserva o
+handle para uma tentativa posterior, evitando sobreposição de recursos nativos.
+O anúncio imediato da faixa é best-effort e tem teto de 1 s, sem atrasar a
+subida local quando DNS ou UDP não respondem.
 
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 
@@ -332,8 +343,10 @@ n_gpu_layers, offload_kqv }` é validado por posição:
 
 - **`target_node_id` vazio é recusa, não convite** para o nó escolher.
 - **Máquina com `n_gpu_layers`/`offload_kqv`**: só o que é propriedade do hardware
-  viaja por máquina. O cache KV é dimensionado pela janela de contexto, e uma
-  caixa com 16 GB de VRAM e uma sem GPU no mesmo pipeline não podem estar as duas
+  viaja por máquina. `offload_kqv` é apenas o booleano GPU versus RAM, e quando
+  fica na GPU o cache segue a camada que carrega os pesos; não há índice de GPU
+  separado. O cache KV é dimensionado pela janela de contexto, e uma caixa com
+  16 GB de VRAM e uma sem GPU no mesmo pipeline não podem estar as duas
   certas sobre onde ele cabe. Tudo o mais (`RuntimeParams`) é do pipeline inteiro
   - contexto, batch, pedaço e precisão do estado oculto decidem o orçamento de
   prompt que o gateway cobra, e a amostragem só roda no último peer. A precisão
@@ -523,7 +536,9 @@ outro peer nem o plano antigo enquanto o inventário ainda está sendo lido.
 um único `LaunchTarget` (`skip_split: true` - o arquivo já existe e o passo é
 só carregar). `cache_type_k`/`cache_type_v` são aplicados no `pom.json` local
 ou pela API do peer antes do launch; `n_gpu_layers` e `offload_kqv` seguem como
-overrides efetivos da máquina. Dois detalhes escondidos na chamada:
+overrides efetivos da máquina. `offload_kqv` não seleciona uma GPU diferente
+dos pesos: ligado, o KV segue o dispositivo da camada; desligado, vai para
+RAM. Dois detalhes escondidos na chamada:
 
 - **`peer_index`/`peer_count`** - a posição é a do pipeline, não "este nó sozinho":
   sem isso o nó somado se diz o último da divisão.

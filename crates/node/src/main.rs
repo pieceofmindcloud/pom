@@ -3,6 +3,23 @@
 /// Commit this binary was built from, stamped by `build.rs`.
 pub const BUILD_COMMIT: &str = env!("POM_BUILD_COMMIT");
 
+/// Development-only controls are enabled only by an explicit process setting.
+pub(crate) const POM_DESENV_ENV: &str = "POM_DESENV";
+static POM_DESENV_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub(crate) fn pom_desenv_enabled_from(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+pub(crate) fn initialize_pom_desenv() -> bool {
+    *POM_DESENV_ENABLED
+        .get_or_init(|| pom_desenv_enabled_from(std::env::var(POM_DESENV_ENV).ok().as_deref()))
+}
+
+pub(crate) fn pom_desenv_enabled() -> bool {
+    initialize_pom_desenv()
+}
+
 #[path = "network/addrs.rs"]
 pub mod addrs;
 #[path = "backend/admin.rs"]
@@ -68,6 +85,11 @@ mod link;
 #[cfg(test)]
 #[path = "inference/link_lab.rs"]
 mod link_lab;
+#[path = "network/local_discovery.rs"]
+mod local_discovery;
+#[cfg(test)]
+#[path = "network/local_discovery_tests.rs"]
+mod local_discovery_tests;
 #[cfg(target_os = "macos")]
 mod macos_status;
 #[path = "models/memory.rs"]
@@ -368,9 +390,9 @@ struct Args {
     #[arg(long, default_value = "64")]
     repeat_last_n: u32,
 
-    /// Disable the conservative cycle detector for this node.
+    /// Enable the conservative cycle detector for this node (off by default).
     #[arg(long)]
-    no_cycle_detection: bool,
+    cycle_detection: bool,
 
     /// Disable Qwen3.5 thinking mode (injects empty <think></think> block).
     #[arg(long)]
@@ -460,6 +482,9 @@ fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer().with_target(false))
         .with(cluster_logs::CaptureLayer::new(log_capture.clone()))
         .init();
+
+    let pom_desenv = initialize_pom_desenv();
+    info!("POM_DESENV habilitado: {pom_desenv}");
 
     // O `llama-engine` não conhece o layout do projeto nem a rede: injeta a raiz
     // que o `sysmon` mede e as funções de estado da coletiva TP que o `llm`
@@ -581,6 +606,8 @@ fn anchor_admin(
             pending_transfer: None,
             completed_transfers: Vec::new(),
             replay: Vec::new(),
+            setup: None,
+            setup_signature: String::new(),
         };
         (document, true)
     };
@@ -684,6 +711,7 @@ async fn async_main(
             .map_or(args.gateway_port, |config| config.gateway_port);
         start_setup_mode(
             gateway_port,
+            args.port,
             existing_config,
             database.clone(),
             gateway_ready,
@@ -709,6 +737,10 @@ async fn async_main(
     app_config.thermal = database
         .thermal_policy()?
         .unwrap_or_else(crate::thermal::ThermalPolicy::default);
+    app_config
+        .thermal
+        .validate()
+        .context("validar política térmica persistida")?;
     app_config.huggingface_token = database.huggingface_token()?;
     config::validate_gateway_port(app_config.gateway_port)?;
     info!("Profile: {}", app_config.profile);
@@ -787,7 +819,7 @@ async fn async_main(
             args.no_default_relays,
             args.advertise_addr.clone(),
             args.public_addr.clone(),
-            !args.no_cycle_detection,
+            args.cycle_detection,
             cluster_logs,
             audit,
             gateway_ready,
@@ -976,6 +1008,7 @@ async fn async_main(
         primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
         network_chat_enabled: app_config.network_chat_enabled,
+        local_auto_discovery: app_config.local_auto_discovery,
         auth: auth_config.clone(),
         admin_trust: admin_trust.clone(),
         database: database.clone(),
@@ -1218,7 +1251,7 @@ async fn async_main(
             admission_health: Default::default(),
             runtime: node_runtime.clone(),
             cycle_config: crate::cycle::CycleConfig {
-                enabled: !args.no_cycle_detection,
+                enabled: args.cycle_detection,
                 ..crate::cycle::CycleConfig::default()
             },
             audit: audit.clone(),
@@ -1305,7 +1338,7 @@ async fn async_main(
             top_k: args.top_k,
             repeat_penalty: args.repeat_penalty,
             repeat_last_n: args.repeat_last_n,
-            cycle_detection_enabled: !args.no_cycle_detection,
+            cycle_detection_enabled: args.cycle_detection,
             cycle_detection_min_window_tokens: cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
             cycle_detection_max_window_tokens: cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
             cycle_detection_repetitions: cycle::DEFAULT_CYCLE_REPETITIONS,
@@ -1488,6 +1521,7 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
 
 async fn start_setup_mode(
     gateway_port: u16,
+    p2p_port: u16,
     preserved: Option<config::Config>,
     database: Arc<db::PomDb>,
     gateway_ready: Option<gateway::GatewayReadySender>,
@@ -1498,9 +1532,13 @@ async fn start_setup_mode(
     use std::net::SocketAddr;
 
     config::validate_gateway_port(gateway_port)?;
+    let setup_p2p_port = preserved
+        .as_ref()
+        .map_or(p2p_port, |config| config.p2p_port);
     let config = Arc::new(RwLock::new(preserved.unwrap_or_else(|| Config {
         profile: crate::profile::NodeProfile::Admin,
         setup_pending: true,
+        local_auto_discovery: false,
         tls_required: false,
         quic_enabled: false,
         cluster_logs_enabled: false,
@@ -1516,7 +1554,7 @@ async fn start_setup_mode(
         gateway_port,
         admin_exposure: config::AdminExposure::Localhost,
         admin_access_token: None,
-        p2p_port: 42777,
+        p2p_port: setup_p2p_port,
         inference_port: None,
         bootstrap_nodes: vec![],
         advertise_addr: None,
@@ -1538,6 +1576,25 @@ async fn start_setup_mode(
         slot_auto_ttl_secs: None,
     })));
 
+    let setup_p2p_port = config.read().await.p2p_port;
+    let setup_socket =
+        tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], setup_p2p_port)))
+            .await
+            .with_context(|| {
+                format!("não foi possível abrir a descoberta local na porta {setup_p2p_port}")
+            })?;
+    setup_socket.set_broadcast(true)?;
+    let local_discovery = crate::local_discovery::LocalDiscoveryRuntime::new(
+        Arc::new(setup_socket),
+        SocketAddr::from(([255, 255, 255, 255], setup_p2p_port)),
+    );
+    {
+        let discovery = local_discovery.clone();
+        tokio::spawn(async move {
+            discovery.run_receive_loop().await;
+        });
+    }
+
     // The same interface the configured node serves, so setup is not a second
     // look-and-feel to maintain. The app notices it is in setup mode because
     // `/api/ui/node` is not among the routes here.
@@ -1553,10 +1610,6 @@ async fn start_setup_mode(
             axum::routing::post(webui::preview_setup_anchor),
         )
         .route(
-            "/api/setup/admin-token",
-            axum::routing::post(webui::generate_setup_admin_token),
-        )
-        .route(
             "/api/setup/trust-anchor",
             axum::routing::post(webui::install_setup_trust_anchor),
         )
@@ -1564,9 +1617,25 @@ async fn start_setup_mode(
             "/api/setup/health",
             axum::routing::post(webui::get_setup_health),
         )
+        .route(
+            "/api/setup/auto-discovery/status",
+            get(webui::get_setup_auto_discovery_status),
+        )
+        .route(
+            "/api/setup/auto-discovery/start",
+            axum::routing::post(webui::start_setup_auto_discovery),
+        )
+        .route(
+            "/api/setup/auto-discovery/search",
+            axum::routing::post(webui::search_setup_auto_discovery),
+        )
         .route("/api/setup/save", axum::routing::post(webui::save_setup))
         .merge(crate::webapp::routes())
-        .with_state(webui::SetupState { config, database })
+        .with_state(webui::SetupState {
+            config,
+            database,
+            local_discovery,
+        })
         .layer(tower_http::compression::CompressionLayer::new());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], gateway_port));
@@ -1668,6 +1737,7 @@ struct P2pStackArgs {
     primary_authority_pubkey: String,
     cluster_logs_enabled: bool,
     network_chat_enabled: bool,
+    local_auto_discovery: bool,
     auth: Arc<RwLock<config::Config>>,
     admin_trust: Arc<crate::admin_trust::AdminTrust>,
     database: Arc<db::PomDb>,
@@ -1810,6 +1880,11 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     net.set_tls(args.tls_required);
     net.set_cluster_logs_enabled(args.cluster_logs_enabled);
     net.set_network_chat_enabled(args.network_chat_enabled);
+    if args.local_auto_discovery {
+        if let Err(error) = net.set_local_auto_discovery(true).await {
+            warn!("descoberta local não pôde ser habilitada na inicialização: {error:#}");
+        }
+    }
 
     if args.no_discovery {
         net.detach().await;
@@ -1964,6 +2039,7 @@ async fn start_gateway_only(
         primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
         network_chat_enabled: app_config.network_chat_enabled,
+        local_auto_discovery: app_config.local_auto_discovery,
         auth: auth_state.clone(),
         admin_trust: admin_trust.clone(),
         database: database.clone(),
@@ -2396,6 +2472,33 @@ mod main_tests {
             advertised_ollama_port(&args.ollama_url),
             "a flag não pode mudar o que se anuncia"
         );
+    }
+
+    /// Sem nenhuma flag de CLI, o detector de ciclos fica desligado - o padrão
+    /// pedido pelo produto. `--cycle-detection` é o interruptor explícito para
+    /// ligá-lo.
+    #[test]
+    fn cycle_detection_is_off_by_default_from_cli_args() {
+        let args = Args::parse_from(["pom"]);
+        assert!(!args.cycle_detection);
+
+        let with_flag = Args::parse_from(["pom", "--cycle-detection"]);
+        assert!(with_flag.cycle_detection);
+    }
+
+    #[test]
+    fn pom_desenv_accepts_only_exact_one() {
+        assert!(pom_desenv_enabled_from(Some("1")));
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("01"),
+            Some("1 "),
+        ] {
+            assert!(!pom_desenv_enabled_from(value));
+        }
     }
 
     /// `--advertise-addr` é mais específico que `--public-addr`, e os dois

@@ -62,6 +62,13 @@ rodada tem teto de 15 minutos, para uma carga fria concluir sem deixar a
 requisição pendurada indefinidamente; o descarregamento continua sendo
 avaliado pelo monitor já existente.
 
+O `serve_with_quic` encerra o endpoint HTTP/3 com um canal one-shot, para que
+um pedido de parada emitido antes do primeiro poll da task não seja perdido.
+Depois da drenagem TCP, ele aguarda o endpoint QUIC por no máximo 2 s e aborta
+a task se o transporte não fechar; assim o supervisor do runtime não fica
+preso em `endpoint.wait_idle()` durante um reload. O supervisor tem 5 s no
+total para concluir a geração anterior.
+
 `POST /api/ui/network/advertise-addr` é `InferNodeAdmin` porque atualiza
 somente o endereço anunciado deste processo e não recebe alvo nem repassa a
 chamada. As rotas administrativas com parâmetro de nó usam a sintaxe `:id`
@@ -95,10 +102,11 @@ profile policy remains the effective authorization boundary.
 ## Files
 
 - `auth.rs` - auth extractors. `AdminAuth` protects the administrative surface
-  with the real peer address, a non-empty constant-time compared token, a
+  with the real peer address, an Argon2id-verified human password, a
   server-side in-memory session cookie, or the explicit internal-node channel.
-  Sessions use a cryptographically random identifier, bind to the current
-  token digest, expire after the single `ADMIN_SESSION_TTL` value and never
+  Passwords are never persisted in plaintext; sessions use a cryptographically
+  random identifier, bind to the current password hash, expire after the single
+  `ADMIN_SESSION_TTL` value and never
   persist in the browser or on disk. `ConnectionAuth` (connection-key bearer
   only), `InternalNodeAuth` (that key plus an internal marker), `ApiKeyAuth`
   (active inference API key only, from `authorization: Bearer` or `x-api-key`),
@@ -168,7 +176,8 @@ profile policy remains the effective authorization boundary.
   `mod.rs`, `routes/` (common, infer, node and admin), `catalog.rs`, `cluster.rs`, `params.rs`, `jobs.rs`,
   `jobs_apply.rs`, `slicing.rs`, `lifecycle.rs`, `setup.rs`, `trust.rs` and test fragments:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths, thermal policy (`GET/POST /api/ui/thermal`), cluster process
+  storage paths, thermal policy (`GET/POST /api/ui/thermal`), local auto-discovery
+  preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`). A
   cluster view transporta `SystemLoad.gpus[].power_watts` como telemetria
@@ -197,6 +206,11 @@ profile policy remains the effective authorization boundary.
   cadeia colada. A validação e a conferência são as de `admin_trust`
   (`parse_transported`, `fingerprint_matches`, `adopt_anchor`), as mesmas que
   `pom admin-anchor` usa: não existe segunda política.
+  `GET /api/ui/network/trust-share` serializa a cadeia local, inclusive o
+  bloco `setup` assinado pelo wizard. Se uma cadeia primária antiga não tiver
+  esse bloco, a rota recupera os dados persistidos em `pom.json`/`pom.db`,
+  assina-os com o principal local e grava a cadeia antes do download; uma
+  autoridade secundária não pode fabricar esses metadados.
   `POST /api/ui/chat-key` é permitido a `node` porque cria somente a chave
   local `pom-<node_id>` e a registra no principal pela rota interna assinada;
   a exceção não permite criar, revogar ou validar chaves de terceiros.
@@ -210,7 +224,12 @@ profile policy remains the effective authorization boundary.
   fica `null` quando o relatório não chega, para que a UI mostre indisponível
   em vez de zero. A validade do RTT é de cinco minutos; valores vencidos
   aparecem como diagnóstico, mas não entram na seleção da geração.
-  `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
+  `NodeInfo` carries the same thermal policy used by the runtime. It also
+  carries `pom_desenv`, which is true only for the exact startup environment
+  value `POM_DESENV=1`; this flag controls only local UI visibility, so every
+  deploy boundary preserves development-only runtime fields received in the
+  request. A missing inference mode uses `dense` (`llama.cpp`) by default.
+  `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
   `parts`. Jobs and the cluster view use conditional JSON responses:
@@ -371,7 +390,13 @@ profile policy remains the effective authorization boundary.
   transcription - spaces, colons, case - never the value); `adopt_anchor`
   writes a transported chain onto a node that has none and refuses a node that
   already has one, because replacing a root is manual re-anchoring on the
-  machine (`--replace`), not an interface gesture.
+  machine (`--replace`), not an interface gesture. A chain created by first
+  access also carries a signed `setup` block with the network name, visibility,
+  access policy, geographic label, admin advertised address, bootstrap address
+  and federated-directory replicas, so a joining node does not retype network
+  identity data. `ensure_setup_metadata` repairs only a missing setup block
+  from the local administrator configuration, and only when the local
+  principal is the current primary.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
   `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
   `launch.rs`, `lifecycle.rs`, `node.rs` e fragmentos de testes: survey de
@@ -662,8 +687,8 @@ faz o download autenticado do blob persistido.
   gateway. Ele exige três janelas canônicas, trata sufixos numéricos de
   identificadores como a mesma estrutura e preserva números de dados. Quando
   confirma, termina sem pedir outra ficha, libera a sessão e publica
-  `finish_reason: "cycle"` e `partial: true`; o limite pode ser desligado em
-  `RuntimeParams` ou com `--no-cycle-detection`.
+  `finish_reason: "cycle"` e `partial: true`; desligado por padrão, o
+  detector é ligado em `RuntimeParams` ou com `--cycle-detection`.
   **O total é inviolável.** Nada o ultrapassa, nem uma chamada de ferramenta
   aberta no token do corte - houve aqui uma folga que ultrapassava o teto, e
   ela foi removida porque nenhum dos dois
@@ -819,7 +844,11 @@ faz o download autenticado do blob persistido.
   modelos inteiros para deixar o `llama.cpp` ajustar camadas à memória livre;
   `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
   parallelism, que não suporta o fit automático em `split-mode tensor`.
-  `RuntimeParams.inference_mode` acompanha o pedido nos três tipos de deploy.
+  `RuntimeParams.inference_mode` acompanha o pedido nos três tipos de deploy
+  independentemente de `POM_DESENV`; `effective_params_for_kind` só aplica a
+  regra estrutural de desligar `fit_memory` no Tensor Parallelism. O modo
+  ausente é `dense` (`llama.cpp`); `auto` só entra quando foi pedido
+  explicitamente.
   O survey leva `is_moe` do catálogo GGUF ao `DeployPlan`; somente metadata de
   experts identifica MoE. O plano expõe `inference_mode_supported` e
   `inference_mode_reason`: MoE em Tensor Parallelism é recusado explicitamente
@@ -937,16 +966,26 @@ faz o download autenticado do blob persistido.
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
   Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
   `/api/setup/geo-reference`,
-  `/api/setup/admin-anchor/preview`, `/api/setup/admin-token`, `/api/setup/trust-anchor`,
+  `/api/setup/admin-anchor/preview`, `/api/setup/trust-anchor`,
   `/api/setup/health` and `/api/setup/save` on its loopback-only router. Saving
   installs the trust document, persists network details in both `pom.json` and
   `pom.db`, and respawns. `setup_pending` keeps the router active after leaving
-  a network while preserving local hardware preferences. The setup
-  anchor preview returns a private connection key only for local/private
-  visibility; the admin access token is persisted only for network exposure.
+  a network while preserving local hardware preferences. The setup hardware
+  response returns the effective P2P port used to render the advertised IPv6;
+  the anchor preview signs the network setup metadata into the trust document.
+  Public-network setup accepts an empty federated-directory list; configured
+  environment or administration entries are still copied into that metadata.
+  The setup health response also reports the existing Windows firewall-rule
+  check; on Mac/Linux it reports whether the POM ports are locally available
+  for binding while no unified firewall API is available.
+  The preview returns a private connection key only for local/private
+  visibility; the administrator chooses a password only for network exposure,
+  and `pom.json` persists only its Argon2id hash. Localhost-only exposure has
+  no administrative password.
   `GET /api/public/network(s)` exposes public network metadata, including the
-  signed trust document and a P2P bootstrap address for the no-secret join
-  flow. `GET/POST /api/public/directory/records` is the federated directory
+  signed trust document, Markdown description/rules/channels and a P2P
+  bootstrap address for the no-secret join flow. `GET/POST
+  /api/public/directory/records` is the federated directory
   ingress: records are checked locally for Ed25519 signature, proof of work,
   trust-root consistency and expiry before entering the bounded SQLite cache.
   A node publishes to every configured ingress and queries all of them in

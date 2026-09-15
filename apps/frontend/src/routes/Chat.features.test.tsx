@@ -24,6 +24,11 @@ const headQuery = vi.hoisted(() => ({
 
 const thinkingScenario = vi.hoisted(() => ({ enabled: true }));
 
+const imageResizeScenario = vi.hoisted(() => ({
+  calls: [] as number[],
+  reject: false,
+}));
+
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
   return {
@@ -71,6 +76,25 @@ vi.mock("../lib/queries", () => ({
   usePeerRuntimes: () => [],
 }));
 
+vi.mock("../lib/imageResize", () => {
+  class ImageResizeLimitError extends Error {}
+  return {
+    imageBudgetBytes: (contextTokens: number, usedBytes = 0) => Math.max(0, Math.floor(contextTokens * 0.9) * 4 - usedBytes),
+    ImageResizeLimitError,
+    resizeImageForVision: async (_file: File, maxBytes?: number) => {
+      imageResizeScenario.calls.push(maxBytes ?? 0);
+      if (imageResizeScenario.reject) throw new ImageResizeLimitError();
+      return {
+        data: "data:image/jpeg;base64,ZmFrZQ==",
+        size: 4,
+        width: 512,
+        height: 256,
+        resized: true,
+      };
+    },
+  };
+});
+
 vi.mock("../components/Logo", () => ({
   LogoFull: () => <div aria-hidden="true" />,
   LogoMark: () => <div aria-hidden="true" />,
@@ -104,6 +128,8 @@ afterEach(() => {
   streamScenario.release = null;
   streamScenario.signalAborted = false;
   streamScenario.lastBody = undefined;
+  imageResizeScenario.calls = [];
+  imageResizeScenario.reject = false;
   thinkingScenario.enabled = true;
   headQuery.data = undefined;
   headQuery.isLoading = false;
@@ -340,7 +366,7 @@ describe("Chat", () => {
     expect(screen.queryByRole("button", { name: /ditado/i })).toBeNull();
   });
 
-  it("usa um único seletor sem accept restritivo e recusa anexos acima do contexto", async () => {
+  it("usa um único seletor sem accept restritivo e recusa arquivos não-imagem acima do contexto", async () => {
     const { container } = mountChat();
     const inputs = container.querySelectorAll<HTMLInputElement>('input[type="file"]');
     expect(inputs).toHaveLength(1);
@@ -352,6 +378,49 @@ describe("Chat", () => {
     expect(await screen.findByText("Anexo grande demais")).toBeTruthy();
     expect(screen.getByText(/excede o contexto disponível/i)).toBeTruthy();
     expect(screen.queryByText("dados.bin")).toBeNull();
+  });
+
+  it("miniaturiza uma imagem grande para o orçamento antes de anexá-la", async () => {
+    const { container } = mountChat();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const file = new File([new Uint8Array(1_172_228)], "paisagem.png", { type: "image/png" });
+
+    fireEvent.change(input, { target: { files: [file] } });
+
+    expect(await screen.findByText("paisagem.png")).toBeTruthy();
+    expect(screen.queryByText("Anexo grande demais")).toBeNull();
+    expect(imageResizeScenario.calls).toEqual([12]);
+    expect(screen.getByText(/redimensionada automaticamente/i)).toBeTruthy();
+  });
+
+  it("envia ao modelo os bytes da imagem miniaturizada", async () => {
+    const { container } = mountChat();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const file = new File([new Uint8Array(1_172_228)], "paisagem.png", { type: "image/png" });
+
+    fireEvent.change(input, { target: { files: [file] } });
+    await screen.findByText("paisagem.png");
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+
+    await waitFor(() => {
+      const messages = streamScenario.lastBody?.messages as Array<{ content?: unknown }> | undefined;
+      expect(messages?.at(-1)?.content).toEqual([
+        { type: "image_url", image_url: { url: "data:image/jpeg;base64,ZmFrZQ==" } },
+      ]);
+    });
+  });
+
+  it("mostra uma recusa específica quando o contexto não comporta nem a miniatura mínima", async () => {
+    imageResizeScenario.reject = true;
+    const { container } = mountChat();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const file = new File([new Uint8Array(1_172_228)], "paisagem.png", { type: "image/png" });
+
+    fireEvent.change(input, { target: { files: [file] } });
+
+    expect(await screen.findByText("Imagem recusada")).toBeTruthy();
+    expect(screen.getByText(/a imagem ainda é grande demais para o contexto disponível/i)).toBeTruthy();
+    expect(screen.queryByText("paisagem.png")).toBeNull();
   });
 
   it("aceita um arquivo de qualquer tipo quando cabe no contexto", async () => {

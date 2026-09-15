@@ -1,4 +1,8 @@
 use crate::config::Config;
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
 use async_trait::async_trait;
 use axum::{
     extract::{FromRequestParts, State},
@@ -373,12 +377,12 @@ impl IntoResponse for AdminAuthRejection {
             AdminAuthRejection::MissingToken => (
                 StatusCode::UNAUTHORIZED,
                 ADMIN_ERROR_MISSING_TOKEN,
-                "missing administrative access token",
+                "missing administrative access password",
             ),
             AdminAuthRejection::InvalidToken => (
                 StatusCode::FORBIDDEN,
                 ADMIN_ERROR_INVALID_TOKEN,
-                "invalid administrative access token",
+                "invalid administrative access password",
             ),
             AdminAuthRejection::LocalhostOnly => return local_only_page(),
         };
@@ -441,6 +445,36 @@ pub(crate) fn constant_time_token_eq(expected: &str, supplied: &str) -> bool {
     expected_digest.ct_eq(&supplied_digest).into()
 }
 
+/// Hash a human administrative password with Argon2id's default password
+/// policy. The PHC string contains its random salt and parameters, so the
+/// password itself never needs to be persisted or returned to the browser.
+pub(crate) fn hash_admin_password(password: &str) -> anyhow::Result<String> {
+    if password.is_empty() {
+        anyhow::bail!("a senha administrativa não pode ser vazia");
+    }
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|error| {
+            anyhow::anyhow!("não foi possível proteger a senha administrativa: {error}")
+        })
+}
+
+/// Verify a password against the PHC-encoded Argon2id hash. Malformed or
+/// legacy values fail closed instead of being treated as plaintext tokens.
+pub(crate) fn verify_admin_password(hash: &str, password: &str) -> bool {
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        return false;
+    };
+    if parsed.algorithm.as_str() != "argon2id" {
+        return false;
+    }
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok()
+}
+
 /// O endereço real do socket é loopback. Toda decisão que depende de "veio
 /// desta máquina" usa esta, nunca um cabeçalho: `X-Forwarded-For` e afins são
 /// escritos pelo cliente e não provam origem nenhuma.
@@ -491,7 +525,7 @@ where
         let State(config): State<AuthState> = State::from_request_parts(parts, state)
             .await
             .map_err(|_| AdminAuthRejection::InvalidToken)?;
-        let (exposure, connection_key, configured_token) = {
+        let (exposure, connection_key, configured_password_hash) = {
             let cfg = config.read().await;
             (
                 cfg.admin_exposure,
@@ -500,7 +534,7 @@ where
             )
         };
 
-        if !exposure.requires_token() {
+        if !exposure.requires_password() {
             return if is_loopback_addr(peer.0) {
                 Ok(AdminAuth {
                     session_id_to_set: None,
@@ -530,7 +564,7 @@ where
             if sessions
                 .lock()
                 .await
-                .validate(&session_id, &configured_token)
+                .validate(&session_id, &configured_password_hash)
             {
                 return Ok(AdminAuth {
                     session_id_to_set: None,
@@ -542,13 +576,12 @@ where
             .headers
             .get(ADMIN_ACCESS_TOKEN_HEADER)
             .and_then(|value| value.to_str().ok())
-            .map(str::trim)
             .ok_or(AdminAuthRejection::MissingToken)?;
-        if constant_time_token_eq(&configured_token, supplied) {
+        if verify_admin_password(&configured_password_hash, supplied) {
             let State(sessions): State<AdminSessionState> = State::from_request_parts(parts, state)
                 .await
                 .map_err(|_| AdminAuthRejection::InvalidToken)?;
-            let session_id = sessions.lock().await.issue(&configured_token);
+            let session_id = sessions.lock().await.issue(&configured_password_hash);
             Ok(AdminAuth {
                 session_id_to_set: Some(session_id),
             })
@@ -734,7 +767,9 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = exposure;
-            cfg.admin_access_token = configured_token.map(str::to_string);
+            cfg.admin_access_token = configured_token
+                .filter(|password| !password.is_empty())
+                .map(|password| hash_admin_password(password).expect("hash de teste"));
         }
         let mut request = Request::builder().body(()).expect("requisição");
         request
@@ -772,6 +807,17 @@ mod tests {
         assert!(!constant_time_token_eq("", "secret"));
         assert!(constant_time_token_eq("secret", "secret"));
         assert!(!constant_time_token_eq("secret", "secret-typo"));
+    }
+
+    #[test]
+    fn admin_password_is_stored_as_an_argon2id_hash_and_only_verified() {
+        let password = "uma senha pessoal";
+        let hash = hash_admin_password(password).expect("hash da senha");
+
+        assert!(hash.starts_with("$argon2id$"));
+        assert!(!hash.contains(password));
+        assert!(verify_admin_password(&hash, password));
+        assert!(!verify_admin_password(&hash, "senha incorreta"));
     }
 
     #[test]
@@ -904,7 +950,7 @@ mod tests {
             let mut cfg = state.auth.write().await;
             cfg.connection_key = "cluster-secret".into();
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("person-secret".into());
+            cfg.admin_access_token = Some(hash_admin_password("person-secret").unwrap());
         }
         let mut request = Request::builder()
             .header(INTERNAL_NODE_REQUEST_HEADER, "1")
@@ -930,7 +976,7 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("old-token".into());
+            cfg.admin_access_token = Some(hash_admin_password("old-token").unwrap());
         }
 
         async fn check(
@@ -958,7 +1004,8 @@ mod tests {
         }
 
         assert!(check(&state, Some("old-token")).await.is_ok());
-        state.auth.write().await.admin_access_token = Some("new-token".into());
+        state.auth.write().await.admin_access_token =
+            Some(hash_admin_password("new-token").unwrap());
         assert!(check(&state, Some("old-token")).await.is_err());
         assert!(check(&state, Some("new-token")).await.is_ok());
         {
@@ -970,7 +1017,7 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("third-token".into());
+            cfg.admin_access_token = Some(hash_admin_password("third-token").unwrap());
         }
         assert!(check(&state, Some("new-token")).await.is_err());
         assert!(check(&state, Some("third-token")).await.is_ok());
@@ -1011,6 +1058,7 @@ mod tests {
             cache_type_v: crate::config::KvCacheType::F16,
             profile: crate::profile::NodeProfile::Admin,
             setup_pending: false,
+            local_auto_discovery: false,
             connection_key: "cluster-secret".into(),
             gateway_port: 8080,
             admin_exposure: Default::default(),
@@ -1074,6 +1122,7 @@ mod tests {
             cache_type_v: crate::config::KvCacheType::F16,
             profile: crate::profile::NodeProfile::Admin,
             setup_pending: false,
+            local_auto_discovery: false,
             connection_key: "cluster-secret".into(),
             gateway_port: 8080,
             admin_exposure: Default::default(),

@@ -129,8 +129,10 @@ usa `x-pom-control-signature`: um envelope Ed25519 cobre método, caminho,
 nonce, epoch e hash do corpo, e o emissor precisa ser uma autoridade vigente na
 cadeia. Os quadros de inferência ficam fora dessa assinatura e dependem do
 transporte TLS. `/api/setup/hardware`, `/api/setup/models`,
-`/api/setup/admin-anchor/preview`, `/api/setup/admin-token`, `/api/setup/trust-anchor`,
-`/api/setup/health` e `/api/setup/save` só existem no router de primeiro acesso;
+`/api/setup/admin-anchor/preview`, `/api/setup/trust-anchor`,
+`/api/setup/health`, `/api/setup/auto-discovery/status`,
+`/api/setup/auto-discovery/start`, `/api/setup/auto-discovery/search` e
+`/api/setup/save` só existem no router de primeiro acesso;
 `/api/setup/save` instala a raiz e o `pom.json` antes de reiniciar. As rotas da porta 8181
 (`/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/v1/session/*`,
 `/v1/tp/reduce`, `/health`) ficam explicitamente fora do escopo desta política.
@@ -220,7 +222,7 @@ A rota é `CommonOrInternal` na tabela de escopo, de propósito: um `profile:
 admin` **por ancorar** não passa em `AdminOnly`, que é exatamente o estado em
 que ele precisa ver a impressão digital, e quem recebe a âncora costuma ser um
 `node` ou um `infer`. Ela também não exige a `connection_key`: a fronteira
-continua sendo `AdminAuth` (loopback em modo local, token humano em modo de
+continua sendo `AdminAuth` (loopback em modo local, senha humana em modo de
 rede), e somar aquela credencial não protege contra a ameaça que a trava de
 loopback contém - quem alcança o navegador alcança o `localStorage` da mesma
 origem - enquanto deixaria a tela morta num navegador que ainda não a recebeu.
@@ -236,8 +238,9 @@ em inglês e português. Em `network`, a tela estática de login é pública, ma
 os dados administrativos exigem `X-POM-Access-Token` na primeira chamada; o
 servidor então emite uma sessão em memória identificada por cookie `HttpOnly`,
 `SameSite=Strict`, com validade de 8 horas e caminhos somente administrativos.
-O digest da sessão é invalidado ao regenerar o token ou voltar a localhost.
-O valor do token é comparado no servidor e nunca é substituído pela
+O digest da sessão é invalidado ao trocar a senha ou voltar a localhost.
+A senha é comparada no servidor com o hash Argon2id persistido, que nunca é
+retornado à interface, e nunca é substituída pela
 `connection_key`. Em rede pública, chamadas de controle entre nós usam somente
 o envelope assinado; em rede privada usam também o marcador interno junto da
 `connection_key`, sem abrir esse caminho para o navegador.
@@ -258,11 +261,11 @@ As rotas da pipeline não entram nessa fronteira: `/api/generate`, `/generate`,
 inferência em `--inference-port`, continuam acessíveis por IPv4 e IPv6 para
 que o HTTP de reserva do túnel libp2p não seja interrompido. `GET /api/access`
 é a única exceção pública da administração, pois informa apenas o modo, a
-necessidade de token e a porta para a tela decidir se deve mostrar a catraca.
+necessidade de senha e a porta para a tela decidir se deve mostrar a catraca.
 
 Em **modo setup** (sem `pom.json`), `main.rs` monta um router menor: as rotas
 `/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
-`/api/setup/admin-token`, `/api/setup/trust-anchor`, `/api/setup/health`, `/api/setup/save` e a UI. Elas
+`/api/setup/trust-anchor`, `/api/setup/health`, `/api/setup/save` e a UI. Elas
 não estão no router principal e só existem antes da configuração inicial.
 
 ## 2. Rotas por grupo
@@ -641,6 +644,15 @@ durável de conversas), `dev/update` +
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
+`GET /api/ui/node` inclui `pom_desenv`, a decisão capturada no startup: ela só
+é verdadeira quando `POM_DESENV` vale exatamente `1`. A ausência da variável,
+`0` e qualquer outro texto deixam a flag falsa. A flag controla somente a
+visibilidade dos controles no browser: os handlers de plan, deploy, apply,
+reconfigure e redeploy preservam os campos da seção `Configurações POM
+(DESENV)` recebidos no pedido, inclusive para clientes que não veem esses
+controles. Quando `inference_mode` não existe, `RuntimeParams` usa `dense`
+(`llama.cpp`) por padrão; `auto` é uma escolha explícita.
+
 `GET /api/ui/infer/heads?model=<id>` é a leitura dedicada das cabeças de
 inferência, autorizada para os perfis `infer` e `admin`:
 retorna somente as máquinas vivas que anunciam uma faixa começando em L0 para
@@ -742,8 +754,9 @@ precisa de decisão de produto: `needs-decision: definir retenção e eventual
 expurgo por idade ou volume`.
 
 As rotas `POST /api/ui/deploy/plan` e `POST /api/ui/deploy` carregam
-`params.inference_mode` (`auto`, `dense` ou `moe`) para os três modos de
-execução: modelo inteiro, pipeline fatiado e Tensor Parallelism. O planner
+`params.inference_mode` (`auto`, `dense` ou `moe`) na seção de desenvolvimento,
+para os três modos de execução: modelo inteiro, pipeline fatiado e Tensor
+Parallelism. O planner
 também devolve `is_moe`, `inference_mode_supported` e
 `inference_mode_reason`. `is_moe` vem da metadata real de experts do GGUF,
 nunca do nome do arquivo. Em modelo denso a UI oculta a escolha; quando uma
@@ -822,7 +835,8 @@ por libp2p; a consulta secundária não faz fallback para o principal.
 
 **`GET/POST /api/ui/thermal`** - exige `ConnectionAuth`. O GET devolve a
 política local `{ limit_c, hysteresis_c, cooldown_secs }`; o POST valida que o
-limite e a margem são finitos, positivos e formam uma histerese válida, grava a
+limite é de pelo menos 70 °C, que o cooldown não passa de 60 segundos, e que a
+margem é finita, positiva e forma uma histerese válida, grava a
 política no `pom.db` e devolve o valor efetivo. O runtime aplica a alteração
 sem reinício. `GET /api/ui/node` inclui a mesma política em `thermal`, junto
 com `system.gpus[].temperature_c`, que é `null` quando o driver não fornece a
@@ -1033,7 +1047,25 @@ transporte. O receptor verifica a autoridade do emissor antes de persistir.
 `GET /api/ui/network/trust-share` é somente do administrador autorizado. Ele
 retorna o documento da raiz com o nome real do arquivo para download e inclui a
 `connection_key` apenas quando a rede é local ou privada. A raiz pode ser
-compartilhada em qualquer rede; redes públicas não distribuem segredo.
+compartilhada em qualquer rede; redes públicas não distribuem segredo. O
+documento é a cadeia assinada local, com os metadados `setup` capturados no
+wizard. Para uma cadeia primária antiga sem esse bloco, a rota recupera os
+campos de rede de `pom.json` e os ingressos do diretório de `pom.db`, assina e
+persiste o bloco antes de devolvê-lo. Se a autoridade local não puder
+reconstituir os dados, o download falha em vez de entregar uma raiz
+incompleta.
+
+O setup expõe a descoberta local no mesmo listener loopback, sem exigir sessão:
+`GET /api/setup/auto-discovery/status` lê o estado da etapa, enquanto o admin
+usa `POST /api/setup/auto-discovery/start` para manter a escuta inicial e node
+ou infer usa `POST /api/setup/auto-discovery/search` para procurar um admin.
+O datagrama público carrega apenas o trust document. O admin só responde ao
+`Proof` que liga o desafio às chaves efêmeras do mesmo pedido; então envia um
+`Secret` cifrado com X25519 e ChaCha20-Poly1305 contendo o documento e a
+`connection_key`. A preferência persistida `local_auto_discovery` começa
+`false` e a versão administrativa usa `GET/POST /api/ui/network/auto-discovery`;
+essa rota exige `AdminOnly`, nunca devolve a chave e desliga o material em
+memória quando recebe `enabled: false`.
 
 `gateway::testkit` (`#[cfg(test)]` em `gateway.rs`) monta um `GatewayState`
 inteiro com a tabela de peers semeada à mão: `peer(node_id, hostname,

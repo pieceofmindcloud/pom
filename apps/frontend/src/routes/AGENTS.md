@@ -23,19 +23,29 @@ Per-file list:
 
 - `Setup.tsx` - Wizard real de primeiro acesso. Começa pelo hardware e usa
   `setupWizardFlow.ts` para manter os percursos separados: administrador cria
-  a rede, node escolhe RAM/CPU e espaço de fatias, e infer apenas instala a
-  raiz de confiança. Todos os perfis registram localização, e a seleção de
-  país/cidade vem da referência SQLite do nó; rede pública exige os dois. As
-  telas conversam com `/api/setup/*`; quando node ou infer escolhem rede
-  pública, o último passo também exige e mostra o nome público antes de
-  habilitar o salvamento; não confundir com o protótipo
+  a rede, escolhe a identidade e informa o IPv6 anunciado na primeira tela;
+  node e infer importam a identidade completa da rede pelo trust document. O
+  caminho node/infer não mostra localização, nome público, endereço,
+  bootstrap ou ingressos do diretório: pede somente o arquivo de confiança e,
+  para redes privadas, a chave de conexão. O admin continua escolhendo
+  país/cidade pela referência SQLite; rede pública exige os dois. As telas
+  conversam com `/api/setup/*`; não confundir com o protótipo
   `SetupWizard.tsx`.
 
-  Redes públicas exigem também pelo menos um ingresso do diretório federado,
-  informado como URLs HTTP(S) separadas por vírgula. Um nó privado pode manter
-  esses ingressos para consultar o catálogo por saída; o join público encerra a
-  sessão privada antes de reconfigurar o nó, sem suporte a duas redes P2P
-  simultâneas no v1.
+  Ingressos do diretório federado são opcionais no wizard: o admin pode deixá-los
+  vazios e configurá-los por ambiente ou depois na administração. Quando
+  existem, o admin grava esses ingressos, o nome público, a política e o
+  bootstrap no bloco `setup` assinado dentro do `.pom-admin-trust.json`; o node
+  apenas importa esse bloco.
+  O join público encerra a sessão privada antes de reconfigurar o nó, sem
+  suporte a duas redes P2P simultâneas no v1. Na etapa de convite, a chave de
+  conexão fica em primeiro plano para redes privadas ou locais; o documento de
+  confiança começa recolhido, embora copiar e baixar continuem disponíveis no
+  cabeçalho do cartão. A etapa de descoberta local fica ativa somente durante
+  o setup: admin espera um nó e node/infer procuram um admin. O documento
+  público é oferecido primeiro; a chave só é entregue após o handshake de
+  prova efêmera. Fora do wizard, o interruptor vive em
+  `/config/preferencias/admin` e começa desligado.
 
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
   padrão de Logs: tabela rolável com nome público, organização, localização,
@@ -46,28 +56,40 @@ Per-file list:
   corresponde à rede exibida, pois o catálogo público atual não as fornece.
   Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um
   país, o combo de cidade mostra apenas as cidades daquele país.
+  O nome de cada rede abre um `Modal` com todo o registro público, incluindo
+  descrição, regras e o campo único de canais Discord ou Telegram renderizados
+  como Markdown; a confirmação de entrada continua sendo uma ação separada.
   O documento assinado fica em `sessionStorage` só durante a transição; o nó sai
   da rede atual e o wizard real retoma com a rede pública pronta para revisão.
 
 - `NetworkSettings.tsx` - Mantém o retrato operacional da rede separado das
-  preferências locais. Node e infer recebem uma leitura somente leitura com
-  nome, descrição, regras, organização, canais, visibilidade e localização;
-  um administrador autorizado pode editar o bloco completo. A edição grava
-  no nó, propaga o envelope assinado aos peers e atualiza a descoberta pública.
-  País e cidade usam a referência de geografia do nó em selects, sem expor o
-  código do país. A tela também agrega nós, latência média, VRAM e modelos
-  conhecidos. A lista de participantes foi movida para a rota
-  `/config/rede/participantes`, apenas para `admin` e `node`. O painel de
-  informações também oferece `Esquecer rede`, que pede confirmação e chama
-  `POST /api/ui/network/leave` para limpar a configuração local e reiniciar no
-  setup; isso é separado de `Sair da rede`, que chama `/api/ui/leave` e apenas
-  desliga a máquina do cluster. O botão continua disponível para o perfil
-  `node` mesmo sem autoridade administrativa, sem modelo carregado ou sem
-  estado `Ready`; o handler local não consulta a saúde da implantação.
-  No Windows, quando suportado, a mesma tela mostra o estado das quatro regras
-  de firewall derivadas da porta P2P efetiva e oferece `Tentar novamente` após
-  uma recusa do UAC; essa ação é independente da implantação e da saída da
-  rede.
+  preferências locais **e** da identidade desta máquina, que vive em
+  `MyMachine.tsx` (rota `/config/minha-maquina`). Node e infer recebem uma
+  leitura somente leitura com nome, descrição, regras, organização, canais,
+  visibilidade e localização; um administrador autorizado pode editar o bloco
+  completo. A edição grava no nó, propaga o envelope assinado aos peers e
+  atualiza a descoberta pública. País e cidade usam a referência de geografia
+  do nó em selects, sem expor o código do país. A tela também agrega nós,
+  latência média, VRAM e modelos conhecidos. A lista de participantes foi
+  movida para a rota `/config/rede/participantes`, apenas para `admin` e
+  `node`. O painel de informações também oferece `Esquecer rede`, que pede
+  confirmação e chama `POST /api/ui/network/leave` para limpar a configuração
+  local e reiniciar no setup - continua aqui porque é sobre a rede, não sobre
+  esta máquina. No Windows, quando suportado, a mesma tela mostra o estado das
+  quatro regras de firewall derivadas da porta P2P efetiva e oferece `Tentar
+  novamente` após uma recusa do UAC; essa ação é independente da implantação.
+  Descrição, regras e o campo único de canais Discord ou Telegram são editados
+  como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
+  mesmo renderer Markdown compartilhado pelo Chat.
+- `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
+  própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
+  saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,
+  portas, perfil, autoridade efetiva, e `Sair da rede`/`Voltar para a rede` via
+  `POST /api/ui/leave`/`/api/ui/rejoin` - abdicação, não privilégio, disponível
+  a todo perfil) e "Endereço anunciado" (`POST /api/ui/network/advertise-addr`,
+  mostra o endereço efetivo usado pelos peers). `Sair da rede` aqui é diferente
+  de `Esquecer rede` em `NetworkSettings.tsx`: um desliga a máquina do cluster,
+  o outro apaga a configuração local e reinicia no setup.
 
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage
@@ -88,11 +110,15 @@ Per-file list:
   while the request trace shows the executed engine and mixed/mismatch flags.
   The runtime record keeps stable identity between unchanged polls so the
   telemetry snapshot cannot trigger a render loop that freezes navigation.
+  At the end of a stream, `telemetryCapture` carries the trace, timings and
+  source to `Bubble` while the immutable transcript patch is settling;
+  `telemetrySnapshots` keeps that complete capture keyed by message id, and
+  `message.trace`/`message.timings` remain the preferred values once available.
+  The quick timing summary stays outside the closed details card, so every
+  assistant message keeps its summary and full telemetry without a reload.
   O perfil `infer` oculta desta tela a origem, os resumos de tempo e
   throughput e o painel detalhado de telemetria; isso é apresentação, não
-  autorização. `ChatSurfaceTabs` é renderizado acima da conversa para manter
-  `/chat` e `/network-chat` acessíveis nos dois sentidos sem depender da
-  Sidebar.
+  autorização.
   No mesmo composer, `InferenceHeadChoice` mostra por qual cabeça de camada 0
   a próxima inferência entrará para qualquer perfil com modelo selecionado,
   mas só aparece quando há mais de uma candidata. Deixa explícito quando não
@@ -127,8 +153,7 @@ Per-file list:
   ids come from `lib/id.ts`, so sending over plain HTTP does not call the
   secure-context-only `crypto.randomUUID` API. The message viewport follows new
   messages while it is near the bottom, and the page uses the full-bleed
-  `PageHeader` pattern instead of a rounded outer panel. Também renderiza
-  `ChatSurfaceTabs`, que retorna ao Chat de IA sem depender da Sidebar. No
+  `PageHeader` pattern instead of a rounded outer panel. No
   celular, participantes ficam ocultos até o botão `Ver online` ser acionado;
   a entrada da Sidebar recebe o contador de mensagens não lidas e a abertura
   da rota marca o snapshot atual como lido.
@@ -167,6 +192,13 @@ Per-file list:
   while holding the selection, the two scroll containers, `?doc=`/`?guia=` deep
   links, search + clear, empty state. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
+- `About.tsx` - Tela informativa em `/config/sobre`, última folha de
+  Configurações. Mostra a licença do POM como placeholder visualmente marcado e
+  lista as dependências diretas do frontend e do workspace Rust agrupadas pela
+  licença declarada, com versão, ecossistema, filtro por texto e link do
+  repositório. O catálogo é `../lib/licenses.generated.ts`, gerado por
+  `scripts/build-licenses.mjs`; o teste em `About.test.tsx` cobre o placeholder,
+  os dois ecossistemas, os links e o filtro.
 - `Dashboard.tsx` — Cluster overview: the admin sees cluster
   coverage/machines/model/in-flight stats; node and infer see local model,
   slice and in-flight requests instead. For administrators, the deployment
@@ -460,17 +492,18 @@ Per-file list:
   vez de repetir o texto do servidor. Vive fora do gate de perfil - ver o
   cabeçalho do arquivo e `lib/access.ts`. Teste: `TrustAnchor.test.tsx`.
 - `Preferences.tsx` - Local settings screen under Configurações: owns the
-  administrative exposure mode and gateway port, displays the generated access
-  token only in network mode, and saves them to `pom.json` through
+  administrative exposure mode and gateway port, accepts a password only in
+  network mode, and saves its Argon2id hash to `pom.json` through
   `POST /api/ui/access`. It also mounts `TlsPanel`, which moves the cluster TLS
   choice out of Network and explains when it is useful, plus `ThermalPanel` and
   `HuggingFaceSettingsPanel`. Também monta o interruptor de logs do cluster,
   disponível apenas ao principal e aplicado em tempo real, e `QuicPanel`, que
   alterna a preferência HTTP/3 em `POST /api/ui/network/quic` com o mesmo
-  controle de autoridade. The access token is a human credential and is not the
+  controle de autoridade. The access password is a human credential and is not the
   cluster `connection_key`. A rota `/config/preferencias/admin` renderiza
-  somente TLS, QUIC, logs de processo entre nós e chat da rede; a rota normal
-  mantém exposição, Hugging Face, proteção térmica e o link de armazenamento.
+  somente TLS, QUIC, logs de processo entre nós e chat da rede, além do
+  interruptor de descoberta local, desligado por padrão; a rota normal mantém
+  exposição, Hugging Face, proteção térmica e o link de armazenamento.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e
@@ -481,21 +514,24 @@ Per-file list:
   friendly name and full path, but sends only the basename; the backend resolves
   it again and the receiver sees only an opaque grant.
 - `Setup.tsx` - First run (no `pom.json`): real wizard backed by
-  `/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
-  `/api/setup/admin-token`, `/api/setup/health` and `/api/setup/save`. It shows hardware first, then
-  resource reserves, local and Hugging Face reference models, the standard
-  `~/.pom/models` and `~/.pom/models_sliced` paths, shared slice space and the
-  trust-root flow. Public networks use signed control without a shared secret;
-  private networks also carry one connection secret. The node saves config and
-  trust root, respawns and the screen reloads. It reuses `WizardLayout` but is
-  separate from the mock-only `SetupWizard.tsx`. The joining screen accepts the
-  trust document by paste or `.json` upload, derives the anchor fingerprint and
-  no longer asks for an extra confirmation checkbox. The
-  administrator invitation downloads the actual trust filename returned by the
-  server and copies a connection secret only for local/private networks. An
-  admin token is generated only when the interface is exposed to the network;
-  optional peer-link TLS starts disabled because libp2p already protects the
-  peer connection.
+  `/api/setup/hardware`, `/api/setup/geo-reference`,
+  `/api/setup/admin-anchor/preview`, `/api/setup/health` and
+  `/api/setup/save`. The hardware response includes the effective `p2p_port`,
+  so the first screen renders the IPv6 host and its configured port without a
+  frontend port constant. The admin preview signs the network identity,
+  announced address, bootstrap and public-directory replicas into the trust
+  document. A joining node accepts that document by paste or `.json` upload,
+  derives the anchor fingerprint and imports those values without asking for
+  another network form. Public networks use signed control without a shared
+  secret; private networks also carry one connection secret. The node saves
+  config and trust root, respawns and the screen reloads. The first machine
+  screen exposes the shared-disk capacity as a slider against detected free
+  space. The health checks and final summary are one `Revisão` step after the
+  invitation or trust import, rather than two wizard steps. It reuses
+  `WizardLayout` without a second product toolbar, but is separate from the
+  mock-only `SetupWizard.tsx`. The setup-only local discovery step lets an admin
+  wait and a node or infer search; the trust document is public, while the
+  connection key is delivered only after the ephemeral proof handshake.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
   only shows the difference), with who is missing it. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and
@@ -560,12 +596,20 @@ Key logic carriers:
   optional TP collective table, aggregate transport identity, execution RTT and
   measured network RTT distributions, bytes with fallback and switch counts,
   prefix reuse counters, overlap counters and a pure diagnosis card. The
-  request summary also shows TTFT, prompt-token prefill rate, output-token generation rate and end-to-end total, including an explicit unavailable state when a rate has no measurable interval. The AI action sends
+  request summary stays visible before the closed details card and shows TTFT,
+  prompt-token prefill rate, output-token generation rate, observed network RTT
+  and end-to-end total, including an explicit unavailable state when a rate has
+  no measurable interval. The AI action sends
   both tables as private request content, while the initial model is shown as
   a non-turn mark before chat messages.
 - `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime
   knobs, including `prefill_max_inflight_chunks` (prefill pipeline depth, 1..8)
   and `fit_memory_margin_mb` (per-device VRAM safety reserve).
+  As duas telas leem `NodeInfo.pom_desenv` de `useNode`; o Deploy Studio, o
+  inspetor do histórico e a caixa de reimplantação falham fechados. A flag só
+  esconde os controles de desenvolvimento locais; o estado de planejamento,
+  lançamento e reimplantação mantém os valores recebidos da implantação,
+  mesmo quando este nó não pode editá-los.
 - `DeployModel.rowsOf`/`sameRows` (DeployModel.tsx) — the selection model:
   merged steps expand back into per-slice rows and the planner answer is compared
   with the displayed rows after sorting by layer.
@@ -616,8 +660,11 @@ indisponibilidade sem checkbox morto, e a escolha segue para a implantação.
 campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
 visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens
 exigem visão disponível; outros tipos são convertidos para texto no pedido.
-A soma dos anexos é validada contra o contexto efetivo do modelo, usando
-`context_length` de `/v1/models` ou o `n_ctx` local como fallback. A visão e a
+A imagem recebe o orçamento efetivo do modelo, usando `context_length` de
+`/v1/models` ou o `n_ctx` local como fallback, com quatro bytes por token e
+margem de segurança de 10%. Qualidade JPEG e resolução descem até 512 px,
+preservando a proporção; a etiqueta `Redimensionada automaticamente` fica no
+anexo quando isso ocorreu. A visão e a
 cobertura do Chat vêm de
 `GET /api/ui/chat/capabilities`, uma leitura agregada da implantação que também
 funciona nos perfis `node` e `infer`; recusa ou falha fica como indisponível,

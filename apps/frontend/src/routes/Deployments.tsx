@@ -26,7 +26,7 @@ import {
   redeployDeployment,
   type DeploymentRow,
 } from "../lib/api";
-import { useDeployments, useInvalidate, useJobs } from "../lib/queries";
+import { useDeployments, useInvalidate, useJobs, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { layerRange } from "../lib/format";
 import { Modal } from "../components/Confirm";
@@ -79,10 +79,12 @@ function RedeployDialog({
   row,
   open,
   onClose,
+  pomDesenv,
 }: {
   row: DeploymentRow;
   open: boolean;
   onClose: () => void;
+  pomDesenv: boolean;
 }) {
   const { t } = useI18n();
   const toast = useToast();
@@ -96,7 +98,7 @@ function RedeployDialog({
     row.deployment.versions?.find(
       (v) => v.version === row.deployment.active_version,
     )?.params ?? first.config;
-  const [params, setParams] = useState<RuntimeParams>({ ...activeParams });
+  const [params, setParams] = useState<RuntimeParams>(() => ({ ...activeParams }));
   const [perNode, setPerNode] = useState<
     Record<string, { n_gpu_layers?: number; offload_kqv?: boolean }>
   >(() =>
@@ -170,7 +172,13 @@ function RedeployDialog({
           </Panel>
         )}
 
-        <RuntimeParamsForm value={params} onChange={setParams} disabled={busy} isTp={isTp} />
+        <RuntimeParamsForm
+          value={params}
+          onChange={setParams}
+          disabled={busy}
+          isTp={isTp}
+          pomDesenv={pomDesenv}
+        />
 
         <div className="space-y-2 border-t border-line pt-4">
           <div className="text-[0.82rem] text-fg">{t("deployments.perMachine")}</div>
@@ -338,10 +346,12 @@ function Row({
   row,
   inspected,
   onInspect,
+  pomDesenv,
 }: {
   row: DeploymentRow;
   inspected: Inspected | null;
   onInspect: (next: Inspected | null) => void;
+  pomDesenv: boolean;
 }) {
   const { locale, t } = useI18n();
   const toast = useToast();
@@ -463,6 +473,7 @@ function Row({
                 row={row}
                 open
                 onClose={() => setRedeploying(false)}
+                pomDesenv={pomDesenv}
               />
             )}
           </div>
@@ -482,6 +493,8 @@ function Row({
 export function Deployments() {
   const { t } = useI18n();
   const { data, isLoading } = useDeployments();
+  const node = useNode();
+  const pomDesenv = node.data?.pom_desenv === true;
   /*
    * A versão aberta no inspetor da direita. Guarda a versão inteira, e não só
    * o número: o registro de uma versão não muda depois de gravado, então uma
@@ -553,6 +566,7 @@ export function Deployments() {
                       row={r}
                       inspected={inspected}
                       onInspect={setInspected}
+                      pomDesenv={pomDesenv}
                     />
                   ))}
                 </tbody>
@@ -594,6 +608,7 @@ export function Deployments() {
               value={inspected.version.params}
               readOnly
               showInferenceMode
+              pomDesenv={pomDesenv}
               showHiddenStateDtype={inspected.version.params.hidden_state_dtype != null}
             />
           </aside>

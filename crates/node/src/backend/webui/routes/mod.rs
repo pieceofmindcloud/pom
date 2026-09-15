@@ -351,6 +351,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::AdminOnly,
     },
     RouteRule {
+        prefix: "/api/ui/network/auto-discovery",
+        method: None,
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
         prefix: "/api/ui/cluster-logs",
         method: None,
         scope: RouteScope::AdminOnly,
@@ -537,6 +542,10 @@ mod policy_tests {
         assert_eq!(
             scope_of("/api/ui/network/firewall"),
             RouteScope::InferNodeAdmin
+        );
+        assert_eq!(
+            scope_of("/api/ui/network/auto-discovery"),
+            RouteScope::AdminOnly
         );
         assert_eq!(scope_of("/api/ui/deployments"), RouteScope::NodeAdmin);
         assert_eq!(

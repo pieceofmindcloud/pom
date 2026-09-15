@@ -2372,6 +2372,30 @@ mod tests {
     }
 
     #[test]
+    fn thermal_policy_rejects_integrity_limits_before_persisting() {
+        let path = temporary_path("thermal-limits");
+        let db = PomDb::open(&path).unwrap();
+
+        assert!(db
+            .save_thermal_policy(crate::thermal::ThermalPolicy {
+                limit_c: 69.9,
+                hysteresis_c: 6.0,
+                cooldown_secs: 30,
+            })
+            .is_err());
+        assert!(db
+            .save_thermal_policy(crate::thermal::ThermalPolicy {
+                limit_c: 85.0,
+                hysteresis_c: 6.0,
+                cooldown_secs: 61,
+            })
+            .is_err());
+        assert!(db.thermal_policy().unwrap().is_none());
+
+        remove_database(&path);
+    }
+
+    #[test]
     fn chat_history_is_normalized_and_survives_reopen() {
         let path = temporary_path("chat-history");
         let session = super::ChatSessionRecord {

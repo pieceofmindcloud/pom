@@ -30,7 +30,7 @@
 //! **Por que a chave de conexão não é exigida aqui.** As rotas vizinhas de
 //! autoridade a exigem; estas não, de propósito. A fronteira continua sendo a
 //! mesma de toda a superfície administrativa (`require_admin_for_surface` ->
-//! `AdminAuth`: loopback em modo local, token humano em modo de rede). Somar
+//! `AdminAuth`: loopback em modo local, senha humana em modo de rede). Somar
 //! aquela credencial não protege contra a ameaça que a trava de loopback
 //! existe para conter - quem alcança o navegador no loopback alcança o
 //! `localStorage` da mesma origem, onde ela está - e custa exatamente o que
@@ -128,6 +128,48 @@ fn refusal(status: StatusCode, reason: &'static str, message: &str) -> Response 
 fn is_loopback(peer: Option<&crate::serve::PeerAddr>) -> bool {
     // Sem endereço de socket não há prova de origem: falha fechada.
     peer.is_some_and(|peer| crate::auth::is_loopback_addr(peer.0))
+}
+
+pub(crate) async fn setup_metadata_from_local_configuration(
+    state: &GatewayState,
+) -> anyhow::Result<Option<crate::admin_trust::TrustNetworkMetadata>> {
+    let (network, advertised_address, bootstrap_address) = {
+        let config = state.auth.read().await;
+        let Some(advertised_address) = config.advertise_addr.clone() else {
+            return Ok(None);
+        };
+        let bootstrap_address = config
+            .bootstrap_nodes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| advertised_address.clone());
+        (
+            config.network.clone(),
+            advertised_address,
+            bootstrap_address,
+        )
+    };
+    if network.public_name.trim().is_empty() || advertised_address.trim().is_empty() {
+        return Ok(None);
+    }
+    let directory_replicas = state
+        .database
+        .public_directory_settings()?
+        .map(|settings| settings.replicas)
+        .unwrap_or_default();
+    Ok(Some(crate::admin_trust::TrustNetworkMetadata {
+        public_name: network.public_name.trim().to_string(),
+        organization: network.organization.trim().to_string(),
+        visibility: network.visibility,
+        access_policy: network.access_policy,
+        country_code: network.country_code.trim().to_ascii_uppercase(),
+        country_name: network.country_name.trim().to_string(),
+        city: network.city.trim().to_string(),
+        geo_label: network.geo_label.trim().to_string(),
+        advertised_address: advertised_address.trim().to_string(),
+        bootstrap_address: bootstrap_address.trim().to_string(),
+        directory_replicas,
+    }))
 }
 
 pub(super) async fn trust_anchor(
@@ -243,7 +285,43 @@ pub(crate) async fn trust_share(State(state): State<GatewayState>) -> Response {
                 .filter(|key| !key.is_empty()),
         )
     };
-    let document = state.admin_trust.document();
+    let document = if state.admin_trust.document().setup.is_none() {
+        let setup = match setup_metadata_from_local_configuration(&state).await {
+            Ok(Some(setup)) => setup,
+            Ok(None) => {
+                return refusal(
+                    StatusCode::CONFLICT,
+                    "trust_setup_metadata_unavailable",
+                    "não foi possível recuperar os dados iniciais da rede para a raiz de confiança",
+                )
+            }
+            Err(error) => {
+                warn!("não foi possível ler a configuração da rede para a raiz de confiança: {error:#}");
+                return refusal(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "trust_setup_metadata_unavailable",
+                    "não foi possível ler os dados iniciais da rede para a raiz de confiança",
+                );
+            }
+        };
+        match state.admin_trust.ensure_setup_metadata(
+            setup,
+            &state.authority_signing_key,
+            &state.authority_principal,
+        ) {
+            Ok(document) => document,
+            Err(error) => {
+                warn!("não foi possível completar os metadados da raiz de confiança: {error:#}");
+                return refusal(
+                    StatusCode::CONFLICT,
+                    "trust_setup_metadata_unavailable",
+                    "não foi possível completar os dados iniciais da rede na raiz de confiança",
+                );
+            }
+        }
+    } else {
+        state.admin_trust.document()
+    };
     let document = match serde_json::to_string_pretty(&document) {
         Ok(document) => document,
         Err(error) => {
@@ -316,7 +394,12 @@ mod tests {
     #[tokio::test]
     async fn admin_can_download_trust_and_private_connection_secret() {
         let state = state_with("ksia", vec![]).await;
-        state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
+        {
+            let mut config = state.auth.write().await;
+            config.profile = crate::profile::NodeProfile::Admin;
+            config.network.public_name = "Rede local".into();
+            config.advertise_addr = Some("[2001:db8::10]:42777".into());
+        }
         let mut request = HttpRequest::get("/api/ui/network/trust-share")
             .header("authorization", "Bearer chave")
             .body(Body::empty())
@@ -331,6 +414,57 @@ mod tests {
         assert!(body["filename"].as_str().unwrap().ends_with("trust.json"));
         assert!(body["document"].as_str().unwrap().contains("anchor"));
         assert_eq!(body["connection_key"], "chave");
+    }
+
+    #[tokio::test]
+    async fn admin_download_hydrates_missing_setup_metadata_from_local_configuration() {
+        let state = state_with("ksia", vec![]).await;
+        {
+            let mut config = state.auth.write().await;
+            config.profile = crate::profile::NodeProfile::Admin;
+            config.network = crate::config::NetworkSettings {
+                public_name: "Rede do wizard".into(),
+                organization: "POM".into(),
+                country_code: "BR".into(),
+                country_name: "Brasil".into(),
+                city: "Curitiba".into(),
+                geo_label: "BR-Curitiba".into(),
+                visibility: crate::config::NetworkVisibility::Private,
+                access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+                ..Default::default()
+            };
+            config.advertise_addr = Some("[2001:db8::10]:43123".into());
+            config.bootstrap_nodes = vec!["[2001:db8::10]:43123".into()];
+        }
+        state
+            .database
+            .save_public_directory_settings(&crate::public_directory::PublicDirectorySettings {
+                replicas: vec!["https://directory.example".into()],
+            })
+            .unwrap();
+
+        let mut request = HttpRequest::get("/api/ui/network/trust-share")
+            .header("authorization", "Bearer chave")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(crate::serve::PeerAddr("127.0.0.1:4321".parse().unwrap()));
+        let response = app(state.clone()).oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        let document: crate::admin_trust::AdminTrustDocument =
+            serde_json::from_str(body["document"].as_str().unwrap()).unwrap();
+        let setup = document
+            .setup
+            .expect("download deve carregar o setup da rede");
+        assert_eq!(setup.public_name, "Rede do wizard");
+        assert_eq!(setup.organization, "POM");
+        assert_eq!(setup.advertised_address, "[2001:db8::10]:43123");
+        assert_eq!(setup.bootstrap_address, "[2001:db8::10]:43123");
+        assert_eq!(setup.directory_replicas, vec!["https://directory.example"]);
+        assert_eq!(state.admin_trust.document().setup, Some(setup));
     }
 
     fn instalar(peer: &str, document: &str, fingerprint: &str) -> HttpRequest<Body> {
@@ -353,7 +487,7 @@ mod tests {
 
     /// A trava é o endereço real do socket, e não `admin_exposure`: aqui a
     /// superfície administrativa está deliberadamente aberta à rede, o
-    /// requisitante traz o token humano correto - e a instalação continua
+    /// requisitante traz a senha humana correta - e a instalação continua
     /// recusada. Usar a exposição configurada como trava seria um buraco.
     #[tokio::test]
     async fn a_ancora_nao_e_instalada_de_fora_do_loopback() {
@@ -361,7 +495,8 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("token-do-operador".into());
+            cfg.admin_access_token =
+                Some(crate::auth::hash_admin_password("token-do-operador").unwrap());
         }
         let (document, fingerprint) = cadeia_do_admin();
 

@@ -220,7 +220,8 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("person-secret".into());
+            cfg.admin_access_token =
+                Some(crate::auth::hash_admin_password("person-secret").unwrap());
         }
         let app: Router = Router::new()
             .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
@@ -738,7 +739,8 @@ mod tests {
             let mut auth = state.auth.write().await;
             auth.profile = crate::profile::NodeProfile::Node;
             auth.admin_exposure = crate::config::AdminExposure::Network;
-            auth.admin_access_token = Some("person-secret".into());
+            auth.admin_access_token =
+                Some(crate::auth::hash_admin_password("person-secret").unwrap());
         }
         let app = Router::new()
             .merge(crate::webui::routes())
@@ -878,7 +880,8 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("person-secret".into());
+            cfg.admin_access_token =
+                Some(crate::auth::hash_admin_password("person-secret").unwrap());
         }
         let app: Router = Router::new()
             .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
@@ -935,7 +938,8 @@ mod tests {
         {
             let mut cfg = state.auth.write().await;
             cfg.admin_exposure = crate::config::AdminExposure::Network;
-            cfg.admin_access_token = Some("person-secret".into());
+            cfg.admin_access_token =
+                Some(crate::auth::hash_admin_password("person-secret").unwrap());
         }
         let app: Router = Router::new()
             .route("/api/ui/new-admin-endpoint", get(|| async { "admin" }))
@@ -981,10 +985,12 @@ mod tests {
 
         let cookie = token_login(&app).await;
         assert_eq!(with_cookie(&app, &cookie).await, StatusCode::OK);
-        state.auth.write().await.admin_access_token = Some("new-secret".into());
+        state.auth.write().await.admin_access_token =
+            Some(crate::auth::hash_admin_password("new-secret").unwrap());
         assert_eq!(with_cookie(&app, &cookie).await, StatusCode::UNAUTHORIZED);
 
-        state.auth.write().await.admin_access_token = Some("person-secret".into());
+        state.auth.write().await.admin_access_token =
+            Some(crate::auth::hash_admin_password("person-secret").unwrap());
         let cookie = token_login(&app).await;
         state.auth.write().await.admin_exposure = crate::config::AdminExposure::Localhost;
         assert_eq!(with_cookie(&app, &cookie).await, StatusCode::FORBIDDEN);
@@ -2323,19 +2329,21 @@ mod replicated_admin_logs_tests {
         let state = testkit::secondary_admin_state("secondary").await;
         assert!(state.network.peers.read().await.is_empty());
 
-        assert!(state.cluster_logs.try_ingest_remote(crate::cluster_logs::LogBatch {
-            source_node_id: "worker".into(),
-            entries: vec![crate::cluster_logs::LogEntry {
-                node_id: "worker".into(),
-                node_name: "worker-1".into(),
-                deploy_id: "deploy-1".into(),
-                origin_at: "2026-09-11T12:00:00Z".into(),
-                level: "INFO".into(),
-                target: "worker::test".into(),
-                message: "processo iniciou".into(),
-            }],
-            dropped: 0,
-        }));
+        assert!(state
+            .cluster_logs
+            .try_ingest_remote(crate::cluster_logs::LogBatch {
+                source_node_id: "worker".into(),
+                entries: vec![crate::cluster_logs::LogEntry {
+                    node_id: "worker".into(),
+                    node_name: "worker-1".into(),
+                    deploy_id: "deploy-1".into(),
+                    origin_at: "2026-09-11T12:00:00Z".into(),
+                    level: "INFO".into(),
+                    target: "worker::test".into(),
+                    message: "processo iniciou".into(),
+                }],
+                dropped: 0,
+            }));
 
         let request = crate::reqlog::AuditRequest {
             id: "request-1".into(),
@@ -2360,10 +2368,12 @@ mod replicated_admin_logs_tests {
             status: crate::reqlog::AuditStatus::Ok,
             error: None,
         };
-        assert!(state.audit.try_ingest_remote(crate::reqlog::AuditEvent::Complete {
-            id: request.id.clone(),
-            completion,
-        }));
+        assert!(state
+            .audit
+            .try_ingest_remote(crate::reqlog::AuditEvent::Complete {
+                id: request.id.clone(),
+                completion,
+            }));
         assert!(state
             .audit
             .try_ingest_remote(crate::reqlog::AuditEvent::Begin(request)));
@@ -2426,6 +2436,8 @@ mod replicated_admin_logs_tests {
             trust_document,
             organization: "Teste".into(),
             description: "Registro remoto".into(),
+            rules: "- Respeite os peers".into(),
+            channels: "[Discord](https://discord.example/pom)".into(),
             country_code: "BR".into(),
             country_name: "Brasil".into(),
             city: "Curitiba".into(),
@@ -2492,6 +2504,11 @@ mod replicated_admin_logs_tests {
         let networks: Vec<PublicNetworkView> = serde_json::from_slice(&body).unwrap();
         assert_eq!(networks.len(), 1);
         assert_eq!(networks[0].name, "Rede federada");
+        assert_eq!(networks[0].rules, "- Respeite os peers");
+        assert_eq!(
+            networks[0].channels,
+            "[Discord](https://discord.example/pom)"
+        );
         assert_eq!(networks[0].discovered_via, "directory");
         assert_eq!(state.database.public_directory_records().unwrap().len(), 1);
         server.abort();
@@ -2661,6 +2678,7 @@ pub(crate) mod testkit {
             cache_type_v: crate::config::KvCacheType::F16,
             profile: crate::profile::NodeProfile::Node,
             setup_pending: false,
+            local_auto_discovery: false,
             tls_required: false,
             quic_enabled: false,
             cluster_logs_enabled: false,

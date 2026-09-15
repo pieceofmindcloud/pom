@@ -671,13 +671,13 @@ pub(super) async fn remove_node_endpoint(
         {
             Ok(request) => request,
             Err(error) => {
-                return bad(json!({ "error": format!("não foi possível assinar: {error}") }))
+                return bad(json!({ "error": format!("não foi possível assinar: {error}") }));
             }
         };
         match request.send().await {
             Ok(r) if r.status().is_success() => {}
             Ok(r) => {
-                return bad(json!({ "error": format!("o peer recusou: HTTP {}", r.status()) }))
+                return bad(json!({ "error": format!("o peer recusou: HTTP {}", r.status()) }));
             }
             Err(e) => return bad(json!({ "error": format!("peer inacessivel: {e}") })),
         }
@@ -1095,7 +1095,7 @@ pub(super) async fn wait_for_transfers(
                         job.get("error")
                             .and_then(|e| e.as_str())
                             .unwrap_or("sem detalhe")
-                    ))
+                    ));
                 }
                 _ => {
                     let total = job

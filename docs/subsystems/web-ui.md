@@ -107,7 +107,8 @@ omitem a seção de temperatura, enquanto uma GPU cujo sensor não responde most
 `GET/POST /api/ui/thermal` lê ou grava seus três valores.
 
 O painel de proteção térmica fica em Configurações > Preferências. O backend valida a
-política antes de persistir, e o runtime do próprio nó aplica a histerese e o
+política antes de persistir, exigindo corte mínimo de 70 °C e cooldown máximo de
+60 segundos, e o runtime do próprio nó aplica a histerese e o
 cooldown. Quando o modelo é pausado por calor, o estado do servidor aparece
 como "aguardando resfriar", distinto de peer indisponível ou falha.
 
@@ -203,14 +204,19 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/setup` -> `Setup`, o wizard real do primeiro acesso, **em tela inteira**:
   sem Sidebar e sem Topbar, como o bootstrap. Ele mostra hardware antes das
   decisões de capacidade e modelo e conduz `admin`, `node` ou `infer` até o
-  save. No admin, a exposição da interface na rede é a única opção que gera
-  token administrativo; a criptografia TLS entre peers é opcional e começa
+  save. No admin, a exposição da interface na rede é a única opção que pede
+  uma senha administrativa; a criptografia TLS entre peers é opcional e começa
   desligada. A tela de convite baixa o arquivo da raiz com o nome retornado por
   `admin_trust_filename` e mostra a chave de conexão apenas em redes local ou
-  privadas. `SetupWizard.tsx` continua sendo apenas o mock de referência visual.
+  privadas. Durante o setup, uma etapa de descoberta local deixa o admin
+  esperando e faz node/infer procurarem um admin; a chave só chega depois do
+  handshake explícito. `SetupWizard.tsx` continua sendo apenas o mock de
+  referência visual.
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
   participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
   `/config/preferencias/admin` -> preferências administrativas;
+  `/config/sobre` -> About, último item de Configurações, com a licença
+  provisória do POM e o catálogo de dependências diretas agrupado por licença;
   `/config/confianca` reúne esta máquina, compartilhamento e chaves de conexão;
   `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias). O wizard de configuração não aparece
@@ -248,15 +254,18 @@ público também é obrigatório para rede pública em todos os perfis e aparece
 passo de confiança de node/infer antes do salvamento. A cidade manual é válida
 quando a referência SQLite não a contém.
 
-O wizard também pede pelo menos um ingresso HTTP(S) do diretório federado,
-separado por vírgulas, para uma rede pública. Um nó privado pode conservar
-esses ingressos para listar o catálogo por saída.
+O wizard não exige ingresso HTTP(S) do diretório federado para uma rede pública.
+Quando configurados por `POM_PUBLIC_DIRECTORY` ou posteriormente na
+administração, eles são persistidos no documento de confiança e usados para
+publicar ou consultar o catálogo. Um nó privado pode conservar esses ingressos
+para listar o catálogo por saída.
 
 O passo de modelos combina o catálogo local com referências do Hugging Face,
 sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como
-padrões. O convite do admin mostra e baixa a raiz `.pom.trust.json`, a chave
-pública, a fingerprint calculada e a chave de conexão apenas quando a rede é
-local/private. A verificação final cobre GPU, backend disponível, configuração,
+padrões. O convite do admin mostra e baixa a raiz `.pom.trust.json`, a
+fingerprint calculada e a chave de conexão apenas quando a rede é
+local/private. A chave pública não é exibida separadamente, pois já está na
+raiz. A verificação final cobre GPU, backend disponível, configuração,
 descoberta P2P e IPv6 público; a inferência do modelo fica para depois.
 
 `routes/SetupWizard.tsx` e `components/setup-wizard/*` continuam sendo apenas o
@@ -293,6 +302,11 @@ uma vista reduzida para conversar com os modelos, ler a documentação, cuidar
 da própria API key e pedir entrada no processamento da rede.
 `GET /api/ui/node` é a fonte usada pelo browser e a toolbar mostra o rótulo
 pela i18n.
+O mesmo retrato traz `pom_desenv`, verdadeiro somente quando o processo foi
+iniciado com `POM_DESENV=1` exatamente. `DeployModel`, Histórico e a caixa de
+reimplantar escondem por completo `Configurações POM (DESENV)` quando a flag é
+falsa. Isso é somente visibilidade local: a UI e o backend preservam os valores
+da implantação recebidos pela rede, mesmo quando o nó não pode editá-los.
 
 No Dashboard, a leitura é separada por responsabilidade. O `admin` vê os
 agregados do cluster, como cobertura, máquinas, modelo ativo e carga em voo.
@@ -511,7 +525,7 @@ obtida em `POST /api/ui/chat-key` e enviada como `X-API-Key` em cada chamada
 `/api/generate` ou `/v1`. Se ela for revogada, a próxima tentativa cria uma
 substituta e repete a mensagem uma única vez. O primeiro acesso usa o router
 de setup (sem `pom.json`), que serve hardware, modelos, prévia da raiz
-administrativa, token administrativo, instalação da raiz, verificações e `POST /api/setup/save`. O save
+administrativa, senha administrativa, instalação da raiz, verificações e `POST /api/setup/save`. O save
 instala a raiz de confiança separada e grava `pom.json` antes do respawn. O
 respawn cria uma sessão independente em Unix, herda os argumentos originais e
 redireciona stdout/stderr para `<project_root>/pom.log`, para que uma falha de
@@ -603,8 +617,10 @@ até o fim de tudo o que ela reporta.
 
 O diálogo `AddNodeDialog` consulta `POST /api/ui/deploy/node/options` depois de
 cada troca de máquina. Assim, o seletor mostra as fatias e o modelo inteiro
-que o alvo realmente tem, além dos controles de camadas na GPU, localização
-do cache KV e tipos K/V daquela máquina. Confirmar chama
+que o alvo realmente tem, além dos controles de camadas na GPU, do booleano de
+KV na GPU versus RAM e dos tipos K/V daquela máquina. O POM não expõe uma
+seleção de GPU exclusiva para o KV: quando ligado, ele segue o dispositivo da
+camada dos pesos. Confirmar chama
 `POST /api/ui/deploy/node` somente no alvo e preserva a inferência dos outros
 peers. Com um `deploy_id` ativo, a alteração cria uma nova versão; selecionar
 um GGUF inteiro ao lado de fatias produz o rótulo `mixed` no Histórico e duas
@@ -677,13 +693,14 @@ disponível para admin e node.
 conexão. `/config/preferencias` monta a exposição administrativa, o
 `ThermalPanel`, o `HuggingFaceSettingsPanel` e o link para armazenamento.
 `/config/preferencias/admin` mantém as preferências administrativas de TLS,
-QUIC, logs de processo entre nós e chat da rede. A separação reorganiza as
+QUIC, logs de processo entre nós, chat da rede e descoberta local. A separação reorganiza as
 mesmas operações e conserva a autorização existente.
 
 A exposição é persistida no `pom.json`: localhost é o padrão instalado, e a
-rede gera um token separado da `connection_key`, mostrado somente depois da
-autenticação. Trocar para localhost limpa o token; regenerá-lo invalida o
-anterior. A porta é validada antes de salvar e uma colisão é informada sem
+rede usa uma senha separada da `connection_key`; somente o hash Argon2id é
+persistido, e a senha anterior é exigida para trocá-la. Trocar para localhost
+limpa a senha. Um token antigo é migrado para Argon2id no primeiro carregamento,
+preservando seu valor como senha. A porta é validada antes de salvar e uma colisão é informada sem
 iniciar em outra porta. O `ThermalPanel` lê e grava a política em
 `GET/POST /api/ui/thermal`; o painel de Hugging Face usa
 `/api/ui/model-provider/config`.
@@ -758,21 +775,25 @@ Três coisas a conversa guarda além das falas:
   pode consultar. Ele aceita qualquer tipo de ficheiro, botão e arrastar e
   largar. Imagens exigem `vision: supported`; `unsupported` mantém o modelo sem
   visão e `unavailable` informa que a leitura foi recusada ou não pôde terminar,
-  sem inventar um modelo vazio. Imagens são redimensionadas no navegador para no
-  máximo 2048 px no lado maior, preservando a proporção, antes de virar base64
-  no pedido, e aparecem inteiras na bolha da fala com legenda e alt.
+  sem inventar um modelo vazio. Imagens são redimensionadas no navegador para
+  caber no orçamento efetivo antes de virar base64 no pedido: a estimativa
+  mantém quatro bytes por token, reserva 10% para segurança e tenta qualidade
+  JPEG e resolução até 2048 px no lado maior, sem passar de 512 px em imagens
+  normais. A proporção é preservada, e a bolha e o anexo pendente mostram
+  "Redimensionada automaticamente" quando a imagem foi alterada.
 - O botão `Think` usa o campo `thinking` da mesma leitura de capabilities e só
   aparece quando o `no_thinking` global da cabeça está desligado. A escolha é
   enviada como `thinking_enabled` em cada chamada de Chat e fica no
   `ChatSession` persistido em `localStorage`, portanto continua entre mensagens
   da mesma conversa até o usuário mudar o toggle. A cabeça ainda impõe o
   desligamento global, mesmo que uma sessão antiga carregue `true`.
-- O lote é recusado antes do envio quando o tamanho bruto ultrapassa o contexto
-  efetivo do modelo: primeiro `context_length` de `/v1/models`, depois `n_ctx`
-  do nó ativo, com a estimativa conservadora de quatro bytes por token. O
-  conteúdo textual e as partes multimodais ficam em `requestContent`, para o
-  histórico reenviar o mesmo pedido estruturado. Cada anexo pendente pode ser
-  removido sem apagar o rascunho.
+- Arquivos de texto continuam sendo recusados antes do envio quando o tamanho
+  estimado ultrapassa o contexto efetivo do modelo: primeiro `context_length`
+  de `/v1/models`, depois `n_ctx` do nó ativo. Imagens usam o mesmo orçamento,
+  mas são reduzidas antes da validação; só uma imagem que não caiba nem em
+  512 px gera recusa. O conteúdo textual e as partes multimodais ficam em
+  `requestContent`, para o histórico reenviar o mesmo pedido estruturado. Cada
+  anexo pendente pode ser removido sem apagar o rascunho.
 - O botão de microfone só aparece quando existe `SpeechRecognition` ou
   `webkitSpeechRecognition`; a transcrição usa o locale da interface quando
   possível e entra diretamente no campo de texto.
@@ -802,6 +823,13 @@ navegador.
   `outside_node_unaccounted_ms`. O gargalo principal é destacado somente
   entre medidas presentes; tempo que não chegou a uma fronteira permanece
   explicitamente como não atribuído.
+  No fim do stream, o `Bubble` usa temporariamente o trace, timings e origem de
+  `telemetryCapture` quando a captura final chega antes da atualização imutável
+  da mensagem. `telemetrySnapshots` guarda a captura completa por `messageId`,
+  então mensagens anteriores continuam com seu próprio resumo rápido e card
+  fechado. Depois que o histórico recebe `message.trace` e `message.timings`,
+  eles continuam sendo a fonte preferida; essa transição mantém o rodapé visível
+  sem recarregar a página.
 - **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
   `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
   embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids
@@ -813,10 +841,12 @@ navegador.
 `chatStream` separa `<think>` do conteúdo visível sem vazar o delimitador
 entre pedaços; `finishChatStream` grava o resumo de TTFT, velocidade de
 pré-processamento do prompt, velocidade de geração da saída e total ponta a
-ponta, além do trace por hop. O Chat mostra essas quatro linhas no resumo da
-resposta, além de `server_ttft_ms`, `engine_ttft_ms` e `client_ttft_ms`, e deixa
-explícito quando uma taxa não é mensurável, como no reuso total do prefixo ou
-numa resposta de um token. Durante o SSE, o navegador mede primeiro chunk,
+  ponta, além do trace por hop. O Chat mostra essas linhas no resumo da
+  resposta, além de `server_ttft_ms`, `engine_ttft_ms`, `client_ttft_ms` e o
+  tempo de rede observado, antes do card fechado. O resumo fica visível sem
+  expandir a telemetria e deixa explícito quando uma taxa não é mensurável,
+  como no reuso total do prefixo ou numa resposta de um token. Durante o SSE,
+  o navegador mede primeiro chunk,
 primeiro token, duração, fim do último token, chunks e bytes com
 `performance.now()`; o `Date.now()` anexado ao recebimento serve apenas para
 correlação com os wall timestamps dos peers. Nenhum relógio de máquinas
@@ -998,13 +1028,17 @@ impressão digital é só modelo + conjunto de faixas.
   chunk de prefill, amostragem, cache K/V da instalação, desativar
   thinking/embeddings, especulativa e MTP), *Configurações POM* (motor de
   inferência, ajustar à memória, chunks em voo, juntar fatias vizinhas e
-  precisão do estado oculto) e *Configurações POM (DESENV)* (as três janelas do
-  detector de ciclo, o interruptor dele e o recuo do MTP para a RAM). O `[i]`
+  precisão do estado oculto) e *Configurações POM (DESENV)* (motor de
+  inferência, as três janelas do detector de ciclo, o interruptor dele e o
+  recuo do MTP para a RAM, além do descarregamento ocioso por peer). A seção
+  só aparece quando `NodeInfo.pom_desenv` está ligada; a ausência da flag faz a
+  interface remover seus controles do DOM. O `[i]`
   vem **antes** do nome, e não depois: com nomes de larguras diferentes, os
   ícones à direita do texto ficavam serrilhados, e antes do nome eles formam uma
   coluna reta do topo ao pé do painel. O combo do motor não oferece
   "Automático" e assume `llama.cpp` ao montar - é escolha de apresentação; o
-  backend continua aceitando os três modos.
+  backend continua aceitando `auto` somente quando o pedido o informa
+  explicitamente. Sem valor, o padrão é `llama.cpp` (`dense`).
   Os cards são um **preview de como o sistema fica depois da implantação**, não
   do estado atual: cada GPU de cada máquina ganha uma barra de VRAM projetada
   (uso previsto contra o total, com o uso de agora como tracinho) que se
@@ -1026,7 +1060,7 @@ impressão digital é só modelo + conjunto de faixas.
   ranks e não apresenta a seleção antiga de fatias. As propriedades globais
   (contexto, batch, amostragem, sessões) ficam
   separadas das propriedades por
-  máquina (`n_gpu_layers`, KV e capacidade local, na mesma linha de propriedade
+  máquina (`n_gpu_layers`, o booleano de KV na GPU e capacidade local, na mesma linha de propriedade
   das globais - `[i]`, nome, controle); ao selecionar uma máquina, o
   inspetor também mostra as camadas que ela executará. A precisão do estado
   oculto (f16/f8) só aparece quando o estado atravessa a fronteira de um peer -
@@ -1039,9 +1073,11 @@ impressão digital é só modelo + conjunto de faixas.
   probabilidade mínima começa em `0,75`, mas continua sendo um campo editável
   pelo operador e o valor alterado segue no deploy. A seção
   **Motor de inferência** aparece somente quando a metadata real do GGUF
-  informa mais de um expert. Ela persiste `inference_mode` como `auto`,
-  `dense` ou `moe` e envia a escolha nos modos modelo inteiro, pipeline
-  fatiado e Tensor Parallelism. Em modelo denso a seção fica oculta. Se a
+  informa mais de um expert. A UI apresenta `dense` (llama.cpp) e `moe`, e
+  envia a escolha nos modos modelo inteiro, pipeline fatiado e Tensor
+  Parallelism. O backend também aceita `auto` somente quando ele chega como
+  escolha explícita de uma API ou implantação persistida. Em modelo denso a
+  seção fica oculta. Se a
   combinação escolhida não for suportada, o seletor continua visível com a
   razão explícita e o deploy fica bloqueado; a telemetria é a fonte de verdade
   sobre o motor executado. As demais opções condicionais recebem
@@ -1184,8 +1220,10 @@ propaga a mutação assinada aos peers e republica o rótulo geo público.
 O mesmo administrador tem, nessa tela, os controles de copiar e baixar o
 documento `.pom-admin-trust.json`. Em rede local ou privada também aparece a
 chave de conexão para copiar ou baixar. O wizard real oferece os mesmos
-materiais na etapa de convite. `SetupWizard.tsx` continua sendo apenas o
-protótipo visual e não participa dessas chamadas.
+materiais na etapa de convite, destacando a chave de conexão no primeiro
+cartão. O conteúdo bruto do trust e da chave pública começa recolhido, mas
+copiar e baixar continuam disponíveis sem expandir os cartões. `SetupWizard.tsx`
+continua sendo apenas o protótipo visual e não participa dessas chamadas.
 
 O painel também expõe `Esquecer rede`, com confirmação destrutiva. Essa ação
 chama `POST /api/ui/network/leave`, que revoga a confiança local, prepara o

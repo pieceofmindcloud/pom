@@ -27,6 +27,8 @@ brand = { path = "../brand" }
 arc-swap = "1"
 socket2 = "0.5"
 tokio = { version = "1", features = ["full"] }
+chacha20poly1305 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 clap = { version = "4", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -35,6 +37,7 @@ base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 rand = "0.8"
 sha2 = "0.10"
+argon2 = "0.5"
 hex = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"

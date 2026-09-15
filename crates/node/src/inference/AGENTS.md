@@ -23,8 +23,11 @@ anotação da fatia servida (estado Pending/Serving/Idle em
 `models/lastslice.rs`). Quando a política por deployment pede descarregamento
 ocioso, `RequestActivity` é avaliado pelo monitor existente fora do caminho de
 inferência; a restauração recebe `reload_model`, espera o `/health` do runtime
-e volta a anunciar `serving`. O gateway dispara esse evento em paralelo para
-os peers ociosos planejados e limita a barreira a 15 minutos.
+e volta a anunciar `serving`. O supervisor só inicia a próxima geração depois
+de o supervisor anterior terminar o encerramento, incluindo a liberação nativa
+do modelo, e essa liberação roda em `spawn_blocking` para não parar o executor
+HTTP. O gateway dispara esse evento em paralelo para os peers ociosos
+planejados e limita a barreira a 15 minutos.
 O runtime consulta a política de `utils/thermal.rs` a cada 5 segundos, pausa
 o modelo acima do limite com estado `thermal`, preserva a configuração para
 retomada e só reimplanta depois de todas as GPUs conhecidas permanecerem
@@ -60,6 +63,10 @@ O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
 (`inference_server.py` de `old/python-inference/` é legado). Os caminhos
 normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção
 controlada, pois coordena seus ranks e seu túnel de transporte neste diretório.
+O campo `NodeConfig.inference_mode` seleciona `dense/llama.cpp`, `moe/q4_0` ou
+`auto` quando essa escolha foi pedida explicitamente; se o campo não existe, o
+padrão é `dense`. `POM_DESENV` não participa dessa seleção, pois só controla a
+visibilidade dos controles de implantação na UI local.
 
 ## Arquivos
 
@@ -1185,6 +1192,15 @@ falha de transporte.
   (`infer_server::run`); muda a config → reinicia o servidor. Anota a fatia em
   `models/lastslice.rs` como **Pending** - mas a anotação só diz o que o `apply`
   decidiu, não o que o servidor conseguiu carregar.
+- `NodeRuntime::supervisor` - mantém o `JoinHandle` da geração atual. Ao
+  aplicar ou recarregar, a geração recebe o sinal de parada e o runtime aguarda
+  o supervisor concluir `serve_with_quic`, a limpeza FFI e a liberação da porta
+  antes de iniciar outro servidor. Essa espera tem teto de 5 s; se estourar,
+  preserva o handle e recusa iniciar a geração nova, para não sobrepor um
+  `llama_free` ainda em andamento.
+- `infer_server::run_native_cleanup` - executa `LlmEngine::unload` em
+  `spawn_blocking`; `llama_free` e os destrutores nativos não podem bloquear a
+  thread que atende o gateway ou as sondagens de `/health`.
 - `spawn_health_watch` - o único ponto que promove a carga: depois de duas
   sondagens consecutivas de `/health` com `model_loaded`, promove a anotação
   de Pending para **Serving**. Um primeiro retorno não limpa o journal, pois a

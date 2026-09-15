@@ -263,7 +263,7 @@ pub(super) async fn run(
                         body.get("error")
                             .and_then(|e| e.as_str())
                             .unwrap_or("motivo não informado")
-                    ))
+                    ));
                 }
             }
         }
@@ -665,10 +665,17 @@ impl RedeployRequest {
         registro.ensure_versions();
         if let Some(v) = self.version {
             registro.set_active_version(v).map_err(|e| e.to_string())?;
-            return Ok(registro
-                .active()
-                .map(|ver| ver.params.clone())
-                .unwrap_or_default());
+            let active_version = registro.active_version;
+            let (params, nodes) = {
+                let version = registro
+                    .versions
+                    .iter_mut()
+                    .find(|ver| ver.version == active_version)
+                    .expect("set_active_version garantiu a versão ativa");
+                (version.params.clone(), version.nodes.clone())
+            };
+            registro.nodes = nodes;
+            return Ok(params);
         }
         let Some(params) = self.params.clone() else {
             return Err("informe `version` ou `params`".to_string());

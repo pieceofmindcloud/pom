@@ -140,11 +140,11 @@ export function useIsSetupMode() {
   }).data;
 }
 
-export type AdminSurfaceState = "setup" | "available" | "requires-token" | "local-only";
+export type AdminSurfaceState = "setup" | "available" | "requires-password" | "local-only";
 
 /**
  * One probe decides which shell is safe to render. A valid server session
- * makes `/api/ui/node` succeed after a reload, so the token gate does not
+ * makes `/api/ui/node` succeed after a reload, so the password gate does not
  * return merely because React state was recreated by F5.
  */
 export function useAdminSurface() {
@@ -154,7 +154,7 @@ export function useAdminSurface() {
    * carregamento (`staleTime: Infinity`). Só que a sessão administrativa vive
    * na memória do nó: um reinício, ou as 8 h de validade, a derrubam com a aba
    * aberta. Sem refazer a sonda, cada tela passava a imprimir o
-   * "missing administrative access token" cru no lugar do seu conteúdo, e o
+   * "missing administrative access password" cru no lugar do seu conteúdo, e o
    * operador não tinha caminho de volta ao portão que não fosse recarregar na
    * mão.
    */
@@ -181,7 +181,7 @@ export function useAdminSurface() {
             // A transient policy read must not expose a guessed UI state.
           }
         }
-        return "requires-token";
+        return "requires-password";
       }
     },
     retry: false,
@@ -190,7 +190,7 @@ export function useAdminSurface() {
   });
 }
 
-/** Public metadata needed before the app knows whether to show the token gate. */
+/** Public metadata needed before the app knows whether to show the password gate. */
 export function useAdminAccess() {
   return useQuery({
     queryKey: keys.adminAccess,
@@ -201,7 +201,7 @@ export function useAdminAccess() {
   });
 }
 
-/** Authenticated administrative state, including the token for the settings page. */
+/** Authenticated administrative state, including only password presence for settings. */
 export function useAdminAccessInfo() {
   return useQuery({
     queryKey: keys.adminAccessInfo,

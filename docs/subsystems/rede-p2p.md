@@ -108,6 +108,12 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
   mas nenhum caminho do código emite hoje (o `Announce` de 5 s cumpre esse papel).
 - **`LocalDiscover`** - descoberta estilo mDNS na LAN. Igualmente só tem o lado
   de recebimento (responde com `PeerRequest`).
+- **`LocalAutoDiscovery`** - handshake explícito e temporário do primeiro setup.
+  `Probe` e `Offer` carregam apenas desafio, chaves efêmeras e o documento de
+  confiança público. `Proof` vincula o pedido às duas pontas; só depois dele o
+  admin envia `Secret`, cifrado com X25519 e ChaCha20-Poly1305, contendo a
+  `connection_key`. Não há resposta nem material sensível para uma escuta
+  passiva.
 
 `PeerInfo` espelha os campos do `Announce` mais `last_seen`,
 `connection_verified` e `api_keys_active`. `PeerInfo::is_alive()` compara
@@ -143,6 +149,19 @@ descoberta.
    transitivos fora da LAN; sem ele a descoberta seria um retrato do arranque.
 5. **Timeout (30 s):** `cleanup_dead_peers` remove peers com `last_seen` a mais
    de `PEER_TIMEOUT_SECS`.
+
+O serviço `LocalDiscoveryRuntime` não substitui o gossip normal. Durante o
+primeiro setup ele recebe `Probe` na porta UDP local e fica ativo somente até a
+configuração terminar. Depois do setup a configuração `local_auto_discovery`
+começa `false`; o administrador pode ligá-la manualmente em Preferências, e o
+processo mantém o trust document e a chave somente na memória enquanto estiver
+respondendo. O `Offer` expõe apenas o fingerprint e os metadados de tamanho do
+documento. Depois do `Proof`, o payload com trust document e `connection_key` é
+cifrado com ChaCha20-Poly1305 e enviado em fragmentos de no máximo 640 bytes,
+para que cada envelope UDP fique dentro do orçamento de 1200 bytes. O nó só
+remonta e valida o fingerprint depois de receber todos os fragmentos; o material
+aceito é limitado a 512 KiB. Desligar limpa as sessões do handshake e o material
+sensível.
 
 ### Tratamento de `Announce` no recebimento
 
@@ -418,6 +437,10 @@ paralelo aos outros peers ociosos. Essa chamada usa `connection_key` e o
 marcador interno, e só ordena a carga local de cada destinatário. Não há
 conexão síncrona adicional no hop normal de inferência nem timer para decidir a
 ociosidade; a decisão usa a atividade local registrada e o monitor existente.
+O encerramento do endpoint QUIC de uma geração é um sinal one-shot local, sem
+confirmação ou barreira entre peers. Ele aguarda no máximo 2 s pelo transporte
+e aborta a task se o endpoint não fechar, para que o reload não fique preso por
+uma notificação perdida ou por `endpoint.wait_idle()`.
   Requisições recebidas pelo túnel são encaminhadas ao servidor de inferência
   local em uma task separada. O loop do swarm continua drenando GossipSub,
   respostas TP e eventos de conexão enquanto um prefill, decode ou redução TP
@@ -468,13 +491,15 @@ um nó novo descobrir a rede.
 
 O catálogo global separado do swarm vive em `public_directory.rs`. O principal
 de uma rede pública assina um registro com endpoint, documento de confiança,
-localização e ingressos conhecidos. O registro carrega `version`, `sequence`,
+descrição, regras e canais em Markdown, localização e ingressos conhecidos. O
+registro carrega `version`, `sequence`,
 `issued_at`, `expires_at` e um nonce de prova de trabalho de 16 bits. A
 identidade lógica é `(publisher_pubkey, sequence)`; o merge mantém a maior
 sequência e resolve conflito idêntico de forma determinística pelo menor hash.
 
 Cada nó pode configurar até 16 ingressos HTTP(S) em `POM_PUBLIC_DIRECTORY` ou
-no wizard. O publicador envia seu registro a todos os ingressos, e um leitor
+na administração. O wizard aceita uma lista vazia; o publicador envia seu
+registro a todos os ingressos configurados, e um leitor
 consulta todos em paralelo e grava o merge no `pom.db`. Uma réplica é transporte,
 não raiz de confiança: assinatura Ed25519, cadeia de confiança, cluster e
 fingerprint são validados pelo leitor e pelo ingresso. Registros expiram em
@@ -743,7 +768,12 @@ escutando, a rota falhar ou responder 404/405, o relay cai para HTTP/HTTPS e
 marca `transport_fallback`; a descoberta compartilha um orçamento de 300 ms
 entre os endereços QUIC anunciados, em vez de serializar um timeout por
 endereço, e coloca um endpoint que falhou em quarentena por 5 s. Uma sessão
-saudável é reutilizada nos próximos frames. O túnel só é a última reserva
+saudável é reutilizada nos próximos frames. Se uma chamada falhar numa sessão
+cacheada, o cliente fecha e remove essa sessão e repete uma vez o pedido com um
+handshake novo dentro do orçamento existente. Assim, o `reset by peer` esperado
+quando o processo remoto reinicia não transforma uma conexão antiga em estado
+permanente. A quarentena continua valendo para a falha final do endpoint e dura
+5 s, evitando handshakes repetidos por token. O túnel só é a última reserva
 depois de uma falha de transporte também no caminho TCP.
 Cada tentativa completa de transporte, incluindo handshake, envio, headers e
 corpo, tem teto de 30 s; isso impede que um endpoint alcançável mas sem resposta

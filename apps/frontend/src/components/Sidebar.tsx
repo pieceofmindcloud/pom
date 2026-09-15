@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { LogoFull, LogoMark } from "./Logo";
 import { ChatSessionList } from "./ChatSessionList";
-import { brand } from "../lib/brand";
 import { navFooterForProfile, navForProfile, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
 import { useProfile } from "../lib/profile";
@@ -14,6 +13,7 @@ import { useNetworkChatUnread } from "../lib/networkChatUnread";
 import { useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
 import { TlsChip } from "./TlsIndicator";
+import { LanguageFlags } from "./LanguageFlags";
 
 /**
  * Cabeçalho da barra. Quando recebe o toggle da Sidebar desktop, a própria
@@ -65,7 +65,7 @@ function SidebarBrand({
  * porque bandeira não é idioma para um leitor de tela.
  */
 function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
-  const { locale, setLocale, t } = useI18n();
+  const { t } = useI18n();
   const { profile } = useProfile();
   const { theme, toggle } = useTheme();
   // O commit deste nó vive aqui, ao lado dos controles: num cluster de várias
@@ -73,10 +73,6 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
   // binário velho parece sadio até a hora da inferência. Sem a palavra "build"
   // na frente - é um hash em fonte mono, e o que ele é fica no tooltip.
   const { data: node } = useNode();
-  const languages = [
-    { id: "en", label: "English" },
-    { id: "pt-BR", label: "Português (Brasil)" },
-  ] as const;
   const footerLinks = navFooterForProfile(profile);
   return (
     <div className={clsx("border-t border-line py-2.5", collapsed ? "px-2" : "px-3")}>
@@ -104,39 +100,10 @@ function SidebarUtilityControls({ collapsed }: { collapsed: boolean }) {
           })}
         </div>
       )}
-      <div
-        role="group"
-        aria-label={locale === "pt-BR" ? "Idioma" : "Language"}
-        className={clsx(
-          "flex items-center gap-1.5",
-          collapsed ? "flex-col" : "flex-row",
-        )}
-      >
-        {languages.map((lang) => (
-          <button
-            key={lang.id}
-            type="button"
-            aria-pressed={locale === lang.id}
-            aria-label={lang.label}
-            title={lang.label}
-            onClick={() => setLocale(lang.id)}
-            className={clsx(
-              "flex h-8 items-center justify-center rounded-md border transition-colors",
-              collapsed ? "w-8" : "w-10",
-              locale === lang.id
-                ? "border-iris/50 bg-iris/12"
-                : "border-line opacity-55 hover:opacity-100",
-            )}
-          >
-            <img
-              src={brand.flags[lang.id]}
-              alt=""
-              aria-hidden="true"
-              className="h-3.5 w-5 rounded-[2px] object-cover ring-1 ring-inset ring-black/20"
-            />
-          </button>
-        ))}
-        <TlsChip />
+      <div className={clsx("flex items-center gap-1.5", collapsed ? "flex-col" : "flex-row")}>
+        <LanguageFlags className={collapsed ? "flex-col" : "flex-row"}>
+          <TlsChip />
+        </LanguageFlags>
         {!collapsed && profile !== "infer" && node?.build_commit && (
           <span
             title={t("sidebar.buildTitle")}

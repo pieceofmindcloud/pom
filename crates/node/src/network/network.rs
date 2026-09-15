@@ -271,6 +271,12 @@ pub enum P2PMessage {
     },
     /// mDNS-style local broadcast
     LocalDiscover { from: String, port: u16 },
+    /// First-access LAN bootstrap. The Offer carries only trust metadata; the
+    /// trust document and connection key are fragmented and encrypted only
+    /// after an accepted Proof.
+    LocalAutoDiscovery {
+        message: crate::local_discovery::LocalAutoDiscoveryMessage,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -751,6 +757,9 @@ pub struct Network {
     runtime_capacity: std::sync::RwLock<RuntimeCapacityState>,
     idle: AtomicBool,
     socket: Arc<UdpSocket>,
+    /// Shared first-access LAN handshake state. It uses this same UDP socket
+    /// so setup and configured runtime do not drift into separate protocols.
+    local_discovery: Arc<crate::local_discovery::LocalDiscoveryRuntime>,
     #[cfg(test)]
     test_panic_on_next_message: AtomicBool,
     /// Set while the operator has taken this node off the network.
@@ -930,6 +939,9 @@ fn message_context(msg: &P2PMessage) -> String {
         P2PMessage::LocalDiscover { from, port } => {
             format!("LocalDiscover from={} port={port}", short(from))
         }
+        P2PMessage::LocalAutoDiscovery { message } => {
+            format!("LocalAutoDiscovery {message:?}")
+        }
     }
 }
 
@@ -959,7 +971,7 @@ fn peer_address_changed(previous: &PeerInfo, current: &PeerInfo) -> bool {
 /// reply into a silent black hole. 1200 is the conservative floor that IPv6
 /// itself guarantees (RFC 8200 requires links to carry 1280), minus headroom for
 /// the IPv6 + UDP headers.
-const MAX_DATAGRAM_PAYLOAD: usize = 1200;
+pub const MAX_DATAGRAM_PAYLOAD: usize = 1200;
 
 /// Split a peer list into datagrams that fit under [`MAX_DATAGRAM_PAYLOAD`].
 ///
@@ -1076,11 +1088,15 @@ impl Network {
         inference_port: Option<u16>,
         gateway_port: Option<u16>,
     ) -> Result<Self> {
+        // Discovery follows the configured UDP port. The default remains
+        // DISCOVERY_PORT, but an isolated node must not broadcast to another
+        // node's listener when its port is overridden.
+        let discovery_port = if port == 0 { DISCOVERY_PORT } else { port };
         Self::new_with_broadcast_addr(
             node_id,
             pubkey,
             port,
-            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT),
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), discovery_port),
             NetworkInit {
                 bootstrap_nodes,
                 ollama_port,
@@ -1201,6 +1217,9 @@ impl Network {
         socket: UdpSocket,
         init: NetworkInit,
     ) -> Self {
+        let socket = Arc::new(socket);
+        let local_discovery =
+            crate::local_discovery::LocalDiscoveryRuntime::new(socket.clone(), broadcast_addr);
         Self {
             node_id,
             pubkey,
@@ -1221,7 +1240,8 @@ impl Network {
             tp: std::sync::RwLock::new(None),
             runtime_capacity: std::sync::RwLock::new(RuntimeCapacityState::default()),
             idle: AtomicBool::new(false),
-            socket: Arc::new(socket),
+            socket,
+            local_discovery,
             #[cfg(test)]
             test_panic_on_next_message: AtomicBool::new(false),
             detached: AtomicBool::new(false),
@@ -1272,6 +1292,44 @@ impl Network {
             .expect("admission cache lock")
             .clear();
         self
+    }
+
+    pub async fn set_local_auto_discovery(&self, enabled: bool) -> anyhow::Result<()> {
+        if !enabled {
+            self.local_discovery.disable().await;
+            return Ok(());
+        }
+        let Some(admission) = self.admission.as_ref() else {
+            anyhow::bail!("a descoberta local exige a admissão do nó");
+        };
+        if self.profile() != crate::profile::NodeProfile::Admin {
+            anyhow::bail!("somente o administrador pode habilitar a descoberta local");
+        }
+        let cfg = admission.auth.read().await;
+        let trust = admission.trust.document();
+        if trust.setup.is_none() {
+            anyhow::bail!(
+                "a descoberta local exige os dados iniciais da rede no documento de confiança"
+            );
+        }
+        let document = serde_json::to_string_pretty(&trust)?;
+        self.local_discovery
+            .set_admin_material(enabled, document, cfg.connection_key.clone())
+            .await
+    }
+
+    pub async fn local_auto_discovery_status(
+        &self,
+    ) -> crate::local_discovery::LocalDiscoveryStatus {
+        self.local_discovery.status().await
+    }
+
+    pub async fn begin_local_auto_discovery_search(&self) -> anyhow::Result<String> {
+        self.local_discovery.begin_search().await
+    }
+
+    pub(crate) fn local_discovery(&self) -> Arc<crate::local_discovery::LocalDiscoveryRuntime> {
+        self.local_discovery.clone()
     }
 
     pub fn with_authority_pubkey(self, pubkey: String) -> Self {
@@ -1980,9 +2038,7 @@ impl Network {
         let peers = self.peers.read().await;
         peers
             .values()
-            .filter(|peer| {
-                peer.is_alive() && peer.profile == crate::profile::NodeProfile::Admin
-            })
+            .filter(|peer| peer.is_alive() && peer.profile == crate::profile::NodeProfile::Admin)
             .filter_map(|peer| {
                 let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
                 Some((peer_id, peer.libp2p_dialable_addrs()))
@@ -2368,10 +2424,9 @@ impl Network {
                             None
                         };
 
-                        if let Some((rtt_ms, transport)) = crate::route::escolher_rtt(
-                            tunnel_rtt,
-                            direct_health_rtt,
-                        ) {
+                        if let Some((rtt_ms, transport)) =
+                            crate::route::escolher_rtt(tunnel_rtt, direct_health_rtt)
+                        {
                             net_routes.rtts.remember(&peer.node_id, rtt_ms, transport);
                         } else {
                             net_routes.rtts.mark_failure(&peer.node_id);
@@ -2745,6 +2800,10 @@ impl Network {
                     };
                     let _ = self.send_to(&req, &reply_addr).await;
                 }
+            }
+
+            P2PMessage::LocalAutoDiscovery { message } => {
+                self.local_discovery.handle(message, src).await;
             }
         }
     }
@@ -3229,16 +3288,9 @@ mod tests {
 
     #[tokio::test]
     async fn secondary_authority_is_not_mistaken_for_the_primary() {
-        let net = Network::testkit(
-            "local".into(),
-            "pk".into(),
-            vec![],
-            None,
-            None,
-            None,
-        )
-        .await
-        .expect("socket UDP em porta efêmera");
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None, None)
+            .await
+            .expect("socket UDP em porta efêmera");
         let (probe, mut received) = tokio::sync::mpsc::unbounded_channel();
         net.set_policy_principal_pubkey("primary-key");
         net.set_cluster_logs_probe(probe);
@@ -4304,6 +4356,7 @@ mod tests {
         Arc::new(RwLock::new(Config {
             profile: crate::profile::NodeProfile::Node,
             setup_pending: false,
+            local_auto_discovery: false,
             connection_key: key.into(),
             gateway_port: 8080,
             admin_exposure: Default::default(),

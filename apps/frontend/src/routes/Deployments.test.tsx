@@ -33,7 +33,9 @@ vi.mock("../lib/api", () => ({
   // `useJobs` passa por aqui; sem uma resposta de verdade o react-query
   // reclama de `undefined` e polui a saída do teste.
   api: {
-    get: vi.fn(async () => ({ jobs: [] })),
+    get: vi.fn(async (url: string) =>
+      url === "/api/ui/node" ? { connection_key: "", pom_desenv: true } : { jobs: [] },
+    ),
     post: vi.fn(async () => ({})),
     del: vi.fn(async () => ({})),
   },

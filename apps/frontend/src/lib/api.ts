@@ -4,9 +4,10 @@
  * Paths are relative: in production the node serves this app on its own gateway
  * port, and in development Vite proxies the same paths (see `vite.config.ts`).
  *
- * The connection key authenticates the administrative surface. Inference uses
+ * The connection key authenticates node-to-node and selected administrative
+ * operations. Inference uses
  * the browser's dedicated `pom-[node_id]` API key, created by `/api/ui/chat-key`.
- * The separate `X-POM-Access-Token` only authenticates a person to the
+ * The separate `X-POM-Access-Token` carries the human access password to the
  * administrative surface; it is kept in memory for this browser tab.
  */
 
@@ -47,7 +48,7 @@ const adminSessionLostListeners = new Set<() => void>();
 /**
  * Avisa quando a sessão administrativa deixou de valer.
  *
- * A sessão vive na memória do nó e o token humano vive na memória desta aba:
+ * A sessão vive na memória do nó e a senha humana vive na memória desta aba:
  * um reinício do nó, ou o fim das 8 h da sessão, derruba as duas sem que a
  * aba perceba. Antes disso cada tela imprimia o 401 cru do servidor e o
  * operador não tinha caminho de volta ao portão a não ser recarregar na mão.

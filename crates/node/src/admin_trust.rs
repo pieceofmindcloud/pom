@@ -80,6 +80,33 @@ pub(crate) struct TrustAnchor {
     pub(crate) fingerprint: String,
 }
 
+/// The initial network descriptor travels with the trust file so a joining
+/// node does not have to retype identity or discovery data. It is signed by
+/// the authority that created the trust chain and is intentionally smaller
+/// than `NetworkSettings`: optional editorial fields belong to administration,
+/// not to first access.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct TrustNetworkMetadata {
+    pub(crate) public_name: String,
+    #[serde(default)]
+    pub(crate) organization: String,
+    pub(crate) visibility: crate::config::NetworkVisibility,
+    pub(crate) access_policy: crate::config::NetworkAccessPolicy,
+    #[serde(default)]
+    pub(crate) country_code: String,
+    #[serde(default)]
+    pub(crate) country_name: String,
+    #[serde(default)]
+    pub(crate) city: String,
+    #[serde(default)]
+    pub(crate) geo_label: String,
+    pub(crate) advertised_address: String,
+    #[serde(default)]
+    pub(crate) bootstrap_address: String,
+    #[serde(default)]
+    pub(crate) directory_replicas: Vec<String>,
+}
+
 impl TrustAnchor {
     pub(crate) fn manual(
         cluster_id: impl Into<String>,
@@ -212,6 +239,12 @@ pub(crate) struct AdminTrustDocument {
     pub(crate) pending_transfer: Option<AdminTransferOffer>,
     pub(crate) completed_transfers: Vec<CompletedTransfer>,
     pub(crate) replay: Vec<ReplayRecord>,
+    /// Network and discovery values captured when the administrator creates
+    /// the chain. Existing authority chains may omit this until regenerated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) setup: Option<TrustNetworkMetadata>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) setup_signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -271,6 +304,8 @@ impl AdminTrust {
                 pending_transfer: None,
                 completed_transfers: Vec::new(),
                 replay: Vec::new(),
+                setup: None,
+                setup_signature: String::new(),
             })),
             path,
         }
@@ -430,6 +465,33 @@ impl AdminTrust {
             .clone()
     }
 
+    /// Completa uma cadeia primária antiga com os metadados que o wizard já
+    /// persistiu na configuração local. A operação só é permitida ao
+    /// principal vigente da própria cadeia, pois esses dados passam a fazer
+    /// parte do documento assinado que será transportado para novos nós.
+    pub(crate) fn ensure_setup_metadata(
+        &self,
+        setup: TrustNetworkMetadata,
+        signing_key: &SigningKey,
+        principal: &AuthorityPrincipal,
+    ) -> Result<AdminTrustDocument> {
+        let mut current = self.state.lock().expect("admin trust lock poisoned");
+        if current.setup.is_some() {
+            return Ok(current.clone());
+        }
+        if current.anchor.principal != *principal || current.primary != *principal {
+            bail!("somente o principal vigente pode completar os metadados da rede");
+        }
+        if principal.verifying_key()? != signing_key.verifying_key() {
+            bail!("a chave local não corresponde ao principal vigente");
+        }
+        current.setup = Some(setup);
+        current.setup_signature = sign_bytes(signing_key, &setup_message(&current));
+        validate_document(&current)?;
+        persist_document(&current, self.path.as_deref())?;
+        Ok(current.clone())
+    }
+
     /// Consume a signed control command before its handler mutates anything.
     /// The nonce and command id are durable so retrying a captured envelope
     /// cannot replay a control action after a process restart.
@@ -497,6 +559,8 @@ impl AdminTrust {
             pending_transfer: None,
             completed_transfers: Vec::new(),
             replay: Vec::new(),
+            setup: None,
+            setup_signature: String::new(),
         };
         validate_document(&document)?;
         let trust = Self {
@@ -556,6 +620,8 @@ impl AdminTrust {
             pending_transfer: None,
             completed_transfers: Vec::new(),
             replay: Vec::new(),
+            setup: None,
+            setup_signature: String::new(),
         };
         Self::in_memory(document)
     }
@@ -1078,6 +1144,7 @@ pub(crate) fn local_authority_identity() -> Result<(SigningKey, AuthorityPrincip
 /// setup cannot leave a trust file that blocks a later first-access attempt.
 pub(crate) fn local_primary_document(
     cluster_id: impl Into<String>,
+    setup: Option<TrustNetworkMetadata>,
 ) -> Result<(AdminTrustDocument, String, String)> {
     let (signing_key, principal) = local_authority_identity()?;
     let anchor = TrustAnchor::for_principal(cluster_id, principal.clone());
@@ -1097,7 +1164,7 @@ pub(crate) fn local_primary_document(
         signature: String::new(),
     };
     grant.signature = sign_bytes(&signing_key, &grant_message(&grant));
-    let document = AdminTrustDocument {
+    let mut document = AdminTrustDocument {
         version: TRUST_VERSION,
         anchor,
         authority_epoch: 0,
@@ -1109,7 +1176,12 @@ pub(crate) fn local_primary_document(
         pending_transfer: None,
         completed_transfers: Vec::new(),
         replay: Vec::new(),
+        setup,
+        setup_signature: String::new(),
     };
+    if document.setup.is_some() {
+        document.setup_signature = sign_bytes(&signing_key, &setup_message(&document));
+    }
     validate_document(&document)?;
     let fingerprint = anchor_fingerprint(&document);
     Ok((document, fingerprint, principal.pubkey))
@@ -1340,6 +1412,24 @@ fn grant_message(grant: &AdminGrant) -> Vec<u8> {
 }
 
 #[derive(Serialize)]
+struct SetupMessage<'a> {
+    cluster_id: &'a str,
+    setup: &'a TrustNetworkMetadata,
+}
+
+fn setup_message(document: &AdminTrustDocument) -> Vec<u8> {
+    let setup = document
+        .setup
+        .as_ref()
+        .expect("setup message requires network metadata");
+    serde_json::to_vec(&SetupMessage {
+        cluster_id: &document.anchor.cluster_id,
+        setup,
+    })
+    .expect("canonical setup metadata JSON")
+}
+
+#[derive(Serialize)]
 struct OfferMessage<'a> {
     version: u32,
     offer_id: &'a str,
@@ -1547,6 +1637,16 @@ fn validate_document(document: &AdminTrustDocument) -> Result<()> {
     if document.version != TRUST_VERSION || !document.anchor.validates() {
         bail!("arquivo de confiança administrativa não tem uma âncora válida");
     }
+    match (&document.setup, document.setup_signature.is_empty()) {
+        (Some(_), true) => bail!("metadados iniciais da rede sem assinatura"),
+        (Some(_), false) => verify_bytes(
+            &document.anchor.principal.pubkey,
+            &setup_message(document),
+            &document.setup_signature,
+        )?,
+        (None, false) => bail!("assinatura de metadados sem conteúdo"),
+        (None, true) => {}
+    }
     if document.primary_history.is_empty()
         || document.primary_history.first() != Some(&document.anchor.principal)
         || document.primary_history.last() != Some(&document.primary)
@@ -1743,6 +1843,31 @@ mod tests {
         let trust =
             AdminTrust::bootstrap_primary(path, "cluster", root.clone(), &signing_key).unwrap();
         (trust, signing_key, root)
+    }
+
+    #[test]
+    fn signed_setup_metadata_is_part_of_the_trust_document() {
+        let dir = TempDir::new();
+        let (trust, signing_key, _root) = boot(&dir.path().join("trust.json"));
+        let mut document = trust.document();
+        document.setup = Some(TrustNetworkMetadata {
+            public_name: "POM-ABCDE".into(),
+            organization: String::new(),
+            visibility: crate::config::NetworkVisibility::Private,
+            access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
+            country_code: String::new(),
+            country_name: String::new(),
+            city: String::new(),
+            geo_label: String::new(),
+            advertised_address: "[2001:db8::10]:42777".into(),
+            bootstrap_address: "[2001:db8::10]:42777".into(),
+            directory_replicas: Vec::new(),
+        });
+        document.setup_signature = sign_bytes(&signing_key, &setup_message(&document));
+        validate_document(&document).unwrap();
+
+        document.setup.as_mut().unwrap().public_name = "forged".into();
+        assert!(validate_document(&document).is_err());
     }
 
     #[test]

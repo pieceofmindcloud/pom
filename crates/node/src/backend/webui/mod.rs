@@ -138,6 +138,7 @@ pub(crate) fn conditional_json_with_version<T: Serialize>(
     json_response_with_etag(headers, bytes, etag, &version.to_string())
 }
 
+mod auto_discovery;
 #[path = "catalog.rs"]
 mod catalog_cache;
 mod cluster;
@@ -151,6 +152,7 @@ mod setup;
 mod slicing;
 mod trust;
 
+pub use auto_discovery::*;
 pub use catalog_cache::*;
 pub use cluster::*;
 pub use jobs::*;

@@ -843,16 +843,32 @@ pub async fn run(
     // `into_inner` no envenenado: um handler que entrou em pânico deixa o
     // mutex marcado, e recusar a liberação por causa disso seria justamente
     // deixar a VRAM presa no caso em que ela mais precisa voltar.
-    app_state
-        .state
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .engine
-        .unload();
+    run_native_cleanup({
+        let state = app_state.state.clone();
+        move || {
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .engine
+                .unload();
+        }
+    })
+    .await?;
     info!("memória do modelo devolvida na porta {port}");
 
     resultado?;
     batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+/// Execute native model cleanup without running it on the async executor.
+async fn run_native_cleanup<F>(cleanup: F) -> Result<()>
+where
+    F: FnOnce() + Send + 'static,
+{
+    tokio::task::spawn_blocking(cleanup)
+        .await
+        .map_err(|error| anyhow::anyhow!("limpeza nativa terminou em pânico: {error}"))?;
     Ok(())
 }
 
@@ -1760,4 +1776,70 @@ pub(super) fn resolve_exec_range(
         return Ok(None);
     }
     Ok(Some(exec_end - slice_start))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_native_cleanup;
+    use axum::{routing::get, Router};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use tokio::sync::oneshot;
+
+    /// Reproduces the production failure on a single-thread executor: a
+    /// synchronous native cleanup prevents an unrelated HTTP health request
+    /// from being accepted until the cleanup returns.
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_cleanup_must_not_block_health_during_reload() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route("/health", get(|| async { "ok" }));
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            crate::serve::serve_with_shutdown(listener, app, None, async move {
+                let _ = stop_rx.await;
+            })
+            .await
+        });
+        tokio::task::yield_now().await;
+
+        let cleanup_started = Arc::new(AtomicBool::new(false));
+        let cleanup_started_by_task = cleanup_started.clone();
+        let test_started = std::time::Instant::now();
+        let cleanup = tokio::spawn(run_native_cleanup(move || {
+            cleanup_started_by_task.store(true, Ordering::Release);
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }));
+
+        // On the buggy implementation this yield polls the cleanup task first
+        // and blocks the only executor thread for the full native cleanup.
+        tokio::task::yield_now().await;
+        let health = tokio::spawn(async move {
+            while !cleanup_started.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+            reqwest::get(format!("http://{address}/health"))
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            test_started.elapsed()
+        });
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(75);
+        let health_response = tokio::time::timeout_at(deadline, health).await;
+
+        let elapsed = health_response
+            .expect("a health request must be polled while native cleanup is running")
+            .unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "health was not polled until native cleanup ended: {elapsed:?}"
+        );
+        cleanup.await.unwrap().unwrap();
+        stop_tx.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    }
 }

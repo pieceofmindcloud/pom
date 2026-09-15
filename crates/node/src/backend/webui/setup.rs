@@ -5,6 +5,7 @@ use super::*;
 pub struct SetupState {
     pub config: AuthState,
     pub database: Arc<crate::db::PomDb>,
+    pub local_discovery: Arc<crate::local_discovery::LocalDiscoveryRuntime>,
 }
 
 impl axum::extract::FromRef<SetupState> for AuthState {
@@ -28,6 +29,7 @@ pub struct SetupHardwareResponse {
     pub p2p_discovery_available: bool,
     pub public_ipv6_available: bool,
     pub suggested_advertise_addr: Option<String>,
+    pub p2p_port: u16,
     pub default_model_dir: String,
     pub default_shard_dir: String,
     pub shard_max_gb: f64,
@@ -68,15 +70,9 @@ pub struct SetupAnchorPreview {
     pub cluster_id: String,
     pub document: String,
     pub fingerprint: String,
-    pub public_key: String,
     pub trust_filename: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private_connection_key: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SetupAdminTokenResponse {
-    pub token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +80,14 @@ pub struct SetupAnchorPreviewRequest {
     pub cluster_id: String,
     #[serde(default)]
     pub visibility: crate::config::NetworkVisibility,
+    #[serde(default)]
+    pub network: crate::config::NetworkSettings,
+    #[serde(default)]
+    pub advertise_addr: String,
+    #[serde(default)]
+    pub bootstrap: String,
+    #[serde(default)]
+    pub public_directory: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +104,27 @@ pub struct SetupHealthResponse {
     pub configuration_ready: bool,
     pub p2p_discovery_working: bool,
     pub public_ipv6_enabled: bool,
+    pub firewall_allowed: bool,
+    pub firewall_supported: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetupAutoDiscoveryStartRequest {
+    pub trust_document: String,
+    #[serde(default)]
+    pub connection_key: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetupAutoDiscoveryStatus {
+    pub enabled: bool,
+    pub active: bool,
+    pub searching: bool,
+    pub found: bool,
+    pub port: u16,
+    pub peers: Vec<crate::local_discovery::LocalDiscoveryPeer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<crate::local_discovery::LocalDiscoveryResult>,
 }
 
 pub(crate) fn clamp_setup_percent(value: f64) -> f64 {
@@ -125,9 +150,67 @@ fn connection_key_after_setup(existing: &str, supplied: &str) -> String {
     }
 }
 
+fn trust_metadata_from_network(
+    network: &crate::config::NetworkSettings,
+    advertise_addr: &str,
+    bootstrap: &str,
+    public_directory: &[String],
+) -> anyhow::Result<crate::admin_trust::TrustNetworkMetadata> {
+    let advertised_address = advertise_addr.trim();
+    anyhow::ensure!(
+        !advertised_address.is_empty(),
+        "o endereço anunciado da máquina é obrigatório"
+    );
+    let directory =
+        crate::public_directory::PublicDirectorySettings::from_urls(public_directory.iter())?
+            .effective_with_env()?;
+    Ok(crate::admin_trust::TrustNetworkMetadata {
+        public_name: network.public_name.trim().to_string(),
+        organization: network.organization.trim().to_string(),
+        visibility: network.visibility,
+        access_policy: network.access_policy,
+        country_code: network.country_code.trim().to_ascii_uppercase(),
+        country_name: network.country_name.trim().to_string(),
+        city: network.city.trim().to_string(),
+        geo_label: network.geo_label.trim().to_string(),
+        advertised_address: advertised_address.to_string(),
+        bootstrap_address: if bootstrap.trim().is_empty() {
+            advertised_address.to_string()
+        } else {
+            bootstrap.trim().to_string()
+        },
+        directory_replicas: directory.replicas,
+    })
+}
+
+fn network_from_trust_metadata(
+    metadata: &crate::admin_trust::TrustNetworkMetadata,
+) -> crate::config::NetworkSettings {
+    crate::config::NetworkSettings {
+        public_name: metadata.public_name.clone(),
+        organization: metadata.organization.clone(),
+        country_code: metadata.country_code.clone(),
+        country_name: metadata.country_name.clone(),
+        city: metadata.city.clone(),
+        geo_label: metadata.geo_label.clone(),
+        visibility: metadata.visibility,
+        access_policy: metadata.access_policy,
+        ..Default::default()
+    }
+}
+
+fn setup_gpu_detected(gpus: &[sysmon::GpuStat]) -> bool {
+    gpus.iter().any(|gpu| {
+        matches!(
+            gpu.vendor,
+            crate::sysmon::GpuVendor::Nvidia | crate::sysmon::GpuVendor::Amd
+        )
+    })
+}
+
 async fn setup_hardware(config: AuthState, public_directory: Vec<String>) -> SetupHardwareResponse {
     let system = sysmon::sample().await;
-    let gpu_detected = !system.gpus.is_empty();
+    let gpu_detected = setup_gpu_detected(&system.gpus);
     let cuda_available = cfg!(feature = "cuda")
         && system
             .gpus
@@ -168,6 +251,7 @@ async fn setup_hardware(config: AuthState, public_directory: Vec<String>) -> Set
                 format!("{ip}:{}", cfg.p2p_port)
             }
         }),
+        p2p_port: cfg.p2p_port,
         default_model_dir: crate::config::default_model_dir()
             .to_string_lossy()
             .into_owned(),
@@ -295,13 +379,37 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
         )
             .into_response();
     }
-    match crate::admin_trust::local_primary_document(cluster_id.to_string()) {
-        Ok((document, fingerprint, public_key)) => match serde_json::to_string_pretty(&document) {
+    let mut network = request.network;
+    network.public_name = cluster_id.to_string();
+    network.visibility = request.visibility;
+    if let Err(error) = crate::config::validate_network_settings(&network) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": error.to_string() })),
+        )
+            .into_response();
+    }
+    let metadata = match trust_metadata_from_network(
+        &network,
+        &request.advertise_addr,
+        &request.bootstrap,
+        &request.public_directory,
+    ) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("metadados da rede inválidos: {error:#}") })),
+            )
+                .into_response();
+        }
+    };
+    match crate::admin_trust::local_primary_document(cluster_id.to_string(), Some(metadata)) {
+        Ok((document, fingerprint, _public_key)) => match serde_json::to_string_pretty(&document) {
             Ok(document) => Json(SetupAnchorPreview {
                 cluster_id: cluster_id.to_string(),
                 document,
                 fingerprint,
-                public_key,
                 trust_filename: crate::config::admin_trust_filename(),
                 private_connection_key: (request.visibility
                     != crate::config::NetworkVisibility::Public)
@@ -322,17 +430,15 @@ pub async fn preview_setup_anchor(Json(request): Json<SetupAnchorPreviewRequest>
     }
 }
 
-pub async fn generate_setup_admin_token() -> impl IntoResponse {
-    Json(SetupAdminTokenResponse {
-        token: crate::webui::new_admin_access_token(),
-    })
-}
-
 pub async fn get_setup_health(
-    State(config): State<AuthState>,
+    State(state): State<SetupState>,
     Json(request): Json<SetupHealthRequest>,
 ) -> impl IntoResponse {
-    let hardware = setup_hardware(config, Vec::new()).await;
+    let hardware = setup_hardware(state.config.clone(), Vec::new()).await;
+    let firewall = {
+        let config = state.config.read().await;
+        crate::windows_firewall::setup_check(&state.database, config.p2p_port)
+    };
     Json(SetupHealthResponse {
         gpu_detected: hardware.gpu_detected,
         cuda_working: hardware.cuda_available,
@@ -340,7 +446,76 @@ pub async fn get_setup_health(
         configuration_ready: request.configuration_ready,
         p2p_discovery_working: hardware.p2p_discovery_available,
         public_ipv6_enabled: hardware.public_ipv6_available,
+        firewall_allowed: firewall.allowed,
+        firewall_supported: firewall.supported,
     })
+}
+
+pub async fn get_setup_auto_discovery_status(State(state): State<SetupState>) -> impl IntoResponse {
+    let status = state.local_discovery.status().await;
+    Json(SetupAutoDiscoveryStatus {
+        enabled: status.enabled,
+        active: status.active,
+        searching: status.searching,
+        found: status.found,
+        port: status.port,
+        peers: status.peers,
+        result: state.local_discovery.peek_result().await,
+    })
+}
+
+pub async fn start_setup_auto_discovery(
+    State(state): State<SetupState>,
+    Json(request): Json<SetupAutoDiscoveryStartRequest>,
+) -> Response {
+    if state.config.read().await.profile != crate::profile::NodeProfile::Admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "somente o administrador cria a espera local" })),
+        )
+            .into_response();
+    }
+    if request.trust_document.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "o documento de confiança é obrigatório" })),
+        )
+            .into_response();
+    }
+    if let Err(error) = crate::admin_trust::parse_transported(&request.trust_document) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("raiz inválida: {error:#}") })),
+        )
+            .into_response();
+    }
+    match state
+        .local_discovery
+        .set_admin_material(true, request.trust_document, request.connection_key)
+        .await
+    {
+        Ok(()) => get_setup_auto_discovery_status(State(state)).await.into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("não foi possível iniciar a descoberta local: {error:#}") })),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn search_setup_auto_discovery(State(state): State<SetupState>) -> Response {
+    match state.local_discovery.begin_search().await {
+        Ok(request_id) => (
+            StatusCode::ACCEPTED,
+            Json(json!({ "request_id": request_id })),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("não foi possível procurar admins locais: {error:#}") })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -367,7 +542,7 @@ pub struct SaveSetupRequest {
     #[serde(default)]
     pub admin_exposure: crate::config::AdminExposure,
     #[serde(default)]
-    pub admin_access_token: String,
+    pub admin_password: String,
     #[serde(default)]
     pub tls_required: bool,
     #[serde(default)]
@@ -420,7 +595,75 @@ pub async fn save_setup(
         }
     };
 
-    let mut network = req.network.clone();
+    let trust_document = if req.trust_document.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "a raiz de confiança é obrigatória" })),
+        )
+            .into_response();
+    } else {
+        match crate::admin_trust::parse_transported(&req.trust_document) {
+            Ok(document) => document,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("raiz inválida: {error:#}") })),
+                )
+                    .into_response();
+            }
+        }
+    };
+    let document_cluster_id = trust_document.anchor.cluster_id.clone();
+    if profile == crate::profile::NodeProfile::Admin {
+        if trust_document.setup.is_none() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "a raiz administrativa precisa carregar os dados da rede" })),
+            )
+                .into_response();
+        }
+        if req.cluster_id.trim().is_empty() || req.cluster_id.trim() != document_cluster_id {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "a raiz pertence a outra rede" })),
+            )
+                .into_response();
+        }
+        if let Err(error) = crate::admin_trust::validate_local_primary_document(
+            &trust_document,
+            req.cluster_id.trim(),
+        ) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("raiz não conferida: {error:#}") })),
+            )
+                .into_response();
+        }
+    }
+    let (mut network, directory_inputs, advertise_addr, bootstrap) =
+        if profile == crate::profile::NodeProfile::Admin {
+            (
+                req.network.clone(),
+                req.public_directory.clone(),
+                req.advertise_addr.clone(),
+                req.bootstrap.clone(),
+            )
+        } else {
+            let Some(metadata) = trust_document.setup.as_ref() else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "a raiz não contém as configurações iniciais da rede" })),
+                )
+                    .into_response();
+            };
+            (
+                network_from_trust_metadata(metadata),
+                metadata.directory_replicas.clone(),
+                metadata.advertised_address.clone(),
+                metadata.bootstrap_address.clone(),
+            )
+        };
+    network.public_name = network.public_name.trim().to_string();
     network.country_code = network.country_code.trim().to_ascii_uppercase();
     network.country_name = network.country_name.trim().to_string();
     network.city = network.city.trim().to_string();
@@ -432,7 +675,7 @@ pub async fn save_setup(
             .into_response();
     }
     let public_directory = match crate::public_directory::PublicDirectorySettings::from_urls(
-        req.public_directory.iter(),
+        directory_inputs.iter(),
     )
     .and_then(|settings| settings.effective_with_env())
     {
@@ -445,18 +688,6 @@ pub async fn save_setup(
                 .into_response();
         }
     };
-    if network.visibility == crate::config::NetworkVisibility::Public
-        && public_directory.replicas.is_empty()
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "reason": "public_directory_required",
-                "error": "redes públicas exigem pelo menos um ingresso do diretório federado"
-            })),
-        )
-            .into_response();
-    }
     network.geo_label = if network.country_code.is_empty() || network.city.is_empty() {
         String::new()
     } else {
@@ -479,58 +710,20 @@ pub async fn save_setup(
             .into_response();
     }
 
-    let trust_document = if req.trust_document.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "a raiz de confiança é obrigatória" })),
-        )
-            .into_response();
-    } else {
-        if req.cluster_id.trim().is_empty() || req.trust_document.trim().is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "a raiz de confiança administrativa é obrigatória" })),
-            )
-                .into_response();
-        }
-        let document = match crate::admin_trust::parse_transported(&req.trust_document) {
-            Ok(document) => document,
+    let admin_password_hash = if profile == crate::profile::NodeProfile::Admin
+        && req.admin_exposure.requires_password()
+    {
+        let password = req.admin_password.clone();
+        match tokio::task::spawn_blocking(move || crate::auth::hash_admin_password(&password)).await
+        {
+            Ok(Ok(hash)) => Some(hash),
+            Ok(Err(error)) => return bad_request(error.to_string()),
             Err(error) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("raiz inválida: {error:#}") })),
-                )
-                    .into_response();
-            }
-        };
-        if document.anchor.cluster_id != req.cluster_id.trim() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "a raiz pertence a outra rede" })),
-            )
-                .into_response();
-        }
-        if profile == crate::profile::NodeProfile::Admin {
-            if let Err(error) = crate::admin_trust::validate_local_primary_document(
-                &document,
-                req.cluster_id.trim(),
-            ) {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("raiz não conferida: {error:#}") })),
-                )
-                    .into_response();
+                return bad_request(format!("não foi possível proteger a senha: {error}"))
             }
         }
-        let expected = crate::admin_trust::anchor_fingerprint(&document);
-        if !crate::admin_trust::fingerprint_matches(&req.trust_fingerprint, &expected) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "a impressão digital da raiz não confere" })),
-            )
-                .into_response();
-        }
-        document
+    } else {
+        None
     };
 
     let expected = crate::admin_trust::anchor_fingerprint(&trust_document);
@@ -564,13 +757,7 @@ pub async fn save_setup(
 
     if profile == crate::profile::NodeProfile::Admin {
         cfg.admin_exposure = req.admin_exposure;
-        cfg.admin_access_token = req.admin_exposure.requires_token().then(|| {
-            if req.admin_access_token.trim().is_empty() {
-                crate::webui::new_admin_access_token()
-            } else {
-                req.admin_access_token.trim().to_string()
-            }
-        });
+        cfg.admin_access_token = admin_password_hash;
     }
 
     let supplied_connection_key = req.connection_key.trim();
@@ -579,9 +766,8 @@ pub async fn save_setup(
     cfg.connection_key = connection_key_after_setup(&cfg.connection_key, supplied_connection_key);
 
     if profile != crate::profile::NodeProfile::Admin {
-        if !req.bootstrap.is_empty() {
-            cfg.bootstrap_nodes = req
-                .bootstrap
+        if !bootstrap.is_empty() {
+            cfg.bootstrap_nodes = bootstrap
                 .split(',')
                 .map(crate::config::normalize_peer_addr)
                 .filter(|s| !s.is_empty())
@@ -589,8 +775,9 @@ pub async fn save_setup(
         }
     }
 
-    cfg.advertise_addr =
-        (!req.advertise_addr.trim().is_empty()).then(|| req.advertise_addr.trim().to_string());
+    cfg.advertise_addr = (profile == crate::profile::NodeProfile::Admin
+        && !advertise_addr.trim().is_empty())
+    .then(|| advertise_addr.trim().to_string());
     cfg.network = network;
     // TLS is an optional network policy chosen by the administrator. Joining
     // a public or private network must not silently turn it on for a node or
@@ -814,6 +1001,28 @@ mod tests {
     }
 
     #[test]
+    fn unified_apple_gpu_is_not_reported_as_a_dedicated_setup_gpu() {
+        let apple = sysmon::GpuStat {
+            index: 0,
+            name: "Apple M4".into(),
+            vendor: sysmon::GpuVendor::Apple,
+            vram_total_mb: None,
+            vram_used_mb: Some(128.0),
+            vram_used_pct: None,
+            utilization_pct: Some(5.0),
+            power_watts: None,
+            temperature_c: None,
+        };
+        let nvidia = sysmon::GpuStat {
+            vendor: sysmon::GpuVendor::Nvidia,
+            ..apple.clone()
+        };
+
+        assert!(!setup_gpu_detected(std::slice::from_ref(&apple)));
+        assert!(setup_gpu_detected(std::slice::from_ref(&nvidia)));
+    }
+
+    #[test]
     fn reference_models_are_marked_as_remote_and_not_installed() {
         let references = reference_models();
         assert!(!references.is_empty());
@@ -839,5 +1048,18 @@ mod tests {
         );
         let generated = connection_key_after_setup("", "");
         assert!(!generated.is_empty());
+    }
+
+    #[test]
+    fn public_network_metadata_allows_empty_manual_directory_replicas() {
+        let mut network = crate::config::NetworkSettings::default();
+        network.public_name = "POM-PUBLIC".into();
+        network.visibility = crate::config::NetworkVisibility::Public;
+        network.access_policy = crate::config::NetworkAccessPolicy::AnyoneWithAnchor;
+
+        let metadata = trust_metadata_from_network(&network, "[2001:db8::10]:42777", "", &[])
+            .expect("public setup may omit manual directory replicas");
+
+        assert!(metadata.directory_replicas.is_empty());
     }
 }

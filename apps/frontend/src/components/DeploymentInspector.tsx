@@ -17,17 +17,17 @@
  * * *Configurações padrões* - o que o llama.cpp já tem: contexto, lote,
  *   amostragem, cache KV, e os interruptores de recurso do próprio motor.
  * * *Configurações POM* - o que existe porque a inferência é distribuída:
- *   motor, ajuste de memória, chunks de prefill em voo, fusão de fatias e a
- *   precisão do estado oculto entre peers.
- * * *Configurações POM (DESENV)* - o detector de ciclo e o recuo do MTP, que
- *   ainda estão sendo medidos.
+ *   desativar embeddings, ajuste de memória, chunks de prefill em voo, fusão
+ *   de fatias e a precisão do estado oculto entre peers.
+ * * *Configurações POM (DESENV)* - o motor de inferência, o detector de ciclo
+ *   e o recuo do MTP, que ainda estão sendo medidos.
  *
  * **O ícone de informação vem antes do nome**, e não depois: os nomes têm
  * larguras diferentes, e um `[i]` colado ao fim de cada um deixava a coluna de
  * ícones serrilhada. Antes do nome ela é uma coluna reta, do topo ao pé do
  * inspetor. É a mesma razão de o controle ter largura fixa à direita.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { AlertTooltip, InfoTip, Input, Select } from "./ui";
 import { MTP_MIN_PROBABILITY, Tick } from "./RuntimeParamsForm";
 import type {
@@ -232,6 +232,7 @@ export function DeploymentInspector({
   inferenceModeAlert,
   /** A precisão do estado oculto só existe quando o pipeline cruza máquinas. */
   showHiddenStateDtype = false,
+  pomDesenv = false,
 }: {
   value: RuntimeParams;
   onChange?: (next: RuntimeParams) => void;
@@ -243,13 +244,14 @@ export function DeploymentInspector({
   showInferenceMode?: boolean;
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
+  pomDesenv?: boolean;
 }) {
   const { t } = useI18n();
   /*
    * O texto meio digitado. Sem ele, apagar o "8192" para escrever "16384"
    * fazia o campo pular para zero no primeiro caractere apagado, porque o
    * valor volta como número a cada tecla.
-   */
+  */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   /**
@@ -271,16 +273,11 @@ export function DeploymentInspector({
     : false;
 
   /*
-   * `auto` sai da combo, então também não pode continuar sendo o valor
-   * escolhido: mostrar "llama.cpp" e enviar "auto" seria a tela mentindo sobre
-   * o que vai subir. O backend continua aceitando os três modos - isto é
-   * apresentação e padrão da interface, não mudança de contrato.
+   * `auto` não está mais na combo, mas pode chegar de uma API ou de uma
+   * implantação persistida. A apresentação cai visualmente em `dense` para
+   * manter a seleção válida, sem mutar o estado recebido; o backend continua
+   * aplicando a escolha explícita.
    */
-  useEffect(() => {
-    if (readOnly || !showInferenceMode) return;
-    if (value.inference_mode === "auto") set({ inference_mode: "dense" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readOnly, showInferenceMode, value.inference_mode]);
 
   function setKnob(key: NumericKey, text: string) {
     setDrafts((current) => ({ ...current, [key]: text }));
@@ -368,7 +365,7 @@ export function DeploymentInspector({
     );
   }
 
-  const cycleOn = value.cycle_detection_enabled ?? true;
+  const cycleOn = value.cycle_detection_enabled ?? false;
   const speculativeOn = value.speculative_decoding_enabled ?? false;
   const mtpOn = value.mtp_enabled ?? false;
 
@@ -414,15 +411,6 @@ export function DeploymentInspector({
           checked: value.no_thinking ?? false,
           onToggle: (next) => set({ no_thinking: next }),
           tip: t("deploy.noThinkingHint"),
-        })}
-        {toggle({
-          key: "no_embeddings",
-          label: t("inspector.noEmbeddings"),
-          capability: capabilities?.no_embeddings,
-          alwaysVisible: true,
-          checked: value.no_embeddings ?? false,
-          onToggle: (next) => set({ no_embeddings: next }),
-          tip: t("deploy.noEmbeddingsHint"),
         })}
         {toggle({
           key: "speculative_decoding_enabled",
@@ -485,32 +473,15 @@ export function DeploymentInspector({
       )}
 
       <Section title={t("inspector.sectionPom")} tone="aqua">
-        {showInferenceMode && (
-          <InspectorRow
-            label={t("inspector.inferenceMode")}
-            tip={t("inspector.inferenceModeHint")}
-            alert={inferenceModeAlert ?? undefined}
-          >
-            {readOnly ? (
-              <ReadValue>{t("inspector.engine." + (value.inference_mode ?? "auto"))}</ReadValue>
-            ) : (
-              <Select
-                aria-label={t("inspector.inferenceMode")}
-                name="inference_mode"
-                value={value.inference_mode === "auto" ? "dense" : (value.inference_mode ?? "dense")}
-                onChange={(event) =>
-                  set({ inference_mode: event.target.value as InferenceMode })
-                }
-                compact
-              >
-                {/* "Automático" continua existindo no backend; sai daqui porque
-                    a interface passou a decidir por llama.cpp. */}
-                <option value="dense">{t("inspector.engine.dense")}</option>
-                <option value="moe">{t("inspector.engine.moe")}</option>
-              </Select>
-            )}
-          </InspectorRow>
-        )}
+        {toggle({
+          key: "no_embeddings",
+          label: t("inspector.noEmbeddings"),
+          capability: capabilities?.no_embeddings,
+          alwaysVisible: true,
+          checked: value.no_embeddings ?? false,
+          onToggle: (next) => set({ no_embeddings: next }),
+          tip: t("deploy.noEmbeddingsHint"),
+        })}
         {toggle({
           key: "fit_memory",
           label: t("inspector.fitMemory"),
@@ -565,7 +536,33 @@ export function DeploymentInspector({
         )}
       </Section>
 
-      <Section title={t("inspector.sectionPomDev")} tone="amber">
+      {pomDesenv && <Section title={t("inspector.sectionPomDev")} tone="amber">
+        {showInferenceMode && (
+          <InspectorRow
+            label={t("inspector.inferenceMode")}
+            tip={t("inspector.inferenceModeHint")}
+            alert={inferenceModeAlert ?? undefined}
+          >
+            {readOnly ? (
+              <ReadValue>{t("inspector.engine." + (value.inference_mode ?? "dense"))}</ReadValue>
+            ) : (
+              <Select
+                aria-label={t("inspector.inferenceMode")}
+                name="inference_mode"
+                value={value.inference_mode === "auto" ? "dense" : (value.inference_mode ?? "dense")}
+                onChange={(event) =>
+                  set({ inference_mode: event.target.value as InferenceMode })
+                }
+                compact
+              >
+                {/* "Automático" continua existindo no backend; sai daqui porque
+                    a interface passou a decidir por llama.cpp. */}
+                <option value="dense">{t("inspector.engine.dense")}</option>
+                <option value="moe">{t("inspector.engine.moe")}</option>
+              </Select>
+            )}
+          </InspectorRow>
+        )}
         {CYCLE_KNOBS.map((key) => numeric(key))}
         {toggle({
           key: "cycle_detection_enabled",
@@ -592,7 +589,7 @@ export function DeploymentInspector({
           tip: t("deploy.unloadIfIdleHint"),
         })}
         {numeric("idle_minutes")}
-      </Section>
+      </Section>}
     </>
   );
 }

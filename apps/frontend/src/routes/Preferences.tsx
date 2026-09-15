@@ -2,7 +2,7 @@
  * Preferências locais deste nó: fronteira administrativa, TLS entre nós,
  * proteção térmica e credencial opcional do provedor Hugging Face.
  */
-import { Ban, Check, Copy, Lock, MessagesSquare, ScrollText, ShieldCheck, ShieldOff, Thermometer, Zap } from "lucide-react";
+import { Ban, Lock, MessagesSquare, RadioTower, ScrollText, ShieldCheck, ShieldOff, Thermometer, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
@@ -244,6 +244,67 @@ export function NetworkChatPanel({
   );
 }
 
+type AutoDiscoveryStatus = {
+  enabled: boolean;
+  active: boolean;
+  searching: boolean;
+  found: boolean;
+  port: number;
+};
+
+export function AutoDiscoveryPanel({
+  status,
+  authority,
+  busy = false,
+  onToggle,
+}: {
+  status: AutoDiscoveryStatus;
+  authority: boolean;
+  busy?: boolean;
+  onToggle?: (next: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const enabled = status.enabled;
+  return (
+    <Panel>
+      <PanelHeader
+        title={t("network.autoDiscoveryTitle")}
+        subtitle={t("network.autoDiscoverySubtitle")}
+        actions={
+          <Button
+            variant={enabled ? "danger" : "primary"}
+            role="switch"
+            aria-label={t("network.autoDiscoveryTitle")}
+            aria-checked={enabled}
+            disabled={!authority || busy}
+            loading={busy}
+            icon={<RadioTower className="h-3.5 w-3.5" />}
+            onClick={() => onToggle?.(!enabled)}
+          >
+            {t(enabled ? "network.autoDiscoveryDisable" : "network.autoDiscoveryEnable")}
+          </Button>
+        }
+      />
+      <div className="space-y-3 px-5 py-4">
+        <KeyValue label={t("network.autoDiscoveryState")}>
+          <Badge tone={enabled ? "aqua" : "amber"}>
+            <RadioTower className="h-3.5 w-3.5" />
+            {t(enabled ? "network.autoDiscoveryOn" : "network.autoDiscoveryOff")}
+          </Badge>
+        </KeyValue>
+        <Footnote icon={<RadioTower className="h-3.5 w-3.5" />}>
+          {t("network.autoDiscoveryHowItWorks")}
+        </Footnote>
+        {!authority && (
+          <Footnote icon={<Ban className="h-3.5 w-3.5" />}>
+            {t("network.autoDiscoveryNotAuthority")}
+          </Footnote>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 function AdminAccessPanel() {
   const { t } = useI18n();
   const access = useAdminAccessInfo();
@@ -251,23 +312,28 @@ function AdminAccessPanel() {
   const invalidate = useInvalidate();
   const [exposure, setExposure] = useState<AdminExposure>("localhost");
   const [port, setPort] = useState("8080");
-  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [passwordConfigured, setPasswordConfigured] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (loaded || !access.data) return;
     setExposure(access.data.admin_exposure);
     setPort(String(access.data.gateway_port));
-    setAccessToken(access.data.access_token);
+    setPasswordConfigured(access.data.password_configured);
     setLoaded(true);
   }, [access.data, loaded]);
 
-  async function save(regenerateToken = false) {
+  async function save() {
     const gatewayPort = Number(port);
     if (!Number.isInteger(gatewayPort) || gatewayPort < 1 || gatewayPort > 65535) {
       toast.fromError(t("preferences.accessSaveFailed"), new Error(t("preferences.portInvalid")));
+      return;
+    }
+    if (exposure === "network" && !passwordConfigured && !newPassword) {
+      toast.fromError(t("preferences.accessSaveFailed"), new Error(t("preferences.accessPasswordRequired")));
       return;
     }
     setSaving(true);
@@ -277,12 +343,15 @@ function AdminAccessPanel() {
         {
           admin_exposure: exposure,
           gateway_port: gatewayPort,
-          regenerate_token: regenerateToken,
+          current_password: currentPassword,
+          new_password: newPassword,
         },
       );
-      setAccessToken(saved.access_token);
-      if (saved.access_token) setAdminAccessToken(saved.access_token);
-      else clearAdminAccessToken();
+      setPasswordConfigured(saved.password_configured);
+      if (exposure === "network" && newPassword) setAdminAccessToken(newPassword);
+      if (exposure === "localhost") clearAdminAccessToken();
+      setCurrentPassword("");
+      setNewPassword("");
       toast.success(
         t("preferences.accessSaved"),
         saved.restart ? t("preferences.accessRestarting") : t("preferences.accessSavedDetail"),
@@ -294,13 +363,6 @@ function AdminAccessPanel() {
     } finally {
       setSaving(false);
     }
-  }
-
-  async function copyToken() {
-    if (!accessToken || !navigator.clipboard) return;
-    await navigator.clipboard.writeText(accessToken);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
   }
 
   const networkExposed = exposure === "network";
@@ -322,7 +384,7 @@ function AdminAccessPanel() {
       />
       <div className="space-y-4 px-5 py-4">
         <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_9rem]">
-          <Field label={t("preferences.accessModeLabel")} hint={t(networkExposed ? "preferences.accessModeNetworkHint" : "preferences.accessModeLocalHint")}>
+          <Field label={t("preferences.accessModeLabel")} hint={t(networkExposed ? "preferences.accessModePasswordHint" : "preferences.accessModeLocalHint")}>
             <Select
               aria-label={t("preferences.accessModeLabel")}
               value={exposure}
@@ -346,35 +408,28 @@ function AdminAccessPanel() {
         </div>
         {networkExposed ? (
           <div className="space-y-3 rounded-lg border border-amber/25 bg-amber/6 p-3.5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-fg">{t("preferences.accessTokenTitle")}</p>
-                <p className="mt-1 text-xs leading-relaxed text-faint">{t("preferences.accessTokenHint")}</p>
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!accessToken || saving}
-                icon={copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                onClick={() => void copyToken()}
-              >
-                {t(copied ? "preferences.accessTokenCopied" : "preferences.accessTokenCopy")}
-              </Button>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-fg">{t("preferences.accessPasswordTitle")}</p>
+              <p className="mt-1 text-xs leading-relaxed text-faint">{t("preferences.accessPasswordHint")}</p>
             </div>
-            <Input
-              aria-label={t("preferences.accessTokenLabel")}
-              readOnly
-              value={accessToken ?? t("preferences.accessTokenUnavailable")}
-              className="font-mono text-xs"
-            />
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={saving}
-              onClick={() => void save(true)}
-            >
-              {t("preferences.accessTokenRegenerate")}
-            </Button>
+            {passwordConfigured && (
+              <Field label={t("preferences.accessPasswordCurrentLabel")}>
+                <Input
+                  type="password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  autoComplete="current-password"
+                />
+              </Field>
+            )}
+            <Field label={t("preferences.accessPasswordNewLabel")}>
+              <Input
+                type="password"
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+                autoComplete="new-password"
+              />
+            </Field>
           </div>
         ) : (
           <Footnote icon={<Lock className="h-3.5 w-3.5" />}>
@@ -407,6 +462,7 @@ export function ThermalPanel({
     String(policy?.cooldown_secs ?? DEFAULT_THERMAL_POLICY.cooldown_secs),
   );
   const [thermalLoaded, setThermalLoaded] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
     if (thermalLoaded || !policy) return;
@@ -422,6 +478,20 @@ export function ThermalPanel({
     cooldown_secs: Number(cooldown),
   });
 
+  function saveThermal() {
+    const next = nextPolicy();
+    if (!Number.isFinite(next.limit_c) || next.limit_c < 70) {
+      setValidationError(t("network.thermalLimitInvalid"));
+      return;
+    }
+    if (!Number.isInteger(next.cooldown_secs) || next.cooldown_secs < 1 || next.cooldown_secs > 60) {
+      setValidationError(t("network.thermalCooldownInvalid"));
+      return;
+    }
+    setValidationError(null);
+    onSave(next);
+  }
+
   const resumeAt = Number(limit) - Number(hysteresis);
   return (
     <Panel>
@@ -433,7 +503,7 @@ export function ThermalPanel({
             variant="primary"
             icon={<Thermometer className="h-3.5 w-3.5" />}
             loading={busy}
-            onClick={() => onSave(nextPolicy())}
+            onClick={saveThermal}
           >
             {t("network.thermalSave")}
           </Button>
@@ -441,14 +511,15 @@ export function ThermalPanel({
       />
       <div className="grid gap-4 px-5 py-4 sm:grid-cols-3">
         <Field label={t("network.thermalLimitLabel")}>
-          <Input type="number" min="1" max="150" step="0.5" value={limit} onChange={(e) => setLimit(e.target.value)} />
+          <Input type="number" min="70" max="150" step="0.5" value={limit} onChange={(e) => { setLimit(e.target.value); setValidationError(null); }} />
         </Field>
         <Field label={t("network.thermalHysteresisLabel")}>
           <Input type="number" min="0.1" max="149" step="0.5" value={hysteresis} onChange={(e) => setHysteresis(e.target.value)} />
         </Field>
         <Field label={t("network.thermalCooldownLabel")}>
-          <Input type="number" min="1" step="1" value={cooldown} onChange={(e) => setCooldown(e.target.value)} />
+          <Input type="number" min="1" max="60" step="1" value={cooldown} onChange={(e) => { setCooldown(e.target.value); setValidationError(null); }} />
         </Field>
+        {validationError && <p className="text-xs text-rose sm:col-span-3" role="alert">{validationError}</p>}
         <Footnote className="sm:col-span-3" icon={<Thermometer className="h-3.5 w-3.5" />}>
           {t("network.thermalHint")} {Number.isFinite(resumeAt) && ` ${t("network.thermalResumeAt", { value: resumeAt })}`}
         </Footnote>
@@ -467,8 +538,36 @@ export function Preferences({ administrative = false }: { administrative?: boole
   const [quicSaving, setQuicSaving] = useState(false);
   const [logsSaving, setLogsSaving] = useState(false);
   const [networkChatSaving, setNetworkChatSaving] = useState(false);
+  const [autoDiscovery, setAutoDiscovery] = useState<AutoDiscoveryStatus>({
+    enabled: false,
+    active: false,
+    searching: false,
+    found: false,
+    port: 0,
+  });
+  const [autoDiscoveryLoaded, setAutoDiscoveryLoaded] = useState(!administrative);
+  const [autoDiscoverySaving, setAutoDiscoverySaving] = useState(false);
   const tlsRequired = node.data?.tls_required ?? false;
   const quicEnabled = node.data?.quic_enabled ?? false;
+
+  useEffect(() => {
+    if (!administrative || autoDiscoveryLoaded) return;
+    let cancelled = false;
+    void api.get<AutoDiscoveryStatus>("/api/ui/network/auto-discovery")
+      .then((status) => {
+        if (cancelled) return;
+        setAutoDiscovery(status);
+        setAutoDiscoveryLoaded(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setAutoDiscoveryLoaded(true);
+        toast.fromError(t("network.autoDiscoveryFailed"), error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [administrative, autoDiscoveryLoaded, t, toast]);
 
   async function saveThermal(next: ThermalPolicy) {
     setThermalSaving(true);
@@ -547,6 +646,25 @@ export function Preferences({ administrative = false }: { administrative?: boole
     }
   }
 
+  async function toggleAutoDiscovery(next: boolean) {
+    setAutoDiscoverySaving(true);
+    try {
+      const status = await api.post<AutoDiscoveryStatus>("/api/ui/network/auto-discovery", {
+        enabled: next,
+      });
+      setAutoDiscovery(status);
+      toast.success(
+        t(next ? "network.autoDiscoveryEnabled" : "network.autoDiscoveryDisabled"),
+        t("network.autoDiscoveryPropagates"),
+      );
+      invalidate();
+    } catch (error) {
+      toast.fromError(t("network.autoDiscoveryFailed"), error);
+    } finally {
+      setAutoDiscoverySaving(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -559,6 +677,7 @@ export function Preferences({ administrative = false }: { administrative?: boole
           {!tlsRequired && <QuicPanel enabled={quicEnabled} authority={node.data?.quic_authority ?? false} busy={quicSaving} onToggle={(next) => void toggleQuic(next)} />}
           <ClusterLogsPanel enabled={node.data?.cluster_logs_enabled ?? false} authority={node.data?.cluster_logs_authority ?? false} busy={logsSaving} onToggle={(next) => void toggleLogs(next)} />
           <NetworkChatPanel enabled={node.data?.network_chat_enabled ?? false} authority={node.data?.network_chat_authority ?? false} busy={networkChatSaving} onToggle={(next) => void toggleNetworkChat(next)} />
+          {autoDiscoveryLoaded && <AutoDiscoveryPanel status={autoDiscovery} authority={node.data?.tls_authority ?? false} busy={autoDiscoverySaving} onToggle={(next) => void toggleAutoDiscovery(next)} />}
         </> : <>
           <AdminAccessPanel />
           <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />

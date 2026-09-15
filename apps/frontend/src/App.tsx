@@ -25,14 +25,13 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
 
   async function authenticate(event: React.FormEvent) {
     event.preventDefault();
-    const token = draft.trim();
-    if (!token) {
+    if (!draft) {
       setFailed(true);
       return;
     }
     setBusy(true);
     setFailed(false);
-    setAdminAccessToken(token);
+    setAdminAccessToken(draft);
     try {
       await api.get("/api/ui/node", { auth: false });
       onAuthenticated();
@@ -49,8 +48,8 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
       <Panel className="w-full max-w-md">
         <PanelHeader
           eyebrow={t("accessGate.eyebrow")}
-          title={t("accessGate.title")}
-          subtitle={t("accessGate.subtitle")}
+          title={t("accessGate.passwordTitle")}
+          subtitle={t("accessGate.passwordSubtitle")}
         />
         <form
           className="space-y-4 px-5 py-5"
@@ -59,19 +58,7 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
         >
           <label className="block">
             <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">
-              {t("accessGate.username")}
-            </span>
-            <Input
-              name="username"
-              type="text"
-              defaultValue="administrator"
-              autoComplete="username"
-              aria-label={t("accessGate.username")}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">
-              {t("accessGate.label")}
+              {t("accessGate.passwordLabel")}
             </span>
             <Input
               autoFocus
@@ -80,11 +67,11 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
               id="admin-access-password"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              aria-label={t("accessGate.label")}
+              aria-label={t("accessGate.passwordLabel")}
               autoComplete="current-password"
             />
           </label>
-          {failed && <p className="text-xs text-rose">{t("accessGate.invalid")}</p>}
+          {failed && <p className="text-xs text-rose">{t("accessGate.passwordInvalid")}</p>}
           <Button variant="primary" loading={busy} type="submit" className="w-full">
             {t("accessGate.submit")}
           </Button>
@@ -145,10 +132,12 @@ export const routeLoaders = {
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
+  myMachine: () => import("./routes/MyMachine").then(({ MyMachine }) => MyMachine),
   adminAuthority: () => import("./routes/AdminAuthority").then(({ AdminAuthority }) => AdminAuthority),
   trustAnchor: () => import("./routes/TrustAnchor").then(({ TrustAnchor }) => TrustAnchor),
   networkSharing: () => import("./routes/NetworkSharing").then(({ NetworkSharing }) => NetworkSharing),
   preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
+  about: () => import("./routes/About").then(({ About }) => About),
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
   deployments: () => import("./routes/Deployments").then(({ Deployments }) => Deployments),
@@ -180,10 +169,12 @@ const Statistics = lazyRoute(routeLoaders.statistics);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
+const MyMachine = lazyRoute(routeLoaders.myMachine);
 const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
 const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
 const NetworkSharing = lazyRoute(routeLoaders.networkSharing);
 const Preferences = lazyRoute(routeLoaders.preferences);
+const About = lazyRoute(routeLoaders.about);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
 const Deployments = lazyRoute(routeLoaders.deployments);
@@ -284,7 +275,7 @@ export default function App() {
    * A sessão administrativa pode morrer com a aba aberta: ela vive na memória
    * do nó, e um reinício ou as 8 h de validade a levam. Quem refaz a sonda é
    * o próprio `useAdminSurface`; aqui só se esquece que esta aba já passou
-   * pelo portão, senão a resposta "requires-token" continuaria escondida
+   * pelo portão, senão a resposta "requires-password" continuaria escondida
    * atrás de um `adminReady` que ficou de uma sessão que não existe mais.
    */
   useEffect(() => onAdminSessionLost(() => setAdminReady(false)), []);
@@ -304,7 +295,7 @@ export default function App() {
   }
 
   if (adminSurface.data === "local-only") return <AdminLocalOnly />;
-  if (adminSurface.data === "requires-token" && !adminReady) {
+  if (adminSurface.data === "requires-password" && !adminReady) {
     return <AdminAccessGate onAuthenticated={() => setAdminReady(true)} />;
   }
 
@@ -408,11 +399,13 @@ export default function App() {
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
                         <Route path="/config/rede/participantes" element={<Page><NetworkParticipants /></Page>} />
+                        <Route path="/config/minha-maquina" element={<Page><MyMachine /></Page>} />
                         <Route path="/config/administracao" element={<Page><AdminAuthority /></Page>} />
                         <Route path="/config/compartilhamento" element={<Page><NetworkSharing /></Page>} />
                         <Route path="/config/confianca" element={<Page><TrustAnchor /></Page>} />
                         <Route path="/config/preferencias" element={<Page><Preferences /></Page>} />
                         <Route path="/config/preferencias/admin" element={<Page><Preferences administrative /></Page>} />
+                        <Route path="/config/sobre" element={<Page><About /></Page>} />
                         <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                         <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
                         <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />

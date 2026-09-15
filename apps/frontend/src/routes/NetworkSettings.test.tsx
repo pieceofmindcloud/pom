@@ -173,6 +173,9 @@ describe("NetworkSettings", () => {
   it("mostra as informações da rede para um infer sem oferecer edição", () => {
     queryMocks.node.data.profile = "infer";
     queryMocks.node.data.authority_level = null;
+    queryMocks.networkInfo.data.network.description = "# Uma descrição formatada";
+    queryMocks.networkInfo.data.network.rules = "- Regra em Markdown";
+    queryMocks.networkInfo.data.network.channels = "[Discord](https://discord.example)";
     render(
       <LocaleProvider initialLocale="pt-BR">
         <NetworkSettings />
@@ -182,7 +185,35 @@ describe("NetworkSettings", () => {
     expect(screen.getByText("Sobre esta rede")).toBeTruthy();
     expect(screen.getByText("Rede de teste")).toBeTruthy();
     expect(screen.getByText("Somente leitura")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Uma descrição formatada" })).toBeTruthy();
+    expect(screen.getByText("Regra em Markdown")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Discord" })).toBeTruthy();
+    expect(screen.queryByText("# Uma descrição formatada")).toBeNull();
     expect(screen.queryByRole("button", { name: "Salvar detalhes da rede" })).toBeNull();
+  });
+
+  it("oferece edição Markdown ampla com preview para descrição, regras e canais", () => {
+    queryMocks.node.data.profile = "admin";
+    queryMocks.node.data.authority_level = "primary";
+    queryMocks.networkInfo.data.can_edit = true;
+    queryMocks.networkInfo.data.network.description = "# Descrição da rede\n\nTexto inicial";
+    queryMocks.networkInfo.data.network.rules = "- Seja gentil";
+    queryMocks.networkInfo.data.network.channels = "[Discord](https://discord.example)";
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkSettings />
+      </LocaleProvider>,
+    );
+
+    for (const label of ["Descrição", "Regras da rede", "Discord ou Telegram"]) {
+      const field = screen.getByRole("textbox", { name: label });
+      expect(field.tagName).toBe("TEXTAREA");
+      expect(field.className).toMatch(/min-h-\[12rem\]/);
+    }
+    expect(screen.getByTestId("markdown-preview-description").querySelector("h1")?.textContent).toBe("Descrição da rede");
+    expect(screen.getByTestId("markdown-preview-rules").querySelector("li")?.textContent).toBe("Seja gentil");
+    expect(screen.getByTestId("markdown-preview-channels").querySelector("a")?.textContent).toBe("Discord");
   });
 
   it("oferece edição ao administrador e mantém o compartilhamento na raiz de confiança", async () => {
@@ -201,7 +232,7 @@ describe("NetworkSettings", () => {
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/settings", expect.anything()));
   });
 
-  it("separa esquecer a configuração local de sair do cluster", async () => {
+  it("separa esquecer a configuração local (continua aqui) de sair do cluster (agora em Minha Máquina)", async () => {
     queryMocks.node.data.profile = "admin";
     queryMocks.node.data.authority_level = "primary";
     queryMocks.networkInfo.data.can_edit = true;
@@ -213,7 +244,7 @@ describe("NetworkSettings", () => {
       </LocaleProvider>,
     );
 
-    expect(screen.getByRole("button", { name: "Sair da rede" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sair da rede" })).toBeNull();
     const esquecer = screen.getByRole("button", { name: "Esquecer rede" });
     fireEvent.click(esquecer);
 
@@ -226,41 +257,6 @@ describe("NetworkSettings", () => {
 
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/leave"));
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/leave");
-  });
-
-  it("mantém Sair da rede como saída da máquina do cluster", async () => {
-    queryMocks.node.data.profile = "admin";
-    queryMocks.node.data.authority_level = "primary";
-    queryMocks.networkInfo.data.can_edit = true;
-    vi.clearAllMocks();
-
-    render(
-      <LocaleProvider initialLocale="pt-BR">
-        <NetworkSettings />
-      </LocaleProvider>,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Sair da rede" }));
-
-    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/leave"));
-    expect(vi.mocked(api.post)).not.toHaveBeenCalledWith("/api/ui/network/leave");
-  });
-
-  it("deixa um node sair mesmo sem autoridade e sem modelo carregado", async () => {
-    queryMocks.node.data.profile = "node";
-    queryMocks.node.data.authority_level = null;
-    queryMocks.networkInfo.data.can_edit = false;
-    vi.clearAllMocks();
-
-    render(
-      <LocaleProvider initialLocale="pt-BR">
-        <NetworkSettings />
-      </LocaleProvider>,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Sair da rede" }));
-
-    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/leave"));
   });
 
   it("mostra o estado do firewall no Windows e oferece retry", async () => {

@@ -3270,6 +3270,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn uma_sessao_quic_morta_ainda_cai_para_tcp_direto() {
+        let identity = crate::identity::Identity::generate();
+        let http_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
+        let http_port = spawn_fake_inference_server({
+            let http_body = http_body.clone();
+            move |_body| (200, http_body.clone())
+        })
+        .await;
+
+        let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let quic_port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let quic_body = http_body.clone();
+        let router = axum::Router::new().route(
+            "/v1/step",
+            axum::routing::post(move |_body: Bytes| {
+                let body = quic_body.clone();
+                async move { (axum::http::StatusCode::OK, body) }
+            }),
+        );
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let config = crate::quic::server_config(&identity).unwrap();
+        let server = tokio::spawn(async move {
+            crate::quic::serve(quic_port, router, config, async move {
+                let _ = stop_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        clients.set_quic(true);
+        let node_id = identity.node_id.0.clone();
+        let mut step = step_with_node(
+            &node_id,
+            &format!("http://127.0.0.1:{http_port}"),
+            false,
+            None,
+        );
+        step.quic_addr_candidates = vec![format!("127.0.0.1:{quic_port}")];
+
+        let first = send_frame_or_tunnel(
+            &clients,
+            &step,
+            None,
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            &node_id,
+            |_| {},
+        )
+        .await
+        .expect("a primeira chamada deve aquecer a sessão QUIC");
+        assert_eq!(first.transport, InferenceTransport::Quic);
+
+        stop_tx.send(()).unwrap();
+        server.await.unwrap();
+
+        let second = send_frame_or_tunnel(
+            &clients,
+            &step,
+            None,
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            &node_id,
+            |_| {},
+        )
+        .await
+        .expect("o HTTP direto deve sobreviver à queda da sessão QUIC");
+        assert_eq!(second.transport, InferenceTransport::Http);
+        assert!(second.transport_fallback);
+        assert!(second
+            .transport_fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("quic")));
+    }
+
+    #[tokio::test]
     async fn quic_enabled_http_failure_uses_tunnel_only_as_last_fallback() {
         let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
         clients.set_quic(true);

@@ -24,11 +24,10 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
 import { ChatSessionList } from "../components/ChatSessionList";
-import { ChatSurfaceTabs } from "../components/ChatSurfaceTabs";
-import { ExecutionTelemetry, TimingSummary, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
+import { ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
 import { InferenceHeadChoice } from "../components/InferenceHeadChoice";
 import { Badge, Button, Empty } from "../components/ui";
 import { isNearBottom } from "../lib/chatScroll";
@@ -47,9 +46,13 @@ import {
   type ChatRequestPart,
   type ChatSession,
 } from "../lib/chatStore";
-import { resizeImageForVision } from "../lib/imageResize";
+import {
+  imageBudgetBytes,
+  ImageResizeLimitError,
+  resizeImageForVision,
+} from "../lib/imageResize";
 import { ms, num } from "../lib/format";
-import type { RequestTrace } from "../lib/chatStream";
+import type { GenerationTimings, RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
   useChatCapabilities,
@@ -198,22 +201,46 @@ export function ChatError({ message }: { message: string }) {
   );
 }
 
-export const Bubble = memo(function Bubble({
+interface ChatTelemetryCapture {
+  messageId: string;
+  trace: RequestTrace;
+  timings?: GenerationTimings;
+  source?: string;
+  cluster: ClusterView | null;
+}
+
+interface ChatTelemetrySnapshot extends ChatTelemetryCapture {
+  environment?: ExecutionTelemetryEnvironment;
+}
+
+export function Bubble({
   message,
   streaming,
   onAnalyze,
   analysisDisabled = false,
   telemetryEnvironment,
+  telemetryTrace,
+  telemetryTimings,
+  telemetrySource,
 }: {
   message: ChatMessage;
   streaming: boolean;
   onAnalyze?: (trace: RequestTrace) => void;
   analysisDisabled?: boolean;
   telemetryEnvironment?: ExecutionTelemetryEnvironment;
+  /** The final stream capture can arrive one render before the transcript patch. */
+  telemetryTrace?: RequestTrace;
+  /** The final stream timings can arrive with the trace before the transcript patch. */
+  telemetryTimings?: GenerationTimings;
+  /** The final stream source can arrive with the trace before the transcript patch. */
+  telemetrySource?: string;
 }) {
   const { t } = useI18n();
   const { profile } = useProfile();
   const showTelemetry = profile !== "infer";
+  const trace = message.trace ?? telemetryTrace;
+  const timings = message.timings ?? telemetryTimings;
+  const source = message.source ?? telemetrySource;
   if (message.role === "event") return <EventMark message={message} />;
   const isUser = message.role === "user";
   return (
@@ -237,8 +264,13 @@ export const Bubble = memo(function Bubble({
                 alt={t("chat.attachmentAlt", { name: attachment.name })}
                 className="max-h-[28rem] max-w-full rounded-xl border border-line object-contain"
               />
-              <figcaption className="mt-1.5 truncate text-[0.7rem] text-faint" title={attachment.name}>
-                {attachment.name}
+              <figcaption className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[0.7rem] text-faint" title={attachment.name}>
+                <span className="min-w-0 truncate">{attachment.name}</span>
+                {attachment.resized && (
+                  <span className="shrink-0 rounded border border-amber/25 bg-amber/[0.08] px-1 py-0.5 text-[0.62rem] text-amber" title={t("chat.attachmentResized")}>
+                    {t("chat.attachmentResized")}
+                  </span>
+                )}
               </figcaption>
             </figure>
           ) : (
@@ -260,22 +292,20 @@ export const Bubble = memo(function Bubble({
           {message.error && (
             <ChatError message={message.error} />
           )}
-          {showTelemetry && message.source && (
-            <p className="mt-2 font-mono text-[0.68rem] text-faint">{message.source}</p>
+          {showTelemetry && source && (
+            <p className="mt-2 font-mono text-[0.68rem] text-faint">{source}</p>
           )}
-          {showTelemetry && message.timings ? (
-            <TimingSummary timings={message.timings} />
-          ) : showTelemetry && message.tokensPerSecond != null && (
+          {showTelemetry && !trace && message.tokensPerSecond != null && (
             <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[0.68rem] text-faint">
               <span>{t("chat.legacyTotalSpeed", { value: num(message.tokensPerSecond, 1) })}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${ms(message.durationMs)}`}</span>
             </div>
           )}
-          {showTelemetry && message.trace && (
+          {showTelemetry && trace && (
             <div className="mt-2">
               <ExecutionTelemetry
-                trace={message.trace}
-                timings={message.timings}
-                source={message.source}
+                trace={trace}
+                timings={timings}
+                source={source}
                 environment={telemetryEnvironment}
                 onAnalyze={onAnalyze}
                 analyzeDisabled={analysisDisabled || streaming}
@@ -286,7 +316,7 @@ export const Bubble = memo(function Bubble({
       )}
     </motion.div>
   );
-});
+}
 
 /**
  * The conversation's name, edited where it is read.
@@ -445,12 +475,8 @@ function ChatScreen() {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
-  const [telemetryCapture, setTelemetryCapture] = useState<{
-    messageId: string;
-    trace: RequestTrace;
-    cluster: ClusterView | null;
-  } | null>(null);
-  const [telemetrySnapshots, setTelemetrySnapshots] = useState<Record<string, ExecutionTelemetryEnvironment>>({});
+  const [telemetryCapture, setTelemetryCapture] = useState<ChatTelemetryCapture | null>(null);
+  const [telemetrySnapshots, setTelemetrySnapshots] = useState<Record<string, ChatTelemetrySnapshot>>({});
   const [headChoice, setHeadChoice] = useState<{ model: string; nodeId: string | null }>({
     model: "",
     nodeId: null,
@@ -515,16 +541,46 @@ function ChatScreen() {
     setTelemetrySnapshots((previous) => {
       const current = previous[telemetryCapture.messageId];
       if (
-        current?.cluster === telemetryEnvironment.cluster &&
-        current?.network === telemetryEnvironment.network &&
-        current?.runtimes === telemetryEnvironment.runtimes &&
-        current?.networkLoading === telemetryEnvironment.networkLoading &&
-        current?.networkError === telemetryEnvironment.networkError &&
-        current?.runtimesLoading === telemetryEnvironment.runtimesLoading
+        current?.trace === telemetryCapture.trace &&
+        current?.timings === telemetryCapture.timings &&
+        current?.source === telemetryCapture.source &&
+        current?.cluster === telemetryCapture.cluster &&
+        current?.environment === telemetryEnvironment
       ) return previous;
-      return { ...previous, [telemetryCapture.messageId]: telemetryEnvironment };
+      return {
+        ...previous,
+        [telemetryCapture.messageId]: {
+          ...telemetryCapture,
+          environment: telemetryEnvironment,
+        },
+      };
     });
   }, [telemetryCapture, telemetryEnvironment]);
+
+  // Keep the response metadata by message immediately, before the environment
+  // query settles. The transcript normally stores the same values, but the
+  // capture is the authoritative bridge across separate React commits.
+  useEffect(() => {
+    if (!showTelemetry || lastStreamResult?.sessionId !== session.id) return;
+    const capture: ChatTelemetryCapture = {
+      messageId: lastStreamResult.messageId,
+      trace: lastStreamResult.trace,
+      timings: lastStreamResult.timings,
+      source: lastStreamResult.source,
+      cluster: lastStreamResult.cluster,
+    };
+    setTelemetryCapture(capture);
+    setTelemetrySnapshots((previous) => {
+      const current = previous[capture.messageId];
+      if (
+        current?.trace === capture.trace &&
+        current?.timings === capture.timings &&
+        current?.source === capture.source &&
+        current?.cluster === capture.cluster
+      ) return previous;
+      return { ...previous, [capture.messageId]: { ...current, ...capture } };
+    });
+  }, [lastStreamResult, session.id, showTelemetry]);
 
   // A session with no model yet takes whatever the network is serving.
   const model = session.model && available.includes(session.model)
@@ -542,15 +598,6 @@ function ChatScreen() {
     const element = thread.current;
     if (element && autoFollow.current) element.scrollTop = element.scrollHeight;
   }, [session.messages, streaming]);
-
-  useEffect(() => {
-    if (!showTelemetry || lastStreamResult?.sessionId !== session.id) return;
-    setTelemetryCapture({
-      messageId: lastStreamResult.messageId,
-      trace: lastStreamResult.trace,
-      cluster: lastStreamResult.cluster,
-    });
-  }, [lastStreamResult, session.id, showTelemetry]);
 
   useEffect(() => () => {
     recognition.current?.stop();
@@ -574,39 +621,51 @@ function ChatScreen() {
 
   async function addFiles(files: FileList | File[]) {
     const selectedFiles = Array.from(files);
-    const contextBytes = contextLength != null ? contextLength * 4 : undefined;
     const currentBytes = attachments.reduce((total, attachment) => total + estimatedAttachmentBytes(attachment), 0);
-    const selectedBytes = selectedFiles.reduce((total, file) => total + file.size, 0);
-    if (contextBytes != null && currentBytes + selectedBytes > contextBytes) {
-      toast.error(
-        t("chat.attachmentTooLarge"),
-        t("chat.attachmentTooLargeDetail", {
-          bytes: currentBytes + selectedBytes,
-          context: contextLength ?? 0,
-        }),
-      );
-      return;
-    }
-
     const added: ChatAttachment[] = [];
-    for (const file of selectedFiles) {
+    for (const [index, file] of selectedFiles.entries()) {
+      const usedBytes = currentBytes + added.reduce((total, attachment) => total + estimatedAttachmentBytes(attachment), 0);
       if (file.type.startsWith("image/")) {
         if (!visionAvailable) {
           toast.error(t("chat.imageRejected"), t("chat.imageVisionUnavailable"));
           continue;
         }
         try {
+          const remainingImages = selectedFiles
+            .slice(index)
+            .filter((selectedFile) => selectedFile.type.startsWith("image/")).length;
+          const availableBytes = contextLength == null
+            ? undefined
+            : Math.floor(imageBudgetBytes(contextLength, usedBytes) / Math.max(1, remainingImages));
+          const image = await resizeImageForVision(file, availableBytes);
           added.push({
             id: newId(),
             name: file.name,
             kind: "image",
-            data: await resizeImageForVision(file),
-            mediaType: file.type,
-            size: file.size,
+            data: image.data,
+            mediaType: image.data.startsWith("data:image/jpeg") ? "image/jpeg" : file.type,
+            size: image.size,
+            resized: image.resized,
           });
         } catch (error) {
-          toast.error(t("chat.imageRejected"), error instanceof Error ? error.message : String(error));
+          const detail = error instanceof ImageResizeLimitError
+            ? t("chat.imageContextTooSmallDetail", { context: contextLength ?? 0 })
+            : error instanceof Error ? error.message : String(error);
+          toast.error(t("chat.imageRejected"), detail);
         }
+        continue;
+      }
+      if (
+        contextLength != null
+        && usedBytes + file.size > imageBudgetBytes(contextLength)
+      ) {
+        toast.error(
+          t("chat.attachmentTooLarge"),
+          t("chat.attachmentTooLargeDetail", {
+            bytes: usedBytes + file.size,
+            context: contextLength,
+          }),
+        );
         continue;
       }
       if (isTextFile(file)) {
@@ -935,16 +994,24 @@ function ChatScreen() {
               <div className="space-y-6">
                 <AnimatePresence initial={false}>
                   {modelAtStart && <ModelIntroMark model={modelAtStart} />}
-                  {session.messages.map((m) => (
-                    <Bubble
-                      key={m.id}
-                      message={m}
-                      streaming={streaming && m.id === session.messages[session.messages.length - 1]?.id}
-                      onAnalyze={analyzeTrace}
-                      analysisDisabled={streaming || !model}
-                      telemetryEnvironment={telemetryCapture?.messageId === m.id ? telemetryEnvironment : telemetrySnapshots[m.id]}
-                    />
-                  ))}
+                  {session.messages.map((m) => {
+                    const telemetry = telemetryCapture?.messageId === m.id
+                      ? { ...telemetrySnapshots[m.id], ...telemetryCapture, environment: telemetryEnvironment }
+                      : telemetrySnapshots[m.id];
+                    return (
+                      <Bubble
+                        key={m.id}
+                        message={m}
+                        streaming={streaming && m.id === session.messages[session.messages.length - 1]?.id}
+                        onAnalyze={analyzeTrace}
+                        analysisDisabled={streaming || !model}
+                        telemetryTrace={telemetry?.trace}
+                        telemetryTimings={telemetry?.timings}
+                        telemetrySource={telemetry?.source}
+                        telemetryEnvironment={telemetry?.environment}
+                      />
+                    );
+                  })}
                 </AnimatePresence>
                 {streaming &&
                   !session.messages[session.messages.length - 1]?.content && (
@@ -993,6 +1060,11 @@ function ChatScreen() {
                       </span>
                     )}
                     <span className="max-w-[16rem] truncate" title={attachment.name}>{attachment.name}</span>
+                    {attachment.resized && (
+                      <span className="shrink-0 rounded border border-amber/25 bg-amber/[0.08] px-1 py-0.5 text-[0.62rem] text-amber" title={t("chat.attachmentResized")}>
+                        {t("chat.attachmentResized")}
+                      </span>
+                    )}
                     <button
                       type="button"
                       aria-label={t("chat.removeAttachment", { name: attachment.name })}
@@ -1156,7 +1228,6 @@ export function Chat() {
   );
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
-      <ChatSurfaceTabs />
       <div className="min-h-0 flex-1">{ai}</div>
     </div>
   );

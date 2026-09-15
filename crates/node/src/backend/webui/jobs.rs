@@ -2,14 +2,17 @@ use super::*;
 // ── Applying a configuration ─────────────────────────────────────────────────
 
 /// Which inference engine the operator asks the runtime to use for a model.
-/// `Auto` keeps the runtime's model-metadata decision; the explicit variants
-/// are persisted with the deployment so every peer receives the same choice.
+/// `Dense` é o padrão e `Auto` continua sendo uma escolha explícita guiada
+/// pela metadata; todas as variantes são persistidas com a implantação para
+/// que todos os peers recebam a mesma escolha.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InferenceMode {
+    /// llama.cpp é o padrão seguro do produto. Auto continua disponível quando
+    /// a seleção guiada pela metadata é pedida explicitamente.
     #[default]
-    Auto,
     Dense,
+    Auto,
     Moe,
 }
 
@@ -21,8 +24,8 @@ pub enum InferenceMode {
 /// verifica que uma reimplantação mudou alguma coisa.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeParams {
-    /// Engine preference. `Auto` is backwards-compatible and lets the runtime
-    /// choose from the actual GGUF metadata.
+    /// Preferência de motor. `Dense` seleciona llama.cpp por padrão; `Auto`
+    /// deixa um pedido explícito escolher pela metadata GGUF real.
     #[serde(default)]
     pub inference_mode: InferenceMode,
     #[serde(default = "d_gpu_layers")]
@@ -78,8 +81,8 @@ pub struct RuntimeParams {
     pub repeat_penalty: f32,
     #[serde(default = "d_repeat_last_n")]
     pub repeat_last_n: u32,
-    /// Detector conservador de ciclos; fica ligado por padrão e pode ser
-    /// desligado sem alterar os parâmetros do sampler.
+    /// Detector conservador de ciclos; fica desligado por padrão e pode ser
+    /// ligado sem alterar os parâmetros do sampler.
     #[serde(default = "d_cycle_detection_enabled")]
     pub cycle_detection_enabled: bool,
     #[serde(default = "d_cycle_detection_min_window_tokens")]
@@ -174,7 +177,7 @@ pub(super) fn d_repeat_last_n() -> u32 {
     64
 }
 pub(super) fn d_cycle_detection_enabled() -> bool {
-    true
+    false
 }
 pub(super) fn d_cycle_detection_min_window_tokens() -> u32 {
     crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
@@ -213,7 +216,7 @@ pub(super) fn d_idle_minutes() -> u32 {
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self {
-            inference_mode: InferenceMode::Auto,
+            inference_mode: InferenceMode::Dense,
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),

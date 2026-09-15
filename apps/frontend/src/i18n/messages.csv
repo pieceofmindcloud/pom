@@ -1,7 +1,29 @@
 key,en,pt-BR
+about.dependenciesCount,"Showing {visible} of {total} dependencies","Mostrando {visible} de {total} dependências"
+about.dependenciesSubtitle,"Direct frontend and Rust dependencies, grouped by their declared license.","Dependências diretas do frontend e do Rust, agrupadas pela licença declarada."
+about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
+about.ecosystem.frontend,Frontend,Frontend
+about.ecosystem.rust,Rust,Rust
+about.empty,No dependencies match this search.,Nenhuma dependência corresponde a esta busca.
+about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
+about.placeholderBody,"The POM software license has not been defined officially yet. This screen shows an example only.","A licença do software POM ainda não foi definida oficialmente. Esta tela mostra apenas um exemplo."
+about.placeholderLicense,Provisional license (example),Licença provisória (exemplo)
+about.placeholderLicenseText,"AGPL-3.0 + registered-trademark clause - subject to final definition","AGPL-3.0 + cláusula de marca registrada - sujeita à definição final"
+about.placeholderLicenseValue,AGPL-3.0 + registered-trademark clause,AGPL-3.0 + cláusula de marca registrada
+about.placeholderTitle,POM software license,Licença do software POM
+about.repository,Repository,Repositório
+about.searchLabel,Search dependencies,Buscar dependências
+about.searchPlaceholder,Search by package,Buscar por pacote
+about.subtitle,The software and libraries that make POM possible.,Os softwares e bibliotecas que tornam o POM possível.
+about.title,About,Sobre
+about.version,Version,Versão
 accessGate.eyebrow,Administrative surface,Superfície administrativa
 accessGate.invalid,That token was not accepted.,Esse token não foi aceito.
 accessGate.label,Administrative access token,Token de acesso administrativo
+accessGate.passwordInvalid,That password was not accepted.,Essa senha não foi aceita.
+accessGate.passwordLabel,Administrative access password,Senha de acesso administrativo
+accessGate.passwordSubtitle,This interface is exposed to the network. Enter the administrative access password to continue.,Esta interface está exposta à rede. Informe a senha de acesso administrativo para continuar.
+accessGate.passwordTitle,Administrative password required,Senha administrativa necessária
 accessGate.submit,Open interface,Abrir interface
 accessGate.subtitle,This interface is exposed to the network. Enter the administrative access token to continue.,Esta interface está exposta à rede. Informe o token de acesso administrativo para continuar.
 accessGate.title,Access token required,Token de acesso necessário
@@ -96,6 +118,7 @@ chat.ask,Ask the network anything,Pergunte alguma coisa à rede
 chat.askDetail,Messages travel through machines in Dashboard order and return token by token.,As mensagens percorrem as máquinas na ordem do Painel e voltam token a token.
 chat.attach,Attach file,Anexar ficheiro
 chat.attachmentAlt,Sent image: {name},Imagem enviada: {name}
+chat.attachmentResized,Resized automatically,Redimensionada automaticamente
 chat.attachmentThumbnail,Thumbnail of {name},Miniatura de {name}
 chat.attachmentTooLarge,Attachment too large,Anexo grande demais
 chat.attachmentTooLargeDetail,"This attachment is {bytes} bytes, above the available context of {context} tokens.","Este anexo tem {bytes} bytes e excede o contexto disponível de {context} tokens."
@@ -137,6 +160,7 @@ chat.headSelected,Selected entry,Entrada selecionada
 chat.headUnavailable,Head selection unavailable,Escolha da cabeça indisponível
 chat.headUnavailableDetail,"This node could not read the current head candidates. Inference remains protected until a fresh choice is available.","Este nó não conseguiu ler as candidatas atuais à cabeça. A inferência fica protegida até haver uma escolha fresca."
 chat.history,Conversation history,Histórico de conversas
+chat.imageContextTooSmallDetail,"The image is still too large for the available context after reduction.",A imagem ainda é grande demais para o contexto disponível mesmo após a redução.
 chat.imageRejected,Image rejected,Imagem recusada
 chat.imageVisionUnavailable,This model does not support vision,este modelo não tem visão
 chat.incomplete,incomplete coverage,cobertura incompleta
@@ -973,6 +997,9 @@ models.sendAria,Send {name},Enviar {name}
 models.size,Size,Tamanho
 models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
+myMachine.subtitle,This machine's identity in the cluster and the address it advertises to peers.,A identidade desta máquina no cluster e o endereço que ela anuncia aos peers.
+myMachine.title,My machine,Minha máquina
+nav.about,About,Sobre
 nav.administration,Administration,Administração
 nav.administrativePreferences,Administrative preferences,Preferências administrativas
 nav.administrators,Administrators,Administradores
@@ -990,6 +1017,7 @@ nav.inProgress,In progress,Em andamento
 nav.logs,Logs,Logs
 nav.modelFolders,Storage,Armazenamento
 nav.models,Models,Modelos
+nav.myMachine,My machine,Minha máquina
 nav.network,Network,Rede
 nav.networkChat,Network Chat,Chat da rede
 nav.networkInfo,Network information,Informações da rede
@@ -1029,6 +1057,19 @@ network.authority,Authority,Autoridade
 network.authority.primary,Primary administrator,Administrador principal
 network.authority.secondary,Secondary administrator,Administrador secundário
 network.authorityNone,No authority,Sem autoridade
+network.autoDiscoveryDisable,Turn local discovery off,Desligar descoberta local
+network.autoDiscoveryDisabled,Local discovery turned off,Descoberta local desligada
+network.autoDiscoveryEnable,Turn local discovery on,Ligar descoberta local
+network.autoDiscoveryEnabled,Local discovery turned on,Descoberta local ligada
+network.autoDiscoveryFailed,Could not change local discovery,Não foi possível mudar a descoberta local
+network.autoDiscoveryHowItWorks,"When enabled, the administrator answers the setup handshake on the local network. The connection key is sent only after the joining node proves possession of its ephemeral secret.","Quando ligada, a administradora responde ao handshake de configuração na rede local. A chave de conexão só é enviada depois que o nó que entra prova que possui o segredo efêmero."
+network.autoDiscoveryNotAuthority,Only the main administrator can change this.,Somente o administrador principal pode mudar isso.
+network.autoDiscoveryOff,disabled,desligada
+network.autoDiscoveryOn,enabled,ligada
+network.autoDiscoveryPropagates,This setting applies to this administrator and is off again after a fresh setup.,Esta configuração vale para esta administradora e volta a ficar desligada após uma nova configuração.
+network.autoDiscoveryState,Local discovery,Descoberta local
+network.autoDiscoverySubtitle,Let new machines join this network through a deliberate local handshake.,Permita que novas máquinas entrem nesta rede por um handshake local explícito.
+network.autoDiscoveryTitle,Automatic local discovery,Descoberta automática local
 network.away,away,ausente
 network.back,Back on the network,De volta à rede
 network.block,Block,Bloquear
@@ -1098,6 +1139,7 @@ network.logsPropagates,No restart needed. Other nodes confirm the policy with th
 network.logsState,Cluster collection,Coleta do cluster
 network.logsSubtitle,"When on, this node reports its process log to every admin replica. The bounded queue drops lines under pressure so inference is never held up.","Ligado, este nó envia seu log de processo para cada réplica admin. A fila limitada descarta linhas sob pressão para nunca segurar a inferência."
 network.logsTitle,Process logs between nodes,Logs de processo entre nós
+network.markdownPreview,Preview,Prévia
 network.metricsEyebrow,Network health,Saúde da rede
 network.metricsLatency,Average latency,Latência média
 network.metricsModels,Served models,Modelos servidos
@@ -1184,9 +1226,11 @@ network.shareTitle,Give another node what it needs,Entregue a outro nó o que el
 network.sharingSubtitle,"Trust root, this machine, and connection key in one place.","Raiz de confiança, esta máquina e chave de conexão em um só lugar."
 network.sharingTitle,Sharing,Compartilhamento
 network.subtitle,Which machines this node sees and which it refuses to serve.,"Quem este nó enxerga, e quem ele se recusa a atender."
+network.thermalCooldownInvalid,The cooldown must be at most 60 seconds.,O tempo de resfriamento deve ser de no máximo 60 segundos.
 network.thermalCooldownLabel,Cooldown (seconds),Tempo de resfriamento (segundos)
 network.thermalHint,Automatic recovery starts only when all GPU readings are known and safe.,A retomada automática só começa quando todas as leituras das GPUs são conhecidas e seguras.
 network.thermalHysteresisLabel,Hysteresis (°C),Margem de segurança (°C)
+network.thermalLimitInvalid,The cutoff temperature must be at least 70 °C.,A temperatura de corte deve ser de pelo menos 70 °C.
 network.thermalLimitLabel,Unload above (°C),Desimplantar acima (°C)
 network.thermalResumeAt,Automatic recovery threshold: {value} °C,Limite de retomada automática: {value} °C
 network.thermalSave,Save thermal policy,Salvar política térmica
@@ -1347,6 +1391,12 @@ preferences.accessModeLocal,Only this computer,Somente este computador
 preferences.accessModeLocalHint,The administration surface accepts only localhost and does not ask for a password.,A superfície administrativa aceita somente localhost e não pede senha.
 preferences.accessModeNetwork,Local network (IPv4 / IPv6),Rede local (IPv4 / IPv6)
 preferences.accessModeNetworkHint,The administration surface accepts network connections and always asks for the access token.,A superfície administrativa aceita conexões da rede e sempre pede o token de acesso.
+preferences.accessModePasswordHint,The administration surface accepts network connections and always asks for the access password.,A superfície administrativa aceita conexões da rede e sempre pede a senha de acesso.
+preferences.accessPasswordCurrentLabel,Current password,Senha anterior
+preferences.accessPasswordHint,"The password is stored only as a one-way Argon2id hash and can never be recovered. Leave the new password empty to keep the current one.","A senha é armazenada somente como hash Argon2id de mão única e nunca pode ser recuperada. Deixe a nova senha vazia para manter a atual."
+preferences.accessPasswordNewLabel,New password,Nova senha
+preferences.accessPasswordRequired,Set a password before exposing the interface to the network.,Defina uma senha antes de expor a interface à rede.
+preferences.accessPasswordTitle,Administrative access password,Senha de acesso administrativo
 preferences.accessPortHint,The port must be between 1 and 65535 and available.,A porta precisa estar entre 1 e 65535 e disponível.
 preferences.accessPortLabel,Interface port,Porta da interface
 preferences.accessRestarting,The node is restarting on the new port.,O nó está reiniciando na nova porta.
@@ -1381,14 +1431,18 @@ publicNetworks.allCountries,All countries,Todos os países
 publicNetworks.checking,Checking reachability,Verificando alcance
 publicNetworks.city,City,Cidade
 publicNetworks.country,Country,País
+publicNetworks.detailsTitle,Details for {name},Detalhes de {name}
+publicNetworks.directoryReplicas,Directory replicas,Réplicas do diretório
 publicNetworks.discoveredDetail,Only public metadata is shown here. Trust is confirmed when you join.,Aqui aparecem apenas dados públicos. A confiança é conferida quando você entra.
 publicNetworks.discoveredTitle,Networks found,Redes encontradas
+publicNetworks.discoveredVia,Discovered via,Descoberta via
 publicNetworks.distance,{value} km away,{value} km de distância
 publicNetworks.emptyDetail,Keep POM open on a network or try again in a moment. Public networks announce themselves through the existing discovery layer.,Deixe o POM aberto em uma rede ou tente novamente em instantes. Redes públicas se anunciam pela camada de descoberta existente.
 publicNetworks.emptyTitle,No public networks found,Não encontramos redes públicas
 publicNetworks.failed,Could not load public networks,Não foi possível carregar as redes públicas
 publicNetworks.fingerprint,Fingerprint,Impressão digital
 publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
+publicNetworks.ipv6Unavailable,IPv6 unavailable on this machine,IPv6 indisponível nesta máquina
 publicNetworks.join,Open joining,Entrar na rede
 publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
 publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
@@ -1402,6 +1456,7 @@ publicNetworks.name,Public name,Nome público
 publicNetworks.noMatches,No public networks match these filters,Nenhuma rede pública corresponde a estes filtros
 publicNetworks.noMatchesDetail,Try another country or city.,Tente outro país ou cidade.
 publicNetworks.nodes,Nodes,Nós
+publicNetworks.openDetails,Open details for {name},Abrir detalhes de {name}
 publicNetworks.organization,Organization,Organização
 publicNetworks.pkarr,pkarr,pkarr
 publicNetworks.reachable,Reachable,Alcançável
@@ -1554,13 +1609,16 @@ setupWizard.adminExposure,Interface exposure,Exposição da interface
 setupWizard.adminExposureHint,Choose whether the admin screen is reachable only here or from other machines on the network.,Escolha se a tela administrativa ficará acessível só aqui ou também por outras máquinas da rede.
 setupWizard.adminExposureLocalhost,Only this machine,Apenas esta máquina
 setupWizard.adminExposureNetwork,This network,Esta rede
+setupWizard.adminPassword,Administrative access password,Senha de acesso administrativo
+setupWizard.adminPasswordDetail,Choose a password you can remember. It is stored only as a one-way Argon2id hash.,Escolha uma senha que você consiga lembrar. Ela é armazenada somente como hash Argon2id de mão única.
+setupWizard.adminPasswordMissing,Enter a password here,Informe uma senha aqui
 setupWizard.adminToken,Administrative access token,Token de acesso administrativo
 setupWizard.adminTokenDetail,This generated token lets an administrator open the interface. Save it in a password manager.,Este token gerado permite que um administrador abra a interface. Salve-o em um gerenciador de senhas.
 setupWizard.adminTokenFailed,The administrative token could not be generated,O token administrativo não pôde ser gerado
 setupWizard.adminTokenMissing,The token will be generated here,O token será gerado aqui
-setupWizard.advertiseAddress,Address this machine will announce,Endereço que esta máquina anunciará
-setupWizard.advertiseAddressHint,Use a stable public host and port when this machine is behind a router.,Use um host e uma porta públicos estáveis quando esta máquina estiver atrás de um roteador.
-setupWizard.advertiseAddressPlaceholder,example.com:8080,exemplo.com:8080
+setupWizard.advertiseAddress,IPv6 address this machine will announce,Endereço IPv6 que esta máquina anunciará
+setupWizard.advertiseAddressHint,Use this machine's stable public IPv6. The POM port is added automatically.,Use o IPv6 público estável desta máquina. A porta do POM é adicionada automaticamente.
+setupWizard.advertiseAddressPlaceholder,2001:db8::1,2001:db8::1
 setupWizard.anchorFailed,The trust root could not be created,Não foi possível criar a raiz de confiança
 setupWizard.anyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança
 setupWizard.authorizedPeople,People approved by the administrator,Pessoas aprovadas pelo administrador
@@ -1571,6 +1629,8 @@ setupWizard.bootstrapPlaceholder,example.com:42777,exemplo.com:42777
 setupWizard.channels,Discord or Telegram channels,Canais do Discord ou Telegram
 setupWizard.checkConfig,Initial configuration ready,Configuração inicial pronta
 setupWizard.checkCuda,CUDA working,CUDA funcionando
+setupWizard.checkFirewall,Firewall ports allowed,Portas do firewall permitidas
+setupWizard.checkFirewallLocal,POM ports available locally,Portas do POM disponíveis localmente
 setupWizard.checkGpu,GPU detected,GPU detectada
 setupWizard.checkIpv6,Public IPv6 enabled,IPv6 público habilitado
 setupWizard.checkP2p,P2P discovery working,Descoberta P2P funcionando
@@ -1590,8 +1650,26 @@ setupWizard.cpuReserve,CPU available for the system,CPU disponível para o siste
 setupWizard.cpuReserveDetail,More means POM yields more often to other work.,Mais significa que o POM cede mais vezes a outras tarefas.
 setupWizard.cpuValue,{count} logical cores,{count} núcleos lógicos
 setupWizard.cudaAvailable,CUDA ready,CUDA disponível
+setupWizard.cudaInstallHint,Install the CUDA toolkit and restart POM to use this NVIDIA GPU.,Instale o toolkit CUDA e reinicie o POM para usar esta GPU NVIDIA.
 setupWizard.description,Description,Descrição
+setupWizard.discoveryAdminDetail,POM is listening on this local network only during the initial setup.,"Durante a configuração inicial, o POM escuta apenas nesta rede local."
+setupWizard.discoveryAdminSecurity,Only a node that completes the challenge can receive the connection secret.,Somente um nó que completa o desafio pode receber o segredo de conexão.
+setupWizard.discoveryAdminTitle,Wait for a nearby machine,Espere uma máquina próxima
 setupWizard.discoveryAvailable,Discovery ready,Descoberta disponível
+setupWizard.discoveryFailed,Local discovery could not start,Não foi possível iniciar a descoberta local
+setupWizard.discoveryFound,Network details received securely.,Detalhes da rede recebidos com segurança.
+setupWizard.discoveryManualFallback,No administrator was found yet. You can continue with the trust file.,Nenhum administrador foi encontrado ainda. Você pode continuar com o arquivo de confiança.
+setupWizard.discoveryManualHint,"If the administrator is not on this network, continue and import the trust file manually.","Se o administrador não estiver nesta rede, continue e importe o arquivo de confiança manualmente."
+setupWizard.discoveryNodeDetail,POM will look for an administrator that is actively sharing this network locally.,O POM vai procurar um administrador que esteja compartilhando esta rede localmente.
+setupWizard.discoveryNodeSecurity,The secret is encrypted for this setup and is never announced in the local broadcast.,O segredo é cifrado para esta configuração e nunca é anunciado no broadcast local.
+setupWizard.discoveryNodeTitle,Find an administrator nearby,Encontre um administrador próximo
+setupWizard.discoveryPanelDetail,The trust document is public; the connection secret is sent only after a private handshake.,O documento de confiança é público; o segredo de conexão só é enviado depois de um handshake privado.
+setupWizard.discoveryPanelTitle,Automatic local connection,Conexão local automática
+setupWizard.discoveryPeerCount,{count} machine(s) completed the local handshake.,{count} máquina(s) concluíram o handshake local.
+setupWizard.discoveryPeerCountDetail,This list updates while nearby nodes complete the secure exchange.,Esta lista é atualizada enquanto os nós próximos concluem a troca segura.
+setupWizard.discoveryPeerHandshake,Handshake complete,Handshake concluído
+setupWizard.discoverySearching,Looking for an administrator on this local network...,Procurando um administrador nesta rede local...
+setupWizard.discoveryWaiting,Waiting for a machine to join this local network...,Esperando uma máquina entrar nesta rede local...
 setupWizard.diskAvailable,{value} GB available,{value} GB disponíveis
 setupWizard.diskTotal,{value} GB total,{value} GB no total
 setupWizard.download,Download,Baixar
@@ -1608,18 +1686,17 @@ setupWizard.finish,Save and restart,Salvar e reiniciar
 setupWizard.generated,Generated,Gerado
 setupWizard.gpu,GPU,GPU
 setupWizard.gpuDetected,GPU detected,GPU detectada
-setupWizard.gpuMaxNote,GPU capacity is always offered at its maximum. You only choose how much RAM and CPU to keep for the system.,A capacidade da GPU é sempre oferecida no máximo. Você só escolhe quanta RAM e CPU manter para o sistema.
-setupWizard.hardwareDetail,These readings describe what this machine can share right now.,Estas informações mostram o que esta máquina pode compartilhar agora.
-setupWizard.hardwareTitle,This is what POM found,Isso foi o que o POM encontrou
+setupWizard.gpuUnavailable,No dedicated GPU detected,Nenhuma GPU dedicada detectada
 setupWizard.hardwareUnavailable,Hardware detection is not available yet.,A detecção de hardware ainda não está disponível.
 setupWizard.healthDetail,These are general checks only. Model inference is checked after the node joins the network.,Estas são apenas verificações gerais. A inferência do modelo será verificada depois que o nó entrar na rede.
 setupWizard.healthFailed,The general checks could not run,Não foi possível executar as verificações gerais
 setupWizard.healthModelLater,The model check happens after setup so a missing model never blocks first access.,A verificação do modelo acontece depois da configuração para que um modelo ausente nunca bloqueie o primeiro acesso.
 setupWizard.healthTitle,A quick check before restart,Uma verificação rápida antes de reiniciar
+setupWizard.hideContents,Hide contents,Ocultar conteúdo
 setupWizard.infer,Inference node,Nó de inferência
 setupWizard.inferDetail,Use this machine to send prompts through a trusted network.,Use esta máquina para enviar prompts por uma rede confiável.
 setupWizard.installedHere,Already on this machine,Já está nesta máquina
-setupWizard.inviteDetail,Share the trust document and public key. Keep the fingerprint available through a separate channel.,Compartilhe o documento de confiança e a chave pública. Envie a impressão digital por um canal separado.
+setupWizard.inviteDetail,Save the trust document and connection secret for the people you will invite.,Salve o documento de confiança e o segredo de conexão para as pessoas que você vai convidar.
 setupWizard.inviteTitle,Your network is ready to invite people,Sua rede está pronta para convidar pessoas
 setupWizard.loadFailed,The setup information could not be loaded,Não foi possível carregar as informações da configuração inicial
 setupWizard.localOnly,Only this local network,Apenas esta rede local
@@ -1656,19 +1733,17 @@ setupWizard.noModelSelected,No model selected,Nenhum modelo selecionado
 setupWizard.noModels,No model was found yet. You can choose one after setup.,Nenhum modelo foi encontrado ainda. Você poderá escolher um depois da configuração.
 setupWizard.node,Network node,Nó da rede
 setupWizard.nodeDetail,Share this machine's resources with a network you already trust.,Compartilhe os recursos desta máquina com uma rede em que você confia.
-setupWizard.nodeName,Name this node,Nomeie este nó
-setupWizard.nodeNameHint,This is how the machine appears to people in the network.,É assim que esta máquina aparecerá para as pessoas na rede.
+setupWizard.nodeName,Machine name,Nome da máquina
 setupWizard.notAvailable,Not available,Não disponível
 setupWizard.ok,OK,OK
 setupWizard.organization,Organization,Organização
 setupWizard.otherCity,Another city,Outra cidade
+setupWizard.passwordDefined,Password defined,Senha definida
+setupWizard.passwordMissing,Password not defined,Senha não definida
 setupWizard.pasteTrust,Confirm the network before joining,Confirme a rede antes de entrar
 setupWizard.pasteTrustDetail,Get the document and a separate fingerprint message from the administrator.,Receba o documento e uma mensagem separada com a impressão digital do administrador.
 setupWizard.privateInternet,Private over the internet,Privada pela internet
 setupWizard.profileLabel,Role,Função
-setupWizard.publicDirectory,Federated directory ingresses,Ingressos do diretório federado
-setupWizard.publicDirectoryHint,Enter one or more HTTP(S) URLs separated by commas. A private node only needs outbound access to list public networks.,Informe uma ou mais URLs HTTP(S) separadas por vírgulas. Um nó privado precisa apenas de saída para listar redes públicas.
-setupWizard.publicDirectoryPlaceholder,https://directory.example,https://diretorio.exemplo
 setupWizard.publicGeoRequired,Public networks need a country and city so nearby people can filter them quickly.,Redes públicas precisam de país e cidade para que pessoas próximas possam filtrá-las rapidamente.
 setupWizard.publicInternet,Public over the internet,Pública pela internet
 setupWizard.publicKey,Generated public key,Chave pública gerada
@@ -1684,7 +1759,6 @@ setupWizard.resourcesTitle,How much should POM leave for the system?,Quanto o PO
 setupWizard.reviewDetail,Review the essentials once. POM will save the configuration and restart this node.,Revise o essencial uma vez. O POM salvará a configuração e reiniciará este nó.
 setupWizard.reviewNote,The trust document is stored separately from pom.json so changing the profile cannot create authority.,O documento de confiança fica separado do pom.json para que mudar a função não crie autoridade.
 setupWizard.reviewTitle,Everything looks ready,Está tudo pronto
-setupWizard.roleHint,You can change the machine role later from the administration screens.,Você poderá mudar o papel da máquina depois pelas telas de administração.
 setupWizard.rules,Network rules,Regras da rede
 setupWizard.saveFailed,The configuration was not saved,A configuração não foi salva
 setupWizard.savedDetail,This node is restarting with its new identity. The interface will return automatically.,Este nó está reiniciando com sua nova identidade. A interface voltará automaticamente.
@@ -1695,6 +1769,8 @@ setupWizard.shardSpace,Disk space to share,Espaço em disco para compartilhar
 setupWizard.shardSpaceHint,This is the maximum space POM may use for model slices.,Este é o espaço máximo que o POM poderá usar para fatias de modelos.
 setupWizard.shardsFolder,Shared slices folder,Pasta de fatias compartilhadas
 setupWizard.shardsFolderHint,Default: ~/.pom/models_sliced, Padrão: ~/.pom/models_sliced
+setupWizard.showContents,Show contents,Ver conteúdo
+setupWizard.stepDiscovery,Local discovery,Descoberta local
 setupWizard.stepHardware,Your machine,Sua máquina
 setupWizard.stepHealth,Checks,Verificações
 setupWizard.stepInvite,Invite,Convite
@@ -1720,6 +1796,7 @@ setupWizard.tlsRequired,Encrypt connections between nodes (optional),Criptografa
 setupWizard.trustDocument,Trust document,Documento de confiança
 setupWizard.trustDocumentHint,Paste the complete JSON document from the administrator or upload trust.json.,Cole o documento JSON completo enviado pelo administrador ou envie o trust.json.
 setupWizard.trustFilename,Save the document as {filename},Salve o documento como {filename}
+setupWizard.trustJoinDetail,Import the trust file and enter the connection key supplied by the administrator.,Importe o arquivo de confiança e informe a chave de conexão fornecida pelo administrador.
 setupWizard.trustLabel,Trust root,Raiz de confiança
 setupWizard.trustPrivateDetail,Private networks use the trust root and one shared connection secret.,Redes privadas usam a raiz de confiança e um único segredo compartilhado.
 setupWizard.trustPublicDetail,Public networks do not use a shared secret. The trust document authenticates control between machines.,Redes públicas não usam segredo compartilhado. O documento de confiança autentica o controle entre as máquinas.
@@ -1729,9 +1806,9 @@ setupWizard.uploadingTrust,Reading file...,Lendo arquivo...
 setupWizard.visibility,Who can find this network?,Quem pode encontrar esta rede?
 setupWizard.visibilityHint,Public networks use signed control and no shared secret.,Redes públicas usam controle assinado e não têm segredo compartilhado.
 setupWizard.vulkanAvailable,Vulkan ready,Vulkan disponível
-setupWizard.welcomeDetail,POM will ask one clear question at a time and save a real configuration at the end.,O POM fará uma pergunta clara por vez e salvará uma configuração real no final.
+setupWizard.welcomeDetail,Let us set up this machine.,Vamos configurar esta máquina.
 setupWizard.welcomeEyebrow,Your first step,Seu primeiro passo
-setupWizard.welcomeTitle,Let us set up this machine,Vamos configurar esta máquina
+setupWizard.welcomeTitle,Welcome to POM,Bem-vindo ao POM
 shards.complete,covers model,cobre o modelo
 shards.empty,No shards on this machine,Nenhuma fatia nesta máquina
 shards.emptyDetail,Shards appear here after local slicing or an accepted transfer. They are stored in the configured shard folder.,Fatias aparecem aqui depois de um fatiamento local ou de uma transferência aceita. Elas são gravadas na pasta de fatias configurada.

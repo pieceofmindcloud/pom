@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 
-export type PublicReachability = "checking" | "reachable" | "unreachable";
+export type PublicReachability = "checking" | "reachable" | "unreachable" | "ipv6-unavailable";
 
 const PROBE_TIMEOUT_MS = 1800;
 const CACHE_TTL_MS = 30_000;
+
+// Endereço IPv6 literal, público e estável (DNS público do Google), usado
+// somente para descobrir se esta máquina tem rota IPv6 - nunca para
+// verificar o peer. Sem isso, um navegador sem IPv6 marcava todo peer
+// anunciado por IPv6 como "unreachable" mesmo quando o peer está no ar.
+const IPV6_PROBE_URL = "http://[2001:4860:4860::8888]/";
+const IPV6_PROBE_TIMEOUT_MS = 1200;
+const IPV6_CONNECTIVITY_CACHE_TTL_MS = 5 * 60_000;
 
 interface ReachabilityCacheEntry {
   status: Exclude<PublicReachability, "checking">;
@@ -13,8 +21,54 @@ interface ReachabilityCacheEntry {
 
 const cache = new Map<string, ReachabilityCacheEntry>();
 
+let ipv6ConnectivityCache: { hasIpv6: boolean; checkedAt: number } | null = null;
+let ipv6ConnectivityPending: Promise<boolean> | null = null;
+
 export function resetPublicAddressReachabilityCache() {
   cache.clear();
+  ipv6ConnectivityCache = null;
+  ipv6ConnectivityPending = null;
+}
+
+export function isIpv6Hostname(hostname: string): boolean {
+  return hostname.startsWith("[") || hostname.includes(":");
+}
+
+export function isIpv6Address(address: string): boolean {
+  const url = healthUrlForPublicAddress(address);
+  if (!url) return false;
+  try {
+    return isIpv6Hostname(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+export async function hasIpv6Connectivity(
+  fetcher: typeof fetch = globalThis.fetch,
+): Promise<boolean> {
+  const fresh = ipv6ConnectivityCache && Date.now() - ipv6ConnectivityCache.checkedAt < IPV6_CONNECTIVITY_CACHE_TTL_MS;
+  if (fresh) return ipv6ConnectivityCache!.hasIpv6;
+  if (ipv6ConnectivityPending) return ipv6ConnectivityPending;
+
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), IPV6_PROBE_TIMEOUT_MS);
+  const pending = fetcher(IPV6_PROBE_URL, {
+    method: "GET",
+    mode: "no-cors",
+    cache: "no-store",
+    signal: controller.signal,
+  })
+    .then(() => true)
+    .catch(() => false)
+    .finally(() => {
+      window.clearTimeout(timeout);
+    });
+  ipv6ConnectivityPending = pending;
+  const hasIpv6 = await pending;
+  ipv6ConnectivityCache = { hasIpv6, checkedAt: Date.now() };
+  ipv6ConnectivityPending = null;
+  return hasIpv6;
 }
 
 export function healthUrlForPublicAddress(address: string): string | null {
@@ -53,6 +107,12 @@ export async function probePublicAddress(
     // additionally expose the normal 2xx status.
     return response.ok || response.type === "opaque" ? "reachable" : "unreachable";
   } catch {
+    // A falha pode ser o peer fora do ar ou esta máquina sem rota IPv6 - só
+    // um endereço IPv6 sem conectividade local vira "ipv6-unavailable"; o
+    // resto continua "unreachable".
+    if (isIpv6Hostname(new URL(url).hostname) && !(await hasIpv6Connectivity(fetcher))) {
+      return "ipv6-unavailable";
+    }
     return "unreachable";
   } finally {
     window.clearTimeout(timeout);

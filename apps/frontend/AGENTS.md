@@ -26,12 +26,15 @@ remain local until the deploy preflight.
 - `scripts/build-brand.mjs` - brings the product identity into the bundle. Runs before dev/build/test via the same npm pre-hooks: reads `brand.json` at the repository root (the file the Rust binary embeds with `include_str!`), copies a URL-rewritten manifest to `src/brand/brand.json` and the images it points at to `public/brand/`. Both are gitignored - build output, and a committed copy is a copy that drifts. Vite cannot import from outside its root, which is the whole reason this step exists. **Published names carry a content hash** (`pom-icon-512.f95e6ea3.png`): the node serves everything except `index.html` as `immutable, max-age=1y` on the premise that asset names are hashed, and files under `public/` are copied verbatim by Vite - a fixed name pinned the old logo in the browser for a year, which is exactly what happened the first time this ran. `vite.config.ts`'s `brandHtml` plugin reads the **generated** manifest for the same reason, and the folder is recreated each run so old hashes do not pile up in `dist/`.
 - `scripts/build-docs.mjs` - embeds the repository's living documentation into the bundle. Runs before dev/build/test via the npm `predev`/`prebuild`/`pretest` hooks: copies the folder `AGENTS.md` files, the `docs/subsystems/*.md` READMEs and the root README into `src/docs/` (gitignored, never committed) plus a generated `manifest.json` (`{id, path, title, label, kind, scope, section, order}`). `label` is the short human name (title minus "Subsistema: "/"AGENTS.md - " and minus everything after the first ":"/" - "/"("), `kind` is `overview` for a folder's `AGENTS.md` and `doc` otherwise, `scope` the folder an overview covers - the screen must never parse paths or show a file name. The Documentation screen reads them through two build-time imports (`manifest.json` + `import.meta.glob`), so the docs travel inside the built JS and work on any machine that serves `dist/` - no node route, no disk reads at runtime. `src/vite-env.d.ts` references `vite/client`, which is what types `import.meta.glob` under `tsconfig.app.json`.
 
+`scripts/build-licenses.mjs` - gera o catálogo versionado `src/lib/licenses.generated.ts` a partir das dependências diretas do frontend e do workspace Rust, incluindo dependências de build diretas. Lê manifests de pacotes e `cargo metadata`, normaliza links de repositório e não expande dependências transitivas. Rode `npm run licenses` após alterar `package.json`, `package-lock.json`, `Cargo.toml` ou `Cargo.lock` e versione também o arquivo gerado.
+
 ## package.json scripts
 
 - `dev` - `vite --port 5199 --strictPort` (hot reload against a proxied node).
 - `build` - `tsc -b && vite build` (type-check via project references, then bundle to `dist/`).
 - `preview` - `vite preview --port 5199 --strictPort`.
 - `test` - `vitest run`.
+- `licenses` - `node scripts/build-licenses.mjs` (atualiza o catálogo de dependências e licenças usado por Sobre).
 - `predev`/`prebuild`/`pretest` - `node scripts/build-docs.mjs` (regenerate `src/docs/` so the embedded documentation is fresh for the dev server, the build and the tests).
 - Dependencies: `@tanstack/react-query`, `react-router-dom` (v6 with v7 future flags), `framer-motion`, `react-markdown` + `remark-gfm` + `rehype-highlight`, `@uiw/react-md-editor` + `@uiw/react-markdown-preview` + `rehype-sanitize` for trusted read-only Markdown surfaces, `highlight.js`, `lucide-react`, `recharts`, `clsx`, fontsource font packages.
 
@@ -42,8 +45,8 @@ remain local until the deploy preflight.
 - `index.css` - design tokens and global styles (see below).
 - `App.tsx` - shell and route table (see below); after setup detection it probes
   the public administrative exposure and gates the whole shell with the human
-  access token only when needed. The real login is a browser-recognized form;
-  the token stays in module memory and the server-side `HttpOnly` session is
+  access password only when needed. The real login is a browser-recognized form;
+  the password stays in module memory and the server-side `HttpOnly` session is
   what survives a reload. This gate is only a UI flow: the server remains the
   authorization boundary.
 
@@ -117,8 +120,10 @@ desenhado**, porque uma vista só não é uma escolha.
   compatível da tela da raiz de confiança.
 - `/config/preferencias` -> Preferences com exposição, Hugging Face e proteção
   térmica; `/config/armazenamento` -> ModelPaths; `/config/preferencias/admin`
-  -> preferências administrativas de TLS, QUIC, logs e chat da rede. Estes são
-  os três itens que permanecem na seção principal Configurações.
+  -> preferências administrativas de TLS, QUIC, logs e chat da rede; e
+  `/config/sobre` -> About, com a licença provisória explícita do POM e o
+  catálogo agrupado por licença das dependências diretas do frontend e do Rust.
+  Sobre é o último item da seção Configurações.
 - `*` -> NotFound
 
 Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-fade wrapper; chat and dashboard get overflow-hidden main, the rest scroll.
@@ -131,7 +136,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 ## src/ subfolders
 
-- `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, tipos compartilhados e o contrato de métricas de TTFT, prefill, geração e total. See `src/lib/AGENTS.md`.
+- `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, tipos compartilhados, catálogo de licenças gerado, redimensionamento de imagens por orçamento de contexto e contrato de métricas de TTFT, prefill, geração e total. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider, including telemetry and initial-model copy. See `src/i18n/AGENTS.md`.
 - `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action, initial-model mark and `RemoteModels`. See `src/routes/AGENTS.md`.
 - `src/components/` - chrome (Sidebar, Topbar, nav, Notifications, TlsIndicator, ChatSessionList, ChatSurfaceTabs) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog, ApiKeysTable, DeploymentLogDock, OpenNativeChatWindowButton). `ChatSurfaceTabs` mantém `/chat` e `/network-chat` navegáveis nos dois sentidos. `RuntimeParamsForm` é o editor compartilhado dos ajustes da implantação, incluindo a reserva de segurança de VRAM por dispositivo e o detector configurável de ciclos de geração.
@@ -165,7 +170,8 @@ sessão P2P por processo.
   `HttpOnly` admin session. Administrative requests use the cluster connection
   key, while `/v1/*` chat requests use the dedicated `pom-[node_id]` API key
   created by `/api/ui/chat-key`; a rejected key is replaced once before
-  retrying. The human access token is never persisted by the browser.
+  retrying. The human access password is never persisted by the browser, and
+  the node stores only its Argon2id hash.
 - The node serves `dist/` from disk per request; `POM_UI_DIST` overrides the directory (used by the Docker image).
 
 ## Pendências

@@ -33,6 +33,9 @@ O relatório de entrega da fase de UI está em
 gated e a licença antes do download.
 - `bench-llamacpp-qwen36-unified.md` - registro versionado da rodada de
   comparação do llama.cpp puro com cache unificado, MTP e a geometria do POM.
+- `kv-cache-device-placement.md` - investigação da separação entre dispositivo
+  dos pesos e dispositivo do cache KV, incluindo a decisão pendente que exige
+  uma API nova no fork do llama.cpp.
 - `subsystems/freetoken-moe.md` - método, medições e invariantes do goal que
   adiciona o caminho MoE próprio ao lado do caminho denso, incluindo o marco
   dos quatro modelos da ksia, a salvaguarda por dtype, o diagnóstico de reserva
@@ -43,6 +46,9 @@ gated e a licença antes do download.
 O fluxo incremental de topologia de deployments, incluindo o modo misto e as
 versões criadas ao adicionar ou remover máquinas, é detalhado em
 `subsystems/implantacao.md`, `subsystems/api-http.md` e `subsystems/web-ui.md`.
+
+O plano da correção do reload após idle-unload está em
+`superpowers/plans/2026-09-14-reload-idle-runtime-v2.md`.
 
 ## subsystems/
 
@@ -150,6 +156,8 @@ acima em duas fases (A: rota dinamica em `crates/node/src/network/route.rs` e
 commit proprio. `2026-05-24-pkarr-discovery.md` e o par do design homonimo.
 O plano `2026-09-02-nome-comercial-gpu.md` cobre a resolucao de nomes de GPU
 pela descricao do backend, pela base do sistema e pelo identificador PCI.
+O plano `2026-09-14-reload-idle-runtime.md` registra a reprodução e a correção
+da limpeza nativa durante a recarga de um peer ocioso.
 
 ## Convencao de nomes - e a excecao
 

@@ -52,7 +52,7 @@ import {
   ServerCog,
 } from "lucide-react";
 import { api } from "../lib/api";
-import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
+import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs, useNode } from "../lib/queries";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
 import { bytes, deployModelDisplayName, layerRange, megabytes } from "../lib/format";
@@ -292,6 +292,7 @@ export function DeployModel() {
   const { t } = useI18n();
   const cluster = useClusterCatalog();
   const liveCluster = useCluster();
+  const node = useNode();
   const [group, setGroup] = useState("");
   const [deploymentName, setDeploymentName] = useState("");
   const [strategy, setStrategy] = useState<DeployStrategy>("simple");
@@ -761,7 +762,8 @@ export function DeployModel() {
     }));
   }, [p, tp, tpGroup]);
 
-  /** The settings in force: the operator's edit, or the node's own defaults. */
+  /** The settings in force: the operator's edit or the plan's received values. */
+  const pomDesenv = node.data?.pom_desenv === true;
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
   /** The server's GGUF metadata is the only source of truth for MoE. */
   const isMoePlan = p?.is_moe === true;
@@ -906,7 +908,7 @@ export function DeployModel() {
         strategy,
         preferred_node_ids: preferredNodeIds,
         ...(selection ? { selection: rows } : {}),
-        ...(params ? { params } : {}),
+        ...(params ? { params: eff } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
         vision: useVision,
@@ -1317,6 +1319,7 @@ export function DeployModel() {
               }}
               merge={isWhole ? undefined : { value: effMerge, onChange: setMerge }}
               showInferenceMode={isMoePlan}
+              pomDesenv={pomDesenv}
               inferenceModeAlert={
                 inferenceModeSupported
                   ? undefined

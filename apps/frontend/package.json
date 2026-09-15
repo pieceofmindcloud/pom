@@ -8,6 +8,7 @@
     "dev": "vite --port 5199 --strictPort",
     "prebuild": "node scripts/build-brand.mjs && node scripts/build-docs.mjs",
     "build": "tsc -b && vite build",
+    "licenses": "node scripts/build-licenses.mjs",
     "preview": "vite preview --port 5199 --strictPort",
     "pretest": "node scripts/build-brand.mjs && node scripts/build-docs.mjs",
     "test": "vitest run"

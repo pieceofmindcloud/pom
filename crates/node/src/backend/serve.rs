@@ -207,6 +207,13 @@ pub async fn serve(listener: TcpListener, app: Router, tls: Option<TlsServer>) -
 /// desligamento, antes de ser abortada.
 const DRAIN_DEADLINE: Duration = Duration::from_secs(3);
 
+/// O endpoint QUIC pode estar esperando uma conexão que nunca termina. O
+/// supervisor não pode transformar esse caso em uma espera sem fim durante o
+/// reload; depois do prazo, abortar a task derruba o endpoint e permite que a
+/// geração nova seja criada. O valor é pouco maior que o idle timeout QUIC de
+/// 1,2 s, com margem para o fechamento do endpoint.
+const QUIC_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(2);
+
 /// Como `serve`, mas para de aceitar quando `shutdown` resolve e **encerra as
 /// conexões que sobraram** em vez de deixá-las soltas.
 ///
@@ -236,14 +243,16 @@ pub async fn serve_with_quic(
     quic_port: Option<u16>,
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
-    let quic_shutdown = Arc::new(tokio::sync::Notify::new());
+    // This is a one-shot lifecycle signal, not a broadcast event. Unlike
+    // `Notify::notify_waiters`, a oneshot keeps the value when the QUIC task
+    // has not reached its first poll yet.
+    let (quic_shutdown_tx, quic_shutdown_rx) = tokio::sync::oneshot::channel();
     let quic_task = quic.and_then(|config| {
         let port = quic_port?;
         let router = app.clone();
-        let stop = quic_shutdown.clone();
         Some(tokio::spawn(async move {
             let result = crate::quic::serve(port, router, config, async move {
-                stop.notified().await;
+                let _ = quic_shutdown_rx.await;
             })
             .await;
             if let Err(error) = &result {
@@ -304,12 +313,19 @@ pub async fn serve_with_quic(
         warn!("conexões ainda vivas depois de {DRAIN_DEADLINE:?}; encerrando");
         conns.shutdown().await;
     }
-    quic_shutdown.notify_waiters();
-    if let Some(task) = quic_task {
-        match task.await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}"),
-            Err(error) => warn!("task HTTP/3 terminou de forma inesperada: {error}"),
+    let _ = quic_shutdown_tx.send(());
+    if let Some(mut task) = quic_task {
+        match tokio::time::timeout(QUIC_SHUTDOWN_DEADLINE, &mut task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => {
+                warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}")
+            }
+            Ok(Err(error)) => warn!("task HTTP/3 terminou de forma inesperada: {error}"),
+            Err(_) => {
+                warn!("endpoint HTTP/3 não encerrou em {QUIC_SHUTDOWN_DEADLINE:?}; abortando task");
+                task.abort();
+                let _ = task.await;
+            }
         }
     }
     Ok(())
@@ -444,6 +460,7 @@ mod integracao {
     use crate::identity::Identity;
     use axum::{
         body::Bytes,
+        extract::State,
         http::StatusCode,
         routing::{get, post},
         Router,
@@ -533,6 +550,196 @@ mod integracao {
         assert_eq!(response.body, b"http3-without-tcp-tls");
         stop_tx.send(()).unwrap();
         server.await.unwrap();
+    }
+
+    /// Dois peers podem estar ociosos e receber o wake-up ao mesmo tempo. Uma
+    /// requisição QUIC pendurada em cada um não pode transformar o shutdown da
+    /// geração anterior em uma espera sem fim.
+    #[tokio::test]
+    async fn dois_peers_ociosos_podem_encerrar_quic_concorrente() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::Notify;
+
+        #[derive(Clone)]
+        struct RequestsInFlight {
+            started: Arc<AtomicUsize>,
+            all_started: Arc<Notify>,
+        }
+
+        async fn hold_request(
+            State(state): State<RequestsInFlight>,
+            _body: Bytes,
+        ) -> std::convert::Infallible {
+            if state.started.fetch_add(1, Ordering::SeqCst) + 1 == 2 {
+                state.all_started.notify_one();
+            }
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+
+        async fn spawn_peer(
+            identity: Identity,
+            state: RequestsInFlight,
+        ) -> (
+            tokio::sync::oneshot::Sender<()>,
+            tokio::task::JoinHandle<Result<()>>,
+            u16,
+            u16,
+        ) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let tcp_port = listener.local_addr().unwrap().port();
+            let udp_probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let quic_port = udp_probe.local_addr().unwrap().port();
+            drop(udp_probe);
+            let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+            let quic = quic_server_config(&identity).unwrap();
+            let app = Router::new()
+                .route("/hold", post(hold_request))
+                .with_state(state);
+            let server = tokio::spawn(async move {
+                serve_with_quic(
+                    listener,
+                    app,
+                    None,
+                    Some(quic),
+                    Some(quic_port),
+                    async move {
+                        let _ = stop_rx.await;
+                    },
+                )
+                .await
+            });
+            (stop_tx, server, tcp_port, quic_port)
+        }
+
+        let barrier = RequestsInFlight {
+            started: Arc::new(AtomicUsize::new(0)),
+            all_started: Arc::new(Notify::new()),
+        };
+        let first_identity = Identity::generate();
+        let second_identity = Identity::generate();
+        let first_node_id = first_identity.node_id.0.clone();
+        let second_node_id = second_identity.node_id.0.clone();
+        let (first_stop, first_server, first_tcp, first_quic) =
+            spawn_peer(first_identity, barrier.clone()).await;
+        let (second_stop, second_server, second_tcp, second_quic) =
+            spawn_peer(second_identity, barrier.clone()).await;
+
+        let clients = crate::quic::ClientPool::new();
+        let first_request = tokio::spawn({
+            let clients = clients.clone();
+            let node_id = first_node_id;
+            async move {
+                clients
+                    .request(
+                        &node_id,
+                        &format!("http://127.0.0.1:{first_tcp}"),
+                        &[format!("127.0.0.1:{first_quic}")],
+                        "/hold",
+                        "application/octet-stream",
+                        None,
+                        None,
+                        Vec::new(),
+                        Duration::from_secs(600),
+                    )
+                    .await
+            }
+        });
+        let second_request = tokio::spawn({
+            let clients = clients.clone();
+            let node_id = second_node_id;
+            async move {
+                clients
+                    .request(
+                        &node_id,
+                        &format!("http://127.0.0.1:{second_tcp}"),
+                        &[format!("127.0.0.1:{second_quic}")],
+                        "/hold",
+                        "application/octet-stream",
+                        None,
+                        None,
+                        Vec::new(),
+                        Duration::from_secs(600),
+                    )
+                    .await
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), barrier.all_started.notified())
+            .await
+            .expect("os dois peers deveriam aceitar a requisição QUIC");
+
+        let shutdown = tokio::time::timeout(Duration::from_secs(5), async {
+            first_stop.send(()).unwrap();
+            second_stop.send(()).unwrap();
+            first_server.await.unwrap().unwrap();
+            second_server.await.unwrap().unwrap();
+        })
+        .await;
+
+        first_request.abort();
+        second_request.abort();
+        assert!(
+            shutdown.is_ok(),
+            "peers ociosos não podem esperar indefinidamente pelo shutdown QUIC"
+        );
+    }
+
+    /// O reload pode pedir o encerramento antes de a task QUIC ter sido
+    /// escalonada pela primeira vez. O sinal precisa sobreviver a essa
+    /// corrida em cada peer, ou o supervisor fica esperando para sempre.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dois_peers_nao_perdem_sinal_de_shutdown_quic_antes_do_primeiro_poll() {
+        async fn peer_parts(
+            identity: Identity,
+        ) -> (tokio::net::TcpListener, QuicServerConfig, u16) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let udp_probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let quic_port = udp_probe.local_addr().unwrap().port();
+            drop(udp_probe);
+            let quic = quic_server_config(&identity).unwrap();
+            (listener, quic, quic_port)
+        }
+
+        // Prepare both sockets before spawning either server. This leaves the
+        // already-ready shutdown futures queued together with the two peers,
+        // making the lost `notify_waiters` wake-up deterministic.
+        let (first_listener, first_quic, first_quic_port) = peer_parts(Identity::generate()).await;
+        let (second_listener, second_quic, second_quic_port) =
+            peer_parts(Identity::generate()).await;
+        let mut first = tokio::spawn(serve_with_quic(
+            first_listener,
+            Router::new(),
+            None,
+            Some(first_quic),
+            Some(first_quic_port),
+            async {},
+        ));
+        let mut second = tokio::spawn(serve_with_quic(
+            second_listener,
+            Router::new(),
+            None,
+            Some(second_quic),
+            Some(second_quic_port),
+            async {},
+        ));
+        tokio::task::yield_now().await;
+        let finished = tokio::time::timeout(Duration::from_secs(1), async {
+            (&mut first).await.unwrap().unwrap();
+            (&mut second).await.unwrap().unwrap();
+        })
+        .await;
+
+        if finished.is_err() {
+            first.abort();
+            second.abort();
+            let _ = first.await;
+            let _ = second.await;
+        }
+        assert!(
+            finished.is_ok(),
+            "o shutdown simultâneo dos dois peers não pode perder o sinal QUIC"
+        );
     }
 
     /// E o ataque que o pinning existe para impedir: quem espera outro node_id

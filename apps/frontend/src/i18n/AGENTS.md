@@ -16,7 +16,9 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
 ## Per-file
 
 - `messages.csv` - fonte única das mensagens, ordenada por chave para diffs
-  estáveis. Textos simples permanecem literais; interpolação usa `{name}` e
+  estáveis. Textos simples permanecem literais; mensagens da senha administrativa
+  explicam que só o hash Argon2id é persistido e nunca carregam um segredo real;
+  interpolação usa `{name}` e
   lógica usa `plural`, `select` e seletores exatos ICU. Valores internos de
   `select` são preparados apenas pelo carregador para preservar condicionais
   de truthiness que existiam no código antigo. As chaves de deployment também
@@ -25,6 +27,9 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   aqui, sem strings hard-coded nas rotas.
   As métricas do card de máquina usam aqui os rótulos de GPUs, uso e potência
   para manter o detalhe disponível nas duas línguas.
+- As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem
+  o aviso de miniaturização automática de imagens e a recusa rara quando o
+  contexto não comporta nem a resolução mínima.
 - As mensagens `chat.thinkToggle` e `chat.thinkToggleHint` nomeiam o controle
   persistente de thinking do Chat nas duas línguas.
 - O grupo `adminAuthority.*` cobre a tela do principal e as vistas somente
@@ -63,6 +68,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
 - O grupo `deploymentLogs.*` cobre o console de processo da réplica local:
   estado do auto-scroll, cópia das últimas 500 linhas, retorno da cópia, filtro
   e estados de coleta.
+- O grupo `about.*` cobre a tela Sobre: licença provisória do POM, contagem e
+  filtro do catálogo, rótulos de ecossistema, versão, repositório e estado vazio.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 Os identificadores oficiais de perfil são `admin`, `node` e `infer`. O rótulo

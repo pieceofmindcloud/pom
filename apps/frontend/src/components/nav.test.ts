@@ -56,6 +56,15 @@ describe("navigation structure", () => {
     ]);
   });
 
+  it("places About as the final Settings item", () => {
+    const settings = NAV.find((section) => section.labelKey === "nav.settings");
+
+    expect(settings?.children?.at(-1)).toMatchObject({
+      labelKey: "nav.about",
+      to: "/config/sobre",
+    });
+  });
+
   it("keeps network chat separate and removes wizard and connection keys from the menu", () => {
     expect(NAV.map((section) => section.labelKey)).toContain("nav.networkChat");
     expect(NAV.flatMap((section) => section.children ?? []).map((child) => child.labelKey)).not.toContain("nav.setupWizard");
@@ -102,6 +111,7 @@ describe("navForProfile", () => {
     expect(network?.children?.map((child) => child.to)).toEqual([
       "/config/rede",
       "/config/rede/participantes",
+      "/config/minha-maquina",
       "/config/administracao",
       "/config/compartilhamento",
       "/config/keys/api",
@@ -109,6 +119,7 @@ describe("navForProfile", () => {
     expect(network?.children?.map((child) => child.labelKey)).toEqual([
       "nav.networkInfo",
       "nav.networkParticipants",
+      "nav.myMachine",
       "nav.administrators",
       "nav.sharing",
       "nav.apiKeys",
@@ -117,6 +128,7 @@ describe("navForProfile", () => {
       "/config/preferencias",
       "/config/armazenamento",
       "/config/preferencias/admin",
+      "/config/sobre",
     ]);
 
     const inferSettings = navForProfile("infer");

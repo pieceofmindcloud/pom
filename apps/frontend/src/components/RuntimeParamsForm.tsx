@@ -208,12 +208,14 @@ export function RuntimeParamsForm({
    */
   isTp = false,
   capabilities,
+  pomDesenv = false,
 }: {
   value: RuntimeParams;
   onChange: (next: RuntimeParams) => void;
   disabled?: boolean;
   isTp?: boolean;
   capabilities?: DeploymentCapabilities;
+  pomDesenv?: boolean;
 }) {
   const { t } = useI18n();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -317,13 +319,15 @@ export function RuntimeParamsForm({
           label={t("deploy.noEmbeddings")}
           hint={t("deploy.noEmbeddingsHint")}
         />
-        <Switch
-          checked={value.cycle_detection_enabled ?? true}
-          onChange={(v) => onChange({ ...value, cycle_detection_enabled: v })}
-          disabled={disabled}
-          label={t("deploy.cycleDetection")}
-          hint={t("deploy.cycleDetectionHint")}
-        />
+        {pomDesenv && (
+          <Switch
+            checked={value.cycle_detection_enabled ?? false}
+            onChange={(v) => onChange({ ...value, cycle_detection_enabled: v })}
+            disabled={disabled}
+            label={t("deploy.cycleDetection")}
+            hint={t("deploy.cycleDetectionHint")}
+          />
+        )}
         <CapabilitySwitch
           capability={capabilities?.speculative_decoding}
           checked={value.speculative_decoding_enabled ?? false}
@@ -348,7 +352,7 @@ export function RuntimeParamsForm({
         />
       </div>
 
-      {(value.cycle_detection_enabled ?? true) && (
+      {pomDesenv && (value.cycle_detection_enabled ?? false) && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {CYCLE_KNOBS.map((k) => numeric(k))}
         </div>
@@ -365,14 +369,16 @@ export function RuntimeParamsForm({
         capabilities?.mtp?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {MTP_KNOBS.map((k) => numeric(k))}
-          <CapabilitySwitch
-            alwaysVisible
-            checked={value.mtp_cpu_fallback_enabled ?? true}
-            onChange={(v) => onChange({ ...value, mtp_cpu_fallback_enabled: v })}
-            disabled={disabled}
-            label={t("deploy.mtpCpuFallback")}
-            hint={t("deploy.mtpCpuFallbackHint")}
-          />
+          {pomDesenv && (
+            <CapabilitySwitch
+              alwaysVisible
+              checked={value.mtp_cpu_fallback_enabled ?? true}
+              onChange={(v) => onChange({ ...value, mtp_cpu_fallback_enabled: v })}
+              disabled={disabled}
+              label={t("deploy.mtpCpuFallback")}
+              hint={t("deploy.mtpCpuFallbackHint")}
+            />
+          )}
         </div>
       )}
     </div>

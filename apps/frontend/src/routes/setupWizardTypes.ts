@@ -11,16 +11,11 @@ export type NetworkMode = "local" | "private" | "public";
 export type DiscoveryMode = "automatic" | "mdns" | "manual";
 export type WizardStage =
   | "setup-profile"
-  | "setup-hardware"
   | "setup-location"
-  | "setup-resources"
-  | "setup-model"
-  | "setup-storage"
   | "setup-network"
-  | "setup-security"
   | "setup-trust"
   | "setup-invite"
-  | "setup-health"
+  | "setup-discovery"
   | "setup-review"
   | "setup-saved"
   | "welcome"

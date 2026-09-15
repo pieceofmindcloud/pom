@@ -6,6 +6,7 @@ import { LocaleProvider } from "../i18n/provider";
 import { Preferences, ThermalPanel } from "./Preferences";
 
 const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
   post: vi.fn(),
   saveHuggingFaceToken: vi.fn(),
   invalidate: vi.fn(),
@@ -25,7 +26,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/api", () => ({
-  api: { post: mocks.post },
+  api: { get: mocks.get, post: mocks.post },
   setAdminAccessToken: mocks.setAdminAccessToken,
   clearAdminAccessToken: mocks.clearAdminAccessToken,
   saveHuggingFaceToken: (...args: unknown[]) => mocks.saveHuggingFaceToken(...args),
@@ -33,7 +34,7 @@ vi.mock("../lib/api", () => ({
 
 vi.mock("../lib/queries", () => ({
   useAdminAccessInfo: () => ({
-    data: { admin_exposure: "localhost", gateway_port: 8080, access_token: null },
+    data: { admin_exposure: "localhost", gateway_port: 8080, password_configured: false },
     refetch: mocks.invalidate,
   }),
   useHuggingFaceTokenConfig: () => ({
@@ -51,6 +52,7 @@ vi.mock("../lib/toast", () => ({
 
 afterEach(() => {
   cleanup();
+  mocks.get.mockReset();
   mocks.post.mockReset();
   mocks.saveHuggingFaceToken.mockReset();
   mocks.invalidate.mockReset();
@@ -58,14 +60,17 @@ afterEach(() => {
   mocks.fromError.mockReset();
   mocks.setAdminAccessToken.mockReset();
   mocks.clearAdminAccessToken.mockReset();
+  mocks.get.mockResolvedValue({ enabled: false, active: false, searching: false, found: false, port: 0 });
   mocks.node.tls_required = false;
   mocks.node.quic_enabled = false;
 });
 
+mocks.get.mockResolvedValue({ enabled: false, active: false, searching: false, found: false, port: 0 });
+
 function mount(child: React.ReactNode) {
   return render(
     <LocaleProvider initialLocale="pt-BR">
-      <MemoryRouter>{child}</MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>{child}</MemoryRouter>
     </LocaleProvider>,
   );
 }
@@ -113,6 +118,18 @@ describe("Preferences", () => {
     });
   });
 
+  it("mantém a descoberta local desligada e permite ativá-la pela preferência administrativa", async () => {
+    mocks.post.mockResolvedValue({ enabled: true, active: true, searching: false, found: false, port: 42777 });
+    mount(<Preferences administrative />);
+
+    await waitFor(() => expect(screen.getByText("Descoberta automática local")).toBeTruthy());
+    fireEvent.click(screen.getByRole("switch", { name: "Descoberta automática local" }));
+
+    await waitFor(() => {
+      expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/auto-discovery", { enabled: true });
+    });
+  });
+
   it("esconde a política incompatível com o transporte ativo", () => {
     mocks.node.quic_enabled = true;
     mount(<Preferences administrative />);
@@ -129,18 +146,21 @@ describe("Preferences", () => {
     expect(screen.queryByText("Transporte QUIC")).toBeNull();
   });
 
-  it("gera e guarda o token quando a interface passa para a rede", async () => {
+  it("define e guarda a senha quando a interface passa para a rede", async () => {
     mocks.post.mockResolvedValue({
       saved: true,
       restart: false,
       admin_exposure: "network",
       gateway_port: 8080,
-      access_token: "new-admin-token",
+      password_configured: true,
     });
     mount(<Preferences />);
 
     fireEvent.change(screen.getByLabelText(/quem pode abrir a interface/i), {
       target: { value: "network" },
+    });
+    fireEvent.change(screen.getByLabelText(/nova senha/i), {
+      target: { value: "new-admin-password" },
     });
     fireEvent.click(screen.getByRole("button", { name: /salvar exposição/i }));
 
@@ -148,9 +168,10 @@ describe("Preferences", () => {
       expect(mocks.post).toHaveBeenCalledWith("/api/ui/access", {
         admin_exposure: "network",
         gateway_port: 8080,
-        regenerate_token: false,
+        current_password: "",
+        new_password: "new-admin-password",
       });
-      expect(mocks.setAdminAccessToken).toHaveBeenCalledWith("new-admin-token");
+      expect(mocks.setAdminAccessToken).toHaveBeenCalledWith("new-admin-password");
     });
   });
 
@@ -174,6 +195,54 @@ describe("Preferences", () => {
 });
 
 describe("ThermalPanel", () => {
+  it("aceita exatamente 70 °C e 60 segundos", () => {
+    const onSave = vi.fn();
+    mount(
+      <ThermalPanel
+        policy={{ limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 }}
+        onSave={onSave}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/desimplantar acima/i), { target: { value: "70" } });
+    fireEvent.change(screen.getByLabelText(/tempo de resfriamento/i), { target: { value: "60" } });
+    fireEvent.click(screen.getByRole("button", { name: /salvar política térmica/i }));
+
+    expect(onSave).toHaveBeenCalledWith({ limit_c: 70, hysteresis_c: 8, cooldown_secs: 60 });
+  });
+
+  it("recusa temperatura de corte abaixo de 70 °C", () => {
+    const onSave = vi.fn();
+    mount(
+      <ThermalPanel
+        policy={{ limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 }}
+        onSave={onSave}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/desimplantar acima/i), { target: { value: "69" } });
+    fireEvent.click(screen.getByRole("button", { name: /salvar política térmica/i }));
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByText(/temperatura de corte deve ser de pelo menos 70 °C/i)).toBeTruthy();
+  });
+
+  it("recusa tempo de resfriamento acima de 60 segundos", () => {
+    const onSave = vi.fn();
+    mount(
+      <ThermalPanel
+        policy={{ limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 }}
+        onSave={onSave}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/tempo de resfriamento/i), { target: { value: "61" } });
+    fireEvent.click(screen.getByRole("button", { name: /salvar política térmica/i }));
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByText(/tempo de resfriamento deve ser de no máximo 60 segundos/i)).toBeTruthy();
+  });
+
   it("continua enviando a política editada quando usado isoladamente", () => {
     const onSave = vi.fn();
     mount(

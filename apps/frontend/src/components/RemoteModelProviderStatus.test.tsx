@@ -25,7 +25,7 @@ describe("RemoteModelProviderStatus", () => {
   it("distinguishes an installed CLI that still needs authentication", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
-        <MemoryRouter basename="/admin-ui" initialEntries={["/admin-ui/"]}>
+        <MemoryRouter basename="/admin-ui" initialEntries={["/admin-ui/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <RemoteModelProviderStatus
             status={{
               cli: { installed: true, version: "1.2.3", authenticated: false, username: null },

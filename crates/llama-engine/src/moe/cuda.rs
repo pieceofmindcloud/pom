@@ -376,7 +376,10 @@ where
     let outputs = std::thread::scope(|scope| {
         let handles = groups
             .into_iter()
-            .map(|group| scope.spawn(move || run(group)))
+            .map(|group| {
+                let run = &run;
+                scope.spawn(move || run(group))
+            })
             .collect::<Vec<_>>();
         handles
             .into_iter()
@@ -2073,6 +2076,23 @@ mod tests {
     use super::super::format_q4_0::{pack_payload, parse_tensor_table, Q4_0Expert};
     use super::*;
     use memmap2::Mmap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NonCloneState(Arc<AtomicUsize>);
+
+    #[test]
+    fn soma_paralela_reutiliza_a_closure_fn_em_todos_os_grupos() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = NonCloneState(Arc::clone(&calls));
+        let output = sum_parallel_device_outputs(vec![1u8, 2, 3], 2, move |group| {
+            state.0.fetch_add(1, Ordering::Relaxed);
+            Ok(vec![group as f32, 1.0])
+        })
+        .unwrap();
+
+        assert_eq!(output, vec![6.0, 3.0]);
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
 
     struct TestDeviceAllocation {
         bytes: usize,

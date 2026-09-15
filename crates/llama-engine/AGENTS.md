@@ -57,8 +57,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   os metadados de memória. O caminho uniforme IQ3_XXS (dtype 18) também usa o
   pipeline persistente e kernels cooperativos; IQ e K compartilham buffers e
   o mesmo agrupamento por CUDA<n>, sem `cudaDeviceSynchronize` no hot path.
-  No IQ3_XXS cada lane processa dois valores adjacentes do superbloco e
-  reutiliza seus metadados de codebook.
+  No IQ3_XXS uma warp cobre o superbloco inteiro: cada lane processa os oito
+  valores de uma fatia `(group, il)` e a soma usa shuffle, sem uma árvore de
+  shared memory de quatro warps por linha.
   Com o perfil CUDA, `cuda_device_calls` separa chamadas, experts e tempos por
   ordinal para distinguir bytes residentes de uso efetivo da placa.
   A cobertura CUDA por dtype e os números da ksia ficam em

@@ -1173,11 +1173,54 @@ __device__ float iq_dot(
     return result;
 }
 
-// IQ3_XXS stores 256 values per superblock. The cooperative route kernel has
-// 128 lanes, so each lane can consume two adjacent values. Keeping the lane
-// mapping adjacent makes the q3/codebook metadata reusable and avoids the
-// scalar decoder recomputing the same aux32 and grid lookup for distant
-// columns. The result is a partial sum for the calling lane.
+// IQ3_XXS stores 256 values per superblock. One warp covers one superblock:
+// each lane owns the eight values of one (group, il) slice. This keeps the
+// q3/codebook metadata reusable and avoids paying for four warps and a shared
+// memory tree reduction for a single output row. The result is a partial sum
+// for the calling lane.
+__device__ __forceinline__ float iq3xxs_warp_partial_dot(
+    const uint8_t *matrix,
+    int columns,
+    const float *input
+) {
+    constexpr int block_elements = 256;
+    constexpr int block_bytes = 98;
+    const int lane = threadIdx.x & 31;
+    const int group = lane / 4;
+    const int il = lane % 4;
+    float result = 0.0f;
+    for (int block_index = 0; block_index < columns / block_elements; ++block_index) {
+        const uint8_t *block = matrix + block_index * block_bytes;
+        const uint8_t *q3 = block + 2 + group * 8;
+        const uint32_t aux32 = static_cast<uint32_t>(block[66 + group * 4]) |
+            (static_cast<uint32_t>(block[67 + group * 4]) << 8) |
+            (static_cast<uint32_t>(block[68 + group * 4]) << 16) |
+            (static_cast<uint32_t>(block[69 + group * 4]) << 24);
+        const float d = __half2float(__ushort_as_half(
+            static_cast<uint16_t>(block[0]) |
+            (static_cast<uint16_t>(block[1]) << 8))) *
+            (0.5f + static_cast<float>(aux32 >> 28)) * 0.5f;
+        const uint8_t signs = ksigns_iq2xs[(aux32 >> (7 * il)) & 127];
+        const uint32_t grid_lo = iq3xxs_grid[q3[2 * il]];
+        const uint32_t grid_hi = iq3xxs_grid[q3[2 * il + 1]];
+        const int column_base = block_index * block_elements + group * 32 + il * 8;
+        for (int element = 0; element < 8; ++element) {
+            const uint32_t grid = element < 4 ? grid_lo : grid_hi;
+            const int grid_element = element & 3;
+            const uint8_t code = static_cast<uint8_t>((grid >> (8 * grid_element)) & 0xffu);
+            result += d * static_cast<float>(code) *
+                ((signs & kmask_iq2xs[element]) != 0 ? -1.0f : 1.0f) *
+                input[column_base + element];
+        }
+    }
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        result += __shfl_down_sync(0xffffffffu, result, offset);
+    }
+    return result;
+}
+
+// Kept for the other IQ layouts, whose metadata mapping is not identical to
+// IQ3_XXS. They still use one block per row and a shared-memory reduction.
 __device__ float iq3xxs_cooperative_partial_dot(
     const uint8_t *matrix,
     int columns,
@@ -1617,6 +1660,30 @@ __global__ void iquant_gate_up_cooperative_route_kernel(
     }
 }
 
+__global__ void iquant_gate_up_iq3xxs_warp_route_kernel(
+    const uint8_t * const *payloads,
+    const uint32_t *token_ids,
+    int pair_count,
+    int intermediate,
+    int hidden,
+    const float *hidden_values,
+    float *gate_up_values
+) {
+    const int row_index = blockIdx.x;
+    const int rows_per_pair = 2 * intermediate;
+    const int pair = row_index / rows_per_pair;
+    const int row = row_index % rows_per_pair;
+    if (pair >= pair_count) return;
+    const std::size_t row_bytes = static_cast<std::size_t>(hidden / 256) * 98;
+    const uint8_t *matrix = payloads[pair] + kScalarPayloadHeaderBytes;
+    const uint8_t *encoded = matrix + static_cast<std::size_t>(row) * row_bytes;
+    const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
+    const float value = iq3xxs_warp_partial_dot(encoded, hidden, input);
+    if (threadIdx.x == 0) {
+        gate_up_values[pair * rows_per_pair + row] = value;
+    }
+}
+
 __global__ void iquant_down_cooperative_route_kernel(
     uint32_t dtype,
     const uint8_t * const *payloads,
@@ -1647,6 +1714,29 @@ __global__ void iquant_down_cooperative_route_kernel(
     }
     if (threadIdx.x == 0) {
         pair_output[pair * hidden + row] = partials[0];
+    }
+}
+
+__global__ void iquant_down_iq3xxs_warp_route_kernel(
+    const uint8_t * const *payloads,
+    int pair_count,
+    int hidden,
+    int intermediate,
+    std::size_t gate_up_len,
+    const float *activated,
+    float *pair_output
+) {
+    const int row_index = blockIdx.x;
+    const int pair = row_index / hidden;
+    const int row = row_index % hidden;
+    if (pair >= pair_count) return;
+    const std::size_t row_bytes = static_cast<std::size_t>(intermediate / 256) * 98;
+    const uint8_t *matrix = payloads[pair] + kScalarPayloadHeaderBytes + gate_up_len;
+    const uint8_t *encoded = matrix + static_cast<std::size_t>(row) * row_bytes;
+    const float *input = activated + static_cast<std::size_t>(pair) * intermediate;
+    const float value = iq3xxs_warp_partial_dot(encoded, intermediate, input);
+    if (threadIdx.x == 0) {
+        pair_output[pair * hidden + row] = value;
     }
 }
 
@@ -2851,10 +2941,17 @@ extern "C" int pom_moe_iquant_forward_route_batch_resident(
             result = cuda_status(cudaEventRecord(start));
             if (result != 0) break;
         }
-        iquant_gate_up_route_kernel<<<
-            (2 * intermediate_i * pair_count + block_size - 1) / block_size,
-            block_size>>>(dtype, d_payloads, d_token_ids, pair_count, intermediate_i,
-                hidden_i, d_hidden, d_gate_up);
+        if (dtype == 18) {
+            iquant_gate_up_iq3xxs_warp_route_kernel<<<
+                2 * intermediate_i * pair_count, 32>>>(
+                    d_payloads, d_token_ids, pair_count, intermediate_i,
+                    hidden_i, d_hidden, d_gate_up);
+        } else {
+            iquant_gate_up_cooperative_route_kernel<<<
+                2 * intermediate_i * pair_count, block_size>>>(
+                    dtype, d_payloads, d_token_ids, pair_count, intermediate_i,
+                    hidden_i, d_hidden, d_gate_up);
+        }
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         kquant_silu_kernel<<<
@@ -2862,10 +2959,17 @@ extern "C" int pom_moe_iquant_forward_route_batch_resident(
             block_size>>>(d_gate_up, pair_count, intermediate_i, d_activated);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
-        iquant_down_route_kernel<<<
-            (hidden_i * pair_count + block_size - 1) / block_size,
-            block_size>>>(dtype, d_payloads, pair_count, hidden_i, intermediate_i,
-                d_activated, d_pair_output);
+        if (dtype == 18) {
+            iquant_down_iq3xxs_warp_route_kernel<<<
+                hidden_i * pair_count, 32>>>(
+                    d_payloads, pair_count, hidden_i, intermediate_i,
+                    gate_up_bytes, d_activated, d_pair_output);
+        } else {
+            iquant_down_cooperative_route_kernel<<<
+                hidden_i * pair_count, block_size>>>(
+                    dtype, d_payloads, pair_count, hidden_i, intermediate_i,
+                    gate_up_bytes, d_activated, d_pair_output);
+        }
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         aggregate_route_batch_kernel<<<
@@ -4707,6 +4811,11 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
             2 * intermediate_i * pair_count, block_size>>>(
                 dtype, pipeline->d_payloads, pipeline->d_token_ids, pair_count,
                 intermediate_i, hidden_i, pipeline->d_hidden, pipeline->d_gate_up);
+    } else if (dtype == 18) {
+        iquant_gate_up_iq3xxs_warp_route_kernel<<<
+            2 * intermediate_i * pair_count, 32>>>(
+                pipeline->d_payloads, pipeline->d_token_ids, pair_count,
+                intermediate_i, hidden_i, pipeline->d_hidden, pipeline->d_gate_up);
     } else {
         iquant_gate_up_cooperative_route_kernel<<<
             2 * intermediate_i * pair_count, block_size>>>(
@@ -4723,6 +4832,10 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
     if (is_kquant) {
         kquant_down_cooperative_route_kernel<<<hidden_i * pair_count, block_size>>>(
             dtype, pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
+            expected_gate_up_bytes, pipeline->d_activated, pipeline->d_pair_output);
+    } else if (dtype == 18) {
+        iquant_down_iq3xxs_warp_route_kernel<<<hidden_i * pair_count, 32>>>(
+            pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
             expected_gate_up_bytes, pipeline->d_activated, pipeline->d_pair_output);
     } else {
         iquant_down_cooperative_route_kernel<<<hidden_i * pair_count, block_size>>>(

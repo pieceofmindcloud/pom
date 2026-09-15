@@ -2667,17 +2667,21 @@ O caminho IQ agora compartilha o mesmo workspace persistente por `(device,
 geometria)` usado pelos K-quants. O runtime cria um pipeline para cada shard
 `CUDA<n>` do cache residente, agrupa as rotas pelo ordinal e executa os grupos
 em paralelo; nenhum device é escolhido como `main_gpu` único pelo executor.
-Cada kernel cooperativo atribui uma linha a um bloco de 128 threads, reduz os
-fragmentos do dot product em shared memory e mantém a sequência gate/up,
-SiLU, down e agregação. O D2H síncrono continua sendo a barreira necessária
-para devolver o resultado ao callback, mas o `cudaDeviceSynchronize` adicional
-foi removido e o perfil publica `sync_count=0`. IQ3_XXS agora é elegível para a
-ponte CUDA e valida a geometria do payload antes do lançamento.
+Os IQs genéricos atribuem uma linha a um bloco de 128 threads e reduzem os
+fragmentos do dot product em shared memory. Para o IQ3_XXS medido, cada linha
+usa uma única warp de 32 threads: cada lane processa os oito valores de uma
+fatia `(group, il)` e a soma usa shuffle. Isso reduz de quatro para uma warp o
+trabalho de coordenação da linha e elimina a árvore de shared memory, mantendo a sequência
+gate/up, SiLU, down e agregação. O D2H síncrono continua sendo a barreira
+necessária para devolver o resultado ao callback, mas o
+`cudaDeviceSynchronize` adicional foi removido e o perfil publica
+`sync_count=0`. IQ3_XXS agora é elegível para a ponte CUDA e valida a geometria
+do payload antes do lançamento.
 
-No IQ3_XXS, as 128 lanes percorrem dois valores adjacentes de cada superbloco
-de 256 elementos. Isso reutiliza o `aux32`, o índice do codebook e os sinais
-para o par local, em vez de reconstruir esses metadados para colunas distantes.
-Os outros IQs mantêm o decoder cooperativo genérico até terem a mesma prova
+No IQ3_XXS, as 32 lanes cobrem os 256 elementos do superbloco em grupos de
+oito. O `aux32`, os dois índices do codebook e os sinais são lidos uma vez por
+fatia, em vez de reconstruir esses metadados para cada par de colunas. Os
+outros IQs mantêm o decoder cooperativo genérico até terem a mesma prova
 diferencial de layout.
 
 O cache não copia a fonte fria em hits: a admissão continua sendo por hash de
@@ -2699,6 +2703,33 @@ llama.cpp. O fork continua fornecendo o callback externo e os metadados de
 memória. A comparação contra `dense/llama.cpp` e contra FreeToken precisa ser
 repetida na ksia com o build CUDA novo: este worktree não possui `nvcc` nem
 GPU, então não há uma alegação local de throughput.
+
+### Comparação isolada em uma máquina - 2026-09-15
+
+Uma execução real no nó `5b035803`, com duas RTX 5060 Ti e sem salto de
+pipeline, confirmou que o transporte não é o gargalo. O MoE usou 46 tokens de
+prefill e gerou 188 tokens: `5667,7 ms` de prefill (`8,1 tok/s`) e
+`35009,3 ms` de decode em 95 chamadas (`5,3 tok/s`), com p50/p95 de
+`347,2/617,1 ms` por chamada. A rede foi `0-16 ms`, a fila e o setup ficaram
+abaixo de `2 ms`, e `99%` do tempo ficou em `llama_decode` local.
+
+O controle `dense/llama.cpp` no mesmo nó gerou 178 tokens a `18,5 tok/s`, com
+`749,7 ms` de prefill (`29,2 tok/s`) para 22 tokens e p50/p95 de
+`125,4/129,8 ms` por chamada de decode. A comparação não tem prompt idêntico
+(`46` contra `22` tokens), portanto é evidência de ordem de grandeza, não uma
+medição pareada final. Mesmo assim, o MoE ficou cerca de `3,6x` mais lento por
+token no decode e `3,6x` mais lento no prefill normalizado, apesar de anunciar
+`36 GPU / 0 CPU / 0 mixed`; esse contador descreve camadas do llama.cpp e não
+prova utilização de CUDA0 e CUDA1 pelo executor externo.
+
+A execução ainda não tinha `POM_MOE_CUDA_PROFILE=1`, então não permite dizer
+qual ordinal recebeu as rotas nem separar kernel, H2D, D2H e misses do cache.
+Para o próximo ensaio na ksia, o perfil deve ser ligado desde o arranque e a
+telemetria deve incluir `cuda_device_calls` e
+`device_cache_resident_bytes_by_device`. A ausência de transporte e de espera
+de scheduler já elimina timeouts como hipótese principal; a hipótese restante
+é o custo do callback por camada, das cópias host/device e do decoder IQ3_XXS
+customizado, a comparar com as chamadas CUDA otimizadas do caminho denso.
 
 ## Defeitos anotados
 

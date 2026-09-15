@@ -617,8 +617,10 @@ até o fim de tudo o que ela reporta.
 
 O diálogo `AddNodeDialog` consulta `POST /api/ui/deploy/node/options` depois de
 cada troca de máquina. Assim, o seletor mostra as fatias e o modelo inteiro
-que o alvo realmente tem, além dos controles de camadas na GPU, localização
-do cache KV e tipos K/V daquela máquina. Confirmar chama
+que o alvo realmente tem, além dos controles de camadas na GPU, do booleano de
+KV na GPU versus RAM e dos tipos K/V daquela máquina. O POM não expõe uma
+seleção de GPU exclusiva para o KV: quando ligado, ele segue o dispositivo da
+camada dos pesos. Confirmar chama
 `POST /api/ui/deploy/node` somente no alvo e preserva a inferência dos outros
 peers. Com um `deploy_id` ativo, a alteração cria uma nova versão; selecionar
 um GGUF inteiro ao lado de fatias produz o rótulo `mixed` no Histórico e duas
@@ -1058,7 +1060,7 @@ impressão digital é só modelo + conjunto de faixas.
   ranks e não apresenta a seleção antiga de fatias. As propriedades globais
   (contexto, batch, amostragem, sessões) ficam
   separadas das propriedades por
-  máquina (`n_gpu_layers`, KV e capacidade local, na mesma linha de propriedade
+  máquina (`n_gpu_layers`, o booleano de KV na GPU e capacidade local, na mesma linha de propriedade
   das globais - `[i]`, nome, controle); ao selecionar uma máquina, o
   inspetor também mostra as camadas que ela executará. A precisão do estado
   oculto (f16/f8) só aparece quando o estado atravessa a fronteira de um peer -

@@ -261,6 +261,44 @@ mostra o valor efetivo. Isso resolve falta de VRAM para o cache; se os próprios
 pesos não couberem, ainda é necessário reduzir `n_gpu_layers` ou dividir o
 modelo entre máquinas.
 
+#### Limitação: KV em uma GPU diferente dos pesos
+
+O runtime não oferece hoje um campo `context_gpu` ou `kv_cache_gpu`. A API
+vendorizada do llama.cpp não tem esse grau de liberdade:
+
+- `llama_split_mode` documenta `layer` e `row` como divisões de camadas **e
+  KV** entre GPUs (`vendor/llama-cpp-sys-2/llama.cpp/include/llama.h:198-203`).
+  `tensor_split` altera a divisão do modelo, não cria uma divisão independente
+  para o cache.
+- `llama_context_params` expõe `type_k`, `type_v` e `offload_kqv`, mas não um
+  dispositivo ou buffer type para o KV (`vendor/llama-cpp-sys-2/llama.cpp/include/llama.h:421-468`).
+  `offload_kqv=false` é o único recuo de localização e escolhe CPU/RAM.
+- Na implementação nativa, cada camada de KV usa `model.dev_layer(il)` e o
+  buffer type desse dispositivo quando `offload_kqv` está ligado
+  (`vendor/llama-cpp-sys-2/llama.cpp/src/llama-kv-cache.cpp:210-223`).
+  `model.dev_layer` é definido pela mesma alocação de camadas que carrega os
+  pesos (`vendor/llama-cpp-sys-2/llama.cpp/src/llama-model.cpp:1363-1384`).
+- `llama_model_tensor_buft_override` pertence a `llama_model_params` e é
+  aplicado ao nome dos tensores durante o carregamento do modelo
+  (`vendor/llama-cpp-sys-2/llama.cpp/include/llama.h:302-322` e
+  `vendor/llama-cpp-sys-2/llama.cpp/src/llama-model-loader.cpp:1237-1254`).
+  Ele não alcança os tensores `cache_k_l*` e `cache_v_l*`, criados depois pelo
+  contexto.
+
+O wrapper do POM confirma a fronteira: `crates/llama-engine/src/llm/model.rs`
+passa `devices`, `tensor_split` e `tensor_buft_overrides` somente em
+`llama_model_params:429-447`, enquanto a criação do contexto só preenche
+`n_ctx`, `n_seq_max`, `kv_unified`, `offload_kqv` e os tipos K/V em
+`crates/llama-engine/src/llm/config.rs:1012-1022`. Não há uma API existente que
+permita apontar o cache do contexto para a Radeon mantendo os pesos na RTX.
+
+Assim, `split-mode layer`, `row` ou `tensor` pode usar as duas GPUs, mas muda a
+colocação dos pesos e do KV de forma conjunta. A alternativa disponível sem
+alterar o fork é `offload_kqv=false`, que conserva os pesos na GPU e leva o KV
+para a RAM, não para outra GPU. A investigação completa e o contrato proposto
+para uma futura alteração nativa estão em
+`docs/architecture/kv-cache-device-placement.md`.
+
 O tipo numérico do cache é uma configuração da instalação, no `pom.json`, e não
 uma escolha por máquina dentro de uma implantação:
 

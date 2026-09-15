@@ -343,8 +343,10 @@ n_gpu_layers, offload_kqv }` é validado por posição:
 
 - **`target_node_id` vazio é recusa, não convite** para o nó escolher.
 - **Máquina com `n_gpu_layers`/`offload_kqv`**: só o que é propriedade do hardware
-  viaja por máquina. O cache KV é dimensionado pela janela de contexto, e uma
-  caixa com 16 GB de VRAM e uma sem GPU no mesmo pipeline não podem estar as duas
+  viaja por máquina. `offload_kqv` é apenas o booleano GPU versus RAM, e quando
+  fica na GPU o cache segue a camada que carrega os pesos; não há índice de GPU
+  separado. O cache KV é dimensionado pela janela de contexto, e uma caixa com
+  16 GB de VRAM e uma sem GPU no mesmo pipeline não podem estar as duas
   certas sobre onde ele cabe. Tudo o mais (`RuntimeParams`) é do pipeline inteiro
   - contexto, batch, pedaço e precisão do estado oculto decidem o orçamento de
   prompt que o gateway cobra, e a amostragem só roda no último peer. A precisão
@@ -534,7 +536,9 @@ outro peer nem o plano antigo enquanto o inventário ainda está sendo lido.
 um único `LaunchTarget` (`skip_split: true` - o arquivo já existe e o passo é
 só carregar). `cache_type_k`/`cache_type_v` são aplicados no `pom.json` local
 ou pela API do peer antes do launch; `n_gpu_layers` e `offload_kqv` seguem como
-overrides efetivos da máquina. Dois detalhes escondidos na chamada:
+overrides efetivos da máquina. `offload_kqv` não seleciona uma GPU diferente
+dos pesos: ligado, o KV segue o dispositivo da camada; desligado, vai para
+RAM. Dois detalhes escondidos na chamada:
 
 - **`peer_index`/`peer_count`** - a posição é a do pipeline, não "este nó sozinho":
   sem isso o nó somado se diz o último da divisão.

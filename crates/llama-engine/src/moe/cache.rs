@@ -498,7 +498,7 @@ impl fmt::Display for DeviceCacheError {
 impl std::error::Error for DeviceCacheError {}
 
 #[cfg(any(feature = "cuda", test))]
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeviceCacheStats {
     pub hits: u64,
     pub misses: u64,
@@ -510,6 +510,12 @@ pub struct DeviceCacheStats {
     pub upload_ms: f64,
     pub resident_bytes: usize,
     pub entries: usize,
+    /// Nomes dos devices na mesma ordem de `resident_bytes_by_device`.
+    /// Preenchido somente no agregado retornado por `DeviceExpertCache::stats`.
+    pub device_names: Vec<String>,
+    /// Bytes residentes de cada shard, sem somar novamente em
+    /// `resident_bytes`.
+    pub resident_bytes_by_device: Vec<usize>,
 }
 
 #[cfg(any(feature = "cuda", test))]
@@ -673,26 +679,36 @@ impl DeviceExpertCache {
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .stats
+                    .clone()
             })
             .collect()
     }
 
     fn aggregate_stats(&self) -> DeviceCacheStats {
-        self.per_device_stats()
-            .into_iter()
-            .fold(DeviceCacheStats::default(), |mut total, stats| {
-                total.hits = total.hits.saturating_add(stats.hits);
-                total.misses = total.misses.saturating_add(stats.misses);
-                total.admissions = total.admissions.saturating_add(stats.admissions);
-                total.evictions = total.evictions.saturating_add(stats.evictions);
-                total.rejections = total.rejections.saturating_add(stats.rejections);
-                total.uploads = total.uploads.saturating_add(stats.uploads);
-                total.upload_bytes = total.upload_bytes.saturating_add(stats.upload_bytes);
-                total.upload_ms += stats.upload_ms;
-                total.resident_bytes = total.resident_bytes.saturating_add(stats.resident_bytes);
-                total.entries = total.entries.saturating_add(stats.entries);
-                total
-            })
+        let per_device_stats = self.per_device_stats();
+        let mut total =
+            per_device_stats
+                .iter()
+                .fold(DeviceCacheStats::default(), |mut total, stats| {
+                    total.hits = total.hits.saturating_add(stats.hits);
+                    total.misses = total.misses.saturating_add(stats.misses);
+                    total.admissions = total.admissions.saturating_add(stats.admissions);
+                    total.evictions = total.evictions.saturating_add(stats.evictions);
+                    total.rejections = total.rejections.saturating_add(stats.rejections);
+                    total.uploads = total.uploads.saturating_add(stats.uploads);
+                    total.upload_bytes = total.upload_bytes.saturating_add(stats.upload_bytes);
+                    total.upload_ms += stats.upload_ms;
+                    total.resident_bytes =
+                        total.resident_bytes.saturating_add(stats.resident_bytes);
+                    total.entries = total.entries.saturating_add(stats.entries);
+                    total
+                });
+        total.device_names = self.device_names();
+        total.resident_bytes_by_device = per_device_stats
+            .iter()
+            .map(|stats| stats.resident_bytes)
+            .collect();
+        total
     }
 
     pub fn lookup(self: &Arc<Self>, key: &ExpertKey) -> Option<DeviceExpertLease> {
@@ -1279,6 +1295,12 @@ mod tests {
         assert_eq!(hit.device_index(), device);
         assert!(allocator0.uploads.load(Ordering::Relaxed) > 0);
         assert!(allocator1.uploads.load(Ordering::Relaxed) > 0);
+        let stats = cache.stats();
+        assert_eq!(stats.device_names, vec!["fake-device", "fake-device"]);
+        assert_eq!(
+            stats.resident_bytes_by_device.iter().sum::<usize>(),
+            stats.resident_bytes
+        );
     }
 
     #[test]

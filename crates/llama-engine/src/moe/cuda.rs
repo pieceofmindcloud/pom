@@ -290,6 +290,14 @@ impl fmt::Display for CudaMoeError {
 
 impl std::error::Error for CudaMoeError {}
 
+fn cuda_device_index_i32(device_index: u32) -> Result<i32, CudaMoeError> {
+    i32::try_from(device_index).map_err(|_| {
+        CudaMoeError::BackendUnavailable(format!(
+            "ordinal CUDA fora do limite suportado: {device_index}"
+        ))
+    })
+}
+
 struct DeviceRouteIndexGroup {
     device_index: u32,
     indices: Vec<usize>,
@@ -363,7 +371,7 @@ fn sum_parallel_device_outputs<T, F>(
 ) -> Result<Vec<f32>, CudaMoeError>
 where
     T: Send,
-    F: Fn(T) -> Result<Vec<f32>, CudaMoeError> + Sync,
+    F: Fn(T) -> Result<Vec<f32>, CudaMoeError> + Sync + Send,
 {
     let outputs = std::thread::scope(|scope| {
         let handles = groups
@@ -406,6 +414,11 @@ pub struct CudaHeterogeneousTensor {
     pub secondary_scale: f32,
     pub secondary_input_scale: f32,
 }
+
+// Os ponteiros apontam para alocações CUDA de experts que ficam imutáveis após
+// o upload. A posse é mantida pelos leases durante toda a rota; as threads
+// somente copiam os descritores e fazem leituras no device correspondente.
+unsafe impl Sync for CudaHeterogeneousTensor {}
 
 const _: () = {
     assert!(std::mem::offset_of!(CudaHeterogeneousTensor, data) == 0);
@@ -466,6 +479,7 @@ unsafe impl Send for Nvfp4RoutePipelineHandle {}
 
 impl Nvfp4RoutePipelineHandle {
     fn new(device_index: u32, hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
+        let device_index = cuda_device_index_i32(device_index)?;
         let mut handle = std::ptr::null_mut();
         let status = unsafe {
             pom_moe_nvfp4_route_pipeline_create(device_index, hidden, intermediate, &mut handle)
@@ -560,6 +574,7 @@ unsafe impl Send for KQuantRoutePipelineHandle {}
 
 impl KQuantRoutePipelineHandle {
     fn new(device_index: u32, hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
+        let device_index = cuda_device_index_i32(device_index)?;
         let mut handle = std::ptr::null_mut();
         let status = unsafe {
             pom_moe_kquant_route_pipeline_create(device_index, hidden, intermediate, &mut handle)

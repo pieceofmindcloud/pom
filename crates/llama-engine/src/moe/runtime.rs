@@ -1730,12 +1730,9 @@ impl MoeRuntime {
                     diagnostics.device_cache_upload_bytes = device_cache.upload_bytes;
                     diagnostics.device_cache_upload_ms = device_cache.upload_ms;
                     diagnostics.device_cache_resident_bytes = device_cache.resident_bytes;
-                    diagnostics.device_cache_devices = device_cache.device_names();
-                    diagnostics.device_cache_resident_bytes_by_device = device_cache
-                        .per_device_stats()
-                        .into_iter()
-                        .map(|stats| stats.resident_bytes)
-                        .collect();
+                    diagnostics.device_cache_devices = device_cache.device_names;
+                    diagnostics.device_cache_resident_bytes_by_device =
+                        device_cache.resident_bytes_by_device;
                     device_cache_recorded = true;
                 }
                 if let MoeBlock::Nvfp4(block) = block {

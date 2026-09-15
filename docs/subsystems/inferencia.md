@@ -489,7 +489,9 @@ Sem essa guarda, o callback pode deixar o thread em uma GPU e a próxima espera
 do scheduler em outra receber um stream ou evento no contexto corrente errado.
 O cache residente mede os compute buffers por `CUDA<n>`, mantém orçamento e LRU
 separados por placa e as rotas executam em paralelo os grupos de GPUs antes de
-somar os parciais. As 59 divisões observadas com o hook são esperadas:
+somar os parciais. A telemetria publica os nomes dos devices e
+`device_cache_resident_bytes_by_device` na mesma ordem dos shards. As 59
+divisões observadas com o hook são esperadas:
 cada camada externalizada atravessa a operação customizada de host; reduzir
 esse número não corrige a afinidade nem substitui a sincronização correta.
 

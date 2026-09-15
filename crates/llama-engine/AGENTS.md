@@ -48,7 +48,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   disponível, e um fallback CPU efetivo fica registrado na telemetria e no log
   de inicialização. O cache CUDA residente é particionado por ordinal (`CUDA0`,
   `CUDA1`, ...), com orçamento e allocator próprios por placa; as rotas são
-  agrupadas por shard e executadas em paralelo. A ponte CUDA é código próprio
+  agrupadas por shard e executadas em paralelo. O agregado do cache publica os
+  nomes dos devices e os bytes residentes por shard para a telemetria. A ponte
+  CUDA é código próprio
   deste crate; o fork `vendor/llama-cpp-sys-2/llama.cpp` só fornece o callback e
   os metadados de memória.
   A cobertura CUDA por dtype e os números da ksia ficam em

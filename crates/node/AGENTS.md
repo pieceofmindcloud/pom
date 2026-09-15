@@ -258,11 +258,13 @@ libp2p separado do túnel de inferência. O `GatewayState` compartilha o serviç
 com as rotas `/api/ui/network-chat`; a política de cluster é aplicada pela
 catraca de `network_chat_policy`.
 
-`src/enterprise.rs` mantém o cliente mockável do servidor de licenças e o
-estado local de entitlement. O `GatewayState` expõe esse estado ao backend,
-enquanto `webui` publica `/api/ui/enterprise/status` e `reqlog` recusa os dados
-Enterprise sem entitlement. O host separado e suas fases pendentes estão em
-`docs/subsystems/licenciamento-enterprise.md`.
+`src/enterprise.rs` mantém o cliente mockável do servidor de licenças, o
+fingerprint, o estado persistido sem a chave e o supervisor de heartbeat. O
+`enterprise_host.rs` é o único adaptador do `pom` para o processo auxiliar;
+`enterprise_p2p.rs` assina provas de fingerprint por nonce. O `GatewayState`
+expõe entitlement ao backend, enquanto `webui` publica status/ativação e
+`reqlog` encaminha eventos e consultas ao plugin ativo. A fronteira e os
+limites restantes estão em `docs/subsystems/licenciamento-enterprise.md`.
 
 ## Ligações
 

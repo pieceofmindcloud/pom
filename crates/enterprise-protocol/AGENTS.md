@@ -2,8 +2,10 @@
 
 Crate compartilhado do contrato cliente Enterprise. Define DTOs JSON do
 licenciamento e a ABI C v1 usada exclusivamente pelo `pom-plugin-host`; não
-carrega biblioteca dinâmica, faz rede ou persiste licença. A referência de
-arquitetura e as fases pendentes estão em
+carrega biblioteca dinâmica, faz rede ou persiste licença. Os DTOs precisam
+continuar compatíveis com o servidor em `license.pieceofmind.cloud`, inclusive
+com envelope, manifests/grants assinados e estados de lease. A referência de
+arquitetura e os limites restantes estão em
 `docs/subsystems/licenciamento-enterprise.md`.
 
 ## Maintaining this file

@@ -68,6 +68,10 @@ mod discovery;
 mod display;
 #[path = "enterprise.rs"]
 mod enterprise;
+#[path = "enterprise_host.rs"]
+mod enterprise_host;
+#[path = "enterprise_p2p.rs"]
+mod enterprise_p2p;
 #[path = "inference/executor.rs"]
 mod executor;
 #[path = "backend/gateway/mod.rs"]
@@ -913,7 +917,7 @@ async fn async_main(
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
-    let enterprise = enterprise::EnterpriseState::runtime(&node_id);
+    let enterprise = enterprise::EnterpriseState::runtime_with_database(&node_id, database.clone());
 
     let pkarr_peer_keys: Vec<String> = args
         .pkarr_peers
@@ -2207,7 +2211,7 @@ async fn start_gateway_only(
             ..crate::cycle::CycleConfig::default()
         },
         audit,
-        enterprise: enterprise::EnterpriseState::runtime(&node_id),
+        enterprise: enterprise::EnterpriseState::runtime_with_database(&node_id, database.clone()),
         database: database.clone(),
         gateway_port,
         auth: auth_state,

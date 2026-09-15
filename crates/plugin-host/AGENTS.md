@@ -4,7 +4,8 @@ Binário auxiliar `pom-plugin-host`, responsável por carregar uma biblioteca
 Enterprise em processo separado e expor o IPC JSON enquadrado do host. Valida
 caminho absoluto, manifesto, hash, versão ABI e callbacks antes de criar o
 handle. O processo `pom` não deve importar `libloading` nem carregar a
-biblioteca diretamente.
+biblioteca diretamente. Além de `ready`, `ingest` e `shutdown`, o IPC expõe
+`query` com cópia segura do buffer retornado pela biblioteca e limite de 1 MiB.
 
 ## Maintaining this file
 

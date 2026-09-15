@@ -102,8 +102,12 @@ pub fn validate_artifact(
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     io::copy(&mut file, &mut hasher)?;
-    let actual = format!("sha256:{}", hex::encode(hasher.finalize()));
-    if actual != manifest.sha256 {
+    let actual = hex::encode(hasher.finalize());
+    let expected = manifest
+        .sha256
+        .strip_prefix("sha256:")
+        .unwrap_or(&manifest.sha256);
+    if actual != expected {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "hash do plugin divergente",
@@ -204,6 +208,45 @@ impl LoadedPlugin {
             Err(io::Error::other(format!("plugin retornou status {status}")))
         }
     }
+
+    pub fn query(&self, request: &[u8]) -> io::Result<Vec<u8>> {
+        let query = self.api.query.expect("validate_api garantiu query");
+        let buffer = unsafe {
+            query(
+                self.handle,
+                ByteSlice {
+                    ptr: request.as_ptr(),
+                    len: request.len(),
+                },
+            )
+        };
+        if buffer.len > MAX_FRAME_BYTES {
+            if let Some(free_buffer) = self.api.free_buffer {
+                unsafe { free_buffer(buffer) };
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "resposta do plugin excede o limite do IPC",
+            ));
+        }
+        let result = if buffer.len == 0 {
+            Vec::new()
+        } else if buffer.ptr.is_null() {
+            if let Some(free_buffer) = self.api.free_buffer {
+                unsafe { free_buffer(buffer) };
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "plugin retornou buffer nulo com tamanho positivo",
+            ));
+        } else {
+            unsafe { std::slice::from_raw_parts(buffer.ptr, buffer.len).to_vec() }
+        };
+        if let Some(free_buffer) = self.api.free_buffer {
+            unsafe { free_buffer(buffer) };
+        }
+        Ok(result)
+    }
 }
 
 impl Drop for LoadedPlugin {
@@ -285,6 +328,19 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
             let event = request.payload.to_string();
             match plugin.ingest(event.as_bytes()) {
                 Ok(()) => response(request, serde_json::json!({ "status": "accepted" })),
+                Err(error) => error_response(request, error.to_string()),
+            }
+        }
+        "query" => {
+            let Some(plugin) = plugin else {
+                return error_response(request, "plugin Enterprise não carregado");
+            };
+            let query = request.payload.to_string();
+            match plugin.query(query.as_bytes()) {
+                Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                    Ok(result) => response(request, result),
+                    Err(error) => error_response(request, error.to_string()),
+                },
                 Err(error) => error_response(request, error.to_string()),
             }
         }

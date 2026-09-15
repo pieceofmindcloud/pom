@@ -142,6 +142,21 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
+        prefix: "/api/ui/enterprise/activate",
+        method: Some(Method::POST),
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/enterprise/refresh",
+        method: Some(Method::POST),
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/enterprise/deactivate",
+        method: Some(Method::POST),
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
         prefix: "/api/ui/cluster",
         method: None,
         scope: RouteScope::CommonOrInternal,
@@ -527,6 +542,17 @@ mod policy_tests {
             scope_of("/api/ui/enterprise/status"),
             RouteScope::CommonOrInternal
         );
+        for path in [
+            "/api/ui/enterprise/activate",
+            "/api/ui/enterprise/refresh",
+            "/api/ui/enterprise/deactivate",
+        ] {
+            assert_eq!(
+                route_scope(&Method::POST, path),
+                RouteScope::AdminOnly,
+                "rota={path}"
+            );
+        }
         assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);
         assert_eq!(
             scope_of("/api/ui/model-provider/status"),

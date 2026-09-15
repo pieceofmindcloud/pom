@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { canAccessRoute, homeRoute, isEnterprisePath } from "./lib/access";
 import {
   api,
@@ -119,6 +119,12 @@ function EnterpriseUnavailable({ manageUrl }: { manageUrl: string }) {
           >
             {t("enterprise.learnMore")}
           </a>
+          <Link
+            to="/enterprise"
+            className="ml-2 inline-flex rounded-md border border-line px-4 py-2 text-sm font-semibold text-fg transition-colors hover:border-line-strong hover:bg-line/40"
+          >
+            {t("enterprise.activateHere")}
+          </Link>
         </div>
       </Panel>
     </main>
@@ -154,6 +160,7 @@ export const routeLoaders = {
   logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
   statistics: () => import("./routes/Statistics").then(({ Statistics }) => Statistics),
+  enterprise: () => import("./routes/Enterprise").then(({ Enterprise }) => Enterprise),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
@@ -191,6 +198,7 @@ const Dashboard = lazyRoute(routeLoaders.dashboard);
 const Logs = lazyRoute(routeLoaders.logs);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
 const Statistics = lazyRoute(routeLoaders.statistics);
+const Enterprise = lazyRoute(routeLoaders.enterprise);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
@@ -430,6 +438,7 @@ export default function App() {
                         <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
                         <Route path="/logs" element={<Page><Logs /></Page>} />
                         <Route path="/estatisticas" element={<Page><Statistics /></Page>} />
+                        <Route path="/enterprise" element={<Page><Enterprise /></Page>} />
                         <Route path="/logs/estatisticas" element={<Navigate to="/estatisticas" replace />} />
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />

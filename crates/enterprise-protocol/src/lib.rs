@@ -192,6 +192,8 @@ pub struct PluginManifest {
     pub schema: u32,
     pub release_id: String,
     pub product: String,
+    pub version: String,
+    pub channel: String,
     pub feature_set: Vec<String>,
     pub os: String,
     pub arch: String,
@@ -199,7 +201,9 @@ pub struct PluginManifest {
     pub plugin_abi: u32,
     pub sha256: String,
     pub size: u64,
-    pub download_expires_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_expires_at: Option<String>,
+    pub key_id: String,
     pub signature: String,
 }
 
@@ -214,31 +218,121 @@ pub struct Grant {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActivationPayload {
     pub license_key: String,
-    pub fingerprint: Fingerprint,
+    pub fingerprint_scheme: String,
+    pub fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installation_id_hash: Option<String>,
     pub node_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cluster_id_hash: Option<String>,
     pub requested_features: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValidatePayload {
+    pub license_key: String,
+    pub requested_features: Vec<String>,
+    pub fingerprint_scheme: Option<String>,
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValidateResponse {
+    pub license_id: String,
+    pub status: String,
+    pub entitlements: Vec<String>,
+    pub activation_required: bool,
+    pub activation_id: Option<String>,
+    pub eligible_release: Option<EligibleRelease>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EligibleRelease {
+    pub release_id: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadGrant {
+    pub token: String,
+    pub url: String,
+    pub expires_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActivationResponse {
     pub license_id: String,
     pub activation_id: String,
+    pub activation_token: String,
     pub lease_id: String,
+    pub lease_token: String,
     pub entitlements: Vec<String>,
     pub lease_expires_at: String,
     pub heartbeat_due_at: String,
+    pub grace_seconds: u64,
     pub plugin_release_id: String,
     pub plugin_manifest: PluginManifest,
     pub grant: Grant,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManifestResponse {
+    pub manifest: PluginManifest,
+    pub download: DownloadGrant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantBody {
+    pub v: u32,
+    pub iss: String,
+    pub product: String,
+    pub license_id: String,
+    pub activation_id: String,
+    pub lease_id: String,
+    pub jti: String,
+    pub node_id: String,
+    pub features: Vec<String>,
+    pub fingerprint_scheme: String,
+    pub fingerprint_hash: String,
+    pub cluster_id_hash: Option<String>,
+    pub release_id: String,
+    pub iat: String,
+    pub nbf: String,
+    pub exp: String,
+    pub heartbeat_due_at: String,
+    pub grace_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LicenseStatusResponse {
+    pub state: String,
+    pub license_id: String,
+    pub activation_id: String,
+    pub lease_id: String,
+    pub entitlements: Vec<String>,
+    pub license_expires_at: Option<String>,
+    pub lease_expires_at: String,
+    pub grace_ends_at: String,
+    pub plugin_release_id: String,
+    pub eligible_release_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeartbeatPayload {
     pub activation_id: String,
     pub lease_id: String,
-    pub fingerprint: Fingerprint,
+    pub fingerprint_scheme: String,
+    pub fingerprint: String,
     pub node_id: String,
     pub nonce: String,
+    pub client_time: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeactivatePayload {
+    pub fingerprint_scheme: String,
+    pub fingerprint: String,
+    pub reason: String,
 }
 
 pub fn decode_response<T: DeserializeOwned>(
@@ -318,5 +412,33 @@ mod tests {
         assert_eq!(envelope.idempotency_key, "activate:key:fingerprint");
         assert_eq!(envelope.client.product, "pom");
         assert_eq!(envelope.payload["license_key"], "PM-test");
+    }
+
+    #[test]
+    fn activation_payload_matches_the_published_server_wire_contract() {
+        let payload = ActivationPayload {
+            license_key: "PM-test".into(),
+            fingerprint_scheme: FINGERPRINT_SCHEME.into(),
+            fingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
+            installation_id_hash: Some(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            ),
+            node_id: "node-a".into(),
+            cluster_id_hash: None,
+            requested_features: vec!["enterprise.request_logs".into()],
+        };
+
+        assert_eq!(
+            serde_json::to_value(payload).expect("activation payload JSON"),
+            serde_json::json!({
+                "license_key": "PM-test",
+                "fingerprint_scheme": "pom-fingerprint-v1",
+                "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "installation_id_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "node_id": "node-a",
+                "requested_features": ["enterprise.request_logs"],
+            })
+        );
     }
 }

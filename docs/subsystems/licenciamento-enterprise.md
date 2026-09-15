@@ -1,7 +1,7 @@
 # Subsistema: licenciamento Enterprise
 
-Este documento registra o que o cliente entrega nesta primeira rodada e separa
-as garantias atuais das fases ainda não implementadas. A especificação completa
+Este documento registra o que o cliente entrega nesta rodada e separa as
+garantias atuais dos limites restantes. A especificação completa
 é o relatório de design em
 `/Users/jairpereira/Sites/firstmate/data/rdma-enterprise-licenciamento-design/report.md`.
 
@@ -12,14 +12,22 @@ as garantias atuais das fases ainda não implementadas. A especificação comple
   versionada e os envelopes de ativação e heartbeat.
 - `crates/node/src/enterprise.rs` contém o cliente HTTPS mockável. O runtime
   usa o endpoint real como configuração padrão, mas os testes usam
-  `MockLicenseService`; a chave de licença só atravessa o pedido de ativação e
-  não faz parte do snapshot local de ativação.
+  `MockLicenseService`; a chave de licença só atravessa validação/ativação e
+  não faz parte do snapshot local de ativação. O cliente consulta `/v1/keys`,
+  verifica grant e manifest Ed25519, além de hash, tamanho, ABI e plataforma.
 - `crates/plugin-host` é o processo `pom-plugin-host`. Ele carrega um artefato
   somente por caminho absoluto, valida ABI, tamanho e SHA-256, mantém a
   biblioteca carregada dentro do processo auxiliar e conversa com o cliente por
   JSON com tamanho prefixado em stdin/stdout. O `pom` não usa `libloading`.
 - `crates/enterprise-plugin-fixture` é uma biblioteca `cdylib` de teste para
   validar a entrada ABI `pom_enterprise_plugin_v1` e o fluxo do host.
+- `crates/enterprise-plugin` é a biblioteca `cdylib` de produção. O domínio de
+  auditoria vive em `enterprise.db`, com schema, índices, listagem filtrada e
+  agregações de estatísticas próprios.
+- `crates/node/src/enterprise_host.rs` supervisiona o processo auxiliar por
+  IPC assíncrono com frames limitados, timeout e encerramento ordenado. O
+  caminho ativo envia eventos neutros ao host; o `pom.db` legado é fallback
+  transitório para testes, migração e falha do plugin.
 
 O ABI C v1 é deliberadamente pequeno e explícito: descriptor imutável com
 versão, capacidades e callbacks `create`, `ingest`, `query`, `free_buffer` e
@@ -44,22 +52,31 @@ mostra a tela Enterprise e o link
 `https://pieceofmind.cloud/enterprise`. O menu é descoberta do produto, não
 prova de autorização: o backend continua sendo a fronteira de segurança.
 
-## Fases ainda pendentes
+## Fases e limites desta entrega
 
-- **Fase 3 - extração de auditoria:** `crates/node/src/backend/reqlog.rs`
-  ainda mantém a persistência SQLite, o schema, a replicação e os handlers de
-  auditoria. O gate já está no handler, mas o banco Enterprise separado e o
-  processamento pelo plugin ainda não existem.
-- **Fase 4 - P2P Enterprise:** grants, estado de lease e pacotes Enterprise
-  ainda não são propagados entre peers. Nenhuma chave de licença é propagada.
-- **Fase 5 - frontend:** o contrato, a consulta, o menu descobrível e o
-  callout com link foram entregues. Ainda falta uma tela de entrada da chave e
-  a ativação ponta a ponta; os dados continuam protegidos pelo backend.
-- **Fase 6 - release/hardening:** o `pom` ainda não supervisiona o processo
-  host no fluxo de produção, nem baixa e verifica criptograficamente um plugin
-  assinado. Também faltam persistência integrada da instalação, agendamento de
-  heartbeat e do lease, rotação/remoção de artefatos, atualização e
-  observabilidade.
+- **Fase 0 - contrato:** entregue em `crates/enterprise-protocol`, incluindo
+  envelope, fingerprint, estados, lease, manifest, grant, download e status.
+- **Fase 1 - licença sem plugin:** entregue com `validate`, ativação idempotente,
+  heartbeat, status após reinício, desativação e persistência sem chave. A
+  supervisão roda fora do caminho quente e mantém inferência Free disponível.
+- **Fase 2 - host e ABI:** entregue com `pom-plugin-host`, ABI C v1, IPC
+  enquadrado, fixture e biblioteca real. A biblioteca nunca é carregada pelo
+  processo `pom`.
+- **Fase 3 - extração de auditoria:** entregue no caminho Enterprise ativo.
+  O plugin grava e consulta `enterprise.db`, preservando os DTOs atuais.
+  `reqlog.rs` e o schema antigo permanecem como fallback de migração e de
+  indisponibilidade; sua remoção definitiva exige importação explícita.
+- **Fase 4 - P2P Enterprise:** entregue o contrato de prova de fingerprint,
+  assinatura por nonce e a rota interna autenticada
+  `/api/internal/enterprise/fingerprint`. Falta ligar a coleta ao fluxo admin
+  de `activation-batches` e à transferência de grants/artefatos entre peers.
+- **Fase 5 - frontend:** entregue `/enterprise`, ativação, refresh e estado
+  ativo. `/logs` e `/estatisticas` permanecem visíveis e clicáveis sem licença,
+  mostrando o convite Enterprise em vez de dados vazios.
+- **Fase 6 - release/hardening:** entregues `build-enterprise-plugin.sh`,
+  `pom-release.sh`, instalação atômica e verificação Ed25519/hash/ABI. Ainda
+  faltam code signing/notarização nativos, rollback com ponteiro, circuit
+  breaker completo e matriz real de três plataformas.
 
 O servidor de licenças pode evoluir em paralelo: o cliente não depende dele
 para os testes locais porque o contrato é exercitado pelo mock.
@@ -72,10 +89,12 @@ cargo test -p enterprise-plugin-fixture
 cargo test -p pom-plugin-host
 cargo test -p node enterprise
 cd apps/frontend && npm test -- src/lib/access.test.ts src/components/nav.test.ts src/App.test.tsx
+./scripts/build-enterprise-plugin.sh --platform macos-aarch64 --debug
+./pom-release.sh --platform linux-x86_64 --plugin enterprise --dry-run
 ```
 
 ## Maintaining this file
 
 Atualize este documento quando uma fase mudar de estado ou quando a fronteira
-entre o processo `pom`, o host e a biblioteca Enterprise mudar. Não descreva
-como entregue uma fase que ainda aparece em "Fases ainda pendentes".
+entre o processo `pom`, o host e a biblioteca Enterprise mudar. Mantenha
+explícitos os fallbacks de migração e os limites que ainda não têm integração.

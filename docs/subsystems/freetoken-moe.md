@@ -2686,8 +2686,10 @@ diferencial de layout.
 
 O cache não copia a fonte fria em hits: a admissão continua sendo por hash de
 modelo, camada e expert em shards independentes. Assim, uma segunda chamada
-reutiliza o mesmo handle em CUDA0 ou CUDA1. O warmup é cancelado quando a
-primeira rota chega, evitando que a admissão concorrente expulse o working set;
+reutiliza o mesmo handle em CUDA0 ou CUDA1. O warmup é cancelado antes de cada
+`llama_decode` que tem callback MoE, e novamente na primeira rota como defesa;
+isso impede que uma admissão concorrente expulse o working set ou segure o
+shard enquanto o grafo já está em execução;
 se os contadores por device ainda mostrarem uma única placa em uso, o próximo
 diagnóstico é a distribuição efetiva dos experts selecionados, não um timeout.
 

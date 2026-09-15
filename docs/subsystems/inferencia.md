@@ -483,13 +483,24 @@ impedir uma ordenação explícita insegura sem alterar a distribuição de mem�
 depois da sondagem.
 
 O executor externo de MoE é um callback de host, mas usa CUDA internamente.
-Todas as entradas da ponte fixam alocações, streams e eventos no CUDA 0, o
-dispositivo cujo orçamento o cache mede, e restauram o dispositivo corrente do
-thread ao sair. Sem essa guarda, o callback pode deixar o thread no CUDA 0 e a
-próxima espera do scheduler no backend CUDA 1 receber um stream ou evento no
-contexto corrente errado. As 59 divisões observadas com o hook são esperadas:
+Cada entrada da ponte recebe o ordinal da GPU da shard e fixa alocações, streams
+e eventos nessa placa, restaurando o dispositivo corrente do thread ao sair.
+Sem essa guarda, o callback pode deixar o thread em uma GPU e a próxima espera
+do scheduler em outra receber um stream ou evento no contexto corrente errado.
+O cache residente mede os compute buffers por `CUDA<n>`, mantém orçamento e LRU
+separados por placa e as rotas executam em paralelo os grupos de GPUs antes de
+somar os parciais. A telemetria publica os nomes dos devices e
+`device_cache_resident_bytes_by_device` na mesma ordem dos shards. As 59
+divisões observadas com o hook são esperadas:
 cada camada externalizada atravessa a operação customizada de host; reduzir
 esse número não corrige a afinidade nem substitui a sincronização correta.
+
+O aquecimento do cache é oportunista e cooperativo. Quando chega a primeira
+rota real, o runtime o cancela sem remover entradas já admitidas; assim a thread
+de aquecimento não pode expulsar o working set da requisição nem transformar
+uma segunda chamada em outra sequência de misses e uploads. O detalhe da causa
+confirmada e da correção fica em `docs/subsystems/freetoken-moe.md`, seção
+"Fase 5.7".
 
 A guarda também é a fronteira de degradação para o defeito observado em
 01/09/2026: a combinação Vulkan/CUDA mantém a ordem padrão do llama.cpp e não
@@ -1393,8 +1404,10 @@ delegam ao `LlmEngine`, então esta é uma ligação parcial do bloco, não um
 transformer MoE completo. Q4_0, NVFP4, K-quants e IQ-quants usam loaders
 próprios com validação da ordem GGUF `[input, output, experts]` antes do
 forward. Com a feature `cuda`, Q4_0 usa a ponte heterogênea CUDA e o cache
-residente; sem CUDA, o decoder CPU é uma escolha explícita na telemetria e no
-log de inicialização. O caminho CUDA continua reservado aos dtypes com ponte
+residente particionado por `CUDA0`, `CUDA1`, ...; cada shard recebe os experts
+por uma colocação estável e a rota junta os parciais das placas em paralelo.
+Sem CUDA, o decoder CPU é uma escolha explícita na telemetria e no log de
+inicialização. O caminho CUDA continua reservado aos dtypes com ponte
 validada, e não há fallback nativo silencioso quando a seleção MoE externa
 falha.
 
@@ -1873,6 +1886,34 @@ valores são iguais.
   `relay/v2-direct`.
 - A fatia final é a única que carrega o bloco porque `splitter::split` zera
   `<arch>.nextn_predict_layers` fora dela - ver `docs/subsystems/fatiamento.md`.
+
+### 5.3 Estado recorrente do Kimi-K3
+
+O Kimi-K3 é híbrido: alterna camadas KDA recorrentes e MLA de atenção plena.
+Quando `n_rs_seq > 0`, o `llama_memory_hybrid` reserva snapshots por sequência
+e `init_batch` chama `llama_batch_allocr::split_equal` mantendo os
+`n_rs_seq + 1` tokens finais de cada sequência no mesmo ubatch. A posição do
+token pode estar próxima de `750000` sem estourar o cálculo do alocador: os
+índices e offsets desse caminho são de 64 bits. Um ubatch de `516` tokens com
+seis sequências também é uma geometria válida (`6 * 86`), produzida pela
+reserva retangular do grafo, não uma escrita 4 bytes além de um buffer de 512.
+
+O suporte a rollback precisa existir em duas camadas. O classificador nativo
+deve aceitar `LLM_ARCH_KIMI_K3`; caso contrário, `llama_init_from_model`
+silencia `n_rs_seq` para zero. Além disso, cada camada KDA deve gravar as
+`1 + n_rs_seq` janelas de convolução nos grupos de snapshot e executar a
+varredura por `build_recurrent_attn`, que restaura o estado correspondente à
+sequência e à posição. Gravar somente a última janela e copiar o estado final
+do `build_delta_net` deixa o cache híbrido incompatível com o rollback que o
+gateway faz depois de uma rodada especulativa. A falha pode aparecer mais
+tarde, durante a montagem de um ubatch, como o SIGSEGV em
+`llama_batch_allocr::ubatch_add`, embora a origem seja o estado recorrente
+incompleto.
+
+O teste nativo `test-hybrid-memory-batch-kimi-k3` gera um GGUF K3 mínimo e
+repete quatro decodes com seis sequências, `n_ctx=750000`, `n_ubatch=512` e
+rollback/replay de três tokens. `test-batch-alloc` cobre separadamente a
+geometria do alocador em contexto grande e formatos aleatórios de split.
 
 Quando o operador pede MTP e o contexto de rascunho não pode ser criado, o
 runtime mantém a inferência principal disponível, publica `mtp_ready=false` e

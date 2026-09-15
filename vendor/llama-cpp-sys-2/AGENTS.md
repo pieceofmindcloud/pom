@@ -136,3 +136,21 @@ resultado errado em silêncio, e o conserto é reler o cabeçalho novo - a
 alternativa, derivar a colocação de `n_gpu_layers`, mente sempre que um override
 de buffer type entra. Ver `docs/subsystems/inferencia.md`, "Onde as camadas
 ficaram".
+
+## Estado recorrente no Kimi-K3
+
+O checkout nativo também implementa a parte específica dos modelos híbridos.
+Kimi-K3 precisa declarar suporte a rollback recorrente e materializar as
+`1 + n_rs_seq` janelas de convolução nos grupos de snapshot antes do decode.
+Sem isso, `llama_context` reduz `n_rs_seq` a zero e o estado KDA fica
+incompatível com o rollback/replay usado pela inferência especulativa. A
+regressão executável está em `llama.cpp/tests/test-hybrid-memory-batch.cpp`;
+consulte `docs/subsystems/inferencia.md`, seção 5.3, para a invariável do
+batch e do estado.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

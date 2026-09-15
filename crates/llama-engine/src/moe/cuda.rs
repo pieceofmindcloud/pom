@@ -4,11 +4,12 @@
 
 use super::admission::MemoryAccount;
 use super::bandwidth::BandwidthProfile;
-use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache};
+use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache, DeviceExpertLease};
 use super::format_k_quants::{KQuantExpert, KQuantFormat};
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
 use super::format_plain::{PlainExpert, PlainFormat};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -289,6 +290,117 @@ impl fmt::Display for CudaMoeError {
 
 impl std::error::Error for CudaMoeError {}
 
+fn cuda_device_index_i32(device_index: u32) -> Result<i32, CudaMoeError> {
+    i32::try_from(device_index).map_err(|_| {
+        CudaMoeError::BackendUnavailable(format!(
+            "ordinal CUDA fora do limite suportado: {device_index}"
+        ))
+    })
+}
+
+struct DeviceRouteIndexGroup {
+    device_index: u32,
+    indices: Vec<usize>,
+    token_ids: Vec<u32>,
+    weights: Vec<f32>,
+    token_offsets: Vec<usize>,
+}
+
+/// Divide uma rota por GPU sem alterar a ordem dos pares dentro de cada GPU.
+/// Os offsets continuam indexados pelo lote global, portanto cada chamada CUDA
+/// pode produzir um vetor completo e os resultados podem ser somados em
+/// paralelo sem uma cópia de hidden entre placas.
+fn group_route_indices(
+    device_indices: &[u32],
+    token_ids: &[u32],
+    weights: &[f32],
+    token_offsets: &[usize],
+    tokens: usize,
+) -> Result<Vec<DeviceRouteIndexGroup>, CudaMoeError> {
+    if device_indices.is_empty()
+        || device_indices.len() != token_ids.len()
+        || device_indices.len() != weights.len()
+        || tokens == 0
+        || token_offsets.len() != tokens + 1
+        || token_offsets.first() != Some(&0)
+        || token_offsets.last() != Some(&device_indices.len())
+        || token_offsets.windows(2).any(|pair| pair[0] > pair[1])
+        || token_ids.iter().any(|&token| token as usize >= tokens)
+        || weights.iter().any(|weight| !weight.is_finite())
+    {
+        return Err(CudaMoeError::Payload(
+            "batch CUDA tem rotas ou offsets inválidos".into(),
+        ));
+    }
+
+    let mut groups = Vec::<DeviceRouteIndexGroup>::new();
+    let mut positions = HashMap::<u32, usize>::new();
+    for token in 0..tokens {
+        for route in token_offsets[token]..token_offsets[token + 1] {
+            let device_index = device_indices[route];
+            let group_index = if let Some(index) = positions.get(&device_index) {
+                *index
+            } else {
+                let index = groups.len();
+                positions.insert(device_index, index);
+                groups.push(DeviceRouteIndexGroup {
+                    device_index,
+                    indices: Vec::new(),
+                    token_ids: Vec::new(),
+                    weights: Vec::new(),
+                    token_offsets: vec![0; token + 1],
+                });
+                index
+            };
+            let group = &mut groups[group_index];
+            group.indices.push(route);
+            group.token_ids.push(token_ids[route]);
+            group.weights.push(weights[route]);
+        }
+        for group in &mut groups {
+            group.token_offsets.push(group.indices.len());
+        }
+    }
+    Ok(groups)
+}
+
+fn sum_parallel_device_outputs<T, F>(
+    groups: Vec<T>,
+    output_len: usize,
+    run: F,
+) -> Result<Vec<f32>, CudaMoeError>
+where
+    T: Send,
+    F: Fn(T) -> Result<Vec<f32>, CudaMoeError> + Sync + Send,
+{
+    let outputs = std::thread::scope(|scope| {
+        let handles = groups
+            .into_iter()
+            .map(|group| scope.spawn(move || run(group)))
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    CudaMoeError::BackendUnavailable("thread CUDA MoE entrou em pânico".into())
+                })?
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    let mut output = vec![0.0; output_len];
+    for values in outputs {
+        if values.len() != output_len {
+            return Err(CudaMoeError::Payload(
+                "GPU CUDA MoE devolveu hidden com tamanho inesperado".into(),
+            ));
+        }
+        for (target, value) in output.iter_mut().zip(values) {
+            *target += value;
+        }
+    }
+    Ok(output)
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CudaHeterogeneousTensor {
@@ -302,6 +414,11 @@ pub struct CudaHeterogeneousTensor {
     pub secondary_scale: f32,
     pub secondary_input_scale: f32,
 }
+
+// Os ponteiros apontam para alocações CUDA de experts que ficam imutáveis após
+// o upload. A posse é mantida pelos leases durante toda a rota; as threads
+// somente copiam os descritores e fazem leituras no device correspondente.
+unsafe impl Sync for CudaHeterogeneousTensor {}
 
 const _: () = {
     assert!(std::mem::offset_of!(CudaHeterogeneousTensor, data) == 0);
@@ -361,10 +478,12 @@ struct Nvfp4RoutePipelineHandle {
 unsafe impl Send for Nvfp4RoutePipelineHandle {}
 
 impl Nvfp4RoutePipelineHandle {
-    fn new(hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
+    fn new(device_index: u32, hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
+        let device_index = cuda_device_index_i32(device_index)?;
         let mut handle = std::ptr::null_mut();
-        let status =
-            unsafe { pom_moe_nvfp4_route_pipeline_create(hidden, intermediate, &mut handle) };
+        let status = unsafe {
+            pom_moe_nvfp4_route_pipeline_create(device_index, hidden, intermediate, &mut handle)
+        };
         if status != 0 {
             return Err(CudaMoeError::BackendUnavailable(format!(
                 "pipeline CUDA MoE não pôde ser criado (código {status})"
@@ -427,7 +546,7 @@ pub struct Nvfp4CudaExecutor {
     intermediate: usize,
     profile: bool,
     resident_cache: Arc<DeviceExpertCache>,
-    route_pipeline: Mutex<Nvfp4RoutePipelineHandle>,
+    route_pipelines: Vec<(u32, Mutex<Nvfp4RoutePipelineHandle>)>,
     diagnostics: Mutex<Nvfp4CudaDiagnostics>,
 }
 
@@ -443,7 +562,7 @@ pub struct KQuantCudaExecutor {
     format: KQuantFormat,
     profile: bool,
     resident_cache: Arc<DeviceExpertCache>,
-    route_pipeline: Mutex<KQuantRoutePipelineHandle>,
+    route_pipelines: Vec<(u32, Mutex<KQuantRoutePipelineHandle>)>,
     diagnostics: Mutex<Nvfp4CudaDiagnostics>,
 }
 
@@ -454,10 +573,12 @@ struct KQuantRoutePipelineHandle {
 unsafe impl Send for KQuantRoutePipelineHandle {}
 
 impl KQuantRoutePipelineHandle {
-    fn new(hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
+    fn new(device_index: u32, hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
+        let device_index = cuda_device_index_i32(device_index)?;
         let mut handle = std::ptr::null_mut();
-        let status =
-            unsafe { pom_moe_kquant_route_pipeline_create(hidden, intermediate, &mut handle) };
+        let status = unsafe {
+            pom_moe_kquant_route_pipeline_create(device_index, hidden, intermediate, &mut handle)
+        };
         if status != 0 {
             return Err(CudaMoeError::BackendUnavailable(format!(
                 "pipeline CUDA K-quant não pôde ser criado (código {status})"
@@ -625,6 +746,29 @@ impl PlainCudaExecutor {
             ));
         }
 
+        let device_indices = payloads
+            .iter()
+            .map(DeviceExpertLease::device_index)
+            .collect::<Vec<_>>();
+        let groups =
+            group_route_indices(&device_indices, token_ids, weights, token_offsets, tokens)?;
+        sum_parallel_device_outputs(groups, hidden.len(), |group| {
+            let grouped_payloads = group
+                .indices
+                .iter()
+                .map(|&index| &payloads[index])
+                .collect::<Vec<_>>();
+            self.run_route_batch_on_device(&group, &grouped_payloads, hidden, tokens)
+        })
+    }
+
+    fn run_route_batch_on_device(
+        &self,
+        group: &DeviceRouteIndexGroup,
+        payloads: &[&DeviceExpertLease],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, CudaMoeError> {
         let handles = payloads
             .iter()
             .map(|payload| payload.handle() as *const u8)
@@ -637,13 +781,14 @@ impl PlainCudaExecutor {
         let cuda_started = Instant::now();
         let status = unsafe {
             pom_moe_plain_forward_route_batch_resident(
+                group.device_index as i32,
                 self.format.dtype(),
                 handles.as_ptr(),
                 payloads.len(),
-                token_ids.as_ptr(),
-                weights.as_ptr(),
-                token_offsets.as_ptr(),
-                token_offsets.len(),
+                group.token_ids.as_ptr(),
+                group.weights.as_ptr(),
+                group.token_offsets.as_ptr(),
+                group.token_offsets.len(),
                 tokens,
                 hidden.as_ptr(),
                 hidden.len(),
@@ -695,6 +840,14 @@ impl KQuantCudaExecutor {
                 format.name()
             )));
         }
+        let route_pipelines = resident_cache
+            .device_indices()
+            .into_iter()
+            .map(|device_index| {
+                KQuantRoutePipelineHandle::new(device_index, hidden, intermediate)
+                    .map(|pipeline| (device_index, Mutex::new(pipeline)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             hidden,
             intermediate,
@@ -702,7 +855,7 @@ impl KQuantCudaExecutor {
             profile: std::env::var("POM_MOE_CUDA_PROFILE")
                 .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
             resident_cache,
-            route_pipeline: Mutex::new(KQuantRoutePipelineHandle::new(hidden, intermediate)?),
+            route_pipelines,
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
         })
     }
@@ -780,13 +933,36 @@ impl KQuantCudaExecutor {
             })?;
         }
 
+        let device_indices = payloads
+            .iter()
+            .map(DeviceExpertLease::device_index)
+            .collect::<Vec<_>>();
+        let groups =
+            group_route_indices(&device_indices, token_ids, weights, token_offsets, tokens)?;
+        sum_parallel_device_outputs(groups, hidden.len(), |group| {
+            let grouped_payloads = group
+                .indices
+                .iter()
+                .map(|&index| &payloads[index])
+                .collect::<Vec<_>>();
+            self.run_route_batch_on_device(&group, &grouped_payloads, hidden, tokens)
+        })
+    }
+
+    fn run_route_batch_on_device(
+        &self,
+        group: &DeviceRouteIndexGroup,
+        payloads: &[&DeviceExpertLease],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, CudaMoeError> {
         let handles = payloads
             .iter()
             .map(|payload| payload.handle() as *const u8)
             .collect::<Vec<_>>();
         let payload_lengths = payloads
             .iter()
-            .map(super::cache::DeviceExpertLease::bytes)
+            .map(|payload| payload.bytes())
             .collect::<Vec<_>>();
         let mut output = vec![0.0f32; hidden.len()];
         let mut timing = CudaMoeCallTiming {
@@ -797,8 +973,17 @@ impl KQuantCudaExecutor {
         let mut nonfinite_index = 0;
         let mut nonfinite_count = 0;
         let cuda_started = Instant::now();
-        let status = self
-            .route_pipeline
+        let Some((_, route_pipeline)) = self
+            .route_pipelines
+            .iter()
+            .find(|(device_index, _)| *device_index == group.device_index)
+        else {
+            return Err(CudaMoeError::BackendUnavailable(format!(
+                "pipeline K-quant ausente para CUDA{}",
+                group.device_index
+            )));
+        };
+        let status = route_pipeline
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .run(
@@ -806,10 +991,10 @@ impl KQuantCudaExecutor {
                 handles.as_ptr(),
                 payloads.len(),
                 payload_lengths.as_ptr(),
-                token_ids.as_ptr(),
-                weights.as_ptr(),
-                token_offsets.as_ptr(),
-                token_offsets.len(),
+                group.token_ids.as_ptr(),
+                group.weights.as_ptr(),
+                group.token_offsets.as_ptr(),
+                group.token_offsets.len(),
                 tokens,
                 hidden.as_ptr(),
                 hidden.len(),
@@ -960,6 +1145,29 @@ impl IqQuantCudaExecutor {
             ));
         }
 
+        let device_indices = payloads
+            .iter()
+            .map(DeviceExpertLease::device_index)
+            .collect::<Vec<_>>();
+        let groups =
+            group_route_indices(&device_indices, token_ids, weights, token_offsets, tokens)?;
+        sum_parallel_device_outputs(groups, hidden.len(), |group| {
+            let grouped_payloads = group
+                .indices
+                .iter()
+                .map(|&index| &payloads[index])
+                .collect::<Vec<_>>();
+            self.run_route_batch_on_device(&group, &grouped_payloads, hidden, tokens)
+        })
+    }
+
+    fn run_route_batch_on_device(
+        &self,
+        group: &DeviceRouteIndexGroup,
+        payloads: &[&DeviceExpertLease],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, CudaMoeError> {
         let handles = payloads
             .iter()
             .map(|payload| payload.handle() as *const u8)
@@ -972,13 +1180,14 @@ impl IqQuantCudaExecutor {
         let cuda_started = Instant::now();
         let status = unsafe {
             pom_moe_iquant_forward_route_batch_resident(
+                group.device_index as i32,
                 self.format.dtype(),
                 handles.as_ptr(),
                 payloads.len(),
-                token_ids.as_ptr(),
-                weights.as_ptr(),
-                token_offsets.as_ptr(),
-                token_offsets.len(),
+                group.token_ids.as_ptr(),
+                group.weights.as_ptr(),
+                group.token_offsets.as_ptr(),
+                group.token_offsets.len(),
                 tokens,
                 hidden.as_ptr(),
                 hidden.len(),
@@ -1064,6 +1273,7 @@ impl HeterogeneousCudaExecutor {
     pub fn run_route_batch_resident(
         &self,
         experts: &[CudaHeterogeneousExpert],
+        device_indices: &[u32],
         expert_ids: &[u32],
         token_ids: &[u32],
         weights: &[f32],
@@ -1073,6 +1283,7 @@ impl HeterogeneousCudaExecutor {
         activation: i32,
     ) -> Result<Vec<f32>, CudaMoeError> {
         if experts.is_empty()
+            || experts.len() != device_indices.len()
             || experts.len() != expert_ids.len()
             || experts.len() != token_ids.len()
             || experts.len() != weights.len()
@@ -1147,6 +1358,36 @@ impl HeterogeneousCudaExecutor {
             }
         }
 
+        let groups =
+            group_route_indices(device_indices, token_ids, weights, token_offsets, tokens)?;
+        sum_parallel_device_outputs(groups, hidden.len(), |group| {
+            let grouped_experts = group
+                .indices
+                .iter()
+                .map(|&index| experts[index])
+                .collect::<Vec<_>>();
+            self.run_route_batch_on_device(
+                &group,
+                &grouped_experts,
+                hidden,
+                tokens,
+                activation,
+                hidden_width,
+                intermediate_width,
+            )
+        })
+    }
+
+    fn run_route_batch_on_device(
+        &self,
+        group: &DeviceRouteIndexGroup,
+        experts: &[CudaHeterogeneousExpert],
+        hidden: &[f32],
+        tokens: usize,
+        activation: i32,
+        hidden_width: usize,
+        intermediate_width: usize,
+    ) -> Result<Vec<f32>, CudaMoeError> {
         let mut output = vec![0.0f32; hidden.len()];
         let mut timing = CudaMoeCallTiming {
             expert_calls: experts.len() as u64,
@@ -1158,12 +1399,13 @@ impl HeterogeneousCudaExecutor {
         let cuda_started = Instant::now();
         let status = unsafe {
             pom_moe_heterogeneous_quant_forward_route_batch_resident(
+                group.device_index as i32,
                 experts.as_ptr(),
                 experts.len(),
-                token_ids.as_ptr(),
-                weights.as_ptr(),
-                token_offsets.as_ptr(),
-                token_offsets.len(),
+                group.token_ids.as_ptr(),
+                group.weights.as_ptr(),
+                group.token_offsets.as_ptr(),
+                group.token_offsets.len(),
                 tokens,
                 hidden.as_ptr(),
                 hidden.len(),
@@ -1312,13 +1554,21 @@ impl Nvfp4CudaExecutor {
         resident_cache: Arc<DeviceExpertCache>,
     ) -> Result<Self, CudaMoeError> {
         debug_assert!(Nvfp4Expert::packed_bytes(hidden, intermediate).is_ok());
+        let route_pipelines = resident_cache
+            .device_indices()
+            .into_iter()
+            .map(|device_index| {
+                Nvfp4RoutePipelineHandle::new(device_index, hidden, intermediate)
+                    .map(|pipeline| (device_index, Mutex::new(pipeline)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             hidden,
             intermediate,
             profile: std::env::var("POM_MOE_CUDA_PROFILE")
                 .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
             resident_cache,
-            route_pipeline: Mutex::new(Nvfp4RoutePipelineHandle::new(hidden, intermediate)?),
+            route_pipelines,
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
         })
     }
@@ -1369,6 +1619,15 @@ impl Nvfp4CudaExecutor {
                 actual: hidden.len(),
             });
         }
+        let device_index = payloads[0].device_index();
+        if payloads
+            .iter()
+            .any(|payload| payload.device_index() != device_index)
+        {
+            return Err(CudaMoeError::Payload(
+                "batch residente de experts mistura dispositivos CUDA".into(),
+            ));
+        }
         let handles = payloads
             .iter()
             .map(|payload| payload.handle() as *const u8)
@@ -1381,6 +1640,7 @@ impl Nvfp4CudaExecutor {
         let cuda_started = Instant::now();
         let status = unsafe {
             pom_moe_nvfp4_forward_batch_resident(
+                device_index as i32,
                 handles.as_ptr(),
                 payloads.len(),
                 hidden.as_ptr(),
@@ -1423,37 +1683,35 @@ impl Nvfp4CudaExecutor {
         hidden: &[f32],
         tokens: usize,
     ) -> Result<Vec<f32>, CudaMoeError> {
-        if payloads.is_empty() {
-            return Err(CudaMoeError::Payload(
-                "batch residente de rotas vazio".into(),
-            ));
-        }
-        if payloads.len() != token_ids.len() || payloads.len() != weights.len() {
-            return Err(CudaMoeError::Payload(
-                "batch residente de rotas tem descritores com tamanhos diferentes".into(),
-            ));
-        }
-        if tokens == 0 || token_offsets.len() != tokens + 1 {
-            return Err(CudaMoeError::Payload(
-                "offsets de rota não correspondem ao número de tokens".into(),
-            ));
-        }
-        if token_offsets.first() != Some(&0)
-            || token_offsets.last() != Some(&payloads.len())
-            || token_offsets.windows(2).any(|pair| pair[0] > pair[1])
-            || token_ids.iter().any(|&token| token as usize >= tokens)
-        {
-            return Err(CudaMoeError::Payload(
-                "offsets ou ids de token da rota são inválidos".into(),
-            ));
-        }
         if hidden.len() != tokens.saturating_mul(self.hidden) {
             return Err(CudaMoeError::HiddenWidth {
                 expected: tokens.saturating_mul(self.hidden),
                 actual: hidden.len(),
             });
         }
+        let device_indices = payloads
+            .iter()
+            .map(DeviceExpertLease::device_index)
+            .collect::<Vec<_>>();
+        let groups =
+            group_route_indices(&device_indices, token_ids, weights, token_offsets, tokens)?;
+        sum_parallel_device_outputs(groups, hidden.len(), |group| {
+            let grouped_payloads = group
+                .indices
+                .iter()
+                .map(|&index| &payloads[index])
+                .collect::<Vec<_>>();
+            self.run_route_batch_on_device(&group, &grouped_payloads, hidden, tokens)
+        })
+    }
 
+    fn run_route_batch_on_device(
+        &self,
+        group: &DeviceRouteIndexGroup,
+        payloads: &[&DeviceExpertLease],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, CudaMoeError> {
         let handles = payloads
             .iter()
             .map(|payload| payload.handle() as *const u8)
@@ -1463,18 +1721,27 @@ impl Nvfp4CudaExecutor {
             expert_calls: payloads.len() as u64,
             ..CudaMoeCallTiming::default()
         };
+        let Some((_, route_pipeline)) = self
+            .route_pipelines
+            .iter()
+            .find(|(device_index, _)| *device_index == group.device_index)
+        else {
+            return Err(CudaMoeError::BackendUnavailable(format!(
+                "pipeline NVFP4 ausente para CUDA{}",
+                group.device_index
+            )));
+        };
         let cuda_started = Instant::now();
-        let status = self
-            .route_pipeline
+        let status = route_pipeline
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .run(
                 handles.as_ptr(),
                 payloads.len(),
-                token_ids.as_ptr(),
-                weights.as_ptr(),
-                token_offsets.as_ptr(),
-                token_offsets.len(),
+                group.token_ids.as_ptr(),
+                group.weights.as_ptr(),
+                group.token_offsets.as_ptr(),
+                group.token_offsets.len(),
                 tokens,
                 hidden.as_ptr(),
                 hidden.len(),
@@ -1510,6 +1777,7 @@ impl Nvfp4CudaExecutor {
 }
 
 struct CudaDeviceAllocation {
+    device_index: u32,
     handle: usize,
     bytes: usize,
 }
@@ -1532,20 +1800,32 @@ impl DeviceAllocation for CudaDeviceAllocation {
 
 impl Drop for CudaDeviceAllocation {
     fn drop(&mut self) {
-        unsafe { pom_moe_device_free(self.handle as *mut c_void) };
+        unsafe { pom_moe_device_free(self.device_index as i32, self.handle as *mut c_void) };
     }
 }
 
-struct CudaDeviceAllocator;
+struct CudaDeviceAllocator {
+    device_index: u32,
+    name: String,
+}
+
+impl CudaDeviceAllocator {
+    fn new(device_index: u32) -> Self {
+        Self {
+            device_index,
+            name: format!("CUDA{device_index}"),
+        }
+    }
+}
 
 impl DeviceAllocator for CudaDeviceAllocator {
     fn device_name(&self) -> &str {
-        "CUDA device 0"
+        &self.name
     }
 
     fn free_bytes(&self) -> io::Result<u64> {
         let mut free = 0u64;
-        let status = unsafe { pom_moe_device_free_bytes(&mut free) };
+        let status = unsafe { pom_moe_device_free_bytes(self.device_index as i32, &mut free) };
         if status == 0 {
             Ok(free)
         } else {
@@ -1557,7 +1837,14 @@ impl DeviceAllocator for CudaDeviceAllocator {
 
     fn upload(&self, payload: &[u8]) -> Result<Box<dyn DeviceAllocation>, String> {
         let mut handle = std::ptr::null_mut();
-        let status = unsafe { pom_moe_device_upload(payload.as_ptr(), payload.len(), &mut handle) };
+        let status = unsafe {
+            pom_moe_device_upload(
+                self.device_index as i32,
+                payload.as_ptr(),
+                payload.len(),
+                &mut handle,
+            )
+        };
         if status != 0 {
             return Err(format!("upload CUDA retornou {status}"));
         }
@@ -1565,6 +1852,7 @@ impl DeviceAllocator for CudaDeviceAllocator {
             return Err("upload CUDA retornou handle nulo".into());
         }
         Ok(Box::new(CudaDeviceAllocation {
+            device_index: self.device_index,
             handle: handle as usize,
             bytes: payload.len(),
         }))
@@ -1572,26 +1860,48 @@ impl DeviceAllocator for CudaDeviceAllocator {
 }
 
 fn measured_device_cache(compute_bytes: u64) -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
-    let allocator: Arc<dyn DeviceAllocator> = Arc::new(CudaDeviceAllocator);
-    let baseline_free_bytes = allocator
-        .free_bytes()
-        .map_err(|error| CudaMoeError::BackendUnavailable(error.to_string()))?;
-    let account =
-        MemoryAccount::for_device_cache(baseline_free_bytes, compute_bytes).ok_or_else(|| {
-            CudaMoeError::BackendUnavailable(format!(
-                "compute buffer CUDA medido inválido: {compute_bytes} bytes"
-            ))
-        })?;
-    Ok(DeviceExpertCache::new(account, allocator))
+    measured_device_cache_for_devices(&[(0, compute_bytes)])
+}
+
+fn measured_device_cache_for_devices(
+    compute_bytes: &[(u32, u64)],
+) -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
+    if compute_bytes.is_empty() {
+        return Err(CudaMoeError::BackendUnavailable(
+            "llama.cpp não reportou compute buffers CUDA por dispositivo".into(),
+        ));
+    }
+    let mut shards = Vec::with_capacity(compute_bytes.len());
+    for &(device_index, compute) in compute_bytes {
+        let allocator = Arc::new(CudaDeviceAllocator::new(device_index));
+        let baseline_free_bytes = allocator
+            .free_bytes()
+            .map_err(|error| CudaMoeError::BackendUnavailable(error.to_string()))?;
+        let account =
+            MemoryAccount::for_device_cache(baseline_free_bytes, compute).ok_or_else(|| {
+                CudaMoeError::BackendUnavailable(format!(
+                    "compute buffer CUDA medido inválido em CUDA{device_index}: {compute} bytes"
+                ))
+            })?;
+        shards.push((device_index, account, allocator as Arc<dyn DeviceAllocator>));
+    }
+    Ok(DeviceExpertCache::new_sharded(shards))
 }
 
 pub fn create_device_cache(compute_bytes: u64) -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
     measured_device_cache(compute_bytes)
 }
 
+pub fn create_device_cache_for_devices(
+    compute_bytes: &[(u32, u64)],
+) -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
+    measured_device_cache_for_devices(compute_bytes)
+}
+
 #[cfg(feature = "cuda")]
 unsafe extern "C" {
     fn pom_moe_nvfp4_forward_batch_resident(
+        device_index: i32,
         payloads: *const *const u8,
         payload_count: usize,
         hidden: *const f32,
@@ -1604,6 +1914,7 @@ unsafe extern "C" {
     ) -> i32;
 
     fn pom_moe_nvfp4_route_pipeline_create(
+        device_index: i32,
         hidden_width: usize,
         intermediate_width: usize,
         out: *mut *mut c_void,
@@ -1628,6 +1939,7 @@ unsafe extern "C" {
     fn pom_moe_nvfp4_route_pipeline_destroy(handle: *mut c_void);
 
     fn pom_moe_kquant_route_pipeline_create(
+        device_index: i32,
         hidden_width: usize,
         intermediate_width: usize,
         out: *mut *mut c_void,
@@ -1657,6 +1969,7 @@ unsafe extern "C" {
     fn pom_moe_kquant_route_pipeline_destroy(handle: *mut c_void);
 
     fn pom_moe_plain_forward_route_batch_resident(
+        device_index: i32,
         dtype: u32,
         payloads: *const *const u8,
         payload_count: usize,
@@ -1675,6 +1988,7 @@ unsafe extern "C" {
     ) -> i32;
 
     fn pom_moe_iquant_forward_route_batch_resident(
+        device_index: i32,
         dtype: u32,
         payloads: *const *const u8,
         payload_count: usize,
@@ -1693,6 +2007,7 @@ unsafe extern "C" {
     ) -> i32;
 
     fn pom_moe_heterogeneous_quant_forward_route_batch_resident(
+        device_index: i32,
         experts: *const CudaHeterogeneousExpert,
         expert_count: usize,
         token_ids: *const u32,
@@ -1713,14 +2028,20 @@ unsafe extern "C" {
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
 
-    fn pom_moe_device_free_bytes(free_bytes: *mut u64) -> i32;
-    fn pom_moe_device_upload(payload: *const u8, payload_len: usize, out: *mut *mut c_void) -> i32;
-    fn pom_moe_device_free(handle: *mut c_void);
+    fn pom_moe_device_free_bytes(device_index: i32, free_bytes: *mut u64) -> i32;
+    fn pom_moe_device_upload(
+        device_index: i32,
+        payload: *const u8,
+        payload_len: usize,
+        out: *mut *mut c_void,
+    ) -> i32;
+    fn pom_moe_device_free(device_index: i32, handle: *mut c_void);
 }
 
 #[cfg(test)]
 unsafe extern "C" {
     fn pom_moe_iquant_trace_single_resident(
+        device_index: i32,
         dtype: u32,
         payload: *const u8,
         hidden: *const f32,
@@ -2764,6 +3085,7 @@ mod tests {
             let mut actual_output = vec![0.0f32; hidden];
             let status = unsafe {
                 pom_moe_iquant_trace_single_resident(
+                    0,
                     format.dtype(),
                     lease.handle() as *const u8,
                     hidden_values.as_ptr(),

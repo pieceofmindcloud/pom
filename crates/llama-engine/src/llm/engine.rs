@@ -958,6 +958,14 @@ impl LlmEngine {
         crate::moe::admission::cuda_compute_bytes_from_llama_memory(&self.context_memory()?)
     }
 
+    /// Compute buffers CUDA medidos, preservando o ordinal de cada placa.
+    ///
+    /// O executor externo usa este relatório para criar um cache residente por
+    /// GPU, com a mesma topologia `CUDA0`, `CUDA1`, ... do contexto denso.
+    pub fn cuda_compute_bytes_by_device(&self) -> Option<Vec<(u32, u64)>> {
+        crate::moe::admission::cuda_compute_bytes_by_device(&self.context_memory()?)
+    }
+
     pub fn eos_token(&self) -> i32 {
         unsafe { sys::llama_vocab_eos(self.loaded.vocab) }
     }

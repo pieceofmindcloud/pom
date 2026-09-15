@@ -373,6 +373,18 @@ where
     T: Send,
     F: Fn(T) -> Result<Vec<f32>, CudaMoeError> + Sync + Send,
 {
+    if groups.len() == 1 {
+        let Some(group) = groups.into_iter().next() else {
+            return Ok(vec![0.0; output_len]);
+        };
+        let values = run(group)?;
+        if values.len() != output_len {
+            return Err(CudaMoeError::Payload(
+                "GPU CUDA MoE devolveu hidden com tamanho inesperado".into(),
+            ));
+        }
+        return Ok(values);
+    }
     let outputs = std::thread::scope(|scope| {
         let handles = groups
             .into_iter()
@@ -645,6 +657,169 @@ impl Drop for KQuantRoutePipelineHandle {
     fn drop(&mut self) {
         if !self.handle.is_null() {
             unsafe { pom_moe_kquant_route_pipeline_destroy(self.handle) };
+        }
+    }
+}
+
+struct IquantRoutePipelineHandle {
+    handle: *mut c_void,
+}
+
+unsafe impl Send for IquantRoutePipelineHandle {}
+
+impl IquantRoutePipelineHandle {
+    fn new(device_index: u32, hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
+        let device_index = cuda_device_index_i32(device_index)?;
+        let mut handle = std::ptr::null_mut();
+        let status = unsafe {
+            pom_moe_iquant_route_pipeline_create(device_index, hidden, intermediate, &mut handle)
+        };
+        if status != 0 {
+            return Err(CudaMoeError::BackendUnavailable(format!(
+                "pipeline CUDA IQ-quant não pôde ser criado (código {status})"
+            )));
+        }
+        if handle.is_null() {
+            return Err(CudaMoeError::BackendUnavailable(
+                "pipeline CUDA IQ-quant retornou handle nulo".into(),
+            ));
+        }
+        Ok(Self { handle })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        dtype: u32,
+        payloads: *const *const u8,
+        payload_count: usize,
+        payload_lengths: *const usize,
+        token_ids: *const u32,
+        weights: *const f32,
+        token_offsets: *const usize,
+        token_offsets_len: usize,
+        token_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        nonfinite_stage: *mut i32,
+        nonfinite_index: *mut usize,
+        nonfinite_count: *mut usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32 {
+        unsafe {
+            pom_moe_iquant_route_pipeline_run(
+                self.handle,
+                dtype,
+                payloads,
+                payload_count,
+                payload_lengths,
+                token_ids,
+                weights,
+                token_offsets,
+                token_offsets_len,
+                token_count,
+                hidden,
+                hidden_len,
+                output,
+                output_len,
+                nonfinite_stage,
+                nonfinite_index,
+                nonfinite_count,
+                timing,
+            )
+        }
+    }
+}
+
+impl Drop for IquantRoutePipelineHandle {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { pom_moe_iquant_route_pipeline_destroy(self.handle) };
+        }
+    }
+}
+
+struct HeterogeneousRoutePipelineHandle {
+    handle: *mut c_void,
+}
+
+unsafe impl Send for HeterogeneousRoutePipelineHandle {}
+
+impl HeterogeneousRoutePipelineHandle {
+    fn new(device_index: u32, hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
+        let device_index = cuda_device_index_i32(device_index)?;
+        let mut handle = std::ptr::null_mut();
+        let status = unsafe {
+            pom_moe_heterogeneous_route_pipeline_create(
+                device_index,
+                hidden,
+                intermediate,
+                &mut handle,
+            )
+        };
+        if status != 0 {
+            return Err(CudaMoeError::BackendUnavailable(format!(
+                "pipeline CUDA heterogêneo não pôde ser criado (código {status})"
+            )));
+        }
+        if handle.is_null() {
+            return Err(CudaMoeError::BackendUnavailable(
+                "pipeline CUDA heterogêneo retornou handle nulo".into(),
+            ));
+        }
+        Ok(Self { handle })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        experts: *const CudaHeterogeneousExpert,
+        expert_count: usize,
+        token_ids: *const u32,
+        weights: *const f32,
+        token_offsets: *const usize,
+        token_offsets_len: usize,
+        token_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        activation: i32,
+        nonfinite_stage: *mut i32,
+        nonfinite_index: *mut usize,
+        nonfinite_count: *mut usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32 {
+        unsafe {
+            pom_moe_heterogeneous_route_pipeline_run(
+                self.handle,
+                experts,
+                expert_count,
+                token_ids,
+                weights,
+                token_offsets,
+                token_offsets_len,
+                token_count,
+                hidden,
+                hidden_len,
+                output,
+                output_len,
+                activation,
+                nonfinite_stage,
+                nonfinite_index,
+                nonfinite_count,
+                timing,
+            )
+        }
+    }
+}
+
+impl Drop for HeterogeneousRoutePipelineHandle {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { pom_moe_heterogeneous_route_pipeline_destroy(self.handle) };
         }
     }
 }
@@ -1056,14 +1231,16 @@ impl KQuantCudaExecutor {
 
 /// Executor CUDA para os IQ usados nos modelos UD priorizados.
 ///
-/// O formato permanece dado na chamada FFI. A ponte cobre IQ3_S (21), IQ2_S
-/// (22) e IQ4_XS (23); um IQ diferente é recusado antes de chegar ao kernel.
+/// O formato permanece dado na chamada FFI. O pipeline residente cobre
+/// IQ3_XXS (18), IQ3_S (21), IQ2_S (22) e IQ4_XS (23); um IQ diferente é
+/// recusado antes de chegar ao kernel.
 pub struct IqQuantCudaExecutor {
     hidden: usize,
     intermediate: usize,
     format: super::format_iq_quants::IqQuantFormat,
     profile: bool,
     resident_cache: Arc<DeviceExpertCache>,
+    route_pipelines: Vec<(u32, Mutex<IquantRoutePipelineHandle>)>,
     diagnostics: Mutex<Nvfp4CudaDiagnostics>,
 }
 
@@ -1081,6 +1258,14 @@ impl IqQuantCudaExecutor {
                 format.name()
             )));
         }
+        let route_pipelines = resident_cache
+            .device_indices()
+            .into_iter()
+            .map(|device_index| {
+                IquantRoutePipelineHandle::new(device_index, hidden, intermediate)
+                    .map(|pipeline| (device_index, Mutex::new(pipeline)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             hidden,
             intermediate,
@@ -1088,6 +1273,7 @@ impl IqQuantCudaExecutor {
             profile: std::env::var("POM_MOE_CUDA_PROFILE")
                 .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
             resident_cache,
+            route_pipelines,
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
         })
     }
@@ -1175,18 +1361,37 @@ impl IqQuantCudaExecutor {
             .iter()
             .map(|payload| payload.handle() as *const u8)
             .collect::<Vec<_>>();
+        let payload_lengths = payloads
+            .iter()
+            .map(|payload| payload.bytes())
+            .collect::<Vec<_>>();
         let mut output = vec![0.0f32; hidden.len()];
         let mut timing = CudaMoeCallTiming {
             expert_calls: payloads.len() as u64,
             ..CudaMoeCallTiming::default()
         };
+        let mut nonfinite_stage = 0;
+        let mut nonfinite_index = 0;
+        let mut nonfinite_count = 0;
+        let Some((_, route_pipeline)) = self
+            .route_pipelines
+            .iter()
+            .find(|(device_index, _)| *device_index == group.device_index)
+        else {
+            return Err(CudaMoeError::BackendUnavailable(format!(
+                "pipeline IQ-quant ausente para CUDA{}",
+                group.device_index
+            )));
+        };
         let cuda_started = Instant::now();
-        let status = unsafe {
-            pom_moe_iquant_forward_route_batch_resident(
-                group.device_index as i32,
+        let status = route_pipeline
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .run(
                 self.format.dtype(),
                 handles.as_ptr(),
                 payloads.len(),
+                payload_lengths.as_ptr(),
                 group.token_ids.as_ptr(),
                 group.weights.as_ptr(),
                 group.token_offsets.as_ptr(),
@@ -1196,18 +1401,33 @@ impl IqQuantCudaExecutor {
                 hidden.len(),
                 output.as_mut_ptr(),
                 output.len(),
-                self.hidden,
-                self.intermediate,
+                &mut nonfinite_stage,
+                &mut nonfinite_index,
+                &mut nonfinite_count,
                 if self.profile {
                     &mut timing
                 } else {
                     std::ptr::null_mut()
                 },
-            )
-        };
+            );
         let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
         if status != 0 {
             return Err(CudaMoeError::Launch(status));
+        }
+        if nonfinite_stage != 0 {
+            let stage = match nonfinite_stage {
+                1 => "gate_up",
+                2 => "ativação",
+                3 => "down",
+                4 => "agregação",
+                _ => "desconhecido",
+            };
+            return Err(CudaMoeError::NonFinite {
+                stage,
+                index: nonfinite_index,
+                count: nonfinite_count,
+                kind: "saída IQ-quant CUDA",
+            });
         }
         if self.profile {
             let mut diagnostics = self
@@ -1235,6 +1455,14 @@ impl IqQuantCudaExecutor {
 pub struct HeterogeneousCudaExecutor {
     profile: bool,
     resident_cache: Arc<DeviceExpertCache>,
+    route_pipelines: Mutex<
+        Vec<(
+            u32,
+            usize,
+            usize,
+            Arc<Mutex<HeterogeneousRoutePipelineHandle>>,
+        )>,
+    >,
     diagnostics: Mutex<Nvfp4CudaDiagnostics>,
 }
 
@@ -1248,8 +1476,33 @@ impl HeterogeneousCudaExecutor {
             profile: std::env::var("POM_MOE_CUDA_PROFILE")
                 .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
             resident_cache,
+            route_pipelines: Mutex::new(Vec::new()),
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
         }
+    }
+
+    fn route_pipeline(
+        &self,
+        device_index: u32,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Arc<Mutex<HeterogeneousRoutePipelineHandle>>, CudaMoeError> {
+        let mut pipelines = self
+            .route_pipelines
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((_, _, _, pipeline)) = pipelines.iter().find(|(device, width, inner, _)| {
+            *device == device_index && *width == hidden && *inner == intermediate
+        }) {
+            return Ok(Arc::clone(pipeline));
+        }
+        let pipeline = Arc::new(Mutex::new(HeterogeneousRoutePipelineHandle::new(
+            device_index,
+            hidden,
+            intermediate,
+        )?));
+        pipelines.push((device_index, hidden, intermediate, Arc::clone(&pipeline)));
+        Ok(pipeline)
     }
 
     pub fn resident_lookup(
@@ -1400,9 +1653,12 @@ impl HeterogeneousCudaExecutor {
         let mut nonfinite_index = 0;
         let mut nonfinite_count = 0;
         let cuda_started = Instant::now();
-        let status = unsafe {
-            pom_moe_heterogeneous_quant_forward_route_batch_resident(
-                group.device_index as i32,
+        let route_pipeline =
+            self.route_pipeline(group.device_index, hidden_width, intermediate_width)?;
+        let status = route_pipeline
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .run(
                 experts.as_ptr(),
                 experts.len(),
                 group.token_ids.as_ptr(),
@@ -1414,8 +1670,6 @@ impl HeterogeneousCudaExecutor {
                 hidden.len(),
                 output.as_mut_ptr(),
                 output.len(),
-                hidden_width,
-                intermediate_width,
                 activation,
                 &mut nonfinite_stage,
                 &mut nonfinite_index,
@@ -1425,8 +1679,7 @@ impl HeterogeneousCudaExecutor {
                 } else {
                     std::ptr::null_mut()
                 },
-            )
-        };
+            );
         let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
         if status != 0 {
             return Err(CudaMoeError::Launch(status));
@@ -1971,6 +2224,36 @@ unsafe extern "C" {
 
     fn pom_moe_kquant_route_pipeline_destroy(handle: *mut c_void);
 
+    fn pom_moe_iquant_route_pipeline_create(
+        device_index: i32,
+        hidden_width: usize,
+        intermediate_width: usize,
+        out: *mut *mut c_void,
+    ) -> i32;
+
+    fn pom_moe_iquant_route_pipeline_run(
+        handle: *mut c_void,
+        dtype: u32,
+        payloads: *const *const u8,
+        payload_count: usize,
+        payload_lengths: *const usize,
+        token_ids: *const u32,
+        weights: *const f32,
+        token_offsets: *const usize,
+        token_offsets_len: usize,
+        token_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        nonfinite_stage: *mut i32,
+        nonfinite_index: *mut usize,
+        nonfinite_count: *mut usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32;
+
+    fn pom_moe_iquant_route_pipeline_destroy(handle: *mut c_void);
+
     fn pom_moe_plain_forward_route_batch_resident(
         device_index: i32,
         dtype: u32,
@@ -2030,6 +2313,35 @@ unsafe extern "C" {
         nonfinite_count: *mut usize,
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
+
+    fn pom_moe_heterogeneous_route_pipeline_create(
+        device_index: i32,
+        hidden_width: usize,
+        intermediate_width: usize,
+        out: *mut *mut c_void,
+    ) -> i32;
+
+    fn pom_moe_heterogeneous_route_pipeline_run(
+        handle: *mut c_void,
+        experts: *const CudaHeterogeneousExpert,
+        expert_count: usize,
+        token_ids: *const u32,
+        weights: *const f32,
+        token_offsets: *const usize,
+        token_offsets_len: usize,
+        token_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        activation: i32,
+        nonfinite_stage: *mut i32,
+        nonfinite_index: *mut usize,
+        nonfinite_count: *mut usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32;
+
+    fn pom_moe_heterogeneous_route_pipeline_destroy(handle: *mut c_void);
 
     fn pom_moe_device_free_bytes(device_index: i32, free_bytes: *mut u64) -> i32;
     fn pom_moe_device_upload(
@@ -2092,6 +2404,23 @@ mod tests {
 
         assert_eq!(output, vec![6.0, 3.0]);
         assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn soma_de_um_grupo_nao_cria_thread_de_espera() {
+        let caller = std::thread::current().id();
+        let observed = Arc::new(Mutex::new(None));
+        let output = sum_parallel_device_outputs(vec![1u8], 1, {
+            let observed = Arc::clone(&observed);
+            move |_| {
+                *observed.lock().unwrap() = Some(std::thread::current().id());
+                Ok(vec![1.0])
+            }
+        })
+        .unwrap();
+
+        assert_eq!(output, vec![1.0]);
+        assert_eq!(*observed.lock().unwrap(), Some(caller));
     }
 
     struct TestDeviceAllocation {
@@ -3004,7 +3333,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu() {
+    fn executor_cuda_iq_preserva_iq3xxs_iq3s_iq2s_e_iq4xs_do_decoder_cpu() {
         let hidden = 256;
         let intermediate = 256;
         let hidden_values = (0..hidden)
@@ -3012,6 +3341,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut failures = Vec::new();
         for format in [
+            IqQuantFormat::Iq3XXS,
             IqQuantFormat::Iq3S,
             IqQuantFormat::Iq2S,
             IqQuantFormat::Iq4XS,
@@ -3062,6 +3392,7 @@ mod tests {
             .map(|index| (index as f32 - 127.0) * 0.0078125)
             .collect::<Vec<_>>();
         for format in [
+            IqQuantFormat::Iq3XXS,
             IqQuantFormat::Iq3S,
             IqQuantFormat::Iq2S,
             IqQuantFormat::Iq4XS,
@@ -4113,5 +4444,16 @@ mod tests {
             bandwidth.gpu_fraction().unwrap(),
             serde_json::to_string(&profile).unwrap()
         );
+    }
+
+    #[test]
+    #[ignore = "requer uma GPU CUDA para exercitar a ABI do pipeline"]
+    fn pipeline_heterogeneo_residente_expoe_handle_persistente() {
+        let mut handle = std::ptr::null_mut();
+        let status =
+            unsafe { pom_moe_heterogeneous_route_pipeline_create(0, 256, 256, &mut handle) };
+        assert_eq!(status, 0);
+        assert!(!handle.is_null());
+        unsafe { pom_moe_heterogeneous_route_pipeline_destroy(handle) };
     }
 }

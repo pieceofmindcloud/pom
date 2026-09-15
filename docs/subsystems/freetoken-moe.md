@@ -2600,6 +2600,93 @@ decode e a confirmação final da queda de 15x precisam ser repetidas pelo
 captain na ksia com o perfil CUDA ligado. O fork nativo não foi alterado nesta
 correção.
 
+### Fase 5.8: hot path heterogêneo alinhado ao FreeToken - 2026-09-15
+
+A telemetria mais recente da ksia mostrou que fila e setup do nó ficavam abaixo
+de 1 ms, enquanto o backend heterogêneo gastava `978-1495 ms` no prefill e
+`83-117 ms` por chamada de decode. Portanto os timeouts de scheduler não eram a
+causa daquele trace. O caminho também carregava bytes do mmap para cada papel
+antes de consultar o cache residente; um hit descartava essa cópia. Isso
+contradizia a decisão do FreeToken de manter o working set de experts residente
+no device e explica por que uma segunda requisição não ficava materialmente
+mais barata.
+
+O caminho de produção agora usa três fronteiras explícitas:
+
+- `HeterogeneousTensorSpec` valida papel, dtype, geometria e escalas sem copiar
+  payload. `HeterogeneousMoeBlock` consulta primeiro o `DeviceExpertCache` e só
+  chama `load_expert_tensor` em um miss real;
+- `HeterogeneousRoutePipeline` mantém descriptors, hidden, ids, pesos, offsets,
+  ativações, resultados intermediários e saída alocados por device. O pipeline
+  é compartilhado por todas as camadas do runtime e indexado por
+  `(CUDA<n>, hidden, intermediate)`, evitando uma reserva grande por camada;
+- os experts continuam particionados pelo hash estável de modelo, camada e
+  expert. Cada grupo por ordinal é executado em sua própria pipeline dentro do
+  `sum_parallel_device_outputs`, e grupos em `CUDA0` e `CUDA1` podem progredir
+  simultaneamente. A contagem de camadas do llama.cpp não é usada como prova de
+  utilização das duas placas: a confirmação em campo deve olhar os bytes
+  residentes e os contadores por device.
+
+O pipeline copia apenas os metadados de rota e o hidden a cada chamada. A
+`cudaMemcpy` D2H da saída continua sendo a barreira necessária para devolver o
+resultado ao callback, mas o `cudaDeviceSynchronize` adicional foi removido;
+`sync_count=0` no perfil desse caminho. `alloc_ms` só aparece quando a
+capacidade cresce, e não em cada token. A atualização é código CUDA próprio em
+`crates/llama-engine/src/moe/cuda_kernels.cu`; o fork do llama.cpp continua
+inalterado e fornece apenas o callback e os metadados.
+
+O cancelamento do aquecimento também é observado depois que um candidato é
+obtido. Assim, uma leitura que terminou depois da chegada de uma requisição
+real não pode admitir bytes de camadas futuras e expulsar o working set ativo.
+O caminho ainda permite que uma única admissão já em andamento termine, mas não
+inicia outra depois do cancelamento. O teste
+`warmup_cancelado_depois_de_obter_candidato_nao_admite_payload` fixa essa
+fronteira.
+
+Esta fase elimina cópias, alocações e sincronizações redundantes, mas não
+transforma o particionamento de experts em tensor parallelism. Se todos os
+experts escolhidos por um token caírem no mesmo shard, a outra placa ficará
+ociosa nessa rota; o caminho denso do llama.cpp pode usar as duas para cada
+matriz por meio de `tensor_split`. A medição na ksia deve separar esse efeito
+de roteamento do custo de kernel antes de declarar throughput superior ao
+llama.cpp ou ao FreeToken.
+
+### Fase 5.9: caminho efetivo IQ3_XXS e kernel cooperativo - 2026-09-15
+
+A telemetria do modelo `Mistral-Small-4-119B-2603-UD-IQ3_XXS-9c2b030b`
+mostrou `IQ3_XXS` (dtype GGML 18), não uma carga heterogênea. Por isso a
+otimização heterogênea da fase anterior não tocava o caminho medido: o
+`IqQuantCudaExecutor` ainda chamava `pom_moe_iquant_forward_route_batch_resident`,
+que fazia `cudaMalloc`/`cudaFree` e `cudaDeviceSynchronize` em cada chamada.
+Além disso, cada thread do kernel IQ calculava sozinha o dot product completo
+de uma linha, repetindo o mesmo trabalho dentro do bloco. Esse era o custo
+local observado como `978-1495 ms` no prefill e `83-117 ms` por decode, não uma
+espera de fila: a telemetria do nó registrou fila e setup abaixo de 1 ms.
+
+O caminho IQ agora compartilha o mesmo workspace persistente por `(device,
+geometria)` usado pelos K-quants. O runtime cria um pipeline para cada shard
+`CUDA<n>` do cache residente, agrupa as rotas pelo ordinal e executa os grupos
+em paralelo; nenhum device é escolhido como `main_gpu` único pelo executor.
+Cada kernel cooperativo atribui uma linha a um bloco de 128 threads, reduz os
+fragmentos do dot product em shared memory e mantém a sequência gate/up,
+SiLU, down e agregação. O D2H síncrono continua sendo a barreira necessária
+para devolver o resultado ao callback, mas o `cudaDeviceSynchronize` adicional
+foi removido e o perfil publica `sync_count=0`. IQ3_XXS agora é elegível para a
+ponte CUDA e valida a geometria do payload antes do lançamento.
+
+O cache não copia a fonte fria em hits: a admissão continua sendo por hash de
+modelo, camada e expert em shards independentes. Assim, uma segunda chamada
+reutiliza o mesmo handle em CUDA0 ou CUDA1. O warmup é cancelado quando a
+primeira rota chega, evitando que a admissão concorrente expulse o working set;
+se os contadores por device ainda mostrarem uma única placa em uso, o próximo
+diagnóstico é a distribuição efetiva dos experts selecionados, não um timeout.
+
+Esta correção é código CUDA próprio em `cuda_kernels.cu`; não altera o fork do
+llama.cpp. O fork continua fornecendo o callback externo e os metadados de
+memória. A comparação contra `dense/llama.cpp` e contra FreeToken precisa ser
+repetida na ksia com o build CUDA novo: este worktree não possui `nvcc` nem
+GPU, então não há uma alegação local de throughput.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

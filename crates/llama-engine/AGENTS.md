@@ -48,11 +48,15 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   disponível, e um fallback CPU efetivo fica registrado na telemetria e no log
   de inicialização. O cache CUDA residente é particionado por ordinal (`CUDA0`,
   `CUDA1`, ...), com orçamento e allocator próprios por placa; as rotas são
-  agrupadas por shard e executadas em paralelo. O agregado do cache publica os
-  nomes dos devices e os bytes residentes por shard para a telemetria. A ponte
-  CUDA é código próprio
+  agrupadas por shard e executadas em paralelo. O caminho heterogêneo consulta
+  primeiro as especificações do mmap e só copia bytes em um miss; seu workspace
+  CUDA é um pipeline persistente compartilhado pelas camadas, indexado por
+  device e geometria. O agregado do cache publica os nomes dos devices e os
+  bytes residentes por shard para a telemetria. A ponte CUDA é código próprio
   deste crate; o fork `vendor/llama-cpp-sys-2/llama.cpp` só fornece o callback e
-  os metadados de memória.
+  os metadados de memória. O caminho uniforme IQ3_XXS (dtype 18) também usa o
+  pipeline persistente e kernels cooperativos; IQ e K compartilham buffers e
+  o mesmo agrupamento por CUDA<n>, sem `cudaDeviceSynchronize` no hot path.
   A cobertura CUDA por dtype e os números da ksia ficam em
   `docs/subsystems/freetoken-moe.md`.
 - `collective.rs` - `reduce_sum` + `ReduceBarrier` do tensor parallelism

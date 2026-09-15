@@ -13,7 +13,7 @@ use super::cache::{CacheError, ExpertCache};
 #[cfg(feature = "cuda")]
 use super::cache::{DeviceWarmupOptions, DeviceWarmupReport, DeviceWarmupStop, ExpertKey};
 #[cfg(feature = "cuda")]
-use super::cuda::CudaTransferProfile;
+use super::cuda::{CudaTransferProfile, HeterogeneousCudaExecutor};
 use super::format_heterogeneous::{HeterogeneousMoeSource, TensorRole};
 use super::format_iq_quants::{IqQuantFormat, IqQuantSource};
 use super::format_k_quants::{KQuantFormat, KQuantSource};
@@ -603,6 +603,7 @@ impl MoeSource {
 struct DeviceWarmupCandidates<'a> {
     source: &'a MoeSource,
     model: &'a str,
+    cancellation: Arc<AtomicBool>,
     layers: u32,
     experts: u32,
     layer: u32,
@@ -612,10 +613,17 @@ struct DeviceWarmupCandidates<'a> {
 
 #[cfg(feature = "cuda")]
 impl<'a> DeviceWarmupCandidates<'a> {
-    fn new(source: &'a MoeSource, model: &'a str, layers: u32, experts: u32) -> Self {
+    fn new(
+        source: &'a MoeSource,
+        model: &'a str,
+        cancellation: Arc<AtomicBool>,
+        layers: u32,
+        experts: u32,
+    ) -> Self {
         Self {
             source,
             model,
+            cancellation,
             layers,
             experts,
             layer: 0,
@@ -630,6 +638,9 @@ impl Iterator for DeviceWarmupCandidates<'_> {
     type Item = Result<(ExpertKey, Vec<u8>), String>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.cancellation.load(Ordering::Acquire) {
+            return None;
+        }
         if let Some(candidate) = self.pending.pop_front() {
             return Some(candidate);
         }
@@ -644,8 +655,14 @@ impl Iterator for DeviceWarmupCandidates<'_> {
             self.expert = 0;
             self.layer = self.layer.saturating_add(1);
         }
+        if self.cancellation.load(Ordering::Acquire) {
+            return None;
+        }
         match self.source.warmup_payloads(layer, expert, self.model) {
             Ok(payloads) => {
+                if self.cancellation.load(Ordering::Acquire) {
+                    return None;
+                }
                 self.pending.extend(payloads.into_iter().map(Ok));
                 self.pending.pop_front()
             }
@@ -764,7 +781,7 @@ fn make_external_executor_plan(
                 && single_dtype
                 && KQuantFormat::from_dtype(dtypes[0]).is_ok_and(|format| format.cuda_supported())
         }
-        ExpertFormat::Iq3S | ExpertFormat::Iq2S | ExpertFormat::Iq4XS => {
+        ExpertFormat::Iq3XXS | ExpertFormat::Iq3S | ExpertFormat::Iq2S | ExpertFormat::Iq4XS => {
             cuda_compiled
                 && single_dtype
                 && IqQuantFormat::from_dtype(dtypes[0]).is_ok_and(|format| format.cuda_supported())
@@ -842,8 +859,7 @@ fn make_external_executor_plan(
 fn cuda_heterogeneous_dtype_supported(dtype: u32) -> bool {
     dtype == 2
         || KQuantFormat::from_dtype(dtype).is_ok_and(|format| format.cuda_supported())
-        || IqQuantFormat::from_dtype(dtype)
-            .is_ok_and(|format| format.cuda_supported() || matches!(format, IqQuantFormat::Iq3XXS))
+        || IqQuantFormat::from_dtype(dtype).is_ok_and(|format| format.cuda_supported())
         || LowBitFormat::from_dtype(dtype).is_ok_and(|format| matches!(format, LowBitFormat::Mxfp4))
 }
 
@@ -1440,18 +1456,24 @@ impl MoeRuntime {
                 } else {
                     None
                 };
+                #[cfg(feature = "cuda")]
+                let cuda_executor = device_cache.as_ref().map(|device_cache| {
+                    Arc::new(HeterogeneousCudaExecutor::new_with_cache(
+                        0,
+                        0,
+                        Arc::clone(device_cache),
+                    ))
+                });
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
                     #[cfg(feature = "cuda")]
-                    let block = if let Some(device_cache) = device_cache.as_ref() {
-                        HeterogeneousMoeBlock::new_with_device_cache(
+                    let block = if let Some(cuda_executor) = cuda_executor.as_ref() {
+                        HeterogeneousMoeBlock::new_with_device_executor(
                             Arc::clone(&cache),
-                            Arc::clone(device_cache),
+                            Arc::clone(cuda_executor),
                             &model,
                             layer,
                             top_k,
-                            source.layer_geometry(layer)?.0,
-                            source.layer_geometry(layer)?.1,
                         )
                     } else {
                         HeterogeneousMoeBlock::new(Arc::clone(&cache), &model, layer, top_k)
@@ -1552,6 +1574,7 @@ impl MoeRuntime {
                 let candidates = DeviceWarmupCandidates::new(
                     &runtime.source,
                     &runtime.model,
+                    Arc::clone(&options_for_thread.cancellation),
                     runtime.layers(),
                     runtime.source.experts(),
                 );
@@ -2468,8 +2491,10 @@ mod tests {
         assert!(KQuantFormat::Q3K.cuda_supported());
         assert!(KQuantFormat::Q5K.cuda_supported());
         assert!(!KQuantFormat::Q8K.cuda_supported());
+        assert!(IqQuantFormat::Iq3XXS.cuda_supported());
         assert!(cuda_heterogeneous_dtype_supported(10));
         assert!(cuda_heterogeneous_dtype_supported(11));
+        assert!(cuda_heterogeneous_dtype_supported(18));
         assert!(cuda_heterogeneous_dtype_supported(13));
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,

@@ -976,6 +976,45 @@ bool kquant_payload_geometry(
     return true;
 }
 
+bool iquant_payload_geometry(
+    uint32_t dtype,
+    std::size_t hidden_width,
+    std::size_t intermediate_width,
+    std::size_t *gate_up_bytes,
+    std::size_t *total_bytes
+) {
+    if ((dtype != 18 && dtype != 21 && dtype != 22 && dtype != 23) ||
+        hidden_width == 0 || intermediate_width == 0 ||
+        hidden_width % 256 != 0 || intermediate_width % 256 != 0 ||
+        gate_up_bytes == nullptr || total_bytes == nullptr) {
+        return false;
+    }
+    const std::size_t block_bytes = dtype == 18 ? 98 : dtype == 21 ? 110 :
+        dtype == 22 ? 82 : 136;
+    const std::size_t hidden_blocks = hidden_width / 256;
+    const std::size_t intermediate_blocks = intermediate_width / 256;
+    if (hidden_blocks > std::numeric_limits<std::size_t>::max() / block_bytes ||
+        intermediate_blocks > std::numeric_limits<std::size_t>::max() / block_bytes) {
+        return false;
+    }
+    const std::size_t gate_up_row_bytes = hidden_blocks * block_bytes;
+    const std::size_t down_row_bytes = intermediate_blocks * block_bytes;
+    if (intermediate_width > std::numeric_limits<std::size_t>::max() / 2 ||
+        2 * intermediate_width > std::numeric_limits<std::size_t>::max() / gate_up_row_bytes ||
+        hidden_width > std::numeric_limits<std::size_t>::max() / down_row_bytes) {
+        return false;
+    }
+    *gate_up_bytes = 2 * intermediate_width * gate_up_row_bytes;
+    const std::size_t down_bytes = hidden_width * down_row_bytes;
+    if (*gate_up_bytes > std::numeric_limits<std::size_t>::max() - kScalarPayloadHeaderBytes ||
+        kScalarPayloadHeaderBytes + *gate_up_bytes >
+            std::numeric_limits<std::size_t>::max() - down_bytes) {
+        return false;
+    }
+    *total_bytes = kScalarPayloadHeaderBytes + *gate_up_bytes + down_bytes;
+    return true;
+}
+
 // IQ usa codebooks GGML por superbloco. Estas funções acessam um peso pela
 // posição lógica, preservando a mesma ordem que dequantize_row_* usa no CPU.
 __device__ __forceinline__ float iq2s_value(const uint8_t *matrix, int index) {
@@ -1106,6 +1145,17 @@ __device__ float mxfp4_dot(
     return result;
 }
 
+__device__ __forceinline__ float iq_value(
+    uint32_t dtype,
+    const uint8_t *encoded,
+    int index
+) {
+    if (dtype == 18) return iq3xxs_value(encoded, index);
+    if (dtype == 21) return iq3s_value(encoded, index);
+    if (dtype == 22) return iq2s_value(encoded, index);
+    return iq4xs_value(encoded, index);
+}
+
 __device__ float iq_dot(
     uint32_t dtype,
     const uint8_t *matrix,
@@ -1118,12 +1168,7 @@ __device__ float iq_dot(
     const uint8_t *encoded = matrix + row * row_bytes;
     float result = 0.0f;
     for (int index = 0; index < columns; ++index) {
-        const float weight = dtype == 18
-            ? iq3xxs_value(encoded, index)
-            : dtype == 21
-            ? iq3s_value(encoded, index)
-            : dtype == 22 ? iq2s_value(encoded, index) : iq4xs_value(encoded, index);
-        result += weight * input[index];
+        result += iq_value(dtype, encoded, index) * input[index];
     }
     return result;
 }
@@ -1474,6 +1519,83 @@ __global__ void iquant_down_route_kernel(
         activated + pair * intermediate);
 }
 
+// IQ3_XXS (o formato medido na telemetria), IQ3_S, IQ2_S e IQ4_XS precisam
+// do mesmo tratamento cooperativo que os K-quants. O kernel antigo atribuía
+// um dot product inteiro a cada thread: para cada linha, 128 threads faziam
+// o mesmo loop serial. Um bloco agora compartilha cada redução.
+__global__ void iquant_gate_up_cooperative_route_kernel(
+    uint32_t dtype,
+    const uint8_t * const *payloads,
+    const uint32_t *token_ids,
+    int pair_count,
+    int intermediate,
+    int hidden,
+    const float *hidden_values,
+    float *gate_up_values
+) {
+    const int row_index = blockIdx.x;
+    const int rows_per_pair = 2 * intermediate;
+    const int pair = row_index / rows_per_pair;
+    const int row = row_index % rows_per_pair;
+    if (pair >= pair_count) return;
+    const std::size_t block_bytes = dtype == 18 ? 98 : dtype == 21 ? 110 :
+        dtype == 22 ? 82 : 136;
+    const std::size_t row_bytes = static_cast<std::size_t>(hidden / 256) * block_bytes;
+    const uint8_t *matrix = payloads[pair] + kScalarPayloadHeaderBytes;
+    const uint8_t *encoded = matrix + static_cast<std::size_t>(row) * row_bytes;
+    const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
+    float value = 0.0f;
+    for (int column = threadIdx.x; column < hidden; column += blockDim.x) {
+        value += iq_value(dtype, encoded, column) * input[column];
+    }
+    __shared__ float partials[128];
+    partials[threadIdx.x] = value;
+    __syncthreads();
+    for (int width = blockDim.x / 2; width > 0; width /= 2) {
+        if (threadIdx.x < width) partials[threadIdx.x] += partials[threadIdx.x + width];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        gate_up_values[pair * rows_per_pair + row] = partials[0];
+    }
+}
+
+__global__ void iquant_down_cooperative_route_kernel(
+    uint32_t dtype,
+    const uint8_t * const *payloads,
+    int pair_count,
+    int hidden,
+    int intermediate,
+    std::size_t gate_up_len,
+    const float *activated,
+    float *pair_output
+) {
+    const int row_index = blockIdx.x;
+    const int pair = row_index / hidden;
+    const int row = row_index % hidden;
+    if (pair >= pair_count) return;
+    const std::size_t block_bytes = dtype == 18 ? 98 : dtype == 21 ? 110 :
+        dtype == 22 ? 82 : 136;
+    const std::size_t row_bytes = static_cast<std::size_t>(intermediate / 256) * block_bytes;
+    const uint8_t *matrix = payloads[pair] + kScalarPayloadHeaderBytes + gate_up_len;
+    const uint8_t *encoded = matrix + static_cast<std::size_t>(row) * row_bytes;
+    const float *input = activated + static_cast<std::size_t>(pair) * intermediate;
+    float value = 0.0f;
+    for (int column = threadIdx.x; column < intermediate; column += blockDim.x) {
+        value += iq_value(dtype, encoded, column) * input[column];
+    }
+    __shared__ float partials[128];
+    partials[threadIdx.x] = value;
+    __syncthreads();
+    for (int width = blockDim.x / 2; width > 0; width /= 2) {
+        if (threadIdx.x < width) partials[threadIdx.x] += partials[threadIdx.x + width];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        pair_output[pair * hidden + row] = partials[0];
+    }
+}
+
 __device__ float heterogeneous_quant_partial_dot(
     const CudaHeterogeneousTensor &tensor,
     int row,
@@ -1533,39 +1655,32 @@ __global__ void heterogeneous_quant_gate_up_route_kernel(
     const CudaHeterogeneousExpert expert = experts[pair];
     const float * input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
     const int component_row = row % intermediate;
-    float gate;
-    float up;
+    float value;
     if (expert.gate_up.data != nullptr) {
-        gate = heterogeneous_quant_partial_dot(
-            expert.gate_up, component_row, input,
-            expert.gate_up.scale, expert.gate_up.input_scale);
-        up = heterogeneous_quant_partial_dot(expert.gate_up,
-            intermediate + component_row, input,
-            expert.gate_up.secondary_scale, expert.gate_up.secondary_input_scale);
+        const bool is_up = row >= intermediate;
+        value = heterogeneous_quant_partial_dot(
+            expert.gate_up,
+            is_up ? intermediate + component_row : component_row,
+            input,
+            is_up ? expert.gate_up.secondary_scale : expert.gate_up.scale,
+            is_up ? expert.gate_up.secondary_input_scale : expert.gate_up.input_scale);
     } else {
-        gate = heterogeneous_quant_partial_dot(
-            expert.gate, component_row, input,
-            expert.gate.scale, expert.gate.input_scale);
-        up = heterogeneous_quant_partial_dot(
-            expert.up, component_row, input,
-            expert.up.scale, expert.up.input_scale);
+        const bool is_up = row >= intermediate;
+        const CudaHeterogeneousTensor &tensor = is_up ? expert.up : expert.gate;
+        value = heterogeneous_quant_partial_dot(
+            tensor, component_row, input, tensor.scale, tensor.input_scale);
     }
     __shared__ float gate_partials[128];
-    __shared__ float up_partials[128];
-    gate_partials[threadIdx.x] = gate;
-    up_partials[threadIdx.x] = up;
+    gate_partials[threadIdx.x] = value;
     __syncthreads();
     for (int width = blockDim.x / 2; width > 0; width /= 2) {
         if (threadIdx.x < width) {
             gate_partials[threadIdx.x] += gate_partials[threadIdx.x + width];
-            up_partials[threadIdx.x] += up_partials[threadIdx.x + width];
         }
         __syncthreads();
     }
     if (threadIdx.x == 0) {
-        gate_up_values[pair * rows_per_pair + row] = row < intermediate
-            ? gate_partials[0]
-            : up_partials[0];
+        gate_up_values[pair * rows_per_pair + row] = gate_partials[0];
     }
 }
 
@@ -3051,6 +3166,401 @@ extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
     return result;
 }
 
+// O callback MoE também é síncrono para o llama.cpp, mas as alocações de
+// trabalho não precisam ser. Este pipeline mantém os buffers temporários por
+// device e só cresce quando um lote maior aparece. Os descritores continuam
+// sendo copiados a cada rota porque os experts residentes podem mudar, porém
+// o peso apontado por eles nunca volta para a CPU.
+struct HeterogeneousRoutePipeline {
+    int device_index;
+    std::size_t hidden_width;
+    std::size_t intermediate_width;
+    std::size_t token_capacity = 0;
+    std::size_t route_capacity = 0;
+    CudaHeterogeneousExpert *d_experts = nullptr;
+    float *d_hidden = nullptr;
+    uint32_t *d_token_ids = nullptr;
+    float *d_weights = nullptr;
+    std::size_t *d_token_offsets = nullptr;
+    float *d_gate_up = nullptr;
+    float *d_activated = nullptr;
+    float *d_pair_output = nullptr;
+    float *d_output = nullptr;
+    cudaEvent_t start = nullptr;
+    cudaEvent_t end = nullptr;
+};
+
+void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) {
+    if (pipeline == nullptr) return;
+    if (pipeline->start != nullptr) cudaEventDestroy(pipeline->start);
+    if (pipeline->end != nullptr) cudaEventDestroy(pipeline->end);
+    cudaFree(pipeline->d_output);
+    cudaFree(pipeline->d_pair_output);
+    cudaFree(pipeline->d_activated);
+    cudaFree(pipeline->d_gate_up);
+    cudaFree(pipeline->d_token_offsets);
+    cudaFree(pipeline->d_weights);
+    cudaFree(pipeline->d_token_ids);
+    cudaFree(pipeline->d_hidden);
+    cudaFree(pipeline->d_experts);
+    pipeline->start = nullptr;
+    pipeline->end = nullptr;
+    pipeline->d_output = nullptr;
+    pipeline->d_pair_output = nullptr;
+    pipeline->d_activated = nullptr;
+    pipeline->d_gate_up = nullptr;
+    pipeline->d_token_offsets = nullptr;
+    pipeline->d_weights = nullptr;
+    pipeline->d_token_ids = nullptr;
+    pipeline->d_hidden = nullptr;
+    pipeline->d_experts = nullptr;
+    pipeline->token_capacity = 0;
+    pipeline->route_capacity = 0;
+}
+
+int ensure_heterogeneous_route_pipeline_capacity(
+    HeterogeneousRoutePipeline *pipeline,
+    std::size_t tokens,
+    std::size_t routes
+) {
+    if (pipeline->token_capacity >= tokens && pipeline->route_capacity >= routes) {
+        return 0;
+    }
+    const std::size_t max_size = std::numeric_limits<std::size_t>::max();
+    if (tokens == 0 || routes == 0 ||
+        tokens > max_size / pipeline->hidden_width ||
+        routes > max_size / sizeof(CudaHeterogeneousExpert) ||
+        routes > max_size / sizeof(uint32_t) ||
+        routes > max_size / sizeof(float) ||
+        routes > max_size / pipeline->intermediate_width ||
+        routes > max_size / pipeline->hidden_width ||
+        pipeline->intermediate_width > max_size / 2 ||
+        tokens + 1 < tokens) {
+        return 1;
+    }
+    const std::size_t hidden_elements = tokens * pipeline->hidden_width;
+    const std::size_t gate_up_elements = 2 * pipeline->intermediate_width * routes;
+    const std::size_t activated_elements = pipeline->intermediate_width * routes;
+    const std::size_t pair_output_elements = pipeline->hidden_width * routes;
+    if (hidden_elements > max_size / sizeof(float) ||
+        gate_up_elements > max_size / sizeof(float) ||
+        activated_elements > max_size / sizeof(float) ||
+        pair_output_elements > max_size / sizeof(float) ||
+        tokens + 1 > max_size / sizeof(std::size_t)) {
+        return 1;
+    }
+
+    release_heterogeneous_route_pipeline(pipeline);
+    pipeline->token_capacity = tokens;
+    pipeline->route_capacity = routes;
+    const std::size_t hidden_bytes = hidden_elements * sizeof(float);
+    const std::size_t gate_up_bytes = gate_up_elements * sizeof(float);
+    const std::size_t activated_bytes = activated_elements * sizeof(float);
+    const std::size_t pair_output_bytes = pair_output_elements * sizeof(float);
+    const std::size_t offset_bytes = (tokens + 1) * sizeof(std::size_t);
+    int result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_experts),
+        routes * sizeof(*pipeline->d_experts)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_hidden), hidden_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_token_ids), routes * sizeof(*pipeline->d_token_ids)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_weights), routes * sizeof(*pipeline->d_weights)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_token_offsets), offset_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_gate_up), gate_up_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_activated), activated_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_pair_output), pair_output_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_output), hidden_bytes));
+    if (result != 0) goto fail;
+    return 0;
+
+fail:
+    release_heterogeneous_route_pipeline(pipeline);
+    return result;
+}
+
+extern "C" int pom_moe_heterogeneous_route_pipeline_create(
+    int device_index,
+    std::size_t hidden_width,
+    std::size_t intermediate_width,
+    void **out
+) {
+    const ScopedMoeCudaDevice device(device_index);
+    if (!device.ready()) return 1;
+    if (out == nullptr || hidden_width == 0 || intermediate_width == 0 ||
+        hidden_width > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        intermediate_width > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return 1;
+    }
+    *out = nullptr;
+    auto *pipeline = new (std::nothrow) HeterogeneousRoutePipeline{
+        device_index,
+        hidden_width,
+        intermediate_width,
+    };
+    if (pipeline == nullptr) return 2;
+    int result = cuda_status(cudaEventCreate(&pipeline->start));
+    if (result != 0) {
+        delete pipeline;
+        return result;
+    }
+    result = cuda_status(cudaEventCreate(&pipeline->end));
+    if (result != 0) {
+        release_heterogeneous_route_pipeline(pipeline);
+        delete pipeline;
+        return result;
+    }
+    *out = pipeline;
+    return 0;
+}
+
+extern "C" int pom_moe_heterogeneous_route_pipeline_run(
+    void *handle,
+    const CudaHeterogeneousExpert * experts,
+    std::size_t expert_count,
+    const uint32_t * token_ids,
+    const float * weights,
+    const std::size_t * token_offsets,
+    std::size_t token_offsets_len,
+    std::size_t token_count,
+    const float * hidden,
+    std::size_t hidden_len,
+    float * output,
+    std::size_t output_len,
+    int activation,
+    int *nonfinite_stage,
+    std::size_t *nonfinite_index,
+    std::size_t *nonfinite_count,
+    CudaMoeCallTiming * timing
+) {
+    auto *pipeline = static_cast<HeterogeneousRoutePipeline *>(handle);
+    if (pipeline == nullptr) return 1;
+    const ScopedMoeCudaDevice device(pipeline->device_index);
+    if (!device.ready()) return 1;
+    if (nonfinite_stage != nullptr) *nonfinite_stage = 0;
+    if (nonfinite_index != nullptr) *nonfinite_index = 0;
+    if (nonfinite_count != nullptr) *nonfinite_count = 0;
+    if (timing != nullptr) {
+        *timing = {};
+        timing->expert_calls = static_cast<uint64_t>(expert_count);
+        timing->kernel_launches = 4;
+        // cudaMemcpy(DeviceToHost) below is the completion barrier. An extra
+        // cudaDeviceSynchronize would wait for unrelated work on this device.
+        timing->sync_count = 0;
+    }
+    const auto validation_started = Clock::now();
+    if (experts == nullptr || token_ids == nullptr || weights == nullptr ||
+        token_offsets == nullptr || hidden == nullptr || output == nullptr ||
+        expert_count == 0 || token_count == 0 ||
+        expert_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        token_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        token_offsets_len != token_count + 1 || hidden_len != token_count * pipeline->hidden_width ||
+        output_len != hidden_len || token_offsets[0] != 0 ||
+        token_offsets[token_count] != expert_count ||
+        token_count + 1 < token_count) {
+        return 1;
+    }
+    const auto valid_dtype = [](uint32_t dtype) {
+        return dtype == 2 || dtype == 10 || dtype == 11 || dtype == 12 || dtype == 13 ||
+            dtype == 14 || dtype == 18 || dtype == 21 || dtype == 22 || dtype == 23 || dtype == 39;
+    };
+    const auto row_bytes = [&](uint32_t dtype, std::size_t columns) -> std::size_t {
+        if (dtype == 2) return (columns / 32) * 18;
+        if (dtype == 39) return (columns / 32) * 17;
+        const std::size_t block_bytes = dtype == 10 ? 84 : dtype == 11 ? 110 :
+            dtype == 12 ? 144 : dtype == 13 ? 176 : dtype == 14 ? 210 : dtype == 18 ? 98 :
+            dtype == 21 ? 110 : dtype == 22 ? 82 : 136;
+        return (columns / 256) * block_bytes;
+    };
+    const auto valid_tensor = [&](const CudaHeterogeneousTensor & tensor,
+                                  std::size_t rows,
+                                  std::size_t columns) {
+        if (tensor.data == nullptr || !valid_dtype(tensor.dtype) || tensor.rows != rows ||
+            tensor.columns != columns || columns == 0 ||
+            ((tensor.dtype == 2 || tensor.dtype == 39) ? columns % 32 != 0 : columns % 256 != 0) ||
+            !std::isfinite(tensor.scale) || !std::isfinite(tensor.input_scale) ||
+            !std::isfinite(tensor.secondary_scale) ||
+            !std::isfinite(tensor.secondary_input_scale)) {
+            return false;
+        }
+        return tensor.bytes == rows * row_bytes(tensor.dtype, columns);
+    };
+    for (std::size_t pair = 0; pair < expert_count; ++pair) {
+        const auto & expert = experts[pair];
+        if (token_ids[pair] >= token_count || !std::isfinite(weights[pair]) ||
+            !valid_tensor(expert.down, pipeline->hidden_width, pipeline->intermediate_width)) {
+            return 1;
+        }
+        const bool fused = expert.gate_up.data != nullptr;
+        if (fused) {
+            if (expert.gate.data != nullptr || expert.up.data != nullptr ||
+                !valid_tensor(expert.gate_up, 2 * pipeline->intermediate_width,
+                    pipeline->hidden_width)) {
+                return 1;
+            }
+        } else if (!valid_tensor(expert.gate, pipeline->intermediate_width, pipeline->hidden_width) ||
+                   !valid_tensor(expert.up, pipeline->intermediate_width, pipeline->hidden_width)) {
+            return 1;
+        }
+    }
+    for (std::size_t token = 0; token < token_count; ++token) {
+        if (token_offsets[token] > token_offsets[token + 1]) return 1;
+    }
+    if (timing != nullptr) {
+        timing->payload_validation_ms = elapsed_ms(validation_started, Clock::now());
+    }
+
+    const auto allocation_started = Clock::now();
+    const std::size_t old_token_capacity = pipeline->token_capacity;
+    const std::size_t old_route_capacity = pipeline->route_capacity;
+    const int capacity_result = ensure_heterogeneous_route_pipeline_capacity(
+        pipeline, token_count, expert_count);
+    if (timing != nullptr &&
+        (old_token_capacity != pipeline->token_capacity || old_route_capacity != pipeline->route_capacity)) {
+        timing->alloc_ms = elapsed_ms(allocation_started, Clock::now());
+    }
+    if (capacity_result != 0) return capacity_result;
+
+    const int pair_count = static_cast<int>(expert_count);
+    const int token_count_i = static_cast<int>(token_count);
+    const int hidden_i = static_cast<int>(pipeline->hidden_width);
+    const int intermediate_i = static_cast<int>(pipeline->intermediate_width);
+    const int block_size = 128;
+    const std::size_t hidden_bytes = hidden_len * sizeof(float);
+    const std::size_t gate_up_bytes = 2 * pipeline->intermediate_width * expert_count * sizeof(float);
+    const std::size_t activated_bytes = pipeline->intermediate_width * expert_count * sizeof(float);
+    const std::size_t pair_output_bytes = pipeline->hidden_width * expert_count * sizeof(float);
+
+    const auto h2d_started = Clock::now();
+    int result = cuda_status(cudaMemcpy(
+        pipeline->d_experts, experts,
+        expert_count * sizeof(*pipeline->d_experts), cudaMemcpyHostToDevice));
+    if (result != 0) return result;
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_hidden, hidden, hidden_bytes, cudaMemcpyHostToDevice));
+    if (result != 0) return result;
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_token_ids, token_ids,
+        expert_count * sizeof(*pipeline->d_token_ids), cudaMemcpyHostToDevice));
+    if (result != 0) return result;
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_weights, weights,
+        expert_count * sizeof(*pipeline->d_weights), cudaMemcpyHostToDevice));
+    if (result != 0) return result;
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_token_offsets, token_offsets,
+        token_offsets_len * sizeof(*pipeline->d_token_offsets), cudaMemcpyHostToDevice));
+    if (timing != nullptr) {
+        timing->h2d_ms = elapsed_ms(h2d_started, Clock::now());
+        timing->h2d_bytes = static_cast<uint64_t>(
+            expert_count * sizeof(*pipeline->d_experts) + hidden_bytes +
+            expert_count * sizeof(*pipeline->d_token_ids) +
+            expert_count * sizeof(*pipeline->d_weights) +
+            token_offsets_len * sizeof(*pipeline->d_token_offsets));
+    }
+    if (result != 0) return result;
+
+    const auto launch_started = Clock::now();
+    if (timing != nullptr) {
+        result = cuda_status(cudaEventRecord(pipeline->start));
+        if (result != 0) return result;
+    }
+    heterogeneous_quant_gate_up_route_kernel<<<
+        2 * intermediate_i * pair_count, block_size>>>(
+            pipeline->d_experts, pipeline->d_token_ids, pair_count, intermediate_i,
+            hidden_i, pipeline->d_hidden, pipeline->d_gate_up);
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    heterogeneous_activation_kernel<<<
+        (intermediate_i * pair_count + block_size - 1) / block_size,
+        block_size>>>(pipeline->d_gate_up, pair_count, intermediate_i, activation,
+            pipeline->d_activated);
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    heterogeneous_quant_down_route_kernel<<<
+        hidden_i * pair_count, block_size>>>(
+            pipeline->d_experts, pair_count, hidden_i, intermediate_i,
+            pipeline->d_activated, pipeline->d_pair_output);
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    aggregate_route_batch_kernel<<<
+        (token_count_i * hidden_i + block_size - 1) / block_size,
+        block_size>>>(pipeline->d_pair_output, pipeline->d_weights,
+            pipeline->d_token_offsets, token_count_i, hidden_i, pipeline->d_output);
+    result = cuda_status(cudaGetLastError());
+    if (timing != nullptr) timing->launch_ms = elapsed_ms(launch_started, Clock::now());
+    if (result != 0) return result;
+    if (timing != nullptr) {
+        result = cuda_status(cudaEventRecord(pipeline->end));
+        if (result != 0) return result;
+    }
+
+    const auto d2h_started = Clock::now();
+    result = cuda_status(cudaMemcpy(
+        output, pipeline->d_output, hidden_bytes, cudaMemcpyDeviceToHost));
+    if (timing != nullptr) {
+        timing->d2h_ms = elapsed_ms(d2h_started, Clock::now());
+        timing->d2h_bytes = static_cast<uint64_t>(hidden_bytes);
+    }
+    if (result != 0) return result;
+    if (timing != nullptr) {
+        float kernel_ms = 0.0f;
+        result = cuda_status(cudaEventElapsedTime(&kernel_ms, pipeline->start, pipeline->end));
+        if (result != 0) return result;
+        timing->kernel_ms = kernel_ms;
+    }
+    if (first_nonfinite(
+            output, hidden_bytes / sizeof(float), nonfinite_index, nonfinite_count)) {
+        std::vector<float> stage_values;
+        int copy_status = 0;
+        if (device_has_nonfinite(
+                pipeline->d_gate_up, gate_up_bytes / sizeof(float), stage_values,
+                &copy_status, nullptr, nullptr)) {
+            if (nonfinite_stage != nullptr) *nonfinite_stage = 1;
+        } else if (copy_status != 0) {
+            result = copy_status;
+        } else if (device_has_nonfinite(
+                pipeline->d_activated, activated_bytes / sizeof(float), stage_values,
+                &copy_status, nullptr, nullptr)) {
+            if (nonfinite_stage != nullptr) *nonfinite_stage = 2;
+        } else if (copy_status != 0) {
+            result = copy_status;
+        } else if (device_has_nonfinite(
+                pipeline->d_pair_output, pair_output_bytes / sizeof(float), stage_values,
+                &copy_status, nullptr, nullptr)) {
+            if (nonfinite_stage != nullptr) *nonfinite_stage = 3;
+        } else if (copy_status != 0) {
+            result = copy_status;
+        } else if (nonfinite_stage != nullptr) {
+            *nonfinite_stage = 4;
+        }
+    }
+    return result;
+}
+
+extern "C" void pom_moe_heterogeneous_route_pipeline_destroy(void *handle) {
+    auto *pipeline = static_cast<HeterogeneousRoutePipeline *>(handle);
+    if (pipeline == nullptr) return;
+    const ScopedMoeCudaDevice device(pipeline->device_index);
+    if (!device.ready()) return;
+    release_heterogeneous_route_pipeline(pipeline);
+    delete pipeline;
+}
+
 extern "C" int pom_moe_nvfp4_forward_batch(
     int device_index,
     const uint8_t * payload,
@@ -4032,9 +4542,12 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         *timing = {};
         timing->expert_calls = static_cast<uint64_t>(payload_count);
         timing->kernel_launches = 4;
-        timing->sync_count = 1;
+        timing->sync_count = 0;
     }
-    if ((dtype != 10 && dtype != 11 && dtype != 12 && dtype != 13 && dtype != 14) ||
+    const bool is_kquant = dtype == 10 || dtype == 11 || dtype == 12 ||
+        dtype == 13 || dtype == 14;
+    const bool is_iquant = dtype == 18 || dtype == 21 || dtype == 22 || dtype == 23;
+    if ((!is_kquant && !is_iquant) ||
         payloads == nullptr || payload_lengths == nullptr || token_ids == nullptr ||
         weights == nullptr || token_offsets == nullptr || hidden == nullptr ||
         output == nullptr || payload_count == 0 || token_count == 0 ||
@@ -4047,12 +4560,14 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
     }
     std::size_t expected_gate_up_bytes = 0;
     std::size_t expected_payload_bytes = 0;
-    if (!kquant_payload_geometry(
-            dtype,
-            pipeline->hidden_width,
-            pipeline->intermediate_width,
-            &expected_gate_up_bytes,
-            &expected_payload_bytes)) {
+    const bool valid_geometry = is_kquant
+        ? kquant_payload_geometry(
+            dtype, pipeline->hidden_width, pipeline->intermediate_width,
+            &expected_gate_up_bytes, &expected_payload_bytes)
+        : iquant_payload_geometry(
+            dtype, pipeline->hidden_width, pipeline->intermediate_width,
+            &expected_gate_up_bytes, &expected_payload_bytes);
+    if (!valid_geometry) {
         return 1;
     }
     for (std::size_t pair = 0; pair < payload_count; ++pair) {
@@ -4133,15 +4648,15 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         result = cuda_status(cudaEventRecord(start));
         if (result != 0) goto finish;
     }
-    if (dtype == 10 || dtype == 11 || dtype == 12 || dtype == 13 || dtype == 14) {
+    if (is_kquant) {
         kquant_gate_up_cooperative_route_kernel<<<
             2 * intermediate_i * pair_count, block_size>>>(
                 dtype, pipeline->d_payloads, pipeline->d_token_ids, pair_count,
                 intermediate_i, hidden_i, pipeline->d_hidden, pipeline->d_gate_up);
     } else {
-        kquant_gate_up_route_kernel<<<
-            (2 * intermediate_i * pair_count + block_size - 1) / block_size,
-            block_size>>>(dtype, pipeline->d_payloads, pipeline->d_token_ids, pair_count,
+        iquant_gate_up_cooperative_route_kernel<<<
+            2 * intermediate_i * pair_count, block_size>>>(
+                dtype, pipeline->d_payloads, pipeline->d_token_ids, pair_count,
                 intermediate_i, hidden_i, pipeline->d_hidden, pipeline->d_gate_up);
     }
     result = cuda_status(cudaGetLastError());
@@ -4151,15 +4666,14 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         block_size>>>(pipeline->d_gate_up, pair_count, intermediate_i, pipeline->d_activated);
     result = cuda_status(cudaGetLastError());
     if (result != 0) goto finish;
-    if (dtype == 10 || dtype == 11 || dtype == 12 || dtype == 13 || dtype == 14) {
+    if (is_kquant) {
         kquant_down_cooperative_route_kernel<<<hidden_i * pair_count, block_size>>>(
             dtype, pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
             expected_gate_up_bytes, pipeline->d_activated, pipeline->d_pair_output);
     } else {
-        kquant_down_route_kernel<<<
-            (hidden_i * pair_count + block_size - 1) / block_size,
-            block_size>>>(dtype, pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
-                expected_gate_up_bytes, pipeline->d_activated, pipeline->d_pair_output);
+        iquant_down_cooperative_route_kernel<<<hidden_i * pair_count, block_size>>>(
+            dtype, pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
+            expected_gate_up_bytes, pipeline->d_activated, pipeline->d_pair_output);
     }
     result = cuda_status(cudaGetLastError());
     if (result != 0) goto finish;
@@ -4175,19 +4689,6 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         if (result != 0) goto finish;
     }
     {
-        const auto sync_started = Clock::now();
-        result = cuda_status(cudaDeviceSynchronize());
-        if (result != 0) goto finish;
-        if (timing != nullptr) {
-            float kernel_ms = 0.0f;
-            result = cuda_status(cudaEventElapsedTime(&kernel_ms, start, end));
-            if (result != 0) goto finish;
-            timing->kernel_ms = kernel_ms;
-            timing->sync_ms = std::max(0.0, elapsed_ms(sync_started, Clock::now()) -
-                static_cast<double>(kernel_ms));
-        }
-    }
-    {
         const auto d2h_started = Clock::now();
         result = cuda_status(cudaMemcpy(
             output, pipeline->d_output, hidden_bytes, cudaMemcpyDeviceToHost));
@@ -4195,6 +4696,17 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
             timing->d2h_ms = elapsed_ms(d2h_started, Clock::now());
             timing->d2h_bytes = static_cast<uint64_t>(hidden_bytes);
         }
+    }
+    if (result != 0) goto finish;
+    if (timing != nullptr) {
+        // A synchronous D2H copy is the completion barrier for the default
+        // stream. There is no standalone cudaDeviceSynchronize on this hot
+        // path; measuring the event after the copy preserves the kernel span.
+        float kernel_ms = 0.0f;
+        result = cuda_status(cudaEventElapsedTime(&kernel_ms, start, end));
+        if (result != 0) goto finish;
+        timing->kernel_ms = kernel_ms;
+        timing->sync_ms = 0.0;
     }
     if (result == 0 && first_nonfinite(
             output, hidden_bytes / sizeof(float), nonfinite_index, nonfinite_count)) {
@@ -4238,6 +4750,49 @@ extern "C" void pom_moe_kquant_route_pipeline_destroy(void *handle) {
     delete pipeline;
 }
 
+// IQ e K-quant compartilham o mesmo workspace residente e o mesmo contrato
+// de lote. Mantemos símbolos distintos para que a seleção Rust continue
+// explícita por formato, sem duplicar a implementação ou o estado CUDA.
+extern "C" int pom_moe_iquant_route_pipeline_create(
+    int device_index,
+    std::size_t hidden_width,
+    std::size_t intermediate_width,
+    void **out
+) {
+    return pom_moe_kquant_route_pipeline_create(
+        device_index, hidden_width, intermediate_width, out);
+}
+
+extern "C" int pom_moe_iquant_route_pipeline_run(
+    void *handle,
+    uint32_t dtype,
+    const uint8_t * const *payloads,
+    std::size_t payload_count,
+    const std::size_t *payload_lengths,
+    const uint32_t *token_ids,
+    const float *weights,
+    const std::size_t *token_offsets,
+    std::size_t token_offsets_len,
+    std::size_t token_count,
+    const float *hidden,
+    std::size_t hidden_len,
+    float *output,
+    std::size_t output_len,
+    int *nonfinite_stage,
+    std::size_t *nonfinite_index,
+    std::size_t *nonfinite_count,
+    CudaMoeCallTiming *timing
+) {
+    return pom_moe_kquant_route_pipeline_run(
+        handle, dtype, payloads, payload_count, payload_lengths, token_ids, weights,
+        token_offsets, token_offsets_len, token_count, hidden, hidden_len, output,
+        output_len, nonfinite_stage, nonfinite_index, nonfinite_count, timing);
+}
+
+extern "C" void pom_moe_iquant_route_pipeline_destroy(void *handle) {
+    pom_moe_kquant_route_pipeline_destroy(handle);
+}
+
 // Diagnóstico por estágio para comparar o decoder CUDA com o oráculo GGML.
 // Mantém a mesma sequência do caminho de produção, mas devolve gate/up,
 // ativação e down separadamente para localizar a primeira divergência.
@@ -4258,7 +4813,7 @@ extern "C" int pom_moe_iquant_trace_single_resident(
 ) {
     const ScopedMoeCudaDevice device(device_index);
     if (!device.ready()) return 1;
-    if ((dtype != 21 && dtype != 22 && dtype != 23) || payload == nullptr ||
+    if ((dtype != 18 && dtype != 21 && dtype != 22 && dtype != 23) || payload == nullptr ||
         hidden == nullptr || gate_up == nullptr || activated == nullptr ||
         output == nullptr || hidden_width == 0 || intermediate_width == 0 ||
         hidden_len != hidden_width || gate_up_len != 2 * intermediate_width * sizeof(float) ||
@@ -4303,10 +4858,9 @@ extern "C" int pom_moe_iquant_trace_single_resident(
         result = cuda_status(cudaMemcpy(d_hidden, hidden, hidden_len * sizeof(float), cudaMemcpyHostToDevice));
         if (result != 0) break;
 
-        iquant_gate_up_route_kernel<<<
-            (2 * intermediate_i + block_size - 1) / block_size,
-            block_size>>>(dtype, d_payloads, d_token_ids, 1, intermediate_i,
-                hidden_i, d_hidden, d_gate_up);
+        iquant_gate_up_cooperative_route_kernel<<<
+            2 * intermediate_i, block_size>>>(dtype, d_payloads, d_token_ids, 1,
+                intermediate_i, hidden_i, d_hidden, d_gate_up);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         result = cuda_status(cudaDeviceSynchronize());
@@ -4324,10 +4878,9 @@ extern "C" int pom_moe_iquant_trace_single_resident(
         result = cuda_status(cudaMemcpy(activated, d_activated, activated_bytes, cudaMemcpyDeviceToHost));
         if (result != 0) break;
 
-        iquant_down_route_kernel<<<
-            (hidden_i + block_size - 1) / block_size,
-            block_size>>>(dtype, d_payloads, 1, hidden_i, intermediate_i,
-                d_activated, d_output);
+        iquant_down_cooperative_route_kernel<<<
+            hidden_i, block_size>>>(dtype, d_payloads, 1, hidden_i, intermediate_i,
+                gate_up_bytes, d_activated, d_output);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         result = cuda_status(cudaDeviceSynchronize());

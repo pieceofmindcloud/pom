@@ -715,6 +715,8 @@ pub struct MoeRuntime {
     device_cache: Option<Arc<super::cache::DeviceExpertCache>>,
     #[cfg(feature = "cuda")]
     warmup: Arc<Mutex<MoeWarmupState>>,
+    #[cfg(feature = "cuda")]
+    warmup_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
 pub struct MoeRouteBatch<'a> {
@@ -984,6 +986,8 @@ impl MoeRuntime {
                     device_cache: None,
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => {
@@ -1049,6 +1053,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Q4_0 => {
@@ -1104,6 +1110,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Nvfp4 => {
@@ -1194,6 +1202,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Mxfp4
@@ -1253,6 +1263,8 @@ impl MoeRuntime {
                     device_cache: None,
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Q2K
@@ -1344,6 +1356,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Iq2XXS
@@ -1441,6 +1455,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Heterogeneous => {
@@ -1499,6 +1515,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
         }
@@ -1552,9 +1570,12 @@ impl MoeRuntime {
     /// a fonte fria até a reserva medida ser atingida, o prazo vencer ou o
     /// cancelamento ser solicitado. O estado fica nos diagnósticos do runtime
     /// e cada payload é admitido pela mesma política de memória usada no
-    /// caminho quente.
+    /// caminho quente. Se um preenchimento anterior ainda existir, ele é
+    /// encerrado antes de iniciar outro para nunca haver duas fontes
+    /// concorrendo pelo mesmo cache.
     #[cfg(feature = "cuda")]
     pub fn start_device_warmup(self: &Arc<Self>) {
+        self.cancel_device_warmup();
         let Some(device_cache) = self.device_cache.clone() else {
             return;
         };
@@ -1572,9 +1593,7 @@ impl MoeRuntime {
                 .warmup
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if let Some(previous) = state.cancellation.replace(Arc::clone(&cancellation)) {
-                previous.store(true, Ordering::Release);
-            }
+            state.cancellation = Some(Arc::clone(&cancellation));
             state.status = "running".to_owned();
             state.candidates = 0;
             state.admitted = 0;
@@ -1626,17 +1645,25 @@ impl MoeRuntime {
                     "aquecimento do cache MoE residente terminou"
                 );
             });
-        if let Err(error) = spawn {
-            let mut state = self
-                .warmup
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            state.status = "failed".to_owned();
-            state.error = Some(format!(
-                "não foi possível iniciar a thread de aquecimento: {error}"
-            ));
-            state.cancellation = None;
-            tracing::warn!(error = %error, "aquecimento do cache MoE não iniciou");
+        match spawn {
+            Ok(handle) => {
+                *self
+                    .warmup_thread
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(handle);
+            }
+            Err(error) => {
+                let mut state = self
+                    .warmup
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                state.status = "failed".to_owned();
+                state.error = Some(format!(
+                    "não foi possível iniciar a thread de aquecimento: {error}"
+                ));
+                state.cancellation = None;
+                tracing::warn!(error = %error, "aquecimento do cache MoE não iniciou");
+            }
         }
     }
 
@@ -1644,16 +1671,36 @@ impl MoeRuntime {
     pub fn start_device_warmup(&self) {}
 
     /// Interrompe o aquecimento sem desalojar as entradas já admitidas.
+    ///
+    /// O cancelamento sozinho era uma corrida: o callback podia sinalizar a
+    /// thread enquanto ela ainda segurava o shard durante `cudaMemcpy`, e o
+    /// primeiro forward ficava atrás do preenchimento. Depois do sinal,
+    /// aguardar a admissão corrente garante que nenhuma nova admissão possa
+    /// competir com a rota quente. A thread só faz uma admissão por vez e
+    /// verifica o sinal entre payloads, então o join não espera o warmup
+    /// inteiro.
     #[cfg(feature = "cuda")]
     pub fn cancel_device_warmup(&self) {
-        if let Some(cancellation) = self
+        let cancellation = self
             .warmup
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .cancellation
-            .clone()
-        {
+            .clone();
+        if let Some(cancellation) = cancellation {
             cancellation.store(true, Ordering::Release);
+        }
+        let handle = self
+            .warmup_thread
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            if handle.thread().id() == std::thread::current().id() {
+                tracing::error!("thread de aquecimento tentou aguardar a si própria");
+            } else if handle.join().is_err() {
+                tracing::warn!("thread de aquecimento terminou com panic");
+            }
         }
     }
 

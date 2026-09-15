@@ -30,9 +30,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   `wrapper_common.cpp`; eles devem tratar qualquer nome/descrição C nulo antes
   de chegar a `std::string` ou JSON, pois essa falha pode virar
   `strlen(nullptr)` no runtime C do Windows. Antes de cada avaliação do grafo
-  com callback MoE, `begin_moe_callback` solicita o cancelamento cooperativo
-  do warmup; o caminho quente mantém prioridade sobre o preenchimento
-  especulativo.
+  com callback MoE, `begin_moe_callback` sinaliza o cancelamento do warmup e
+  aguarda apenas a admissão CUDA corrente terminar; o caminho quente mantém
+  prioridade sobre o preenchimento especulativo, sem ficar atrás de uma
+  varredura inteira.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   O `build.rs` lê o mesmo checkout preparado pelo `llama-cpp-sys-2`, recebido
@@ -60,10 +61,13 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   os metadados de memória. O caminho uniforme IQ3_XXS (dtype 18) também usa o
   pipeline persistente e kernels cooperativos; IQ e K compartilham buffers e
   o mesmo agrupamento por CUDA<n>, sem `cudaDeviceSynchronize` no hot path.
-  Antes do forward heterogêneo, misses são carregados em uma thread por shard;
+  Antes do forward heterogêneo, as specs de toda a rota são construídas em
+  uma travessia do inventário da camada e os misses são carregados em uma
+  thread por shard;
   cada shard serializa sua admissão pelo mutex, enquanto CUDA0/CUDA1 podem
-  fazer H2D em paralelo. Os leases de admissão permanecem ativos até o
-  forward terminar.
+  fazer H2D em paralelo. O upload usa diretamente a fatia do mmap, sem copiar
+  cada tensor para um `Vec` intermediário. Os leases de admissão permanecem
+  ativos até o forward terminar.
   No IQ3_XXS a entrada é quantizada para `block_q8_1` e o decoder nativo
   `vec_dot_iq3_xxs_q8_1` do fork usa `dp4a`. As 32 lanes cobrem quatro
   superblocos por warp, cada uma processando uma fatia q8 e avançando em

@@ -2385,8 +2385,9 @@ carregamento por o modelo inteiro não caber.
 
 O prazo pode ser ajustado por `POM_MOE_WARMUP_MAX_MS`. A thread verifica o
 prazo e um `AtomicBool` antes de cada candidato; `MoeRuntime::cancel_device_warmup`
-permite cancelamento cooperativo sem remover entradas já admitidas. Logs de início e fim registram
-modelo, status, bytes admitidos e motivo de parada. A telemetria
+sinaliza a parada e aguarda somente a admissão CUDA que já começou, sem remover
+entradas admitidas. Logs de início e fim registram modelo, status, bytes
+admitidos e motivo de parada. A telemetria
 `moe_executor_diagnostics` publica `warmup_status`, candidatos visitados,
 experts admitidos, bytes residentes, duração e erro. Assim uma subida não fica
 bloqueada indefinidamente e uma parada por orçamento, prazo ou erro não vira
@@ -2761,6 +2762,14 @@ naquela GPU; threads de shards diferentes trabalham em paralelo. A segunda
 passagem monta os descriptors somente depois de todas as admissões, mantendo
 os leases vivos durante o forward para impedir eviction prematura.
 
+Cada upload usa diretamente a fatia do mmap. O caminho CUDA não cria mais um
+`Vec<u8>` intermediário para cada tensor, reduzindo uma cópia de dezenas de GB
+na preparação de uma rota fria.
+
+As especificações dos experts da mesma camada também são montadas em lote, em
+uma travessia única do inventário. Isso evita repetir a busca de entradas e
+geometria para cada expert selecionado durante o prefill.
+
 Isso alinha a admissão ao agrupamento que já existia no kernel: o cache não
 escolhe mais uma única fila global para dezenas de GB de H2D. A mudança é
 somente no crate Rust e usa o allocator CUDA existente, que seleciona o ordinal
@@ -2769,6 +2778,13 @@ de parede e a ocupação efetiva de cada placa ainda precisam ser medidos na
 ksia. Com `POM_MOE_CUDA_PROFILE=1`, comparar `device_cache_upload_ms` por delta
 com `cuda_device_calls` em `CUDA0` e `CUDA1`, sempre com `POM_MOE_WARMUP` ausente
 ou desabilitado para medir a rota fria sem poluição especulativa.
+
+Além disso, `cancel_device_warmup` agora aguarda o handle da thread depois de
+sinalizar o `AtomicBool`. A espera cobre somente a admissão que já entrou em
+`cudaMemcpy` ou no mutex do shard; a thread verifica o cancelamento antes de
+cada próximo candidato. Assim o callback não pode começar o forward atrás de
+uma varredura de warmup ainda ativa, e não existe espera fixa de cinco segundos
+no caminho quente.
 
 ### Comparação isolada em uma máquina - 2026-09-15
 

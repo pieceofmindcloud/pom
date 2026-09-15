@@ -387,6 +387,8 @@ fn group_route_indices(
                     indices: Vec::new(),
                     token_ids: Vec::new(),
                     weights: Vec::new(),
+                    // Fill offsets for tokens already traversed. The offset
+                    // for the current token's end is appended below.
                     token_offsets: vec![0; token + 1],
                 });
                 index
@@ -2505,6 +2507,22 @@ mod tests {
 
         assert_eq!(output, vec![1.0]);
         assert_eq!(*observed.lock().unwrap(), Some(caller));
+    }
+
+    #[test]
+    fn agrupamento_por_gpu_preserva_offsets_quando_gpu_so_aparece_depois() {
+        let groups = group_route_indices(
+            &[0, 1, 1, 0],
+            &[0, 1, 1, 2],
+            &[1.0, 1.0, 1.0, 1.0],
+            &[0, 1, 3, 4],
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].token_offsets, vec![0, 1, 1, 2]);
+        assert_eq!(groups[1].token_offsets, vec![0, 0, 2, 2]);
     }
 
     struct TestDeviceAllocation {

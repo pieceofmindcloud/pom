@@ -1390,10 +1390,10 @@ impl HeterogeneousMoeBlock {
         let mut pending_by_device: HashMap<u32, Vec<(ExpertKey, HeterogeneousTensorSpec)>> =
             HashMap::new();
         let mut pending_keys = HashSet::new();
-        for &expert in experts {
-            let specs = source
-                .expert_tensor_specs(self.layer, expert)
-                .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+        let specs_by_expert = source
+            .expert_tensor_specs_batch(self.layer, experts)
+            .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+        for (&expert, specs) in experts.iter().zip(specs_by_expert) {
             let mut resolved_specs = Vec::with_capacity(specs.len());
             for spec in specs {
                 let key = ExpertKey::new(
@@ -1424,7 +1424,7 @@ impl HeterogeneousMoeBlock {
                             .into_iter()
                             .map(|(key, spec)| {
                                 let bytes = source
-                                    .load_expert_tensor(spec)
+                                    .expert_tensor_slice(spec)
                                     .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
                                 cuda.resident_admit(key, &bytes)
                                     .map_err(|error| MoeBlockError::Executor(error.to_string()))

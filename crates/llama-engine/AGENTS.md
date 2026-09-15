@@ -67,7 +67,12 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   cada shard serializa sua admissão pelo mutex, enquanto CUDA0/CUDA1 podem
   fazer H2D em paralelo. O upload usa diretamente a fatia do mmap, sem copiar
   cada tensor para um `Vec` intermediário. Os leases de admissão permanecem
-  ativos até o forward terminar.
+  ativos até o forward terminar. Quando há vários misses no mesmo shard, o
+  allocator faz todas as alocações e cópias em um lote e sincroniza o stream
+  uma vez; eviction usa `cudaFreeAsync` para não introduzir um wait global por
+  tensor. A cópia ainda termina antes de o slice temporário sair de escopo.
+  Pares repetidos de expert e token são calculados uma vez e a agregação
+  conserva o peso de cada rota original.
   No IQ3_XXS a entrada é quantizada para `block_q8_1` e o decoder nativo
   `vec_dot_iq3_xxs_q8_1` do fork usa `dp4a`. As 32 lanes cobrem quatro
   superblocos por warp, cada uma processando uma fatia q8 e avançando em

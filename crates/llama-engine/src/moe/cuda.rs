@@ -514,6 +514,93 @@ pub struct CudaHeterogeneousExpert {
     pub down: CudaHeterogeneousTensor,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct HeterogeneousTensorKey {
+    data: usize,
+    bytes: usize,
+    rows: usize,
+    columns: usize,
+    dtype: u32,
+    scale: u32,
+    input_scale: u32,
+    secondary_scale: u32,
+    secondary_input_scale: u32,
+}
+
+impl From<CudaHeterogeneousTensor> for HeterogeneousTensorKey {
+    fn from(tensor: CudaHeterogeneousTensor) -> Self {
+        Self {
+            data: tensor.data as usize,
+            bytes: tensor.bytes,
+            rows: tensor.rows,
+            columns: tensor.columns,
+            dtype: tensor.dtype,
+            scale: tensor.scale.to_bits(),
+            input_scale: tensor.input_scale.to_bits(),
+            secondary_scale: tensor.secondary_scale.to_bits(),
+            secondary_input_scale: tensor.secondary_input_scale.to_bits(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct HeterogeneousExpertTokenKey {
+    gate_up: HeterogeneousTensorKey,
+    gate: HeterogeneousTensorKey,
+    up: HeterogeneousTensorKey,
+    down: HeterogeneousTensorKey,
+    token_id: u32,
+}
+
+impl HeterogeneousExpertTokenKey {
+    fn new(expert: CudaHeterogeneousExpert, token_id: u32) -> Self {
+        Self {
+            gate_up: expert.gate_up.into(),
+            gate: expert.gate.into(),
+            up: expert.up.into(),
+            down: expert.down.into(),
+            token_id,
+        }
+    }
+}
+
+/// Deduplica o trabalho matemático sem alterar a rota lógica. Rotas que
+/// apontam para o mesmo expert e token compartilham o resultado do FFN, mas
+/// continuam no mapa para que seus pesos sejam somados individualmente.
+fn deduplicate_heterogeneous_route_pairs(
+    experts: &[CudaHeterogeneousExpert],
+    token_ids: &[u32],
+) -> Result<(Vec<CudaHeterogeneousExpert>, Vec<u32>, Vec<u32>), CudaMoeError> {
+    if experts.len() != token_ids.len() {
+        return Err(CudaMoeError::Payload(
+            "rota CUDA heterogênea tem experts e tokens desalinhados".into(),
+        ));
+    }
+
+    let mut positions = HashMap::<HeterogeneousExpertTokenKey, u32>::new();
+    let mut unique_experts = Vec::new();
+    let mut unique_token_ids = Vec::new();
+    let mut route_to_pair = Vec::with_capacity(experts.len());
+    for (&expert, &token_id) in experts.iter().zip(token_ids) {
+        let key = HeterogeneousExpertTokenKey::new(expert, token_id);
+        let pair = if let Some(&pair) = positions.get(&key) {
+            pair
+        } else {
+            let pair = u32::try_from(unique_experts.len()).map_err(|_| {
+                CudaMoeError::Payload(
+                    "rota CUDA heterogênea excede o limite de pares deduplicados".into(),
+                )
+            })?;
+            positions.insert(key, pair);
+            unique_experts.push(expert);
+            unique_token_ids.push(token_id);
+            pair
+        };
+        route_to_pair.push(pair);
+    }
+    Ok((unique_experts, unique_token_ids, route_to_pair))
+}
+
 impl From<Nvfp4Error> for CudaMoeError {
     fn from(error: Nvfp4Error) -> Self {
         match error {
@@ -820,6 +907,8 @@ impl HeterogeneousRoutePipelineHandle {
         expert_count: usize,
         token_ids: *const u32,
         weights: *const f32,
+        route_to_pair: *const u32,
+        route_count: usize,
         token_offsets: *const usize,
         token_offsets_len: usize,
         token_count: usize,
@@ -840,6 +929,8 @@ impl HeterogeneousRoutePipelineHandle {
                 expert_count,
                 token_ids,
                 weights,
+                route_to_pair,
+                route_count,
                 token_offsets,
                 token_offsets_len,
                 token_count,
@@ -1590,6 +1681,19 @@ impl HeterogeneousCudaExecutor {
             .map_err(|error| CudaMoeError::Cache(error.to_string()))
     }
 
+    pub fn resident_admit_many<'a, I>(
+        &self,
+        device_index: u32,
+        candidates: I,
+    ) -> Result<Vec<super::cache::DeviceExpertLease>, CudaMoeError>
+    where
+        I: IntoIterator<Item = (super::cache::ExpertKey, &'a [u8])>,
+    {
+        self.resident_cache
+            .admit_many_on_device(device_index, candidates)
+            .map_err(|error| CudaMoeError::Cache(error.to_string()))
+    }
+
     pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
         self.resident_cache.stats()
     }
@@ -1712,9 +1816,12 @@ impl HeterogeneousCudaExecutor {
         hidden_width: usize,
         intermediate_width: usize,
     ) -> Result<Vec<f32>, CudaMoeError> {
+        let (unique_experts, unique_token_ids, route_to_pair) =
+            deduplicate_heterogeneous_route_pairs(experts, &group.token_ids)?;
+        let route_count = experts.len();
         let mut output = vec![0.0f32; hidden.len()];
         let mut timing = CudaMoeCallTiming {
-            expert_calls: experts.len() as u64,
+            expert_calls: unique_experts.len() as u64,
             ..CudaMoeCallTiming::default()
         };
         let mut nonfinite_stage = 0;
@@ -1727,10 +1834,12 @@ impl HeterogeneousCudaExecutor {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .run(
-                experts.as_ptr(),
-                experts.len(),
-                group.token_ids.as_ptr(),
+                unique_experts.as_ptr(),
+                unique_experts.len(),
+                unique_token_ids.as_ptr(),
                 group.weights.as_ptr(),
+                route_to_pair.as_ptr(),
+                route_count,
                 group.token_offsets.as_ptr(),
                 group.token_offsets.len(),
                 tokens,
@@ -1778,7 +1887,7 @@ impl HeterogeneousCudaExecutor {
                 .unwrap_or_else(|error| error.into_inner());
             diagnostics.add_device_call(
                 group.device_index,
-                experts.len() as u64,
+                unique_experts.len() as u64,
                 timing.kernel_ms,
                 cuda_call_wall_ms,
             );
@@ -2199,6 +2308,47 @@ impl DeviceAllocator for CudaDeviceAllocator {
             bytes: payload.len(),
         }))
     }
+
+    fn upload_many(&self, payloads: &[&[u8]]) -> Result<Vec<Box<dyn DeviceAllocation>>, String> {
+        if payloads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let payload_ptrs = payloads
+            .iter()
+            .map(|payload| payload.as_ptr())
+            .collect::<Vec<_>>();
+        let payload_lengths = payloads
+            .iter()
+            .map(|payload| payload.len())
+            .collect::<Vec<_>>();
+        let mut handles = vec![std::ptr::null_mut(); payloads.len()];
+        let status = unsafe {
+            pom_moe_device_upload_many(
+                self.device_index as i32,
+                payload_ptrs.as_ptr(),
+                payload_lengths.as_ptr(),
+                payloads.len(),
+                handles.as_mut_ptr(),
+            )
+        };
+        if status != 0 {
+            return Err(format!("upload CUDA em lote retornou {status}"));
+        }
+        handles
+            .into_iter()
+            .zip(payloads)
+            .map(|(handle, payload)| {
+                if handle.is_null() {
+                    return Err("upload CUDA em lote retornou handle nulo".into());
+                }
+                Ok(Box::new(CudaDeviceAllocation {
+                    device_index: self.device_index,
+                    handle: handle as usize,
+                    bytes: payload.len(),
+                }) as Box<dyn DeviceAllocation>)
+            })
+            .collect()
+    }
 }
 
 fn measured_device_cache(compute_bytes: u64) -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
@@ -2413,6 +2563,8 @@ unsafe extern "C" {
         expert_count: usize,
         token_ids: *const u32,
         weights: *const f32,
+        route_to_pair: *const u32,
+        route_count: usize,
         token_offsets: *const usize,
         token_offsets_len: usize,
         token_count: usize,
@@ -2434,6 +2586,13 @@ unsafe extern "C" {
         device_index: i32,
         payload: *const u8,
         payload_len: usize,
+        out: *mut *mut c_void,
+    ) -> i32;
+    fn pom_moe_device_upload_many(
+        device_index: i32,
+        payloads: *const *const u8,
+        payload_lengths: *const usize,
+        payload_count: usize,
         out: *mut *mut c_void,
     ) -> i32;
     fn pom_moe_device_free(device_index: i32, handle: *mut c_void);
@@ -2523,6 +2682,37 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].token_offsets, vec![0, 1, 1, 2]);
         assert_eq!(groups[1].token_offsets, vec![0, 0, 2, 2]);
+    }
+
+    #[test]
+    fn deduplicacao_de_pares_expert_token_preserva_a_ordem_e_o_mapa() {
+        let expert_a = CudaHeterogeneousExpert {
+            down: CudaHeterogeneousTensor {
+                data: 0x1000usize as *const u8,
+                ..CudaHeterogeneousTensor::default()
+            },
+            ..CudaHeterogeneousExpert::default()
+        };
+        let expert_b = CudaHeterogeneousExpert {
+            down: CudaHeterogeneousTensor {
+                data: 0x2000usize as *const u8,
+                ..CudaHeterogeneousTensor::default()
+            },
+            ..CudaHeterogeneousExpert::default()
+        };
+
+        let (unique_experts, unique_tokens, route_to_pair) = deduplicate_heterogeneous_route_pairs(
+            &[expert_a, expert_a, expert_a, expert_b],
+            &[0, 0, 1, 0],
+        )
+        .unwrap();
+
+        assert_eq!(unique_experts.len(), 3);
+        assert_eq!(unique_experts[0].down.data, expert_a.down.data);
+        assert_eq!(unique_experts[1].down.data, expert_a.down.data);
+        assert_eq!(unique_experts[2].down.data, expert_b.down.data);
+        assert_eq!(unique_tokens, vec![0, 1, 0]);
+        assert_eq!(route_to_pair, vec![0, 0, 1, 2]);
     }
 
     struct TestDeviceAllocation {

@@ -1417,19 +1417,20 @@ impl HeterogeneousMoeBlock {
 
         let admission_results = std::thread::scope(|scope| {
             let handles = pending_by_device
-                .into_values()
-                .map(|pending| {
+                .into_iter()
+                .map(|(device_index, pending)| {
                     scope.spawn(move || {
-                        pending
+                        let candidates = pending
                             .into_iter()
                             .map(|(key, spec)| {
-                                let bytes = source
+                                source
                                     .expert_tensor_slice(spec)
-                                    .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
-                                cuda.resident_admit(key, &bytes)
+                                    .map(|bytes| (key, bytes))
                                     .map_err(|error| MoeBlockError::Executor(error.to_string()))
                             })
-                            .collect::<Result<Vec<DeviceExpertLease>, MoeBlockError>>()
+                            .collect::<Result<Vec<_>, MoeBlockError>>()?;
+                        cuda.resident_admit_many(device_index, candidates)
+                            .map_err(|error| MoeBlockError::Executor(error.to_string()))
                     })
                 })
                 .collect::<Vec<_>>();

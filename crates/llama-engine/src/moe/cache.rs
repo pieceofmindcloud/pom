@@ -415,11 +415,27 @@ pub trait DeviceAllocator: Send + Sync {
     fn device_name(&self) -> &str;
     fn free_bytes(&self) -> io::Result<u64>;
     fn upload(&self, payload: &[u8]) -> Result<Box<dyn DeviceAllocation>, String>;
+
+    /// Faz o upload de vários payloads que pertencem ao mesmo device.
+    ///
+    /// O padrão preserva a compatibilidade dos allocators de teste e de
+    /// backends que não têm uma operação vetorizada. Allocators CUDA devem
+    /// sobrescrever este método para enfileirar todas as cópias e sincronizar
+    /// o stream uma única vez.
+    fn upload_many(&self, payloads: &[&[u8]]) -> Result<Vec<Box<dyn DeviceAllocation>>, String> {
+        payloads
+            .iter()
+            .map(|payload| self.upload(payload))
+            .collect()
+    }
 }
 
 #[cfg(any(feature = "cuda", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceCacheError {
+    DeviceNotConfigured {
+        device_index: u32,
+    },
     EmptyExpert {
         key: ExpertKey,
     },
@@ -456,6 +472,10 @@ pub enum DeviceCacheError {
 impl fmt::Display for DeviceCacheError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DeviceNotConfigured { device_index } => write!(
+                formatter,
+                "device CUDA{device_index} não tem shard no cache de experts"
+            ),
             Self::EmptyExpert { key } => write!(formatter, "expert vazio não pode entrar no cache de device: {key:?}"),
             Self::MemoryProbe { device, reason } => {
                 write!(formatter, "não foi possível medir memória livre de {device}: {reason}")
@@ -883,6 +903,215 @@ impl DeviceExpertCache {
         self.admit_inner(key, payload, true)
     }
 
+    /// Admite vários payloads já agrupados pelo mesmo device.
+    ///
+    /// A rota heterogênea conhece a afinidade de cada miss antes de começar
+    /// os uploads. Medir `cudaMemGetInfo` e atravessar o mutex uma vez por
+    /// tensor era desnecessário e tornava a preparação de um lote grande
+    /// proporcional ao número de papéis dos experts. A política de eviction
+    /// continua sendo a mesma, mas usa um único snapshot de orçamento para o
+    /// lote, enquanto cada lease retornado mantém sua entrada protegida até o
+    /// forward terminar.
+    pub fn admit_many_on_device<'a, I>(
+        self: &Arc<Self>,
+        device_index: u32,
+        candidates: I,
+    ) -> Result<Vec<DeviceExpertLease>, DeviceCacheError>
+    where
+        I: IntoIterator<Item = (ExpertKey, &'a [u8])>,
+    {
+        let candidates = candidates.into_iter().collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let shard = self
+            .shards
+            .iter()
+            .find(|shard| shard.device_index == device_index)
+            .ok_or(DeviceCacheError::DeviceNotConfigured { device_index })?;
+        let mut state = shard
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut leases = Vec::with_capacity(candidates.len());
+        let mut pending = Vec::new();
+        for (key, payload) in candidates {
+            if payload.is_empty() {
+                return Err(DeviceCacheError::EmptyExpert { key });
+            }
+            if self.device_index_for_key(&key) != device_index {
+                return Err(DeviceCacheError::DeviceNotConfigured { device_index });
+            }
+            state.clock = state.clock.saturating_add(1);
+            let now = state.clock;
+            if let Some(entry) = state.entries.get_mut(&key) {
+                entry.active = entry.active.saturating_add(1);
+                entry.last_used = now;
+                let handle = entry.allocation.handle();
+                let bytes = entry.allocation.bytes();
+                state.stats.hits = state.stats.hits.saturating_add(1);
+                leases.push(DeviceExpertLease {
+                    cache: Arc::clone(self),
+                    key,
+                    device_index: shard.device_index,
+                    handle,
+                    bytes,
+                });
+            } else {
+                state.stats.misses = state.stats.misses.saturating_add(1);
+                pending.push((key, payload, now));
+            }
+        }
+        if pending.is_empty() {
+            return Ok(leases);
+        }
+
+        let device = shard.allocator.device_name().to_owned();
+        let current_free =
+            shard
+                .allocator
+                .free_bytes()
+                .map_err(|error| DeviceCacheError::MemoryProbe {
+                    device: device.clone(),
+                    reason: error.to_string(),
+                })?;
+        let budget = shard
+            .account
+            .budget_snapshot(current_free, state.stats.resident_bytes as u64);
+        let admitted = self.admit_new_many_locked(shard, &mut state, pending, budget)?;
+        leases.extend(admitted);
+        Ok(leases)
+    }
+
+    fn admit_new_many_locked<'a>(
+        self: &Arc<Self>,
+        shard: &DeviceCacheShard,
+        state: &mut DeviceState,
+        pending: Vec<(ExpertKey, &'a [u8], u64)>,
+        budget: CacheBudgetSnapshot,
+    ) -> Result<Vec<DeviceExpertLease>, DeviceCacheError> {
+        let Some(first_key) = pending.first().map(|(key, _, _)| key.clone()) else {
+            return Ok(Vec::new());
+        };
+        let device = shard.allocator.device_name().to_owned();
+        let limit = budget.effective_limit_bytes.unwrap_or(0);
+        if limit == 0 {
+            state.stats.rejections = state.stats.rejections.saturating_add(pending.len() as u64);
+            return Err(DeviceCacheError::BudgetExhausted { device, budget });
+        }
+
+        // Reserve room for the whole batch before allocating any new handle.
+        // A failed upload can therefore leave evictions behind, but it cannot
+        // publish a partially built entry as a valid cache hit.
+        let mut planned_resident = state.stats.resident_bytes as u64;
+        for (key, payload, _) in &pending {
+            let bytes = payload.len();
+            if bytes as u64 > limit {
+                state.stats.rejections = state.stats.rejections.saturating_add(1);
+                return Err(DeviceCacheError::NoBudget {
+                    key: key.clone(),
+                    device,
+                    bytes,
+                    limit,
+                    budget,
+                });
+            }
+            while planned_resident.saturating_add(bytes as u64) > limit {
+                let victim = state
+                    .entries
+                    .iter()
+                    .filter(|(_, entry)| entry.active == 0)
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(key, _)| key.clone());
+                let Some(victim) = victim else {
+                    state.stats.rejections = state.stats.rejections.saturating_add(1);
+                    return Err(DeviceCacheError::BusyAndNoEviction {
+                        key: key.clone(),
+                        device,
+                        bytes,
+                        limit,
+                        budget,
+                    });
+                };
+                if let Some(entry) = state.entries.remove(&victim) {
+                    state.stats.resident_bytes = state
+                        .stats
+                        .resident_bytes
+                        .saturating_sub(entry.allocation.bytes());
+                    planned_resident =
+                        planned_resident.saturating_sub(entry.allocation.bytes() as u64);
+                    state.stats.entries = state.stats.entries.saturating_sub(1);
+                    state.stats.evictions = state.stats.evictions.saturating_add(1);
+                }
+            }
+            planned_resident = planned_resident.saturating_add(bytes as u64);
+        }
+
+        let payloads = pending
+            .iter()
+            .map(|(_, payload, _)| *payload)
+            .collect::<Vec<_>>();
+        let upload_started = Instant::now();
+        let allocations =
+            shard
+                .allocator
+                .upload_many(&payloads)
+                .map_err(|reason| DeviceCacheError::Upload {
+                    key: first_key.clone(),
+                    device: device.clone(),
+                    reason: format!("lote de {} experts: {reason}", pending.len()),
+                })?;
+        if allocations.len() != pending.len() {
+            return Err(DeviceCacheError::Upload {
+                key: first_key,
+                device,
+                reason: format!(
+                    "allocator devolveu {} alocações para {} payloads",
+                    allocations.len(),
+                    pending.len()
+                ),
+            });
+        }
+        state.stats.upload_ms += upload_started.elapsed().as_secs_f64() * 1_000.0;
+
+        let mut leases = Vec::with_capacity(pending.len());
+        for ((key, payload, now), allocation) in pending.into_iter().zip(allocations) {
+            let bytes = payload.len();
+            if allocation.bytes() != bytes {
+                return Err(DeviceCacheError::Upload {
+                    key,
+                    device: shard.allocator.device_name().to_owned(),
+                    reason: format!(
+                        "backend alocou {} bytes para payload de {bytes}",
+                        allocation.bytes()
+                    ),
+                });
+            }
+            let handle = allocation.handle();
+            state.stats.resident_bytes = state.stats.resident_bytes.saturating_add(bytes);
+            state.stats.entries = state.entries.len().saturating_add(1);
+            state.stats.admissions = state.stats.admissions.saturating_add(1);
+            state.stats.uploads = state.stats.uploads.saturating_add(1);
+            state.stats.upload_bytes = state.stats.upload_bytes.saturating_add(bytes as u64);
+            state.entries.insert(
+                key.clone(),
+                DeviceEntry {
+                    allocation,
+                    active: 1,
+                    last_used: now,
+                },
+            );
+            leases.push(DeviceExpertLease {
+                cache: Arc::clone(self),
+                key,
+                device_index: shard.device_index,
+                handle,
+                bytes,
+            });
+        }
+        Ok(leases)
+    }
+
     fn admit_inner(
         self: &Arc<Self>,
         key: ExpertKey,
@@ -893,7 +1122,6 @@ impl DeviceExpertCache {
             return Err(DeviceCacheError::EmptyExpert { key });
         }
         let shard = self.shard_for_key(&key);
-        let bytes = payload.len();
         let device = shard.allocator.device_name().to_owned();
         let mut state = shard
             .state
@@ -929,6 +1157,21 @@ impl DeviceExpertCache {
         let budget = shard
             .account
             .budget_snapshot(current_free, state.stats.resident_bytes as u64);
+        self.admit_new_locked(shard, &mut state, key, payload, allow_eviction, budget, now)
+    }
+
+    fn admit_new_locked(
+        self: &Arc<Self>,
+        shard: &DeviceCacheShard,
+        state: &mut DeviceState,
+        key: ExpertKey,
+        payload: &[u8],
+        allow_eviction: bool,
+        budget: CacheBudgetSnapshot,
+        now: u64,
+    ) -> Result<DeviceExpertLease, DeviceCacheError> {
+        let bytes = payload.len();
+        let device = shard.allocator.device_name().to_owned();
         let limit = budget.effective_limit_bytes.unwrap_or(0);
         if limit == 0 {
             state.stats.rejections = state.stats.rejections.saturating_add(1);
@@ -1205,6 +1448,7 @@ mod tests {
 
     struct FakeDeviceAllocator {
         free: AtomicU64,
+        free_queries: AtomicU64,
         uploads: AtomicU64,
     }
 
@@ -1212,6 +1456,7 @@ mod tests {
         fn new(free: u64) -> Arc<Self> {
             Arc::new(Self {
                 free: AtomicU64::new(free),
+                free_queries: AtomicU64::new(0),
                 uploads: AtomicU64::new(0),
             })
         }
@@ -1223,6 +1468,7 @@ mod tests {
         }
 
         fn free_bytes(&self) -> io::Result<u64> {
+            self.free_queries.fetch_add(1, Ordering::Relaxed);
             Ok(self.free.load(Ordering::Relaxed))
         }
 
@@ -1262,6 +1508,24 @@ mod tests {
         assert_eq!(second.bytes(), 3);
         assert_eq!(allocator.uploads.load(Ordering::Relaxed), 1);
         assert_eq!(cache.stats().upload_bytes, 3);
+    }
+
+    #[test]
+    fn cache_device_admite_lote_com_um_snapshot_de_memoria() {
+        let allocator = FakeDeviceAllocator::new(100);
+        let cache = device_cache(&allocator, 100);
+        let payload_a = [1, 2, 3];
+        let payload_b = [4, 5];
+
+        let leases = cache
+            .admit_many_on_device(0, vec![(key(1), &payload_a[..]), (key(2), &payload_b[..])])
+            .unwrap();
+
+        assert_eq!(leases.len(), 2);
+        assert_eq!(allocator.uploads.load(Ordering::Relaxed), 2);
+        assert_eq!(allocator.free_queries.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.stats().resident_bytes, 5);
+        drop(leases);
     }
 
     #[test]

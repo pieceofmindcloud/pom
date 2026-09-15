@@ -490,6 +490,31 @@ __global__ void aggregate_route_batch_kernel(
     output[token * hidden + row] = value;
 }
 
+__global__ void aggregate_route_batch_deduplicated_kernel(
+    const float *pair_output,
+    const float *weights,
+    const uint32_t *route_to_pair,
+    const std::size_t *token_offsets,
+    int token_count,
+    int hidden,
+    float *output
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int token = index / hidden;
+    const int row = index % hidden;
+    if (token >= token_count) {
+        return;
+    }
+    float value = 0.0f;
+    const std::size_t begin = token_offsets[token];
+    const std::size_t end = token_offsets[token + 1];
+    for (std::size_t route = begin; route < end; ++route) {
+        value += weights[route] * pair_output[
+            static_cast<std::size_t>(route_to_pair[route]) * hidden + row];
+    }
+    output[token * hidden + row] = value;
+}
+
 // K-quants usam superblocos de 256 valores. Estas rotinas reimplementam a
 // convenção GGML a partir do layout do formato, sem depender de arquitetura
 // ou de um modelo específico.
@@ -3733,6 +3758,7 @@ struct HeterogeneousRoutePipeline {
     block_q8_1 *d_hidden_q8 = nullptr;
     uint32_t *d_token_ids = nullptr;
     float *d_weights = nullptr;
+    uint32_t *d_route_to_pair = nullptr;
     std::size_t *d_token_offsets = nullptr;
     float *d_gate_up = nullptr;
     float *d_activated = nullptr;
@@ -3753,6 +3779,7 @@ void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) 
     cudaFree(pipeline->d_activated_q8);
     cudaFree(pipeline->d_gate_up);
     cudaFree(pipeline->d_token_offsets);
+    cudaFree(pipeline->d_route_to_pair);
     cudaFree(pipeline->d_weights);
     cudaFree(pipeline->d_token_ids);
     cudaFree(pipeline->d_hidden);
@@ -3766,6 +3793,7 @@ void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) 
     pipeline->d_activated_q8 = nullptr;
     pipeline->d_gate_up = nullptr;
     pipeline->d_token_offsets = nullptr;
+    pipeline->d_route_to_pair = nullptr;
     pipeline->d_weights = nullptr;
     pipeline->d_token_ids = nullptr;
     pipeline->d_hidden = nullptr;
@@ -3839,6 +3867,10 @@ int ensure_heterogeneous_route_pipeline_capacity(
         reinterpret_cast<void **>(&pipeline->d_weights), routes * sizeof(*pipeline->d_weights)));
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_route_to_pair),
+        routes * sizeof(*pipeline->d_route_to_pair)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
         reinterpret_cast<void **>(&pipeline->d_token_offsets), offset_bytes));
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(
@@ -3905,6 +3937,8 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     std::size_t expert_count,
     const uint32_t * token_ids,
     const float * weights,
+    const uint32_t * route_to_pair,
+    std::size_t route_count,
     const std::size_t * token_offsets,
     std::size_t token_offsets_len,
     std::size_t token_count,
@@ -3935,13 +3969,15 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     }
     const auto validation_started = Clock::now();
     if (experts == nullptr || token_ids == nullptr || weights == nullptr ||
+        route_to_pair == nullptr ||
         token_offsets == nullptr || hidden == nullptr || output == nullptr ||
-        expert_count == 0 || token_count == 0 ||
+        expert_count == 0 || route_count == 0 || token_count == 0 ||
         expert_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        route_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         token_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         token_offsets_len != token_count + 1 || hidden_len != token_count * pipeline->hidden_width ||
         output_len != hidden_len || token_offsets[0] != 0 ||
-        token_offsets[token_count] != expert_count ||
+        token_offsets[token_count] != route_count ||
         token_count + 1 < token_count) {
         return 1;
     }
@@ -3988,6 +4024,9 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
             return 1;
         }
     }
+    for (std::size_t route = 0; route < route_count; ++route) {
+        if (route_to_pair[route] >= expert_count) return 1;
+    }
     for (std::size_t token = 0; token < token_count; ++token) {
         if (token_offsets[token] > token_offsets[token + 1]) return 1;
     }
@@ -3999,7 +4038,7 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     const std::size_t old_token_capacity = pipeline->token_capacity;
     const std::size_t old_route_capacity = pipeline->route_capacity;
     const int capacity_result = ensure_heterogeneous_route_pipeline_capacity(
-        pipeline, token_count, expert_count);
+        pipeline, token_count, std::max(expert_count, route_count));
     if (timing != nullptr &&
         (old_token_capacity != pipeline->token_capacity || old_route_capacity != pipeline->route_capacity)) {
         timing->alloc_ms = elapsed_ms(allocation_started, Clock::now());
@@ -4031,7 +4070,11 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     if (result != 0) return result;
     result = cuda_status(cudaMemcpy(
         pipeline->d_weights, weights,
-        expert_count * sizeof(*pipeline->d_weights), cudaMemcpyHostToDevice));
+        route_count * sizeof(*pipeline->d_weights), cudaMemcpyHostToDevice));
+    if (result != 0) return result;
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_route_to_pair, route_to_pair,
+        route_count * sizeof(*pipeline->d_route_to_pair), cudaMemcpyHostToDevice));
     if (result != 0) return result;
     result = cuda_status(cudaMemcpy(
         pipeline->d_token_offsets, token_offsets,
@@ -4041,7 +4084,8 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
         timing->h2d_bytes = static_cast<uint64_t>(
             expert_count * sizeof(*pipeline->d_experts) + hidden_bytes +
             expert_count * sizeof(*pipeline->d_token_ids) +
-            expert_count * sizeof(*pipeline->d_weights) +
+            route_count * sizeof(*pipeline->d_weights) +
+            route_count * sizeof(*pipeline->d_route_to_pair) +
             token_offsets_len * sizeof(*pipeline->d_token_offsets));
     }
     if (result != 0) return result;
@@ -4079,10 +4123,11 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
             pipeline->d_activated_q8, pipeline->d_pair_output);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
-    aggregate_route_batch_kernel<<<
+    aggregate_route_batch_deduplicated_kernel<<<
         (token_count_i * hidden_i + block_size - 1) / block_size,
         block_size>>>(pipeline->d_pair_output, pipeline->d_weights,
-            pipeline->d_token_offsets, token_count_i, hidden_i, pipeline->d_output);
+            pipeline->d_route_to_pair, pipeline->d_token_offsets,
+            token_count_i, hidden_i, pipeline->d_output);
     result = cuda_status(cudaGetLastError());
     if (timing != nullptr) timing->launch_ms = elapsed_ms(launch_started, Clock::now());
     if (result != 0) return result;
@@ -5558,27 +5603,69 @@ extern "C" int pom_moe_device_free_bytes(int device_index, std::uint64_t * free_
     return 0;
 }
 
+extern "C" int pom_moe_device_upload_many(
+    int device_index,
+    const std::uint8_t * const * payloads,
+    const std::size_t * payload_lengths,
+    std::size_t payload_count,
+    void ** out
+) {
+    const ScopedMoeCudaDevice device(device_index);
+    if (!device.ready()) return 1;
+    if (payloads == nullptr || payload_lengths == nullptr || out == nullptr ||
+        payload_count == 0 ||
+        payload_count > std::numeric_limits<std::size_t>::max() / sizeof(void *)) {
+        return 1;
+    }
+    for (std::size_t index = 0; index < payload_count; ++index) {
+        out[index] = nullptr;
+        if (payloads[index] == nullptr || payload_lengths[index] == 0) return 1;
+    }
+
+    // Use the device memory pool so a cache eviction does not force the
+    // legacy cudaFree synchronization on every expert. The copy itself stays
+    // synchronous because callers may release a temporary mmap/Vec as soon
+    // as this function returns; subsequent kernels still observe the same
+    // default-stream ordering as before.
+    int status = 0;
+    for (std::size_t index = 0; index < payload_count; ++index) {
+        status = cuda_status(cudaMallocAsync(&out[index], payload_lengths[index], nullptr));
+        if (status != 0) goto fail;
+    }
+    for (std::size_t index = 0; index < payload_count; ++index) {
+        status = cuda_status(cudaMemcpyAsync(
+            out[index], payloads[index], payload_lengths[index], cudaMemcpyHostToDevice, nullptr));
+        if (status != 0) goto fail;
+    }
+    status = cuda_status(cudaStreamSynchronize(nullptr));
+    if (status == 0) return 0;
+
+fail:
+    for (std::size_t index = 0; index < payload_count; ++index) {
+        if (out[index] != nullptr) {
+            (void) cudaFreeAsync(out[index], nullptr);
+            out[index] = nullptr;
+        }
+    }
+    // Cleanup is an error-only path. Complete the queued frees so a caller
+    // can immediately retry without retaining failed batch allocations.
+    (void) cudaStreamSynchronize(nullptr);
+    return status;
+}
+
 extern "C" int pom_moe_device_upload(
     int device_index,
     const std::uint8_t * payload,
     std::size_t payload_len,
     void ** out
 ) {
-    const ScopedMoeCudaDevice device(device_index);
-    if (!device.ready()) return 1;
-    if (payload == nullptr || payload_len == 0 || out == nullptr) {
-        return 1;
-    }
-    *out = nullptr;
-    auto status = cuda_status(cudaMalloc(out, payload_len));
-    if (status != 0) {
-        return status;
-    }
-    status = cuda_status(cudaMemcpy(*out, payload, payload_len, cudaMemcpyHostToDevice));
-    if (status != 0) {
-        cudaFree(*out);
-        *out = nullptr;
-    }
+    if (out == nullptr) return 1;
+    const std::uint8_t * payloads[] = {payload};
+    const std::size_t payload_lengths[] = {payload_len};
+    void * handles[] = {nullptr};
+    const int status = pom_moe_device_upload_many(
+        device_index, payloads, payload_lengths, 1, handles);
+    if (status == 0) *out = handles[0];
     return status;
 }
 
@@ -5586,7 +5673,10 @@ extern "C" void pom_moe_device_free(int device_index, void * handle) {
     const ScopedMoeCudaDevice device(device_index);
     if (!device.ready()) return;
     if (handle != nullptr) {
-        cudaFree(handle);
+        // All MoE kernels and the upload above use the device default stream.
+        // Queueing the release there preserves ordering while avoiding a
+        // device-wide host wait for every LRU eviction.
+        (void) cudaFreeAsync(handle, nullptr);
     }
 }
 

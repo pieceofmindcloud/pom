@@ -2842,6 +2842,45 @@ timeout ou espera de transporte. O caminho q8/dp4a ataca justamente esse
 trabalho, mas a confirmação de throughput e de correção numérica precisa ser
 feita na ksia com `POM_MOE_CUDA_PROFILE=1`.
 
+### Fase 5.13: lote CUDA para admissões e rotas repetidas - 2026-09-15
+
+O JSON mais recente da ksia não mostra um timeout escondido de cinco segundos.
+No mesmo nó, `node_lock_wait_ms` foi `0`, a fila e o scheduler somaram poucos
+milissegundos e o transporte somou `54 ms`. O trabalho está em
+`node_moe_forward_ms` (`6445,8 ms` no prefill) e nas chamadas de decode, não em
+um `wait` do pipeline. O atraso observado no primeiro token acompanha o
+prefill local de `6656,5 ms`.
+
+O diagnóstico do cache identifica a causa operacional: em 320 chamadas de
+decode houve `94522` misses/admissões, `90762` evictions e aproximadamente
+`412 GB` de uploads cumulativos. Os shards estavam equilibrados em `CUDA0` e
+`CUDA1` (`8242/8165 MB` residentes), portanto as duas placas eram usadas para
+residência, mas o working set excedia o orçamento e era recarregado. O
+`runtime_forward_ms` e `device_cache_upload_ms` são contadores cumulativos de
+callbacks e devices; não são um único wait de cinco segundos.
+
+O caminho quente agora agrupa os misses por shard e faz uma única consulta de
+orçamento por GPU. O `DeviceAllocator` ganhou `upload_many`; o allocator CUDA
+enfileira todas as alocações e cópias no stream default e sincroniza somente
+uma vez por lote. Evictions usam `cudaFreeAsync`, mantendo a ordem do stream e
+evitando a sincronização global de `cudaFree` em cada tensor. A sincronização da
+cópia continua necessária porque os bytes vêm de uma fatia de `mmap` que pode
+ser liberada assim que a admissão retorna. O fork do llama.cpp não foi
+alterado.
+
+Na mesma rota, o executor deduplica somente pares com o mesmo descriptor de
+expert e o mesmo token. O kernel calcula o FFN uma vez e a agregação aplica
+novamente cada peso através do mapa de rotas, preservando a semântica do
+router. Isso reduz trabalho quando o top-k repete um expert para um token sem
+alterar a soma de rotas distintas.
+
+A telemetria `d5eeeaa` ainda foi gerada antes de `fef71ae`, que corrigiu a
+escala compartilhada do `block_q8_1` no kernel de quantização. A saída sem
+sentido daquela execução não é uma medição válida de qualidade do modelo; a
+ksia precisa repetir o mesmo prompt com o SHA que contém essa correção e esta
+otimização de lote. Este ambiente não possui `nvcc` nem GPU para medir a
+redução final de prefill/decode localmente.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

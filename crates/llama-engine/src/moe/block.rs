@@ -9,7 +9,7 @@ use super::cache::{ExpertCache, ExpertKey};
 use super::cuda::{CudaHeterogeneousExpert, CudaHeterogeneousTensor, CudaMoeError};
 use super::format_heterogeneous::HeterogeneousMoeSource;
 #[cfg(feature = "cuda")]
-use super::format_heterogeneous::{HeterogeneousTensorPayload, TensorRole};
+use super::format_heterogeneous::{HeterogeneousTensorSpec, TensorRole};
 use super::format_iq_quants::{
     IqQuantError, IqQuantExecuteError, IqQuantExecutor, IqQuantFormat, IqQuantSource,
 };
@@ -1189,7 +1189,7 @@ pub struct HeterogeneousMoeBlock {
     top_k: usize,
     cache: Arc<ExpertCache>,
     #[cfg(feature = "cuda")]
-    cuda: Option<super::cuda::HeterogeneousCudaExecutor>,
+    cuda: Option<Arc<super::cuda::HeterogeneousCudaExecutor>>,
 }
 
 impl HeterogeneousMoeBlock {
@@ -1216,19 +1216,38 @@ impl HeterogeneousMoeBlock {
         model: impl Into<String>,
         layer: u32,
         top_k: usize,
-        hidden: usize,
-        intermediate: usize,
+        _hidden: usize,
+        _intermediate: usize,
     ) -> Self {
         Self {
             model: model.into(),
             layer,
             top_k,
             cache,
-            cuda: Some(super::cuda::HeterogeneousCudaExecutor::new_with_cache(
-                hidden,
-                intermediate,
-                device_cache,
+            cuda: Some(Arc::new(
+                super::cuda::HeterogeneousCudaExecutor::new_with_cache(
+                    _hidden,
+                    _intermediate,
+                    device_cache,
+                ),
             )),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn new_with_device_executor(
+        cache: Arc<ExpertCache>,
+        cuda: Arc<super::cuda::HeterogeneousCudaExecutor>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            layer,
+            top_k,
+            cache,
+            cuda: Some(cuda),
         }
     }
 
@@ -1239,18 +1258,16 @@ impl HeterogeneousMoeBlock {
 
     #[cfg(feature = "cuda")]
     pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
-        self.cuda.as_ref().map_or_else(
-            Default::default,
-            super::cuda::HeterogeneousCudaExecutor::diagnostics,
-        )
+        self.cuda
+            .as_ref()
+            .map_or_else(Default::default, |cuda| cuda.diagnostics())
     }
 
     #[cfg(feature = "cuda")]
     pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
-        self.cuda.as_ref().map_or_else(
-            Default::default,
-            super::cuda::HeterogeneousCudaExecutor::resident_cache_stats,
-        )
+        self.cuda
+            .as_ref()
+            .map_or_else(Default::default, |cuda| cuda.resident_cache_stats())
     }
 
     pub fn forward_from_source_with_route(
@@ -1361,20 +1378,20 @@ impl HeterogeneousMoeBlock {
         let mut leases = Vec::new();
         let mut device_indices = Vec::with_capacity(experts.len());
         for &expert in experts {
-            let payloads = source
-                .load_expert_tensors(self.layer, expert)
+            let specs = source
+                .expert_tensor_specs(self.layer, expert)
                 .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
             let mut descriptor = CudaHeterogeneousExpert::default();
             let mut expert_device_index = None;
-            for payload in payloads {
-                let HeterogeneousTensorPayload {
+            for spec in specs {
+                let HeterogeneousTensorSpec {
                     role,
                     dtype,
                     rows,
                     columns,
-                    bytes,
                     scales,
-                } = payload;
+                    ..
+                } = spec;
                 let key = ExpertKey::new(
                     &self.model,
                     self.layer,
@@ -1383,9 +1400,13 @@ impl HeterogeneousMoeBlock {
                 );
                 let lease = match cuda.resident_lookup(&key) {
                     Some(lease) => lease,
-                    None => cuda
-                        .resident_admit(key, &bytes)
-                        .map_err(|error| MoeBlockError::Executor(error.to_string()))?,
+                    None => {
+                        let bytes = source
+                            .load_expert_tensor(spec)
+                            .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+                        cuda.resident_admit(key, &bytes)
+                            .map_err(|error| MoeBlockError::Executor(error.to_string()))?
+                    }
                 };
                 match expert_device_index {
                     Some(expected) if expected != lease.device_index() => {

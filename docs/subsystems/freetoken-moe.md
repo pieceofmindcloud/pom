@@ -2600,6 +2600,139 @@ decode e a confirmação final da queda de 15x precisam ser repetidas pelo
 captain na ksia com o perfil CUDA ligado. O fork nativo não foi alterado nesta
 correção.
 
+### Fase 5.8: hot path heterogêneo alinhado ao FreeToken - 2026-09-15
+
+A telemetria mais recente da ksia mostrou que fila e setup do nó ficavam abaixo
+de 1 ms, enquanto o backend heterogêneo gastava `978-1495 ms` no prefill e
+`83-117 ms` por chamada de decode. Portanto os timeouts de scheduler não eram a
+causa daquele trace. O caminho também carregava bytes do mmap para cada papel
+antes de consultar o cache residente; um hit descartava essa cópia. Isso
+contradizia a decisão do FreeToken de manter o working set de experts residente
+no device e explica por que uma segunda requisição não ficava materialmente
+mais barata.
+
+O caminho de produção agora usa três fronteiras explícitas:
+
+- `HeterogeneousTensorSpec` valida papel, dtype, geometria e escalas sem copiar
+  payload. `HeterogeneousMoeBlock` consulta primeiro o `DeviceExpertCache` e só
+  chama `load_expert_tensor` em um miss real;
+- `HeterogeneousRoutePipeline` mantém descriptors, hidden, ids, pesos, offsets,
+  ativações, resultados intermediários e saída alocados por device. O pipeline
+  é compartilhado por todas as camadas do runtime e indexado por
+  `(CUDA<n>, hidden, intermediate)`, evitando uma reserva grande por camada;
+- os experts continuam particionados pelo hash estável de modelo, camada e
+  expert. Cada grupo por ordinal é executado em sua própria pipeline dentro do
+  `sum_parallel_device_outputs`, e grupos em `CUDA0` e `CUDA1` podem progredir
+  simultaneamente. A contagem de camadas do llama.cpp não é usada como prova de
+  utilização das duas placas: a confirmação em campo deve olhar os bytes
+  residentes e os contadores por device.
+
+O pipeline copia apenas os metadados de rota e o hidden a cada chamada. A
+`cudaMemcpy` D2H da saída continua sendo a barreira necessária para devolver o
+resultado ao callback, mas o `cudaDeviceSynchronize` adicional foi removido;
+`sync_count=0` no perfil desse caminho. `alloc_ms` só aparece quando a
+capacidade cresce, e não em cada token. A atualização é código CUDA próprio em
+`crates/llama-engine/src/moe/cuda_kernels.cu`; o fork do llama.cpp continua
+inalterado e fornece apenas o callback e os metadados.
+
+O cancelamento do aquecimento também é observado depois que um candidato é
+obtido. Assim, uma leitura que terminou depois da chegada de uma requisição
+real não pode admitir bytes de camadas futuras e expulsar o working set ativo.
+O caminho ainda permite que uma única admissão já em andamento termine, mas não
+inicia outra depois do cancelamento. O teste
+`warmup_cancelado_depois_de_obter_candidato_nao_admite_payload` fixa essa
+fronteira.
+
+Esta fase elimina cópias, alocações e sincronizações redundantes, mas não
+transforma o particionamento de experts em tensor parallelism. Se todos os
+experts escolhidos por um token caírem no mesmo shard, a outra placa ficará
+ociosa nessa rota; o caminho denso do llama.cpp pode usar as duas para cada
+matriz por meio de `tensor_split`. A medição na ksia deve separar esse efeito
+de roteamento do custo de kernel antes de declarar throughput superior ao
+llama.cpp ou ao FreeToken.
+
+### Fase 5.9: caminho efetivo IQ3_XXS e kernel cooperativo - 2026-09-15
+
+A telemetria do modelo `Mistral-Small-4-119B-2603-UD-IQ3_XXS-9c2b030b`
+mostrou `IQ3_XXS` (dtype GGML 18), não uma carga heterogênea. Por isso a
+otimização heterogênea da fase anterior não tocava o caminho medido: o
+`IqQuantCudaExecutor` ainda chamava `pom_moe_iquant_forward_route_batch_resident`,
+que fazia `cudaMalloc`/`cudaFree` e `cudaDeviceSynchronize` em cada chamada.
+Além disso, cada thread do kernel IQ calculava sozinha o dot product completo
+de uma linha, repetindo o mesmo trabalho dentro do bloco. Esse era o custo
+local observado como `978-1495 ms` no prefill e `83-117 ms` por decode, não uma
+espera de fila: a telemetria do nó registrou fila e setup abaixo de 1 ms.
+
+O caminho IQ agora compartilha o mesmo workspace persistente por `(device,
+geometria)` usado pelos K-quants. O runtime cria um pipeline para cada shard
+`CUDA<n>` do cache residente, agrupa as rotas pelo ordinal e executa os grupos
+em paralelo; nenhum device é escolhido como `main_gpu` único pelo executor.
+Os IQs genéricos atribuem uma linha a um bloco de 128 threads e reduzem os
+fragmentos do dot product em shared memory. Para o IQ3_XXS medido, cada linha
+usa uma única warp de 32 threads: cada lane processa os oito valores de uma
+fatia `(group, il)` e a soma usa shuffle. Isso reduz de quatro para uma warp o
+trabalho de coordenação da linha e elimina a árvore de shared memory, mantendo a sequência
+gate/up, SiLU, down e agregação. O D2H síncrono continua sendo a barreira
+necessária para devolver o resultado ao callback, mas o
+`cudaDeviceSynchronize` adicional foi removido e o perfil publica
+`sync_count=0`. IQ3_XXS agora é elegível para a ponte CUDA e valida a geometria
+do payload antes do lançamento.
+
+No IQ3_XXS, as 32 lanes cobrem os 256 elementos do superbloco em grupos de
+oito. O `aux32`, os dois índices do codebook e os sinais são lidos uma vez por
+fatia, em vez de reconstruir esses metadados para cada par de colunas. Os
+outros IQs mantêm o decoder cooperativo genérico até terem a mesma prova
+diferencial de layout.
+
+O cache não copia a fonte fria em hits: a admissão continua sendo por hash de
+modelo, camada e expert em shards independentes. Assim, uma segunda chamada
+reutiliza o mesmo handle em CUDA0 ou CUDA1. O warmup é cancelado antes de cada
+`llama_decode` que tem callback MoE, e novamente na primeira rota como defesa;
+isso impede que uma admissão concorrente expulse o working set ou segure o
+shard enquanto o grafo já está em execução;
+se os contadores por device ainda mostrarem uma única placa em uso, o próximo
+diagnóstico é a distribuição efetiva dos experts selecionados, não um timeout.
+
+Com `POM_MOE_CUDA_PROFILE=1`, `moe_executor_diagnostics.cuda_device_calls` agora
+registra por ordinal o número de chamadas, experts processados e tempo de
+kernel/parede. Esse campo deve ser comparado com
+`device_cache_resident_bytes_by_device`: bytes em uma placa sem chamadas
+indicam somente capacidade residente, enquanto chamadas em `CUDA0` e `CUDA1`
+confirmam participação efetiva da rota.
+
+Esta correção é código CUDA próprio em `cuda_kernels.cu`; não altera o fork do
+llama.cpp. O fork continua fornecendo o callback externo e os metadados de
+memória. A comparação contra `dense/llama.cpp` e contra FreeToken precisa ser
+repetida na ksia com o build CUDA novo: este worktree não possui `nvcc` nem
+GPU, então não há uma alegação local de throughput.
+
+### Comparação isolada em uma máquina - 2026-09-15
+
+Uma execução real no nó `5b035803`, com duas RTX 5060 Ti e sem salto de
+pipeline, confirmou que o transporte não é o gargalo. O MoE usou 46 tokens de
+prefill e gerou 188 tokens: `5667,7 ms` de prefill (`8,1 tok/s`) e
+`35009,3 ms` de decode em 95 chamadas (`5,3 tok/s`), com p50/p95 de
+`347,2/617,1 ms` por chamada. A rede foi `0-16 ms`, a fila e o setup ficaram
+abaixo de `2 ms`, e `99%` do tempo ficou em `llama_decode` local.
+
+O controle `dense/llama.cpp` no mesmo nó gerou 178 tokens a `18,5 tok/s`, com
+`749,7 ms` de prefill (`29,2 tok/s`) para 22 tokens e p50/p95 de
+`125,4/129,8 ms` por chamada de decode. A comparação não tem prompt idêntico
+(`46` contra `22` tokens), portanto é evidência de ordem de grandeza, não uma
+medição pareada final. Mesmo assim, o MoE ficou cerca de `3,6x` mais lento por
+token no decode e `3,6x` mais lento no prefill normalizado, apesar de anunciar
+`36 GPU / 0 CPU / 0 mixed`; esse contador descreve camadas do llama.cpp e não
+prova utilização de CUDA0 e CUDA1 pelo executor externo.
+
+A execução ainda não tinha `POM_MOE_CUDA_PROFILE=1`, então não permite dizer
+qual ordinal recebeu as rotas nem separar kernel, H2D, D2H e misses do cache.
+Para o próximo ensaio na ksia, o perfil deve ser ligado desde o arranque e a
+telemetria deve incluir `cuda_device_calls` e
+`device_cache_resident_bytes_by_device`. A ausência de transporte e de espera
+de scheduler já elimina timeouts como hipótese principal; a hipótese restante
+é o custo do callback por camada, das cópias host/device e do decoder IQ3_XXS
+customizado, a comparar com as chamadas CUDA otimizadas do caminho denso.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

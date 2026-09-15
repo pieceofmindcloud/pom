@@ -29,7 +29,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   Os snapshots nativos usados por `/health` passam pelo
   `wrapper_common.cpp`; eles devem tratar qualquer nome/descrição C nulo antes
   de chegar a `std::string` ou JSON, pois essa falha pode virar
-  `strlen(nullptr)` no runtime C do Windows.
+  `strlen(nullptr)` no runtime C do Windows. Antes de cada avaliação do grafo
+  com callback MoE, `begin_moe_callback` cancela o warmup cooperativo para que
+  uploads de experts não concorram com o prefill nem segurem o shard do cache.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   O `build.rs` lê o mesmo checkout preparado pelo `llama-cpp-sys-2`, recebido
@@ -48,11 +50,20 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   disponível, e um fallback CPU efetivo fica registrado na telemetria e no log
   de inicialização. O cache CUDA residente é particionado por ordinal (`CUDA0`,
   `CUDA1`, ...), com orçamento e allocator próprios por placa; as rotas são
-  agrupadas por shard e executadas em paralelo. O agregado do cache publica os
-  nomes dos devices e os bytes residentes por shard para a telemetria. A ponte
-  CUDA é código próprio
+  agrupadas por shard e executadas em paralelo. O caminho heterogêneo consulta
+  primeiro as especificações do mmap e só copia bytes em um miss; seu workspace
+  CUDA é um pipeline persistente compartilhado pelas camadas, indexado por
+  device e geometria. O agregado do cache publica os nomes dos devices e os
+  bytes residentes por shard para a telemetria. A ponte CUDA é código próprio
   deste crate; o fork `vendor/llama-cpp-sys-2/llama.cpp` só fornece o callback e
-  os metadados de memória.
+  os metadados de memória. O caminho uniforme IQ3_XXS (dtype 18) também usa o
+  pipeline persistente e kernels cooperativos; IQ e K compartilham buffers e
+  o mesmo agrupamento por CUDA<n>, sem `cudaDeviceSynchronize` no hot path.
+  No IQ3_XXS uma warp cobre o superbloco inteiro: cada lane processa os oito
+  valores de uma fatia `(group, il)` e a soma usa shuffle, sem uma árvore de
+  shared memory de quatro warps por linha.
+  Com o perfil CUDA, `cuda_device_calls` separa chamadas, experts e tempos por
+  ordinal para distinguir bytes residentes de uso efetivo da placa.
   A cobertura CUDA por dtype e os números da ksia ficam em
   `docs/subsystems/freetoken-moe.md`.
 - `collective.rs` - `reduce_sum` + `ReduceBarrier` do tensor parallelism

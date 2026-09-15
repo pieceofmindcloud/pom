@@ -51,6 +51,8 @@ O plano da correção do reload após idle-unload está em
 `superpowers/plans/2026-09-14-reload-idle-runtime-v2.md`.
 O plano da correção do rollback recorrente Kimi-K3 está em
 `superpowers/plans/2026-09-15-hybrid-memory-decode-segv.md`.
+O plano do hot path CUDA heterogêneo alinhado ao FreeToken está em
+`superpowers/plans/2026-09-15-moe-freetoken-performance.md`.
 
 ## subsystems/
 

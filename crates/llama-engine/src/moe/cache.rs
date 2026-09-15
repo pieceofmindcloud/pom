@@ -809,6 +809,10 @@ impl DeviceExpertCache {
                     break;
                 }
             };
+            if options.cancellation.load(Ordering::Acquire) {
+                report.stop = DeviceWarmupStop::Cancelled;
+                break;
+            }
             let bytes = payload.len() as u64;
             match self.admit_inner(key, &payload, false) {
                 Ok(lease) => {
@@ -1378,6 +1382,31 @@ mod tests {
 
         assert_eq!(report.stop, DeviceWarmupStop::Cancelled);
         assert_eq!(report.candidates, 0);
+        assert_eq!(allocator.uploads.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn warmup_cancelado_depois_de_obter_candidato_nao_admite_payload() {
+        let allocator = FakeDeviceAllocator::new(10);
+        let cache = device_cache(&allocator, 10);
+        let options = DeviceWarmupOptions::new(Duration::from_secs(1));
+        let cancellation = Arc::clone(&options.cancellation);
+        let mut emitted = false;
+        let candidates = std::iter::from_fn(move || {
+            if emitted {
+                None
+            } else {
+                emitted = true;
+                cancellation.store(true, Ordering::Release);
+                Some(Ok((key(1), vec![1; 3])))
+            }
+        });
+
+        let report = cache.warm(candidates, &options);
+
+        assert_eq!(report.stop, DeviceWarmupStop::Cancelled);
+        assert_eq!(report.candidates, 1);
+        assert_eq!(report.admitted, 0);
         assert_eq!(allocator.uploads.load(Ordering::Relaxed), 0);
     }
 

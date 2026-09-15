@@ -1533,8 +1533,15 @@ __global__ void quantize_q8_1_rows_kernel(
         amax = fmaxf(amax, __shfl_down_sync(0xffffffffu, amax, offset));
         sum += __shfl_down_sync(0xffffffffu, sum, offset);
     }
-    const float d = amax / 127.0f;
-    const int8_t quantized = amax == 0.0f ? 0 : static_cast<int8_t>(roundf(value / d));
+    // The reduction result is valid only in lane zero. Every lane must use
+    // that same delta when writing the shared q8 block; using the lane-local
+    // partial maximum silently corrupts the activation scale and the dot
+    // product even though the kernel launch itself succeeds.
+    const float row_amax = __shfl_sync(0xffffffffu, amax, 0);
+    const float d = row_amax / 127.0f;
+    const int8_t quantized = row_amax == 0.0f
+        ? 0
+        : static_cast<int8_t>(roundf(value / d));
     block_q8_1 *block = &output[
         static_cast<std::size_t>(row) * blocks_per_row + column_block];
     block->qs[element] = quantized;

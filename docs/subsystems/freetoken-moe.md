@@ -3014,6 +3014,22 @@ efetiva variou de `15,337` a `17,803 GB` e a residência terminou encostada
 nesse limite. A próxima rodada com este detalhamento deve decidir se há
 alguma margem conservadora antes de alterar a política.
 
+### Fase 5.19: microlote físico menor para o cache residente - 2026-09-16
+
+As sondagens brutas da ksia mostraram que `MemoryAccount` não subestima a
+VRAM: depois dos buffers do contexto, cada RTX 5060 Ti tinha cerca de `0,5 GB`
+livre, enquanto o compute buffer ocupava aproximadamente `3,1 GB`. O cache
+residente terminava encostado em `15,3-17,8 GB` agregados, abaixo dos `19,62 GB`
+de `4499` candidatos aquecidos. O conjunto não cabe com `n_ubatch=512` e não
+há evidência de outra carga de GPU.
+
+O primeiro ajuste de capacidade mantém `n_batch=512` como lote público, mas
+limita `n_ubatch` a `128` somente quando `moe_external_executor` está ativo.
+O grafo do llama.cpp passa a reservar workspaces físicos menores, devolvendo
+VRAM para o cache de experts sem alterar o caminho denso. A mudança é
+deliberadamente fora dos kernels e deve ser aceita somente se a medição na
+ksia reduzir misses/evictions e não piorar o throughput de referência.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

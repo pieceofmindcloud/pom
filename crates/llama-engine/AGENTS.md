@@ -86,6 +86,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   orçamento (`baseline_free`, `current_free`, compute, reserva, limites e
   entradas residentes). Isso separa pressão real do orçamento de uma eviction
   indevida de lease ativo e permite auditar uma margem conservadora.
+  Quando `moe_external_executor` está ligado, `llm/config.rs` conserva o lote
+  público pedido, mas limita o microlote físico a 128 tokens para devolver
+  espaço ao cache residente sem alterar o caminho denso do llama.cpp.
   Pares repetidos de expert e token são calculados uma vez e a agregação
   conserva o peso de cada rota original.
   No IQ3_XXS a entrada é quantizada para `block_q8_1` e o decoder nativo

@@ -2063,11 +2063,11 @@ mod tests {
     fn manifest_url_uses_the_requested_plugin_code() {
         let service = HttpLicenseService::new("https://license.example");
 
-        let url = service.manifest_url("pom-core", "lease-1", "macos", "aarch64");
+        let url = service.manifest_url("pom_core", "lease-1", "macos", "aarch64");
 
         assert_eq!(
             url,
-            "https://license.example/v1/plugins/pom-core/manifest?lease_id=lease-1&os=macos&arch=aarch64&channel=stable&host_version=0.1.0&plugin_abi=1"
+            "https://license.example/v1/plugins/pom_core/manifest?lease_id=lease-1&os=macos&arch=aarch64&channel=stable&host_version=0.1.0&plugin_abi=1"
         );
     }
 

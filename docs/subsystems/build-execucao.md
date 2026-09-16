@@ -348,7 +348,7 @@ máquina. Precedência:
 
 O caminho de produção está em `crates/node/src/core_update.rs` e não usa o
 `devupdate.rs`: após um heartbeat aceito e somente com Enterprise ativo, o nó
-consulta o manifest `pom-core` no servidor de licenças e publica no status uma
+consulta o manifest `pom_core` no servidor de licenças e publica no status uma
 release pendente. A detecção não baixa, troca nem reinicia. A UI autoriza uma
 release específica por `POST /api/ui/enterprise/pom-update/apply`; só então o
 cliente baixa o artefato assinado, confere tamanho/SHA-256, troca o executável

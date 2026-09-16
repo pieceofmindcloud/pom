@@ -107,7 +107,7 @@ o contrato de que deployments `idle` continuam selecionáveis pelo nome, mesmo
 sem capacidade efetiva anunciada, para que a primeira requisição possa acordá-los.
 
 `api-http.md`, `build-execucao.md` e `licenciamento-enterprise.md` documentam o
-aviso diário de release `pom-core` para licenças Enterprise e a aplicação
+aviso diário de release `pom_core` para licenças Enterprise e a aplicação
 somente após autorização explícita na UI.
 
 O armazenamento local unificado está especificado em

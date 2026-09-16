@@ -181,7 +181,7 @@ profile policy remains the effective authorization boundary.
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`). O
   status Enterprise (`GET /api/ui/enterprise/status`) inclui a release
-  `pom-core` detectada, enquanto `POST /api/ui/enterprise/pom-update/apply`
+  `pom_core` detectada, enquanto `POST /api/ui/enterprise/pom-update/apply`
   exige a confirmação explícita dessa release antes de baixar e reiniciar. A
   cluster view transporta `SystemLoad.gpus[].power_watts` como telemetria
   opcional, mantendo `null` quando o sistema não expõe consumo da placa.

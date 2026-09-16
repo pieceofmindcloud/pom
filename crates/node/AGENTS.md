@@ -263,7 +263,7 @@ fingerprint, o estado persistido sem a chave e o supervisor de heartbeat. O
 heartbeat consome o payload rico de renovação e persiste prazo, token,
 entitlements, grant e release devolvidos pelo servidor; o prazo não é
 recalculado localmente. Depois de um heartbeat aceito, e somente com o
-entitlement ativo, ele consulta o manifest `pom-core`, publica uma atualização
+entitlement ativo, ele consulta o manifest `pom_core`, publica uma atualização
 pendente no status e só delega decisão, hash, troca atômica e reinício a
 `core_update.rs` depois de uma autorização explícita pela UI. O
 `enterprise_host.rs` é o único adaptador do `pom` para o processo auxiliar;

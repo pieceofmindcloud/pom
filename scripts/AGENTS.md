@@ -83,8 +83,8 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   para uma plataforma explícita, localiza a extensão correta e copia o artefato
   com SHA-256 e tamanho para o diretório de saída.
 - `resolve-release-version.py` - lê a resposta de `GET /internal/releases` e
- escolhe o maior SemVer entre todas as plataformas, incrementando o metadado
- `build.N` para o `pom-release.sh`.
+  escolhe o maior SemVer entre todas as plataformas, incrementando o metadado
+  `build.N` para o `pom-release.sh`.
 - `test_pom_release.sh` - smoke test local do incremento automático, override
   manual e `--dry-run`, usando `curl` e `cargo` falsos.
 

@@ -101,21 +101,21 @@ Enterprise aceito e enquanto `EnterpriseStatus.active` for verdadeiro. O modo
 Free não chama esse caminho. A detecção diária apenas compara a release e
 publica `EnterpriseStatus.core_update`; não baixa, troca nem reinicia. O cliente
 usa a mesma rota pública e os mesmos DTOs do plugin, com o código de catálogo
-`pom-core`:
+`pom_core`:
 
 ```text
-GET /v1/plugins/pom-core/manifest
+GET /v1/plugins/pom_core/manifest
     ?lease_id=<lease>&os=<consts::OS>&arch=<consts::ARCH>
     &channel=stable&host_version=<CARGO_PKG_VERSION>&plugin_abi=1
 Authorization: Bearer <lease_token>
 ```
 
 A resposta esperada é o `ManifestResponse` já existente, com `manifest` e
-`download`. O lado servidor deve publicar para `pom-core` um manifest com
+`download`. O lado servidor deve publicar para `pom_core` um manifest com
 `product: "pom"`, `channel: "stable"`, a plataforma solicitada, `version` em
 SemVer, `min_host_version`, `sha256`, `size`, `key_id` e `signature`; o grant de
 download continua apontando para a rota existente
-`/v1/plugins/pom-core/:release_id/download`. Não é usado o endpoint interno de
+`/v1/plugins/pom_core/:release_id/download`. Não é usado o endpoint interno de
 listagem de releases. O `plugin_abi` deve continuar em `1`; quando não houver
 changelog, o campo deve ser omitido para preservar a canonicalização assinada.
 O `release_id` de uma release do core deve ser o commit

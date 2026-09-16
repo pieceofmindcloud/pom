@@ -81,7 +81,7 @@ Per-file list:
   Descrição, regras e o campo único de canais Discord ou Telegram são editados
   como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
   mesmo renderer Markdown compartilhado pelo Chat.
-- `Enterprise.tsx` - Mostra o estado da licença, a release `pom-core` detectada
++ `Enterprise.tsx` - Mostra o estado da licença, a release `pom_core` detectada
   no heartbeat e seu `release_id`; o botão de instalar e reiniciar só chama a
   ação autenticada depois da confirmação do operador.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada

@@ -3,7 +3,7 @@ use semver::Version;
 use sha2::Digest;
 use std::path::{Path, PathBuf};
 
-pub(crate) const CORE_PLUGIN_CODE: &str = "pom-core";
+pub(crate) const CORE_PLUGIN_CODE: &str = "pom_core";
 pub(crate) const CORE_RELEASE_CHANNEL: &str = "stable";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub(crate) fn validate_manifest(
     current_version: &str,
 ) -> Result<(), String> {
     if manifest.schema != 1 {
-        return Err("schema de manifest do pom-core não suportado".into());
+        return Err("schema de manifest do pom_core não suportado".into());
     }
     if manifest.product != "pom"
         || manifest.channel != CORE_RELEASE_CHANNEL
@@ -49,18 +49,18 @@ pub(crate) fn validate_manifest(
         || manifest.arch != std::env::consts::ARCH
         || manifest.plugin_abi != enterprise_protocol::PLUGIN_ABI_VERSION
     {
-        return Err("manifest do pom-core incompatível com esta instalação ou ABI".into());
+        return Err("manifest do pom_core incompatível com esta instalação ou ABI".into());
     }
     if manifest.release_id.trim().is_empty() || manifest.signature.trim().is_empty() {
-        return Err("manifest do pom-core sem release_id ou assinatura".into());
+        return Err("manifest do pom_core sem release_id ou assinatura".into());
     }
     let current = Version::parse(current_version)
         .map_err(|_| "versão do pom em execução inválida".to_string())?;
-    Version::parse(&manifest.version).map_err(|_| "versão do pom-core inválida".to_string())?;
+    Version::parse(&manifest.version).map_err(|_| "versão do pom_core inválida".to_string())?;
     let minimum = Version::parse(&manifest.min_host_version)
-        .map_err(|_| "min_host_version do pom-core inválido".to_string())?;
+        .map_err(|_| "min_host_version do pom_core inválido".to_string())?;
     if minimum > current {
-        return Err("o pom-core exige uma versão do host mais nova".into());
+        return Err("o pom_core exige uma versão do host mais nova".into());
     }
     if manifest
         .sha256
@@ -75,17 +75,17 @@ pub(crate) fn validate_manifest(
             .chars()
             .all(|c| c.is_ascii_hexdigit())
     {
-        return Err("sha256 do pom-core inválido".into());
+        return Err("sha256 do pom_core inválido".into());
     }
     if manifest.size == 0 {
-        return Err("manifest do pom-core representa uma versão inválida".into());
+        return Err("manifest do pom_core representa uma versão inválida".into());
     }
     Ok(())
 }
 
 pub(crate) fn validate_download(manifest: &PluginManifest, bytes: &[u8]) -> Result<(), String> {
     if bytes.len() as u64 != manifest.size {
-        return Err("tamanho do pom-core divergente".into());
+        return Err("tamanho do pom_core divergente".into());
     }
     let actual = hex::encode(sha2::Sha256::digest(bytes));
     let expected = manifest
@@ -93,7 +93,7 @@ pub(crate) fn validate_download(manifest: &PluginManifest, bytes: &[u8]) -> Resu
         .strip_prefix("sha256:")
         .unwrap_or(&manifest.sha256);
     if actual != expected {
-        return Err("hash do pom-core divergente".into());
+        return Err("hash do pom_core divergente".into());
     }
     Ok(())
 }
@@ -195,6 +195,11 @@ fn powershell_literal(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uses_the_license_server_core_plugin_code() {
+        assert_eq!(CORE_PLUGIN_CODE, "pom_core");
+    }
 
     fn manifest(release_id: &str, version: &str) -> PluginManifest {
         PluginManifest {

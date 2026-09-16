@@ -2936,6 +2936,22 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
+### Fase 5.16: despacho q8 especializado por dtype - 2026-09-16
+
+O pipeline heterogêneo usa vários formatos no mesmo modelo, mas cada tensor
+individual tem um dtype fixo. Antes desta fase, o loop q8 resolvia o decoder
+por um ponteiro de função device indireto a cada bloco quantizado. Isso
+preservava a escolha do decoder, mas dificultava o inlining dos
+`vec_dot_*_q8_1` canônicos exatamente no loop que percorre todas as colunas.
+
+O despacho agora seleciona uma especialização de template por dtype antes de
+entrar nesse loop. As especializações chamam os mesmos decoders do fork, com
+os mesmos layouts, escalas, índices de bloco e mapeamento de lanes; a mudança
+não altera quantização, agregação, cache residente ou distribuição entre
+CUDA0 e CUDA1. O build CUDA na ksia é obrigatório para verificar o código
+gerado pelo NVCC. A otimização só pode permanecer publicada se mantiver a
+corretude textual e superar a melhor referência aquecida registrada.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

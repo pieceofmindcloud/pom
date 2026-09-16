@@ -2154,32 +2154,11 @@ __global__ void heterogeneous_quant_down_route_kernel(
 // quantizer has a canonical q8_1 dot product in vecdotq.cuh. The previous
 // implementation dequantized every scalar in a 128-thread block; four warps
 // repeated the same dot product and left dp4a unused.
-using HeterogeneousVecDotQ8_1 = float (*) (
-    const void * __restrict__, const block_q8_1 * __restrict__, const int &, const int &);
-
 struct HeterogeneousQ8Layout {
     int qk;
     int qi;
     int vdr;
 };
-
-static constexpr __device__ HeterogeneousVecDotQ8_1 heterogeneous_vec_dot_q8_1(
-    uint32_t dtype) {
-    switch (dtype) {
-        case 2:  return vec_dot_q4_0_q8_1;
-        case 10: return vec_dot_q2_K_q8_1;
-        case 11: return vec_dot_q3_K_q8_1;
-        case 12: return vec_dot_q4_K_q8_1;
-        case 13: return vec_dot_q5_K_q8_1;
-        case 14: return vec_dot_q6_K_q8_1;
-        case 18: return vec_dot_iq3_xxs_q8_1;
-        case 21: return vec_dot_iq3_s_q8_1;
-        case 22: return vec_dot_iq2_s_q8_1;
-        case 23: return vec_dot_iq4_xs_q8_1;
-        case 39: return vec_dot_mxfp4_q8_1;
-        default: return nullptr;
-    }
-}
 
 static constexpr __device__ HeterogeneousQ8Layout heterogeneous_q8_layout(
     uint32_t dtype) {
@@ -2199,11 +2178,45 @@ static constexpr __device__ HeterogeneousQ8Layout heterogeneous_q8_layout(
     }
 }
 
+template <uint32_t dtype>
+__device__ __forceinline__ float heterogeneous_q8_dot(
+    const void * __restrict__ tensor,
+    const block_q8_1 * __restrict__ input,
+    const int & block_index,
+    const int & q8_subblock
+) {
+    if constexpr (dtype == 2) {
+        return vec_dot_q4_0_q8_1(tensor, input, block_index, q8_subblock);
+    } else if constexpr (dtype == 10) {
+        return vec_dot_q2_K_q8_1(tensor, input, block_index, q8_subblock);
+    } else if constexpr (dtype == 11) {
+        return vec_dot_q3_K_q8_1(tensor, input, block_index, q8_subblock);
+    } else if constexpr (dtype == 12) {
+        return vec_dot_q4_K_q8_1(tensor, input, block_index, q8_subblock);
+    } else if constexpr (dtype == 13) {
+        return vec_dot_q5_K_q8_1(tensor, input, block_index, q8_subblock);
+    } else if constexpr (dtype == 14) {
+        return vec_dot_q6_K_q8_1(tensor, input, block_index, q8_subblock);
+    } else if constexpr (dtype == 18) {
+        return vec_dot_iq3_xxs_q8_1(tensor, input, block_index, q8_subblock);
+    } else if constexpr (dtype == 21) {
+        return vec_dot_iq3_s_q8_1(tensor, input, block_index, q8_subblock);
+    } else if constexpr (dtype == 22) {
+        return vec_dot_iq2_s_q8_1(tensor, input, block_index, q8_subblock);
+    } else if constexpr (dtype == 23) {
+        return vec_dot_iq4_xs_q8_1(tensor, input, block_index, q8_subblock);
+    } else if constexpr (dtype == 39) {
+        return vec_dot_mxfp4_q8_1(tensor, input, block_index, q8_subblock);
+    } else {
+        return 0.0f;
+    }
+}
+
+template <uint32_t dtype>
 __device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1_impl(
     const CudaHeterogeneousTensor &tensor,
     int row,
     const block_q8_1 *input,
-    HeterogeneousVecDotQ8_1 dot,
     float scale,
     float input_scale,
     HeterogeneousQ8Layout layout
@@ -2220,7 +2233,7 @@ __device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1_impl(
          block_index += blocks_per_iteration) {
         const int q8_block = block_index * (layout.qk / QK8_1);
         const int q8_subblock = layout.vdr * (lane % lanes_per_block);
-        result += dot(
+        result += heterogeneous_q8_dot<dtype>(
             row_data,
             input + q8_block,
             block_index,
@@ -2239,13 +2252,47 @@ __device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1(
     float scale,
     float input_scale
 ) {
-    const HeterogeneousVecDotQ8_1 dot = heterogeneous_vec_dot_q8_1(tensor.dtype);
     const HeterogeneousQ8Layout layout = heterogeneous_q8_layout(tensor.dtype);
-    if (dot == nullptr || layout.qk == 0 || layout.qi == 0 || layout.vdr == 0) {
+    if (layout.qk == 0 || layout.qi == 0 || layout.vdr == 0) {
         return 0.0f;
     }
-    return heterogeneous_quant_partial_dot_q8_1_impl(
-        tensor, row, input, dot, scale, input_scale, layout);
+    switch (tensor.dtype) {
+        case 2:
+            return heterogeneous_quant_partial_dot_q8_1_impl<2>(
+                tensor, row, input, scale, input_scale, layout);
+        case 10:
+            return heterogeneous_quant_partial_dot_q8_1_impl<10>(
+                tensor, row, input, scale, input_scale, layout);
+        case 11:
+            return heterogeneous_quant_partial_dot_q8_1_impl<11>(
+                tensor, row, input, scale, input_scale, layout);
+        case 12:
+            return heterogeneous_quant_partial_dot_q8_1_impl<12>(
+                tensor, row, input, scale, input_scale, layout);
+        case 13:
+            return heterogeneous_quant_partial_dot_q8_1_impl<13>(
+                tensor, row, input, scale, input_scale, layout);
+        case 14:
+            return heterogeneous_quant_partial_dot_q8_1_impl<14>(
+                tensor, row, input, scale, input_scale, layout);
+        case 18:
+            return heterogeneous_quant_partial_dot_q8_1_impl<18>(
+                tensor, row, input, scale, input_scale, layout);
+        case 21:
+            return heterogeneous_quant_partial_dot_q8_1_impl<21>(
+                tensor, row, input, scale, input_scale, layout);
+        case 22:
+            return heterogeneous_quant_partial_dot_q8_1_impl<22>(
+                tensor, row, input, scale, input_scale, layout);
+        case 23:
+            return heterogeneous_quant_partial_dot_q8_1_impl<23>(
+                tensor, row, input, scale, input_scale, layout);
+        case 39:
+            return heterogeneous_quant_partial_dot_q8_1_impl<39>(
+                tensor, row, input, scale, input_scale, layout);
+        default:
+            return 0.0f;
+    }
 }
 
 __global__ void heterogeneous_quant_gate_up_route_q8_kernel(

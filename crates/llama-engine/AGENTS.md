@@ -93,6 +93,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   quantiza hidden e ativação em buffers persistentes e executa uma warp por
   linha; isso é importante para GGUF como Mistral-Small, que combina dtypes
   18, 22 e 23 nos papéis gate/up/down.
+  O despacho q8 é especializado por dtype em tempo de compilação, mantendo o
+  decoder canônico inline no loop de blocos e evitando chamada indireta de
+  função device para cada bloco quantizado.
   Cada pipeline heterogêneo mantém um staging host pinned para a saída CUDA:
   o callback do llama.cpp continua recebendo um buffer host comum, mas a
   transferência D2H não paga o staging pageable em cada chamada.

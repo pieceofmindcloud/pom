@@ -2936,6 +2936,32 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
+### Fase 5.16: agrupar warps do callback heterogêneo - 2026-09-16
+
+O deploy de `6d2d348c` confirmou que a saída do callback era pequena e que o
+tempo rotulado como D2H continha principalmente a espera pela conclusão dos
+kernels. No primeiro prefill, por exemplo, `cuda_d2h_ms` ficou em `6197 ms`,
+enquanto o output inteiro tinha poucos KB; a cópia pinned não eliminou a
+parede. A causa era estrutural no lançamento: gate/up e down criavam um bloco
+CUDA para cada linha de cada par expert-token.
+
+O kernel heterogêneo q8 agora lança um bloco por par, com quatro warps. Cada
+warp continua calculando uma linha independente e reduz seus fragmentos com o
+mesmo `vec_dot_*_q8_1`; somente o escalonamento foi agrupado. A lane usada na
+primitiva é local à warp, portanto o resultado não depende do warp escolhido.
+Isso reduz os lançamentos de milhares de blocos por par para um bloco por par,
+sem trocar a quantização, os pesos residentes, a afinidade entre CUDA0/CUDA1
+ou a ordem de agregação.
+
+O build CUDA foi concluído na ksia e as quatro portas retornaram HTTP 200. A
+primeira inferência respondeu corretamente, mas ainda mediu `4458 ms` de
+prefill e `1376 ms` de decode; a segunda mediu `1609 ms` e `943 ms`. Esses
+números são evidência de que o patch compila e preserva a corretude, não de que
+a meta de 1,5x contra `llama.cpp` ou FreeToken já foi atingida. É necessário
+repetir o mesmo prompt após o novo kernel e comparar os deltas de
+`node_moe_forward_ms`, `cuda_call_wall_ms`, `cuda_d2h_ms` e
+`cuda_kernel_ms`.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

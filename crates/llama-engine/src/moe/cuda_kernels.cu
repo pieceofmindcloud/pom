@@ -2208,7 +2208,7 @@ __device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1_impl(
     float input_scale,
     HeterogeneousQ8Layout layout
 ) {
-    const int lane = threadIdx.x;
+    const int lane = threadIdx.x & 31;
     const int lanes_per_block = layout.qi / layout.vdr;
     const int blocks_per_iteration = layout.vdr * 32 / layout.qi;
     const int blocks_per_row = static_cast<int>(tensor.columns) / layout.qk;
@@ -2257,32 +2257,41 @@ __global__ void heterogeneous_quant_gate_up_route_q8_kernel(
     const block_q8_1 *hidden_values,
     float *gate_up_values
 ) {
-    const int row_index = blockIdx.x;
-    const int pair = row_index / intermediate;
-    const int row = row_index % intermediate;
+    // Four warps cooperate on one expert/token pair. The old one-warp-per-row
+    // launch created one CUDA block for every intermediate row, which made a
+    // real MoE batch spend most of its time scheduling hundreds of thousands
+    // of tiny blocks instead of executing the dot products. Each warp still
+    // owns exactly one output row, so the q8 dot primitive and its reduction
+    // remain unchanged.
+    const int warps_per_block = blockDim.x / 32;
+    const int pair = blockIdx.x;
+    const int warp = threadIdx.x / 32;
+    const int lane = threadIdx.x & 31;
     if (pair >= pair_count) return;
     const CudaHeterogeneousExpert expert = experts[pair];
     const block_q8_1 *input = hidden_values +
         static_cast<std::size_t>(token_ids[pair]) * (hidden / QK8_1);
-    float gate;
-    float up;
-    if (expert.gate_up.data != nullptr) {
-        gate = heterogeneous_quant_partial_dot_q8_1(
-            expert.gate_up, row, input,
-            expert.gate_up.scale, expert.gate_up.input_scale);
-        up = heterogeneous_quant_partial_dot_q8_1(
-            expert.gate_up, row + intermediate, input,
-            expert.gate_up.secondary_scale, expert.gate_up.secondary_input_scale);
-    } else {
-        gate = heterogeneous_quant_partial_dot_q8_1(
-            expert.gate, row, input, expert.gate.scale, expert.gate.input_scale);
-        up = heterogeneous_quant_partial_dot_q8_1(
-            expert.up, row, input, expert.up.scale, expert.up.input_scale);
-    }
-    if (threadIdx.x == 0) {
-        const int output_offset = pair * 2 * intermediate + row;
-        gate_up_values[output_offset] = gate;
-        gate_up_values[output_offset + intermediate] = up;
+    for (int row = warp; row < intermediate; row += warps_per_block) {
+        float gate;
+        float up;
+        if (expert.gate_up.data != nullptr) {
+            gate = heterogeneous_quant_partial_dot_q8_1(
+                expert.gate_up, row, input,
+                expert.gate_up.scale, expert.gate_up.input_scale);
+            up = heterogeneous_quant_partial_dot_q8_1(
+                expert.gate_up, row + intermediate, input,
+                expert.gate_up.secondary_scale, expert.gate_up.secondary_input_scale);
+        } else {
+            gate = heterogeneous_quant_partial_dot_q8_1(
+                expert.gate, row, input, expert.gate.scale, expert.gate.input_scale);
+            up = heterogeneous_quant_partial_dot_q8_1(
+                expert.up, row, input, expert.up.scale, expert.up.input_scale);
+        }
+        if (lane == 0) {
+            const int output_offset = pair * 2 * intermediate + row;
+            gate_up_values[output_offset] = gate;
+            gate_up_values[output_offset + intermediate] = up;
+        }
     }
 }
 
@@ -2294,17 +2303,23 @@ __global__ void heterogeneous_quant_down_route_q8_kernel(
     const block_q8_1 *activated,
     float *pair_output
 ) {
-    const int row_index = blockIdx.x;
-    const int pair = row_index / hidden;
-    const int row = row_index % hidden;
+    // Match the gate/up kernel: one block covers several output rows, one
+    // warp per row. This removes the per-row launch overhead while preserving
+    // independent reductions for every hidden component.
+    const int warps_per_block = blockDim.x / 32;
+    const int pair = blockIdx.x;
+    const int warp = threadIdx.x / 32;
+    const int lane = threadIdx.x & 31;
     if (pair >= pair_count) return;
     const block_q8_1 *input = activated +
         static_cast<std::size_t>(pair) * (intermediate / QK8_1);
     const CudaHeterogeneousTensor down = experts[pair].down;
-    const float value = heterogeneous_quant_partial_dot_q8_1(
-        down, row, input, down.scale, down.input_scale);
-    if (threadIdx.x == 0) {
-        pair_output[pair * hidden + row] = value;
+    for (int row = warp; row < hidden; row += warps_per_block) {
+        const float value = heterogeneous_quant_partial_dot_q8_1(
+            down, row, input, down.scale, down.input_scale);
+        if (lane == 0) {
+            pair_output[pair * hidden + row] = value;
+        }
     }
 }
 
@@ -4089,8 +4104,9 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
             pipeline->d_hidden, token_count_i, hidden_i, pipeline->d_hidden_q8);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
+    constexpr int route_warps = 4;
     heterogeneous_quant_gate_up_route_q8_kernel<<<
-        intermediate_i * pair_count, warp_size>>>(
+        pair_count, route_warps * warp_size>>>(
             pipeline->d_experts, pipeline->d_token_ids, pair_count, intermediate_i,
             hidden_i, pipeline->d_hidden_q8, pipeline->d_gate_up);
     result = cuda_status(cudaGetLastError());
@@ -4107,7 +4123,7 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
     heterogeneous_quant_down_route_q8_kernel<<<
-        hidden_i * pair_count, warp_size>>>(
+        pair_count, route_warps * warp_size>>>(
             pipeline->d_experts, pair_count, hidden_i, intermediate_i,
             pipeline->d_activated_q8, pipeline->d_pair_output);
     result = cuda_status(cudaGetLastError());

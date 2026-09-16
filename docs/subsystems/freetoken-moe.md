@@ -2981,28 +2981,6 @@ com `nvidia-smi` sem processo concorrente mediram `10,6127`, `11,8136` e
 sem texto corrompido. O resultado é uma melhoria observada, mas ainda está
 abaixo da meta de `1,5x` sobre o denso.
 
-### Fase 5.18: eviction heterogênea balanceada por camada - 2026-09-16
-
-O cache residente tinha LRU global por tensor. Como o `llama.cpp` percorre as
-36 camadas em ordem, uma camada tardia podia ocupar o orçamento de uma placa e
-expulsar as camadas iniciais antes da próxima passagem. Isso transforma um
-cache com hits em um ciclo de eviction/reupload, especialmente quando o
-working set de experts excede a VRAM.
-
-Para chaves `heterogeneous:*`, a admissão agora escolhe primeiro a camada com
-mais bytes entre as entradas ociosas e, dentro dela, o tensor ocioso mais
-antigo. Quando há somente uma camada heterogênea o comportamento continua LRU;
-chaves de outros formatos também mantêm LRU. Leases ativos nunca são
-considerados vítimas, e a política só altera a escolha de eviction, não a
-afinidade entre CUDA0/CUDA1, os kernels, a agregação ou o caminho denso.
-
-O teste de cache cobre a preservação da camada sub-representada mesmo quando a
-camada sobrecarregada foi usada mais recentemente. A aceitação depende de três
-rodadas na ksia com `nvidia-smi` imediatamente antes de cada requisição, sem
-carga concorrente, mesma requisição e saída correta. O candidato só deve ser
-mantido se sua mediana superar a referência `ea58bfab` de `10,9890 tok/s`;
-caso contrário, ele deve ser revertido imediatamente.
-
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

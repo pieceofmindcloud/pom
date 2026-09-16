@@ -77,10 +77,6 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   allocator faz todas as alocações e cópias em um lote e sincroniza o stream
   uma vez; eviction usa `cudaFreeAsync` para não introduzir um wait global por
   tensor. A cópia ainda termina antes de o slice temporário sair de escopo.
-  Para chaves heterogêneas, a eviction prefere a camada com mais bytes
-  residentes e escolhe o item ocioso mais antigo dentro dela; isso evita que a
-  varredura sequencial das camadas monopolize o working set, mantendo LRU para
-  formatos não heterogêneos e quando há uma única camada residente.
   O warmup percorre experts por camada em ordem expert-major, espalhando as
   admissões pelas camadas antes de esgotar o orçamento de cada GPU; isso evita
   aquecer apenas o prefixo do modelo e concentrar misses na primeira

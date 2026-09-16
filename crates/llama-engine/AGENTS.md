@@ -65,8 +65,8 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   `POM_MOE_CUDA_PROFILE` não é necessário nem altera a execução. Quando há
   `<modelo>.cuda-profile.json` com um `BandwidthProfile`, o bloco heterogêneo
   também divide misses entre lanes CPU e GPU e as executa em paralelo, como o
-  NVFP4. Sem sidecar, usa um perfil inicial GPU-first que mantém uma lane CPU
-  ativa; o sidecar medido substitui esse perfil quando estiver disponível.
+  NVFP4. Sem sidecar, mantém a política exclusivamente CUDA; coexecução só
+  usa taxas persistidas e medidas para não inventar uma velocidade de CPU.
   Antes do forward heterogêneo, as specs de toda a rota são construídas em
   uma travessia do inventário da camada e os misses são carregados em uma
   thread por shard;

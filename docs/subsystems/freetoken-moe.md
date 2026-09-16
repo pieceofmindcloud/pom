@@ -2902,13 +2902,12 @@ nem toca LRU, para que o planejador não falsifique hits ou impeça eviction.
 
 Os diagnósticos são automáticos quando o executor CUDA MoE está ativo;
 `POM_MOE_CUDA_PROFILE` não é necessário e não altera a execução. O sidecar
-`<modelo>.cuda-profile.json` com o campo `bandwidth` continua sendo o override
-medido. Sem esse arquivo, o runtime começa com um perfil GPU-first que envia
-75% dos misses à GPU e 25% à lane CPU, mantendo transferência e GEMV
-simultâneos até que exista uma medição persistida. Essa fração é uma política
-de partida, não uma medição da placa. Na ksia, a validação deve repetir o
-mesmo prompt com o warmup padrão, persistir o sidecar medido para este modelo
-e comparar prefill, decode, corretude textual e deltas de uploads.
+`<modelo>.cuda-profile.json` com o campo `bandwidth` continua sendo necessário
+para habilitar a divisão medida entre as lanes CPU e GPU. Sem esse arquivo, o
+runtime mantém a política exclusivamente CUDA e não fabrica uma taxa para a
+CPU escalar Rust. Na ksia, a validação deve repetir o mesmo prompt com o
+warmup padrão, persistir o sidecar medido para este modelo e comparar prefill,
+decode, corretude textual e deltas de uploads.
 
 ## Defeitos anotados
 

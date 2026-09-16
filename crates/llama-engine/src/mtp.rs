@@ -175,7 +175,7 @@ pub fn context_params_with_offload(
 ) -> sys::llama_context_params {
     let mut cparams = unsafe { sys::llama_context_default_params() };
     cparams.n_ctx = cfg.n_ctx;
-    crate::llm::apply_context_batch_params(&mut cparams, cfg);
+    crate::llm::apply_mtp_context_batch_params(&mut cparams, cfg);
     cparams.n_seq_max = crate::llm::kv_seq_budget(cfg.max_sessions);
     cparams.kv_unified = true;
     cparams.ctx_type = sys::LLAMA_CONTEXT_TYPE_MTP;
@@ -573,12 +573,13 @@ mod tests {
     }
 
     #[test]
-    fn contexto_mtp_aplica_o_microlote_efetivo_do_contexto_principal() {
+    fn contexto_mtp_mantem_512_com_executor_moe_externo() {
         let mut cfg = cfg();
+        cfg.moe_external_executor = true;
         let params = context_params(&cfg);
         assert_eq!(params.n_batch, 4096);
-        // 512 fixo de proposito: guarda contra a reversao para 128 que ja
-        // aconteceu. Ver o teste irmao em llm.rs.
+        // 512 é deliberado: o contexto MTP não herda a exceção de 128 do
+        // contexto principal MoE.
         assert_eq!(params.n_ubatch, 512);
 
         cfg.fit_memory = false;

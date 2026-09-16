@@ -1527,7 +1527,6 @@ impl LlmEngine {
             }
         }
 
-        self.begin_moe_callback();
         let tp_antes = crate::tp_probe::reduce_count();
         self.begin_moe_callback();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };

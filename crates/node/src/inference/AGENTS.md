@@ -496,12 +496,12 @@ visibilidade dos controles de implantação na UI local.
   O fork mantém a lista como metadata
   copiada no modelo e o grafo escolhe external/native pela camada, nunca por
   uma flag global que possa deixar experts sem executor.
-  A telemetria `moe_executor_diagnostics` expõe, quando o perfil CUDA está
-  ligado, chamadas, hits/misses do LRU, bytes H2D/D2H e tempos de alocação,
-  kernel, sincronização, liberação, busca/admissão e carregamento de experts no
-  host, preparação do lote e cópia dos resultados para vetores Rust. O perfil é opt-in por
-  `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
-  política do cache.
+  A telemetria `moe_executor_diagnostics` expõe automaticamente, quando o
+  executor CUDA MoE está ativo, chamadas, hits/misses do LRU, bytes H2D/D2H e
+  tempos de alocação, kernel, sincronização, liberação, busca/admissão e
+  carregamento de experts no host, preparação do lote e cópia dos resultados
+  para vetores Rust. `POM_MOE_CUDA_PROFILE` é legado e não é necessário nem
+  altera a política do cache.
   Para investigar a origem de uma rota inválida, `POM_MOE_ROUTE_DIAGNOSTICS=1`
   habilita duas linhas adjacentes, `callback_entry_default` no target padrão e
   `callback_entry` no target `moe.route_diagnostic`, como primeira ação do
@@ -567,8 +567,7 @@ visibilidade dos controles de implantação na UI local.
   `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o
   dtype dos experts, seleciona o decoder validado e liga o bloco ao hidden state
   nos caminhos unitário e batch. O teste ignorado
-  `mede_banda_h2d_d2h_do_lote_nvfp4`, executado explicitamente com
-  `POM_MOE_CUDA_PROFILE=1`, mede H2D, D2H, kernel e parede externa em
+  `mede_banda_h2d_d2h_do_lote_nvfp4` mede H2D, D2H, kernel e parede externa em
   geometrias pequena e Gemma4 após o aquecimento do cache de device. O perfil
   agora usa dois slots CUDA persistentes, streams separados e buffers host
   pinned para alternar grupos de tokens; `buffer_mask`, `buffer_switches`,
@@ -583,14 +582,24 @@ visibilidade dos controles de implantação na UI local.
   vivem em `docs/subsystems/freetoken-moe.md`.
   O wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
   atenção, demais camadas ou a amostragem do `LlmEngine`.
-  Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` percorre os
+  Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` pode percorrer os
   payloads canônicos por camada, expert, papel e dtype em uma thread separada,
-  usando a mesma admissão do cache residente. O orçamento continua derivado da
-  memória livre e da reserva do compute buffer medido; `warmup_status`, bytes,
-  candidatos e erros chegam em `moe_executor_diagnostics`. O prazo é
-  `POM_MOE_WARMUP_MAX_MS` (30 s por padrão) e `cancel_device_warmup` faz
-  cancelamento cooperativo entre payloads. Fontes sem ponte device não aquecem
-  nem removem experts do llama.cpp.
+  usando a mesma admissão do cache residente. O aquecimento é padrão e pode ser
+  desligado explicitamente por `POM_MOE_WARMUP=0`, `false`, `off` ou `no`. O
+  orçamento por placa continua derivado da memória livre e da reserva do
+  compute buffer medido; quando ele se esgota, o warmup termina com
+  `budget-exhausted`, pois não é possível manter todos os experts de um modelo
+  grande na VRAM. Se o modelo tiver um sidecar
+  `<modelo>.cuda-profile.json` com `bandwidth`, o bloco heterogêneo reaproveita
+  a mesma fração medida do FreeToken para executar misses em lanes CPU e GPU
+  sobrepostas; sem sidecar, mantém a política exclusivamente CUDA e não
+  fabrica uma constante de hardware.
+  `warmup_status`, bytes, candidatos e erros chegam em
+  `moe_executor_diagnostics`. O prazo é `POM_MOE_WARMUP_MAX_MS` (30 s por
+  padrão). O callback de inferência apenas sinaliza o cancelamento cooperativo
+  entre payloads; ele não aguarda a thread de warmup. O `join` fica reservado
+  à troca explícita de warmup, fora do caminho quente.
+  Fontes sem ponte device não aquecem nem removem experts do llama.cpp.
   A prova numérica `nvfp4_matches_llama_cpp_from_first_layer_and_stage` é
   ignorada por depender de GGUF real: com `POM_MOE_NUMERIC_MODEL` e
   `POM_MOE_NUMERIC_ACTIVATION`, ela compara camada a camada `gate`, `up`,

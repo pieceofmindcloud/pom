@@ -5,6 +5,8 @@
 //! Atenção e o restante das camadas continuam no contexto llama.cpp; aqui a
 //! fronteira própria é o router GGUF mais o FFN esparso da camada local.
 
+#[cfg(feature = "cuda")]
+use super::block::HeterogeneousLayerWorkingSetDiagnostics;
 use super::block::{
     HeterogeneousMoeBlock, IqQuantMoeBlock, LegacyQuantMoeBlock, LowBitMoeBlock, MoeBlockError,
     Nvfp4MoeBlock, PlainMoeBlock, Q4_0MoeBlock,
@@ -66,6 +68,21 @@ pub struct MoeExecutorTelemetry {
     pub diagnostics: Option<MoeExecutorDiagnostics>,
 }
 
+#[cfg(feature = "cuda")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceCacheBudgetDiagnostics {
+    pub baseline_free_bytes: u64,
+    pub compute_bytes: u64,
+    pub weights_bytes: u64,
+    pub fixed_bytes: u64,
+    pub reserve_bytes: u64,
+    pub current_free_bytes: u64,
+    pub resident_bytes: u64,
+    pub baseline_limit_bytes: Option<u64>,
+    pub dynamic_limit_bytes: Option<u64>,
+    pub effective_limit_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MoeExecutorDiagnostics {
     pub profiled: bool,
@@ -91,6 +108,27 @@ pub struct MoeExecutorDiagnostics {
     pub device_cache_resident_bytes: usize,
     pub device_cache_devices: Vec<String>,
     pub device_cache_resident_bytes_by_device: Vec<usize>,
+    /// Limite efetivo atual de cada shard, na mesma ordem de
+    /// `device_cache_devices`. `None` indica que a sonda CUDA falhou.
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub device_cache_capacity_bytes: Option<u64>,
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub device_cache_capacity_bytes_by_device: Vec<Option<u64>>,
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub device_cache_entries_by_device: Vec<usize>,
+    /// Entradas que formaram o limite, na mesma ordem de
+    /// `device_cache_devices`. `None` indica que a sonda falhou.
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub device_cache_budget_by_device: Vec<Option<DeviceCacheBudgetDiagnostics>>,
+    /// Working set observado por camada. `distinct_experts_per_token` é a
+    /// soma por token e deve ser dividida por `tokens` para obter a média.
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub cache_working_set_by_layer: Vec<HeterogeneousLayerWorkingSetDiagnostics>,
     /// Chamadas efetivamente executadas por ordinal CUDA. Resident bytes não
     /// provam que uma placa participou da rota; estes contadores provam.
     #[cfg(feature = "cuda")]
@@ -604,6 +642,29 @@ impl MoeSource {
     }
 }
 
+#[cfg(any(feature = "cuda", test))]
+/// Percorre a matriz expert/camada em ordem de expert para espalhar o working
+/// set residente por todas as camadas antes de esgotar o orçamento de VRAM.
+/// A ordem por camada aquecia apenas o prefixo do modelo e deixava a primeira
+/// requisição pagar misses concentrados nas camadas finais.
+fn next_warmup_position(
+    layer: &mut u32,
+    expert: &mut u32,
+    layers: u32,
+    experts: u32,
+) -> Option<(u32, u32)> {
+    if *layer >= layers || *expert >= experts || layers == 0 || experts == 0 {
+        return None;
+    }
+    let position = (*layer, *expert);
+    *layer = layer.saturating_add(1);
+    if *layer >= layers {
+        *layer = 0;
+        *expert = expert.saturating_add(1);
+    }
+    Some(position)
+}
+
 #[cfg(feature = "cuda")]
 struct DeviceWarmupCandidates<'a> {
     source: &'a MoeSource,
@@ -649,17 +710,9 @@ impl Iterator for DeviceWarmupCandidates<'_> {
         if let Some(candidate) = self.pending.pop_front() {
             return Some(candidate);
         }
-        if self.layer >= self.layers || self.expert >= self.experts {
-            return None;
-        }
+        let (layer, expert) =
+            next_warmup_position(&mut self.layer, &mut self.expert, self.layers, self.experts)?;
 
-        let layer = self.layer;
-        let expert = self.expert;
-        self.expert = self.expert.saturating_add(1);
-        if self.expert >= self.experts {
-            self.expert = 0;
-            self.layer = self.layer.saturating_add(1);
-        }
         if self.cancellation.load(Ordering::Acquire) {
             return None;
         }
@@ -715,6 +768,8 @@ pub struct MoeRuntime {
     device_cache: Option<Arc<super::cache::DeviceExpertCache>>,
     #[cfg(feature = "cuda")]
     warmup: Arc<Mutex<MoeWarmupState>>,
+    #[cfg(feature = "cuda")]
+    warmup_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
 pub struct MoeRouteBatch<'a> {
@@ -984,6 +1039,8 @@ impl MoeRuntime {
                     device_cache: None,
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => {
@@ -1049,6 +1106,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Q4_0 => {
@@ -1104,6 +1163,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Nvfp4 => {
@@ -1194,6 +1255,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Mxfp4
@@ -1253,6 +1316,8 @@ impl MoeRuntime {
                     device_cache: None,
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Q2K
@@ -1344,6 +1409,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Iq2XXS
@@ -1441,6 +1508,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
             ExpertFormat::Heterogeneous => {
@@ -1469,6 +1538,10 @@ impl MoeRuntime {
                         Arc::clone(device_cache),
                     ))
                 });
+                #[cfg(feature = "cuda")]
+                let coexecution_profile = CudaTransferProfile::load_for_model(&path)
+                    .map_err(MoeRuntimeError::Block)?
+                    .and_then(|profile| profile.bandwidth);
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
                     #[cfg(feature = "cuda")]
@@ -1479,6 +1552,7 @@ impl MoeRuntime {
                             &model,
                             layer,
                             top_k,
+                            coexecution_profile,
                         )
                     } else {
                         HeterogeneousMoeBlock::new(Arc::clone(&cache), &model, layer, top_k)
@@ -1499,6 +1573,8 @@ impl MoeRuntime {
                     device_cache: device_cache.clone(),
                     #[cfg(feature = "cuda")]
                     warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
+                    #[cfg(feature = "cuda")]
+                    warmup_thread: Arc::new(Mutex::new(None)),
                 })
             }
         }
@@ -1506,6 +1582,20 @@ impl MoeRuntime {
 
     pub fn layers(&self) -> u32 {
         self.blocks.len() as u32
+    }
+
+    #[cfg(feature = "cuda")]
+    fn warmup_enabled() -> bool {
+        // O carregamento inicial deve deixar a VRAM aquecida, como no caminho
+        // FreeToken. O orçamento medido ainda limita quantos experts cabem e
+        // a primeira rota cancela o restante antes de executar. O operador
+        // pode desligar explicitamente o aquecimento para uma medição fria.
+        !matches!(
+            std::env::var("POM_MOE_WARMUP")
+                .ok()
+                .map(|value| value.trim().to_ascii_lowercase()),
+            Some(value) if matches!(value.as_str(), "0" | "false" | "off" | "no")
+        )
     }
 
     #[cfg(feature = "cuda")]
@@ -1541,12 +1631,22 @@ impl MoeRuntime {
     /// a fonte fria até a reserva medida ser atingida, o prazo vencer ou o
     /// cancelamento ser solicitado. O estado fica nos diagnósticos do runtime
     /// e cada payload é admitido pela mesma política de memória usada no
-    /// caminho quente.
+    /// caminho quente. Se um preenchimento anterior ainda existir, ele é
+    /// encerrado antes de iniciar outro para nunca haver duas fontes
+    /// concorrendo pelo mesmo cache.
     #[cfg(feature = "cuda")]
     pub fn start_device_warmup(self: &Arc<Self>) {
+        self.cancel_device_warmup();
         let Some(device_cache) = self.device_cache.clone() else {
             return;
         };
+        if !Self::warmup_enabled() {
+            tracing::debug!(
+                model = %self.model,
+                "aquecimento do cache MoE desabilitado explicitamente"
+            );
+            return;
+        }
         let options = DeviceWarmupOptions::new(Self::warmup_max_duration());
         let cancellation = Arc::clone(&options.cancellation);
         {
@@ -1554,9 +1654,7 @@ impl MoeRuntime {
                 .warmup
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if let Some(previous) = state.cancellation.replace(Arc::clone(&cancellation)) {
-                previous.store(true, Ordering::Release);
-            }
+            state.cancellation = Some(Arc::clone(&cancellation));
             state.status = "running".to_owned();
             state.candidates = 0;
             state.admitted = 0;
@@ -1608,39 +1706,79 @@ impl MoeRuntime {
                     "aquecimento do cache MoE residente terminou"
                 );
             });
-        if let Err(error) = spawn {
-            let mut state = self
-                .warmup
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            state.status = "failed".to_owned();
-            state.error = Some(format!(
-                "não foi possível iniciar a thread de aquecimento: {error}"
-            ));
-            state.cancellation = None;
-            tracing::warn!(error = %error, "aquecimento do cache MoE não iniciou");
+        match spawn {
+            Ok(handle) => {
+                *self
+                    .warmup_thread
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(handle);
+            }
+            Err(error) => {
+                let mut state = self
+                    .warmup
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                state.status = "failed".to_owned();
+                state.error = Some(format!(
+                    "não foi possível iniciar a thread de aquecimento: {error}"
+                ));
+                state.cancellation = None;
+                tracing::warn!(error = %error, "aquecimento do cache MoE não iniciou");
+            }
         }
     }
 
     #[cfg(not(feature = "cuda"))]
     pub fn start_device_warmup(&self) {}
 
-    /// Interrompe o aquecimento sem desalojar as entradas já admitidas.
+    /// Solicita o fim do aquecimento sem desalojar as entradas já admitidas.
+    ///
+    /// O caminho de inferência não pode aguardar a thread de warmup: se ela
+    /// estiver em uma admissão CUDA, `join` transforma uma cópia de peso em
+    /// latência de TTFT. A admissão corrente é serializada pelo shard e termina
+    /// com segurança; a flag impede qualquer candidato seguinte. O handle só
+    /// é aguardado por `cancel_device_warmup`, fora do caminho quente, quando o
+    /// runtime vai iniciar outro aquecimento.
     #[cfg(feature = "cuda")]
     pub fn cancel_device_warmup(&self) {
-        if let Some(cancellation) = self
+        self.signal_device_warmup_cancel();
+        let handle = self
+            .warmup_thread
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            if handle.thread().id() == std::thread::current().id() {
+                tracing::error!("thread de aquecimento tentou aguardar a si própria");
+            } else if handle.join().is_err() {
+                tracing::warn!("thread de aquecimento terminou com panic");
+            }
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn cancel_device_warmup_for_forward(&self) {
+        self.signal_device_warmup_cancel();
+    }
+
+    #[cfg(feature = "cuda")]
+    fn signal_device_warmup_cancel(&self) {
+        let cancellation = self
             .warmup
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .cancellation
-            .clone()
-        {
+            .clone();
+        if let Some(cancellation) = cancellation {
             cancellation.store(true, Ordering::Release);
         }
     }
 
     #[cfg(not(feature = "cuda"))]
     pub fn cancel_device_warmup(&self) {}
+
+    #[cfg(not(feature = "cuda"))]
+    pub fn cancel_device_warmup_for_forward(&self) {}
 
     pub fn executor_kind(&self) -> MoeExecutorKind {
         match self.blocks.first() {
@@ -1702,25 +1840,43 @@ impl MoeRuntime {
 
             let mut device_cache_recorded = false;
             for block in &self.blocks {
-                let (cuda, device_cache) = match block {
-                    MoeBlock::Nvfp4(block) => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
-                    MoeBlock::K(block) if block.uses_cuda() => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
-                    MoeBlock::Iq(block) if block.uses_cuda() => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
-                    MoeBlock::Plain(block) if block.uses_cuda() => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
-                    MoeBlock::Q4(block) if block.uses_cuda() => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
-                    MoeBlock::Heterogeneous(block) if block.uses_cuda() => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
+                let (cuda, device_cache, capacity_by_device, budget_by_device) = match block {
+                    MoeBlock::Nvfp4(block) => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                    MoeBlock::K(block) if block.uses_cuda() => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                    MoeBlock::Iq(block) if block.uses_cuda() => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                    MoeBlock::Plain(block) if block.uses_cuda() => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                    MoeBlock::Q4(block) if block.uses_cuda() => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                    MoeBlock::Heterogeneous(block) if block.uses_cuda() => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        block.resident_cache_capacity_bytes_by_device(),
+                        block.resident_cache_budget_snapshots_by_device(),
+                    ),
                     _ => continue,
                 };
                 diagnostics.profiled |= cuda.calls > 0;
@@ -1776,6 +1932,30 @@ impl MoeRuntime {
                     diagnostics.device_cache_devices = device_cache.device_names;
                     diagnostics.device_cache_resident_bytes_by_device =
                         device_cache.resident_bytes_by_device;
+                    diagnostics.device_cache_entries_by_device = device_cache.entries_by_device;
+                    diagnostics.device_cache_capacity_bytes_by_device = capacity_by_device;
+                    diagnostics.device_cache_capacity_bytes = diagnostics
+                        .device_cache_capacity_bytes_by_device
+                        .iter()
+                        .copied()
+                        .try_fold(0u64, |total, capacity| total.checked_add(capacity?));
+                    diagnostics.device_cache_budget_by_device = budget_by_device
+                        .into_iter()
+                        .map(|snapshot| {
+                            snapshot.map(|snapshot| DeviceCacheBudgetDiagnostics {
+                                baseline_free_bytes: snapshot.baseline_free_bytes,
+                                compute_bytes: snapshot.compute_bytes,
+                                weights_bytes: snapshot.weights_bytes,
+                                fixed_bytes: snapshot.fixed_bytes,
+                                reserve_bytes: snapshot.reserve_bytes,
+                                current_free_bytes: snapshot.current_free_bytes,
+                                resident_bytes: snapshot.resident_bytes,
+                                baseline_limit_bytes: snapshot.baseline_limit_bytes,
+                                dynamic_limit_bytes: snapshot.dynamic_limit_bytes,
+                                effective_limit_bytes: snapshot.effective_limit_bytes,
+                            })
+                        })
+                        .collect();
                     device_cache_recorded = true;
                 }
                 if let MoeBlock::Nvfp4(block) = block {
@@ -1789,10 +1969,24 @@ impl MoeRuntime {
                         .saturating_add(host.cpu_expert_calls);
                     diagnostics.coexecution_gpu_fraction = host.coexecution_gpu_fraction;
                 }
+                #[cfg(feature = "cuda")]
+                if let MoeBlock::Heterogeneous(block) = block {
+                    let host = block.host_diagnostics();
+                    diagnostics.cpu_expert_calls = diagnostics
+                        .cpu_expert_calls
+                        .saturating_add(host.cpu_expert_calls);
+                    diagnostics.coexecution_gpu_fraction = host.coexecution_gpu_fraction;
+                    diagnostics
+                        .cache_working_set_by_layer
+                        .push(block.working_set_diagnostics());
+                }
             }
             diagnostics
                 .cuda_device_calls
                 .sort_by_key(|device| device.device_index);
+            diagnostics
+                .cache_working_set_by_layer
+                .sort_by_key(|layer| layer.layer);
         }
 
         diagnostics
@@ -1964,7 +2158,7 @@ impl MoeRuntime {
         // caso contrário, a thread de fundo pode continuar admitindo experts
         // de camadas futuras e expulsar os experts usados no turno anterior.
         #[cfg(feature = "cuda")]
-        self.cancel_device_warmup();
+        self.cancel_device_warmup_for_forward();
 
         log_moe_layer_input_diagnostic(
             &self.source,
@@ -2372,6 +2566,19 @@ mod tests {
     use super::super::format_plain::{tests::write_plain_source, PlainFormat};
     use super::super::format_q4_0::tests::write_q4_source;
     use super::*;
+
+    #[test]
+    fn warmup_distribui_candidatos_por_todas_as_camadas() {
+        let mut layer = 0;
+        let mut expert = 0;
+        let positions = (0..6)
+            .filter_map(|_| next_warmup_position(&mut layer, &mut expert, 3, 2))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            positions,
+            vec![(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)]
+        );
+    }
 
     #[test]
     fn executor_cuda_recusa_relatorio_sem_compute_medido() {

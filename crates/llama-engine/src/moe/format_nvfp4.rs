@@ -14,7 +14,7 @@ use super::bandwidth::BandwidthProfile;
 use super::cache::ExpertLease;
 use super::cache::{CacheError, ExpertCache, ExpertKey};
 #[cfg(feature = "cuda")]
-use super::coexecution::{combine_lane_outputs, run_overlap, split_route_experts};
+use super::coexecution::{combine_lane_outputs, filter_route, run_overlap, split_route_experts};
 use super::format_q4_0::{parse_tensor_table, Q4LoadError, TensorSpec};
 use memmap2::Mmap;
 #[cfg(feature = "cuda")]
@@ -1543,40 +1543,6 @@ impl Nvfp4Executor {
             Nvfp4Backend::Cuda(_) => unreachable!("o caminho CUDA usa o cache residente"),
         }
     }
-}
-
-#[cfg(feature = "cuda")]
-fn filter_route(
-    experts: &[u32],
-    token_ids: &[u32],
-    weights: &[f32],
-    token_offsets: &[usize],
-    allowed: &[u32],
-    tokens: usize,
-) -> (Vec<u32>, Vec<u32>, Vec<f32>, Vec<usize>) {
-    let mut filtered_experts = Vec::new();
-    let mut filtered_token_ids = Vec::new();
-    let mut filtered_weights = Vec::new();
-    let mut filtered_offsets = Vec::with_capacity(tokens + 1);
-    filtered_offsets.push(0);
-    for token in 0..tokens {
-        let start = token_offsets[token];
-        let end = token_offsets[token + 1];
-        for index in start..end {
-            if allowed.contains(&experts[index]) {
-                filtered_experts.push(experts[index]);
-                filtered_token_ids.push(token_ids[index]);
-                filtered_weights.push(weights[index]);
-            }
-        }
-        filtered_offsets.push(filtered_experts.len());
-    }
-    (
-        filtered_experts,
-        filtered_token_ids,
-        filtered_weights,
-        filtered_offsets,
-    )
 }
 
 fn select_backend_kind(

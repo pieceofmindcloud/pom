@@ -17,10 +17,11 @@
 // o executor e os kernels abaixo continuam sendo específicos deste motor.
 #define GGML_COMMON_DECL_CUDA
 #define GGML_COMMON_IMPL_CUDA
-// Caminho relativo a este arquivo: crates/llama-engine/src/moe/ -> raiz do
-// repo (4 níveis) -> o symlink vendado do fork do llama.cpp. Eram 5 níveis
-// quando o arquivo vivia em crates/node/src/inference/moe/.
-#include "../../../../vendor/llama-cpp-sys-2/llama.cpp/ggml/src/ggml-common.h"
+// build.rs points this include at the exact fork selected for the build.
+#include "ggml-common.h"
+// Reuse llama.cpp's canonical IQ3_XXS q8_1/dp4a decoder. The include root is
+// supplied by build.rs from the active fork, so LLAMA_SOURCE remains valid.
+#include "ggml-cuda/vecdotq.cuh"
 
 namespace {
 
@@ -485,6 +486,31 @@ __global__ void aggregate_route_batch_kernel(
     const std::size_t end = token_offsets[token + 1];
     for (std::size_t pair = begin; pair < end; ++pair) {
         value += weights[pair] * pair_output[pair * hidden + row];
+    }
+    output[token * hidden + row] = value;
+}
+
+__global__ void aggregate_route_batch_deduplicated_kernel(
+    const float *pair_output,
+    const float *weights,
+    const uint32_t *route_to_pair,
+    const std::size_t *token_offsets,
+    int token_count,
+    int hidden,
+    float *output
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int token = index / hidden;
+    const int row = index % hidden;
+    if (token >= token_count) {
+        return;
+    }
+    float value = 0.0f;
+    const std::size_t begin = token_offsets[token];
+    const std::size_t end = token_offsets[token + 1];
+    for (std::size_t route = begin; route < end; ++route) {
+        value += weights[route] * pair_output[
+            static_cast<std::size_t>(route_to_pair[route]) * hidden + row];
     }
     output[token * hidden + row] = value;
 }
@@ -1219,6 +1245,138 @@ __device__ __forceinline__ float iq3xxs_warp_partial_dot(
     return result;
 }
 
+// Gate and up are adjacent matrices in the resident payload and consume the
+// same hidden row. Compute both accumulators in one warp so the hidden values
+// and the route metadata are fetched once instead of once per projection.
+__device__ __forceinline__ void iq3xxs_warp_partial_dot_gate_up(
+    const uint8_t *gate_matrix,
+    const uint8_t *up_matrix,
+    int columns,
+    const float *input,
+    float *gate_result,
+    float *up_result
+) {
+    constexpr int block_elements = 256;
+    constexpr int block_bytes = 98;
+    const int lane = threadIdx.x & 31;
+    const int group = lane / 4;
+    const int il = lane % 4;
+    float gate = 0.0f;
+    float up = 0.0f;
+    for (int block_index = 0; block_index < columns / block_elements; ++block_index) {
+        const uint8_t *gate_block = gate_matrix + block_index * block_bytes;
+        const uint8_t *up_block = up_matrix + block_index * block_bytes;
+        const uint8_t *gate_q3 = gate_block + 2 + group * 8;
+        const uint8_t *up_q3 = up_block + 2 + group * 8;
+        const uint32_t gate_aux32 = static_cast<uint32_t>(gate_block[66 + group * 4]) |
+            (static_cast<uint32_t>(gate_block[67 + group * 4]) << 8) |
+            (static_cast<uint32_t>(gate_block[68 + group * 4]) << 16) |
+            (static_cast<uint32_t>(gate_block[69 + group * 4]) << 24);
+        const uint32_t up_aux32 = static_cast<uint32_t>(up_block[66 + group * 4]) |
+            (static_cast<uint32_t>(up_block[67 + group * 4]) << 8) |
+            (static_cast<uint32_t>(up_block[68 + group * 4]) << 16) |
+            (static_cast<uint32_t>(up_block[69 + group * 4]) << 24);
+        const float gate_d = __half2float(__ushort_as_half(
+            static_cast<uint16_t>(gate_block[0]) |
+            (static_cast<uint16_t>(gate_block[1]) << 8))) *
+            (0.5f + static_cast<float>(gate_aux32 >> 28)) * 0.5f;
+        const float up_d = __half2float(__ushort_as_half(
+            static_cast<uint16_t>(up_block[0]) |
+            (static_cast<uint16_t>(up_block[1]) << 8))) *
+            (0.5f + static_cast<float>(up_aux32 >> 28)) * 0.5f;
+        const uint8_t gate_signs = ksigns_iq2xs[(gate_aux32 >> (7 * il)) & 127];
+        const uint8_t up_signs = ksigns_iq2xs[(up_aux32 >> (7 * il)) & 127];
+        const uint32_t gate_grid_lo = iq3xxs_grid[gate_q3[2 * il]];
+        const uint32_t gate_grid_hi = iq3xxs_grid[gate_q3[2 * il + 1]];
+        const uint32_t up_grid_lo = iq3xxs_grid[up_q3[2 * il]];
+        const uint32_t up_grid_hi = iq3xxs_grid[up_q3[2 * il + 1]];
+        const int column_base = block_index * block_elements + group * 32 + il * 8;
+        for (int element = 0; element < 8; ++element) {
+            const uint32_t gate_grid = element < 4 ? gate_grid_lo : gate_grid_hi;
+            const uint32_t up_grid = element < 4 ? up_grid_lo : up_grid_hi;
+            const int grid_element = element & 3;
+            const uint8_t gate_code = static_cast<uint8_t>(
+                (gate_grid >> (8 * grid_element)) & 0xffu);
+            const uint8_t up_code = static_cast<uint8_t>(
+                (up_grid >> (8 * grid_element)) & 0xffu);
+            const float hidden_value = input[column_base + element];
+            gate += gate_d * static_cast<float>(gate_code) *
+                ((gate_signs & kmask_iq2xs[element]) != 0 ? -1.0f : 1.0f) * hidden_value;
+            up += up_d * static_cast<float>(up_code) *
+                ((up_signs & kmask_iq2xs[element]) != 0 ? -1.0f : 1.0f) * hidden_value;
+        }
+    }
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        gate += __shfl_down_sync(0xffffffffu, gate, offset);
+        up += __shfl_down_sync(0xffffffffu, up, offset);
+    }
+    *gate_result = gate;
+    *up_result = up;
+}
+
+// llama.cpp's MMVQ path quantizes the activation to q8_1 and evaluates the
+// IQ3_XXS codebook with dp4a. Keep the same representation here so the
+// external callback does not fall back to scalar float/codebook arithmetic.
+__device__ __forceinline__ float iq3xxs_warp_partial_dot_q8_1(
+    const uint8_t *matrix,
+    int columns,
+    const block_q8_1 *input
+) {
+    constexpr int block_elements = 256;
+    constexpr int q8_blocks_per_block = block_elements / QK8_1;
+    constexpr int q8_chunks_per_warp = q8_blocks_per_block;
+    constexpr int blocks_per_iteration = 32 / q8_chunks_per_warp;
+    const int lane = threadIdx.x & 31;
+    const int q8_chunk = lane % q8_chunks_per_warp;
+    float result = 0.0f;
+    for (int block_index = lane / q8_chunks_per_warp;
+         block_index < columns / block_elements;
+         block_index += blocks_per_iteration) {
+        result += vec_dot_iq3_xxs_q8_1(
+            matrix,
+            input + block_index * q8_blocks_per_block,
+            block_index,
+            q8_chunk * 2);
+    }
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        result += __shfl_down_sync(0xffffffffu, result, offset);
+    }
+    return result;
+}
+
+__device__ __forceinline__ void iq3xxs_warp_partial_dot_q8_1_gate_up(
+    const uint8_t *gate_matrix,
+    const uint8_t *up_matrix,
+    int columns,
+    const block_q8_1 *input,
+    float *gate_result,
+    float *up_result
+) {
+    constexpr int block_elements = 256;
+    constexpr int q8_blocks_per_block = block_elements / QK8_1;
+    constexpr int q8_chunks_per_warp = q8_blocks_per_block;
+    constexpr int blocks_per_iteration = 32 / q8_chunks_per_warp;
+    const int lane = threadIdx.x & 31;
+    const int q8_chunk = lane % q8_chunks_per_warp;
+    float gate = 0.0f;
+    float up = 0.0f;
+    for (int block_index = lane / q8_chunks_per_warp;
+         block_index < columns / block_elements;
+         block_index += blocks_per_iteration) {
+        const block_q8_1 *input_block = input + block_index * q8_blocks_per_block;
+        gate += vec_dot_iq3_xxs_q8_1(
+            gate_matrix, input_block, block_index, q8_chunk * 2);
+        up += vec_dot_iq3_xxs_q8_1(
+            up_matrix, input_block, block_index, q8_chunk * 2);
+    }
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        gate += __shfl_down_sync(0xffffffffu, gate, offset);
+        up += __shfl_down_sync(0xffffffffu, up, offset);
+    }
+    *gate_result = gate;
+    *up_result = up;
+}
+
 // Kept for the other IQ layouts, whose metadata mapping is not identical to
 // IQ3_XXS. They still use one block per row and a shared-memory reduction.
 __device__ float iq3xxs_cooperative_partial_dot(
@@ -1373,6 +1531,48 @@ __global__ void kquant_silu_kernel(
             ? gate * gate_exp / (1.0f + gate_exp)
             : gate / (1.0f + gate_exp);
     activated[pair * intermediate + row] = silu * up;
+}
+
+// One warp quantizes one contiguous activation block, matching llama.cpp's
+// block_q8_1 input expected by its IQ3_XXS MMVQ decoder. Rows are independent
+// so the same kernel serves hidden tokens and per-route activated vectors.
+__global__ void quantize_q8_1_rows_kernel(
+    const float *input,
+    int rows,
+    int columns,
+    block_q8_1 *output
+) {
+    constexpr int elements_per_block = QK8_1;
+    const int blocks_per_row = columns / elements_per_block;
+    const int block_index = blockIdx.x;
+    const int row = block_index / blocks_per_row;
+    const int column_block = block_index % blocks_per_row;
+    if (row >= rows) return;
+
+    const int element = threadIdx.x;
+    const float value = input[
+        static_cast<std::size_t>(row) * columns + column_block * elements_per_block + element];
+    float amax = fabsf(value);
+    float sum = value;
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        amax = fmaxf(amax, __shfl_down_sync(0xffffffffu, amax, offset));
+        sum += __shfl_down_sync(0xffffffffu, sum, offset);
+    }
+    // The reduction result is valid only in lane zero. Every lane must use
+    // that same delta when writing the shared q8 block; using the lane-local
+    // partial maximum silently corrupts the activation scale and the dot
+    // product even though the kernel launch itself succeeds.
+    const float row_amax = __shfl_sync(0xffffffffu, amax, 0);
+    const float d = row_amax / 127.0f;
+    const int8_t quantized = row_amax == 0.0f
+        ? 0
+        : static_cast<int8_t>(roundf(value / d));
+    block_q8_1 *block = &output[
+        static_cast<std::size_t>(row) * blocks_per_row + column_block];
+    block->qs[element] = quantized;
+    if (element == 0) {
+        block->ds = make_half2(d, sum);
+    }
 }
 
 __global__ void kquant_down_route_kernel(
@@ -1670,17 +1870,52 @@ __global__ void iquant_gate_up_iq3xxs_warp_route_kernel(
     float *gate_up_values
 ) {
     const int row_index = blockIdx.x;
-    const int rows_per_pair = 2 * intermediate;
-    const int pair = row_index / rows_per_pair;
-    const int row = row_index % rows_per_pair;
+    const int pair = row_index / intermediate;
+    const int row = row_index % intermediate;
     if (pair >= pair_count) return;
     const std::size_t row_bytes = static_cast<std::size_t>(hidden / 256) * 98;
     const uint8_t *matrix = payloads[pair] + kScalarPayloadHeaderBytes;
-    const uint8_t *encoded = matrix + static_cast<std::size_t>(row) * row_bytes;
+    const uint8_t *gate = matrix + static_cast<std::size_t>(row) * row_bytes;
+    const uint8_t *up = matrix + static_cast<std::size_t>(row + intermediate) * row_bytes;
     const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
-    const float value = iq3xxs_warp_partial_dot(encoded, hidden, input);
+    float gate_value = 0.0f;
+    float up_value = 0.0f;
+    iq3xxs_warp_partial_dot_gate_up(
+        gate, up, hidden, input, &gate_value, &up_value);
     if (threadIdx.x == 0) {
-        gate_up_values[pair * rows_per_pair + row] = value;
+        const int output_offset = pair * 2 * intermediate + row;
+        gate_up_values[output_offset] = gate_value;
+        gate_up_values[output_offset + intermediate] = up_value;
+    }
+}
+
+__global__ void iquant_gate_up_iq3xxs_q8_warp_route_kernel(
+    const uint8_t * const *payloads,
+    const uint32_t *token_ids,
+    int pair_count,
+    int intermediate,
+    int hidden,
+    const block_q8_1 *hidden_values,
+    float *gate_up_values
+) {
+    const int row_index = blockIdx.x;
+    const int pair = row_index / intermediate;
+    const int row = row_index % intermediate;
+    if (pair >= pair_count) return;
+    const std::size_t row_bytes = static_cast<std::size_t>(hidden / 256) * 98;
+    const uint8_t *matrix = payloads[pair] + kScalarPayloadHeaderBytes;
+    const uint8_t *gate = matrix + static_cast<std::size_t>(row) * row_bytes;
+    const uint8_t *up = matrix + static_cast<std::size_t>(row + intermediate) * row_bytes;
+    const block_q8_1 *input = hidden_values +
+        static_cast<std::size_t>(token_ids[pair]) * (hidden / QK8_1);
+    float gate_value = 0.0f;
+    float up_value = 0.0f;
+    iq3xxs_warp_partial_dot_q8_1_gate_up(
+        gate, up, hidden, input, &gate_value, &up_value);
+    if (threadIdx.x == 0) {
+        const int output_offset = pair * 2 * intermediate + row;
+        gate_up_values[output_offset] = gate_value;
+        gate_up_values[output_offset + intermediate] = up_value;
     }
 }
 
@@ -1735,6 +1970,30 @@ __global__ void iquant_down_iq3xxs_warp_route_kernel(
     const uint8_t *encoded = matrix + static_cast<std::size_t>(row) * row_bytes;
     const float *input = activated + static_cast<std::size_t>(pair) * intermediate;
     const float value = iq3xxs_warp_partial_dot(encoded, intermediate, input);
+    if (threadIdx.x == 0) {
+        pair_output[pair * hidden + row] = value;
+    }
+}
+
+__global__ void iquant_down_iq3xxs_q8_warp_route_kernel(
+    const uint8_t * const *payloads,
+    int pair_count,
+    int hidden,
+    int intermediate,
+    std::size_t gate_up_len,
+    const block_q8_1 *activated,
+    float *pair_output
+) {
+    const int row_index = blockIdx.x;
+    const int pair = row_index / hidden;
+    const int row = row_index % hidden;
+    if (pair >= pair_count) return;
+    const std::size_t row_bytes = static_cast<std::size_t>(intermediate / 256) * 98;
+    const uint8_t *matrix = payloads[pair] + kScalarPayloadHeaderBytes + gate_up_len;
+    const uint8_t *encoded = matrix + static_cast<std::size_t>(row) * row_bytes;
+    const block_q8_1 *input = activated +
+        static_cast<std::size_t>(pair) * (intermediate / QK8_1);
+    const float value = iq3xxs_warp_partial_dot_q8_1(encoded, intermediate, input);
     if (threadIdx.x == 0) {
         pair_output[pair * hidden + row] = value;
     }
@@ -1888,6 +2147,168 @@ __global__ void heterogeneous_quant_down_route_kernel(
         __syncthreads();
     }
     if (threadIdx.x == 0) pair_output[pair * hidden + row] = partials[0];
+}
+
+// The heterogeneous path must use the same MMVQ primitives as llama.cpp.
+// Its tensors may use different quantizers per role, but every supported
+// quantizer has a canonical q8_1 dot product in vecdotq.cuh. Keep the dtype
+// dispatch outside the block loop and call each primitive directly: a device
+// function pointer in that loop prevents the compiler from inlining the
+// canonical dp4a/codebook implementation and was measurable on the mixed
+// dtype Mistral route.
+#define DEFINE_HETEROGENEOUS_Q8_DOT(NAME, QK_VALUE, QI_VALUE, VDR_VALUE, DOT_FN) \
+__device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1_##NAME( \
+    const CudaHeterogeneousTensor &tensor, \
+    int row, \
+    const block_q8_1 *input, \
+    float scale, \
+    float input_scale \
+) { \
+    constexpr int qk = QK_VALUE; \
+    constexpr int qi = QI_VALUE; \
+    constexpr int vdr = VDR_VALUE; \
+    const int lane = threadIdx.x; \
+    const int lanes_per_block = qi / vdr; \
+    const int blocks_per_iteration = vdr * 32 / qi; \
+    const int blocks_per_row = static_cast<int>(tensor.columns) / qk; \
+    const std::size_t row_bytes = tensor.bytes / tensor.rows; \
+    const uint8_t *row_data = tensor.data + static_cast<std::size_t>(row) * row_bytes; \
+    float result = 0.0f; \
+    for (int block_index = lane / lanes_per_block; \
+         block_index < blocks_per_row; \
+         block_index += blocks_per_iteration) { \
+        const int q8_block = block_index * (qk / QK8_1); \
+        const int q8_subblock = vdr * (lane % lanes_per_block); \
+        result += DOT_FN( \
+            row_data, \
+            input + q8_block, \
+            block_index, \
+            q8_subblock); \
+    } \
+    for (int offset = 16; offset > 0; offset >>= 1) { \
+        result += __shfl_down_sync(0xffffffffu, result, offset); \
+    } \
+    return result * scale * input_scale; \
+}
+
+DEFINE_HETEROGENEOUS_Q8_DOT(q4_0, QK4_0, QI4_0, VDR_Q4_0_Q8_1_MMVQ, vec_dot_q4_0_q8_1)
+DEFINE_HETEROGENEOUS_Q8_DOT(q2_k, QK_K, QI2_K, VDR_Q2_K_Q8_1_MMVQ, vec_dot_q2_K_q8_1)
+DEFINE_HETEROGENEOUS_Q8_DOT(q3_k, QK_K, QI3_K, VDR_Q3_K_Q8_1_MMVQ, vec_dot_q3_K_q8_1)
+DEFINE_HETEROGENEOUS_Q8_DOT(q4_k, QK_K, QI4_K, VDR_Q4_K_Q8_1_MMVQ, vec_dot_q4_K_q8_1)
+DEFINE_HETEROGENEOUS_Q8_DOT(q5_k, QK_K, QI5_K, VDR_Q5_K_Q8_1_MMVQ, vec_dot_q5_K_q8_1)
+DEFINE_HETEROGENEOUS_Q8_DOT(q6_k, QK_K, QI6_K, VDR_Q6_K_Q8_1_MMVQ, vec_dot_q6_K_q8_1)
+DEFINE_HETEROGENEOUS_Q8_DOT(iq3_xxs, QK_K, QI3_XXS, VDR_IQ3_XXS_Q8_1_MMVQ, vec_dot_iq3_xxs_q8_1)
+DEFINE_HETEROGENEOUS_Q8_DOT(iq3_s, QK_K, QI3_S, VDR_IQ3_S_Q8_1_MMVQ, vec_dot_iq3_s_q8_1)
+DEFINE_HETEROGENEOUS_Q8_DOT(iq2_s, QK_K, QI2_S, VDR_IQ2_S_Q8_1_MMVQ, vec_dot_iq2_s_q8_1)
+DEFINE_HETEROGENEOUS_Q8_DOT(iq4_xs, QK_K, QI4_XS, VDR_IQ4_XS_Q8_1_MMVQ, vec_dot_iq4_xs_q8_1)
+DEFINE_HETEROGENEOUS_Q8_DOT(mxfp4, QK_MXFP4, QI_MXFP4, VDR_MXFP4_Q8_1_MMVQ, vec_dot_mxfp4_q8_1)
+
+__device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1_direct(
+    const CudaHeterogeneousTensor &tensor,
+    int row,
+    const block_q8_1 *input,
+    float scale,
+    float input_scale
+) {
+    switch (tensor.dtype) {
+        case 2:
+            return heterogeneous_quant_partial_dot_q8_1_q4_0(
+                tensor, row, input, scale, input_scale);
+        case 10:
+            return heterogeneous_quant_partial_dot_q8_1_q2_k(
+                tensor, row, input, scale, input_scale);
+        case 11:
+            return heterogeneous_quant_partial_dot_q8_1_q3_k(
+                tensor, row, input, scale, input_scale);
+        case 12:
+            return heterogeneous_quant_partial_dot_q8_1_q4_k(
+                tensor, row, input, scale, input_scale);
+        case 13:
+            return heterogeneous_quant_partial_dot_q8_1_q5_k(
+                tensor, row, input, scale, input_scale);
+        case 14:
+            return heterogeneous_quant_partial_dot_q8_1_q6_k(
+                tensor, row, input, scale, input_scale);
+        case 18:
+            return heterogeneous_quant_partial_dot_q8_1_iq3_xxs(
+                tensor, row, input, scale, input_scale);
+        case 21:
+            return heterogeneous_quant_partial_dot_q8_1_iq3_s(
+                tensor, row, input, scale, input_scale);
+        case 22:
+            return heterogeneous_quant_partial_dot_q8_1_iq2_s(
+                tensor, row, input, scale, input_scale);
+        case 23:
+            return heterogeneous_quant_partial_dot_q8_1_iq4_xs(
+                tensor, row, input, scale, input_scale);
+        case 39:
+            return heterogeneous_quant_partial_dot_q8_1_mxfp4(
+                tensor, row, input, scale, input_scale);
+        default:
+            return 0.0f;
+    }
+}
+
+#undef DEFINE_HETEROGENEOUS_Q8_DOT
+
+__global__ void heterogeneous_quant_gate_up_route_q8_kernel(
+    const CudaHeterogeneousExpert *experts,
+    const uint32_t *token_ids,
+    int pair_count,
+    int intermediate,
+    int hidden,
+    const block_q8_1 *hidden_values,
+    float *gate_up_values
+) {
+    const int row_index = blockIdx.x;
+    const int pair = row_index / intermediate;
+    const int row = row_index % intermediate;
+    if (pair >= pair_count) return;
+    const CudaHeterogeneousExpert expert = experts[pair];
+    const block_q8_1 *input = hidden_values +
+        static_cast<std::size_t>(token_ids[pair]) * (hidden / QK8_1);
+    float gate;
+    float up;
+    if (expert.gate_up.data != nullptr) {
+        gate = heterogeneous_quant_partial_dot_q8_1_direct(
+            expert.gate_up, row, input,
+            expert.gate_up.scale, expert.gate_up.input_scale);
+        up = heterogeneous_quant_partial_dot_q8_1_direct(
+            expert.gate_up, row + intermediate, input,
+            expert.gate_up.secondary_scale, expert.gate_up.secondary_input_scale);
+    } else {
+        gate = heterogeneous_quant_partial_dot_q8_1_direct(
+            expert.gate, row, input, expert.gate.scale, expert.gate.input_scale);
+        up = heterogeneous_quant_partial_dot_q8_1_direct(
+            expert.up, row, input, expert.up.scale, expert.up.input_scale);
+    }
+    if (threadIdx.x == 0) {
+        const int output_offset = pair * 2 * intermediate + row;
+        gate_up_values[output_offset] = gate;
+        gate_up_values[output_offset + intermediate] = up;
+    }
+}
+
+__global__ void heterogeneous_quant_down_route_q8_kernel(
+    const CudaHeterogeneousExpert *experts,
+    int pair_count,
+    int hidden,
+    int intermediate,
+    const block_q8_1 *activated,
+    float *pair_output
+) {
+    const int row_index = blockIdx.x;
+    const int pair = row_index / hidden;
+    const int row = row_index % hidden;
+    if (pair >= pair_count) return;
+    const block_q8_1 *input = activated +
+        static_cast<std::size_t>(pair) * (intermediate / QK8_1);
+    const CudaHeterogeneousTensor down = experts[pair].down;
+    const float value = heterogeneous_quant_partial_dot_q8_1_direct(
+        down, row, input, down.scale, down.input_scale);
+    if (threadIdx.x == 0) {
+        pair_output[pair * hidden + row] = value;
+    }
 }
 
 int cuda_status(cudaError_t error) {
@@ -2943,7 +3364,7 @@ extern "C" int pom_moe_iquant_forward_route_batch_resident(
         }
         if (dtype == 18) {
             iquant_gate_up_iq3xxs_warp_route_kernel<<<
-                2 * intermediate_i * pair_count, 32>>>(
+                intermediate_i * pair_count, 32>>>(
                     d_payloads, d_token_ids, pair_count, intermediate_i,
                     hidden_i, d_hidden, d_gate_up);
         } else {
@@ -3337,40 +3758,50 @@ struct HeterogeneousRoutePipeline {
     std::size_t route_capacity = 0;
     CudaHeterogeneousExpert *d_experts = nullptr;
     float *d_hidden = nullptr;
+    block_q8_1 *d_hidden_q8 = nullptr;
     uint32_t *d_token_ids = nullptr;
     float *d_weights = nullptr;
+    uint32_t *d_route_to_pair = nullptr;
     std::size_t *d_token_offsets = nullptr;
     float *d_gate_up = nullptr;
     float *d_activated = nullptr;
+    block_q8_1 *d_activated_q8 = nullptr;
     float *d_pair_output = nullptr;
     float *d_output = nullptr;
-    cudaEvent_t start = nullptr;
-    cudaEvent_t end = nullptr;
+    // The llama.cpp callback owns a regular host tensor. Copying directly to
+    // pageable memory makes every synchronous D2H transfer pay the CUDA
+    // staging cost. Keep one pinned staging buffer per device pipeline and
+    // copy the small final result to the callback buffer after the transfer.
+    float *h_output = nullptr;
 };
 
 void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) {
     if (pipeline == nullptr) return;
-    if (pipeline->start != nullptr) cudaEventDestroy(pipeline->start);
-    if (pipeline->end != nullptr) cudaEventDestroy(pipeline->end);
+    cudaFreeHost(pipeline->h_output);
     cudaFree(pipeline->d_output);
     cudaFree(pipeline->d_pair_output);
     cudaFree(pipeline->d_activated);
+    cudaFree(pipeline->d_activated_q8);
     cudaFree(pipeline->d_gate_up);
     cudaFree(pipeline->d_token_offsets);
+    cudaFree(pipeline->d_route_to_pair);
     cudaFree(pipeline->d_weights);
     cudaFree(pipeline->d_token_ids);
     cudaFree(pipeline->d_hidden);
+    cudaFree(pipeline->d_hidden_q8);
     cudaFree(pipeline->d_experts);
-    pipeline->start = nullptr;
-    pipeline->end = nullptr;
     pipeline->d_output = nullptr;
+    pipeline->h_output = nullptr;
     pipeline->d_pair_output = nullptr;
     pipeline->d_activated = nullptr;
+    pipeline->d_activated_q8 = nullptr;
     pipeline->d_gate_up = nullptr;
     pipeline->d_token_offsets = nullptr;
+    pipeline->d_route_to_pair = nullptr;
     pipeline->d_weights = nullptr;
     pipeline->d_token_ids = nullptr;
     pipeline->d_hidden = nullptr;
+    pipeline->d_hidden_q8 = nullptr;
     pipeline->d_experts = nullptr;
     pipeline->token_capacity = 0;
     pipeline->route_capacity = 0;
@@ -3386,6 +3817,8 @@ int ensure_heterogeneous_route_pipeline_capacity(
     }
     const std::size_t max_size = std::numeric_limits<std::size_t>::max();
     if (tokens == 0 || routes == 0 ||
+        pipeline->hidden_width % QK8_1 != 0 ||
+        pipeline->intermediate_width % QK8_1 != 0 ||
         tokens > max_size / pipeline->hidden_width ||
         routes > max_size / sizeof(CudaHeterogeneousExpert) ||
         routes > max_size / sizeof(uint32_t) ||
@@ -3397,12 +3830,16 @@ int ensure_heterogeneous_route_pipeline_capacity(
         return 1;
     }
     const std::size_t hidden_elements = tokens * pipeline->hidden_width;
+    const std::size_t hidden_q8_blocks = hidden_elements / QK8_1;
     const std::size_t gate_up_elements = 2 * pipeline->intermediate_width * routes;
     const std::size_t activated_elements = pipeline->intermediate_width * routes;
+    const std::size_t activated_q8_blocks = activated_elements / QK8_1;
     const std::size_t pair_output_elements = pipeline->hidden_width * routes;
     if (hidden_elements > max_size / sizeof(float) ||
         gate_up_elements > max_size / sizeof(float) ||
+        hidden_q8_blocks > max_size / sizeof(block_q8_1) ||
         activated_elements > max_size / sizeof(float) ||
+        activated_q8_blocks > max_size / sizeof(block_q8_1) ||
         pair_output_elements > max_size / sizeof(float) ||
         tokens + 1 > max_size / sizeof(std::size_t)) {
         return 1;
@@ -3424,10 +3861,18 @@ int ensure_heterogeneous_route_pipeline_capacity(
         reinterpret_cast<void **>(&pipeline->d_hidden), hidden_bytes));
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_hidden_q8),
+        hidden_q8_blocks * sizeof(*pipeline->d_hidden_q8)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
         reinterpret_cast<void **>(&pipeline->d_token_ids), routes * sizeof(*pipeline->d_token_ids)));
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(
         reinterpret_cast<void **>(&pipeline->d_weights), routes * sizeof(*pipeline->d_weights)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_route_to_pair),
+        routes * sizeof(*pipeline->d_route_to_pair)));
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(
         reinterpret_cast<void **>(&pipeline->d_token_offsets), offset_bytes));
@@ -3439,10 +3884,17 @@ int ensure_heterogeneous_route_pipeline_capacity(
         reinterpret_cast<void **>(&pipeline->d_activated), activated_bytes));
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_activated_q8),
+        activated_q8_blocks * sizeof(*pipeline->d_activated_q8)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
         reinterpret_cast<void **>(&pipeline->d_pair_output), pair_output_bytes));
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(
         reinterpret_cast<void **>(&pipeline->d_output), hidden_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMallocHost(
+        reinterpret_cast<void **>(&pipeline->h_output), hidden_bytes));
     if (result != 0) goto fail;
     return 0;
 
@@ -3471,17 +3923,6 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_create(
         intermediate_width,
     };
     if (pipeline == nullptr) return 2;
-    int result = cuda_status(cudaEventCreate(&pipeline->start));
-    if (result != 0) {
-        delete pipeline;
-        return result;
-    }
-    result = cuda_status(cudaEventCreate(&pipeline->end));
-    if (result != 0) {
-        release_heterogeneous_route_pipeline(pipeline);
-        delete pipeline;
-        return result;
-    }
     *out = pipeline;
     return 0;
 }
@@ -3492,6 +3933,8 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     std::size_t expert_count,
     const uint32_t * token_ids,
     const float * weights,
+    const uint32_t * route_to_pair,
+    std::size_t route_count,
     const std::size_t * token_offsets,
     std::size_t token_offsets_len,
     std::size_t token_count,
@@ -3515,20 +3958,22 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     if (timing != nullptr) {
         *timing = {};
         timing->expert_calls = static_cast<uint64_t>(expert_count);
-        timing->kernel_launches = 4;
+        timing->kernel_launches = 6;
         // cudaMemcpy(DeviceToHost) below is the completion barrier. An extra
         // cudaDeviceSynchronize would wait for unrelated work on this device.
         timing->sync_count = 0;
     }
     const auto validation_started = Clock::now();
     if (experts == nullptr || token_ids == nullptr || weights == nullptr ||
+        route_to_pair == nullptr ||
         token_offsets == nullptr || hidden == nullptr || output == nullptr ||
-        expert_count == 0 || token_count == 0 ||
+        expert_count == 0 || route_count == 0 || token_count == 0 ||
         expert_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        route_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         token_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         token_offsets_len != token_count + 1 || hidden_len != token_count * pipeline->hidden_width ||
         output_len != hidden_len || token_offsets[0] != 0 ||
-        token_offsets[token_count] != expert_count ||
+        token_offsets[token_count] != route_count ||
         token_count + 1 < token_count) {
         return 1;
     }
@@ -3575,6 +4020,9 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
             return 1;
         }
     }
+    for (std::size_t route = 0; route < route_count; ++route) {
+        if (route_to_pair[route] >= expert_count) return 1;
+    }
     for (std::size_t token = 0; token < token_count; ++token) {
         if (token_offsets[token] > token_offsets[token + 1]) return 1;
     }
@@ -3586,7 +4034,7 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     const std::size_t old_token_capacity = pipeline->token_capacity;
     const std::size_t old_route_capacity = pipeline->route_capacity;
     const int capacity_result = ensure_heterogeneous_route_pipeline_capacity(
-        pipeline, token_count, expert_count);
+        pipeline, token_count, std::max(expert_count, route_count));
     if (timing != nullptr &&
         (old_token_capacity != pipeline->token_capacity || old_route_capacity != pipeline->route_capacity)) {
         timing->alloc_ms = elapsed_ms(allocation_started, Clock::now());
@@ -3598,6 +4046,7 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     const int hidden_i = static_cast<int>(pipeline->hidden_width);
     const int intermediate_i = static_cast<int>(pipeline->intermediate_width);
     const int block_size = 128;
+    const int warp_size = 32;
     const std::size_t hidden_bytes = hidden_len * sizeof(float);
     const std::size_t gate_up_bytes = 2 * pipeline->intermediate_width * expert_count * sizeof(float);
     const std::size_t activated_bytes = pipeline->intermediate_width * expert_count * sizeof(float);
@@ -3617,7 +4066,11 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     if (result != 0) return result;
     result = cuda_status(cudaMemcpy(
         pipeline->d_weights, weights,
-        expert_count * sizeof(*pipeline->d_weights), cudaMemcpyHostToDevice));
+        route_count * sizeof(*pipeline->d_weights), cudaMemcpyHostToDevice));
+    if (result != 0) return result;
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_route_to_pair, route_to_pair,
+        route_count * sizeof(*pipeline->d_route_to_pair), cudaMemcpyHostToDevice));
     if (result != 0) return result;
     result = cuda_status(cudaMemcpy(
         pipeline->d_token_offsets, token_offsets,
@@ -3627,20 +4080,22 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
         timing->h2d_bytes = static_cast<uint64_t>(
             expert_count * sizeof(*pipeline->d_experts) + hidden_bytes +
             expert_count * sizeof(*pipeline->d_token_ids) +
-            expert_count * sizeof(*pipeline->d_weights) +
+            route_count * sizeof(*pipeline->d_weights) +
+            route_count * sizeof(*pipeline->d_route_to_pair) +
             token_offsets_len * sizeof(*pipeline->d_token_offsets));
     }
     if (result != 0) return result;
 
     const auto launch_started = Clock::now();
-    if (timing != nullptr) {
-        result = cuda_status(cudaEventRecord(pipeline->start));
-        if (result != 0) return result;
-    }
-    heterogeneous_quant_gate_up_route_kernel<<<
-        2 * intermediate_i * pair_count, block_size>>>(
+    quantize_q8_1_rows_kernel<<<
+        token_count_i * (hidden_i / QK8_1), warp_size>>>(
+            pipeline->d_hidden, token_count_i, hidden_i, pipeline->d_hidden_q8);
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    heterogeneous_quant_gate_up_route_q8_kernel<<<
+        intermediate_i * pair_count, warp_size>>>(
             pipeline->d_experts, pipeline->d_token_ids, pair_count, intermediate_i,
-            hidden_i, pipeline->d_hidden, pipeline->d_gate_up);
+            hidden_i, pipeline->d_hidden_q8, pipeline->d_gate_up);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
     heterogeneous_activation_kernel<<<
@@ -3649,37 +4104,43 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
             pipeline->d_activated);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
-    heterogeneous_quant_down_route_kernel<<<
-        hidden_i * pair_count, block_size>>>(
-            pipeline->d_experts, pair_count, hidden_i, intermediate_i,
-            pipeline->d_activated, pipeline->d_pair_output);
+    quantize_q8_1_rows_kernel<<<
+        pair_count * (intermediate_i / QK8_1), warp_size>>>(
+            pipeline->d_activated, pair_count, intermediate_i, pipeline->d_activated_q8);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
-    aggregate_route_batch_kernel<<<
+    heterogeneous_quant_down_route_q8_kernel<<<
+        hidden_i * pair_count, warp_size>>>(
+            pipeline->d_experts, pair_count, hidden_i, intermediate_i,
+            pipeline->d_activated_q8, pipeline->d_pair_output);
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    aggregate_route_batch_deduplicated_kernel<<<
         (token_count_i * hidden_i + block_size - 1) / block_size,
         block_size>>>(pipeline->d_pair_output, pipeline->d_weights,
-            pipeline->d_token_offsets, token_count_i, hidden_i, pipeline->d_output);
+            pipeline->d_route_to_pair, pipeline->d_token_offsets,
+            token_count_i, hidden_i, pipeline->d_output);
     result = cuda_status(cudaGetLastError());
     if (timing != nullptr) timing->launch_ms = elapsed_ms(launch_started, Clock::now());
     if (result != 0) return result;
-    if (timing != nullptr) {
-        result = cuda_status(cudaEventRecord(pipeline->end));
-        if (result != 0) return result;
-    }
-
     const auto d2h_started = Clock::now();
     result = cuda_status(cudaMemcpy(
-        output, pipeline->d_output, hidden_bytes, cudaMemcpyDeviceToHost));
+        pipeline->h_output, pipeline->d_output, hidden_bytes, cudaMemcpyDeviceToHost));
     if (timing != nullptr) {
         timing->d2h_ms = elapsed_ms(d2h_started, Clock::now());
         timing->d2h_bytes = static_cast<uint64_t>(hidden_bytes);
     }
     if (result != 0) return result;
+    std::memcpy(output, pipeline->h_output, hidden_bytes);
     if (timing != nullptr) {
-        float kernel_ms = 0.0f;
-        result = cuda_status(cudaEventElapsedTime(&kernel_ms, pipeline->start, pipeline->end));
-        if (result != 0) return result;
-        timing->kernel_ms = kernel_ms;
+        // A chamada pode ocorrer durante a captura de grafo do llama.cpp.
+        // Eventos gravados pelo hook retornam cudaErrorInvalidResourceHandle
+        // (400) nesse contexto. A cópia D2H é a barreira de conclusão, então
+        // o intervalo de parede até ela mantém o diagnóstico sem tocar nos
+        // recursos da captura.
+        timing->kernel_ms = elapsed_ms(launch_started, d2h_started);
+        timing->kernel_span_ms = timing->kernel_ms;
+        timing->transfer_span_ms = timing->h2d_ms + timing->d2h_ms;
     }
     if (first_nonfinite(
             output, hidden_bytes / sizeof(float), nonfinite_index, nonfinite_count)) {
@@ -4551,12 +5012,14 @@ struct KQuantRoutePipeline {
     std::size_t token_capacity = 0;
     std::size_t route_capacity = 0;
     float *d_hidden = nullptr;
+    block_q8_1 *d_hidden_q8 = nullptr;
     const uint8_t **d_payloads = nullptr;
     uint32_t *d_token_ids = nullptr;
     float *d_weights = nullptr;
     std::size_t *d_token_offsets = nullptr;
     float *d_gate_up = nullptr;
     float *d_activated = nullptr;
+    block_q8_1 *d_activated_q8 = nullptr;
     float *d_pair_output = nullptr;
     float *d_output = nullptr;
 };
@@ -4566,21 +5029,25 @@ void release_kquant_route_pipeline(KQuantRoutePipeline *pipeline) {
     cudaFree(pipeline->d_output);
     cudaFree(pipeline->d_pair_output);
     cudaFree(pipeline->d_activated);
+    cudaFree(pipeline->d_activated_q8);
     cudaFree(pipeline->d_gate_up);
     cudaFree(pipeline->d_token_offsets);
     cudaFree(pipeline->d_weights);
     cudaFree(pipeline->d_token_ids);
     cudaFree(pipeline->d_payloads);
     cudaFree(pipeline->d_hidden);
+    cudaFree(pipeline->d_hidden_q8);
     pipeline->d_output = nullptr;
     pipeline->d_pair_output = nullptr;
     pipeline->d_activated = nullptr;
+    pipeline->d_activated_q8 = nullptr;
     pipeline->d_gate_up = nullptr;
     pipeline->d_token_offsets = nullptr;
     pipeline->d_weights = nullptr;
     pipeline->d_token_ids = nullptr;
     pipeline->d_payloads = nullptr;
     pipeline->d_hidden = nullptr;
+    pipeline->d_hidden_q8 = nullptr;
     pipeline->token_capacity = 0;
     pipeline->route_capacity = 0;
 }
@@ -4593,28 +5060,51 @@ int ensure_kquant_route_pipeline_capacity(
     if (pipeline->token_capacity >= tokens && pipeline->route_capacity >= routes) {
         return 0;
     }
+    const auto fits_product = [](std::size_t lhs, std::size_t rhs) {
+        return rhs == 0 || lhs <= std::numeric_limits<std::size_t>::max() / rhs;
+    };
+    const auto fits_product3 = [&](std::size_t first, std::size_t second, std::size_t third) {
+        return fits_product(first, second) &&
+            fits_product(first * second, third);
+    };
+    const auto fits_product4 = [&](std::size_t first, std::size_t second,
+                                   std::size_t third, std::size_t fourth) {
+        if (!fits_product(first, second)) return false;
+        const std::size_t first_second = first * second;
+        if (!fits_product(first_second, third)) return false;
+        return fits_product(first_second * third, fourth);
+    };
+    const std::size_t hidden_q8_blocks = pipeline->hidden_width / QK8_1;
+    const std::size_t activated_q8_blocks = pipeline->intermediate_width / QK8_1;
     if (tokens == 0 || routes == 0 ||
-        tokens > std::numeric_limits<std::size_t>::max() / pipeline->hidden_width ||
-        routes > std::numeric_limits<std::size_t>::max() /
-            (2 * pipeline->intermediate_width * sizeof(float)) ||
-        routes > std::numeric_limits<std::size_t>::max() /
-            (pipeline->hidden_width * sizeof(float)) ||
-        routes > std::numeric_limits<std::size_t>::max() /
-            (pipeline->intermediate_width * sizeof(float)) ||
-        tokens + 1 < tokens) {
+        tokens == std::numeric_limits<std::size_t>::max() ||
+        !fits_product3(tokens, pipeline->hidden_width, sizeof(float)) ||
+        !fits_product3(tokens, hidden_q8_blocks, sizeof(block_q8_1)) ||
+        !fits_product4(2, pipeline->intermediate_width, routes, sizeof(float)) ||
+        !fits_product3(routes, activated_q8_blocks, sizeof(block_q8_1)) ||
+        !fits_product3(routes, pipeline->hidden_width, sizeof(float)) ||
+        !fits_product3(routes, pipeline->intermediate_width, sizeof(float)) ||
+        !fits_product(tokens + 1, sizeof(std::size_t))) {
         return 1;
     }
     release_kquant_route_pipeline(pipeline);
     pipeline->token_capacity = tokens;
     pipeline->route_capacity = routes;
     const std::size_t hidden_bytes = tokens * pipeline->hidden_width * sizeof(float);
+    const std::size_t hidden_q8_bytes =
+        tokens * (pipeline->hidden_width / QK8_1) * sizeof(block_q8_1);
     const std::size_t gate_up_bytes =
         2 * pipeline->intermediate_width * routes * sizeof(float);
     const std::size_t activated_bytes = pipeline->intermediate_width * routes * sizeof(float);
+    const std::size_t activated_q8_bytes =
+        routes * (pipeline->intermediate_width / QK8_1) * sizeof(block_q8_1);
     const std::size_t pair_output_bytes = pipeline->hidden_width * routes * sizeof(float);
     const std::size_t offset_bytes = (tokens + 1) * sizeof(std::size_t);
 
     int result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&pipeline->d_hidden), hidden_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_hidden_q8), hidden_q8_bytes));
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&pipeline->d_payloads),
         routes * sizeof(*pipeline->d_payloads)));
@@ -4633,6 +5123,9 @@ int ensure_kquant_route_pipeline_capacity(
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&pipeline->d_activated),
         activated_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMalloc(
+        reinterpret_cast<void **>(&pipeline->d_activated_q8), activated_q8_bytes));
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&pipeline->d_pair_output),
         pair_output_bytes));
@@ -4699,7 +5192,9 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
     if (timing != nullptr) {
         *timing = {};
         timing->expert_calls = static_cast<uint64_t>(payload_count);
-        timing->kernel_launches = 4;
+        // IQ3_XXS follows llama.cpp's MMVQ contract and needs one q8_1
+        // quantization pass for hidden and one for each activated route.
+        timing->kernel_launches = dtype == 18 ? 6 : 4;
         timing->sync_count = 0;
     }
     const bool is_kquant = dtype == 10 || dtype == 11 || dtype == 12 ||
@@ -4806,16 +5301,23 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         result = cuda_status(cudaEventRecord(start));
         if (result != 0) goto finish;
     }
+    if (dtype == 18) {
+        quantize_q8_1_rows_kernel<<<
+            token_count_i * (hidden_i / QK8_1), 32>>>(
+                pipeline->d_hidden, token_count_i, hidden_i, pipeline->d_hidden_q8);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) goto finish;
+    }
     if (is_kquant) {
         kquant_gate_up_cooperative_route_kernel<<<
             2 * intermediate_i * pair_count, block_size>>>(
                 dtype, pipeline->d_payloads, pipeline->d_token_ids, pair_count,
                 intermediate_i, hidden_i, pipeline->d_hidden, pipeline->d_gate_up);
     } else if (dtype == 18) {
-        iquant_gate_up_iq3xxs_warp_route_kernel<<<
-            2 * intermediate_i * pair_count, 32>>>(
+        iquant_gate_up_iq3xxs_q8_warp_route_kernel<<<
+            intermediate_i * pair_count, 32>>>(
                 pipeline->d_payloads, pipeline->d_token_ids, pair_count,
-                intermediate_i, hidden_i, pipeline->d_hidden, pipeline->d_gate_up);
+                intermediate_i, hidden_i, pipeline->d_hidden_q8, pipeline->d_gate_up);
     } else {
         iquant_gate_up_cooperative_route_kernel<<<
             2 * intermediate_i * pair_count, block_size>>>(
@@ -4829,14 +5331,22 @@ extern "C" int pom_moe_kquant_route_pipeline_run(
         block_size>>>(pipeline->d_gate_up, pair_count, intermediate_i, pipeline->d_activated);
     result = cuda_status(cudaGetLastError());
     if (result != 0) goto finish;
+    if (dtype == 18) {
+        quantize_q8_1_rows_kernel<<<
+            pair_count * (intermediate_i / QK8_1), 32>>>(
+                pipeline->d_activated, pair_count, intermediate_i,
+                pipeline->d_activated_q8);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) goto finish;
+    }
     if (is_kquant) {
         kquant_down_cooperative_route_kernel<<<hidden_i * pair_count, block_size>>>(
             dtype, pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
             expected_gate_up_bytes, pipeline->d_activated, pipeline->d_pair_output);
     } else if (dtype == 18) {
-        iquant_down_iq3xxs_warp_route_kernel<<<hidden_i * pair_count, 32>>>(
+        iquant_down_iq3xxs_q8_warp_route_kernel<<<hidden_i * pair_count, 32>>>(
             pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
-            expected_gate_up_bytes, pipeline->d_activated, pipeline->d_pair_output);
+            expected_gate_up_bytes, pipeline->d_activated_q8, pipeline->d_pair_output);
     } else {
         iquant_down_cooperative_route_kernel<<<hidden_i * pair_count, block_size>>>(
             dtype, pipeline->d_payloads, pair_count, hidden_i, intermediate_i,
@@ -5085,27 +5595,69 @@ extern "C" int pom_moe_device_free_bytes(int device_index, std::uint64_t * free_
     return 0;
 }
 
+extern "C" int pom_moe_device_upload_many(
+    int device_index,
+    const std::uint8_t * const * payloads,
+    const std::size_t * payload_lengths,
+    std::size_t payload_count,
+    void ** out
+) {
+    const ScopedMoeCudaDevice device(device_index);
+    if (!device.ready()) return 1;
+    if (payloads == nullptr || payload_lengths == nullptr || out == nullptr ||
+        payload_count == 0 ||
+        payload_count > std::numeric_limits<std::size_t>::max() / sizeof(void *)) {
+        return 1;
+    }
+    for (std::size_t index = 0; index < payload_count; ++index) {
+        out[index] = nullptr;
+        if (payloads[index] == nullptr || payload_lengths[index] == 0) return 1;
+    }
+
+    // Use the device memory pool so a cache eviction does not force the
+    // legacy cudaFree synchronization on every expert. The copy itself stays
+    // synchronous because callers may release a temporary mmap/Vec as soon
+    // as this function returns; subsequent kernels still observe the same
+    // default-stream ordering as before.
+    int status = 0;
+    for (std::size_t index = 0; index < payload_count; ++index) {
+        status = cuda_status(cudaMallocAsync(&out[index], payload_lengths[index], nullptr));
+        if (status != 0) goto fail;
+    }
+    for (std::size_t index = 0; index < payload_count; ++index) {
+        status = cuda_status(cudaMemcpyAsync(
+            out[index], payloads[index], payload_lengths[index], cudaMemcpyHostToDevice, nullptr));
+        if (status != 0) goto fail;
+    }
+    status = cuda_status(cudaStreamSynchronize(nullptr));
+    if (status == 0) return 0;
+
+fail:
+    for (std::size_t index = 0; index < payload_count; ++index) {
+        if (out[index] != nullptr) {
+            (void) cudaFreeAsync(out[index], nullptr);
+            out[index] = nullptr;
+        }
+    }
+    // Cleanup is an error-only path. Complete the queued frees so a caller
+    // can immediately retry without retaining failed batch allocations.
+    (void) cudaStreamSynchronize(nullptr);
+    return status;
+}
+
 extern "C" int pom_moe_device_upload(
     int device_index,
     const std::uint8_t * payload,
     std::size_t payload_len,
     void ** out
 ) {
-    const ScopedMoeCudaDevice device(device_index);
-    if (!device.ready()) return 1;
-    if (payload == nullptr || payload_len == 0 || out == nullptr) {
-        return 1;
-    }
-    *out = nullptr;
-    auto status = cuda_status(cudaMalloc(out, payload_len));
-    if (status != 0) {
-        return status;
-    }
-    status = cuda_status(cudaMemcpy(*out, payload, payload_len, cudaMemcpyHostToDevice));
-    if (status != 0) {
-        cudaFree(*out);
-        *out = nullptr;
-    }
+    if (out == nullptr) return 1;
+    const std::uint8_t * payloads[] = {payload};
+    const std::size_t payload_lengths[] = {payload_len};
+    void * handles[] = {nullptr};
+    const int status = pom_moe_device_upload_many(
+        device_index, payloads, payload_lengths, 1, handles);
+    if (status == 0) *out = handles[0];
     return status;
 }
 
@@ -5113,7 +5665,10 @@ extern "C" void pom_moe_device_free(int device_index, void * handle) {
     const ScopedMoeCudaDevice device(device_index);
     if (!device.ready()) return;
     if (handle != nullptr) {
-        cudaFree(handle);
+        // All MoE kernels and the upload above use the device default stream.
+        // Queueing the release there preserves ordering while avoiding a
+        // device-wide host wait for every LRU eviction.
+        (void) cudaFreeAsync(handle, nullptr);
     }
 }
 

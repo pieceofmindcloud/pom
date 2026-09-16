@@ -1706,6 +1706,18 @@ impl HeterogeneousCudaExecutor {
         self.resident_cache.stats()
     }
 
+    pub fn resident_cache_capacity_bytes_by_device(&self) -> Vec<Option<u64>> {
+        self.resident_cache
+            .effective_capacity_bytes_by_device()
+            .unwrap_or_else(|error| {
+                tracing::debug!(
+                    error = %error,
+                    "não foi possível obter a capacidade efetiva do cache CUDA para diagnóstico"
+                );
+                vec![None; self.resident_cache.device_indices().len()]
+            })
+    }
+
     pub fn run_route_batch_resident(
         &self,
         experts: &[CudaHeterogeneousExpert],

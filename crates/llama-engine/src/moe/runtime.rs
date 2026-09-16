@@ -5,6 +5,8 @@
 //! Atenção e o restante das camadas continuam no contexto llama.cpp; aqui a
 //! fronteira própria é o router GGUF mais o FFN esparso da camada local.
 
+#[cfg(feature = "cuda")]
+use super::block::HeterogeneousLayerWorkingSetDiagnostics;
 use super::block::{
     HeterogeneousMoeBlock, IqQuantMoeBlock, LegacyQuantMoeBlock, LowBitMoeBlock, MoeBlockError,
     Nvfp4MoeBlock, PlainMoeBlock, Q4_0MoeBlock,
@@ -91,6 +93,19 @@ pub struct MoeExecutorDiagnostics {
     pub device_cache_resident_bytes: usize,
     pub device_cache_devices: Vec<String>,
     pub device_cache_resident_bytes_by_device: Vec<usize>,
+    /// Limite efetivo atual de cada shard, na mesma ordem de
+    /// `device_cache_devices`. `None` indica que a sonda CUDA falhou.
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub device_cache_capacity_bytes: Option<u64>,
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub device_cache_capacity_bytes_by_device: Vec<Option<u64>>,
+    /// Working set observado por camada. `distinct_experts_per_token` é a
+    /// soma por token e deve ser dividida por `tokens` para obter a média.
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub cache_working_set_by_layer: Vec<HeterogeneousLayerWorkingSetDiagnostics>,
     /// Chamadas efetivamente executadas por ordinal CUDA. Resident bytes não
     /// provam que uma placa participou da rota; estes contadores provam.
     #[cfg(feature = "cuda")]
@@ -1802,25 +1817,37 @@ impl MoeRuntime {
 
             let mut device_cache_recorded = false;
             for block in &self.blocks {
-                let (cuda, device_cache) = match block {
-                    MoeBlock::Nvfp4(block) => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
-                    MoeBlock::K(block) if block.uses_cuda() => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
-                    MoeBlock::Iq(block) if block.uses_cuda() => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
-                    MoeBlock::Plain(block) if block.uses_cuda() => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
-                    MoeBlock::Q4(block) if block.uses_cuda() => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
-                    MoeBlock::Heterogeneous(block) if block.uses_cuda() => {
-                        (block.cuda_diagnostics(), block.resident_cache_stats())
-                    }
+                let (cuda, device_cache, capacity_by_device) = match block {
+                    MoeBlock::Nvfp4(block) => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        Vec::new(),
+                    ),
+                    MoeBlock::K(block) if block.uses_cuda() => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        Vec::new(),
+                    ),
+                    MoeBlock::Iq(block) if block.uses_cuda() => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        Vec::new(),
+                    ),
+                    MoeBlock::Plain(block) if block.uses_cuda() => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        Vec::new(),
+                    ),
+                    MoeBlock::Q4(block) if block.uses_cuda() => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        Vec::new(),
+                    ),
+                    MoeBlock::Heterogeneous(block) if block.uses_cuda() => (
+                        block.cuda_diagnostics(),
+                        block.resident_cache_stats(),
+                        block.resident_cache_capacity_bytes_by_device(),
+                    ),
                     _ => continue,
                 };
                 diagnostics.profiled |= cuda.calls > 0;
@@ -1876,6 +1903,12 @@ impl MoeRuntime {
                     diagnostics.device_cache_devices = device_cache.device_names;
                     diagnostics.device_cache_resident_bytes_by_device =
                         device_cache.resident_bytes_by_device;
+                    diagnostics.device_cache_capacity_bytes_by_device = capacity_by_device;
+                    diagnostics.device_cache_capacity_bytes = diagnostics
+                        .device_cache_capacity_bytes_by_device
+                        .iter()
+                        .copied()
+                        .try_fold(0u64, |total, capacity| total.checked_add(capacity?));
                     device_cache_recorded = true;
                 }
                 if let MoeBlock::Nvfp4(block) = block {
@@ -1896,11 +1929,17 @@ impl MoeRuntime {
                         .cpu_expert_calls
                         .saturating_add(host.cpu_expert_calls);
                     diagnostics.coexecution_gpu_fraction = host.coexecution_gpu_fraction;
+                    diagnostics
+                        .cache_working_set_by_layer
+                        .push(block.working_set_diagnostics());
                 }
             }
             diagnostics
                 .cuda_device_calls
                 .sort_by_key(|device| device.device_index);
+            diagnostics
+                .cache_working_set_by_layer
+                .sort_by_key(|layer| layer.layer);
         }
 
         diagnostics

@@ -2981,6 +2981,31 @@ com `nvidia-smi` sem processo concorrente mediram `10,6127`, `11,8136` e
 sem texto corrompido. O resultado é uma melhoria observada, mas ainda está
 abaixo da meta de `1,5x` sobre o denso.
 
+### Fase 5.18: telemetria de working set e orçamento CUDA - 2026-09-16
+
+A política de `DeviceExpertCache` mantém leases ativos protegidos: `Drop`
+apenas reduz `active`, e uma entrada só é removida quando o LRU encontra uma
+entrada ociosa (`active == 0`). Portanto os milhares de evictions observados
+em uma execução não demonstram expulsão de experts em uso. Eles podem ser
+residência ociosa churnada por um working set maior que o limite efetivo, mas
+antes não havia uma medição por camada para separar as hipóteses.
+
+O diagnóstico do executor heterogêneo agora acumula, por camada, lotes,
+tokens, ocorrências de rota, experts distintos no lote e a soma/máximo de
+experts distintos por token. Também publica a capacidade efetiva atual por
+GPU, calculada com a mesma fórmula de `MemoryAccount` e uma leitura de memória
+livre do allocator CUDA. A capacidade é um snapshot de diagnóstico e não muda
+a política de admissão.
+
+Esta instrumentação deve ser usada antes de outro ajuste de kernel ou dispatch:
+compare `cache_working_set_by_layer` com
+`device_cache_capacity_bytes_by_device`, além de misses, evictions e uploads.
+Se a capacidade estiver correta e o working set exceder repetidamente o limite,
+o problema é pressão legítima do conjunto de experts; se houver capacidade
+disponível apesar da churn, investigue a conta de memória e a granularidade da
+admissão. A medição de throughput da instrumentação ainda precisa ser feita na
+ksia.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

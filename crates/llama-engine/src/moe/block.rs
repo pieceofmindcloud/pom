@@ -1202,6 +1202,8 @@ pub struct HeterogeneousMoeBlock {
     coexecution_profile: Option<super::bandwidth::BandwidthProfile>,
     #[cfg(feature = "cuda")]
     host_diagnostics: Mutex<HeterogeneousHostDiagnostics>,
+    #[cfg(feature = "cuda")]
+    working_set_diagnostics: Mutex<HeterogeneousLayerWorkingSetDiagnostics>,
 }
 
 #[cfg(feature = "cuda")]
@@ -1209,6 +1211,20 @@ pub struct HeterogeneousMoeBlock {
 pub struct HeterogeneousHostDiagnostics {
     pub cpu_expert_calls: u64,
     pub coexecution_gpu_fraction: Option<f32>,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HeterogeneousLayerWorkingSetDiagnostics {
+    pub layer: u32,
+    pub batches: u64,
+    pub tokens: u64,
+    pub route_experts: u64,
+    pub distinct_experts: u64,
+    /// Soma dos experts distintos nas rotas de cada token observado.
+    /// Dividido por `tokens`, dá a média por token sem guardar cada rota.
+    pub distinct_experts_per_token: u64,
+    pub max_distinct_experts_per_token: u64,
 }
 
 impl HeterogeneousMoeBlock {
@@ -1229,6 +1245,11 @@ impl HeterogeneousMoeBlock {
             coexecution_profile: None,
             #[cfg(feature = "cuda")]
             host_diagnostics: Mutex::new(HeterogeneousHostDiagnostics::default()),
+            #[cfg(feature = "cuda")]
+            working_set_diagnostics: Mutex::new(HeterogeneousLayerWorkingSetDiagnostics {
+                layer,
+                ..HeterogeneousLayerWorkingSetDiagnostics::default()
+            }),
         }
     }
 
@@ -1256,6 +1277,10 @@ impl HeterogeneousMoeBlock {
             )),
             coexecution_profile: None,
             host_diagnostics: Mutex::new(HeterogeneousHostDiagnostics::default()),
+            working_set_diagnostics: Mutex::new(HeterogeneousLayerWorkingSetDiagnostics {
+                layer,
+                ..HeterogeneousLayerWorkingSetDiagnostics::default()
+            }),
         }
     }
 
@@ -1276,6 +1301,10 @@ impl HeterogeneousMoeBlock {
             cuda: Some(cuda),
             coexecution_profile,
             host_diagnostics: Mutex::new(HeterogeneousHostDiagnostics::default()),
+            working_set_diagnostics: Mutex::new(HeterogeneousLayerWorkingSetDiagnostics {
+                layer,
+                ..HeterogeneousLayerWorkingSetDiagnostics::default()
+            }),
         }
     }
 
@@ -1299,11 +1328,66 @@ impl HeterogeneousMoeBlock {
     }
 
     #[cfg(feature = "cuda")]
+    pub fn resident_cache_capacity_bytes_by_device(&self) -> Vec<Option<u64>> {
+        self.cuda.as_ref().map_or_else(Vec::new, |cuda| {
+            cuda.resident_cache_capacity_bytes_by_device()
+        })
+    }
+
+    #[cfg(feature = "cuda")]
     pub fn host_diagnostics(&self) -> HeterogeneousHostDiagnostics {
         *self
             .host_diagnostics
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn working_set_diagnostics(&self) -> HeterogeneousLayerWorkingSetDiagnostics {
+        self.working_set_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    #[cfg(feature = "cuda")]
+    fn record_working_set_diagnostics(
+        &self,
+        experts: &[u32],
+        token_offsets: &[usize],
+        tokens: usize,
+    ) {
+        let mut all_experts = HashSet::with_capacity(experts.len());
+        let mut distinct_experts_per_token = 0u64;
+        let mut max_distinct_experts_per_token = 0u64;
+        for window in token_offsets.windows(2).take(tokens) {
+            let mut token_experts = HashSet::with_capacity(window[1] - window[0]);
+            for &expert in &experts[window[0]..window[1]] {
+                all_experts.insert(expert);
+                token_experts.insert(expert);
+            }
+            let distinct = token_experts.len() as u64;
+            distinct_experts_per_token = distinct_experts_per_token.saturating_add(distinct);
+            max_distinct_experts_per_token = max_distinct_experts_per_token.max(distinct);
+        }
+        let mut diagnostics = self
+            .working_set_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        diagnostics.batches = diagnostics.batches.saturating_add(1);
+        diagnostics.tokens = diagnostics.tokens.saturating_add(tokens as u64);
+        diagnostics.route_experts = diagnostics
+            .route_experts
+            .saturating_add(experts.len() as u64);
+        diagnostics.distinct_experts = diagnostics
+            .distinct_experts
+            .saturating_add(all_experts.len() as u64);
+        diagnostics.distinct_experts_per_token = diagnostics
+            .distinct_experts_per_token
+            .saturating_add(distinct_experts_per_token);
+        diagnostics.max_distinct_experts_per_token = diagnostics
+            .max_distinct_experts_per_token
+            .max(max_distinct_experts_per_token);
     }
 
     pub fn forward_from_source_with_route(
@@ -1411,6 +1495,7 @@ impl HeterogeneousMoeBlock {
                 experts: self.top_k,
             }));
         }
+        self.record_working_set_diagnostics(experts, token_offsets, tokens);
         if let Some(profile) = self.coexecution_profile {
             return self.forward_batch_coexecuted_from_source(
                 source,

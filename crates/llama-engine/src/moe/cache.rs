@@ -911,6 +911,36 @@ impl DeviceExpertCache {
         Ok(aggregate_budget_snapshots(&snapshots))
     }
 
+    /// Retorna o limite efetivo atual de cada shard, na ordem das GPUs.
+    ///
+    /// Esta leitura existe para diagnóstico do working set. A política de
+    /// admissão continua usando seu snapshot próprio, imediatamente antes do
+    /// upload; portanto esta função não altera a decisão de eviction.
+    pub fn effective_capacity_bytes_by_device(&self) -> Result<Vec<Option<u64>>, DeviceCacheError> {
+        self.shards
+            .iter()
+            .map(|shard| {
+                let device = shard.allocator.device_name().to_owned();
+                let current_free = shard.allocator.free_bytes().map_err(|error| {
+                    DeviceCacheError::MemoryProbe {
+                        device,
+                        reason: error.to_string(),
+                    }
+                })?;
+                let resident = shard
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .stats
+                    .resident_bytes as u64;
+                Ok(shard
+                    .account
+                    .budget_snapshot(current_free, resident)
+                    .effective_limit_bytes)
+            })
+            .collect()
+    }
+
     pub fn admit(
         self: &Arc<Self>,
         key: ExpertKey,
@@ -1542,6 +1572,36 @@ mod tests {
         assert_eq!(allocator.free_queries.load(Ordering::Relaxed), 1);
         assert_eq!(cache.stats().resident_bytes, 5);
         drop(leases);
+    }
+
+    #[test]
+    fn cache_device_publica_capacidade_efetiva_por_shard() {
+        let allocator0 = FakeDeviceAllocator::new(100);
+        let allocator1 = FakeDeviceAllocator::new(80);
+        let account = |baseline| MemoryAccount {
+            baseline_free_bytes: baseline,
+            compute_bytes: 0,
+            weights_bytes: 0,
+            fixed_bytes: 0,
+            reserve_bytes: 0,
+        };
+        let cache = DeviceExpertCache::new_sharded(vec![
+            (
+                0,
+                account(100),
+                Arc::clone(&allocator0) as Arc<dyn DeviceAllocator>,
+            ),
+            (
+                1,
+                account(80),
+                Arc::clone(&allocator1) as Arc<dyn DeviceAllocator>,
+            ),
+        ]);
+
+        assert_eq!(
+            cache.effective_capacity_bytes_by_device().unwrap(),
+            vec![Some(100), Some(80)]
+        );
     }
 
     #[test]

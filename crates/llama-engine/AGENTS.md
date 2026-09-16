@@ -29,11 +29,11 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   Os snapshots nativos usados por `/health` passam pelo
   `wrapper_common.cpp`; eles devem tratar qualquer nome/descrição C nulo antes
   de chegar a `std::string` ou JSON, pois essa falha pode virar
-  `strlen(nullptr)` no runtime C do Windows. Antes de cada avaliação do grafo
-  com callback MoE, `begin_moe_callback` sinaliza o cancelamento do warmup sem
-  aguardar a thread: o caminho quente não fica atrás de uma admissão CUDA
-  corrente. O `join` permanece somente na troca explícita de warmup, fora da
-  inferência.
+  `strlen(nullptr)` no runtime C do Windows. O warmup CUDA inicial termina
+  antes de o servidor de inferência ser anunciado, portanto
+  `begin_moe_callback` não encontra uma thread de aquecimento concorrente no
+  caminho quente. O cancelamento continua sendo sinalizado para preservar a
+  API de troca e o ciclo de vida do runtime.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   O `build.rs` lê o mesmo checkout preparado pelo `llama-cpp-sys-2`, recebido

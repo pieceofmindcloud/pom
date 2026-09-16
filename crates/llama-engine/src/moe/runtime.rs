@@ -604,6 +604,29 @@ impl MoeSource {
     }
 }
 
+#[cfg(any(feature = "cuda", test))]
+/// Percorre a matriz expert/camada em ordem de expert para espalhar o working
+/// set residente por todas as camadas antes de esgotar o orçamento de VRAM.
+/// A ordem por camada aquecia apenas o prefixo do modelo e deixava a primeira
+/// requisição pagar misses concentrados nas camadas finais.
+fn next_warmup_position(
+    layer: &mut u32,
+    expert: &mut u32,
+    layers: u32,
+    experts: u32,
+) -> Option<(u32, u32)> {
+    if *layer >= layers || *expert >= experts || layers == 0 || experts == 0 {
+        return None;
+    }
+    let position = (*layer, *expert);
+    *layer = layer.saturating_add(1);
+    if *layer >= layers {
+        *layer = 0;
+        *expert = expert.saturating_add(1);
+    }
+    Some(position)
+}
+
 #[cfg(feature = "cuda")]
 struct DeviceWarmupCandidates<'a> {
     source: &'a MoeSource,
@@ -649,17 +672,9 @@ impl Iterator for DeviceWarmupCandidates<'_> {
         if let Some(candidate) = self.pending.pop_front() {
             return Some(candidate);
         }
-        if self.layer >= self.layers || self.expert >= self.experts {
-            return None;
-        }
+        let (layer, expert) =
+            next_warmup_position(&mut self.layer, &mut self.expert, self.layers, self.experts)?;
 
-        let layer = self.layer;
-        let expert = self.expert;
-        self.expert = self.expert.saturating_add(1);
-        if self.expert >= self.experts {
-            self.expert = 0;
-            self.layer = self.layer.saturating_add(1);
-        }
         if self.cancellation.load(Ordering::Acquire) {
             return None;
         }
@@ -2453,6 +2468,19 @@ mod tests {
     use super::super::format_plain::{tests::write_plain_source, PlainFormat};
     use super::super::format_q4_0::tests::write_q4_source;
     use super::*;
+
+    #[test]
+    fn warmup_distribui_candidatos_por_todas_as_camadas() {
+        let mut layer = 0;
+        let mut expert = 0;
+        let positions = (0..6)
+            .filter_map(|_| next_warmup_position(&mut layer, &mut expert, 3, 2))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            positions,
+            vec![(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)]
+        );
+    }
 
     #[test]
     fn executor_cuda_recusa_relatorio_sem_compute_medido() {

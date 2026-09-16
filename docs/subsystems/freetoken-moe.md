@@ -2890,6 +2890,10 @@ estava `disabled`. O comportamento agora volta a ser o pré-aquecimento padrão.
 explicitamente frios. O warmup permanece limitado pelo orçamento independente
 de cada GPU; em uma 5060 Ti ele pode terminar com `budget-exhausted` antes de
 carregar todos os experts, porque o modelo inteiro não cabe na VRAM.
+Para aproveitar melhor esse orçamento, a enumeração do warmup é expert-major:
+ela alterna as camadas para cada expert antes de avançar ao próximo expert.
+Assim, quando a VRAM não comporta o modelo inteiro, todas as camadas recebem
+um working set residente em vez de somente o prefixo do modelo.
 
 O intervalo de aproximadamente cinco segundos não era timeout: no trace
 pareado, `node_lock_wait_ms`, fila, scheduler e transporte ficaram próximos de

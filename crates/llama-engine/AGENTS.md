@@ -77,6 +77,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   allocator faz todas as alocações e cópias em um lote e sincroniza o stream
   uma vez; eviction usa `cudaFreeAsync` para não introduzir um wait global por
   tensor. A cópia ainda termina antes de o slice temporário sair de escopo.
+  O warmup percorre experts por camada em ordem expert-major, espalhando as
+  admissões pelas camadas antes de esgotar o orçamento de cada GPU; isso evita
+  aquecer apenas o prefixo do modelo e concentrar misses na primeira
+  requisição.
   Pares repetidos de expert e token são calculados uma vez e a agregação
   conserva o peso de cada rota original.
   No IQ3_XXS a entrada é quantizada para `block_q8_1` e o decoder nativo

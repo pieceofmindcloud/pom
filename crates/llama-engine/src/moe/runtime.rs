@@ -68,6 +68,21 @@ pub struct MoeExecutorTelemetry {
     pub diagnostics: Option<MoeExecutorDiagnostics>,
 }
 
+#[cfg(feature = "cuda")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceCacheBudgetDiagnostics {
+    pub baseline_free_bytes: u64,
+    pub compute_bytes: u64,
+    pub weights_bytes: u64,
+    pub fixed_bytes: u64,
+    pub reserve_bytes: u64,
+    pub current_free_bytes: u64,
+    pub resident_bytes: u64,
+    pub baseline_limit_bytes: Option<u64>,
+    pub dynamic_limit_bytes: Option<u64>,
+    pub effective_limit_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MoeExecutorDiagnostics {
     pub profiled: bool,
@@ -101,6 +116,14 @@ pub struct MoeExecutorDiagnostics {
     #[cfg(feature = "cuda")]
     #[serde(default)]
     pub device_cache_capacity_bytes_by_device: Vec<Option<u64>>,
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub device_cache_entries_by_device: Vec<usize>,
+    /// Entradas que formaram o limite, na mesma ordem de
+    /// `device_cache_devices`. `None` indica que a sonda falhou.
+    #[cfg(feature = "cuda")]
+    #[serde(default)]
+    pub device_cache_budget_by_device: Vec<Option<DeviceCacheBudgetDiagnostics>>,
     /// Working set observado por camada. `distinct_experts_per_token` é a
     /// soma por token e deve ser dividida por `tokens` para obter a média.
     #[cfg(feature = "cuda")]
@@ -1817,36 +1840,42 @@ impl MoeRuntime {
 
             let mut device_cache_recorded = false;
             for block in &self.blocks {
-                let (cuda, device_cache, capacity_by_device) = match block {
+                let (cuda, device_cache, capacity_by_device, budget_by_device) = match block {
                     MoeBlock::Nvfp4(block) => (
                         block.cuda_diagnostics(),
                         block.resident_cache_stats(),
+                        Vec::new(),
                         Vec::new(),
                     ),
                     MoeBlock::K(block) if block.uses_cuda() => (
                         block.cuda_diagnostics(),
                         block.resident_cache_stats(),
                         Vec::new(),
+                        Vec::new(),
                     ),
                     MoeBlock::Iq(block) if block.uses_cuda() => (
                         block.cuda_diagnostics(),
                         block.resident_cache_stats(),
+                        Vec::new(),
                         Vec::new(),
                     ),
                     MoeBlock::Plain(block) if block.uses_cuda() => (
                         block.cuda_diagnostics(),
                         block.resident_cache_stats(),
                         Vec::new(),
+                        Vec::new(),
                     ),
                     MoeBlock::Q4(block) if block.uses_cuda() => (
                         block.cuda_diagnostics(),
                         block.resident_cache_stats(),
+                        Vec::new(),
                         Vec::new(),
                     ),
                     MoeBlock::Heterogeneous(block) if block.uses_cuda() => (
                         block.cuda_diagnostics(),
                         block.resident_cache_stats(),
                         block.resident_cache_capacity_bytes_by_device(),
+                        block.resident_cache_budget_snapshots_by_device(),
                     ),
                     _ => continue,
                 };
@@ -1903,12 +1932,30 @@ impl MoeRuntime {
                     diagnostics.device_cache_devices = device_cache.device_names;
                     diagnostics.device_cache_resident_bytes_by_device =
                         device_cache.resident_bytes_by_device;
+                    diagnostics.device_cache_entries_by_device = device_cache.entries_by_device;
                     diagnostics.device_cache_capacity_bytes_by_device = capacity_by_device;
                     diagnostics.device_cache_capacity_bytes = diagnostics
                         .device_cache_capacity_bytes_by_device
                         .iter()
                         .copied()
                         .try_fold(0u64, |total, capacity| total.checked_add(capacity?));
+                    diagnostics.device_cache_budget_by_device = budget_by_device
+                        .into_iter()
+                        .map(|snapshot| {
+                            snapshot.map(|snapshot| DeviceCacheBudgetDiagnostics {
+                                baseline_free_bytes: snapshot.baseline_free_bytes,
+                                compute_bytes: snapshot.compute_bytes,
+                                weights_bytes: snapshot.weights_bytes,
+                                fixed_bytes: snapshot.fixed_bytes,
+                                reserve_bytes: snapshot.reserve_bytes,
+                                current_free_bytes: snapshot.current_free_bytes,
+                                resident_bytes: snapshot.resident_bytes,
+                                baseline_limit_bytes: snapshot.baseline_limit_bytes,
+                                dynamic_limit_bytes: snapshot.dynamic_limit_bytes,
+                                effective_limit_bytes: snapshot.effective_limit_bytes,
+                            })
+                        })
+                        .collect();
                     device_cache_recorded = true;
                 }
                 if let MoeBlock::Nvfp4(block) = block {

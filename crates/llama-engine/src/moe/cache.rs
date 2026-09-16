@@ -536,6 +536,9 @@ pub struct DeviceCacheStats {
     /// Bytes residentes de cada shard, sem somar novamente em
     /// `resident_bytes`.
     pub resident_bytes_by_device: Vec<usize>,
+    /// Entradas residentes de cada shard, na mesma ordem de
+    /// `resident_bytes_by_device`.
+    pub entries_by_device: Vec<usize>,
 }
 
 #[cfg(any(feature = "cuda", test))]
@@ -735,6 +738,10 @@ impl DeviceExpertCache {
             .iter()
             .map(|stats| stats.resident_bytes)
             .collect();
+        total.entries_by_device = per_device_stats
+            .iter()
+            .map(|stats| stats.entries)
+            .collect();
         total
     }
 
@@ -889,34 +896,18 @@ impl DeviceExpertCache {
     }
 
     pub fn budget_snapshot(&self) -> Result<CacheBudgetSnapshot, DeviceCacheError> {
-        let mut snapshots = Vec::with_capacity(self.shards.len());
-        for shard in &self.shards {
-            let device = shard.allocator.device_name().to_owned();
-            let current_free =
-                shard
-                    .allocator
-                    .free_bytes()
-                    .map_err(|error| DeviceCacheError::MemoryProbe {
-                        device,
-                        reason: error.to_string(),
-                    })?;
-            let resident = shard
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .stats
-                .resident_bytes as u64;
-            snapshots.push(shard.account.budget_snapshot(current_free, resident));
-        }
-        Ok(aggregate_budget_snapshots(&snapshots))
+        Ok(aggregate_budget_snapshots(
+            &self.budget_snapshots_by_device()?,
+        ))
     }
 
-    /// Retorna o limite efetivo atual de cada shard, na ordem das GPUs.
-    ///
-    /// Esta leitura existe para diagnóstico do working set. A política de
-    /// admissão continua usando seu snapshot próprio, imediatamente antes do
-    /// upload; portanto esta função não altera a decisão de eviction.
-    pub fn effective_capacity_bytes_by_device(&self) -> Result<Vec<Option<u64>>, DeviceCacheError> {
+    /// Retorna o snapshot bruto do orçamento de cada shard, na mesma ordem
+    /// de `device_names`. Além do limite efetivo, preserva os valores que o
+    /// formaram para a telemetria distinguir pouca VRAM real de margem
+    /// excessiva da política.
+    pub fn budget_snapshots_by_device(
+        &self,
+    ) -> Result<Vec<CacheBudgetSnapshot>, DeviceCacheError> {
         self.shards
             .iter()
             .map(|shard| {
@@ -933,12 +924,23 @@ impl DeviceExpertCache {
                     .unwrap_or_else(|error| error.into_inner())
                     .stats
                     .resident_bytes as u64;
-                Ok(shard
-                    .account
-                    .budget_snapshot(current_free, resident)
-                    .effective_limit_bytes)
+                Ok(shard.account.budget_snapshot(current_free, resident))
             })
             .collect()
+    }
+
+    /// Retorna o limite efetivo atual de cada shard, na ordem das GPUs.
+    ///
+    /// Esta leitura existe para diagnóstico do working set. A política de
+    /// admissão continua usando seu snapshot próprio, imediatamente antes do
+    /// upload; portanto esta função não altera a decisão de eviction.
+    pub fn effective_capacity_bytes_by_device(&self) -> Result<Vec<Option<u64>>, DeviceCacheError> {
+        self.budget_snapshots_by_device().map(|snapshots| {
+            snapshots
+                .into_iter()
+                .map(|snapshot| snapshot.effective_limit_bytes)
+                .collect()
+        })
     }
 
     pub fn admit(
@@ -1602,6 +1604,13 @@ mod tests {
             cache.effective_capacity_bytes_by_device().unwrap(),
             vec![Some(100), Some(80)]
         );
+        let snapshots = cache.budget_snapshots_by_device().unwrap();
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].baseline_free_bytes, 100);
+        assert_eq!(snapshots[0].current_free_bytes, 100);
+        assert_eq!(snapshots[0].effective_limit_bytes, Some(100));
+        assert_eq!(snapshots[1].baseline_free_bytes, 80);
+        assert_eq!(snapshots[1].current_free_bytes, 80);
     }
 
     #[test]

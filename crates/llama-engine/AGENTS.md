@@ -82,8 +82,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   aquecer apenas o prefixo do modelo e concentrar misses na primeira
   requisição.
   A telemetria também publica, por camada, o working set observado de experts
-  distintos por token e a capacidade efetiva atual de cada shard, para separar
-  pressão real do orçamento de uma eviction indevida de lease ativo.
+  distintos por token e, por shard, os valores brutos de VRAM que formaram o
+  orçamento (`baseline_free`, `current_free`, compute, reserva, limites e
+  entradas residentes). Isso separa pressão real do orçamento de uma eviction
+  indevida de lease ativo e permite auditar uma margem conservadora.
   Pares repetidos de expert e token são calculados uma vez e a agregação
   conserva o peso de cada rota original.
   No IQ3_XXS a entrada é quantizada para `block_q8_1` e o decoder nativo

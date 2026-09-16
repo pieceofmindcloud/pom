@@ -4,7 +4,9 @@
 
 use super::admission::MemoryAccount;
 use super::bandwidth::BandwidthProfile;
-use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache, DeviceExpertLease};
+use super::cache::{
+    CacheBudgetSnapshot, DeviceAllocation, DeviceAllocator, DeviceExpertCache, DeviceExpertLease,
+};
 use super::format_k_quants::{KQuantExpert, KQuantFormat};
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
 use super::format_plain::{PlainExpert, PlainFormat};
@@ -1713,6 +1715,21 @@ impl HeterogeneousCudaExecutor {
                 tracing::debug!(
                     error = %error,
                     "não foi possível obter a capacidade efetiva do cache CUDA para diagnóstico"
+                );
+                vec![None; self.resident_cache.device_indices().len()]
+            })
+    }
+
+    pub fn resident_cache_budget_snapshots_by_device(
+        &self,
+    ) -> Vec<Option<CacheBudgetSnapshot>> {
+        self.resident_cache
+            .budget_snapshots_by_device()
+            .map(|snapshots| snapshots.into_iter().map(Some).collect())
+            .unwrap_or_else(|error| {
+                tracing::debug!(
+                    error = %error,
+                    "não foi possível obter o orçamento do cache CUDA para diagnóstico"
                 );
                 vec![None; self.resident_cache.device_indices().len()]
             })

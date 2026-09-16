@@ -3003,8 +3003,16 @@ compare `cache_working_set_by_layer` com
 Se a capacidade estiver correta e o working set exceder repetidamente o limite,
 o problema é pressão legítima do conjunto de experts; se houver capacidade
 disponível apesar da churn, investigue a conta de memória e a granularidade da
-admissão. A medição de throughput da instrumentação ainda precisa ser feita na
-ksia.
+admissão. `device_cache_budget_by_device` expõe a conta completa por shard:
+`baseline_free_bytes`, `current_free_bytes`, `compute_bytes`, `reserve_bytes`,
+os limites intermediários e as entradas residentes. `device_cache_entries_by_device`
+permite converter a capacidade em entradas reais, sem confundir o campo
+genérico `cache_entries` do cache de host. A medição de throughput da
+instrumentação foi feita na ksia em `e8709f09`: três rodadas sem processo
+concorrente tiveram `11,018`, `10,440` e `10,351 tok/s`; a capacidade
+efetiva variou de `15,337` a `17,803 GB` e a residência terminou encostada
+nesse limite. A próxima rodada com este detalhamento deve decidir se há
+alguma margem conservadora antes de alterar a política.
 
 ## Defeitos anotados
 

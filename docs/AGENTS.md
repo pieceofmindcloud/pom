@@ -53,6 +53,8 @@ O plano da correção do rollback recorrente Kimi-K3 está em
 `superpowers/plans/2026-09-15-hybrid-memory-decode-segv.md`.
 O plano do hot path CUDA heterogêneo alinhado ao FreeToken está em
 `superpowers/plans/2026-09-15-moe-freetoken-performance.md`.
+O plano da correção do contrato rico de heartbeat Enterprise está em
+`superpowers/plans/2026-09-16-enterprise-heartbeat-schema.md`.
 
 ## subsystems/
 
@@ -78,6 +80,9 @@ reduzir suas camadas. `implantacao.md` também documenta a
 seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
 completa, além da prévia analítica de capacidade sem chamada ao fit nativo.
+`build-execucao.md` e `freetoken-moe.md` também registram a investigação de
+NCCL no link final CUDA e a separação entre o caminho llama.cpp e o executor
+MoE próprio.
 `superpowers/plans/2026-09-12-windows-crash-root-cause.md` registra o
 rastreamento da confirmação `model_loaded`, as fronteiras nativas do `/health`
 e as evidências que ainda precisam de reprodução real no Windows.

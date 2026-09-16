@@ -15,6 +15,9 @@ garantias atuais dos limites restantes. A especificação completa
   `MockLicenseService`; a chave de licença só atravessa validação/ativação e
   não faz parte do snapshot local de ativação. O cliente consulta `/v1/keys`,
   verifica grant e manifest Ed25519, além de hash, tamanho, ABI e plataforma.
+  O heartbeat desserializa o payload rico de renovação e persiste o novo token,
+  expiração, prazo do próximo heartbeat, entitlements, grant e release
+  informados pelo servidor, sem substituir o prazo por uma estimativa local.
 - `crates/plugin-host` é o processo `pom-plugin-host`. Ele carrega um artefato
   somente por caminho absoluto, valida ABI, tamanho e SHA-256, mantém a
   biblioteca carregada dentro do processo auxiliar e conversa com o cliente por

@@ -3079,6 +3079,64 @@ mesmo cache a ser substituída por expert-parallel. O alvo de superar o denso
 em `1,5x` ainda não foi atingido; esse resultado é uma melhoria de capacidade
 do MoE e deve permanecer como referência antes de qualquer nova mudança.
 
+### Investigação NCCL no tensor parallelism - 2026-09-16
+
+O host ksia confirmou duas RTX 5060 Ti e a instalação do NCCL pelo loader do
+sistema:
+
+```text
+libnccl.so.2 => /lib/x86_64-linux-gnu/libnccl.so.2
+libnccl.so   => /lib/x86_64-linux-gnu/libnccl.so
+```
+
+O diagnóstico inicial foi reproduzido no build: `vendor/llama-cpp-sys-2/build.rs`
+repassava as variáveis `GGML_*` ao CMake, mas depois definia
+`GGML_CUDA_NCCL=OFF` incondicionalmente. Após permitir o opt-in, o CMake gravou
+`GGML_CUDA_NCCL=ON`, `NCCL_INCLUDE_DIR=/usr/include` e
+`NCCL_LIBRARY=/usr/lib/x86_64-linux-gnu/libnccl.so`. O primeiro link revelou a
+segunda fronteira: os archives estáticos produzidos pelo CMake não propagavam
+`NCCL::NCCL` para o link final do binário Rust. O build script agora adiciona o
+diretório resolvido e `dylib=nccl` somente quando o opt-in está ligado, mantendo
+o build padrão sem dependência nova.
+
+O binário isolado resultante foi
+`112aeef362fbc44d0b66fbf799822ed609a2dd6b3a007f853a137bab4b426a45`. A prova de
+link foi:
+
+```text
+libnccl.so.2 => /lib/x86_64-linux-gnu/libnccl.so.2
+```
+
+Foi feita uma fumaça E2E fora do serviço produtivo, com o mesmo GGUF
+`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`, as duas GPUs, o prompt curto
+`Oi, teste. Responda em uma frase curta.` e `max_tokens=32`. Com um processo
+isolado sem identidade TP, o caminho `dense/llama.cpp` mediu
+`29,674`, `60,606` e `53,030 tok/s` em três chamadas, mediana de `53,030 tok/s`.
+Essa rodada confirma que o executável carrega o modelo nas duas placas, mas
+não é uma medição de NCCL: `tp` não foi configurado e a divisão observada é de
+camadas, não o grupo de ranks do tensor parallelism. A variação inclui o
+aquecimento do processo e não deve ser comparada diretamente ao controle
+histórico do deployment.
+
+A tentativa de selecionar `POM_INFERENCE_MODE=moe` no mesmo arranque direto não
+é uma medição válida: o caminho de linha de comando fixa `Dense` e o pedido
+continua registrando `dense/llama.cpp`. Ao preparar um journal isolado MoE, o
+executor alcançou as duas GPUs, mas a chamada terminou em
+`kernel CUDA MoE falhou (código 400)`, sem tokens e sem tok/s aproveitável.
+Isso não atribui a falha ao NCCL. O executor MoE próprio não usa a coletiva do
+llama.cpp, e o benchmark MoE pós-build ainda depende de uma implantação MoE
+válida.
+
+Como referência comparável já registrada na ksia, o melhor MoE confirmado foi
+`15,968 tok/s` no SHA `f4b7eb4`, enquanto o controle denso foi `24,97 tok/s`.
+Esses números são pré-NCCL. A comparação pós-NCCL no deployment produtivo não
+foi executada nesta rodada porque trocar o binário servido e reiniciar os
+processos da ksia requer autorização operacional explícita. Portanto, ainda
+não há evidência de melhora real de throughput. A conclusão técnica disponível
+é somente: o host encontra o NCCL, o binário novo está linkado com
+`libnccl.so.2`, e o caminho MoE próprio não se beneficia diretamente dessa
+coletiva.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

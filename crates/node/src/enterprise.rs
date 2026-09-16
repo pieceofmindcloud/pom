@@ -49,6 +49,22 @@ impl fmt::Display for LicenseClientError {
 
 impl std::error::Error for LicenseClientError {}
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct HeartbeatResponse {
+    pub license_id: String,
+    pub activation_id: String,
+    pub lease_id: String,
+    pub lease_token: String,
+    pub entitlements: Vec<String>,
+    pub lease_expires_at: String,
+    pub heartbeat_due_at: String,
+    pub grace_seconds: u64,
+    pub plugin_release_id: String,
+    pub release_changed: bool,
+    pub available_release_id: Option<String>,
+    pub grant: Grant,
+}
+
 #[async_trait]
 pub(crate) trait LicenseService: Send + Sync {
     async fn validate(
@@ -70,7 +86,7 @@ pub(crate) trait LicenseService: Send + Sync {
         &self,
         request: RequestEnvelope<HeartbeatPayload>,
         lease_token: &str,
-    ) -> Result<ResponseEnvelope<()>, LicenseClientError>;
+    ) -> Result<ResponseEnvelope<HeartbeatResponse>, LicenseClientError>;
 
     async fn status(
         &self,
@@ -285,7 +301,7 @@ impl LicenseService for HttpLicenseService {
         &self,
         request: RequestEnvelope<HeartbeatPayload>,
         lease_token: &str,
-    ) -> Result<ResponseEnvelope<()>, LicenseClientError> {
+    ) -> Result<ResponseEnvelope<HeartbeatResponse>, LicenseClientError> {
         let response = self
             .client
             .post(self.heartbeat_url())
@@ -1131,21 +1147,48 @@ impl EnterpriseState {
             .heartbeat(request, &persisted.lease_token)
             .await
         {
-            Ok(_) => {
-                let mut status = self.status.write().await;
-                if status.active {
-                    status.state = LicenseState::Active;
-                }
-                drop(status);
+            Ok(response) => {
+                let HeartbeatResponse {
+                    lease_token,
+                    entitlements,
+                    lease_expires_at,
+                    heartbeat_due_at,
+                    grace_seconds,
+                    plugin_release_id,
+                    release_changed,
+                    available_release_id,
+                    grant,
+                    ..
+                } = response.payload;
+                let features = EnterpriseFeaturesFromEntitlements::from(entitlements.as_slice()).0;
                 let mut persisted = self.persisted.lock().await;
                 if let Some(state) = persisted.as_mut() {
+                    state.lease_token = lease_token;
+                    state.lease_expires_at = lease_expires_at.clone();
+                    state.heartbeat_due_at = heartbeat_due_at;
+                    state.grace_seconds = grace_seconds;
+                    state.plugin_release_id = plugin_release_id.clone();
+                    state.signed_grant = grant;
+                    state.features = features.clone();
                     state.last_success_at = Some(chrono::Utc::now().to_rfc3339());
-                    state.heartbeat_due_at =
-                        (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339();
                     if let Some(database) = &self.database {
                         let _ = database.save_local_setting(PERSISTED_SETTING, state);
                     }
                 }
+                drop(persisted);
+                if release_changed {
+                    tracing::info!(
+                        plugin_release_id = %plugin_release_id,
+                        available_release_id = ?available_release_id,
+                        "heartbeat Enterprise indicou alteração de release"
+                    );
+                }
+                let mut status = self.status.write().await;
+                if status.active {
+                    status.state = LicenseState::Active;
+                }
+                status.features = features;
+                status.lease_expires_at = Some(lease_expires_at);
                 Ok(())
             }
             Err(error) => {
@@ -1601,16 +1644,35 @@ impl LicenseService for MockLicenseService {
         &self,
         request: RequestEnvelope<HeartbeatPayload>,
         _lease_token: &str,
-    ) -> Result<ResponseEnvelope<()>, LicenseClientError> {
+    ) -> Result<ResponseEnvelope<HeartbeatResponse>, LicenseClientError> {
         if let Some(code) = *self.heartbeat_error.lock().await {
             return Err(LicenseClientError::new(code, "mock heartbeat error"));
         }
+        let MockResponse::Valid(response) = self.response.lock().await.clone() else {
+            return Err(LicenseClientError::new(
+                LicenseErrorCode::InvalidKey,
+                "mock license error",
+            ));
+        };
         Ok(ResponseEnvelope {
             protocol: enterprise_protocol::LICENSE_PROTOCOL.into(),
             request_id: request.request_id,
             server_time: "2099-01-01T00:00:00Z".into(),
-            expires_at: None,
-            payload: (),
+            expires_at: Some("2099-01-08T00:00:00Z".into()),
+            payload: HeartbeatResponse {
+                license_id: response.license_id,
+                activation_id: response.activation_id,
+                lease_id: response.lease_id,
+                lease_token: "plt-renewed".into(),
+                entitlements: response.entitlements,
+                lease_expires_at: "2099-01-08T00:00:00Z".into(),
+                heartbeat_due_at: "2099-01-02T00:00:00Z".into(),
+                grace_seconds: 86400,
+                plugin_release_id: "ent-heartbeat".into(),
+                release_changed: false,
+                available_release_id: None,
+                grant: response.grant,
+            },
         })
     }
 
@@ -1716,6 +1778,117 @@ mod tests {
                 signature: "grant-signature".into(),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn heartbeat_accepts_the_server_payload_object() {
+        let app = axum::Router::new().route(
+            "/v1/licenses/leases/heartbeat",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "protocol": "pom-license/v1",
+                    "request_id": "heartbeat-request",
+                    "server_time": "2099-01-01T00:00:00Z",
+                    "expires_at": "2099-01-08T00:00:00Z",
+                    "payload": {
+                        "license_id": "lic-1",
+                        "activation_id": "act-1",
+                        "lease_id": "lease-1",
+                        "lease_token": "plt-renewed",
+                        "entitlements": [
+                            "enterprise.request_logs",
+                            "enterprise.statistics"
+                        ],
+                        "lease_expires_at": "2099-01-08T00:00:00Z",
+                        "heartbeat_due_at": "2099-01-02T00:00:00Z",
+                        "grace_seconds": 172800,
+                        "plugin_release_id": "ent-test",
+                        "release_changed": false,
+                        "available_release_id": null,
+                        "grant": {
+                            "alg": "Ed25519",
+                            "key_id": "test",
+                            "body": "grant-body",
+                            "signature": "grant-signature"
+                        }
+                    }
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind heartbeat stub");
+        let address = listener.local_addr().expect("heartbeat stub address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve heartbeat stub");
+        });
+
+        let service = HttpLicenseService::new(format!("http://{address}"));
+        let request = RequestEnvelope::new(
+            "heartbeat-request",
+            "heartbeat-idempotency",
+            client_info(),
+            HeartbeatPayload {
+                activation_id: "act-1".into(),
+                lease_id: "lease-1".into(),
+                fingerprint_scheme: "pom-fingerprint-v1".into(),
+                fingerprint:
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                node_id: "node-a".into(),
+                nonce: "heartbeat-nonce".into(),
+                client_time: "2099-01-01T00:00:00Z".into(),
+            },
+        );
+
+        let response = service.heartbeat(request, "plt-test").await;
+
+        server.abort();
+        let response = response
+            .expect("server heartbeat payload should deserialize")
+            .payload;
+        assert_eq!(response.lease_token, "plt-renewed");
+        assert_eq!(response.heartbeat_due_at, "2099-01-02T00:00:00Z");
+        assert_eq!(response.entitlements.len(), 2);
+        assert_eq!(response.plugin_release_id, "ent-test");
+        assert!(!response.release_changed);
+        assert_eq!(response.available_release_id, None);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_persists_authoritative_lease_data() {
+        let service = Arc::new(MockLicenseService::valid(activation()));
+        let state = EnterpriseState::new(service, fingerprint());
+        state.activate("PM-test-key").await.expect("activate");
+        state
+            .mark_plugin_ready("ent-test")
+            .await
+            .expect("plugin ready");
+
+        state.heartbeat("heartbeat-nonce").await.expect("heartbeat");
+
+        let persisted = state.persisted().await;
+        assert_eq!(persisted.lease_token, "plt-renewed");
+        assert_eq!(persisted.lease_expires_at, "2099-01-08T00:00:00Z");
+        assert_eq!(persisted.heartbeat_due_at, "2099-01-02T00:00:00Z");
+        assert_eq!(persisted.grace_seconds, 86400);
+        assert_eq!(persisted.plugin_release_id, "ent-heartbeat");
+        assert_eq!(persisted.signed_grant.body, "grant-body");
+        assert_eq!(
+            persisted.features,
+            EnterpriseFeatures {
+                request_logs: true,
+                statistics: true,
+            }
+        );
+
+        let status = state.status().await;
+        assert_eq!(status.state, LicenseState::Active);
+        assert_eq!(
+            status.lease_expires_at.as_deref(),
+            Some("2099-01-08T00:00:00Z")
+        );
     }
 
     #[tokio::test]

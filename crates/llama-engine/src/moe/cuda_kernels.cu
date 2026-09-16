@@ -2199,6 +2199,14 @@ static constexpr __device__ HeterogeneousQ8Layout heterogeneous_q8_layout(
     }
 }
 
+__device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1_iq3_xxs(
+    const CudaHeterogeneousTensor &tensor,
+    int row,
+    const block_q8_1 *input,
+    float scale,
+    float input_scale
+);
+
 __device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1_impl(
     const CudaHeterogeneousTensor &tensor,
     int row,
@@ -2239,6 +2247,10 @@ __device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1(
     float scale,
     float input_scale
 ) {
+    if (tensor.dtype == 18) {
+        return heterogeneous_quant_partial_dot_q8_1_iq3_xxs(
+            tensor, row, input, scale, input_scale);
+    }
     const HeterogeneousVecDotQ8_1 dot = heterogeneous_vec_dot_q8_1(tensor.dtype);
     const HeterogeneousQ8Layout layout = heterogeneous_q8_layout(tensor.dtype);
     if (dot == nullptr || layout.qk == 0 || layout.qi == 0 || layout.vdr == 0) {
@@ -2246,6 +2258,45 @@ __device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1(
     }
     return heterogeneous_quant_partial_dot_q8_1_impl(
         tensor, row, input, dot, scale, input_scale, layout);
+}
+
+// IQ3_XXS is a frequent tensor type in the Mistral4 heterogeneous route.
+// Calling it through HeterogeneousVecDotQ8_1 keeps the generic path compact,
+// but prevents nvcc from inlining the canonical dp4a primitive. Keep the
+// exact same lane partition and scaling in a direct path so this optimization
+// changes dispatch only, not the numerical contract.
+__device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1_iq3_xxs(
+    const CudaHeterogeneousTensor &tensor,
+    int row,
+    const block_q8_1 *input,
+    float scale,
+    float input_scale
+) {
+    constexpr int qk = QK_K;
+    constexpr int qi = QI3_XXS;
+    constexpr int vdr = VDR_IQ3_XXS_Q8_1_MMVQ;
+    const int lane = threadIdx.x;
+    const int lanes_per_block = qi / vdr;
+    const int blocks_per_iteration = vdr * 32 / qi;
+    const int blocks_per_row = static_cast<int>(tensor.columns) / qk;
+    const std::size_t row_bytes = tensor.bytes / tensor.rows;
+    const uint8_t *row_data = tensor.data + static_cast<std::size_t>(row) * row_bytes;
+    float result = 0.0f;
+    for (int block_index = lane / lanes_per_block;
+         block_index < blocks_per_row;
+         block_index += blocks_per_iteration) {
+        const int q8_block = block_index * (qk / QK8_1);
+        const int q8_subblock = vdr * (lane % lanes_per_block);
+        result += vec_dot_iq3_xxs_q8_1(
+            row_data,
+            input + q8_block,
+            block_index,
+            q8_subblock);
+    }
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        result += __shfl_down_sync(0xffffffffu, result, offset);
+    }
+    return result * scale * input_scale;
 }
 
 __global__ void heterogeneous_quant_gate_up_route_q8_kernel(

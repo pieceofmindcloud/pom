@@ -83,6 +83,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   requisição.
   Pares repetidos de expert e token são calculados uma vez e a agregação
   conserva o peso de cada rota original.
+  No kernel heterogêneo, IQ3_XXS usa um despacho direto para o primitive
+  `vec_dot_iq3_xxs_q8_1`, preservando a mesma partição de lanes do caminho
+  genérico e permitindo que `nvcc` faça inline do `dp4a`; os demais dtypes
+  continuam no despacho genérico.
   No IQ3_XXS a entrada é quantizada para `block_q8_1` e o decoder nativo
   `vec_dot_iq3_xxs_q8_1` do fork usa `dp4a`. As 32 lanes cobrem quatro
   superblocos por warp, cada uma processando uma fatia q8 e avançando em

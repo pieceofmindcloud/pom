@@ -2961,6 +2961,27 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
+### Fase 5.17: despacho direto do IQ3_XXS no kernel heterogêneo - 2026-09-16
+
+O perfil real da ksia continua mostrando a rota heterogênea com os dtypes
+`18`, `22` e `23`. O kernel já usava o primitive `vec_dot_iq3_xxs_q8_1` do
+fork, mas o alcançava por um ponteiro de função selecionado em runtime e
+recalculava o layout dentro de cada dot. Para o dtype `18` isso impedia o
+inline do caminho `dp4a` e adicionava despacho ao trabalho de cada linha.
+
+O kernel agora tem um caminho direto para IQ3_XXS. Ele mantém exatamente os
+mesmos valores de `qk`, `qi`, `vdr`, offsets q8, redução warp e fatores de
+escala do caminho genérico; somente a chamada é direta para o primitive
+canônico. Dtypes `22` e `23` e demais formatos continuam no caminho genérico,
+portanto a alteração não muda a seleção de experts nem a aritmética de outras
+quantizações.
+
+Esta é uma otimização local de despacho e precisa ser aceita somente após a
+metodologia de campo: `nvidia-smi` imediatamente antes de cada rodada, mesmo
+prompt e parâmetros da referência, três rodadas na ksia e comparação de
+`node_moe_forward_ms`, p50/p95, `generation_tokens_per_sec` e corretude. Se a
+mediana regredir contra a referência vigente, o commit deve ser revertido.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

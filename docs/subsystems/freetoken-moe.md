@@ -2961,31 +2961,6 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
-### Fase 5.17: resolução única da rota heterogênea - 2026-09-16
-
-O caminho CUDA recebe a rota em ordem token-major, então o mesmo expert pode
-aparecer várias vezes quando é escolhido por tokens diferentes. Antes desta
-fase, cada ocorrência repetia a consulta das specs, a consulta do cache e a
-aquisição de leases; depois da admissão, uma segunda consulta ao cache era
-feita para cada ocorrência fria. Os descriptors e leases duplicados não
-mudavam o resultado do kernel, mas aumentavam a contenção do mutex do cache e
-o trabalho de preparação do lote.
-
-`forward_batch_cuda_only` agora resolve cada expert único uma vez, preservando
-a ordem da primeira ocorrência. Uma única spec e um único lease são mantidos
-por papel de tensor durante todo o forward; o descriptor, que é um valor
-`Copy`, é reutilizado nas ocorrências da rota. A lista original de
-`expert_ids`, `token_ids`, pesos e offsets continua sendo enviada ao kernel,
-portanto a agregação token-major e os pesos das rotas não mudam. A mesma
-deduplicação é compartilhada pela verificação de residência da coexecução.
-
-Essa otimização segue o princípio do FreeToken de preparar views do working
-set uma vez por lote e evita refazer metadados já resolvidos. Ela não altera a
-política de afinidade, o orçamento de VRAM, as admissões, os kernels CUDA ou o
-fork do llama.cpp. O ganho deve ser aceito somente após comparação controlada
-com três rodadas na ksia, conferindo `generation_tokens_per_sec`, TTFT,
-corretude da saída e ausência de carga concorrente nas GPUs.
-
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

@@ -367,11 +367,21 @@ offload no primeiro clique.
 ## Docker
 
 - **`Dockerfile`**: dois estágios. Builder
-  `nvidia/cuda:13.0.3-devel-ubuntu24.04` instala rustup + node, faz
-  `npm run build` em `apps/frontend` e `cargo build --release --features cuda`
-  com cache mounts (registry/git/target). Runtime é a base CUDA 13.0.3 com
-  `LD_LIBRARY_PATH` incluindo `compat/` e `POM_HOME=/app`. O `ARG
-  POM_BUILD_COMMIT` recebe o commit do host.
+  `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala rustup + node, faz
+  `npm run build` em `apps/frontend`, compila `pom` com
+  `cargo build --release --features cuda,vulkan` e compila
+  `cargo build --release -p pom-plugin-host` sem features de GPU, tudo com
+  cache mounts (registry/git/target). Runtime copia os dois binários para
+  `/usr/local/bin`, mantém `LD_LIBRARY_PATH` incluindo `compat/` e
+  `POM_HOME=/app`, e usa `docker-entrypoint.sh`. O `ARG POM_BUILD_COMMIT`
+  recebe o commit do host.
+- **`docker-entrypoint.sh`**: valida os dois binários, exporta
+  `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` e faz `exec` do `pom` com os
+  argumentos recebidos. O `pom` inicia o host como filho somente quando há um
+  plugin Enterprise instalado, passando o artefato como argumento e conectando
+  stdin/stdout por frames JSON de tamanho prefixado. Portanto não há socket
+  Unix nem volume adicional de IPC. `bash scripts/test-docker-entrypoint.sh`
+  cobre esse encaminhamento sem precisar construir a imagem.
 - O cache de `target/` também conserva o `CMakeCache.txt` e a árvore nativa do
   `llama.cpp`. Como o fork coleta `src/models/*.cpp` por `file(GLOB ...)` sem
   `CONFIGURE_DEPENDS`, uma árvore gerada antes de um arquivo de modelo existir
@@ -399,9 +409,11 @@ offload no primeiro clique.
   `node-gpu-2`, `node-cpu-1`, `node-cpu-2`) com `network_mode: host`; estado
   em `tests/fixtures/<nome>`, modelos montados de `./models`, GPU só via
   `deploy.resources` (exige NVIDIA Container Toolkit). Cada serviço define
-  `POM_HOME=/data` e `POM_UI_DIST=/app/apps/frontend/dist` (a UI
-  não ficaria sob o diretório de dados montado). As portas de cada nó vêm da
-  config, não do CLI - daí o gerador abaixo. Os nomes de fixture do compose
+  `POM_HOME=/data`, `POM_UI_DIST=/app/apps/frontend/dist` e o caminho explícito
+  `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (a UI não ficaria sob o
+  diretório de dados montado). O plugin baixado e `enterprise.db` ficam no
+  volume `/data`; não há volume de socket, pois o IPC é por pipes filho-pai.
+  As portas de cada nó vêm da config, não do CLI - daí o gerador abaixo. Os nomes de fixture do compose
   (`node-gpu`, `node-cpu-1`...) e os do gerador (`node-<N>`) são de ambientes
   diferentes de propósito e não precisam se encontrar - ver `scripts/AGENTS.md`.
 - **`scripts/gen-node-configs.py`**: gera um `pom.json` por nó em

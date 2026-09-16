@@ -76,6 +76,10 @@ RUST_LOG=debug ./target/release/pom ...
 cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 ```
 
+A imagem Docker também compila `pom-plugin-host` e o coloca ao lado de `pom`;
+o entrypoint mantém o caminho explícito e o próprio `pom` inicia o host após
+baixar o plugin Enterprise, usando IPC por stdin/stdout.
+
 ## Preparo do build
 
 O build depende do fork do `llama.cpp` na branch `pom-tensor-parallel`,

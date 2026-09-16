@@ -27,12 +27,16 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
   exporta `POM_BUILD_COMMIT` e chama `docker compose build`. Durante esse build,
-  o `Dockerfile:45-46` roda `npm run build` em `apps/frontend`; o script não
-  executa o build da UI diretamente. O commit nao pode ser lido dentro da imagem builder
-  (`.dockerignore` corta `.git/` e a imagem nao tem `git`); sem a variavel o
-  `crates/node/build.rs` carimba "desconhecido" em todo container; ver
-  `TODO.md`, item 26. Construa a imagem por este script, nunca `docker compose build`
-  na mao.
+  o `Dockerfile` roda `npm run build` em `apps/frontend`, compila `pom` com as
+  features CUDA/Vulkan e compila `pom-plugin-host` separadamente, sem essas
+  features. O script não executa o build da UI diretamente. O commit nao pode
+  ser lido dentro da imagem builder (`.dockerignore` corta `.git/` e a imagem
+  nao tem `git`); sem a variavel o `crates/node/build.rs` carimba
+  "desconhecido" em todo container; ver `TODO.md`, item 26. Construa a imagem
+  por este script, nunca `docker compose build` na mao.
+- `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
+  falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
+  argumentos.
 - `gen-node-configs.py` - gera um `pom.json` por no em
   `tests/fixtures/node-<N>/`. As portas de cada no vem da config, nao do CLI
   (com `network_mode: host`, colisao de porta e o erro tipico). No 1 =
@@ -129,11 +133,17 @@ invocados pelo binario (ver o `README.md` de la).
 
 ## Infra de build e dev na raiz
 
-- `Dockerfile` - dois estagios: builder `nvidia/cuda:13.0.3-devel-ubuntu24.04`
-  compila `--features cuda` com cache mounts (registry/git/target) e monta a UI
-  (`apps/frontend/dist`); runtime e a base CUDA 13.0.3 com `LD_LIBRARY_PATH`
-  no `compat/` e `POM_HOME=/app`. `ARG POM_BUILD_COMMIT` recebe o
-  commit do host (ver `build-docker.sh`).
+- `Dockerfile` - dois estagios: builder `nvidia/cuda:13.2.1-devel-ubuntu24.04`
+  compila `pom` com CUDA/Vulkan e `pom-plugin-host` sem features, com cache
+  mounts (registry/git/target), e monta a UI (`apps/frontend/dist`). O runtime
+  copia os dois binarios e usa `docker-entrypoint.sh`, que faz `exec` do `pom`
+  e exporta `POM_PLUGIN_HOST`; na ativacao, o `pom` inicia o host como filho
+  com o plugin baixado e IPC por stdin/stdout, sem socket ou volume de IPC.
+  `ARG POM_BUILD_COMMIT` recebe o commit do host (ver `build-docker.sh`).
+- `docker-entrypoint.sh` - valida que `pom` e `pom-plugin-host` estao
+  executaveis, fixa o caminho do host e preserva os argumentos do container.
+  Nao inicia um host vazio no boot porque o host precisa do caminho do plugin
+  Enterprise, que so existe depois da ativacao.
 - `docker-compose.yml` - cluster local de 4 servicos (`node-gpu`, `node-gpu-2`,
   `node-cpu-1`, `node-cpu-2`) com `network_mode: host`; estado em
   `tests/fixtures/<nome>` e modelos montados de `./models`. GPU so via

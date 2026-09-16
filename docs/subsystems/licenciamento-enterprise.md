@@ -28,6 +28,10 @@ garantias atuais dos limites restantes. A especificação completa
   IPC assíncrono com frames limitados, timeout e encerramento ordenado. O
   caminho ativo envia eventos neutros ao host; o `pom.db` legado é fallback
   transitório para testes, migração e falha do plugin.
+- A imagem Docker copia `pom-plugin-host` para `/usr/local/bin` ao lado de
+  `pom`. O entrypoint valida ambos, e o `pom` inicia o host somente após a
+  ativação, com o caminho absoluto do plugin baixado e pipes stdin/stdout;
+  `docker-compose.yml` só precisa persistir `/data`, sem socket IPC extra.
 
 O ABI C v1 é deliberadamente pequeno e explícito: descriptor imutável com
 versão, capacidades e callbacks `create`, `ingest`, `query`, `free_buffer` e

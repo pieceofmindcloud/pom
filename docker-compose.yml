@@ -42,6 +42,10 @@ x-node: &node
   environment:
     POM_HOME: /data
     POM_UI_DIST: /app/apps/frontend/dist
+    # O plugin host é um filho do pom e usa stdin/stdout com frames JSON de
+    # tamanho prefixado. Não há socket Unix nem volume adicional para IPC;
+    # o plugin baixado e enterprise.db persistem no volume /data.
+    POM_PLUGIN_HOST: /usr/local/bin/pom-plugin-host
     POM_PROFILE_SYNC: 1
     # Telemetry profile (crates/node/src/telemetry.rs: off|basic|trace). `trace`
     # keeps the execution telemetry card COMPLETE - per-chunk detail and the

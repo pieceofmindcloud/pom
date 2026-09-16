@@ -5614,6 +5614,32 @@ extern "C" int pom_moe_device_upload_many(
         if (payloads[index] == nullptr || payload_lengths[index] == 0) return 1;
     }
 
+    // GGUF experts are backed by mmap'd, pageable host memory. Copying them
+    // directly with cudaMemcpyAsync makes the CUDA runtime create an implicit
+    // staging allocation on every batch, which is especially expensive while
+    // the resident cache is admitting a new working set. Use one bounded
+    // pinned staging window and reuse it for the whole batch. The window is
+    // intentionally bounded so a large prefill cannot consume an unbounded
+    // amount of the host's pinned-memory quota.
+    constexpr std::size_t kPinnedUploadChunkBytes = 256 * 1024 * 1024;
+    std::size_t total_payload_bytes = 0;
+    for (std::size_t index = 0; index < payload_count; ++index) {
+        if (payload_lengths[index] >
+            std::numeric_limits<std::size_t>::max() - total_payload_bytes) {
+            return 1;
+        }
+        total_payload_bytes += payload_lengths[index];
+    }
+
+    std::uint8_t *pinned_staging = nullptr;
+    const std::size_t staging_bytes = std::min(
+        total_payload_bytes, kPinnedUploadChunkBytes);
+    // A host may have a restrictive pinned-memory quota. Fall back to the
+    // existing pageable path in that case; an upload must not become a new
+    // inference failure merely because optional staging could not be reserved.
+    const bool use_pinned_staging =
+        cudaMallocHost(reinterpret_cast<void **>(&pinned_staging), staging_bytes) == cudaSuccess;
+
     // Use the device memory pool so a cache eviction does not force the
     // legacy cudaFree synchronization on every expert. The copy itself stays
     // synchronous because callers may release a temporary mmap/Vec as soon
@@ -5624,15 +5650,60 @@ extern "C" int pom_moe_device_upload_many(
         status = cuda_status(cudaMallocAsync(&out[index], payload_lengths[index], nullptr));
         if (status != 0) goto fail;
     }
-    for (std::size_t index = 0; index < payload_count; ++index) {
-        status = cuda_status(cudaMemcpyAsync(
-            out[index], payloads[index], payload_lengths[index], cudaMemcpyHostToDevice, nullptr));
-        if (status != 0) goto fail;
+
+    if (use_pinned_staging) {
+        std::size_t payload_index = 0;
+        std::size_t payload_offset = 0;
+        while (payload_index < payload_count) {
+            std::size_t staged_bytes = 0;
+            while (payload_index < payload_count &&
+                   staged_bytes < staging_bytes) {
+                const std::size_t remaining =
+                    payload_lengths[payload_index] - payload_offset;
+                const std::size_t chunk = std::min(
+                    remaining, staging_bytes - staged_bytes);
+                std::memcpy(
+                    pinned_staging + staged_bytes,
+                    payloads[payload_index] + payload_offset,
+                    chunk);
+                status = cuda_status(cudaMemcpyAsync(
+                    static_cast<std::uint8_t *>(out[payload_index]) + payload_offset,
+                    pinned_staging + staged_bytes,
+                    chunk,
+                    cudaMemcpyHostToDevice,
+                    nullptr));
+                if (status != 0) goto fail;
+                staged_bytes += chunk;
+                payload_offset += chunk;
+                if (payload_offset == payload_lengths[payload_index]) {
+                    ++payload_index;
+                    payload_offset = 0;
+                }
+            }
+            // The same staging window is reused in the next iteration, so
+            // complete this window before overwriting its host bytes.
+            status = cuda_status(cudaStreamSynchronize(nullptr));
+            if (status != 0) goto fail;
+        }
+    } else {
+        for (std::size_t index = 0; index < payload_count; ++index) {
+            status = cuda_status(cudaMemcpyAsync(
+                out[index], payloads[index], payload_lengths[index],
+                cudaMemcpyHostToDevice, nullptr));
+            if (status != 0) goto fail;
+        }
     }
     status = cuda_status(cudaStreamSynchronize(nullptr));
-    if (status == 0) return 0;
+    if (status == 0) {
+        if (pinned_staging != nullptr) cudaFreeHost(pinned_staging);
+        return 0;
+    }
 
 fail:
+    // A failed async copy may still be reading the pinned window. Synchronize
+    // before releasing it, then clean up the device allocations as before.
+    (void) cudaStreamSynchronize(nullptr);
+    if (pinned_staging != nullptr) cudaFreeHost(pinned_staging);
     for (std::size_t index = 0; index < payload_count; ++index) {
         if (out[index] != nullptr) {
             (void) cudaFreeAsync(out[index], nullptr);

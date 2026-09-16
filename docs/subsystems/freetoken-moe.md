@@ -2981,6 +2981,27 @@ com `nvidia-smi` sem processo concorrente mediram `10,6127`, `11,8136` e
 sem texto corrompido. O resultado é uma melhoria observada, mas ainda está
 abaixo da meta de `1,5x` sobre o denso.
 
+### Fase 5.18: staging pinned dos uploads de pesos - 2026-09-16
+
+O perfil do FreeToken trata a VRAM, a RAM e o caminho PCIe como um único
+substrato. No POM, os experts frios continuam vindo de fatias mmap pagináveis;
+o `cudaMemcpyAsync` direto dessas fatias deixa o runtime CUDA criar staging
+implícito durante cada admissão. Isso é diferente do staging pinned persistente
+que já existe para as ativações e para a saída do pipeline.
+
+O upload em lote agora reserva, quando possível, uma janela host pinned de até
+`256 MiB`, copia os payloads para essa janela em chunks e só a reutiliza depois
+de sincronizar o stream. A janela é limitada para não transformar um prefill
+grande em consumo ilimitado de memória pinned. Se a quota do host impedir a
+reserva, o upload volta ao caminho pageable anterior e preserva a disponibilidade
+do serviço. As alocações de pesos no device e a sincronização final do lote não
+mudaram; o fork do llama.cpp permanece intocado.
+
+A medição A/B deste candidato ainda deve ser feita na ksia com três rodadas,
+`nvidia-smi` imediatamente antes de cada requisição e o mesmo prompt/parâmetros
+da referência `ea58bfab`. O candidato só permanece se reduzir ou preservar a
+mediana de `10,9890 tok/s` da referência segura.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

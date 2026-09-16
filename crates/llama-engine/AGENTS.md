@@ -96,6 +96,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   O dispatcher q8 heterogêneo escolhe helpers diretos por dtype, sem ponteiro
   de função de device no loop de blocos, permitindo ao nvcc fazer inline das
   primitivas canônicas.
+  O upload em lote dos pesos copia fatias mmap pagináveis por uma janela pinned
+  limitada a 256 MiB, reutilizada em chunks e sincronizada antes de ser
+  sobrescrita; se a quota de memória pinned do host recusar a janela, o
+  caminho pageable anterior continua como fallback.
   Cada pipeline heterogêneo mantém um staging host pinned para a saída CUDA:
   o callback do llama.cpp continua recebendo um buffer host comum, mas a
   transferência D2H não paga o staging pageable em cada chamada.

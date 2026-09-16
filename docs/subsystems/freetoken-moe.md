@@ -2961,6 +2961,23 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
+### Fase 5.17: despacho q8 heterogêneo direto por dtype - 2026-09-16
+
+O kernel q8 heterogêneo recebia um ponteiro de função CUDA escolhido pelo dtype
+e chamava esse ponteiro dentro do loop de blocos de cada linha. Isso preservava
+o resultado, mas impedia o compilador de fazer inline das primitivas
+`vec_dot_*_q8_1` canônicas do fork. Para a rota Mistral-Small, que mistura os
+dtypes 18, 22 e 23, o dispatch agora seleciona um helper compilado por dtype;
+cada helper chama diretamente a primitiva correspondente. O layout de
+`block_q8_1`, a quantização, a redução warp e o número de lançamentos não
+mudaram.
+
+Um teste de fonte impede o retorno do alias de ponteiro de função no caminho
+q8. O worktree não tem `nvcc` nem GPU, então esta fase não afirma ganho de
+desempenho nem corretude CUDA até o build e as três rodadas na ksia. A decisão
+de manter ou reverter deve usar a mediana contra a referência `b4df3c22`, hoje
+`10,2416 tok/s`, com `nvidia-smi` imediatamente antes de cada rodada.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

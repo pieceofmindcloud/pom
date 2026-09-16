@@ -4586,6 +4586,19 @@ mod tests {
     }
 
     #[test]
+    fn kernel_heterogeneo_nao_despacha_vec_dot_por_ponteiro_indireto() {
+        let source = include_str!("cuda_kernels.cu");
+        assert!(
+            !source.contains("using HeterogeneousVecDotQ8_1"),
+            "o hot path não pode chamar vec_dot por ponteiro de função CUDA"
+        );
+        assert!(
+            source.contains("heterogeneous_quant_partial_dot_q8_1_direct"),
+            "o kernel deve manter um dispatcher CUDA com chamadas diretas por dtype"
+        );
+    }
+
+    #[test]
     #[ignore = "medição CUDA explícita; execute com POM_MOE_CUDA_PROFILE=1"]
     fn mede_banda_h2d_d2h_do_lote_nvfp4() {
         let cases = [

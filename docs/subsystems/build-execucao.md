@@ -245,6 +245,8 @@ ssh ksia 'bash -lc "cd /data/ftk-cuda-src && \
   export PATH=/usr/local/cuda-12/bin:\$PATH && \
   export CUDAARCHS=120 && \
   export CUDACXX=/usr/local/cuda-12/bin/nvcc && \
+  export NCCL_ROOT=/usr && \
+  export GGML_CUDA_NCCL=ON && \
   export CCACHE=ccache && \
   CARGO_TARGET_DIR=/data/ftk-cuda-target \
   cargo build --release --features vulkan,cuda"'
@@ -253,9 +255,14 @@ ssh ksia 'bash -lc "cd /data/ftk-cuda-src && \
 O `PATH` é necessário porque o `build.rs` executa o programa `nvcc`
 diretamente; `CUDACXX` também deve ser definido para os sub-builds que
 consumirem a convenção CMake. `CUDAARCHS=120` limita o kernel MoE à GPU da
-ksia. `CCACHE=ccache` faz o `build.rs` executar `ccache nvcc`; o target Rust
-continua em `/data/ftk-cuda-target`. `/data/ksia-target` fica reservado ao
-binário servido e nunca é usado para validar uma revisão.
+ksia. `NCCL_ROOT=/usr` orienta o `FindNCCL` para a instalação do host, e
+`GGML_CUDA_NCCL=ON` é necessário para optar pelo caminho coletivo. O `build.rs`
+também lê a biblioteca resolvida do `CMakeCache.txt` e emite o link dinâmico
+para o executável Rust; sem isso o archive estático do llama.cpp deixa símbolos
+`nccl*` sem resolução no link final. `CCACHE=ccache` faz o `build.rs` executar
+`ccache nvcc`; o target Rust continua em `/data/ftk-cuda-target`.
+`/data/ksia-target` fica reservado ao binário servido e nunca é usado para
+validar uma revisão.
 
 ## Identidade do produto (`brand.json`)
 

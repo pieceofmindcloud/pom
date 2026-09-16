@@ -72,6 +72,12 @@ o launcher muda. O helper `scripts/build-env.sh` usa `sccache` nesses pontos;
 nao ha caminho prebuilt para `libllama` porque um arquivo isolado nao prova
 source, target, feature ou configuracao CMake compativeis.
 
+NCCL fica opt-in nos builds CUDA. `GGML_CUDA_NCCL=ON` ativa o caminho coletivo
+no CMake e tambem faz o `build.rs` propagar `NCCL_LIBRARY` do cache CMake para o
+link final do executavel Rust. Sem essa segunda etapa, os arquivos estaticos do
+llama.cpp compilam chamadas `nccl*`, mas o link final falha com simbolos
+indefinidos. O caminho desativado continua sem dependencia em `libnccl.so`.
+
 Com a feature `vulkan` em macOS, o build tambem publica a busca e o link do
 loader `libvulkan.dylib` a partir de `CMAKE_Vulkan_LIBRARY`, `Vulkan_LIBRARY` ou
 `VULKAN_SDK`; isso é necessário porque o CMake produz os objetos Vulkan

@@ -58,10 +58,11 @@ impl CacheBudgetSnapshot {
 /// Margem adicional relativa ao buffer de computação medido no contexto
 /// llama.cpp.
 ///
-/// O buffer de computação já foi alocado quando esta política mede o baseline.
-/// Portanto a reserva não deve contar o buffer inteiro novamente: conserva 25%
-/// dele como margem adicional, mas limita essa margem a 512 MiB para que um
-/// microlote e contexto grandes não consumam todo o orçamento do cache.
+/// O relatório de memória do llama.cpp descreve o buffer de computação que o
+/// scheduler precisa reservar, mas a alocação efetiva pode acontecer depois de
+/// o cache residente ser criado e aquecido. O buffer inteiro fica fora do LRU;
+/// além dele, conserva-se 25% como margem adicional, limitada a 512 MiB, para
+/// fragmentação e alocações transitórias.
 #[cfg(any(feature = "cuda", test))]
 const COMPUTE_HEADROOM_NUMERATOR: u64 = 1;
 #[cfg(any(feature = "cuda", test))]
@@ -134,16 +135,17 @@ pub fn cuda_compute_bytes_by_device(memory: &serde_json::Value) -> Option<Vec<(u
 impl MemoryAccount {
     /// Cria o orçamento do cache de device a partir da medição do llama.cpp.
     ///
-    /// Os pesos e buffers do contexto já estão refletidos na leitura de VRAM
-    /// livre feita depois da criação do contexto. O compute buffer medido fica
-    /// registrado para diagnóstico, com a margem adicional definida acima.
+    /// Os pesos e buffers já alocados estão refletidos na leitura de VRAM livre.
+    /// O compute buffer medido também fica reservado integralmente porque o
+    /// scheduler pode materializá-lo somente depois da criação do cache. Isso
+    /// impede que o primeiro request provoque eviction em cascata do warmup.
     #[cfg(any(feature = "cuda", test))]
     pub fn for_device_cache(baseline_free_bytes: u64, compute_bytes: u64) -> Option<Self> {
         Some(Self {
             baseline_free_bytes,
             compute_bytes,
             weights_bytes: 0,
-            fixed_bytes: 0,
+            fixed_bytes: compute_bytes,
             reserve_bytes: device_cache_reserve_bytes(compute_bytes)?,
         })
     }
@@ -303,9 +305,10 @@ mod tests {
         let account = MemoryAccount::for_device_cache(baseline, compute).unwrap();
 
         assert_eq!(account.reserve_bytes, 512 * 1024 * 1024);
+        assert_eq!(account.fixed_bytes, compute);
         assert_eq!(
             account.cache_limit_bytes(baseline, 0),
-            Some(baseline - account.reserve_bytes)
+            Some(baseline - compute - account.reserve_bytes)
         );
     }
 
@@ -318,7 +321,8 @@ mod tests {
     fn account_do_cache_de_device_preserva_a_reserva_medida() {
         let account = MemoryAccount::for_device_cache(10_000, 1_000).unwrap();
 
+        assert_eq!(account.fixed_bytes, 1_000);
         assert_eq!(account.reserve_bytes, 250);
-        assert_eq!(account.cache_limit_bytes(10_000, 0), Some(9_750));
+        assert_eq!(account.cache_limit_bytes(10_000, 0), Some(8_750));
     }
 }

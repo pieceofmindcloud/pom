@@ -1689,25 +1689,27 @@ recusam explicitamente.
 
 #### Correção de admissão por workspace medido
 
-O orçamento agora também preserva o workspace transitório que o próprio
-`llama.cpp` mediu depois de construir o contexto. `LlmEngine::cuda_compute_bytes`
-extrai os buffers `CUDA*` de `llama_rs_context_memory_json`, soma apenas o
-campo `compute` residente no device e ignora `CUDA_Host`; relatório ausente,
-incompleto ou sem bytes CUDA positivos recusa o executor CUDA com mensagem
-explícita. A reserva é `ceil(1,25 * compute_bytes)` usando aritmética inteira,
-uma margem relativa de 25% para crescimento do grafo e fragmentação, e não uma
-capacidade fixa de placa, contexto ou modelo.
+O orçamento preserva o workspace transitório que o próprio `llama.cpp` reporta.
+`LlmEngine::cuda_compute_bytes` extrai os buffers `CUDA*` de
+`llama_rs_context_memory_json`, soma apenas o campo `compute` residente no
+device e ignora `CUDA_Host`; relatório ausente, incompleto ou sem bytes CUDA
+positivos recusa o executor CUDA com mensagem explícita. O tamanho inteiro do
+compute buffer fica fora do LRU, porque o scheduler pode materializá-lo depois
+da criação e do warmup do cache. Além dele, a reserva é
+`ceil(1,25 * compute_bytes)` usando aritmética inteira, uma margem relativa de
+25% para crescimento do grafo e fragmentação, e não uma capacidade fixa de
+placa, contexto ou modelo.
 
-O `DeviceExpertCache` usa essa reserva tanto no teto inicial quanto na nova
-medição de memória livre de cada miss. Se o expert nomeado pela chave
+O `DeviceExpertCache` usa o compute reservado e a margem tanto no teto inicial
+quanto na nova medição de memória livre de cada miss. Se o expert nomeado pela chave
 `modelo/camada/expert/formato` não couber depois da reserva e da eviction de
 entradas ociosas, a admissão recusa e inclui device, chave, bytes solicitados e
 limite disponível. Não há tentativa de alocação para descobrir se cabe, nem
 fallback silencioso para uma residência que consumiria o workspace do grafo.
 O teste `cache_device_recusa_expert_quando_workspace_medido_consumiu_o_orcamento`
-cobre o caso apertado com allocator falso. Esta correção está em implementação
-local; a promoção exige build CUDA no ramo de checagem e validação no ambiente
-real, sem alterar o serviço durante a medição do captain.
+cobre o caso apertado com allocator falso. A validação final exige build CUDA
+no ramo de checagem e medição no ambiente real, sem alterar o serviço durante
+a medição do captain.
 
 No NVFP4, o lote agora envia a lista pequena de ponteiros residentes para a
 GPU. O H2D interno do lote contém hidden e ponteiros, não os pesos; `upload_ms`

@@ -81,6 +81,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   admissões pelas camadas antes de esgotar o orçamento de cada GPU; isso evita
   aquecer apenas o prefixo do modelo e concentrar misses na primeira
   requisição.
+  O orçamento CUDA reserva integralmente o compute buffer reportado pelo
+  llama.cpp, além da margem de crescimento; o scheduler pode materializar
+  esse workspace depois da criação do cache e não deve expulsar experts no
+  primeiro request.
   Pares repetidos de expert e token são calculados uma vez e a agregação
   conserva o peso de cada rota original.
   No IQ3_XXS a entrada é quantizada para `block_q8_1` e o decoder nativo

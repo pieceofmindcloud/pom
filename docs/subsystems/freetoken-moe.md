@@ -2936,21 +2936,6 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
-### Fase 5.16: fusão correta de ativação e quantização q8 - 2026-09-16
-
-O vetor float produzido entre gate/up e down era escrito e lido novamente
-apenas para ser quantizado em `block_q8_1`. A fusão usa uma warp por bloco para
-calcular a ativação, reduzir máximo e soma e gravar diretamente o bloco q8.
-O máximo é transmitido explicitamente da lane zero para todas as lanes antes
-da divisão por `127`; sem esse broadcast, cada lane usaria um máximo parcial,
-corrompendo a escala e a saída do modelo.
-
-A fórmula de ativação, o arredondamento, o layout `block_q8_1` e o decoder
-`vec_dot_*_q8_1` não mudam. O buffer float continua reservado para preservar
-capacidade e diagnóstico, mas deixa de participar desse estágio. Esta é uma
-candidata de produção e só permanece após build CUDA, saída correta e A/B
-longo contra a melhor medição aquecida confirmada.
-
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

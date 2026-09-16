@@ -1702,19 +1702,6 @@ impl HeterogeneousCudaExecutor {
             .map_err(|error| CudaMoeError::Cache(error.to_string()))
     }
 
-    pub fn resident_admit_bundles<'a, I>(
-        &self,
-        device_index: u32,
-        candidates: I,
-    ) -> Result<Vec<super::cache::DeviceExpertLease>, CudaMoeError>
-    where
-        I: IntoIterator<Item = (super::cache::ExpertKey, Vec<&'a [u8]>)>,
-    {
-        self.resident_cache
-            .admit_bundles_on_device(device_index, candidates)
-            .map_err(|error| CudaMoeError::Cache(error.to_string()))
-    }
-
     pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
         self.resident_cache.stats()
     }
@@ -2369,59 +2356,6 @@ impl DeviceAllocator for CudaDeviceAllocator {
             })
             .collect()
     }
-
-    fn upload_bundles(
-        &self,
-        bundles: &[&[&[u8]]],
-    ) -> Result<Vec<Box<dyn DeviceAllocation>>, String> {
-        if bundles.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut payload_ptrs = Vec::new();
-        let mut payload_lengths = Vec::new();
-        let mut bundle_segment_offsets = Vec::with_capacity(bundles.len() + 1);
-        bundle_segment_offsets.push(0usize);
-        let mut bundle_bytes = Vec::with_capacity(bundles.len());
-        for segments in bundles {
-            if segments.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
-                return Err("bundle CUDA precisa de segmentos não vazios".into());
-            }
-            for segment in *segments {
-                payload_ptrs.push(segment.as_ptr());
-                payload_lengths.push(segment.len());
-            }
-            bundle_segment_offsets.push(payload_ptrs.len());
-            bundle_bytes.push(super::cache::device_bundle_allocation_bytes(segments)?);
-        }
-        let mut handles = vec![std::ptr::null_mut(); bundles.len()];
-        let status = unsafe {
-            pom_moe_device_upload_bundles(
-                self.device_index as i32,
-                payload_ptrs.as_ptr(),
-                payload_lengths.as_ptr(),
-                bundle_segment_offsets.as_ptr(),
-                bundles.len(),
-                handles.as_mut_ptr(),
-            )
-        };
-        if status != 0 {
-            return Err(format!("upload CUDA de bundles retornou {status}"));
-        }
-        handles
-            .into_iter()
-            .zip(bundle_bytes)
-            .map(|(handle, bytes)| {
-                if handle.is_null() {
-                    return Err("upload CUDA de bundles retornou handle nulo".into());
-                }
-                Ok(Box::new(CudaDeviceAllocation {
-                    device_index: self.device_index,
-                    handle: handle as usize,
-                    bytes,
-                }) as Box<dyn DeviceAllocation>)
-            })
-            .collect()
-    }
 }
 
 fn measured_device_cache(compute_bytes: u64) -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
@@ -2666,14 +2600,6 @@ unsafe extern "C" {
         payloads: *const *const u8,
         payload_lengths: *const usize,
         payload_count: usize,
-        out: *mut *mut c_void,
-    ) -> i32;
-    fn pom_moe_device_upload_bundles(
-        device_index: i32,
-        payloads: *const *const u8,
-        payload_lengths: *const usize,
-        bundle_segment_offsets: *const usize,
-        bundle_count: usize,
         out: *mut *mut c_void,
     ) -> i32;
     fn pom_moe_device_free(device_index: i32, handle: *mut c_void);

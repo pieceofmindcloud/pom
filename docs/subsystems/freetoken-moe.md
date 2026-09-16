@@ -2961,32 +2961,6 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
-### Fase 5.17: bundle residente por expert heterogêneo - 2026-09-16
-
-O cache heterogêneo ainda tratava gate/up/down como entradas LRU separadas.
-Essa granularidade é incompatível com o working set do FreeToken: um expert
-só pode ser usado no device quando todos os seus papéis estão presentes, então
-expulsar um único papel transforma o próximo uso em miss e repete H2D de forma
-fragmentada. O executor agora usa uma chave de residência por
-`(modelo, camada, expert)` e admite o expert inteiro como um bundle indivisível.
-
-Cada bundle reserva uma única alocação CUDA, com cada slice começando em offset
-alinhado a 256 bytes. O allocator CUDA enfileira as cópias dos slices do mmap
-diretamente nessa alocação e sincroniza o stream uma vez por lote. O descriptor
-continua recebendo o tamanho real e os metadados de cada papel, mas aponta para
-`base + offset`; um único lease mantém a alocação viva durante o forward.
-Allocators de teste usam a implementação padrão, que monta um buffer temporário
-somente para validar o contrato. O fork do llama.cpp não foi alterado.
-
-Além de reduzir chamadas de alocação e impedir eviction parcial, a mudança
-torna a decisão de residência igual à unidade de trabalho do executor: hits e
-evictions passam a contar experts completos, e os bytes de telemetria de upload
-continuam contando apenas os bytes úteis dos slices, enquanto a reserva mede os
-bytes alocados incluindo padding. A prova CUDA deve comparar três rodadas com
-`nvidia-smi` limpo antes de cada chamada, o mesmo prompt e parâmetros da
-referência `b4df3c22`, sem aceitar qualquer queda no melhor medido de
-`10,2416 tok/s`.
-
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

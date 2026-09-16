@@ -77,11 +77,6 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   allocator faz todas as alocações e cópias em um lote e sincroniza o stream
   uma vez; eviction usa `cudaFreeAsync` para não introduzir um wait global por
   tensor. A cópia ainda termina antes de o slice temporário sair de escopo.
-  No caminho heterogêneo, gate/up/down de cada expert são admitidos como um
-  único bundle LRU em uma alocação CUDA alinhada a 256 bytes. O allocator CUDA
-  copia os slices do mmap diretamente para os offsets do bundle e devolve um
-  único lease; os descriptors apontam para os offsets dos papéis sem duplicar
-  a residência nem permitir eviction parcial de um expert.
   O warmup percorre experts por camada em ordem expert-major, espalhando as
   admissões pelas camadas antes de esgotar o orçamento de cada GPU; isso evita
   aquecer apenas o prefixo do modelo e concentrar misses na primeira

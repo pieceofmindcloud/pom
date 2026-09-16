@@ -1211,63 +1211,6 @@ pub struct HeterogeneousHostDiagnostics {
     pub coexecution_gpu_fraction: Option<f32>,
 }
 
-#[cfg(feature = "cuda")]
-const HETEROGENEOUS_BUNDLE_FORMAT: &str = "heterogeneous:bundle:v1";
-
-#[cfg(feature = "cuda")]
-const HETEROGENEOUS_BUNDLE_ALIGNMENT: usize = 256;
-
-#[cfg(feature = "cuda")]
-#[derive(Clone, Copy)]
-struct HeterogeneousBundleTensor {
-    spec: HeterogeneousTensorSpec,
-    offset: usize,
-    bytes: usize,
-}
-
-#[cfg(feature = "cuda")]
-fn heterogeneous_bundle_key(model: &str, layer: u32, expert: u32) -> ExpertKey {
-    ExpertKey::new(model, layer, expert, HETEROGENEOUS_BUNDLE_FORMAT)
-}
-
-#[cfg(feature = "cuda")]
-fn heterogeneous_bundle_layout(
-    source: &HeterogeneousMoeSource,
-    specs: &[HeterogeneousTensorSpec],
-) -> Result<Vec<HeterogeneousBundleTensor>, MoeBlockError> {
-    let mut layout = Vec::with_capacity(specs.len());
-    let mut offset = 0usize;
-    for &spec in specs {
-        offset = offset
-            .checked_add(HETEROGENEOUS_BUNDLE_ALIGNMENT - 1)
-            .map(|value| value & !(HETEROGENEOUS_BUNDLE_ALIGNMENT - 1))
-            .ok_or_else(|| MoeBlockError::Executor("bundle CUDA excede usize".into()))?;
-        let bytes = source
-            .expert_tensor_slice(spec)
-            .map_err(|error| MoeBlockError::Executor(error.to_string()))?
-            .len();
-        if bytes == 0 {
-            return Err(MoeBlockError::Executor(
-                "tensor heterogêneo vazio não pode entrar no bundle CUDA".into(),
-            ));
-        }
-        layout.push(HeterogeneousBundleTensor {
-            spec,
-            offset,
-            bytes,
-        });
-        offset = offset
-            .checked_add(bytes)
-            .ok_or_else(|| MoeBlockError::Executor("bundle CUDA excede usize".into()))?;
-    }
-    if layout.is_empty() {
-        return Err(MoeBlockError::Executor(
-            "expert heterogêneo sem tensors".into(),
-        ));
-    }
-    Ok(layout)
-}
-
 impl HeterogeneousMoeBlock {
     pub fn new(
         cache: Arc<ExpertCache>,
@@ -1527,15 +1470,20 @@ impl HeterogeneousMoeBlock {
             .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
         let resident_gpu_experts = unique_experts
             .iter()
+            .copied()
             .zip(specs_by_expert)
-            .filter_map(|(&expert, specs)| {
-                (!specs.is_empty()
-                    && cuda.resident_contains(&heterogeneous_bundle_key(
-                        &self.model,
-                        self.layer,
-                        expert,
-                    )))
-                .then_some(expert)
+            .filter_map(|(expert, specs)| {
+                let complete = !specs.is_empty()
+                    && specs.into_iter().all(|spec| {
+                        let key = ExpertKey::new(
+                            &self.model,
+                            self.layer,
+                            expert,
+                            format!("heterogeneous:{}:{}", spec.role.as_str(), spec.dtype),
+                        );
+                        cuda.resident_contains(&key)
+                    });
+                complete.then_some(expert)
             })
             .collect::<Vec<_>>();
         let split = split_route_experts(experts, &resident_gpu_experts, Some(profile))
@@ -1650,30 +1598,33 @@ impl HeterogeneousMoeBlock {
         // Mantemos uma fila por device: dentro de um shard o mutex do cache
         // continua serializando admissão, eviction e atualização do LRU, mas
         // uploads para GPUs distintas podem progredir em paralelo.
-        let mut unique_specs = Vec::new();
-        let mut seen_experts = HashSet::new();
+        let mut resolved_experts = Vec::with_capacity(experts.len());
+        let mut pending_by_device: HashMap<u32, Vec<(ExpertKey, HeterogeneousTensorSpec)>> =
+            HashMap::new();
+        let mut pending_keys = HashSet::new();
         let specs_by_expert = source
             .expert_tensor_specs_batch(self.layer, experts)
             .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
         for (&expert, specs) in experts.iter().zip(specs_by_expert) {
-            if seen_experts.insert(expert) {
-                unique_specs.push((expert, specs));
+            let mut resolved_specs = Vec::with_capacity(specs.len());
+            for spec in specs {
+                let key = ExpertKey::new(
+                    &self.model,
+                    self.layer,
+                    expert,
+                    format!("heterogeneous:{}:{}", spec.role.as_str(), spec.dtype),
+                );
+                let lease = cuda.resident_lookup(&key);
+                if lease.is_none() && pending_keys.insert(key.clone()) {
+                    let device_index = cuda.device_index_for_key(&key);
+                    pending_by_device
+                        .entry(device_index)
+                        .or_default()
+                        .push((key.clone(), spec));
+                }
+                resolved_specs.push((spec, key, lease));
             }
-        }
-        let mut layouts_by_expert = HashMap::with_capacity(unique_specs.len());
-        let mut pending_by_device: HashMap<u32, Vec<(ExpertKey, Vec<HeterogeneousTensorSpec>)>> =
-            HashMap::new();
-        for (expert, specs) in unique_specs {
-            let layout = heterogeneous_bundle_layout(source, &specs)?;
-            layouts_by_expert.insert(expert, layout);
-            let key = heterogeneous_bundle_key(&self.model, self.layer, expert);
-            if cuda.resident_lookup(&key).is_none() {
-                let device_index = cuda.device_index_for_key(&key);
-                pending_by_device
-                    .entry(device_index)
-                    .or_default()
-                    .push((key, specs));
-            }
+            resolved_experts.push(resolved_specs);
         }
 
         let admission_results = std::thread::scope(|scope| {
@@ -1683,16 +1634,14 @@ impl HeterogeneousMoeBlock {
                     scope.spawn(move || {
                         let candidates = pending
                             .into_iter()
-                            .map(|(key, specs)| {
-                                let segments = specs
-                                    .iter()
-                                    .map(|&spec| source.expert_tensor_slice(spec))
-                                    .collect::<Result<Vec<_>, _>>()
-                                    .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
-                                Ok((key, segments))
+                            .map(|(key, spec)| {
+                                source
+                                    .expert_tensor_slice(spec)
+                                    .map(|bytes| (key, bytes))
+                                    .map_err(|error| MoeBlockError::Executor(error.to_string()))
                             })
                             .collect::<Result<Vec<_>, MoeBlockError>>()?;
-                        cuda.resident_admit_bundles(device_index, candidates)
+                        cuda.resident_admit_many(device_index, candidates)
                             .map_err(|error| MoeBlockError::Executor(error.to_string()))
                     })
                 })
@@ -1716,23 +1665,18 @@ impl HeterogeneousMoeBlock {
         let mut descriptors = Vec::with_capacity(experts.len());
         let mut leases = Vec::new();
         let mut device_indices = Vec::with_capacity(experts.len());
-        for &expert in experts {
-            let key = heterogeneous_bundle_key(&self.model, self.layer, expert);
-            let lease = cuda.resident_lookup(&key).ok_or_else(|| {
-                MoeBlockError::Executor(format!(
-                    "expert heterogêneo {expert} desapareceu do cache após admissão"
-                ))
-            })?;
-            let base = lease.handle() as *const u8;
+        for (expert, resolved_specs) in experts.iter().copied().zip(resolved_experts) {
             let mut descriptor = CudaHeterogeneousExpert::default();
-            let device_index = lease.device_index();
-            let layout = layouts_by_expert.get(&expert).ok_or_else(|| {
-                MoeBlockError::Executor(format!(
-                    "layout do expert heterogêneo {expert} desapareceu antes do forward"
-                ))
-            })?;
-            for placement in layout {
-                let spec = placement.spec;
+            let mut expert_device_index = None;
+            for (spec, key, lease) in resolved_specs {
+                let lease = match lease {
+                    Some(lease) => lease,
+                    None => cuda.resident_lookup(&key).ok_or_else(|| {
+                        MoeBlockError::Executor(format!(
+                            "expert heterogêneo {expert} desapareceu do cache após admissão"
+                        ))
+                    })?,
+                };
                 let HeterogeneousTensorSpec {
                     role,
                     dtype,
@@ -1741,9 +1685,19 @@ impl HeterogeneousMoeBlock {
                     scales,
                     ..
                 } = spec;
+                match expert_device_index {
+                    Some(expected) if expected != lease.device_index() => {
+                        return Err(MoeBlockError::Executor(format!(
+                            "expert heterogêneo {expert} foi particionado entre CUDA{expected} e CUDA{}",
+                            lease.device_index()
+                        )))
+                    }
+                    None => expert_device_index = Some(lease.device_index()),
+                    _ => {}
+                }
                 let tensor = CudaHeterogeneousTensor {
-                    data: base.wrapping_add(placement.offset),
-                    bytes: placement.bytes,
+                    data: lease.handle() as *const u8,
+                    bytes: lease.bytes(),
                     rows,
                     columns,
                     dtype,
@@ -1766,10 +1720,15 @@ impl HeterogeneousMoeBlock {
                         )))
                     }
                 }
+                leases.push(lease);
             }
+            let Some(device_index) = expert_device_index else {
+                return Err(MoeBlockError::Executor(format!(
+                    "expert heterogêneo {expert} não possui tensors"
+                )));
+            };
             device_indices.push(device_index);
             descriptors.push(descriptor);
-            leases.push(lease);
         }
         let output = cuda
             .run_route_batch_resident(

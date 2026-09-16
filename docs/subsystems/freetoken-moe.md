@@ -3011,8 +3011,8 @@ genérico `cache_entries` do cache de host. A medição de throughput da
 instrumentação foi feita na ksia em `e8709f09`: três rodadas sem processo
 concorrente tiveram `11,018`, `10,440` e `10,351 tok/s`; a capacidade
 efetiva variou de `15,337` a `17,803 GB` e a residência terminou encostada
-nesse limite. A próxima rodada com este detalhamento deve decidir se há
-alguma margem conservadora antes de alterar a política.
+nesse limite. A Fase 5.19 usou esse detalhamento para confirmar a margem
+recuperável dos buffers de compute e validar a redução do microlote físico.
 
 ### Fase 5.19: microlote físico menor para o cache residente - 2026-09-16
 
@@ -3027,8 +3027,34 @@ O primeiro ajuste de capacidade mantém `n_batch=512` como lote público, mas
 limita `n_ubatch` a `128` somente quando `moe_external_executor` está ativo.
 O grafo do llama.cpp passa a reservar workspaces físicos menores, devolvendo
 VRAM para o cache de experts sem alterar o caminho denso. A mudança é
-deliberadamente fora dos kernels e deve ser aceita somente se a medição na
-ksia reduzir misses/evictions e não piorar o throughput de referência.
+deliberadamente fora dos kernels. Em três rodadas na ksia, com apenas o
+processo `pom` visível no `nvidia-smi` das duas placas, o decode do mesmo
+prompt mediu `16,001`, `15,968` e `13,631 tok/s`, mediana `15,968 tok/s`.
+A referência anterior do mesmo teste mediu `10,560 tok/s`, portanto a mudança
+foi mantida com ganho de `1,512x` sobre o estado anterior do executor MoE.
+
+O diagnóstico confirma a causa: a capacidade agregada subiu para
+`20,925-23,500 GB`, contra `15,337-17,803 GB` antes, e a residência terminou
+encostada no limite em todas as rodadas. Os snapshots mostraram cerca de
+`12,82/12,68 GB` livres no baseline por placa, compute de
+`1,02/1,00 GB`, reserva de `0,26/0,25 GB` e somente `0,27 GB` livres depois da
+residência. Não há evidência de VRAM livre omitida pela `MemoryAccount`.
+
+O working set observado teve exatamente quatro ocorrências de rota por token
+em cada uma das 36 camadas. Na rodada de 832 tokens, a soma de experts
+distintos por lote variou de `2228` a `2810` entre camadas. A telemetria de
+cache ainda acumulou `29.846` misses e `24.876` evictions, logo a pressão de
+working set não foi eliminada, apenas reduzida. Como os leases ativos nunca
+são vítimas do LRU, esses contadores representam churn de entradas ociosas que
+não cabem na capacidade efetiva.
+
+O particionamento entre GPUs já é expert-parallel: `CUDA0` e `CUDA1` têm LRU,
+orçamento e allocator independentes, e o hash de cada chave escolhe um único
+shard. Na rodada de melhor capacidade, havia `2719` e `2660` entradas, com
+`11,859` e `11,603 GB` residentes nas duas placas. Não há uma segunda cópia do
+mesmo cache a ser substituída por expert-parallel. O alvo de superar o denso
+em `1,5x` ainda não foi atingido; esse resultado é uma melhoria de capacidade
+do MoE e deve permanecer como referência antes de qualquer nova mudança.
 
 ## Defeitos anotados
 

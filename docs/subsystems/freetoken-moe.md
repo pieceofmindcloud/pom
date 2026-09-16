@@ -2961,6 +2961,30 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
+### Fase 5.16: eviction coerente por expert - 2026-09-16
+
+O cache CUDA mantinha cada papel do descriptor heterogêneo como uma entrada
+independente. Quando o orçamento apertava, a eviction podia retirar somente
+gate, up ou down. O restante parecia residente, mas a próxima rota precisava
+recarregar o papel ausente e continuava pagando uploads fragmentados. Isso
+divergia da unidade de trabalho do FreeToken, que trata o expert como o
+working set residente.
+
+O cache agora deriva um grupo por modelo, camada, expert e família de formato.
+As chaves `heterogeneous:<papel>:<dtype>` compartilham a família
+`heterogeneous`, portanto todos os papéis e dtypes daquele expert são
+expulsos juntos. Formatos independentes permanecem separados. Um grupo só é
+elegível quando todos os seus tensors estão ociosos; um lease ativo em um
+papel protege o grupo inteiro. A contagem de eviction continua sendo por
+tensor, para que bytes, entradas e diagnósticos permaneçam exatos.
+
+A mudança atua somente na política do cache MoE e não altera o caminho denso.
+Os testes de cache cobrem tanto a retirada atômica de gate/up/down quanto a
+recusa de retirar um grupo com lease ativo. A validação obrigatória na ksia é
+comparar três rodadas com `nvidia-smi` sem carga concorrente, mesma requisição,
+corretude textual, `generation_tokens_per_sec` e os deltas de misses,
+evictions, uploads e bytes residentes contra `b4df3c2`.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

@@ -3,7 +3,9 @@
 //! Uma instância vive no servidor de inferência e é compartilhada por todas
 //! as sessões. A chave inclui modelo, camada, expert e formato, portanto uma
 //! entrada de uma requisição pode ser reutilizada por outra sem misturar
-//! pesos. Leases mantêm entradas ativas protegidas contra eviction.
+//! pesos. Leases mantêm entradas ativas protegidas contra eviction. No cache
+//! CUDA, os tensors de um expert heterogêneo formam um grupo de eviction:
+//! nenhum papel é deixado residente sozinho por uma substituição parcial.
 
 #[cfg(any(feature = "cuda", test))]
 use super::admission::CacheBudgetSnapshot;
@@ -546,6 +548,38 @@ struct DeviceEntry {
 }
 
 #[cfg(any(feature = "cuda", test))]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ExpertEvictionGroup {
+    model: String,
+    layer: u32,
+    expert: u32,
+    format_family: String,
+}
+
+#[cfg(any(feature = "cuda", test))]
+impl ExpertKey {
+    /// Retorna o conjunto lógico que deve ser admitido e desalojado junto.
+    ///
+    /// Os papéis heterogêneos carregam dtype e papel no formato da chave,
+    /// mas gate/up/down são um único expert para fins de residência. Outros
+    /// formatos continuam separados por família, preservando a possibilidade
+    /// de o mesmo expert existir em representações independentes.
+    fn eviction_group(&self) -> ExpertEvictionGroup {
+        let format_family = if self.format.starts_with("heterogeneous:") {
+            "heterogeneous".to_owned()
+        } else {
+            self.format.clone()
+        };
+        ExpertEvictionGroup {
+            model: self.model.clone(),
+            layer: self.layer,
+            expert: self.expert,
+            format_family,
+        }
+    }
+}
+
+#[cfg(any(feature = "cuda", test))]
 struct DeviceState {
     entries: HashMap<ExpertKey, DeviceEntry>,
     clock: u64,
@@ -927,7 +961,9 @@ impl DeviceExpertCache {
     /// proporcional ao número de papéis dos experts. A política de eviction
     /// continua sendo a mesma, mas usa um único snapshot de orçamento para o
     /// lote, enquanto cada lease retornado mantém sua entrada protegida até o
-    /// forward terminar.
+    /// forward terminar. Quando precisa liberar espaço, a eviction remove o
+    /// grupo lógico inteiro de um expert heterogêneo, evitando residência
+    /// parcial de gate/up/down e os reuploads que ela provoca.
     pub fn admit_many_on_device<'a, I>(
         self: &Arc<Self>,
         device_index: u32,
@@ -1033,13 +1069,7 @@ impl DeviceExpertCache {
                 });
             }
             while planned_resident.saturating_add(bytes as u64) > limit {
-                let victim = state
-                    .entries
-                    .iter()
-                    .filter(|(_, entry)| entry.active == 0)
-                    .min_by_key(|(_, entry)| entry.last_used)
-                    .map(|(key, _)| key.clone());
-                let Some(victim) = victim else {
+                let Some(freed) = evict_oldest_idle_group(state) else {
                     state.stats.rejections = state.stats.rejections.saturating_add(1);
                     return Err(DeviceCacheError::BusyAndNoEviction {
                         key: key.clone(),
@@ -1049,16 +1079,8 @@ impl DeviceExpertCache {
                         budget,
                     });
                 };
-                if let Some(entry) = state.entries.remove(&victim) {
-                    state.stats.resident_bytes = state
-                        .stats
-                        .resident_bytes
-                        .saturating_sub(entry.allocation.bytes());
-                    planned_resident =
-                        planned_resident.saturating_sub(entry.allocation.bytes() as u64);
-                    state.stats.entries = state.stats.entries.saturating_sub(1);
-                    state.stats.evictions = state.stats.evictions.saturating_add(1);
-                }
+                state.stats.resident_bytes = state.stats.resident_bytes.saturating_sub(freed);
+                planned_resident = planned_resident.saturating_sub(freed as u64);
             }
             planned_resident = planned_resident.saturating_add(bytes as u64);
         }
@@ -1209,13 +1231,7 @@ impl DeviceExpertCache {
                 state.stats.rejections = state.stats.rejections.saturating_add(1);
                 return Err(DeviceCacheError::BudgetExhausted { device, budget });
             }
-            let victim = state
-                .entries
-                .iter()
-                .filter(|(_, entry)| entry.active == 0)
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(key, _)| key.clone());
-            let Some(victim) = victim else {
+            let Some(freed) = evict_oldest_idle_group(state) else {
                 state.stats.rejections = state.stats.rejections.saturating_add(1);
                 return Err(DeviceCacheError::BusyAndNoEviction {
                     key,
@@ -1225,14 +1241,7 @@ impl DeviceExpertCache {
                     budget,
                 });
             };
-            if let Some(entry) = state.entries.remove(&victim) {
-                state.stats.resident_bytes = state
-                    .stats
-                    .resident_bytes
-                    .saturating_sub(entry.allocation.bytes());
-                state.stats.entries = state.stats.entries.saturating_sub(1);
-                state.stats.evictions = state.stats.evictions.saturating_add(1);
-            }
+            state.stats.resident_bytes = state.stats.resident_bytes.saturating_sub(freed);
         }
 
         let upload_started = Instant::now();
@@ -1289,6 +1298,37 @@ impl DeviceExpertCache {
             entry.active = entry.active.saturating_sub(1);
         }
     }
+}
+
+#[cfg(any(feature = "cuda", test))]
+fn evict_oldest_idle_group(state: &mut DeviceState) -> Option<usize> {
+    let mut groups = HashMap::<ExpertEvictionGroup, (u64, bool)>::new();
+    for (key, entry) in &state.entries {
+        let group = key.eviction_group();
+        let group_state = groups.entry(group).or_insert((entry.last_used, false));
+        group_state.0 = group_state.0.min(entry.last_used);
+        group_state.1 |= entry.active != 0;
+    }
+    let victim_group = groups
+        .into_iter()
+        .filter(|(_, (_, has_active_entry))| !has_active_entry)
+        .min_by_key(|(_, (last_used, _))| *last_used)
+        .map(|(group, _)| group)?;
+    let victims = state
+        .entries
+        .keys()
+        .filter(|key| key.eviction_group() == victim_group)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut freed = 0usize;
+    for key in victims {
+        if let Some(entry) = state.entries.remove(&key) {
+            freed = freed.saturating_add(entry.allocation.bytes());
+            state.stats.entries = state.stats.entries.saturating_sub(1);
+            state.stats.evictions = state.stats.evictions.saturating_add(1);
+        }
+    }
+    (freed > 0).then_some(freed)
 }
 
 #[cfg(any(feature = "cuda", test))]
@@ -1542,6 +1582,74 @@ mod tests {
         assert_eq!(allocator.free_queries.load(Ordering::Relaxed), 1);
         assert_eq!(cache.stats().resident_bytes, 5);
         drop(leases);
+    }
+
+    #[test]
+    fn cache_device_expulsa_o_expert_heterogeneo_inteiro() {
+        let allocator = FakeDeviceAllocator::new(10);
+        let cache = device_cache(&allocator, 10);
+        let expert_keys = [
+            ExpertKey::new("model", 3, 1, "heterogeneous:gate:18"),
+            ExpertKey::new("model", 3, 1, "heterogeneous:up:22"),
+            ExpertKey::new("model", 3, 1, "heterogeneous:down:23"),
+        ];
+        let payloads = [[1u8; 3], [2u8; 3], [3u8; 3]];
+        let leases = cache
+            .admit_many_on_device(
+                0,
+                expert_keys
+                    .iter()
+                    .zip(payloads.iter())
+                    .map(|(key, payload)| (key.clone(), &payload[..]))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        drop(leases);
+
+        let replacement = cache
+            .admit(
+                ExpertKey::new("model", 3, 2, "heterogeneous:gate:18"),
+                &[4u8; 3],
+            )
+            .unwrap();
+
+        assert!(expert_keys.iter().all(|key| !cache.contains(key)));
+        assert_eq!(cache.stats().evictions, expert_keys.len() as u64);
+        assert_eq!(cache.stats().resident_bytes, replacement.bytes());
+        drop(replacement);
+    }
+
+    #[test]
+    fn cache_device_nao_expulsa_grupo_heterogeneo_com_lease_ativo() {
+        let allocator = FakeDeviceAllocator::new(10);
+        let cache = device_cache(&allocator, 10);
+        let active = cache
+            .admit_many_on_device(
+                0,
+                vec![
+                    (
+                        ExpertKey::new("model", 3, 1, "heterogeneous:gate:18"),
+                        &[1u8; 3][..],
+                    ),
+                    (
+                        ExpertKey::new("model", 3, 1, "heterogeneous:up:22"),
+                        &[2u8; 3][..],
+                    ),
+                ],
+            )
+            .unwrap();
+
+        let error = cache.admit(
+            ExpertKey::new("model", 3, 2, "heterogeneous:gate:18"),
+            &[3u8; 8],
+        );
+
+        assert!(matches!(
+            error,
+            Err(DeviceCacheError::BusyAndNoEviction { .. })
+        ));
+        assert_eq!(cache.stats().evictions, 0);
+        drop(active);
     }
 
     #[test]

@@ -836,10 +836,7 @@ pub fn apply_context_batch_params(cparams: &mut sys::llama_context_params, cfg: 
 
 /// Aplica os parâmetros do contexto MTP sem herdar a exceção de microbatch do
 /// contexto principal MoE.
-pub fn apply_mtp_context_batch_params(
-    cparams: &mut sys::llama_context_params,
-    cfg: &EngineConfig,
-) {
+pub fn apply_mtp_context_batch_params(cparams: &mut sys::llama_context_params, cfg: &EngineConfig) {
     cparams.n_batch = cfg.n_batch;
     cparams.n_ubatch = effective_mtp_n_ubatch(cfg);
 }

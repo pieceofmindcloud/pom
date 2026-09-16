@@ -1718,9 +1718,7 @@ impl HeterogeneousCudaExecutor {
             })
     }
 
-    pub fn resident_cache_budget_snapshots_by_device(
-        &self,
-    ) -> Vec<Option<CacheBudgetSnapshot>> {
+    pub fn resident_cache_budget_snapshots_by_device(&self) -> Vec<Option<CacheBudgetSnapshot>> {
         self.resident_cache
             .budget_snapshots_by_device()
             .map(|snapshots| snapshots.into_iter().map(Some).collect())

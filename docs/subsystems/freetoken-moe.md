@@ -2961,23 +2961,6 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
-### Fase 5.17: staging host pinned das entradas heterogêneas - 2026-09-16
-
-O pipeline persistente já evitava o staging pageable no retorno D2H, mas ainda
-recebia `hidden`, descriptors e vetores de rota em buffers host comuns. A
-ponte CUDA agora copia cada entrada para buffers `cudaMallocHost` persistentes
-quando a capacidade da rota é criada ou cresce; as cópias H2D seguintes usam
-essa memória pinned. O contrato não muda: o callback continua recebendo o
-resultado em seu buffer host comum e nenhuma rota ou peso é alterado.
-
-Esta é uma candidata isolada de desempenho, alinhada ao uso de buffers
-persistentes do FreeToken. A cópia CPU adicional é deliberada e entra no
-custo real da chamada; não há alegação de ganho antes de três medições na ksia
-com `nvidia-smi` sem carga concorrente. Se a mediana de geração não superar a
-referência `b4df3c2`, o commit deve ser revertido antes de qualquer outra
-otimização. A validação também deve conferir TTFT, `node_moe_forward_ms`,
-corretude textual e que o caminho denso permaneça sem alteração.
-
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

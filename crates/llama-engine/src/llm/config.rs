@@ -224,12 +224,6 @@ pub(super) const FIT_MIN_CONTEXT: u32 = 4096;
 /// ubatch is the safe automatic fallback before llama.cpp reserves those
 /// workspaces on a nearly-full GPU.
 pub(super) const FIT_MAX_UBATCH: u32 = 512;
-/// O executor MoE mantém um cache residente de experts no mesmo device que
-/// já contém KV, pesos não-esparsos e os buffers do contexto. Limitar somente
-/// o microlote físico deixa o lote público intacto, mas devolve VRAM que seria
-/// reservada pelo grafo para a residência dos experts.
-pub(super) const MOE_EXTERNAL_MAX_UBATCH: u32 = 128;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FitDeviceMemory {
     pub(super) total_bytes: usize,
@@ -805,52 +799,9 @@ pub(super) fn backend_registry_name(device: sys::ggml_backend_dev_t) -> Option<S
 pub fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
     let n_batch = cfg.n_batch.max(1);
     if cfg.fit_memory {
-        let maximum = if cfg.moe_external_executor {
-            MOE_EXTERNAL_MAX_UBATCH
-        } else {
-            FIT_MAX_UBATCH
-        };
-        n_batch.min(maximum)
+        n_batch.min(FIT_MAX_UBATCH)
     } else {
         n_batch
-    }
-}
-
-#[cfg(test)]
-mod effective_ubatch_tests {
-    use super::*;
-
-    fn config(moe_external_executor: bool) -> EngineConfig {
-        EngineConfig {
-            mmproj_path: None,
-            n_ctx: 4096,
-            offload_kqv: true,
-            cache_type_k: KvCacheType::F16,
-            cache_type_v: KvCacheType::F16,
-            fit_memory: true,
-            fit_memory_margin_mb: 256,
-            n_batch: 512,
-            n_gpu_layers: 99,
-            n_threads: 0,
-            max_sessions: 1,
-            need_embeddings: false,
-            mtp: false,
-            mtp_cpu_fallback_enabled: false,
-            rs_seq_window: 0,
-            moe_external_executor,
-            moe_external_executor_layers: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn moe_externo_reduz_so_o_micro_lote_fisico() {
-        assert_eq!(effective_n_ubatch(&config(true)), MOE_EXTERNAL_MAX_UBATCH);
-        assert_eq!(config(true).n_batch, 512);
-    }
-
-    #[test]
-    fn caminho_nativo_mantem_limite_existente() {
-        assert_eq!(effective_n_ubatch(&config(false)), FIT_MAX_UBATCH);
     }
 }
 

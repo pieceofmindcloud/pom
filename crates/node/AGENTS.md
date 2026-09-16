@@ -260,6 +260,9 @@ catraca de `network_chat_policy`.
 
 `src/enterprise.rs` mantém o cliente mockável do servidor de licenças, o
 fingerprint, o estado persistido sem a chave e o supervisor de heartbeat. O
+heartbeat consome o payload rico de renovação e persiste prazo, token,
+entitlements, grant e release devolvidos pelo servidor; o prazo não é
+recalculado localmente. O
 `enterprise_host.rs` é o único adaptador do `pom` para o processo auxiliar;
 `enterprise_p2p.rs` assina provas de fingerprint por nonce. O `GatewayState`
 expõe entitlement ao backend, enquanto `webui` publica status/ativação e

@@ -53,6 +53,8 @@ O plano da correção do rollback recorrente Kimi-K3 está em
 `superpowers/plans/2026-09-15-hybrid-memory-decode-segv.md`.
 O plano do hot path CUDA heterogêneo alinhado ao FreeToken está em
 `superpowers/plans/2026-09-15-moe-freetoken-performance.md`.
+O plano da correção do contrato rico de heartbeat Enterprise está em
+`superpowers/plans/2026-09-16-enterprise-heartbeat-schema.md`.
 
 ## subsystems/
 

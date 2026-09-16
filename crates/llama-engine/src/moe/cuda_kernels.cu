@@ -5595,11 +5595,28 @@ extern "C" int pom_moe_device_free_bytes(int device_index, std::uint64_t * free_
     return 0;
 }
 
-extern "C" int pom_moe_device_upload_many(
+extern "C" int pom_moe_host_pinned_alloc(
+    std::size_t bytes,
+    void ** out
+) {
+    if (out == nullptr || bytes == 0) return 1;
+    *out = nullptr;
+    return cuda_status(cudaMallocHost(out, bytes));
+}
+
+extern "C" void pom_moe_host_pinned_free(void * handle) {
+    if (handle != nullptr) {
+        (void) cudaFreeHost(handle);
+    }
+}
+
+extern "C" int pom_moe_device_upload_many_with_staging(
     int device_index,
     const std::uint8_t * const * payloads,
     const std::size_t * payload_lengths,
     std::size_t payload_count,
+    std::uint8_t * pinned_staging,
+    std::size_t pinned_staging_bytes,
     void ** out
 ) {
     const ScopedMoeCudaDevice device(device_index);
@@ -5614,6 +5631,22 @@ extern "C" int pom_moe_device_upload_many(
         if (payloads[index] == nullptr || payload_lengths[index] == 0) return 1;
     }
 
+    constexpr std::size_t kPinnedUploadChunkBytes = 256 * 1024 * 1024;
+    std::size_t total_payload_bytes = 0;
+    for (std::size_t index = 0; index < payload_count; ++index) {
+        if (payload_lengths[index] >
+            std::numeric_limits<std::size_t>::max() - total_payload_bytes) {
+            return 1;
+        }
+        total_payload_bytes += payload_lengths[index];
+    }
+    const std::size_t staging_bytes = std::min(
+        total_payload_bytes, kPinnedUploadChunkBytes);
+    // The Rust allocator keeps this optional window across batches. If the
+    // host cannot reserve pinned memory, null selects the pageable fallback.
+    const bool use_pinned_staging =
+        pinned_staging != nullptr && pinned_staging_bytes >= staging_bytes;
+
     // Use the device memory pool so a cache eviction does not force the
     // legacy cudaFree synchronization on every expert. The copy itself stays
     // synchronous because callers may release a temporary mmap/Vec as soon
@@ -5624,10 +5657,46 @@ extern "C" int pom_moe_device_upload_many(
         status = cuda_status(cudaMallocAsync(&out[index], payload_lengths[index], nullptr));
         if (status != 0) goto fail;
     }
-    for (std::size_t index = 0; index < payload_count; ++index) {
-        status = cuda_status(cudaMemcpyAsync(
-            out[index], payloads[index], payload_lengths[index], cudaMemcpyHostToDevice, nullptr));
-        if (status != 0) goto fail;
+    if (use_pinned_staging) {
+        std::size_t payload_index = 0;
+        std::size_t payload_offset = 0;
+        while (payload_index < payload_count) {
+            std::size_t staged_bytes = 0;
+            while (payload_index < payload_count &&
+                   staged_bytes < staging_bytes) {
+                const std::size_t remaining =
+                    payload_lengths[payload_index] - payload_offset;
+                const std::size_t chunk = std::min(
+                    remaining, staging_bytes - staged_bytes);
+                std::memcpy(
+                    pinned_staging + staged_bytes,
+                    payloads[payload_index] + payload_offset,
+                    chunk);
+                status = cuda_status(cudaMemcpyAsync(
+                    static_cast<std::uint8_t *>(out[payload_index]) + payload_offset,
+                    pinned_staging + staged_bytes,
+                    chunk,
+                    cudaMemcpyHostToDevice,
+                    nullptr));
+                if (status != 0) goto fail;
+                staged_bytes += chunk;
+                payload_offset += chunk;
+                if (payload_offset == payload_lengths[payload_index]) {
+                    ++payload_index;
+                    payload_offset = 0;
+                }
+            }
+            // Reuse only after the device has consumed the current window.
+            status = cuda_status(cudaStreamSynchronize(nullptr));
+            if (status != 0) goto fail;
+        }
+    } else {
+        for (std::size_t index = 0; index < payload_count; ++index) {
+            status = cuda_status(cudaMemcpyAsync(
+                out[index], payloads[index], payload_lengths[index],
+                cudaMemcpyHostToDevice, nullptr));
+            if (status != 0) goto fail;
+        }
     }
     status = cuda_status(cudaStreamSynchronize(nullptr));
     if (status == 0) return 0;
@@ -5643,6 +5712,23 @@ fail:
     // can immediately retry without retaining failed batch allocations.
     (void) cudaStreamSynchronize(nullptr);
     return status;
+}
+
+extern "C" int pom_moe_device_upload_many(
+    int device_index,
+    const std::uint8_t * const * payloads,
+    const std::size_t * payload_lengths,
+    std::size_t payload_count,
+    void ** out
+) {
+    return pom_moe_device_upload_many_with_staging(
+        device_index,
+        payloads,
+        payload_lengths,
+        payload_count,
+        nullptr,
+        0,
+        out);
 }
 
 extern "C" int pom_moe_device_upload(

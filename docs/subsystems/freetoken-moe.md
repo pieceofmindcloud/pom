@@ -2981,6 +2981,32 @@ com `nvidia-smi` sem processo concorrente mediram `10,6127`, `11,8136` e
 sem texto corrompido. O resultado é uma melhoria observada, mas ainda está
 abaixo da meta de `1,5x` sobre o denso.
 
+### Fase 5.18: staging pinned persistente dos uploads de pesos - 2026-09-16
+
+O perfil do FreeToken trata a VRAM, a RAM e o caminho PCIe como um único
+substrato. No POM, os experts frios continuam vindo de fatias mmap pagináveis;
+o `cudaMemcpyAsync` direto dessas fatias pode exigir staging implícito durante
+cada admissão. A primeira tentativa de corrigir isso alocava e liberava até
+`256 MiB` pinned em cada lote e regrediu na ksia, chegando a `2,9964` e
+`2,8557 tok/s` contra `10,9890 tok/s` da referência. Ela foi revertida em
+`05e322ef` antes de qualquer nova mudança.
+
+Esta candidata mantém uma janela host pinned de até `256 MiB` no allocator de
+cada device. O Rust a cresce sob mutex e a conserva entre lotes; o kernel copia
+fatias mmap para essa janela em chunks e só a reutiliza depois de sincronizar o
+stream. Quando a quota pinned do host não permite a reserva, o FFI passa
+`null` e preserva o upload pageable anterior. A propriedade da janela termina
+com o allocator, depois de todas as admissões daquele device.
+
+A tentativa por-lote foi publicada como `3a3fb877` para A/B. A compilação CUDA
+da ksia passou em `4m52s`, mas as duas rodadas observadas ficaram em `2,9964` e
+`2,8557 tok/s`; por isso a mudança foi revertida imediatamente. A referência
+segura foi redeployada em `05e322ef` e confirmou `11,1140`, `10,5428` e
+`10,4635 tok/s` nas três rodadas seguintes, mediana `10,5428`. O resultado
+histórico máximo continua `10,9890 tok/s` em `ea58bfab`. Esta implementação
+persistente ainda precisa do A/B na ksia para provar que remove o custo de
+alocação repetida sem introduzir uma regressão.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

@@ -2936,6 +2936,24 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
+### Fase 5.16: staging pinned de entrada e stream persistente - 2026-09-16
+
+Mesmo com a saída em memória pinned, o pipeline ainda recebia descritores,
+hidden e metadados de rota em buffers host comuns. Cada `cudaMemcpy` síncrona
+de entrada podia criar staging interno do runtime CUDA e bloquear o callback
+antes dos kernels. A pipeline agora reserva staging pinned persistente para
+todos esses buffers, copia os dados do callback para o staging e enfileira as
+seis transferências H2D em um stream não bloqueante persistente por device e
+geometria.
+
+Os seis kernels e a cópia D2H usam o mesmo stream; uma única
+`cudaStreamSynchronize` depois da cópia D2H é a barreira antes de copiar a
+saída para o buffer do llama.cpp. A liberação sincroniza e destrói o stream
+antes de liberar os buffers pinned. A semântica do callback, os decoders q8,
+os leases do cache e a divisão entre CUDA0 e CUDA1 não mudam. A validação na
+ksia precisa comparar a medição longa da referência segura, não apenas uma
+resposta curta aquecida, e verificar texto correto e `cuda_d2h_ms`.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

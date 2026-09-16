@@ -17,11 +17,11 @@ use super::format_q4_0::{
 };
 use super::router::dispatch_route_parallel;
 use memmap2::Mmap;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TensorRole {
@@ -279,8 +279,6 @@ pub struct HeterogeneousMoeSource {
     tensors: Vec<TensorSpec>,
     sidecars: BTreeMap<String, Vec<f32>>,
     layers: Vec<LayerInventory>,
-    #[cfg(any(feature = "cuda", test))]
-    spec_cache: Mutex<HashMap<(u32, u32), Vec<HeterogeneousTensorSpec>>>,
 }
 
 impl HeterogeneousMoeSource {
@@ -414,8 +412,6 @@ impl HeterogeneousMoeSource {
             tensors,
             sidecars,
             layers,
-            #[cfg(any(feature = "cuda", test))]
-            spec_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -536,10 +532,6 @@ impl HeterogeneousMoeSource {
                 "camada MoE fora do inventário heterogêneo",
             ))?;
         let entries = self.expert_entries(layer)?;
-        let mut cache = self
-            .spec_cache
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         experts
             .iter()
             .copied()
@@ -550,10 +542,7 @@ impl HeterogeneousMoeSource {
                         count: self.experts,
                     });
                 }
-                if let Some(specs) = cache.get(&(layer, expert)) {
-                    return Ok(specs.clone());
-                }
-                let specs = entries
+                entries
                     .iter()
                     .map(|&(role, entry, rows, columns)| {
                         let scales = if role == TensorRole::GateUp {
@@ -611,9 +600,7 @@ impl HeterogeneousMoeSource {
                             entry,
                         })
                     })
-                    .collect::<Result<Vec<_>, Q4LoadError>>()?;
-                cache.insert((layer, expert), specs.clone());
-                Ok(specs)
+                    .collect()
             })
             .collect()
     }
@@ -1623,7 +1610,6 @@ mod tests {
             tensors,
             sidecars,
             layers: Vec::new(),
-            spec_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1653,7 +1639,6 @@ mod tests {
             tensors,
             sidecars,
             layers,
-            spec_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1755,24 +1740,6 @@ mod tests {
         let source = scalar_execution_source();
 
         let specs = source.expert_tensor_specs(0, 0).unwrap();
-        let cached_specs = source.expert_tensor_specs(0, 0).unwrap();
-
-        assert_eq!(specs.len(), cached_specs.len());
-        assert!(specs.iter().zip(cached_specs).all(|(left, right)| {
-            left.role == right.role
-                && left.dtype == right.dtype
-                && left.rows == right.rows
-                && left.columns == right.columns
-                && left.scales == right.scales
-        }));
-        assert_eq!(
-            source
-                .spec_cache
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .len(),
-            1
-        );
 
         assert_eq!(
             specs

@@ -823,9 +823,9 @@ pub async fn run(
         .await;
     crate::relay::clear_local_inference(generation).await;
 
-    // Preserve o hook de cancelamento antes de liberar o motor, para que
-    // nenhuma geração antiga continue admitindo experts no device durante a
-    // reconfiguração do servidor.
+    // O aquecimento é cooperativo e pode estar lendo o GGUF enquanto o
+    // servidor é reconfigurado. Sinalize a parada antes de liberar o motor,
+    // para que nenhuma geração antiga continue admitindo experts no device.
     if let Some(runtime) = app_state
         .state
         .lock()

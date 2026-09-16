@@ -2361,15 +2361,13 @@ O cache de device começa vazio por desenho: a carga do modelo cria o
 selecionava um expert. Isso deixava a VRAM baixa após o carregamento e fazia as
 primeiras requisições pagarem a leitura do GGUF e o upload dos pesos.
 
-Quando existe uma ponte CUDA para a fonte selecionada, o `MoeRuntime` preenche
-o cache de forma síncrona antes de anunciar o servidor de inferência. Ele
+Quando existe uma ponte CUDA para a fonte selecionada, o `MoeRuntime` pode
+iniciar uma thread de aquecimento assíncrona no carregamento do modelo. Ela
 percorre os experts por camada e índice, pede ao próprio loader o payload
 canônico de cada tensor e chama a mesma admissão do caminho quente. O dispatch
 é por `MoeSource` e pelos metadados do tensor; não há ramo por arquitetura,
 modelo ou versão de quantização. Em um GGUF heterogêneo, cada papel e dtype
-recebe a mesma chave e descriptor que o forward usa. A ordem de prontidão é
-intencional: nenhuma requisição pode começar enquanto essa admissão inicial
-estiver disputando os shards do cache.
+recebe a mesma chave e descriptor que o forward usa.
 
 O aquecimento é padrão para restaurar a VRAM pré-aquecida. O operador pode
 desligá-lo explicitamente com `POM_MOE_WARMUP=0`, `false`, `off` ou `no` para
@@ -2385,12 +2383,12 @@ compute já reportada pelo `llama.cpp`. Quando a admissão devolve
 fora do aquecimento e continuam sujeitos ao LRU sob demanda. Ele não falha o
 carregamento por o modelo inteiro não caber.
 
-O prazo pode ser ajustado por `POM_MOE_WARMUP_MAX_MS`. O aquecimento verifica o
-prazo e um `AtomicBool` antes de cada candidato; o cancelamento permanece
-cooperativo para o ciclo de vida do runtime, sem remover entradas admitidas.
-Como o warmup inicial termina antes da prontidão, o callback de inferência não
-precisa aguardar nem disputar uma admissão CUDA em andamento. Logs de início e
-fim registram modelo, status, bytes admitidos e motivo de parada. A telemetria
+O prazo pode ser ajustado por `POM_MOE_WARMUP_MAX_MS`. A thread verifica o
+prazo e um `AtomicBool` antes de cada candidato; o callback de inferência apenas
+sinaliza a parada e não aguarda uma admissão CUDA em andamento, sem remover
+entradas admitidas. O `join` de `MoeRuntime::cancel_device_warmup` fica restrito
+à troca explícita de warmup, fora do caminho quente. Logs de início e fim registram modelo, status, bytes
+admitidos e motivo de parada. A telemetria
 `moe_executor_diagnostics` publica `warmup_status`, candidatos visitados,
 experts admitidos, bytes residentes, duração e erro. Assim uma subida não fica
 bloqueada indefinidamente e uma parada por orçamento, prazo ou erro não vira
@@ -2401,32 +2399,6 @@ primeiro payload e prazo zero. A validação CUDA da integração e a comparaç�
 E2E do Qwen UD após o aquecimento ainda precisam ser executadas no diretório
 isolado `/data/ftk-cuda-target`; nenhum número de ganho é afirmado antes dessa
 medição.
-
-### Fase 5.18: prontidão após o warmup CUDA - 2026-09-16
-
-Os logs da ksia mostraram uma corrida que não aparecia em `node_lock_wait_ms`:
-o processo registrava `inference server pronto` imediatamente depois de
-`aquecimento do cache MoE residente iniciado`, enquanto o warmup ainda fazia
-uploads e evictions por vários segundos. A primeira requisição podia, portanto,
-entrar no callback durante a admissão de experts e pagar esse trabalho no
-TTFT. O fato de a fila do scheduler estar abaixo de 1 ms não excluía essa
-espera, pois a contenção acontecia no cache residente dentro do callback.
-
-`MoeRuntime::start_device_warmup` agora executa a varredura antes de o
-`infer_server` registrar a prontidão e aceitar requisições. A ordem é:
-
-1. criar o contexto e o cache particionado por GPU;
-2. admitir os candidatos até orçamento, prazo, cancelamento ou erro;
-3. publicar o estado final do warmup;
-4. instalar o callback MoE e anunciar o servidor.
-
-Isso mantém a política de orçamento, inclusive `budget-exhausted`, sem
-prometer que todos os experts cabem na VRAM. O custo deixa de ser latência
-oculta da primeira requisição e passa a ser tempo explícito de prontidão. O
-callback ainda pode sinalizar cancelamento para a troca ou encerramento do
-runtime, mas não existe mais uma thread de warmup concorrendo com o forward
-inicial. A medição E2E deve conferir a ordem dos logs, o TTFT frio e a
-velocidade de geração em três rodadas com `nvidia-smi` antes de cada chamada.
 
 ## Fase 0: baseline local
 

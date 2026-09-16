@@ -582,26 +582,23 @@ visibilidade dos controles de implantação na UI local.
   vivem em `docs/subsystems/freetoken-moe.md`.
   O wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
   atenção, demais camadas ou a amostragem do `LlmEngine`.
-  Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` percorre os
-  payloads canônicos por camada, expert, papel e dtype de forma síncrona antes
-  de o servidor de inferência ser anunciado, usando a mesma admissão do cache
-  residente. Isso evita que a primeira requisição concorra com uploads e
-  evictions do aquecimento. O aquecimento é padrão e pode ser desligado
-  explicitamente por `POM_MOE_WARMUP=0`, `false`, `off` ou `no`. O orçamento por
-  placa continua derivado da memória livre e da reserva do compute buffer
-  medido; quando ele se esgota, o warmup termina com `budget-exhausted`, pois
-  não é possível manter todos os experts de um modelo grande na VRAM. Se o
-  modelo tiver um sidecar
+  Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` pode percorrer os
+  payloads canônicos por camada, expert, papel e dtype em uma thread separada,
+  usando a mesma admissão do cache residente. O aquecimento é padrão e pode ser
+  desligado explicitamente por `POM_MOE_WARMUP=0`, `false`, `off` ou `no`. O
+  orçamento por placa continua derivado da memória livre e da reserva do
+  compute buffer medido; quando ele se esgota, o warmup termina com
+  `budget-exhausted`, pois não é possível manter todos os experts de um modelo
+  grande na VRAM. Se o modelo tiver um sidecar
   `<modelo>.cuda-profile.json` com `bandwidth`, o bloco heterogêneo reaproveita
   a mesma fração medida do FreeToken para executar misses em lanes CPU e GPU
   sobrepostas; sem sidecar, mantém a política exclusivamente CUDA e não
   fabrica uma constante de hardware.
   `warmup_status`, bytes, candidatos e erros chegam em
   `moe_executor_diagnostics`. O prazo é `POM_MOE_WARMUP_MAX_MS` (30 s por
-  padrão). Como o warmup inicial já terminou antes da prontidão, o callback de
-  inferência não precisa aguardar nem disputar uma thread de warmup. O
-  cancelamento continua disponível para a troca explícita e o encerramento do
-  runtime.
+  padrão). O callback de inferência apenas sinaliza o cancelamento cooperativo
+  entre payloads; ele não aguarda a thread de warmup. O `join` fica reservado
+  à troca explícita de warmup, fora do caminho quente.
   Fontes sem ponte device não aquecem nem removem experts do llama.cpp.
   A prova numérica `nvfp4_matches_llama_cpp_from_first_layer_and_stage` é
   ignorada por depender de GGUF real: com `POM_MOE_NUMERIC_MODEL` e

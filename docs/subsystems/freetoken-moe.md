@@ -2973,10 +2973,13 @@ cada helper chama diretamente a primitiva correspondente. O layout de
 mudaram.
 
 Um teste de fonte impede o retorno do alias de ponteiro de função no caminho
-q8. O worktree não tem `nvcc` nem GPU, então esta fase não afirma ganho de
-desempenho nem corretude CUDA até o build e as três rodadas na ksia. A decisão
-de manter ou reverter deve usar a mediana contra a referência `b4df3c22`, hoje
-`10,2416 tok/s`, com `nvidia-smi` imediatamente antes de cada rodada.
+q8. No deploy `ea58bfab`, o build CUDA da ksia passou em `4m52s`; três rodadas
+com `nvidia-smi` sem processo concorrente mediram `10,6127`, `11,8136` e
+`10,9890 tok/s`, mediana `10,9890 tok/s`. Isso é `1,073x` a referência
+`b4df3c22` (`10,2416 tok/s`) e `1,125x` a referência anterior `0c088521`
+(`9,770 tok/s`). A rodada de corretude devolveu a lista numerada esperada,
+sem texto corrompido. O resultado é uma melhoria observada, mas ainda está
+abaixo da meta de `1,5x` sobre o denso.
 
 ## Defeitos anotados
 

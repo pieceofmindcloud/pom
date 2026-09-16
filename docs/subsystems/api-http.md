@@ -648,6 +648,8 @@ alheio (o painel só fala com o próprio nó).
 `core_update: { release_id, version, changelog } | null`. O nó só preenche esse
 aviso depois de um heartbeat Enterprise aceito e enquanto a licença está ativa;
 instalações Free não consultam o manifest do core. A ação administrativa
+`POST /api/ui/enterprise/pom-update/check` força essa detecção sob demanda e
+devolve o `EnterpriseStatus` atualizado, sem baixar nem reiniciar nada.
 `POST /api/ui/enterprise/pom-update/apply` recebe
 `{ "release_id": "..." }`, confere que esse é o release_id ainda anunciado,
 reconsulta e verifica o manifest, baixa o artefato e agenda a troca e o

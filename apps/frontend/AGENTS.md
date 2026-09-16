@@ -126,9 +126,12 @@ desenhado**, porque uma vista só não é uma escolha.
 - `/config/preferencias` -> Preferences com exposição, Hugging Face e proteção
   térmica; `/config/armazenamento` -> ModelPaths; `/config/preferencias/admin`
   -> preferências administrativas de TLS, QUIC, logs e chat da rede; e
-  `/config/sobre` -> About, com a licença provisória explícita do POM e o
+  `/config/sobre` -> About, com a licença provisória explícita do POM, o estado
+  Enterprise do nó, a verificação sob demanda de atualização do POM e o
   catálogo agrupado por licença das dependências diretas do frontend e do Rust.
-  Sobre é o último item da seção Configurações.
+  Quando uma atualização é encontrada, Sobre encaminha para `/enterprise`, que
+  é a única tela com a confirmação e a ação de aplicar/reiniciar. Sobre é o
+  último item da seção Configurações.
 - `*` -> NotFound
 
 Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-fade wrapper; chat and dashboard get overflow-hidden main, the rest scroll.
@@ -170,7 +173,7 @@ sessão P2P por processo.
 
 ## Links
 
-- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, deployments, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, network/info, network/geo-reference, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.
+- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, deployments, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, enterprise status and update check/apply, network/info, network/geo-reference, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.
 - Auth: `api.ts` sends same-origin credentials so the gateway can use its
   `HttpOnly` admin session. Administrative requests use the cluster connection
   key, while `/v1/*` chat requests use the dedicated `pom-[node_id]` API key

@@ -216,7 +216,10 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
   `/config/preferencias/admin` -> preferências administrativas;
   `/config/sobre` -> About, último item de Configurações, com a licença
-  provisória do POM e o catálogo de dependências diretas agrupado por licença;
+  provisória do POM, o estado Enterprise e a verificação sob demanda de
+  atualização do `pom_core`; quando há atualização, a tela encaminha para
+  `/enterprise`, onde fica a confirmação de aplicar e reiniciar, e também
+  mostra o catálogo de dependências diretas agrupado por licença;
   `/config/confianca` reúne esta máquina, compartilhamento e chaves de conexão;
   `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias). O wizard de configuração não aparece

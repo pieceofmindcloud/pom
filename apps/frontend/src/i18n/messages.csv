@@ -5,6 +5,15 @@ about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
 about.ecosystem.frontend,Frontend,Frontend
 about.ecosystem.rust,Rust,Rust
 about.empty,No dependencies match this search.,Nenhuma dependência corresponde a esta busca.
+about.enterpriseActive,Active,Ativa
+about.enterpriseCheckFailed,Could not check for POM updates.,Não foi possível verificar atualizações do POM.
+about.enterpriseCheckUpdates,Check for updates,Verificar atualizações
+about.enterpriseInactive,Inactive,Inativa
+about.enterpriseOpen,Open Enterprise,Abrir Enterprise
+about.enterpriseState,State,Estado
+about.enterpriseSubtitle,License status for this node and on-demand POM update checks.,Estado da licença deste nó e verificação sob demanda de atualização do POM.
+about.enterpriseTitle,Enterprise license,Licença Enterprise
+about.enterpriseUpdateHint,An update was found. Open Enterprise to review and apply it.,Uma atualização foi encontrada. Abra Enterprise para revisar e aplicá-la.
 about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
 about.placeholderBody,"The POM software license has not been defined officially yet. This screen shows an example only.","A licença do software POM ainda não foi definida oficialmente. Esta tela mostra apenas um exemplo."
 about.placeholderLicense,Provisional license (example),Licença provisória (exemplo)

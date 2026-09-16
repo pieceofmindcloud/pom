@@ -2447,6 +2447,21 @@ mod replicated_admin_logs_tests {
         assert_eq!(status["state"], "needs_activation");
         assert_eq!(status["manage_url"], "https://pieceofmind.cloud/enterprise");
 
+        let check = app
+            .clone()
+            .oneshot(
+                Request::post("/api/ui/enterprise/pom-update/check")
+                    .header("authorization", "Bearer chave")
+                    .body(axum::body::Body::empty())
+                    .expect("check request"),
+            )
+            .await
+            .expect("check response");
+        assert_eq!(check.status(), StatusCode::OK);
+        let check: serde_json::Value = body_of(check).await;
+        assert_eq!(check["active"], false);
+        assert_eq!(check["state"], "needs_activation");
+
         let request_logs = app
             .clone()
             .oneshot(

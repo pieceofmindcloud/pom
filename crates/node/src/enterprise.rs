@@ -1477,6 +1477,16 @@ pub(crate) async fn refresh_license(
     }
 }
 
+pub(crate) async fn check_core_update(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+) -> axum::response::Response {
+    match state.enterprise.detect_core_update().await {
+        Ok(()) => axum::Json(state.enterprise.status().await).into_response(),
+        Err(error) => license_error_response(error),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct CoreUpdateApplyRequest {
     pub release_id: String,

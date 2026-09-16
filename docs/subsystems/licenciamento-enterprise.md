@@ -56,8 +56,12 @@ não está ativa. `/api/ui/cluster-logs` continua sendo log operacional Free.
 As entradas `Logs de Requisições` e `Estatísticas` continuam no menu para todos
 os perfis, com ou sem licença. Um acesso direto ou um clique sem entitlement
 mostra a tela Enterprise e o link
-`https://pieceofmind.cloud/enterprise`. O menu é descoberta do produto, não
-prova de autorização: o backend continua sendo a fronteira de segurança.
+  `https://pieceofmind.cloud/enterprise`. O menu é descoberta do produto, não
+  prova de autorização: o backend continua sendo a fronteira de segurança.
+  A tela Sobre também reutiliza `GET /api/ui/enterprise/status`, mostra `active`
+  e `state`, e oferece `POST /api/ui/enterprise/pom-update/check` para uma
+  detecção manual. Se `core_update` for encontrado, Sobre leva o operador para
+  `/enterprise`, que mantém a única confirmação e aplicação do binário.
 
 ## Fases e limites desta entrega
 
@@ -149,6 +153,12 @@ Se o helper não puder ser iniciado, o processo antigo continua rodando e o
 arquivo temporário permanece para diagnóstico. A troca do Windows depende,
 portanto, do PowerShell presente no sistema e não tem a mesma atomicidade
 imediata do rename Unix.
+
+A tela Sobre chama `POST /api/ui/enterprise/pom-update/check` para repetir a
+detecção sob demanda e recebe o mesmo `EnterpriseStatus` atualizado do polling
+de status. Essa rota exige a sessão administrativa, não baixa artefatos e não
+reinicia o processo; a ação de aplicar continua concentrada em `/enterprise`
+para evitar duas implementações da confirmação e da instalação.
 
 ## Testes
 

@@ -3765,10 +3765,16 @@ struct HeterogeneousRoutePipeline {
     block_q8_1 *d_activated_q8 = nullptr;
     float *d_pair_output = nullptr;
     float *d_output = nullptr;
+    // The llama.cpp callback owns a regular host tensor. Copying directly to
+    // pageable memory makes every synchronous D2H transfer pay the CUDA
+    // staging cost. Keep one pinned staging buffer per device pipeline and
+    // copy the small final result to the callback buffer after the transfer.
+    float *h_output = nullptr;
 };
 
 void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) {
     if (pipeline == nullptr) return;
+    cudaFreeHost(pipeline->h_output);
     cudaFree(pipeline->d_output);
     cudaFree(pipeline->d_pair_output);
     cudaFree(pipeline->d_activated);
@@ -3782,6 +3788,7 @@ void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) 
     cudaFree(pipeline->d_hidden_q8);
     cudaFree(pipeline->d_experts);
     pipeline->d_output = nullptr;
+    pipeline->h_output = nullptr;
     pipeline->d_pair_output = nullptr;
     pipeline->d_activated = nullptr;
     pipeline->d_activated_q8 = nullptr;
@@ -3882,6 +3889,9 @@ int ensure_heterogeneous_route_pipeline_capacity(
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(
         reinterpret_cast<void **>(&pipeline->d_output), hidden_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMallocHost(
+        reinterpret_cast<void **>(&pipeline->h_output), hidden_bytes));
     if (result != 0) goto fail;
     return 0;
 
@@ -4112,12 +4122,13 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     if (result != 0) return result;
     const auto d2h_started = Clock::now();
     result = cuda_status(cudaMemcpy(
-        output, pipeline->d_output, hidden_bytes, cudaMemcpyDeviceToHost));
+        pipeline->h_output, pipeline->d_output, hidden_bytes, cudaMemcpyDeviceToHost));
     if (timing != nullptr) {
         timing->d2h_ms = elapsed_ms(d2h_started, Clock::now());
         timing->d2h_bytes = static_cast<uint64_t>(hidden_bytes);
     }
     if (result != 0) return result;
+    std::memcpy(output, pipeline->h_output, hidden_bytes);
     if (timing != nullptr) {
         // A chamada pode ocorrer durante a captura de grafo do llama.cpp.
         // Eventos gravados pelo hook retornam cudaErrorInvalidResourceHandle

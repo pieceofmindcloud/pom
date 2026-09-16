@@ -2745,8 +2745,8 @@ O lançamento passa de quatro para seis kernels (duas quantizações, gate/up,
 ativação, down e agregação), sem `cudaDeviceSynchronize`; a cópia D2H continua
 sendo a barreira de conclusão.
 
-Para confirmar o restante na ksia, ligar `POM_MOE_CUDA_PROFILE=1` desde o
-arranque. O perfil deve mostrar `cuda_device_calls` para CUDA0 e CUDA1 e
+Para confirmar o restante na ksia, basta iniciar o executor MoE. Os
+diagnósticos são automáticos e devem mostrar `cuda_device_calls` para CUDA0 e CUDA1 e
 separar `kernel_ms` de `cuda_call_wall_ms`; os contadores cumulativos de cache
 devem ser comparados por delta entre prefill e decode. A otimização q8 reduz o
 compute do callback, mas não pode fazer caber em 16 GB um working set de
@@ -2912,6 +2912,29 @@ runtime mantém a política exclusivamente CUDA e não fabrica uma taxa para a
 CPU escalar Rust. Na ksia, a validação deve repetir o mesmo prompt com o
 warmup padrão, persistir o sidecar medido para este modelo e comparar prefill,
 decode, corretude textual e deltas de uploads.
+
+### Fase 5.15: staging host pinned na saída heterogênea - 2026-09-16
+
+A telemetria da ksia após o pipeline q8 separou o custo que ainda dominava o
+callback. No prefill, o kernel CUDA acumulou aproximadamente `177 ms`, mas as
+transferências D2H acumularam `6317 ms`; no decode, foram aproximadamente
+`680 ms` de kernel contra `12801 ms` de D2H. O resultado correto precisava
+continuar sendo escrito no tensor host do callback, então o contrato externo
+não permitia simplesmente deixar a saída na VRAM. O custo observado vinha do
+`cudaMemcpy` síncrono diretamente para a memória pageable que o llama.cpp
+entrega ao callback.
+
+Cada `HeterogeneousRoutePipeline` agora reserva um `cudaMallocHost` persistente
+com a mesma capacidade do output device. A cópia D2H vai para esse staging
+pinned e, depois da barreira de conclusão, um `memcpy` curto entrega o resultado
+ao buffer host original. O staging é liberado junto com os buffers persistentes
+da pipeline e cresce somente quando a geometria do lote muda. Isso remove o
+staging implícito repetido do runtime CUDA sem alterar a semântica do callback,
+a agregação de rotas ou a captura de grafo do llama.cpp.
+
+O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
+`cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
+prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
 ## Defeitos anotados
 

@@ -592,7 +592,8 @@ visibilidade dos controles de implantação na UI local.
   grande na VRAM. Se o modelo tiver um sidecar
   `<modelo>.cuda-profile.json` com `bandwidth`, o bloco heterogêneo reaproveita
   a mesma fração medida do FreeToken para executar misses em lanes CPU e GPU
-  sobrepostas; sem sidecar, não é fabricada uma constante de hardware.
+  sobrepostas; sem sidecar, usa um perfil inicial GPU-first e mantém a lane
+  CPU ativa até que uma medição persistida substitua a política.
   `warmup_status`, bytes, candidatos e erros chegam em
   `moe_executor_diagnostics`. O prazo é `POM_MOE_WARMUP_MAX_MS` (30 s por
   padrão) e `cancel_device_warmup` faz cancelamento cooperativo entre payloads.

@@ -5,6 +5,8 @@
 //! Atenção e o restante das camadas continuam no contexto llama.cpp; aqui a
 //! fronteira própria é o router GGUF mais o FFN esparso da camada local.
 
+#[cfg(feature = "cuda")]
+use super::bandwidth::BandwidthProfile;
 use super::block::{
     HeterogeneousMoeBlock, IqQuantMoeBlock, LegacyQuantMoeBlock, LowBitMoeBlock, MoeBlockError,
     Nvfp4MoeBlock, PlainMoeBlock, Q4_0MoeBlock,
@@ -1488,7 +1490,14 @@ impl MoeRuntime {
                 #[cfg(feature = "cuda")]
                 let coexecution_profile = CudaTransferProfile::load_for_model(&path)
                     .map_err(MoeRuntimeError::Block)?
-                    .and_then(|profile| profile.bandwidth);
+                    .and_then(|profile| profile.bandwidth)
+                    .or_else(|| {
+                        tracing::info!(
+                            model = %model,
+                            "perfil CUDA MoE ausente; habilitando coexecução CPU/GPU automática"
+                        );
+                        Some(BandwidthProfile::automatic_startup())
+                    });
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
                     #[cfg(feature = "cuda")]

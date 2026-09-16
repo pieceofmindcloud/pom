@@ -2901,13 +2901,14 @@ somadas com a mesma largura de saída. A consulta de residência não cria lease
 nem toca LRU, para que o planejador não falsifique hits ou impeça eviction.
 
 Os diagnósticos são automáticos quando o executor CUDA MoE está ativo;
-`POM_MOE_CUDA_PROFILE` não é necessário e não altera a execução. O perfil de
-divisão só é aplicado quando existe o sidecar `<modelo>.cuda-profile.json` com
-o campo `bandwidth`. Sem esse arquivo, o runtime mantém a política
-exclusivamente CUDA e não inventa uma taxa para a placa. Na ksia, a validação
-deve repetir o mesmo prompt com o warmup padrão, gerar ou instalar o sidecar
-medido para este modelo e comparar prefill, decode, corretude textual e deltas
-de uploads.
+`POM_MOE_CUDA_PROFILE` não é necessário e não altera a execução. O sidecar
+`<modelo>.cuda-profile.json` com o campo `bandwidth` continua sendo o override
+medido. Sem esse arquivo, o runtime começa com um perfil GPU-first que envia
+75% dos misses à GPU e 25% à lane CPU, mantendo transferência e GEMV
+simultâneos até que exista uma medição persistida. Essa fração é uma política
+de partida, não uma medição da placa. Na ksia, a validação deve repetir o
+mesmo prompt com o warmup padrão, persistir o sidecar medido para este modelo
+e comparar prefill, decode, corretude textual e deltas de uploads.
 
 ## Defeitos anotados
 

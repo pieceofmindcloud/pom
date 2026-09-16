@@ -49,6 +49,22 @@ pub struct MissSplit {
 }
 
 impl BandwidthProfile {
+    /// Perfil inicial usado quando ainda não existe um sidecar medido.
+    ///
+    /// O caminho FreeToken não pode ficar GPU-only enquanto a medição
+    /// persistida ainda não chegou: uma fração dos misses precisa permanecer
+    /// na lane CPU para que transferência e GEMV avancem em paralelo. O
+    /// sidecar continua sendo a fonte preferida e substitui este perfil assim
+    /// que estiver disponível.
+    pub const fn automatic_startup() -> Self {
+        Self {
+            cpu_overlap_bytes_per_sec: 1.0,
+            transfer_overlap_bytes_per_sec: 3.0,
+            cpu_bytes_per_sec: 1.0,
+            transfer_bytes_per_sec: 3.0,
+        }
+    }
+
     /// Retorna a parcela dos misses que deve atravessar a transferência.
     pub fn gpu_fraction(self) -> Result<f32, BandwidthError> {
         let overlap_cpu = valid(self.cpu_overlap_bytes_per_sec);
@@ -139,5 +155,11 @@ mod tests {
             incomplete.gpu_fraction(),
             Err(BandwidthError::MissingCpuMeasurement)
         );
+    }
+
+    #[test]
+    fn perfil_automatico_de_startup_mantem_lane_cpu() {
+        let profile = BandwidthProfile::automatic_startup();
+        assert!((profile.gpu_fraction().unwrap() - 0.75).abs() < 1e-6);
     }
 }

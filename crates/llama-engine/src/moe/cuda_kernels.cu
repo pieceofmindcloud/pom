@@ -3753,6 +3753,15 @@ struct HeterogeneousRoutePipeline {
     std::size_t intermediate_width;
     std::size_t token_capacity = 0;
     std::size_t route_capacity = 0;
+    // The callback normally hands us pageable Rust/llama.cpp allocations.
+    // Keep persistent pinned input staging so every route does not make the
+    // CUDA driver pin and unpin those pages before the H2D copy.
+    CudaHeterogeneousExpert *h_experts = nullptr;
+    float *h_hidden = nullptr;
+    uint32_t *h_token_ids = nullptr;
+    float *h_weights = nullptr;
+    uint32_t *h_route_to_pair = nullptr;
+    std::size_t *h_token_offsets = nullptr;
     CudaHeterogeneousExpert *d_experts = nullptr;
     float *d_hidden = nullptr;
     block_q8_1 *d_hidden_q8 = nullptr;
@@ -3775,6 +3784,12 @@ struct HeterogeneousRoutePipeline {
 void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) {
     if (pipeline == nullptr) return;
     cudaFreeHost(pipeline->h_output);
+    cudaFreeHost(pipeline->h_token_offsets);
+    cudaFreeHost(pipeline->h_route_to_pair);
+    cudaFreeHost(pipeline->h_weights);
+    cudaFreeHost(pipeline->h_token_ids);
+    cudaFreeHost(pipeline->h_hidden);
+    cudaFreeHost(pipeline->h_experts);
     cudaFree(pipeline->d_output);
     cudaFree(pipeline->d_pair_output);
     cudaFree(pipeline->d_activated);
@@ -3789,6 +3804,12 @@ void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) 
     cudaFree(pipeline->d_experts);
     pipeline->d_output = nullptr;
     pipeline->h_output = nullptr;
+    pipeline->h_token_offsets = nullptr;
+    pipeline->h_route_to_pair = nullptr;
+    pipeline->h_weights = nullptr;
+    pipeline->h_token_ids = nullptr;
+    pipeline->h_hidden = nullptr;
+    pipeline->h_experts = nullptr;
     pipeline->d_pair_output = nullptr;
     pipeline->d_activated = nullptr;
     pipeline->d_activated_q8 = nullptr;
@@ -3889,6 +3910,29 @@ int ensure_heterogeneous_route_pipeline_capacity(
     if (result != 0) goto fail;
     result = cuda_status(cudaMalloc(
         reinterpret_cast<void **>(&pipeline->d_output), hidden_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMallocHost(
+        reinterpret_cast<void **>(&pipeline->h_experts),
+        routes * sizeof(*pipeline->h_experts)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMallocHost(
+        reinterpret_cast<void **>(&pipeline->h_hidden), hidden_bytes));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMallocHost(
+        reinterpret_cast<void **>(&pipeline->h_token_ids),
+        routes * sizeof(*pipeline->h_token_ids)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMallocHost(
+        reinterpret_cast<void **>(&pipeline->h_weights),
+        routes * sizeof(*pipeline->h_weights)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMallocHost(
+        reinterpret_cast<void **>(&pipeline->h_route_to_pair),
+        routes * sizeof(*pipeline->h_route_to_pair)));
+    if (result != 0) goto fail;
+    result = cuda_status(cudaMallocHost(
+        reinterpret_cast<void **>(&pipeline->h_token_offsets),
+        (tokens + 1) * sizeof(*pipeline->h_token_offsets)));
     if (result != 0) goto fail;
     result = cuda_status(cudaMallocHost(
         reinterpret_cast<void **>(&pipeline->h_output), hidden_bytes));
@@ -4049,28 +4093,48 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     const std::size_t activated_bytes = pipeline->intermediate_width * expert_count * sizeof(float);
     const std::size_t pair_output_bytes = pipeline->hidden_width * expert_count * sizeof(float);
 
+    // Copy the callback-owned input once into persistent pinned buffers. The
+    // following device copies then use the fast pinned-host path while the
+    // public callback contract remains unchanged.
+    std::memcpy(
+        pipeline->h_experts, experts,
+        expert_count * sizeof(*pipeline->h_experts));
+    std::memcpy(pipeline->h_hidden, hidden, hidden_bytes);
+    std::memcpy(
+        pipeline->h_token_ids, token_ids,
+        expert_count * sizeof(*pipeline->h_token_ids));
+    std::memcpy(
+        pipeline->h_weights, weights,
+        route_count * sizeof(*pipeline->h_weights));
+    std::memcpy(
+        pipeline->h_route_to_pair, route_to_pair,
+        route_count * sizeof(*pipeline->h_route_to_pair));
+    std::memcpy(
+        pipeline->h_token_offsets, token_offsets,
+        token_offsets_len * sizeof(*pipeline->h_token_offsets));
+
     const auto h2d_started = Clock::now();
     int result = cuda_status(cudaMemcpy(
-        pipeline->d_experts, experts,
+        pipeline->d_experts, pipeline->h_experts,
         expert_count * sizeof(*pipeline->d_experts), cudaMemcpyHostToDevice));
     if (result != 0) return result;
     result = cuda_status(cudaMemcpy(
-        pipeline->d_hidden, hidden, hidden_bytes, cudaMemcpyHostToDevice));
+        pipeline->d_hidden, pipeline->h_hidden, hidden_bytes, cudaMemcpyHostToDevice));
     if (result != 0) return result;
     result = cuda_status(cudaMemcpy(
-        pipeline->d_token_ids, token_ids,
+        pipeline->d_token_ids, pipeline->h_token_ids,
         expert_count * sizeof(*pipeline->d_token_ids), cudaMemcpyHostToDevice));
     if (result != 0) return result;
     result = cuda_status(cudaMemcpy(
-        pipeline->d_weights, weights,
+        pipeline->d_weights, pipeline->h_weights,
         route_count * sizeof(*pipeline->d_weights), cudaMemcpyHostToDevice));
     if (result != 0) return result;
     result = cuda_status(cudaMemcpy(
-        pipeline->d_route_to_pair, route_to_pair,
+        pipeline->d_route_to_pair, pipeline->h_route_to_pair,
         route_count * sizeof(*pipeline->d_route_to_pair), cudaMemcpyHostToDevice));
     if (result != 0) return result;
     result = cuda_status(cudaMemcpy(
-        pipeline->d_token_offsets, token_offsets,
+        pipeline->d_token_offsets, pipeline->h_token_offsets,
         token_offsets_len * sizeof(*pipeline->d_token_offsets), cudaMemcpyHostToDevice));
     if (timing != nullptr) {
         timing->h2d_ms = elapsed_ms(h2d_started, Clock::now());

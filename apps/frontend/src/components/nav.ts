@@ -142,14 +142,14 @@ export const NAV: NavSection[] = [
  * O menu como este perfil o vê.
  *
  * Uma seção que navega sozinha some quando a rota dela é fechada; uma seção com
- * filhas some quando **nenhuma** filha sobra, e não quando alguma sai - a seção
- * "Logs" inteira desaparece para o perfil `node` porque as duas filhas estão sob
- * `/logs`, mas "Configurações" continuaria de pé se só uma filha fosse fechada.
+ * filhas some quando **nenhuma** filha sobra, e não quando alguma sai. As telas
+ * Enterprise são deliberadamente descobríveis e permanecem no menu mesmo sem
+ * licença; a própria tela mostra o convite de ativação.
  *
  * A decisão de quem entra onde não está aqui: está em `lib/access.ts`, a mesma
  * tabela que o roteador consulta.
  */
-export function navForProfile(profile: Profile): NavSection[] {
+export function navForProfile(profile: Profile, _enterpriseActive = true): NavSection[] {
   const filterLeaf = (leaf: NavLeaf): NavLeaf | null => {
     const children = (leaf.children ?? [])
       .map(filterLeaf)

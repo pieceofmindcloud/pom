@@ -506,9 +506,11 @@ profile policy remains the effective authorization boundary.
   segunda perna; retries automáticos da mesma mutação assinada são evitados para
   não transformar timeout em falso replay administrativo. O testkit de admin
   sobe dois listeners TCP locais e prova promoção e recusa ponta a ponta.
-- `reqlog.rs` - persistent SQLite audit trail. `AuditLog` enqueues best-effort
-  writes on a dedicated bounded thread, replica eventos `begin` e `complete`
-  aos admins efetivos por libp2p e executa as escritas no `PomDb` compartilhado;
+- `reqlog.rs` - adaptador de auditoria e fallback de migração. No caminho
+  Enterprise ativo, o host grava em `enterprise.db`; `AuditLog` enqueues
+  best-effort writes on a dedicated bounded thread, replica eventos `begin` e
+  `complete` aos admins efetivos por libp2p e executa as escritas no `PomDb`
+  compartilhado;
   `AuditDb` cria o schema e o índice FTS5 somente no adaptador de teste,
   abre requests em `in_progress`, completa a mesma linha, marca registros
   antigos como `incomplete` e serve consultas autenticadas paginadas mais
@@ -516,10 +518,17 @@ profile policy remains the effective authorization boundary.
   key, rótulo de usuário, modelo, prompt e intervalo de entrada; o usuário é o
   rótulo humano da API key porque a auditoria não armazena uma conta separada.
   Falha de enfileiramento ou gravação registra
-  sempre a operação e o request id. Pedidos, conversas e auditoria ficam no
-  mesmo `pom.db`; permissões do banco e dos sidecars WAL/SHM são aplicadas no
-  arranque. Filtros de usuário e modelo vazios são ignorados antes da consulta
-  SQL, preservando a busca ampla quando o campo não foi preenchido.
+  sempre a operação e o request id. Pedidos e conversas ficam no `pom.db`; a
+  auditoria Enterprise fica no `enterprise.db` isolado, enquanto o adaptador
+  legado permanece como fallback. Permissões dos bancos e dos sidecars WAL/SHM
+  são aplicadas no arranque. Filtros de usuário e modelo vazios são ignorados
+  antes da consulta
+  SQL, preservando a busca ampla quando o campo não foi preenchido. As rotas
+  `/api/ui/requests` e `/api/ui/requests/stats` são Enterprise e falham fechado
+  com `enterprise_required` sem entitlement. Com entitlement ativo, os
+  handlers encaminham listagem e estatísticas ao processo
+  `pom-plugin-host`; o `AuditLog` legado só é fallback transitório quando o
+  plugin não está disponível.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
@@ -1036,8 +1045,11 @@ faz o download autenticado do blob persistido.
   `AuthRejection`: MissingHeader=401, InvalidKey=403.
 - `reqlog.rs` - `AuditLog::begin` records the exact prompt, request body,
   resolved model, entry node, API-key identity and arrival time before
-  generation. `spawn_logged_generation_with_stops` later calls `complete` on
-  that id with result, telemetry, timings, token counts, hop chain and error.
+  generation when the Enterprise host is unavailable; the active Enterprise
+  path sends the same neutral events to `pom-plugin-host`, which persists them
+  in `enterprise.db`. `spawn_logged_generation_with_stops` later calls
+  `complete` on that id with result, telemetry, timings, token counts, hop
+  chain and error.
   The request body contains no headers or secrets. `list_requests` requires
   `ConnectionAuth`, supports node, API-key identity, prompt FTS, time-range,
   limit and offset filters, and returns newest first with incomplete/error

@@ -738,10 +738,7 @@ impl DeviceExpertCache {
             .iter()
             .map(|stats| stats.resident_bytes)
             .collect();
-        total.entries_by_device = per_device_stats
-            .iter()
-            .map(|stats| stats.entries)
-            .collect();
+        total.entries_by_device = per_device_stats.iter().map(|stats| stats.entries).collect();
         total
     }
 
@@ -905,9 +902,7 @@ impl DeviceExpertCache {
     /// de `device_names`. Além do limite efetivo, preserva os valores que o
     /// formaram para a telemetria distinguir pouca VRAM real de margem
     /// excessiva da política.
-    pub fn budget_snapshots_by_device(
-        &self,
-    ) -> Result<Vec<CacheBudgetSnapshot>, DeviceCacheError> {
+    pub fn budget_snapshots_by_device(&self) -> Result<Vec<CacheBudgetSnapshot>, DeviceCacheError> {
         self.shards
             .iter()
             .map(|shard| {

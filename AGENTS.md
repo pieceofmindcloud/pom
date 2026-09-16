@@ -157,6 +157,13 @@ quebra o produto inteiro.
   `admin`, `node` ou `infer` e gera a chave de conexão quando necessário. O perfil
   persistido e suas políticas ficam em `crates/node/src/profile.rs`; a chave
   continua sendo o mecanismo de autenticação. → `api-http.md`, `web-ui.md`
+- **Enterprise é uma fronteira de processo.** O cliente de licença e o estado
+  de entitlement vivem em `crates/node/src/enterprise.rs`; a biblioteca
+  Enterprise só pode ser carregada por `pom-plugin-host` através da ABI C e do
+  IPC versionados em `crates/enterprise-protocol`. As telas de Logs de
+  Requisições e Estatísticas continuam descobríveis no menu sem licença, mas o
+  backend recusa os dados até o entitlement correspondente estar ativo. →
+  `docs/subsystems/licenciamento-enterprise.md`
 - **Política de primeira versão.** O produto ainda não foi lançado. Portanto,
   não manter no runtime código de compatibilidade, adapters ou fallbacks para
   versões antigas de protocolos - especialmente formatos de inferência v1/v2.

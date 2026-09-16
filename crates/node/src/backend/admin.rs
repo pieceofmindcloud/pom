@@ -377,6 +377,10 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
         )
         .route("/api/internal/reload_model", post(internal_reload_model))
         .route(
+            "/api/internal/enterprise/fingerprint",
+            get(crate::enterprise::enterprise_peer_fingerprint),
+        )
+        .route(
             "/api/internal/network/settings",
             post(crate::webui::internal_network_settings),
         )

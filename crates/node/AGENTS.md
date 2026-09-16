@@ -258,6 +258,14 @@ libp2p separado do túnel de inferência. O `GatewayState` compartilha o serviç
 com as rotas `/api/ui/network-chat`; a política de cluster é aplicada pela
 catraca de `network_chat_policy`.
 
+`src/enterprise.rs` mantém o cliente mockável do servidor de licenças, o
+fingerprint, o estado persistido sem a chave e o supervisor de heartbeat. O
+`enterprise_host.rs` é o único adaptador do `pom` para o processo auxiliar;
+`enterprise_p2p.rs` assina provas de fingerprint por nonce. O `GatewayState`
+expõe entitlement ao backend, enquanto `webui` publica status/ativação e
+`reqlog` encaminha eventos e consultas ao plugin ativo. A fronteira e os
+limites restantes estão em `docs/subsystems/licenciamento-enterprise.md`.
+
 ## Ligações
 
 - **Depende de**: `routing-contract`, `llama-engine` e `brand` (crates irmãos);
@@ -269,3 +277,10 @@ catraca de `network_chat_policy`.
 ## Defeitos anotados
 
 Nenhum em aberto nesta pasta.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

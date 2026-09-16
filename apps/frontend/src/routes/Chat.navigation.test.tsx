@@ -90,6 +90,18 @@ const chatScenario = vi.hoisted(() => ({
  */
 vi.mock("../lib/queries", () => ({
   useAdminSurface: () => ({ data: "available", isLoading: false, isError: false }),
+  useEnterpriseStatus: () => ({
+    data: {
+      active: true,
+      state: "active",
+      features: { request_logs: true, statistics: true },
+      manage_url: "https://pieceofmind.cloud/enterprise",
+      plugin_version: "test",
+      lease_expires_at: null,
+    },
+    isLoading: false,
+    isError: false,
+  }),
   useNode: () => ({ data: nodeData, isLoading: false, isError: false }),
   useCluster: () => ({ data: chatScenario.cluster }),
   useNetworkChat: () => ({ data: { messages: [] }, isSuccess: true }),

@@ -64,6 +64,11 @@ remain local until the deploy preflight.
 
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
+As telas `/logs` e `/estatisticas` são superfícies Enterprise descobríveis:
+`canAccessRoute` e `navForProfile` mantêm seus itens visíveis para todos os
+perfis, e `App.tsx` mostra o estado Enterprise com link de compra quando o
+entitlement está inativo. A API continua sendo a autoridade e recusa os dados.
+
 O perfil `infer` é uma vista reduzida da interface: conversa, Chat da rede,
 documentação, API key e a tela de rede local para pedir entrada no processamento. O valor vem
 de `/api/ui/node`, é propriedade persistida do nó e aparece na toolbar. Isso

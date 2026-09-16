@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { canAccessRoute, homeRoute } from "./lib/access";
+import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { canAccessRoute, homeRoute, isEnterprisePath } from "./lib/access";
 import {
   api,
   clearAdminAccessToken,
@@ -10,7 +10,7 @@ import {
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
 import { ChatSessionProvider } from "./lib/chatStore";
-import { useAdminSurface } from "./lib/queries";
+import { useAdminSurface, useEnterpriseStatus } from "./lib/queries";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -100,6 +100,37 @@ function AdminLocalOnly() {
   );
 }
 
+function EnterpriseUnavailable({ manageUrl }: { manageUrl: string }) {
+  const { t } = useI18n();
+  return (
+    <main className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
+      <Panel className="w-full max-w-xl">
+        <PanelHeader
+          eyebrow={t("enterprise.eyebrow")}
+          title={t("enterprise.requiredTitle")}
+          subtitle={t("enterprise.requiredSubtitle")}
+        />
+        <div className="px-5 pb-5">
+          <a
+            href={manageUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex rounded-md bg-iris px-4 py-2 text-sm font-semibold text-ink transition-colors hover:bg-iris/80"
+          >
+            {t("enterprise.learnMore")}
+          </a>
+          <Link
+            to="/enterprise"
+            className="ml-2 inline-flex rounded-md border border-line px-4 py-2 text-sm font-semibold text-fg transition-colors hover:border-line-strong hover:bg-line/40"
+          >
+            {t("enterprise.activateHere")}
+          </Link>
+        </div>
+      </Panel>
+    </main>
+  );
+}
+
 function AdminAccessUnavailable() {
   const { t } = useI18n();
   return (
@@ -129,6 +160,7 @@ export const routeLoaders = {
   logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
   statistics: () => import("./routes/Statistics").then(({ Statistics }) => Statistics),
+  enterprise: () => import("./routes/Enterprise").then(({ Enterprise }) => Enterprise),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
@@ -166,6 +198,7 @@ const Dashboard = lazyRoute(routeLoaders.dashboard);
 const Logs = lazyRoute(routeLoaders.logs);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
 const Statistics = lazyRoute(routeLoaders.statistics);
+const Enterprise = lazyRoute(routeLoaders.enterprise);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
@@ -224,6 +257,7 @@ export default function App() {
   const { t } = useI18n();
   const location = useLocation();
   const { profile } = useProfile();
+  const enterpriseStatus = useEnterpriseStatus();
   /*
    * O guarda de perfil fica aqui, e não dentro de cada rota, porque aqui ele
    * é um só: `/chat` renderiza fora do `<Routes>` (ver abaixo), então um guarda
@@ -233,6 +267,13 @@ export default function App() {
    * Quem decide é `lib/access.ts`, a mesma tabela que filtra o menu.
    */
   const allowed = canAccessRoute(location.pathname, profile);
+  const enterprisePath = isEnterprisePath(location.pathname);
+  const enterpriseActive = Boolean(
+    enterpriseStatus.data?.active
+      && (location.pathname.startsWith("/logs")
+        ? enterpriseStatus.data.features.request_logs
+        : enterpriseStatus.data.features.statistics),
+  );
   const isChat = allowed && location.pathname === "/chat";
   const isEmbeddedChat = allowed && location.pathname === "/admin-ui/chat";
   // Screens that own the whole viewport and scroll inside themselves, instead
@@ -373,6 +414,8 @@ export default function App() {
                       <Forbidden />
                     </Page>
                   </div>
+                ) : enterprisePath && !enterpriseActive ? (
+                  <EnterpriseUnavailable manageUrl={enterpriseStatus.data?.manage_url ?? "https://pieceofmind.cloud/enterprise"} />
                 ) : isChat ? (
                   <Chat />
                 ) : (
@@ -395,6 +438,7 @@ export default function App() {
                         <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
                         <Route path="/logs" element={<Page><Logs /></Page>} />
                         <Route path="/estatisticas" element={<Page><Statistics /></Page>} />
+                        <Route path="/enterprise" element={<Page><Enterprise /></Page>} />
                         <Route path="/logs/estatisticas" element={<Navigate to="/estatisticas" replace />} />
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />

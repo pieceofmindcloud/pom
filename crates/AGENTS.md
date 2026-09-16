@@ -75,3 +75,16 @@ content so far; `types` is a placeholder awaiting migration.
   item 5.
 - A extração de `config` e tipos compartilhados ainda não corresponde ao grafo
   atual; ver `TODO.md`, item 6.
+
+Os crates `enterprise-protocol`, `enterprise-plugin-fixture` e `plugin-host`
+formam a fronteira de licenciamento: o primeiro define DTOs e ABI C v1, o
+segundo é uma `cdylib` de teste e o terceiro é o único carregador de plugins.
+O contrato e as lacunas de extração estão em
+`docs/subsystems/licenciamento-enterprise.md`.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

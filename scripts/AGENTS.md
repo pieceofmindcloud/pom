@@ -75,6 +75,17 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   altera as fontes.
 - `run-docker.sh` - `docker compose down` + `docker compose up -d`. Nao recria
   a imagem; use `build-docker.sh` para isso.
+- `build-enterprise-plugin.sh` - compila somente o crate `cdylib` Enterprise
+  para uma plataforma explícita, localiza a extensão correta e copia o artefato
+  com SHA-256 e tamanho para o diretório de saída.
+
+O `pom-release.sh` fica na raiz porque opera sobre o checkout remoto do POM:
+busca `origin/feat/enterprise`, cria worktree descartável, compila o artefato
+Enterprise e envia multipart para `/internal/releases/upload`. A opção
+`--plugin enterprise` mantém o contrato do console de releases; o fluxo
+inicial usa o fixture compatível, e `--plugin-crate enterprise-plugin` publica
+o plugin real depois de um build validado. `--dry-run` não exige token nem faz
+chamada HTTP.
 
 ## Python (nao esta na raiz - esta em old/python-inference/)
 

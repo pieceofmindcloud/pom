@@ -1,0 +1,11 @@
+[package]
+name = "enterprise-plugin-fixture"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+enterprise-protocol = { path = "../enterprise-protocol" }
+

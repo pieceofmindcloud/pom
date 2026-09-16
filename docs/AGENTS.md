@@ -188,6 +188,10 @@ da limpeza nativa durante a recarga de um peer ocioso.
 libp2p, validação e retransmissão pelo principal, catraca autenticada do
 interruptor e prioridade do túnel de inferência sobre o tráfego de conversa.
 
+`subsystems/licenciamento-enterprise.md` registra o contrato de licença,
+entitlement das telas de auditoria, a fronteira `pom`/`pom-plugin-host`, o
+plugin `enterprise.db` e os limites restantes da integração P2P/release.
+
 ## Defeitos anotados
 
 Nenhum em aberto. O `README.md` da raiz foi reconciliado com o codigo em

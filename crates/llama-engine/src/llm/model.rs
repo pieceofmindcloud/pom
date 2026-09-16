@@ -359,7 +359,7 @@ impl LlmEngine {
             // o warmup competir com o prefill. O cancelamento é cooperativo,
             // preserva os handles já residentes e impede que novos candidatos
             // especulativos entrem enquanto a rota quente é montada.
-            state.runtime.cancel_device_warmup();
+            state.runtime.cancel_device_warmup_for_forward();
             state.begin();
         }
     }

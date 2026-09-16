@@ -2384,9 +2384,10 @@ fora do aquecimento e continuam sujeitos ao LRU sob demanda. Ele não falha o
 carregamento por o modelo inteiro não caber.
 
 O prazo pode ser ajustado por `POM_MOE_WARMUP_MAX_MS`. A thread verifica o
-prazo e um `AtomicBool` antes de cada candidato; `MoeRuntime::cancel_device_warmup`
-sinaliza a parada e aguarda somente a admissão CUDA que já começou, sem remover
-entradas admitidas. Logs de início e fim registram modelo, status, bytes
+prazo e um `AtomicBool` antes de cada candidato; o callback de inferência apenas
+sinaliza a parada e não aguarda uma admissão CUDA em andamento, sem remover
+entradas admitidas. O `join` de `MoeRuntime::cancel_device_warmup` fica restrito
+à troca explícita de warmup, fora do caminho quente. Logs de início e fim registram modelo, status, bytes
 admitidos e motivo de parada. A telemetria
 `moe_executor_diagnostics` publica `warmup_status`, candidatos visitados,
 experts admitidos, bytes residentes, duração e erro. Assim uma subida não fica
@@ -2779,12 +2780,36 @@ ksia. Com `POM_MOE_CUDA_PROFILE=1`, comparar `device_cache_upload_ms` por delta
 com `cuda_device_calls` em `CUDA0` e `CUDA1`, sempre com `POM_MOE_WARMUP` ausente
 ou desabilitado para medir a rota fria sem poluição especulativa.
 
-Além disso, `cancel_device_warmup` agora aguarda o handle da thread depois de
-sinalizar o `AtomicBool`. A espera cobre somente a admissão que já entrou em
-`cudaMemcpy` ou no mutex do shard; a thread verifica o cancelamento antes de
-cada próximo candidato. Assim o callback não pode começar o forward atrás de
-uma varredura de warmup ainda ativa, e não existe espera fixa de cinco segundos
-no caminho quente.
+Além disso, o callback agora usa a variante não bloqueante de
+`cancel_device_warmup`: sinaliza o `AtomicBool` e inicia o forward imediatamente.
+A admissão corrente continua protegida pelo mutex do shard e por leases, e a
+thread verifica o cancelamento antes de cada próximo candidato. A variante que
+faz `join` só é usada ao substituir um warmup, evitando transformar uma cópia
+de peso em TTFT sem permitir duas varreduras simultâneas do cache.
+
+### Fase 5.16: cancelamento não bloqueante do warmup - 2026-09-16
+
+O desenho do FreeToken trata o warmup como trabalho de fundo que prepara o
+working set sem bloquear o escalonador. O runtime POM tinha a mesma thread,
+mas `begin_moe_callback` chamava `cancel_device_warmup`, que sinalizava e fazia
+`join`. Se uma admissão de peso estivesse em andamento, o primeiro callback
+ficava parado até ela terminar, embora fila, mutex do contexto, transporte e
+scheduler estivessem livres.
+
+O callback e a entrada de `forward_batch_with_route` agora chamam
+`cancel_device_warmup_for_forward`, que só publica a flag de cancelamento. A
+admissão já iniciada termina com a proteção normal do shard; leases ativos
+impedem que seus handles sejam desalojados, e o stream CUDA conserva a ordem
+das operações. A API de troca continua usando `cancel_device_warmup` com
+`join`, para que um novo warmup nunca concorra com o anterior.
+
+Esta mudança atua somente na espera de TTFT durante a transição warmup-forward;
+ela não aumenta o orçamento nem finge que o modelo inteiro cabe na VRAM. A
+validação obrigatória na ksia deve comparar três rodadas do mesmo prompt com
+`nvidia-smi` sem processos concorrentes, conferindo `ttft_ms`,
+`node_moe_forward_ms`, `generation_tokens_per_sec`, hits/misses e a saída
+textual contra a referência `0c088521`. O ganho não é afirmado antes dessa
+medição.
 
 ### Comparação isolada em uma máquina - 2026-09-15
 

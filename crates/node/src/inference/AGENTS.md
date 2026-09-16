@@ -596,7 +596,9 @@ visibilidade dos controles de implantação na UI local.
   fabrica uma constante de hardware.
   `warmup_status`, bytes, candidatos e erros chegam em
   `moe_executor_diagnostics`. O prazo é `POM_MOE_WARMUP_MAX_MS` (30 s por
-  padrão) e `cancel_device_warmup` faz cancelamento cooperativo entre payloads.
+  padrão). O callback de inferência apenas sinaliza o cancelamento cooperativo
+  entre payloads; ele não aguarda a thread de warmup. O `join` fica reservado
+  à troca explícita de warmup, fora do caminho quente.
   Fontes sem ponte device não aquecem nem removem experts do llama.cpp.
   A prova numérica `nvfp4_matches_llama_cpp_from_first_layer_and_stage` é
   ignorada por depender de GGUF real: com `POM_MOE_NUMERIC_MODEL` e

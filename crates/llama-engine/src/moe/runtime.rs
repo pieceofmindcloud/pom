@@ -1693,26 +1693,17 @@ impl MoeRuntime {
     #[cfg(not(feature = "cuda"))]
     pub fn start_device_warmup(&self) {}
 
-    /// Interrompe o aquecimento sem desalojar as entradas já admitidas.
+    /// Solicita o fim do aquecimento sem desalojar as entradas já admitidas.
     ///
-    /// O cancelamento sozinho era uma corrida: o callback podia sinalizar a
-    /// thread enquanto ela ainda segurava o shard durante `cudaMemcpy`, e o
-    /// primeiro forward ficava atrás do preenchimento. Depois do sinal,
-    /// aguardar a admissão corrente garante que nenhuma nova admissão possa
-    /// competir com a rota quente. A thread só faz uma admissão por vez e
-    /// verifica o sinal entre payloads, então o join não espera o warmup
-    /// inteiro.
+    /// O caminho de inferência não pode aguardar a thread de warmup: se ela
+    /// estiver em uma admissão CUDA, `join` transforma uma cópia de peso em
+    /// latência de TTFT. A admissão corrente é serializada pelo shard e termina
+    /// com segurança; a flag impede qualquer candidato seguinte. O handle só
+    /// é aguardado por `cancel_device_warmup`, fora do caminho quente, quando o
+    /// runtime vai iniciar outro aquecimento.
     #[cfg(feature = "cuda")]
     pub fn cancel_device_warmup(&self) {
-        let cancellation = self
-            .warmup
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .cancellation
-            .clone();
-        if let Some(cancellation) = cancellation {
-            cancellation.store(true, Ordering::Release);
-        }
+        self.signal_device_warmup_cancel();
         let handle = self
             .warmup_thread
             .lock()
@@ -1727,8 +1718,29 @@ impl MoeRuntime {
         }
     }
 
+    #[cfg(feature = "cuda")]
+    pub fn cancel_device_warmup_for_forward(&self) {
+        self.signal_device_warmup_cancel();
+    }
+
+    #[cfg(feature = "cuda")]
+    fn signal_device_warmup_cancel(&self) {
+        let cancellation = self
+            .warmup
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cancellation
+            .clone();
+        if let Some(cancellation) = cancellation {
+            cancellation.store(true, Ordering::Release);
+        }
+    }
+
     #[cfg(not(feature = "cuda"))]
     pub fn cancel_device_warmup(&self) {}
+
+    #[cfg(not(feature = "cuda"))]
+    pub fn cancel_device_warmup_for_forward(&self) {}
 
     pub fn executor_kind(&self) -> MoeExecutorKind {
         match self.blocks.first() {
@@ -2060,7 +2072,7 @@ impl MoeRuntime {
         // caso contrário, a thread de fundo pode continuar admitindo experts
         // de camadas futuras e expulsar os experts usados no turno anterior.
         #[cfg(feature = "cuda")]
-        self.cancel_device_warmup();
+        self.cancel_device_warmup_for_forward();
 
         log_moe_layer_input_diagnostic(
             &self.source,

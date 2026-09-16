@@ -93,10 +93,6 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   quantiza hidden e ativação em buffers persistentes e executa uma warp por
   linha; isso é importante para GGUF como Mistral-Small, que combina dtypes
   18, 22 e 23 nos papéis gate/up/down.
-  O allocator CUDA mantém, por device, uma janela host pinned de até 256 MiB
-  para os uploads em lote de pesos. A janela é protegida por mutex, reutilizada
-  entre lotes e percorrida em chunks; se a reserva falhar, o FFI usa o caminho
-  pageable anterior.
   O dispatcher q8 heterogêneo escolhe helpers diretos por dtype, sem ponteiro
   de função de device no loop de blocos, permitindo ao nvcc fazer inline das
   primitivas canônicas.

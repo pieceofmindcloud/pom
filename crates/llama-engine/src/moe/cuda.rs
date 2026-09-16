@@ -2262,65 +2262,9 @@ impl Drop for CudaDeviceAllocation {
     }
 }
 
-const CUDA_MOE_PINNED_UPLOAD_CHUNK_BYTES: usize = 256 * 1024 * 1024;
-
-struct CudaPinnedUploadStaging {
-    handle: *mut c_void,
-    bytes: usize,
-}
-
-// The pointer is owned by this value and is accessed only while the
-// CudaDeviceAllocator staging mutex is held. CUDA host allocations remain
-// valid until the explicit free in Drop.
-unsafe impl Send for CudaPinnedUploadStaging {}
-
-impl Default for CudaPinnedUploadStaging {
-    fn default() -> Self {
-        Self {
-            handle: std::ptr::null_mut(),
-            bytes: 0,
-        }
-    }
-}
-
-impl CudaPinnedUploadStaging {
-    fn ensure_capacity(&mut self, total_bytes: usize) -> bool {
-        let required = total_bytes.min(CUDA_MOE_PINNED_UPLOAD_CHUNK_BYTES);
-        if required == 0 {
-            return false;
-        }
-        if !self.handle.is_null() && self.bytes >= required {
-            return true;
-        }
-
-        let mut replacement = std::ptr::null_mut();
-        let status = unsafe { pom_moe_host_pinned_alloc(required, &mut replacement) };
-        if status != 0 || replacement.is_null() {
-            return false;
-        }
-        if !self.handle.is_null() {
-            unsafe { pom_moe_host_pinned_free(self.handle) };
-        }
-        self.handle = replacement;
-        self.bytes = required;
-        true
-    }
-}
-
-impl Drop for CudaPinnedUploadStaging {
-    fn drop(&mut self) {
-        if !self.handle.is_null() {
-            unsafe { pom_moe_host_pinned_free(self.handle) };
-            self.handle = std::ptr::null_mut();
-            self.bytes = 0;
-        }
-    }
-}
-
 struct CudaDeviceAllocator {
     device_index: u32,
     name: String,
-    pinned_upload_staging: Mutex<CudaPinnedUploadStaging>,
 }
 
 impl CudaDeviceAllocator {
@@ -2328,7 +2272,6 @@ impl CudaDeviceAllocator {
         Self {
             device_index,
             name: format!("CUDA{device_index}"),
-            pinned_upload_staging: Mutex::new(CudaPinnedUploadStaging::default()),
         }
     }
 }
@@ -2351,10 +2294,26 @@ impl DeviceAllocator for CudaDeviceAllocator {
     }
 
     fn upload(&self, payload: &[u8]) -> Result<Box<dyn DeviceAllocation>, String> {
-        let mut allocations = self.upload_many(&[payload])?;
-        allocations
-            .pop()
-            .ok_or_else(|| "upload CUDA não devolveu alocação".to_owned())
+        let mut handle = std::ptr::null_mut();
+        let status = unsafe {
+            pom_moe_device_upload(
+                self.device_index as i32,
+                payload.as_ptr(),
+                payload.len(),
+                &mut handle,
+            )
+        };
+        if status != 0 {
+            return Err(format!("upload CUDA retornou {status}"));
+        }
+        if handle.is_null() {
+            return Err("upload CUDA retornou handle nulo".into());
+        }
+        Ok(Box::new(CudaDeviceAllocation {
+            device_index: self.device_index,
+            handle: handle as usize,
+            bytes: payload.len(),
+        }))
     }
 
     fn upload_many(&self, payloads: &[&[u8]]) -> Result<Vec<Box<dyn DeviceAllocation>>, String> {
@@ -2370,30 +2329,12 @@ impl DeviceAllocator for CudaDeviceAllocator {
             .map(|payload| payload.len())
             .collect::<Vec<_>>();
         let mut handles = vec![std::ptr::null_mut(); payloads.len()];
-        let total_payload_bytes = payloads
-            .iter()
-            .try_fold(0usize, |total, payload| total.checked_add(payload.len()));
-        let total_payload_bytes = total_payload_bytes
-            .ok_or_else(|| "tamanho total do lote CUDA excede usize".to_owned())?;
-        let mut staging = self
-            .pinned_upload_staging
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let use_staging = staging.ensure_capacity(total_payload_bytes);
-        let staging_handle = if use_staging {
-            staging.handle
-        } else {
-            std::ptr::null_mut()
-        };
-        let staging_bytes = if use_staging { staging.bytes } else { 0 };
         let status = unsafe {
-            pom_moe_device_upload_many_with_staging(
+            pom_moe_device_upload_many(
                 self.device_index as i32,
                 payload_ptrs.as_ptr(),
                 payload_lengths.as_ptr(),
                 payloads.len(),
-                staging_handle,
-                staging_bytes,
                 handles.as_mut_ptr(),
             )
         };
@@ -2659,17 +2600,6 @@ unsafe extern "C" {
         payloads: *const *const u8,
         payload_lengths: *const usize,
         payload_count: usize,
-        out: *mut *mut c_void,
-    ) -> i32;
-    fn pom_moe_host_pinned_alloc(bytes: usize, out: *mut *mut c_void) -> i32;
-    fn pom_moe_host_pinned_free(handle: *mut c_void);
-    fn pom_moe_device_upload_many_with_staging(
-        device_index: i32,
-        payloads: *const *const u8,
-        payload_lengths: *const usize,
-        payload_count: usize,
-        pinned_staging: *mut c_void,
-        pinned_staging_bytes: usize,
         out: *mut *mut c_void,
     ) -> i32;
     fn pom_moe_device_free(device_index: i32, handle: *mut c_void);
@@ -4666,15 +4596,6 @@ mod tests {
             source.contains("heterogeneous_quant_partial_dot_q8_1_direct"),
             "o kernel deve manter um dispatcher CUDA com chamadas diretas por dtype"
         );
-    }
-
-    #[test]
-    fn upload_de_pesos_reutiliza_staging_pinned_por_allocator() {
-        let source = include_str!("cuda_kernels.cu");
-        assert!(source.contains("pom_moe_host_pinned_alloc"));
-        assert!(source.contains("pom_moe_device_upload_many_with_staging"));
-        assert!(source.contains("pinned_upload_staging"));
-        assert!(source.contains("CUDA_MOE_PINNED_UPLOAD_CHUNK_BYTES"));
     }
 
     #[test]

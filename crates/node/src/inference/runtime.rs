@@ -2017,7 +2017,7 @@ mod tests {
             Duration::from_millis(100),
         )
         .await;
-        let mut pending_supervisor = pending_supervisor.expect("o supervisor deve ser preservado");
+        let pending_supervisor = pending_supervisor.expect("o supervisor deve ser preservado");
         assert!(wait_result.is_err());
 
         pending_supervisor.abort();

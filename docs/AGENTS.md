@@ -106,6 +106,10 @@ rotas administrativas concretas. `implantacao.md` e `inferencia.md` mantêm
 o contrato de que deployments `idle` continuam selecionáveis pelo nome, mesmo
 sem capacidade efetiva anunciada, para que a primeira requisição possa acordá-los.
 
+`api-http.md`, `build-execucao.md` e `licenciamento-enterprise.md` documentam o
+aviso diário de release `pom-core` para licenças Enterprise e a aplicação
+somente após autorização explícita na UI.
+
 O armazenamento local unificado está especificado em
 `superpowers/specs/2026-09-02-pom-db-unificado-design.md` e implementado no
 backend. O runtime mantém uma conexão SQLite compartilhada por processo,

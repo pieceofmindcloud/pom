@@ -36,6 +36,14 @@ impl EnterpriseFeatures {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreUpdate {
+    pub release_id: String,
+    pub version: String,
+    #[serde(default)]
+    pub changelog: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnterpriseStatus {
     pub active: bool,
     pub state: LicenseState,
@@ -43,6 +51,7 @@ pub struct EnterpriseStatus {
     pub manage_url: String,
     pub plugin_version: Option<String>,
     pub lease_expires_at: Option<String>,
+    pub core_update: Option<CoreUpdate>,
 }
 
 impl EnterpriseStatus {
@@ -54,6 +63,7 @@ impl EnterpriseStatus {
             manage_url: ENTERPRISE_MANAGE_URL.to_owned(),
             plugin_version: None,
             lease_expires_at: None,
+            core_update: None,
         }
     }
 
@@ -176,6 +186,7 @@ pub enum LicenseErrorCode {
     FingerprintMismatch,
     LeaseUnknown,
     RateLimited,
+    UpdateUnavailable,
     ServerError,
 }
 
@@ -203,6 +214,8 @@ pub struct PluginManifest {
     pub size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub download_expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changelog: Option<String>,
     pub key_id: String,
     pub signature: String,
 }
@@ -361,6 +374,7 @@ mod tests {
                 "manage_url": "https://pieceofmind.cloud/enterprise",
                 "plugin_version": null,
                 "lease_expires_at": null,
+                "core_update": null,
             })
         );
     }

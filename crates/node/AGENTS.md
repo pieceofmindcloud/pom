@@ -262,7 +262,10 @@ catraca de `network_chat_policy`.
 fingerprint, o estado persistido sem a chave e o supervisor de heartbeat. O
 heartbeat consome o payload rico de renovação e persiste prazo, token,
 entitlements, grant e release devolvidos pelo servidor; o prazo não é
-recalculado localmente. O
+recalculado localmente. Depois de um heartbeat aceito, e somente com o
+entitlement ativo, ele consulta o manifest `pom-core`, publica uma atualização
+pendente no status e só delega decisão, hash, troca atômica e reinício a
+`core_update.rs` depois de uma autorização explícita pela UI. O
 `enterprise_host.rs` é o único adaptador do `pom` para o processo auxiliar;
 `enterprise_p2p.rs` assina provas de fingerprint por nonce. O `GatewayState`
 expõe entitlement ao backend, enquanto `webui` publica status/ativação e

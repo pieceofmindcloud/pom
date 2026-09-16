@@ -644,6 +644,15 @@ durável de conversas), `dev/update` +
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
+`GET /api/ui/enterprise/status` é uma leitura comum que inclui
+`core_update: { release_id, version, changelog } | null`. O nó só preenche esse
+aviso depois de um heartbeat Enterprise aceito e enquanto a licença está ativa;
+instalações Free não consultam o manifest do core. A ação administrativa
+`POST /api/ui/enterprise/pom-update/apply` recebe
+`{ "release_id": "..." }`, confere que esse é o release_id ainda anunciado,
+reconsulta e verifica o manifest, baixa o artefato e agenda a troca e o
+reinício. A ação nunca é disparada pela detecção diária.
+
 `GET /api/ui/node` inclui `pom_desenv`, a decisão capturada no startup: ela só
 é verdadeira quando `POM_DESENV` vale exatamente `1`. A ausência da variável,
 `0` e qualquer outro texto deixam a flag falsa. A flag controla somente a

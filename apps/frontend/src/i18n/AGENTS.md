@@ -79,7 +79,9 @@ usam essas chaves, nunca literais cravados nos componentes.
 
 O grupo `enterprise.*` cobre o estado de descoberta das telas de Logs de
 Requisições e Estatísticas. Essas telas continuam navegáveis sem licença para
-que o usuário veja o convite de ativação e o link de compra.
+que o usuário veja o convite de ativação e o link de compra. O mesmo grupo
+nomeia o aviso de atualização do binário `pom-core` e a ação explícita de
+instalação e reinício.
 
 ## Como editar mensagens
 

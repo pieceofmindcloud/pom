@@ -70,6 +70,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   Antes do forward heterogêneo, as specs de toda a rota são construídas em
   uma travessia do inventário da camada e os misses são carregados em uma
   thread por shard;
+  experts repetidos na rota são resolvidos uma vez por lote: specs, leases e
+  descriptors são compartilhados por cópia entre as ocorrências, enquanto a
+  lista token-major enviada ao kernel permanece intacta;
   cada shard serializa sua admissão pelo mutex, enquanto CUDA0/CUDA1 podem
   fazer H2D em paralelo. O upload usa diretamente a fatia do mmap, sem copiar
   cada tensor para um `Vec` intermediário. Os leases de admissão permanecem

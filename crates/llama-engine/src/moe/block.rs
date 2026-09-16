@@ -1337,7 +1337,7 @@ impl HeterogeneousMoeBlock {
     #[cfg(feature = "cuda")]
     pub fn resident_cache_budget_snapshots_by_device(
         &self,
-    ) -> Vec<Option<super::cache::CacheBudgetSnapshot>> {
+    ) -> Vec<Option<super::admission::CacheBudgetSnapshot>> {
         self.cuda.as_ref().map_or_else(Vec::new, |cuda| {
             cuda.resident_cache_budget_snapshots_by_device()
         })

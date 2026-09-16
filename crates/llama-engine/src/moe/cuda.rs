@@ -2,11 +2,9 @@
 
 #![cfg(feature = "cuda")]
 
-use super::admission::MemoryAccount;
+use super::admission::{CacheBudgetSnapshot, MemoryAccount};
 use super::bandwidth::BandwidthProfile;
-use super::cache::{
-    CacheBudgetSnapshot, DeviceAllocation, DeviceAllocator, DeviceExpertCache, DeviceExpertLease,
-};
+use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache, DeviceExpertLease};
 use super::format_k_quants::{KQuantExpert, KQuantFormat};
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
 use super::format_plain::{PlainExpert, PlainFormat};

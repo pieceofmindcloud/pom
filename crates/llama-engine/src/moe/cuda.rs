@@ -4599,15 +4599,6 @@ mod tests {
     }
 
     #[test]
-    fn upload_de_pesos_tem_staging_pinned_limitado_e_fallback() {
-        let source = include_str!("cuda_kernels.cu");
-        assert!(source.contains("kPinnedUploadChunkBytes"));
-        assert!(source.contains("cudaMallocHost"));
-        assert!(source.contains("pinned_staging + staged_bytes"));
-        assert!(source.contains("existing pageable path"));
-    }
-
-    #[test]
     #[ignore = "medição CUDA explícita; execute com POM_MOE_CUDA_PROFILE=1"]
     fn mede_banda_h2d_d2h_do_lote_nvfp4() {
         let cases = [

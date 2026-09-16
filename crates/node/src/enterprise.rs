@@ -102,6 +102,7 @@ pub(crate) trait LicenseService: Send + Sync {
 
     async fn manifest(
         &self,
+        _plugin_code: &str,
         _lease_token: &str,
         _lease_id: &str,
         _os: &str,
@@ -170,10 +171,12 @@ impl HttpLicenseService {
         format!("{}/v1/licenses/validate", self.base_url)
     }
 
-    fn manifest_url(&self, lease_id: &str, os: &str, arch: &str) -> String {
-        let mut url =
-            reqwest::Url::parse(&format!("{}/v1/plugins/enterprise/manifest", self.base_url))
-                .expect("base URL de licenças deve ser válida");
+    fn manifest_url(&self, plugin_code: &str, lease_id: &str, os: &str, arch: &str) -> String {
+        let mut url = reqwest::Url::parse(&format!(
+            "{}/v1/plugins/{plugin_code}/manifest",
+            self.base_url
+        ))
+        .expect("base URL de licenças deve ser válida");
         url.query_pairs_mut()
             .append_pair("lease_id", lease_id)
             .append_pair("os", os)
@@ -366,6 +369,7 @@ impl LicenseService for HttpLicenseService {
 
     async fn manifest(
         &self,
+        plugin_code: &str,
         lease_token: &str,
         lease_id: &str,
         os: &str,
@@ -373,7 +377,7 @@ impl LicenseService for HttpLicenseService {
     ) -> Result<ManifestResponse, LicenseClientError> {
         let response = self
             .client
-            .get(self.manifest_url(lease_id, os, arch))
+            .get(self.manifest_url(plugin_code, lease_id, os, arch))
             .bearer_auth(lease_token)
             .send()
             .await
@@ -678,6 +682,7 @@ pub(crate) struct EnterpriseState {
     persisted: Arc<Mutex<Option<PersistedEnterpriseState>>>,
     database: Option<Arc<crate::db::PomDb>>,
     host: Arc<Mutex<Option<crate::enterprise_host::EnterpriseHost>>>,
+    core_update_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -696,6 +701,7 @@ impl EnterpriseState {
             persisted: Arc::new(Mutex::new(None)),
             database: None,
             host: Arc::new(Mutex::new(None)),
+            core_update_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -921,6 +927,7 @@ impl EnterpriseState {
         status.features = EnterpriseStatus::inactive().features;
         status.plugin_version = None;
         status.lease_expires_at = None;
+        status.core_update = None;
         Ok(())
     }
 
@@ -938,6 +945,7 @@ impl EnterpriseState {
         let manifest = self
             .service
             .manifest(
+                "enterprise",
                 &pending.response.lease_token,
                 &pending.response.lease_id,
                 &self.fingerprint.platform,
@@ -1028,6 +1036,7 @@ impl EnterpriseState {
         status.features = persisted.features.clone();
         status.plugin_version = Some(persisted.plugin_version.clone());
         status.lease_expires_at = Some(persisted.lease_expires_at.clone());
+        status.core_update = None;
     }
 
     pub(crate) async fn ingest_audit_event(&self, event: crate::reqlog::AuditEvent) -> bool {
@@ -1105,6 +1114,7 @@ impl EnterpriseState {
         status.features = features.0;
         status.plugin_version = Some(plugin_version.to_owned());
         status.lease_expires_at = Some(pending.response.lease_expires_at);
+        status.core_update = None;
         Ok(())
     }
 
@@ -1117,6 +1127,7 @@ impl EnterpriseState {
             LicenseState::Degraded
         } else {
             status.active = false;
+            status.core_update = None;
             LicenseState::Expired
         };
     }
@@ -1213,6 +1224,9 @@ impl EnterpriseState {
                     }
                     _ => {}
                 }
+                if !status.active {
+                    status.core_update = None;
+                }
                 drop(status);
                 if stop_host {
                     if let Some(host) = self.host.lock().await.take() {
@@ -1235,6 +1249,8 @@ impl EnterpriseState {
                 }
                 if let Err(error) = state.heartbeat(&uuid::Uuid::new_v4().to_string()).await {
                     tracing::warn!(error = %error, "heartbeat Enterprise falhou");
+                } else if let Err(error) = state.detect_core_update().await {
+                    tracing::warn!(error = %error, "detecção de atualização do pom falhou");
                 }
             }
         });
@@ -1253,6 +1269,141 @@ impl EnterpriseState {
         std::time::Duration::from_secs(seconds.max(30) as u64)
     }
 
+    /// Procura uma release do próprio binário somente depois de um heartbeat
+    /// aceito e com o entitlement ativo. A detecção apenas publica o aviso no
+    /// status; download, troca e reinício ficam reservados à ação explícita.
+    async fn detect_core_update(&self) -> Result<(), LicenseClientError> {
+        let _guard = self.core_update_lock.lock().await;
+        if !self.status().await.active {
+            return Ok(());
+        }
+        let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
+            LicenseClientError::new(
+                LicenseErrorCode::LeaseUnknown,
+                "lease Enterprise local ausente para atualização do pom",
+            )
+        })?;
+        let manifest = self.core_manifest(&persisted).await?;
+        crate::core_update::validate_manifest(&manifest.manifest, env!("CARGO_PKG_VERSION"))
+            .map_err(core_update_error)?;
+        let available = crate::core_update::is_newer_release(
+            env!("CARGO_PKG_VERSION"),
+            crate::BUILD_COMMIT,
+            &manifest.manifest,
+        )
+        .then(|| enterprise_protocol::CoreUpdate {
+            release_id: manifest.manifest.release_id.clone(),
+            version: manifest.manifest.version.clone(),
+            changelog: manifest.manifest.changelog.clone(),
+        });
+        let mut status = self.status.write().await;
+        if status.active {
+            if let Some(update) = &available {
+                tracing::info!(
+                    release_id = %update.release_id,
+                    version = %update.version,
+                    "release nova do pom encontrada"
+                );
+            }
+            status.core_update = available;
+        }
+        Ok(())
+    }
+
+    async fn core_manifest(
+        &self,
+        persisted: &PersistedEnterpriseState,
+    ) -> Result<ManifestResponse, LicenseClientError> {
+        self.service
+            .manifest(
+                crate::core_update::CORE_PLUGIN_CODE,
+                &persisted.lease_token,
+                &persisted.lease_id,
+                &self.fingerprint.platform,
+                &self.fingerprint.arch,
+            )
+            .await
+    }
+
+    /// Baixa e instala somente a release que o operador confirmou na UI.
+    /// Reconsulta o manifest antes do download para não reutilizar uma
+    /// concessão ou metadados antigos de uma detecção diária.
+    pub(crate) async fn apply_core_update(
+        &self,
+        requested_release_id: &str,
+    ) -> Result<(), LicenseClientError> {
+        let _guard = self.core_update_lock.lock().await;
+        let status = self.status().await;
+        if !status.active {
+            return Err(LicenseClientError::new(
+                LicenseErrorCode::FeatureNotEntitled,
+                "uma licença Enterprise ativa é necessária para atualizar o pom",
+            ));
+        }
+        let requested_release_id = requested_release_id.trim();
+        let Some(available) = status.core_update.as_ref() else {
+            return Err(update_unavailable(
+                "nenhuma atualização do pom está disponível",
+            ));
+        };
+        if available.release_id != requested_release_id {
+            return Err(update_unavailable(
+                "a atualização confirmada já não é a atualização disponível",
+            ));
+        }
+        let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
+            LicenseClientError::new(
+                LicenseErrorCode::LeaseUnknown,
+                "lease Enterprise local ausente para atualizar o pom",
+            )
+        })?;
+        let manifest = self.core_manifest(&persisted).await?;
+        crate::core_update::validate_manifest(&manifest.manifest, env!("CARGO_PKG_VERSION"))
+            .map_err(core_update_error)?;
+        if manifest.manifest.release_id != requested_release_id
+            || !crate::core_update::is_newer_release(
+                env!("CARGO_PKG_VERSION"),
+                crate::BUILD_COMMIT,
+                &manifest.manifest,
+            )
+        {
+            return Err(update_unavailable(
+                "a atualização confirmada já não é uma release nova disponível",
+            ));
+        }
+
+        let bytes = self.service.download(&manifest.download).await?;
+        crate::core_update::validate_download(&manifest.manifest, &bytes)
+            .map_err(core_update_error)?;
+        let executable = std::env::current_exe().map_err(io_error)?;
+        match crate::core_update::install_atomically(&executable, &bytes).map_err(io_error)? {
+            crate::core_update::InstallResult::Replaced => {
+                tracing::info!(
+                    release_id = %requested_release_id,
+                    "binário pom trocado; reinício autorizado pelo operador"
+                );
+                schedule_core_restart(executable);
+                Ok(())
+            }
+            #[cfg(windows)]
+            crate::core_update::InstallResult::Staged(staged) => {
+                crate::core_update::launch_staged_update(
+                    &staged,
+                    &executable,
+                    &crate::respawn::original_argv(),
+                )
+                .map_err(io_error)?;
+                tracing::info!(
+                    staged = %staged.display(),
+                    release_id = %requested_release_id,
+                    "binário pom preparado; reinício autorizado pelo operador"
+                );
+                schedule_core_restart(executable);
+                Ok(())
+            }
+        }
+    }
+
     pub(crate) async fn persisted(&self) -> PersistedEnterpriseState {
         self.persisted
             .lock()
@@ -1260,6 +1411,31 @@ impl EnterpriseState {
             .clone()
             .expect("estado persistido só existe após ativação")
     }
+}
+
+fn core_update_error(message: String) -> LicenseClientError {
+    LicenseClientError::new(LicenseErrorCode::ServerError, message)
+}
+
+fn update_unavailable(message: impl Into<String>) -> LicenseClientError {
+    LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, message)
+}
+
+#[cfg(not(windows))]
+fn schedule_core_restart(executable: std::path::PathBuf) {
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let error = crate::respawn::respawn_at(&executable);
+        tracing::error!(error = %error, "reinício autorizado do pom falhou; o processo segue no ar");
+    });
+}
+
+#[cfg(windows)]
+fn schedule_core_restart(_executable: std::path::PathBuf) {
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        std::process::exit(0);
+    });
 }
 
 #[derive(Debug, Deserialize)]
@@ -1291,7 +1467,36 @@ pub(crate) async fn refresh_license(
         .heartbeat(&uuid::Uuid::new_v4().to_string())
         .await
     {
-        Ok(()) => axum::Json(state.enterprise.status().await).into_response(),
+        Ok(()) => {
+            if let Err(error) = state.enterprise.detect_core_update().await {
+                tracing::warn!(error = %error, "detecção de atualização do pom falhou");
+            }
+            axum::Json(state.enterprise.status().await).into_response()
+        }
+        Err(error) => license_error_response(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct CoreUpdateApplyRequest {
+    pub release_id: String,
+}
+
+pub(crate) async fn apply_core_update(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::Json(request): axum::Json<CoreUpdateApplyRequest>,
+) -> axum::response::Response {
+    match state
+        .enterprise
+        .apply_core_update(&request.release_id)
+        .await
+    {
+        Ok(()) => axum::Json(serde_json::json!({
+            "restarting": true,
+            "release_id": request.release_id,
+        }))
+        .into_response(),
         Err(error) => license_error_response(error),
     }
 }
@@ -1349,6 +1554,7 @@ fn license_error_response(error: LicenseClientError) -> axum::response::Response
             StatusCode::CONFLICT
         }
         LicenseErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        LicenseErrorCode::UpdateUnavailable => StatusCode::CONFLICT,
         _ => StatusCode::BAD_GATEWAY,
     };
     (
@@ -1373,6 +1579,7 @@ fn license_error_code(code: LicenseErrorCode) -> &'static str {
         LicenseErrorCode::FingerprintMismatch => "fingerprint_mismatch",
         LicenseErrorCode::LeaseUnknown => "lease_unknown",
         LicenseErrorCode::RateLimited => "rate_limited",
+        LicenseErrorCode::UpdateUnavailable => "update_unavailable",
         LicenseErrorCode::ServerError => "server_error",
     }
 }
@@ -1557,6 +1764,9 @@ pub(crate) struct MockLicenseService {
     response: Arc<Mutex<MockResponse>>,
     heartbeat_error: Arc<Mutex<Option<LicenseErrorCode>>>,
     artifact: Arc<Mutex<Option<Vec<u8>>>>,
+    manifest_plugins: Arc<Mutex<Vec<String>>>,
+    core_manifest: Arc<Mutex<Option<ManifestResponse>>>,
+    download_calls: Arc<Mutex<u32>>,
 }
 
 #[derive(Clone)]
@@ -1571,6 +1781,9 @@ impl MockLicenseService {
             response: Arc::new(Mutex::new(MockResponse::Valid(response))),
             heartbeat_error: Arc::new(Mutex::new(None)),
             artifact: Arc::new(Mutex::new(None)),
+            manifest_plugins: Arc::new(Mutex::new(Vec::new())),
+            core_manifest: Arc::new(Mutex::new(None)),
+            download_calls: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -1579,6 +1792,9 @@ impl MockLicenseService {
             response: Arc::new(Mutex::new(MockResponse::Error(code))),
             heartbeat_error: Arc::new(Mutex::new(None)),
             artifact: Arc::new(Mutex::new(None)),
+            manifest_plugins: Arc::new(Mutex::new(Vec::new())),
+            core_manifest: Arc::new(Mutex::new(None)),
+            download_calls: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -1588,7 +1804,37 @@ impl MockLicenseService {
             response: Arc::new(Mutex::new(MockResponse::Valid(response))),
             heartbeat_error: Arc::new(Mutex::new(None)),
             artifact: Arc::new(Mutex::new(Some(artifact))),
+            manifest_plugins: Arc::new(Mutex::new(Vec::new())),
+            core_manifest: Arc::new(Mutex::new(None)),
+            download_calls: Arc::new(Mutex::new(0)),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn manifest_plugins(&self) -> Vec<String> {
+        self.manifest_plugins.lock().await.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn set_core_manifest(
+        &self,
+        manifest: enterprise_protocol::PluginManifest,
+        artifact: Vec<u8>,
+    ) {
+        *self.core_manifest.lock().await = Some(ManifestResponse {
+            manifest,
+            download: DownloadGrant {
+                token: "mock-core-download".into(),
+                url: "/mock/core-download".into(),
+                expires_at: "2099-01-01T00:00:00Z".into(),
+            },
+        });
+        *self.artifact.lock().await = Some(artifact);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn download_calls(&self) -> u32 {
+        *self.download_calls.lock().await
     }
 
     pub(crate) async fn set_heartbeat_error(&self, code: LicenseErrorCode) {
@@ -1678,11 +1924,21 @@ impl LicenseService for MockLicenseService {
 
     async fn manifest(
         &self,
+        plugin_code: &str,
         _lease_token: &str,
         _lease_id: &str,
         _os: &str,
         _arch: &str,
     ) -> Result<ManifestResponse, LicenseClientError> {
+        self.manifest_plugins
+            .lock()
+            .await
+            .push(plugin_code.to_owned());
+        if plugin_code == crate::core_update::CORE_PLUGIN_CODE {
+            if let Some(manifest) = self.core_manifest.lock().await.clone() {
+                return Ok(manifest);
+            }
+        }
         let response = self.response.lock().await.clone();
         let MockResponse::Valid(response) = response else {
             return Err(LicenseClientError::new(
@@ -1701,6 +1957,7 @@ impl LicenseService for MockLicenseService {
     }
 
     async fn download(&self, _grant: &DownloadGrant) -> Result<Vec<u8>, LicenseClientError> {
+        *self.download_calls.lock().await += 1;
         self.artifact.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::ServerError,
@@ -1768,6 +2025,7 @@ mod tests {
                 sha256: "sha256:test".into(),
                 size: 12,
                 download_expires_at: None,
+                changelog: None,
                 key_id: "test".into(),
                 signature: "test-signature".into(),
             },
@@ -1778,6 +2036,64 @@ mod tests {
                 signature: "grant-signature".into(),
             },
         }
+    }
+
+    fn core_manifest(artifact: &[u8]) -> PluginManifest {
+        PluginManifest {
+            schema: 1,
+            release_id: "core-new-commit".into(),
+            product: "pom".into(),
+            version: "0.2.0".into(),
+            channel: "stable".into(),
+            feature_set: vec![],
+            os: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+            min_host_version: env!("CARGO_PKG_VERSION").into(),
+            plugin_abi: 1,
+            sha256: format!("sha256:{}", hex::encode(sha2::Sha256::digest(artifact))),
+            size: artifact.len() as u64,
+            download_expires_at: None,
+            changelog: None,
+            key_id: "release-key".into(),
+            signature: "signed-manifest".into(),
+        }
+    }
+
+    #[test]
+    fn manifest_url_uses_the_requested_plugin_code() {
+        let service = HttpLicenseService::new("https://license.example");
+
+        let url = service.manifest_url("pom-core", "lease-1", "macos", "aarch64");
+
+        assert_eq!(
+            url,
+            "https://license.example/v1/plugins/pom-core/manifest?lease_id=lease-1&os=macos&arch=aarch64&channel=stable&host_version=0.1.0&plugin_abi=1"
+        );
+    }
+
+    #[test]
+    fn manifest_signature_is_verified_with_the_published_ed25519_key() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let bytes = b"canonical manifest";
+        let signature = URL_SAFE_NO_PAD.encode(signing_key.sign(bytes).to_bytes());
+        let keys = vec![PublicKeyInfo {
+            key_id: "release-key".into(),
+            alg: "Ed25519".into(),
+            public_key: URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes()),
+        }];
+
+        verify_public_signature(&keys, "release-key", &signature, bytes, "manifest")
+            .expect("published signature");
+        assert!(verify_public_signature(
+            &keys,
+            "release-key",
+            &signature,
+            b"tampered manifest",
+            "manifest"
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -1889,6 +2205,75 @@ mod tests {
             status.lease_expires_at.as_deref(),
             Some("2099-01-08T00:00:00Z")
         );
+    }
+
+    #[tokio::test]
+    async fn free_state_never_checks_the_pom_core_manifest() {
+        let service = Arc::new(MockLicenseService::valid(activation()));
+        let state = EnterpriseState::new(service.clone(), fingerprint());
+
+        state
+            .detect_core_update()
+            .await
+            .expect("free mode should skip core updates");
+
+        assert!(service.manifest_plugins().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn licensed_detection_advertises_core_release_without_downloading() {
+        let artifact = b"new-pom".to_vec();
+        let service = Arc::new(MockLicenseService::valid(activation()));
+        service
+            .set_core_manifest(core_manifest(&artifact), artifact)
+            .await;
+        let state = EnterpriseState::new(service.clone(), fingerprint());
+        state.activate("PM-test-key").await.expect("activate");
+        state
+            .mark_plugin_ready("ent-test")
+            .await
+            .expect("plugin ready");
+
+        state
+            .detect_core_update()
+            .await
+            .expect("detect core update");
+
+        let update = state
+            .status()
+            .await
+            .core_update
+            .expect("new release should be advertised");
+        assert_eq!(update.release_id, "core-new-commit");
+        assert_eq!(update.version, "0.2.0");
+        assert_eq!(service.download_calls().await, 0);
+    }
+
+    #[tokio::test]
+    async fn applying_a_different_release_is_rejected_without_downloading() {
+        let artifact = b"new-pom".to_vec();
+        let service = Arc::new(MockLicenseService::valid(activation()));
+        service
+            .set_core_manifest(core_manifest(&artifact), artifact)
+            .await;
+        let state = EnterpriseState::new(service.clone(), fingerprint());
+        state.activate("PM-test-key").await.expect("activate");
+        state
+            .mark_plugin_ready("ent-test")
+            .await
+            .expect("plugin ready");
+        state
+            .detect_core_update()
+            .await
+            .expect("detect core update");
+
+        let error = state
+            .apply_core_update("core-not-confirmed")
+            .await
+            .expect_err("must require the advertised release");
+
+        assert_eq!(error.code(), LicenseErrorCode::UpdateUnavailable);
+        assert_eq!(service.download_calls().await, 0);
     }
 
     #[tokio::test]

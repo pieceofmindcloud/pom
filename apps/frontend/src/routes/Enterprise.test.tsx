@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
       manage_url: "https://pieceofmind.cloud/enterprise",
       plugin_version: null,
       lease_expires_at: null,
+      core_update: null,
     },
     refetch: vi.fn(),
   },
@@ -70,5 +71,25 @@ describe("Enterprise", () => {
 
     expect(await screen.findByText("Não foi possível ativar a licença.")).toBeTruthy();
     expect(screen.queryByText("PM-invalid")).toBeNull();
+  });
+
+  it("só aplica a release do POM depois da confirmação explícita", async () => {
+    mocks.post.mockResolvedValue({ restarting: true });
+    mocks.status.data = {
+      ...mocks.status.data,
+      active: true,
+      state: "active",
+      features: { request_logs: true, statistics: true },
+      plugin_version: "0.1.0",
+      core_update: { release_id: "core-abc123", version: "0.2.0", changelog: null },
+    };
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Instalar e reiniciar" }));
+
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/enterprise/pom-update/apply",
+      { release_id: "core-abc123" },
+    ));
   });
 });

@@ -1,4 +1,4 @@
-import { CheckCircle2, ExternalLink, KeyRound, RefreshCw, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Download, ExternalLink, KeyRound, RefreshCw, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { Button, ErrorState, Input, PageHeader, Panel, PanelHeader, Skeleton } from "../components/ui";
 import { api } from "../lib/api";
@@ -47,6 +47,22 @@ export function Enterprise() {
     }
   }
 
+  async function applyCoreUpdate() {
+    const update = status.data?.core_update;
+    if (!update) return;
+    setBusy(true);
+    setError(false);
+    try {
+      await api.post("/api/ui/enterprise/pom-update/apply", {
+        release_id: update.release_id,
+      });
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (status.isLoading) {
     return <Skeleton className="h-64 w-full" />;
   }
@@ -88,6 +104,30 @@ export function Enterprise() {
                   {t("enterprise.manageLicense")} <ExternalLink className="h-3.5 w-3.5" />
                 </a>
               </div>
+              {status.data?.core_update && (
+                <div className="space-y-3 rounded-xl border border-iris/35 bg-iris/8 px-4 py-3" role="status">
+                  <div>
+                    <p className="text-sm font-medium text-fg">
+                      {t("enterprise.updateAvailable", { version: status.data.core_update.version })}
+                    </p>
+                    <p className="mt-1 font-mono text-xs text-muted">
+                      {t("enterprise.updateRelease", { release_id: status.data.core_update.release_id })}
+                    </p>
+                    {status.data.core_update.changelog && (
+                      <p className="mt-2 text-xs leading-relaxed text-muted">{status.data.core_update.changelog}</p>
+                    )}
+                  </div>
+                  <Button
+                    variant="primary"
+                    loading={busy}
+                    icon={<Download className="h-3.5 w-3.5" />}
+                    onClick={() => void applyCoreUpdate()}
+                  >
+                    {t("enterprise.updateApply")}
+                  </Button>
+                  {error && <p role="alert" className="text-xs text-rose">{t("enterprise.updateApplyFailed")}</p>}
+                </div>
+              )}
             </div>
           ) : (
             <form className="space-y-4 px-5 py-5" onSubmit={(event) => void activate(event)}>

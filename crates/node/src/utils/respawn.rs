@@ -40,7 +40,15 @@ pub fn respawn_self() -> std::io::Error {
         Ok(p) => p,
         Err(e) => return e,
     };
+    respawn_at(&exe)
+}
 
+/// Sobe uma cópia por um caminho capturado antes de uma troca atômica.
+///
+/// Em Unix, depois de `rename` sobre o executável atual, `current_exe()` pode
+/// apontar para o inode antigo com o sufixo `(deleted)`. Quem faz a troca deve
+/// capturar o caminho antes e passá-lo aqui.
+pub(crate) fn respawn_at(exe: &std::path::Path) -> std::io::Error {
     let log_path = crate::config::project_root().join("pom.log");
     let mut log = match OpenOptions::new().create(true).append(true).open(&log_path) {
         Ok(file) => file,

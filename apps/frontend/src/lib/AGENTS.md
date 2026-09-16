@@ -186,8 +186,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   valor quando NVIDIA ou AMD expõe a potência da placa e mantém desconhecido
   quando não há essa leitura.
   `EnterpriseStatus` é o contrato do estado de licença consumido por
-  `useEnterpriseStatus`; quando inativo, esse hook remove caches de auditoria
-  para não reexibir dados Enterprise antigos.
+  `useEnterpriseStatus`; ele também carrega `core_update`, o aviso de release
+  do binário que a tela Enterprise só aplica após confirmação explícita.
+  Quando inativo, esse hook remove caches de auditoria para não reexibir dados
+  Enterprise antigos.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

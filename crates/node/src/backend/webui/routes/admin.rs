@@ -44,6 +44,10 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::enterprise::refresh_license),
         )
         .route(
+            "/api/ui/enterprise/pom-update/apply",
+            post(crate::enterprise::apply_core_update),
+        )
+        .route(
             "/api/ui/enterprise/deactivate",
             post(crate::enterprise::deactivate_license),
         )

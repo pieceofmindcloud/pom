@@ -48,6 +48,8 @@ mod config;
 #[cfg(test)]
 #[path = "backend/continuation_lab.rs"]
 mod continuation_lab;
+#[path = "core_update.rs"]
+mod core_update;
 #[path = "inference/cycle.rs"]
 mod cycle;
 #[path = "backend/db.rs"]

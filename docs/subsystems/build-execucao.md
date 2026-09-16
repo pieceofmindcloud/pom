@@ -344,6 +344,26 @@ máquina. Precedência:
 `rerun-if-env-changed` na variável e `rerun-if-changed` em `.git/HEAD` e
 `.git/index` impedem o carimbo de congelar no primeiro build.
 
+## Atualização licenciada do executável
+
+O caminho de produção está em `crates/node/src/core_update.rs` e não usa o
+`devupdate.rs`: após um heartbeat aceito e somente com Enterprise ativo, o nó
+consulta o manifest `pom-core` no servidor de licenças e publica no status uma
+release pendente. A detecção não baixa, troca nem reinicia. A UI autoriza uma
+release específica por `POST /api/ui/enterprise/pom-update/apply`; só então o
+cliente baixa o artefato assinado, confere tamanho/SHA-256, troca o executável
+e agenda o reinício preservando o argv. O `release_id` publicado para esse
+plugin precisa ser o mesmo commit curto que `build.rs` grava em
+`POM_BUILD_COMMIT`; a comparação de versão é SemVer e não permite downgrade.
+
+Em Linux e macOS o arquivo temporário fica no mesmo diretório e o `rename`
+substitui o executável em uso pela semântica Unix de unlink-on-exec. No Windows
+o executável em uso não pode ser sobrescrito diretamente: depois da autorização
+o cliente deixa um arquivo staged e inicia um helper PowerShell que aguarda o
+processo terminar, move o arquivo e relança o `pom` com os mesmos argumentos.
+Se o helper não iniciar, o processo antigo continua intacto; a limitação e o
+contrato completo estão em `docs/subsystems/licenciamento-enterprise.md`.
+
 ## Atualizar um nó pela própria interface (só desenvolvimento)
 
 `backend/devupdate.rs`. O card de cada peer ganha "Atualizar e reiniciar" quando

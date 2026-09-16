@@ -188,6 +188,12 @@ export interface EnterpriseFeatures {
   statistics: boolean;
 }
 
+export interface EnterpriseCoreUpdate {
+  release_id: string;
+  version: string;
+  changelog: string | null;
+}
+
 export interface EnterpriseStatus {
   active: boolean;
   state: EnterpriseLicenseState;
@@ -195,6 +201,7 @@ export interface EnterpriseStatus {
   manage_url: string;
   plugin_version: string | null;
   lease_expires_at: string | null;
+  core_update: EnterpriseCoreUpdate | null;
 }
 
 export interface NodeInfo {

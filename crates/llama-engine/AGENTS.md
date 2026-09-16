@@ -90,8 +90,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   calculados na mesma warp e os buffers q8 de hidden e ativação ficam
   residentes na pipeline persistente.
   O caminho heterogêneo também usa os `vec_dot_*_q8_1` canônicos para Q4/K/IQ,
-  quantiza hidden e ativação em buffers persistentes e executa uma warp por
-  linha; isso é importante para GGUF como Mistral-Small, que combina dtypes
+  quantiza hidden e ativação em buffers persistentes e executa quatro warps por
+  bloco sobre linhas globais; isso é importante para GGUF como Mistral-Small,
+  que combina dtypes
   18, 22 e 23 nos papéis gate/up/down.
   Cada pipeline heterogêneo mantém um staging host pinned para a saída CUDA:
   o callback do llama.cpp continua recebendo um buffer host comum, mas a

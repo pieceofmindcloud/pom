@@ -2936,6 +2936,21 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
+### Fase 5.16: tiles de quatro warps no kernel heterogêneo - 2026-09-16
+
+O kernel q8 heterogêneo mantém uma warp por linha lógica, mas agora agrupa
+quatro linhas consecutivas em cada bloco. O índice é calculado no espaço global
+de `(expert, linha)`, e não agrupando todas as linhas de um expert em um único
+bloco. Assim a grade continua tendo milhares de blocos independentes mesmo
+quando a rota contém poucos experts, enquanto o custo de agendamento de blocos
+é reduzido em quatro vezes. Cada warp conserva sua redução shuffle, seu
+descriptor e seu resultado; gate/up e down usam a mesma geometria.
+
+Esta mudança é uma hipótese de otimização do código CUDA próprio e não altera o
+fork do llama.cpp nem o contrato do callback. Ela só pode ser mantida depois de
+comparar na ksia o throughput frio e aquecido com `6d2d348c`/`41cf7cfa`; uma
+regressão deve ser revertida imediatamente.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

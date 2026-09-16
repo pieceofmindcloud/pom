@@ -2961,6 +2961,24 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
+### Fase 5.16: memoização das specs heterogêneas - 2026-09-16
+
+O callback CUDA precisa dos mesmos metadados de cada `(camada, expert)` em todos
+os forwards: papel, dtype, geometria e escalas dos sidecars. Antes, cada callback
+refazia `expert_entries`, formatava os nomes dos sidecars e percorria o mapa
+`BTreeMap`, embora o mmap e os sidecars fossem imutáveis durante a vida do
+executor. A fonte agora guarda essas `HeterogeneousTensorSpec` em um cache
+preguiçoso protegido por mutex; a primeira consulta continua validando e
+calculando exatamente a política anterior, e as seguintes apenas clonam os
+metadados pequenos necessários para montar os descriptors.
+
+Essa mudança não altera a chave ou a residência do cache de pesos, a afinidade
+entre shards CUDA, o roteamento, os kernels, a agregação nem o caminho
+`llama.cpp` denso. Ela é uma otimização de preparação no host, não substitui a
+medição do custo dominante de H2D e execução CUDA. A aceitação depende de três
+rodadas pareadas na ksia, com `nvidia-smi` sem carga concorrente, comparadas ao
+controle seguro imediatamente anterior.
+
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

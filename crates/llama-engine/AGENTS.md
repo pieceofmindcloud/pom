@@ -96,6 +96,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   Cada pipeline heterogêneo mantém um staging host pinned para a saída CUDA:
   o callback do llama.cpp continua recebendo um buffer host comum, mas a
   transferência D2H não paga o staging pageable em cada chamada.
+  As specs imutáveis de `(camada, expert)` são memoizadas na fonte heterogênea,
+  evitando refazer buscas de sidecar e formatação de nomes em cada callback;
+  o cache de specs não guarda nem altera pesos residentes.
   Com o perfil CUDA, `cuda_device_calls` separa chamadas, experts e tempos por
   ordinal para distinguir bytes residentes de uso efetivo da placa.
   A cobertura CUDA por dtype e os números da ksia ficam em

@@ -2123,6 +2123,44 @@ __global__ void heterogeneous_activation_kernel(
         heterogeneous_activation(gate_up[row], activation) * gate_up[intermediate + row];
 }
 
+// A ativacao e consumida imediatamente pelo decoder q8_1 do down. Uma warp
+// calcula o bloco q8 completo, aplica a ativacao e grava diretamente o bloco
+// residente, evitando uma escrita e uma leitura global do vetor float.
+__global__ void heterogeneous_activation_quantize_q8_1_kernel(
+    const float *gate_up_values,
+    int pair_count,
+    int intermediate,
+    int activation,
+    block_q8_1 *activated_q8
+) {
+    const int block_index = blockIdx.x;
+    const int blocks_per_pair = intermediate / QK8_1;
+    const int pair = block_index / blocks_per_pair;
+    const int q8_block = block_index % blocks_per_pair;
+    if (pair >= pair_count) return;
+
+    const int row = q8_block * QK8_1 + threadIdx.x;
+    const float *gate_up = gate_up_values + pair * 2 * intermediate;
+    const float gate = heterogeneous_activation(gate_up[row], activation);
+    const float value = gate * gate_up[intermediate + row];
+    float amax = fabsf(value);
+    float sum = value;
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        amax = fmaxf(amax, __shfl_down_sync(0xffffffffu, amax, offset));
+        sum += __shfl_down_sync(0xffffffffu, sum, offset);
+    }
+    const float row_amax = __shfl_sync(0xffffffffu, amax, 0);
+    const float d = row_amax / 127.0f;
+    block_q8_1 *block = &activated_q8[
+        static_cast<std::size_t>(pair) * blocks_per_pair + q8_block];
+    block->qs[threadIdx.x] = row_amax == 0.0f
+        ? 0
+        : static_cast<int8_t>(roundf(value / d));
+    if (threadIdx.x == 0) {
+        block->ds = make_half2(d, sum);
+    }
+}
+
 __global__ void heterogeneous_quant_down_route_kernel(
     const CudaHeterogeneousExpert * experts,
     int pair_count,
@@ -4095,15 +4133,10 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
             hidden_i, pipeline->d_hidden_q8, pipeline->d_gate_up);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
-    heterogeneous_activation_kernel<<<
-        (intermediate_i * pair_count + block_size - 1) / block_size,
-        block_size>>>(pipeline->d_gate_up, pair_count, intermediate_i, activation,
-            pipeline->d_activated);
-    result = cuda_status(cudaGetLastError());
-    if (result != 0) return result;
-    quantize_q8_1_rows_kernel<<<
+    heterogeneous_activation_quantize_q8_1_kernel<<<
         pair_count * (intermediate_i / QK8_1), warp_size>>>(
-            pipeline->d_activated, pair_count, intermediate_i, pipeline->d_activated_q8);
+            pipeline->d_gate_up, pair_count, intermediate_i, activation,
+            pipeline->d_activated_q8);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
     heterogeneous_quant_down_route_q8_kernel<<<

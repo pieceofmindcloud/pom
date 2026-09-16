@@ -96,6 +96,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   Cada pipeline heterogêneo mantém um staging host pinned para a saída CUDA:
   o callback do llama.cpp continua recebendo um buffer host comum, mas a
   transferência D2H não paga o staging pageable em cada chamada.
+  A ativação seguida de quantização q8 pode usar uma única warp por bloco:
+  o máximo reduzido é transmitido da lane zero antes de quantizar, para que
+  todas as lanes usem a mesma escala `block_q8_1`.
   Com o perfil CUDA, `cuda_device_calls` separa chamadas, experts e tempos por
   ordinal para distinguir bytes residentes de uso efetivo da placa.
   A cobertura CUDA por dtype e os números da ksia ficam em

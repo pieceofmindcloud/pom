@@ -77,9 +77,6 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   allocator faz todas as alocações e cópias em um lote e sincroniza o stream
   uma vez; eviction usa `cudaFreeAsync` para não introduzir um wait global por
   tensor. A cópia ainda termina antes de o slice temporário sair de escopo.
-  A eviction CUDA remove como uma unidade os tensors do mesmo expert
-  heterogêneo, sem deixar gate/up/down parcialmente residentes; um lease ativo
-  em qualquer papel protege o grupo inteiro.
   O warmup percorre experts por camada em ordem expert-major, espalhando as
   admissões pelas camadas antes de esgotar o orçamento de cada GPU; isso evita
   aquecer apenas o prefixo do modelo e concentrar misses na primeira

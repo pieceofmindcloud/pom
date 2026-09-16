@@ -2900,14 +2900,14 @@ são divididos por expert entre rotas CPU e GPU, executadas em paralelo e
 somadas com a mesma largura de saída. A consulta de residência não cria lease
 nem toca LRU, para que o planejador não falsifique hits ou impeça eviction.
 
-O perfil só é aplicado quando existe o sidecar
-`<modelo>.cuda-profile.json` com o campo `bandwidth`. Sem esse arquivo, o
-runtime mantém a política exclusivamente CUDA e não inventa uma taxa para a
-placa. A telemetria passa a publicar a fração escolhida e as chamadas CPU do
-caminho heterogêneo, além de `cuda_device_calls` quando
-`POM_MOE_CUDA_PROFILE=1` estiver ativo. Na ksia, a validação deve repetir o
-mesmo prompt com o warmup padrão, gerar ou instalar o sidecar medido para este
-modelo e comparar prefill, decode, corretude textual e deltas de uploads.
+Os diagnósticos são automáticos quando o executor CUDA MoE está ativo;
+`POM_MOE_CUDA_PROFILE` não é necessário e não altera a execução. O perfil de
+divisão só é aplicado quando existe o sidecar `<modelo>.cuda-profile.json` com
+o campo `bandwidth`. Sem esse arquivo, o runtime mantém a política
+exclusivamente CUDA e não inventa uma taxa para a placa. Na ksia, a validação
+deve repetir o mesmo prompt com o warmup padrão, gerar ou instalar o sidecar
+medido para este modelo e comparar prefill, decode, corretude textual e deltas
+de uploads.
 
 ## Defeitos anotados
 

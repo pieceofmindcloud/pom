@@ -3765,14 +3765,10 @@ struct HeterogeneousRoutePipeline {
     block_q8_1 *d_activated_q8 = nullptr;
     float *d_pair_output = nullptr;
     float *d_output = nullptr;
-    cudaEvent_t start = nullptr;
-    cudaEvent_t end = nullptr;
 };
 
 void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) {
     if (pipeline == nullptr) return;
-    if (pipeline->start != nullptr) cudaEventDestroy(pipeline->start);
-    if (pipeline->end != nullptr) cudaEventDestroy(pipeline->end);
     cudaFree(pipeline->d_output);
     cudaFree(pipeline->d_pair_output);
     cudaFree(pipeline->d_activated);
@@ -3785,8 +3781,6 @@ void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) 
     cudaFree(pipeline->d_hidden);
     cudaFree(pipeline->d_hidden_q8);
     cudaFree(pipeline->d_experts);
-    pipeline->start = nullptr;
-    pipeline->end = nullptr;
     pipeline->d_output = nullptr;
     pipeline->d_pair_output = nullptr;
     pipeline->d_activated = nullptr;
@@ -3916,17 +3910,6 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_create(
         intermediate_width,
     };
     if (pipeline == nullptr) return 2;
-    int result = cuda_status(cudaEventCreate(&pipeline->start));
-    if (result != 0) {
-        delete pipeline;
-        return result;
-    }
-    result = cuda_status(cudaEventCreate(&pipeline->end));
-    if (result != 0) {
-        release_heterogeneous_route_pipeline(pipeline);
-        delete pipeline;
-        return result;
-    }
     *out = pipeline;
     return 0;
 }
@@ -4091,10 +4074,6 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     if (result != 0) return result;
 
     const auto launch_started = Clock::now();
-    if (timing != nullptr) {
-        result = cuda_status(cudaEventRecord(pipeline->start));
-        if (result != 0) return result;
-    }
     quantize_q8_1_rows_kernel<<<
         token_count_i * (hidden_i / QK8_1), warp_size>>>(
             pipeline->d_hidden, token_count_i, hidden_i, pipeline->d_hidden_q8);
@@ -4131,11 +4110,6 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     result = cuda_status(cudaGetLastError());
     if (timing != nullptr) timing->launch_ms = elapsed_ms(launch_started, Clock::now());
     if (result != 0) return result;
-    if (timing != nullptr) {
-        result = cuda_status(cudaEventRecord(pipeline->end));
-        if (result != 0) return result;
-    }
-
     const auto d2h_started = Clock::now();
     result = cuda_status(cudaMemcpy(
         output, pipeline->d_output, hidden_bytes, cudaMemcpyDeviceToHost));
@@ -4145,10 +4119,14 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     }
     if (result != 0) return result;
     if (timing != nullptr) {
-        float kernel_ms = 0.0f;
-        result = cuda_status(cudaEventElapsedTime(&kernel_ms, pipeline->start, pipeline->end));
-        if (result != 0) return result;
-        timing->kernel_ms = kernel_ms;
+        // A chamada pode ocorrer durante a captura de grafo do llama.cpp.
+        // Eventos gravados pelo hook retornam cudaErrorInvalidResourceHandle
+        // (400) nesse contexto. A cópia D2H é a barreira de conclusão, então
+        // o intervalo de parede até ela mantém o diagnóstico sem tocar nos
+        // recursos da captura.
+        timing->kernel_ms = elapsed_ms(launch_started, d2h_started);
+        timing->kernel_span_ms = timing->kernel_ms;
+        timing->transfer_span_ms = timing->h2d_ms + timing->d2h_ms;
     }
     if (first_nonfinite(
             output, hidden_bytes / sizeof(float), nonfinite_index, nonfinite_count)) {

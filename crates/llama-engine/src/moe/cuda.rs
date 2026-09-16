@@ -20,6 +20,14 @@ use std::time::Instant;
 
 const CUDA_TRANSFER_PROFILE_VERSION: u32 = 1;
 
+// CUDA MoE diagnostics are part of the runtime contract. They must not depend
+// on an operator-only environment variable: the hot path decides its
+// execution policy from the loaded model and hardware profile, while the
+// diagnostics describe what actually ran.
+fn cuda_diagnostics_enabled() -> bool {
+    true
+}
+
 /// Perfil persistido por uma carga e uma GPU concretas.
 ///
 /// `cpu_wall_ms` é opcional para que um perfil de transferência possa ser
@@ -991,8 +999,7 @@ impl PlainCudaExecutor {
             hidden,
             intermediate,
             format,
-            profile: std::env::var("POM_MOE_CUDA_PROFILE")
-                .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+            profile: cuda_diagnostics_enabled(),
             resident_cache,
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
         })
@@ -1168,8 +1175,7 @@ impl KQuantCudaExecutor {
             hidden,
             intermediate,
             format,
-            profile: std::env::var("POM_MOE_CUDA_PROFILE")
-                .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+            profile: cuda_diagnostics_enabled(),
             resident_cache,
             route_pipelines,
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
@@ -1414,8 +1420,7 @@ impl IqQuantCudaExecutor {
             hidden,
             intermediate,
             format,
-            profile: std::env::var("POM_MOE_CUDA_PROFILE")
-                .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+            profile: cuda_diagnostics_enabled(),
             resident_cache,
             route_pipelines,
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
@@ -1623,8 +1628,7 @@ impl HeterogeneousCudaExecutor {
         resident_cache: Arc<DeviceExpertCache>,
     ) -> Self {
         Self {
-            profile: std::env::var("POM_MOE_CUDA_PROFILE")
-                .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+            profile: cuda_diagnostics_enabled(),
             resident_cache,
             route_pipelines: Mutex::new(Vec::new()),
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
@@ -2008,8 +2012,7 @@ impl Nvfp4CudaExecutor {
         Ok(Self {
             hidden,
             intermediate,
-            profile: std::env::var("POM_MOE_CUDA_PROFILE")
-                .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+            profile: cuda_diagnostics_enabled(),
             resident_cache,
             route_pipelines,
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
@@ -2636,6 +2639,11 @@ mod tests {
     use super::super::format_plain::{PlainExpert, PlainFormat};
     use super::super::format_q4_0::{pack_payload, parse_tensor_table, Q4_0Expert};
     use super::*;
+
+    #[test]
+    fn diagnosticos_cuda_do_moe_sao_automaticos() {
+        assert!(cuda_diagnostics_enabled());
+    }
     use memmap2::Mmap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

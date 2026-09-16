@@ -496,12 +496,12 @@ visibilidade dos controles de implantação na UI local.
   O fork mantém a lista como metadata
   copiada no modelo e o grafo escolhe external/native pela camada, nunca por
   uma flag global que possa deixar experts sem executor.
-  A telemetria `moe_executor_diagnostics` expõe, quando o perfil CUDA está
-  ligado, chamadas, hits/misses do LRU, bytes H2D/D2H e tempos de alocação,
-  kernel, sincronização, liberação, busca/admissão e carregamento de experts no
-  host, preparação do lote e cópia dos resultados para vetores Rust. O perfil é opt-in por
-  `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
-  política do cache.
+  A telemetria `moe_executor_diagnostics` expõe automaticamente, quando o
+  executor CUDA MoE está ativo, chamadas, hits/misses do LRU, bytes H2D/D2H e
+  tempos de alocação, kernel, sincronização, liberação, busca/admissão e
+  carregamento de experts no host, preparação do lote e cópia dos resultados
+  para vetores Rust. `POM_MOE_CUDA_PROFILE` é legado e não é necessário nem
+  altera a política do cache.
   Para investigar a origem de uma rota inválida, `POM_MOE_ROUTE_DIAGNOSTICS=1`
   habilita duas linhas adjacentes, `callback_entry_default` no target padrão e
   `callback_entry` no target `moe.route_diagnostic`, como primeira ação do
@@ -567,8 +567,7 @@ visibilidade dos controles de implantação na UI local.
   `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o
   dtype dos experts, seleciona o decoder validado e liga o bloco ao hidden state
   nos caminhos unitário e batch. O teste ignorado
-  `mede_banda_h2d_d2h_do_lote_nvfp4`, executado explicitamente com
-  `POM_MOE_CUDA_PROFILE=1`, mede H2D, D2H, kernel e parede externa em
+  `mede_banda_h2d_d2h_do_lote_nvfp4` mede H2D, D2H, kernel e parede externa em
   geometrias pequena e Gemma4 após o aquecimento do cache de device. O perfil
   agora usa dois slots CUDA persistentes, streams separados e buffers host
   pinned para alternar grupos de tokens; `buffer_mask`, `buffer_switches`,

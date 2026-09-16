@@ -81,9 +81,15 @@ prova de autorização: o backend continua sendo a fronteira de segurança.
   ativo. `/logs` e `/estatisticas` permanecem visíveis e clicáveis sem licença,
   mostrando o convite Enterprise em vez de dados vazios.
 - **Fase 6 - release/hardening:** entregues `build-enterprise-plugin.sh`,
-  `pom-release.sh`, instalação atômica e verificação Ed25519/hash/ABI. Ainda
-  faltam code signing/notarização nativos, rollback com ponteiro, circuit
-  breaker completo e matriz real de três plataformas.
+  `pom-release.sh`, instalação atômica e verificação Ed25519/hash/ABI.
+  `pom-release.sh` consulta `/internal/releases?plugin=<plugin>&status=all`
+  com o token `POM_RELEASE_TOKEN` antes do upload, considera releases de todas
+  as plataformas e escolhe o próximo `+build.N`; `--version` continua sendo um
+  override manual. O catálogo do binário POM usa exatamente `pom_core`, como
+  definido no `license-server/AGENTS.md`. O `--dry-run` permanece sem rede e
+  usa `+build.1` como prévia quando não há override. Ainda faltam code
+  signing/notarização nativos, rollback com ponteiro, circuit breaker completo
+  e matriz real de três plataformas.
 
 O servidor de licenças pode evoluir em paralelo: o cliente não depende dele
 para os testes locais porque o contrato é exercitado pelo mock.
@@ -97,6 +103,7 @@ cargo test -p pom-plugin-host
 cargo test -p node enterprise
 cd apps/frontend && npm test -- src/lib/access.test.ts src/components/nav.test.ts src/App.test.tsx
 ./scripts/build-enterprise-plugin.sh --platform macos-aarch64 --debug
+./scripts/test_pom_release.sh
 ./pom-release.sh --platform linux-x86_64 --plugin enterprise --dry-run
 ```
 

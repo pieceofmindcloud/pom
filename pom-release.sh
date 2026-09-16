@@ -13,6 +13,7 @@ plugin_crate="enterprise-plugin-fixture"
 branch="feat/enterprise"
 repo_temp=""
 dry_run=false
+version_override=false
 
 die() {
   printf 'pom-release: %s\n' "$1" >&2
@@ -23,7 +24,7 @@ usage() {
   printf '%s\n' \
     'Usage: POM_RELEASE_TOKEN=... POM_RELEASE_API=... POM_RDMA_REPO=... ./pom-release.sh --platform linux-x86_64 --plugin enterprise [options]' \
     '  --plugin <plugin>               plugin do catálogo (default: enterprise)' \
-    '  --version <version>            versão do release (default: versão do Cargo)' \
+    '  --version <version>            versão manual; sem ela consulta e incrementa build.N' \
     '  --min-host <version>            versão mínima do host' \
     '  --channel <channel>            canal (default: stable)' \
     '  --features <a,b>               feature_set' \
@@ -38,7 +39,7 @@ while (($# > 0)); do
   case "$1" in
     --platform) (($# >= 2)) || die '--platform precisa de um valor'; platform="$2"; shift 2 ;;
     --plugin) (($# >= 2)) || die '--plugin precisa de um valor'; plugin="$2"; shift 2 ;;
-    --version) (($# >= 2)) || die '--version precisa de um valor'; version="$2"; shift 2 ;;
+    --version) (($# >= 2)) || die '--version precisa de um valor'; version="$2"; version_override=true; shift 2 ;;
     --min-host|--min-host-version) (($# >= 2)) || die '--min-host precisa de um valor'; min_host_version="$2"; shift 2 ;;
     --channel) (($# >= 2)) || die '--channel precisa de um valor'; channel="$2"; shift 2 ;;
     --features) (($# >= 2)) || die '--features precisa de um valor'; feature_set="$2"; shift 2 ;;
@@ -87,9 +88,42 @@ trap cleanup EXIT
 git -C "$repo" worktree add --detach "$worktree" "origin/$branch" >/dev/null
 
 if [[ -z "$version" ]]; then
-  version="$(sed -n '/^\[workspace.package\]/,/^\[/{/^version = /{s/^version = "\([^"]*\)"/\1/p;}}' "$worktree/Cargo.toml" | head -n 1)"
+  version="$(awk '
+    $0 == "[workspace.package]" { in_workspace = 1; next }
+    in_workspace && /^\[/ { exit }
+    in_workspace && /^version = / {
+      sub(/^version = "/, "")
+      sub(/"$/, "")
+      print
+      exit
+    }
+  ' "$worktree/Cargo.toml")"
 fi
 [[ -n "$version" ]] || version="0.1.0"
+
+if [[ "$version_override" != true ]]; then
+  if [[ "$dry_run" == true ]]; then
+    release_list='{"releases":[]}'
+  else
+    releases_url="${POM_RELEASE_API%/}"
+    if [[ "$releases_url" == */internal/releases/upload ]]; then
+      releases_url="${releases_url%/internal/releases/upload}"
+    fi
+    [[ "$releases_url" == */internal/releases ]] || releases_url="${releases_url}/internal/releases"
+    if ! release_list="$(curl --fail --silent --show-error \
+      -H "Authorization: Bearer ${POM_RELEASE_TOKEN}" \
+      --get \
+      --data-urlencode "plugin=${plugin}" \
+      --data-urlencode 'status=all' \
+      --data-urlencode 'limit=1000' \
+      "$releases_url")"; then
+      die 'falha ao consultar as releases existentes'
+    fi
+  fi
+  if ! version="$(printf '%s' "$release_list" | python3 "$root/scripts/resolve-release-version.py" "$version")"; then
+    die 'resposta de releases inválida ou versão fora do SemVer'
+  fi
+fi
 
 artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/pom-release-artifact.XXXXXX")"
 trap 'rm -rf "$artifact_dir"; cleanup' EXIT

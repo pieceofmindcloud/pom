@@ -82,14 +82,22 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 - `build-enterprise-plugin.sh` - compila somente o crate `cdylib` Enterprise
   para uma plataforma explícita, localiza a extensão correta e copia o artefato
   com SHA-256 e tamanho para o diretório de saída.
+- `resolve-release-version.py` - lê a resposta de `GET /internal/releases` e
+ escolhe o maior SemVer entre todas as plataformas, incrementando o metadado
+ `build.N` para o `pom-release.sh`.
+- `test_pom_release.sh` - smoke test local do incremento automático, override
+  manual e `--dry-run`, usando `curl` e `cargo` falsos.
 
 O `pom-release.sh` fica na raiz porque opera sobre o checkout remoto do POM:
 busca `origin/feat/enterprise`, cria worktree descartável, compila o artefato
-Enterprise e envia multipart para `/internal/releases/upload`. A opção
-`--plugin enterprise` mantém o contrato do console de releases; o fluxo
+Enterprise e envia multipart para `/internal/releases/upload`. Sem
+`--version`, consulta `/internal/releases?plugin=<plugin>&status=all` com o
+token `POM_RELEASE_TOKEN`, agrupa todas as plataformas pela versão SemVer e
+incrementa `+build.N`; `--version` é um override manual e não faz essa consulta.
+A opção `--plugin enterprise` mantém o contrato do console de releases; o fluxo
 inicial usa o fixture compatível, e `--plugin-crate enterprise-plugin` publica
 o plugin real depois de um build validado. `--dry-run` não exige token nem faz
-chamada HTTP.
+chamada HTTP e mostra `+build.1` como prévia quando a versão não é informada.
 
 ## Python (nao esta na raiz - esta em old/python-inference/)
 

@@ -93,8 +93,11 @@ transferência.
   replicação de tensores compartilhados por rank e reserva o cabeçalho gerado.
   Na fusão, arrays escalares sob o namespace da arquitetura são reconstruídos
   pela cobertura de cada fatia, em vez de copiar a primeira; qualquer cauda de
-  camadas especiais é preservada uma vez. O resultado é validado por
-  `gguf::read_layout` antes de o backend o nomear por conteúdo.
+  camadas especiais é preservada uma vez. Os arrays estruturais do PLE do
+  `qwen4exp` (`ple.layers`, `ple.layer_multipliers`, `ple.head_offsets` e
+  `ple.head_vocab_sizes`) são preservados inteiros em toda fatia e herdados da
+  primeira na fusão. O resultado é validado por `gguf::read_layout` antes de o
+  backend o nomear por conteúdo.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.
@@ -198,7 +201,10 @@ são preservados na fatia. Arrays globais, inclusive `tokenizer.ggml.tokens` e
 arrays de strings, são copiados intactos antes de qualquer comparação de
 comprimento. Comprimento 1 é broadcast e permanece igual; um comprimento
 positivo menor que `block_count` em array da arquitetura é recusa nominal com
-chave e tamanho.
+chave e tamanho. Os quatro arrays `qwen4exp.ple.*` que descrevem a tabela PLE
+(`layers`, `layer_multipliers`, `head_offsets` e `head_vocab_sizes`) são uma
+exceção nominal: representam estrutura compartilhada da tabela, não valores
+por bloco, e por isso são copiados inteiros em cada fatia.
 
 ### Projetor multimodal
 

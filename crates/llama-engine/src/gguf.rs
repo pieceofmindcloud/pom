@@ -41,6 +41,21 @@ fn scalar_size(t: u32) -> Option<u64> {
     }
 }
 
+/// Arrays used by Qwen4Exp's prompt lookup embedding (PLE) describe the
+/// structure of the shared table, not one value per transformer block. Keep
+/// the exact producer bytes in every layer slice and let the loader consume
+/// the complete table description.
+pub fn is_structural_array(key: &str, architecture: &str) -> bool {
+    architecture == "qwen4exp"
+        && matches!(
+            key,
+            "qwen4exp.ple.layers"
+                | "qwen4exp.ple.layer_multipliers"
+                | "qwen4exp.ple.head_offsets"
+                | "qwen4exp.ple.head_vocab_sizes"
+        )
+}
+
 /// What we care about from a GGUF header.
 #[derive(Debug, Clone, Default)]
 pub struct GgufInfo {
@@ -1068,7 +1083,9 @@ impl SerializedLayout {
                 continue;
             }
             if let Some(array) = entry.array {
-                if array.count >= self.original_block_count as u64 {
+                if !is_structural_array(&entry.key, &self.architecture)
+                    && array.count >= self.original_block_count as u64
+                {
                     if let Some(element_size) = scalar_size(array.element_type) {
                         bytes += 8
                             + entry.key.len() as u64
@@ -1286,7 +1303,10 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
         let Some(array) = entry.array else {
             continue;
         };
-        if !entry.key.starts_with(&arch_prefix) || entry.key.contains(".rope.") {
+        if !entry.key.starts_with(&arch_prefix)
+            || entry.key.contains(".rope.")
+            || is_structural_array(&entry.key, &architecture)
+        {
             continue;
         }
         if array.count != 1 && array.count < original_block_count as u64 {

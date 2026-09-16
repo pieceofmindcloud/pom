@@ -678,7 +678,9 @@ pub fn split(
             // Only architecture-namespaced arrays are candidates for per-layer
             // slicing. Global arrays such as tokenizer.ggml.tokens must remain
             // byte-for-byte intact, even when their length exceeds block_count.
-            if !is_global_array(key, &arch) {
+            // Qwen4Exp PLE arrays are structural table metadata, not arrays
+            // indexed by transformer block, so they are also copied intact.
+            if !is_global_array(key, &arch) && !crate::gguf::is_structural_array(key, &arch) {
                 let original = original_block_count.ok_or_else(|| {
                     anyhow::anyhow!(
                         "array metadata '{}' tem comprimento {}, mas o GGUF não declara a contagem original de blocos",
@@ -1763,7 +1765,7 @@ fn merge_layer_array(
     parsed: &[MergedSrc],
     mmaps: &[Mmap],
 ) -> Result<Option<Vec<u8>>> {
-    if is_global_array(key, arch) {
+    if is_global_array(key, arch) || crate::gguf::is_structural_array(key, arch) {
         return Ok(None);
     }
 
@@ -2612,6 +2614,54 @@ mod tests {
         None
     }
 
+    fn kv_i32_array(mm: &[u8], want: &str) -> Option<Vec<i32>> {
+        let mut r = R { data: mm, pos: 0 };
+        if r.u32().ok()? != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?;
+        r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            if key == want && vtype == T_ARR {
+                if r.u32().ok()? != T_I32 {
+                    return None;
+                }
+                let count = r.u64().ok()? as usize;
+                return (0..count)
+                    .map(|_| Some(i32::from_le_bytes(r.take(4).ok()?.try_into().unwrap())))
+                    .collect();
+            }
+            r.skip_value(vtype).ok()?;
+        }
+        None
+    }
+
+    fn kv_u64_array(mm: &[u8], want: &str) -> Option<Vec<u64>> {
+        let mut r = R { data: mm, pos: 0 };
+        if r.u32().ok()? != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?;
+        r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            if key == want && vtype == T_ARR {
+                if r.u32().ok()? != T_U64 {
+                    return None;
+                }
+                let count = r.u64().ok()? as usize;
+                return (0..count).map(|_| r.u64().ok()).collect();
+            }
+            r.skip_value(vtype).ok()?;
+        }
+        None
+    }
+
     fn kv_bool_array(mm: &[u8], want: &str) -> Option<Vec<bool>> {
         let mut r = R { data: mm, pos: 0 };
         if r.u32().ok()? != GGUF_MAGIC {
@@ -2741,6 +2791,124 @@ mod tests {
         bytes.extend_from_slice(&kv);
         while bytes.len() % ALIGN != 0 {
             bytes.push(0);
+        }
+        bytes
+    }
+
+    fn qwen4exp_test_gguf_bytes() -> Vec<u8> {
+        let n_blocks = 48u32;
+        let n = 4u64;
+        let f32v = |values: &[f32]| -> Vec<u8> {
+            values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect()
+        };
+        let mut tensors: Vec<(String, Vec<u64>, u32, Vec<u8>)> = vec![(
+            "token_embd.weight".into(),
+            vec![n, n],
+            T_F32,
+            f32v(&[0.5; 16]),
+        )];
+        for layer in 0..n_blocks {
+            tensors.push((
+                format!("blk.{layer}.attn_q.weight"),
+                vec![n, n],
+                T_F32,
+                f32v(&[layer as f32; 16]),
+            ));
+        }
+        tensors.push(("output.weight".into(), vec![n, n], T_F32, f32v(&[3.0; 16])));
+
+        let string = |value: &str| {
+            let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let string_kv = |key: &str, value: &str| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_STR.to_le_bytes());
+            bytes.extend_from_slice(&string(value));
+            bytes
+        };
+        let u32_kv = |key: &str, value: u32| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_U32.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        };
+        let i32_array_kv = |key: &str, values: &[i32]| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_ARR.to_le_bytes());
+            bytes.extend_from_slice(&T_I32.to_le_bytes());
+            bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
+            for value in values {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            bytes
+        };
+        let u64_array_kv = |key: &str, values: &[u64]| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_ARR.to_le_bytes());
+            bytes.extend_from_slice(&T_U64.to_le_bytes());
+            bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
+            for value in values {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            bytes
+        };
+
+        let compress_ratios: Vec<i32> = (0..n_blocks)
+            .map(|layer| if (layer + 1) % 4 == 0 { 4 } else { 0 })
+            .collect();
+        let head_offsets: Vec<u64> = (0..16).map(|head| head as u64 * 20).collect();
+        let head_vocab_sizes: Vec<u64> = (0..16).map(|head| 20 + head as u64).collect();
+        let kv = vec![
+            string_kv("general.architecture", "qwen4exp"),
+            u32_kv("qwen4exp.embedding_length", n as u32),
+            u32_kv("qwen4exp.block_count", n_blocks),
+            i32_array_kv("qwen4exp.attention.compress_ratios", &compress_ratios),
+            i32_array_kv("qwen4exp.ple.layers", &[1]),
+            u64_array_kv(
+                "qwen4exp.ple.layer_multipliers",
+                &[23703573157769, 20109073645365, 8052911324071],
+            ),
+            u64_array_kv("qwen4exp.ple.head_offsets", &head_offsets),
+            u64_array_kv("qwen4exp.ple.head_vocab_sizes", &head_vocab_sizes),
+            u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
+        ];
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+        for entry in &kv {
+            bytes.extend_from_slice(entry);
+        }
+
+        let mut offset = 0u64;
+        let offsets: Vec<u64> = tensors
+            .iter()
+            .map(|(_, _, _, data)| {
+                let current = offset;
+                offset = align_up(offset + data.len() as u64);
+                current
+            })
+            .collect();
+        for ((name, dims, dtype, _), offset) in tensors.iter().zip(offsets) {
+            bytes.extend_from_slice(&string(name));
+            bytes.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+            for dim in dims {
+                bytes.extend_from_slice(&dim.to_le_bytes());
+            }
+            bytes.extend_from_slice(&dtype.to_le_bytes());
+            bytes.extend_from_slice(&offset.to_le_bytes());
+        }
+        bytes.resize(align_up(bytes.len() as u64) as usize, 0);
+        for (_, _, _, data) in tensors {
+            bytes.extend_from_slice(&data);
+            bytes.resize(align_up(bytes.len() as u64) as usize, 0);
         }
         bytes
     }
@@ -3745,6 +3913,86 @@ mod tests {
         assert_eq!(
             estimated, written.bytes,
             "a preview is only valid when it equals the file on disk"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn qwen4exp_ple_structural_arrays_are_preserved_in_slice() {
+        let dir = std::env::temp_dir().join(format!("pom-qwen4exp-ple-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let out = dir.join("slice.gguf");
+        std::fs::write(&whole, qwen4exp_test_gguf_bytes()).unwrap();
+
+        let written = split(&whole, &out, 12, 15, false, false, |_| {}).unwrap();
+        let output = std::fs::read(&out).unwrap();
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+
+        assert_eq!(layout.slice_bytes(12, 15, false), written.bytes);
+        assert_eq!(kv_i32_array(&output, "qwen4exp.ple.layers"), Some(vec![1]));
+        assert_eq!(
+            kv_u64_array(&output, "qwen4exp.ple.layer_multipliers"),
+            Some(vec![23703573157769, 20109073645365, 8052911324071])
+        );
+        assert_eq!(
+            kv_u64_array(&output, "qwen4exp.ple.head_offsets"),
+            Some((0..16).map(|head| head * 20).collect())
+        );
+        assert_eq!(
+            kv_u64_array(&output, "qwen4exp.ple.head_vocab_sizes"),
+            Some((0..16).map(|head| 20 + head).collect())
+        );
+        assert_eq!(
+            kv_i32_array(&output, "qwen4exp.attention.compress_ratios"),
+            Some(vec![0, 0, 0, 4])
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn qwen4exp_ple_structural_arrays_survive_merge() {
+        let dir = std::env::temp_dir().join(format!("pom-qwen4exp-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let first = dir.join("first.gguf");
+        let second = dir.join("second.gguf");
+        let merged = dir.join("merged.gguf");
+        std::fs::write(&whole, qwen4exp_test_gguf_bytes()).unwrap();
+
+        split(&whole, &first, 0, 23, true, false, |_| {}).unwrap();
+        split(&whole, &second, 24, 47, false, true, |_| {}).unwrap();
+        merge(
+            &[
+                MergePart {
+                    path: first,
+                    start_layer: 0,
+                    end_layer: 23,
+                },
+                MergePart {
+                    path: second,
+                    start_layer: 24,
+                    end_layer: 47,
+                },
+            ],
+            &merged,
+            |_| {},
+        )
+        .unwrap();
+
+        let output = std::fs::read(&merged).unwrap();
+        assert_eq!(kv_i32_array(&output, "qwen4exp.ple.layers"), Some(vec![1]));
+        assert_eq!(
+            kv_u64_array(&output, "qwen4exp.ple.layer_multipliers"),
+            Some(vec![23703573157769, 20109073645365, 8052911324071])
+        );
+        assert_eq!(
+            kv_u64_array(&output, "qwen4exp.ple.head_offsets"),
+            Some((0..16).map(|head| head * 20).collect())
+        );
+        assert_eq!(
+            kv_u64_array(&output, "qwen4exp.ple.head_vocab_sizes"),
+            Some((0..16).map(|head| 20 + head).collect())
         );
         let _ = std::fs::remove_dir_all(dir);
     }

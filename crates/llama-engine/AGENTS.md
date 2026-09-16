@@ -77,6 +77,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   allocator faz todas as alocações e cópias em um lote e sincroniza o stream
   uma vez; eviction usa `cudaFreeAsync` para não introduzir um wait global por
   tensor. A cópia ainda termina antes de o slice temporário sair de escopo.
+  Os leases retornados pela admissão em lote são indexados pelo `ExpertKey` e
+  reutilizados durante a montagem dos descriptors, sem uma segunda consulta ao
+  mutex/LRU; um lease compartilhado também cobre experts repetidos na rota.
   O warmup percorre experts por camada em ordem expert-major, espalhando as
   admissões pelas camadas antes de esgotar o orçamento de cada GPU; isso evita
   aquecer apenas o prefixo do modelo e concentrar misses na primeira

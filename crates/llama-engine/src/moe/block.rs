@@ -1659,8 +1659,17 @@ impl HeterogeneousMoeBlock {
         })?;
         // Os leases de admissão ficam ativos enquanto montamos os descriptors
         // e executamos o kernel. Assim um shard sob pressão não pode expulsar
-        // uma entrada recém-carregada antes de ela ser usada.
-        let _admitted_leases = admission_results.into_iter().flatten().collect::<Vec<_>>();
+        // uma entrada recém-carregada antes de ela ser usada. Indexamos os
+        // leases pelo mesmo ExpertKey que planejou o miss: procurar a entrada
+        // novamente aqui atravessava o mutex/LRU uma segunda vez por tensor e
+        // podia transformar uma admissão recente em outro lookup de cache.
+        // O mapa também mantém um único lease ativo quando o router repete o
+        // mesmo expert na rota.
+        let admitted_leases = admission_results
+            .into_iter()
+            .flatten()
+            .map(|lease| (lease.key().clone(), lease))
+            .collect::<HashMap<_, _>>();
 
         let mut descriptors = Vec::with_capacity(experts.len());
         let mut leases = Vec::new();
@@ -1669,13 +1678,26 @@ impl HeterogeneousMoeBlock {
             let mut descriptor = CudaHeterogeneousExpert::default();
             let mut expert_device_index = None;
             for (spec, key, lease) in resolved_specs {
-                let lease = match lease {
-                    Some(lease) => lease,
-                    None => cuda.resident_lookup(&key).ok_or_else(|| {
-                        MoeBlockError::Executor(format!(
-                            "expert heterogêneo {expert} desapareceu do cache após admissão"
-                        ))
-                    })?,
+                let (device_index, handle, bytes) = match lease {
+                    Some(lease) => {
+                        let values = (lease.device_index(), lease.handle(), lease.bytes());
+                        leases.push(lease);
+                        values
+                    }
+                    None => {
+                        if let Some(lease) = admitted_leases.get(&key) {
+                            (lease.device_index(), lease.handle(), lease.bytes())
+                        } else {
+                            let lease = cuda.resident_lookup(&key).ok_or_else(|| {
+                                MoeBlockError::Executor(format!(
+                                    "expert heterogêneo {expert} desapareceu do cache após admissão"
+                                ))
+                            })?;
+                            let values = (lease.device_index(), lease.handle(), lease.bytes());
+                            leases.push(lease);
+                            values
+                        }
+                    }
                 };
                 let HeterogeneousTensorSpec {
                     role,
@@ -1686,18 +1708,18 @@ impl HeterogeneousMoeBlock {
                     ..
                 } = spec;
                 match expert_device_index {
-                    Some(expected) if expected != lease.device_index() => {
+                    Some(expected) if expected != device_index => {
                         return Err(MoeBlockError::Executor(format!(
                             "expert heterogêneo {expert} foi particionado entre CUDA{expected} e CUDA{}",
-                            lease.device_index()
+                            device_index
                         )))
                     }
-                    None => expert_device_index = Some(lease.device_index()),
+                    None => expert_device_index = Some(device_index),
                     _ => {}
                 }
                 let tensor = CudaHeterogeneousTensor {
-                    data: lease.handle() as *const u8,
-                    bytes: lease.bytes(),
+                    data: handle as *const u8,
+                    bytes,
                     rows,
                     columns,
                     dtype,
@@ -1720,7 +1742,6 @@ impl HeterogeneousMoeBlock {
                         )))
                     }
                 }
-                leases.push(lease);
             }
             let Some(device_index) = expert_device_index else {
                 return Err(MoeBlockError::Executor(format!(

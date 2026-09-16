@@ -2936,21 +2936,6 @@ O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
 `cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
 prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
 
-### Fase 5.16: ativação e quantização q8 fundidas - 2026-09-16
-
-O pipeline heterogêneo q8 precisava escrever a ativação gated em `float` e
-imediatamente reler todos os elementos para produzir `block_q8_1`, antes do
-kernel down. A nova etapa usa uma warp por bloco q8, aplica a mesma ativação e
-as mesmas reduções de `amax` e soma, e grava diretamente em
-`d_activated_q8`. O cálculo do down, a agregação de rotas, o cache e o caminho
-denso não mudam; a redução esperada é uma leitura, uma escrita e um lançamento
-de kernel por callback.
-
-Esta alteração é um candidato de desempenho e não recebe crédito sem A/B na
-ksia. O critério de aceitação é manter a saída textual correta e não reduzir a
-melhor medição confirmada do estado `6d2d348c`/`77c70e9d` (`12,725 tok/s` de
-decode aquecido); a meta final continua sendo `1,5x` a baseline densa.
-
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

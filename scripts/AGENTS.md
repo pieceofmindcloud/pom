@@ -86,18 +86,30 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   escolhe o maior SemVer entre todas as plataformas, incrementando o metadado
   `build.N` para o `pom-release.sh`.
 - `test_pom_release.sh` - smoke test local do incremento automático, override
-  manual e `--dry-run`, usando `curl` e `cargo` falsos.
+  manual e `--dry-run`, usando `curl` e `cargo` falsos. Cobre os caminhos
+  `enterprise` (cdylib) e `pom_core` (binário `pom`/`pom.exe`) nas três
+  plataformas.
 
 O `pom-release.sh` fica na raiz porque opera sobre o checkout remoto do POM:
-busca `origin/feat/enterprise`, cria worktree descartável, compila o artefato
-Enterprise e envia multipart para `/internal/releases/upload`. Sem
-`--version`, consulta `/internal/releases?plugin=<plugin>&status=all` com o
-token `POM_RELEASE_TOKEN`, agrupa todas as plataformas pela versão SemVer e
+busca `origin/feat/enterprise`, cria worktree descartável e envia multipart
+para `/internal/releases/upload`. Sem `--version`, consulta
+`/internal/releases?plugin=<plugin>&status=all` com o token
+`POM_RELEASE_TOKEN`, agrupa todas as plataformas pela versão SemVer e
 incrementa `+build.N`; `--version` é um override manual e não faz essa consulta.
-A opção `--plugin enterprise` mantém o contrato do console de releases; o fluxo
-inicial usa o fixture compatível, e `--plugin-crate enterprise-plugin` publica
-o plugin real depois de um build validado. `--dry-run` não exige token nem faz
-chamada HTTP e mostra `+build.1` como prévia quando a versão não é informada.
+`--plugin enterprise` compila o cdylib pelo `build-enterprise-plugin.sh` e
+mantém o `--features` histórico como alias do metadado `feature_set`.
+`--plugin pom_core` compila o binário real do pacote `node` com `cargo build
+--release -p node --target ...`: os defaults são `cuda,vulkan` no Linux (mesmo
+conjunto do `Dockerfile`), `metal` no macOS (workflow de release) e nenhuma
+feature no Windows CPU. Nesse fluxo, `--features` substitui as features do
+build e `--feature-set` altera apenas o metadado do upload. Os artefatos são
+`pom` em Linux/macOS e `pom.exe` no Windows; o wrapper `cargo` do operador
+deve encaminhar o alvo Windows MSVC para `cargo xwin` quando o host não for
+Windows. O servidor exige `plugin_abi` positivo também para `pom_core`, então
+o script envia `1` como metadado de compatibilidade de transporte, não como
+ABI de cdylib. O `feature_set=core` é apenas metadado e não cria entitlement.
+`--dry-run` não exige token nem faz chamada HTTP e mostra `+build.1` como
+prévia quando a versão não é informada.
 
 ## Python (nao esta na raiz - esta em old/python-inference/)
 

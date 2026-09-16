@@ -29,6 +29,7 @@ set -euo pipefail
 target=""
 crate=""
 profile="debug"
+original_args="$*"
 while (($# > 0)); do
   case "$1" in
     --target) target="$2"; shift 2 ;;
@@ -44,7 +45,12 @@ extension="so"
 artifact_dir="target/$target/$profile"
 mkdir -p "$artifact_dir"
 artifact_name="$(printf '%s' "$crate" | tr '-' '_')"
-if [[ "$extension" == dll ]]; then
+printf '%s\n' "$original_args" >> "${POM_RELEASE_CARGO_LOG:?}"
+if [[ "$crate" == node ]]; then
+  core_artifact="$artifact_dir/pom"
+  [[ "$extension" == dll ]] && core_artifact+=".exe"
+  printf 'core fixture' > "$core_artifact"
+elif [[ "$extension" == dll ]]; then
   printf 'fixture' > "$artifact_dir/$artifact_name.dll"
 else
   printf 'fixture' > "$artifact_dir/lib$artifact_name.$extension"
@@ -76,11 +82,13 @@ FAKE_CURL
 chmod +x "$fake_bin/curl"
 
 curl_log="$tmp_dir/curl.log"
+cargo_log="$tmp_dir/cargo.log"
 published_output="$(
   PATH="$fake_bin:$PATH" \
   POM_RELEASE_API='https://license.test' \
   POM_RELEASE_TOKEN='test-token' \
   POM_RELEASE_CURL_LOG="$curl_log" \
+  POM_RELEASE_CARGO_LOG="$cargo_log" \
   POM_RDMA_REPO="$root" \
   "$root/pom-release.sh" \
     --platform linux-x86_64 \
@@ -89,10 +97,11 @@ published_output="$(
     --reason 'teste de incremento'
 )"
 assert_contains "$published_output" 'release_id=ent-0.1.0+build.11-linux-x86_64'
-assert_contains "$(<"$curl_log")" 'plugin=enterprise'
-assert_contains "$(<"$curl_log")" 'status=all'
-assert_contains "$(<"$curl_log")" 'limit=1000'
-assert_contains "$(<"$curl_log")" 'version=0.1.0+build.11'
+curl_contents="$(cat "$curl_log")"
+assert_contains "$curl_contents" 'plugin=enterprise'
+assert_contains "$curl_contents" 'status=all'
+assert_contains "$curl_contents" 'limit=1000'
+assert_contains "$curl_contents" 'version=0.1.0+build.11'
 
 calls_before_manual="$(wc -l < "$curl_log" | tr -d '[:space:]')"
 manual_output="$(
@@ -100,6 +109,7 @@ manual_output="$(
   POM_RELEASE_API='https://license.test' \
   POM_RELEASE_TOKEN='test-token' \
   POM_RELEASE_CURL_LOG="$curl_log" \
+  POM_RELEASE_CARGO_LOG="$cargo_log" \
   POM_RDMA_REPO="$root" \
   "$root/pom-release.sh" \
     --platform linux-x86_64 \
@@ -121,6 +131,7 @@ dry_run_output="$(
   PATH="$fake_bin:$PATH" \
   POM_RELEASE_API='https://license.test' \
   POM_RELEASE_CURL_LOG="$dry_log" \
+  POM_RELEASE_CARGO_LOG="$cargo_log" \
   POM_RDMA_REPO="$root" \
   "$root/pom-release.sh" \
     --platform linux-x86_64 \
@@ -130,5 +141,68 @@ dry_run_output="$(
 )"
 assert_contains "$dry_run_output" 'release_id=ent-0.1.0+build.1-linux-x86_64'
 [[ ! -e "$dry_log" ]]
+
+for platform in linux-x86_64 macos-aarch64 windows-x86_64; do
+  core_dry_run_output="$(
+    PATH="$fake_bin:$PATH" \
+    POM_RELEASE_API='https://license.test' \
+    POM_RELEASE_CARGO_LOG="$cargo_log" \
+    POM_RDMA_REPO="$root" \
+    "$root/pom-release.sh" \
+      --platform "$platform" \
+      --plugin pom_core \
+      --dry-run
+  )"
+  case "$platform" in
+    linux-x86_64)
+      assert_contains "$core_dry_run_output" 'release_id=pom_core-0.1.0+build.1-linux-x86_64'
+      assert_contains "$core_dry_run_output" '/pom'
+      assert_contains "$(tail -n 1 "$cargo_log")" '--features cuda,vulkan -p node --target x86_64-unknown-linux-gnu'
+      ;;
+    macos-aarch64)
+      assert_contains "$core_dry_run_output" 'release_id=pom_core-0.1.0+build.1-macos-aarch64'
+      assert_contains "$core_dry_run_output" '/pom'
+      assert_contains "$(tail -n 1 "$cargo_log")" '--features metal -p node --target aarch64-apple-darwin'
+      ;;
+    windows-x86_64)
+      assert_contains "$core_dry_run_output" 'release_id=pom_core-0.1.0+build.1-windows-x86_64'
+      assert_contains "$core_dry_run_output" '/pom.exe'
+      assert_contains "$(tail -n 1 "$cargo_log")" 'build --release --locked -p node --target x86_64-pc-windows-msvc'
+      ;;
+  esac
+done
+
+override_output="$(
+  PATH="$fake_bin:$PATH" \
+  POM_RELEASE_API='https://license.test' \
+  POM_RELEASE_CARGO_LOG="$cargo_log" \
+  POM_RDMA_REPO="$root" \
+  "$root/pom-release.sh" \
+    --platform linux-x86_64 \
+    --plugin pom_core \
+    --features metal \
+    --dry-run
+)"
+assert_contains "$override_output" 'release_id=pom_core-0.1.0+build.1-linux-x86_64'
+assert_contains "$(tail -n 1 "$cargo_log")" '--features metal -p node --target x86_64-unknown-linux-gnu'
+
+core_published_output="$(
+  PATH="$fake_bin:$PATH" \
+  POM_RELEASE_API='https://license.test' \
+  POM_RELEASE_TOKEN='test-token' \
+  POM_RELEASE_CURL_LOG="$curl_log" \
+  POM_RELEASE_CARGO_LOG="$cargo_log" \
+  POM_RDMA_REPO="$root" \
+  "$root/pom-release.sh" \
+    --platform windows-x86_64 \
+    --plugin pom_core \
+    --reason 'teste de pom_core'
+)"
+assert_contains "$core_published_output" 'release_id=pom_core-0.1.0+build.11-windows-x86_64'
+assert_contains "$core_published_output" 'status=published'
+curl_contents="$(cat "$curl_log")"
+assert_contains "$curl_contents" 'plugin=pom_core'
+assert_contains "$curl_contents" 'feature_set=core'
+assert_contains "$curl_contents" 'plugin_abi=1'
 
 printf 'pom-release tests: PASS\n'

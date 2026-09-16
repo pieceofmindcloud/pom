@@ -86,8 +86,15 @@ prova de autorização: o backend continua sendo a fronteira de segurança.
   com o token `POM_RELEASE_TOKEN` antes do upload, considera releases de todas
   as plataformas e escolhe o próximo `+build.N`; `--version` continua sendo um
   override manual. O catálogo do binário POM usa exatamente `pom_core`, como
-  definido no `license-server/AGENTS.md`. O `--dry-run` permanece sem rede e
-  usa `+build.1` como prévia quando não há override. Ainda faltam code
+  definido no `license-server/AGENTS.md`. Para `pom_core`, o script compila o
+  pacote `node` com os defaults `cuda,vulkan` no Linux, `metal` no macOS e
+  nenhuma feature no Windows CPU; `--features` substitui esse conjunto e
+  `--feature-set` altera somente o metadado do upload. O artefato é `pom` em
+  Linux/macOS e `pom.exe` no Windows. O servidor aceita `plugin_abi=1` como
+  campo obrigatório genérico para `pom_core`, sem representar ABI de cdylib,
+  e `feature_set=core` continua sendo apenas metadado, sem entitlement.
+  O `--dry-run` permanece sem rede e usa `+build.1` como prévia quando não há
+  override. Ainda faltam code
   signing/notarização nativos, rollback com ponteiro, circuit breaker completo
   e matriz real de três plataformas.
 
@@ -154,6 +161,9 @@ cd apps/frontend && npm test -- src/lib/access.test.ts src/components/nav.test.t
 ./scripts/build-enterprise-plugin.sh --platform macos-aarch64 --debug
 ./scripts/test_pom_release.sh
 ./pom-release.sh --platform linux-x86_64 --plugin enterprise --dry-run
+./pom-release.sh --platform linux-x86_64 --plugin pom_core --dry-run
+./pom-release.sh --platform macos-aarch64 --plugin pom_core --dry-run
+./pom-release.sh --platform windows-x86_64 --plugin pom_core --dry-run
 ```
 
 ## Maintaining this file

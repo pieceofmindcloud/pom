@@ -224,6 +224,11 @@ pub(super) const FIT_MIN_CONTEXT: u32 = 4096;
 /// ubatch is the safe automatic fallback before llama.cpp reserves those
 /// workspaces on a nearly-full GPU.
 pub(super) const FIT_MAX_UBATCH: u32 = 512;
+/// Exceção aprovada para o contexto principal que usa o executor externo de
+/// MoE. O microlote menor devolve VRAM ao cache residente; não é a política
+/// do contexto denso nem do MTP, que continuam em `FIT_MAX_UBATCH`.
+pub(super) const MOE_EXTERNAL_MAX_UBATCH: u32 = 128;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FitDeviceMemory {
     pub(super) total_bytes: usize,
@@ -797,19 +802,46 @@ pub(super) fn backend_registry_name(device: sys::ggml_backend_dev_t) -> Option<S
 }
 
 pub fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
+    effective_n_ubatch_with_limit(cfg, cfg.moe_external_executor)
+}
+
+/// Retorna o microlote físico do contexto MTP.
+///
+/// O MTP compartilha a configuração de sessão com o alvo MoE, mas o captain
+/// fixou 512 para o buffer de `nextn`. Por isso esta política não herda a
+/// exceção do contexto principal externo.
+pub fn effective_mtp_n_ubatch(cfg: &EngineConfig) -> u32 {
+    effective_n_ubatch_with_limit(cfg, false)
+}
+
+fn effective_n_ubatch_with_limit(cfg: &EngineConfig, external_moe: bool) -> u32 {
     let n_batch = cfg.n_batch.max(1);
     if cfg.fit_memory {
-        n_batch.min(FIT_MAX_UBATCH)
+        let limit = if external_moe {
+            MOE_EXTERNAL_MAX_UBATCH
+        } else {
+            FIT_MAX_UBATCH
+        };
+        n_batch.min(limit)
     } else {
         n_batch
     }
 }
 
-/// Aplica a política única de lote público e microlote de computação a cada
-/// contexto que o motor cria, inclusive o contexto MTP.
+/// Aplica a política de lote público e microlote do contexto principal.
 pub fn apply_context_batch_params(cparams: &mut sys::llama_context_params, cfg: &EngineConfig) {
     cparams.n_batch = cfg.n_batch;
     cparams.n_ubatch = effective_n_ubatch(cfg);
+}
+
+/// Aplica os parâmetros do contexto MTP sem herdar a exceção de microbatch do
+/// contexto principal MoE.
+pub fn apply_mtp_context_batch_params(
+    cparams: &mut sys::llama_context_params,
+    cfg: &EngineConfig,
+) {
+    cparams.n_batch = cfg.n_batch;
+    cparams.n_ubatch = effective_mtp_n_ubatch(cfg);
 }
 
 pub(super) fn fit_plan(
@@ -1008,10 +1040,14 @@ pub(super) fn fit_plan(
         }
         params
     };
-    let make_context_params = || {
+    let make_context_params = |mtp: bool| {
         let mut params = unsafe { sys::llama_context_default_params() };
         params.n_ctx = cfg.n_ctx;
-        apply_context_batch_params(&mut params, cfg);
+        if mtp {
+            apply_mtp_context_batch_params(&mut params, cfg);
+        } else {
+            apply_context_batch_params(&mut params, cfg);
+        }
         params.n_seq_max = kv_seq_budget(cfg.max_sessions);
         params.kv_unified = true;
         params.offload_kqv = cfg.offload_kqv;
@@ -1032,7 +1068,7 @@ pub(super) fn fit_plan(
         n_overrides
     ];
     let mut primary_mparams = make_model_params(false);
-    let mut primary_cparams = make_context_params();
+    let mut primary_cparams = make_context_params(false);
     let primary_status = unsafe {
         sys::llama_rs_fit_params(
             path.as_ptr(),
@@ -1066,7 +1102,7 @@ pub(super) fn fit_plan(
 
     if mtp_mode == MtpFitMode::Vram && primary_gpu_layers == -1 {
         let mut mtp_mparams = make_model_params(true);
-        let mtp_cparams = make_context_params();
+        let mtp_cparams = make_context_params(true);
         let mut joint_margins = match crate::gguf::read_info(std::path::Path::new(model_path))
             .ok()
             .and_then(|info| estimate_mtp_vram_costs(&info, cfg, physical_devices))

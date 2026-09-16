@@ -1137,10 +1137,10 @@ As hipóteses foram confrontadas com o caminho real:
    callback MoE repetia a preparação de rotas, transferências de descritores
    e sincronização por microbatch. O perfil instrumentado que temos como
    quebra completa tinha 22 tokens, logo cabia em um único microbatch, e mesmo
-   assim a preparação de lote dominou. O candidato foi revertido: hoje
-   `effective_n_ubatch` mantém o limite operacional de 512 para o contexto
-   comum, inclusive o MTP. A fração atribuível ao microlote continua uma
-   decisão separada para o contexto MoE.
+   assim a preparação de lote dominou. A exceção aprovada fica restrita ao
+   contexto principal MoE: o caminho denso e o MTP mantêm o limite operacional
+   de 512. A fração atribuível ao microlote continua uma decisão separada para
+   o contexto MoE.
 
 3. **Sincronização por camada no prefill.** Existe sincronização no executor
    externo, mas não é o gargalo observado. Cada chamada FFI CUDA registra
@@ -3014,10 +3014,10 @@ instrumentação foi feita na ksia em `e8709f09`: três rodadas sem processo
 concorrente tiveram `11,018`, `10,440` e `10,351 tok/s`; a capacidade
 efetiva variou de `15,337` a `17,803 GB` e a residência terminou encostada
 nesse limite. A Fase 5.19 usou esse detalhamento para confirmar a margem
-recuperável dos buffers de compute; o candidato foi revertido até a decisão
-do captain sobre o trade-off do microlote do contexto MoE.
+recuperável dos buffers de compute e orientar a exceção aprovada para o
+contexto principal MoE.
 
-### Fase 5.19: candidato de microlote físico menor para o cache residente - 2026-09-16
+### Fase 5.19: exceção de microlote físico do contexto MoE - 2026-09-16
 
 As sondagens brutas da ksia mostraram que `MemoryAccount` não subestima a
 VRAM: depois dos buffers do contexto, cada RTX 5060 Ti tinha cerca de `0,5 GB`
@@ -3026,31 +3026,35 @@ residente terminava encostado em `15,3-17,8 GB` agregados, abaixo dos `19,62 GB`
 de `4499` candidatos aquecidos. O conjunto não cabe com `n_ubatch=512` e não
 há evidência de outra carga de GPU.
 
-Um candidato manteve `n_batch=512` como lote público, mas limitou `n_ubatch` a
-`128` quando `moe_external_executor` estava ativo. O grafo do llama.cpp passou
-a reservar workspaces físicos menores, devolvendo VRAM para o cache de
-experts sem alterar o contexto denso. Em três rodadas na ksia, com apenas o
-processo `pom` visível no `nvidia-smi` das duas placas, o decode do mesmo
-prompt mediu `16,001`, `15,968` e `13,631 tok/s`, mediana `15,968 tok/s`.
-A referência anterior do mesmo teste mediu `10,560 tok/s`, um ganho de
-`1,512x` sobre o estado anterior do executor MoE.
+A exceção mantém `n_batch=512` como lote público, mas limita `n_ubatch` a
+`128` somente no contexto principal quando `moe_external_executor` está ativo.
+O grafo do llama.cpp passa a reservar workspaces físicos menores, devolvendo
+VRAM para o cache de experts sem alterar o contexto denso. Em três rodadas na
+ksia, com apenas o processo `pom` visível no `nvidia-smi` das duas placas, o
+decode do mesmo prompt mediu `16,001`, `15,968` e `13,631 tok/s`, mediana
+`15,968 tok/s`. A referência anterior do mesmo teste mediu `10,560 tok/s`, um
+ganho de `1,512x` sobre o estado anterior do executor MoE.
 
-Esse candidato foi revertido porque `FIT_MAX_UBATCH=512` é uma preferência
-operacional deliberada: `n_ubatch` influencia o processamento de prompt e o
-buffer do contexto MTP. A política atual volta a aplicar 512 ao contexto
-principal e ao MTP.
+`FIT_MAX_UBATCH=512` continua sendo a preferência operacional deliberada para
+o caminho denso e para o contexto MTP: `n_ubatch` influencia o processamento
+de prompt e o buffer do contexto MTP. O captain aprovou uma exceção restrita
+porque o contexto principal com `moe_external_executor` precisa devolver VRAM
+ao cache residente. Esse contexto usa 128, enquanto o denso e o MTP continuam
+em 512.
 
-A investigação de isolamento encontrou duas fronteiras. É possível manter o
-caminho denso em 512 e, com uma política explícita separada, fazer apenas o
-contexto principal que usa o executor MoE usar 128. Também é possível manter o
-MTP em 512 chamando uma política própria ao criar o contexto `MTP`. Porém não
-é possível reduzir somente o consumo do cache a partir do callback Rust: o
+A investigação de isolamento encontrou duas fronteiras. O caminho denso
+permanece em 512 por usar a política comum, enquanto uma política explícita
+separada faz apenas o contexto principal que usa o executor MoE usar 128. O
+MTP permanece em 512 chamando sua própria política ao criar o contexto `MTP`.
+Porém não é possível reduzir somente o consumo do cache a partir do callback Rust: o
 `llama_context_params` possui um único `n_ubatch`, o scheduler usa esse valor
 para dividir o grafo inteiro, e o callback recebe apenas o microbatch já
 dividido. Portanto a alternativa MoE-only ainda reduz o microlote de atenção,
 KV e demais operações do contexto alvo, além de liberar VRAM para experts.
-Esse trade-off precisa de aprovação explícita antes de reintroduzir 128 no
-contexto MoE. Não há novo ajuste de kernel ou dispatch nesta fase.
+O trade-off de reduzir também o microlote de atenção e KV do contexto MoE foi
+aceito nessa exceção. A implementação mantém essa separação em
+`effective_n_ubatch` e `apply_mtp_context_batch_params`; não há novo ajuste de
+kernel ou dispatch nesta fase.
 
 O diagnóstico confirma a causa: a capacidade agregada subiu para
 `20,925-23,500 GB`, contra `15,337-17,803 GB` antes, e a residência terminou

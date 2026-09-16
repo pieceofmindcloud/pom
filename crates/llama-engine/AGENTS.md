@@ -86,6 +86,12 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   orçamento (`baseline_free`, `current_free`, compute, reserva, limites e
   entradas residentes). Isso separa pressão real do orçamento de uma eviction
   indevida de lease ativo e permite auditar uma margem conservadora.
+  Por decisão aprovada do captain, o contexto principal com
+  `moe_external_executor` usa `n_ubatch=128` para devolver VRAM ao cache
+  residente. Essa exceção também reduz o microlote de atenção e KV desse
+  contexto, trade-off aceito para o caminho MoE. O caminho denso do llama.cpp
+  e o contexto MTP permanecem no valor padrão de `FIT_MAX_UBATCH=512`; o MTP
+  usa uma política de parâmetros própria para não herdar a exceção.
   Pares repetidos de expert e token são calculados uma vez e a agregação
   conserva o peso de cada rota original.
   No IQ3_XXS a entrada é quantizada para `block_q8_1` e o decoder nativo

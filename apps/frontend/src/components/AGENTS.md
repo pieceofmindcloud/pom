@@ -148,7 +148,9 @@ Per-file list:
   sequência operacional de consultar eventos antes de seus agregados. A mesma
   tabela marca as entradas que vão para o rodapé do `infer` e promove a rede
   para o menu principal; `navForProfile` e `navFooterForProfile` são suas duas
-  projeções. Testes em `nav.test.ts`.
+  projeções. Logs de Requisições e Estatísticas permanecem visíveis para todos
+  os perfis mesmo sem licença, para descoberta do produto. Testes em
+  `nav.test.ts`.
   A seção principal Rede contém Informações, Participantes, Minha Máquina,
   Administradores, Compartilhamento e API Keys. Configurações contém Preferências,
   Armazenamento, Preferências Administrativas e Sobre, sempre nesta ordem; Sobre

@@ -139,7 +139,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `canAccessRoute(path, profile)` é
   lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
   `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
-  a rota recusa. Testes em `access.test.ts`.
+  a rota recusa. As superfícies `/logs` e `/estatisticas` são exceções de
+  descoberta e permanecem abertas no menu para todos os perfis; o entitlement
+  é aplicado pelo `App` e pelo backend. Testes em `access.test.ts`.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
 - `transferStatus.ts` - predicates over `TransferJob` for the transfers UI and for the bell.
@@ -183,6 +185,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `GpuStat.power_watts` é telemetria opcional: o card de detalhes mostra o
   valor quando NVIDIA ou AMD expõe a potência da placa e mantém desconhecido
   quando não há essa leitura.
+  `EnterpriseStatus` é o contrato do estado de licença consumido por
+  `useEnterpriseStatus`; quando inativo, esse hook remove caches de auditoria
+  para não reexibir dados Enterprise antigos.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

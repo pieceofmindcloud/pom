@@ -111,10 +111,11 @@ describe("Sidebar", () => {
   });
 
   /**
-   * O menu segue a mesma tabela que barra a rota (`lib/access.ts`). Oferecer no
-   * menu o que a rota recusa manda o operador bater numa porta fechada.
+   * O menu segue a mesma tabela que barra a rota (`lib/access.ts`). As telas
+   * Enterprise são a exceção de descoberta: o item permanece visível sem
+   * licença e a tela explica como ativá-lo.
    */
-  it("esconde do perfil do nó as entradas que ele não abre", () => {
+  it("esconde do perfil do nó as entradas que ele não abre e mantém Enterprise", () => {
     render(
       <MemoryRouter
         initialEntries={["/"]}
@@ -130,7 +131,7 @@ describe("Sidebar", () => {
 
     expect(screen.queryByText("Implantar na rede")).toBeNull();
     expect(screen.queryByText("Implantações")).toBeNull();
-    expect(screen.queryByText("Logs")).toBeNull();
+    expect(screen.getByText("Logs")).toBeTruthy();
     // O que ninguém restringiu continua no lugar.
     expect(screen.getByText("Painel")).toBeTruthy();
     expect(screen.getByText("Modelos")).toBeTruthy();

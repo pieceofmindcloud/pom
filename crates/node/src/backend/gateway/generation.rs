@@ -2211,13 +2211,14 @@ pub fn spawn_logged_generation_with_stops(
     let logged_prompt = input.prompt.clone();
     let request_details = input.request_details.clone();
     let audit = input.state.audit.clone();
+    let enterprise = input.state.enterprise.clone();
     let request_id = input
         .trace_id
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
     let received_at = chrono::Utc::now().to_rfc3339();
     let started = Instant::now();
-    audit.begin(crate::reqlog::AuditRequest {
+    let begin = crate::reqlog::AuditRequest {
         id: request_id.clone(),
         received_at,
         route: route.to_string(),
@@ -2226,6 +2227,16 @@ pub fn spawn_logged_generation_with_stops(
         entry_node_id: entry_node_id.clone(),
         prompt: logged_prompt,
         request_details,
+    };
+    let audit_for_begin = audit.clone();
+    let enterprise_for_begin = enterprise.clone();
+    tokio::spawn(async move {
+        if !enterprise_for_begin
+            .ingest_audit_event(crate::reqlog::AuditEvent::Begin(begin.clone()))
+            .await
+        {
+            audit_for_begin.begin(begin);
+        }
     });
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
@@ -2312,22 +2323,28 @@ pub fn spawn_logged_generation_with_stops(
             "abandoned" => crate::reqlog::AuditStatus::Abandoned,
             _ => crate::reqlog::AuditStatus::Incomplete,
         };
-        audit.complete(
-            request_id,
-            crate::reqlog::AuditCompletion {
-                completed_at: chrono::Utc::now().to_rfc3339(),
-                result: (!result.is_empty()).then_some(result),
-                telemetry,
-                timings,
-                source,
-                hops,
-                prompt_tokens,
-                completion_tokens,
-                duration_ms,
-                status: audit_status,
-                error,
-            },
-        );
+        let completion = crate::reqlog::AuditCompletion {
+            completed_at: chrono::Utc::now().to_rfc3339(),
+            result: (!result.is_empty()).then_some(result),
+            telemetry,
+            timings,
+            source,
+            hops,
+            prompt_tokens,
+            completion_tokens,
+            duration_ms,
+            status: audit_status,
+            error,
+        };
+        if !enterprise
+            .ingest_audit_event(crate::reqlog::AuditEvent::Complete {
+                id: request_id.clone(),
+                completion: completion.clone(),
+            })
+            .await
+        {
+            audit.complete(request_id, completion);
+        }
     });
 }
 
@@ -2343,7 +2360,7 @@ pub(crate) fn record_rejected(
     error: String,
 ) {
     let id = Uuid::new_v4().simple().to_string();
-    state.audit.begin(crate::reqlog::AuditRequest {
+    let begin = crate::reqlog::AuditRequest {
         id: id.clone(),
         received_at: chrono::Utc::now().to_rfc3339(),
         route: route.to_string(),
@@ -2352,23 +2369,39 @@ pub(crate) fn record_rejected(
         entry_node_id: state.network.node_id.clone(),
         prompt,
         request_details,
+    };
+    let completion = crate::reqlog::AuditCompletion {
+        completed_at: chrono::Utc::now().to_rfc3339(),
+        result: None,
+        telemetry: None,
+        timings: None,
+        source: "none".into(),
+        hops: Vec::new(),
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_ms: Some(0),
+        status: crate::reqlog::AuditStatus::Error,
+        error: Some(error),
+    };
+    let audit = state.audit.clone();
+    let enterprise = state.enterprise.clone();
+    tokio::spawn(async move {
+        let complete = crate::reqlog::AuditEvent::Complete {
+            id: id.clone(),
+            completion: completion.clone(),
+        };
+        if enterprise
+            .ingest_audit_event(crate::reqlog::AuditEvent::Begin(begin.clone()))
+            .await
+        {
+            if !enterprise.ingest_audit_event(complete).await {
+                tracing::warn!(request_id = %id, "conclusão de auditoria Enterprise não entrou no plugin");
+            }
+        } else {
+            audit.begin(begin);
+            audit.complete(id, completion);
+        }
     });
-    state.audit.complete(
-        id,
-        crate::reqlog::AuditCompletion {
-            completed_at: chrono::Utc::now().to_rfc3339(),
-            result: None,
-            telemetry: None,
-            timings: None,
-            source: "none".into(),
-            hops: Vec::new(),
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: Some(0),
-            status: crate::reqlog::AuditStatus::Error,
-            error: Some(error),
-        },
-    );
 }
 
 /// Run a generation to completion and return the whole text.

@@ -15,7 +15,7 @@ use build_support::{
     source_include_dirs, source_root,
 };
 
-fn cuda_graphs_enabled(value: Option<&str>) -> bool {
+fn cuda_option_enabled(value: Option<&str>) -> bool {
     value.is_some_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -1251,14 +1251,27 @@ fn main() {
 
     if cfg!(feature = "cuda") {
         config.define("GGML_CUDA", "ON");
-        config.define("GGML_CUDA_NCCL", "OFF");
+        println!("cargo:rerun-if-env-changed=GGML_CUDA_NCCL");
+        println!("cargo:rerun-if-env-changed=NCCL_ROOT");
+        // Keep NCCL opt-in for CUDA builds because it adds a runtime dependency
+        // on libnccl.so. Operators that have installed NCCL can enable the
+        // collective path with GGML_CUDA_NCCL=ON; this must override the
+        // previous unconditional OFF below the environment forwarding pass.
+        config.define(
+            "GGML_CUDA_NCCL",
+            if cuda_option_enabled(env::var("GGML_CUDA_NCCL").ok().as_deref()) {
+                "ON"
+            } else {
+                "OFF"
+            },
+        );
         // CUDA Graphs reserve extra driver state and can fail at graph launch
         // after the normal warmup already succeeded. That is fatal in the
         // fork's CUDA error path and is especially easy to hit when `--fit`
         // intentionally fills a GPU. Keep the safe path as the default; this
         // opt-in is for operators who have verified spare VRAM on their GPU.
         println!("cargo:rerun-if-env-changed=POM_CUDA_GRAPHS");
-        let graphs = cuda_graphs_enabled(env::var("POM_CUDA_GRAPHS").ok().as_deref());
+        let graphs = cuda_option_enabled(env::var("POM_CUDA_GRAPHS").ok().as_deref());
         config.define("GGML_CUDA_GRAPHS", if graphs { "ON" } else { "OFF" });
 
         if cfg!(feature = "cuda-no-vmm") {
@@ -1350,6 +1363,28 @@ fn main() {
         .always_configure(true);
 
     let build_dir = config.build();
+
+    // The CMake targets are static archives. Their NCCL dependency is therefore
+    // not propagated to the final Rust link, so add the imported library here
+    // only when the operator explicitly enabled the NCCL path. Resolve the
+    // search directory from the same CMake cache entry used by FindNCCL.
+    if cfg!(feature = "cuda")
+        && matches!(target_os, TargetOs::Linux)
+        && cuda_option_enabled(env::var("GGML_CUDA_NCCL").ok().as_deref())
+    {
+        let cmake_cache = build_dir.join("build").join("CMakeCache.txt");
+        if let Ok(cache_contents) = std::fs::read_to_string(&cmake_cache) {
+            if let Some(library) = cache_contents
+                .lines()
+                .find_map(|line| line.strip_prefix("NCCL_LIBRARY:FILEPATH="))
+                .filter(|path| !path.is_empty() && Path::new(path).is_file())
+            {
+                if let Some(parent) = Path::new(library).parent() {
+                    println!("cargo:rustc-link-search=native={}", parent.display());
+                }
+            }
+        }
+    }
 
     if cfg!(feature = "dynamic-backends") {
         println!("cargo:backends_dir={}", out_dir.join("backends").display());
@@ -1635,6 +1670,13 @@ fn main() {
         println!("{link}",);
     }
 
+    if cfg!(feature = "cuda")
+        && matches!(target_os, TargetOs::Linux)
+        && cuda_option_enabled(env::var("GGML_CUDA_NCCL").ok().as_deref())
+    {
+        println!("cargo:rustc-link-lib=dylib=nccl");
+    }
+
     // OpenMP
     if cfg!(feature = "openmp") && target_triple.contains("gnu") {
         if cfg!(feature = "static-openmp") {
@@ -1736,15 +1778,15 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{cuda_graphs_enabled, missing_llama_source_error};
+    use super::{cuda_option_enabled, missing_llama_source_error};
 
     #[test]
-    fn cuda_graphs_are_opt_in() {
-        assert!(!cuda_graphs_enabled(None));
-        assert!(!cuda_graphs_enabled(Some("0")));
-        assert!(!cuda_graphs_enabled(Some("off")));
-        assert!(cuda_graphs_enabled(Some("1")));
-        assert!(cuda_graphs_enabled(Some(" On ")));
+    fn cuda_options_are_opt_in() {
+        assert!(!cuda_option_enabled(None));
+        assert!(!cuda_option_enabled(Some("0")));
+        assert!(!cuda_option_enabled(Some("off")));
+        assert!(cuda_option_enabled(Some("1")));
+        assert!(cuda_option_enabled(Some(" On ")));
     }
 
     #[test]

@@ -1,10 +1,10 @@
 /**
  * Que rota cada perfil enxerga.
  *
- * Uma tabela só, e o menu e o roteador leem a mesma: esconder o item do menu
- * sem barrar a rota deixa a tela a um endereço digitado de distância, e barrar
- * a rota sem esconder o item deixa o menu oferecendo o que não abre. Os dois
- * defeitos vêm de haver duas listas; aqui há uma.
+ * Uma tabela só, e o menu e o roteador leem a mesma. Rotas de produto Enterprise
+ * são a exceção de descoberta: continuam abertas para que o menu possa
+ * apresentar o recurso mesmo antes da ativação. O bloqueio de dados acontece
+ * no backend e o App mostra o estado de compra quando o entitlement falta.
  *
  * **Escopo:** isto é apresentação, não autorização - ver o cabeçalho de
  * `profile.tsx`. Bloquear aqui evita que a interface ofereça um trabalho que
@@ -29,8 +29,6 @@ import type { Profile } from "./profile";
 const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/implantar": ["admin"],
   "/implantacoes": ["admin"],
-  "/logs": ["admin"],
-  "/estatisticas": ["admin"],
   "/config/administracao": ["admin", "node"],
   "/config/rede/participantes": ["admin", "node"],
 };
@@ -67,6 +65,10 @@ function isUnder(path: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(prefix + "/");
 }
 
+export function isEnterprisePath(path: string): boolean {
+  return isUnder(path, "/logs") || isUnder(path, "/estatisticas");
+}
+
 /** Os perfis que entram nesta rota, ou `null` quando ela é livre. */
 export function routeProfiles(path: string): readonly Profile[] | null {
   // A chave mais específica vence para qualquer futura exceção de rota.
@@ -78,14 +80,20 @@ export function routeProfiles(path: string): readonly Profile[] | null {
   return best?.profiles ?? null;
 }
 
-/** Se este perfil pode abrir esta rota. */
+/** Se este perfil pode abrir esta rota, incluindo superfícies Enterprise. */
 export function canAccessRoute(path: string, profile: Profile): boolean {
+  if (isEnterprisePath(path)) return true;
   if (profile === "infer") {
     if (INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
     return INFER_ROUTES.some((prefix) => isUnder(path, prefix));
   }
   const allowed = routeProfiles(path);
   return allowed === null || allowed.includes(profile);
+}
+
+/** Enterprise surfaces are intentionally discoverable before activation. */
+export function canAccessEnterprise(path: string, _active: boolean): boolean {
+  return isEnterprisePath(path);
 }
 
 /**

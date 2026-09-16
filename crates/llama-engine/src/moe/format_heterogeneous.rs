@@ -203,7 +203,7 @@ pub fn cuda_tensor_dtype_supported(dtype: u32) -> bool {
     matches!(dtype, 2 | 10 | 11 | 12 | 13 | 14 | 18 | 21 | 22 | 23 | 39)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct ExpertTensor {
     spec_index: usize,
     decoder: TensorDecoder,
@@ -254,11 +254,30 @@ pub struct HeterogeneousTensorPayload {
     pub scales: TensorScales,
 }
 
+/// Metadados de um tensor de expert, sem materializar a fatia do mmap.
+///
+/// O caminho CUDA consulta o cache residente com esta especificação antes de
+/// pedir os bytes. O campo interno mantém o descritor validado do tensor GGUF
+/// para que uma admissão posterior não precise procurar a tabela novamente.
+#[cfg(any(feature = "cuda", test))]
+#[derive(Clone, Copy)]
+pub struct HeterogeneousTensorSpec {
+    pub role: TensorRole,
+    pub dtype: u32,
+    /// Geometria de uma única fatia de expert, sem a dimensão do banco.
+    pub rows: usize,
+    pub columns: usize,
+    pub scales: TensorScales,
+    expert: u32,
+    entry: ExpertTensor,
+}
+
 pub struct HeterogeneousMoeSource {
     mmap: Mmap,
     data_start: usize,
     experts: u32,
     tensors: Vec<TensorSpec>,
+    sidecars: BTreeMap<String, Vec<f32>>,
     layers: Vec<LayerInventory>,
 }
 
@@ -272,6 +291,7 @@ impl HeterogeneousMoeSource {
         let mmap =
             unsafe { Mmap::map(&file) }.map_err(|error| Q4LoadError::Io(error.to_string()))?;
         let (data_start, tensors) = parse_tensor_table(&mmap)?;
+        let sidecars = load_sidecars(&mmap, data_start, &tensors)?;
         let mut max_layer = None;
         let mut expert_entries = Vec::new();
         for (index, tensor) in tensors.iter().enumerate() {
@@ -390,6 +410,7 @@ impl HeterogeneousMoeSource {
             data_start,
             experts,
             tensors,
+            sidecars,
             layers,
         })
     }
@@ -480,12 +501,155 @@ impl HeterogeneousMoeSource {
         Ok(())
     }
 
+    #[cfg(any(feature = "cuda", test))]
+    pub fn expert_tensor_specs(
+        &self,
+        layer: u32,
+        expert: u32,
+    ) -> Result<Vec<HeterogeneousTensorSpec>, Q4LoadError> {
+        self.expert_tensor_specs_batch(layer, std::slice::from_ref(&expert))?
+            .into_iter()
+            .next()
+            .ok_or(Q4LoadError::InvalidTensor(
+                "lote de specs heterogêneas vazio",
+            ))
+    }
+
+    /// Monta as especificações de vários experts da mesma camada em uma só
+    /// travessia do inventário. O callback normalmente recebe vários experts
+    /// por lote; repetir `expert_entries(layer)` e as buscas de geometria para
+    /// cada um fazia essa preparação crescer desnecessariamente no prefill.
+    #[cfg(any(feature = "cuda", test))]
+    pub fn expert_tensor_specs_batch(
+        &self,
+        layer: u32,
+        experts: &[u32],
+    ) -> Result<Vec<Vec<HeterogeneousTensorSpec>>, Q4LoadError> {
+        let inventory = self
+            .layers
+            .get(layer as usize)
+            .ok_or(Q4LoadError::InvalidTensor(
+                "camada MoE fora do inventário heterogêneo",
+            ))?;
+        let entries = self.expert_entries(layer)?;
+        experts
+            .iter()
+            .copied()
+            .map(|expert| {
+                if expert >= self.experts {
+                    return Err(Q4LoadError::ExpertOutOfRange {
+                        expert,
+                        count: self.experts,
+                    });
+                }
+                entries
+                    .iter()
+                    .map(|&(role, entry, rows, columns)| {
+                        let scales = if role == TensorRole::GateUp {
+                            TensorScales {
+                                primary: self.sidecar_scale(
+                                    entry,
+                                    "scale",
+                                    expert,
+                                    0,
+                                    inventory.gate,
+                                )?,
+                                secondary: self.sidecar_scale(
+                                    entry,
+                                    "scale",
+                                    expert,
+                                    1,
+                                    inventory.up,
+                                )?,
+                                input_primary: self.sidecar_scale(
+                                    entry,
+                                    "input_scale",
+                                    expert,
+                                    0,
+                                    inventory.gate,
+                                )?,
+                                input_secondary: self.sidecar_scale(
+                                    entry,
+                                    "input_scale",
+                                    expert,
+                                    1,
+                                    inventory.up,
+                                )?,
+                            }
+                        } else {
+                            TensorScales {
+                                primary: self.sidecar_scale(entry, "scale", expert, 0, None)?,
+                                secondary: 1.0,
+                                input_primary: self.sidecar_scale(
+                                    entry,
+                                    "input_scale",
+                                    expert,
+                                    0,
+                                    None,
+                                )?,
+                                input_secondary: 1.0,
+                            }
+                        };
+                        Ok(HeterogeneousTensorSpec {
+                            role,
+                            dtype: entry.decoder.dtype(),
+                            rows,
+                            columns,
+                            scales,
+                            expert,
+                            entry,
+                        })
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[cfg(any(feature = "cuda", test))]
+    pub fn load_expert_tensor(
+        &self,
+        spec: HeterogeneousTensorSpec,
+    ) -> Result<Vec<u8>, Q4LoadError> {
+        self.expert_tensor_slice(spec).map(ToOwned::to_owned)
+    }
+
+    /// Retorna diretamente a fatia do mmap para o upload CUDA.
+    ///
+    /// O allocator CUDA copia o payload de forma síncrona antes de retornar.
+    /// Portanto o caminho quente não precisa materializar uma segunda cópia
+    /// de cada tensor em `Vec`; a fatia continua válida enquanto a fonte
+    /// estiver viva, que é exatamente a duração da admissão.
+    #[cfg(any(feature = "cuda", test))]
+    pub fn expert_tensor_slice(&self, spec: HeterogeneousTensorSpec) -> Result<&[u8], Q4LoadError> {
+        self.tensor_slice(spec.entry, spec.expert, spec.rows, spec.columns)
+    }
+
     #[cfg(feature = "cuda")]
     pub fn load_expert_tensors(
         &self,
         layer: u32,
         expert: u32,
     ) -> Result<Vec<HeterogeneousTensorPayload>, Q4LoadError> {
+        self.expert_tensor_specs(layer, expert)?
+            .into_iter()
+            .map(|spec| {
+                Ok(HeterogeneousTensorPayload {
+                    role: spec.role,
+                    dtype: spec.dtype,
+                    rows: spec.rows,
+                    columns: spec.columns,
+                    bytes: self.load_expert_tensor(spec)?,
+                    scales: spec.scales,
+                })
+            })
+            .collect()
+    }
+
+    #[cfg(any(feature = "cuda", test))]
+    fn expert_entries(
+        &self,
+        layer: u32,
+    ) -> Result<Vec<(TensorRole, ExpertTensor, usize, usize)>, Q4LoadError> {
         let inventory = self
             .layers
             .get(layer as usize)
@@ -529,39 +693,12 @@ impl HeterogeneousMoeSource {
                 ),
             ]
         };
-        entries
+        Ok(entries
             .into_iter()
             .filter_map(|(role, entry, rows, columns)| {
                 entry.map(|entry| (role, entry, rows, columns))
             })
-            .map(|(role, entry, rows, columns)| {
-                let scales = if role == TensorRole::GateUp {
-                    let gate = inventory.gate;
-                    let up = inventory.up;
-                    TensorScales {
-                        primary: self.sidecar_scale(entry, "scale", expert, 0, gate)?,
-                        secondary: self.sidecar_scale(entry, "scale", expert, 1, up)?,
-                        input_primary: self.sidecar_scale(entry, "input_scale", expert, 0, gate)?,
-                        input_secondary: self.sidecar_scale(entry, "input_scale", expert, 1, up)?,
-                    }
-                } else {
-                    TensorScales {
-                        primary: self.sidecar_scale(entry, "scale", expert, 0, None)?,
-                        secondary: 1.0,
-                        input_primary: self.sidecar_scale(entry, "input_scale", expert, 0, None)?,
-                        input_secondary: 1.0,
-                    }
-                };
-                Ok(HeterogeneousTensorPayload {
-                    role,
-                    dtype: entry.decoder.dtype(),
-                    rows,
-                    columns,
-                    bytes: self.tensor_slice(entry, expert, rows, columns)?,
-                    scales,
-                })
-            })
-            .collect()
+            .collect())
     }
 
     fn entry_for_role(&self, inventory: &LayerInventory, role: TensorRole) -> Option<ExpertTensor> {
@@ -579,7 +716,7 @@ impl HeterogeneousMoeSource {
         expert: u32,
         rows: usize,
         columns: usize,
-    ) -> Result<Vec<u8>, Q4LoadError> {
+    ) -> Result<&[u8], Q4LoadError> {
         if expert >= self.experts {
             return Err(Q4LoadError::ExpertOutOfRange {
                 expert,
@@ -611,7 +748,7 @@ impl HeterogeneousMoeSource {
                 "tensor de expert excede o arquivo",
             ));
         }
-        Ok(self.mmap[start..end].to_vec())
+        Ok(&self.mmap[start..end])
     }
 
     fn sidecar_scale(
@@ -643,10 +780,9 @@ impl HeterogeneousMoeSource {
         let tensor = &self.tensors[entry.spec_index];
         let stem = tensor.name.strip_suffix(".weight").unwrap_or(&tensor.name);
         let name = format!("{stem}.{suffix}");
-        let Some(sidecar) = self.tensors.iter().find(|candidate| candidate.name == name) else {
+        let Some(values) = self.sidecars.get(&name) else {
             return Ok(None);
         };
-        let values = read_scalar_vector(&self.mmap, self.data_start, sidecar)?;
         let experts = self.experts as usize;
         let index = if values.len() == experts {
             expert as usize
@@ -690,7 +826,8 @@ impl HeterogeneousMoeSource {
                 .admit(
                     key,
                     self.tensor_slice(entry, expert, rows, columns)
-                        .map_err(|e| format!("tensor {}: {e}", tensor.name))?,
+                        .map_err(|e| format!("tensor {}: {e}", tensor.name))?
+                        .to_vec(),
                 )
                 .map_err(|error: CacheError| error.to_string())?,
         };
@@ -1225,6 +1362,20 @@ impl HeterogeneousMoeSource {
     }
 }
 
+fn load_sidecars(
+    mmap: &Mmap,
+    data_start: usize,
+    tensors: &[TensorSpec],
+) -> Result<BTreeMap<String, Vec<f32>>, Q4LoadError> {
+    tensors
+        .iter()
+        .filter(|tensor| tensor.name.ends_with(".scale") || tensor.name.ends_with(".input_scale"))
+        .map(|tensor| {
+            read_scalar_vector(mmap, data_start, tensor).map(|values| (tensor.name.clone(), values))
+        })
+        .collect()
+}
+
 fn role_for_name(name: &str) -> Option<TensorRole> {
     [
         TensorRole::GateUp,
@@ -1451,11 +1602,13 @@ mod tests {
         // descriptor is closed; the test removes only its unique path.
         let mmap = unsafe { Mmap::map(&file).unwrap() };
         std::fs::remove_file(path).unwrap();
+        let sidecars = load_sidecars(&mmap, 0, &tensors).unwrap();
         HeterogeneousMoeSource {
             mmap,
             data_start: 0,
             experts: 2,
             tensors,
+            sidecars,
             layers: Vec::new(),
         }
     }
@@ -1478,11 +1631,13 @@ mod tests {
         // descriptor is closed; the test removes only its unique path.
         let mmap = unsafe { Mmap::map(&file).unwrap() };
         std::fs::remove_file(path).unwrap();
+        let sidecars = load_sidecars(&mmap, 0, &tensors).unwrap();
         HeterogeneousMoeSource {
             mmap,
             data_start: 0,
             experts,
             tensors,
+            sidecars,
             layers,
         }
     }
@@ -1581,6 +1736,37 @@ mod tests {
     }
 
     #[test]
+    fn especificacao_de_expert_separa_metadados_do_payload() {
+        let source = scalar_execution_source();
+
+        let specs = source.expert_tensor_specs(0, 0).unwrap();
+
+        assert_eq!(
+            specs
+                .iter()
+                .map(|spec| (spec.role, spec.dtype, spec.rows, spec.columns))
+                .collect::<Vec<_>>(),
+            vec![
+                (TensorRole::Gate, 0, 2, 2),
+                (TensorRole::Up, 0, 2, 2),
+                (TensorRole::Down, 0, 2, 2),
+            ]
+        );
+        assert!(specs
+            .iter()
+            .all(|spec| spec.scales == TensorScales::default()));
+
+        let payloads = specs
+            .iter()
+            .map(|spec| source.load_expert_tensor(*spec).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            payloads.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![16, 16, 16]
+        );
+    }
+
+    #[test]
     fn expert_shared_nao_entra_no_inventario_de_rota() {
         assert_eq!(
             role_for_name("blk.1.ffn_gate_exps.weight"),
@@ -1660,6 +1846,7 @@ mod tests {
                 1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0, 100.0, 200.0, 300.0, 400.0,
             ],
         );
+        assert_eq!(source.sidecars.len(), 6);
         let fused = test_expert_tensor(0, TensorRole::GateUp);
 
         assert_eq!(

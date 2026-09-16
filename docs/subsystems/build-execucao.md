@@ -245,6 +245,8 @@ ssh ksia 'bash -lc "cd /data/ftk-cuda-src && \
   export PATH=/usr/local/cuda-12/bin:\$PATH && \
   export CUDAARCHS=120 && \
   export CUDACXX=/usr/local/cuda-12/bin/nvcc && \
+  export NCCL_ROOT=/usr && \
+  export GGML_CUDA_NCCL=ON && \
   export CCACHE=ccache && \
   CARGO_TARGET_DIR=/data/ftk-cuda-target \
   cargo build --release --features vulkan,cuda"'
@@ -253,9 +255,14 @@ ssh ksia 'bash -lc "cd /data/ftk-cuda-src && \
 O `PATH` é necessário porque o `build.rs` executa o programa `nvcc`
 diretamente; `CUDACXX` também deve ser definido para os sub-builds que
 consumirem a convenção CMake. `CUDAARCHS=120` limita o kernel MoE à GPU da
-ksia. `CCACHE=ccache` faz o `build.rs` executar `ccache nvcc`; o target Rust
-continua em `/data/ftk-cuda-target`. `/data/ksia-target` fica reservado ao
-binário servido e nunca é usado para validar uma revisão.
+ksia. `NCCL_ROOT=/usr` orienta o `FindNCCL` para a instalação do host, e
+`GGML_CUDA_NCCL=ON` é necessário para optar pelo caminho coletivo. O `build.rs`
+também lê a biblioteca resolvida do `CMakeCache.txt` e emite o link dinâmico
+para o executável Rust; sem isso o archive estático do llama.cpp deixa símbolos
+`nccl*` sem resolução no link final. `CCACHE=ccache` faz o `build.rs` executar
+`ccache nvcc`; o target Rust continua em `/data/ftk-cuda-target`.
+`/data/ksia-target` fica reservado ao binário servido e nunca é usado para
+validar uma revisão.
 
 ## Identidade do produto (`brand.json`)
 
@@ -367,11 +374,21 @@ offload no primeiro clique.
 ## Docker
 
 - **`Dockerfile`**: dois estágios. Builder
-  `nvidia/cuda:13.0.3-devel-ubuntu24.04` instala rustup + node, faz
-  `npm run build` em `apps/frontend` e `cargo build --release --features cuda`
-  com cache mounts (registry/git/target). Runtime é a base CUDA 13.0.3 com
-  `LD_LIBRARY_PATH` incluindo `compat/` e `POM_HOME=/app`. O `ARG
-  POM_BUILD_COMMIT` recebe o commit do host.
+  `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala rustup + node, faz
+  `npm run build` em `apps/frontend`, compila `pom` com
+  `cargo build --release --features cuda,vulkan` e compila
+  `cargo build --release -p pom-plugin-host` sem features de GPU, tudo com
+  cache mounts (registry/git/target). Runtime copia os dois binários para
+  `/usr/local/bin`, mantém `LD_LIBRARY_PATH` incluindo `compat/` e
+  `POM_HOME=/app`, e usa `docker-entrypoint.sh`. O `ARG POM_BUILD_COMMIT`
+  recebe o commit do host.
+- **`docker-entrypoint.sh`**: valida os dois binários, exporta
+  `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` e faz `exec` do `pom` com os
+  argumentos recebidos. O `pom` inicia o host como filho somente quando há um
+  plugin Enterprise instalado, passando o artefato como argumento e conectando
+  stdin/stdout por frames JSON de tamanho prefixado. Portanto não há socket
+  Unix nem volume adicional de IPC. `bash scripts/test-docker-entrypoint.sh`
+  cobre esse encaminhamento sem precisar construir a imagem.
 - O cache de `target/` também conserva o `CMakeCache.txt` e a árvore nativa do
   `llama.cpp`. Como o fork coleta `src/models/*.cpp` por `file(GLOB ...)` sem
   `CONFIGURE_DEPENDS`, uma árvore gerada antes de um arquivo de modelo existir
@@ -399,9 +416,11 @@ offload no primeiro clique.
   `node-gpu-2`, `node-cpu-1`, `node-cpu-2`) com `network_mode: host`; estado
   em `tests/fixtures/<nome>`, modelos montados de `./models`, GPU só via
   `deploy.resources` (exige NVIDIA Container Toolkit). Cada serviço define
-  `POM_HOME=/data` e `POM_UI_DIST=/app/apps/frontend/dist` (a UI
-  não ficaria sob o diretório de dados montado). As portas de cada nó vêm da
-  config, não do CLI - daí o gerador abaixo. Os nomes de fixture do compose
+  `POM_HOME=/data`, `POM_UI_DIST=/app/apps/frontend/dist` e o caminho explícito
+  `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (a UI não ficaria sob o
+  diretório de dados montado). O plugin baixado e `enterprise.db` ficam no
+  volume `/data`; não há volume de socket, pois o IPC é por pipes filho-pai.
+  As portas de cada nó vêm da config, não do CLI - daí o gerador abaixo. Os nomes de fixture do compose
   (`node-gpu`, `node-cpu-1`...) e os do gerador (`node-<N>`) são de ambientes
   diferentes de propósito e não precisam se encontrar - ver `scripts/AGENTS.md`.
 - **`scripts/gen-node-configs.py`**: gera um `pom.json` por nó em

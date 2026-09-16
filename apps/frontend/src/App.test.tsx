@@ -8,6 +8,7 @@ import { ProfileProvider, type Profile } from "./lib/profile";
 const adminSurface = vi.hoisted(() => ({
   value: "available" as "setup" | "available" | "requires-password" | "local-only",
 }));
+const enterpriseStatus = vi.hoisted(() => ({ active: true }));
 
 /**
  * Esconder o item do menu não é bloquear: o endereço continua digitável, e um
@@ -19,6 +20,18 @@ const adminSurface = vi.hoisted(() => ({
  */
 vi.mock("./lib/queries", () => ({
   useAdminSurface: () => ({ data: adminSurface.value, isLoading: false, isError: false }),
+  useEnterpriseStatus: () => ({
+    data: {
+      active: enterpriseStatus.active,
+      state: enterpriseStatus.active ? "active" : "needs_activation",
+      features: { request_logs: enterpriseStatus.active, statistics: enterpriseStatus.active },
+      manage_url: "https://pieceofmind.cloud/enterprise",
+      plugin_version: enterpriseStatus.active ? "test" : null,
+      lease_expires_at: null,
+    },
+    isLoading: false,
+    isError: false,
+  }),
   // Nó completo o bastante para a barra superior e o rodapé do menu
   // renderizarem: um `data: null` derruba o `NodeChip` no `node.data!` e o
   // teste passa a medir o `ErrorBoundary` em vez do guarda.
@@ -81,13 +94,12 @@ describe("guarda de perfil por rota", () => {
   afterEach(() => {
     cleanup();
     adminSurface.value = "available";
+    enterpriseStatus.active = true;
   });
 
   const fechadas = [
     ["/implantar", "tela-implantar"],
     ["/implantacoes", "tela-implantacoes"],
-    ["/logs", "tela-logs"],
-    ["/estatisticas", "tela-estatisticas"],
   ] as const;
 
   for (const [path, marker] of fechadas) {
@@ -103,6 +115,14 @@ describe("guarda de perfil por rota", () => {
       expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
     });
   }
+
+  it("shows the Enterprise purchase state from a direct bookmark without hiding the route", async () => {
+    enterpriseStatus.active = false;
+    open("/logs", "admin");
+    expect(await screen.findByText("Este recurso faz parte do Enterprise")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Conhecer o Enterprise" }).getAttribute("href"))
+      .toBe("https://pieceofmind.cloud/enterprise");
+  });
 
   it("não mexe nas rotas que ninguém restringiu", async () => {
     open("/modelos", "node");

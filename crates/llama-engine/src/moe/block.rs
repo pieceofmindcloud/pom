@@ -4,12 +4,16 @@
 //! A projeção do router pode vir do tensor GGUF local, sem mudar o wire entre
 //! peers; a atenção continua no runtime que entrega a ativação a esta fronteira.
 
+#[cfg(feature = "cuda")]
+use super::cache::DeviceExpertLease;
 use super::cache::{ExpertCache, ExpertKey};
+#[cfg(feature = "cuda")]
+use super::coexecution::{combine_lane_outputs, filter_route, run_overlap, split_route_experts};
 #[cfg(feature = "cuda")]
 use super::cuda::{CudaHeterogeneousExpert, CudaHeterogeneousTensor, CudaMoeError};
 use super::format_heterogeneous::HeterogeneousMoeSource;
 #[cfg(feature = "cuda")]
-use super::format_heterogeneous::{HeterogeneousTensorPayload, TensorRole};
+use super::format_heterogeneous::{HeterogeneousTensorSpec, TensorRole};
 use super::format_iq_quants::{
     IqQuantError, IqQuantExecuteError, IqQuantExecutor, IqQuantFormat, IqQuantSource,
 };
@@ -26,8 +30,12 @@ use super::format_q4_0::{Q4Error, Q4ExecuteError, Q4_0Executor, Q4_0Source};
 use super::router::{
     dispatch_route_parallel, dispatch_top_k, select_top_k, DispatchError, RouteError,
 };
+#[cfg(feature = "cuda")]
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
+#[cfg(feature = "cuda")]
+use std::sync::Mutex;
 
 #[derive(Debug)]
 pub enum MoeBlockError {
@@ -971,6 +979,10 @@ impl Q4_0MoeBlock {
         }
         cuda.run_route_batch_resident(
             &descriptors,
+            &leases
+                .iter()
+                .map(super::cache::DeviceExpertLease::device_index)
+                .collect::<Vec<_>>(),
             experts,
             token_ids,
             weights,
@@ -1185,7 +1197,34 @@ pub struct HeterogeneousMoeBlock {
     top_k: usize,
     cache: Arc<ExpertCache>,
     #[cfg(feature = "cuda")]
-    cuda: Option<super::cuda::HeterogeneousCudaExecutor>,
+    cuda: Option<Arc<super::cuda::HeterogeneousCudaExecutor>>,
+    #[cfg(feature = "cuda")]
+    coexecution_profile: Option<super::bandwidth::BandwidthProfile>,
+    #[cfg(feature = "cuda")]
+    host_diagnostics: Mutex<HeterogeneousHostDiagnostics>,
+    #[cfg(feature = "cuda")]
+    working_set_diagnostics: Mutex<HeterogeneousLayerWorkingSetDiagnostics>,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeterogeneousHostDiagnostics {
+    pub cpu_expert_calls: u64,
+    pub coexecution_gpu_fraction: Option<f32>,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HeterogeneousLayerWorkingSetDiagnostics {
+    pub layer: u32,
+    pub batches: u64,
+    pub tokens: u64,
+    pub route_experts: u64,
+    pub distinct_experts: u64,
+    /// Soma dos experts distintos nas rotas de cada token observado.
+    /// Dividido por `tokens`, dá a média por token sem guardar cada rota.
+    pub distinct_experts_per_token: u64,
+    pub max_distinct_experts_per_token: u64,
 }
 
 impl HeterogeneousMoeBlock {
@@ -1202,6 +1241,15 @@ impl HeterogeneousMoeBlock {
             cache,
             #[cfg(feature = "cuda")]
             cuda: None,
+            #[cfg(feature = "cuda")]
+            coexecution_profile: None,
+            #[cfg(feature = "cuda")]
+            host_diagnostics: Mutex::new(HeterogeneousHostDiagnostics::default()),
+            #[cfg(feature = "cuda")]
+            working_set_diagnostics: Mutex::new(HeterogeneousLayerWorkingSetDiagnostics {
+                layer,
+                ..HeterogeneousLayerWorkingSetDiagnostics::default()
+            }),
         }
     }
 
@@ -1212,19 +1260,51 @@ impl HeterogeneousMoeBlock {
         model: impl Into<String>,
         layer: u32,
         top_k: usize,
-        hidden: usize,
-        intermediate: usize,
+        _hidden: usize,
+        _intermediate: usize,
     ) -> Self {
         Self {
             model: model.into(),
             layer,
             top_k,
             cache,
-            cuda: Some(super::cuda::HeterogeneousCudaExecutor::new_with_cache(
-                hidden,
-                intermediate,
-                device_cache,
+            cuda: Some(Arc::new(
+                super::cuda::HeterogeneousCudaExecutor::new_with_cache(
+                    _hidden,
+                    _intermediate,
+                    device_cache,
+                ),
             )),
+            coexecution_profile: None,
+            host_diagnostics: Mutex::new(HeterogeneousHostDiagnostics::default()),
+            working_set_diagnostics: Mutex::new(HeterogeneousLayerWorkingSetDiagnostics {
+                layer,
+                ..HeterogeneousLayerWorkingSetDiagnostics::default()
+            }),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn new_with_device_executor(
+        cache: Arc<ExpertCache>,
+        cuda: Arc<super::cuda::HeterogeneousCudaExecutor>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        coexecution_profile: Option<super::bandwidth::BandwidthProfile>,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            layer,
+            top_k,
+            cache,
+            cuda: Some(cuda),
+            coexecution_profile,
+            host_diagnostics: Mutex::new(HeterogeneousHostDiagnostics::default()),
+            working_set_diagnostics: Mutex::new(HeterogeneousLayerWorkingSetDiagnostics {
+                layer,
+                ..HeterogeneousLayerWorkingSetDiagnostics::default()
+            }),
         }
     }
 
@@ -1235,18 +1315,88 @@ impl HeterogeneousMoeBlock {
 
     #[cfg(feature = "cuda")]
     pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
-        self.cuda.as_ref().map_or_else(
-            Default::default,
-            super::cuda::HeterogeneousCudaExecutor::diagnostics,
-        )
+        self.cuda
+            .as_ref()
+            .map_or_else(Default::default, |cuda| cuda.diagnostics())
     }
 
     #[cfg(feature = "cuda")]
     pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
-        self.cuda.as_ref().map_or_else(
-            Default::default,
-            super::cuda::HeterogeneousCudaExecutor::resident_cache_stats,
-        )
+        self.cuda
+            .as_ref()
+            .map_or_else(Default::default, |cuda| cuda.resident_cache_stats())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn resident_cache_capacity_bytes_by_device(&self) -> Vec<Option<u64>> {
+        self.cuda.as_ref().map_or_else(Vec::new, |cuda| {
+            cuda.resident_cache_capacity_bytes_by_device()
+        })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn resident_cache_budget_snapshots_by_device(
+        &self,
+    ) -> Vec<Option<super::admission::CacheBudgetSnapshot>> {
+        self.cuda.as_ref().map_or_else(Vec::new, |cuda| {
+            cuda.resident_cache_budget_snapshots_by_device()
+        })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn host_diagnostics(&self) -> HeterogeneousHostDiagnostics {
+        *self
+            .host_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn working_set_diagnostics(&self) -> HeterogeneousLayerWorkingSetDiagnostics {
+        self.working_set_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    #[cfg(feature = "cuda")]
+    fn record_working_set_diagnostics(
+        &self,
+        experts: &[u32],
+        token_offsets: &[usize],
+        tokens: usize,
+    ) {
+        let mut all_experts = HashSet::with_capacity(experts.len());
+        let mut distinct_experts_per_token = 0u64;
+        let mut max_distinct_experts_per_token = 0u64;
+        for window in token_offsets.windows(2).take(tokens) {
+            let mut token_experts = HashSet::with_capacity(window[1] - window[0]);
+            for &expert in &experts[window[0]..window[1]] {
+                all_experts.insert(expert);
+                token_experts.insert(expert);
+            }
+            let distinct = token_experts.len() as u64;
+            distinct_experts_per_token = distinct_experts_per_token.saturating_add(distinct);
+            max_distinct_experts_per_token = max_distinct_experts_per_token.max(distinct);
+        }
+        let mut diagnostics = self
+            .working_set_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        diagnostics.batches = diagnostics.batches.saturating_add(1);
+        diagnostics.tokens = diagnostics.tokens.saturating_add(tokens as u64);
+        diagnostics.route_experts = diagnostics
+            .route_experts
+            .saturating_add(experts.len() as u64);
+        diagnostics.distinct_experts = diagnostics
+            .distinct_experts
+            .saturating_add(all_experts.len() as u64);
+        diagnostics.distinct_experts_per_token = diagnostics
+            .distinct_experts_per_token
+            .saturating_add(distinct_experts_per_token);
+        diagnostics.max_distinct_experts_per_token = diagnostics
+            .max_distinct_experts_per_token
+            .max(max_distinct_experts_per_token);
     }
 
     pub fn forward_from_source_with_route(
@@ -1341,6 +1491,187 @@ impl HeterogeneousMoeBlock {
                 weights: weights.len(),
             }));
         }
+        if experts.len() > self.top_k.saturating_mul(tokens.max(1))
+            || tokens == 0
+            || token_offsets.len() != tokens + 1
+            || token_offsets.first() != Some(&0)
+            || token_offsets.last() != Some(&experts.len())
+            || token_offsets.windows(2).any(|pair| pair[0] > pair[1])
+            || token_ids.iter().any(|&token| token as usize >= tokens)
+        {
+            return Err(MoeBlockError::Route(RouteError::InvalidTopK {
+                top_k: experts.len(),
+                experts: self.top_k,
+            }));
+        }
+        self.record_working_set_diagnostics(experts, token_offsets, tokens);
+        if let Some(profile) = self.coexecution_profile {
+            return self.forward_batch_coexecuted_from_source(
+                source,
+                experts,
+                token_ids,
+                weights,
+                token_offsets,
+                hidden,
+                tokens,
+                activation,
+                profile,
+            );
+        }
+        self.forward_batch_cuda_only(
+            source,
+            experts,
+            token_ids,
+            weights,
+            token_offsets,
+            hidden,
+            tokens,
+            activation,
+        )
+    }
+
+    #[cfg(feature = "cuda")]
+    fn forward_batch_coexecuted_from_source(
+        &self,
+        source: &HeterogeneousMoeSource,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+        activation: i32,
+        profile: super::bandwidth::BandwidthProfile,
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let Some(cuda) = self.cuda.as_ref() else {
+            return Err(MoeBlockError::Executor(
+                "executor CUDA heterogêneo não foi selecionado".into(),
+            ));
+        };
+
+        // Experts que já têm todos os seus tensors residentes ficam na GPU.
+        // Um expert parcialmente residente não é elegível: admitir apenas os
+        // tensors faltantes na lane GPU manteria o custo de H2D e poderia
+        // dividir um descriptor entre devices.
+        let mut unique_experts = Vec::new();
+        for &expert in experts {
+            if !unique_experts.contains(&expert) {
+                unique_experts.push(expert);
+            }
+        }
+        let specs_by_expert = source
+            .expert_tensor_specs_batch(self.layer, &unique_experts)
+            .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+        let resident_gpu_experts = unique_experts
+            .iter()
+            .copied()
+            .zip(specs_by_expert)
+            .filter_map(|(expert, specs)| {
+                let complete = !specs.is_empty()
+                    && specs.into_iter().all(|spec| {
+                        let key = ExpertKey::new(
+                            &self.model,
+                            self.layer,
+                            expert,
+                            format!("heterogeneous:{}:{}", spec.role.as_str(), spec.dtype),
+                        );
+                        cuda.resident_contains(&key)
+                    });
+                complete.then_some(expert)
+            })
+            .collect::<Vec<_>>();
+        let split = split_route_experts(experts, &resident_gpu_experts, Some(profile))
+            .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+        {
+            let mut diagnostics = self
+                .host_diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            diagnostics.cpu_expert_calls = diagnostics
+                .cpu_expert_calls
+                .saturating_add(split.cpu_experts.len() as u64);
+            diagnostics.coexecution_gpu_fraction = Some(split.gpu_fraction);
+        }
+        let (cpu_experts, cpu_token_ids, cpu_weights, cpu_offsets) = filter_route(
+            experts,
+            token_ids,
+            weights,
+            token_offsets,
+            &split.cpu_experts,
+            tokens,
+        );
+        let (gpu_experts, gpu_token_ids, gpu_weights, gpu_offsets) = filter_route(
+            experts,
+            token_ids,
+            weights,
+            token_offsets,
+            &split.gpu_experts,
+            tokens,
+        );
+
+        let (cpu_output, gpu_output) = run_overlap(
+            || {
+                if cpu_experts.is_empty() {
+                    Ok::<_, MoeBlockError>(vec![0.0; hidden.len()])
+                } else {
+                    self.forward_batch_from_source_with_route_cpu(
+                        source,
+                        &cpu_experts,
+                        &cpu_token_ids,
+                        &cpu_weights,
+                        &cpu_offsets,
+                        hidden,
+                        tokens,
+                        activation,
+                    )
+                }
+            },
+            || {
+                if gpu_experts.is_empty() {
+                    Ok::<_, MoeBlockError>(vec![0.0; hidden.len()])
+                } else {
+                    self.forward_batch_cuda_only(
+                        source,
+                        &gpu_experts,
+                        &gpu_token_ids,
+                        &gpu_weights,
+                        &gpu_offsets,
+                        hidden,
+                        tokens,
+                        activation,
+                    )
+                }
+            },
+        )
+        .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+        combine_lane_outputs(
+            &cpu_output,
+            &gpu_output,
+            tokens,
+            hidden.len() / tokens.max(1),
+        )
+        .map_err(|error| MoeBlockError::Executor(error.to_string()))
+    }
+
+    #[cfg(feature = "cuda")]
+    fn forward_batch_cuda_only(
+        &self,
+        source: &HeterogeneousMoeSource,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+        activation: i32,
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        if experts.is_empty() || experts.len() != token_ids.len() || experts.len() != weights.len()
+        {
+            return Err(MoeBlockError::Route(RouteError::MismatchedRouteLengths {
+                ids: experts.len(),
+                weights: weights.len(),
+            }));
+        }
         if experts.len() > self.top_k.saturating_mul(tokens.max(1)) {
             return Err(MoeBlockError::Route(RouteError::InvalidTopK {
                 top_k: experts.len(),
@@ -1353,34 +1684,111 @@ impl HeterogeneousMoeBlock {
             ));
         };
 
-        let mut descriptors = Vec::with_capacity(experts.len());
-        let mut leases = Vec::new();
-        for &expert in experts {
-            let payloads = source
-                .load_expert_tensors(self.layer, expert)
-                .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
-            let mut descriptor = CudaHeterogeneousExpert::default();
-            for payload in payloads {
-                let HeterogeneousTensorPayload {
-                    role,
-                    dtype,
-                    rows,
-                    columns,
-                    bytes,
-                    scales,
-                } = payload;
+        // Primeiro resolvemos os hits e planejamos os misses. O caminho
+        // anterior carregava cada tensor no mesmo thread, mesmo quando os
+        // shards pertenciam a GPUs diferentes. Isso serializava dezenas de
+        // GB de H2D e deixava CUDA1 ociosa durante o upload para CUDA0.
+        //
+        // Mantemos uma fila por device: dentro de um shard o mutex do cache
+        // continua serializando admissão, eviction e atualização do LRU, mas
+        // uploads para GPUs distintas podem progredir em paralelo.
+        let mut resolved_experts = Vec::with_capacity(experts.len());
+        let mut pending_by_device: HashMap<u32, Vec<(ExpertKey, HeterogeneousTensorSpec)>> =
+            HashMap::new();
+        let mut pending_keys = HashSet::new();
+        let specs_by_expert = source
+            .expert_tensor_specs_batch(self.layer, experts)
+            .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+        for (&expert, specs) in experts.iter().zip(specs_by_expert) {
+            let mut resolved_specs = Vec::with_capacity(specs.len());
+            for spec in specs {
                 let key = ExpertKey::new(
                     &self.model,
                     self.layer,
                     expert,
-                    format!("heterogeneous:{}:{dtype}", role.as_str()),
+                    format!("heterogeneous:{}:{}", spec.role.as_str(), spec.dtype),
                 );
-                let lease = match cuda.resident_lookup(&key) {
+                let lease = cuda.resident_lookup(&key);
+                if lease.is_none() && pending_keys.insert(key.clone()) {
+                    let device_index = cuda.device_index_for_key(&key);
+                    pending_by_device
+                        .entry(device_index)
+                        .or_default()
+                        .push((key.clone(), spec));
+                }
+                resolved_specs.push((spec, key, lease));
+            }
+            resolved_experts.push(resolved_specs);
+        }
+
+        let admission_results = std::thread::scope(|scope| {
+            let handles = pending_by_device
+                .into_iter()
+                .map(|(device_index, pending)| {
+                    scope.spawn(move || {
+                        let candidates = pending
+                            .into_iter()
+                            .map(|(key, spec)| {
+                                source
+                                    .expert_tensor_slice(spec)
+                                    .map(|bytes| (key, bytes))
+                                    .map_err(|error| MoeBlockError::Executor(error.to_string()))
+                            })
+                            .collect::<Result<Vec<_>, MoeBlockError>>()?;
+                        cuda.resident_admit_many(device_index, candidates)
+                            .map_err(|error| MoeBlockError::Executor(error.to_string()))
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle.join().map_err(|_| {
+                        MoeBlockError::Executor(
+                            "thread de admissão CUDA MoE entrou em pânico".into(),
+                        )
+                    })?
+                })
+                .collect::<Result<Vec<Vec<DeviceExpertLease>>, MoeBlockError>>()
+        })?;
+        // Os leases de admissão ficam ativos enquanto montamos os descriptors
+        // e executamos o kernel. Assim um shard sob pressão não pode expulsar
+        // uma entrada recém-carregada antes de ela ser usada.
+        let _admitted_leases = admission_results.into_iter().flatten().collect::<Vec<_>>();
+
+        let mut descriptors = Vec::with_capacity(experts.len());
+        let mut leases = Vec::new();
+        let mut device_indices = Vec::with_capacity(experts.len());
+        for (expert, resolved_specs) in experts.iter().copied().zip(resolved_experts) {
+            let mut descriptor = CudaHeterogeneousExpert::default();
+            let mut expert_device_index = None;
+            for (spec, key, lease) in resolved_specs {
+                let lease = match lease {
                     Some(lease) => lease,
-                    None => cuda
-                        .resident_admit(key, &bytes)
-                        .map_err(|error| MoeBlockError::Executor(error.to_string()))?,
+                    None => cuda.resident_lookup(&key).ok_or_else(|| {
+                        MoeBlockError::Executor(format!(
+                            "expert heterogêneo {expert} desapareceu do cache após admissão"
+                        ))
+                    })?,
                 };
+                let HeterogeneousTensorSpec {
+                    role,
+                    dtype,
+                    rows,
+                    columns,
+                    scales,
+                    ..
+                } = spec;
+                match expert_device_index {
+                    Some(expected) if expected != lease.device_index() => {
+                        return Err(MoeBlockError::Executor(format!(
+                            "expert heterogêneo {expert} foi particionado entre CUDA{expected} e CUDA{}",
+                            lease.device_index()
+                        )))
+                    }
+                    None => expert_device_index = Some(lease.device_index()),
+                    _ => {}
+                }
                 let tensor = CudaHeterogeneousTensor {
                     data: lease.handle() as *const u8,
                     bytes: lease.bytes(),
@@ -1408,11 +1816,18 @@ impl HeterogeneousMoeBlock {
                 }
                 leases.push(lease);
             }
+            let Some(device_index) = expert_device_index else {
+                return Err(MoeBlockError::Executor(format!(
+                    "expert heterogêneo {expert} não possui tensors"
+                )));
+            };
+            device_indices.push(device_index);
             descriptors.push(descriptor);
         }
         let output = cuda
             .run_route_batch_resident(
                 &descriptors,
+                &device_indices,
                 experts,
                 token_ids,
                 weights,

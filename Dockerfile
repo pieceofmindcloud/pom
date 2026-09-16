@@ -69,7 +69,9 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target,id=pom-target-${LLAMA_CPP_COMMIT} \
     cargo build --release --features cuda,vulkan && \
-    cp target/release/pom /build/pom
+    cp target/release/pom /build/pom && \
+    cargo build --release -p pom-plugin-host && \
+    cp target/release/pom-plugin-host /build/pom-plugin-host
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu24.04
@@ -99,7 +101,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN find /usr/share/vulkan/icd.d -type f ! -name 'radeon_icd*.json' -delete
 
 COPY --from=builder /build/pom /usr/local/bin/pom
+COPY --from=builder /build/pom-plugin-host /usr/local/bin/pom-plugin-host
 COPY --from=builder /build/apps/frontend/dist /app/apps/frontend/dist
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
 # P2P UDP, HTTP gateway, inference server
 EXPOSE 42777/udp
@@ -110,6 +115,7 @@ ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/:/usr/local/cuda-13.0/compat/
 # project_root() would otherwise need models/ or pom.json in /app to
 # recognize it; this makes the resolution explicit instead of incidental.
 ENV POM_HOME=/app
+ENV POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host
 
 WORKDIR /app
-ENTRYPOINT ["pom"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

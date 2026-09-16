@@ -35,6 +35,18 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/rejoin", post(rejoin_network))
         .route("/api/ui/requests", get(crate::reqlog::list_requests))
         .route("/api/ui/requests/stats", get(crate::reqlog::stats_requests))
+        .route(
+            "/api/ui/enterprise/activate",
+            post(crate::enterprise::activate_license),
+        )
+        .route(
+            "/api/ui/enterprise/refresh",
+            post(crate::enterprise::refresh_license),
+        )
+        .route(
+            "/api/ui/enterprise/deactivate",
+            post(crate::enterprise::deactivate_license),
+        )
         .merge(crate::deploy::routes())
         .merge(crate::model_provider_backend::routes())
         .merge(crate::devupdate::router())

@@ -1264,6 +1264,36 @@ impl PomDb {
         })
     }
 
+    pub(crate) fn local_setting_json(&self, key: &str) -> Result<Option<String>> {
+        self.with_read("ler configuração local", |connection| {
+            connection
+                .query_row(
+                    "SELECT value_json FROM local_settings WHERE setting_key = ?",
+                    params![key],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .context("ler configuração local")
+        })
+    }
+
+    pub(crate) fn save_local_setting<T: serde::Serialize + ?Sized>(
+        &self,
+        key: &str,
+        value: &T,
+    ) -> Result<()> {
+        self.save_setting(key, value)
+    }
+
+    pub(crate) fn delete_local_setting(&self, key: &str) -> Result<bool> {
+        self.with_write("remover configuração local", |connection| {
+            Ok(connection.execute(
+                "DELETE FROM local_settings WHERE setting_key = ?",
+                params![key],
+            )? > 0)
+        })
+    }
+
     /// Record the current catalog while retaining rows for files that vanished.
     pub fn record_catalog(&self, catalog: &Catalog) -> Result<()> {
         self.with_write("registrar catálogo", |connection| {

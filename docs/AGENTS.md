@@ -49,6 +49,12 @@ versões criadas ao adicionar ou remover máquinas, é detalhado em
 
 O plano da correção do reload após idle-unload está em
 `superpowers/plans/2026-09-14-reload-idle-runtime-v2.md`.
+O plano da correção do rollback recorrente Kimi-K3 está em
+`superpowers/plans/2026-09-15-hybrid-memory-decode-segv.md`.
+O plano do hot path CUDA heterogêneo alinhado ao FreeToken está em
+`superpowers/plans/2026-09-15-moe-freetoken-performance.md`.
+O plano da correção do contrato rico de heartbeat Enterprise está em
+`superpowers/plans/2026-09-16-enterprise-heartbeat-schema.md`.
 
 ## subsystems/
 
@@ -74,6 +80,9 @@ reduzir suas camadas. `implantacao.md` também documenta a
 seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
 completa, além da prévia analítica de capacidade sem chamada ao fit nativo.
+`build-execucao.md` e `freetoken-moe.md` também registram a investigação de
+NCCL no link final CUDA e a separação entre o caminho llama.cpp e o executor
+MoE próprio.
 `superpowers/plans/2026-09-12-windows-crash-root-cause.md` registra o
 rastreamento da confirmação `model_loaded`, as fronteiras nativas do `/health`
 e as evidências que ainda precisam de reprodução real no Windows.
@@ -85,7 +94,8 @@ HTTP do túnel libp2p. O guia descreve como essa validação aparece na tela Imp
 apresenta hops e RTTs direcionais e como o perfil Inference reduz a vista sem
 criar autorização no backend. `inferencia.md` registra também
 as causas conhecidas de perda do estado de sessão, o estado de disponibilidade
-do MTP no `/health` e a tarefa de observabilidade recomendada para distingui-las
+do MTP no `/health`, o rollback por snapshots do Kimi-K3 e a tarefa de
+observabilidade recomendada para distingui-las
 em campo. A seção 2.1.1 registra a regressão de endereço anunciada de
 2026-09-04, a reaplicação da rota morta por lote e a memória de falha que a
 corrige.
@@ -182,6 +192,10 @@ da limpeza nativa durante a recarga de um peer ocioso.
 `docs/subsystems/rede-p2p.md` também documenta o Chat da rede: protocolo
 libp2p, validação e retransmissão pelo principal, catraca autenticada do
 interruptor e prioridade do túnel de inferência sobre o tráfego de conversa.
+
+`subsystems/licenciamento-enterprise.md` registra o contrato de licença,
+entitlement das telas de auditoria, a fronteira `pom`/`pom-plugin-host`, o
+plugin `enterprise.db` e os limites restantes da integração P2P/release.
 
 ## Defeitos anotados
 

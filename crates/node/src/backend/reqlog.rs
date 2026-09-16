@@ -172,7 +172,7 @@ pub struct Entry {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AuditQuery {
     pub node_id: Option<String>,
     /// Human-readable API key label used as the request user.
@@ -1336,6 +1336,22 @@ pub async fn list_requests(
     State(state): State<crate::gateway::GatewayState>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
+    if !state
+        .enterprise
+        .status()
+        .await
+        .is_feature_active(enterprise_protocol::EnterpriseFeature::RequestLogs)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "enterprise_required",
+                "error": "Logs de Requisições exigem uma licença Enterprise.",
+                "manage_url": enterprise_protocol::ENTERPRISE_MANAGE_URL,
+            })),
+        )
+            .into_response();
+    }
     let query = AuditQuery {
         node_id: query.node_id,
         user: query.user,
@@ -1347,6 +1363,13 @@ pub async fn list_requests(
         limit: query.limit,
         offset: query.offset,
     };
+    if let Some(response) = state
+        .enterprise
+        .query_audit("list", serde_json::to_value(&query).unwrap_or_default())
+        .await
+    {
+        return (StatusCode::OK, Json(response)).into_response();
+    }
     match state.audit.list(query).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {
@@ -1367,6 +1390,22 @@ pub async fn stats_requests(
     State(state): State<crate::gateway::GatewayState>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
+    if !state
+        .enterprise
+        .status()
+        .await
+        .is_feature_active(enterprise_protocol::EnterpriseFeature::Statistics)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "enterprise_required",
+                "error": "Estatísticas exigem uma licença Enterprise.",
+                "manage_url": enterprise_protocol::ENTERPRISE_MANAGE_URL,
+            })),
+        )
+            .into_response();
+    }
     let query = AuditQuery {
         node_id: query.node_id,
         user: query.user,
@@ -1378,6 +1417,13 @@ pub async fn stats_requests(
         limit: None,
         offset: None,
     };
+    if let Some(response) = state
+        .enterprise
+        .query_audit("stats", serde_json::to_value(&query).unwrap_or_default())
+        .await
+    {
+        return (StatusCode::OK, Json(response)).into_response();
+    }
     match state.audit.stats(query).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {

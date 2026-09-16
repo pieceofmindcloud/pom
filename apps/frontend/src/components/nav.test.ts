@@ -80,13 +80,24 @@ describe("navForProfile", () => {
     expect(navFooterForProfile("node")).toEqual([]);
   });
 
-  it("tira do nó implantar, implantações e logs", () => {
+  it("tira do nó implantação, mas preserva as entradas Enterprise para descoberta", () => {
     const labels = navForProfile("node").map((s) => s.labelKey);
     expect(labels).not.toContain("nav.deploy");
     expect(labels).not.toContain("nav.deployments");
-    // Logs é uma tela restrita ao administrador.
-    expect(labels).not.toContain("nav.logs");
-    expect(labels).not.toContain("nav.statistics");
+    expect(labels).toContain("nav.logs");
+    expect(labels).toContain("nav.statistics");
+  });
+
+  it("mantém as superfícies Enterprise em todos os perfis quando a licença está inativa", () => {
+    for (const profile of ["admin", "node", "infer"] as const) {
+      const sections = navForProfile(profile, false);
+      const labels = sections.map((s) => s.labelKey);
+      expect(labels, profile).toContain("nav.logs");
+      expect(labels, profile).toContain("nav.statistics");
+      expect(sections.find((s) => s.labelKey === "nav.logs")?.children?.map((child) => child.to), profile)
+        .toContain("/logs");
+      expect(sections.find((s) => s.labelKey === "nav.statistics")?.to, profile).toBe("/estatisticas");
+    }
   });
 
   it("preserva no nó tudo que ninguém restringiu", () => {
@@ -140,6 +151,8 @@ describe("navForProfile", () => {
     expect(navForProfile("infer").map((section) => section.labelKey)).toEqual([
       "nav.publicNetworks",
       "nav.networkChat",
+      "nav.logs",
+      "nav.statistics",
       "nav.network",
     ]);
     expect(navFooterForProfile("infer").map((item) => [item.labelKey, item.to])).toEqual([

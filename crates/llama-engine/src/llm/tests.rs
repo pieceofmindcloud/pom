@@ -824,7 +824,7 @@ mod tests {
             .expect("a camada de captura deve existir");
         let weights_bytes = std::fs::metadata(&path).expect("o GGUF deve existir").len();
         let cuda_compute_bytes = external
-            .cuda_compute_bytes()
+            .cuda_compute_bytes_by_device()
             .expect("o contexto deve expor um compute buffer CUDA medido");
         let runtime = std::sync::Arc::new(
             crate::moe::runtime::MoeRuntime::open(

@@ -696,6 +696,19 @@ mod pool_tests {
     }
 
     #[test]
+    fn contexto_principal_moe_externo_usa_excecao_de_128() {
+        let mut cfg = cfg();
+        cfg.moe_external_executor = true;
+        assert_eq!(cfg.n_batch, 512);
+        assert_eq!(effective_n_ubatch(&cfg), 128);
+
+        let mut params = unsafe { sys::llama_context_default_params() };
+        apply_context_batch_params(&mut params, &cfg);
+        assert_eq!(params.n_batch, 512);
+        assert_eq!(params.n_ubatch, 128);
+    }
+
+    #[test]
     fn context_batch_params_cap_a_large_mtp_batch_with_fit_enabled() {
         let mut cfg = cfg();
         cfg.mtp = true;

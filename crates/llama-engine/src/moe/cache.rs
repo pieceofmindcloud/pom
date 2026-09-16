@@ -1033,12 +1033,7 @@ impl DeviceExpertCache {
                 });
             }
             while planned_resident.saturating_add(bytes as u64) > limit {
-                let victim = state
-                    .entries
-                    .iter()
-                    .filter(|(_, entry)| entry.active == 0)
-                    .min_by_key(|(_, entry)| entry.last_used)
-                    .map(|(key, _)| key.clone());
+                let victim = select_idle_victim(state, key);
                 let Some(victim) = victim else {
                     state.stats.rejections = state.stats.rejections.saturating_add(1);
                     return Err(DeviceCacheError::BusyAndNoEviction {
@@ -1209,12 +1204,7 @@ impl DeviceExpertCache {
                 state.stats.rejections = state.stats.rejections.saturating_add(1);
                 return Err(DeviceCacheError::BudgetExhausted { device, budget });
             }
-            let victim = state
-                .entries
-                .iter()
-                .filter(|(_, entry)| entry.active == 0)
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(key, _)| key.clone());
+            let victim = select_idle_victim(state, &key);
             let Some(victim) = victim else {
                 state.stats.rejections = state.stats.rejections.saturating_add(1);
                 return Err(DeviceCacheError::BusyAndNoEviction {
@@ -1289,6 +1279,46 @@ impl DeviceExpertCache {
             entry.active = entry.active.saturating_sub(1);
         }
     }
+}
+
+#[cfg(any(feature = "cuda", test))]
+fn select_idle_victim(state: &DeviceState, incoming: &ExpertKey) -> Option<ExpertKey> {
+    let mut heterogeneous_layer_bytes = HashMap::<u32, usize>::new();
+    if incoming.format.starts_with("heterogeneous:") {
+        for (key, entry) in &state.entries {
+            if entry.active == 0 && key.format.starts_with("heterogeneous:") {
+                let bytes = heterogeneous_layer_bytes.entry(key.layer).or_default();
+                *bytes = bytes.saturating_add(entry.allocation.bytes());
+            }
+        }
+    }
+
+    if heterogeneous_layer_bytes.len() > 1 {
+        let most_loaded_layer = heterogeneous_layer_bytes
+            .iter()
+            .max_by_key(|(_, bytes)| **bytes)
+            .map(|(layer, _)| *layer);
+        if let Some(victim) = state
+            .entries
+            .iter()
+            .filter(|(key, entry)| {
+                entry.active == 0
+                    && key.format.starts_with("heterogeneous:")
+                    && Some(key.layer) == most_loaded_layer
+            })
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| key.clone())
+        {
+            return Some(victim);
+        }
+    }
+
+    state
+        .entries
+        .iter()
+        .filter(|(_, entry)| entry.active == 0)
+        .min_by_key(|(_, entry)| entry.last_used)
+        .map(|(key, _)| key.clone())
 }
 
 #[cfg(any(feature = "cuda", test))]
@@ -1542,6 +1572,37 @@ mod tests {
         assert_eq!(allocator.free_queries.load(Ordering::Relaxed), 1);
         assert_eq!(cache.stats().resident_bytes, 5);
         drop(leases);
+    }
+
+    #[test]
+    fn cache_device_heterogeneo_eviction_prioriza_camada_sobrecarregada() {
+        let allocator = FakeDeviceAllocator::new(8);
+        let cache = device_cache(&allocator, 8);
+        let layer_zero_a = ExpertKey::new("model", 0, 1, "heterogeneous:gate:18");
+        let layer_one = ExpertKey::new("model", 1, 2, "heterogeneous:gate:18");
+        let layer_zero_b = ExpertKey::new("model", 0, 3, "heterogeneous:gate:18");
+
+        let first = cache.admit(layer_zero_a.clone(), &[1; 3]).unwrap();
+        let middle = cache.admit(layer_one.clone(), &[2; 2]).unwrap();
+        let last = cache.admit(layer_zero_b.clone(), &[3; 3]).unwrap();
+        drop((first, middle, last));
+
+        // Torna a camada 0 recente. Um LRU puro retiraria a camada 1, mas a
+        // política por working set preserva a camada sub-representada.
+        let hit_a = cache.lookup(&layer_zero_a).unwrap();
+        let hit_b = cache.lookup(&layer_zero_b).unwrap();
+        drop((hit_a, hit_b));
+
+        let replacement = cache
+            .admit(
+                ExpertKey::new("model", 2, 4, "heterogeneous:gate:18"),
+                &[4; 3],
+            )
+            .unwrap();
+
+        assert!(cache.contains(&layer_one));
+        assert!(!cache.contains(&layer_zero_a) || !cache.contains(&layer_zero_b));
+        drop(replacement);
     }
 
     #[test]

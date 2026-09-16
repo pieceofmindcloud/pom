@@ -2208,7 +2208,7 @@ __device__ __forceinline__ float heterogeneous_quant_partial_dot_q8_1_impl(
     float input_scale,
     HeterogeneousQ8Layout layout
 ) {
-    const int lane = threadIdx.x & 31;
+    const int lane = threadIdx.x;
     const int lanes_per_block = layout.qi / layout.vdr;
     const int blocks_per_iteration = layout.vdr * 32 / layout.qi;
     const int blocks_per_row = static_cast<int>(tensor.columns) / layout.qk;
@@ -2257,16 +2257,9 @@ __global__ void heterogeneous_quant_gate_up_route_q8_kernel(
     const block_q8_1 *hidden_values,
     float *gate_up_values
 ) {
-    // Keep enough independent blocks to occupy the whole GPU, while making
-    // each block cover four adjacent rows. The earlier grouped experiment
-    // put every row of one pair in a single block; with a small route batch
-    // that left most SMs idle. Indexing the global row space preserves the
-    // original occupancy while cutting block scheduling overhead.
-    constexpr int warps_per_block = 4;
-    const int lane = threadIdx.x & 31;
-    const int global_row = blockIdx.x * warps_per_block + threadIdx.x / 32;
-    const int pair = global_row / intermediate;
-    const int row = global_row % intermediate;
+    const int row_index = blockIdx.x;
+    const int pair = row_index / intermediate;
+    const int row = row_index % intermediate;
     if (pair >= pair_count) return;
     const CudaHeterogeneousExpert expert = experts[pair];
     const block_q8_1 *input = hidden_values +
@@ -2286,7 +2279,7 @@ __global__ void heterogeneous_quant_gate_up_route_q8_kernel(
         up = heterogeneous_quant_partial_dot_q8_1(
             expert.up, row, input, expert.up.scale, expert.up.input_scale);
     }
-    if (lane == 0) {
+    if (threadIdx.x == 0) {
         const int output_offset = pair * 2 * intermediate + row;
         gate_up_values[output_offset] = gate;
         gate_up_values[output_offset + intermediate] = up;
@@ -2301,18 +2294,16 @@ __global__ void heterogeneous_quant_down_route_q8_kernel(
     const block_q8_1 *activated,
     float *pair_output
 ) {
-    constexpr int warps_per_block = 4;
-    const int lane = threadIdx.x & 31;
-    const int global_row = blockIdx.x * warps_per_block + threadIdx.x / 32;
-    const int pair = global_row / hidden;
-    const int row = global_row % hidden;
+    const int row_index = blockIdx.x;
+    const int pair = row_index / hidden;
+    const int row = row_index % hidden;
     if (pair >= pair_count) return;
     const block_q8_1 *input = activated +
         static_cast<std::size_t>(pair) * (intermediate / QK8_1);
     const CudaHeterogeneousTensor down = experts[pair].down;
     const float value = heterogeneous_quant_partial_dot_q8_1(
         down, row, input, down.scale, down.input_scale);
-    if (lane == 0) {
+    if (threadIdx.x == 0) {
         pair_output[pair * hidden + row] = value;
     }
 }
@@ -4098,10 +4089,8 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
             pipeline->d_hidden, token_count_i, hidden_i, pipeline->d_hidden_q8);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
-    constexpr int route_warps = 4;
     heterogeneous_quant_gate_up_route_q8_kernel<<<
-        (intermediate_i * pair_count + route_warps - 1) / route_warps,
-        route_warps * warp_size>>>(
+        intermediate_i * pair_count, warp_size>>>(
             pipeline->d_experts, pipeline->d_token_ids, pair_count, intermediate_i,
             hidden_i, pipeline->d_hidden_q8, pipeline->d_gate_up);
     result = cuda_status(cudaGetLastError());
@@ -4118,8 +4107,7 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
     heterogeneous_quant_down_route_q8_kernel<<<
-        (hidden_i * pair_count + route_warps - 1) / route_warps,
-        route_warps * warp_size>>>(
+        hidden_i * pair_count, warp_size>>>(
             pipeline->d_experts, pair_count, hidden_i, intermediate_i,
             pipeline->d_activated_q8, pipeline->d_pair_output);
     result = cuda_status(cudaGetLastError());

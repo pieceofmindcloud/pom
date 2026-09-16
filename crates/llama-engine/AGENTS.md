@@ -93,9 +93,6 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   quantiza hidden e ativação em buffers persistentes e executa uma warp por
   linha; isso é importante para GGUF como Mistral-Small, que combina dtypes
   18, 22 e 23 nos papéis gate/up/down.
-  O pipeline heterogêneo mantém staging pinned para entradas e saída e um
-  stream CUDA próprio por geometria; as cópias assíncronas terminam com uma
-  única sincronização de stream antes de devolver o residual ao callback.
   Cada pipeline heterogêneo mantém um staging host pinned para a saída CUDA:
   o callback do llama.cpp continua recebendo um buffer host comum, mas a
   transferência D2H não paga o staging pageable em cada chamada.

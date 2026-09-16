@@ -3770,29 +3770,10 @@ struct HeterogeneousRoutePipeline {
     // staging cost. Keep one pinned staging buffer per device pipeline and
     // copy the small final result to the callback buffer after the transfer.
     float *h_output = nullptr;
-    // Keep the host inputs pinned as well. cudaMemcpyAsync from pageable
-    // memory falls back to an implicit staging allocation on every route.
-    CudaHeterogeneousExpert *h_experts = nullptr;
-    float *h_hidden = nullptr;
-    uint32_t *h_token_ids = nullptr;
-    float *h_weights = nullptr;
-    uint32_t *h_route_to_pair = nullptr;
-    std::size_t *h_token_offsets = nullptr;
-    cudaStream_t stream = nullptr;
 };
 
 void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) {
     if (pipeline == nullptr) return;
-    if (pipeline->stream != nullptr) {
-        cudaStreamSynchronize(pipeline->stream);
-        cudaStreamDestroy(pipeline->stream);
-    }
-    cudaFreeHost(pipeline->h_token_offsets);
-    cudaFreeHost(pipeline->h_route_to_pair);
-    cudaFreeHost(pipeline->h_weights);
-    cudaFreeHost(pipeline->h_token_ids);
-    cudaFreeHost(pipeline->h_hidden);
-    cudaFreeHost(pipeline->h_experts);
     cudaFreeHost(pipeline->h_output);
     cudaFree(pipeline->d_output);
     cudaFree(pipeline->d_pair_output);
@@ -3819,15 +3800,8 @@ void release_heterogeneous_route_pipeline(HeterogeneousRoutePipeline *pipeline) 
     pipeline->d_hidden = nullptr;
     pipeline->d_hidden_q8 = nullptr;
     pipeline->d_experts = nullptr;
-    pipeline->h_token_offsets = nullptr;
-    pipeline->h_route_to_pair = nullptr;
-    pipeline->h_weights = nullptr;
-    pipeline->h_token_ids = nullptr;
-    pipeline->h_hidden = nullptr;
-    pipeline->h_experts = nullptr;
     pipeline->token_capacity = 0;
     pipeline->route_capacity = 0;
-    pipeline->stream = nullptr;
 }
 
 int ensure_heterogeneous_route_pipeline_capacity(
@@ -3918,31 +3892,6 @@ int ensure_heterogeneous_route_pipeline_capacity(
     if (result != 0) goto fail;
     result = cuda_status(cudaMallocHost(
         reinterpret_cast<void **>(&pipeline->h_output), hidden_bytes));
-    if (result != 0) goto fail;
-    result = cuda_status(cudaMallocHost(
-        reinterpret_cast<void **>(&pipeline->h_experts),
-        routes * sizeof(*pipeline->h_experts)));
-    if (result != 0) goto fail;
-    result = cuda_status(cudaMallocHost(
-        reinterpret_cast<void **>(&pipeline->h_hidden), hidden_bytes));
-    if (result != 0) goto fail;
-    result = cuda_status(cudaMallocHost(
-        reinterpret_cast<void **>(&pipeline->h_token_ids),
-        routes * sizeof(*pipeline->h_token_ids)));
-    if (result != 0) goto fail;
-    result = cuda_status(cudaMallocHost(
-        reinterpret_cast<void **>(&pipeline->h_weights),
-        routes * sizeof(*pipeline->h_weights)));
-    if (result != 0) goto fail;
-    result = cuda_status(cudaMallocHost(
-        reinterpret_cast<void **>(&pipeline->h_route_to_pair),
-        routes * sizeof(*pipeline->h_route_to_pair)));
-    if (result != 0) goto fail;
-    result = cuda_status(cudaMallocHost(
-        reinterpret_cast<void **>(&pipeline->h_token_offsets), offset_bytes));
-    if (result != 0) goto fail;
-    result = cuda_status(cudaStreamCreateWithFlags(
-        &pipeline->stream, cudaStreamNonBlocking));
     if (result != 0) goto fail;
     return 0;
 
@@ -4100,52 +4049,29 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     const std::size_t activated_bytes = pipeline->intermediate_width * expert_count * sizeof(float);
     const std::size_t pair_output_bytes = pipeline->hidden_width * expert_count * sizeof(float);
 
-    std::memcpy(
-        pipeline->h_experts, experts,
-        expert_count * sizeof(*pipeline->h_experts));
-    std::memcpy(pipeline->h_hidden, hidden, hidden_bytes);
-    std::memcpy(
-        pipeline->h_token_ids, token_ids,
-        expert_count * sizeof(*pipeline->h_token_ids));
-    std::memcpy(
-        pipeline->h_weights, weights,
-        route_count * sizeof(*pipeline->h_weights));
-    std::memcpy(
-        pipeline->h_route_to_pair, route_to_pair,
-        route_count * sizeof(*pipeline->h_route_to_pair));
-    std::memcpy(
-        pipeline->h_token_offsets, token_offsets,
-        token_offsets_len * sizeof(*pipeline->h_token_offsets));
-
     const auto h2d_started = Clock::now();
-    int result = cuda_status(cudaMemcpyAsync(
-        pipeline->d_experts, pipeline->h_experts,
-        expert_count * sizeof(*pipeline->d_experts), cudaMemcpyHostToDevice,
-        pipeline->stream));
+    int result = cuda_status(cudaMemcpy(
+        pipeline->d_experts, experts,
+        expert_count * sizeof(*pipeline->d_experts), cudaMemcpyHostToDevice));
     if (result != 0) return result;
-    result = cuda_status(cudaMemcpyAsync(
-        pipeline->d_hidden, pipeline->h_hidden, hidden_bytes,
-        cudaMemcpyHostToDevice, pipeline->stream));
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_hidden, hidden, hidden_bytes, cudaMemcpyHostToDevice));
     if (result != 0) return result;
-    result = cuda_status(cudaMemcpyAsync(
-        pipeline->d_token_ids, pipeline->h_token_ids,
-        expert_count * sizeof(*pipeline->d_token_ids), cudaMemcpyHostToDevice,
-        pipeline->stream));
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_token_ids, token_ids,
+        expert_count * sizeof(*pipeline->d_token_ids), cudaMemcpyHostToDevice));
     if (result != 0) return result;
-    result = cuda_status(cudaMemcpyAsync(
-        pipeline->d_weights, pipeline->h_weights,
-        route_count * sizeof(*pipeline->d_weights), cudaMemcpyHostToDevice,
-        pipeline->stream));
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_weights, weights,
+        route_count * sizeof(*pipeline->d_weights), cudaMemcpyHostToDevice));
     if (result != 0) return result;
-    result = cuda_status(cudaMemcpyAsync(
-        pipeline->d_route_to_pair, pipeline->h_route_to_pair,
-        route_count * sizeof(*pipeline->d_route_to_pair), cudaMemcpyHostToDevice,
-        pipeline->stream));
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_route_to_pair, route_to_pair,
+        route_count * sizeof(*pipeline->d_route_to_pair), cudaMemcpyHostToDevice));
     if (result != 0) return result;
-    result = cuda_status(cudaMemcpyAsync(
-        pipeline->d_token_offsets, pipeline->h_token_offsets,
-        token_offsets_len * sizeof(*pipeline->d_token_offsets), cudaMemcpyHostToDevice,
-        pipeline->stream));
+    result = cuda_status(cudaMemcpy(
+        pipeline->d_token_offsets, token_offsets,
+        token_offsets_len * sizeof(*pipeline->d_token_offsets), cudaMemcpyHostToDevice));
     if (timing != nullptr) {
         timing->h2d_ms = elapsed_ms(h2d_started, Clock::now());
         timing->h2d_bytes = static_cast<uint64_t>(
@@ -4159,48 +4085,44 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
 
     const auto launch_started = Clock::now();
     quantize_q8_1_rows_kernel<<<
-        token_count_i * (hidden_i / QK8_1), warp_size, 0, pipeline->stream>>>(
+        token_count_i * (hidden_i / QK8_1), warp_size>>>(
             pipeline->d_hidden, token_count_i, hidden_i, pipeline->d_hidden_q8);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
     heterogeneous_quant_gate_up_route_q8_kernel<<<
-        intermediate_i * pair_count, warp_size, 0, pipeline->stream>>>(
+        intermediate_i * pair_count, warp_size>>>(
             pipeline->d_experts, pipeline->d_token_ids, pair_count, intermediate_i,
             hidden_i, pipeline->d_hidden_q8, pipeline->d_gate_up);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
     heterogeneous_activation_kernel<<<
         (intermediate_i * pair_count + block_size - 1) / block_size,
-        block_size, 0, pipeline->stream>>>(pipeline->d_gate_up, pair_count, intermediate_i, activation,
+        block_size>>>(pipeline->d_gate_up, pair_count, intermediate_i, activation,
             pipeline->d_activated);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
     quantize_q8_1_rows_kernel<<<
-        pair_count * (intermediate_i / QK8_1), warp_size, 0, pipeline->stream>>>(
+        pair_count * (intermediate_i / QK8_1), warp_size>>>(
             pipeline->d_activated, pair_count, intermediate_i, pipeline->d_activated_q8);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
     heterogeneous_quant_down_route_q8_kernel<<<
-        hidden_i * pair_count, warp_size, 0, pipeline->stream>>>(
+        hidden_i * pair_count, warp_size>>>(
             pipeline->d_experts, pair_count, hidden_i, intermediate_i,
             pipeline->d_activated_q8, pipeline->d_pair_output);
     result = cuda_status(cudaGetLastError());
     if (result != 0) return result;
     aggregate_route_batch_deduplicated_kernel<<<
         (token_count_i * hidden_i + block_size - 1) / block_size,
-        block_size, 0, pipeline->stream>>>(pipeline->d_pair_output, pipeline->d_weights,
+        block_size>>>(pipeline->d_pair_output, pipeline->d_weights,
             pipeline->d_route_to_pair, pipeline->d_token_offsets,
             token_count_i, hidden_i, pipeline->d_output);
     result = cuda_status(cudaGetLastError());
     if (timing != nullptr) timing->launch_ms = elapsed_ms(launch_started, Clock::now());
     if (result != 0) return result;
     const auto d2h_started = Clock::now();
-    result = cuda_status(cudaMemcpyAsync(
-        pipeline->h_output, pipeline->d_output, hidden_bytes, cudaMemcpyDeviceToHost,
-        pipeline->stream));
-    if (result == 0) {
-        result = cuda_status(cudaStreamSynchronize(pipeline->stream));
-    }
+    result = cuda_status(cudaMemcpy(
+        pipeline->h_output, pipeline->d_output, hidden_bytes, cudaMemcpyDeviceToHost));
     if (timing != nullptr) {
         timing->d2h_ms = elapsed_ms(d2h_started, Clock::now());
         timing->d2h_bytes = static_cast<uint64_t>(hidden_bytes);
@@ -4208,10 +4130,11 @@ extern "C" int pom_moe_heterogeneous_route_pipeline_run(
     if (result != 0) return result;
     std::memcpy(output, pipeline->h_output, hidden_bytes);
     if (timing != nullptr) {
-        // A sincronização do stream é a barreira de conclusão. Eventos
-        // gravados pelo hook podem retornar cudaErrorInvalidResourceHandle
-        // durante a captura de grafo do llama.cpp, portanto o diagnóstico
-        // continua baseado no intervalo de parede desta chamada.
+        // A chamada pode ocorrer durante a captura de grafo do llama.cpp.
+        // Eventos gravados pelo hook retornam cudaErrorInvalidResourceHandle
+        // (400) nesse contexto. A cópia D2H é a barreira de conclusão, então
+        // o intervalo de parede até ela mantém o diagnóstico sem tocar nos
+        // recursos da captura.
         timing->kernel_ms = elapsed_ms(launch_started, d2h_started);
         timing->kernel_span_ms = timing->kernel_ms;
         timing->transfer_span_ms = timing->h2d_ms + timing->d2h_ms;

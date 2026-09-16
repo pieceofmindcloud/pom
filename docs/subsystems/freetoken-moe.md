@@ -2981,27 +2981,6 @@ com `nvidia-smi` sem processo concorrente mediram `10,6127`, `11,8136` e
 sem texto corrompido. O resultado é uma melhoria observada, mas ainda está
 abaixo da meta de `1,5x` sobre o denso.
 
-### Fase 5.18: reutilização dos leases de admissão - 2026-09-16
-
-O forward heterogêneo já agrupava misses por GPU e os admitia em lote, mas
-descartava o vetor de `DeviceExpertLease` retornado pela admissão. Ao montar
-os descriptors, cada miss fazia uma segunda busca no cache para recuperar o
-mesmo handle. Essa busca atravessava novamente o mutex e o LRU e era
-especialmente desnecessária quando a admissão acabara de carregar um working
-set inteiro.
-
-Os leases agora são indexados por `ExpertKey` e permanecem vivos até o fim do
-forward. A montagem usa o handle, o device e o tamanho diretamente do lease
-admitido; somente a ausência inesperada no mapa usa o lookup como defesa
-contra uma corrida ou inconsistência. Experts repetidos na rota compartilham
-o lease admitido, sem aumentar artificialmente a contagem de leases ativos.
-Isso não muda kernel, afinidade entre GPUs, orçamento, eviction, ordem das
-rotas ou valores numéricos.
-
-O candidato deve ser aceito apenas se as rodadas controladas na ksia, com
-`nvidia-smi` imediatamente antes de cada requisição, melhorarem ou preservarem
-a referência atual de `ca799d8c` (`10,5133 tok/s` de mediana em três rodadas).
-
 ## Defeitos anotados
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis

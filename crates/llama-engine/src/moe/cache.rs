@@ -1302,10 +1302,6 @@ pub struct DeviceExpertLease {
 
 #[cfg(any(feature = "cuda", test))]
 impl DeviceExpertLease {
-    pub fn key(&self) -> &ExpertKey {
-        &self.key
-    }
-
     pub fn handle(&self) -> usize {
         self.handle
     }
@@ -1546,17 +1542,6 @@ mod tests {
         assert_eq!(allocator.free_queries.load(Ordering::Relaxed), 1);
         assert_eq!(cache.stats().resident_bytes, 5);
         drop(leases);
-    }
-
-    #[test]
-    fn cache_device_lease_expoe_a_chave_da_admissao() {
-        let allocator = FakeDeviceAllocator::new(100);
-        let cache = device_cache(&allocator, 100);
-        let expected = key(7);
-        let lease = cache.admit(expected.clone(), &[1, 2, 3]).unwrap();
-
-        assert_eq!(lease.key(), &expected);
-        drop(lease);
     }
 
     #[test]

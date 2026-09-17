@@ -99,8 +99,14 @@ transferência.
   `ple.layer_multipliers`, `ple.head_offsets` e `ple.head_vocab_sizes` são
   preservados inteiros. `per_layer_token_embd.weight` só entra na fatia que
   contém uma camada PLE, e os três tensores `output_hc_*` obrigatórios são
-  copiados para cada fatia. O resultado é validado por `gguf::read_layout`
-  antes de o backend o nomear por conteúdo.
+  copiados para cada fatia. A identidade sintética de `output_norm.weight`
+  injetada em toda faixa não final (para satisfazer o loader genérico) é
+  pulada para `qwen4exp` (`gguf::uses_output_norm`): o mixer de
+  hyper-connection final dessa arquitetura carrega esse papel e o loader
+  nunca chama `create_tensor` para `output_norm`, então a fatia física não
+  pode ter um tensor extra não reclamado - era a causa de "wrong number of
+  tensors" na primeira fatia de um Qwen3.8 Flash Next real. O resultado é
+  validado por `gguf::read_layout` antes de o backend o nomear por conteúdo.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.

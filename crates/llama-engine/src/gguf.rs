@@ -931,6 +931,18 @@ pub fn required_output_tensors(architecture: &str) -> &'static [&'static str] {
     }
 }
 
+/// Whether this architecture's loader ever creates `output_norm.weight`.
+/// True for the generic dense-transformer contract and for `deepseek4`
+/// (which lists it explicitly). `qwen4exp` is the one exception: its final
+/// hyper-connection mixer (`output_hc_norm.weight`) carries that role
+/// instead, and the loader never calls `create_tensor` for `output_norm`.
+/// A non-final slice must not receive the synthetic identity norm that
+/// every other architecture needs, or the physical tensor count in the file
+/// outruns what the loader actually claims.
+pub fn uses_output_norm(architecture: &str) -> bool {
+    architecture != "qwen4exp"
+}
+
 pub fn is_output_tensor(architecture: &str, name: &str) -> bool {
     matches!(
         name,
@@ -1171,7 +1183,9 @@ impl SerializedLayout {
 
         // Non-final slices carry an F32 identity norm exactly as splitter::split
         // does. The source norm's dtype is deliberately not reused here.
-        if !is_last {
+        // `qwen4exp` never creates `output_norm.weight` (see `uses_output_norm`),
+        // so it must not be charged or emitted for that architecture.
+        if !is_last && uses_output_norm(&self.architecture) {
             let hidden = self.hidden_dim as u64;
             headers += tensor_header_size_layout("output_norm.weight", &[hidden]);
             payload += align_up_layout(hidden * 4);

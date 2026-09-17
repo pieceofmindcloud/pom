@@ -2,11 +2,12 @@
 //!
 //! Reads the source model with mmap (never loads weights into RAM), selects
 //! tensors for the assigned layer range, remaps `blk.(start+i).*` names to
-//! `blk.i.*`, injects a fake identity `output_norm.weight` on non-last slices,
-//! updates KV metadata, and streams the slice to disk. Architecture-specific
-//! output contracts are checked before the destination is created: required
-//! head tensors are copied from the source into every slice that needs them,
-//! including non-final slices.
+//! `blk.i.*`, injects a fake identity `output_norm.weight` on non-last slices
+//! (skipped for `qwen4exp`, whose loader never creates that tensor — see
+//! `gguf::uses_output_norm`), updates KV metadata, and streams the slice to
+//! disk. Architecture-specific output contracts are checked before the
+//! destination is created: required head tensors are copied from the source
+//! into every slice that needs them, including non-final slices.
 //!
 //! Progress is reported via `on_progress(0.0..=100.0)` as bytes are written.
 
@@ -941,7 +942,11 @@ pub fn split(
         })
         .collect();
 
-    if !is_last {
+    // `qwen4exp` never creates `output_norm.weight` (its final hyper-connection
+    // mixer carries that role instead), so injecting the fake identity here
+    // would leave a physical tensor the loader never claims via
+    // `create_tensor`, breaking its "wrong number of tensors" count check.
+    if !is_last && crate::gguf::uses_output_norm(&arch) {
         let out_norm_dtype = all_tensors
             .iter()
             .find(|t| t.name == "output_norm.weight")
@@ -4255,6 +4260,39 @@ mod tests {
             .tensors()
             .iter()
             .any(|tensor| tensor.name == "per_layer_token_embd.weight"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn qwen4exp_non_final_slice_does_not_get_a_fake_output_norm() {
+        // qwen4exp's final hyper-connection mixer carries the output-norm
+        // role (`output_hc_norm.weight`); the loader never calls
+        // `create_tensor("output_norm.weight")`. Injecting the synthetic
+        // identity norm that every other architecture needs on a non-final
+        // slice would leave an unclaimed physical tensor, and llama.cpp's
+        // loader refuses to load with "wrong number of tensors".
+        let dir = std::env::temp_dir().join(format!(
+            "pom-qwen4exp-no-fake-norm-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let out = dir.join("slice.gguf");
+        std::fs::write(&whole, qwen4exp_test_gguf_bytes()).unwrap();
+
+        let written = split(&whole, &out, 0, 15, false, false, |_| {}).unwrap();
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+        assert_eq!(layout.slice_bytes(0, 15, false), written.bytes);
+
+        let output_source = crate::multipart::GgufSource::open(&out).unwrap();
+        assert!(
+            !output_source
+                .tensors()
+                .iter()
+                .any(|tensor| tensor.name == "output_norm.weight"),
+            "qwen4exp slices must never carry a fake output_norm.weight: \
+             the loader would leave it unclaimed and refuse to load"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

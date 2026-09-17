@@ -41,10 +41,11 @@ fn scalar_size(t: u32) -> Option<u64> {
     }
 }
 
-/// Arrays used by Qwen4Exp's prompt lookup embedding (PLE) describe the
-/// structure of the shared table, not one value per transformer block. Keep
-/// the exact producer bytes in every layer slice and let the loader consume
-/// the complete table description.
+/// Metadata arrays used by Qwen4Exp's prompt lookup embedding (PLE) do not
+/// follow the generic per-block rule. The three table-description arrays are
+/// copied intact; `ple.layers` is a selector list and is filtered/rebased by
+/// the splitter. Keeping it in this category also exempts it from the generic
+/// short-array refusal.
 pub fn is_structural_array(key: &str, architecture: &str) -> bool {
     architecture == "qwen4exp"
         && matches!(
@@ -742,6 +743,7 @@ pub struct SerializedLayout {
     architecture: String,
     hidden_dim: u32,
     original_block_count: u32,
+    qwen4exp_ple_layers: Vec<u32>,
     kv: Vec<LayoutKv>,
     tensors: Vec<LayoutTensor>,
 }
@@ -906,11 +908,17 @@ impl GgufLayout {
 
 /// Tensores que o llama.cpp cria fora de `blk.N.*` para esta arquitetura.
 ///
-/// Os nomes vêm de `models/deepseek4.cpp`, onde todos são criados com flags
-/// obrigatórias. Em particular, os tensores HC são uma transformação
+/// Os nomes vêm dos loaders arquiteturais do llama.cpp, onde são criados com
+/// flags obrigatórias. Em particular, os tensores HC são uma transformação
 /// arquitetural antes de `output_norm`, não uma projeção de saída opcional.
 pub fn required_output_tensors(architecture: &str) -> &'static [&'static str] {
     match architecture {
+        "qwen4exp" => &[
+            "token_embd.weight",
+            "output_hc_norm.weight",
+            "output_hc_down.weight",
+            "output_hc_up.weight",
+        ],
         "deepseek4" => &[
             "token_embd.weight",
             "output_norm.weight",
@@ -1025,12 +1033,21 @@ fn layout_wants_tensor(
     start: u32,
     end: u32,
     is_last: bool,
+    qwen4exp_ple_layers: &[u32],
 ) -> bool {
     if let Some(index) = layout_block_index(name) {
         return (start..=end).contains(&index);
     }
     match name {
         "token_embd.weight" => true,
+        "per_layer_token_embd.weight"
+            if architecture == "qwen4exp"
+                && qwen4exp_ple_layers
+                    .iter()
+                    .any(|&layer| (start..=end).contains(&layer)) =>
+        {
+            true
+        }
         _ if is_required_non_final_tensor(architecture, name) => true,
         _ if is_output_tensor(architecture, name) => is_last,
         n if n.contains("rope") || n.contains("pos_embd") => true,
@@ -1082,6 +1099,15 @@ impl SerializedLayout {
                 bytes += Self::encoded_u32_size(&entry.key);
                 continue;
             }
+            if self.architecture == "qwen4exp" && entry.key == "qwen4exp.ple.layers" {
+                let local_count = self
+                    .qwen4exp_ple_layers
+                    .iter()
+                    .filter(|&&layer| (start..=end).contains(&layer))
+                    .count();
+                bytes += Self::encoded_u32_array_size(&entry.key, local_count as u32);
+                continue;
+            }
             if let Some(array) = entry.array {
                 if !is_structural_array(&entry.key, &self.architecture)
                     && array.count >= self.original_block_count as u64
@@ -1127,7 +1153,14 @@ impl SerializedLayout {
         let mut has_output_norm = false;
 
         for tensor in &self.tensors {
-            if !layout_wants_tensor(&tensor.name, &self.architecture, start, end, is_last) {
+            if !layout_wants_tensor(
+                &tensor.name,
+                &self.architecture,
+                start,
+                end,
+                is_last,
+                &self.qwen4exp_ple_layers,
+            ) {
                 continue;
             }
             headers +=
@@ -1184,6 +1217,7 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
     let mut architecture = "llama".to_string();
     let mut hidden_dim = 4096u32;
     let mut source_block_count = None;
+    let mut qwen4exp_ple_layers = Vec::new();
     let mut kv = Vec::with_capacity(n_kv);
     for _ in 0..n_kv {
         let kv_start = r.position()?;
@@ -1201,7 +1235,23 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
             T_ARRAY => {
                 let element_type = r.u32()?;
                 let count = r.u64()?;
-                r.skip_array_payload(element_type, count)?;
+                if key == "qwen4exp.ple.layers" {
+                    if count > 100_000 {
+                        bail!("implausible qwen4exp PLE layer array length {count}");
+                    }
+                    qwen4exp_ple_layers = (0..count)
+                        .map(|_| {
+                            r.value_as_u32(element_type)?.ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "metadata '{}' tem elementos que não são inteiros não negativos",
+                                    key
+                                )
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                } else {
+                    r.skip_array_payload(element_type, count)?;
+                }
                 array = Some(ArrayShape {
                     element_type,
                     count,
@@ -1298,6 +1348,23 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
             0
         }
     });
+    if architecture == "qwen4exp" {
+        if let Some(&layer) = qwen4exp_ple_layers
+            .iter()
+            .find(|&&layer| layer >= original_block_count)
+        {
+            bail!(
+                "qwen4exp.ple.layers contém a camada {layer}, mas a origem declara apenas {original_block_count} blocos"
+            );
+        }
+        if !qwen4exp_ple_layers.is_empty()
+            && !layout_tensors
+                .iter()
+                .any(|tensor| tensor.name == "per_layer_token_embd.weight")
+        {
+            bail!("a origem qwen4exp declara PLE, mas não contém per_layer_token_embd.weight");
+        }
+    }
     let arch_prefix = format!("{architecture}.");
     for entry in &kv {
         let Some(array) = entry.array else {
@@ -1328,6 +1395,7 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
         architecture,
         hidden_dim,
         original_block_count,
+        qwen4exp_ple_layers,
         kv,
         tensors: layout_tensors,
     });

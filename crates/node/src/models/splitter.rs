@@ -238,6 +238,32 @@ fn encode_kv_u32_array(key: &str, values: &[u32]) -> Vec<u8> {
     encode_kv_array(key, T_U32, &payload)
 }
 
+fn encode_kv_u32_array_with_type(key: &str, element_type: u32, values: &[u32]) -> Result<Vec<u8>> {
+    let payload: Vec<u8> = match element_type {
+        T_U32 => values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect(),
+        T_I32 => values
+            .iter()
+            .map(|&value| {
+                i32::try_from(value)
+                    .map(i32::to_le_bytes)
+                    .map_err(|_| anyhow::anyhow!("array '{}' excede i32", key))
+            })
+            .collect::<Result<Vec<[u8; 4]>>>()?
+            .into_iter()
+            .flatten()
+            .collect(),
+        other => bail!(
+            "array '{}' tem tipo {}; esperado inteiro u32 ou i32",
+            key,
+            other
+        ),
+    };
+    Ok(encode_kv_array(key, element_type, &payload))
+}
+
 fn encode_kv_array(key: &str, element_type: u32, payload: &[u8]) -> Vec<u8> {
     let element_size = scalar_size(element_type)
         .expect("arrays de metadata reconstruídos precisam de elementos escalares");
@@ -292,6 +318,54 @@ fn source_scalar_u32(mm: &[u8], entry: &KvSource) -> Option<u32> {
             .and_then(|value| u32::try_from(value).ok()),
         _ => None,
     }
+}
+
+fn source_u32_array(mm: &[u8], entry: &KvSource) -> Result<Vec<u32>> {
+    let array = entry
+        .array
+        .ok_or_else(|| anyhow::anyhow!("metadata '{}' não é um array", entry.key))?;
+    let element_size = scalar_size(array.element_type).ok_or_else(|| {
+        anyhow::anyhow!(
+            "metadata '{}' tem elementos aninhados, esperado um array inteiro",
+            entry.key
+        )
+    })?;
+    let mut values = Vec::with_capacity(
+        usize::try_from(array.count)
+            .map_err(|_| anyhow::anyhow!("array '{}' grande demais", entry.key))?,
+    );
+    for index in 0..array.count {
+        let byte_offset = usize::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_mul(element_size))
+            .ok_or_else(|| anyhow::anyhow!("overflow no array '{}'", entry.key))?;
+        let start = array
+            .payload_start
+            .checked_add(byte_offset)
+            .ok_or_else(|| anyhow::anyhow!("overflow no array '{}'", entry.key))?;
+        let value = match array.element_type {
+            T_U32 => u32::from_le_bytes(
+                mm.get(start..start + 4)
+                    .ok_or_else(|| anyhow::anyhow!("array '{}' truncado", entry.key))?
+                    .try_into()
+                    .unwrap(),
+            ),
+            T_I32 => u32::try_from(i32::from_le_bytes(
+                mm.get(start..start + 4)
+                    .ok_or_else(|| anyhow::anyhow!("array '{}' truncado", entry.key))?
+                    .try_into()
+                    .unwrap(),
+            ))
+            .map_err(|_| anyhow::anyhow!("array '{}' contém valor negativo", entry.key))?,
+            _ => bail!(
+                "array '{}' tem tipo {}; esperado inteiro u32 ou i32",
+                entry.key,
+                array.element_type
+            ),
+        };
+        values.push(value);
+    }
+    Ok(values)
 }
 
 fn source_string(mm: &[u8], entry: &KvSource) -> Option<String> {
@@ -421,7 +495,14 @@ fn tensor_header_size(name: &str, dims: &[u64]) -> usize {
     + 8 // offset(u64)
 }
 
-fn want_tensor(name: &str, architecture: &str, start: u32, end: u32, is_last: bool) -> bool {
+fn want_tensor(
+    name: &str,
+    architecture: &str,
+    start: u32,
+    end: u32,
+    is_last: bool,
+    qwen4exp_ple_layers: &[u32],
+) -> bool {
     if let Some(rest) = name.strip_prefix("blk.") {
         let idx: u32 = rest
             .split('.')
@@ -432,6 +513,14 @@ fn want_tensor(name: &str, architecture: &str, start: u32, end: u32, is_last: bo
     }
     match name {
         "token_embd.weight" => true,
+        "per_layer_token_embd.weight"
+            if architecture == "qwen4exp"
+                && qwen4exp_ple_layers
+                    .iter()
+                    .any(|&layer| (start..=end).contains(&layer)) =>
+        {
+            true
+        }
         _ if crate::gguf::is_required_non_final_tensor(architecture, name) => true,
         _ if crate::gguf::is_output_tensor(architecture, name) => is_last,
         n if n.contains("rope") || n.contains("pos_embd") => true,
@@ -625,6 +714,23 @@ pub fn split(
         .iter()
         .find(|entry| entry.key.ends_with(".block_count"))
         .and_then(|entry| source_scalar_u32(mm, entry));
+    let qwen4exp_ple_layers = if arch == "qwen4exp" {
+        entries
+            .iter()
+            .find(|entry| entry.key == "qwen4exp.ple.layers")
+            .map(|entry| source_u32_array(mm, entry))
+            .transpose()?
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if let Some(original) = original_block_count {
+        if let Some(&layer) = qwen4exp_ple_layers.iter().find(|&&layer| layer >= original) {
+            bail!(
+                "qwen4exp.ple.layers contém a camada {layer}, mas a origem declara apenas {original} blocos"
+            );
+        }
+    }
 
     let tensor_names: HashSet<&str> = source
         .tensors()
@@ -632,6 +738,12 @@ pub fn split(
         .map(|tensor| tensor.name.as_str())
         .collect();
     crate::gguf::validate_slice_tensors(&arch, &tensor_names, is_last)?;
+    if arch == "qwen4exp"
+        && !qwen4exp_ple_layers.is_empty()
+        && !tensor_names.contains("per_layer_token_embd.weight")
+    {
+        bail!("a origem qwen4exp declara PLE, mas não contém per_layer_token_embd.weight");
+    }
 
     let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
     let mut block_count_updated = false;
@@ -674,12 +786,30 @@ pub fn split(
             // Recomputed below from the actual ssm_conv1d tensors.
             continue;
         }
+        if arch == "qwen4exp" && key == "qwen4exp.ple.layers" {
+            let element_type = entry.array.map(|array| array.element_type).unwrap_or(T_U32);
+            let local_layers: Vec<u32> = qwen4exp_ple_layers
+                .iter()
+                .filter_map(|&layer| {
+                    (start_layer..=end_layer)
+                        .contains(&layer)
+                        .then(|| layer - start_layer)
+                })
+                .collect();
+            kv_out.push(KvOut::Encoded(encode_kv_u32_array_with_type(
+                key,
+                element_type,
+                &local_layers,
+            )?));
+            continue;
+        }
         if let Some(array) = entry.array {
             // Only architecture-namespaced arrays are candidates for per-layer
             // slicing. Global arrays such as tokenizer.ggml.tokens must remain
             // byte-for-byte intact, even when their length exceeds block_count.
-            // Qwen4Exp PLE arrays are structural table metadata, not arrays
-            // indexed by transformer block, so they are also copied intact.
+            // Qwen4Exp PLE table arrays are structural metadata, not arrays
+            // indexed by transformer block. `ple.layers` was handled above
+            // because it is a selector list that must be filtered and rebased.
             if !is_global_array(key, &arch) && !crate::gguf::is_structural_array(key, &arch) {
                 let original = original_block_count.ok_or_else(|| {
                     anyhow::anyhow!(
@@ -771,7 +901,16 @@ pub fn split(
     let selected: Vec<&TensorRecord> = source_read_order(&all_tensors)
         .into_iter()
         .map(|index| &all_tensors[index])
-        .filter(|t| want_tensor(&t.name, &arch, start_layer, end_layer, is_last))
+        .filter(|t| {
+            want_tensor(
+                &t.name,
+                &arch,
+                start_layer,
+                end_layer,
+                is_last,
+                &qwen4exp_ple_layers,
+            )
+        })
         .collect();
 
     if selected.is_empty() {
@@ -2530,6 +2669,7 @@ fn qwen35_hybrid_test_gguf_bytes(n_blocks: u32, full_attn_interval: u32) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn payload_reads_are_ordered_by_source_part_and_offset() {
@@ -2810,6 +2950,32 @@ mod tests {
             T_F32,
             f32v(&[0.5; 16]),
         )];
+        tensors.extend([
+            (
+                "per_layer_token_embd.weight".into(),
+                vec![n, n],
+                T_F32,
+                f32v(&[0.6; 16]),
+            ),
+            (
+                "output_hc_norm.weight".into(),
+                vec![n, n],
+                T_F32,
+                f32v(&[0.7; 16]),
+            ),
+            (
+                "output_hc_down.weight".into(),
+                vec![n, n],
+                T_F32,
+                f32v(&[0.8; 16]),
+            ),
+            (
+                "output_hc_up.weight".into(),
+                vec![n, n],
+                T_F32,
+                f32v(&[0.9; 16]),
+            ),
+        ]);
         for layer in 0..n_blocks {
             tensors.push((
                 format!("blk.{layer}.attn_q.weight"),
@@ -2911,6 +3077,139 @@ mod tests {
             bytes.resize(align_up(bytes.len() as u64) as usize, 0);
         }
         bytes
+    }
+
+    fn qwen4exp_multipart_part_bytes(part_no: u16, tensors: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let string = |value: &str| {
+            let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let u16_kv = |key: &str, value: u16| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_U16.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        };
+        let i32_array_kv = |key: &str, values: &[i32]| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_ARR.to_le_bytes());
+            bytes.extend_from_slice(&T_I32.to_le_bytes());
+            bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
+            for value in values {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            bytes
+        };
+        let u64_array_kv = |key: &str, values: &[u64]| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_ARR.to_le_bytes());
+            bytes.extend_from_slice(&T_U64.to_le_bytes());
+            bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
+            for value in values {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            bytes
+        };
+
+        let mut kv = vec![
+            u16_kv("split.no", part_no),
+            u16_kv("split.tensors.count", 10),
+            u16_kv("split.count", 3),
+        ];
+        if part_no == 0 {
+            let string_kv = |key: &str, value: &str| {
+                let mut bytes = string(key);
+                bytes.extend_from_slice(&T_STR.to_le_bytes());
+                bytes.extend_from_slice(&string(value));
+                bytes
+            };
+            let u32_kv = |key: &str, value: u32| {
+                let mut bytes = string(key);
+                bytes.extend_from_slice(&T_U32.to_le_bytes());
+                bytes.extend_from_slice(&value.to_le_bytes());
+                bytes
+            };
+            kv.extend([
+                string_kv("general.architecture", "qwen4exp"),
+                u32_kv("qwen4exp.embedding_length", 4),
+                u32_kv("qwen4exp.block_count", 4),
+                i32_array_kv("qwen4exp.ple.layers", &[1]),
+                u64_array_kv("qwen4exp.ple.layer_multipliers", &[3, 5, 7]),
+                u64_array_kv("qwen4exp.ple.head_offsets", &[0, 16]),
+                u64_array_kv("qwen4exp.ple.head_vocab_sizes", &[16, 16]),
+                u32_kv(&crate::brand::gguf_key("original_block_count"), 4),
+            ]);
+        }
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+        for entry in &kv {
+            bytes.extend_from_slice(entry);
+        }
+
+        let mut offset = 0u64;
+        for (name, data) in tensors {
+            bytes.extend_from_slice(&string(name));
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&(data.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(&T_F32.to_le_bytes());
+            bytes.extend_from_slice(&offset.to_le_bytes());
+            offset = align_up(offset + data.len() as u64);
+        }
+        bytes.resize(align_up(bytes.len() as u64) as usize, 0);
+        for (_, data) in tensors {
+            bytes.extend_from_slice(data);
+            bytes.resize(align_up(bytes.len() as u64) as usize, 0);
+        }
+        bytes
+    }
+
+    fn qwen4exp_multipart_fixture(dir: &Path) -> PathBuf {
+        let parts = [
+            Vec::new(),
+            vec![
+                ("token_embd.weight", vec![0x11; 32]),
+                ("per_layer_token_embd.weight", vec![0x22; 32]),
+                ("output_hc_norm.weight", vec![0x33; 32]),
+                ("output_hc_down.weight", vec![0x34; 32]),
+                ("output_hc_up.weight", vec![0x35; 32]),
+                ("blk.0.attn_q.weight", vec![0x40; 32]),
+                ("blk.1.attn_q.weight", vec![0x41; 32]),
+            ],
+            vec![
+                ("blk.2.attn_q.weight", vec![0x42; 32]),
+                ("blk.3.attn_q.weight", vec![0x43; 32]),
+                ("output.weight", vec![0x44; 32]),
+            ],
+        ];
+        let mut first = None;
+        for (part_no, tensors) in parts.into_iter().enumerate() {
+            let path = dir.join(format!("qwen4exp-{:05}-of-00003.gguf", part_no + 1));
+            std::fs::write(
+                &path,
+                qwen4exp_multipart_part_bytes(part_no as u16, &tensors),
+            )
+            .unwrap();
+            if part_no == 0 {
+                first = Some(path);
+            }
+        }
+        first.unwrap()
+    }
+
+    fn multipart_tensor_data(source: &crate::multipart::GgufSource, name: &str) -> Vec<u8> {
+        let tensor = source
+            .tensors()
+            .iter()
+            .find(|tensor| tensor.name == name)
+            .unwrap_or_else(|| panic!("tensor {name} não encontrado"));
+        let part = &source.parts()[tensor.part_index];
+        let start = part.data_start() + tensor.offset as usize;
+        part.map()[start..start + tensor.byte_size as usize].to_vec()
     }
 
     fn tensor_data<'a>(mm: &'a [u8], p: &MergedSrc, name: &str) -> &'a [u8] {
@@ -3930,7 +4229,11 @@ mod tests {
         let layout = crate::gguf::read_layout(&whole).unwrap();
 
         assert_eq!(layout.slice_bytes(12, 15, false), written.bytes);
-        assert_eq!(kv_i32_array(&output, "qwen4exp.ple.layers"), Some(vec![1]));
+        assert_eq!(
+            kv_i32_array(&output, "qwen4exp.ple.layers"),
+            Some(Vec::new()),
+            "PLE layers outside the slice must not be advertised with the source index"
+        );
         assert_eq!(
             kv_u64_array(&output, "qwen4exp.ple.layer_multipliers"),
             Some(vec![23703573157769, 20109073645365, 8052911324071])
@@ -3947,6 +4250,93 @@ mod tests {
             kv_i32_array(&output, "qwen4exp.attention.compress_ratios"),
             Some(vec![0, 0, 0, 4])
         );
+        let output_source = crate::multipart::GgufSource::open(&out).unwrap();
+        assert!(!output_source
+            .tensors()
+            .iter()
+            .any(|tensor| tensor.name == "per_layer_token_embd.weight"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn qwen4exp_ple_layer_and_table_tensor_are_rebased_to_the_local_slice() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-qwen4exp-ple-local-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let with_ple = dir.join("with-ple.gguf");
+        let without_ple = dir.join("without-ple.gguf");
+        std::fs::write(&whole, qwen4exp_test_gguf_bytes()).unwrap();
+
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+        let with_ple_written = split(&whole, &with_ple, 1, 1, false, false, |_| {}).unwrap();
+        let without_ple_written =
+            split(&whole, &without_ple, 12, 15, false, false, |_| {}).unwrap();
+
+        let with_ple_bytes = std::fs::read(&with_ple).unwrap();
+        assert_eq!(
+            kv_i32_array(&with_ple_bytes, "qwen4exp.ple.layers"),
+            Some(vec![0]),
+            "an absolute PLE layer must be rebased to the local block number"
+        );
+        let with_ple_source = crate::multipart::GgufSource::open(&with_ple).unwrap();
+        assert!(with_ple_source
+            .tensors()
+            .iter()
+            .any(|tensor| tensor.name == "per_layer_token_embd.weight"));
+
+        let without_ple_bytes = std::fs::read(&without_ple).unwrap();
+        assert_eq!(
+            kv_i32_array(&without_ple_bytes, "qwen4exp.ple.layers"),
+            Some(Vec::new())
+        );
+        let without_ple_source = crate::multipart::GgufSource::open(&without_ple).unwrap();
+        assert!(!without_ple_source
+            .tensors()
+            .iter()
+            .any(|tensor| tensor.name == "per_layer_token_embd.weight"));
+
+        assert_eq!(
+            layout.slice_bytes(1, 1, false),
+            with_ple_written.bytes,
+            "the preview must include the PLE table when its layer is present"
+        );
+        assert_eq!(
+            layout.slice_bytes(12, 15, false),
+            without_ple_written.bytes,
+            "the preview must omit the PLE table when its layer is outside the slice"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn qwen4exp_multipart_slice_keeps_non_block_tensors_from_all_parts() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-qwen4exp-multipart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source_path = qwen4exp_multipart_fixture(&dir);
+        let output_path = dir.join("slice.gguf");
+
+        let source = crate::multipart::GgufSource::open(&source_path).unwrap();
+        assert_eq!(source.parts().len(), 3);
+        assert_eq!(source.tensors().len(), 10);
+
+        split(&source_path, &output_path, 0, 3, true, true, |_| {}).unwrap();
+        let output = crate::multipart::GgufSource::open(&output_path).unwrap();
+        assert_eq!(output.tensors().len(), 10);
+        assert_eq!(
+            multipart_tensor_data(&output, "per_layer_token_embd.weight"),
+            vec![0x22; 32]
+        );
+        assert_eq!(
+            multipart_tensor_data(&output, "output_hc_down.weight"),
+            vec![0x34; 32]
+        );
+        assert_eq!(
+            multipart_tensor_data(&output, "blk.3.attn_q.weight"),
+            vec![0x43; 32]
+        );
+
         let _ = std::fs::remove_dir_all(dir);
     }
 

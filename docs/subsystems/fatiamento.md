@@ -350,13 +350,16 @@ de reparo que fabrique outro arquivo recusado pelo loader.
    chave. `merge` faz o mesmo sobre a numeração 0-based do arquivo unido.
 6. Primeiro se decide se o array é por camada: ele precisa estar sob o
    namespace da arquitetura e não ser um array estrutural de rope. Há uma
-   exceção explícita para os quatro arrays estruturais do PLE do `qwen4exp`:
-   `qwen4exp.ple.layers`, `qwen4exp.ple.layer_multipliers`,
-   `qwen4exp.ple.head_offsets` e `qwen4exp.ple.head_vocab_sizes`. Esses arrays
-   descrevem a tabela compartilhada de lookup, não uma série indexada pelos
-   blocos, e são copiados inteiros, byte a byte, para cada fatia. Só os demais
-   arrays escalares cujo comprimento é pelo menos `block_count` são recortados
-   pelos índices absolutos da faixa e gravados com a contagem local.
+   exceção explícita para os metadados PLE do `qwen4exp`:
+   `layer_multipliers`, `head_offsets` e `head_vocab_sizes` descrevem a tabela
+   compartilhada de lookup, não uma série indexada pelos blocos, e são copiados
+   inteiros, byte a byte, para cada fatia. `qwen4exp.ple.layers` é diferente:
+   lista os índices absolutos das camadas que usam PLE, então é filtrado para a
+   faixa e rebaseado para a numeração local. O tensor
+   `per_layer_token_embd.weight` só é copiado quando a faixa contém uma dessas
+   camadas. Só os demais arrays escalares cujo comprimento é pelo menos
+   `block_count` são recortados pelos índices absolutos da faixa e gravados com
+   a contagem local.
    Comprimento 1 continua broadcast; comprimento menor que `block_count` é
    recusa nominal. Arrays globais, como `tokenizer.ggml.tokens`, inclusive
    arrays de strings, são copiados intactos antes da comparação de comprimento.
@@ -372,7 +375,12 @@ de reparo que fabrique outro arquivo recusado pelo loader.
    `head_vocab_sizes` têm 16 valores porque descrevem as cabeças do hash. O
    `qwen4exp.cpp` do llama.cpp lê essas listas completas como parâmetros da
    tabela, enquanto `attention.compress_ratios` continua sendo um vetor de 48
-   posições, uma por bloco.
+   posições, uma por bloco. Como a origem pode distribuir a tabela de tensores
+   por três ou mais arquivos físicos, o layout e a cópia usam o índice da parte
+   resolvido por `multipart::GgufSource`; não há limite de duas partes. A perda
+   observada no Qwen3.8 foi a filtragem dos tensores não-bloco
+   `per_layer_token_embd.weight` e `output_hc_*`, não a abertura da terceira
+   parte.
 7. Grava `pom.original_block_count/start_layer/end_layer` no KV - a metadata
    que torna o total de camadas confiável para as fatias novas.
 8. Ordena os payloads por parte e offset físico, escreve com `ALIGN` de 32 bytes

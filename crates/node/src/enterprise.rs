@@ -1663,10 +1663,14 @@ fn plugin_path(
     os: &str,
     arch: &str,
 ) -> Result<std::path::PathBuf, LicenseClientError> {
+    // '+' aparece no metadado de build SemVer (ex: "ent-0.1.0+build.1-linux-x86_64"),
+    // gerado pelo auto-incremento de versao do pom-release.sh. E seguro em nomes de
+    // arquivo nas tres plataformas (Linux/macOS/Windows) e nao habilita path
+    // traversal, pois nao e '.'/'/'/'\\'.
     if release_id.is_empty()
         || !release_id
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
     {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
@@ -2079,6 +2083,16 @@ mod tests {
             url,
             "https://license.example/v1/plugins/pom_core/manifest?lease_id=lease-1&os=macos&arch=aarch64&channel=stable&host_version=0.1.0&plugin_abi=1"
         );
+    }
+
+    #[test]
+    fn plugin_path_accepts_semver_build_metadata_in_release_id() {
+        let path = plugin_path("ent-0.1.0+build.1-linux-x86_64", "linux", "x86_64")
+            .expect("release_id com '+' de metadado de build deve ser aceito");
+
+        assert!(path
+            .to_string_lossy()
+            .ends_with("ent-0.1.0+build.1-linux-x86_64-x86_64.so"));
     }
 
     #[test]

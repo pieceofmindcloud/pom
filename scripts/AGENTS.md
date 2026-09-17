@@ -105,7 +105,11 @@ feature no Windows CPU. Nesse fluxo, `--features` substitui as features do
 build e `--feature-set` altera apenas o metadado do upload. Os artefatos são
 `pom` em Linux/macOS e `pom.exe` no Windows; o wrapper `cargo` do operador
 deve encaminhar o alvo Windows MSVC para `cargo xwin` quando o host não for
-Windows. O servidor exige `plugin_abi` positivo também para `pom_core`, então
+Windows. Antes do Cargo, esse fluxo remove `CMAKE_CUDA_ARCHITECTURES` e força
+`CUDAARCHS=''`: o CMake trata o valor vazio como não definido e o
+`CMakeLists.txt` vendorizado escolhe a lista ampla de arquiteturas CUDA, nunca
+a GPU da máquina de build. Essa limpeza não é aplicada ao cdylib Enterprise,
+que não usa CUDA. O servidor exige `plugin_abi` positivo também para `pom_core`, então
 o script envia `1` como metadado de compatibilidade de transporte, não como
 ABI de cdylib. O `feature_set=core` é apenas metadado e não cria entitlement.
 `--dry-run` não exige token nem faz chamada HTTP e mostra `+build.1` como

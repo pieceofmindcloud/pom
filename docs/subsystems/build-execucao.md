@@ -669,6 +669,11 @@ diferentes:
   self-hosted, e uma máquina de desenvolvimento pode ter `CUDAARCHS` no ambiente
   para encurtar o build local; herdar aquele valor produziria, em silêncio, uma
   release que só funciona na GPU de quem compilou.
+  O `pom-release.sh` aplica a mesma regra ao build `pom_core`: remove também
+  `CMAKE_CUDA_ARCHITECTURES` herdado e executa Cargo com `CUDAARCHS=''`. O CMake
+  trata o valor vazio como não definido, então o `CMakeLists.txt` vendorizado
+  entra no caminho da lista ampla. O build do cdylib Enterprise não recebe essa
+  limpeza porque não compila CUDA.
 - **Desenvolvimento** (`pom-ksia.sh`, fora do repositório): só a arquitetura da
   máquina, via `CUDAARCHS`. O CMake ≥ 3.20 inicializa `CMAKE_CUDA_ARCHITECTURES`
   a partir dessa variável de ambiente, então não é preciso tocar no `build.rs`.

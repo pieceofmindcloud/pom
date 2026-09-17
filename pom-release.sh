@@ -169,7 +169,12 @@ if [[ "$plugin" == "pom_core" ]]; then
   cargo_args+=(-p node --target "$target")
   (
     cd "$worktree"
-    cargo "${cargo_args[@]}"
+    # Releases must not inherit the build machine's GPU. An empty CUDAARCHS is
+    # treated as unset by CMake, which lets the vendored ggml CMakeLists choose
+    # its broad architecture list. Remove the explicit CMake override too,
+    # since vendor/llama-cpp-sys-2 forwards CMAKE_* variables to that cache.
+    unset CMAKE_CUDA_ARCHITECTURES
+    CUDAARCHS='' cargo "${cargo_args[@]}"
   ) >/dev/null
   built_artifact="$worktree/target/$target/release/pom$extension"
   artifact="$artifact_dir/pom$extension"

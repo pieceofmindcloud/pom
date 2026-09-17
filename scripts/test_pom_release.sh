@@ -46,6 +46,11 @@ artifact_dir="target/$target/$profile"
 mkdir -p "$artifact_dir"
 artifact_name="$(printf '%s' "$crate" | tr '-' '_')"
 printf '%s\n' "$original_args" >> "${POM_RELEASE_CARGO_LOG:?}"
+if [[ -n "${POM_RELEASE_CARGO_ENV_LOG:-}" ]]; then
+  printf 'CUDAARCHS=%s CMAKE_CUDA_ARCHITECTURES=%s\n' \
+    "${CUDAARCHS-__unset__}" "${CMAKE_CUDA_ARCHITECTURES-__unset__}" \
+    >> "$POM_RELEASE_CARGO_ENV_LOG"
+fi
 if [[ "$crate" == node ]]; then
   core_artifact="$artifact_dir/pom"
   [[ "$extension" == dll ]] && core_artifact+=".exe"
@@ -83,6 +88,7 @@ chmod +x "$fake_bin/curl"
 
 curl_log="$tmp_dir/curl.log"
 cargo_log="$tmp_dir/cargo.log"
+cargo_env_log="$tmp_dir/cargo-env.log"
 published_output="$(
   PATH="$fake_bin:$PATH" \
   POM_RELEASE_API='https://license.test' \
@@ -145,8 +151,11 @@ assert_contains "$dry_run_output" 'release_id=ent-0.1.0+build.1-linux-x86_64'
 for platform in linux-x86_64 macos-aarch64 windows-x86_64; do
   core_dry_run_output="$(
     PATH="$fake_bin:$PATH" \
+    CUDAARCHS='120' \
+    CMAKE_CUDA_ARCHITECTURES='120' \
     POM_RELEASE_API='https://license.test' \
     POM_RELEASE_CARGO_LOG="$cargo_log" \
+    POM_RELEASE_CARGO_ENV_LOG="$cargo_env_log" \
     POM_RDMA_REPO="$root" \
     "$root/pom-release.sh" \
       --platform "$platform" \
@@ -170,12 +179,17 @@ for platform in linux-x86_64 macos-aarch64 windows-x86_64; do
       assert_contains "$(tail -n 1 "$cargo_log")" 'build --release --locked -p node --target x86_64-pc-windows-msvc'
       ;;
   esac
+  assert_contains "$(tail -n 1 "$cargo_env_log")" 'CUDAARCHS='
+  [[ "$(tail -n 1 "$cargo_env_log")" == 'CUDAARCHS= CMAKE_CUDA_ARCHITECTURES=__unset__' ]]
 done
 
 override_output="$(
   PATH="$fake_bin:$PATH" \
+  CUDAARCHS='120' \
+  CMAKE_CUDA_ARCHITECTURES='120' \
   POM_RELEASE_API='https://license.test' \
   POM_RELEASE_CARGO_LOG="$cargo_log" \
+  POM_RELEASE_CARGO_ENV_LOG="$cargo_env_log" \
   POM_RDMA_REPO="$root" \
   "$root/pom-release.sh" \
     --platform linux-x86_64 \
@@ -185,13 +199,17 @@ override_output="$(
 )"
 assert_contains "$override_output" 'release_id=pom_core-0.1.0+build.1-linux-x86_64'
 assert_contains "$(tail -n 1 "$cargo_log")" '--features metal -p node --target x86_64-unknown-linux-gnu'
+[[ "$(tail -n 1 "$cargo_env_log")" == 'CUDAARCHS= CMAKE_CUDA_ARCHITECTURES=__unset__' ]]
 
 core_published_output="$(
   PATH="$fake_bin:$PATH" \
+  CUDAARCHS='120' \
+  CMAKE_CUDA_ARCHITECTURES='120' \
   POM_RELEASE_API='https://license.test' \
   POM_RELEASE_TOKEN='test-token' \
   POM_RELEASE_CURL_LOG="$curl_log" \
   POM_RELEASE_CARGO_LOG="$cargo_log" \
+  POM_RELEASE_CARGO_ENV_LOG="$cargo_env_log" \
   POM_RDMA_REPO="$root" \
   "$root/pom-release.sh" \
     --platform windows-x86_64 \
@@ -204,5 +222,6 @@ curl_contents="$(cat "$curl_log")"
 assert_contains "$curl_contents" 'plugin=pom_core'
 assert_contains "$curl_contents" 'feature_set=core'
 assert_contains "$curl_contents" 'plugin_abi=1'
+[[ "$(tail -n 1 "$cargo_env_log")" == 'CUDAARCHS= CMAKE_CUDA_ARCHITECTURES=__unset__' ]]
 
 printf 'pom-release tests: PASS\n'

@@ -672,6 +672,7 @@ impl LlmEngine {
                     image.as_ptr(),
                     image.len(),
                     false,
+                    sys::mtmd_helper_init_opt_default(),
                 )
             };
             if wrapper.bitmap.is_null() {

@@ -91,6 +91,13 @@ não do fork: é a ponte `extern "C"` para o que o `llama.h` público não expõ
 as declarações do `.h`, então cada função nova aparece em `llama_cpp_sys_2::`
 sem mais nenhum passo.
 
+Após a migração upstream para `common_json`,
+`llama_rs_json_schema_to_grammar` deve analisar o texto com
+`common_json::parse`, não com `nlohmann::ordered_json`, porque a API interna
+recebe a abstração própria. `llama_rs_fit_params` passa `nullptr` no novo
+parâmetro de modelo extra de `common_fit_params`; isso representa corretamente
+que o POM não usa um modelo adicional nessa sondagem.
+
 Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
 `src/llama-ext.h`), e é bom saber por quê antes de mexer:
 

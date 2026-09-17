@@ -172,6 +172,10 @@ M-RoPE as duas divergem por desenho do upstream, e `mrope_positions` carrega a
 coordenada `[t, y, x, z]` de cada célula para que o estado oculto atravesse os
 hops sem reduzir as duas contagens a uma só - ver
 `decode_hidden_with_positions` e `crates/node/src/inference/AGENTS.md`.
+Ao criar um bitmap, `decode_multimodal` passa
+`mtmd_helper_init_opt_default()` à API do upstream. As opções passaram a ser
+explícitas, e esse default preserva o comportamento de imagens sem configurar
+parâmetros de vídeo.
 A captura de residual acumula microlotes pelo número de células físicas: o
 `mtmd` pode entregar o trecho textual e o trecho expandido da imagem em
 callbacks separados, enquanto `n_past` continua sendo apenas a posição lógica.

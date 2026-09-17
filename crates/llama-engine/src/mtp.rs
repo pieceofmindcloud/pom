@@ -39,6 +39,57 @@
 //! a capacidade. Ver `docs/subsystems/inferencia.md` para a conta do que
 //! custaria estender ao caso fatiado.
 //!
+//! # GGUF de rascunho separado ("shared MTP module")
+//!
+//! Nem todo modelo com MTP embute o bloco `nextn` no próprio arquivo. A
+//! Unsloth distribui o rascunho do Qwen3.8-Flash-Next (arquitetura
+//! `qwen4exp`) num GGUF à parte (`mtp-<modelo>-shared-Q8_0.gguf`) que
+//! reaproveita `token_embd`/`output` do modelo principal em vez de duplicá-los
+//! - o mesmo motivo de espaço que o llama.cpp já resolve para EAGLE3/DFLASH
+//! via `ctx_other` (`llama-ext.h`), embora o formato aqui seja mais simples: o
+//! arquivo de rascunho de fato inclui sua própria cópia pequena de
+//! `token_embd`/`output` (o "mtp_only" que `qwen35.cpp`/`qwen3next.cpp` já
+//! sabem carregar - `blk.0.attn_norm.weight` ausente marca o arquivo como
+//! só-nextn), então **não precisa** de `ctx_other`: carrega como um
+//! `LoadedModel` inteiramente independente
+//! (`LoadedModel::load_mtp_draft`) e vira o `companion` de
+//! `mtp_model_for_attach`, exatamente como o irmão CPU-only do recuo para RAM
+//! - os dois nunca coexistem.
+//!
+//! `EngineConfig::mtp_draft_path` é onde esse caminho chega. A descoberta
+//! segue o mesmo padrão de `mmproj` (arquivo irmão na pasta de modelos, ver
+//! `models::catalog::find_mtp_draft_sibling` e `find_mmproj_sibling`), e é
+//! automática - **não há um interruptor novo na UI**: o operador já liga MTP
+//! pelo campo que existe hoje, e o rascunho externo entra quando o alvo não
+//! tem `nextn` embutido e o arquivo existe ao lado do GGUF. A descoberta
+//! acontece na própria máquina que carrega o modelo (`run_apply`,
+//! `reconfigure_local`), então só a máquina que serve a fatia final - onde o
+//! MTP roda de fato - precisa ter o arquivo no disco; nem o orquestrador do
+//! deploy nem as demais máquinas do pipeline precisam dele.
+//!
+//! **Pré-requisito que o rascunho externo não supre sozinho**: o par
+//! `(h_p, x_{p+1})` que a cabeça `nextn` consome exige que o **alvo** exporte
+//! `h_nextn` do próprio grafo (`pom_llama_set_embeddings_nextn`), e isso é
+//! código por arquitetura no fork (`build_arch_graph`/`res->t_h_nextn`, ver
+//! `qwen35.cpp` como referência) - o rascunho não pode fornecer o que o alvo
+//! nunca calculou. `load_with_cache` verifica isso *antes* de gastar uma carga
+//! do arquivo de rascunho, reaplicando `mtp_graph_unavailable_reason` contra a
+//! arquitetura do **alvo** (não do rascunho). Na data em que esta capacidade
+//! foi escrita, `qwen4exp` não está na lista gerada de arquiteturas MTP (não
+//! tem despacho `LLM_GRAPH_TYPE_DECODER_MTP` nem emite `t_h_nextn`) - então um
+//! Qwen3.8-Flash-Next com um rascunho externo válido ainda relata
+//! `mtp_ready() == false`, com a razão nomeando a arquitetura, até esse
+//! trabalho ser feito no fork vendorizado (`pereirajair/llama.cpp`,
+//! `pom-tensor-parallel`, `src/models/qwen4exp.cpp`). Ver a sonda
+//! `an_external_mtp_draft_attaches_to_a_target_without_embedded_nextn` nos
+//! testes deste módulo para o roteiro de validação com os arquivos reais.
+//!
+//! **Fatiamento multi-nó do rascunho externo**: fora de escopo por ora. O
+//! mesmo limite da seção acima vale aqui - MTP só roda hoje quando uma máquina
+//! serve o modelo inteiro -, e como o rascunho depende do estado oculto final
+//! do alvo, ele teria que morar na mesma máquina que serve a última fatia,
+//! nunca na cabeça nem numa terceira máquina. Não implementado.
+//!
 //! # De onde veio o algoritmo
 //!
 //! De `llama.cpp/common/speculative.cpp`, `common_speculative_impl_draft_mtp`
@@ -569,6 +620,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         }
     }
 
@@ -714,6 +766,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
         let mut engine = crate::llm::LlmEngine::load_with_cache(
             &path,
@@ -774,5 +827,90 @@ mod tests {
             !de_novo.is_empty(),
             "a segunda rodada parou de rascunhar — o estado entre rodadas não sobreviveu"
         );
+    }
+
+    /// Sonda ao vivo do rascunho MTP **externo**: um modelo alvo que não
+    /// embute `nextn` (ex. `qwen4exp`/Qwen3.8-Flash-Next) mais um GGUF de
+    /// rascunho separado ("shared MTP module" da Unsloth, ex.
+    /// `mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf`).
+    ///
+    /// `#[ignore]`, dirigida por `POM_MTP_TARGET_MODEL` (o alvo) e
+    /// `POM_MTP_DRAFT_MODEL` (o rascunho). Diferente da sonda acima, o que
+    /// esta prova primeiro é o **pré-requisito arquitetural** que a integração
+    /// nova introduziu: o alvo precisa exportar `h_nextn` do próprio grafo
+    /// (`crate::mtp::mtp_graph_unavailable_reason` aplicado ao alvo, não ao
+    /// rascunho) mesmo quando o rascunho é um arquivo à parte. Um alvo fora da
+    /// lista gerada de arquiteturas MTP (`qwen4exp` incluído, na data em que
+    /// isto foi escrito) faz `engine.mtp_ready()` continuar falso mesmo com um
+    /// rascunho válido - isso é esperado e a asserção abaixo distingue os dois
+    /// desfechos em vez de tratar qualquer `mtp_ready() == false` como erro de
+    /// sonda.
+    ///
+    /// Rode com:
+    ///
+    /// ```text
+    /// POM_MTP_TARGET_MODEL=/caminho/Qwen3.8-Flash-Next-Q8_0.gguf \
+    /// POM_MTP_DRAFT_MODEL=/caminho/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
+    ///   cargo test --release --features metal --bin pom \
+    ///   mtp::tests::an_external_mtp_draft_attaches_to_a_target_without_embedded_nextn \
+    ///   -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn an_external_mtp_draft_attaches_to_a_target_without_embedded_nextn() {
+        let (Ok(target_path), Ok(draft_path)) = (
+            std::env::var("POM_MTP_TARGET_MODEL"),
+            std::env::var("POM_MTP_DRAFT_MODEL"),
+        ) else {
+            eprintln!(
+                "defina POM_MTP_TARGET_MODEL e POM_MTP_DRAFT_MODEL para rodar esta sonda"
+            );
+            return;
+        };
+        let cfg = crate::llm::EngineConfig {
+            n_ctx: 4096,
+            offload_kqv: true,
+            cache_type_k: crate::KvCacheType::F16,
+            cache_type_v: crate::KvCacheType::F16,
+            fit_memory: true,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            n_batch: 512,
+            n_gpu_layers: 99,
+            n_threads: 0,
+            max_sessions: 1,
+            need_embeddings: false,
+            mtp: true,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+            mmproj_path: None,
+            mtp_draft_path: Some(draft_path.clone()),
+        };
+        let engine = crate::llm::LlmEngine::load_with_cache(
+            &target_path,
+            &cfg,
+            &crate::llm::ModelCache::new(),
+            false,
+        )
+        .expect("carregar o alvo");
+
+        if !engine.mtp_ready() {
+            eprintln!(
+                "MTP não ficou pronto: {:?}. Se a razão citar arquitetura sem grafo MTP, o \
+                 alvo ainda precisa da correção no fork (emitir h_nextn do próprio grafo) - \
+                 ver a nota de limitação em `crate::mtp` e o AGENTS.md de models/. Se citar \
+                 outra coisa (arquivo não encontrado, largura incompatível), é o rascunho ou \
+                 o caminho configurado que está errado.",
+                engine.mtp_unavailable_reason()
+            );
+            panic!("MTP não ficou pronto - ver a mensagem acima para qual dos dois motivos");
+        }
+        assert!(
+            matches!(engine.mtp_allocation(), Some("vram" | "ram")),
+            "o runtime precisa publicar onde o MTP foi alocado: {:?}",
+            engine.mtp_allocation()
+        );
+        eprintln!("MTP externo pronto: alocação {:?}", engine.mtp_allocation());
     }
 }

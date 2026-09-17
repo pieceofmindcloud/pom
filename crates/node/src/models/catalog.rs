@@ -519,6 +519,13 @@ fn describe(
         return None;
     }
 
+    // MTP draft sidecars (`mtp-*`, e.g. Unsloth's "shared MTP module") reuse
+    // the main model's `embed_tokens` and are not complete language models
+    // either - see `find_mtp_draft_sibling`.
+    if filename.to_ascii_lowercase().starts_with("mtp-") {
+        return None;
+    }
+
     // Quem manda é o `.pom`. O nome do arquivo é o hash, e hash não diz de que
     // modelo é nem que pedaço dele traz; o manifesto diz as duas coisas. Sem
     // manifesto o arquivo não é parte de fatiamento nenhum - é um GGUF que
@@ -608,6 +615,48 @@ pub(crate) fn find_mmproj_sibling(model: &Path) -> Option<String> {
             }
             let distance = match (model_bits, parse_quant_bits(&name)) {
                 (Some(model_bits), Some(projector_bits)) => model_bits.abs_diff(projector_bits),
+                _ => u32::MAX,
+            };
+            Some((distance, name, path))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    candidates
+        .first()
+        .map(|(_, _, path)| path.to_string_lossy().into_owned())
+}
+
+/// A `.gguf` sibling in the same directory whose filename starts with
+/// `mtp-`, choosing the closest quantisation when more than one candidate
+/// exists. Same mechanism as [`find_mmproj_sibling`], for the separate MTP
+/// draft head ("shared MTP module") some architectures ship instead of
+/// embedding `nextn` weights in the main GGUF - see `crate::llm::mtp`.
+///
+/// The `mtp-` prefix is the convention observed in the wild (e.g. Unsloth's
+/// `mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf`); `mmproj`'s convention is a
+/// substring match instead of a prefix because llama.cpp itself only checks
+/// `contains`, but no such precedent exists for MTP drafts, so a prefix is
+/// used here to avoid false positives on an unrelated model whose name
+/// happens to contain "mtp".
+pub(crate) fn find_mtp_draft_sibling(model: &Path) -> Option<String> {
+    let parent = model.parent()?;
+    let model_name = model.file_name()?.to_string_lossy();
+    let model_bits = parse_quant_bits(&model_name);
+    let mut candidates = std::fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            if path == model
+                || !path.is_file()
+                || !name.to_ascii_lowercase().starts_with("mtp-")
+                || !name.to_ascii_lowercase().ends_with(".gguf")
+            {
+                return None;
+            }
+            let distance = match (model_bits, parse_quant_bits(&name)) {
+                (Some(model_bits), Some(draft_bits)) => model_bits.abs_diff(draft_bits),
                 _ => u32::MAX,
             };
             Some((distance, name, path))
@@ -709,7 +758,10 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
             return EnrichResult::Failed;
         }
     };
-    if info.architecture.as_deref() == Some("clip") || filename.starts_with("mmproj") {
+    if info.architecture.as_deref() == Some("clip")
+        || filename.starts_with("mmproj")
+        || filename.to_ascii_lowercase().starts_with("mtp-")
+    {
         return EnrichResult::Drop;
     }
 
@@ -1435,6 +1487,53 @@ mod tests {
         let catalog = discover_fast(std::slice::from_ref(&models), &shards);
         assert_eq!(catalog.models.len(), 1);
         assert_eq!(catalog.models[0].mmproj_path.as_deref(), projector.to_str());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn find_mtp_draft_sibling_matches_the_unsloth_naming_convention() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mtp-draft-sibling-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let model = root.join("Qwen3.8-Flash-Next-Q8_0.gguf");
+        let draft = root.join("mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf");
+        std::fs::write(&model, vec![0u8; 4096]).unwrap();
+        std::fs::write(&draft, vec![0u8; 4096]).unwrap();
+
+        assert_eq!(find_mtp_draft_sibling(&model).as_deref(), draft.to_str());
+
+        // A file that merely contains "mtp" without the leading prefix must
+        // not match: the convention is a prefix, not a substring, precisely
+        // to avoid false positives on an unrelated model.
+        std::fs::remove_file(&draft).unwrap();
+        let decoy = root.join("qwen-mtp-experiment-Q8_0.gguf");
+        std::fs::write(&decoy, vec![0u8; 4096]).unwrap();
+        assert_eq!(find_mtp_draft_sibling(&model), None);
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_excludes_the_mtp_draft_sidecar_from_listing() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mtp-draft-catalog-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let model = models.join("Qwen3.8-Flash-Next-Q8_0.gguf");
+        let draft = models.join("mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf");
+        std::fs::write(&model, crate::splitter::test_gguf_bytes(8)).unwrap();
+        std::fs::write(&draft, vec![0u8; 4096]).unwrap();
+
+        let catalog = discover_fast(std::slice::from_ref(&models), &shards);
+        assert_eq!(catalog.models.len(), 1, "o sidecar de rascunho não é um modelo");
+        assert_eq!(catalog.models[0].path, model.to_string_lossy());
 
         std::fs::remove_dir_all(root).ok();
     }

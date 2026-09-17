@@ -39,10 +39,15 @@ fn write_mrope_position(
 impl LlmEngine {
     /// Escolhe o modelo que pode respaldar o contexto MTP.
     ///
-    /// Um companheiro presente é obrigatório no recuo para RAM: o alvo pode
-    /// ter sido carregado deliberadamente sem `nextn`. A seleção devolve
-    /// `None` antes de qualquer chamada que reserve o grafo MTP quando nem o
-    /// alvo nem o companheiro carregam esses pesos.
+    /// `companion` cobre dois casos, nunca simultâneos: o irmão CPU-only do
+    /// recuo para RAM (mesmo GGUF do alvo, ver `LoadedModel::load_mtp_cpu`) e
+    /// o GGUF de rascunho externo ("shared MTP module", ver
+    /// `LoadedModel::load_mtp_draft`) quando o alvo não embute `nextn`
+    /// nenhum. Em ambos o alvo pode ter sido carregado deliberadamente sem
+    /// `nextn`, então o companheiro - quando presente - é a única fonte
+    /// considerada. A seleção devolve `None` antes de qualquer chamada que
+    /// reserve o grafo MTP quando nem o alvo nem o companheiro carregam esses
+    /// pesos.
     pub(super) fn mtp_model_for_attach<'a>(
         target: &'a LoadedModel,
         companion: Option<&'a LoadedModel>,
@@ -201,6 +206,104 @@ impl LlmEngine {
                 engine.mtp_unavailable_reason = Some(format!(
                     "{vram_reason}; o recuo para a RAM foi recusado pelo operador"
                 ));
+            }
+        }
+
+        // Nem o alvo embute `nextn` nem (se aplicável) a RAM resolveu -
+        // último recurso: um GGUF de rascunho separado ("shared MTP module"),
+        // ver `crate::mtp` e `EngineConfig::mtp_draft_path`. Diferente do
+        // caso acima, este arquivo não é o mesmo do alvo: reaproveita
+        // `token_embd`/`output` próprios em vez de compartilhar os do alvo,
+        // então o alvo em si nunca precisa recarregar - só o contexto, que
+        // por isso é derrubado antes de recriar (`drop(engine)`) para não
+        // manter dois contextos do mesmo modelo vivos ao mesmo tempo.
+        if cfg.mtp && !engine.mtp_ready() {
+            if let Some(draft_path) = cfg.mtp_draft_path.clone() {
+                let target_architecture_reason = loaded
+                    .as_deref()
+                    .and_then(|target| {
+                        // Um rascunho externo alimenta o par (h_p, x_{p+1})
+                        // com o estado oculto que o próprio grafo do ALVO
+                        // exporta (`h_nextn`) - ver
+                        // `pom_llama_set_embeddings_nextn` em `crate::mtp`.
+                        // Isso é código por arquitetura no fork
+                        // (`build_arch_graph`/`t_h_nextn`), não algo que o
+                        // arquivo de rascunho supra sozinho: um alvo fora da
+                        // lista de arquiteturas MTP nunca preenche esse
+                        // estado, e o rascunho travaria mudo no primeiro
+                        // `observe` em vez de na carga. Falhar aqui, antes de
+                        // gastar uma carga e um contexto novos, é o mesmo
+                        // "falhar fechado" que `mtp_graph_unavailable_reason`
+                        // já pratica para o lado do rascunho.
+                        crate::mtp::mtp_graph_unavailable_reason(
+                            target.model_architecture().as_deref(),
+                        )
+                    });
+
+                if let Some(reason) = target_architecture_reason {
+                    tracing::info!(
+                        reason,
+                        "MTP: arquivo de rascunho encontrado, mas o alvo não exporta estado oculto nextn"
+                    );
+                    engine.mtp_unavailable_reason = Some(reason);
+                } else {
+                    let fit_memory_applied = engine.fit_memory_applied;
+                    let effective_n_gpu_layers = engine.effective_n_gpu_layers;
+                    let previous_reason = engine.mtp_unavailable_reason.clone();
+                    drop(engine);
+                    let target_loaded = loaded
+                        .clone()
+                        .expect("o modelo alvo deve permanecer carregado");
+
+                    let draft_result = LoadedModel::load_mtp_draft(&draft_path, cfg).and_then(
+                        |draft_loaded| {
+                            Self::from_loaded_with_mtp_offload(
+                                target_loaded.clone(),
+                                cfg,
+                                fit_memory_applied,
+                                effective_n_gpu_layers,
+                                Some(draft_loaded),
+                                cfg.offload_kqv,
+                            )
+                        },
+                    );
+
+                    match draft_result {
+                        Ok(draft_engine) if draft_engine.mtp_ready() => {
+                            tracing::info!(
+                                draft_path,
+                                "MTP: rascunho externo anexado com sucesso"
+                            );
+                            engine = draft_engine;
+                            mtp_fallback_used = true;
+                        }
+                        Ok(mut draft_engine) => {
+                            // Arquivo presente mas inutilizável (largura
+                            // incompatível com o alvo etc.) - o contexto sem
+                            // MTP que ele já criou serve como o engine
+                            // efetivo; só a razão é substituída.
+                            if draft_engine.mtp_unavailable_reason.is_none() {
+                                draft_engine.mtp_unavailable_reason = previous_reason;
+                            }
+                            engine = draft_engine;
+                        }
+                        Err(error) => {
+                            let reason = format!(
+                                "rascunho MTP externo em {draft_path} não anexou: {error:#}"
+                            );
+                            warn!("{reason}");
+                            engine = Self::from_loaded_with_mtp_offload(
+                                target_loaded,
+                                cfg,
+                                fit_memory_applied,
+                                effective_n_gpu_layers,
+                                None,
+                                cfg.offload_kqv,
+                            )?;
+                            engine.mtp_unavailable_reason = Some(reason);
+                        }
+                    }
+                }
             }
         }
 

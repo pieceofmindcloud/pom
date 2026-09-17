@@ -1308,6 +1308,7 @@ async fn async_main(
             // Configurado pela linha de comando: não veio de implantação nenhuma.
             model_path: model_name.clone(),
             mmproj_path: None,
+            mtp_draft_path: None,
             model_label: profile.name.clone(),
             deployment_name: profile.name.clone(),
             start_layer: assignment.start_layer,

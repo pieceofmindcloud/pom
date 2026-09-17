@@ -44,6 +44,16 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   Quando o modelo alvo usa MoE externo metadata-only, `LlmEngine::set_moe_runtime`
   instala o mesmo callback também no contexto MTP; o acompanhante CPU do recuo
   mantém o caminho nativo porque seus pesos de experts estão presentes.
+  `EngineConfig.mtp_draft_path` (+ `LoadedModel::load_mtp_draft`) é uma segunda
+  fonte de pesos `nextn`: um GGUF de rascunho separado ("shared MTP module",
+  ex. `qwen4exp`/Qwen3.8-Flash-Next) carregado como `LoadedModel` independente e
+  usado como o mesmo `companion` do recuo para RAM em `mtp_model_for_attach` -
+  os dois nunca coexistem. `load_with_cache` verifica a arquitetura do **alvo**
+  contra `mtp_graph_unavailable_reason` antes de gastar essa carga, porque o
+  rascunho externo depende do alvo exportar `h_nextn` do próprio grafo
+  (código por arquitetura no fork, `res->t_h_nextn`) - ver o cabeçalho de
+  `mtp.rs` para a limitação conhecida de `qwen4exp` e a convenção de nome
+  (`catalog::find_mtp_draft_sibling`, prefixo `mtp-`).
 - `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em
   `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`. O
   fallback CPU do router executa os experts selecionados em workers escopados

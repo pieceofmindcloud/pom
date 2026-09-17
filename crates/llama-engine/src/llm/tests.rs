@@ -531,6 +531,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
         let target_plan = empty_fit_plan_with_mtp_mode(&target_cfg, MtpFitMode::Disabled);
         let target_loaded = LoadedModel::load_with_mtp(&path, &target_plan, false)
@@ -604,6 +605,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
         let mut target_cfg = cfg.clone();
         target_cfg.fit_memory = false;
@@ -657,6 +659,7 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             mmproj_path: None,
+            mtp_draft_path: None,
             offload_kqv: true,
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
@@ -769,6 +772,7 @@ mod tests {
         let config = |external| EngineConfig {
             n_ctx: 512,
             mmproj_path: None,
+            mtp_draft_path: None,
             offload_kqv: true,
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,
@@ -933,6 +937,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
         let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -986,6 +991,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
         let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -1061,6 +1067,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
         let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -1134,6 +1141,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
         let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -1177,6 +1185,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
         let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");

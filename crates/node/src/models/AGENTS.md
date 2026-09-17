@@ -226,6 +226,24 @@ próxima. `DiscoveredModel.mmproj_path` é a resposta persistida no catálogo;
 origem com o mesmo rótulo. A interface não deve varrer o disco. O projetor não
 é um modelo selecionável.
 
+### Rascunho MTP separado
+
+`catalog.rs::find_mtp_draft_sibling` é o mesmo mecanismo que `find_mmproj_sibling`
+(irmão `.gguf` no mesmo diretório, quantização mais próxima), mas com um
+prefixo em vez de substring - `mtp-` - porque não existe convenção estabelecida
+para esse arquivo fora da própria Unsloth, e substring arriscaria falso
+positivo num modelo cujo nome contenha "mtp". Ao contrário do mmproj, esse
+caminho **não** vive no catálogo central (`DiscoveredModel`/`ShardSet`/`Plan`):
+a descoberta acontece direto na máquina que carrega o modelo
+(`webui::run_apply`, `webui::reconfigure_local`), porque só ela precisa do
+arquivo - nem o orquestrador do deploy nem as demais máquinas do pipeline. Sem
+opt-in na UI: o interruptor existente `mtp_enabled` já é a intenção do
+operador, e achar (ou não) o arquivo só decide como o MTP roda quando o modelo
+alvo não traz `nextn` embutido. Ver `crates/llama-engine/src/mtp.rs` para a
+mecânica completa (`LoadedModel::load_mtp_draft`, `EngineConfig.mtp_draft_path`)
+e a limitação conhecida de arquitetura-alvo (`qwen4exp` ainda não emite o
+estado oculto que o rascunho externo precisa).
+
 ## Manutenção deste arquivo
 
 Este arquivo é um mapa curto da pasta. Ao adicionar metadados de modelo ou

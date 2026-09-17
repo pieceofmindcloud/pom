@@ -489,4 +489,25 @@ impl LoadedModel {
         let plan = empty_fit_plan(&cpu_cfg);
         Self::load_with_mtp(model_path, &plan, true)
     }
+
+    /// Carrega um GGUF de rascunho MTP separado ("shared MTP module"), usado
+    /// quando o modelo alvo não embute pesos `nextn` próprios.
+    ///
+    /// Ao contrário de `load_mtp_cpu` (o mesmo arquivo do alvo, só que
+    /// CPU-only), este é um arquivo **diferente**: pequeno por desenho -
+    /// tipicamente só o bloco `nextn` mais `token_embd`/`output` -, então
+    /// carrega com offload total de GPU em vez de forçar CPU. Sem executor
+    /// externo de MoE: o arquivo de rascunho não traz experts próprios.
+    pub(super) fn load_mtp_draft(draft_path: &str, cfg: &EngineConfig) -> Result<Arc<Self>> {
+        let mut draft_cfg = cfg.clone();
+        draft_cfg.n_gpu_layers = DEFAULT_GPU_LAYERS;
+        draft_cfg.moe_external_executor = false;
+        draft_cfg.moe_external_executor_layers.clear();
+        let plan = empty_fit_plan_with_mtp_mode(&draft_cfg, MtpFitMode::Vram);
+        let loaded = Self::load_with_mtp(draft_path, &plan, true)?;
+        if !loaded.has_nextn_weights() {
+            bail!("o arquivo de rascunho MTP em {draft_path} não traz pesos nextn");
+        }
+        Ok(loaded)
+    }
 }

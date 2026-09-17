@@ -321,6 +321,7 @@ mod pool_tests {
         EngineConfig {
             n_ctx: 120_320,
             mmproj_path: None,
+            mtp_draft_path: None,
             offload_kqv: true,
             cache_type_k: KvCacheType::F16,
             cache_type_v: KvCacheType::F16,

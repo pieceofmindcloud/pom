@@ -84,6 +84,13 @@ pub const MTP_NO_NEXTN_REASON: &str = "o modelo carregado não traz o bloco next
 pub struct EngineConfig {
     /// Projector multimodal opcional, carregado como o `--mmproj` do llama.cpp.
     pub mmproj_path: Option<String>,
+    /// GGUF externo de rascunho MTP ("shared MTP module"), usado quando o
+    /// modelo alvo não embute pesos `nextn` próprios. Mesmo padrão de
+    /// descoberta do `mmproj_path` (arquivo irmão na pasta de modelos) - ver
+    /// `crate::mtp` e `catalog::find_mtp_draft_sibling`. `None` preserva o
+    /// comportamento atual: MTP pedido sem `nextn` embutido e sem este campo
+    /// segue sem MTP.
+    pub mtp_draft_path: Option<String>,
     /// Capacidade total do cache KV. O runtime já multiplica a janela pública
     /// por sessão por `max_sessions` antes de montar esta configuração.
     pub n_ctx: u32,
@@ -588,6 +595,7 @@ mod fit_memory_margin_tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
 
         assert_eq!(
@@ -629,6 +637,7 @@ mod fit_memory_margin_tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
 
         let physical = fit_device_count(2, 2, 16);

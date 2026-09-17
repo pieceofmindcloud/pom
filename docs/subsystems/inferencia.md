@@ -1886,6 +1886,27 @@ valores são iguais.
   `relay/v2-direct`.
 - A fatia final é a única que carrega o bloco porque `splitter::split` zera
   `<arch>.nextn_predict_layers` fora dela - ver `docs/subsystems/fatiamento.md`.
+- **Um GGUF de rascunho separado é a segunda fonte de pesos `nextn`.** Nem todo
+  modelo embute o bloco no próprio arquivo - a Unsloth distribui o do
+  Qwen3.8-Flash-Next (`qwen4exp`) num GGUF à parte (`mtp-<modelo>-shared-*.gguf`)
+  que carrega como `LoadedModel` independente
+  (`LoadedModel::load_mtp_draft`) e vira o mesmo `companion` do recuo para RAM
+  em `mtp_model_for_attach` - os dois nunca coexistem. A descoberta segue a
+  convenção do `mmproj` (arquivo irmão, prefixo `mtp-`,
+  `catalog::find_mtp_draft_sibling`), roda direto na máquina que carrega o
+  modelo (`run_apply`/`reconfigure_local`, nunca o catálogo central) e não tem
+  interruptor próprio: usa `mtp_enabled`. **Pré-requisito que o arquivo de
+  rascunho não supre sozinho**: o alvo precisa exportar `h_nextn` do próprio
+  grafo, que é código por arquitetura no fork
+  (`build_arch_graph`/`res->t_h_nextn`); `qwen4exp` ainda não está na lista
+  gerada de arquiteturas MTP, então um alvo desse tipo com um rascunho externo
+  válido continua relatando `mtp_ready=false` até esse trabalho ser feito em
+  `pereirajair/llama.cpp` (`pom-tensor-parallel`,
+  `src/models/qwen4exp.cpp`) - `load_with_cache` detecta isso antes de gastar
+  uma carga do arquivo de rascunho e nomeia a arquitetura na razão. Fatiamento
+  multi-nó do rascunho não está implementado, pelo mesmo limite do bullet acima
+  (MTP só ativa hoje com uma máquina servindo o modelo inteiro). Ver
+  `crates/llama-engine/src/mtp.rs` para a mecânica completa.
 
 ### 5.3 Estado recorrente do Kimi-K3
 

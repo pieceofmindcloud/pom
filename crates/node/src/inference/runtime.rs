@@ -78,6 +78,7 @@ pub(crate) fn engine_config_from_node(
     let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
     Ok(crate::llm::EngineConfig {
         mmproj_path: cfg.mmproj_path.clone(),
+        mtp_draft_path: cfg.mtp_draft_path.clone(),
         n_ctx: total_context_tokens(cfg.n_ctx, cfg.max_sessions)?,
         offload_kqv: cfg.offload_kqv,
         cache_type_k: cfg.cache_type_k,
@@ -132,6 +133,13 @@ pub struct NodeConfig {
     /// Projector multimodal carregado junto do GGUF, equivalente a `--mmproj`.
     #[serde(default)]
     pub mmproj_path: Option<String>,
+    /// GGUF externo de rascunho MTP ("shared MTP module"), presente só na
+    /// máquina que serve a última camada do modelo (onde o bloco `nextn`
+    /// rodaria). Descoberto pelo mesmo mecanismo de irmão de arquivo que o
+    /// `mmproj_path`; ver `models::catalog::find_mtp_draft_sibling` e
+    /// `crate::llm::mtp`.
+    #[serde(default)]
+    pub mtp_draft_path: Option<String>,
     /// Label shared by every peer of the same model. The pipeline planner only
     /// chains peers whose label matches exactly, so this must agree across the
     /// cluster (see `ModelProfile::guess_from_name`).
@@ -310,6 +318,7 @@ impl NodeConfig {
             deployment_name: String::new(),
             model_path: String::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
             model_label: String::new(),
             start_layer: 0,
             end_layer: 0,
@@ -381,6 +390,7 @@ impl NodeConfig {
             deployment_name: self.deployment_name.clone(),
             model_path: self.model_path.clone(),
             mmproj_path: self.mmproj_path.clone(),
+            mtp_draft_path: self.mtp_draft_path.clone(),
             model_label: self.model_label.clone(),
             start_layer: self.start_layer,
             end_layer: self.end_layer,
@@ -534,6 +544,7 @@ impl NodeConfig {
     fn weights_are_compatible(&self, other: &Self) -> bool {
         self.model_path == other.model_path
             && self.mmproj_path == other.mmproj_path
+            && self.mtp_draft_path == other.mtp_draft_path
             && self.start_layer == other.start_layer
             && self.end_layer == other.end_layer
             && self.total_layers == other.total_layers
@@ -2148,6 +2159,7 @@ mod tests {
             deploy_id: String::new(),
             model_path: "/nonexistent/model.gguf".into(),
             mmproj_path: None,
+            mtp_draft_path: None,
             model_label: "qwen35".into(),
             deployment_name: "qwen35".into(),
             start_layer: 0,

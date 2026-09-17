@@ -68,7 +68,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
 - O grupo `deploymentLogs.*` cobre o console de processo da réplica local:
   estado do auto-scroll, cópia das últimas 500 linhas, retorno da cópia, filtro
   e estados de coleta.
-- O grupo `about.*` cobre a tela Sobre: licença provisória do POM, contagem e
+- O grupo `about.*` cobre a tela Sobre: licença provisória do POM, status
+  Enterprise e verificação sob demanda de atualização do `pom_core`, contagem e
   filtro do catálogo, rótulos de ecossistema, versão, repositório e estado vazio.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
@@ -79,7 +80,9 @@ usam essas chaves, nunca literais cravados nos componentes.
 
 O grupo `enterprise.*` cobre o estado de descoberta das telas de Logs de
 Requisições e Estatísticas. Essas telas continuam navegáveis sem licença para
-que o usuário veja o convite de ativação e o link de compra.
+que o usuário veja o convite de ativação e o link de compra. O mesmo grupo
+nomeia o aviso de atualização do binário `pom_core` e a ação explícita de
+instalação e reinício.
 
 ## Como editar mensagens
 

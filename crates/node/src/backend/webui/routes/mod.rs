@@ -152,6 +152,16 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::AdminOnly,
     },
     RouteRule {
+        prefix: "/api/ui/enterprise/pom-update/apply",
+        method: Some(Method::POST),
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/enterprise/pom-update/check",
+        method: Some(Method::POST),
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
         prefix: "/api/ui/enterprise/deactivate",
         method: Some(Method::POST),
         scope: RouteScope::AdminOnly,
@@ -545,6 +555,8 @@ mod policy_tests {
         for path in [
             "/api/ui/enterprise/activate",
             "/api/ui/enterprise/refresh",
+            "/api/ui/enterprise/pom-update/check",
+            "/api/ui/enterprise/pom-update/apply",
             "/api/ui/enterprise/deactivate",
         ] {
             assert_eq!(

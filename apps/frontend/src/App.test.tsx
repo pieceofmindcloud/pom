@@ -28,6 +28,7 @@ vi.mock("./lib/queries", () => ({
       manage_url: "https://pieceofmind.cloud/enterprise",
       plugin_version: enterpriseStatus.active ? "test" : null,
       lease_expires_at: null,
+      core_update: null,
     },
     isLoading: false,
     isError: false,

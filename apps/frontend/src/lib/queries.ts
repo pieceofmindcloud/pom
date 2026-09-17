@@ -199,6 +199,7 @@ const inactiveEnterpriseStatus: EnterpriseStatus = {
   manage_url: "https://pieceofmind.cloud/enterprise",
   plugin_version: null,
   lease_expires_at: null,
+  core_update: null,
 };
 
 /** Public license state. A missing endpoint is treated as Free, fail-closed. */

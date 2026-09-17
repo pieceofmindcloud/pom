@@ -68,7 +68,8 @@ transferência.
   intermediária.
   `read_layout` usa a tabela unificada de multipart.rs, então o
   primeiro arquivo de um GGUF multipart, mesmo sem tensores, representa o
-  conjunto inteiro.
+  conjunto inteiro. O custo e a seleção também consideram tensores presentes
+  em todas as partes físicas, inclusive a terceira ou posteriores.
 - multipart.rs - mapeia um GGUF simples ou todas as partes declaradas por
   split.count, split.no e split.tensors.count. Valida a convenção N-of-M.gguf,
   resolve cada tensor para parte e offset relativo e soma/hash somente a
@@ -93,8 +94,13 @@ transferência.
   replicação de tensores compartilhados por rank e reserva o cabeçalho gerado.
   Na fusão, arrays escalares sob o namespace da arquitetura são reconstruídos
   pela cobertura de cada fatia, em vez de copiar a primeira; qualquer cauda de
-  camadas especiais é preservada uma vez. O resultado é validado por
-  `gguf::read_layout` antes de o backend o nomear por conteúdo.
+  camadas especiais é preservada uma vez. No `qwen4exp`, `ple.layers` é
+  filtrado e rebaseado para a numeração local, enquanto
+  `ple.layer_multipliers`, `ple.head_offsets` e `ple.head_vocab_sizes` são
+  preservados inteiros. `per_layer_token_embd.weight` só entra na fatia que
+  contém uma camada PLE, e os três tensores `output_hc_*` obrigatórios são
+  copiados para cada fatia. O resultado é validado por `gguf::read_layout`
+  antes de o backend o nomear por conteúdo.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.
@@ -198,7 +204,12 @@ são preservados na fatia. Arrays globais, inclusive `tokenizer.ggml.tokens` e
 arrays de strings, são copiados intactos antes de qualquer comparação de
 comprimento. Comprimento 1 é broadcast e permanece igual; um comprimento
 positivo menor que `block_count` em array da arquitetura é recusa nominal com
-chave e tamanho.
+chave e tamanho. Os quatro arrays `qwen4exp.ple.*` são tratados por semântica
+nominal: `layer_multipliers`, `head_offsets` e `head_vocab_sizes` representam
+estrutura compartilhada da tabela e são copiados inteiros em cada fatia;
+`ple.layers` é a lista de camadas PLE, filtrada para a faixa e rebaseada para
+o índice local. O tensor `per_layer_token_embd.weight` acompanha somente as
+fatias que contêm uma dessas camadas.
 
 ### Projetor multimodal
 

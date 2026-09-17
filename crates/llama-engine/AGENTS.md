@@ -130,7 +130,13 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   quem precisa da rota, do `batch_id` ou de uma validação. Detalhe e números em
   `docs/subsystems/inferencia.md` §2.2.
 - `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo modelos
-  multipart. `kv_budget.rs` - orçamento de bytes do cache KV por geometria.
+  multipart. `read_layout` valida arrays por camada usando a tabela unificada
+  de todas as partes físicas. Para `qwen4exp`, mede
+  `per_layer_token_embd.weight` apenas nas faixas que contêm uma camada PLE;
+  os três arrays de estrutura (`layer_multipliers`, `head_offsets` e
+  `head_vocab_sizes`) permanecem completos, enquanto `ple.layers` é filtrado
+  e rebaseado pelo fatiador. `kv_budget.rs` - orçamento de bytes do cache KV
+  por geometria.
 - `kv_cache.rs` - `KvCacheType` (era `node/src/utils/config.rs`; `Config` de
   `node` só o referencia como campo).
 - `sysmon.rs` - monitor de CPU/RAM/disco/GPU. A raiz do projeto que ele mede é

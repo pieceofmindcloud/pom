@@ -5,6 +5,15 @@ about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
 about.ecosystem.frontend,Frontend,Frontend
 about.ecosystem.rust,Rust,Rust
 about.empty,No dependencies match this search.,Nenhuma dependência corresponde a esta busca.
+about.enterpriseActive,Active,Ativa
+about.enterpriseCheckFailed,Could not check for POM updates.,Não foi possível verificar atualizações do POM.
+about.enterpriseCheckUpdates,Check for updates,Verificar atualizações
+about.enterpriseInactive,Inactive,Inativa
+about.enterpriseOpen,Open Enterprise,Abrir Enterprise
+about.enterpriseState,State,Estado
+about.enterpriseSubtitle,License status for this node and on-demand POM update checks.,Estado da licença deste nó e verificação sob demanda de atualização do POM.
+about.enterpriseTitle,Enterprise license,Licença Enterprise
+about.enterpriseUpdateHint,An update was found. Open Enterprise to review and apply it.,Uma atualização foi encontrada. Abra Enterprise para revisar e aplicá-la.
 about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
 about.placeholderBody,"The POM software license has not been defined officially yet. This screen shows an example only.","A licença do software POM ainda não foi definida oficialmente. Esta tela mostra apenas um exemplo."
 about.placeholderLicense,Provisional license (example),Licença provisória (exemplo)
@@ -838,34 +847,38 @@ docs.section.subsystems,Subsystem docs,Docs de subsistema
 docs.selectAria,Open {title},Abrir {title}
 docs.tab.guides,Guides,Guias
 docs.tab.reference,Reference,Referência
-enterprise.eyebrow,Enterprise,Enterprise
-enterprise.learnMore,Learn about Enterprise,Conhecer o Enterprise
-enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
-enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
+enterprise.activate,Activate license,Ativar licença
 enterprise.activateHere,Activate a license,Ativar uma licença
-enterprise.activationTitle,Enterprise license,Licença Enterprise
-enterprise.activationSubtitle,Activate the plugin on this node to unlock Request Logs and Statistics.,Ative o plugin neste nó para liberar Logs de Requisições e Estatísticas.
 enterprise.activationEyebrow,License activation,Ativação da licença
-enterprise.formTitle,Enter your license key,Digite sua chave de licença
+enterprise.activationFailed,Could not activate the license.,Não foi possível ativar a licença.
+enterprise.activationSubtitle,Activate the plugin on this node to unlock Request Logs and Statistics.,Ative o plugin neste nó para liberar Logs de Requisições e Estatísticas.
+enterprise.activationTitle,Enterprise license,Licença Enterprise
+enterprise.activeEyebrow,Enterprise active,Enterprise ativo
+enterprise.activeState,Active,Ativa
+enterprise.activeSubtitle,Request Logs and Statistics are available on this node.,Logs de Requisições e Estatísticas estão disponíveis neste nó.
+enterprise.activeTitle,Enterprise is ready,Enterprise está pronto
+enterprise.eyebrow,Enterprise,Enterprise
 enterprise.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
+enterprise.formTitle,Enter your license key,Digite sua chave de licença
+enterprise.includedSubtitle,These screens remain visible so you can discover Enterprise.,Estas telas continuam visíveis para você conhecer o Enterprise.
+enterprise.includedTitle,Included features,Funcionalidades incluídas
+enterprise.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
+enterprise.learnMore,Learn about Enterprise,Conhecer o Enterprise
 enterprise.licenseKeyLabel,Enterprise license key,Chave de licença Enterprise
 enterprise.licenseKeyPlaceholder,PM-...,PM-...
-enterprise.activate,Activate license,Ativar licença
-enterprise.activationFailed,Could not activate the license.,Não foi possível ativar a licença.
-enterprise.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
-enterprise.activeEyebrow,Enterprise active,Enterprise ativo
-enterprise.activeTitle,Enterprise is ready,Enterprise está pronto
-enterprise.activeSubtitle,Request Logs and Statistics are available on this node.,Logs de Requisições e Estatísticas estão disponíveis neste nó.
-enterprise.pluginVersion,Plugin version,Versão do plugin
 enterprise.licenseState,License state,Estado da licença
-enterprise.activeState,Active,Ativa
-enterprise.refresh,Refresh license,Atualizar licença
 enterprise.manageLicense,Manage license,Gerenciar licença
-enterprise.includedTitle,Included features,Funcionalidades incluídas
-enterprise.includedSubtitle,These screens remain visible so you can discover Enterprise.,Estas telas continuam visíveis para você conhecer o Enterprise.
-enterprise.requestLogs,Request Logs,Logs de Requisições
-enterprise.statistics,Statistics,Estatísticas
+enterprise.pluginVersion,Plugin version,Versão do plugin
 enterprise.purchaseLink,Buy or manage Enterprise,Comprar ou gerenciar Enterprise
+enterprise.refresh,Refresh license,Atualizar licença
+enterprise.requestLogs,Request Logs,Logs de Requisições
+enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
+enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
+enterprise.statistics,Statistics,Estatísticas
+enterprise.updateApply,Install and restart,Instalar e reiniciar
+enterprise.updateApplyFailed,Could not apply the POM update.,Não foi possível aplicar a atualização do POM.
+enterprise.updateAvailable,POM update available: {version},Atualização do POM disponível: {version}
+enterprise.updateRelease,Release {release_id},Release {release_id}
 errorBoundary.detail,"The rest of the interface is still available: use the menu to open another screen. If it happens again, the detail below is what the browser recorded.","O resto da interface continua de pé: use o menu para ir a outra tela. Se insistir, o detalhe abaixo é o que o navegador registrou."
 errorBoundary.retry,Try rendering again,Tentar montar de novo
 errorBoundary.title,This screen stopped working,Esta tela parou de funcionar

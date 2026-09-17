@@ -81,6 +81,9 @@ Per-file list:
   Descrição, regras e o campo único de canais Discord ou Telegram são editados
   como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
   mesmo renderer Markdown compartilhado pelo Chat.
++ `Enterprise.tsx` - Mostra o estado da licença, a release `pom_core` detectada
+  no heartbeat e seu `release_id`; o botão de instalar e reiniciar só chama a
+  ação autenticada depois da confirmação do operador.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,
@@ -193,12 +196,17 @@ Per-file list:
   links, search + clear, empty state. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `About.tsx` - Tela informativa em `/config/sobre`, última folha de
-  Configurações. Mostra a licença do POM como placeholder visualmente marcado e
-  lista as dependências diretas do frontend e do workspace Rust agrupadas pela
-  licença declarada, com versão, ecossistema, filtro por texto e link do
-  repositório. O catálogo é `../lib/licenses.generated.ts`, gerado por
-  `scripts/build-licenses.mjs`; o teste em `About.test.tsx` cobre o placeholder,
-  os dois ecossistemas, os links e o filtro.
+  Configurações. Mostra a licença do POM como placeholder visualmente marcado,
+  o campo `active` e o estado da licença Enterprise, e permite verificar
+  atualizações do `pom_core` pela rota autenticada
+  `/api/ui/enterprise/pom-update/check`. Quando `core_update` existe, exibe a
+  release e encaminha para `/enterprise`, evitando duplicar a confirmação e a
+  aplicação do binário. Também lista as dependências diretas do frontend e do
+  workspace Rust agrupadas pela licença declarada, com versão, ecossistema,
+  filtro por texto e link do repositório. O catálogo é
+  `../lib/licenses.generated.ts`, gerado por `scripts/build-licenses.mjs`; o
+  teste em `About.test.tsx` cobre o placeholder, os dois ecossistemas, os
+  links, o filtro, o estado Enterprise e a verificação sob demanda.
 - `Dashboard.tsx` — Cluster overview: the admin sees cluster
   coverage/machines/model/in-flight stats; node and infer see local model,
   slice and in-flight requests instead. For administrators, the deployment

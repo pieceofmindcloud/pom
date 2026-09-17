@@ -344,6 +344,26 @@ máquina. Precedência:
 `rerun-if-env-changed` na variável e `rerun-if-changed` em `.git/HEAD` e
 `.git/index` impedem o carimbo de congelar no primeiro build.
 
+## Atualização licenciada do executável
+
+O caminho de produção está em `crates/node/src/core_update.rs` e não usa o
+`devupdate.rs`: após um heartbeat aceito e somente com Enterprise ativo, o nó
+consulta o manifest `pom_core` no servidor de licenças e publica no status uma
+release pendente. A detecção não baixa, troca nem reinicia. A UI autoriza uma
+release específica por `POST /api/ui/enterprise/pom-update/apply`; só então o
+cliente baixa o artefato assinado, confere tamanho/SHA-256, troca o executável
+e agenda o reinício preservando o argv. O `release_id` publicado para esse
+plugin precisa ser o mesmo commit curto que `build.rs` grava em
+`POM_BUILD_COMMIT`; a comparação de versão é SemVer e não permite downgrade.
+
+Em Linux e macOS o arquivo temporário fica no mesmo diretório e o `rename`
+substitui o executável em uso pela semântica Unix de unlink-on-exec. No Windows
+o executável em uso não pode ser sobrescrito diretamente: depois da autorização
+o cliente deixa um arquivo staged e inicia um helper PowerShell que aguarda o
+processo terminar, move o arquivo e relança o `pom` com os mesmos argumentos.
+Se o helper não iniciar, o processo antigo continua intacto; a limitação e o
+contrato completo estão em `docs/subsystems/licenciamento-enterprise.md`.
+
 ## Atualizar um nó pela própria interface (só desenvolvimento)
 
 `backend/devupdate.rs`. O card de cada peer ganha "Atualizar e reiniciar" quando
@@ -649,6 +669,11 @@ diferentes:
   self-hosted, e uma máquina de desenvolvimento pode ter `CUDAARCHS` no ambiente
   para encurtar o build local; herdar aquele valor produziria, em silêncio, uma
   release que só funciona na GPU de quem compilou.
+  O `pom-release.sh` aplica a mesma regra ao build `pom_core`: remove também
+  `CMAKE_CUDA_ARCHITECTURES` herdado e executa Cargo com `CUDAARCHS=''`. O CMake
+  trata o valor vazio como não definido, então o `CMakeLists.txt` vendorizado
+  entra no caminho da lista ampla. O build do cdylib Enterprise não recebe essa
+  limpeza porque não compila CUDA.
 - **Desenvolvimento** (`pom-ksia.sh`, fora do repositório): só a arquitetura da
   máquina, via `CUDAARCHS`. O CMake ≥ 3.20 inicializa `CMAKE_CUDA_ARCHITECTURES`
   a partir dessa variável de ambiente, então não é preciso tocar no `build.rs`.

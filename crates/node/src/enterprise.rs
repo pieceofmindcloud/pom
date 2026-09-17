@@ -1454,7 +1454,10 @@ pub(crate) async fn activate_license(
         .await
     {
         Ok(()) => axum::Json(state.enterprise.status().await).into_response(),
-        Err(error) => license_error_response(error),
+        Err(error) => {
+            tracing::warn!(error = %error, "ativação de licença Enterprise falhou");
+            license_error_response(error)
+        }
     }
 }
 

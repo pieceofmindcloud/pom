@@ -48,11 +48,17 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   fonte de pesos `nextn`: um GGUF de rascunho separado ("shared MTP module",
   ex. `qwen4exp`/Qwen3.8-Flash-Next) carregado como `LoadedModel` independente e
   usado como o mesmo `companion` do recuo para RAM em `mtp_model_for_attach` -
-  os dois nunca coexistem. `load_with_cache` verifica a arquitetura do **alvo**
-  contra `mtp_graph_unavailable_reason` antes de gastar essa carga, porque o
-  rascunho externo depende do alvo exportar `h_nextn` do próprio grafo
-  (código por arquitetura no fork, `res->t_h_nextn`) - ver o cabeçalho de
-  `mtp.rs` para a limitação conhecida de `qwen4exp` e a convenção de nome
+  os dois nunca coexistem. O rascunho externo depende do alvo exportar
+  `h_nextn` do próprio grafo (código por arquitetura no fork,
+  `res->t_h_nextn`); `qwen4exp.cpp` ganhou isso em `pereirajair/llama.cpp`
+  (`pom-tensor-parallel`), gated por
+  `cparams.embeddings_nextn && !cparams.embeddings_nextn_masked` para não
+  regredir o corte antecipado de linhas da última camada quando MTP não foi
+  pedido. Não há checagem estática do lado Rust dessa capacidade - a lista
+  gerada em `build/mtp_arch.rs` certifica só quem constrói o grafo
+  `DECODER_MTP` (o lado do rascunho); um alvo sem `h_nextn` falha no primeiro
+  `observe` e desliga o MTP daquela sessão com aviso, sem abortar. Ver o
+  cabeçalho de `mtp.rs` para a mecânica completa e a convenção de nome
   (`catalog::find_mtp_draft_sibling`, prefixo `mtp-`).
 - `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em
   `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`. O

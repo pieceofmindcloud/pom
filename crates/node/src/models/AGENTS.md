@@ -241,8 +241,10 @@ opt-in na UI: o interruptor existente `mtp_enabled` já é a intenção do
 operador, e achar (ou não) o arquivo só decide como o MTP roda quando o modelo
 alvo não traz `nextn` embutido. Ver `crates/llama-engine/src/mtp.rs` para a
 mecânica completa (`LoadedModel::load_mtp_draft`, `EngineConfig.mtp_draft_path`)
-e a limitação conhecida de arquitetura-alvo (`qwen4exp` ainda não emite o
-estado oculto que o rascunho externo precisa).
+e o pré-requisito do lado do fork: o alvo precisa exportar `h_nextn` do
+próprio grafo (`qwen4exp.cpp` ganhou isso em `pereirajair/llama.cpp`,
+`pom-tensor-parallel`, sem regredir o corte antecipado de linhas da última
+camada quando MTP não foi pedido).
 
 ## Manutenção deste arquivo
 

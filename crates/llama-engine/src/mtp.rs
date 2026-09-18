@@ -70,17 +70,28 @@
 //! **Pré-requisito que o rascunho externo não supre sozinho**: o par
 //! `(h_p, x_{p+1})` que a cabeça `nextn` consome exige que o **alvo** exporte
 //! `h_nextn` do próprio grafo (`pom_llama_set_embeddings_nextn`), e isso é
-//! código por arquitetura no fork (`build_arch_graph`/`res->t_h_nextn`, ver
-//! `qwen35.cpp` como referência) - o rascunho não pode fornecer o que o alvo
-//! nunca calculou. `load_with_cache` verifica isso *antes* de gastar uma carga
-//! do arquivo de rascunho, reaplicando `mtp_graph_unavailable_reason` contra a
-//! arquitetura do **alvo** (não do rascunho). Na data em que esta capacidade
-//! foi escrita, `qwen4exp` não está na lista gerada de arquiteturas MTP (não
-//! tem despacho `LLM_GRAPH_TYPE_DECODER_MTP` nem emite `t_h_nextn`) - então um
-//! Qwen3.8-Flash-Next com um rascunho externo válido ainda relata
-//! `mtp_ready() == false`, com a razão nomeando a arquitetura, até esse
-//! trabalho ser feito no fork vendorizado (`pereirajair/llama.cpp`,
-//! `pom-tensor-parallel`, `src/models/qwen4exp.cpp`). Ver a sonda
+//! código por arquitetura no fork (`build_arch_graph`/`res->t_h_nextn`) - o
+//! rascunho não pode fornecer o que o alvo nunca calculou. `qwen35.cpp` já
+//! fazia isso; `qwen4exp.cpp` (Qwen3.8-Flash-Next) ganhou o mesmo em
+//! `pereirajair/llama.cpp` (`pom-tensor-parallel`), gated por
+//! `cparams.embeddings_nextn && !cparams.embeddings_nextn_masked` para não
+//! regredir o corte antecipado de linhas que a arquitetura já fazia na
+//! última camada (`inp_out_ids`) - sem MTP pedido esse corte continua
+//! idêntico ao de antes, sem custo extra de FFN/hyper-connection por posição.
+//!
+//! Não há checagem estática do lado Rust para essa capacidade: a lista
+//! gerada em `build/mtp_arch.rs` (`MTP_GRAPH_ARCHITECTURES`) certifica quem
+//! consegue **construir o grafo `DECODER_MTP`** (a capacidade do lado do
+//! rascunho, checada em `MtpDrafter::attach` contra a arquitetura do
+//! rascunho), não quem exporta `h_nextn` do lado do alvo - as duas
+//! coincidem para os modelos que embutem `nextn` porque nesse caso alvo e
+//! rascunho são o mesmo arquivo, mas divergem de propósito para um alvo como
+//! `qwen4exp` que só precisa exportar o estado, nunca construir a cabeça de
+//! rascunho. Um alvo cujo grafo não exporta `h_nextn` simplesmente falha no
+//! primeiro `observe` (`llama_get_embeddings_nextn_ith` devolve `NULL`) e
+//! desliga o MTP daquela sessão com aviso - a mesma degradação que já existe
+//! para um peer velho que não ecoa a composição do lote no MTP fatiado (ver
+//! `docs/subsystems/inferencia.md`, 5.2). Ver a sonda
 //! `an_external_mtp_draft_attaches_to_a_target_without_embedded_nextn` nos
 //! testes deste módulo para o roteiro de validação com os arquivos reais.
 //!
@@ -838,13 +849,13 @@ mod tests {
     /// `POM_MTP_DRAFT_MODEL` (o rascunho). Diferente da sonda acima, o que
     /// esta prova primeiro é o **pré-requisito arquitetural** que a integração
     /// nova introduziu: o alvo precisa exportar `h_nextn` do próprio grafo
-    /// (`crate::mtp::mtp_graph_unavailable_reason` aplicado ao alvo, não ao
-    /// rascunho) mesmo quando o rascunho é um arquivo à parte. Um alvo fora da
-    /// lista gerada de arquiteturas MTP (`qwen4exp` incluído, na data em que
-    /// isto foi escrito) faz `engine.mtp_ready()` continuar falso mesmo com um
-    /// rascunho válido - isso é esperado e a asserção abaixo distingue os dois
-    /// desfechos em vez de tratar qualquer `mtp_ready() == false` como erro de
-    /// sonda.
+    /// mesmo quando o rascunho é um arquivo à parte - `qwen4exp.cpp` ganhou
+    /// isso em `pereirajair/llama.cpp` (`pom-tensor-parallel`), mas um alvo de
+    /// outra arquitetura sem esse suporte ainda faz `engine.mtp_ready()`
+    /// continuar falso mesmo com um rascunho válido (degrada com aviso, não
+    /// aborta - ver o cabeçalho deste módulo). A asserção abaixo distingue os
+    /// dois desfechos em vez de tratar qualquer `mtp_ready() == false` como
+    /// erro de sonda.
     ///
     /// Rode com:
     ///

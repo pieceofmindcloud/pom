@@ -1898,15 +1898,21 @@ valores são iguais.
   interruptor próprio: usa `mtp_enabled`. **Pré-requisito que o arquivo de
   rascunho não supre sozinho**: o alvo precisa exportar `h_nextn` do próprio
   grafo, que é código por arquitetura no fork
-  (`build_arch_graph`/`res->t_h_nextn`); `qwen4exp` ainda não está na lista
-  gerada de arquiteturas MTP, então um alvo desse tipo com um rascunho externo
-  válido continua relatando `mtp_ready=false` até esse trabalho ser feito em
-  `pereirajair/llama.cpp` (`pom-tensor-parallel`,
-  `src/models/qwen4exp.cpp`) - `load_with_cache` detecta isso antes de gastar
-  uma carga do arquivo de rascunho e nomeia a arquitetura na razão. Fatiamento
-  multi-nó do rascunho não está implementado, pelo mesmo limite do bullet acima
-  (MTP só ativa hoje com uma máquina servindo o modelo inteiro). Ver
-  `crates/llama-engine/src/mtp.rs` para a mecânica completa.
+  (`build_arch_graph`/`res->t_h_nextn`); `qwen4exp.cpp` ganhou isso em
+  `pereirajair/llama.cpp` (`pom-tensor-parallel`), gated por
+  `cparams.embeddings_nextn && !cparams.embeddings_nextn_masked` para não
+  regredir o corte antecipado de linhas da última camada (`inp_out_ids`)
+  quando MTP não foi pedido - sem isso a arquitetura pagaria o custo de
+  FFN/hyper-connection por posição em todo prefill, não só quando alguém lê
+  o estado oculto. Não há checagem estática do lado Rust dessa capacidade: a
+  lista gerada de arquiteturas MTP certifica só quem constrói o grafo
+  `DECODER_MTP` (a capacidade do rascunho), não quem exporta `h_nextn` do
+  alvo; um alvo sem essa exportação simplesmente falha no primeiro `observe`
+  e desliga o MTP daquela sessão com aviso, a mesma degradação que já existe
+  para um peer velho que não ecoa a composição do lote no MTP fatiado.
+  Fatiamento multi-nó do rascunho não está implementado, pelo mesmo limite do
+  bullet acima (MTP só ativa hoje com uma máquina servindo o modelo inteiro).
+  Ver `crates/llama-engine/src/mtp.rs` para a mecânica completa.
 
 ### 5.3 Estado recorrente do Kimi-K3
 

@@ -219,89 +219,68 @@ impl LlmEngine {
         // manter dois contextos do mesmo modelo vivos ao mesmo tempo.
         if cfg.mtp && !engine.mtp_ready() {
             if let Some(draft_path) = cfg.mtp_draft_path.clone() {
-                let target_architecture_reason = loaded
-                    .as_deref()
-                    .and_then(|target| {
-                        // Um rascunho externo alimenta o par (h_p, x_{p+1})
-                        // com o estado oculto que o próprio grafo do ALVO
-                        // exporta (`h_nextn`) - ver
-                        // `pom_llama_set_embeddings_nextn` em `crate::mtp`.
-                        // Isso é código por arquitetura no fork
-                        // (`build_arch_graph`/`t_h_nextn`), não algo que o
-                        // arquivo de rascunho supra sozinho: um alvo fora da
-                        // lista de arquiteturas MTP nunca preenche esse
-                        // estado, e o rascunho travaria mudo no primeiro
-                        // `observe` em vez de na carga. Falhar aqui, antes de
-                        // gastar uma carga e um contexto novos, é o mesmo
-                        // "falhar fechado" que `mtp_graph_unavailable_reason`
-                        // já pratica para o lado do rascunho.
-                        crate::mtp::mtp_graph_unavailable_reason(
-                            target.model_architecture().as_deref(),
+                // Um rascunho externo alimenta o par (h_p, x_{p+1}) com o
+                // estado oculto que o próprio grafo do ALVO exporta
+                // (`h_nextn`) - ver `pom_llama_set_embeddings_nextn` em
+                // `crate::mtp`. Isso é código por arquitetura no fork
+                // (`build_arch_graph`/`t_h_nextn`); não há lista estática no
+                // lado Rust para checar isso de antemão (a lista gerada em
+                // `build/mtp_arch.rs` só cobre quem constrói o grafo
+                // DECODER_MTP, a capacidade do lado do RASCUNHO, não do
+                // alvo). Um alvo que não exporta o estado simplesmente falha
+                // no primeiro `observe` (`llama_get_embeddings_nextn_ith`
+                // devolve NULL) e desliga o MTP com aviso para aquela sessão
+                // - degradação já existente, nunca abort. `attach` já falha
+                // fechado do lado do rascunho.
+                let fit_memory_applied = engine.fit_memory_applied;
+                let effective_n_gpu_layers = engine.effective_n_gpu_layers;
+                let previous_reason = engine.mtp_unavailable_reason.clone();
+                drop(engine);
+                let target_loaded = loaded
+                    .clone()
+                    .expect("o modelo alvo deve permanecer carregado");
+
+                let draft_result =
+                    LoadedModel::load_mtp_draft(&draft_path, cfg).and_then(|draft_loaded| {
+                        Self::from_loaded_with_mtp_offload(
+                            target_loaded.clone(),
+                            cfg,
+                            fit_memory_applied,
+                            effective_n_gpu_layers,
+                            Some(draft_loaded),
+                            cfg.offload_kqv,
                         )
                     });
 
-                if let Some(reason) = target_architecture_reason {
-                    tracing::info!(
-                        reason,
-                        "MTP: arquivo de rascunho encontrado, mas o alvo não exporta estado oculto nextn"
-                    );
-                    engine.mtp_unavailable_reason = Some(reason);
-                } else {
-                    let fit_memory_applied = engine.fit_memory_applied;
-                    let effective_n_gpu_layers = engine.effective_n_gpu_layers;
-                    let previous_reason = engine.mtp_unavailable_reason.clone();
-                    drop(engine);
-                    let target_loaded = loaded
-                        .clone()
-                        .expect("o modelo alvo deve permanecer carregado");
-
-                    let draft_result = LoadedModel::load_mtp_draft(&draft_path, cfg).and_then(
-                        |draft_loaded| {
-                            Self::from_loaded_with_mtp_offload(
-                                target_loaded.clone(),
-                                cfg,
-                                fit_memory_applied,
-                                effective_n_gpu_layers,
-                                Some(draft_loaded),
-                                cfg.offload_kqv,
-                            )
-                        },
-                    );
-
-                    match draft_result {
-                        Ok(draft_engine) if draft_engine.mtp_ready() => {
-                            tracing::info!(
-                                draft_path,
-                                "MTP: rascunho externo anexado com sucesso"
-                            );
-                            engine = draft_engine;
-                            mtp_fallback_used = true;
+                match draft_result {
+                    Ok(draft_engine) if draft_engine.mtp_ready() => {
+                        tracing::info!(draft_path, "MTP: rascunho externo anexado com sucesso");
+                        engine = draft_engine;
+                        mtp_fallback_used = true;
+                    }
+                    Ok(mut draft_engine) => {
+                        // Arquivo presente mas inutilizável (arquitetura sem
+                        // grafo MTP, largura incompatível com o alvo etc.) -
+                        // o contexto sem MTP que ele já criou serve como o
+                        // engine efetivo; só a razão é substituída.
+                        if draft_engine.mtp_unavailable_reason.is_none() {
+                            draft_engine.mtp_unavailable_reason = previous_reason;
                         }
-                        Ok(mut draft_engine) => {
-                            // Arquivo presente mas inutilizável (largura
-                            // incompatível com o alvo etc.) - o contexto sem
-                            // MTP que ele já criou serve como o engine
-                            // efetivo; só a razão é substituída.
-                            if draft_engine.mtp_unavailable_reason.is_none() {
-                                draft_engine.mtp_unavailable_reason = previous_reason;
-                            }
-                            engine = draft_engine;
-                        }
-                        Err(error) => {
-                            let reason = format!(
-                                "rascunho MTP externo em {draft_path} não anexou: {error:#}"
-                            );
-                            warn!("{reason}");
-                            engine = Self::from_loaded_with_mtp_offload(
-                                target_loaded,
-                                cfg,
-                                fit_memory_applied,
-                                effective_n_gpu_layers,
-                                None,
-                                cfg.offload_kqv,
-                            )?;
-                            engine.mtp_unavailable_reason = Some(reason);
-                        }
+                        engine = draft_engine;
+                    }
+                    Err(error) => {
+                        let reason =
+                            format!("rascunho MTP externo em {draft_path} não anexou: {error:#}");
+                        warn!("{reason}");
+                        engine = Self::from_loaded_with_mtp_offload(
+                            target_loaded,
+                            cfg,
+                            fit_memory_applied,
+                            effective_n_gpu_layers,
+                            None,
+                            cfg.offload_kqv,
+                        )?;
+                        engine.mtp_unavailable_reason = Some(reason);
                     }
                 }
             }

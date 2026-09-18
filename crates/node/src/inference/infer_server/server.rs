@@ -244,17 +244,30 @@ impl InferState {
             self.finish(sid);
             return None;
         }
-        let (gen_seq, prompt_len) = (session.gen_seq, session.prompt_len);
+        let (gen_seq, prompt_seq, prompt_len, prompt_cells, positions_ok) = (
+            session.gen_seq,
+            session.prompt_seq,
+            session.prompt_len,
+            session.prompt_cells,
+            session.positions_match_cells(),
+        );
         if let Some(gen) = gen_seq {
             let _ = self.engine.kv_remove(gen, 0, -1);
         }
+        // O rabicho volátil do template (o que fica depois da fronteira
+        // estável - ver `Session::stable_len`) foi decodificado em
+        // `prompt_seq` junto com o resto do prompt deste turno: nada até aqui
+        // separa fisicamente as duas partes na mesma sequência. Sem descartar
+        // essas células agora, `prompt_cells` fica maior que o `n_past`
+        // retido para sempre e `positions_match_cells` recusa todo reuso
+        // seguinte mesmo com o prefixo fisicamente intacto. Só tenta quando
+        // sobra o que cortar; um motor que recusa (recorrente/híbrido fora da
+        // janela de snapshot) mantém o prompt inteiro retido e perde o reuso
+        // deste turno, sem jamais corromper a sessão.
+        let trimmed_to_stable = prompt_len >= prompt_cells
+            || (positions_ok && self.engine.kv_remove(prompt_seq, prompt_len as i32, -1));
         let session = self.sessions.get_mut(sid).expect("session exists");
-        session.gen_seq = None;
-        session.n_past = prompt_len;
-        session.recent_tokens.clear();
-        let _ = session.finish_token_stream();
-        session.retained = true;
-        session.last_used = Instant::now();
+        session.apply_retention(prompt_len, trimmed_to_stable);
         // Uma sessão retida é slot reclamável só depois da carência: acorda o
         // escalonador para ele reavaliar quem espera.
         self.signal_slot_freed();

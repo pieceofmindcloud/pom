@@ -770,6 +770,17 @@ visibilidade dos controles de implantação na UI local.
   isto, **não** `finish`; destruir a sessão no EOS era o que fazia o rewind do
   gateway chegar a uma "sessão desconhecida". `finish` continua sendo a
   liberação de vez (release explícito, cancelamento, erro).
+  Também tenta uma remoção de **sufixo** (não de meio) em `prompt_seq`, de
+  `prompt_len` até o fim, para descartar o rabicho volátil do template que o
+  prefill decodificou ali junto com o resto do prompt neste turno - sem isso,
+  `prompt_cells` (célula física) ficava preso acima de `n_past` (posição
+  retida) para sempre, e `positions_match_cells` recusava todo reuso seguinte
+  mesmo com o prefixo fisicamente intacto (`prefix_match_tokens == 0` em
+  100% dos turnos, defeito de produção de 2026-09-18). `Session::apply_retention`
+  só encolhe `prompt_cells`/`prompt_tokens` junto com `n_past` quando a poda
+  bate (motor aceitou, ou não havia rabicho a cortar); um motor
+  recorrente/híbrido que recusa mantém a sessão retida com o prompt inteiro,
+  perde o reuso daquele turno e nunca fica incoerente.
 - `plan_prefix_reuse` / `expected_prefill_pos` - a regra do reuso e a posição do
   pedaço, puras e testadas em `prefix_rule_tests`. A regra é só-acrescentar:
   fora dela, a sessão recomeça, o que custa o reuso do turno e nunca a

@@ -333,6 +333,31 @@ impl Session {
         self.gen_seq.unwrap_or(self.prompt_seq)
     }
 
+    /// Aplica em memória o que `retain_prompt` decidiu sobre o KV.
+    ///
+    /// `trimmed_to_stable` diz se `prompt_seq` ficou fisicamente com
+    /// exatamente `prompt_len` células - por já estar assim (nada além da
+    /// fronteira estável foi decodificado nela neste turno) ou por o motor ter
+    /// aceitado descartar o excedente. Só então `prompt_cells` e
+    /// `prompt_tokens` encolhem junto com `n_past`: sem isso, `prompt_cells`
+    /// fica maior que `n_past` para sempre e `positions_match_cells` recusa
+    /// todo reuso seguinte mesmo com o prefixo fisicamente intacto - era
+    /// exatamente esse o `prefix_match_tokens == 0` do relatório. Quando o
+    /// motor recusa a poda, a sessão continua retida com o prompt inteiro (sem
+    /// reuso neste turno), nunca com um estado incoerente.
+    pub(super) fn apply_retention(&mut self, prompt_len: u32, trimmed_to_stable: bool) {
+        self.gen_seq = None;
+        self.n_past = prompt_len;
+        if trimmed_to_stable {
+            self.prompt_cells = prompt_len;
+            self.prompt_tokens.truncate(prompt_len as usize);
+        }
+        self.recent_tokens.clear();
+        let _ = self.finish_token_stream();
+        self.retained = true;
+        self.last_used = Instant::now();
+    }
+
     pub(super) fn feed_token_piece(&mut self, piece: &[u8]) -> String {
         self.utf8.feed(piece)
     }
@@ -380,6 +405,105 @@ mod session_text_tests {
         assert_eq!(second.feed_token_piece(b"\xf0\x9f"), "");
         assert_eq!(first.feed_token_piece(b"\xa3o"), "ão");
         assert_eq!(second.feed_token_piece(b"\x98\x80"), "😀");
+    }
+}
+
+#[cfg(test)]
+mod retention_accounting_tests {
+    use super::*;
+
+    /// Constrói a sessão exatamente como ela fica ao fim de um turno normal,
+    /// **antes** de `retain_prompt` rodar: `prompt_seq` recebeu o prompt
+    /// inteiro (retido + rabicho volátil do template), então `prompt_cells` e
+    /// `n_past` estão em lockstep, ambos acima da fronteira estável.
+    fn sessao_de_fim_de_turno(retidos: &[i32], rabicho: u32) -> Session {
+        let mut s = Session::new(0);
+        let total = retidos.len() as u32 + rabicho;
+        s.prompt_tokens = retidos.to_vec();
+        s.prompt_tokens.extend(std::iter::repeat_n(999, rabicho as usize));
+        s.n_past = total;
+        s.prompt_cells = total;
+        s.stable_len = retidos.len() as u32;
+        s
+    }
+
+    /// A reprodução exata do relatório: `prompt_cells` (célula física) fica
+    /// maior que `n_past` (posição lógica retida) para sempre quando a poda
+    /// não acontece, e por isso `positions_match_cells` - o portão que
+    /// `adopt_prompt_prefix` consulta antes de sequer chamar `plan_prefix_reuse`
+    /// - nunca mais deixa passar. `prefix_match_tokens` sai 0 mesmo com o
+    /// prefixo fisicamente intacto.
+    #[test]
+    fn without_trimming_the_stable_boundary_positions_never_match_again() {
+        let mut sessao = sessao_de_fim_de_turno(&[1, 2, 3, 4, 5], 5);
+        let prompt_len = sessao.stable_len; // 5, a fronteira medida no turno.
+
+        sessao.apply_retention(prompt_len, false);
+
+        assert_eq!(sessao.n_past, 5);
+        assert_eq!(sessao.prompt_cells, 10, "sem poda, a contagem física fica presa no rabicho");
+        assert!(
+            !sessao.positions_match_cells(),
+            "o portão de reuso tem que recusar um estado fisicamente inconsistente"
+        );
+    }
+
+    /// O conserto: quando o motor aceita (ou não havia nada para cortar),
+    /// `prompt_cells` e `prompt_tokens` encolhem junto com `n_past`, e o
+    /// portão volta a abrir para o turno seguinte.
+    #[test]
+    fn trimming_the_stable_boundary_makes_positions_match_again() {
+        let mut sessao = sessao_de_fim_de_turno(&[1, 2, 3, 4, 5], 5);
+        let prompt_len = sessao.stable_len;
+
+        sessao.apply_retention(prompt_len, true);
+
+        assert_eq!(sessao.n_past, 5);
+        assert_eq!(sessao.prompt_cells, 5);
+        assert_eq!(sessao.prompt_tokens, vec![1, 2, 3, 4, 5]);
+        assert!(sessao.positions_match_cells());
+        assert_eq!(sessao.prompt_tokens.len() as u32, sessao.n_past);
+    }
+
+    /// Ponta a ponta, sem motor nenhum: a mesma sequência de eventos do
+    /// relatório (segundo pedido com o mesmo prefixo) prova
+    /// `prefix_match_tokens > 0` e `reused == true` usando a regra de
+    /// produção (`plan_prefix_reuse`), pela mesma porta que
+    /// `adopt_prompt_prefix` usa (`positions_match_cells` +
+    /// `prompt_tokens.len() == n_past`). Este é o teste dirigido que a tarefa
+    /// pede: prova por código que o conserto elimina a condição que hoje
+    /// impede o match, sem precisar de GGUF nem de cluster.
+    #[test]
+    fn a_second_turn_with_the_same_prefix_hits_after_the_fix() {
+        // Turno 1: prompt "system user1" (2 tokens retidos) + rabicho do
+        // template de chat (3 tokens: fim de turno + abertura do assistente).
+        let prompt_len = 2u32;
+
+        // Sem o conserto (trimmed_to_stable=false), o portão fica fechado
+        // para sempre - a regressão relatada.
+        let mut sem_conserto = sessao_de_fim_de_turno(&[10, 11], 3);
+        sem_conserto.apply_retention(prompt_len, false);
+        assert!(!sem_conserto.positions_match_cells());
+
+        // Com o conserto, o portão abre e a regra de produção decide.
+        let mut sessao = sessao_de_fim_de_turno(&[10, 11], 3);
+        sessao.apply_retention(prompt_len, true);
+        assert!(sessao.positions_match_cells());
+        assert_eq!(sessao.prompt_tokens.len() as u32, sessao.n_past);
+
+        // Turno 2: a conversa cresceu (render_prompt garante que o texto
+        // cru do turno 1 é prefixo exato do turno 2 - ver `openai.rs`), então
+        // os tokens novos começam com exatamente o que ficou retido.
+        let turno2 = vec![10, 11, 20, 21, 22];
+        let decisao = plan_prefix_reuse(&sessao.prompt_tokens, sessao.n_past, &turno2);
+
+        assert!(decisao.reused, "o segundo pedido com o mesmo prefixo tem que acertar");
+        assert_eq!(decisao.cached_tokens, 2);
+        assert!(
+            decisao.matched_tokens > 0,
+            "prefix_match_tokens tem que ser > 0 no segundo pedido, não 0 como no relatório"
+        );
+        assert_eq!(decisao.matched_tokens, 2);
     }
 }
 

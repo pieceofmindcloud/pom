@@ -1135,6 +1135,22 @@ não passam por EOS (limite de tokens, sequência de parada, cliente que
 desligou); é idempotente e não recua nada. Liberar de vez continua sendo ato
 explícito do gateway, por `/v1/session/release`.
 
+`InferState::retain_prompt` também tenta uma remoção de sufixo (nunca de meio)
+em `prompt_seq`, de `prompt_len` até o fim, para descartar fisicamente o
+rabicho volátil que o prefill decodificou ali junto com o resto do prompt
+neste turno. Sem essa poda, a contagem física de células (`prompt_cells`)
+ficava presa acima da posição retida (`n_past`) para sempre, e
+`Session::positions_match_cells` - o portão que `adopt_prompt_prefix` confere
+antes de sequer chamar `plan_prefix_reuse` - recusava todo reuso seguinte
+mesmo com o prefixo fisicamente intacto: `prefix_match_tokens` saía `0` em
+100% dos turnos de qualquer conversa que usasse template de chat, o defeito de
+produção medido em 2026-09-18 (91 a 147 s até a primeira palavra, série de
+turnos crescendo). Quando o motor aceita a poda (ou não havia rabicho a
+cortar), `prompt_cells` e `prompt_tokens` encolhem junto com `n_past` e o
+turno seguinte volta a casar; um motor recorrente/híbrido que recusa mantém a
+sessão retida com o prompt inteiro e perde o reuso daquele turno, sem jamais
+ficar incoerente.
+
 O comprimento confirmado no rewind é a fronteira estável medida durante o
 prefill (`retained_tokens`), não necessariamente o total tokenizado do prompt:
 o rabicho do template e a entrada que fornece os logits do primeiro token ficam

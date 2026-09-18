@@ -60,6 +60,12 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   `observe` e desliga o MTP daquela sessão com aviso, sem abortar. Ver o
   cabeçalho de `mtp.rs` para a mecânica completa e a convenção de nome
   (`catalog::find_mtp_draft_sibling`, prefixo `mtp-`).
+  DEFEITO ANOTADO (2026-09-18): para `qwen4exp`, o próprio arquivo de
+  rascunho nunca carrega - `check_tensor_dims: tensor 'output_hc_norm.weight'
+  not found` em `load_mtp_draft`, reproduzido com um GGUF sintético em
+  `llm/model.rs::mtp_draft_tests` e fixture/gerador em `tests/fixtures/mtp/`.
+  Causa e escopo completos (fork-only) em `docs/subsystems/inferencia.md`,
+  seção "Defeitos anotados".
 - `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em
   `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`. O
   fallback CPU do router executa os experts selecionados em workers escopados

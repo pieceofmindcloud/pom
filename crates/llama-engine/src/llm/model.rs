@@ -511,3 +511,86 @@ impl LoadedModel {
         Ok(loaded)
     }
 }
+
+#[cfg(test)]
+mod mtp_draft_tests {
+    use super::*;
+
+    /// Rascunho MTP externo sintético do arquiteto `qwen4exp`: mesmo desenho
+    /// do "shared MTP module" real da Unsloth (só o bloco final mais
+    /// `token_embd`/`output`/`nextn.*`), mas sem os três tensores de nível de
+    /// modelo que `qwen4exp.cpp::load_arch_tensors` exige incondicionalmente
+    /// antes de qualquer tensor por camada (`output_hc_norm`, `output_hc_down`,
+    /// `output_hc_up` - ver `crates/llama-engine/tests/fixtures/mtp/`).
+    ///
+    /// Gerado por `gerar_gguf_sintetico.py` (mesma pasta); reproduz byte a
+    /// byte a mensagem vista nos logs da ksia em 2026-09-18 (tarefa
+    /// sl-mtp-draft-attach, ver `report.md`).
+    const QWEN4EXP_DRAFT_SEM_OUTPUT_HC: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/mtp/qwen4exp-external-draft-sem-output-hc.gguf"
+    ));
+
+    fn draft_cfg(draft_path: &str) -> EngineConfig {
+        EngineConfig {
+            n_ctx: 64,
+            offload_kqv: true,
+            cache_type_k: crate::KvCacheType::F16,
+            cache_type_v: crate::KvCacheType::F16,
+            fit_memory: true,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            n_batch: 64,
+            n_gpu_layers: 0,
+            n_threads: 1,
+            max_sessions: 1,
+            need_embeddings: false,
+            mtp: true,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+            mmproj_path: None,
+            mtp_draft_path: Some(draft_path.to_string()),
+        }
+    }
+
+    /// Fixa o comportamento de degradação segura de hoje: um rascunho externo
+    /// `qwen4exp` sem os tensores de saída da hyper-connection não anexa -
+    /// `llama_model_load_from_file` devolve nulo - mas isso nunca aborta o
+    /// processo, sempre vira um `Err` com a mesma mensagem que
+    /// `LlmEngine::load_with_cache` loga e segue sem MTP (ver
+    /// `crate::llm::engine`, linhas em torno de "rascunho MTP externo").
+    ///
+    /// A causa raiz vive no fork vendorizado (`llama.cpp/src/models/qwen4exp.cpp`),
+    /// fora do escopo desta tarefa sem autorização explícita do captain - ver
+    /// `needs-decision` em `report.md`. Este teste não passa a exercitar um
+    /// anexo bem-sucedido até esse patch existir; até lá, ele é a rede de
+    /// segurança de que a falha continua **graciosa**, não um crash.
+    #[test]
+    fn rascunho_qwen4exp_sem_output_hc_falha_sem_panico() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "pom-qwen4exp-draft-sem-output-hc-{}.gguf",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, QWEN4EXP_DRAFT_SEM_OUTPUT_HC).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+
+        let cfg = draft_cfg(&path_str);
+        let result = LoadedModel::load_mtp_draft(&path_str, &cfg);
+
+        let _ = std::fs::remove_file(&path);
+
+        let Err(error) = result else {
+            panic!(
+                "o rascunho sintético não traz output_hc_norm/down/up; \
+                 load_mtp_draft precisa recusar, nunca aceitar silenciosamente"
+            );
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("llama_model_load_from_file failed"),
+            "mensagem inesperada: {message}"
+        );
+    }
+}

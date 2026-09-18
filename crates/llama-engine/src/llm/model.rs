@@ -510,6 +510,27 @@ impl LoadedModel {
         }
         Ok(loaded)
     }
+
+    /// A mesma carga de `load_mtp_draft`, mas sem tentar GPU nenhuma -
+    /// espelha `load_mtp_cpu` para o caso do arquivo separado. Usada quando
+    /// o `fit_plan` do alvo já decidiu `MtpFitMode::Ram` (a VRAM principal já
+    /// está saturada, então pedir GPU para o rascunho só repetiria o mesmo
+    /// `cudaMalloc` que falhou para o alvo, agora nos pesos - tipicamente
+    /// pequenos, mas ainda maiores que o que sobrou) e como recuo reativo
+    /// quando `load_mtp_draft` falha mesmo com `MtpFitMode::Vram` (a VRAM
+    /// ficou cheia entre o fit e esta carga).
+    pub(super) fn load_mtp_draft_cpu(draft_path: &str, cfg: &EngineConfig) -> Result<Arc<Self>> {
+        let mut draft_cfg = cfg.clone();
+        draft_cfg.n_gpu_layers = 0;
+        draft_cfg.moe_external_executor = false;
+        draft_cfg.moe_external_executor_layers.clear();
+        let plan = empty_fit_plan_with_mtp_mode(&draft_cfg, MtpFitMode::Ram);
+        let loaded = Self::load_with_mtp(draft_path, &plan, true)?;
+        if !loaded.has_nextn_weights() {
+            bail!("o arquivo de rascunho MTP em {draft_path} não traz pesos nextn");
+        }
+        Ok(loaded)
+    }
 }
 
 #[cfg(test)]

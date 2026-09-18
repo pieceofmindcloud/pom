@@ -240,38 +240,66 @@ impl LlmEngine {
                     .clone()
                     .expect("o modelo alvo deve permanecer carregado");
 
-                let draft_result = LoadedModel::load_mtp_draft(&draft_path, cfg).and_then(
-                    |draft_loaded| {
+                // O `fit_plan` do alvo já mediu a VRAM restante e decidiu se
+                // o MTP cabe nela (`vram_plan.mtp_mode`) - antes mesmo de o
+                // rascunho externo entrar em cena. Pedir GPU para os pesos do
+                // rascunho quando essa resposta já foi "não" só repete o
+                // `cudaMalloc` que falhou para o alvo, agora nos pesos do
+                // rascunho: confirmado ao vivo na ksia em 2026-09-18 -
+                // "mtp_fit_mode=Ram" no log do fit, seguido de
+                // "allocating 2305.68 MiB on device 1: cudaMalloc failed" no
+                // carregamento de `load_mtp_draft`, que sempre pede
+                // `DEFAULT_GPU_LAYERS` sem essa checagem. `load_mtp_draft_cpu`
+                // é o mesmo carregamento sem offload de peso nenhum -
+                // proativo aqui quando o fit já decidiu Ram, e reativo logo
+                // abaixo (`.or_else`) quando o fit achou que cabia mas a VRAM
+                // mudou entre o fit e esta carga.
+                let draft_wants_ram = vram_plan.mtp_mode == MtpFitMode::Ram;
+                let draft_loaded_result = if draft_wants_ram {
+                    LoadedModel::load_mtp_draft_cpu(&draft_path, cfg)
+                } else {
+                    LoadedModel::load_mtp_draft(&draft_path, cfg)
+                };
+                let draft_loaded_result = draft_loaded_result
+                    .map(|draft_loaded| (draft_loaded, draft_wants_ram))
+                    .or_else(|vram_error| {
+                        if draft_wants_ram || !cfg.mtp_cpu_fallback_enabled {
+                            return Err(vram_error);
+                        }
+                        warn!(
+                            "carregamento do rascunho MTP externo na VRAM falhou ({vram_error:#}); \
+                             tentando de novo sem offload de peso (RAM)"
+                        );
+                        LoadedModel::load_mtp_draft_cpu(&draft_path, cfg)
+                            .map(|draft_loaded| (draft_loaded, true))
+                    });
+
+                let draft_result =
+                    draft_loaded_result.and_then(|(draft_loaded, draft_on_cpu)| {
+                        // Pesos na RAM (decidido acima ou pelo recuo reativo)
+                        // já entram com `offload_kqv=false`: tentar VRAM
+                        // primeiro só repetiria a mesma falta de espaço no
+                        // contexto que o round anterior já corrigiu para o
+                        // caso reativo.
+                        let initial_offload_kqv = cfg.offload_kqv && !draft_on_cpu;
                         let attach = Self::from_loaded_with_mtp_offload(
                             target_loaded.clone(),
                             cfg,
                             fit_memory_applied,
                             effective_n_gpu_layers,
                             Some(draft_loaded.clone()),
-                            cfg.offload_kqv,
+                            initial_offload_kqv,
                         )?;
-                        // `load_mtp_draft` sempre tenta VRAM (MtpFitMode::Vram,
-                        // DEFAULT_GPU_LAYERS) sem checar memória livre antes -
-                        // diferente do alvo, cujo fit_plan mede a VRAM restante
-                        // e reduz camadas antes de carregar. Quando a VRAM já
-                        // está cheia (alvo grande, GPUs saturadas), os pesos do
-                        // rascunho ainda caem para CPU um a um dentro do
-                        // llama.cpp (efeito colateral, não decisão do POM), mas
-                        // `attach` acima usou `cfg.offload_kqv` do alvo - com
-                        // `op_offload=true` o agendador ainda tenta reservar
-                        // buffer de compute na GPU para pesos que já estão na
-                        // CPU, e essa reserva de pior caso (ubatch cheio) pode
-                        // não caber (`cudaMalloc failed: out of memory`,
-                        // confirmado ao vivo na ksia em 2026-09-18). Mesmo
-                        // recuo que a RAM do embutido já usa (`offload_kqv =
-                        // false` força execução no host). Não recarrega peso
-                        // nenhum - só recria o contexto (do alvo e do
-                        // rascunho, porque `with_model_and_mtp_offload` monta
-                        // os dois juntos), o mesmo custo que o recuo do
-                        // embutido já paga hoje (`drop(engine)` + segunda
-                        // `with_model_and_mtp_offload` logo acima).
+                        // Rede de segurança para quando os pesos couberam na
+                        // VRAM mas o contexto (buffer de compute do ubatch de
+                        // pior caso) ainda assim não coube - round 2 desta
+                        // tarefa: `op_offload=true` deixa o agendador tentar
+                        // GPU mesmo sem necessidade. Não se aplica de novo
+                        // quando `draft_on_cpu` já é true (mesma tentativa que
+                        // acabou de rodar).
                         if !attach.mtp_ready()
                             && attach.mtp_initial_context_error.is_some()
+                            && !draft_on_cpu
                             && cfg.mtp_cpu_fallback_enabled
                         {
                             let vram_error = attach
@@ -292,8 +320,7 @@ impl LlmEngine {
                             );
                         }
                         Ok(attach)
-                    },
-                );
+                    });
 
                 match draft_result {
                     Ok(draft_engine) if draft_engine.mtp_ready() => {

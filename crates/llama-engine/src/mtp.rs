@@ -68,20 +68,38 @@
 //! MTP roda de fato - precisa ter o arquivo no disco; nem o orquestrador do
 //! deploy nem as demais máquinas do pipeline precisam dele.
 //!
-//! `LoadedModel::load_mtp_draft` sempre tenta VRAM
-//! (`MtpFitMode::Vram`, `DEFAULT_GPU_LAYERS`) sem medir memória livre antes -
-//! ao contrário do alvo, cujo `fit_plan` mede a VRAM restante e reduz
-//! camadas antes de carregar. Quando as GPUs já estão saturadas pelo alvo, os
-//! pesos do rascunho caem para CPU peça por peça dentro do próprio
-//! `llama.cpp`, mas isso sozinho não bastava: `LlmEngine::load_with_cache`
-//! sempre criava o contexto do rascunho com `cfg.offload_kqv` do alvo, e com
-//! `op_offload=true` o agendador ainda reserva buffer de compute na GPU
-//! mesmo para pesos já em CPU - a reserva de pior caso (ubatch cheio) podia
-//! estourar a VRAM que sobrou (`cudaMalloc failed: out of memory`,
-//! confirmado ao vivo na ksia em 2026-09-18). `load_with_cache` agora repete
-//! a tentativa com `offload_kqv=false` quando só essa falha específica
-//! acontece e `mtp_cpu_fallback_enabled` está ligado - o mesmo recuo que o
-//! `nextn` embutido já usa, sem recarregar peso nenhum.
+//! `LoadedModel::load_mtp_draft` sozinho sempre tenta VRAM
+//! (`MtpFitMode::Vram`, `DEFAULT_GPU_LAYERS`) sem medir memória livre - ao
+//! contrário do alvo, cujo `fit_plan` mede a VRAM restante e reduz camadas
+//! antes de carregar. `LlmEngine::load_with_cache` fecha essa lacuna em duas
+//! camadas, cada uma confirmada ao vivo na ksia num teste separado
+//! (2026-09-18):
+//!
+//! 1. **Carga dos pesos.** Quando o `fit_plan` do alvo já decidiu
+//!    `MtpFitMode::Ram` (VRAM saturada), pedir GPU para os pesos do
+//!    rascunho só repete o mesmo `cudaMalloc` que falhou para o alvo -
+//!    visto ao vivo como `mtp_fit_mode=Ram` no log do fit seguido de
+//!    `cudaMalloc failed: out of memory` dentro do próprio
+//!    `llama_model_load_from_file` do rascunho. `load_with_cache` agora
+//!    pula direto para `LoadedModel::load_mtp_draft_cpu`
+//!    (`n_gpu_layers=0`, mesmo padrão de `load_mtp_cpu`) quando o fit já
+//!    disse Ram, com um recuo reativo para a mesma função se
+//!    `load_mtp_draft` falhar mesmo partindo de `Vram`.
+//! 2. **Criação do contexto.** Mesmo com os pesos na CPU (pela camada 1 ou
+//!    organicamente, porque `llama.cpp` não achou espaço tensor por
+//!    tensor), a primeira tentativa de anexar sempre criava o contexto com
+//!    `cfg.offload_kqv` do alvo - com `op_offload=true` o agendador ainda
+//!    reserva buffer de compute na GPU mesmo para pesos já em CPU, e essa
+//!    reserva de pior caso (ubatch cheio) podia estourar a VRAM que sobrou
+//!    (`cudaMalloc failed: out of memory` num teste anterior, mesma
+//!    investigação). Corrigido: o contexto já nasce com
+//!    `offload_kqv=false` quando os pesos entraram pela RAM, e
+//!    `load_with_cache` ainda repete com `offload_kqv=false` se os pesos
+//!    couberam na VRAM mas o contexto não coube.
+//!
+//! As duas camadas só disparam com `mtp_cpu_fallback_enabled` ligado; nunca
+//! recarregam peso além do necessário - a camada 2 nunca recarrega peso
+//! nenhum, só recria o contexto.
 //!
 //! `llm::config::fit_plan` também precisa saber disso, separado de
 //! `load_with_cache`: é ele quem decide `MtpFitMode` (e portanto se MTP

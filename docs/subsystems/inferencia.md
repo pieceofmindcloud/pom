@@ -1927,23 +1927,42 @@ valores são iguais.
   próprio arquivo de rascunho não carregava. Ver `crates/llama-engine/src/mtp.rs`
   para a mecânica completa.
 
-  **Anexar o rascunho não basta - o contexto MTP dele pode estourar a
-  VRAM mesmo com os pesos na CPU.** `load_mtp_draft` sempre tenta VRAM
-  (`MtpFitMode::Vram`, `DEFAULT_GPU_LAYERS`) sem medir memória livre antes,
-  ao contrário do alvo, cujo `fit_plan` mede a VRAM restante e reduz camadas
-  antes de carregar - a reserva do contexto MTP acontece só depois que o
-  fit do alvo já decidiu suas camadas, sem reservar espaço para ela.
-  Quando as GPUs já estão saturadas pelo alvo, os pesos do rascunho caem
-  para CPU peça por peça dentro do próprio `llama.cpp` (efeito colateral do
-  carregador), mas a primeira tentativa de anexar sempre usava
-  `cfg.offload_kqv` do alvo - com `op_offload=true` o agendador ainda
-  reserva buffer de compute na GPU para pesos já em CPU, e essa reserva de
-  pior caso (ubatch cheio) pode não caber (`cudaMalloc failed: out of
-  memory`, confirmado ao vivo na ksia em 2026-09-18, node-4). Corrigido:
-  `load_with_cache` repete a tentativa com `offload_kqv=false` (mesmo recuo
-  que a RAM do embutido já usa) quando essa falha específica acontece e o
-  operador permite recuo (`mtp_cpu_fallback_enabled`), sem recarregar peso
-  nenhum.
+  **Anexar o rascunho não basta - tanto a carga dos pesos quanto o contexto
+  MTP podem estourar a VRAM mesmo quando o fit já decidiu RAM.**
+  `LoadedModel::load_mtp_draft` sozinho sempre tenta VRAM
+  (`MtpFitMode::Vram`, `DEFAULT_GPU_LAYERS`) sem medir memória livre - ao
+  contrário do alvo, cujo `fit_plan` mede a VRAM restante e reduz camadas
+  antes de carregar. A decisão desse `fit_plan` (`vram_plan.mtp_mode`)
+  chega ao rascunho externo em duas camadas, corrigidas em rodadas
+  separadas da mesma investigação (2026-09-18):
+
+  1. **Carga dos pesos.** Quando `vram_plan.mtp_mode == MtpFitMode::Ram` (a
+     VRAM principal já está saturada), `load_with_cache` pula direto para
+     `LoadedModel::load_mtp_draft_cpu` (`n_gpu_layers=0`) em vez de pedir
+     GPU para os pesos do rascunho - pedir mesmo assim só repete o
+     `cudaMalloc` que já falhou para o alvo, agora nos pesos do rascunho
+     (~2,3 GiB no teste do modelo inteiro sem fatiar). Reproduzido ao vivo
+     na ksia: `mtp_fit_mode=Ram` no log do fit, seguido de
+     `llama_model_load: error loading model: unable to allocate CUDA1
+     buffer`/`cudaMalloc failed: out of memory` dentro de `load_mtp_draft`.
+     Recuo reativo com a mesma função quando `load_mtp_draft` (VRAM) falha
+     mesmo partindo de `MtpFitMode::Vram` (a VRAM mudou entre o fit e esta
+     carga).
+  2. **Criação do contexto.** Mesmo com os pesos já na RAM (pela camada 1
+     acima, ou organicamente porque `llama.cpp` não achou espaço tensor por
+     tensor), a primeira tentativa de anexar usava sempre `cfg.offload_kqv`
+     do alvo - com `op_offload=true` o agendador ainda reserva buffer de
+     compute na GPU para pesos já em CPU, e essa reserva de pior caso
+     (ubatch cheio) pode não caber (`cudaMalloc failed: out of memory`,
+     reproduzido ao vivo num teste anterior na ksia, node-4). Corrigido:
+     quando os pesos já entram na RAM, o contexto já nasce com
+     `offload_kqv=false`; quando os pesos couberam na VRAM mas o contexto
+     ainda assim falhar, `load_with_cache` repete com `offload_kqv=false`
+     (mesmo recuo que a RAM do embutido já usa).
+
+  As duas camadas só disparam quando o operador permite recuo para RAM
+  (`mtp_cpu_fallback_enabled`); nenhuma recarrega peso além do necessário -
+  a camada 2 nunca recarrega peso nenhum, só recria o contexto.
 
 ### 5.3 Estado recorrente do Kimi-K3
 

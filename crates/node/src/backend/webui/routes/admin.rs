@@ -36,24 +36,32 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/requests", get(crate::reqlog::list_requests))
         .route("/api/ui/requests/stats", get(crate::reqlog::stats_requests))
         .route(
-            "/api/ui/enterprise/activate",
-            post(crate::enterprise::activate_license),
+            "/api/ui/plugins/activate",
+            post(crate::plugins::activate_plugin),
         )
         .route(
-            "/api/ui/enterprise/refresh",
-            post(crate::enterprise::refresh_license),
+            "/api/ui/plugins/:code/refresh",
+            post(crate::plugins::refresh_plugin),
         )
         .route(
-            "/api/ui/enterprise/pom-update/check",
-            post(crate::enterprise::check_core_update),
+            "/api/ui/plugins/:code/deactivate",
+            post(crate::plugins::deactivate_plugin),
         )
         .route(
-            "/api/ui/enterprise/pom-update/apply",
-            post(crate::enterprise::apply_core_update),
+            "/api/ui/plugins/:code/update/check",
+            post(crate::plugins::check_plugin_update),
         )
         .route(
-            "/api/ui/enterprise/deactivate",
-            post(crate::enterprise::deactivate_license),
+            "/api/ui/plugins/:code/update/apply",
+            post(crate::plugins::apply_plugin_update),
+        )
+        .route(
+            "/api/ui/pom-update/check",
+            post(crate::pom_core_update::check_pom_update),
+        )
+        .route(
+            "/api/ui/pom-update/apply",
+            post(crate::pom_core_update::apply_pom_update),
         )
         .merge(crate::deploy::routes())
         .merge(crate::model_provider_backend::routes())

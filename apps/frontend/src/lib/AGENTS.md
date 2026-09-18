@@ -185,11 +185,15 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `GpuStat.power_watts` é telemetria opcional: o card de detalhes mostra o
   valor quando NVIDIA ou AMD expõe a potência da placa e mantém desconhecido
   quando não há essa leitura.
-  `EnterpriseStatus` é o contrato do estado de licença consumido por
-  `useEnterpriseStatus`; ele também carrega `core_update`, o aviso de release
-  do binário que a tela Enterprise só aplica após confirmação explícita.
-  Quando inativo, esse hook remove caches de auditoria para não reexibir dados
-  Enterprise antigos.
+  `PluginStatus` é o contrato de UM plugin independente do catálogo (ver
+  `crates/node/src/plugins.rs`), consumido por `usePlugins`/`useEnterpriseStatus`
+  (o segundo é um seletor sobre o primeiro, para o `plugin_code` `"enterprise"`
+  especificamente). Quando inativo, `useEnterpriseStatus` remove caches de
+  auditoria para não reexibir dados antigos. A atualização do binário `pom`
+  em si é um contrato separado, `PomCoreUpdateStatus`/`usePomCoreUpdateStatus`
+  - nunca misture os dois: a tela de Plugins só aplica atualização de plugin,
+  e `About.tsx` só aplica atualização do `pom`, cada uma após confirmação
+  explícita do operador.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

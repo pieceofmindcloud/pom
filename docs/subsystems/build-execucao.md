@@ -346,14 +346,18 @@ máquina. Precedência:
 
 ## Atualização licenciada do executável
 
-O caminho de produção está em `crates/node/src/core_update.rs` e não usa o
-`devupdate.rs`: após um heartbeat aceito e somente com Enterprise ativo, o nó
-consulta o manifest `pom_core` no servidor de licenças e publica no status uma
-release pendente. A detecção não baixa, troca nem reinicia. A UI autoriza uma
-release específica por `POST /api/ui/enterprise/pom-update/apply`; só então o
-cliente baixa o artefato assinado, confere tamanho/SHA-256, troca o executável
-e agenda o reinício preservando o argv. O `release_id` publicado para esse
-plugin precisa ser o mesmo commit curto que `build.rs` grava em
+O caminho de produção está em `crates/node/src/core_update.rs` (validação/
+instalação puras) mais `crates/node/src/pom_core_update.rs` (orquestração
+com estado, deliberadamente separado de `crates/node/src/plugins.rs`) e não
+usa o `devupdate.rs`: enquanto o plugin `enterprise` estiver ativo (mecanismo
+transicional que empresta o lease dele - ver
+`docs/subsystems/licenciamento-enterprise.md`, Fase 7), o nó consulta o
+manifest `pom_core` no servidor de licenças e publica o resultado em
+`GET /api/ui/pom-update/status`. A detecção não baixa, troca nem reinicia. A
+UI autoriza uma release específica por `POST /api/ui/pom-update/apply`; só
+então o cliente baixa o artefato assinado, confere tamanho/SHA-256, troca o
+executável e agenda o reinício preservando o argv. O `release_id` publicado
+para esse plugin precisa ser o mesmo commit curto que `build.rs` grava em
 `POM_BUILD_COMMIT`; a comparação de versão é SemVer e não permite downgrade.
 
 Em Linux e macOS o arquivo temporário fica no mesmo diretório e o `rename`

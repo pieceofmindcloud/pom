@@ -9,17 +9,21 @@ about.enterpriseActive,Active,Ativa
 about.enterpriseCheckFailed,Could not check for POM updates.,Não foi possível verificar atualizações do POM.
 about.enterpriseCheckUpdates,Check for updates,Verificar atualizações
 about.enterpriseInactive,Inactive,Inativa
-about.enterpriseOpen,Open Enterprise,Abrir Enterprise
 about.enterpriseState,State,Estado
-about.enterpriseSubtitle,License status for this node and on-demand POM update checks.,Estado da licença deste nó e verificação sob demanda de atualização do POM.
-about.enterpriseTitle,Enterprise license,Licença Enterprise
-about.enterpriseUpdateHint,An update was found. Open Enterprise to review and apply it.,Uma atualização foi encontrada. Abra Enterprise para revisar e aplicá-la.
 about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
 about.placeholderBody,"The POM software license has not been defined officially yet. This screen shows an example only.","A licença do software POM ainda não foi definida oficialmente. Esta tela mostra apenas um exemplo."
 about.placeholderLicense,Provisional license (example),Licença provisória (exemplo)
 about.placeholderLicenseText,"AGPL-3.0 + registered-trademark clause - subject to final definition","AGPL-3.0 + cláusula de marca registrada - sujeita à definição final"
 about.placeholderLicenseValue,AGPL-3.0 + registered-trademark clause,AGPL-3.0 + cláusula de marca registrada
 about.placeholderTitle,POM software license,Licença do software POM
+about.pomUpdateApply,Install and restart,Instalar e reiniciar
+about.pomUpdateApplyFailed,Could not apply the POM update.,Não foi possível aplicar a atualização do POM.
+about.pomUpdateAvailable,POM update available: {version},Atualização do POM disponível: {version}
+about.pomUpdateNeedsPlugin,POM update checks currently borrow the enterprise plugin's license.,A verificação de atualização do POM hoje usa o lease do plugin enterprise.
+about.pomUpdateOpenPlugins,Open Plugins,Abrir Plugins
+about.pomUpdateRelease,Release {release_id},Release {release_id}
+about.pomUpdateSubtitle,"On-demand check and, once confirmed, installation of a new POM build.","Verificação sob demanda e, após confirmação, instalação de uma nova versão do POM."
+about.pomUpdateTitle,POM update,Atualização do POM
 about.repository,Repository,Repositório
 about.searchLabel,Search dependencies,Buscar dependências
 about.searchPlaceholder,Search by package,Buscar por pacote
@@ -847,38 +851,13 @@ docs.section.subsystems,Subsystem docs,Docs de subsistema
 docs.selectAria,Open {title},Abrir {title}
 docs.tab.guides,Guides,Guias
 docs.tab.reference,Reference,Referência
-enterprise.activate,Activate license,Ativar licença
 enterprise.activateHere,Activate a license,Ativar uma licença
-enterprise.activationEyebrow,License activation,Ativação da licença
-enterprise.activationFailed,Could not activate the license.,Não foi possível ativar a licença.
-enterprise.activationSubtitle,Activate the plugin on this node to unlock Request Logs and Statistics.,Ative o plugin neste nó para liberar Logs de Requisições e Estatísticas.
-enterprise.activationTitle,Enterprise license,Licença Enterprise
-enterprise.activeEyebrow,Enterprise active,Enterprise ativo
-enterprise.activeState,Active,Ativa
-enterprise.activeSubtitle,Request Logs and Statistics are available on this node.,Logs de Requisições e Estatísticas estão disponíveis neste nó.
-enterprise.activeTitle,Enterprise is ready,Enterprise está pronto
 enterprise.eyebrow,Enterprise,Enterprise
-enterprise.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
-enterprise.formTitle,Enter your license key,Digite sua chave de licença
-enterprise.includedSubtitle,These screens remain visible so you can discover Enterprise.,Estas telas continuam visíveis para você conhecer o Enterprise.
-enterprise.includedTitle,Included features,Funcionalidades incluídas
-enterprise.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
 enterprise.learnMore,Learn about Enterprise,Conhecer o Enterprise
-enterprise.licenseKeyLabel,Enterprise license key,Chave de licença Enterprise
-enterprise.licenseKeyPlaceholder,PM-...,PM-...
 enterprise.licenseState,License state,Estado da licença
-enterprise.manageLicense,Manage license,Gerenciar licença
-enterprise.pluginVersion,Plugin version,Versão do plugin
 enterprise.purchaseLink,Buy or manage Enterprise,Comprar ou gerenciar Enterprise
-enterprise.refresh,Refresh license,Atualizar licença
-enterprise.requestLogs,Request Logs,Logs de Requisições
 enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
 enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
-enterprise.statistics,Statistics,Estatísticas
-enterprise.updateApply,Install and restart,Instalar e reiniciar
-enterprise.updateApplyFailed,Could not apply the POM update.,Não foi possível aplicar a atualização do POM.
-enterprise.updateAvailable,POM update available: {version},Atualização do POM disponível: {version}
-enterprise.updateRelease,Release {release_id},Release {release_id}
 errorBoundary.detail,"The rest of the interface is still available: use the menu to open another screen. If it happens again, the detail below is what the browser recorded.","O resto da interface continua de pé: use o menu para ir a outra tela. Se insistir, o detalhe abaixo é o que o navegador registrou."
 errorBoundary.retry,Try rendering again,Tentar montar de novo
 errorBoundary.title,This screen stopped working,Esta tela parou de funcionar
@@ -1424,6 +1403,37 @@ placement.title,How the model was loaded,Como o modelo foi carregado
 placement.unavailable,This node did not report where the layers landed. It may be running a build without the diagnostic bridge.,Este nó não informou onde as camadas ficaram. Pode estar rodando uma versão sem a ponte de diagnóstico.
 placement.weights,Weights,Pesos
 placement.weightsDetail,{gpu} on the GPU · {cpu} on the CPU,{gpu} na GPU · {cpu} na CPU
+plugins.activate,Activate license,Ativar licença
+plugins.activationEyebrow,License activation,Ativação da licença
+plugins.activationFailed,Could not activate the license.,Não foi possível ativar a licença.
+plugins.activationSucceeded,"Activated: {plugins}","Ativado(s): {plugins}"
+plugins.activeTitle,Active,Ativo
+plugins.buy,Buy,Comprar
+plugins.catalog.enterprise.description,Request Logs and Statistics for this node.,Logs de Requisições e Estatísticas para este nó.
+plugins.catalog.enterprise.name,Statistics & Request Logs,Estatísticas e Logs de Requisições
+plugins.deactivate,Deactivate,Desativar
+plugins.features,Features,Funcionalidades
+plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
+plugins.formTitle,Enter your license key,Digite sua chave de licença
+plugins.inactiveTitle,Available,Disponível
+plugins.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
+plugins.licenseKeyLabel,License key,Chave de licença
+plugins.licenseKeyPlaceholder,PM-...,PM-...
+plugins.manage,Manage,Gerenciar
+plugins.refresh,Refresh,Atualizar
+plugins.state.active,Active,Ativo
+plugins.state.degraded,Degraded,Degradado
+plugins.state.expired,Expired,Expirado
+plugins.state.needs_activation,Not activated,Não ativado
+plugins.state.revoked,Revoked,Revogado
+plugins.state.unavailable,Unavailable,Indisponível
+plugins.subtitle,"Independent plugins for this node, each with its own license, version and lifecycle.","Plugins independentes para este nó, cada um com sua própria licença, versão e ciclo de vida."
+plugins.title,Plugins,Plugins
+plugins.updateApply,Install update,Instalar atualização
+plugins.updateApplyFailed,Could not apply the plugin update.,Não foi possível aplicar a atualização do plugin.
+plugins.updateAvailable,Update available: {version},Atualização disponível: {version}
+plugins.updateRelease,Release {release_id},Release {release_id}
+plugins.version,Version,Versão
 preferences.accessConnectionKeyNote,The connection key is separate: it authenticates nodes to each other and is not reused as the interface password.,A connection key é outra coisa: autentica os nós entre si e não é reutilizada como senha da interface.
 preferences.accessEyebrow,Administrative surface,Superfície administrativa
 preferences.accessLocalNoToken,"In local-only mode, the interface has no password. The pipeline routes are still available over IPv4 and IPv6 for the tunnel fallback.","No modo somente local, a interface não tem senha. As rotas da pipeline continuam disponíveis por IPv4 e IPv6 para a reserva do túnel."

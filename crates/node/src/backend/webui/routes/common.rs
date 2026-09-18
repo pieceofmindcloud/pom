@@ -6,7 +6,11 @@ use super::super::*;
 pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/node", get(node_info))
-        .route("/api/ui/enterprise/status", get(enterprise_status))
+        .route("/api/ui/plugins", get(crate::plugins::list_plugins))
+        .route(
+            "/api/ui/pom-update/status",
+            get(crate::pom_core_update::pom_update_status),
+        )
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/chat/capabilities", get(chat_capabilities))
         .route("/api/ui/cluster/models", get(cluster_models))
@@ -39,6 +43,3 @@ pub(super) fn routes() -> Router<GatewayState> {
         )
 }
 
-async fn enterprise_status(State(state): State<GatewayState>) -> impl IntoResponse {
-    Json(state.enterprise.status().await)
-}

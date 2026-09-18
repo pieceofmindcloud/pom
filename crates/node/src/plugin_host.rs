@@ -1,8 +1,11 @@
-//! Supervisor IPC do plugin Enterprise.
+//! Supervisor IPC de um plugin, via processo auxiliar.
 //!
 //! Este módulo não carrega biblioteca dinâmica. Ele inicia o executável
-//! `pom-plugin-host`, envia frames JSON enquadrados e encerra o circuito quando
-//! o processo auxiliar falha ou não responde dentro do timeout.
+//! `pom-plugin-host` apontado para o binário de UM plugin, envia frames JSON
+//! enquadrados e encerra o circuito quando o processo auxiliar falha ou não
+//! responde dentro do timeout. Cada instância é um processo próprio: nada
+//! aqui é global, então `crate::plugins::PluginManager` pode manter uma
+//! instância por plugin_code ativo, concorrentes, sem se pisarem.
 
 use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -20,7 +23,7 @@ const IPC_TIMEOUT: Duration = Duration::from_secs(3);
 /// grande carregando, máquina ainda se recuperando de um OOM) e demorar bem
 /// mais que uma chamada IPC comum. Um timeout curto aqui não falha o plugin
 /// de verdade - só descarta a conexão e, sem `kill_on_drop`, deixava o
-/// processo `pom-plugin-host` órfão rodando sem que `EnterpriseState.host`
+/// processo `pom-plugin-host` órfão rodando sem que o `PluginRuntime`
 /// apontasse para ele: os eventos de auditoria caíam silenciosamente no
 /// fallback legado enquanto o processo continuava vivo no SO.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -48,11 +51,11 @@ struct HostProcess {
 }
 
 #[derive(Clone)]
-pub(crate) struct EnterpriseHost {
+pub(crate) struct PluginHost {
     process: Arc<Mutex<HostProcess>>,
 }
 
-impl EnterpriseHost {
+impl PluginHost {
     pub(crate) async fn start(plugin: &Path, database: &Path) -> Result<Self> {
         let host = host_executable()?;
         let mut child = Command::new(&host)

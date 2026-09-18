@@ -2211,7 +2211,7 @@ pub fn spawn_logged_generation_with_stops(
     let logged_prompt = input.prompt.clone();
     let request_details = input.request_details.clone();
     let audit = input.state.audit.clone();
-    let enterprise = input.state.enterprise.clone();
+    let plugins = input.state.plugins.clone();
     let request_id = input
         .trace_id
         .clone()
@@ -2229,10 +2229,13 @@ pub fn spawn_logged_generation_with_stops(
         request_details,
     };
     let audit_for_begin = audit.clone();
-    let enterprise_for_begin = enterprise.clone();
+    let plugins_for_begin = plugins.clone();
     tokio::spawn(async move {
-        if !enterprise_for_begin
-            .ingest_audit_event(crate::reqlog::AuditEvent::Begin(begin.clone()))
+        if !plugins_for_begin
+            .ingest_audit_event(
+                crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                crate::reqlog::AuditEvent::Begin(begin.clone()),
+            )
             .await
         {
             audit_for_begin.begin(begin);
@@ -2336,11 +2339,14 @@ pub fn spawn_logged_generation_with_stops(
             status: audit_status,
             error,
         };
-        if !enterprise
-            .ingest_audit_event(crate::reqlog::AuditEvent::Complete {
-                id: request_id.clone(),
-                completion: completion.clone(),
-            })
+        if !plugins
+            .ingest_audit_event(
+                crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                crate::reqlog::AuditEvent::Complete {
+                    id: request_id.clone(),
+                    completion: completion.clone(),
+                },
+            )
             .await
         {
             audit.complete(request_id, completion);
@@ -2384,18 +2390,24 @@ pub(crate) fn record_rejected(
         error: Some(error),
     };
     let audit = state.audit.clone();
-    let enterprise = state.enterprise.clone();
+    let plugins = state.plugins.clone();
     tokio::spawn(async move {
         let complete = crate::reqlog::AuditEvent::Complete {
             id: id.clone(),
             completion: completion.clone(),
         };
-        if enterprise
-            .ingest_audit_event(crate::reqlog::AuditEvent::Begin(begin.clone()))
+        if plugins
+            .ingest_audit_event(
+                crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                crate::reqlog::AuditEvent::Begin(begin.clone()),
+            )
             .await
         {
-            if !enterprise.ingest_audit_event(complete).await {
-                tracing::warn!(request_id = %id, "conclusão de auditoria Enterprise não entrou no plugin");
+            if !plugins
+                .ingest_audit_event(crate::plugins::ENTERPRISE_PLUGIN_CODE, complete)
+                .await
+            {
+                tracing::warn!(request_id = %id, "conclusão de auditoria não entrou no plugin");
             }
         } else {
             audit.begin(begin);

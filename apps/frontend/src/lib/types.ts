@@ -174,8 +174,15 @@ export interface AdminAccessInfo {
   password_configured: boolean;
 }
 
-/** Licença Enterprise, consultada antes de renderizar dados de auditoria. */
-export type EnterpriseLicenseState =
+/**
+ * Um plugin independente do catálogo (ver `crates/node/src/plugins.rs`),
+ * comprado/ativado/desativado separadamente dos demais. Hoje o catálogo só
+ * tem `"enterprise"` (Estatísticas/Logs de Requisições), mas o tipo é
+ * genérico para N plugins - a tela de Plugins lista todo `PluginStatus`
+ * conhecido, mesmo quando `active` é `false` (ainda não comprado/ativado
+ * nesta instalação).
+ */
+export type PluginLicenseState =
   | "needs_activation"
   | "active"
   | "degraded"
@@ -183,25 +190,31 @@ export type EnterpriseLicenseState =
   | "revoked"
   | "unavailable";
 
-export interface EnterpriseFeatures {
-  request_logs: boolean;
-  statistics: boolean;
-}
-
-export interface EnterpriseCoreUpdate {
+/** Uma atualização de versão disponível - do plugin em si, nunca do `pom_core`. */
+export interface PluginUpdateInfo {
   release_id: string;
   version: string;
   changelog: string | null;
 }
 
-export interface EnterpriseStatus {
+export interface PluginStatus {
+  code: string;
   active: boolean;
-  state: EnterpriseLicenseState;
-  features: EnterpriseFeatures;
+  state: PluginLicenseState;
+  features: string[];
   manage_url: string;
   plugin_version: string | null;
   lease_expires_at: string | null;
-  core_update: EnterpriseCoreUpdate | null;
+  available_update: PluginUpdateInfo | null;
+}
+
+/**
+ * Atualização do binário `pom` em si. Fronteira de produto deliberadamente
+ * separada dos plugins (ver `crates/node/src/pom_core_update.rs`): nunca
+ * misture este tipo com `PluginStatus`/`PluginUpdateInfo` na UI.
+ */
+export interface PomCoreUpdateStatus {
+  core_update: PluginUpdateInfo | null;
 }
 
 export interface NodeInfo {

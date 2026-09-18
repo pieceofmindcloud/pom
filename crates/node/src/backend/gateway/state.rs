@@ -238,8 +238,12 @@ pub struct GatewayState {
     pub cycle_config: crate::cycle::CycleConfig,
     /// Durable audit trail for requests entering this gateway.
     pub audit: Arc<crate::reqlog::AuditLog>,
-    /// License and helper-host state for Enterprise-only request data.
-    pub(crate) enterprise: Arc<crate::enterprise::EnterpriseState>,
+    /// Gerenciador dos plugins independentes (licença, host de processo por
+    /// plugin, atualização própria). Ver `crate::plugins`.
+    pub(crate) plugins: Arc<crate::plugins::PluginManager>,
+    /// Detecção/instalação da release do próprio binário `pom`. Fronteira de
+    /// produto separada dos plugins de propósito - ver `crate::pom_core_update`.
+    pub(crate) pom_core_update: Arc<crate::pom_core_update::PomCoreUpdater>,
     /// Single durable store for local operational state.
     pub database: Arc<crate::db::PomDb>,
     /// HTTP port this node serves the API and UI on.

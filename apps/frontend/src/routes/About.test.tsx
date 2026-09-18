@@ -5,25 +5,43 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { About } from "./About";
 
+function inactiveEnterpriseStatus() {
+  return {
+    active: false,
+    state: "needs_activation",
+    features: [] as string[],
+    manage_url: "https://pieceofmind.cloud/enterprise",
+    plugin_version: null,
+    lease_expires_at: null,
+    available_update: null,
+  };
+}
+
 const mocks = vi.hoisted(() => ({
   post: vi.fn(),
-  refetch: vi.fn(),
-  status: {
+  enterpriseStatus: {
     data: {
       active: false,
       state: "needs_activation",
-      features: { request_logs: false, statistics: false },
+      features: [] as string[],
       manage_url: "https://pieceofmind.cloud/enterprise",
       plugin_version: null,
       lease_expires_at: null,
-      core_update: null,
+      available_update: null,
     },
+    refetch: vi.fn(),
+  },
+  pomUpdate: {
+    data: { core_update: null as null | { release_id: string; version: string; changelog: string | null } },
     refetch: vi.fn(),
   },
 }));
 
 vi.mock("../lib/api", () => ({ api: { post: mocks.post } }));
-vi.mock("../lib/queries", () => ({ useEnterpriseStatus: () => mocks.status }));
+vi.mock("../lib/queries", () => ({
+  useEnterpriseStatus: () => mocks.enterpriseStatus,
+  usePomCoreUpdateStatus: () => mocks.pomUpdate,
+}));
 
 function mount() {
   return render(
@@ -38,16 +56,10 @@ function mount() {
 afterEach(() => {
   cleanup();
   mocks.post.mockReset();
-  mocks.status.refetch.mockReset();
-  mocks.status.data = {
-    active: false,
-    state: "needs_activation",
-    features: { request_logs: false, statistics: false },
-    manage_url: "https://pieceofmind.cloud/enterprise",
-    plugin_version: null,
-    lease_expires_at: null,
-    core_update: null,
-  };
+  mocks.enterpriseStatus.refetch.mockReset();
+  mocks.pomUpdate.refetch.mockReset();
+  mocks.enterpriseStatus.data = inactiveEnterpriseStatus();
+  mocks.pomUpdate.data = { core_update: null };
   localStorage.clear();
 });
 
@@ -79,35 +91,34 @@ describe("About", () => {
     expect(screen.getByText("Licença provisória (exemplo)")).toBeTruthy();
   });
 
-  it("mostra o estado Enterprise e permite verificar atualizações sob demanda", async () => {
-    mocks.status.data = {
-      ...mocks.status.data,
-      active: true,
-      state: "active",
-    };
-    mocks.post.mockResolvedValue({ ...mocks.status.data });
+  it("permite verificar atualizações do pom sob demanda, separado dos plugins", async () => {
+    mocks.enterpriseStatus.data = { ...inactiveEnterpriseStatus(), active: true, state: "active" };
+    mocks.post.mockResolvedValue({ core_update: null });
     mount();
 
-    expect(screen.getByText("Licença Enterprise")).toBeTruthy();
-    expect(screen.getAllByText("Ativa")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: "Verificar atualizações" }));
 
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
-      "/api/ui/enterprise/pom-update/check",
-    ));
-    expect(mocks.status.refetch).toHaveBeenCalled();
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/pom-update/check"));
+    expect(mocks.pomUpdate.refetch).toHaveBeenCalled();
+    expect(mocks.post).not.toHaveBeenCalledWith(expect.stringContaining("/api/ui/plugins"));
   });
 
-  it("encaminha uma atualização detectada para a tela Enterprise", () => {
-    mocks.status.data = {
-      ...mocks.status.data,
-      active: true,
-      state: "active",
+  it("mostra e aplica a atualização do pom nesta própria tela, sem redirecionar", async () => {
+    mocks.enterpriseStatus.data = { ...inactiveEnterpriseStatus(), active: true, state: "active" };
+    mocks.pomUpdate.data = {
       core_update: { release_id: "pom_core-0.2.0-linux-x86_64", version: "0.2.0", changelog: null },
     };
+    mocks.post.mockResolvedValue({ restarting: true });
     mount();
 
     expect(screen.getByText("Atualização do POM disponível: 0.2.0")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Abrir Enterprise" }).getAttribute("href")).toBe("/enterprise");
+    expect(screen.queryByRole("link", { name: "Abrir Enterprise" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Instalar e reiniciar" }));
+
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/pom-update/apply",
+      { release_id: "pom_core-0.2.0-linux-x86_64" },
+    ));
   });
 });

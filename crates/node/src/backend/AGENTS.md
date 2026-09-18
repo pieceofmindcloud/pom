@@ -179,12 +179,17 @@ profile policy remains the effective authorization boundary.
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), local auto-discovery
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
-  e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`). O
-  status Enterprise (`GET /api/ui/enterprise/status`) inclui a release
-  `pom_core` detectada; `POST /api/ui/enterprise/pom-update/check` força a
-  detecção sob demanda e devolve o status atualizado; enquanto
-  `POST /api/ui/enterprise/pom-update/apply` exige a confirmação explícita
-  dessa release antes de baixar e reiniciar. A
+  e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
+  `GET /api/ui/plugins` lista o catálogo inteiro de plugins independentes
+  (`crate::plugins`), cada um com seu estado, features e atualização de
+  versão próprios; `POST /api/ui/plugins/activate` ativa quantos plugins
+  conhecidos a chave conceder, e `POST /api/ui/plugins/:code/refresh|
+  deactivate|update/check|update/apply` agem sobre um plugin só. A detecção
+  da release `pom_core` é outra fronteira, deliberadamente separada
+  (`crate::pom_core_update`): `GET /api/ui/pom-update/status`,
+  `POST /api/ui/pom-update/check` força a detecção sob demanda, e
+  `POST /api/ui/pom-update/apply` exige a confirmação explícita dessa
+  release antes de baixar e reiniciar. A
   cluster view transporta `SystemLoad.gpus[].power_watts` como telemetria
   opcional, mantendo `null` quando o sistema não expõe consumo da placa.
   leitura `/api/ui/network/geo-reference` entrega a referência SQLite de

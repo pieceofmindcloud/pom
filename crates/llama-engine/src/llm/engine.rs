@@ -240,17 +240,60 @@ impl LlmEngine {
                     .clone()
                     .expect("o modelo alvo deve permanecer carregado");
 
-                let draft_result =
-                    LoadedModel::load_mtp_draft(&draft_path, cfg).and_then(|draft_loaded| {
-                        Self::from_loaded_with_mtp_offload(
+                let draft_result = LoadedModel::load_mtp_draft(&draft_path, cfg).and_then(
+                    |draft_loaded| {
+                        let attach = Self::from_loaded_with_mtp_offload(
                             target_loaded.clone(),
                             cfg,
                             fit_memory_applied,
                             effective_n_gpu_layers,
-                            Some(draft_loaded),
+                            Some(draft_loaded.clone()),
                             cfg.offload_kqv,
-                        )
-                    });
+                        )?;
+                        // `load_mtp_draft` sempre tenta VRAM (MtpFitMode::Vram,
+                        // DEFAULT_GPU_LAYERS) sem checar memória livre antes -
+                        // diferente do alvo, cujo fit_plan mede a VRAM restante
+                        // e reduz camadas antes de carregar. Quando a VRAM já
+                        // está cheia (alvo grande, GPUs saturadas), os pesos do
+                        // rascunho ainda caem para CPU um a um dentro do
+                        // llama.cpp (efeito colateral, não decisão do POM), mas
+                        // `attach` acima usou `cfg.offload_kqv` do alvo - com
+                        // `op_offload=true` o agendador ainda tenta reservar
+                        // buffer de compute na GPU para pesos que já estão na
+                        // CPU, e essa reserva de pior caso (ubatch cheio) pode
+                        // não caber (`cudaMalloc failed: out of memory`,
+                        // confirmado ao vivo na ksia em 2026-09-18). Mesmo
+                        // recuo que a RAM do embutido já usa (`offload_kqv =
+                        // false` força execução no host). Não recarrega peso
+                        // nenhum - só recria o contexto (do alvo e do
+                        // rascunho, porque `with_model_and_mtp_offload` monta
+                        // os dois juntos), o mesmo custo que o recuo do
+                        // embutido já paga hoje (`drop(engine)` + segunda
+                        // `with_model_and_mtp_offload` logo acima).
+                        if !attach.mtp_ready()
+                            && attach.mtp_initial_context_error.is_some()
+                            && cfg.mtp_cpu_fallback_enabled
+                        {
+                            let vram_error = attach
+                                .mtp_initial_context_error
+                                .clone()
+                                .unwrap_or_default();
+                            warn!(
+                                "contexto do rascunho MTP externo falhou na VRAM ({vram_error}); \
+                                 tentando de novo com execução no host (offload_kqv=false)"
+                            );
+                            return Self::from_loaded_with_mtp_offload(
+                                target_loaded.clone(),
+                                cfg,
+                                fit_memory_applied,
+                                effective_n_gpu_layers,
+                                Some(draft_loaded),
+                                false,
+                            );
+                        }
+                        Ok(attach)
+                    },
+                );
 
                 match draft_result {
                     Ok(draft_engine) if draft_engine.mtp_ready() => {

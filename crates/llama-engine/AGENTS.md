@@ -73,6 +73,24 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   Prova sintética completa (falha antes do porte, contexto MTP reservando
   depois) em `llm/model.rs::mtp_draft_tests` e fixture/gerador em
   `tests/fixtures/mtp/`.
+  `load_mtp_draft` sempre tenta VRAM (`MtpFitMode::Vram`,
+  `DEFAULT_GPU_LAYERS`) sem medir memória livre antes - ao contrário do alvo,
+  cujo `fit_plan` mede a VRAM restante e reduz camadas antes de carregar.
+  Quando as GPUs já estão cheias (alvo grande sozinho já as satura), os pesos
+  do rascunho ainda caem para CPU peça por peça dentro do próprio
+  `llama.cpp` (efeito colateral do carregador, não decisão do POM), mas a
+  primeira tentativa de anexar usava sempre `cfg.offload_kqv` do alvo - com
+  `op_offload=true` o agendador ainda reserva buffer de compute na GPU para
+  pesos que já estão na CPU, e essa reserva de pior caso pode não caber
+  (`cudaMalloc failed: out of memory`, confirmado ao vivo na ksia em
+  2026-09-18). `load_with_cache` agora repete a tentativa com
+  `offload_kqv=false` (mesmo recuo que a RAM do embutido já usa) quando essa
+  falha específica acontece e o operador permite recuo para RAM
+  (`mtp_cpu_fallback_enabled`) - sem recarregar peso nenhum, só recriando o
+  contexto. Não verificável neste devcontainer: não há GPU aqui, então o
+  mecanismo (`op_offload` evitando a reserva CUDA) se apoia no mesmo teste já
+  existente para o recuo do embutido (`contexto_mtp_para_ram_desliga_o_offload_do_cache`
+  em `mtp.rs`), não numa reprodução direta do OOM.
 - `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em
   `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`. O
   fallback CPU do router executa os experts selecionados em workers escopados

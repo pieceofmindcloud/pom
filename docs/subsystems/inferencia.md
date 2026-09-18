@@ -1924,9 +1924,26 @@ valores são iguais.
   `qwen35.cpp`/`deepseek4.cpp` portado para `qwen4exp.cpp` (tronco e
   `hc_head_*` de nível de modelo viram `TENSOR_NOT_REQUIRED`, a cauda ganha
   `layer.nextn.*`, `build_arch_graph` ganha uma `graph_mtp`) - sem isso o
-  próprio arquivo de rascunho não carregava, ver "Defeitos anotados" para a
-  causa raiz completa. Ver `crates/llama-engine/src/mtp.rs` para a mecânica
-  completa.
+  próprio arquivo de rascunho não carregava. Ver `crates/llama-engine/src/mtp.rs`
+  para a mecânica completa.
+
+  **Anexar o rascunho não basta - o contexto MTP dele pode estourar a
+  VRAM mesmo com os pesos na CPU.** `load_mtp_draft` sempre tenta VRAM
+  (`MtpFitMode::Vram`, `DEFAULT_GPU_LAYERS`) sem medir memória livre antes,
+  ao contrário do alvo, cujo `fit_plan` mede a VRAM restante e reduz camadas
+  antes de carregar - a reserva do contexto MTP acontece só depois que o
+  fit do alvo já decidiu suas camadas, sem reservar espaço para ela.
+  Quando as GPUs já estão saturadas pelo alvo, os pesos do rascunho caem
+  para CPU peça por peça dentro do próprio `llama.cpp` (efeito colateral do
+  carregador), mas a primeira tentativa de anexar sempre usava
+  `cfg.offload_kqv` do alvo - com `op_offload=true` o agendador ainda
+  reserva buffer de compute na GPU para pesos já em CPU, e essa reserva de
+  pior caso (ubatch cheio) pode não caber (`cudaMalloc failed: out of
+  memory`, confirmado ao vivo na ksia em 2026-09-18, node-4). Corrigido:
+  `load_with_cache` repete a tentativa com `offload_kqv=false` (mesmo recuo
+  que a RAM do embutido já usa) quando essa falha específica acontece e o
+  operador permite recuo (`mtp_cpu_fallback_enabled`), sem recarregar peso
+  nenhum.
 
 ### 5.3 Estado recorrente do Kimi-K3
 

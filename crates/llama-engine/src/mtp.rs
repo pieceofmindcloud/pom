@@ -68,6 +68,21 @@
 //! MTP roda de fato - precisa ter o arquivo no disco; nem o orquestrador do
 //! deploy nem as demais máquinas do pipeline precisam dele.
 //!
+//! `LoadedModel::load_mtp_draft` sempre tenta VRAM
+//! (`MtpFitMode::Vram`, `DEFAULT_GPU_LAYERS`) sem medir memória livre antes -
+//! ao contrário do alvo, cujo `fit_plan` mede a VRAM restante e reduz
+//! camadas antes de carregar. Quando as GPUs já estão saturadas pelo alvo, os
+//! pesos do rascunho caem para CPU peça por peça dentro do próprio
+//! `llama.cpp`, mas isso sozinho não bastava: `LlmEngine::load_with_cache`
+//! sempre criava o contexto do rascunho com `cfg.offload_kqv` do alvo, e com
+//! `op_offload=true` o agendador ainda reserva buffer de compute na GPU
+//! mesmo para pesos já em CPU - a reserva de pior caso (ubatch cheio) podia
+//! estourar a VRAM que sobrou (`cudaMalloc failed: out of memory`,
+//! confirmado ao vivo na ksia em 2026-09-18). `load_with_cache` agora repete
+//! a tentativa com `offload_kqv=false` quando só essa falha específica
+//! acontece e `mtp_cpu_fallback_enabled` está ligado - o mesmo recuo que o
+//! `nextn` embutido já usa, sem recarregar peso nenhum.
+//!
 //! `llm::config::fit_plan` também precisa saber disso, separado de
 //! `load_with_cache`: é ele quem decide `MtpFitMode` (e portanto se MTP
 //! sequer é tentado) antes da carga de verdade, e antes de 2026-09-18 só

@@ -16,6 +16,14 @@ use tokio::time::{timeout, Duration};
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const IPC_TIMEOUT: Duration = Duration::from_secs(3);
+/// O handshake inicial de "ready" pode competir com um boot pesado (modelo
+/// grande carregando, máquina ainda se recuperando de um OOM) e demorar bem
+/// mais que uma chamada IPC comum. Um timeout curto aqui não falha o plugin
+/// de verdade - só descarta a conexão e, sem `kill_on_drop`, deixava o
+/// processo `pom-plugin-host` órfão rodando sem que `EnterpriseState.host`
+/// apontasse para ele: os eventos de auditoria caíam silenciosamente no
+/// fallback legado enquanto o processo continuava vivo no SO.
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct IpcRequest {
@@ -53,16 +61,27 @@ impl EnterpriseHost {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("iniciar pom-plugin-host em {}", host.display()))?;
-        let stdin = child
-            .stdin
-            .take()
-            .context("capturar stdin do plugin host")?;
-        let stdout = child
+        let stdin = match child.stdin.take().context("capturar stdin do plugin host") {
+            Ok(stdin) => stdin,
+            Err(error) => {
+                let _ = child.start_kill();
+                return Err(error);
+            }
+        };
+        let stdout = match child
             .stdout
             .take()
-            .context("capturar stdout do plugin host")?;
+            .context("capturar stdout do plugin host")
+        {
+            Ok(stdout) => stdout,
+            Err(error) => {
+                let _ = child.start_kill();
+                return Err(error);
+            }
+        };
         let supervisor = Self {
             process: Arc::new(Mutex::new(HostProcess {
                 child,
@@ -71,11 +90,35 @@ impl EnterpriseHost {
                 next_id: 1,
             })),
         };
-        let ready = supervisor.request("ready", Value::Null).await?;
-        if ready.get("status").and_then(Value::as_str) != Some("ready") {
-            anyhow::bail!("plugin host não ficou pronto");
+        match timeout(READY_TIMEOUT, supervisor.request("ready", Value::Null)).await {
+            Ok(Ok(ready)) if ready.get("status").and_then(Value::as_str) == Some("ready") => {
+                Ok(supervisor)
+            }
+            Ok(Ok(ready)) => {
+                supervisor.kill().await;
+                anyhow::bail!("plugin host não ficou pronto: resposta {ready}")
+            }
+            Ok(Err(error)) => {
+                supervisor.kill().await;
+                Err(error).context("handshake ready do plugin host falhou")
+            }
+            Err(_) => {
+                supervisor.kill().await;
+                anyhow::bail!(
+                    "handshake ready do plugin host não respondeu em {:?}",
+                    READY_TIMEOUT
+                )
+            }
         }
-        Ok(supervisor)
+    }
+
+    /// Mata o processo auxiliar sem passar pelo protocolo `shutdown` - usado
+    /// quando o handshake inicial falha e não há conexão IPC íntegra para
+    /// negociar um encerramento limpo.
+    async fn kill(&self) {
+        let mut process = self.process.lock().await;
+        let _ = process.child.start_kill();
+        let _ = process.child.wait().await;
     }
 
     pub(crate) async fn ingest(&self, event: Value) -> Result<()> {

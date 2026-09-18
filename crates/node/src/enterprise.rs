@@ -742,13 +742,9 @@ impl EnterpriseState {
             if let Some(path) = persisted.plugin_path.clone().map(std::path::PathBuf::from) {
                 if path.is_file() {
                     let state_for_host = state.clone();
-                    let database_for_host = state.database.clone();
                     let service = state.service.clone();
                     let fingerprint = state.fingerprint.clone();
                     tokio::spawn(async move {
-                        let Some(database) = database_for_host else {
-                            return;
-                        };
                         let remote_state = service.status(&persisted, &fingerprint).await;
                         let allowed = match remote_state {
                             Ok(remote) => {
@@ -764,18 +760,8 @@ impl EnterpriseState {
                             status.state = LicenseState::Expired;
                             return;
                         }
-                        let database_path = database.path().with_file_name("enterprise.db");
-                        match crate::enterprise_host::EnterpriseHost::start(&path, &database_path)
-                            .await
-                        {
-                            Ok(host) => {
-                                *state_for_host.host.lock().await = Some(host);
-                                state_for_host.restore_ready(&persisted).await;
-                            }
-                            Err(error) => {
-                                tracing::warn!(error = %error, "plugin Enterprise persistido não pôde ser restaurado")
-                            }
-                        }
+                        state_for_host.ensure_host_running(&persisted).await;
+                        state_for_host.restore_ready(&persisted).await;
                     });
                 }
             }
@@ -1039,8 +1025,40 @@ impl EnterpriseState {
         status.core_update = None;
     }
 
+    /// Reinicia o host do plugin Enterprise quando a licença está ativa mas o
+    /// host não está rodando (por exemplo, depois que uma revogação temporária
+    /// o parou e um heartbeat subsequente restaurou a licença). Não faz nada
+    /// se o host já estiver de pé ou se faltar o caminho do plugin instalado.
+    async fn ensure_host_running(&self, persisted: &PersistedEnterpriseState) {
+        if self.host.lock().await.is_some() {
+            return;
+        }
+        let Some(path) = persisted.plugin_path.clone().map(std::path::PathBuf::from) else {
+            return;
+        };
+        if !path.is_file() {
+            return;
+        }
+        let Some(database) = &self.database else {
+            return;
+        };
+        let database_path = database.path().with_file_name("enterprise.db");
+        match crate::enterprise_host::EnterpriseHost::start(&path, &database_path).await {
+            Ok(host) => {
+                *self.host.lock().await = Some(host);
+                tracing::info!("host do plugin Enterprise reiniciado após licença voltar a ficar ativa");
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "host do plugin Enterprise não pôde ser reiniciado após licença voltar a ficar ativa");
+            }
+        }
+    }
+
     pub(crate) async fn ingest_audit_event(&self, event: crate::reqlog::AuditEvent) -> bool {
         let Some(host) = self.host.lock().await.clone() else {
+            tracing::warn!(
+                "evento Enterprise descartado: host do plugin não está rodando (licença inativa ou aguardando restauração)"
+            );
             return false;
         };
         let event = match event {
@@ -1173,6 +1191,7 @@ impl EnterpriseState {
                 } = response.payload;
                 let features = EnterpriseFeaturesFromEntitlements::from(entitlements.as_slice()).0;
                 let mut persisted = self.persisted.lock().await;
+                let mut updated_persisted = None;
                 if let Some(state) = persisted.as_mut() {
                     state.lease_token = lease_token;
                     state.lease_expires_at = lease_expires_at.clone();
@@ -1185,6 +1204,7 @@ impl EnterpriseState {
                     if let Some(database) = &self.database {
                         let _ = database.save_local_setting(PERSISTED_SETTING, state);
                     }
+                    updated_persisted = Some(state.clone());
                 }
                 drop(persisted);
                 if release_changed {
@@ -1195,11 +1215,20 @@ impl EnterpriseState {
                     );
                 }
                 let mut status = self.status.write().await;
-                if status.active {
-                    status.state = LicenseState::Active;
-                }
+                let was_active = status.active;
+                status.active = true;
+                status.state = LicenseState::Active;
                 status.features = features;
                 status.lease_expires_at = Some(lease_expires_at);
+                drop(status);
+                if !was_active {
+                    tracing::info!(
+                        "licença Enterprise voltou a ficar ativa após heartbeat bem-sucedido"
+                    );
+                }
+                if let Some(persisted) = updated_persisted {
+                    self.ensure_host_running(&persisted).await;
+                }
                 Ok(())
             }
             Err(error) => {
@@ -1857,6 +1886,11 @@ impl MockLicenseService {
     pub(crate) async fn set_heartbeat_error(&self, code: LicenseErrorCode) {
         *self.heartbeat_error.lock().await = Some(code);
     }
+
+    #[cfg(test)]
+    pub(crate) async fn clear_heartbeat_error(&self) {
+        *self.heartbeat_error.lock().await = None;
+    }
 }
 
 #[async_trait]
@@ -2374,6 +2408,114 @@ mod tests {
         let status = state.status().await;
         assert!(!status.active);
         assert_eq!(status.state, LicenseState::Revoked);
+    }
+
+    /// Reproduz o bug relatado pelo captain: uma revogação para o host do
+    /// plugin Enterprise; o próximo heartbeat bem-sucedido (self-heal, sem o
+    /// processo `pom` inteiro reiniciar) precisa colocá-lo de pé de novo,
+    /// senão Logs de Requisições/Estatísticas ficam mudos indefinidamente até
+    /// o próximo restart completo.
+    #[tokio::test]
+    async fn heartbeat_success_restarts_the_stopped_plugin_host() {
+        // `CARGO_BIN_EXE_*` só é injetado em testes de integração
+        // (`tests/*.rs`); este é um teste de unidade dentro do binário `pom`,
+        // então localizamos o binário auxiliar do mesmo jeito que
+        // `enterprise_host::host_executable` localiza o `pom-plugin-host`
+        // real em produção: ao lado do diretório de saída do cargo
+        // (`target/<profile>/deps/pom-<hash>` -> `target/<profile>/`).
+        let fake_host = std::env::current_exe()
+            .expect("localizar binário de teste")
+            .parent()
+            .and_then(|deps| deps.parent())
+            .expect("localizar diretório target/<profile>")
+            .join(if cfg!(windows) {
+                "pom-fake-enterprise-plugin-host.exe"
+            } else {
+                "pom-fake-enterprise-plugin-host"
+            });
+        assert!(
+            fake_host.is_file(),
+            "binário auxiliar {} não foi compilado; rode `cargo test -p node` (não `--lib`) para produzir todos os alvos [[bin]]",
+            fake_host.display()
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plugin_path = dir.path().join("enterprise-plugin.bin");
+        std::fs::write(&plugin_path, b"fake-plugin").expect("escrever plugin fake");
+        let host_log = dir.path().join("ingest.log");
+
+        // SAFETY: nenhum outro teste desta suíte lê ou grava
+        // POM_PLUGIN_HOST/POM_FAKE_HOST_LOG; só este exercita um
+        // EnterpriseHost::start() real.
+        std::env::set_var("POM_PLUGIN_HOST", fake_host);
+        std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
+
+        let db = crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste");
+        let service = Arc::new(MockLicenseService::valid(activation()));
+        let mut state = EnterpriseState::new(service.clone(), fingerprint());
+        state.database = Some(Arc::new(db));
+        state.activate("PM-test-key").await.expect("activate");
+        state
+            .mark_plugin_ready("ent-test")
+            .await
+            .expect("plugin ready");
+        {
+            let mut persisted = state.persisted.lock().await;
+            persisted.as_mut().unwrap().plugin_path =
+                Some(plugin_path.to_string_lossy().into_owned());
+        }
+
+        let persisted = state.persisted().await;
+        state.ensure_host_running(&persisted).await;
+        assert!(
+            state.host.lock().await.is_some(),
+            "host deveria subir na primeira ativação"
+        );
+
+        service.set_heartbeat_error(LicenseErrorCode::Revoked).await;
+        state
+            .heartbeat("nonce-revoke")
+            .await
+            .expect_err("heartbeat deve refletir a revogação");
+        assert!(
+            state.host.lock().await.is_none(),
+            "host deveria parar quando a licença é revogada"
+        );
+        assert!(!state.status().await.active);
+
+        service.clear_heartbeat_error().await;
+        state
+            .heartbeat("nonce-self-heal")
+            .await
+            .expect("heartbeat de self-heal deve ter sucesso");
+
+        assert!(
+            state.host.lock().await.is_some(),
+            "heartbeat de sucesso deveria reiniciar o host sem restart do processo pom"
+        );
+        assert!(state.status().await.active);
+
+        assert!(
+            state
+                .ingest_audit_event(crate::reqlog::AuditEvent::Begin(
+                    crate::reqlog::AuditRequest {
+                        id: "req-1".into(),
+                        received_at: "2099-01-01T00:00:00Z".into(),
+                        route: "/api/generate".into(),
+                        model: "test-model".into(),
+                        caller: crate::reqlog::Caller::anonymous(),
+                        entry_node_id: "node-a".into(),
+                        prompt: "olá".into(),
+                        request_details: serde_json::json!({}),
+                    }
+                ))
+                .await,
+            "ingest deveria funcionar com o host restaurado"
+        );
+        let events = std::fs::read_to_string(&host_log).expect("ler log do fake host");
+        assert!(
+            events.contains("req-1"),
+            "evento de auditoria deveria ter chegado ao host reiniciado"
+        );
     }
 
     #[tokio::test]

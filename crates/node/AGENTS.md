@@ -265,8 +265,20 @@ entitlements, grant e release devolvidos pelo servidor; o prazo não é
 recalculado localmente. Depois de um heartbeat aceito, e somente com o
 entitlement ativo, ele consulta o manifest `pom_core`, publica uma atualização
 pendente no status e só delega decisão, hash, troca atômica e reinício a
-`core_update.rs` depois de uma autorização explícita pela UI. O
+`core_update.rs` depois de uma autorização explícita pela UI. Todo heartbeat
+com SUCESSO marca a licença ativa e chama `ensure_host_running` (mesma lógica
+de `runtime_with_database`, extraída em um só lugar): se o host do plugin
+estiver `None` - porque uma revogação o derrubou, ou porque o handshake
+`ready` no boot falhou - ele sobe de novo sem esperar um restart completo do
+processo `pom`. `ingest_audit_event` avisa em log quando descarta um evento
+por falta de host, porque antes esse caminho falhava 100% silencioso e só
+dava pra confirmar lendo `enterprise.db` direto. O
 `enterprise_host.rs` é o único adaptador do `pom` para o processo auxiliar;
+`EnterpriseHost::start` usa `kill_on_drop` e mata explicitamente o processo
+quando o handshake `ready` falha ou estoura o timeout de 30s - sem isso, um
+handshake lento (máquina ainda se recuperando de um OOM) deixava
+`pom-plugin-host` órfão no SO enquanto `EnterpriseState.host` continuava
+`None`, e a auditoria caía pro fallback legado sem nenhum aviso.
 `enterprise_p2p.rs` assina provas de fingerprint por nonce. O `GatewayState`
 expõe entitlement ao backend, enquanto `webui` publica status/ativação e
 `reqlog` encaminha eventos e consultas ao plugin ativo. A fronteira e os

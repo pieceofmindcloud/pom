@@ -8,6 +8,13 @@ build = "build.rs"
 name = "pom"
 path = "src/main.rs"
 
+# Host IPC falso, usado só pelo teste de regressão de
+# `enterprise::heartbeat_success_restarts_stopped_host_...` em
+# `src/enterprise.rs`. Não faz parte do produto.
+[[bin]]
+name = "pom-fake-enterprise-plugin-host"
+path = "tests/support/fake_plugin_host.rs"
+
 [features]
 default = []
 # As features do backend nativo vivem em `llama-engine`, que é quem declara

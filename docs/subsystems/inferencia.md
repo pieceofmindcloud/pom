@@ -1912,7 +1912,15 @@ valores são iguais.
   para um peer velho que não ecoa a composição do lote no MTP fatiado.
   Fatiamento multi-nó do rascunho não está implementado, pelo mesmo limite do
   bullet acima (MTP só ativa hoje com uma máquina servindo o modelo inteiro).
-  Ver `crates/llama-engine/src/mtp.rs` para a mecânica completa.
+  `llm::config::fit_plan` é quem decide `MtpFitMode` antes da carga, e até
+  2026-09-18 só olhava `has_nextn_tensors` do arquivo **principal** - um
+  defeito confirmado ao vivo na ksia/salem que reportava "MTP indisponível"
+  mesmo com o rascunho externo correto já no disco, porque `fit_plan` nunca
+  conferia `EngineConfig::mtp_draft_path`. Corrigido: `fit_plan` agora trata
+  um rascunho externo válido como disponibilidade de MTP tão boa quanto
+  `nextn` embutido, sem rodar a checagem de arquitetura-`DECODER_MTP` contra
+  o alvo nesse caso (ela não se aplica - é o rascunho quem constrói esse
+  grafo). Ver `crates/llama-engine/src/mtp.rs` para a mecânica completa.
 
 ### 5.3 Estado recorrente do Kimi-K3
 

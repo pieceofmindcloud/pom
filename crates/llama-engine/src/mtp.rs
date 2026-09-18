@@ -67,6 +67,14 @@
 //! MTP roda de fato - precisa ter o arquivo no disco; nem o orquestrador do
 //! deploy nem as demais máquinas do pipeline precisam dele.
 //!
+//! `llm::config::fit_plan` também precisa saber disso, separado de
+//! `load_with_cache`: é ele quem decide `MtpFitMode` (e portanto se MTP
+//! sequer é tentado) antes da carga de verdade, e antes de 2026-09-18 só
+//! olhava `has_nextn_tensors` do arquivo **principal** - reportando
+//! "MTP indisponível" (defeito confirmado ao vivo na ksia/salem) mesmo com um
+//! rascunho externo correto já no disco, porque nunca conferia
+//! `EngineConfig::mtp_draft_path`.
+//!
 //! **Pré-requisito que o rascunho externo não supre sozinho**: o par
 //! `(h_p, x_{p+1})` que a cabeça `nextn` consome exige que o **alvo** exporte
 //! `h_nextn` do próprio grafo (`pom_llama_set_embeddings_nextn`), e isso é

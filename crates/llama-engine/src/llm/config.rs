@@ -721,6 +721,123 @@ mod fit_memory_margin_tests {
             (MtpFitMode::Disabled, None)
         );
     }
+
+    /// Um `.gguf` mínimo, só o bastante para `has_nextn_tensors`/`read_info`
+    /// lerem os nomes dos tensores: sem KVs, um tensor de uma dimensão por
+    /// nome pedido.
+    fn minimal_gguf_with_tensor_names(names: &[&str]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x4655_4747u32.to_le_bytes()); // "GGUF"
+        b.extend_from_slice(&2u32.to_le_bytes()); // version
+        b.extend_from_slice(&(names.len() as u64).to_le_bytes()); // n_tensors
+        b.extend_from_slice(&0u64.to_le_bytes()); // n_kv
+        for name in names {
+            b.extend_from_slice(&(name.len() as u64).to_le_bytes());
+            b.extend_from_slice(name.as_bytes());
+            b.extend_from_slice(&1u32.to_le_bytes()); // n_dimensions
+            b.extend_from_slice(&1u64.to_le_bytes()); // dim[0]
+            b.extend_from_slice(&0u32.to_le_bytes()); // dtype
+            b.extend_from_slice(&0u64.to_le_bytes()); // offset
+        }
+        b
+    }
+
+    fn cfg_for_fit_plan() -> EngineConfig {
+        EngineConfig {
+            n_ctx: 4096,
+            max_sessions: 1,
+            offload_kqv: true,
+            cache_type_k: crate::KvCacheType::F16,
+            cache_type_v: crate::KvCacheType::F16,
+            // Toma o retorno antecipado de `fit_plan` (sem `fit_can_adjust_layers`),
+            // que já passou pela decisão de disponibilidade do MTP mas não
+            // precisa sondar dispositivo real nenhum - o teste fica sobre a
+            // decisão, não sobre o fit de memória.
+            fit_memory: false,
+            fit_memory_margin_mb: 256,
+            n_batch: 128,
+            n_gpu_layers: DEFAULT_GPU_LAYERS,
+            n_threads: 0,
+            need_embeddings: false,
+            mtp: true,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+            mmproj_path: None,
+            mtp_draft_path: None,
+        }
+    }
+
+    /// Reproduz o defeito ao vivo na ksia/salem: implantar com MTP ligado e
+    /// um rascunho externo já correto no disco (ver
+    /// `models::catalog::find_mtp_draft_sibling`) ainda relatava "MTP
+    /// indisponível: o arquivo não traz tensores nextn", porque `fit_plan`
+    /// só olhava `has_nextn_tensors` do arquivo do modelo **principal** -
+    /// nunca soube que `EngineConfig.mtp_draft_path` existe, mesmo esse campo
+    /// já tendo sido introduzido para exatamente este caso.
+    #[test]
+    fn fit_plan_reconhece_um_rascunho_mtp_externo_quando_o_alvo_nao_embute_nextn() {
+        let dir = std::env::temp_dir().join(format!(
+            "pom-fit-plan-external-draft-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Arquitetura deliberadamente fora da lista gerada de arquiteturas
+        // MTP (como `qwen4exp`): o alvo em si nunca vai construir o grafo
+        // `DECODER_MTP`, e essa checagem não deve nem rodar quando quem tem
+        // `nextn` é o rascunho, não o alvo.
+        let target_path = dir.join("target-sem-nextn.gguf");
+        std::fs::write(&target_path, minimal_gguf_with_tensor_names(&["token_embd.weight"]))
+            .unwrap();
+        let draft_path = dir.join("mtp-target-sem-nextn-shared.gguf");
+        std::fs::write(
+            &draft_path,
+            minimal_gguf_with_tensor_names(&["blk.0.nextn.eh_proj.weight"]),
+        )
+        .unwrap();
+
+        let mut cfg = cfg_for_fit_plan();
+        cfg.mtp_draft_path = Some(draft_path.to_string_lossy().into_owned());
+
+        let plan = fit_plan(target_path.to_str().unwrap(), &cfg, MtpFitMode::Vram)
+            .expect("fit_plan não deveria falhar com um GGUF válido");
+
+        assert_ne!(
+            plan.mtp_mode,
+            MtpFitMode::Disabled,
+            "um rascunho MTP externo válido deve manter o MTP tentável mesmo \
+             sem nextn embutido no arquivo principal"
+        );
+        assert_eq!(
+            plan.mtp_unavailable_reason, None,
+            "não deveria haver razão de indisponibilidade quando o rascunho supre o nextn"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Sem `nextn` embutido e sem rascunho configurado, o comportamento
+    /// permanece exatamente o de antes: MTP indisponível.
+    #[test]
+    fn fit_plan_continua_indisponivel_sem_nextn_e_sem_rascunho() {
+        let dir = std::env::temp_dir().join(format!(
+            "pom-fit-plan-no-draft-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target_path = dir.join("target-sem-nextn.gguf");
+        std::fs::write(&target_path, minimal_gguf_with_tensor_names(&["token_embd.weight"]))
+            .unwrap();
+
+        let cfg = cfg_for_fit_plan();
+        let plan = fit_plan(target_path.to_str().unwrap(), &cfg, MtpFitMode::Vram)
+            .expect("fit_plan não deveria falhar com um GGUF válido");
+
+        assert_eq!(plan.mtp_mode, MtpFitMode::Disabled);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 /// Parâmetros do modelo já ajustados pelo `common_fit_params`.
@@ -860,19 +977,51 @@ pub(super) fn fit_plan(
     } else {
         let path = std::path::Path::new(model_path);
         let has_nextn = crate::gguf::has_nextn_tensors(path).unwrap_or(false);
-        let architecture = crate::gguf::read_info(path)
-            .ok()
-            .and_then(|info| info.architecture);
-        let (mode, reason) = mtp_fit_mode_for_model(mtp_mode, has_nextn, architecture.as_deref());
-        if !has_nextn {
+        // Um GGUF de rascunho MTP separado ("shared MTP module", ex.
+        // qwen4exp/Qwen3.8-Flash-Next) supre os pesos `nextn` que o arquivo
+        // principal não traz - ver `crate::mtp` e
+        // `models::catalog::find_mtp_draft_sibling` no lado do backend. Sem
+        // isto, `fit_plan` desligava o MTP para qualquer alvo assim mesmo
+        // com um rascunho válido já detectado no disco, porque só olhava o
+        // arquivo principal (defeito confirmado ao vivo na ksia/salem,
+        // 2026-09-18).
+        let has_external_draft = !has_nextn
+            && cfg
+                .mtp_draft_path
+                .as_deref()
+                .map(std::path::Path::new)
+                .is_some_and(|draft_path| crate::gguf::has_nextn_tensors(draft_path).unwrap_or(false));
+
+        if has_nextn {
+            // Embutido: o grafo do próprio alvo precisa saber construir a
+            // cabeça `nextn` (`LLM_GRAPH_TYPE_DECODER_MTP`), então a
+            // arquitetura dele tem que estar na lista gerada.
+            let architecture = crate::gguf::read_info(path)
+                .ok()
+                .and_then(|info| info.architecture);
+            let (mode, reason) =
+                mtp_fit_mode_for_model(mtp_mode, true, architecture.as_deref());
+            if let Some(reason) = reason.as_deref() {
+                warn!(model = %model_path, reason, "MTP indisponível para a arquitetura do modelo");
+            }
+            (mode, reason)
+        } else if has_external_draft {
+            // Rascunho externo: quem constrói a cabeça `nextn` é o arquivo
+            // de rascunho, com a própria arquitetura dele - checado depois,
+            // em `MtpDrafter::attach`, contra o rascunho, não contra o alvo.
+            // O alvo só precisa exportar `h_nextn` do próprio grafo, o que
+            // não é um fato estático por arquitetura que `fit_plan` possa
+            // conferir aqui; um alvo que não exportar falha de forma
+            // graciosa no primeiro `observe` (ver `crate::mtp`), nunca
+            // aborta.
+            (mtp_mode, None)
+        } else {
             tracing::info!(
                 model = %model_path,
-                "MTP indisponível: o arquivo não traz tensores nextn"
+                "MTP indisponível: o arquivo não traz tensores nextn nem há um rascunho externo válido"
             );
-        } else if let Some(reason) = reason.as_deref() {
-            warn!(model = %model_path, reason, "MTP indisponível para a arquitetura do modelo");
+            (MtpFitMode::Disabled, None)
         }
-        (mode, reason)
     };
 
     if !fit_can_adjust_layers(cfg) {

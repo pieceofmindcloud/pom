@@ -518,14 +518,16 @@ mod mtp_draft_tests {
 
     /// Rascunho MTP externo sintético do arquiteto `qwen4exp`: mesmo desenho
     /// do "shared MTP module" real da Unsloth (só o bloco final mais
-    /// `token_embd`/`output`/`nextn.*`), mas sem os três tensores de nível de
-    /// modelo que `qwen4exp.cpp::load_arch_tensors` exige incondicionalmente
-    /// antes de qualquer tensor por camada (`output_hc_norm`, `output_hc_down`,
-    /// `output_hc_up` - ver `crates/llama-engine/tests/fixtures/mtp/`).
+    /// `token_embd`/`output`/`nextn.*`, sem tronco e sem os três tensores de
+    /// nível de modelo `output_hc_{norm,down,up}` - ver
+    /// `crates/llama-engine/tests/fixtures/mtp/`).
     ///
-    /// Gerado por `gerar_gguf_sintetico.py` (mesma pasta); reproduz byte a
-    /// byte a mensagem vista nos logs da ksia em 2026-09-18 (tarefa
-    /// sl-mtp-draft-attach, ver `report.md`).
+    /// Antes do porte do padrão `qwen35`/`deepseek4` para `qwen4exp.cpp`
+    /// (`mtp_only` + `layer.nextn.*` + `graph_mtp`/`DECODER_MTP`), este
+    /// arquivo não carregava - `check_tensor_dims: tensor 'output_hc_norm.weight'
+    /// not found`, reproduzindo byte a byte o log da ksia de 2026-09-18
+    /// (tarefa sl-mtp-draft-attach, ver `report.md`). Gerado por
+    /// `gerar_gguf_sintetico.py` (mesma pasta).
     const QWEN4EXP_DRAFT_SEM_OUTPUT_HC: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/mtp/qwen4exp-external-draft-sem-output-hc.gguf"
@@ -554,20 +556,23 @@ mod mtp_draft_tests {
         }
     }
 
-    /// Fixa o comportamento de degradação segura de hoje: um rascunho externo
-    /// `qwen4exp` sem os tensores de saída da hyper-connection não anexa -
-    /// `llama_model_load_from_file` devolve nulo - mas isso nunca aborta o
-    /// processo, sempre vira um `Err` com a mesma mensagem que
-    /// `LlmEngine::load_with_cache` loga e segue sem MTP (ver
-    /// `crate::llm::engine`, linhas em torno de "rascunho MTP externo").
+    /// Regressão para o porte do padrão `qwen35`/`deepseek4` em
+    /// `qwen4exp.cpp` (`mtp_only` no `load_arch_tensors`, tensores
+    /// `layer.nextn.*`, `graph_mtp` para `LLM_GRAPH_TYPE_DECODER_MTP`):
     ///
-    /// A causa raiz vive no fork vendorizado (`llama.cpp/src/models/qwen4exp.cpp`),
-    /// fora do escopo desta tarefa sem autorização explícita do captain - ver
-    /// `needs-decision` em `report.md`. Este teste não passa a exercitar um
-    /// anexo bem-sucedido até esse patch existir; até lá, ele é a rede de
-    /// segurança de que a falha continua **graciosa**, não um crash.
+    /// 1. `LoadedModel::load_mtp_draft` carrega o rascunho sintético sem o
+    ///    tronco e sem `output_hc_*` de nível de modelo - o mesmo caminho
+    ///    real que `LlmEngine::load_with_cache` usa em produção.
+    /// 2. Um contexto `ctx_type = MTP` sobre esse modelo reserva o grafo
+    ///    `graph_mtp` sem abortar - é a prova de que o fork monta o grafo
+    ///    da cabeça nextn de verdade, não só que os tensores carregam.
+    ///
+    /// Isso prova que a causa raiz (identificada em código e por reprodução
+    /// sintética antes do porte - ver `report.md`) está corrigida para este
+    /// arquivo sintético; o modelo real da Unsloth e o deploy na ksia não
+    /// podem ser verificados aqui.
     #[test]
-    fn rascunho_qwen4exp_sem_output_hc_falha_sem_panico() {
+    fn rascunho_qwen4exp_sem_output_hc_anexa() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
             "pom-qwen4exp-draft-sem-output-hc-{}.gguf",
@@ -579,18 +584,31 @@ mod mtp_draft_tests {
         let cfg = draft_cfg(&path_str);
         let result = LoadedModel::load_mtp_draft(&path_str, &cfg);
 
+        let loaded = match result {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                panic!("load_mtp_draft deveria anexar o rascunho sintético: {error:#}");
+            }
+        };
+        assert!(
+            loaded.has_nextn_weights(),
+            "o rascunho carregado precisa expor pesos nextn"
+        );
+
+        let mut cparams = crate::mtp::context_params_with_offload(&cfg, false);
+        cparams.embeddings = false;
+        let ctx = unsafe { sys::llama_init_from_model(loaded.model_ptr(), cparams) };
+        let ctx_ok = !ctx.is_null();
+        if !ctx.is_null() {
+            unsafe { sys::llama_free(ctx) };
+        }
+
         let _ = std::fs::remove_file(&path);
 
-        let Err(error) = result else {
-            panic!(
-                "o rascunho sintético não traz output_hc_norm/down/up; \
-                 load_mtp_draft precisa recusar, nunca aceitar silenciosamente"
-            );
-        };
-        let message = format!("{error:#}");
         assert!(
-            message.contains("llama_model_load_from_file failed"),
-            "mensagem inesperada: {message}"
+            ctx_ok,
+            "llama_init_from_model(ctx_type=MTP) devolveu nulo - graph_mtp não reservou"
         );
     }
 }

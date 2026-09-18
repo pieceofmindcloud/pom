@@ -59,13 +59,20 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   `DECODER_MTP` (o lado do rascunho); um alvo sem `h_nextn` falha no primeiro
   `observe` e desliga o MTP daquela sessão com aviso, sem abortar. Ver o
   cabeçalho de `mtp.rs` para a mecânica completa e a convenção de nome
-  (`catalog::find_mtp_draft_sibling`, prefixo `mtp-`).
-  DEFEITO ANOTADO (2026-09-18): para `qwen4exp`, o próprio arquivo de
-  rascunho nunca carrega - `check_tensor_dims: tensor 'output_hc_norm.weight'
-  not found` em `load_mtp_draft`, reproduzido com um GGUF sintético em
-  `llm/model.rs::mtp_draft_tests` e fixture/gerador em `tests/fixtures/mtp/`.
-  Causa e escopo completos (fork-only) em `docs/subsystems/inferencia.md`,
-  seção "Defeitos anotados".
+  (`catalog::find_mtp_draft_sibling`, prefixo `mtp-`). Para `qwen4exp`, o
+  fork (`pereirajair/llama.cpp`, `pom-tensor-parallel`) porta o padrão de
+  `qwen35.cpp`/`deepseek4.cpp` em `qwen4exp.cpp`: `load_arch_tensors` detecta
+  um rascunho nextn-only (`mtp_only`, mesma sondagem de `blk.0.*`) e libera o
+  tronco e os tensores de nível de modelo (`hc_head_*`) como
+  `TENSOR_NOT_REQUIRED`; a cauda ganha os tensores `layer.nextn.*`
+  (`eh_proj`/`enorm`/`hnorm`/`hc_head_*` próprios); e `build_arch_graph`
+  despacha para uma `graph_mtp` nova quando `params.gtype ==
+  LLM_GRAPH_TYPE_DECODER_MTP`. O `h_nextn` exportado pelo alvo também foi
+  corrigido para o estado **largo** (`n_embd*hc`, pré-mixer) - exportar a
+  versão já colapsada silenciava a cabeça de rascunho sem travar nada.
+  Prova sintética completa (falha antes do porte, contexto MTP reservando
+  depois) em `llm/model.rs::mtp_draft_tests` e fixture/gerador em
+  `tests/fixtures/mtp/`.
 - `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em
   `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`. O
   fallback CPU do router executa os experts selecionados em workers escopados

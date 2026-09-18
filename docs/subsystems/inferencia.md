@@ -1920,7 +1920,13 @@ valores são iguais.
   um rascunho externo válido como disponibilidade de MTP tão boa quanto
   `nextn` embutido, sem rodar a checagem de arquitetura-`DECODER_MTP` contra
   o alvo nesse caso (ela não se aplica - é o rascunho quem constrói esse
-  grafo). Ver `crates/llama-engine/src/mtp.rs` para a mecânica completa.
+  grafo). Para `qwen4exp`, o fork também precisou do padrão `mtp_only` de
+  `qwen35.cpp`/`deepseek4.cpp` portado para `qwen4exp.cpp` (tronco e
+  `hc_head_*` de nível de modelo viram `TENSOR_NOT_REQUIRED`, a cauda ganha
+  `layer.nextn.*`, `build_arch_graph` ganha uma `graph_mtp`) - sem isso o
+  próprio arquivo de rascunho não carregava, ver "Defeitos anotados" para a
+  causa raiz completa. Ver `crates/llama-engine/src/mtp.rs` para a mecânica
+  completa.
 
 ### 5.3 Estado recorrente do Kimi-K3
 
@@ -2371,36 +2377,21 @@ lifetime, frames e bytes, primeira entrega, latências de frame min/p50/p95/p99/
 
 ## Defeitos anotados
 
-- DEFEITO ANOTADO (2026-09-18): o rascunho MTP externo de `qwen4exp`
-  (Qwen3.8-Flash-Next) não anexa - nem no caminho feliz. `h_nextn` já é
-  exportado pelo alvo (`pereirajair/llama.cpp`, commit `1b9c07a8`), mas o
-  próprio arquivo de rascunho nunca carrega: `llama_model_qwen4exp::load_arch_tensors`
-  (`llama.cpp/src/models/qwen4exp.cpp`, por volta da linha 175) cria
-  `output_hc_norm`/`output_hc_down`/`output_hc_up` sem `TENSOR_NOT_REQUIRED` e
-  sem computar um `mtp_only` a partir de `blk.0.attn_norm.weight` ausente, ao
-  contrário de `qwen35.cpp`/`qwen3next.cpp` (linhas 36-39 de cada), que já
-  resolvem exatamente esse caso para as próprias arquiteturas. Um rascunho
-  "shared MTP module" real (ex. da Unsloth) só traz o bloco final e falha
-  logo no primeiro `create_tensor` de nível de modelo com
-  `check_tensor_dims: tensor 'output_hc_norm.weight' not found` - reproduzido
-  com um GGUF sintético em
-  `crates/llama-engine/src/llm/model.rs::mtp_draft_tests` (fixture e gerador
-  em `crates/llama-engine/tests/fixtures/mtp/`). Suprir só esses três tensores
-  não bastaria: a mesma função exige incondicionalmente todo `blk.0..n_layer`
-  do tronco (nenhum tem `TENSOR_NOT_REQUIRED`), e um rascunho separado nunca
-  traz o tronco - só o bloco final. Além disso `qwen4exp.cpp` nunca declara os
-  tensores `blk.<n_layer_all-1>.nextn.*` (`layer.nextn` não existe nesse
-  arquivo) nem tem uma classe de grafo para
-  `params.gtype == LLM_GRAPH_TYPE_DECODER_MTP` (`build_arch_graph`, linha
-  ~275, sempre devolve o `graph` cheio) - por isso `qwen4exp` também não entra
-  na lista gerada em `build/mtp_arch.rs`. O conversor do próprio fork já
-  assume isso: `conversion/qwen4exp.py` define `supports_mtp_export = False` e
-  `no_mtp = True`. Ou seja, o suporte ao rascunho externo de `qwen4exp` requer
-  três mudanças no fork (gate `mtp_only` no tronco, declarar e carregar
-  `nextn.*`, escrever um `graph_mtp` dedicado) - fora do escopo de uma
-  correção só em POM. Ver `crate::llm::engine::load_with_cache`
-  (mensagem "rascunho MTP externo ... não anexou") para a degradação já
-  correta: nunca aborta, só segue sem MTP.
+Nenhum em aberto. O rascunho MTP externo de `qwen4exp` (Qwen3.8-Flash-Next)
+não anexava - `check_tensor_dims: tensor 'output_hc_norm.weight' not found`
+em `load_mtp_draft`, confirmado ao vivo na ksia/salem em 2026-09-18. A causa
+tinha três partes em `llama.cpp/src/models/qwen4exp.cpp` (fork
+`pereirajair/llama.cpp`, `pom-tensor-parallel`): `load_arch_tensors` nunca
+computava `mtp_only` (o padrão que `qwen35.cpp`/`qwen3next.cpp`/`deepseek4.cpp`
+já usam para liberar o tronco quando o arquivo é só o rascunho); a arquitetura
+nunca declarava os tensores `layer.nextn.*` da cauda; e `build_arch_graph`
+nunca despachava para uma `graph_mtp` em `params.gtype ==
+LLM_GRAPH_TYPE_DECODER_MTP`. Corrigido portando o padrão de
+`qwen35.cpp`/`deepseek4.cpp` para `qwen4exp.cpp` (as três peças acima) e
+corrigindo a largura do `h_nextn` exportado pelo alvo, que saía já colapsado
+pelo mixer final em vez do estado largo `n_embd*hc` que a cabeça de rascunho
+espera. Prova por reprodução sintética (falha antes, contexto MTP reservando
+depois) em `crates/llama-engine/src/llm/model.rs::mtp_draft_tests`.
 
 ## Nota de versão
 

@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
-"""Gera um GGUF qwen4exp minimo e estruturalmente valido, para reproduzir o
-defeito da tarefa sl-mtp-draft-attach (ver report.md na raiz da tarefa).
+"""Gera um GGUF qwen4exp minimo e estruturalmente valido, para a tarefa
+sl-mtp-draft-attach (ver o `## Defeitos anotados` de docs/subsystems/inferencia.md
+para a causa raiz e o conserto).
 
 mode="draft": espelha o rascunho externo real da Unsloth ("shared MTP
 module") - so o ultimo bloco (indice n_layer_all - 1) mais
 token_embd/output/nextn.*, sem os tensores de nivel de modelo
-output_hc_{norm,down,up}. Falha esperada: "check_tensor_dims: tensor
-'output_hc_norm.weight' not found", igual ao log da ksia.
+output_hc_{norm,down,up}. Antes do porte do padrao qwen35/deepseek4 para
+qwen4exp.cpp (mtp_only + layer.nextn.* + graph_mtp), esse arquivo falhava
+com "check_tensor_dims: tensor 'output_hc_norm.weight' not found", igual ao
+log da ksia; depois do porte ele carrega e um contexto ctx_type=MTP sobre
+ele reserva o grafo `graph_mtp` normalmente - ver o teste
+`rascunho_qwen4exp_sem_output_hc_anexa` em
+`crates/llama-engine/src/llm/model.rs`.
 
 mode="draft_fixed": igual ao anterior, mas com output_hc_{norm,down,up}
-tambem presentes. Falha esperada um passo depois, no primeiro tensor de
-tronco ausente (blk.0.*) - prova que só adicionar os 3 tensores (hipotese 1)
-nao resolve, porque o intervalo de tronco (blk.0..n_layer-1) continua sem
-gate TENSOR_NOT_REQUIRED em `load_arch_tensors` (qwen4exp.cpp).
+tambem presentes - variante historica usada para descartar a hipotese de
+que bastava exportar mais tensores (nao bastava: o tronco blk.0..n_layer-1
+tambem precisava do gate mtp_only, ausente antes do porte).
 
-O fixture `qwen4exp-external-draft-sem-output-hc.gguf` neste diretorio é a
+O fixture `qwen4exp-external-draft-sem-output-hc.gguf` neste diretorio e a
 saida deste script em mode="draft"; regenere com:
 
     python3 gerar_gguf_sintetico.py qwen4exp-external-draft-sem-output-hc.gguf draft
@@ -49,10 +54,6 @@ N_EXPERT = 2
 N_EXPERT_USED = 1
 BLOCK_COUNT = 2          # n_layer_all: blk.0 (trunk-only) + blk.1 (nextn block)
 NEXTN_PREDICT_LAYERS = 1  # n_layer() = BLOCK_COUNT - NEXTN_PREDICT_LAYERS = 1
-
-
-def f32(*shape):
-    return np.zeros(shape, dtype=np.float32)
 
 
 def write(path: str, mode: str):
@@ -94,22 +95,30 @@ def write(path: str, mode: str):
     w.add_token_list([f"<t{i}>" for i in range(N_VOCAB)])
     w.add_token_types([int(gguf.TokenType.NORMAL)] * N_VOCAB)
 
-    # --- tensors -----------------------------------------------------
-    w.add_tensor("token_embd.weight", f32(N_VOCAB, N_EMBD))
-    w.add_tensor("output.weight", f32(N_VOCAB, N_EMBD))
+    # --- tensores --------------------------------------------------------
+    # `ne(*dims)` recebe os `dims` colados literalmente do `{...}` de
+    # qwen4exp.cpp (mesma ordem) e inverte por dentro para numpy - conferido
+    # contra o proprio "expected"/"got" do erro do loader nativo com um
+    # fixture fresco (o GGUFWriter grava dims[] invertido e o llama.cpp le
+    # dims[] de novo sem inverter, entao ne[] == reversed(numpy.shape)).
+    def ne(*dims):
+        return np.zeros(tuple(reversed(dims)), dtype=np.float32)
+
+    w.add_tensor("token_embd.weight", ne(N_EMBD, N_VOCAB))
+    w.add_tensor("output.weight", ne(N_EMBD, N_VOCAB))
 
     if mode in ("draft_fixed",):
-        w.add_tensor("output_hc_norm.weight", f32(HC, N_EMBD))
-        w.add_tensor("output_hc_down.weight", f32(HC_LOW_RANK, HC_DIM))
-        w.add_tensor("output_hc_up.weight", f32(HC_DIM, HC_LOW_RANK))
+        w.add_tensor("output_hc_norm.weight", ne(N_EMBD, HC))
+        w.add_tensor("output_hc_down.weight", ne(HC_DIM, HC_LOW_RANK))
+        w.add_tensor("output_hc_up.weight", ne(HC_LOW_RANK, HC_DIM))
 
-    il = BLOCK_COUNT - 1  # 1: the only block present, mirrors "blk.48" in the real draft
+    il = BLOCK_COUNT - 1  # 1: o unico bloco presente, espelha "blk.48" no rascunho real
     key_dim = SSM_D_STATE * SSM_N_GROUP
     value_dim = SSM_D_STATE * SSM_DT_RANK
     conv_dim = key_dim * 2 + value_dim
 
-    def blk(name, *shape):
-        w.add_tensor(f"blk.{il}.{name}", f32(*shape))
+    def blk(name, *dims):
+        w.add_tensor(f"blk.{il}.{name}", ne(*dims))
 
     blk("attn_k.weight", N_EMBD, N_EMBD_HEAD * N_HEAD_KV)
     blk("attn_k_norm.weight", N_EMBD_HEAD)
@@ -127,11 +136,11 @@ def write(path: str, mode: str):
     blk("ffn_up_shexp.weight", N_EMBD, N_FF_SHEXP)
     blk("hc_attn_down.weight", HC_DIM, HC_LOW_RANK)
     blk("hc_attn_inject.weight", HC_DIM, HC)
-    blk("hc_attn_norm.weight", HC, N_EMBD)
+    blk("hc_attn_norm.weight", N_EMBD, HC)  # TENSOR_ALLOW_RESHAPE
     blk("hc_attn_up.weight", HC_LOW_RANK, HC_DIM)
     blk("hc_ffn_down.weight", HC_DIM, HC_LOW_RANK)
     blk("hc_ffn_inject.weight", HC_DIM, HC)
-    blk("hc_ffn_norm.weight", HC, N_EMBD)
+    blk("hc_ffn_norm.weight", N_EMBD, HC)  # TENSOR_ALLOW_RESHAPE
     blk("hc_ffn_up.weight", HC_LOW_RANK, HC_DIM)
     blk("indexer.k_norm.weight", IDX_HEAD_DIM)
     blk("indexer.k_proj.weight", N_EMBD, IDX_HEAD_DIM)
@@ -139,10 +148,10 @@ def write(path: str, mode: str):
     blk("indexer.q_proj.weight", N_EMBD, IDX_HEADS * IDX_HEAD_DIM)
     blk("nextn.eh_proj.weight", 2 * N_EMBD, N_EMBD)
     blk("nextn.enorm.weight", N_EMBD)
-    blk("nextn.hc_head_down.weight", HC_LOW_RANK, HC_DIM)
-    blk("nextn.hc_head_norm.weight", HC, N_EMBD)
-    blk("nextn.hc_head_up.weight", HC_DIM, HC_LOW_RANK)
-    blk("nextn.hnorm.weight", N_EMBD)
+    blk("nextn.hc_head_down.weight", HC_DIM, HC_LOW_RANK)
+    blk("nextn.hc_head_norm.weight", N_EMBD, HC)  # TENSOR_ALLOW_RESHAPE
+    blk("nextn.hc_head_up.weight", HC_LOW_RANK, HC_DIM)
+    blk("nextn.hnorm.weight", HC_DIM)
 
     w.write_header_to_file()
     w.write_kv_data_to_file()

@@ -48,9 +48,10 @@
 //! - o mesmo motivo de espaço que o llama.cpp já resolve para EAGLE3/DFLASH
 //! via `ctx_other` (`llama-ext.h`), embora o formato aqui seja mais simples: o
 //! arquivo de rascunho de fato inclui sua própria cópia pequena de
-//! `token_embd`/`output` (o "mtp_only" que `qwen35.cpp`/`qwen3next.cpp` já
-//! sabem carregar - `blk.0.attn_norm.weight` ausente marca o arquivo como
-//! só-nextn), então **não precisa** de `ctx_other`: carrega como um
+//! `token_embd`/`output` (o "mtp_only" que `qwen35.cpp`/`qwen3next.cpp`/
+//! `deepseek4.cpp`/`qwen4exp.cpp` já sabem carregar - `blk.0.<primeiro tensor
+//! de tronco da arquitetura>` ausente marca o arquivo como só-nextn), então
+//! **não precisa** de `ctx_other`: carrega como um
 //! `LoadedModel` inteiramente independente
 //! (`LoadedModel::load_mtp_draft`) e vira o `companion` de
 //! `mtp_model_for_attach`, exatamente como o irmão CPU-only do recuo para RAM
@@ -86,22 +87,30 @@
 //! regredir o corte antecipado de linhas que a arquitetura já fazia na
 //! última camada (`inp_out_ids`) - sem MTP pedido esse corte continua
 //! idêntico ao de antes, sem custo extra de FFN/hyper-connection por posição.
+//! `h_nextn` é sempre o estado **largo** pré-mixer (`n_embd*hc` para
+//! arquiteturas de hyper-connection como `qwen4exp`/`deepseek4`, `n_embd`
+//! nas demais) - exportar a versão já colapsada pelo mixer final é um erro
+//! silencioso, não um crash: a cabeça de rascunho ainda decodifica, só que
+//! sobre menos informação, derrubando a taxa de aceitação sem avisar.
 //!
-//! Não há checagem estática do lado Rust para essa capacidade: a lista
-//! gerada em `build/mtp_arch.rs` (`MTP_GRAPH_ARCHITECTURES`) certifica quem
-//! consegue **construir o grafo `DECODER_MTP`** (a capacidade do lado do
-//! rascunho, checada em `MtpDrafter::attach` contra a arquitetura do
-//! rascunho), não quem exporta `h_nextn` do lado do alvo - as duas
-//! coincidem para os modelos que embutem `nextn` porque nesse caso alvo e
-//! rascunho são o mesmo arquivo, mas divergem de propósito para um alvo como
-//! `qwen4exp` que só precisa exportar o estado, nunca construir a cabeça de
-//! rascunho. Um alvo cujo grafo não exporta `h_nextn` simplesmente falha no
+//! A lista gerada em `build/mtp_arch.rs` (`MTP_GRAPH_ARCHITECTURES`)
+//! certifica quem consegue **construir o grafo `DECODER_MTP`** (a capacidade
+//! do lado do rascunho, checada em `MtpDrafter::attach` contra a arquitetura
+//! do rascunho) - não há checagem estática do lado Rust para quem exporta
+//! `h_nextn` do lado do alvo. As duas coincidem sempre que o rascunho é
+//! `qwen4exp` (embutido ou externo): a mesma `qwen4exp.cpp` exporta o estado
+//! largo do alvo (`graph::graph`) e constrói a cabeça de rascunho
+//! (`graph::graph_mtp`, despachada por `params.gtype ==
+//! LLM_GRAPH_TYPE_DECODER_MTP`) - só o `ctx_type` do contexto muda qual das
+//! duas roda. Um alvo cujo grafo não exporta `h_nextn` simplesmente falha no
 //! primeiro `observe` (`llama_get_embeddings_nextn_ith` devolve `NULL`) e
 //! desliga o MTP daquela sessão com aviso - a mesma degradação que já existe
 //! para um peer velho que não ecoa a composição do lote no MTP fatiado (ver
 //! `docs/subsystems/inferencia.md`, 5.2). Ver a sonda
 //! `an_external_mtp_draft_attaches_to_a_target_without_embedded_nextn` nos
-//! testes deste módulo para o roteiro de validação com os arquivos reais.
+//! testes deste módulo para o roteiro de validação com os arquivos reais, e
+//! `crates/llama-engine/src/llm/model.rs::mtp_draft_tests` para a
+//! reprodução sintética que provou a causa raiz e a correção.
 //!
 //! **Fatiamento multi-nó do rascunho externo**: fora de escopo por ora. O
 //! mesmo limite da seção acima vale aqui - MTP só roda hoje quando uma máquina

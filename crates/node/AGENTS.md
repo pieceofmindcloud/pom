@@ -291,7 +291,10 @@ por plugin ativo. `PluginHost::start` usa `kill_on_drop` e mata explicitamente
 o processo quando o handshake `ready` falha ou estoura o timeout de 30s - sem
 isso, um handshake lento (máquina ainda se recuperando de um OOM) deixava
 `pom-plugin-host` órfão no SO enquanto o `PluginRuntime` continuava sem host,
-e a auditoria caía pro fallback legado sem nenhum aviso. `enterprise_p2p.rs`
+e a auditoria caía pro fallback legado sem nenhum aviso. O host mantém um
+leitor persistente de stdout e correlaciona respostas pelo ID do pedido; um
+timeout remove somente o registro pendente, e uma resposta tardia é consumida
+sem deslocar o frame da chamada seguinte. `enterprise_p2p.rs`
 assina provas de fingerprint por nonce (uso genérico, não específico de um
 plugin). O `GatewayState` expõe o `PluginManager` ao backend, `webui` publica
 lista/ativação/atualização por plugin e `reqlog` encaminha eventos e consultas

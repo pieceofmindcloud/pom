@@ -57,11 +57,14 @@ que é uma fronteira de produto separada desde antes e continua sendo).
   agregações de estatísticas próprios.
 - `crates/node/src/plugin_host.rs` (`PluginHost`, renomeado de
   `EnterpriseHost`) supervisiona o processo auxiliar por IPC assíncrono com
-  frames limitados, timeout e encerramento ordenado. Uma instância por
-  chamada de `start()` - nada é global - então `PluginManager` mantém uma
-  instância concorrente por plugin ativo sem se pisarem. O caminho ativo
-  envia eventos neutros ao host; o `pom.db` legado é fallback transitório
-  para testes, migração e falha do plugin.
+  frames limitados, timeout e encerramento ordenado. Um leitor persistente
+  correlaciona cada resposta pelo ID, inclusive quando pedidos concorrentes
+  retornam fora de ordem. Depois do timeout, o registro pendente é removido,
+  mas o leitor consome uma resposta tardia pelo ID sem a entregar à chamada
+  seguinte. Uma instância por chamada de `start()` - nada é global - então
+  `PluginManager` mantém uma instância concorrente por plugin ativo sem se
+  pisarem. O caminho ativo envia eventos neutros ao host; o `pom.db` legado é
+  fallback transitório para testes, migração e falha do plugin.
 - A imagem Docker copia `pom-plugin-host` para `/usr/local/bin` ao lado de
   `pom`. O entrypoint valida ambos, e o `pom` inicia o host somente após a
   ativação, com o caminho absoluto do plugin baixado e pipes stdin/stdout;

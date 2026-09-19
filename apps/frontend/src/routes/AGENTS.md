@@ -132,6 +132,8 @@ Per-file list:
   `message.trace`/`message.timings` remain the preferred values once available.
   The quick timing summary stays outside the closed details card, so every
   assistant message keeps its summary and full telemetry without a reload.
+  Each hop's backend telemetry separates the llama.cpp evaluation call from
+  explicit backend synchronization.
   O perfil `infer` oculta desta tela a origem, os resumos de tempo e
   throughput e o painel detalhado de telemetria; isso é apresentação, não
   autorização.

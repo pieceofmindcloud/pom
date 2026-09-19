@@ -62,14 +62,83 @@ pub(crate) async fn set_test_local_inference(local: Option<LocalInference>) {
     *local_inference_slot().write().await = local.map(|local| (u64::MAX, local));
 }
 
-/// Tentativa de prefill por chamada antes de devolver a falha ao gateway.
-///
-/// Uma falha de transporte não informa se o peer já gravou o chunk antes de
-/// perder a resposta. Reenviar cegamente pode pedir `kv_remove` no meio de um
-/// cache recorrente. A recuperação segura acontece no gateway, que recria a
-/// sessão inteira a partir do chunk 0. Decode também passa `1`, mas por uma
-/// razão independente: ele nunca tem rollback automático.
-pub const CHUNK_ATTEMPTS: u32 = 1;
+/// Tentativas do mesmo chunk quando todos os caminhos provam que não
+/// entregaram o corpo. Uma falha depois do início do envio é ambígua e nunca é
+/// repetida automaticamente, porque o peer pode já ter avançado o KV.
+pub const CHUNK_ATTEMPTS: u32 = 3;
+
+#[derive(Debug)]
+struct FrameNotDelivered {
+    message: String,
+}
+
+impl std::fmt::Display for FrameNotDelivered {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for FrameNotDelivered {}
+
+/// `true` apenas quando a camada de transporte confirma que o frame não
+/// chegou ao handler remoto. Timeout de resposta e erro durante envio ficam
+/// deliberadamente fora desta classe.
+pub fn is_pre_delivery_error(error: &anyhow::Error) -> bool {
+    if error.downcast_ref::<FrameNotDelivered>().is_some() {
+        return true;
+    }
+    if error
+        .downcast_ref::<crate::quic::QuicDeliveryError>()
+        .is_some_and(|failure| failure.before_body)
+    {
+        return true;
+    }
+    if error
+        .downcast_ref::<crate::infer_tunnel::TunnelDeliveryError>()
+        .is_some_and(|failure| failure.before_request)
+    {
+        return true;
+    }
+    if error
+        .downcast_ref::<crate::link::LinkDeliveryError>()
+        .is_some_and(|failure| failure.before_frame)
+    {
+        return true;
+    }
+    error
+        .downcast_ref::<reqwest::Error>()
+        .is_some_and(|failure| failure.is_connect() || failure.is_builder())
+}
+
+/// `true` quando o transporte pode ter entregue o corpo antes de perder a
+/// resposta. O gateway só deve reconstruir a sessão inteira nesses casos; uma
+/// falha de conexão comprovadamente anterior ao corpo pode retomar o chunk.
+pub fn is_delivery_ambiguous(error: &anyhow::Error) -> bool {
+    if error.downcast_ref::<FrameNotDelivered>().is_some()
+        || error.downcast_ref::<HttpRefusal>().is_some()
+    {
+        return false;
+    }
+    if let Some(failure) = error.downcast_ref::<crate::quic::QuicDeliveryError>() {
+        return !failure.before_body;
+    }
+    if let Some(failure) = error.downcast_ref::<crate::infer_tunnel::TunnelDeliveryError>() {
+        return !failure.before_request;
+    }
+    if let Some(failure) = error.downcast_ref::<crate::link::LinkDeliveryError>() {
+        return !failure.before_frame;
+    }
+    if error.downcast_ref::<TransportDeadline>().is_some() {
+        return true;
+    }
+    error
+        .downcast_ref::<reqwest::Error>()
+        .is_some_and(|failure| !failure.is_connect() && !failure.is_builder())
+}
+
+fn retry_backoff(attempt: u32) -> Duration {
+    Duration::from_millis(100u64.saturating_mul(1u64 << attempt.saturating_sub(1).min(3)))
+}
 
 #[cfg(not(test))]
 const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_secs(600);
@@ -627,6 +696,15 @@ pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
     text.contains("sessão") && text.contains("desconhecida")
 }
 
+/// Erros que provam divergência do KV remoto. Diferente de uma falha de
+/// transporte antes da entrega, eles pedem que a sessão inteira seja limpa.
+pub fn is_prefill_state_error(error: &anyhow::Error) -> bool {
+    let text = error.to_string().to_lowercase();
+    text.contains("chunk fora de ordem")
+        || text.contains("sem start_pos absoluto")
+        || text.contains("não aceita descartar posições do meio do cache")
+}
+
 /// Uma falha de repasse entre hops causada pelo **transporte** - caminho
 /// morto, timeout, ou recusa de autenticação 401/403 - e não pelo conteúdo do
 /// pedido. Um gap transitório na propagação da política de rede (TLS/QUIC
@@ -721,8 +799,8 @@ pub fn extract_relay_failure(e: &anyhow::Error) -> Option<RelayFailure> {
 }
 
 /// POST one wire frame to `{base_url}{path}`, retrying up to `attempts`
-/// times on transport/timeout failure with the same 400ms×attempt backoff
-/// this project has always used. An explicit HTTP error response is never
+/// times on failures proven to precede delivery, with a short millisecond
+/// backoff. An explicit HTTP error response is never
 /// retried — it's the peer's considered refusal, not a hiccup. `attempts=1`
 /// means exactly one try, no retry at all (the decode/`/v1/step` path has
 /// never retried, since, unlike prefill chunks, a step has no KV-rollback
@@ -1046,6 +1124,14 @@ async fn send_frame_with_protocol(
                         }));
                     }
                     Err(error) => {
+                        if !is_pre_delivery_error(&error) {
+                            on_issue(SendIssue {
+                                kind: SendIssueKind::Transport,
+                                attempt,
+                                message: format!("QUIC: {error}"),
+                            });
+                            return Err(error);
+                        }
                         transport_fallback = true;
                         transport_fallback_reason = Some(match transport_fallback_reason.take() {
                             Some(previous) => format!("{previous}; quic: {error}"),
@@ -1190,6 +1276,9 @@ async fn send_frame_with_protocol(
                     warn!(
                         "chamada para {peer_label} em {base} falhou (tentativa {attempt}/{attempts}): {last_error}"
                     );
+                    if !is_pre_delivery_error(&e) {
+                        return Err(e);
+                    }
                 }
             }
         }
@@ -1198,9 +1287,11 @@ async fn send_frame_with_protocol(
         }
     }
 
-    Err(anyhow!(
-        "{peer_label} não respondeu após {attempts} tentativa(s): {last_error}"
-    ))
+    Err(anyhow::Error::new(FrameNotDelivered {
+        message: format!(
+            "{peer_label} não recebeu o frame após {attempts} tentativa(s): {last_error}"
+        ),
+    }))
 }
 
 #[derive(Debug)]
@@ -1454,6 +1545,7 @@ async fn send_batch_body(
                 });
             }
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+            Err(error) if !is_pre_delivery_error(&error) => return Err(error),
             Err(error) => {
                 transport_fallback = true;
                 transport_fallback_reason = Some(format!("https-link: {error}"));
@@ -1479,9 +1571,10 @@ async fn send_batch_body(
     let client_encode_ms = 0;
     let mut last_error = String::new();
     for attempt in 1..=attempts {
+        last_error.clear();
         let ordered = clients.route_order(&route_key, &route_candidates);
         if ordered.is_empty() {
-            break;
+            last_error = "nenhuma rota HTTP de inferência disponível".to_string();
         }
         for base in ordered {
             let url = format!("{}{path}", base.trim_end_matches('/'));
@@ -1549,6 +1642,9 @@ async fn send_batch_body(
                         }));
                     }
                     Err(error) => {
+                        if !is_pre_delivery_error(&error) {
+                            return Err(error);
+                        }
                         transport_fallback = true;
                         transport_fallback_reason = Some(match transport_fallback_reason.take() {
                             Some(previous) => format!("{previous}; quic: {error}"),
@@ -1628,45 +1724,64 @@ async fn send_batch_body(
                 Err(error) => {
                     last_error = error.to_string();
                     clients.remember_route_failure(&route_key, &base);
+                    if !is_pre_delivery_error(&error) {
+                        return Err(error);
+                    }
                 }
             }
         }
-        if attempt < attempts && !last_error.is_empty() {
-            tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
+        let direct_error = anyhow::Error::new(FrameNotDelivered {
+            message: format!("{peer_label} não recebeu o batch: {last_error}"),
+        });
+
+        // Cada tentativa percorre a escada completa antes do recuo: QUIC,
+        // HTTP e túnel. Falhar em abrir o transporte direto não pode consumir
+        // todas as tentativas antes de experimentar o caminho independente.
+        if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
+            let auth = clients.internal_node_token().await;
+            match send_batch_via_tunnel(
+                tunnel,
+                peer_id,
+                &step.libp2p_addr_candidates,
+                path,
+                body.to_vec(),
+                peer_label,
+                auth,
+                session_id,
+                profiling.as_ref(),
+            )
+            .await
+            {
+                Ok(mut response) => {
+                    response.transport_fallback = true;
+                    response.transport_fallback_reason = Some(match transport_fallback_reason {
+                        Some(previous) => format!("{previous}; http: {direct_error}"),
+                        None => format!("http: {direct_error}"),
+                    });
+                    return Ok(response);
+                }
+                Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+                Err(tunnel_error) if is_pre_delivery_error(&tunnel_error) => {
+                    last_error = format!("{direct_error}; libp2p-tunnel: {tunnel_error}");
+                }
+                Err(tunnel_error) => {
+                    return Err(tunnel_error.context(format!("{direct_error}")));
+                }
+            }
+        } else {
+            last_error = direct_error.to_string();
+        }
+
+        if attempt < attempts {
+            tokio::time::sleep(retry_backoff(attempt)).await;
         }
     }
-    let direct_error =
-        anyhow!("{peer_label} não respondeu após {attempts} tentativa(s): {last_error}");
-    if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
-        let auth = clients.internal_node_token().await;
-        match send_batch_via_tunnel(
-            tunnel,
-            peer_id,
-            &step.libp2p_addr_candidates,
-            path,
-            body.to_vec(),
-            peer_label,
-            auth,
-            session_id,
-            profiling.as_ref(),
-        )
-        .await
-        {
-            Ok(mut response) => {
-                response.transport_fallback = true;
-                response.transport_fallback_reason = Some(match transport_fallback_reason {
-                    Some(previous) => format!("{previous}; http: {direct_error}"),
-                    None => format!("http: {direct_error}"),
-                });
-                return Ok(response);
-            }
-            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
-            Err(tunnel_error) => {
-                return Err(anyhow!("{direct_error}; libp2p-tunnel: {tunnel_error}"));
-            }
-        }
-    }
-    Err(direct_error)
+
+    Err(anyhow::Error::new(FrameNotDelivered {
+        message: format!(
+            "{peer_label} não recebeu o batch após {attempts} tentativa(s): {last_error}"
+        ),
+    }))
 }
 
 async fn send_batch_via_tunnel(
@@ -1708,7 +1823,9 @@ async fn send_batch_via_tunnel(
         })
         .await
         .map_err(|_| {
-            anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)")
+            anyhow::Error::new(crate::infer_tunnel::TunnelDeliveryError::before_request(
+                format!("{peer_label}: swarm de libp2p não está disponível (canal fechado)"),
+            ))
         })?;
     let send_finished = Instant::now();
     // Include queueing the request into the swarm in the measured round-trip.
@@ -1717,9 +1834,24 @@ async fn send_batch_via_tunnel(
     let started = send_started;
     let response = match tokio::time::timeout(TUNNEL_REPLY_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
-        Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: falha no túnel libp2p: {error}")),
-        Ok(Err(_)) => return Err(anyhow!("{peer_label}: túnel libp2p encerrou sem responder")),
-        Err(_) => return Err(anyhow!("{peer_label}: túnel libp2p não respondeu a tempo")),
+        Ok(Ok(Err(error))) => {
+            let message = format!("{peer_label}: falha no túnel libp2p: {error}");
+            return Err(anyhow::Error::new(error).context(message));
+        }
+        Ok(Err(_)) => {
+            return Err(anyhow::Error::new(
+                crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
+                    "{peer_label}: túnel libp2p encerrou sem responder"
+                )),
+            ))
+        }
+        Err(_) => {
+            return Err(anyhow::Error::new(
+                crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
+                    "{peer_label}: túnel libp2p não respondeu a tempo"
+                )),
+            ))
+        }
     };
     if !(200..300).contains(&response.status) {
         return Err(anyhow::Error::new(HttpRefusal {
@@ -2020,6 +2152,7 @@ pub async fn send_frame_or_tunnel(
         )
         .await;
     }
+    let mut on_issue = on_issue;
 
     let peer_id = step
         .libp2p_peer_id
@@ -2109,81 +2242,97 @@ pub async fn send_frame_or_tunnel(
                 });
             }
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
-            Err(error) => {
+            Err(error) if is_pre_delivery_error(&error) => {
                 transport_fallback = true;
                 transport_fallback_reason = Some(format!("https-link: {error}"));
                 warn!("{peer_label}: canal persistente falhou ({error}), tentando transporte de reserva");
             }
+            Err(error) => return Err(error),
         }
     }
 
-    let direct = send_frame_with_protocol(
-        clients,
-        &step.node_id,
-        &step.inference_url,
-        &step.inference_candidates,
-        &step.quic_addr_candidates,
-        path,
-        meta,
-        tensor.clone(),
-        dtype,
-        encoding,
-        use_batch_frame,
-        attempts,
-        peer_label,
-        transport_fallback,
-        transport_fallback_reason.clone(),
-        on_issue,
-        session_id,
-    )
-    .await;
+    let max_attempts = attempts.max(1);
+    let mut last_error = String::new();
+    for attempt in 1..=max_attempts {
+        let direct = send_frame_with_protocol(
+            clients,
+            &step.node_id,
+            &step.inference_url,
+            &step.inference_candidates,
+            &step.quic_addr_candidates,
+            path,
+            meta,
+            tensor.clone(),
+            dtype,
+            encoding,
+            use_batch_frame,
+            1,
+            peer_label,
+            transport_fallback,
+            transport_fallback_reason.clone(),
+            |issue| on_issue(issue),
+            session_id,
+        )
+        .await;
 
-    match direct {
-        Ok(sent) => Ok(sent),
-        Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => Err(error),
-        Err(direct_error) => {
-            let direct_stage = if clients.effective_quic_enabled() {
-                format!("quic/http: {direct_error}")
-            } else {
-                format!("http: {direct_error}")
-            };
-            let direct_reason = match &transport_fallback_reason {
-                Some(previous) => format!("{previous}; {direct_stage}"),
-                None => direct_stage,
-            };
-            if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
-                let auth = clients.internal_node_token().await;
-                match send_frame_via_tunnel_with_auth(
-                    tunnel,
-                    peer_id,
-                    &step.libp2p_addr_candidates,
-                    path,
-                    meta,
-                    tensor,
-                    dtype,
-                    encoding,
-                    use_batch_frame,
-                    peer_label,
-                    auth,
-                    session_id,
-                )
-                .await
-                {
-                    Ok(mut sent) => {
-                        sent.transport_fallback = true;
-                        sent.transport_fallback_reason = Some(direct_reason);
-                        Ok(sent)
-                    }
-                    Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => Err(error),
-                    Err(tunnel_error) => {
-                        Err(anyhow!("{direct_reason}; libp2p-tunnel: {tunnel_error}"))
-                    }
+        let direct_error = match direct {
+            Ok(sent) => return Ok(sent),
+            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+            Err(error) if is_pre_delivery_error(&error) => error,
+            Err(error) => return Err(error),
+        };
+        let direct_stage = if clients.effective_quic_enabled() {
+            format!("quic/http: {direct_error}")
+        } else {
+            format!("http: {direct_error}")
+        };
+        let direct_reason = match &transport_fallback_reason {
+            Some(previous) => format!("{previous}; {direct_stage}"),
+            None => direct_stage,
+        };
+        last_error = direct_reason.clone();
+
+        if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
+            let auth = clients.internal_node_token().await;
+            match send_frame_via_tunnel_with_auth(
+                tunnel,
+                peer_id,
+                &step.libp2p_addr_candidates,
+                path,
+                meta,
+                tensor.clone(),
+                dtype,
+                encoding,
+                use_batch_frame,
+                peer_label,
+                auth,
+                session_id,
+            )
+            .await
+            {
+                Ok(mut sent) => {
+                    sent.transport_fallback = true;
+                    sent.transport_fallback_reason = Some(direct_reason);
+                    return Ok(sent);
                 }
-            } else {
-                Err(direct_error)
+                Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+                Err(error) if is_pre_delivery_error(&error) => {
+                    last_error = format!("{direct_reason}; libp2p-tunnel: {error}");
+                }
+                Err(error) => {
+                    return Err(anyhow!("{direct_reason}; libp2p-tunnel: {error}"));
+                }
             }
         }
+
+        if attempt < max_attempts {
+            tokio::time::sleep(retry_backoff(attempt)).await;
+        }
     }
+
+    Err(anyhow::Error::new(FrameNotDelivered {
+        message: format!("{peer_label} não recebeu o frame: {last_error}"),
+    }))
 }
 
 /// A local pipeline step is dispatched directly to this process's inference
@@ -2316,7 +2465,9 @@ async fn send_frame_via_tunnel_with_auth(
         reply: reply_tx,
     };
     tunnel.send(outbound).await.map_err(|_| {
-        anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)")
+        anyhow::Error::new(crate::infer_tunnel::TunnelDeliveryError::before_request(
+            format!("{peer_label}: swarm de libp2p não está disponível (canal fechado)"),
+        ))
     })?;
     let frame_sent_at = Instant::now();
 
@@ -2326,9 +2477,24 @@ async fn send_frame_via_tunnel_with_auth(
     let started = call_started;
     let response = match tokio::time::timeout(TUNNEL_REPLY_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
-        Ok(Ok(Err(e))) => return Err(anyhow!("{peer_label}: falha no túnel libp2p: {e}")),
-        Ok(Err(_)) => return Err(anyhow!("{peer_label}: túnel libp2p encerrou sem responder")),
-        Err(_) => return Err(anyhow!("{peer_label}: túnel libp2p não respondeu a tempo")),
+        Ok(Ok(Err(error))) => {
+            let message = format!("{peer_label}: falha no túnel libp2p: {error}");
+            return Err(anyhow::Error::new(error).context(message));
+        }
+        Ok(Err(_)) => {
+            return Err(anyhow::Error::new(
+                crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
+                    "{peer_label}: túnel libp2p encerrou sem responder"
+                )),
+            ))
+        }
+        Err(_) => {
+            return Err(anyhow::Error::new(
+                crate::infer_tunnel::TunnelDeliveryError::after_dispatch(format!(
+                    "{peer_label}: túnel libp2p não respondeu a tempo"
+                )),
+            ))
+        }
     };
     let response_received_at = Instant::now();
     let round_trip_ms = started.elapsed().as_millis() as u64;
@@ -2578,6 +2744,101 @@ mod tests {
         assert_eq!(response.body, b"partial");
         assert_eq!(response.transport, ByteTransport::Direct);
         assert!(!response.fallback);
+    }
+
+    #[tokio::test]
+    async fn prefill_retries_a_connection_refused_before_the_chunk_reaches_the_peer() {
+        use axum::{body::Bytes, routing::post, Router};
+
+        let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+
+        let server_address = address;
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let listener = tokio::net::TcpListener::bind(server_address).await.unwrap();
+            let response =
+                Bytes::from(wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap());
+            let app = Router::new().route(
+                "/v1/prefill",
+                post(move || {
+                    let response = response.clone();
+                    async move { response }
+                }),
+            );
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let step = step_with(&format!("http://{address}"), false, None);
+        let sent = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(Duration::from_secs(600)),
+            &step,
+            None,
+            "/v1/prefill",
+            &json!({"session_id": "resume-after-connect-refused"}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            CHUNK_ATTEMPTS,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("o mesmo pedaço deve ser reenviado após uma recusa de conexão");
+
+        assert_eq!(sent.meta["done"], true);
+    }
+
+    #[tokio::test]
+    async fn prefill_does_not_retry_after_the_peer_may_have_processed_the_chunk() {
+        use axum::{body::Bytes, routing::post, Router};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let processed = Arc::new(AtomicUsize::new(0));
+        let server_processed = processed.clone();
+        let response =
+            Bytes::from(wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap());
+        let app = Router::new().route(
+            "/v1/prefill",
+            post(move || {
+                let processed = server_processed.clone();
+                let response = response.clone();
+                async move {
+                    processed.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(Duration::from_millis(350)).await;
+                    response
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let step = step_with(&format!("http://{address}"), false, None);
+        let result = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(Duration::from_secs(600)),
+            &step,
+            None,
+            "/v1/prefill",
+            &json!({"session_id": "ambiguous-delivery"}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            CHUNK_ATTEMPTS,
+            "peer-x",
+            |_| {},
+        )
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("uma resposta atrasada não prova que o frame ficou sem efeito"),
+        };
+
+        assert!(is_delivery_ambiguous(&error));
+        assert_eq!(processed.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
@@ -2914,7 +3175,10 @@ mod tests {
     /// `infer_server.rs`'s `relay_tests` fake a next hop with a real axum
     /// server instead of mocking `send_frame`.
     fn fake_swarm_answering_with(
-        response: Result<crate::infer_tunnel::TunnelResponse, String>,
+        response: Result<
+            crate::infer_tunnel::TunnelResponse,
+            crate::infer_tunnel::TunnelDeliveryError,
+        >,
     ) -> TunnelOutboundSender {
         let (tx, mut rx) = mpsc::channel::<TunnelOutbound>(1);
         tokio::spawn(async move {
@@ -2980,7 +3244,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_swarm_side_failure_surfaces_as_an_error() {
-        let tunnel = fake_swarm_answering_with(Err("dial failed".to_string()));
+        let tunnel = fake_swarm_answering_with(Err(
+            crate::infer_tunnel::TunnelDeliveryError::before_request("dial failed"),
+        ));
 
         let result = send_frame_via_tunnel(
             &tunnel,
@@ -3114,7 +3380,9 @@ mod tests {
         tokio::spawn(async move {
             if let Some(outbound) = tunnel_rx.recv().await {
                 attempts_for_swarm.fetch_add(1, Ordering::Relaxed);
-                let _ = outbound.reply.send(Err("dial failed".into()));
+                let _ = outbound.reply.send(Err(
+                    crate::infer_tunnel::TunnelDeliveryError::before_request("dial failed"),
+                ));
             }
         });
 
@@ -3593,23 +3861,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_blackholed_inference_address_is_tried_only_once_across_frames() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let blackhole_hits = Arc::new(AtomicUsize::new(0));
-        let blackhole_hits_task = blackhole_hits.clone();
-        let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let blackhole_addr = blackhole.local_addr().unwrap();
-        tokio::spawn(async move {
-            while let Ok((stream, _)) = blackhole.accept().await {
-                blackhole_hits_task.fetch_add(1, Ordering::SeqCst);
-                tokio::spawn(async move {
-                    let _stream = stream;
-                    std::future::pending::<()>().await;
-                });
-            }
-        });
-
+    async fn a_refused_inference_address_is_tried_once_before_using_the_healthy_route() {
+        let unreachable = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let unreachable_addr = unreachable.local_addr().unwrap();
+        drop(unreachable);
         let healthy_port = spawn_fake_inference_server(|_body| {
             (
                 200,
@@ -3617,10 +3872,10 @@ mod tests {
             )
         })
         .await;
-        let blackhole_url = format!("http://{blackhole_addr}");
+        let unreachable_url = format!("http://{unreachable_addr}");
         let healthy_url = format!("http://127.0.0.1:{healthy_port}");
-        let mut step = step_with(&blackhole_url, false, None);
-        step.inference_candidates = vec![blackhole_url, healthy_url];
+        let mut step = step_with(&unreachable_url, false, None);
+        step.inference_candidates = vec![unreachable_url, healthy_url];
         let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
         let started = std::time::Instant::now();
 
@@ -3643,7 +3898,6 @@ mod tests {
             assert_eq!(sent.meta["done"], true);
         }
 
-        assert_eq!(blackhole_hits.load(Ordering::SeqCst), 1);
         assert!(
             started.elapsed() < DIRECT_FRAME_TIMEOUT * 2,
             "o endereço morto voltou a ser pago por quadro: {:?}",
@@ -3848,6 +4102,78 @@ mod tests {
 
         assert_eq!(sent.transport, InferenceTransport::Http);
         assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn batched_step_falls_back_to_the_tunnel_before_retrying_the_http_path() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = reservation.local_addr().unwrap().port();
+        drop(reservation);
+        let mut step = step_with(
+            &format!("http://127.0.0.1:{port}"),
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        step.inference_frame_capabilities
+            .push(crate::pipeline::CAP_FRAME_BATCH.into());
+
+        let tunnel_attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_swarm = tunnel_attempts.clone();
+        let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(2);
+        tokio::spawn(async move {
+            while let Some(outbound) = tunnel_rx.recv().await {
+                let attempt = attempts_for_swarm.fetch_add(1, Ordering::Relaxed);
+                if attempt == 0 {
+                    let _ = outbound.reply.send(Err(
+                        crate::infer_tunnel::TunnelDeliveryError::before_request(
+                            "primeiro dial falhou",
+                        ),
+                    ));
+                    continue;
+                }
+                let batch = wire::decode_batch(&outbound.request.body).unwrap();
+                let item = &batch.items[0];
+                let body = wire::encode_batch_items(
+                    batch.kind,
+                    batch.batch_id,
+                    &[wire::BatchPayloadItem {
+                        item_id: item.item_id.clone(),
+                        session_id: item.session_id.clone(),
+                        meta: json!({"done": true}),
+                        tensor: None,
+                        dtype: WireDtype::F16,
+                    }],
+                )
+                .unwrap();
+                let _ = outbound.reply.send(Ok(crate::infer_tunnel::TunnelResponse {
+                    status: 200,
+                    body,
+                }));
+                break;
+            }
+        });
+
+        let sent = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(Duration::from_secs(600)),
+            &step,
+            Some(&tunnel_tx),
+            "/v1/step",
+            &json!({"session_id": "batch-fallback", "is_last": true}),
+            Some((&[0.25_f32, -0.5], vec![1, 2])),
+            WireDtype::F16,
+            FrameEncoding::F16,
+            2,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("após um dial falhar, a repetição deve percorrer a escada de transportes");
+
+        assert_eq!(sent.meta["done"], true);
+        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]

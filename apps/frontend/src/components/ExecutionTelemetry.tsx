@@ -485,7 +485,7 @@ function PhaseRow({
     <tr className="text-faint">
       <td className="pb-1.5 pr-3 align-top" colSpan={9}>
         <span className="block">{t("chat.telemetry.nodeRow", { frame: phase.node_frame_decode_ms, prepare: phase.node_input_prepare_ms, queue: phase.node_queue_ms, engineWait: phase.node_lock_wait_ms, setup: phase.node_setup_ms, mtpDraft: phase.node_mtp_draft_ms ?? 0, frameOut: phase.node_encode_ms })}{nodeResidual > 0 ? ` · ${t("chat.telemetry.nodeResidual", { ms: nodeResidual })}` : ""}</span>
-        <span className="block">{t("chat.telemetry.backendRow", { enqueue: phase.node_backend_enqueue_ms, completion: phase.node_backend_completion_ms, d2hCapture: phase.node_residual_capture_d2h_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}</span>
+        <span className="block">{t("chat.telemetry.backendRow", { call: phase.node_backend_call_ms, sync: phase.node_backend_sync_ms, d2hCapture: phase.node_residual_capture_d2h_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}</span>
         <span className="block">{t("chat.telemetry.samplingRow", { access: phase.node_logits_access_ms, clone: phase.node_logits_clone_ms, penalty: phase.node_repetition_penalty_ms, softmax: phase.node_softmax_ms, topK: phase.node_top_k_ms, topP: phase.node_top_p_ms, selection: phase.node_selection_ms, text: phase.node_token_text_ms })}</span>
         <span className="block">{t("chat.telemetry.gatewayRow", { encode: phase.client_encode_ms, headers: phase.response_headers_ms, body: phase.response_body_ms, decode: phase.client_decode_ms })}</span>
         {phase.hidden_state_dtype && (

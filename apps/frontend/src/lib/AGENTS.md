@@ -47,24 +47,25 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `ChatStreamResult` retains trace, generation timings and source so Chat can
   associate the complete telemetry capture with the specific reply while the
   persisted message patch settles.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
   `stream_duration_ms` is measured locally from the first SSE data frame to
   receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
   separate `time_last_token_to_response_end_ms` isolates that tail.
   `chatStream.ts` also carries trace spans, outside-node accounting,
   first-token boundaries, connection counts, decode counts, browser-local stream
   observations and distributed `TelemetrySummary`/`TelemetrySpan`. TTFT keeps
-  separate pipeline/server/client meanings; backend completion timing must not
-  be used to infer `POM_PROFILE_SYNC` or the engine.
+  separate pipeline/server/client meanings; backend synchronization timing
+  must not be used to infer `POM_PROFILE_SYNC` or the engine.
   The remote-stream contract separates producer, downstream, channel, queue
   and callback timing, and `PhaseTrace` carries synchronous MTP draft time
   when reported. `RequestTrace.pipeline_cycle` preserves the measured directional legs of the
   distributed cycle, including the final peer-to-gateway return when the
   transport publishes one; missing legs remain unknown. The Dashboard uses
   this data for the virtual Gateway cost card instead of a topology probe.
-  Decode coverage with no expected span denominator is rendered as not measured,
-  and an incomplete transport receipt remains visible independently of the
-  response-complete state.
+  Decode coverage uses callback expectations when available, otherwise output
+  tokens times pipeline hops; with no output or callbacks it is not measured.
+  An incomplete transport receipt remains visible independently of response
+  completeness.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
   backend cost and time outside the node; compara timings ponta a ponta com o
   processamento medido no nó antes de nomear o gargalo. It refuses to label

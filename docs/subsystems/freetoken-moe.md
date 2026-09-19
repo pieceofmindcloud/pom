@@ -2723,7 +2723,7 @@ GPU, então não há uma alegação local de throughput.
 
 O JSON da telemetria fechou a causa do intervalo de cinco segundos. No prefill
 de 45 tokens, `node_moe_forward_ms=4706,821` dentro de
-`node_backend_enqueue_ms=4994,464`; `node_queue_ms=0,038`,
+`node_backend_call_ms=4994,464`; `node_queue_ms=0,038`,
 `node_lock_wait_ms=0`, `node_scheduler_wait_ms=0,012`, rede `0 ms` e a cópia
 D2H `0,394 ms`. Portanto não havia um timeout de cinco segundos no pipeline.
 O campo `node_moe_forward_ms` é o callback externo síncrono que o llama.cpp

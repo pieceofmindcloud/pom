@@ -95,8 +95,9 @@ visibilidade dos controles de implantação na UI local.
 - `link.rs` (860) - a ligação persistente entre andares
   (`transport/link-v1`, `POST /v1/link`): um corpo de ida em fluxo e um corpo
   de volta em fluxo carregando quadros `frame/v1-batch` sucessivos, em vez de
-  uma requisição por ativação. A abertura tem teto de 2 s e testa os candidatos
-  de endereço com memória de falha; a quarentena de 5 min acompanha a memória
+  uma requisição por ativação. A abertura dá até 400 ms por endereço e no
+  máximo 800 ms para testar duas rotas; timeout e recusa entram na memória de
+  falha, e a quarentena de 5 min acompanha a memória
   das rotas e evita reabrir o mesmo
   destino depois de uma falha. Os quadros vão num envelope
   `[tamanho][status][batch_id][corpo]`; o `batch_id` - o mesmo do
@@ -977,9 +978,11 @@ visibilidade dos controles de implantação na UI local.
   (default ligado; "0"/"false" desliga), publicado explicitamente por peer em
   `/health`. `NodeTimings` mantém os contadores em microssegundos e serializa os
   campos `*_ms` de diagnóstico como milissegundos fracionários, então uma
-  medição sub-milisegundo não vira zero no wire. `backend_completion_ms` é uma
-  duração medida, não uma fonte de verdade sobre o estado da flag; a telemetria
-  do Chat não deduz esse estado de um timing zero.
+  medição sub-milisegundo não vira zero no wire. `backend_call_ms` mede a
+  chamada de avaliação do llama.cpp, separada de fila e espera pelo mutex;
+  `backend_sync_ms` mede a barreira explícita e pode incluir trabalho de GPU já
+  enfileirado. Nenhum dos dois é tempo puro de kernel ou fonte de verdade sobre
+  `POM_PROFILE_SYNC`; o Chat lê a flag publicada por `/health`.
 - `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
   `Drop` libera só o ctx - os pesos são do `LoadedModel`.
 - `SamplingConfig` - a cada passo, o sampler aplica a penalidade de repetição,

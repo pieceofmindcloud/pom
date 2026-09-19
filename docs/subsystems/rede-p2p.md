@@ -179,7 +179,7 @@ sensível.
   mudanças de modelo e faixa entre peers transitivos. Snapshots mais antigos
   não revertem um anúncio recente; a verificação local é preservada no refresh,
   e os candidatos de endereço locais são herdados **menos os que este nó já
-  provou mortos** (`RouteTable::host_is_discredited`). Herdar a lista inteira
+  provou mortos** (`RouteTable::endpoint_is_discredited`). Herdar a lista inteira
   tornava candidato morto imortal - ver "Endereço que deixou de responder".
 - Nó destacado (`is_detached`, `--no-discovery`) não aprende nem responde nada;
   o socket continua bound, e `rejoin` refaz bootstrap + announce.
@@ -237,6 +237,10 @@ Hoje:
   trocar um defeito por outro.
 - `RouteTable::usable` devolve os candidatos ainda não desacreditados. Vazio é
   informação: significa "todo endereço conhecido deste par falhou".
+- A falha de rota é associada ao endpoint, host e porta. Uma falha na URL HTTP
+  de inferência não apaga `addr_candidates` da porta P2P no mesmo host. Isso
+  mantém o transporte P2P elegível quando apenas o serviço de inferência teve
+  um solavanco, sem impedir que um `Announce` novo substitua endereços antigos.
 - Aí entra `Network::request_peer_addresses`: manda `PeerRequest` aos bootstrap
   nodes e aos outros peers vivos (quem responde manda `Announce` + `PeerList`) e
   **poda os candidatos desacreditados da entrada local**, para que o `Announce`
@@ -245,6 +249,14 @@ Hoje:
   ciclo curto. Sem broadcast na LAN: o par continua vivo e o `Announce` dele
   chega a cada 5 s de qualquer modo, e transmitir da suíte de rotas quebraria a
   regra de nunca falar UDP de verdade nos testes.
+- O aviso `Reencontrando ... nenhum endereço conhecido responde` pode surgir
+  por essa poda. A investigação encontrou uma ligação: a comparação antiga
+  tratava falha HTTP de qualquer porta como falha do host inteiro, removendo
+  também o endereço P2P, mesmo que o serviço de inferência ou o túnel em outra
+  porta ainda respondesse. Agora a poda compara host e porta. Essa redescoberta
+  não apaga uma sessão de KV por si só, mas deixar de remover uma porta P2P viva
+  impede que uma falha HTTP transitória contamine os candidatos usados pelo
+  pipeline.
 - Enquanto isso o `/api/ui/cluster` devolve `rediscovering: true` no par, e a
   tela diz "reencontrando" em vez de "nada abaixo pode ser lido". A distinção é
   de produto: um é trabalho em curso que se resolve sozinho, o outro é beco sem

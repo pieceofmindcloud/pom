@@ -105,10 +105,13 @@ Per-file list:
   mensagem, então a mesma captura permanece disponível em mensagens anteriores.
   O resumo por transporte diferencia RTT de execução, que inclui processamento
   remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
-  medição da conexão quando disponível.
-  Cobertura de decode só é exibida quando há denominador esperado; traces
-  diretos sem essa medição mostram o estado como não medido, e uma coleta de
-  transporte incompleta continua visível mesmo quando a resposta terminou.
+  medição da conexão quando disponível. A linha do backend separa
+  `node_backend_call_ms` (`llama_decode`/avaliação) de
+  `node_backend_sync_ms` (`llama_synchronize`).
+  Cobertura de decode usa callbacks quando disponíveis, ou tokens de saída por
+  hop no caminho normal; sem tokens ou callbacks esperados, mostra não medido.
+  Uma coleta de transporte incompleta continua visível mesmo quando a resposta
+  terminou.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

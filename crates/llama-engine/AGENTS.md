@@ -33,7 +33,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   com callback MoE, `begin_moe_callback` sinaliza o cancelamento do warmup sem
   aguardar a thread: o caminho quente não fica atrás de uma admissão CUDA
   corrente. O `join` permanece somente na troca explícita de warmup, fora da
-  inferência.
+  inferência. `DecodeTimings::backend_call_us` mede a chamada de avaliação do
+  llama.cpp; `backend_sync_us` mede separadamente a sincronização explícita. A
+  primeira não é tempo puro de kernel, e a segunda pode esperar trabalho de
+  dispositivo e transferências já enfileirados.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   O `build.rs` lê o mesmo checkout preparado pelo `llama-cpp-sys-2`, recebido

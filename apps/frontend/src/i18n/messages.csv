@@ -233,7 +233,7 @@ chat.telemetry.analysis.tpTitle,Tensor-parallel network wait dominates,A espera 
 chat.telemetry.analysisPrompt,Analyze this execution,Analise esta execução
 chat.telemetry.analyze,Analyze with AI,Analisar com IA
 chat.telemetry.backendHeader,backend,backend
-chat.telemetry.backendRow,backend: decode call {enqueue} ms · completion {completion} ms · D2H capture {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms,backend: chamada de decode {enqueue} ms · conclusão {completion} ms · D2H da captura {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms
+chat.telemetry.backendRow,backend: evaluation call {call} ms · sync {sync} ms · D2H capture {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms,backend: chamada de avaliação {call} ms · sincronização {sync} ms · D2H da captura {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms
 chat.telemetry.bytesHeader,bytes,bytes
 chat.telemetry.calls,calls,chamadas
 chat.telemetry.capacity,Capacity,Capacidade

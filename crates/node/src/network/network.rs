@@ -2231,7 +2231,7 @@ impl Network {
             let mut peers = self.peers.write().await;
             if let Some(peer) = peers.get_mut(node_id) {
                 peer.addr_candidates
-                    .retain(|addr| !self.routes.host_is_discredited(node_id, addr));
+                    .retain(|addr| !self.routes.endpoint_is_discredited(node_id, addr));
             }
         }
 
@@ -2760,7 +2760,7 @@ impl Network {
                     // volta.
                     if peer.addr_candidates.is_empty() {
                         for addr in &previous.addr_candidates {
-                            if self.routes.host_is_discredited(&peer.node_id, addr) {
+                            if self.routes.endpoint_is_discredited(&peer.node_id, addr) {
                                 continue;
                             }
                             peer.merge_observed(addr);

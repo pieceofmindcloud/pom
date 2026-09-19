@@ -27,6 +27,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   aqui, sem strings hard-coded nas rotas.
   As métricas do card de máquina usam aqui os rótulos de GPUs, uso e potência
   para manter o detalhe disponível nas duas línguas.
+  `chat.telemetry.backendRow` distingue chamada de avaliação e sincronização,
+  sem rotular o tempo de avaliação como enqueue.
 - As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem
   o aviso de miniaturização automática de imagens e a recusa rara quando o
   contexto não comporta nem a resolução mínima.

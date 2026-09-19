@@ -72,6 +72,39 @@ pub struct TunnelResponse {
     pub body: Vec<u8>,
 }
 
+/// Falha do request/response com a fronteira de entrega conhecida. Erros de
+/// dial ocorrem antes de enviar o request; timeout ou conexão fechada depois
+/// do despacho não provam que o handler deixou de executar o frame.
+#[derive(Debug)]
+pub struct TunnelDeliveryError {
+    pub before_request: bool,
+    message: String,
+}
+
+impl TunnelDeliveryError {
+    pub fn before_request(message: impl Into<String>) -> Self {
+        Self {
+            before_request: true,
+            message: message.into(),
+        }
+    }
+
+    pub fn after_dispatch(message: impl Into<String>) -> Self {
+        Self {
+            before_request: false,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for TunnelDeliveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for TunnelDeliveryError {}
+
 /// One outbound call dispatched to the swarm's own task (`Discovery::run`)
 /// from outside its loop — the gateway in hub mode, or a relaying hop inside
 /// `infer_server.rs` in ring mode. `Discovery::run` resolves `reply` by
@@ -85,7 +118,7 @@ pub struct TunnelOutbound {
     /// multiaddresses TCP quando o swarm local ainda não recebeu o anúncio.
     pub addr_candidates: Vec<String>,
     pub request: TunnelRequest,
-    pub reply: oneshot::Sender<Result<TunnelResponse, String>>,
+    pub reply: oneshot::Sender<Result<TunnelResponse, TunnelDeliveryError>>,
 }
 
 pub type TunnelOutboundSender = mpsc::Sender<TunnelOutbound>;
@@ -303,7 +336,7 @@ pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutbound
 
     let (tx, mut rx) = mpsc::channel::<TunnelOutbound>(8);
     tokio::spawn(async move {
-        let mut pending: HashMap<_, oneshot::Sender<Result<TunnelResponse, String>>> =
+        let mut pending: HashMap<_, oneshot::Sender<Result<TunnelResponse, TunnelDeliveryError>>> =
             HashMap::new();
         loop {
             tokio::select! {
@@ -324,7 +357,16 @@ pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutbound
                     }
                     SwarmEvent::Behaviour(Event::OutboundFailure { request_id, error, .. }) => {
                         if let Some(reply) = pending.remove(&request_id) {
-                            let _ = reply.send(Err(error.to_string()));
+                            let before_request = matches!(
+                                &error,
+                                request_response::OutboundFailure::DialFailure
+                            );
+                            let failure = if before_request {
+                                TunnelDeliveryError::before_request(error.to_string())
+                            } else {
+                                TunnelDeliveryError::after_dispatch(error.to_string())
+                            };
+                            let _ = reply.send(Err(failure));
                         }
                     }
                     other => eprintln!("[probe-swarm] {other:?}"),

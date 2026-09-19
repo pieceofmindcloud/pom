@@ -264,8 +264,8 @@ pub(crate) fn step_blocking(
             None,
         );
     }
-    timings.backend_enqueue_us += engine_timing.enqueue_us;
-    timings.backend_completion_us += engine_timing.backend_completion_us;
+    timings.backend_call_us += engine_timing.backend_call_us;
+    timings.backend_sync_us += engine_timing.backend_sync_us;
     timings.merge_engine_capture(&engine_timing);
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;

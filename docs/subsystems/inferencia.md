@@ -106,6 +106,25 @@ Essa chamada não abre socket nem passa por HTTP. O servidor HTTP de inferência
 continua ativo para health checks e para peers remotos; com QUIC ligado, a
 ordem remota é QUIC, HTTP/HTTPS direto e, só por último, túnel libp2p. Com
 QUIC desligado, HTTP/HTTPS direto também precede o túnel.
+Uma falha em uma chamada percorre primeiro a escada disponível de transportes
+sem esperar o backoff: QUIC, HTTP/HTTPS e, por último, túnel libp2p. Só se todos
+os caminhos confirmarem que o corpo não chegou ao peer é que o mesmo chunk pode
+ser repetido, com três tentativas e recuo curto de 100/200 ms. Timeout ou perda
+de resposta após o corpo começar é ambíguo e não repete o chunk.
+
+No prefill, uma falha comprovadamente anterior à entrega retoma no índice e na
+posição absoluta que já tinham sido aceitos, preservando o mesmo id de sessão,
+o KV remoto, o cache de prefixo e o trace acumulado. A sessão inteira só é
+reconstruída quando o peer já não tem a sessão, a entrega ficou ambígua, um hop
+downstream pode ter avançado o KV ou falta posição absoluta confiável; cada
+reconstrução registra o motivo. A abertura fria de QUIC tem orçamento de
+estabelecimento separado, em milissegundos. O envio do frame e a resposta
+usam o prazo de serviço próprio, então um corpo grande não consome o orçamento
+curto de handshake.
+
+O cache de rota guarda falhas por endpoint, incluindo a porta. Uma falha HTTP
+de inferência não remove o endereço P2P de outra porta no mesmo host; a
+redescoberta de endereços e a retoma do KV são mecanismos separados.
 Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
 
@@ -149,14 +168,18 @@ para a tela do Chat e não entra no frame entre peers nem no planejador. O Chat
 usa `/api/ui/chat/telemetry` para buscar separadamente o RTT direcional das
 arestas entre os peers do trace. O `/health` publica `profile_sync_enabled`
 por máquina, derivado diretamente de `POM_PROFILE_SYNC`; um zero em
-`node_backend_completion_ms` nunca é usado para deduzir essa flag.
+`node_backend_sync_ms` nunca é usado para deduzir essa flag.
+`expected_decode_spans` usa os tokens de saída e os hops do plano quando não
+há expectativa explícita dos callbacks remote-stream. Isso torna a cobertura
+mensurável também no caminho direto normal; os spans reportados continuam a
+ser contagens observadas por hop.
+
 `hidden_state_dtype` é evidência do fio, não a configuração local do gateway:
 ele só aparece quando bytes de estado oculto cruzaram o hop. Por isso fica
 ausente, em vez de afirmar f8 ou f16, no caso de um plano de modelo inteiro de
 um único nó, que não transmite estado oculto.
-Quando `expected_decode_spans` é zero, o modo direto só observou chamadas e
-não possui denominador de spans distribuídos; `decode_span_expectation_available`
-fica falso e a UI mostra a cobertura como não medida, nunca como `N/0 · 100%`.
+Se não há tokens de saída nem expectativa explícita de callbacks, a cobertura
+fica indisponível e a UI não apresenta `N/0 · 100%`.
 
 ### Trace ponta a ponta e tempos fora do nó
 
@@ -766,8 +789,8 @@ dos lotes densos.
 `transport/link-v1` mantém **um canal por aresta** (`node_id` + URL de
 inferência): um único `POST /v1/link` cujo corpo de ida é um fluxo de quadros
 binários e cujo corpo de volta é outro fluxo de quadros binários. A abertura
-testa os candidatos de endereço, tem teto de 2 s para os cabeçalhos e deixa a
-rota que falhou em memória por 5 min. Um guarda por aresta serializa somente
+testa até duas rotas, com teto de 400 ms por endereço e 800 ms no total, e
+deixa a rota que falhou em memória por 5 min. Um guarda por aresta serializa somente
 aberturas concorrentes do mesmo destino; a abertura acontece fora da trava
 global do mapa de canais. Cada quadro, nas duas direções:
 
@@ -1480,15 +1503,16 @@ isso a execução multi-sequência ainda fica desabilitada no TP atual.
 O servidor de inferência acumula os cronômetros internos em microssegundos em
 `NodeTimings`. Ao montar o metadado `node_timings`, os campos públicos
 `*_ms` usam milissegundos fracionários (`us / 1000.0`) para não perder uma
-etapa menor que 1 ms. Isso vale para a chamada de decode, a conclusão medida
-por `llama_synchronize`, captura D2H, logits, amostragem, fila e os demais
-limites do bloco.
+etapa menor que 1 ms. `backend_call_ms` mede apenas a chamada de avaliação do
+llama.cpp; `queue_ms`, `scheduler_wait_ms` e `lock_wait_ms` descrevem esperas
+antes dela. A chamada pode incluir despacho no host e não é uma medida pura de
+kernels na GPU. `backend_sync_ms` mede separadamente `llama_synchronize`, que
+pode esperar trabalho de dispositivo já enfileirado e transferências de saída.
+Captura D2H, logits, amostragem e os demais limites do bloco seguem separados.
 
 `POM_PROFILE_SYNC` fica ligado por padrão e controla se a barreira de
-diagnóstico é executada. `backend_completion_ms` é uma duração: zero pode
-representar uma duração nula ou uma medição pequena demais apenas se um
-consumidor antigo ainda tiver truncado o número, e não deve ser usado para
-deduzir sozinho o estado da configuração do peer.
+diagnóstico é executada. `backend_sync_ms` é uma duração e não deve ser usado
+para deduzir sozinho o estado da configuração do peer.
 
 ### 3.3 Template de conversa e completions
 

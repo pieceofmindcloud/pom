@@ -359,8 +359,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `RouteTable::invalidate` **preserva** a memória de falha; só `forget` a apaga.
   Apagá-la em `invalidate` significava que a rotação de IPv6 - o evento que mata
   o endereço - era também o que apagava a prova de que ele morreu.
-- `RouteTable::host_is_discredited` - a mesma pergunta por host, para o gossip
-  decidir se herda um candidato antigo.
+- `RouteTable::endpoint_is_discredited` - compara host e porta ao filtrar
+  candidatos herdados. Falha HTTP no gateway ou na inferência não desacredita a
+  porta P2P/UDP do mesmo host; isso evita remover um endereço de tunnel vivo.
 - `RouteTable::resolve` - endereço escolhido para o node_id; `None` =
   "ainda não medido ou vencido", e o chamador cai no `inference_url` do plano.
 - `RttTable` - guarda `target_node_id`, `rtt_ms` e `transport` localmente;

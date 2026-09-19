@@ -102,6 +102,12 @@ const TELEMETRY_RETENTION: Duration = Duration::from_secs(30);
 #[derive(Clone, Default)]
 pub struct ReplyInbox(Arc<Mutex<InboxState>>);
 
+impl std::fmt::Debug for ReplyInbox {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ReplyInbox").finish_non_exhaustive()
+    }
+}
+
 #[derive(Default)]
 struct InboxState {
     replies: HashMap<String, ReplyState>,
@@ -452,6 +458,10 @@ impl DirectReply {
 
     pub fn stream_reply_to(&self, ticket: &str) -> Value {
         self.reply_to(ticket)
+    }
+
+    pub(crate) fn trace_inbox(&self) -> ReplyInbox {
+        self.inbox.clone()
     }
 
     pub fn record_transport(

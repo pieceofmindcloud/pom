@@ -748,6 +748,7 @@ pub(super) fn summary_for(
     trace.set_generated_tokens(tokens_generated);
     trace.complete = !partial;
     trace.server_ttft_ms = Some(ttft_ms);
+    trace.reconcile_direct_receipts();
     // Do not manufacture `outside_node` by subtracting accumulated peer
     // processing from E2E. Those clocks are wall-clock and accumulated work,
     // respectively, and the distributed pipeline overlaps them. The fields

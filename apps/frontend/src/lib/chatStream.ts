@@ -363,9 +363,9 @@ export interface PhaseTrace {
   node_decode_ms: number;
   /** Measured synchronous MTP/nextn draft production, when reported. */
   node_mtp_draft_ms?: number;
-  node_backend_enqueue_ms: number;
-  /** Backend completion timing. Never infer POM_PROFILE_SYNC from this value. */
-  node_backend_completion_ms: number;
+  node_backend_call_ms: number;
+  /** Explicit llama_synchronize duration; never infer POM_PROFILE_SYNC from it. */
+  node_backend_sync_ms: number;
   node_residual_capture_d2h_sync_ms: number;
   node_residual_ms: number;
   node_logits_access_ms: number;

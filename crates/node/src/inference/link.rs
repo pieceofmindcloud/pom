@@ -88,10 +88,43 @@ const OPEN_FAILURE_COOLDOWN: Duration = crate::peer_client::ROUTE_FAILURE_COOLDO
 /// o corpo continua vivo até `CHANNEL_LIFETIME`, sem transformar uma geração
 /// longa em uma conexão interrompida prematuramente.
 #[cfg(not(test))]
-const LINK_OPEN_TIMEOUT: Duration = Duration::from_secs(2);
+const LINK_OPEN_TIMEOUT: Duration = Duration::from_millis(400);
 
 #[cfg(test)]
 const LINK_OPEN_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// Fronteira de entrega do canal persistente. Falhas na abertura ocorrem
+/// antes de qualquer frame de inferência; depois de enfileirar o frame, a
+/// resposta pode se perder embora o peer já tenha processado o pedido.
+#[derive(Debug)]
+pub(crate) struct LinkDeliveryError {
+    pub before_frame: bool,
+    message: String,
+}
+
+impl LinkDeliveryError {
+    fn before_frame(message: impl Into<String>) -> Self {
+        Self {
+            before_frame: true,
+            message: message.into(),
+        }
+    }
+
+    fn after_frame(error: impl std::fmt::Display) -> Self {
+        Self {
+            before_frame: false,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for LinkDeliveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LinkDeliveryError {}
 
 /// Teto de vida de um canal. O cliente HTTP do peer é construído com timeout
 /// total, e o corpo em fluxo conta para ele: sem um teto explícito o canal
@@ -688,12 +721,34 @@ pub async fn send_batch_with_session_profile(
     let route_key = format!("inference:{node_id}");
     let ordered = clients.route_order(&route_key, &route_candidates);
     let mut last_error = String::new();
+    // A dead first URL must not consume the entire fallback window and hide
+    // a healthy advertised address. Bound the route ladder to two short
+    // opens, independently from the lifetime of the inference request.
+    let open_deadline = Instant::now() + LINK_OPEN_TIMEOUT.saturating_mul(2);
     for base in ordered {
+        let Some(open_budget) = open_deadline.checked_duration_since(Instant::now()) else {
+            last_error = "orçamento de abertura do canal esgotado".to_string();
+            break;
+        };
         let setup_started = Instant::now();
-        let (channel, opened) = match channel_for(clients, node_id, &base, session_id).await {
-            Ok(channel) => channel,
-            Err(error) => {
+        let (channel, opened) = match tokio::time::timeout(
+            open_budget,
+            channel_for(clients, node_id, &base, session_id),
+        )
+        .await
+        {
+            Ok(Ok(channel)) => channel,
+            Ok(Err(error)) => {
                 last_error = error.to_string();
+                clients.remember_route_failure(&route_key, &base);
+                continue;
+            }
+            Err(_) => {
+                last_error = format!(
+                    "canal não abriu dentro do orçamento de {} ms",
+                    LINK_OPEN_TIMEOUT.as_millis()
+                );
+                quarantine(&target_key(node_id, &base));
                 clients.remember_route_failure(&route_key, &base);
                 continue;
             }
@@ -729,13 +784,13 @@ pub async fn send_batch_with_session_profile(
             }
             Err(error) => {
                 clients.remember_route_failure(&route_key, &base);
-                return Err(error);
+                return Err(anyhow::Error::new(LinkDeliveryError::after_frame(error)));
             }
         }
     }
-    Err(anyhow!(
-        "canal com {node_id} não abriu por nenhuma rota: {last_error}"
-    ))
+    Err(anyhow::Error::new(LinkDeliveryError::before_frame(
+        format!("canal com {node_id} não abriu dentro do orçamento: {last_error}"),
+    )))
 }
 
 /// Envia um frame já enquadrado pelo canal persistente, sem exigir que a
@@ -1560,7 +1615,7 @@ mod tests {
             .await
             .expect_err("segunda tentativa também falha");
         assert!(
-            error.to_string().contains("nenhuma rota"),
+            error.to_string().contains("quarentena"),
             "a segunda tentativa devia parar na memória de falha, veio: {error}"
         );
         assert!(

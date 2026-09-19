@@ -233,14 +233,15 @@ impl ModelCache {
     }
 }
 
-/// A diagnostic boundary around `llama_decode`. `backend_completion_us` is
-/// measured with the public `llama_synchronize` API and therefore includes all
-/// queued backend work and output transfers that must complete. It is not
-/// labelled as pure kernel time.
+/// Time spent inside the backend evaluation call, separate from queue
+/// preparation, output capture, and explicit backend synchronization.
+/// `backend_sync_us` is measured with the public `llama_synchronize` API and
+/// includes queued backend work and output transfers. It is not pure kernel
+/// time and is collected only when backend sync profiling is enabled.
 #[derive(Debug, Clone, Default)]
 pub struct DecodeTimings {
-    pub enqueue_us: u64,
-    pub backend_completion_us: u64,
+    pub backend_call_us: u64,
+    pub backend_sync_us: u64,
     /// Compatibility total for the old aggregate field: ready wait plus the
     /// actual device-to-host read.
     pub residual_capture_d2h_sync_us: u64,
@@ -258,7 +259,7 @@ pub struct DecodeTimings {
 ///
 /// O `llama_synchronize` é uma barreira de medição, e a suspeita de que ela
 /// custasse tempo foi o motivo de nascer desligada. Medido em
-/// `logits_access_versus_backend_completion` (fatia final de 16 camadas, Metal,
+/// `logits_access_versus_backend_sync` (fatia final de 16 camadas, Metal,
 /// 16 tokens por rodada, duas rodadas intercaladas de cada modo):
 ///
 /// | | total por token | conclusão | acesso aos logits |

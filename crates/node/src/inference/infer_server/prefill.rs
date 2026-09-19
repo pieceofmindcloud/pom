@@ -939,8 +939,8 @@ pub(super) fn prefill_blocking(
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     timings.tp = crate::tp::take_decode_telemetry();
-    timings.backend_enqueue_us += engine_timing.enqueue_us;
-    timings.backend_completion_us += engine_timing.backend_completion_us;
+    timings.backend_call_us += engine_timing.backend_call_us;
+    timings.backend_sync_us += engine_timing.backend_sync_us;
     timings.merge_engine_capture(&engine_timing);
 
     // ── Session update ───────────────────────────────────────────────────────
@@ -1542,8 +1542,8 @@ pub(super) fn prefill_batch_blocking(
                 scheduler_session_existing: item.scheduler_session_existing,
                 pipeline_session: item.pipeline_session,
                 lock_wait_us,
-                decode_us: engine_timings.enqueue_us,
-                backend_completion_us: engine_timings.backend_completion_us,
+                decode_us: engine_timings.backend_call_us,
+                backend_sync_us: engine_timings.backend_sync_us,
                 ..Default::default()
             };
             timings.merge_engine_capture(&engine_timings);
@@ -2050,8 +2050,8 @@ pub(super) fn step_batch_blocking(
                 scheduler_session_existing: item.scheduler_session_existing,
                 pipeline_session: item.pipeline_session,
                 lock_wait_us,
-                decode_us: engine_timings.enqueue_us,
-                backend_completion_us: engine_timings.backend_completion_us,
+                decode_us: engine_timings.backend_call_us,
+                backend_sync_us: engine_timings.backend_sync_us,
                 ..Default::default()
             };
             timings.merge_engine_capture(&engine_timings);

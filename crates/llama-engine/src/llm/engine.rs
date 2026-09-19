@@ -886,7 +886,7 @@ impl LlmEngine {
         let mrope_positions = self.multimodal_mrope_positions(chunks.0, n_past)?;
         let mut new_n_past = n_past as sys::llama_pos;
         self.reset_capture_slot_with_physical_chunks(n_tokens, true);
-        let started = Instant::now();
+        let backend_call_started = Instant::now();
         self.begin_moe_callback();
         let rc = unsafe {
             sys::mtmd_helper_eval_chunks(
@@ -903,15 +903,16 @@ impl LlmEngine {
         if rc != 0 {
             bail!("mtmd falhou ao avaliar a mensagem multimodal (rc={rc})");
         }
+        let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         let mut timings = DecodeTimings {
-            enqueue_us: started.elapsed().as_micros() as u64,
+            backend_call_us,
             ..Default::default()
         };
         self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
             let sync_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
-            timings.backend_completion_us = sync_started.elapsed().as_micros() as u64;
+            timings.backend_sync_us = sync_started.elapsed().as_micros() as u64;
         }
         self.finish_moe_callback(&mut timings)?;
         let n_past = u32::try_from(new_n_past)
@@ -1397,7 +1398,6 @@ impl LlmEngine {
 
         let n = i32::try_from(layout.total_tokens())
             .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
-        let enqueue_started = Instant::now();
         self.reset_capture_slot(layout.total_tokens());
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
         batch.n_tokens = n;
@@ -1420,12 +1420,14 @@ impl LlmEngine {
             }
         }
         self.begin_moe_callback();
+        let backend_call_started = Instant::now();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode (token batch) failed rc={rc}");
         }
-        self.finish_batch(layout, need_residual, enqueue_started)
+        self.finish_batch(layout, need_residual, backend_call_us)
     }
 
     /// Decodes multiple hidden-state sequences in one llama batch.
@@ -1493,7 +1495,6 @@ impl LlmEngine {
         let input_width = input_width.expect("entries não vazio garante largura de entrada");
         let input_width_i32 = i32::try_from(input_width)
             .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
-        let enqueue_started = Instant::now();
         let has_mrope_positions = entries.iter().any(|entry| entry.mrope_positions.is_some());
         self.reset_capture_slot_with_physical_chunks(layout.total_tokens(), has_mrope_positions);
         let mut flattened_positions = has_mrope_positions
@@ -1548,13 +1549,15 @@ impl LlmEngine {
             batch.pos = storage.as_mut_ptr();
         }
         self.begin_moe_callback();
+        let backend_call_started = Instant::now();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         batch.pos = scalar_positions;
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode (hidden batch) failed rc={rc}");
         }
-        self.finish_batch(layout, need_residual, enqueue_started)
+        self.finish_batch(layout, need_residual, backend_call_us)
     }
 
     pub(super) fn reset_capture_slot(&self, n_tokens: usize) {
@@ -1600,7 +1603,7 @@ impl LlmEngine {
         &self,
         layout: BatchLayout,
         need_residual: bool,
-        enqueue_started: Instant,
+        backend_call_us: u64,
     ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
         crate::tp_probe::set_expected_reduces(
             2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64,
@@ -1626,14 +1629,14 @@ impl LlmEngine {
             .unwrap_or_else(|| vec![0, self.n_embd]);
         let residual = residual.map(|captured| captured.values);
         let mut timings = DecodeTimings {
-            enqueue_us: enqueue_started.elapsed().as_micros() as u64,
+            backend_call_us,
             ..Default::default()
         };
         self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
-            let completion_started = Instant::now();
+            let sync_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
-            timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
+            timings.backend_sync_us = sync_started.elapsed().as_micros() as u64;
         }
         self.finish_moe_callback(&mut timings)?;
         Ok((
@@ -1661,7 +1664,6 @@ impl LlmEngine {
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
         self.reset_capture_slot(tokens.len());
-        let enqueue_started = Instant::now();
         let n = tokens.len() as i32;
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
         batch.n_tokens = n;
@@ -1682,7 +1684,9 @@ impl LlmEngine {
 
         let tp_antes = crate::tp_probe::reduce_count();
         self.begin_moe_callback();
+        let backend_call_started = Instant::now();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode failed rc={rc}");
@@ -1761,14 +1765,14 @@ impl LlmEngine {
         }
 
         let mut timings = DecodeTimings {
-            enqueue_us: enqueue_started.elapsed().as_micros() as u64,
+            backend_call_us,
             ..Default::default()
         };
         self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
-            let completion_started = Instant::now();
+            let sync_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
-            timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
+            timings.backend_sync_us = sync_started.elapsed().as_micros() as u64;
         }
         self.finish_moe_callback(&mut timings)?;
         Ok(timings)
@@ -1823,7 +1827,6 @@ impl LlmEngine {
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
         self.reset_capture_slot_with_physical_chunks(n_tokens, mrope_positions.is_some());
-        let enqueue_started = Instant::now();
         let input_width = validate_hidden_tensor(
             hidden.len(),
             shape,
@@ -1873,7 +1876,9 @@ impl LlmEngine {
         if let Some(storage) = mrope_batch_positions.as_mut() {
             batch.pos = storage.as_mut_ptr();
         }
+        let backend_call_started = Instant::now();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         batch.pos = scalar_positions;
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
@@ -1926,14 +1931,14 @@ impl LlmEngine {
             self.mtp = None;
         }
         let mut timings = DecodeTimings {
-            enqueue_us: enqueue_started.elapsed().as_micros() as u64,
+            backend_call_us,
             ..Default::default()
         };
         self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
-            let completion_started = Instant::now();
+            let sync_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
-            timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
+            timings.backend_sync_us = sync_started.elapsed().as_micros() as u64;
         }
         self.finish_moe_callback(&mut timings)?;
         Ok(timings)

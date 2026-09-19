@@ -1026,7 +1026,7 @@ mod tests {
     }
 
     /// Mudança 6 do spec de 2026-08-12: `node_logits_access_ms` marcava ~4,9 ms
-    /// por token no nó da LM head, com `backend_completion_ms` em zero quando o
+    /// por token no nó da LM head, com `backend_sync_ms` em zero quando o
     /// `llama_synchronize` de diagnóstico está desligado pela configuração. A
     /// hipótese é que esses milissegundos são a GPU terminando o trabalho,
     /// cobrados na etapa errada - o primeiro toque de CPU nos logits é quem
@@ -1042,7 +1042,7 @@ mod tests {
     /// ```
     #[test]
     #[ignore]
-    fn logits_access_versus_backend_completion() {
+    fn logits_access_versus_backend_sync() {
         let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(path) = std::env::var("POM_TEST_GGUF") else {
             eprintln!("skipping: set POM_TEST_GGUF to a .gguf to run this");
@@ -1091,7 +1091,7 @@ mod tests {
 
             let mut access_us = 0u64;
             let mut completion_us = 0u64;
-            let mut enqueue_us = 0u64;
+            let mut backend_call_us = 0u64;
             let reps = 16;
             let wall_started = Instant::now();
             for _ in 0..reps {
@@ -1100,15 +1100,15 @@ mod tests {
                 let logits = engine.logits_ith(0);
                 let _touch = logits[0] + logits[logits.len() - 1];
                 access_us += started.elapsed().as_micros() as u64;
-                completion_us += t.backend_completion_us;
-                enqueue_us += t.enqueue_us;
+                completion_us += t.backend_sync_us;
+                backend_call_us += t.backend_call_us;
                 pos += 1;
             }
             let wall = wall_started.elapsed().as_secs_f64() * 1000.0 / reps as f64;
             println!(
                 "PROFILE_SYNC={}: TOTAL {wall:.2} ms/token | enfileirar {:.2} ms | conclusão {:.2} ms | acesso aos logits {:.2} ms",
                 sync as u8,
-                enqueue_us as f64 / reps as f64 / 1000.0,
+                backend_call_us as f64 / reps as f64 / 1000.0,
                 completion_us as f64 / reps as f64 / 1000.0,
                 access_us as f64 / reps as f64 / 1000.0,
             );

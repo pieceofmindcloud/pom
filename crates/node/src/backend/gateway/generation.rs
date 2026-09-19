@@ -31,6 +31,27 @@ fn record_gateway_span(
     ));
 }
 
+fn prefill_rebuild_reason(error: &anyhow::Error) -> Option<&'static str> {
+    if let Some(rebuild) = crate::prefill::rebuild_required(error) {
+        return Some(rebuild.reason);
+    }
+    if crate::relay::is_unknown_session_error(error) {
+        return Some("a sessão remota não existe mais");
+    }
+    if crate::relay::is_delivery_ambiguous(error) {
+        return Some("a resposta se perdeu depois do envio e o peer pode ter processado o chunk");
+    }
+    if crate::relay::is_prefill_state_error(error) {
+        return Some("as posições do KV remoto não coincidem com o próximo chunk");
+    }
+    if crate::relay::is_transport_relay_failure(error)
+        && !crate::relay::is_pre_delivery_error(error)
+    {
+        return Some("um hop downstream falhou depois que a cabeça aceitou o chunk");
+    }
+    None
+}
+
 /// Regista o desfecho de uma requisição que termina antes de planear a
 /// pipeline.
 ///
@@ -745,47 +766,39 @@ pub(super) async fn generate_stream_inner(
         };
         let mut prefill_result = prefill_attempt(reuse_prefix, None).await;
         let mut unknown_session_recovery_attempted = false;
+        let mut cold_recovery_attempted = false;
         if let Err(e) = &prefill_result {
-            let original_unknown_session = crate::relay::is_unknown_session_error(e);
             if crate::relay::is_frame_size_error(e) {
                 warn!(
                     "prefill falhou por limite de frame ({e}); \
                      não é recuperável repetindo o mesmo chunk"
                 );
             } else if !crate::prefill::is_cancelled(e) {
-                // Falha de repasse head->tail causada pelo transporte (caminho
-                // morto, timeout, ou 401/403 de credencial): um gap transitório
-                // na propagação da política de rede some sozinho, então vale um
-                // único prefill frio antes de desistir - `run_direct` trata
-                // qualquer erro no chunk 0 como terminal e não retenta.
-                let original_transport_relay = crate::relay::is_transport_relay_failure(e);
-                // Um erro depois de um chunk aceito não revela se o peer
-                // avançou o KV antes de a resposta se perder. Não se pode
-                // tentar uma remoção parcial: modelos recorrentes recusam-na
-                // e a sessão ficaria corrompida. A recuperação segura é um
-                // prefill frio, que apaga a sessão inteira em cada peer.
                 if let Some(rp) = crate::prefill::resume_point(e) {
                     warn!(
-                        "prefill falhou no pedaço {} (posição {}, {e}); reconstruindo a sessão desde o início",
+                        "prefill falhou antes de entregar o pedaço {} (posição {}, {e}); retomando nesse ponto e preservando o KV",
                         rp.from_chunk, rp.start_pos
+                    );
+                    prefill_result = prefill_attempt(reuse_prefix, Some(rp)).await;
+                } else if let Some(reason) = prefill_rebuild_reason(e) {
+                    unknown_session_recovery_attempted =
+                        crate::relay::is_unknown_session_error(e);
+                    cold_recovery_attempted = true;
+                    warn!(
+                        "prefill precisa de reconstrução fria ({reason}; {e}); limpando as sessões remotas uma vez"
                     );
                     prefill_result = prefill_attempt(false, None).await;
                 }
-                // Uma segunda recuperação fria só é necessária para prefixo
-                // reutilizado, sessão desconhecida ou falha transitória de
-                // transporte. Uma falha durante a reconstrução já tem a sessão
-                // em estado incerto e deve cair direto no cleanup, sem uma nova
-                // tentativa parcial.
-                if let Err(e2) = &prefill_result {
-                    let unknown_session =
-                        original_unknown_session || crate::relay::is_unknown_session_error(e2);
-                    let transport_relay =
-                        original_transport_relay || crate::relay::is_transport_relay_failure(e2);
-                    if reuse_prefix || unknown_session || transport_relay {
-                        unknown_session_recovery_attempted = unknown_session;
+            }
+        }
+        if !cold_recovery_attempted {
+            if let Err(error) = &prefill_result {
+                if !crate::prefill::is_cancelled(error) {
+                    if let Some(reason) = prefill_rebuild_reason(error) {
+                        unknown_session_recovery_attempted =
+                            crate::relay::is_unknown_session_error(error);
                         warn!(
-                            "prefill falhou com estado de sessão incompatível ou transporte \
-                             transitório ({e2}); reconstruindo o prefill inteiro a frio uma vez"
+                            "prefill retomado ainda exige reconstrução fria ({reason}; {error}); limpando as sessões remotas uma vez"
                         );
                         prefill_result = prefill_attempt(false, None).await;
                     }
@@ -822,6 +835,8 @@ pub(super) async fn generate_stream_inner(
                     || crate::relay::is_unknown_session_error(&e)
                 {
                     "Prefill falhou: um peer perdeu o estado da sessão; o sistema tentou reconstruir o contexto, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
+                } else if cold_recovery_attempted {
+                    "Prefill falhou: uma falha de transporte deixou incerto se o peer processou o último chunk. O sistema tentou reconstruir o contexto uma vez, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
                 } else {
                     format!("Prefill falhou: {e}")
                 };

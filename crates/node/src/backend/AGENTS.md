@@ -655,12 +655,14 @@ faz o download autenticado do blob persistido.
   the next turn the instant the stream closes and used to arrive in the middle
   of it; token events still go out live. `release_sessions` tries every
   `inference_candidates` route, remembers which route worked, and remains best
-  effort so a stale address cannot prevent cleanup. A prefill that fails with
-  the prefix enabled is retried once from scratch - reusing is an optimisation, never a
-  reason for the request to fail. A peer that reports an unknown session also
-  triggers that same single cold retry, even when the original request did not
-  use prefix reuse, because a later chunk cannot be reconstructed from hidden
-  state alone. When the stream receiver closes, the event pump observes
+  effort so a stale address cannot prevent cleanup. When every transport proves
+  a prefill chunk was not delivered, the gateway resumes at that absolute
+  position with the same live KV and prefix. It rebuilds the session only for
+  an unknown session, ambiguous delivery, downstream state mismatch or missing
+  absolute progress, and logs the reason. An unknown session also triggers one
+  cold rebuild without prefix reuse, because a later chunk cannot be
+  reconstructed from hidden state alone. When the stream receiver closes, the
+  event pump observes
   `Sender::closed()` even though the generation keeps a sender clone for
   end-of-turn bookkeeping, and cancels the local HTTP future before the next
   retry, hop or chunk. The remote-stream callback propagates an asynchronous

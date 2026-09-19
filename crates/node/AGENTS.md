@@ -298,7 +298,8 @@ sem deslocar o frame da chamada seguinte. `enterprise_p2p.rs`
 assina provas de fingerprint por nonce (uso genérico, não específico de um
 plugin). O `GatewayState` expõe o `PluginManager` ao backend, `webui` publica
 lista/ativação/atualização por plugin e `reqlog` encaminha eventos e consultas
-ao plugin `enterprise` especificamente.
+ao plugin `enterprise` especificamente. Os dois lados do IPC usam o limite
+compartilhado `enterprise_protocol::MAX_IPC_FRAME_BYTES` de 16 MiB.
 
 `src/pom_core_update.rs` é deliberadamente SEPARADO de `src/plugins.rs`: a
 atualização do binário `pom` em si não é um plugin e vai virar GitHub Releases

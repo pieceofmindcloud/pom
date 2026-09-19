@@ -10,6 +10,9 @@ pode conceder vários. Os DTOs precisam continuar compatíveis com o servidor
 em `license.pieceofmind.cloud`, inclusive com envelope, manifests/grants
 assinados e estados de lease.
 
+Também publica `MAX_IPC_FRAME_BYTES`, o limite compartilhado dos frames JSON
+na comunicação local por stdin/stdout entre `pom` e `pom-plugin-host`.
+
 O aviso de atualização do `pom_core` **não** vive aqui: ele saiu deste crate
 com o pivô de plugins e é tipo interno de `crates/node/src/pom_core_update.rs`,
 porque o binário `pom` não é um plugin e sua atualização não é parte do

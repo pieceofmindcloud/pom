@@ -6,7 +6,8 @@ host. Valida caminho absoluto, manifesto, hash, versão ABI e callbacks antes
 de criar o handle. O processo `pom` não deve importar `libloading` nem
 carregar a biblioteca diretamente. Além de `ready`, `ingest` e `shutdown`, o
 IPC expõe `query` com cópia segura do buffer retornado pela biblioteca e
-limite de 1 MiB.
+limite compartilhado de 16 MiB definido por
+`enterprise_protocol::MAX_IPC_FRAME_BYTES`.
 
 Cada instância deste binário serve um plugin só; nada aqui é global ou
 singleton (nem estado de processo, nem socket com nome fixo), então

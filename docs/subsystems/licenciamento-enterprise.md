@@ -73,7 +73,11 @@ que é uma fronteira de produto separada desde antes e continua sendo).
 O ABI C v1 é deliberadamente pequeno e explícito: descriptor imutável com
 versão, capacidades e callbacks `create`, `ingest`, `query`, `free_buffer` e
 `shutdown`, todos com tipos `repr(C)`. O host valida todos os callbacks antes
-de criar o handle. O IPC rejeita frames vazios ou maiores que 1 MiB.
+de criar o handle. O IPC local por stdin/stdout rejeita frames vazios ou
+maiores que 16 MiB, usando `enterprise_protocol::MAX_IPC_FRAME_BYTES` nos dois
+processos. Esse limite cobre consultas e eventos do plugin, inclusive a
+telemetria serializada, sem alterar os limites do transporte de inferência
+entre peers.
 
 ## Entitlement e interface
 

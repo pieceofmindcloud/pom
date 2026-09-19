@@ -19,7 +19,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::time::{timeout, Duration};
 
-const MAX_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_FRAME_BYTES: usize = enterprise_protocol::MAX_IPC_FRAME_BYTES;
 const IPC_TIMEOUT: Duration = Duration::from_secs(3);
 /// O handshake inicial de "ready" pode competir com um boot pesado (modelo
 /// grande carregando, máquina ainda se recuperando de um OOM) e demorar bem

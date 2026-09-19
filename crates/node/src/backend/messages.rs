@@ -533,7 +533,10 @@ async fn messages(
     let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
 
     let model = match req.model.clone() {
-        Some(m) if !m.is_empty() => resolve_model(&state, m).await,
+        Some(m) if !m.is_empty() => match resolve_model(&state, m).await {
+            Ok(model) => model,
+            Err(error) => return error_response(StatusCode::NOT_FOUND, "not_found_error", error),
+        },
         _ => state.active_model().await,
     };
     let task_budget = req

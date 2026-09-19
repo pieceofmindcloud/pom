@@ -426,6 +426,27 @@ ainda pode ser prefixo de uma parada fica retido e a própria parada nunca é
 enviada ao cliente. CORS `*` para harnesses
 de navegador.
 
+O campo `model` do pedido é validado, não apenas lido: `POST
+/v1/chat/completions` e `POST /v1/completions` recusam com HTTP 404
+(`error.type: "invalid_request_error"`, `error.code: 404`) um nome que nenhum
+peer anuncia em `GET /v1/models`; `POST /v1/messages` recusa o mesmo caso com
+HTTP 404 (`error.type: "not_found_error"`, no formato de erro da Anthropic).
+Nenhuma das três rotas serve a implantação ativa em silêncio para um nome
+desconhecido.
+Um seletor explícito `<modelo>@<deploy_id>` que ainda não apareceu no anúncio
+de ninguém continua aceito - recusar aqui trocaria "esta implantação não
+respondeu" por "atendi noutra", pior para quem pediu aquela configuração
+específica; a falha nesse caso nasce adiante, no planejador de pipeline, e
+nomeia o seletor. Omitir `model` continua usando a implantação ativa deste
+gateway (`GET /health` → `default_model`), o único fallback implícito que
+resta. `POST /api/generate` nunca reescreve o nome pedido: um nome sem peer
+correspondente falha no planejador com "Nenhum pipeline válido para o modelo
+'X'" em vez de qualquer substituição. Quando mais de um modelo está carregado
+no cluster, `GET /v1/models` é a fonte da verdade dos nomes servíveis - inclusive
+a variante `<modelo>@<deploy_id>` para escolher entre implantações do mesmo
+modelo - e um cliente bem configurado escolhe entre eles enviando o nome
+exato.
+
 `GET /v1/models` e `GET /v1/models/{id}` anunciam somente modelos publicados
 por peers vivos, inclusive o modelo local quando há uma atribuição ativa. O
 `default_model` do CLI e o registro persistido de deployments não entram nessa

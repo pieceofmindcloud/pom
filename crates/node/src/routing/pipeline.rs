@@ -826,6 +826,50 @@ mod ipv6_tests {
         assert_eq!(ids.len(), 1, "um pipeline, uma implantação: {ids:?}");
     }
 
+    /// Dois modelos **distintos** carregados ao mesmo tempo, cada um na sua
+    /// própria faixa de peers. `model_pipeline_candidates` filtra por
+    /// igualdade exata de rótulo, então pedir um dos dois nomes nunca deve
+    /// misturar hops do outro - é o mecanismo que já dá ao cliente a escolha
+    /// entre modelos carregados, desde que `resolve_model` (camada HTTP)
+    /// valide o nome contra `GET /v1/models` em vez de trocá-lo calado pelo
+    /// ativo.
+    #[tokio::test]
+    async fn two_distinct_models_route_independently() {
+        let mut a1 = peer("10.0.0.1:42777", 0, 15);
+        let mut a2 = peer("10.0.0.2:42777", 16, 31);
+        let mut b1 = peer("10.0.0.3:42777", 0, 31);
+        for (p, id, model) in [
+            (&mut a1, "a1", "modelo-a"),
+            (&mut a2, "a2", "modelo-a"),
+            (&mut b1, "b1", "modelo-b"),
+        ] {
+            p.node_id = id.to_string();
+            p.model = model.to_string();
+        }
+        let todos = vec![a1, a2, b1];
+        let tracker = LoadTracker::new();
+
+        let plano_a = plan_pipeline(&todos, "modelo-a", None, 32, &tracker)
+            .await
+            .expect("modelo-a cobre 0..31 em dois hops");
+        assert_eq!(plano_a.steps.len(), 2);
+        assert!(plano_a
+            .steps
+            .iter()
+            .all(|s| s.node_id == "a1" || s.node_id == "a2"));
+
+        let plano_b = plan_pipeline(&todos, "modelo-b", None, 32, &tracker)
+            .await
+            .expect("modelo-b cobre 0..31 num hop só");
+        assert_eq!(plano_b.steps.len(), 1);
+        assert_eq!(plano_b.steps[0].node_id, "b1");
+
+        let candidatos_a = model_pipeline_candidates(&todos, "modelo-a", None);
+        assert!(candidatos_a.iter().all(|p| p.model == "modelo-a"));
+        let candidatos_b = model_pipeline_candidates(&todos, "modelo-b", None);
+        assert!(candidatos_b.iter().all(|p| p.model == "modelo-b"));
+    }
+
     /// Um id que ninguém serve não pode cair de volta no rótulo e devolver a
     /// outra implantação calado - seria atender numa configuração que o cliente
     /// explicitamente não pediu.

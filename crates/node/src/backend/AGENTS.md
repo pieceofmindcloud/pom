@@ -737,8 +737,12 @@ faz o download autenticado do blob persistido.
   peer announcements (never the stale CLI default), and keeps an `idle` deployment
   selectable while its weights are unloaded; an unready non-idle peer without
   `runtime_capacity` still hides the model until `/health` confirms it; model objects include both
-  OpenAI and Anthropic discovery fields; `resolve_model` maps unknown names to
-  the active model;
+  OpenAI and Anthropic discovery fields; `resolve_model` only accepts a name a
+  peer actually announces (`model_ids`) or an explicit `<modelo>@<deploy_id>`
+  selector still pending gossip - anything else is refused with HTTP 404
+  before generation starts, never silently swapped for the active model.
+  A request that omits `model` still uses `active_model()`,
+  which is the only remaining implicit default;
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;
   `chat_message_json` (flat content + `tool_calls` array),
   `apply_scan_events_openai` (tool_call deltas), `chunk_json` (+

@@ -617,10 +617,10 @@ async fn chat_completions(
     let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
 
     let model = match req.model.clone() {
-        // Harnesses often pin a model name that means nothing here; the cluster
-        // serves whatever it has loaded, so an unknown name maps to the active
-        // model rather than failing the request.
-        Some(m) if !m.is_empty() => resolve_model(&state, m).await,
+        Some(m) if !m.is_empty() => match resolve_model(&state, m).await {
+            Ok(model) => model,
+            Err(error) => return error_response(StatusCode::NOT_FOUND, error),
+        },
         _ => state.active_model().await,
     };
     let requested_max_tokens = req.max_tokens();
@@ -728,7 +728,10 @@ async fn completions(
     Json(req): Json<CompletionRequest>,
 ) -> Response {
     let model = match req.model.clone() {
-        Some(m) if !m.is_empty() => resolve_model(&state, m).await,
+        Some(m) if !m.is_empty() => match resolve_model(&state, m).await {
+            Ok(model) => model,
+            Err(error) => return error_response(StatusCode::NOT_FOUND, error),
+        },
         _ => state.active_model().await,
     };
     let requested_max_tokens = req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS).max(1);
@@ -798,24 +801,27 @@ async fn completions(
     }
 }
 
-/// Use the requested model when a peer serves it, otherwise fall back to
-/// whatever this cluster is actually running.
-pub(crate) async fn resolve_model(state: &GatewayState, requested: String) -> String {
+/// Use the requested model when a peer serves it. A name no peer announces is
+/// refused instead of silently swapped for whatever this cluster happens to be
+/// running - a client that pinned a model, including one that does not exist,
+/// used to get `200` back with a different model's output and no indication
+/// of the substitution. `GET /v1/models` remains the source of truth for the
+/// names a client may pass here.
+pub(crate) async fn resolve_model(state: &GatewayState, requested: String) -> Result<String, String> {
     if model_ids(state).await.contains(&requested) {
-        return requested;
+        return Ok(requested);
     }
     // Um `@<deploy_id>` que ainda não apareceu no anúncio de ninguém continua
     // valendo: recusar aqui trocaria "esta implantação não respondeu" por
     // "atendi noutra", que é pior - o cliente pediu uma configuração
     // específica. Quem não achar peer nenhum falha adiante, dizendo isso.
     if crate::deployment::split_selector(&requested).1.is_some() {
-        return requested;
+        return Ok(requested);
     }
-    {
-        let active = state.active_model().await;
-        info!("modelo '{requested}' desconhecido — usando '{active}'");
-        active
-    }
+    Err(format!(
+        "modelo '{requested}' não existe ou não está carregado nesta rede; \
+         consulte GET /v1/models para os nomes servíveis"
+    ))
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1626,7 +1632,7 @@ mod tests {
         );
         assert_eq!(
             resolve_model(&state, "ornith-35b".into()).await,
-            "ornith-35b"
+            Ok("ornith-35b".to_string())
         );
 
         let limit = state
@@ -1650,13 +1656,25 @@ mod tests {
 
         assert_eq!(
             resolve_model(&state, "qwen3:8b@d-cccccccc".into()).await,
-            "qwen3:8b@d-cccccccc"
+            Ok("qwen3:8b@d-cccccccc".to_string())
         );
-        // Um nome pelado desconhecido continua caindo na ativa, como sempre.
-        assert_ne!(
-            resolve_model(&state, "modelo-que-nao-existe".into()).await,
-            "modelo-que-nao-existe"
-        );
+    }
+
+    /// Um nome pelado que nenhum peer anuncia é recusado, não trocado
+    /// caladamente pelo modelo ativo - decisão do captain: o cliente que
+    /// pediu um modelo inexistente precisa de um erro claro, nunca de uma
+    /// resposta 200 servida por outro modelo.
+    #[tokio::test]
+    async fn an_unknown_plain_model_name_is_refused_not_silently_swapped() {
+        let mut p1 = crate::gateway::testkit::peer("n1", "n1", 8080);
+        p1.model = "qwen3:8b".into();
+        p1.deploy_id = "d-aaaaaaaa".into();
+        let state = crate::gateway::testkit::state_with("eu", vec![p1]).await;
+
+        let error = resolve_model(&state, "modelo-que-nao-existe".into())
+            .await
+            .expect_err("unknown model must be refused");
+        assert!(error.contains("modelo-que-nao-existe"), "{error}");
     }
 
     // ── render_prompt ────────────────────────────────────────────────────────
@@ -2091,7 +2109,11 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
-                model: Some("lab".into()),
+                // Sem peer anunciando "lab" nesta fixture, um `model`
+                // explícito seria recusado pelo `resolve_model` - o alvo deste
+                // teste é a matemática de orçamento/contexto, não a resolução
+                // de nome, então omitir usa `active_model()` diretamente.
+                model: None,
                 messages: vec![
                     msg("system", &"agent instructions ".repeat(prompt_repeats)),
                     msg("user", "hello"),

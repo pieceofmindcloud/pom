@@ -1,4 +1,5 @@
 import {
+  Blocks,
   BookOpen,
   Boxes,
   ChartNoAxesColumn,
@@ -133,6 +134,11 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.preferences", to: "/config/preferencias", icon: SlidersHorizontal },
       { labelKey: "nav.storage", to: "/config/armazenamento", icon: FolderTree },
       { labelKey: "nav.administrativePreferences", to: "/config/preferencias/admin", icon: SlidersHorizontal },
+      // O catálogo de plugins é uma vitrine: precisa ser alcançável sem que o
+      // operador esbarre antes numa tela bloqueada. Fica antes de "Sobre", que
+      // é a casa da atualização do `pom` em si - itens distintos de propósito,
+      // porque atualizar um plugin e atualizar o binário não são a mesma coisa.
+      { labelKey: "nav.plugins", to: "/plugins", icon: Blocks },
       { labelKey: "nav.about", to: "/config/sobre", icon: Info },
     ],
   },
@@ -143,8 +149,9 @@ export const NAV: NavSection[] = [
  *
  * Uma seção que navega sozinha some quando a rota dela é fechada; uma seção com
  * filhas some quando **nenhuma** filha sobra, e não quando alguma sai. As telas
- * Enterprise são deliberadamente descobríveis e permanecem no menu mesmo sem
- * licença; a própria tela mostra o convite de ativação.
+ * servidas por plugin (Logs de Requisições, Estatísticas) são deliberadamente
+ * descobríveis e permanecem no menu mesmo sem licença; a própria tela mostra o
+ * convite de ativação, e "Plugins" lista o catálogo inteiro.
  *
  * A decisão de quem entra onde não está aqui: está em `lib/access.ts`, a mesma
  * tabela que o roteador consulta.

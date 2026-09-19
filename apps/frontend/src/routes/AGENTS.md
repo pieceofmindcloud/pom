@@ -94,6 +94,9 @@ Per-file list:
   separada (ver `crates/node/src/pom_core_update.rs`). O link de comprar/
   gerenciar de cada card usa o `manage_url` do próprio plugin
   (`pieceofmind.cloud`). Substituiu a antiga `Enterprise.tsx` de produto único.
+  Tem entrada própria no menu (Configurações > Plugins, antes de "Sobre"): o
+  catálogo é vitrine e precisa ser navegável antes da compra, não só
+  alcançável ao esbarrar numa tela bloqueada, como era a `/enterprise`.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,

@@ -79,8 +79,10 @@ content so far; `types` is a placeholder awaiting migration.
 Os crates `enterprise-protocol`, `enterprise-plugin-fixture` e `plugin-host`
 formam a fronteira de licenciamento: o primeiro define DTOs e ABI C v1, o
 segundo é uma `cdylib` de teste e o terceiro é o único carregador de plugins.
-O contrato e as lacunas de extração estão em
-`docs/subsystems/licenciamento-enterprise.md`.
+O licenciamento é por `plugin_code` independente, não de um produto único -
+`pom-plugin-host` sobe uma instância por plugin ativo, e os nomes com
+"enterprise" ficaram por história de git. O contrato e as lacunas de extração
+estão em `docs/subsystems/licenciamento-enterprise.md`.
 
 ## Maintaining this file
 

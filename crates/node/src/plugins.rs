@@ -1479,11 +1479,19 @@ pub(crate) struct PluginManager {
 }
 
 impl PluginManager {
+    /// `restore_on_boot` liga a releitura do estado persistido de cada plugin
+    /// (ver [`PluginRuntime::restore`]). Em produção é sempre `true`: é o que
+    /// religa um plugin já ativado depois de um restart do `pom`. Os testes
+    /// passam `false` porque a restauração é uma tarefa concorrente que
+    /// sobrescreve o estado em memória a partir do banco em um instante que
+    /// o teste não controla - deixá-la ligada tornaria qualquer cenário que
+    /// monta estado à mão não determinístico, sem cobrir nada a mais.
     fn from_catalog(
         catalog: &[&str],
         service: Arc<dyn LicenseService>,
         fingerprint: Fingerprint,
         database: Option<Arc<crate::db::PomDb>>,
+        restore_on_boot: bool,
     ) -> Arc<Self> {
         let runtimes = catalog
             .iter()
@@ -1503,10 +1511,12 @@ impl PluginManager {
             runtimes,
         });
         for runtime in manager.runtimes.values() {
-            tokio::spawn({
-                let runtime = runtime.clone();
-                async move { runtime.restore().await }
-            });
+            if restore_on_boot {
+                tokio::spawn({
+                    let runtime = runtime.clone();
+                    async move { runtime.restore().await }
+                });
+            }
             runtime.spawn_heartbeat_supervisor();
         }
         manager
@@ -1522,6 +1532,7 @@ impl PluginManager {
             Arc::new(HttpLicenseService::new(license_base_url())),
             fingerprint,
             Some(database),
+            true,
         )
     }
 
@@ -1532,12 +1543,13 @@ impl PluginManager {
             Arc::new(HttpLicenseService::new(license_base_url())),
             fingerprint,
             None,
+            true,
         )
     }
 
     #[cfg(test)]
     pub(crate) fn test_manager(catalog: &[&str], service: Arc<dyn LicenseService>) -> Arc<Self> {
-        Self::from_catalog(catalog, service, test_fingerprint(), None)
+        Self::from_catalog(catalog, service, test_fingerprint(), None, false)
     }
 
     /// Como `test_manager`, mas com um `PomDb` real - só os poucos testes que
@@ -1549,7 +1561,7 @@ impl PluginManager {
         service: Arc<dyn LicenseService>,
         database: Arc<crate::db::PomDb>,
     ) -> Arc<Self> {
-        Self::from_catalog(catalog, service, test_fingerprint(), Some(database))
+        Self::from_catalog(catalog, service, test_fingerprint(), Some(database), false)
     }
 
     pub(crate) fn fingerprint(&self) -> &Fingerprint {
@@ -2684,6 +2696,10 @@ mod tests {
             crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
         );
         let service = Arc::new(MockLicenseService::single("enterprise", activation("enterprise", "ent-1")));
+        // `test_manager_with_database` não dispara o `restore()` de boot (ver
+        // `from_catalog`): aqui o estado é montado à mão logo abaixo, e uma
+        // restauração concorrente o sobrescreveria a partir do banco em um
+        // instante fora do controle do teste.
         let manager = PluginManager::test_manager_with_database(&["enterprise"], service.clone(), db);
         let runtime = manager.runtime_for("enterprise").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;

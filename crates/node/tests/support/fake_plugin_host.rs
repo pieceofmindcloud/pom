@@ -1,5 +1,5 @@
-//! Host IPC mínimo, só para o teste de regressão em `enterprise.rs`. Fala o
-//! mesmo protocolo de frame (u32 big-endian + JSON) que `enterprise_host.rs`
+//! Host IPC mínimo, só para o teste de regressão em `plugins.rs`. Fala o
+//! mesmo protocolo de frame (u32 big-endian + JSON) que `plugin_host.rs`
 //! usa contra o `pom-plugin-host` real, mas sem nenhuma lógica de plugin: só
 //! responde `ready`, registra cada `ingest` numa linha do arquivo apontado
 //! por `POM_FAKE_HOST_LOG` e sai em `shutdown`.

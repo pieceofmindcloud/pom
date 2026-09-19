@@ -276,6 +276,14 @@ completo do processo `pom`. `ingest_audit_event` avisa em log quando descarta
 um evento por falta de host, porque antes esse caminho falhava 100%
 silencioso e só dava pra confirmar lendo o banco do plugin direto.
 
+A restauração de boot (`PluginRuntime::restore`) é uma tarefa concorrente que
+sobrescreve o estado em memória com o do banco e pode religar o host por conta
+própria. Por isso `from_catalog` recebe `restore_on_boot`: produção passa
+`true`, e os construtores de teste passam `false`. Um teste que monta estado à
+mão perde a corrida contra ela de forma não determinística - foi o que
+fazia `heartbeat_success_restarts_the_stopped_plugin_host` falhar ora por
+`plugin_path` sumido, ora por host revivido depois da revogação.
+
 `plugin_host.rs` (`PluginHost`) é o único adaptador do `pom` para o processo
 auxiliar `pom-plugin-host` - já suporta várias instâncias concorrentes, uma
 por plugin ativo. `PluginHost::start` usa `kill_on_drop` e mata explicitamente

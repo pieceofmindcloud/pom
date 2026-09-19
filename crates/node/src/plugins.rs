@@ -16,16 +16,22 @@
 //! por baixo dos panos, o lease do plugin `"enterprise"` enquanto esse
 //! mecanismo de transição não muda. Ver `crate::pom_core_update`.
 //!
-//! **Suposição de contrato** (o servidor de licenças está sendo redesenhado em
-//! paralelo para o mesmo modelo - ver `rdma-license-server-catalogo-plugins`):
-//! uma chave de licença pode conceder vários `plugin_code` de uma vez, e
-//! `ValidateResponse.entitlements` lista todos eles, com o formato
-//! `"<plugin_code>.<feature>"` (já era assim para `enterprise.*` antes desta
-//! mudança). A ativação em si (`POST /v1/licenses/activations`) continua
-//! sendo uma chamada POR plugin_code - por isso `ActivationPayload` e
-//! `ActivationResponse` ganharam o campo `plugin_code` nesta mudança. Os
-//! endpoints de manifest/download já eram genéricos por `plugin_code`
-//! (`/v1/plugins/:plugin_code/manifest`) e não mudaram.
+//! **Contrato do servidor de licenças** (confirmado contra o servidor real, e
+//! fixado por `enterprise-protocol/tests/wire_contract.rs` com corpos de
+//! resposta capturados dele): uma chave concede vários `plugin_code` de uma
+//! vez, e todas as respostas listam esses códigos em `licensed_plugins` -
+//! códigos puros, sem features. **As features de um plugin vêm do manifesto
+//! do release instalado** (`PluginManifest::feature_set`, no formato
+//! `"<plugin_code>.<feature>"`), porque quem define o que uma versão entrega
+//! é aquela versão, não a licença. A ativação (`POST
+//! /v1/licenses/activations`) é uma chamada POR `plugin_code`, e os endpoints
+//! de manifest/download já eram genéricos por `plugin_code`
+//! (`/v1/plugins/:plugin_code/manifest`).
+//!
+//! Este cliente já assumiu o contrário - que a licença listava features em
+//! `entitlements` - e a ativação de plugin quebrou em produção com
+//! `missing field \`entitlements\`` quando o servidor virou catálogo de
+//! plugins. Não volte a derivar features da licença.
 
 use async_trait::async_trait;
 use axum::response::IntoResponse;
@@ -95,7 +101,7 @@ pub(crate) struct HeartbeatResponse {
     pub activation_id: String,
     pub lease_id: String,
     pub lease_token: String,
-    pub entitlements: Vec<String>,
+    pub licensed_plugins: Vec<String>,
     pub lease_expires_at: String,
     pub heartbeat_due_at: String,
     pub grace_seconds: u64,
@@ -988,11 +994,11 @@ impl PluginRuntime {
         }
 
         let response = response.payload;
-        let features = features_for_code(&self.code, &response.entitlements);
+        let features = features_for_code(&self.code, &response.plugin_manifest.feature_set);
         if features.is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "A chave não inclui este plugin.",
+                "O release instalado não declara nenhuma feature para este plugin.",
             ));
         }
         *self.pending.lock().await = Some(PendingActivation {
@@ -1154,11 +1160,14 @@ impl PluginRuntime {
                 "A ativação não pertence a esta instalação.",
             ));
         }
-        let features = features_for_code(&self.code, &pending.response.entitlements);
+        let features = features_for_code(
+            &self.code,
+            &pending.response.plugin_manifest.feature_set,
+        );
         if features.is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "A licença não inclui este plugin.",
+                "O release instalado não declara nenhuma feature para este plugin.",
             ));
         }
         let mut status = self.status.write().await;
@@ -1211,7 +1220,7 @@ impl PluginRuntime {
             Ok(response) => {
                 let HeartbeatResponse {
                     lease_token,
-                    entitlements,
+                    licensed_plugins,
                     lease_expires_at,
                     heartbeat_due_at,
                     grace_seconds,
@@ -1221,7 +1230,15 @@ impl PluginRuntime {
                     grant,
                     ..
                 } = response.payload;
-                let features = features_for_code(&self.code, &entitlements);
+                // O heartbeat não traz manifesto, então as features continuam
+                // sendo as do release instalado. O que ele traz é a lista de
+                // plugins que a licença ainda concede: se este saiu da lista,
+                // o plugin perde as features na hora.
+                let features = if licensed_plugins.iter().any(|code| *code == self.code) {
+                    persisted.features.clone()
+                } else {
+                    Vec::new()
+                };
                 let mut persisted = self.persisted.lock().await;
                 let mut updated_persisted = None;
                 if let Some(state) = persisted.as_mut() {
@@ -1633,8 +1650,9 @@ impl PluginManager {
             },
         );
         let validation = self.service.validate(validate_request).await?;
-        let granted = plugin_codes_from_entitlements(&validation.payload.entitlements);
-        let known_granted = granted
+        let known_granted = validation
+            .payload
+            .licensed_plugins
             .into_iter()
             .filter(|code| self.runtimes.contains_key(code))
             .collect::<Vec<_>>();
@@ -1731,26 +1749,15 @@ fn machine_fingerprint(node_id: &str) -> Fingerprint {
     )
 }
 
-/// Entitlements vêm como `"<plugin_code>.<feature>"`. Extrai os `plugin_code`
-/// distintos, na ordem em que aparecem.
-fn plugin_codes_from_entitlements(entitlements: &[String]) -> Vec<String> {
-    let mut codes: Vec<String> = Vec::new();
-    for entitlement in entitlements {
-        if let Some((code, _feature)) = entitlement.split_once('.') {
-            if !codes.iter().any(|existing| existing == code) {
-                codes.push(code.to_owned());
-            }
-        }
-    }
-    codes
-}
-
-/// As features concedidas para UM `plugin_code`, extraídas do mesmo formato
-/// `"<plugin_code>.<feature>"`, sem o prefixo.
-fn features_for_code(code: &str, entitlements: &[String]) -> Vec<String> {
-    entitlements
+/// As features que UM `plugin_code` entrega, lidas do `feature_set` do
+/// manifesto do release no formato `"<plugin_code>.<feature>"`, sem o prefixo.
+/// Um release só declara as suas próprias features, mas o prefixo é filtrado
+/// mesmo assim: é ele que garante que um manifesto trocado não empreste
+/// feature de outro plugin.
+fn features_for_code(code: &str, feature_set: &[String]) -> Vec<String> {
+    feature_set
         .iter()
-        .filter_map(|entitlement| entitlement.strip_prefix(code).and_then(|rest| rest.strip_prefix('.')))
+        .filter_map(|feature| feature.strip_prefix(code).and_then(|rest| rest.strip_prefix('.')))
         .map(str::to_owned)
         .collect()
 }
@@ -2188,15 +2195,14 @@ pub(crate) mod tests_support {
         ) -> Result<ResponseEnvelope<enterprise_protocol::ValidateResponse>, LicenseClientError>
         {
             let responses = self.responses.lock().await;
-            let entitlements = responses
+            let licensed_plugins = responses
                 .values()
                 .filter_map(|response| match response {
-                    MockResponse::Valid(response) => Some(response.entitlements.clone()),
+                    MockResponse::Valid(response) => Some(response.plugin_code.clone()),
                     MockResponse::Error(_) => None,
                 })
-                .flatten()
                 .collect::<Vec<_>>();
-            if entitlements.is_empty() {
+            if licensed_plugins.is_empty() {
                 if let Some(MockResponse::Error(code)) = responses.values().next() {
                     return Err(LicenseClientError::new(*code, "mock license error"));
                 }
@@ -2209,7 +2215,7 @@ pub(crate) mod tests_support {
                 payload: enterprise_protocol::ValidateResponse {
                     license_id: "lic-mock".into(),
                     status: "active".into(),
-                    entitlements,
+                    licensed_plugins,
                     activation_required: true,
                     activation_id: None,
                     eligible_release: None,
@@ -2268,7 +2274,7 @@ pub(crate) mod tests_support {
                     activation_id: response.activation_id.clone(),
                     lease_id: response.lease_id.clone(),
                     lease_token: "plt-renewed".into(),
-                    entitlements: response.entitlements.clone(),
+                    licensed_plugins: vec![response.plugin_code.clone()],
                     lease_expires_at: "2099-01-08T00:00:00Z".into(),
                     heartbeat_due_at: "2099-01-02T00:00:00Z".into(),
                     grace_seconds: 86400,
@@ -2355,7 +2361,7 @@ mod tests {
             activation_token: "pat-test".into(),
             lease_id: format!("lease-{code}"),
             lease_token: "plt-test".into(),
-            entitlements: vec![format!("{code}.request_logs"), format!("{code}.statistics")],
+            licensed_plugins: vec![code.into()],
             lease_expires_at: "2099-01-01T00:00:00Z".into(),
             heartbeat_due_at: "2099-01-01T00:00:00Z".into(),
             grace_seconds: 172800,
@@ -2366,7 +2372,7 @@ mod tests {
                 product: "pom".into(),
                 version: "0.1.0".into(),
                 channel: "stable".into(),
-                feature_set: vec![format!("{code}.request_logs")],
+                feature_set: vec![format!("{code}.request_logs"), format!("{code}.statistics")],
                 os: std::env::consts::OS.into(),
                 arch: std::env::consts::ARCH.into(),
                 min_host_version: "0.1.0".into(),
@@ -2437,24 +2443,27 @@ mod tests {
         .is_err());
     }
 
-    /// Uma ativação por chave de licença não tenta baixar/instalar nenhum
-    /// plugin sem antes descobrir quais `plugin_code` a chave concede - por
-    /// isso este teste é sobre `plugin_codes_from_entitlements`, a função
-    /// pura que faz esse recorte, e não sobre `PluginManager::activate` de
-    /// ponta a ponta: essa ponta a ponta precisa do host real
-    /// `pom-plugin-host`, testado à parte (`cargo test -p pom-plugin-host`).
+    /// As features de um plugin vêm do `feature_set` do manifesto do release,
+    /// e cada release só declara as suas. O prefixo `"<plugin_code>."` é
+    /// filtrado mesmo assim: é ele que impede que um manifesto de outro
+    /// plugin conceda feature a este.
     #[test]
-    fn plugin_codes_from_entitlements_extracts_distinct_codes_per_plugin() {
-        let entitlements = vec![
+    fn features_for_code_takes_only_the_features_of_that_plugin() {
+        let feature_set = vec![
             "enterprise.request_logs".to_string(),
             "enterprise.statistics".to_string(),
             "sample.other_feature".to_string(),
         ];
 
         assert_eq!(
-            plugin_codes_from_entitlements(&entitlements),
-            vec!["enterprise".to_string(), "sample".to_string()]
+            features_for_code("enterprise", &feature_set),
+            vec!["request_logs".to_string(), "statistics".to_string()]
         );
+        assert_eq!(
+            features_for_code("sample", &feature_set),
+            vec!["other_feature".to_string()]
+        );
+        assert!(features_for_code("outro", &feature_set).is_empty());
     }
 
     /// Monta um plugin "pronto" sem manifest/download/host real - a mesma

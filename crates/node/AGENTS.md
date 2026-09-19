@@ -266,8 +266,9 @@ compartilhado, estado persistido sem a chave (`plugin_license:<code>`),
 supervisor de heartbeat e checagem de atualização de versão PRÓPRIA - nenhum
 desses estados é compartilhado entre plugins nem com o `pom_core`. Uma
 ativação por chave de licença primeiro valida uma vez para descobrir quais
-`plugin_code` ela concede (entitlements no formato `"<plugin_code>.<feature>"`),
-depois ativa/instala cada um separadamente. Todo heartbeat com SUCESSO marca
+`plugin_code` ela concede (`licensed_plugins`, códigos puros), depois
+ativa/instala cada um separadamente. As features de cada plugin vêm do
+`feature_set` do manifesto do release, NÃO da licença. Todo heartbeat com SUCESSO marca
 o plugin ativo e chama `ensure_host_running` (mesma lógica usada na
 restauração de boot, extraída em um só lugar): se o host daquele plugin
 estiver `None` - porque uma revogação temporária o derrubou, ou porque o

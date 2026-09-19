@@ -317,7 +317,7 @@ mod tests {
             activation_token: "pat-test".into(),
             lease_id: "lease-1".into(),
             lease_token: "plt-test".into(),
-            entitlements: vec!["enterprise.request_logs".into(), "enterprise.statistics".into()],
+            licensed_plugins: vec![ENTERPRISE_PLUGIN_CODE.into()],
             lease_expires_at: "2099-01-01T00:00:00Z".into(),
             heartbeat_due_at: "2099-01-01T00:00:00Z".into(),
             grace_seconds: 172800,

@@ -34,13 +34,12 @@ que é uma fronteira de produto separada desde antes e continua sendo).
   snapshot local de ativação (`plugin_license:<code>`). O cliente consulta
   `/v1/keys`, verifica grant e manifest Ed25519, além de hash, tamanho, ABI e
   plataforma. Uma ativação por chave primeiro chama `/v1/licenses/validate`
-  uma vez para descobrir quais `plugin_code` ela concede (entitlements no
-  formato `"<plugin_code>.<feature>"`), depois ativa cada um separadamente via
-  `/v1/licenses/activations` com `plugin_code` no payload (campo novo desta
-  mudança - suposição de contrato até o license-server publicar o formato
-  real, ver `rdma-license-server-catalogo-plugins`). O heartbeat desserializa
-  o payload rico de renovação e persiste o novo token, expiração, prazo do
-  próximo heartbeat, entitlements, grant e release informados pelo servidor,
+  uma vez para descobrir quais `plugin_code` ela concede (`licensed_plugins`,
+  uma lista de códigos puros), depois ativa cada um separadamente via
+  `/v1/licenses/activations` com `plugin_code` no payload. As features de um
+  plugin vêm do `feature_set` do manifesto do release, não da licença. O
+  heartbeat desserializa o payload rico de renovação e persiste o novo token,
+  expiração, prazo do próximo heartbeat, grant e release informados pelo servidor,
   sem substituir o prazo por uma estimativa local - tudo isso por
   `PluginRuntime`, nunca compartilhado entre plugins. Cada `PluginRuntime`
   também checa sua PRÓPRIA atualização de versão (`detect_update`/
@@ -157,15 +156,19 @@ duas famílias de rotas nunca se misturam, no código nem na UI.
   `EnterpriseState` e ganhou arquivo próprio, `pom_core_update.rs`
   (`PomCoreUpdater`), com sua própria tela inteira em `/config/sobre` - nunca
   mais compartilhando código ou UI com a tela de Plugins. **Suposição de
-  contrato** enquanto o license-server não publica o formato real
-  (`rdma-license-server-catalogo-plugins`, tarefa irmã): `ActivationPayload`/
-  `ActivationResponse`/`GrantBody` ganharam o campo `plugin_code`, e a
-  ativação continua sendo uma chamada por `plugin_code` (o cliente descobre
-  quais chamar validando uma vez e lendo os `plugin_code` distintos dos
-  entitlements). Ajustar quando o contrato real estiver documentado.
+  contrato**, agora confirmado contra o servidor real: `ActivationPayload`/
+  `ActivationResponse`/`GrantBody` carregam `plugin_code`, e a ativação é uma
+  chamada por `plugin_code` (o cliente descobre quais chamar validando uma vez
+  e lendo `licensed_plugins`).
 
-O servidor de licenças pode evoluir em paralelo: o cliente não depende dele
-para os testes locais porque o contrato é exercitado pelo mock.
+O servidor de licenças evolui em paralelo, e só o mock não basta para
+acompanhá-lo: o mock concordava com a suposição errada deste cliente, então os
+testes ficaram verdes enquanto toda ativação quebrava em produção com
+`missing field \`entitlements\``. Por isso o contrato é afirmado também sobre
+corpos de resposta REAIS, capturados do license-server, em
+`crates/enterprise-protocol/tests/wire_contract.rs`; o mesmo contrato é afirmado
+do outro lado em `license-server/test/wire-contract.test.ts` (repositório
+pom-website), que regrava essas fixtures com `POM_WIRE_FIXTURES=<dir>`.
 
 ## Detecção e atualização autorizada do binário
 

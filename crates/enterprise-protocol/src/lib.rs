@@ -197,7 +197,11 @@ pub struct ValidatePayload {
 pub struct ValidateResponse {
     pub license_id: String,
     pub status: String,
-    pub entitlements: Vec<String>,
+    /// Os `plugin_code` que esta licença concede hoje. O servidor de licenças
+    /// é um catálogo de plugins: a licença concede uma LISTA de códigos, e as
+    /// features de cada plugin vêm do manifesto do release instalado
+    /// (`PluginManifest::feature_set`), não da licença.
+    pub licensed_plugins: Vec<String>,
     pub activation_required: bool,
     pub activation_id: Option<String>,
     pub eligible_release: Option<EligibleRelease>,
@@ -224,7 +228,8 @@ pub struct ActivationResponse {
     pub activation_token: String,
     pub lease_id: String,
     pub lease_token: String,
-    pub entitlements: Vec<String>,
+    /// Os `plugin_code` que a licença concede, como em [`ValidateResponse`].
+    pub licensed_plugins: Vec<String>,
     pub lease_expires_at: String,
     pub heartbeat_due_at: String,
     pub grace_seconds: u64,
@@ -250,7 +255,6 @@ pub struct GrantBody {
     pub lease_id: String,
     pub jti: String,
     pub node_id: String,
-    pub features: Vec<String>,
     pub fingerprint_scheme: String,
     pub fingerprint_hash: String,
     pub cluster_id_hash: Option<String>,
@@ -268,7 +272,8 @@ pub struct LicenseStatusResponse {
     pub license_id: String,
     pub activation_id: String,
     pub lease_id: String,
-    pub entitlements: Vec<String>,
+    /// Os `plugin_code` que a licença concede, como em [`ValidateResponse`].
+    pub licensed_plugins: Vec<String>,
     pub license_expires_at: Option<String>,
     pub lease_expires_at: String,
     pub grace_ends_at: String,

@@ -682,18 +682,21 @@ codificação em trânsito. Formato:
   request. Uma recusa determinística de tamanho não repete o mesmo prefill a
   frio.
 - O decode sempre devolve o tensor como f32: precisão reduzida é propriedade do
-  fio, nunca da matemática. `f16` é o padrão preservado; `f8` usa FP8 E4M3FN,
-  um byte por valor, e é uma escolha explícita de `RuntimeParams` para medir o
-  trade-off. O conversor recusa NaN, infinito e valores fora do alcance finito
-  em vez de saturá-los silenciosamente. O f32 continua representável em
-  caminhos internos, mas não é uma opção de implantação.
+  fio, nunca da matemática. `f16` é o padrão; `f8` usa FP8 E4M3FN, e `i4g64` /
+  `i4g128` usam int4 assinado com uma escala FP16 por grupo de 64 / 128 valores.
+  Os formatos com perda são escolhas explícitas de `RuntimeParams`; o i4 empacota
+  dois valores por byte além das escalas. O conversor recusa valores não finitos
+  e escalas FP16 fora do alcance em vez de saturá-los silenciosamente. O f32
+  continua representável em caminhos internos, mas não é uma opção de implantação.
 - `RuntimeParams.hidden_state_dtype` é global para a implantação e segue o
   mesmo caminho persistido de contexto, batch, chunk prefill e cache KV. O
-  padrão é `f16`; `f8` só é enviado quando o operador o escolhe
-  explicitamente. Cada peer anuncia `inference/frame-v1-dtype-f8` em
-  `/api/ui/node`. O planejador bloqueia uma implantação f8 se qualquer peer
-  selecionado não anunciar a capability, e o servidor ainda recusa um frame
-  incompatível com uma mensagem explícita. Não há interpretação silenciosa.
+  padrão é `f16`; f8/i4 só são enviados quando o operador os escolhe
+  explicitamente. Cada peer anuncia capabilities separadas para
+  `inference/frame-v1-dtype-f8`, `inference/frame-v1-dtype-i4g64` e
+  `inference/frame-v1-dtype-i4g128` em `/api/ui/node`. O planejador bloqueia a
+  implantação se qualquer peer selecionado não anunciar o formato escolhido,
+  e o servidor ainda recusa um frame incompatível com mensagem explícita. Não
+  há interpretação silenciosa.
 - O trace de cada hop registra `hidden_state_bytes_sent`,
   `hidden_state_bytes_received` e `hidden_state_dtype`. A UI mostra esses
   campos por travessia e o formato efetivo, inclusive quando uma configuração
@@ -1040,7 +1043,9 @@ mudou:
   transporte no `relay.rs` e o teste de "isto é um lote?" na entrada de
   `handle_step` e `handle_prefill`.
 
-O formato do fio não mudou.
+O envelope `frame/v1-batch` e a estrutura do header seguem iguais; f8 e os
+formatos i4 são dtypes opcionais identificados pelo campo `dtype` e pela
+capability correspondente.
 
 ## 3. Prefill e step
 
@@ -1054,15 +1059,21 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   `min(prefill_chunk_tokens, n_batch)` (`prompt_chunk_of`), porque um pedaço é
   decodificado como um batch no peer e maior que `n_batch` abortaria o llama.cpp
   igual o prompt inteiro abortava.
-- **Falha de transporte no prefill**: cada pedaço recebe uma única tentativa
-  (`relay::CHUNK_ATTEMPTS = 1`). Quando a resposta se perde, não há como saber
-  se o peer gravou o chunk antes da desconexão; repetir cegamente poderia pedir
-  remoção parcial de KV no meio de um modelo recorrente. Se os chunks anteriores
-  já foram aceitos, o gateway reconstrói a sessão inteira a frio, começando no
-  chunk 0. Se essa reconstrução falhar, a geração termina limpa e libera as
-  sessões alcançadas. `start_pos` continua sendo a fronteira absoluta usada no
-  fluxo normal; ausência nos chunks posteriores é erro de protocolo, nunca
-  `chunk_index * chunk_size`.
+- **Chunk adaptativo**: o gateway aprende bytes por token, largura de banda,
+  compute por token e RTT das prefill traces concluídas, separado por modelo e
+  rota. Na próxima requisição escolhe um tamanho que equilibra banda-delay e
+  compute por RTT, arredondado em blocos de 16 e limitado por
+  `prefill_chunk_tokens` e `n_batch`. Rota sem amostra usa o teto configurado;
+  a escolha não faz sonda nem espera adicional no caminho da requisição.
+- **Falha de transporte no prefill**: um chunk pode ser tentado até três vezes
+  (`relay::CHUNK_ATTEMPTS = 3`) com recuo de 100 ms e 200 ms, mas só quando
+  todos os caminhos comprovam que o corpo não foi entregue. Se chunks anteriores
+  já foram aceitos, o gateway retoma do mesmo índice e posição absoluta,
+  preservando o KV confirmado. Timeout ou falha depois do envio pode deixar o
+  peer adiantado; nesse caso não repete cegamente o chunk e reconstrói a sessão
+  a frio uma vez, registrando o motivo. Se essa reconstrução falhar, a geração
+  termina limpa e libera as sessões alcançadas. Ausência de `start_pos` nos
+  chunks posteriores é erro de protocolo, nunca `chunk_index * chunk_size`.
 - **Step não retenta**: decode não tem proteção de rollback de KV, então o
   `step` sempre vai com `attempts = 1`. Prefill e decode não compartilham a
   constante para ela não derivar.
@@ -1136,6 +1147,10 @@ capacidade nominal.
 Em um miss, uma entrada ociosa pode ser reciclada antes do prefill novo, o que
 mantém o caminho compatível com `max_sessions=1` sem compartilhar entrada
 ocupada.
+O trace informa `gateway_prefix_miss_reason`: `cache-empty`,
+`matching-session-busy`, `prompt-prefix-changed` ou `route-changed`. Isso explica
+a decisão local do gateway; `cached_tokens` continua sendo a contagem executada
+e confirmada pela cabeça.
 
 **A geração não acontece na sequência do prompt.** Cada sessão de um peer tem
 duas sequências de KV: `prompt_seq`, onde o prefill escreve apenas até a
@@ -1215,11 +1230,15 @@ antes dele, `release_sessions` percorre todas as URLs de cada hop e faz a
 liberação em modo best effort. Reusar é otimização, nunca motivo para a
 requisição falhar.
 
-O prompt que o cache reconhece vem do **array de mensagens**
-(`openai::conversation_cache_key`), não do texto renderizado, e `render_prompt`
-rotula todo turno inclusive o primeiro: as duas coisas juntas garantem que o
-prompt de um turno seja prefixo exato do prompt do seguinte. Texto cru sem
-rótulo continua disponível em `/v1/completions` e `POST /api/generate`.
+O prompt que o cache reconhece é o texto da renderização canônica
+(`openai::conversation_cache_key`), na mesma ordenação que a cabeça tokeniza.
+Isso importa porque `system`, `developer` e ferramentas são movidos para o
+início; chavear pela ordem original das mensagens podia considerar prefixo
+válido quando o prompt real tinha mudado no início. `render_prompt` rotula todo
+turno, inclusive o primeiro, para que mensagens novas ao fim mantenham o prefixo.
+Pedidos com imagens não reutilizam nem gravam prefixo automático, pois o texto
+do marcador não identifica o conteúdo de imagem. Texto cru sem rótulo continua
+disponível em `/v1/completions` e `POST /api/generate`.
 No caminho Anthropic, quando há `output_config.task_budget`,
 `conversation_cache_key_with_budget` também prefixa `type`, `total` e
 `remaining`; trocar qualquer valor invalida o KV porque troca o marcador que o

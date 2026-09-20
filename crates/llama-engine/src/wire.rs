@@ -16,7 +16,7 @@
 //! * the body is **binary**, where it used to be base64 (which inflated every
 //!   transfer by a third for nothing);
 //! * the tensor travels as **f16** by default, half the size of f32. The maths
-//!   stays f32 on both ends; f8 is also available as an explicit experiment.
+//!   stays f32 on both ends; f8 and groupwise i4 are explicit experiments.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,8 @@ pub enum FrameEncoding {
     F32,
     F16,
     F8,
+    I4G64,
+    I4G128,
 }
 
 /// Precision a tensor takes on the wire. Inference always receives f32 after
@@ -66,6 +68,8 @@ pub enum WireDtype {
     #[default]
     F16,
     F8,
+    I4G64,
+    I4G128,
 }
 
 impl WireDtype {
@@ -74,6 +78,8 @@ impl WireDtype {
             WireDtype::F32 => "f32",
             WireDtype::F16 => "f16",
             WireDtype::F8 => "f8",
+            WireDtype::I4G64 => "i4g64",
+            WireDtype::I4G128 => "i4g128",
         }
     }
 
@@ -82,6 +88,8 @@ impl WireDtype {
             "f32" => Ok(WireDtype::F32),
             "f16" => Ok(WireDtype::F16),
             "f8" => Ok(WireDtype::F8),
+            "i4g64" => Ok(WireDtype::I4G64),
+            "i4g128" => Ok(WireDtype::I4G128),
             other => Err(anyhow!("dtype de fio desconhecido: {other}")),
         }
     }
@@ -90,7 +98,7 @@ impl WireDtype {
         match self {
             WireDtype::F32 => 4,
             WireDtype::F16 => 2,
-            WireDtype::F8 => 1,
+            WireDtype::F8 | WireDtype::I4G64 | WireDtype::I4G128 => 1,
         }
     }
 
@@ -99,6 +107,8 @@ impl WireDtype {
             WireDtype::F32 => FrameEncoding::F32,
             WireDtype::F16 => FrameEncoding::F16,
             WireDtype::F8 => FrameEncoding::F8,
+            WireDtype::I4G64 => FrameEncoding::I4G64,
+            WireDtype::I4G128 => FrameEncoding::I4G128,
         }
     }
 }
@@ -613,6 +623,8 @@ pub fn encode_with_encoding(
         FrameEncoding::F32 => WireDtype::F32,
         FrameEncoding::F16 => WireDtype::F16,
         FrameEncoding::F8 => WireDtype::F8,
+        FrameEncoding::I4G64 => WireDtype::I4G64,
+        FrameEncoding::I4G128 => WireDtype::I4G128,
     };
     encode_batch_single(meta, tensor, dtype)
 }
@@ -680,9 +692,7 @@ fn decode_tensor_payload(
         return Err(anyhow!("shape inválido: {:?}", shape));
     }
     let expected = checked_tensor_values(&shape)?;
-    let expected_bytes = expected
-        .checked_mul(dtype.bytes_per_value())
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    let expected_bytes = checked_tensor_bytes(&shape, dtype)?;
     if expected_bytes > MAX_FRAME_PAYLOAD_BYTES {
         return Err(anyhow!(
             "payload do tensor excede limite de {} bytes",
@@ -710,6 +720,8 @@ fn decode_tensor_payload(
             .iter()
             .map(|byte| f8_bits_to_f32(*byte))
             .collect::<Result<Vec<_>>>()?,
+        WireDtype::I4G64 => decode_i4_groups(payload, expected, 64)?,
+        WireDtype::I4G128 => decode_i4_groups(payload, expected, 128)?,
     };
     if values.len() != expected {
         return Err(anyhow!(
@@ -733,9 +745,14 @@ fn checked_tensor_values(shape: &[usize]) -> Result<usize> {
 
 fn checked_tensor_bytes(shape: &[usize], dtype: WireDtype) -> Result<usize> {
     let values = checked_tensor_values(shape)?;
-    let bytes = values
-        .checked_mul(dtype.bytes_per_value())
-        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    let bytes = match dtype {
+        WireDtype::F32 => values.checked_mul(4),
+        WireDtype::F16 => values.checked_mul(2),
+        WireDtype::F8 => Some(values),
+        WireDtype::I4G64 => i4_payload_bytes(values, 64),
+        WireDtype::I4G128 => i4_payload_bytes(values, 128),
+    }
+    .ok_or_else(|| anyhow!("shape excede o limite"))?;
     if bytes > MAX_FRAME_PAYLOAD_BYTES {
         return Err(anyhow!(
             "payload do tensor excede limite de {} bytes",
@@ -743,6 +760,13 @@ fn checked_tensor_bytes(shape: &[usize], dtype: WireDtype) -> Result<usize> {
         ));
     }
     Ok(bytes)
+}
+
+fn i4_payload_bytes(values: usize, group_size: usize) -> Option<usize> {
+    // Cada grupo armazena os nibbles empacotados e uma escala FP16.
+    values
+        .div_ceil(2)
+        .checked_add(values.div_ceil(group_size).checked_mul(2)?)
 }
 
 /// Number of bytes an owned tensor occupies after wire conversion, without
@@ -823,8 +847,97 @@ fn encode_values_into(
                 out.extend_from_slice(&staging[..block.len()]);
             }
         }
+        WireDtype::I4G64 => encode_i4_groups(values, 64, out)?,
+        WireDtype::I4G128 => encode_i4_groups(values, 128, out)?,
     }
     Ok(())
+}
+
+/// Codificação simétrica signed-int4 por grupos. A escala FP16 vem antes dos
+/// nibbles do grupo; o par de valores ocupa um byte, valor ímpar no nibble baixo.
+fn encode_i4_groups(values: &[f32], group_size: usize, out: &mut Vec<u8>) -> Result<()> {
+    for group in values.chunks(group_size) {
+        if group.iter().any(|value| !value.is_finite()) {
+            return Err(anyhow!(
+                "valor não finito não é representável em i4 groupwise"
+            ));
+        }
+        let max_abs = group
+            .iter()
+            .fold(0.0_f32, |max, value| max.max(value.abs()));
+        let scale = if max_abs == 0.0 { 0.0 } else { max_abs / 7.0 };
+        let scale_bits = f32_to_f16_bits(scale);
+        let represented_scale = f16_bits_to_f32(scale_bits);
+        if !represented_scale.is_finite() {
+            return Err(anyhow!(
+                "escala {scale} excede o alcance FP16 do i4 groupwise"
+            ));
+        }
+        if scale > 0.0 && represented_scale == 0.0 {
+            return Err(anyhow!(
+                "escala {scale} é pequena demais para FP16 no i4 groupwise"
+            ));
+        }
+        out.extend_from_slice(&scale_bits.to_le_bytes());
+        for pair in group.chunks(2) {
+            let quantize = |value: f32| -> u8 {
+                if represented_scale == 0.0 {
+                    0
+                } else {
+                    ((value / represented_scale).round() as i32).clamp(-7, 7) as i8 as u8 & 0x0f
+                }
+            };
+            let low = quantize(pair[0]);
+            let high = pair.get(1).copied().map(quantize).unwrap_or(0);
+            out.push(low | (high << 4));
+        }
+    }
+    Ok(())
+}
+
+fn decode_i4_groups(payload: &[u8], values: usize, group_size: usize) -> Result<Vec<f32>> {
+    let mut decoded = Vec::with_capacity(values);
+    let mut offset = 0usize;
+    while decoded.len() < values {
+        let group_len = (values - decoded.len()).min(group_size);
+        let scale_end = offset
+            .checked_add(2)
+            .ok_or_else(|| anyhow!("offset de escala i4 excede o limite"))?;
+        let scale_bytes = payload
+            .get(offset..scale_end)
+            .ok_or_else(|| anyhow!("escala i4 truncada"))?;
+        let scale = f16_bits_to_f32(u16::from_le_bytes([scale_bytes[0], scale_bytes[1]]));
+        if !scale.is_finite() || scale < 0.0 {
+            return Err(anyhow!("escala FP16 inválida no grupo i4"));
+        }
+        offset = scale_end;
+        let packed_len = group_len.div_ceil(2);
+        let packed_end = offset
+            .checked_add(packed_len)
+            .ok_or_else(|| anyhow!("offset de nibbles i4 excede o limite"))?;
+        let packed = payload
+            .get(offset..packed_end)
+            .ok_or_else(|| anyhow!("nibbles i4 truncados"))?;
+        for index in 0..group_len {
+            let byte = packed[index / 2];
+            let nibble = if index % 2 == 0 {
+                byte & 0x0f
+            } else {
+                byte >> 4
+            };
+            let signed = if nibble & 0x08 == 0 {
+                nibble as i8
+            } else {
+                (nibble as i8) - 16
+            };
+            decoded.push(f32::from(signed) * scale);
+        }
+        offset = packed_end;
+    }
+    if offset != payload.len() {
+        return Err(anyhow!("payload i4 tem bytes excedentes"));
+    }
+    Ok(decoded)
 }
 
 // ── f16 conversion ───────────────────────────────────────────────────────────
@@ -1100,6 +1213,63 @@ mod tests {
             tensor_payload_len(Some((&values, vec![1, 1024])), WireDtype::F16).unwrap(),
             1024 * 2
         );
+    }
+
+    #[test]
+    fn groupwise_i4_uses_fp16_scales_and_round_trips_activation_values() {
+        let values = (0..257)
+            .map(|index| ((index as f32 * 0.37).sin()) * (0.25 + index as f32 % 13.0))
+            .collect::<Vec<_>>();
+        for (dtype, group_size) in [(WireDtype::I4G64, 64), (WireDtype::I4G128, 128)] {
+            let framed = encode(
+                &serde_json::json!({}),
+                Some((&values, vec![1, values.len()])),
+                dtype,
+            )
+            .expect("codifica i4");
+            let (meta, tensor) = decode(&framed).expect("decodifica i4");
+            assert_eq!(meta["dtype"], dtype.as_str());
+            let (decoded, shape) = tensor.expect("tensor");
+            assert_eq!(shape, vec![1, values.len()]);
+
+            for (original, actual) in values.chunks(group_size).zip(decoded.chunks(group_size)) {
+                let max_abs = original
+                    .iter()
+                    .fold(0.0_f32, |max, value| max.max(value.abs()));
+                let tolerance = max_abs / 7.0 * 0.6 + 1e-3;
+                for (original, actual) in original.iter().zip(actual.iter()) {
+                    assert!(
+                        (original - actual).abs() <= tolerance,
+                        "{original} virou {actual}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn groupwise_i4_payload_includes_one_fp16_scale_per_group() {
+        let values = vec![1.0_f32; 128];
+        assert_eq!(
+            tensor_payload_len(Some((&values, vec![1, 128])), WireDtype::I4G64).unwrap(),
+            68
+        );
+        assert_eq!(
+            tensor_payload_len(Some((&values, vec![1, 128])), WireDtype::I4G128).unwrap(),
+            66
+        );
+    }
+
+    #[test]
+    fn groupwise_i4_refuses_non_finite_values_and_scale_underflow() {
+        for value in [f32::NAN, f32::INFINITY, 1e-20] {
+            assert!(encode(
+                &serde_json::json!({}),
+                Some((&[value], vec![1, 1])),
+                WireDtype::I4G64,
+            )
+            .is_err());
+        }
     }
 
     #[test]

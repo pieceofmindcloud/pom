@@ -1169,6 +1169,8 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
     let mut caps = vec![
         crate::pipeline::CAP_FRAME_BATCH,
         crate::pipeline::CAP_FRAME_DTYPE_F8,
+        crate::pipeline::CAP_FRAME_DTYPE_I4G64,
+        crate::pipeline::CAP_FRAME_DTYPE_I4G128,
         crate::pipeline::CAP_REMOTE_TOKEN_STREAM,
         crate::pipeline::CAP_LINK_STREAM,
         "relay/v1-chain",

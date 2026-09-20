@@ -1197,9 +1197,9 @@ pub(super) async fn validate_redeploy_wire_dtype(
     self_id: &str,
     dtype: crate::wire::WireDtype,
 ) -> Result<(), String> {
-    if dtype != crate::wire::WireDtype::F8 {
+    let Some(required_capability) = crate::pipeline::wire_dtype_capability(dtype) else {
         return Ok(());
-    }
+    };
 
     let mut blocked = Vec::new();
     for node in nodes {
@@ -1259,19 +1259,18 @@ pub(super) async fn validate_redeploy_wire_dtype(
                 continue;
             }
         };
-        let supports_f8 = body
+        let supports_dtype = body
             .get("inference_frame_capabilities")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|capabilities| {
-                capabilities.iter().any(|capability| {
-                    capability.as_str() == Some(crate::pipeline::CAP_FRAME_DTYPE_F8)
-                })
+                capabilities
+                    .iter()
+                    .any(|capability| capability.as_str() == Some(required_capability))
             });
-        if !supports_f8 {
+        if !supports_dtype {
             blocked.push(format!(
                 "{}: não anuncia {}",
-                node.hostname,
-                crate::pipeline::CAP_FRAME_DTYPE_F8
+                node.hostname, required_capability
             ));
         }
     }
@@ -1280,7 +1279,8 @@ pub(super) async fn validate_redeploy_wire_dtype(
         Ok(())
     } else {
         Err(format!(
-            "A precisão f8 do estado oculto foi solicitada, mas a negociação falhou: {}",
+            "A precisão {} do estado oculto foi solicitada, mas a negociação falhou: {}",
+            dtype.as_str(),
             blocked.join("; ")
         ))
     }

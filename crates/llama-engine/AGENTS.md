@@ -178,7 +178,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   motivo de falha da coletiva de dentro do decode; `node` instala as funções
   reais (`tp::install_probe`) no arranque. Sem instalação, `is_active()` é
   `false` (caminho não-TP).
-- `wire.rs` - formato binário do estado oculto entre peers (f16/f8, zstd). A
+- `wire.rs` - formato binário do estado oculto entre peers
+  (f16/f8/i4g64/i4g128, zstd). I4 usa valores assinados de 4 bits e uma escala
+  f16 por grupo; o decodificador entrega f32 ao motor. A
   identidade de sessão do `BatchItem` é autoritativa ao decodificar, para que
   um relay não reative uma sessão sintética a partir de metadata antiga. O
   caminho quente não copia o tensor à toa: `encode_batch_items` escreve direto

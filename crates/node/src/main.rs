@@ -1259,6 +1259,7 @@ async fn async_main(
             loads: node_runtime.load_tracker(),
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
+            adaptive_chunk_tuner: crate::gateway::AdaptiveChunkTuner::default_arc(),
             peer_http: peer_clients.clone(),
             admission_health: Default::default(),
             runtime: node_runtime.clone(),
@@ -2212,6 +2213,7 @@ async fn start_gateway_only(
         // Nó implantado pela UI (sem `--model`): é este o caminho comum, e o
         // cache de prefixo persistente precisa do índice aqui também.
         prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
+        adaptive_chunk_tuner: crate::gateway::AdaptiveChunkTuner::default_arc(),
         peer_http: peer_clients.clone(),
         admission_health: Default::default(),
         runtime: node_runtime.clone(),

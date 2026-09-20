@@ -221,8 +221,8 @@ automáticas de uma implantação problemática.
   (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),
   `cycle.rs` (detector de ciclo de saída, lido pelo gateway),
-  `wire.rs` (frame inicial único `[len][JSON][itens][tensor]`, f16 e batch
-  validado), `relay.rs` (chain relay + agrupamento por próximo hop),
+  `wire.rs` (frame inicial único `[len][JSON][itens][tensor]`, f16/f8/i4
+  groupwise e batch validado), `relay.rs` (chain relay + agrupamento por próximo hop),
   `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
   `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
   outro mecanismo, e outra chave, que a especulação por lookup).

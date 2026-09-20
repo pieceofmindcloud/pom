@@ -352,8 +352,10 @@ visibilidade dos controles de implantação na UI local.
   apresentar uma fração `N/0` como cobertura completa.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
-  contém peso, tensor ou transporte de arquivo. A chave textual vem do array de
-  mensagens (`openai::conversation_cache_key`), não do prompt renderizado; no
+  contém peso, tensor ou transporte de arquivo. A chave textual é o prompt
+  renderizado canônico (`openai::conversation_cache_key`), na mesma ordem que a
+  cabeça tokeniza. `PrefixLease` identifica miss por cache vazio, sessão
+  correspondente ocupada, prefixo divergente ou rota alterada. No
   caminho Anthropic, `conversation_cache_key_with_budget` também inclui a
   identidade de `task_budget` para impedir que o KV de outro marcador seja
   reutilizado. `PrefixCache::adopt` registra uma sessão restaurada do disco
@@ -750,9 +752,10 @@ visibilidade dos controles de implantação na UI local.
   texto sem sentido (18/08).
 - `wire.rs` - o único lugar que conhece o dtype/codificação do tensor em
   trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
-  `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN na borda,
-  sempre devolvendo f32 ao motor; `prefill/`/`relay.rs` propagam o dtype
-  escolhido e registram bytes enviados, recebidos e formato efetivo por hop.
+  `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN e i4g64/i4g128
+  assinado com escala f16 por grupo na borda, sempre devolvendo f32 ao motor;
+  `prefill/`/`relay.rs` propagam o dtype escolhido e registram bytes enviados,
+  recebidos e formato efetivo por hop.
 
 ## Funções-chave
 
@@ -1008,8 +1011,8 @@ visibilidade dos controles de implantação na UI local.
   quando `plan.supports_direct_reply()`, senão `run_ring`/`step_ring` quando
   `supports_relay_chain()`, senão o pipeline hub. `run_with_options` recebe
   `max_inflight_chunks` e um `resume: Option<PrefillResumable>` para uma
-  retomada que o chamador tenha provado segura; a recuperação de transporte
-  usa reconstrução fria.
+  retomada que o chamador tenha provado segura; somente entrega ambígua ou
+  estado remoto divergente exige reconstrução fria.
 - hub e `run_direct` - pipeline em ordem, não par travado: `head_pump`
   (despacho serial à cabeça, lê `next_pos` do ACK) e um `drain` com
   `FuturesOrdered` que leva cada estado oculto pelos hops restantes, até `W`
@@ -1118,9 +1121,11 @@ falha de transporte.
 - `extract_relay_failure` - usado por `forward_direct` para nomear o hop que
   falhou na entrega do erro direto.
 - `RelayFailure{failed_node_id, kind, message}`/`HttpRefusal`/`SendIssue` - o
-  gateway responde 502 atribuindo o hop que falhou. `CHUNK_ATTEMPTS=1` no
-  prefill: uma resposta perdida deixa ambíguo se o chunk já foi aplicado, então
-  o gateway reconstrói a sessão inteira em vez de repetir parcialmente.
+  gateway responde 502 atribuindo o hop que falhou. `CHUNK_ATTEMPTS=3` repete
+  somente falhas comprovadamente anteriores à entrega, com recuo exponencial
+  de 100 ms e 200 ms. Depois de chunks aceitos, o prefill retoma na posição
+  absoluta quando é seguro; entrega ambígua ou sessão divergente exige uma
+  reconstrução fria com motivo explícito.
 
 `direct.rs`:
 - `ReplyInbox`/`Ticket` - mapa ticket→canal oneshot que vive no `GatewayState`

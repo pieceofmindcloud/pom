@@ -134,7 +134,10 @@ profile policy remains the effective authorization boundary.
   builds `GatewayState.prefix_disk`, `generate_stream_with_stops` spills each
   retained turn to disk in a detached task and, on a memory miss, restores the
   longest strict-prefix snapshot before prefill (`prefix_reuse_status = "disk"`),
-  and the `testkit` test scaffold (peer/state_with/body_of).
+  the adaptive chunk tuner learns bytes/token, bandwidth, compute and RTT from
+  completed prefill traces for each model/route without waiting on the next
+  request, capped by `prefill_chunk_tokens` and `n_batch`, and the `testkit`
+  test scaffold (peer/state_with/body_of).
 - `db.rs` - único armazenamento SQLite local: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
@@ -316,8 +319,8 @@ profile policy remains the effective authorization boundary.
   (local or forwarded to a peer).
 - `RuntimeParams.hidden_state_dtype` is persistido e encaminhado pelo mesmo
   caminho de apply/launch dos demais ajustes globais; `NodeInfo` e
-  `DeployPlan.capabilities.hidden_state_f8` expõem a capability de peer usada
-  para bloquear uma implantação f8 incompatível. O redeploy consulta
+  `DeployPlan.capabilities.hidden_state_f8/hidden_state_i4g64/hidden_state_i4g128`
+  expõem as capabilities usadas para bloquear formato não suportado. O redeploy consulta
   `/api/ui/node` de todos os participantes antes de reconfigurar qualquer nó,
   evitando uma implantação parcialmente misturada.
 - **Implantações são versionadas** (`Deployment`, `DEPLOYMENT_VERSION = 2`,
@@ -727,8 +730,11 @@ faz o download autenticado do blob persistido.
   **every** turn including the first, so one turn's prompt is an exact prefix of
   the next one's - the property the prefix cache rests on; raw, unlabelled text
   is what `/v1/completions` and `/api/generate` are for.
-  `conversation_cache_key` is what the prefix cache keys on (the message array,
-  not the rendered text) and travels as `GenerationInput::cache_key`; a versão
+  `conversation_cache_key` é o prompt renderizado canônico que a cabeça
+  tokeniza e viaja como `GenerationInput::cache_key`; isso mantém a ordenação
+  de system/developer e ferramentas idêntica à execução e evita declarar hit
+  quando essas partes mudam no início do prompt. O gateway registra o motivo
+  local do miss e o tamanho efetivo do chunk no trace. A versão
   Anthropic, `conversation_cache_key_with_budget`, prefixa a identidade do
   orçamento de tarefa para que uma entrada sem orçamento ou com marcador
   diferente não seja reutilizada; o marcador final é injetado a cada pedido,

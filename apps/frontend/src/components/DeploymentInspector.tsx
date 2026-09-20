@@ -267,10 +267,22 @@ export function DeploymentInspector({
   }
   const set = (patch: Partial<RuntimeParams>) => onChange?.({ ...value, ...patch });
 
-  const hiddenStateCapability = capabilities?.hidden_state_f8;
-  const f8Unavailable = hiddenStateCapability
+  const hiddenStateDtype = value.hidden_state_dtype ?? "f16";
+  const hiddenStateCapability = hiddenStateDtype === "f8"
+    ? capabilities?.hidden_state_f8
+    : hiddenStateDtype === "i4g64"
+      ? capabilities?.hidden_state_i4g64
+      : hiddenStateDtype === "i4g128"
+        ? capabilities?.hidden_state_i4g128
+        : undefined;
+  const hiddenStateUnavailable = hiddenStateCapability
     ? hiddenStateCapability.state !== "supported"
     : false;
+  const f8Unavailable = capabilities?.hidden_state_f8
+    ? capabilities.hidden_state_f8.state !== "supported"
+    : false;
+  const i4g64Unavailable = capabilities?.hidden_state_i4g64?.state !== "supported";
+  const i4g128Unavailable = capabilities?.hidden_state_i4g128?.state !== "supported";
 
   /*
    * `auto` não está mais na combo, mas pode chegar de uma API ou de uma
@@ -513,22 +525,29 @@ export function DeploymentInspector({
                 <Select
                   aria-label={t("deploy.knob.hidden_state_dtype")}
                   name="hidden_state_dtype"
-                  value={value.hidden_state_dtype ?? "f16"}
+                  value={hiddenStateDtype}
                   onChange={(event) =>
                     set({ hidden_state_dtype: event.target.value as WireDtype })
                   }
                   compact
                 >
-                  <option value="f16">f16</option>
+                  <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
                   <option value="f8" disabled={f8Unavailable}>
-                    f8
+                    {t("deploy.knob.hidden_state_dtypeF8")}
+                  </option>
+                  <option value="i4g64" disabled={i4g64Unavailable}>
+                    {t("deploy.knob.hidden_state_dtypeI4G64")}
+                  </option>
+                  <option value="i4g128" disabled={i4g128Unavailable}>
+                    {t("deploy.knob.hidden_state_dtypeI4G128")}
                   </option>
                 </Select>
               )}
             </InspectorRow>
-            {!readOnly && hiddenStateCapability && f8Unavailable && (
+            {!readOnly && hiddenStateCapability && hiddenStateUnavailable && (
               <p role="alert" className="px-0.5 text-[0.6rem] leading-relaxed text-amber">
                 {t("deploy.knob.hidden_state_dtypeUnavailable")}
+                {" "}
                 {hiddenStateCapability.reason}
               </p>
             )}

@@ -1,4 +1,6 @@
 use super::*;
+use std::collections::HashMap;
+use std::sync::Mutex as StdMutex;
 
 /// Prompt tokens a peer running `cfg` can accept.
 ///
@@ -36,6 +38,135 @@ pub fn prompt_chunk_of(prefill_chunk_tokens: u32, n_batch: u32) -> u32 {
     prefill_chunk_tokens.max(1).min(n_batch.max(1))
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct AdaptivePrefillProfile {
+    bytes_per_token: f64,
+    bandwidth_bytes_per_ms: f64,
+    compute_ms_per_token: f64,
+    rtt_ms: f64,
+}
+
+/// Learns from completed prefill traces and chooses a chunk without waiting on
+/// the request path. The configured chunk and `n_batch` remain hard ceilings.
+#[derive(Debug, Default)]
+pub(crate) struct AdaptiveChunkTuner {
+    profiles: StdMutex<HashMap<String, AdaptivePrefillProfile>>,
+}
+
+impl AdaptiveChunkTuner {
+    pub(crate) fn default_arc() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub(crate) fn choose(&self, route: &str, configured_max: u32, n_batch: u32) -> u32 {
+        let ceiling = prompt_chunk_of(configured_max, n_batch);
+        let profile = self
+            .profiles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(route)
+            .copied();
+        profile.map_or(ceiling, |profile| choose_from_profile(ceiling, profile))
+    }
+
+    pub(crate) fn observe(
+        &self,
+        route: &str,
+        trace: &crate::prefill::RequestTrace,
+        prompt_tokens: u32,
+        cached_tokens: u32,
+    ) {
+        let processed_tokens = prompt_tokens.saturating_sub(cached_tokens);
+        if processed_tokens == 0 {
+            return;
+        }
+
+        let mut compute_ms = 0.0;
+        let mut network_ms = 0.0;
+        let mut bytes_sent = 0.0;
+        let mut rtt_ms = 0.0;
+        for hop in &trace.hops {
+            let phase = &hop.prefill;
+            compute_ms += phase.node_backend_call_ms.max(0.0);
+            network_ms += phase.network_ms as f64;
+            bytes_sent += phase.hidden_state_bytes_sent as f64;
+            for transport in &phase.transport_summary.transports {
+                if transport.bytes_sent > 0 {
+                    rtt_ms += transport.net_rtt_median_ms as f64;
+                }
+            }
+        }
+        if bytes_sent <= 0.0 || compute_ms <= 0.0 || rtt_ms <= 0.0 {
+            return;
+        }
+        if network_ms <= 0.0 {
+            network_ms = rtt_ms;
+        }
+        let sample = AdaptivePrefillProfile {
+            bytes_per_token: bytes_sent / f64::from(processed_tokens),
+            bandwidth_bytes_per_ms: bytes_sent / network_ms,
+            compute_ms_per_token: compute_ms / f64::from(processed_tokens),
+            rtt_ms,
+        };
+        if ![
+            sample.bytes_per_token,
+            sample.bandwidth_bytes_per_ms,
+            sample.compute_ms_per_token,
+            sample.rtt_ms,
+        ]
+        .into_iter()
+        .all(|value| value.is_finite() && value > 0.0)
+        {
+            return;
+        }
+
+        let mut profiles = self
+            .profiles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let profile = profiles.entry(route.to_string()).or_default();
+        const ALPHA: f64 = 0.25;
+        if profile.bytes_per_token == 0.0 {
+            *profile = sample;
+        } else {
+            profile.bytes_per_token = ewma(profile.bytes_per_token, sample.bytes_per_token, ALPHA);
+            profile.bandwidth_bytes_per_ms = ewma(
+                profile.bandwidth_bytes_per_ms,
+                sample.bandwidth_bytes_per_ms,
+                ALPHA,
+            );
+            profile.compute_ms_per_token = ewma(
+                profile.compute_ms_per_token,
+                sample.compute_ms_per_token,
+                ALPHA,
+            );
+            profile.rtt_ms = ewma(profile.rtt_ms, sample.rtt_ms, ALPHA);
+        }
+    }
+}
+
+fn ewma(previous: f64, sample: f64, alpha: f64) -> f64 {
+    previous * (1.0 - alpha) + sample * alpha
+}
+
+fn choose_from_profile(ceiling: u32, profile: AdaptivePrefillProfile) -> u32 {
+    const MIN_CHUNK: u32 = 32;
+    const BUCKET: f64 = 16.0;
+    if ceiling <= MIN_CHUNK {
+        return ceiling;
+    }
+
+    // Bandwidth-delay product estimates how many hidden-state tokens fill the
+    // link. Compute tokens per RTT estimates how many fit in one peer compute
+    // window. Their geometric mean balances utilization and pipeline overlap.
+    let bandwidth_delay_tokens =
+        profile.bandwidth_bytes_per_ms * profile.rtt_ms / profile.bytes_per_token;
+    let compute_window_tokens = profile.rtt_ms / profile.compute_ms_per_token;
+    let ideal = (bandwidth_delay_tokens.max(1.0) * compute_window_tokens.max(1.0)).sqrt();
+    let bucketed = (ideal / BUCKET).round() * BUCKET;
+    (bucketed as u32).clamp(MIN_CHUNK, ceiling)
+}
+
 /// Same clamp as `prompt_chunk_of`, for the same reason: a speculative batch
 /// (`1 + drafted tokens`) is decoded as one batch on the head too, so it
 /// can't exceed `n_batch` either. Trivially satisfied at the defaults (4 «
@@ -68,6 +199,44 @@ pub(super) fn disable_sliced_mtp_for_remote_stream(
     sliced_mtp_requested: bool,
 ) -> bool {
     remote_stream_capable && sliced_mtp_requested
+}
+
+#[cfg(test)]
+mod adaptive_chunk_tests {
+    use super::*;
+
+    fn profile(
+        bandwidth_bytes_per_ms: f64,
+        compute_ms_per_token: f64,
+        rtt_ms: f64,
+    ) -> AdaptivePrefillProfile {
+        AdaptivePrefillProfile {
+            bytes_per_token: 10_000.0,
+            bandwidth_bytes_per_ms,
+            compute_ms_per_token,
+            rtt_ms,
+        }
+    }
+
+    #[test]
+    fn chunk_tracks_bandwidth_rtt_and_compute_without_exceeding_batch_limit() {
+        let baseline = profile(200_000.0, 2.0, 20.0);
+        let faster_link = profile(600_000.0, 2.0, 20.0);
+        let higher_rtt = profile(200_000.0, 2.0, 40.0);
+        let slower_compute = profile(200_000.0, 4.0, 20.0);
+
+        let baseline_chunk = choose_from_profile(512, baseline);
+        assert!(choose_from_profile(512, faster_link) > baseline_chunk);
+        assert!(choose_from_profile(512, higher_rtt) > baseline_chunk);
+        assert!(choose_from_profile(512, slower_compute) < baseline_chunk);
+        assert_eq!(choose_from_profile(64, higher_rtt), 64);
+    }
+
+    #[test]
+    fn unmeasured_route_uses_configured_limit_without_waiting() {
+        let tuner = AdaptiveChunkTuner::default_arc();
+        assert_eq!(tuner.choose("model|head|tail", 512, 256), 256);
+    }
 }
 
 // O protocolo antigo `/v1/infer` (tensor em base64, uma chamada por peer)

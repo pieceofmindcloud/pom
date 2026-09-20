@@ -2452,7 +2452,10 @@ mod replicated_admin_logs_tests {
             .expect("enterprise plugin entry");
         assert_eq!(enterprise["active"], false);
         assert_eq!(enterprise["state"], "needs_activation");
-        assert_eq!(enterprise["manage_url"], "https://pieceofmind.cloud/enterprise");
+        assert_eq!(
+            enterprise["manage_url"],
+            "https://pieceofmind.cloud/enterprise"
+        );
 
         let check = app
             .clone()
@@ -2795,6 +2798,7 @@ pub(crate) mod testkit {
             loads: Arc::new(LoadTracker::new()),
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             prefix_disk: None,
+            adaptive_chunk_tuner: crate::gateway::AdaptiveChunkTuner::default_arc(),
             peer_http: Arc::new(crate::peer_client::PeerClients::new(
                 std::time::Duration::from_secs(600),
             )),

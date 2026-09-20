@@ -59,6 +59,8 @@ function hiddenStateCapabilities(hiddenStateF8: RuntimeCapability): DeploymentCa
     speculative_decoding: hiddenStateF8,
     mtp: hiddenStateF8,
     hidden_state_f8: hiddenStateF8,
+    hidden_state_i4g64: hiddenStateF8,
+    hidden_state_i4g128: hiddenStateF8,
   };
 }
 
@@ -335,5 +337,35 @@ describe("RuntimeParamsForm", () => {
     );
 
     expect((screen.getByRole("option", { name: /^f8/ }) as HTMLOptionElement).disabled).toBe(true);
+  });
+
+  it("exige capacidade anunciada para as opções i4 groupwise", () => {
+    const onChange = vi.fn();
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RuntimeParamsForm value={FORM_PARAMS} onChange={onChange} />
+      </LocaleProvider>,
+    );
+    expect((screen.getByRole("option", { name: /^i4g64/ }) as HTMLOptionElement).disabled).toBe(true);
+    expect((screen.getByRole("option", { name: /^i4g128/ }) as HTMLOptionElement).disabled).toBe(true);
+
+    cleanup();
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RuntimeParamsForm
+          value={FORM_PARAMS}
+          onChange={onChange}
+          capabilities={hiddenStateCapabilities({
+            state: "supported",
+            source: "capacidades runtime dos peers selecionados",
+            reason: "todos os peers selecionados anunciam suporte",
+          })}
+        />
+      </LocaleProvider>,
+    );
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "i4g64" } });
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ hidden_state_dtype: "i4g64" }),
+    );
   });
 });

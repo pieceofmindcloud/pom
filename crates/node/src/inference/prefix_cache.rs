@@ -115,6 +115,20 @@ impl PrefixCache {
             })
             .max_by_key(|(_, entry)| entry.prompt.len())
             .map(|(id, entry)| (id.clone(), entry.prompt.clone(), entry.cached_tokens));
+        let miss_reason =
+            matched.is_none().then(|| {
+                if state.entries.is_empty() {
+                    "cache-empty"
+                } else if state.entries.values().any(|entry| {
+                    entry.busy && entry.key == key && prompt.starts_with(&entry.prompt)
+                }) {
+                    "matching-session-busy"
+                } else if state.entries.values().any(|entry| entry.key == key) {
+                    "prompt-prefix-changed"
+                } else {
+                    "route-changed"
+                }
+            });
 
         let (entry_id, session_id, cached_prompt, cached_tokens) = match matched {
             Some((entry_id, cached_prompt, cached_tokens)) => {
@@ -148,6 +162,7 @@ impl PrefixCache {
             session_id,
             cached_prompt,
             cached_tokens,
+            miss_reason,
             active: true,
         }
     }
@@ -183,6 +198,7 @@ impl PrefixCache {
             session_id,
             cached_prompt: prompt.to_string(),
             cached_tokens,
+            miss_reason: None,
             active: true,
         }
     }
@@ -258,6 +274,7 @@ pub struct PrefixLease {
     session_id: String,
     pub cached_prompt: String,
     pub cached_tokens: u32,
+    miss_reason: Option<&'static str>,
     active: bool,
 }
 
@@ -268,6 +285,10 @@ impl PrefixLease {
 
     pub fn is_hit(&self) -> bool {
         self.entry_id.is_some()
+    }
+
+    pub fn miss_reason(&self) -> Option<&'static str> {
+        self.miss_reason
     }
 
     /// Publica a sessão depois que o gateway a rewindeu para o fim do prompt.
@@ -556,6 +577,35 @@ mod tests {
         assert!(hit.is_hit());
         assert_eq!(hit.session_id(), "old-session");
         hit.discard();
+    }
+
+    #[test]
+    fn miss_reports_whether_the_cache_is_empty_route_changed_or_prompt_diverged() {
+        let cache = PrefixCache::new(4);
+        let empty = cache.acquire(key(), "system", "empty".into());
+        assert_eq!(empty.miss_reason(), Some("cache-empty"));
+        empty.commit("system".into(), 2);
+
+        let changed = cache.acquire(key(), "different", "changed".into());
+        assert_eq!(changed.miss_reason(), Some("prompt-prefix-changed"));
+        changed.discard();
+
+        let other_route = PrefixRouteKey::new("model", ["other-head".to_string()]);
+        let route = cache.acquire(other_route, "system", "route".into());
+        assert_eq!(route.miss_reason(), Some("route-changed"));
+    }
+
+    #[test]
+    fn miss_reports_when_another_request_holds_the_matching_session() {
+        let cache = PrefixCache::new(4);
+        cache
+            .acquire(key(), "system", "s1".into())
+            .commit("system".into(), 2);
+        let active = cache.acquire(key(), "system\nnext", "s2".into());
+        let concurrent = cache.acquire(key(), "system\nnext2", "s3".into());
+        assert_eq!(concurrent.miss_reason(), Some("matching-session-busy"));
+        concurrent.discard();
+        active.discard();
     }
 
     /// A corrida do incidente de 2026-09-08: um agente com 62 mil tokens

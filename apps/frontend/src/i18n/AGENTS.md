@@ -29,6 +29,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   para manter o detalhe disponível nas duas línguas.
   `chat.telemetry.backendRow` distingue chamada de avaliação e sincronização,
   sem rotular o tempo de avaliação como enqueue.
+  As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16 permanece
+  padrão e que f8/i4g64/i4g128 são opções com perda sujeitas a capability.
 - As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem
   o aviso de miniaturização automática de imagens e a recusa rara quando o
   contexto não comporta nem a resolução mínima.
@@ -112,7 +114,8 @@ The chat telemetry additions live in both locale blocks: execution RTT, the
 source-to-destination edge scope, machine capacity/configuration, effective
 placement, per-peer `POM_PROFILE_SYNC`, backend-reported execution engine,
   execution diagnosis, TP collective table, prefix reuse and transmitted-token
-  counts, overlap status, per-traversal transport identity/bytes, distributed
+  counts, gateway prefix-miss reason and effective prefill chunk, overlap
+  status, per-traversal transport identity/bytes, distributed
   telemetry status/coverage, remote-stream aggregates with producer/downstream/channel/queue/callback wait
   split and token delivery quantiles, synchronous MTP draft time, explicit HTTPS fallback counts/reasons, semantic TTFT labels,
   AI-analysis action, initial-model mark and the explicit "time outside the

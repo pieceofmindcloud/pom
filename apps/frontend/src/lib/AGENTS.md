@@ -170,7 +170,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   ordered physical files and multipart_error carries the concrete reason a
   declared set cannot be sliced; the UI uses metadata_complete to avoid
   displaying a first-part byte count while enrichment is pending.
-  `RuntimeParams.hidden_state_dtype` is the deployment-wide f16/f8 choice;
+  `RuntimeParams.hidden_state_dtype` is the deployment-wide f16/f8/i4g64/i4g128 choice;
   `RuntimeParams.max_new_tokens` is only the size of one backend leg. The
   cycle detector settings in `RuntimeParams` control the gateway's bounded
   repetition safety stop and can be disabled explicitly. The total output
@@ -405,7 +405,8 @@ ultrapassam o orçamento, mas imagem só falha se nem a miniatura mínima couber
   `RequestTrace.cached_tokens` is optional on purpose: a node that does not
   report prefix reuse means "unknown", and the chat shows nothing rather than
   claiming savings it cannot prove. The trace also carries prefix candidate and
-  transmitted-token counts, reuse status, bounded prefill-overlap counters, and
+  transmitted-token counts, gateway miss reason and effective adaptive chunk
+  size, reuse status, bounded prefill-overlap counters, and
   per-transport traversal distributions with execution RTT, measured network
   RTT, fallback and switch counts. The
   transport contract is aggregate by default, never one serialized entry per

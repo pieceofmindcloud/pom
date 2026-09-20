@@ -316,6 +316,18 @@ mod tests {
             serde_json::to_value(explicit).unwrap()["hidden_state_dtype"],
             "f8"
         );
+
+        for dtype in ["i4g64", "i4g128"] {
+            let explicit: RuntimeParams = serde_json::from_value(serde_json::json!({
+                "hidden_state_dtype": dtype
+            }))
+            .unwrap();
+            assert_eq!(explicit.hidden_state_dtype.as_str(), dtype);
+            assert_eq!(
+                serde_json::to_value(explicit).unwrap()["hidden_state_dtype"],
+                dtype
+            );
+        }
     }
 
     #[test]

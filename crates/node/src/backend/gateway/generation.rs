@@ -513,6 +513,7 @@ pub(super) async fn generate_stream_inner(
             )
         }),
     );
+    let adaptive_chunk_route = format!("{}|{}", prefix_key.model, prefix_key.hops.join("|"));
     // A hit reuses the peer session that stayed parked at the end of the prior
     // prompt. A miss gets a fresh id and is published only after this turn has
     // completed its prefill, so an incomplete session cannot enter the cache.
@@ -650,7 +651,13 @@ pub(super) async fn generate_stream_inner(
             // clamp de `prompt_budget_error`, e é ele que vale - não o valor
             // cru do knob.
             cfg.as_ref()
-                .map(prompt_chunk_tokens)
+                .map(|config| {
+                    state.adaptive_chunk_tuner.choose(
+                        &adaptive_chunk_route,
+                        prompt_chunk_tokens(config),
+                        config.n_batch,
+                    )
+                })
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
             cfg.as_ref()
                 .map(|c| c.prefill_max_inflight_chunks as usize)
@@ -807,6 +814,15 @@ pub(super) async fn generate_stream_inner(
         }
         let first = match prefill_result {
             Ok(mut o) => {
+                o.trace.gateway_prefix_miss_reason =
+                    prefix_lease.miss_reason().map(str::to_owned);
+                o.trace.prefill_chunk_tokens = chunk_tokens;
+                state.adaptive_chunk_tuner.observe(
+                    &adaptive_chunk_route,
+                    &o.trace,
+                    o.prompt_tokens,
+                    o.cached_tokens,
+                );
                 if unknown_session_recovery_attempted {
                     o.trace.prefix_reuse_status = Some("session-lost-cold".to_owned());
                 } else if disk_restore_hash.is_some()

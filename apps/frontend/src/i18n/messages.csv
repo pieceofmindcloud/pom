@@ -317,6 +317,8 @@ chat.telemetry.prefill,prefill,prefill
 chat.telemetry.prefillMs,{ms} ms prefill,{ms} ms prefill
 chat.telemetry.prefixCandidate,{count} prefix candidate,{count} candidatos no prefixo
 chat.telemetry.prefixStatus,prefix: {status},prefixo: {status}
+chat.telemetry.prefixMissReason,gateway cache miss: {reason},miss do cache no gateway: {reason}
+chat.telemetry.prefillChunk,chunk: {count} tokens,pedaço: {count} tokens
 chat.telemetry.principalBottleneck,Principal bottleneck,Gargalo principal
 chat.telemetry.profileSync,POM_PROFILE_SYNC: {state},POM_PROFILE_SYNC: {state}
 chat.telemetry.profileSyncActive,active,ativo
@@ -624,8 +626,10 @@ deploy.knob.fit_memory_margin_mbHint,"VRAM the automatic fit leaves unused on ea
 deploy.knob.hidden_state_dtype,Hidden-state precision,Precisão do estado oculto
 deploy.knob.hidden_state_dtypeF16,f16 - 2 bytes per value,f16 - 2 bytes por valor
 deploy.knob.hidden_state_dtypeF8,f8 - 1 byte per value,f8 - 1 byte por valor
-deploy.knob.hidden_state_dtypeHint,Controls the bytes sent between inference peers. f16 is the default; f8 uses one byte per value and requires every selected peer to advertise support.,Controla os bytes enviados entre peers de inferência. f16 é o padrão; f8 usa um byte por valor e exige que todos os peers selecionados anunciem suporte.
-deploy.knob.hidden_state_dtypeUnavailable,f8 unavailable: ,f8 indisponível: 
+deploy.knob.hidden_state_dtypeI4G64,i4g64 - signed int4 with FP16 scale per 64 values,i4g64 - int4 assinado com escala FP16 a cada 64 valores
+deploy.knob.hidden_state_dtypeI4G128,i4g128 - signed int4 with FP16 scale per 128 values,i4g128 - int4 assinado com escala FP16 a cada 128 valores
+deploy.knob.hidden_state_dtypeHint,Controls bytes sent between inference peers. f16 remains the default. f8 and groupwise int4 are opt-in lossy formats and require every selected peer to advertise support.,Controla os bytes enviados entre peers de inferência. f16 continua como padrão. f8 e int4 por grupo são formatos com perda opcionais e exigem suporte anunciado por todos os peers selecionados.
+deploy.knob.hidden_state_dtypeUnavailable,Selected hidden-state format unavailable:,Formato selecionado do estado oculto indisponível:
 deploy.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 deploy.knob.idle_minutesHint,"Minutes without a request before this peer unloads its model.","Minutos sem requisição antes de este peer descarregar o modelo."
 deploy.knob.max_new_tokens,Max new tokens,Máx. tokens novos

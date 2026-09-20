@@ -220,6 +220,14 @@
                 "capacidades runtime dos peers selecionados",
                 "pelo menos um peer selecionado não anuncia estado oculto f8",
             ),
+            hidden_state_i4g64: crate::capabilities::unsupported(
+                "capacidades runtime dos peers selecionados",
+                "pelo menos um peer selecionado não anuncia estado oculto i4g64",
+            ),
+            hidden_state_i4g128: crate::capabilities::unsupported(
+                "capacidades runtime dos peers selecionados",
+                "pelo menos um peer selecionado não anuncia estado oculto i4g128",
+            ),
         };
         let no_embeddings = crate::capabilities::evaluate_no_embeddings(&[]);
         let mut params = RuntimeParams::default();
@@ -228,6 +236,35 @@
         let error = super::requested_capability_block(&params, &capabilities, &no_embeddings)
             .expect("precisão f8 sem capacidade não pode seguir silenciosamente");
         assert!(error.contains("f8"));
+        assert!(error.contains("não anuncia"));
+    }
+
+    #[test]
+    fn i4_request_is_blocked_when_peer_capability_is_unsupported() {
+        let supported = crate::capabilities::supported("teste", "presente");
+        let capabilities = crate::capabilities::DeploymentCapabilities {
+            fit_memory: supported.clone(),
+            no_thinking: supported.clone(),
+            no_embeddings: supported.clone(),
+            speculative_decoding: supported.clone(),
+            mtp: supported.clone(),
+            hidden_state_f8: supported,
+            hidden_state_i4g64: crate::capabilities::unsupported(
+                "capacidades runtime dos peers selecionados",
+                "pelo menos um peer não anuncia i4g64",
+            ),
+            hidden_state_i4g128: crate::capabilities::unknown(
+                "capacidades runtime dos peers selecionados",
+                "não foi possível consultar todos os peers",
+            ),
+        };
+        let no_embeddings = crate::capabilities::evaluate_no_embeddings(&[]);
+        let mut params = RuntimeParams::default();
+        params.hidden_state_dtype = crate::wire::WireDtype::I4G64;
+
+        let error = super::requested_capability_block(&params, &capabilities, &no_embeddings)
+            .expect("i4 sem capacidade não pode seguir");
+        assert!(error.contains("i4g64"));
         assert!(error.contains("não anuncia"));
     }
 

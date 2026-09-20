@@ -307,36 +307,17 @@ impl ChatRequest {
 
 // ── Prompt rendering ─────────────────────────────────────────────────────────
 
-/// Chave do cache de prefixo para uma conversa: o array de mensagens, não o
-/// texto renderizado.
+/// Chave do cache de prefixo: o mesmo prompt canônico que será tokenizado pela
+/// cabeça da pipeline.
 ///
-/// O cache reconhece a continuação de uma conversa por prefixo textual
-/// (`PrefixCache::acquire` usa `starts_with`). O texto renderizado é frágil
-/// demais para esse papel: um `timestamp` no system, uma troca de template ou
-/// um rótulo novo movem o começo do prompt e derrubam o prefixo inteiro,
-/// mesmo quando a conversa só cresceu. O array de mensagens não move.
-///
-/// Esta chave só cresce: turno seguinte é a chave anterior mais os segmentos
-/// novos. As ferramentas vão na frente de propósito - trocar a lista de
-/// ferramentas muda o prompt inteiro e o prefixo tem mesmo que ser descartado.
-/// Os separadores são caracteres de controle (U+001E, U+001F) para que nenhum
-/// conteúdo de mensagem consiga forjar uma fronteira de segmento.
+/// A chave precisa ter exatamente a mesma ordenação que `render_prompt_with_images`.
+/// Em especial, system/developer e ferramentas são movidos para o início do
+/// prompt. Chavear pela ordem original das mensagens podia declarar um hit
+/// quando um agente acrescentava um developer message no fim: a chave antiga
+/// continuava prefixo, mas o prompt real tinha mudado desde o primeiro token.
+/// O peer então recusava todo o prefixo e reprocessava o prompt inteiro.
 pub fn conversation_cache_key(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
-    let mut key = String::new();
-    for tool in tools {
-        key.push_str("tool\u{1f}");
-        key.push_str(&tool.name);
-        key.push('\u{1f}');
-        key.push_str(&tool.input_schema.to_string());
-        key.push('\u{1e}');
-    }
-    for message in messages.iter().filter(|m| !m.is_empty()) {
-        key.push_str(&message.role);
-        key.push('\u{1f}');
-        key.push_str(&message.rendered_body());
-        key.push('\u{1e}');
-    }
-    key
+    render_prompt(messages, tools)
 }
 
 /// Flatten a conversation (plus any declared tools) into the single prompt
@@ -2190,6 +2171,29 @@ mod tests {
         let k3 = conversation_cache_key(&turno3, &[]);
         assert!(k2.starts_with(&k1));
         assert!(k3.starts_with(&k2));
+    }
+
+    #[test]
+    fn late_developer_message_invalidates_the_rendered_prefix() {
+        let first = vec![
+            msg("user", "edite este arquivo"),
+            msg("assistant", "vou editar"),
+        ];
+        let mut next = first.clone();
+        next.push(msg("developer", "use o formatter do projeto"));
+        next.push(msg("user", "agora aplique a correção"));
+
+        let first_prompt = render_prompt(&first, &[]);
+        let next_prompt = render_prompt(&next, &[]);
+        let first_key = conversation_cache_key(&first, &[]);
+        let next_key = conversation_cache_key(&next, &[]);
+
+        assert_eq!(first_key, first_prompt);
+        assert_eq!(next_key, next_prompt);
+        assert!(
+            !next_key.starts_with(&first_key),
+            "o cache não pode declarar prefixo quando a renderização inseriu contexto no início"
+        );
     }
 
     /// Trocar a lista de ferramentas move o começo do prompt, e o prefixo

@@ -1693,7 +1693,7 @@ export interface RuntimeParams {
 }
 
 /** Precisões que o protocolo de inferência consegue converter ponta a ponta. */
-export type WireDtype = "f16" | "f8";
+export type WireDtype = "f16" | "f8" | "i4g64" | "i4g128";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown";
 
@@ -1713,6 +1713,10 @@ export interface DeploymentCapabilities {
   mtp: RuntimeCapability;
   /** Capacidade de todos os peers selecionados de receber estado oculto f8. */
   hidden_state_f8?: RuntimeCapability;
+  /** Capacidade de todos os peers selecionados de receber estado oculto i4g64. */
+  hidden_state_i4g64?: RuntimeCapability;
+  /** Capacidade de todos os peers selecionados de receber estado oculto i4g128. */
+  hidden_state_i4g128?: RuntimeCapability;
 }
 
 export type InferenceMode = "auto" | "dense" | "moe";

@@ -85,10 +85,14 @@ export interface RequestTrace {
   prefix_match_tokens?: number;
   /** Resultado executado do reuso: full, cold, miss ou perda de sessão. */
   prefix_reuse_status?: string;
+  /** Motivo local de miss no gateway: cache vazio, rota alterada, prefixo divergente ou sessão ocupada. */
+  gateway_prefix_miss_reason?: string;
   /** Tokens que cruzaram a fronteira de inferência nesta execução. */
   prompt_tokens_transmitted?: number;
   output_tokens: number;
   prefill_ms: number;
+  /** Tamanho do pedaço de prompt efetivamente escolhido pelo gateway. */
+  prefill_chunk_tokens?: number;
   total_bytes_sent: number;
   total_bytes_received: number;
   hops: HopTrace[];

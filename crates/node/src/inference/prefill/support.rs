@@ -1810,6 +1810,11 @@ pub struct RequestTrace {
     /// quando o reuso veio de um snapshot automático em disco
     /// (`slot_persist_prefix_cache`, ver `inferencia.md` §3.1.1).
     pub prefix_reuse_status: Option<String>,
+    /// Razão local para o gateway não ter encontrado sessão em memória.
+    /// Diferencia cache vazio, rota diferente, prompt que divergiu e lease
+    /// ocupado, sem inferir o motivo a partir do resultado do peer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_prefix_miss_reason: Option<String>,
     /// Tokens que realmente precisaram atravessar a fronteira de inferência.
     /// Em um turno frio, ou após uma divergência parcial, é o prompt inteiro.
     pub prompt_tokens_transmitted: u32,
@@ -1824,6 +1829,9 @@ pub struct RequestTrace {
     pub transport_trace_complete: bool,
     pub prefill_overlap_enabled: bool,
     pub prefill_max_inflight_chunks: u32,
+    /// Tamanho efetivo escolhido para os pedaços nesta rota.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub prefill_chunk_tokens: u32,
     pub prefill_overlapped_chunks: u32,
     /// Maior número de pedaços de prefill que estiveram em voo ao mesmo tempo
     /// nesta requisição. `<= prefill_max_inflight_chunks`; `1` quando a
@@ -2126,6 +2134,7 @@ impl RequestTrace {
             cached_tokens: 0,
             prefix_match_tokens: 0,
             prefix_reuse_status: None,
+            gateway_prefix_miss_reason: None,
             prompt_tokens_transmitted: 0,
             output_tokens: 0,
             prefill_ms: 0,
@@ -2137,6 +2146,7 @@ impl RequestTrace {
             transport_trace_complete: true,
             prefill_overlap_enabled: false,
             prefill_max_inflight_chunks: 1,
+            prefill_chunk_tokens: 0,
             prefill_overlapped_chunks: 0,
             prefill_pipeline_depth_max: 0,
             telemetry: TelemetrySummary::default(),
@@ -3180,10 +3190,14 @@ impl RequestTrace {
         if self.prefix_reuse_status.is_none() {
             self.prefix_reuse_status = other.prefix_reuse_status.clone();
         }
+        if self.gateway_prefix_miss_reason.is_none() {
+            self.gateway_prefix_miss_reason = other.gateway_prefix_miss_reason.clone();
+        }
         self.prefill_overlap_enabled |= other.prefill_overlap_enabled;
         self.prefill_max_inflight_chunks = self
             .prefill_max_inflight_chunks
             .max(other.prefill_max_inflight_chunks);
+        self.prefill_chunk_tokens = self.prefill_chunk_tokens.max(other.prefill_chunk_tokens);
         self.prefill_overlapped_chunks += other.prefill_overlapped_chunks;
         self.prefill_pipeline_depth_max = self
             .prefill_pipeline_depth_max

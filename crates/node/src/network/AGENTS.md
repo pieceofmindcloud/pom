@@ -260,7 +260,8 @@ fallback continua em `addr_candidates` + `RouteTable`.
   servida pelo mesmo router das demais rotas `/v1`. A capability
   `inference/frame-v1-batch` só entra quando o servidor de inferência carregou
   um modelo e o scheduler multi-item está ativo; setup, TP, carregamento e
-  queda não anunciam capacidade de inferência. `runtime_capacity` só entra
+  queda não anunciam capacidade de inferência. Capabilities separadas anunciam
+  f8, i4g64 e i4g128; f16 continua implícito e padrão. `runtime_capacity` só entra
   depois de `/health` confirmar o modelo carregado e leva `n_ctx` e
   `max_new_tokens` (perna); apply, erro, stop e thermal unload limpam o campo
   antes de anunciar. Não existe anúncio ou fallback

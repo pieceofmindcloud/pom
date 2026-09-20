@@ -183,6 +183,10 @@ pub const CAP_FRAME_BATCH: &str = "inference/frame-v1-batch";
 /// representation of hidden state. This is all-or-nothing across a plan:
 /// sending f8 through one peer that only knows f16 would corrupt the answer.
 pub const CAP_FRAME_DTYPE_F8: &str = "inference/frame-v1-dtype-f8";
+/// Optional signed-int4 hidden-state representation, 64 values per FP16 scale.
+pub const CAP_FRAME_DTYPE_I4G64: &str = "inference/frame-v1-dtype-i4g64";
+/// Optional signed-int4 hidden-state representation, 128 values per FP16 scale.
+pub const CAP_FRAME_DTYPE_I4G128: &str = "inference/frame-v1-dtype-i4g128";
 
 /// Advertised when a remote complete-model peer can own the autoregressive
 /// loop and return generated tokens through bounded opportunistic batches.
@@ -290,20 +294,19 @@ pub(crate) fn routing_request_from_peers(total_layers: u32, peers: &[PeerInfo]) 
 impl PipelinePlan {
     /// Validate the wire precision before the first request is sent.
     ///
-    /// f16 is the original contract and remains valid for peers that do not
-    /// advertise the optional f8 extension. A selected f8 plan must have the
-    /// explicit capability on every hop, otherwise it fails visibly instead
-    /// of allowing a mixed-version peer to interpret bytes incorrectly.
+    /// f16 is the baseline. Every lossy extension must be advertised by every
+    /// hop, otherwise the request fails before sending ambiguous payloads.
     pub fn validate_wire_dtype(&self, dtype: WireDtype) -> anyhow::Result<()> {
-        if dtype != WireDtype::F8 {
+        let Some(capability) = wire_dtype_capability(dtype) else {
             return Ok(());
-        }
+        };
         for step in &self.steps {
-            if !step.supports(CAP_FRAME_DTYPE_F8) {
+            if !step.supports(capability) {
                 return Err(anyhow::anyhow!(
-                    "o formato f8 do estado oculto não foi negociado: o peer {} não anuncia {}",
+                    "o formato {} do estado oculto não foi negociado: o peer {} não anuncia {}",
+                    dtype.as_str(),
                     step.node_id,
-                    CAP_FRAME_DTYPE_F8
+                    capability
                 ));
             }
         }
@@ -365,6 +368,15 @@ impl PipelinePlan {
                 .steps
                 .last()
                 .is_some_and(|s| s.supports(CAP_SPECULATE_MTP))
+    }
+}
+
+pub fn wire_dtype_capability(dtype: WireDtype) -> Option<&'static str> {
+    match dtype {
+        WireDtype::F32 | WireDtype::F16 => None,
+        WireDtype::F8 => Some(CAP_FRAME_DTYPE_F8),
+        WireDtype::I4G64 => Some(CAP_FRAME_DTYPE_I4G64),
+        WireDtype::I4G128 => Some(CAP_FRAME_DTYPE_I4G128),
     }
 }
 
@@ -1049,6 +1061,28 @@ mod ipv6_tests {
         assert!(plan.validate_wire_dtype(crate::wire::WireDtype::F8).is_ok());
         assert!(plan
             .validate_wire_dtype(crate::wire::WireDtype::F16)
+            .is_ok());
+    }
+
+    #[test]
+    fn groupwise_i4_requires_its_exact_capability_on_every_hop() {
+        let plan = plan_of(vec![
+            step(&[CAP_FRAME_DTYPE_I4G64]),
+            step(&[CAP_FRAME_DTYPE_I4G128]),
+        ]);
+        assert!(plan
+            .validate_wire_dtype(crate::wire::WireDtype::I4G64)
+            .is_err());
+        assert!(plan
+            .validate_wire_dtype(crate::wire::WireDtype::I4G128)
+            .is_err());
+
+        let plan = plan_of(vec![
+            step(&[CAP_FRAME_DTYPE_I4G64]),
+            step(&[CAP_FRAME_DTYPE_I4G64]),
+        ]);
+        assert!(plan
+            .validate_wire_dtype(crate::wire::WireDtype::I4G64)
             .is_ok());
     }
 

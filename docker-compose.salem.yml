@@ -1,31 +1,40 @@
-# Salem hardware overlay: NVIDIA 3060 plus one Radeon.
-# Set COMPOSE_FILE=docker-compose.yml:docker-compose.salem.yml when building
-# or starting the cluster there. This file changes device visibility only.
+# Salem hardware Compose entrypoint: NVIDIA 3060 plus one Radeon.
+# This file can be selected directly or use docker-compose.yml by default.
 services:
   node-gpu:
-    devices: !override
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu
+    devices:
       - /dev/dri:/dev/dri
     deploy:
       resources:
         reservations:
-          devices: !override
+          devices:
             - driver: nvidia
               capabilities: [gpu]
               device_ids: ['0']
 
   node-gpu2:
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu2
     deploy:
       resources:
         reservations:
-          devices: !override
+          devices:
             - driver: nvidia
               capabilities: [gpu]
               device_ids: ['0']
 
   node-gpu-3:
-    devices: !override
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu-3
+    devices:
       - /dev/dri:/dev/dri
-    deploy:
-      resources:
-        reservations:
-          devices: !override []
+
+  node-cpu:
+    extends:
+      file: docker-compose.common.yml
+      service: node-cpu

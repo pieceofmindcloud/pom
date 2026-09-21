@@ -1,0 +1,61 @@
+# Shared image, runtime environment, network, and data mounts.
+# Host-specific Compose entrypoints extend these four services and add GPU visibility.
+x-node: &node
+  build:
+    context: .
+    args:
+      # Empty here on purpose: crates/node/build.rs falls back to reading git
+      # when this is blank, and inside the builder that read always fails
+      # (.dockerignore drops .git/, and the image has no git). Build through
+      # scripts/build-docker.sh, which exports the host's commit.
+      POM_BUILD_COMMIT: ${POM_BUILD_COMMIT:-}
+      # Keys the Dockerfile's /build/target cache mount id. A bump of the
+      # vendored llama.cpp fork gets a clean native tree instead of a stale
+      # libllama.a. build-docker.sh exports it from the fork checkout.
+      LLAMA_CPP_COMMIT: ${LLAMA_CPP_COMMIT:-unknown}
+  image: pom:latest
+  network_mode: host
+  restart: always
+  environment:
+    POM_HOME: /data
+    POM_UI_DIST: /app/apps/frontend/dist
+    POM_PLUGIN_HOST: /usr/local/bin/pom-plugin-host
+    POM_PROFILE_SYNC: 1
+    POM_PROFILE: trace
+    # NVIDIA stays on CUDA. Do not add graphics, which also exposes an
+    # NVIDIA Vulkan ICD and can make the Vulkan backend enumerate that GPU.
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    POM_SLOT_PERSIST_PREFIX_CACHE: 1
+
+services:
+  node-gpu:
+    <<: *node
+    container_name: pom-node-gpu
+    volumes:
+      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      - ./tests/fixtures/node-gpu:/data
+
+  node-gpu2:
+    <<: *node
+    container_name: pom-node-gpu2
+    volumes:
+      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      - ./tests/fixtures/node-gpu-2:/data
+
+  node-gpu-3:
+    <<: *node
+    container_name: pom-node-gpu3
+    volumes:
+      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      - ./tests/fixtures/node-gpu-3:/data
+
+  node-cpu:
+    <<: *node
+    container_name: pom-node-cpu
+    volumes:
+      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      - ./tests/fixtures/node-cpu:/data

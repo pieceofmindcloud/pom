@@ -177,9 +177,11 @@ invocados pelo binario (ver o `README.md` de la).
 - `docker-compose.yml` - cluster local de 4 servicos (`node-gpu`, `node-gpu2`,
   `node-gpu-3`, `node-cpu`) com `network_mode: host`, uma ancora comum de
   build/imagem e estado persistido em `tests/fixtures/<nome>`. O padrao
-  mapeia a topologia da Ksia; na Salem, `COMPOSE_FILE=docker-compose.yml:docker-compose.salem.yml`
-  troca so a visibilidade das GPUs. Ambos mantem os mesmos servicos, contexto,
-  imagem, volumes e variaveis. A UI e reencontrada por
+  mapeia a topologia da Salem; na Ksia, `COMPOSE_FILE=docker-compose.ksia.yml`
+  seleciona o ponto de entrada de GPUs NVIDIA. `docker-compose.salem.yml`
+  tambem e selecionavel diretamente. Os dois estendem a definicao comum em
+  `docker-compose.common.yml`, mantendo os mesmos servicos, contexto, imagem,
+  volumes e variaveis. A UI e reencontrada por
   `POM_UI_DIST=/app/apps/frontend/dist` porque `POM_HOME=/data` nao e o
   `/app` da imagem.
 - `.github/workflows/release.yml` - release so manual (`workflow_dispatch` com
@@ -205,8 +207,10 @@ invocados pelo binario (ver o `README.md` de la).
 
 ## Sobre os nomes e o estado das fixtures do docker-compose
 
-`docker-compose.yml` e `docker-compose.salem.yml` usam os mesmos quatro
-servicos nas duas maquinas, mas preservam os diretorios de estado ja usados
+`docker-compose.yml`, `docker-compose.salem.yml` e
+`docker-compose.ksia.yml` estendem `docker-compose.common.yml` para usar os
+mesmos quatro servicos nas duas maquinas,
+mas preservam os diretorios de estado ja usados
 por cada no. `gen-node-configs.py` continua gravando em
 `tests/fixtures/node-<N>`; Compose monta as pastas nomeadas por papel de
 hardware. Nao troque os caminhos dos volumes como parte do alinhamento dos

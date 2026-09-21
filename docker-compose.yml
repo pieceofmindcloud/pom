@@ -1,114 +1,28 @@
-# Four-node local dev/test cluster. The same service names are used on Ksia
-# and Salem; docker-compose.salem.yml overrides only Salem's GPU visibility.
+# Four-node local dev/test cluster. This is the default Salem configuration.
 #
-# Host networking is required, same as the manual `docker run --net host`
-# this replaces: P2P discovery broadcasts to 255.255.255.255:42777 and the
-# gateway/inference ports are only reachable that way. Because every node
-# shares the host's network namespace, each one's pom.json must pick its
-# own gateway_port/p2p_port/inference_port so they don't collide (see
-# old/scripts/run-p1.sh + run-p2.sh for the same pattern on bare metal).
+# Host networking is required, same as the manual docker run --net host:
+# P2P discovery broadcasts to 255.255.255.255:42777 and gateway/inference
+# ports are reachable that way. Each node's pom.json must use distinct
+# gateway_port, p2p_port, and inference_port values.
 #
-# Each node's state — pom.json, .pom-node.key, models/ — lives under
-# its own directory in ./tests/fixtures (POM_HOME below), gitignored so
-# generated keys and models never land in the repo. A node with nothing in
-# its directory yet just boots into setup mode
-# (https://<host>:<gateway_port>/) same as on bare metal. POM_UI_DIST is
-# pinned to the path baked into the image because POM_HOME no longer
-# points at /app, and the web interface would otherwise be looked for under
-# the (bind-mounted, UI-less) data directory instead.
+# State lives in each node's tests/fixtures directory. POM_UI_DIST is pinned
+# to the image path because POM_HOME points to the bind-mounted /data volume.
 #
-# Default GPU visibility for Ksia (two NVIDIA RTX 5060 Ti, no Radeon):
-#   node-gpu    : NVIDIA devices 0 and 1
-#   node-gpu2   : NVIDIA device 1
-#   node-gpu-3  : NVIDIA device 0
-#   node-cpu    : no GPU reservation
-# Salem has one NVIDIA 3060 and one Radeon; select its overlay with
-# COMPOSE_FILE=docker-compose.yml:docker-compose.salem.yml. Its service names,
-# image, build context, volumes, network and environment remain shared.
-x-node: &node
-  build:
-    context: .
-    args:
-      # Empty here on purpose: `crates/node/build.rs` falls back to reading git
-      # when this is blank, and inside the builder that read always fails
-      # (`.dockerignore` drops `.git/`, the image has no `git`). Build through
-      # `scripts/build-docker.sh`, which exports the host's commit, or the
-      # interface shows "desconhecido" for every container.
-      POM_BUILD_COMMIT: ${POM_BUILD_COMMIT:-}
-      # Keys the Dockerfile's /build/target cache mount id. A bump of the
-      # vendored llama.cpp fork gets a clean native tree instead of a stale
-      # libllama.a. build-docker.sh exports it from the fork checkout.
-      LLAMA_CPP_COMMIT: ${LLAMA_CPP_COMMIT:-unknown}
-  image: pom:latest
-  network_mode: host
-  restart: always
-  environment:
-    POM_HOME: /data
-    POM_UI_DIST: /app/apps/frontend/dist
-    # O plugin host é um filho do pom e usa stdin/stdout com frames JSON de
-    # tamanho prefixado. Não há socket Unix nem volume adicional para IPC;
-    # o plugin baixado e enterprise.db persistem no volume /data.
-    POM_PLUGIN_HOST: /usr/local/bin/pom-plugin-host
-    POM_PROFILE_SYNC: 1
-    # Telemetry profile (crates/node/src/telemetry.rs: off|basic|trace). `trace`
-    # keeps the execution telemetry card COMPLETE - per-chunk detail and the
-    # transport spans; without it the trace is `basic` and the UI shows
-    # "telemetria de transporte incompleta". Override to basic/off to trim.
-    POM_PROFILE: trace
-    # NVIDIA is injected by the toolkit (deploy.resources below). Keep its
-    # capabilities at compute+utility on purpose: adding `graphics` would also
-    # mount an NVIDIA Vulkan ICD, and then the Vulkan backend would enumerate
-    # the NVIDIA card too - POM's sysmon counts AMD-only devices on the Vulkan
-    # side. NVIDIA stays on CUDA, AMD stays on Vulkan/RADV.
-    NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    POM_SLOT_PERSIST_PREFIX_CACHE: 1
-    # RUST_LOG: info,pom=debug
-    # ^ comentada: `pom=debug` gerava spam (ex "DEBUG pom::discovery",
-    # "infer-tunnel ...") que enchia cluster_logs no SQLite (94M linhas / 23 GB
-    # na salem). Sem a linha, o binario cai no default `info`
-    # (crates/node/src/main.rs). Descomente para depurar.
-
+# Salem GPU visibility:
+#   node-gpu    : NVIDIA 0 plus Radeon (/dev/dri)
+#   node-gpu2   : NVIDIA 0 only
+#   node-gpu-3  : Radeon (/dev/dri) only
+#   node-cpu    : no GPU
+# Ksia has two NVIDIA RTX 5060 Ti and no Radeon. Set COMPOSE_FILE to
+# docker-compose.ksia.yml there. Shared build/runtime data is in
+# docker-compose.common.yml.
 services:
-  # salem-gpu : NVIDIA(0) + Radeon
   node-gpu:
-    <<: *node
-    container_name: pom-node-gpu
-    volumes:
-      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
-      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
-      - ./tests/fixtures/node-gpu:/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
-              device_ids: ['0', '1']
-
-  # Ksia's second NVIDIA node. Salem's override maps its sole NVIDIA card here.
-  node-gpu2:
-    <<: *node
-    container_name: pom-node-gpu2
-    volumes:
-      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
-      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
-      - ./tests/fixtures/node-gpu-2:/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
-              device_ids: ['1']
-
-  # Ksia's first NVIDIA card. Salem's override maps its Radeon here.
-  node-gpu-3:
-    <<: *node
-    container_name: pom-node-gpu3
-    volumes:
-      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
-      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
-      - ./tests/fixtures/node-gpu-3:/data
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu
+    devices:
+      - /dev/dri:/dev/dri
     deploy:
       resources:
         reservations:
@@ -117,10 +31,26 @@ services:
               capabilities: [gpu]
               device_ids: ['0']
 
+  node-gpu2:
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ['0']
+
+  node-gpu-3:
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu-3
+    devices:
+      - /dev/dri:/dev/dri
+
   node-cpu:
-    <<: *node
-    container_name: pom-node-cpu
-    volumes:
-      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
-      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
-      - ./tests/fixtures/node-cpu:/data
+    extends:
+      file: docker-compose.common.yml
+      service: node-cpu

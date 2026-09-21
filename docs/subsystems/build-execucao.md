@@ -438,13 +438,15 @@ offload no primeiro clique.
   (não recria a imagem).
 - **`docker-compose.yml`**: quatro serviços compartilhados entre Ksia e Salem:
   `node-gpu`, `node-gpu2`, `node-gpu-3` e `node-cpu`. Todos herdam a mesma
-  âncora de build, imagem `pom:latest`, contexto e configuração de runtime,
-  com `network_mode: host`. O padrão é a topologia Ksia, com NVIDIA 0 e 1 em
-  `node-gpu`, NVIDIA 1 em `node-gpu2`, NVIDIA 0 em `node-gpu-3` e nenhuma
-  reserva em `node-cpu`. Na Salem, use
-  `COMPOSE_FILE=docker-compose.yml:docker-compose.salem.yml`: o overlay expõe
-  a Radeon por `/dev/dri` em `node-gpu` e `node-gpu-3`, reserva a NVIDIA 0
-  em `node-gpu` e `node-gpu2`, e não dá GPU ao CPU. Os serviços mantêm os
+  definição comum em `docker-compose.common.yml`, que centraliza build,
+  imagem `pom:latest`, contexto, runtime, volumes e `network_mode: host`.
+  O padrão é a topologia Salem, com NVIDIA 0 e
+  Radeon em `node-gpu`, NVIDIA 0 em `node-gpu2`, Radeon em `node-gpu-3` e
+  nenhuma reserva em `node-cpu`. Salem usa `docker-compose.yml` por padrão;
+  `docker-compose.salem.yml` também pode ser selecionado diretamente. Na
+  Ksia, use `COMPOSE_FILE=docker-compose.ksia.yml`: esse ponto de entrada
+  remove `/dev/dri`, reserva as NVIDIA 0 e 1 em `node-gpu`, NVIDIA 1 em
+  `node-gpu2`, NVIDIA 0 em `node-gpu-3` e nenhuma GPU em `node-cpu`. Os serviços mantêm os
   volumes de modelos e de estado em `tests/fixtures/<nome>`. Cada serviço
   define `POM_HOME=/data`, `POM_UI_DIST=/app/apps/frontend/dist` e o caminho
   explícito `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (a UI não ficaria

@@ -1,0 +1,43 @@
+# Ksia hardware Compose entrypoint: two NVIDIA RTX 5060 Ti and no Radeon.
+# The common image/build/runtime definitions are extended from one file.
+services:
+  node-gpu:
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ['0', '1']
+
+  node-gpu2:
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ['1']
+
+  node-gpu-3:
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu-3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ['0']
+
+  node-cpu:
+    extends:
+      file: docker-compose.common.yml
+      service: node-cpu

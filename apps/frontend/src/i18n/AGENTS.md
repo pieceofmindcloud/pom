@@ -41,6 +41,11 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   recusas concretas, confirmações e resultado das ações. O grupo
   `notifications.*` também nomeia ofertas de sucessão e de promoção
   infer-to-node, além do aviso sem botões de descida para infer.
+- O grupo `plugins.*` cobre o estado de carregamento, erro e catálogo vazio,
+  metadados ausentes, release disponível, preços, licença ativa ou não exigida,
+  screenshots, ativação e ações por plugin. Todos os rótulos precisam existir
+  nas colunas `en` e `pt-BR`; nomes, descrições, códigos, releases e URLs de
+  imagem são dados do catálogo público, não traduções fixas.
 - `locales.ts` - parser CSV pequeno, carregamento síncrono do `?raw`, cache de
   `IntlMessageFormat` e a API pública de locale. Não coloque traduções novas
   aqui. O fallback continua sendo locale solicitado, depois inglês, depois a

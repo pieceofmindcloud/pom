@@ -81,22 +81,22 @@ Per-file list:
   Descrição, regras e o campo único de canais Discord ou Telegram são editados
   como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
   mesmo renderer Markdown compartilhado pelo Chat.
-- `Plugins.tsx` - rota `/plugins`. Lista todo `PluginStatus` do catálogo
-  (`GET /api/ui/plugins`), inclusive o que o operador nunca ativou, com estado,
-  funcionalidades concedidas e atualização de versão PRÓPRIA daquele plugin
-  quando existe (`available_update`, aplicada por
-  `POST /api/ui/plugins/:code/update/apply` após a confirmação do release_id).
-  Um único formulário de chave de licença ativa quantos plugins conhecidos a
-  chave conceder (`POST /api/ui/plugins/activate`, resposta `{activated}`
-  nomeia quais); atualizar e desativar são ações por plugin
-  (`POST /api/ui/plugins/:code/refresh|deactivate`). Não trata da atualização
-  do binário `pom` em si - essa fica inteira em `About.tsx`, de propósito
-  separada (ver `crates/node/src/pom_core_update.rs`). O link de comprar/
-  gerenciar de cada card usa o `manage_url` do próprio plugin
-  (`pieceofmind.cloud`). Substituiu a antiga `Enterprise.tsx` de produto único.
-  Tem entrada própria no menu (Configurações > Plugins, antes de "Sobre"): o
-  catálogo é vitrine e precisa ser navegável antes da compra, não só
-  alcançável ao esbarrar numa tela bloqueada, como era a `/enterprise`.
+- `Plugins.tsx` - rota `/plugins`. Cruza o catálogo público de
+  `https://license.pieceofmind.cloud/v1/plugins` com o estado local de
+  `GET /api/ui/plugins`, usando `code` como identidade. O cliente público fica
+  em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita somente
+  plugins com pelo menos uma release válida; dados de imagem incompletos viram
+  placeholders, e até quatro screenshots são exibidos. O estado de licença,
+  funcionalidades, versão instalada e ações administrativas continuam vindo do
+  nó; plugins locais ativos permanecem visíveis mesmo quando faltam no catálogo
+  público. Plugins que exigem licença e não a têm ativa compram por
+  `https://pieceofmind.cloud/plugins/index.html?plugin=<code>` com o código
+  codificado. Um único formulário de chave ativa quantos plugins conhecidos a
+  chave conceder (`POST /api/ui/plugins/activate`, resposta `{activated}`); as
+  ações de atualizar e desativar continuam por plugin. A atualização do binário
+  `pom` em si fica separada em `About.tsx` (ver
+  `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,
+  Configurações > Plugins.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,

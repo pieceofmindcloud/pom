@@ -206,6 +206,16 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   auditoria, com um único título e filtros de usuário, API key, modelo, nó,
   prompt e intervalo de datas;
   `/logs/estatisticas` redireciona para a rota nova
+- `/plugins` -> Plugins, vitrine dos itens publicáveis retornados por
+  `https://license.pieceofmind.cloud/v1/plugins`, cruzados pelo `code` com o
+  estado local de licença e instalação. O browser lê o catálogo público sem
+  credenciais do nó, e o cliente só aceita plugins com releases válidas. A tela
+  mostra ícone, até quatro screenshots, descrição, preço e release quando o
+  servidor fornece esses dados; campos e imagens ausentes têm fallback visual.
+  Plugins ativos no nó continuam listados mesmo quando faltam no catálogo
+  público, com as ações locais preservadas. Quando a licença exigida não está
+  ativa, a compra abre o site público com o `code` codificado. Carregamento,
+  erro e catálogo vazio têm estados próprios.
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/redes-publicas` -> PublicNetworks, catálogo full-bleed de redes públicas
   descobertas pela camada pkarr. A tabela agrupa por país/cidade e ordena pela
@@ -228,10 +238,10 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
   `/config/preferencias/admin` -> preferências administrativas;
   `/config/sobre` -> About, último item de Configurações, com a licença
-  provisória do POM, o estado Enterprise e a verificação sob demanda de
-  atualização do `pom_core`; quando há atualização, a tela encaminha para
-  `/enterprise`, onde fica a confirmação de aplicar e reiniciar, e também
-  mostra o catálogo de dependências diretas agrupado por licença;
+  provisória do POM, o estado do plugin associado à atualização do `pom_core`
+  e a verificação sob demanda. Quando há atualização disponível, a própria
+  tela oferece aplicar e reiniciar; também mostra o catálogo de dependências
+  diretas agrupado por licença;
   `/config/confianca` reúne esta máquina, compartilhamento e chaves de conexão;
   `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias). O wizard de configuração não aparece

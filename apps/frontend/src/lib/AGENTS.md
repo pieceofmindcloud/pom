@@ -195,6 +195,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   - nunca misture os dois: a tela de Plugins só aplica atualização de plugin,
   e `About.tsx` só aplica atualização do `pom`, cada uma após confirmação
   explícita do operador.
+- `pluginCatalog.ts` - consulta diretamente o catálogo público de plugins do
+  servidor de licenças, com `credentials: "omit"`; não usa `api.ts` nem envia a
+  chave de conexão ou a sessão administrativa. Valida os campos obrigatórios de
+  cada release, descarta plugins sem release válida, mantém campos opcionais
+  ausentes como dados desconhecidos e aceita imagens somente do host público
+  esperado, sem credenciais embutidas na URL. `usePublicPluginCatalog` em
+  `queries.ts` controla carregamento, erro e atualização periódica dessa leitura.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

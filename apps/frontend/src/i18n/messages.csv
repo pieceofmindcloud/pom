@@ -1434,19 +1434,34 @@ plugins.activationEyebrow,License activation,Ativação da licença
 plugins.activationFailed,Could not activate the license.,Não foi possível ativar a licença.
 plugins.activationSucceeded,"Activated: {plugins}","Ativado(s): {plugins}"
 plugins.activeTitle,Active,Ativo
+plugins.annualPrice,{price}/year,{price}/ano
+plugins.availableRelease,Available release,Release disponível
 plugins.buy,Buy,Comprar
 plugins.catalog.enterprise.description,Request Logs and Statistics for this node.,Logs de Requisições e Estatísticas para este nó.
 plugins.catalog.enterprise.name,Statistics & Request Logs,Estatísticas e Logs de Requisições
+plugins.catalogEmpty,No plugins are available right now.,Nenhum plugin disponível no momento.
+plugins.catalogError,Could not load the public plugin catalog.,Não foi possível carregar o catálogo público.
+plugins.catalogLoading,Loading the public plugin catalog,Carregando o catálogo público de plugins
 plugins.deactivate,Deactivate,Desativar
 plugins.features,Features,Funcionalidades
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
 plugins.inactiveTitle,Available,Disponível
+plugins.licenseStatusError,Could not read this node's plugin license status.,Não foi possível ler o estado das licenças deste nó.
+plugins.licenseUnknown,License status unavailable,Estado da licença indisponível
 plugins.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
 plugins.licenseKeyLabel,License key,Chave de licença
 plugins.licenseKeyPlaceholder,PM-...,PM-...
 plugins.manage,Manage,Gerenciar
+plugins.metadataIncomplete,Some catalog details or images are unavailable.,Alguns detalhes ou imagens do catálogo estão indisponíveis.
+plugins.metadataUnavailable,Description unavailable,Descrição indisponível
 plugins.refresh,Refresh,Atualizar
+plugins.monthlyPrice,{price}/month,{price}/mês
+plugins.noLicenseRequired,No license required,Não exige licença
+plugins.pricing,Pricing,Preços
+plugins.releaseUnavailable,No valid release available,Nenhuma release válida disponível
+plugins.screenshotAlt,{name} screenshot {number},Captura de tela {number} de {name}
+plugins.screenshots,Screenshots,Capturas de tela
 plugins.state.active,Active,Ativo
 plugins.state.degraded,Degraded,Degradado
 plugins.state.expired,Expired,Expirado

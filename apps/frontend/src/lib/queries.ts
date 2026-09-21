@@ -23,6 +23,7 @@ import {
   setConnectionKey,
 } from "./api";
 import { modelDownloadJobs } from "./modelProvider";
+import { fetchPublicPluginCatalog } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
   ChatCapabilities,
@@ -92,6 +93,7 @@ export const keys = {
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   plugins: ["plugins"] as const,
+  publicPluginCatalog: ["public-plugin-catalog"] as const,
   pomCoreUpdate: ["pom-core-update"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
@@ -215,6 +217,17 @@ export function usePlugins() {
     queryFn: () => optional(api.get<PluginStatus[]>("/api/ui/plugins", { auth: false }), []),
     retry: false,
     refetchInterval: 30_000,
+  });
+}
+
+/** Public store metadata is fetched directly without node credentials or cookies. */
+export function usePublicPluginCatalog() {
+  return useQuery({
+    queryKey: keys.publicPluginCatalog,
+    queryFn: ({ signal }) => fetchPublicPluginCatalog(signal),
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
   });
 }
 

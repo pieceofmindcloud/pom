@@ -187,6 +187,14 @@ expirada desativa as features - de UM plugin, nunca dos outros.
 chave concedeu e instalou). `POST /api/ui/plugins/:code/refresh|deactivate`
 e `POST /api/ui/plugins/:code/update/check|apply` agem sobre um plugin só.
 
+`GET /api/ui/plugins` é AdminOnly. Seu `PluginStatus` carrega `licensed_plugins`,
+`activation_candidates` com release elegível, `license_expires_at` e
+`plugin_usage` por `plugin_code`; os contadores no status escalar correspondem
+ao plugin daquela entrada, não aos totais da licença. A tela usa esses dados
+autenticados para distinguir licença ativa, ausente, expirada ou revogada e
+para mostrar uso de ativações. O catálogo público não publica entitlement nem
+uso de licença. Comprar leva à loja pública com o código do plugin na query.
+
 As rotas autenticadas `/api/ui/requests` e `/api/ui/requests/stats` falham
 fechado com `403` e `code: enterprise_required` quando o plugin `enterprise`
 não tem a feature correspondente ativa. `/api/ui/cluster-logs` continua sendo

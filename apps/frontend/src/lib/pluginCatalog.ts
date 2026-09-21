@@ -16,11 +16,6 @@ export interface PublicPluginPrice {
   interval: string | null;
 }
 
-export interface PublicPluginActivationUsage {
-  active_machines: number;
-  max_machines: number;
-}
-
 export interface PublicPluginCatalogEntry {
   code: string;
   display_name: string | null;
@@ -29,7 +24,6 @@ export interface PublicPluginCatalogEntry {
   requires_license: boolean | null;
   icon_url: string | null;
   screenshot_urls: string[];
-  activation_usage: PublicPluginActivationUsage | null;
   pricing: {
     monthly: PublicPluginPrice | null;
     annual: PublicPluginPrice | null;
@@ -102,22 +96,6 @@ function publicPrice(value: unknown): PublicPluginPrice | null {
   return { amount, currency: currency.toUpperCase(), interval };
 }
 
-function activationUsage(value: unknown): PublicPluginActivationUsage | null {
-  if (!isRecord(value)) return null;
-  const activeMachines = value.active_machines;
-  const maxMachines = value.max_machines;
-  if (
-    !Number.isSafeInteger(activeMachines)
-    || (activeMachines as number) < 0
-    || !Number.isSafeInteger(maxMachines)
-    || (maxMachines as number) <= 0
-  ) return null;
-  return {
-    active_machines: activeMachines as number,
-    max_machines: maxMachines as number,
-  };
-}
-
 function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
   if (!isRecord(value)) return null;
   const code = nonEmptyString(value.code);
@@ -142,7 +120,6 @@ function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
     screenshot_urls: Array.isArray(value.screenshot_urls)
       ? value.screenshot_urls.map(publicImageUrl).filter((url): url is string => url !== null).slice(0, MAX_SCREENSHOTS)
       : [],
-    activation_usage: activationUsage(value.activation_usage),
     pricing: {
       monthly: publicPrice(pricing.monthly),
       annual: publicPrice(pricing.annual),

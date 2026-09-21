@@ -285,6 +285,10 @@ por heartbeat. `PluginStatus.license_expires_at` é a validade da LICENÇA
 "Atualizar" via `refresh_license_status`), nunca o `lease_expires_at` técnico -
 confundir os dois já vazou para a UI uma vez, ver
 `docs/subsystems/licenciamento-enterprise.md`.
+O `PluginStatus` também publica a expiração, os plugins concedidos, candidatos
+com release elegível e uso autenticado por `plugin_code`, preservados da
+validação/ativação/heartbeat. `GET /api/ui/plugins` é AdminOnly; esse JSON não
+inclui tokens de licença. O catálogo comercial permanece público e separado.
 Todo heartbeat com SUCESSO marca
 o plugin ativo e chama `ensure_host_running` (mesma lógica usada na
 restauração de boot, extraída em um só lugar): se o host daquele plugin

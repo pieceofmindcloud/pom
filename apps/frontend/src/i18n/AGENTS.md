@@ -43,8 +43,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   infer-to-node, além do aviso sem botões de descida para infer.
 - O grupo `plugins.*` cobre o estado de carregamento, erro e catálogo vazio,
   metadados ausentes, release disponível, preços, licença ativa ou não exigida,
-  uso e limite de ativações por máquina, checkout, lightbox de screenshots,
-  ativação e ações por plugin. Todos os rótulos precisam existir nas colunas
+  uso e limite de ativações por plugin, link de compra à loja pública, lightbox
+  de screenshots, ativação e ações por plugin. Todos os rótulos precisam existir nas colunas
   `en` e `pt-BR`; nomes, descrições, códigos, releases e URLs de imagem são
   dados do catálogo público, não traduções fixas. A descrição do catálogo tem
   fallback para inglês quando o idioma selecionado não está disponível. Validade

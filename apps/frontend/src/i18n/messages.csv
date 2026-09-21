@@ -1442,7 +1442,6 @@ plugins.catalog.enterprise.name,Statistics & Request Logs,Estatísticas e Logs d
 plugins.catalogEmpty,No plugins are available right now.,Nenhum plugin disponível no momento.
 plugins.catalogError,Could not load the public plugin catalog.,Não foi possível carregar o catálogo público.
 plugins.catalogLoading,Loading the public plugin catalog,Carregando o catálogo público de plugins
-plugins.checkoutFailed,Could not open the secure checkout. Try again.,Não foi possível abrir o checkout seguro. Tente novamente.
 plugins.deactivate,Deactivate,Desativar
 plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
 plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
@@ -1457,11 +1456,11 @@ plugins.keyPrivacy,The license key stays in this form only while activation is r
 plugins.licenseKeyLabel,License key,Chave de licença
 plugins.licenseKeyPlaceholder,PM-...,PM-...
 plugins.licenseExpires,License expires,Licença válida até
-plugins.machineUsage.count,{active} of {max} machines activated,{active} de {max} máquinas ativadas
-plugins.machineUsage.label,License machine usage,Uso da licença por máquinas
-plugins.machineUsage.limitReached,Activation limit reached,Limite atingido
-plugins.machineUsage.partial,Partially used,Parcialmente utilizada
-plugins.machineUsage.unused,No machines activated,Nenhuma máquina ativada
+plugins.activationUsage.count,{active} of {max} activations used,{active} de {max} ativações usadas
+plugins.activationUsage.label,License activation usage,Uso de ativações da licença
+plugins.activationUsage.limitReached,Activation limit reached,Limite atingido
+plugins.activationUsage.partial,Partially used,Parcialmente utilizada
+plugins.activationUsage.unused,No activations used,Nenhuma ativação utilizada
 plugins.manage,Manage,Gerenciar
 plugins.metadataIncomplete,Some catalog details or images are unavailable.,Alguns detalhes ou imagens do catálogo estão indisponíveis.
 plugins.metadataUnavailable,Description unavailable,Descrição indisponível

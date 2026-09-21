@@ -665,15 +665,14 @@ durável de conversas), `dev/update` +
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
-`GET /api/ui/plugins` entrega o estado local de cada plugin. O browser consulta
-o catálogo público diretamente em `/v1/plugins`, sem credenciais. O checkout
-usa `GET /api/ui/plugins/checkout/plans` e
-`POST /api/ui/plugins/checkout/sessions`, ambos na superfície administrativa
-autenticada: o nó consulta os endpoints públicos do license-server e encaminha
-somente `plan_code`, `plugin_code`, `interval` e `locale` na criação de sessão.
-Chave de conexão, cookie de sessão e tokens de licença não são enviados ao
-license-server nesse fluxo. A sessão devolve uma URL HTTPS do Stripe, validada
-no frontend antes da navegação.
+`GET /api/ui/plugins` é AdminOnly e entrega o estado local de cada plugin,
+incluindo `licensed_plugins`, `activation_candidates`, `plugin_usage` por
+`plugin_code`, `license_expires_at` e contadores de ativação daquele plugin.
+Esses dados vêm das respostas autenticadas de validação, ativação e heartbeat;
+tokens de licença não aparecem no status JSON. O browser consulta o catálogo
+público diretamente em `/v1/plugins`, sem credenciais, e Comprar redireciona à
+loja pública com `plugin=<plugin_code>` codificado. A página pública continua
+sendo responsável pelo checkout e não recebe credenciais do nó.
 
 `GET /api/ui/enterprise/status` é uma leitura comum que inclui
 `core_update: { release_id, version, changelog } | null`. O nó só preenche esse

@@ -102,6 +102,13 @@ pub(crate) struct HeartbeatResponse {
     pub lease_id: String,
     pub lease_token: String,
     pub licensed_plugins: Vec<String>,
+    pub license_expires_at: Option<String>,
+    pub activation_count: Option<u32>,
+    pub max_activations: Option<u32>,
+    #[serde(default)]
+    pub plugin_usage: Vec<enterprise_protocol::PluginUsage>,
+    #[serde(default)]
+    pub activation_candidates: Vec<enterprise_protocol::ActivationCandidate>,
     pub lease_expires_at: String,
     pub heartbeat_due_at: String,
     pub grace_seconds: u64,
@@ -709,6 +716,18 @@ pub(crate) struct PersistedPluginState {
     pub lease_token: String,
     pub fingerprint: Fingerprint,
     pub signed_grant: Grant,
+    #[serde(default)]
+    pub licensed_plugins: Vec<String>,
+    #[serde(default)]
+    pub plugin_usage: Vec<enterprise_protocol::PluginUsage>,
+    #[serde(default)]
+    pub activation_candidates: Vec<enterprise_protocol::ActivationCandidate>,
+    #[serde(default)]
+    pub license_expires_at: Option<String>,
+    #[serde(default)]
+    pub activation_count: Option<u32>,
+    #[serde(default)]
+    pub max_activations: Option<u32>,
     pub lease_expires_at: String,
     pub heartbeat_due_at: String,
     pub grace_seconds: u64,
@@ -775,6 +794,11 @@ pub(crate) struct PluginStatus {
     /// fosse a validade da licença é a confusão que este campo existe para
     /// evitar.
     pub license_expires_at: Option<String>,
+    pub activation_count: Option<u32>,
+    pub max_activations: Option<u32>,
+    pub licensed_plugins: Vec<String>,
+    pub plugin_usage: Vec<enterprise_protocol::PluginUsage>,
+    pub activation_candidates: Vec<enterprise_protocol::ActivationCandidate>,
     pub installed_at: Option<String>,
     pub update_checked_at: Option<String>,
     pub available_update: Option<PluginUpdateInfo>,
@@ -791,6 +815,11 @@ impl PluginStatus {
             plugin_version: None,
             lease_expires_at: None,
             license_expires_at: None,
+            activation_count: None,
+            max_activations: None,
+            licensed_plugins: Vec::new(),
+            plugin_usage: Vec::new(),
+            activation_candidates: Vec::new(),
             installed_at: None,
             update_checked_at: None,
             available_update: None,
@@ -883,15 +912,32 @@ impl PluginRuntime {
         let this = self.clone();
         tokio::spawn(async move {
             let remote_state = this.service.status(&persisted, &this.fingerprint).await;
-            let license_expires_at = remote_state
-                .as_ref()
-                .ok()
-                .and_then(|remote| remote.payload.license_expires_at.clone());
-            let allowed = match &remote_state {
+            let mut restored = persisted.clone();
+            let allowed = match remote_state {
                 Ok(remote) => {
-                    remote.payload.activation_id == persisted.activation_id
-                        && remote.payload.lease_id == persisted.lease_id
-                        && matches!(remote.payload.state.as_str(), "active" | "grace")
+                    let status = remote.payload;
+                    let usage = plugin_usage_for_code(&this.code, &status.plugin_usage)
+                        .map(|entry| (entry.activation_count, entry.max_activations));
+                    let allowed = status.activation_id == persisted.activation_id
+                        && status.lease_id == persisted.lease_id
+                        && status
+                            .licensed_plugins
+                            .iter()
+                            .any(|code| code == &this.code)
+                        && matches!(status.state.as_str(), "active" | "grace");
+                    if allowed {
+                        restored.licensed_plugins = status.licensed_plugins;
+                        restored.plugin_usage = status.plugin_usage;
+                        restored.activation_candidates = status.activation_candidates;
+                        restored.license_expires_at = status.license_expires_at;
+                        restored.activation_count = usage.map(|(count, _)| count);
+                        restored.max_activations = usage.map(|(_, maximum)| maximum);
+                        restored.lease_expires_at = status.lease_expires_at;
+                        if let Some(database) = &this.database {
+                            let _ = database.save_local_setting(&this.setting_key(), &restored);
+                        }
+                    }
+                    allowed
                 }
                 Err(_) => lease_allows_offline(&persisted),
             };
@@ -901,19 +947,25 @@ impl PluginRuntime {
                 status.state = LicenseState::Expired;
                 return;
             }
-            this.ensure_host_running(&persisted).await;
-            this.restore_ready(&persisted, license_expires_at).await;
+            *this.persisted.lock().await = Some(restored.clone());
+            this.ensure_host_running(&restored).await;
+            this.restore_ready(&restored).await;
         });
     }
 
-    async fn restore_ready(&self, persisted: &PersistedPluginState, license_expires_at: Option<String>) {
+    async fn restore_ready(&self, persisted: &PersistedPluginState) {
         let mut status = self.status.write().await;
         status.active = true;
         status.state = LicenseState::Active;
         status.features = persisted.features.clone();
         status.plugin_version = Some(persisted.plugin_version.clone());
         status.lease_expires_at = Some(persisted.lease_expires_at.clone());
-        status.license_expires_at = license_expires_at;
+        status.license_expires_at = persisted.license_expires_at.clone();
+        status.activation_count = persisted.activation_count;
+        status.max_activations = persisted.max_activations;
+        status.licensed_plugins = persisted.licensed_plugins.clone();
+        status.plugin_usage = persisted.plugin_usage.clone();
+        status.activation_candidates = persisted.activation_candidates.clone();
         status.installed_at = persisted.installed_at.clone();
         status.update_checked_at = persisted.update_checked_at.clone();
         status.available_update = None;
@@ -1039,6 +1091,9 @@ impl PluginRuntime {
         }
 
         let response = response.payload;
+        let usage = plugin_usage_for_code(&self.code, &response.plugin_usage);
+        let activation_count = usage.map(|entry| entry.activation_count);
+        let max_activations = usage.map(|entry| entry.max_activations);
         let features = features_for_code(&self.code, &response.plugin_manifest.feature_set);
         if features.is_empty() {
             return Err(LicenseClientError::new(
@@ -1058,6 +1113,12 @@ impl PluginRuntime {
             lease_token: response.lease_token,
             fingerprint: self.fingerprint.clone(),
             signed_grant: response.grant,
+            licensed_plugins: response.licensed_plugins.clone(),
+            plugin_usage: response.plugin_usage.clone(),
+            activation_candidates: response.activation_candidates.clone(),
+            license_expires_at: response.license_expires_at.clone(),
+            activation_count,
+            max_activations,
             lease_expires_at: response.lease_expires_at,
             heartbeat_due_at: response.heartbeat_due_at,
             grace_seconds: response.grace_seconds,
@@ -1084,6 +1145,12 @@ impl PluginRuntime {
         status.features = Vec::new();
         status.plugin_version = None;
         status.lease_expires_at = None;
+        status.license_expires_at = response.license_expires_at;
+        status.activation_count = activation_count;
+        status.max_activations = max_activations;
+        status.licensed_plugins = response.licensed_plugins;
+        status.plugin_usage = response.plugin_usage;
+        status.activation_candidates = response.activation_candidates;
         status.installed_at = None;
         status.update_checked_at = None;
         status.available_update = None;
@@ -1297,6 +1364,9 @@ impl PluginRuntime {
                 let HeartbeatResponse {
                     lease_token,
                     licensed_plugins,
+                    license_expires_at,
+                    plugin_usage,
+                    activation_candidates,
                     lease_expires_at,
                     heartbeat_due_at,
                     grace_seconds,
@@ -1306,6 +1376,9 @@ impl PluginRuntime {
                     grant,
                     ..
                 } = response.payload;
+                let usage = plugin_usage_for_code(&self.code, &plugin_usage);
+                let activation_count = usage.map(|entry| entry.activation_count);
+                let max_activations = usage.map(|entry| entry.max_activations);
                 // O heartbeat não traz manifesto, então as features continuam
                 // sendo as do release instalado. O que ele traz é a lista de
                 // plugins que a licença ainda concede: se este saiu da lista,
@@ -1320,6 +1393,12 @@ impl PluginRuntime {
                 if let Some(state) = persisted.as_mut() {
                     state.lease_token = lease_token;
                     state.lease_expires_at = lease_expires_at.clone();
+                    state.license_expires_at = license_expires_at.clone();
+                    state.activation_count = activation_count;
+                    state.max_activations = max_activations;
+                    state.licensed_plugins = licensed_plugins.clone();
+                    state.plugin_usage = plugin_usage.clone();
+                    state.activation_candidates = activation_candidates.clone();
                     state.heartbeat_due_at = heartbeat_due_at;
                     state.grace_seconds = grace_seconds;
                     // `installed_release_id` NÃO é escrito aqui: o heartbeat não baixa
@@ -1352,6 +1431,12 @@ impl PluginRuntime {
                 status.state = LicenseState::Active;
                 status.features = features;
                 status.lease_expires_at = Some(lease_expires_at);
+                status.license_expires_at = license_expires_at;
+                status.activation_count = activation_count;
+                status.max_activations = max_activations;
+                status.licensed_plugins = licensed_plugins;
+                status.plugin_usage = plugin_usage;
+                status.activation_candidates = activation_candidates;
                 drop(status);
                 if !was_active {
                     tracing::info!(
@@ -1908,6 +1993,13 @@ fn features_for_code(code: &str, feature_set: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn plugin_usage_for_code<'a>(
+    code: &str,
+    usage: &'a [enterprise_protocol::PluginUsage],
+) -> Option<&'a enterprise_protocol::PluginUsage> {
+    usage.iter().find(|entry| entry.plugin_code == code)
+}
+
 fn update_unavailable(message: impl Into<String>) -> LicenseClientError {
     LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, message)
 }
@@ -1917,115 +2009,10 @@ fn update_unavailable(message: impl Into<String>) -> LicenseClientError {
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn list_plugins(
+    _auth: crate::auth::ConnectionAuth,
     axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
 ) -> axum::response::Response {
     axum::Json(state.plugins.all_statuses().await).into_response()
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct PluginCheckoutSessionRequest {
-    pub plan_code: String,
-    pub plugin_code: String,
-    pub interval: String,
-    pub locale: String,
-}
-
-fn valid_checkout_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-}
-
-async fn public_checkout_json(
-    base_url: &str,
-    path: &str,
-    body: Option<&serde_json::Value>,
-) -> Result<serde_json::Value, LicenseClientError> {
-    let url = format!("{}/{}", base_url.trim_end_matches('/'), path.trim_start_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|error| {
-            LicenseClientError::new(
-                LicenseErrorCode::ServerError,
-                format!("cliente de checkout indisponível: {error}"),
-            )
-        })?;
-    let request = match body {
-        Some(body) => client.post(url).json(body),
-        None => client.get(url),
-    };
-    let response = request.send().await.map_err(|error| {
-        LicenseClientError::new(
-            LicenseErrorCode::ServerError,
-            format!("servidor de checkout indisponível: {error}"),
-        )
-    })?;
-    if !response.status().is_success() {
-        return Err(LicenseClientError::new(
-            LicenseErrorCode::ServerError,
-            format!("servidor de checkout respondeu HTTP {}", response.status().as_u16()),
-        ));
-    }
-    response.json().await.map_err(|error| {
-        LicenseClientError::new(
-            LicenseErrorCode::ServerError,
-            format!("resposta inválida do servidor de checkout: {error}"),
-        )
-    })
-}
-
-fn checkout_proxy_error(error: LicenseClientError) -> axum::response::Response {
-    (
-        axum::http::StatusCode::BAD_GATEWAY,
-        axum::Json(serde_json::json!({ "error": error.to_string() })),
-    )
-        .into_response()
-}
-
-pub(crate) async fn public_checkout_plans(
-    _auth: crate::auth::ConnectionAuth,
-) -> axum::response::Response {
-    match public_checkout_json(&license_base_url(), "/v1/checkout/plans", None).await {
-        Ok(value) => axum::Json(value).into_response(),
-        Err(error) => checkout_proxy_error(error),
-    }
-}
-
-pub(crate) async fn create_public_checkout_session(
-    _auth: crate::auth::ConnectionAuth,
-    axum::Json(request): axum::Json<PluginCheckoutSessionRequest>,
-) -> axum::response::Response {
-    if !valid_checkout_identifier(&request.plan_code)
-        || !valid_checkout_identifier(&request.plugin_code)
-        || !matches!(request.interval.as_str(), "month" | "year")
-        || !matches!(request.locale.as_str(), "en" | "pt-BR")
-    {
-        return (
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
-            axum::Json(serde_json::json!({ "error": "parâmetros de checkout inválidos" })),
-        )
-            .into_response();
-    }
-
-    let body = serde_json::json!({
-        "plan_code": request.plan_code,
-        "plugin_code": request.plugin_code,
-        "interval": request.interval,
-        "locale": request.locale,
-    });
-    match public_checkout_json(
-        &license_base_url(),
-        "/v1/checkout/sessions",
-        Some(&body),
-    )
-    .await
-    {
-        Ok(value) => axum::Json(value).into_response(),
-        Err(error) => checkout_proxy_error(error),
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2474,6 +2461,22 @@ pub(crate) mod tests_support {
                     return Err(LicenseClientError::new(*code, "mock license error"));
                 }
             }
+            let activation_candidates = responses
+                .values()
+                .filter_map(|response| match response {
+                    MockResponse::Valid(response) => Some(response.activation_candidates.clone()),
+                    MockResponse::Error(_) => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            let plugin_usage = responses
+                .values()
+                .filter_map(|response| match response {
+                    MockResponse::Valid(response) => Some(response.plugin_usage.clone()),
+                    MockResponse::Error(_) => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>();
             Ok(ResponseEnvelope {
                 protocol: enterprise_protocol::LICENSE_PROTOCOL.into(),
                 request_id: request.request_id,
@@ -2484,6 +2487,11 @@ pub(crate) mod tests_support {
                     status: "active".into(),
                     licensed_plugins,
                     activation_required: true,
+                    license_expires_at: Some("2099-12-31T00:00:00Z".into()),
+                    activation_count: Some(1),
+                    max_activations: Some(5),
+                    plugin_usage,
+                    activation_candidates,
                     activation_id: None,
                     eligible_release: None,
                 },
@@ -2543,6 +2551,11 @@ pub(crate) mod tests_support {
                     lease_id: response.lease_id.clone(),
                     lease_token: "plt-renewed".into(),
                     licensed_plugins: vec![response.plugin_code.clone()],
+                    license_expires_at: Some("2099-12-31T00:00:00Z".into()),
+                    activation_count: Some(1),
+                    max_activations: Some(5),
+                    plugin_usage: response.plugin_usage.clone(),
+                    activation_candidates: response.activation_candidates.clone(),
                     lease_expires_at: "2099-01-08T00:00:00Z".into(),
                     heartbeat_due_at: "2099-01-02T00:00:00Z".into(),
                     grace_seconds: 86400,
@@ -2649,20 +2662,6 @@ mod tests {
     use super::*;
     use enterprise_protocol::{ActivationResponse, Grant, LicenseErrorCode, PluginManifest};
 
-    type CapturedCheckoutRequest = Arc<Mutex<Option<(axum::http::HeaderMap, serde_json::Value)>>>;
-
-    async fn capture_checkout_request(
-        axum::extract::State(captured): axum::extract::State<CapturedCheckoutRequest>,
-        headers: axum::http::HeaderMap,
-        axum::Json(body): axum::Json<serde_json::Value>,
-    ) -> axum::Json<serde_json::Value> {
-        *captured.lock().await = Some((headers, body));
-        axum::Json(serde_json::json!({
-            "id": "cs_test_checkout_123",
-            "url": "https://checkout.stripe.com/c/pay/cs_test_checkout_123",
-        }))
-    }
-
     fn activation(code: &str, release_id: &str) -> ActivationResponse {
         ActivationResponse {
             license_id: "lic-1".into(),
@@ -2672,6 +2671,20 @@ mod tests {
             lease_id: format!("lease-{code}"),
             lease_token: "plt-test".into(),
             licensed_plugins: vec![code.into()],
+            license_expires_at: Some("2099-12-31T00:00:00Z".into()),
+            activation_count: Some(1),
+            max_activations: Some(5),
+            plugin_usage: vec![enterprise_protocol::PluginUsage {
+                plugin_code: code.into(),
+                activation_count: 1,
+                max_activations: 5,
+            }],
+            activation_candidates: vec![enterprise_protocol::ActivationCandidate {
+                plugin_code: "next_plugin".into(),
+                display_name: "Next Plugin".into(),
+                release_id: "next-1".into(),
+                version: "1.0.0".into(),
+            }],
             lease_expires_at: "2099-01-01T00:00:00Z".into(),
             heartbeat_due_at: "2099-01-01T00:00:00Z".into(),
             grace_seconds: 172800,
@@ -2704,50 +2717,6 @@ mod tests {
                 signature: "grant-signature".into(),
             },
         }
-    }
-
-    #[tokio::test]
-    async fn public_checkout_proxy_forwards_only_the_public_session_contract() {
-        let captured: CapturedCheckoutRequest = Arc::new(Mutex::new(None));
-        let app = axum::Router::new()
-            .route("/v1/checkout/sessions", axum::routing::post(capture_checkout_request))
-            .with_state(captured.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind checkout mock");
-        let address = listener.local_addr().expect("checkout mock address");
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("checkout mock server");
-        });
-        let request = serde_json::json!({
-            "plan_code": "analytics-plus",
-            "plugin_code": "analytics_plus",
-            "interval": "year",
-            "locale": "pt-BR",
-        });
-
-        let response = public_checkout_json(
-            &format!("http://{address}"),
-            "/v1/checkout/sessions",
-            Some(&request),
-        )
-        .await
-        .expect("checkout response");
-        server.abort();
-
-        assert_eq!(response["url"], "https://checkout.stripe.com/c/pay/cs_test_checkout_123");
-        let (headers, body) = captured.lock().await.take().expect("captured request");
-        assert_eq!(body, request);
-        assert!(headers.get(axum::http::header::AUTHORIZATION).is_none());
-        assert!(headers.get(axum::http::header::COOKIE).is_none());
-    }
-
-    #[test]
-    fn checkout_identifiers_cannot_change_the_fixed_server_path() {
-        assert!(valid_checkout_identifier("analytics_plus-2.1"));
-        assert!(!valid_checkout_identifier("alpha/beta"));
-        assert!(!valid_checkout_identifier("../checkout/sessions"));
-        assert!(!valid_checkout_identifier(""));
     }
 
     #[test]
@@ -2872,6 +2841,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plugin_status_exposes_authenticated_license_usage_and_candidates() {
+        let service = Arc::new(MockLicenseService::single(
+            "analytics_plus",
+            activation("analytics_plus", "ap-1"),
+        ));
+        let manager = PluginManager::test_manager(&["analytics_plus"], service);
+        let runtime = manager.runtime_for("analytics_plus").expect("runtime");
+
+        runtime.activate("PM-test-key").await.expect("activate");
+
+        let status = manager.status("analytics_plus").await.expect("status");
+        assert_eq!(
+            status.license_expires_at.as_deref(),
+            Some("2099-12-31T00:00:00Z")
+        );
+        assert_eq!(status.activation_count, Some(1));
+        assert_eq!(status.max_activations, Some(5));
+        assert_eq!(status.licensed_plugins, ["analytics_plus"]);
+        assert_eq!(status.activation_candidates[0].plugin_code, "next_plugin");
+        let status_json = serde_json::to_value(status).expect("plugin status JSON");
+        assert_eq!(
+            status_json["activation_candidates"],
+            serde_json::json!([{
+                "plugin_code": "next_plugin",
+                "display_name": "Next Plugin",
+                "release_id": "next-1",
+                "version": "1.0.0"
+            }])
+        );
+        assert!(!status_json.to_string().contains("token"));
+    }
+
+    #[tokio::test]
     async fn invalid_license_keeps_the_plugin_inactive_and_returns_a_stable_error() {
         let service = Arc::new(MockLicenseService::new());
         service.deny("enterprise", LicenseErrorCode::InvalidKey).await;
@@ -2888,17 +2890,34 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_persists_authoritative_lease_data() {
-        let service = Arc::new(MockLicenseService::single("enterprise", activation("enterprise", "ent-1")));
+        let service = Arc::new(MockLicenseService::single(
+            "enterprise",
+            activation("enterprise", "ent-1"),
+        ));
         let manager = PluginManager::test_manager(&["enterprise"], service);
         let runtime = manager.runtime_for("enterprise").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
 
-        runtime.heartbeat("heartbeat-nonce").await.expect("heartbeat");
+        runtime
+            .heartbeat("heartbeat-nonce")
+            .await
+            .expect("heartbeat");
 
         let persisted = runtime.persisted_state().await.expect("persisted state");
         assert_eq!(persisted.lease_token, "plt-renewed");
         assert_eq!(persisted.lease_expires_at, "2099-01-08T00:00:00Z");
         assert_eq!(persisted.grace_seconds, 86400);
+        assert_eq!(
+            persisted.license_expires_at.as_deref(),
+            Some("2099-12-31T00:00:00Z")
+        );
+        assert_eq!(persisted.activation_count, Some(1));
+        assert_eq!(persisted.max_activations, Some(5));
+        assert_eq!(persisted.licensed_plugins, ["enterprise"]);
+        assert_eq!(
+            persisted.activation_candidates[0].plugin_code,
+            "next_plugin"
+        );
 
         let status = manager.status("enterprise").await.expect("status");
         assert_eq!(status.state, LicenseState::Active);
@@ -2906,6 +2925,12 @@ mod tests {
             status.lease_expires_at.as_deref(),
             Some("2099-01-08T00:00:00Z")
         );
+        assert_eq!(
+            status.license_expires_at.as_deref(),
+            Some("2099-12-31T00:00:00Z")
+        );
+        assert_eq!(status.activation_count, Some(1));
+        assert_eq!(status.max_activations, Some(5));
     }
 
     /// O clique manual em "Atualizar" (`PluginManager::refresh`) publica

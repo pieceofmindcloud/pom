@@ -7,7 +7,7 @@ import { api } from "../lib/api";
 import { usePlugins, usePublicPluginCatalog } from "../lib/queries";
 import type { PluginStatus } from "../lib/types";
 import type { PublicPluginCatalogEntry, PublicPluginPrice } from "../lib/pluginCatalog";
-import { createPluginCheckout, navigateToCheckout } from "../lib/pluginCheckout";
+import { navigateToPluginPurchase } from "../lib/pluginPurchase";
 import { useI18n } from "../i18n/provider";
 
 function stateTone(state: PluginStatus["state"] | null): Tone {
@@ -50,11 +50,10 @@ function formatDateTime(value: string | null | undefined, locale: string): strin
 type PluginCardProps = {
   entry: PublicPluginCatalogEntry | null;
   status: PluginStatus | null;
+  licenseStatus: PluginStatus | null;
   licenseStatusAvailable: boolean;
   busyCode: string | null;
   updateFailedCode: string | null;
-  checkoutBusyCode: string | null;
-  checkoutFailedCode: string | null;
   deactivateFailedCode: string | null;
   locale: string;
   onRefresh: (code: string) => void;
@@ -66,11 +65,10 @@ type PluginCardProps = {
 function PluginCard({
   entry,
   status,
+  licenseStatus,
   licenseStatusAvailable,
   busyCode,
   updateFailedCode,
-  checkoutBusyCode,
-  checkoutFailedCode,
   deactivateFailedCode,
   locale,
   onRefresh,
@@ -112,25 +110,43 @@ function PluginCard({
   // renewal deadline the heartbeat rolls forward every few days) - showing
   // the lease here would read as "your license expires tomorrow" while the
   // purchased license is still valid for months.
-  const licenseExpiresAt = formatDateTime(status?.license_expires_at, locale);
+  const licenseExpiresAt = formatDateTime(
+    licenseStatus?.license_expires_at ?? status?.license_expires_at,
+    locale,
+  );
   const monthlyPrice = formatPrice(entry?.pricing.monthly ?? null, locale);
   const annualPrice = formatPrice(entry?.pricing.annual ?? null, locale);
   const screenshots = entry?.screenshot_urls.slice(0, 4) ?? [];
-  const activationUsage = entry?.activation_usage ?? null;
+  const isLicenseEnded = status?.state === "expired" || status?.state === "revoked";
+  const hasLicense = status?.active === true
+    || (!isLicenseEnded && licenseStatus?.licensed_plugins.includes(code) === true);
+  const directCount = status?.activation_count;
+  const directMaximum = status?.max_activations;
+  const directUsage = directCount !== null && directCount !== undefined
+    && directMaximum !== null && directMaximum !== undefined && directMaximum > 0
+    ? { active: directCount, max: directMaximum }
+    : null;
+  const sharedUsage = licenseStatus?.plugin_usage.find((usage) => usage.plugin_code === code);
+  const activationUsage = hasLicense
+    ? directUsage
+      ?? (sharedUsage && sharedUsage.max_activations > 0
+        ? { active: sharedUsage.activation_count, max: sharedUsage.max_activations }
+        : null)
+    : null;
   const machineLimitReached = activationUsage !== null
-    && activationUsage.active_machines >= activationUsage.max_machines;
+    && activationUsage.active >= activationUsage.max;
   const machineUsageState = activationUsage === null
     ? null
     : machineLimitReached
       ? "limitReached"
-      : activationUsage.active_machines > 0
+      : activationUsage.active > 0
         ? "partial"
         : "unused";
-  const machineUsageTone: Tone = machineLimitReached ? "rose" : activationUsage?.active_machines ? "amber" : "aqua";
+  const machineUsageTone: Tone = machineLimitReached ? "rose" : activationUsage?.active ? "amber" : "aqua";
   const machineUsageCount = activationUsage
-    ? t("plugins.machineUsage.count", {
-      active: activationUsage.active_machines,
-      max: activationUsage.max_machines,
+    ? t("plugins.activationUsage.count", {
+      active: activationUsage.active,
+      max: activationUsage.max,
     })
     : null;
   const hasMissingMetadata = entry !== null && (
@@ -237,24 +253,24 @@ function PluginCard({
           </div>
         )}
 
-          {hasRequiredLicense && activationUsage && machineUsageState && machineUsageCount && (
-          <div className="space-y-2 rounded-lg border border-line bg-raised/45 px-3.5 py-3" role="group" aria-label={t("plugins.machineUsage.label")}>
+        {hasRequiredLicense && activationUsage && machineUsageState && machineUsageCount && (
+          <div className="space-y-2 rounded-lg border border-line bg-raised/45 px-3.5 py-3" role="group" aria-label={t("plugins.activationUsage.label")}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-sm font-medium text-fg">{machineUsageCount}</span>
-              <Badge tone={machineUsageTone}>{t(`plugins.machineUsage.${machineUsageState}`)}</Badge>
+              <Badge tone={machineUsageTone}>{t(`plugins.activationUsage.${machineUsageState}`)}</Badge>
             </div>
             <div
               role="progressbar"
-              aria-label={t("plugins.machineUsage.label")}
+              aria-label={t("plugins.activationUsage.label")}
               aria-valuemin={0}
-              aria-valuemax={activationUsage.max_machines}
-              aria-valuenow={Math.min(activationUsage.active_machines, activationUsage.max_machines)}
+              aria-valuemax={activationUsage.max}
+              aria-valuenow={Math.min(activationUsage.active, activationUsage.max)}
               aria-valuetext={machineUsageCount}
               className="h-1.5 overflow-hidden rounded-full bg-line"
             >
               <div
                 className={machineLimitReached ? "h-full rounded-full bg-rose" : "h-full rounded-full bg-aqua"}
-                style={{ width: `${Math.min(100, activationUsage.active_machines / activationUsage.max_machines * 100)}%` }}
+                style={{ width: `${Math.min(100, activationUsage.active / activationUsage.max * 100)}%` }}
               />
             </div>
           </div>
@@ -291,7 +307,7 @@ function PluginCard({
               <dd className="text-sm text-fg">{updateCheckedAt}</dd>
             </div>
           )}
-          {active && licenseExpiresAt && (
+        {hasLicense && licenseExpiresAt && (
             <div>
               <dt className="eyebrow mb-1">{t("plugins.licenseExpires")}</dt>
               <dd className="text-sm text-fg">{licenseExpiresAt}</dd>
@@ -385,11 +401,10 @@ function PluginCard({
               </Button>
             </>
           )}
-          {!active && hasRequiredLicense && licenseStatusAvailable && entry && (
+          {!active && hasRequiredLicense && licenseStatusAvailable && entry && !hasLicense && (
             <Button
               variant="ghost"
               type="button"
-              loading={checkoutBusyCode === code}
               icon={<ExternalLink className="h-4 w-4" />}
               className="plugin-buy-button focus-visible:ring-2 focus-visible:ring-iris focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
               onClick={() => onBuy(entry)}
@@ -399,9 +414,6 @@ function PluginCard({
           )}
         </div>
 
-        {checkoutFailedCode === code && (
-          <p role="alert" className="text-xs text-rose">{t("plugins.checkoutFailed")}</p>
-        )}
         {deactivateFailedCode === code && (
           <p role="alert" className="text-xs text-rose">{t("plugins.deactivateFailed")}</p>
         )}
@@ -449,8 +461,6 @@ export function Plugins() {
   const [updateFailedCode, setUpdateFailedCode] = useState<string | null>(null);
   const [deactivateTarget, setDeactivateTarget] = useState<string | null>(null);
   const [deactivateFailedCode, setDeactivateFailedCode] = useState<string | null>(null);
-  const [checkoutBusyCode, setCheckoutBusyCode] = useState<string | null>(null);
-  const [checkoutFailedCode, setCheckoutFailedCode] = useState<string | null>(null);
 
   async function activate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -513,31 +523,50 @@ export function Plugins() {
     }
   }
 
-  async function buy(entry: PublicPluginCatalogEntry) {
-    setCheckoutBusyCode(entry.code);
-    setCheckoutFailedCode(null);
-    try {
-      const checkoutUrl = await createPluginCheckout(entry, locale);
-      navigateToCheckout(checkoutUrl);
-    } catch {
-      setCheckoutFailedCode(entry.code);
-    } finally {
-      setCheckoutBusyCode(null);
-    }
+  function buy(entry: PublicPluginCatalogEntry) {
+    navigateToPluginPurchase(entry.code);
   }
 
   const publicEntries = catalog.data?.plugins ?? [];
   const localStatuses = plugins.data ?? [];
   const localByCode = new Map(localStatuses.map((plugin) => [plugin.code, plugin]));
   const publicCodes = new Set(publicEntries.map((plugin) => plugin.code));
-  const activationEligible = publicEntries.some(
-    (entry) => entry.requires_license === true && localByCode.get(entry.code)?.active !== true,
-  );
+  const licenseStatusByCode = new Map<string, PluginStatus>();
+  for (const source of localStatuses) {
+    if (source.licensed_plugins.includes(source.code)) {
+      licenseStatusByCode.set(source.code, source);
+    }
+  }
+  for (const source of [...localStatuses].sort((left, right) => Number(right.active) - Number(left.active) || left.code.localeCompare(right.code))) {
+    for (const code of new Set(source.licensed_plugins)) {
+      if (!licenseStatusByCode.has(code)) licenseStatusByCode.set(code, source);
+    }
+  }
+  const licensedCodes = new Set(localStatuses.flatMap((status) => status.licensed_plugins));
+  const activationCandidates = new Set(localStatuses.flatMap((status) => status.activation_candidates.map((candidate) => candidate.plugin_code)));
+  const hasLicenseContext = licensedCodes.size > 0 || activationCandidates.size > 0;
+  const activationEligible = publicEntries.some((entry) => {
+    const status = localByCode.get(entry.code);
+    return entry.requires_license === true
+      && status !== undefined
+      && !status.active
+      && (
+        !hasLicenseContext
+        || licensedCodes.has(entry.code)
+        || activationCandidates.has(entry.code)
+        || status.state === "expired"
+        || status.state === "revoked"
+      );
+  });
   const cards = [
-    ...publicEntries.map((entry) => ({ entry, status: localByCode.get(entry.code) ?? null })),
+    ...publicEntries.map((entry) => ({
+      entry,
+      status: localByCode.get(entry.code) ?? null,
+      licenseStatus: licenseStatusByCode.get(entry.code) ?? localByCode.get(entry.code) ?? null,
+    })),
     ...localStatuses
       .filter((status) => status.active && !publicCodes.has(status.code))
-      .map((status) => ({ entry: null, status })),
+      .map((status) => ({ entry: null, status, licenseStatus: licenseStatusByCode.get(status.code) ?? status })),
   ];
   const licenseStatusAvailable = !plugins.isLoading && !plugins.isError && plugins.data !== undefined;
 
@@ -569,16 +598,15 @@ export function Plugins() {
             />
           )}
 
-          {cards.map(({ entry, status }) => (
+          {cards.map(({ entry, status, licenseStatus }) => (
             <PluginCard
               key={entry?.code ?? status?.code}
               entry={entry}
               status={status}
+              licenseStatus={licenseStatus}
               licenseStatusAvailable={licenseStatusAvailable}
               busyCode={busyCode}
               updateFailedCode={updateFailedCode}
-              checkoutBusyCode={checkoutBusyCode}
-              checkoutFailedCode={checkoutFailedCode}
               deactivateFailedCode={deactivateFailedCode}
               locale={locale}
               onRefresh={(code) => void refresh(code)}

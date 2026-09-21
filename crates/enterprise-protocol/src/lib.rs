@@ -205,6 +205,15 @@ pub struct ValidateResponse {
     /// (`PluginManifest::feature_set`), não da licença.
     pub licensed_plugins: Vec<String>,
     pub activation_required: bool,
+    pub license_expires_at: Option<String>,
+    pub activation_count: Option<u32>,
+    pub max_activations: Option<u32>,
+    /// Per-plugin active activation counts for this license.
+    #[serde(default)]
+    pub plugin_usage: Vec<PluginUsage>,
+    /// Products and eligible releases this license can activate on this node.
+    #[serde(default)]
+    pub activation_candidates: Vec<ActivationCandidate>,
     pub activation_id: Option<String>,
     pub eligible_release: Option<EligibleRelease>,
 }
@@ -213,6 +222,21 @@ pub struct ValidateResponse {
 pub struct EligibleRelease {
     pub release_id: String,
     pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivationCandidate {
+    pub plugin_code: String,
+    pub display_name: String,
+    pub release_id: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginUsage {
+    pub plugin_code: String,
+    pub activation_count: u32,
+    pub max_activations: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +256,15 @@ pub struct ActivationResponse {
     pub lease_token: String,
     /// Os `plugin_code` que a licença concede, como em [`ValidateResponse`].
     pub licensed_plugins: Vec<String>,
+    pub license_expires_at: Option<String>,
+    pub activation_count: Option<u32>,
+    pub max_activations: Option<u32>,
+    /// Per-plugin active activation counts for this license.
+    #[serde(default)]
+    pub plugin_usage: Vec<PluginUsage>,
+    /// Products and eligible releases this license can activate on this node.
+    #[serde(default)]
+    pub activation_candidates: Vec<ActivationCandidate>,
     pub lease_expires_at: String,
     pub heartbeat_due_at: String,
     pub grace_seconds: u64,
@@ -277,6 +310,14 @@ pub struct LicenseStatusResponse {
     /// Os `plugin_code` que a licença concede, como em [`ValidateResponse`].
     pub licensed_plugins: Vec<String>,
     pub license_expires_at: Option<String>,
+    pub activation_count: Option<u32>,
+    pub max_activations: Option<u32>,
+    /// Per-plugin active activation counts for this license.
+    #[serde(default)]
+    pub plugin_usage: Vec<PluginUsage>,
+    /// Products and eligible releases this license can activate on this node.
+    #[serde(default)]
+    pub activation_candidates: Vec<ActivationCandidate>,
     pub lease_expires_at: String,
     pub grace_ends_at: String,
     pub plugin_release_id: String,
@@ -388,5 +429,48 @@ mod tests {
                 "requested_features": ["request_logs"],
             })
         );
+    }
+
+    #[test]
+    fn license_status_preserves_per_license_usage_and_activation_candidates() {
+        let status: LicenseStatusResponse = serde_json::from_value(serde_json::json!({
+            "state": "active",
+            "license_id": "lic-123",
+            "activation_id": "act-456",
+            "lease_id": "lease-789",
+            "licensed_plugins": ["analytics_plus", "enterprise"],
+            "license_expires_at": "2099-11-30T12:00:00Z",
+            "activation_count": 3,
+            "max_activations": 10,
+            "plugin_usage": [{
+                "plugin_code": "analytics_plus",
+                "activation_count": 2,
+                "max_activations": 5
+            }],
+            "activation_candidates": [{
+                "plugin_code": "new_plugin",
+                "display_name": "New Plugin",
+                "release_id": "new-1",
+                "version": "1.0.0"
+            }],
+            "lease_expires_at": "2099-12-01T12:00:00Z",
+            "grace_ends_at": "2099-12-03T12:00:00Z",
+            "plugin_release_id": "analytics-plus-1",
+            "eligible_release_id": null
+        }))
+        .expect("published license status payload");
+
+        assert_eq!(status.licensed_plugins, ["analytics_plus", "enterprise"]);
+        assert_eq!(
+            status.license_expires_at.as_deref(),
+            Some("2099-11-30T12:00:00Z")
+        );
+        assert_eq!(status.activation_count, Some(3));
+        assert_eq!(status.max_activations, Some(10));
+        assert_eq!(status.plugin_usage[0].plugin_code, "analytics_plus");
+        assert_eq!(status.plugin_usage[0].activation_count, 2);
+        assert_eq!(status.plugin_usage[0].max_activations, 5);
+        assert_eq!(status.activation_candidates[0].plugin_code, "new_plugin");
+        assert_eq!(status.activation_candidates[0].release_id, "new-1");
     }
 }

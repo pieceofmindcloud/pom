@@ -136,19 +136,14 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::CommonOrInternal,
     },
-    // Catálogo de plugins independentes (ver `crate::plugins`): a leitura é
-    // descobrível para qualquer perfil, toda mutação é AdminOnly - inclusive
+    // Estado privado das licenças de plugins independentes (ver
+    // `crate::plugins`): leitura e mutação são AdminOnly - inclusive
     // sob `/api/ui/plugins/:code/...`, porque a regra casa por prefixo de
     // segmento e um `:code` no meio não muda o escopo de nenhuma ação.
     RouteRule {
-        prefix: "/api/ui/plugins/checkout",
-        method: None,
-        scope: RouteScope::AdminOnly,
-    },
-    RouteRule {
         prefix: "/api/ui/plugins",
         method: Some(Method::GET),
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::AdminOnly,
     },
     RouteRule {
         prefix: "/api/ui/plugins",
@@ -549,15 +544,13 @@ mod policy_tests {
             RouteScope::AdminOnly
         );
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::CommonOrInternal);
+        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::AdminOnly);
         assert_eq!(
             scope_of("/api/ui/pom-update/status"),
             RouteScope::CommonOrInternal
         );
         for path in [
             "/api/ui/plugins/activate",
-            "/api/ui/plugins/checkout/plans",
-            "/api/ui/plugins/checkout/sessions",
             "/api/ui/plugins/enterprise/refresh",
             "/api/ui/plugins/enterprise/deactivate",
             "/api/ui/plugins/enterprise/update/check",
@@ -571,10 +564,6 @@ mod policy_tests {
                 "rota={path}"
             );
         }
-        assert_eq!(
-            route_scope(&Method::GET, "/api/ui/plugins/checkout/plans"),
-            RouteScope::AdminOnly
-        );
         assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);
         assert_eq!(
             scope_of("/api/ui/model-provider/status"),

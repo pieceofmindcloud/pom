@@ -91,7 +91,7 @@ describe("fetchPublicPluginCatalog", () => {
     expect(catalog.plugins[0].icon_url).toBeNull();
   });
 
-  it("preserves the localized description and validated machine activation limits from the catalog contract", async () => {
+  it("preserves catalog metadata but ignores activation usage not provided by the public contract", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       plugins: [publicPlugin("capacity", {
         description_pt_br: "Descrição em português",
@@ -103,10 +103,10 @@ describe("fetchPublicPluginCatalog", () => {
 
     expect(catalog.plugins[0].description).toBe("capacity description");
     expect(catalog.plugins[0].description_pt_br).toBe("Descrição em português");
-    expect(catalog.plugins[0].activation_usage).toEqual({ active_machines: 2, max_machines: 5 });
+    expect("activation_usage" in catalog.plugins[0]).toBe(false);
   });
 
-  it("omits malformed machine activation limits instead of inventing a capacity", async () => {
+  it("does not accept public activation aggregates as license usage", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       plugins: [publicPlugin("capacity", {
         description_pt_br: "   ",
@@ -117,7 +117,7 @@ describe("fetchPublicPluginCatalog", () => {
     const catalog = await fetchPublicPluginCatalog();
 
     expect(catalog.plugins[0].description_pt_br).toBeNull();
-    expect(catalog.plugins[0].activation_usage).toBeNull();
+    expect("activation_usage" in catalog.plugins[0]).toBe(false);
   });
 
   it("rejects a malformed public catalog response", async () => {

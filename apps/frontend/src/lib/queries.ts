@@ -204,6 +204,11 @@ function inactivePlugin(code: string): PluginStatus {
     plugin_version: null,
     lease_expires_at: null,
     license_expires_at: null,
+    activation_count: null,
+    max_activations: null,
+    licensed_plugins: [],
+    plugin_usage: [],
+    activation_candidates: [],
     installed_at: null,
     update_checked_at: null,
     available_update: null,
@@ -217,7 +222,7 @@ function inactivePlugin(code: string): PluginStatus {
 export function usePlugins() {
   return useQuery<PluginStatus[]>({
     queryKey: keys.plugins,
-    queryFn: () => optional(api.get<PluginStatus[]>("/api/ui/plugins", { auth: false }), []),
+    queryFn: () => optional(api.get<PluginStatus[]>("/api/ui/plugins"), []),
     retry: false,
     refetchInterval: 30_000,
   });

@@ -214,13 +214,13 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   servidor fornece esses dados; campos e imagens ausentes têm fallback visual.
   A descrição usa a versão pt-BR se existir, senão a descrição inglesa. Até
   quatro screenshots podem ser ampliados em um diálogo de tela cheia, com
-  Escape e foco devolvido ao controle que abriu. O uso de licenças mostra as
-  máquinas ativas e o limite quando o contrato publica `activation_usage`.
+  Escape e foco devolvido ao controle que abriu. Expiração e uso de ativações
+  por plugin vêm do estado autenticado publicado pelo nó, nunca do catálogo
+  público.
   Plugins ativos no nó continuam listados mesmo quando faltam no catálogo
   público, com as ações locais preservadas. Quando a licença exigida não está
-  ativa, Comprar encontra o plano pelo código do plugin e cria uma sessão no
-  checkout público Stripe por `lib/pluginCheckout.ts`, sem enviar credenciais
-  do nó nem voltar à página da loja. Plugins ativos mostram expiração da
+  ativa, Comprar redireciona para a loja pública com o `plugin_code` codificado
+  por `lib/pluginPurchase.ts`. Plugins ativos mostram expiração da
   licença, última instalação/aplicação e última checagem de update como datas
   distintas; a tela lê esses horários do estado persistido pelo nó. A chave de
   ativação só aparece se houver um plugin licenciado inativo. Desativação pede

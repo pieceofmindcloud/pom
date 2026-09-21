@@ -40,14 +40,6 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugins::activate_plugin),
         )
         .route(
-            "/api/ui/plugins/checkout/plans",
-            get(crate::plugins::public_checkout_plans),
-        )
-        .route(
-            "/api/ui/plugins/checkout/sessions",
-            post(crate::plugins::create_public_checkout_session),
-        )
-        .route(
             "/api/ui/plugins/:code/refresh",
             post(crate::plugins::refresh_plugin),
         )

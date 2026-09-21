@@ -202,7 +202,9 @@ interruptor e prioridade do túnel de inferência sobre o tráfego de conversa.
 `subsystems/licenciamento-enterprise.md` registra o contrato de licença por
 `plugin_code` independente (catálogo `PLUGIN_CATALOG`, hoje só `enterprise`),
 entitlement das telas de auditoria, a fronteira `pom`/`pom-plugin-host`, o
-plugin `enterprise.db` e os limites restantes da integração P2P/release.
+plugin `enterprise.db` e os limites restantes da integração P2P/release. A
+vitrine `/plugins` cruza o catálogo público com o estado AdminOnly do nó e
+leva a compra à loja pública usando `plugin_code`.
 
 ## Defeitos anotados
 

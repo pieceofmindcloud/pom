@@ -183,16 +183,14 @@ profile policy remains the effective authorization boundary.
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
-  `GET /api/ui/plugins` lista o catálogo inteiro de plugins independentes
-  (`crate::plugins`), cada um com seu estado, features e atualização de
+  `GET /api/ui/plugins` (AdminOnly) lista o catálogo inteiro de plugins independentes
+  (`crate::plugins`), cada um com seu estado, features, validade, uso
+  autenticado por plugin e atualização de
   versão próprios; `POST /api/ui/plugins/activate` ativa quantos plugins
   conhecidos a chave conceder, e `POST /api/ui/plugins/:code/refresh|
   deactivate|update/check|update/apply` agem sobre um plugin só.
-  `GET /api/ui/plugins/checkout/plans` e
-  `POST /api/ui/plugins/checkout/sessions` são proxies autenticados para o
-  checkout público do license-server. Encaminham só o contrato público de
-  plano/plugin/intervalo/idioma e nunca repassam chave, cookie ou token de
-  licença. A detecção
+  O catálogo de releases é consultado diretamente pelo browser sem credenciais;
+  Comprar envia o operador à loja pública com o código do plugin. A detecção
   da release `pom_core` é outra fronteira, deliberadamente separada
   (`crate::pom_core_update`): `GET /api/ui/pom-update/status`,
   `POST /api/ui/pom-update/check` força a detecção sob demanda, e

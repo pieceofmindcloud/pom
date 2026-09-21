@@ -47,4 +47,3 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(trust_anchor).post(install_trust_anchor),
         )
 }
-

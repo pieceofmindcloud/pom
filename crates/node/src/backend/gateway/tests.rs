@@ -2427,16 +2427,28 @@ mod replicated_admin_logs_tests {
     }
 
     #[tokio::test]
-    async fn plugin_status_defaults_to_inactive_and_request_logs_are_gated() {
+    async fn plugin_status_requires_admin_and_defaults_to_inactive() {
         let state = testkit::state_with("enterprise-free", vec![]).await;
         let app = Router::new()
             .merge(crate::webui::routes())
             .with_state(state);
 
+        let anonymous_status = app
+            .clone()
+            .oneshot(
+                Request::get("/api/ui/plugins")
+                    .body(axum::body::Body::empty())
+                    .expect("anonymous status request"),
+            )
+            .await
+            .expect("anonymous status response");
+        assert_eq!(anonymous_status.status(), StatusCode::UNAUTHORIZED);
+
         let status = app
             .clone()
             .oneshot(
                 Request::get("/api/ui/plugins")
+                    .header("authorization", "Bearer chave")
                     .body(axum::body::Body::empty())
                     .expect("status request"),
             )

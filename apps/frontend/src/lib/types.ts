@@ -197,6 +197,19 @@ export interface PluginUpdateInfo {
   changelog: string | null;
 }
 
+export interface PluginActivationCandidate {
+  plugin_code: string;
+  display_name: string;
+  release_id: string;
+  version: string;
+}
+
+export interface PluginActivationUsage {
+  plugin_code: string;
+  activation_count: number;
+  max_activations: number;
+}
+
 export interface PluginStatus {
   code: string;
   active: boolean;
@@ -207,6 +220,15 @@ export interface PluginStatus {
   lease_expires_at: string | null;
   /** License validity (not the technical lease above), from GET /v1/licenses/status. */
   license_expires_at: string | null;
+  /** Per-license activation usage; null means the server supplied no value. */
+  activation_count: number | null;
+  max_activations: number | null;
+  /** Plugin codes this license grants. */
+  licensed_plugins: string[];
+  /** Per-plugin activation usage returned by the authenticated license server. */
+  plugin_usage: PluginActivationUsage[];
+  /** Other catalog products with a release eligible for this node. */
+  activation_candidates: PluginActivationCandidate[];
   /** Last time the installed host reported ready for a release. */
   installed_at: string | null;
   /** Last successful manifest lookup, regardless of whether it found an update. */

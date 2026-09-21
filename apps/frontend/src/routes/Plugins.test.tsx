@@ -15,6 +15,11 @@ function pluginStatus(code: string, overrides: Record<string, unknown> = {}) {
     plugin_version: null,
     lease_expires_at: null,
     license_expires_at: null,
+    activation_count: null,
+    max_activations: null,
+    licensed_plugins: [],
+    plugin_usage: [],
+    activation_candidates: [],
     installed_at: null,
     update_checked_at: null,
     available_update: null,
@@ -43,16 +48,23 @@ function publicPlugin(code: string, overrides: Record<string, unknown> = {}) {
     icon_url: null,
     screenshot_urls: [],
     pricing: { monthly: null, annual: null },
-    activation_usage: null,
     releases: [release()],
     ...overrides,
   };
 }
 
+function activationCandidate(plugin_code: string) {
+  return {
+    plugin_code,
+    display_name: plugin_code,
+    release_id: `${plugin_code}-1`,
+    version: "1.0.0",
+  };
+}
+
 const mocks = vi.hoisted(() => ({
   post: vi.fn(),
-  createCheckout: vi.fn(),
-  navigateToCheckout: vi.fn(),
+  navigateToPluginPurchase: vi.fn(),
   plugins: {
     data: [] as Array<{
       code: string;
@@ -63,6 +75,11 @@ const mocks = vi.hoisted(() => ({
       plugin_version: string | null;
       lease_expires_at: string | null;
       license_expires_at: string | null;
+      activation_count: number | null;
+      max_activations: number | null;
+      licensed_plugins: string[];
+      plugin_usage: Array<{ plugin_code: string; activation_count: number; max_activations: number }>;
+      activation_candidates: Array<{ plugin_code: string; display_name: string; release_id: string; version: string }>;
       installed_at: string | null;
       update_checked_at: string | null;
       available_update: { release_id: string; version: string; changelog: string | null } | null;
@@ -86,10 +103,7 @@ vi.mock("../lib/queries", () => ({
   usePlugins: () => mocks.plugins,
   usePublicPluginCatalog: () => mocks.catalog,
 }));
-vi.mock("../lib/pluginCheckout", () => ({
-  createPluginCheckout: mocks.createCheckout,
-  navigateToCheckout: mocks.navigateToCheckout,
-}));
+vi.mock("../lib/pluginPurchase", () => ({ navigateToPluginPurchase: mocks.navigateToPluginPurchase }));
 
 function renderPage(initialLocale: "en" | "pt-BR" = "pt-BR") {
   return render(
@@ -115,8 +129,7 @@ describe("Plugins", () => {
     mocks.catalog.isError = false;
     mocks.catalog.error = null;
     mocks.catalog.refetch.mockReset();
-    mocks.createCheckout.mockReset();
-    mocks.navigateToCheckout.mockReset();
+    mocks.navigateToPluginPurchase.mockReset();
     localStorage.clear();
   });
 
@@ -206,21 +219,16 @@ describe("Plugins", () => {
     expect(screen.getByRole("button", { name: "Instalar atualização" })).toBeTruthy();
   });
 
-  it("abre a sessão do Stripe diretamente ao comprar um plugin", async () => {
-    const entry = publicPlugin("analytics_plus", { display_name: "Analytics Plus" });
+  it("opens the public plugin store with the selected plugin code", () => {
+    const pluginCode = "analytics_plus";
+    const entry = publicPlugin(pluginCode, { display_name: "Analytics Plus" });
     mocks.catalog.data = { plugins: [entry] };
-    mocks.plugins.data = [pluginStatus("analytics_plus")];
-    mocks.createCheckout.mockResolvedValue("https://checkout.stripe.com/c/pay/cs_test_12345678");
+    mocks.plugins.data = [pluginStatus(pluginCode)];
     renderPage("en");
 
     fireEvent.click(screen.getByRole("button", { name: "Buy" }));
 
-    await waitFor(() => {
-      expect(mocks.createCheckout).toHaveBeenCalledWith(entry, "en");
-      expect(mocks.navigateToCheckout).toHaveBeenCalledWith(
-        "https://checkout.stripe.com/c/pay/cs_test_12345678",
-      );
-    });
+    expect(mocks.navigateToPluginPurchase).toHaveBeenCalledWith(pluginCode);
   });
 
   it("mantém plugins locais ativos mesmo se não vierem no catálogo público", () => {
@@ -315,26 +323,109 @@ describe("Plugins", () => {
     expect(screen.queryByText("Descrição traduzida do catálogo")).toBeNull();
   });
 
-  it("shows machine activation usage and distinguishes partial use from a full limit", () => {
+  it("uses authenticated per-plugin activation usage instead of public catalog aggregates", () => {
     mocks.catalog.data = {
       plugins: [
-        publicPlugin("partial", { activation_usage: { active_machines: 2, max_machines: 5 } }),
-        publicPlugin("full", { activation_usage: { active_machines: 5, max_machines: 5 } }),
+        publicPlugin("partial", { activation_usage: { active_machines: 99, max_machines: 100 } }),
+        publicPlugin("full", { activation_usage: { active_machines: 0, max_machines: 1 } }),
       ],
     };
     mocks.plugins.data = [
-      pluginStatus("partial", { active: true, state: "active" }),
-      pluginStatus("full"),
+      pluginStatus("partial", {
+        active: true,
+        state: "active",
+        licensed_plugins: ["partial", "full"],
+        plugin_usage: [
+          { plugin_code: "partial", activation_count: 2, max_activations: 5 },
+          { plugin_code: "full", activation_count: 5, max_activations: 5 },
+        ],
+        activation_candidates: [activationCandidate("full")],
+        activation_count: 2,
+        max_activations: 5,
+      }),
+      pluginStatus("full", {
+        licensed_plugins: ["partial", "full"],
+        plugin_usage: [
+          { plugin_code: "partial", activation_count: 2, max_activations: 5 },
+          { plugin_code: "full", activation_count: 5, max_activations: 5 },
+        ],
+        activation_candidates: [activationCandidate("full")],
+        activation_count: 5,
+        max_activations: 5,
+      }),
     ];
     renderPage();
 
     const partial = screen.getByRole("heading", { name: "partial" }).closest(".panel");
     const full = screen.getByRole("heading", { name: "full" }).closest(".panel");
-    expect(within(partial as HTMLElement).getByText("2 de 5 máquinas ativadas")).toBeTruthy();
+    expect(within(partial as HTMLElement).getByText("2 de 5 ativações usadas")).toBeTruthy();
     expect(within(partial as HTMLElement).getByText("Parcialmente utilizada")).toBeTruthy();
     expect(within(partial as HTMLElement).getByText("Ativo")).toBeTruthy();
-    expect(within(full as HTMLElement).getByText("5 de 5 máquinas ativadas")).toBeTruthy();
+    expect(within(full as HTMLElement).getByText("5 de 5 ativações usadas")).toBeTruthy();
     expect(within(full as HTMLElement).getByText("Limite atingido")).toBeTruthy();
+  });
+
+  it("uses a licensed plugin's authenticated status for its inactive activation candidate", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("analytics_plus")] };
+    mocks.plugins.data = [
+      pluginStatus("enterprise", {
+        active: true,
+        state: "active",
+        licensed_plugins: ["enterprise", "analytics_plus"],
+        plugin_usage: [
+          { plugin_code: "enterprise", activation_count: 1, max_activations: 5 },
+          { plugin_code: "analytics_plus", activation_count: 2, max_activations: 5 },
+        ],
+        activation_candidates: [],
+        license_expires_at: "2099-11-30T12:00:00.000Z",
+        activation_count: 2,
+        max_activations: 5,
+      }),
+      pluginStatus("analytics_plus"),
+    ];
+    renderPage();
+
+    const card = screen.getByRole("heading", { name: "analytics_plus" }).closest(".panel");
+    const expiry = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" })
+      .format(new Date("2099-11-30T12:00:00.000Z"));
+    expect(within(card as HTMLElement).getByText("2 de 5 ativações usadas")).toBeTruthy();
+    expect(within(card as HTMLElement).getByText("Licença válida até")).toBeTruthy();
+    expect(within(card as HTMLElement).getByText(expiry)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Comprar" })).toBeNull();
+    expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
+  });
+
+  it("shows the activation form only for plugin releases eligible on this node", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("candidate")] };
+    mocks.plugins.data = [
+      pluginStatus("enterprise", {
+        active: true,
+        state: "active",
+        licensed_plugins: ["enterprise"],
+        activation_candidates: [activationCandidate("candidate")],
+      }),
+      pluginStatus("candidate"),
+    ];
+    renderPage();
+
+    expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
+  });
+
+  it("hides activation when the authenticated license service returns no eligible candidate", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("not-eligible")] };
+    mocks.plugins.data = [
+      pluginStatus("enterprise", {
+        active: true,
+        state: "active",
+        licensed_plugins: ["enterprise"],
+        activation_candidates: [],
+      }),
+      pluginStatus("not-eligible"),
+    ];
+    renderPage();
+
+    expect(screen.queryByLabelText("Chave de licença")).toBeNull();
+    expect(screen.getByRole("button", { name: "Comprar" })).toBeTruthy();
   });
 
   it("shows license expiration separately from the lease, install and update-check times", () => {
@@ -346,7 +437,7 @@ describe("Plugins", () => {
       // short technical renewal deadline the heartbeat rolls forward every
       // few days, never the purchased license's own validity.
       lease_expires_at: "2026-09-28T12:00:00.000Z",
-      license_expires_at: "2099-12-31T12:00:00.000Z",
+      license_expires_at: "2099-11-30T12:00:00.000Z",
       installed_at: "2026-09-20T10:15:00.000Z",
       update_checked_at: "2026-09-21T14:30:00.000Z",
       available_update: { release_id: "alpha-2", version: "2.0.0", changelog: null },
@@ -359,7 +450,7 @@ describe("Plugins", () => {
     const installDate = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" })
       .format(new Date("2026-09-20T10:15:00.000Z"));
     const expirationDate = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" })
-      .format(new Date("2099-12-31T12:00:00.000Z"));
+      .format(new Date("2099-11-30T12:00:00.000Z"));
     const leaseDate = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" })
       .format(new Date("2026-09-28T12:00:00.000Z"));
 
@@ -417,11 +508,10 @@ describe("Plugins", () => {
     expect(document.activeElement).toBe(opener);
   });
 
-  it("directly opens the Stripe session from the Buy action with the selected locale", async () => {
+  it("keeps purchase-button styling and navigates without opening a checkout session", () => {
     const entry = publicPlugin("alpha");
     mocks.catalog.data = { plugins: [entry] };
     mocks.plugins.data = [pluginStatus("alpha")];
-    mocks.createCheckout.mockResolvedValue("https://checkout.stripe.com/c/pay/cs_test_checkout_123");
     renderPage();
 
     const buy = screen.getByRole("button", { name: "Comprar" });
@@ -429,21 +519,7 @@ describe("Plugins", () => {
     expect(buy.className).toContain("focus-visible:ring-2");
     fireEvent.click(buy);
 
-    await waitFor(() => expect(mocks.createCheckout).toHaveBeenCalledWith(entry, "pt-BR"));
-    expect(mocks.navigateToCheckout).toHaveBeenCalledWith("https://checkout.stripe.com/c/pay/cs_test_checkout_123");
-  });
-
-  it("shows a translated checkout error and keeps the plugin available after failure", async () => {
-    mocks.catalog.data = { plugins: [publicPlugin("alpha")] };
-    mocks.plugins.data = [pluginStatus("alpha")];
-    mocks.createCheckout.mockRejectedValue(new Error("checkout unavailable"));
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: "Comprar" }));
-
-    expect(await screen.findByText("Não foi possível abrir o checkout seguro. Tente novamente.")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "alpha" })).toBeTruthy();
-    expect(mocks.navigateToCheckout).not.toHaveBeenCalled();
+    expect(mocks.navigateToPluginPurchase).toHaveBeenCalledWith("alpha");
   });
 
   it("recarrega o catálogo após erro", () => {

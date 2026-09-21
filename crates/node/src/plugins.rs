@@ -1147,6 +1147,19 @@ impl PluginRuntime {
         }
     }
 
+    /// Manifesto de UI do plugin, pedido ao host (`ui.manifest`) e validado.
+    /// `None` quando inativo, sem host, sem UI ou com manifesto inválido.
+    pub(crate) async fn ui_manifest(&self) -> Option<crate::plugin_ui::PluginUiManifest> {
+        let value = self.query_audit("ui.manifest", serde_json::json!({})).await?;
+        match crate::plugin_ui::PluginUiManifest::parse(&self.code, value) {
+            Ok(manifest) => Some(manifest),
+            Err(error) => {
+                tracing::warn!(plugin_code = %self.code, %error, "manifesto de UI do plugin recusado");
+                None
+            }
+        }
+    }
+
     pub(crate) async fn mark_plugin_ready(&self, plugin_version: &str) -> Result<(), LicenseClientError> {
         let pending = self.pending.lock().await.take().ok_or_else(|| {
             LicenseClientError::new(
@@ -1625,6 +1638,10 @@ impl PluginManager {
         query: serde_json::Value,
     ) -> Option<serde_json::Value> {
         self.runtime_for(code)?.query_audit(operation, query).await
+    }
+
+    pub(crate) async fn ui_manifest(&self, code: &str) -> Option<crate::plugin_ui::PluginUiManifest> {
+        self.runtime_for(code)?.ui_manifest().await
     }
 
     /// Valida a chave uma vez para descobrir quais `plugin_code` conhecidos

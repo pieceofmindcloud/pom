@@ -60,15 +60,11 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
 - O grupo `huggingFace.*` cobre o campo de token da tela de Preferências. O valor
   persistido nunca entra numa mensagem; a UI mostra somente a máscara e a
   fonte efetiva.
-- O grupo `tokenLogs.*` cobre a auditoria de requisições: barra de filtros,
-  abas de requisições e estatísticas, métricas agregadas, abas ENVIADO,
-  REQUEST, Resposta e TELEMETRIA, visualizadores Markdown, toggle persistente
-  de JSON cru ou Markdown renderizado, caminho da requisição e cópia segura da
-  aba ativa. Também nomeia os botões de expansão e a janela grande de leitura.
-  O aviso
-  sobre JSON selecionável foi removido; nenhuma mensagem dessa tela recebe o
-  segredo da chave. Nas mensagens pt-BR, `Tokens` é o termo de produto para
-  contagens e velocidades de tokens; não use `Fichas`.
+- Textos de plugin **não** ficam neste CSV: cada plugin leva os próprios
+  catálogos (o antigo grupo `tokenLogs.*` foi para `pom-plugin-logs/i18n/`).
+  `locales.ts` só oferece `setPluginMessages`/`clearPluginMessages`, que colocam
+  as chaves `<plugin_code>.*` no mapa de `formatMessage` e nunca sobrescrevem
+  chave do POM. Ver `docs/subsystems/plugins-ui.md`.
 - O grupo `deploymentLogs.*` cobre o console de processo da réplica local:
   estado do auto-scroll, cópia das últimas 500 linhas, retorno da cópia, filtro
   e estados de coleta.

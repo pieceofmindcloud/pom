@@ -10,7 +10,10 @@ import {
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
 import { ChatSessionProvider } from "./lib/chatStore";
-import { useAdminSurface, useEnterpriseStatus } from "./lib/queries";
+import { useAdminSurface, usePluginUi } from "./lib/queries";
+import { resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
+import { PluginScreen } from "./components/PluginScreen";
+import { syncPluginCatalogs } from "./lib/pluginI18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -127,9 +130,7 @@ export const routeLoaders = {
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   networkChat: () => import("./routes/NetworkChat").then(({ NetworkChat }) => NetworkChat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
-  logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
-  statistics: () => import("./routes/Statistics").then(({ Statistics }) => Statistics),
   plugins: () => import("./routes/Plugins").then(({ Plugins }) => Plugins),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
@@ -165,9 +166,7 @@ const PublicNetworks = lazyRoute(routeLoaders.publicNetworks);
 const Chat = lazyRoute(routeLoaders.chat);
 const NetworkChat = lazyRoute(routeLoaders.networkChat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
-const Logs = lazyRoute(routeLoaders.logs);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
-const Statistics = lazyRoute(routeLoaders.statistics);
 const Plugins = lazyRoute(routeLoaders.plugins);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
@@ -224,10 +223,19 @@ function RouteFallback({ fullScreen = false }: { fullScreen?: boolean }) {
  * page transition: unmounting it to animate would drop tokens mid-answer.
  */
 export default function App() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const location = useLocation();
   const { profile } = useProfile();
-  const enterpriseStatus = useEnterpriseStatus();
+  const pluginUi = usePluginUi();
+  // O registro é lido por `canAccessRoute` e pelo menu; precisa estar em dia
+  // antes de qualquer filho consultar o guarda.
+  setPluginUi(pluginUi.data?.plugins ?? []);
+  const pluginRoute = resolvePluginRoute(location.pathname);
+  // Cada plugin traz os próprios textos; acompanha plugins ativos e idioma.
+  const activePlugins = pluginUi.data?.plugins;
+  useEffect(() => {
+    void syncPluginCatalogs(activePlugins ?? [], locale);
+  }, [activePlugins, locale]);
   /*
    * O guarda de perfil fica aqui, e não dentro de cada rota, porque aqui ele
    * é um só: `/chat` renderiza fora do `<Routes>` (ver abaixo), então um guarda
@@ -238,19 +246,13 @@ export default function App() {
    */
   const allowed = canAccessRoute(location.pathname, profile);
   /*
-   * `/logs` e `/estatisticas` são as telas reais do plugin `enterprise`,
-   * protegidas pelo entitlement: com o plugin ativo (e a feature da tela
-   * habilitada) renderizam a tela; sem ele, a vitrine
-   * `EnterpriseFeatureShowcase`. O backend recusa os dados sem entitlement de
-   * qualquer modo - ver `docs/subsystems/licenciamento-enterprise.md`.
+   * Telas fornecidas por plugins (`lib/pluginUi.ts`) vêm do manifesto do
+   * plugin ativo. `/logs` e `/estatisticas` só caem na vitrine de propaganda
+   * (`EnterpriseFeatureShowcase`) quando nenhum plugin instalado as fornece.
+   * O backend recusa os dados sem entitlement de qualquer modo - ver
+   * `docs/subsystems/licenciamento-enterprise.md` e `plugins-ui.md`.
    */
   const enterprisePath = isEnterprisePath(location.pathname);
-  const enterpriseActive = Boolean(
-    enterpriseStatus.data?.active
-      && enterpriseStatus.data.features.includes(
-        location.pathname.startsWith("/logs") ? "request_logs" : "statistics",
-      ),
-  );
   const isChat = allowed && location.pathname === "/chat";
   const isEmbeddedChat = allowed && location.pathname === "/admin-ui/chat";
   // Screens that own the whole viewport and scroll inside themselves, instead
@@ -264,11 +266,10 @@ export default function App() {
       location.pathname === "/documentacao" ||
       location.pathname === "/implantar" ||
       location.pathname === "/implantacoes" ||
-      location.pathname === "/logs" ||
+      pluginRoute?.route.full_bleed === true ||
       location.pathname === "/implantacoes/logs" ||
       location.pathname === "/redes-publicas" ||
       location.pathname === "/network-chat" ||
-      location.pathname === "/estatisticas" ||
       location.pathname === "/config/keys/api");
   /*
    * O assistente é a única tela que sai da moldura inteira: ele guia a
@@ -393,9 +394,13 @@ export default function App() {
                   </div>
                 ) : location.pathname === "/logs/estatisticas" ? (
                   // Alias antigo, preservado fora do `<Routes>` porque o
-                  // destino também passa pela vitrine Enterprise.
+                  // destino também é uma rota de plugin ou a vitrine Enterprise.
                   <Navigate to="/estatisticas" replace />
-                ) : enterprisePath && !enterpriseActive ? (
+                ) : pluginRoute ? (
+                  <div className={pluginRoute.route.full_bleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
+                    <PluginScreen resolved={pluginRoute} />
+                  </div>
+                ) : enterprisePath ? (
                   <EnterpriseFeatureShowcase kind={location.pathname.startsWith("/logs") ? "logs" : "statistics"} />
                 ) : isChat ? (
                   <Chat />
@@ -417,8 +422,6 @@ export default function App() {
                         <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
                         <Route path="/transferencias" element={<Page><Transfers /></Page>} />
                         <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
-                        <Route path="/logs" element={<Page><Logs /></Page>} />
-                        <Route path="/estatisticas" element={<Page><Statistics /></Page>} />
                         <Route path="/plugins" element={<Page><Plugins /></Page>} />
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />

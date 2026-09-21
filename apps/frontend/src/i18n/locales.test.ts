@@ -40,16 +40,6 @@ describe("cobertura das traduções", () => {
 });
 
 describe("formatMessage", () => {
-  it("mantém Tokens como termo de produto em todas as métricas", () => {
-    expect(formatMessage("pt-BR", "tokenLogs.averageTokPerSec")).toBe("Média de Tokens/s");
-    expect(formatMessage("pt-BR", "tokenLogs.modelSpeedSubtitle")).toContain("Tokens por segundo");
-    expect(formatMessage("pt-BR", "tokenLogs.statsTokensSubtitle")).toBe(
-      "Tokens de entrada e saída registradas na auditoria.",
-    );
-    expect(formatMessage("pt-BR", "tokenLogs.totalInputTokens")).toBe("Tokens de entrada");
-    expect(formatMessage("pt-BR", "tokenLogs.totalOutputTokens")).toBe("Tokens de saída");
-  });
-
   it("uses the locale's plural form instead of concatenating a sentence", () => {
     expect(formatMessage("en", "cluster.peerCount", { count: 1 })).toBe("1 node");
     expect(formatMessage("en", "cluster.peerCount", { count: 2 })).toBe("2 nodes");

@@ -301,6 +301,14 @@ lista/ativação/atualização por plugin e `reqlog` encaminha eventos e consult
 ao plugin `enterprise` especificamente. Os dois lados do IPC usam o limite
 compartilhado `enterprise_protocol::MAX_IPC_FRAME_BYTES` de 16 MiB.
 
+`src/plugin_ui.rs` é a interface fornecida por plugins: valida o manifesto
+`pom-plugin-ui/v1` que o plugin devolve na operação `ui.manifest` do `query`
+(`PluginUiManifest::parse`, `validate_catalog` para os catálogos i18n), e serve
+`GET /api/ui/plugins/ui` (só plugins ativos com manifesto válido) e
+`GET /api/ui/plugins/:code/assets/*path` (só assets listados, via `ui.asset`).
+`PluginRuntime::ui_manifest` reaproveita `query_audit`. Contrato completo em
+`docs/subsystems/plugins-ui.md`.
+
 `src/pom_core_update.rs` é deliberadamente SEPARADO de `src/plugins.rs`: a
 atualização do binário `pom` em si não é um plugin e vai virar GitHub Releases
 público sem licença (outra tarefa). Até essa migração, `PomCoreUpdater`

@@ -1422,6 +1422,7 @@ placement.title,How the model was loaded,Como o modelo foi carregado
 placement.unavailable,This node did not report where the layers landed. It may be running a build without the diagnostic bridge.,Este nó não informou onde as camadas ficaram. Pode estar rodando uma versão sem a ponte de diagnóstico.
 placement.weights,Weights,Pesos
 placement.weightsDetail,{gpu} on the GPU · {cpu} on the CPU,{gpu} na GPU · {cpu} na CPU
+plugins.screenError.title,This plugin screen could not be loaded.,Não foi possível carregar a tela deste plugin.
 plugins.activate,Activate license,Ativar licença
 plugins.activationEyebrow,License activation,Ativação da licença
 plugins.activationFailed,Could not activate the license.,Não foi possível ativar a licença.
@@ -1979,115 +1980,6 @@ slice.tpRankCount,{size} ranks,{size} ranks
 slice.tpSize,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeAria,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeHint,Choose the number of machines that will hold this tensor-parallel model.,Escolha quantas máquinas vão guardar este modelo em tensor parallelism.
-tokenLogs.allLoaded,All requests loaded,Todas as requisições foram carregadas
-tokenLogs.allNodes,All nodes,Todos os nós
-tokenLogs.apiKey,API key identity,Identidade da API key
-tokenLogs.apiKeyPlaceholder,"label, id or node","rótulo, id ou nó"
-tokenLogs.applyFilters,Apply filters,Aplicar filtros
-tokenLogs.averageInference,Average inference,Tempo médio de inferência
-tokenLogs.averageTokPerSec,Average tokens/s,Média de Tokens/s
-tokenLogs.averageTtft,Average TTFT,TTFT médio
-tokenLogs.byNode,By network node,Por nó da rede
-tokenLogs.byToken,By API token,Por API token
-tokenLogs.bytesReceived,Received,Recebidos
-tokenLogs.bytesSent,Sent,Enviados
-tokenLogs.closeInspector,Close inspector,Fechar inspetor
-tokenLogs.copied,Copied,Copiado
-tokenLogs.copyInspectorTab,Copy content from the {tab} tab,Copiar conteúdo da aba {tab}
-tokenLogs.copyRequestData,Copy request data,Copiar dados da requisição
-tokenLogs.count,"{count}{count, plural, =1 { request} other { requests}}","{count}{count, plural, =1 { requisição} other { requisições}}"
-tokenLogs.duration,Duration,Duração
-tokenLogs.empty,Nothing recorded yet,Nada registrado ainda
-tokenLogs.emptyDetail,"When the network serves a request, it appears here. You can trigger one from chat.","Assim que a rede atender uma requisição, ela aparece aqui. Você pode provocar uma no chat."
-tokenLogs.entryNode,Entry node,Nó de entrada
-tokenLogs.errors,"{count}{count, plural, =1 { error} other { errors}}","{count}{count, plural, =1 { erro} other { erros}}"
-tokenLogs.expandInspectorContent,Expand content: {label},Expandir conteúdo: {label}
-tokenLogs.expandedInspectorTitle,Expanded reading: {label},Leitura ampliada: {label}
-tokenLogs.filter,Filter by node,Filtrar por nó
-tokenLogs.filters,Find a request,Encontrar uma requisição
-tokenLogs.filtersHint,"Search by key identity, prompt text or arrival period. Secrets are never used here.","Busque pela identidade da chave, texto do prompt ou período de entrada. Segredos nunca são usados aqui."
-tokenLogs.from,From,De
-tokenLogs.generation,generation {value},geração {value}
-tokenLogs.inputTokens,Input,Entrada
-tokenLogs.inputTokensDetail,Across filtered requests,Nas requisições filtradas
-tokenLogs.inspect,Inspect request,Inspecionar requisição
-tokenLogs.inspectorFormat,Inspector format,Formato do inspetor
-tokenLogs.inspectorFormatFormattedState,Current format: formatted. Switch to raw JSON,Formato atual: pré-formatado. Alternar para JSON cru
-tokenLogs.inspectorFormatRawState,Current format: raw JSON. Switch to rendered Markdown,Formato atual: JSON cru. Alternar para Markdown renderizado
-tokenLogs.inspectorFormatted,Formatted,Pré-formatado
-tokenLogs.inspectorRaw,Raw JSON,JSON cru
-tokenLogs.inspectorRequest,REQUEST,REQUEST
-tokenLogs.inspectorResponse,Response,Resposta
-tokenLogs.inspectorSent,SENT,ENVIADO
-tokenLogs.inspectorTabs,Request object sections,Seções do objeto da requisição
-tokenLogs.inspectorTelemetry,TELEMETRY,TELEMETRIA
-tokenLogs.inspectorTitle,Request inspector,Inspetor de requisição
-tokenLogs.loadingMore,Loading more,Carregando mais
-tokenLogs.model,Model,Modelo
-tokenLogs.modelPlaceholder,model name,nome do modelo
-tokenLogs.modelSpeedSubtitle,"Mean total generation speed, in tokens per second.","Velocidade média total de geração, em Tokens por segundo."
-tokenLogs.newPrompt,New prompt,Prompt novo
-tokenLogs.noHops,No hops recorded yet.,Nenhum salto registrado ainda.
-tokenLogs.noPipeline,no pipeline,sem pipeline
-tokenLogs.noPreviousContext,No previous context.,Nenhum contexto anterior.
-tokenLogs.noRequests,No requests recorded yet.,Nenhuma requisição registrada ainda.
-tokenLogs.outputTokens,Output,Saída
-tokenLogs.outputTokensDetail,Across filtered requests,Nas requisições filtradas
-tokenLogs.path,Path,Caminho
-tokenLogs.peerConsumptionSubtitle,Bytes exchanged and network time from recorded hops.,Bytes trocados e tempo de rede dos saltos registrados.
-tokenLogs.performance,Performance,Desempenho
-tokenLogs.prefill,prefill {value},pré-processamento {value}
-tokenLogs.prefixCache,Prefix cache,Cache de prefixo
-tokenLogs.prefixCacheDetail,{hits} hits in {eligible} eligible requests,{hits} acertos em {eligible} requisições elegíveis
-tokenLogs.previousContext,Previous context,Contexto anterior
-tokenLogs.promptPlaceholder,words from the prompt,palavras do prompt
-tokenLogs.promptSearch,Text in prompt,Texto no prompt
-tokenLogs.rateUnavailable,not measurable,não mensurável
-tokenLogs.requestPath,Request path,Caminho da requisição
-tokenLogs.requestPathNone,No execution path recorded,Nenhum caminho de execução registrado
-tokenLogs.requests,Requests,Requisições
-tokenLogs.requestsSubtitle,Count of matching requests.,Quantidade de requisições correspondentes.
-tokenLogs.requestsTab,REQUESTS,REQUISIÇÕES
-tokenLogs.route,Route,Rota
-tokenLogs.screenTabs,Log view,Visão dos logs
-tokenLogs.scrollForMore,Scroll for more,Role para carregar mais
-tokenLogs.search,Search,Buscar
-tokenLogs.source,Source,Origem
-tokenLogs.sqliteDetail,"Persisted in SQLite on this node. Open a row to inspect the exact prompt, request body, result and telemetry.","Persistido no SQLite deste nó. Abra uma linha para inspecionar prompt exato, corpo da requisição, resultado e telemetria."
-tokenLogs.statsByDay,Usage by day,Consumo por dia
-tokenLogs.statsByModel,Average speed by model,Média de velocidade por modelo
-tokenLogs.statsByNode,Requests by network node,Requisições por nó da rede
-tokenLogs.statsByToken,Requests by API token,Requisições por API token
-tokenLogs.statsEmpty,No statistics yet,Ainda não há estatísticas
-tokenLogs.statsEmptyDetail,Statistics appear after the network records a request.,As estatísticas aparecem depois que a rede registra uma requisição.
-tokenLogs.statsPeerConsumption,Consumption by peer,Consumo por peer
-tokenLogs.statsSubtitle,Aggregated request usage across the network.,Consumo agregado de requisições na rede.
-tokenLogs.statsTab,STATISTICS,ESTATÍSTICAS
-tokenLogs.statsTerminalStates,Terminal states,Estados terminais
-tokenLogs.statsTitle,Statistics,Estatísticas
-tokenLogs.statsTokensSubtitle,Input and output tokens recorded by the audit trail.,Tokens de entrada e saída registradas na auditoria.
-tokenLogs.status,Status,Estado
-tokenLogs.statusAbandoned,client left,cliente saiu
-tokenLogs.statusCompleted,completed,concluída
-tokenLogs.statusError,error,erro
-tokenLogs.statusInProgress,in progress,em andamento
-tokenLogs.statusIncomplete,incomplete,incompleta
-tokenLogs.statusPartial,partial,parcial
-tokenLogs.subtitle,"Requests served by the network, with their path, usage and performance.","Requisições atendidas pela rede, com caminho, consumo e desempenho."
-tokenLogs.terminalStatesSubtitle,"How requests ended, excluding requests still in progress.","Como as requisições terminaram, sem as ainda em andamento."
-tokenLogs.time,Time,Hora
-tokenLogs.title,Logs,Logs
-tokenLogs.to,To,Até
-tokenLogs.token,Token,Token
-tokenLogs.tokens,Tokens,Tokens
-tokenLogs.tokensPerSecondUnit,tokens/s,tokens/s
-tokenLogs.total,total {value},total {value}
-tokenLogs.totalInputTokens,Input tokens,Tokens de entrada
-tokenLogs.totalOutputTokens,Output tokens,Tokens de saída
-tokenLogs.ttft,TTFT {value},TTFT {value}
-tokenLogs.unavailable,not available,indisponível
-tokenLogs.user,User,Usuário
-tokenLogs.userPlaceholder,API key label,rótulo da API key
 topbar.apiTitle,OpenAI-compatible API served by this node,API compatível com OpenAI servida por este nó
 topbar.closeMenu,Close menu,Fechar menu
 topbar.layers,{covered}/{total} layers,{covered}/{total} camadas

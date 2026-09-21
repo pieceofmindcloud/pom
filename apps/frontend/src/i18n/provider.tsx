@@ -5,10 +5,12 @@ import {
   useEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { type Locale, formatMessage, resolveLocale, setActiveLocale } from "./locales";
+import { type Locale, formatMessage, pluginMessagesVersion, resolveLocale, setActiveLocale, subscribePluginMessages } from "./locales";
 import { storageKey } from "../lib/brand";
+import { pluginLabel } from "../lib/pluginUi";
 
 const STORAGE_KEY = storageKey("locale");
 
@@ -42,6 +44,8 @@ export function LocaleProvider({
 }) {
   const [locale, setLocaleState] = useState<Locale>(() => initialLocale ?? browserLocale());
   setActiveLocale(locale);
+  // Catálogos de plugin chegam depois do primeiro render: refaz o `t`.
+  const pluginVersion = useSyncExternalStore(subscribePluginMessages, pluginMessagesVersion, pluginMessagesVersion);
 
   useEffect(() => {
     document.documentElement.lang = locale;
@@ -61,9 +65,12 @@ export function LocaleProvider({
       locale,
       setLocale,
       t: (key: string, values: Record<string, string | number> = {}) =>
+        // Rótulos de menu de plugin vêm do manifesto, não do CSV do POM.
+        (key.startsWith("plugin:") ? pluginLabel(key, locale) : null) ??
         formatMessage(locale, key, values),
     }),
-    [locale, setLocale],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [locale, setLocale, pluginVersion],
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;

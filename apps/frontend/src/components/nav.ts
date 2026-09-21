@@ -26,6 +26,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { canAccessRoute } from "../lib/access";
+import { pluginLabelKey, pluginMenuItems } from "../lib/pluginUi";
 import type { Profile } from "../lib/profile";
 
 export interface NavLeaf {
@@ -144,6 +145,68 @@ export const NAV: NavSection[] = [
   },
 ];
 
+/** Ícones que um manifesto de plugin pode pedir por nome; o resto vira `Blocks`. */
+const PLUGIN_ICONS: Readonly<Record<string, LucideIcon>> = {
+  "list-tree": ListTree,
+  "chart-no-axes-column": ChartNoAxesColumn,
+  blocks: Blocks,
+  gauge: Gauge,
+  terminal: Terminal,
+  history: History,
+  settings: Settings,
+  network: Network,
+  boxes: Boxes,
+  "shield-check": ShieldCheck,
+};
+
+function pluginIcon(name?: string | null): LucideIcon {
+  return (name && PLUGIN_ICONS[name]) || Blocks;
+}
+
+/**
+ * Aplica os itens de menu dos plugins ativos: um item cujo `to` já existe
+ * (o fallback de propaganda do POM) o substitui; um novo entra na seção
+ * `nav.<group>` ou, sem grupo, na raiz antes da documentação.
+ */
+function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] {
+  const result: NavSection[] = sections.map((section) => {
+    const copy: NavSection = { ...section };
+    if (section.children) copy.children = section.children.map((child) => ({ ...child }));
+    return copy;
+  });
+  const replace = (target: { labelKey: string; icon?: LucideIcon }, item: ReturnType<typeof pluginMenuItems>[number]) => {
+    target.labelKey = pluginLabelKey(item.code, item.id);
+    target.icon = pluginIcon(item.icon);
+  };
+  for (const item of pluginMenuItems(profile)) {
+    const key = pluginLabelKey(item.code, item.id);
+    let placed = false;
+    for (const section of result) {
+      if (section.to === item.to) {
+        section.labelKey = key;
+        section.icon = pluginIcon(item.icon);
+        placed = true;
+      }
+      for (const child of section.children ?? []) {
+        if (child.to === item.to) {
+          replace(child, item);
+          placed = true;
+        }
+      }
+    }
+    if (placed) continue;
+    const group = item.group ? result.find((s) => s.labelKey === `nav.${item.group}` && s.children) : undefined;
+    if (group) {
+      group.children!.push({ labelKey: key, to: item.to, icon: pluginIcon(item.icon) });
+    } else {
+      const docs = result.findIndex((s) => s.labelKey === "nav.documentation");
+      const entry: NavSection = { labelKey: key, icon: pluginIcon(item.icon), to: item.to };
+      result.splice(docs < 0 ? result.length : docs, 0, entry);
+    }
+  }
+  return result;
+}
+
 /**
  * O menu como este perfil o vê.
  *
@@ -165,7 +228,7 @@ export function navForProfile(profile: Profile, _enterpriseActive = true): NavSe
     return { ...leaf, ...(children.length > 0 ? { children } : {}) };
   };
   const visible: NavSection[] = [];
-  for (const section of NAV) {
+  for (const section of withPluginMenu(NAV, profile)) {
     if (section.chatPanelProfiles?.includes(profile)) continue;
     if (section.footerProfiles?.includes(profile)) {
       for (const child of section.children ?? []) {

@@ -8,7 +8,7 @@ import { ProfileProvider, type Profile } from "./lib/profile";
 const adminSurface = vi.hoisted(() => ({
   value: "available" as "setup" | "available" | "requires-password" | "local-only",
 }));
-const enterpriseStatus = vi.hoisted(() => ({ active: true }));
+const pluginUi = vi.hoisted(() => ({ plugins: [] as unknown[] }));
 
 /**
  * Esconder o item do menu não é bloquear: o endereço continua digitável, e um
@@ -20,20 +20,7 @@ const enterpriseStatus = vi.hoisted(() => ({ active: true }));
  */
 vi.mock("./lib/queries", () => ({
   useAdminSurface: () => ({ data: adminSurface.value, isLoading: false, isError: false }),
-  useEnterpriseStatus: () => ({
-    data: {
-      code: "enterprise",
-      active: enterpriseStatus.active,
-      state: enterpriseStatus.active ? "active" : "needs_activation",
-      features: enterpriseStatus.active ? ["request_logs", "statistics"] : [],
-      manage_url: "https://pieceofmind.cloud/enterprise",
-      plugin_version: enterpriseStatus.active ? "test" : null,
-      lease_expires_at: null,
-      available_update: null,
-    },
-    isLoading: false,
-    isError: false,
-  }),
+  usePluginUi: () => ({ data: { plugins: pluginUi.plugins }, isLoading: false, isError: false }),
   // Nó completo o bastante para a barra superior e o rodapé do menu
   // renderizarem: um `data: null` derruba o `NodeChip` no `node.data!` e o
   // teste passa a medir o `ErrorBoundary` em vez do guarda.
@@ -65,8 +52,11 @@ vi.mock("./components/Logo", () => ({
 // marcador é escrito à mão em vez de sair de um auxiliar compartilhado.
 vi.mock("./routes/DeployModel", () => ({ DeployModel: () => <div>tela-implantar</div> }));
 vi.mock("./routes/Deployments", () => ({ Deployments: () => <div>tela-implantacoes</div> }));
-vi.mock("./routes/Logs", () => ({ Logs: () => <div>tela-logs</div> }));
-vi.mock("./routes/Statistics", () => ({ Statistics: () => <div>tela-estatisticas</div> }));
+vi.mock("./components/PluginScreen", () => ({
+  PluginScreen: ({ resolved }: { resolved: { code: string; route: { screen: string } } }) => (
+    <div>{`tela-plugin:${resolved.code}:${resolved.route.screen}`}</div>
+  ),
+}));
 vi.mock("./routes/WholeModels", () => ({ WholeModels: () => <div>tela-modelos</div> }));
 vi.mock("./routes/Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 vi.mock("./routes/Chat", () => ({ Chat: () => <div>tela-chat</div> }));
@@ -96,7 +86,7 @@ describe("guarda de perfil por rota", () => {
   afterEach(() => {
     cleanup();
     adminSurface.value = "available";
-    enterpriseStatus.active = true;
+    pluginUi.plugins = [];
   });
 
   const fechadas = [
@@ -118,29 +108,44 @@ describe("guarda de perfil por rota", () => {
     });
   }
 
-  it("shows the showcase without an active plugin and the real screens with it", async () => {
-    enterpriseStatus.active = false;
+  const enterpriseManifest = (profiles: string[]) => ({
+    code: "enterprise",
+    version: "1.0.0",
+    manifest: {
+      schema: "pom-plugin-ui/v1",
+      plugin_code: "enterprise",
+      menu: [],
+      routes: [
+        { path: "/logs", screen: "logs", profiles, full_bleed: true },
+        { path: "/estatisticas", screen: "stats", profiles },
+      ],
+      screens: { logs: { module: "ui/logs.js" }, stats: { module: "ui/stats.js" } },
+      assets: ["ui/logs.js", "ui/stats.js"],
+    },
+  });
+
+  it("shows the advertising fallback when no plugin provides /logs or /estatisticas", async () => {
     open("/logs", "admin");
     expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Comprar e instalar" }).getAttribute("href"))
-      .toBe("https://pieceofmind.cloud/enterprise/index.html");
-    expect(screen.queryByText("tela-logs")).toBeNull();
+    expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
     cleanup();
-
     open("/estatisticas", "admin");
     expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
-    expect(screen.queryByText("tela-estatisticas")).toBeNull();
-    cleanup();
+  });
 
-    enterpriseStatus.active = true;
+  it("renders the plugin-provided screen instead of the fallback, per manifest profile", async () => {
+    pluginUi.plugins = [enterpriseManifest(["admin", "node"])];
     open("/logs", "admin");
-    expect(await screen.findByText("tela-logs")).toBeTruthy();
-    expect(screen.queryByText("Este plugin já está ativo neste cluster.")).toBeNull();
-    cleanup();
-
-    open("/estatisticas", "admin");
-    expect(await screen.findByText("tela-estatisticas")).toBeTruthy();
+    expect(await screen.findByText("tela-plugin:enterprise:logs")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Comprar e instalar" })).toBeNull();
+    cleanup();
+    open("/estatisticas", "node");
+    expect(await screen.findByText("tela-plugin:enterprise:stats")).toBeTruthy();
+    cleanup();
+    // infer não está nos perfis do manifesto: recusa, e não cai na propaganda.
+    open("/logs", "infer");
+    expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
+    expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
   });
 
   it("não mexe nas rotas que ninguém restringiu", async () => {

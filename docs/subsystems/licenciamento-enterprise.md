@@ -115,18 +115,17 @@ reusável por qualquer `plugin_code` futuro:
   reproduzível para macOS/Linux/Windows, GitHub Actions e a publicação da
   versão já gerada no GitHub no servidor de licenças) vive inteiramente em
   `pom-plugin-logs` - ver o `AGENTS.md` desse repositório.
-- No frontend, as telas reais de Logs de Requisições e Estatísticas
-  (`routes/Logs.tsx`, `routes/Statistics.tsx`, `components/RequestInspector.tsx`)
-  continuam em `apps/frontend`, porque dependem do kit de design e dos hooks
-  compartilhados daqui. `App.tsx` as renderiza em `/logs` e `/estatisticas`
-  quando o entitlement do plugin `enterprise` está ativo com a feature da tela
-  (`request_logs`/`statistics`); sem ele mostra `EnterpriseFeatureShowcase`, com
-  descrição e link para `https://pieceofmind.cloud/enterprise/index.html`.
-  Uma versão anterior (97bb0e91) exibia só a vitrine mesmo com o plugin ativo
-  ("Este plugin já está ativo neste cluster") - defeito corrigido. As rotas
-  `/api/ui/requests` e `/api/ui/requests/stats` recusam os dados sem
-  entitlement. O `frontend-reference/` de `pom-plugin-logs` é apenas cópia
-  histórica.
+- No frontend, o POM **não** contém mais as telas de Logs de Requisições e
+  Estatísticas: elas vivem em `pom-plugin-logs` (`ui/`) e chegam pelo
+  mecanismo genérico de UI de plugin (manifesto, telas e i18n instalados junto
+  do backend) - ver `plugins-ui.md`. O POM mantém só o fallback de propaganda
+  (`EnterpriseFeatureShowcase`, com link para
+  `https://pieceofmind.cloud/enterprise/index.html`) para `/logs` e
+  `/estatisticas` quando o plugin não está ativo. Uma versão anterior
+  (97bb0e91) exibia só a vitrine mesmo com o plugin ativo ("Este plugin já está
+  ativo neste cluster") - defeito corrigido. As rotas `/api/ui/requests` e
+  `/api/ui/requests/stats` continuam no nó, AdminOnly, e recusam os dados sem
+  entitlement.
 
 ## Entitlement e interface
 

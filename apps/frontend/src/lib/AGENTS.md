@@ -338,10 +338,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   aggregated for the active model), `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)`
   60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s
   while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while
-  waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, user,
-  api_key, model, prompt, from, to, limit, offset})` 3s,
-  `useRequestStats({node_id, user, api_key, model, prompt, from, to}, enabled)`
-  30s while the statistics tab is open,
+  waiting or 10s idle, `useAdminNodes()` 8s, `usePluginUi()` 30s (manifestos `pom-plugin-ui/v1` dos plugins ativos),
   `useServableModels()` 30s. The latter preserves `context_length` and
   `max_input_tokens` from `/v1/models` for the Chat attachment guard. A refusal
   or transport failure in the capability read becomes the explicit
@@ -544,3 +541,14 @@ Keep this file for knowledge useful to almost every future agent session in this
 Do not repeat what the codebase already shows; point to the authoritative file or command instead.
 Prefer rewriting or pruning existing entries over appending new ones.
 When updating this file, preserve this bar for all agents and keep entries concise.
+
+## Interface de plugins
+
+- `pluginUi.ts` - tipos do manifesto e o registro (`setPluginUi`) que menu,
+  guarda de perfil e roteador leem: `resolvePluginRoute`, `pluginRouteProfiles`,
+  `pluginMenuItems`, `pluginLabel`, `pluginAssetUrl`. Não conhece plugin algum.
+- `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
+  design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
+  empacotar cópias próprias.
+- `pluginI18n.ts` - carrega/valida/instala os catálogos de texto do plugin
+  (`syncPluginCatalogs`), nos idiomas selecionados. Ver `docs/subsystems/plugins-ui.md`.

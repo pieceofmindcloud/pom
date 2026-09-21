@@ -1233,50 +1233,6 @@ export interface GenerationTimings {
   total_tokens_per_sec: number;
 }
 
-/** One inference request, as the node recorded it. `src/reqlog.rs`. */
-export interface RequestLogEntry {
-  id: string;
-  received_at: string;
-  completed_at: string | null;
-  route: string;
-  model: string;
-  /** Stable API-key identity. The secret is never part of this contract. */
-  api_key_id: string;
-  /** Label of the API key, or "chave de conexão". */
-  api_key_label: string;
-  /** Node the API key is assigned to, when it is assigned to one. */
-  api_key_node_id: string | null;
-  /** Node that received the request. */
-  entry_node_id: string;
-  /** Exact prompt sent to the inference pipeline. */
-  prompt: string;
-  /** Parsed request body, excluding headers and credentials. */
-  request_details: Record<string, unknown>;
-  /** Result text, when any was produced. */
-  result: string | null;
-  /** Per-request telemetry, or null before the generation completes. */
-  telemetry: Record<string, unknown> | null;
-  /** Ordered node ids the generation actually went through. */
-  hops: string[];
-  source: string;
-  prompt_tokens: number | null;
-  completion_tokens: number | null;
-  duration_ms: number | null;
-  timings?: GenerationTimings | null;
-  status: "in_progress" | "ok" | "partial" | "error" | "abandoned" | "incomplete" | string;
-  error: string | null;
-}
-
-export interface RequestLogResponse {
-  entries: RequestLogEntry[];
-  total: number;
-  errors: number;
-  incomplete: number;
-  by_token: Record<string, number>;
-  by_node: Record<string, number>;
-  storage: "sqlite" | string;
-}
-
 /** Linha do log de processo persistida pelo nó principal. */
 export interface ClusterLogEntry {
   received_seq: number;
@@ -1293,48 +1249,6 @@ export interface ClusterLogEntry {
 export interface ClusterLogResponse {
   entries: ClusterLogEntry[];
   dropped: number;
-}
-
-export interface RequestUsageStats {
-  requests: number;
-  input_tokens: number;
-  output_tokens: number;
-}
-
-export interface RequestModelStats {
-  requests: number;
-  average_tokens_per_sec: number | null;
-  average_inference_ms: number | null;
-}
-
-export interface RequestPeerStats {
-  requests: number;
-  bytes_sent: number;
-  bytes_received: number;
-  network_ms: number;
-}
-
-export interface RequestCacheStats {
-  eligible_requests: number;
-  hit_requests: number;
-  input_tokens: number;
-  cached_tokens: number;
-}
-
-export interface RequestStats {
-  total: number;
-  input_tokens: number;
-  output_tokens: number;
-  average_inference_ms: number | null;
-  average_ttft_ms: number | null;
-  by_token: Record<string, number>;
-  by_node: Record<string, number>;
-  by_day: Record<string, RequestUsageStats>;
-  by_model: Record<string, RequestModelStats>;
-  peer_consumption: Record<string, RequestPeerStats>;
-  terminal_states: Record<string, number>;
-  cache: RequestCacheStats;
-  storage: "sqlite" | string;
 }
 
 /** One slice of a size-driven plan. `src/plan.rs` — `SizedRange`. */

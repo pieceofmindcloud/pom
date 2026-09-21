@@ -64,16 +64,16 @@ remain local until the deploy preflight.
 
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
-As telas `/logs` e `/estatisticas` são as telas reais do plugin `enterprise`
-(código do plugin em `pom-plugin-logs`), protegidas pelo entitlement:
-`canAccessRoute` e `navForProfile` mantêm os itens visíveis para todos os
-perfis, e `App.tsx` renderiza `Logs`/`Statistics` quando
-`useEnterpriseStatus()` está ativo com a feature da tela (`request_logs`/
-`statistics`); caso contrário renderiza `EnterpriseFeatureShowcase`
-(`src/components/`) com descrição, prévia ilustrada e link para
-`https://pieceofmind.cloud/enterprise/index.html`. A API (`/api/ui/requests`,
+Telas, menu, rotas e textos de plugin vêm do manifesto `pom-plugin-ui/v1` do
+plugin ativo (`lib/pluginUi.ts`, `components/PluginScreen.tsx`,
+`lib/pluginHost.ts`, `lib/pluginI18n.ts`; ver `docs/subsystems/plugins-ui.md`).
+`canAccessRoute` e `navForProfile` leem o mesmo registro. Sem plugin que forneça
+`/logs` ou `/estatisticas`, o `App.tsx` renderiza o fallback de propaganda
+`EnterpriseFeatureShowcase` (`src/components/`), com link para
+`https://pieceofmind.cloud/enterprise/index.html`. O código de Logs/Estatísticas
+não existe aqui: mora em `pom-plugin-logs`. A API (`/api/ui/requests`,
 `/api/ui/requests/stats`) continua sendo a autoridade e recusa os dados sem
-entitlement; ver `docs/subsystems/licenciamento-enterprise.md`.
+entitlement.
 
 O perfil `infer` é uma vista reduzida da interface: conversa, Chat da rede,
 documentação, API key e a tela de rede local para pedir entrada no processamento. O valor vem
@@ -117,10 +117,9 @@ desenhado**, porque uma vista só não é uma escolha.
   sem Sidebar nem Topbar. `SetupWizard` continua sendo uma referência visual
   mock, não a tela usada quando o nó está em modo setup.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` e `/estatisticas` -> `Logs`/`Statistics` (dentro do `<Routes>`) com o
-  plugin `enterprise` ativo e a feature da tela habilitada; sem isso,
-  `EnterpriseFeatureShowcase` (fora do `<Routes>`, como o chat, antes da tabela
-  de rotas) - vitrine com descrição, prévia e link de compra/instalação.
+- Rotas de plugin (por exemplo `/logs` e `/estatisticas`) -> `PluginScreen`
+  quando um plugin ativo as fornece (fora do `<Routes>`, antes da tabela de
+  rotas); senão o fallback `EnterpriseFeatureShowcase`.
   `/logs/estatisticas` continua redirecionando para a rota nova.
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
 - `/config/rede` -> NetworkSettings; a seção principal Rede também reúne

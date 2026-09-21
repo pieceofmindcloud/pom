@@ -129,6 +129,7 @@ mod pkarr_node;
 mod plan;
 #[path = "plugin_host.rs"]
 mod plugin_host;
+mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;
 #[path = "models/pom.rs"]

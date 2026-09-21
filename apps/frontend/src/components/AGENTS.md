@@ -63,15 +63,14 @@ Per-file list:
   **fora** do `<label>` (um `<button>` dentro de `<label>` quebra o nome
   acessível do controle), então o `<label>` continua embrulhando só texto e
   controle. `hint` (texto visível) segue existindo para as outras telas.
-- `EnterpriseFeatureShowcase.tsx` - vitrine estática usada por `/logs` e
-  `/estatisticas` **somente enquanto o plugin `enterprise` não está ativo**
-  (renderizada fora do `<Routes>` em `App.tsx`, como o chat).
-  Recebe `kind: "logs" | "statistics"`, mostra título, descrição, uma prévia
-  ilustrada em SVG inline (mockup, não captura real), três destaques e o link
-  de compra/instalação `https://pieceofmind.cloud/enterprise/index.html`. Com o
-  plugin ativo o `App.tsx` renderiza no lugar as telas reais `Logs`/`Statistics`
-  (`RequestInspector.tsx` e `CodeViewer.tsx` são do inspetor de `Logs`). Ver
-  `docs/subsystems/licenciamento-enterprise.md`.
+- `EnterpriseFeatureShowcase.tsx` - fallback de propaganda de `/logs` e
+  `/estatisticas` **quando nenhum plugin ativo as fornece** (renderizado fora
+  do `<Routes>` em `App.tsx`, como o chat). Recebe `kind: "logs" | "statistics"`,
+  mostra título, descrição, prévia SVG inline (mockup), três destaques e o link
+  de compra/instalação `https://pieceofmind.cloud/enterprise/index.html`.
+- `PluginScreen.tsx` - carrega o módulo ES de uma tela de plugin (asset servido
+  pelo nó) e o monta na árvore do POM, com estilos do plugin e cartão de erro
+  se a carga ou a renderização falhar. Ver `docs/subsystems/plugins-ui.md`.
 - `ExecutionTelemetry.tsx` - cartão compartilhado do trace de execução usado
   pelo Chat. Mantém a tabela de fases, tempos por hop,
   rede, ambiente, diagnóstico e demais detalhes em um único componente. Cruza

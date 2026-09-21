@@ -448,7 +448,7 @@ Per-file list:
   `deploy_id`; mantém apenas o terminal em preto, acompanha o fim enquanto o
   leitor está no fim, pausa o acompanhamento ao rolar para cima, oferece um
   botão de estado visível para reativá-lo e copia as últimas 500 linhas. Não é a
-  auditoria paginada de requisições em `Logs.tsx`.
+  auditoria de requisições, que é do plugin `enterprise`.
 - `Keys.tsx` - Two screens in one file. `TokenKeys` delega a tabela full-bleed
   `ApiKeysTable`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
@@ -463,16 +463,10 @@ Per-file list:
   aparece com `authority_level` presente. O administrador escolhe o nó ao
   criar e vê os próprios tokens completos, enquanto os tokens de outros nós
   ficam mascarados; node e infer veem e criam somente os seus.
-- `Logs.tsx`/`Statistics.tsx` - auditoria interativa do plugin `enterprise`
-  (`GET /api/ui/requests`/`/requests/stats`, tabela paginada com
-  `IntersectionObserver`, inspetor com abas ENVIADO/REQUEST/Resposta/
-  TELEMETRIA em Markdown renderizado, gráficos agregados). Só renderizam com o
-  entitlement ativo (feature `request_logs`/`statistics` em
-  `useEnterpriseStatus()`), decidido em `App.tsx`; sem ele `/logs` e
-  `/estatisticas` mostram `../components/EnterpriseFeatureShowcase.tsx`. O
-  backend recusa os dados sem entitlement de qualquer modo. Ver
-  `docs/subsystems/licenciamento-enterprise.md`, "Extração para
-  pom-plugin-logs".
+- Logs de Requisições e Estatísticas **não existem aqui**: são telas do plugin
+  `enterprise`, entregues por `pom-plugin-logs` pelo mecanismo de UI de plugin
+  (`docs/subsystems/plugins-ui.md`). `App.tsx` mostra o fallback
+  `../components/EnterpriseFeatureShowcase.tsx` quando o plugin não está ativo.
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and

@@ -86,14 +86,19 @@ Per-file list:
   `GET /api/ui/plugins`, usando `code` como identidade. O cliente público fica
   em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita somente
   plugins com pelo menos uma release válida; dados de imagem incompletos viram
-  placeholders, e até quatro screenshots são exibidos. O estado de licença,
-  funcionalidades, versão instalada e ações administrativas continuam vindo do
+  placeholders, e até quatro screenshots abrem em lightbox com Escape e foco
+  restaurado. Descrições usam português brasileiro quando disponível e têm
+  fallback para inglês; o limite de ativações é exibido quando o contrato
+  fornece `activation_usage`. A tela full-bleed segue o cabeçalho e o contêiner
+  interno de `/modelos`. O estado de licença, validade, última instalação,
+  última consulta de update, funcionalidades, versão e ações continuam vindo do
   nó; plugins locais ativos permanecem visíveis mesmo quando faltam no catálogo
-  público. Plugins que exigem licença e não a têm ativa compram por
-  `https://pieceofmind.cloud/plugins/index.html?plugin=<code>` com o código
-  codificado. Um único formulário de chave ativa quantos plugins conhecidos a
-  chave conceder (`POST /api/ui/plugins/activate`, resposta `{activated}`); as
-  ações de atualizar e desativar continuam por plugin. A atualização do binário
+  público. Desativação exige confirmação. O formulário de chave aparece quando
+  há plugin licenciado elegível; para comprar, a tela resolve o plano pelo
+  código e cria uma sessão de checkout Stripe em `lib/pluginCheckout.ts`, sem
+  reenviar o usuário à vitrine do site. Um único formulário ativa quantos
+  plugins conhecidos a chave conceder (`POST /api/ui/plugins/activate`, resposta
+  `{activated}`); atualizar e desativar continuam por plugin. A atualização do binário
   `pom` em si fica separada em `About.tsx` (ver
   `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,
   Configurações > Plugins.

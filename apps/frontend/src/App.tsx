@@ -274,6 +274,7 @@ export default function App() {
       location.pathname === "/modelos" ||
       location.pathname === "/modelos/remotos" ||
       location.pathname === "/modelos/fatiar" ||
+      location.pathname === "/plugins" ||
       location.pathname === "/fatias" ||
       location.pathname === "/transferencias" ||
       location.pathname === "/transferencias/enviar");

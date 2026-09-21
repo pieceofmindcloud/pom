@@ -665,6 +665,16 @@ durável de conversas), `dev/update` +
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
+`GET /api/ui/plugins` entrega o estado local de cada plugin. O browser consulta
+o catálogo público diretamente em `/v1/plugins`, sem credenciais. O checkout
+usa `GET /api/ui/plugins/checkout/plans` e
+`POST /api/ui/plugins/checkout/sessions`, ambos na superfície administrativa
+autenticada: o nó consulta os endpoints públicos do license-server e encaminha
+somente `plan_code`, `plugin_code`, `interval` e `locale` na criação de sessão.
+Chave de conexão, cookie de sessão e tokens de licença não são enviados ao
+license-server nesse fluxo. A sessão devolve uma URL HTTPS do Stripe, validada
+no frontend antes da navegação.
+
 `GET /api/ui/enterprise/status` é uma leitura comum que inclui
 `core_update: { release_id, version, changelog } | null`. O nó só preenche esse
 aviso depois de um heartbeat Enterprise aceito e enquanto a licença está ativa;

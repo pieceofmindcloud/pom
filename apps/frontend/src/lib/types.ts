@@ -205,6 +205,10 @@ export interface PluginStatus {
   manage_url: string;
   plugin_version: string | null;
   lease_expires_at: string | null;
+  /** Last time the installed host reported ready for a release. */
+  installed_at: string | null;
+  /** Last successful manifest lookup, regardless of whether it found an update. */
+  update_checked_at: string | null;
   available_update: PluginUpdateInfo | null;
 }
 

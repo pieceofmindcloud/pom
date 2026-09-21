@@ -141,6 +141,11 @@ const ROUTE_RULES: &[RouteRule] = &[
     // sob `/api/ui/plugins/:code/...`, porque a regra casa por prefixo de
     // segmento e um `:code` no meio não muda o escopo de nenhuma ação.
     RouteRule {
+        prefix: "/api/ui/plugins/checkout",
+        method: None,
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
         prefix: "/api/ui/plugins",
         method: Some(Method::GET),
         scope: RouteScope::CommonOrInternal,
@@ -551,6 +556,8 @@ mod policy_tests {
         );
         for path in [
             "/api/ui/plugins/activate",
+            "/api/ui/plugins/checkout/plans",
+            "/api/ui/plugins/checkout/sessions",
             "/api/ui/plugins/enterprise/refresh",
             "/api/ui/plugins/enterprise/deactivate",
             "/api/ui/plugins/enterprise/update/check",
@@ -564,6 +571,10 @@ mod policy_tests {
                 "rota={path}"
             );
         }
+        assert_eq!(
+            route_scope(&Method::GET, "/api/ui/plugins/checkout/plans"),
+            RouteScope::AdminOnly
+        );
         assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);
         assert_eq!(
             scope_of("/api/ui/model-provider/status"),

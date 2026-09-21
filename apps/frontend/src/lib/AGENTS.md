@@ -200,8 +200,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   chave de conexão ou a sessão administrativa. Valida os campos obrigatórios de
   cada release, descarta plugins sem release válida, mantém campos opcionais
   ausentes como dados desconhecidos e aceita imagens somente do host público
-  esperado, sem credenciais embutidas na URL. `usePublicPluginCatalog` em
-  `queries.ts` controla carregamento, erro e atualização periódica dessa leitura.
+  esperado, sem credenciais embutidas na URL. Também valida `description_pt_br`
+  e `activation_usage` (`active_machines`, `max_machines`) quando publicados.
+  `pluginCheckout.ts` lê os planos públicos, seleciona pelo `plugin_code` e
+  abre uma sessão de checkout sem enviar credenciais; só aceita URLs HTTPS do
+  Stripe ou do servidor de licenças. `usePublicPluginCatalog` em `queries.ts`
+  controla carregamento, erro e atualização periódica dessa leitura.
+  `PluginStatus` também carrega `installed_at` e `update_checked_at` do estado
+  real persistido pelo nó; não derive a data da última instalação do heartbeat.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

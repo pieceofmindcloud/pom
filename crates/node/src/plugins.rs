@@ -713,6 +713,14 @@ pub(crate) struct PersistedPluginState {
     pub heartbeat_due_at: String,
     pub grace_seconds: u64,
     pub last_success_at: Option<String>,
+    /// Momento em que o host da release instalada ficou pronto. Heartbeats e
+    /// consultas de atualização não alteram este campo.
+    #[serde(default)]
+    pub installed_at: Option<String>,
+    /// Última consulta de manifest concluída com sucesso, independente de
+    /// haver uma release nova. Uma consulta que falha preserva a última boa.
+    #[serde(default)]
+    pub update_checked_at: Option<String>,
     /// A release efetivamente baixada, verificada e instalada nesta máquina.
     /// Só a instalação de `activate_and_install`/o passo final de
     /// `activate` (sem download real, usado só nos testes deste módulo) e
@@ -759,6 +767,8 @@ pub(crate) struct PluginStatus {
     pub manage_url: String,
     pub plugin_version: Option<String>,
     pub lease_expires_at: Option<String>,
+    pub installed_at: Option<String>,
+    pub update_checked_at: Option<String>,
     pub available_update: Option<PluginUpdateInfo>,
 }
 
@@ -772,6 +782,8 @@ impl PluginStatus {
             manage_url: enterprise_protocol::PLUGIN_MANAGE_URL.to_owned(),
             plugin_version: None,
             lease_expires_at: None,
+            installed_at: None,
+            update_checked_at: None,
             available_update: None,
         }
     }
@@ -888,6 +900,8 @@ impl PluginRuntime {
         status.features = persisted.features.clone();
         status.plugin_version = Some(persisted.plugin_version.clone());
         status.lease_expires_at = Some(persisted.lease_expires_at.clone());
+        status.installed_at = persisted.installed_at.clone();
+        status.update_checked_at = persisted.update_checked_at.clone();
         status.available_update = None;
     }
 
@@ -1034,6 +1048,8 @@ impl PluginRuntime {
             heartbeat_due_at: response.heartbeat_due_at,
             grace_seconds: response.grace_seconds,
             last_success_at: None,
+            installed_at: None,
+            update_checked_at: None,
             installed_release_id: response.plugin_release_id,
             plugin_version: response.plugin_manifest.version.clone(),
             features,
@@ -1054,6 +1070,8 @@ impl PluginRuntime {
         status.features = Vec::new();
         status.plugin_version = None;
         status.lease_expires_at = None;
+        status.installed_at = None;
+        status.update_checked_at = None;
         status.available_update = None;
         Ok(())
     }
@@ -1200,12 +1218,26 @@ impl PluginRuntime {
                 "O release instalado não declara nenhuma feature para este plugin.",
             ));
         }
+        let installed_at = chrono::Utc::now().to_rfc3339();
+        let mut persisted_guard = self.persisted.lock().await;
+        let mut persisted = persisted_guard.clone().ok_or_else(|| {
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
+        })?;
+        persisted.installed_at = Some(installed_at.clone());
+        if let Some(database) = &self.database {
+            database.save_local_setting(&self.setting_key(), &persisted).map_err(|error| {
+                LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
+            })?;
+        }
+        *persisted_guard = Some(persisted);
+        drop(persisted_guard);
         let mut status = self.status.write().await;
         status.active = true;
         status.state = LicenseState::Active;
         status.features = features;
         status.plugin_version = Some(plugin_version.to_owned());
         status.lease_expires_at = Some(pending.response.lease_expires_at);
+        status.installed_at = Some(installed_at);
         status.available_update = None;
         Ok(())
     }
@@ -1433,6 +1465,26 @@ impl PluginRuntime {
                 changelog: manifest.manifest.changelog.clone(),
             }
         });
+        let update_checked_at = chrono::Utc::now().to_rfc3339();
+        let mut persisted_guard = self.persisted.lock().await;
+        let has_persisted = if let Some(state) = persisted_guard.as_mut() {
+            state.update_checked_at = Some(update_checked_at.clone());
+            if let Some(database) = &self.database {
+                database.save_local_setting(&self.setting_key(), state).map_err(|error| {
+                    LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
+                })?;
+            }
+            true
+        } else {
+            false
+        };
+        drop(persisted_guard);
+        if !has_persisted {
+            return Err(LicenseClientError::new(
+                LicenseErrorCode::LeaseUnknown,
+                "lease local ausente ao salvar a verificação de atualização",
+            ));
+        }
         let mut status = self.status.write().await;
         if status.active {
             if let Some(update) = &available {
@@ -1443,6 +1495,7 @@ impl PluginRuntime {
                     "release nova do plugin encontrada"
                 );
             }
+            status.update_checked_at = Some(update_checked_at);
             status.available_update = available;
         }
         Ok(())
@@ -1521,6 +1574,7 @@ impl PluginRuntime {
         persisted.plugin_version = manifest.manifest.version.clone();
         persisted.plugin_sha256 = manifest.manifest.sha256.clone();
         persisted.plugin_path = Some(path.to_string_lossy().into_owned());
+        persisted.installed_at = Some(chrono::Utc::now().to_rfc3339());
         persisted.last_success_at = Some(chrono::Utc::now().to_rfc3339());
         if let Some(database) = &self.database {
             database
@@ -1529,9 +1583,10 @@ impl PluginRuntime {
                     LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
                 })?;
         }
-        *self.persisted.lock().await = Some(persisted);
+        *self.persisted.lock().await = Some(persisted.clone());
         let mut status = self.status.write().await;
         status.plugin_version = Some(manifest.manifest.version);
+        status.installed_at = persisted.installed_at.clone();
         status.available_update = None;
         Ok(())
     }
@@ -1830,6 +1885,112 @@ pub(crate) async fn list_plugins(
     axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
 ) -> axum::response::Response {
     axum::Json(state.plugins.all_statuses().await).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PluginCheckoutSessionRequest {
+    pub plan_code: String,
+    pub plugin_code: String,
+    pub interval: String,
+    pub locale: String,
+}
+
+fn valid_checkout_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+async fn public_checkout_json(
+    base_url: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, LicenseClientError> {
+    let url = format!("{}/{}", base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|error| {
+            LicenseClientError::new(
+                LicenseErrorCode::ServerError,
+                format!("cliente de checkout indisponível: {error}"),
+            )
+        })?;
+    let request = match body {
+        Some(body) => client.post(url).json(body),
+        None => client.get(url),
+    };
+    let response = request.send().await.map_err(|error| {
+        LicenseClientError::new(
+            LicenseErrorCode::ServerError,
+            format!("servidor de checkout indisponível: {error}"),
+        )
+    })?;
+    if !response.status().is_success() {
+        return Err(LicenseClientError::new(
+            LicenseErrorCode::ServerError,
+            format!("servidor de checkout respondeu HTTP {}", response.status().as_u16()),
+        ));
+    }
+    response.json().await.map_err(|error| {
+        LicenseClientError::new(
+            LicenseErrorCode::ServerError,
+            format!("resposta inválida do servidor de checkout: {error}"),
+        )
+    })
+}
+
+fn checkout_proxy_error(error: LicenseClientError) -> axum::response::Response {
+    (
+        axum::http::StatusCode::BAD_GATEWAY,
+        axum::Json(serde_json::json!({ "error": error.to_string() })),
+    )
+        .into_response()
+}
+
+pub(crate) async fn public_checkout_plans(
+    _auth: crate::auth::ConnectionAuth,
+) -> axum::response::Response {
+    match public_checkout_json(&license_base_url(), "/v1/checkout/plans", None).await {
+        Ok(value) => axum::Json(value).into_response(),
+        Err(error) => checkout_proxy_error(error),
+    }
+}
+
+pub(crate) async fn create_public_checkout_session(
+    _auth: crate::auth::ConnectionAuth,
+    axum::Json(request): axum::Json<PluginCheckoutSessionRequest>,
+) -> axum::response::Response {
+    if !valid_checkout_identifier(&request.plan_code)
+        || !valid_checkout_identifier(&request.plugin_code)
+        || !matches!(request.interval.as_str(), "month" | "year")
+        || !matches!(request.locale.as_str(), "en" | "pt-BR")
+    {
+        return (
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            axum::Json(serde_json::json!({ "error": "parâmetros de checkout inválidos" })),
+        )
+            .into_response();
+    }
+
+    let body = serde_json::json!({
+        "plan_code": request.plan_code,
+        "plugin_code": request.plugin_code,
+        "interval": request.interval,
+        "locale": request.locale,
+    });
+    match public_checkout_json(
+        &license_base_url(),
+        "/v1/checkout/sessions",
+        Some(&body),
+    )
+    .await
+    {
+        Ok(value) => axum::Json(value).into_response(),
+        Err(error) => checkout_proxy_error(error),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2419,6 +2580,20 @@ mod tests {
     use super::*;
     use enterprise_protocol::{ActivationResponse, Grant, LicenseErrorCode, PluginManifest};
 
+    type CapturedCheckoutRequest = Arc<Mutex<Option<(axum::http::HeaderMap, serde_json::Value)>>>;
+
+    async fn capture_checkout_request(
+        axum::extract::State(captured): axum::extract::State<CapturedCheckoutRequest>,
+        headers: axum::http::HeaderMap,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> axum::Json<serde_json::Value> {
+        *captured.lock().await = Some((headers, body));
+        axum::Json(serde_json::json!({
+            "id": "cs_test_checkout_123",
+            "url": "https://checkout.stripe.com/c/pay/cs_test_checkout_123",
+        }))
+    }
+
     fn activation(code: &str, release_id: &str) -> ActivationResponse {
         ActivationResponse {
             license_id: "lic-1".into(),
@@ -2460,6 +2635,50 @@ mod tests {
                 signature: "grant-signature".into(),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn public_checkout_proxy_forwards_only_the_public_session_contract() {
+        let captured: CapturedCheckoutRequest = Arc::new(Mutex::new(None));
+        let app = axum::Router::new()
+            .route("/v1/checkout/sessions", axum::routing::post(capture_checkout_request))
+            .with_state(captured.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind checkout mock");
+        let address = listener.local_addr().expect("checkout mock address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("checkout mock server");
+        });
+        let request = serde_json::json!({
+            "plan_code": "analytics-plus",
+            "plugin_code": "analytics_plus",
+            "interval": "year",
+            "locale": "pt-BR",
+        });
+
+        let response = public_checkout_json(
+            &format!("http://{address}"),
+            "/v1/checkout/sessions",
+            Some(&request),
+        )
+        .await
+        .expect("checkout response");
+        server.abort();
+
+        assert_eq!(response["url"], "https://checkout.stripe.com/c/pay/cs_test_checkout_123");
+        let (headers, body) = captured.lock().await.take().expect("captured request");
+        assert_eq!(body, request);
+        assert!(headers.get(axum::http::header::AUTHORIZATION).is_none());
+        assert!(headers.get(axum::http::header::COOKIE).is_none());
+    }
+
+    #[test]
+    fn checkout_identifiers_cannot_change_the_fixed_server_path() {
+        assert!(valid_checkout_identifier("analytics_plus-2.1"));
+        assert!(!valid_checkout_identifier("alpha/beta"));
+        assert!(!valid_checkout_identifier("../checkout/sessions"));
+        assert!(!valid_checkout_identifier(""));
     }
 
     #[test]
@@ -2691,6 +2910,9 @@ mod tests {
         let runtime = manager.runtime_for("enterprise").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         assert!(runtime.status().await.available_update.is_none());
+        let installed_at = "2026-09-20T10:15:00.000Z".to_owned();
+        runtime.persisted.lock().await.as_mut().expect("persisted").installed_at = Some(installed_at.clone());
+        runtime.status.write().await.installed_at = Some(installed_at.clone());
 
         updated.plugin_release_id = "ent-2".into();
         updated.plugin_manifest.release_id = "ent-2".into();
@@ -2705,6 +2927,11 @@ mod tests {
             .expect("update should be advertised");
         assert_eq!(available.release_id, "ent-2");
         assert_eq!(available.version, "0.2.0");
+        let status = runtime.status().await;
+        let checked_at = status.update_checked_at.expect("successful manifest check timestamp");
+        assert!(chrono::DateTime::parse_from_rfc3339(&checked_at).is_ok());
+        assert_eq!(status.installed_at.as_deref(), Some(installed_at.as_str()));
+        assert_eq!(runtime.persisted_state().await.expect("persisted").installed_at.as_deref(), Some(installed_at.as_str()));
     }
 
     /// Reproduz o bug relatado pelo captain: um heartbeat bem-sucedido não

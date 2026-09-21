@@ -91,6 +91,35 @@ describe("fetchPublicPluginCatalog", () => {
     expect(catalog.plugins[0].icon_url).toBeNull();
   });
 
+  it("preserves the localized description and validated machine activation limits from the catalog contract", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      plugins: [publicPlugin("capacity", {
+        description_pt_br: "Descrição em português",
+        activation_usage: { active_machines: 2, max_machines: 5 },
+      })],
+    }), { status: 200 })));
+
+    const catalog = await fetchPublicPluginCatalog();
+
+    expect(catalog.plugins[0].description).toBe("capacity description");
+    expect(catalog.plugins[0].description_pt_br).toBe("Descrição em português");
+    expect(catalog.plugins[0].activation_usage).toEqual({ active_machines: 2, max_machines: 5 });
+  });
+
+  it("omits malformed machine activation limits instead of inventing a capacity", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      plugins: [publicPlugin("capacity", {
+        description_pt_br: "   ",
+        activation_usage: { active_machines: -1, max_machines: 0 },
+      })],
+    }), { status: 200 })));
+
+    const catalog = await fetchPublicPluginCatalog();
+
+    expect(catalog.plugins[0].description_pt_br).toBeNull();
+    expect(catalog.plugins[0].activation_usage).toBeNull();
+  });
+
   it("rejects a malformed public catalog response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [] }), { status: 200 })));
 

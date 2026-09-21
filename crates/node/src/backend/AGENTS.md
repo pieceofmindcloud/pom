@@ -187,7 +187,12 @@ profile policy remains the effective authorization boundary.
   (`crate::plugins`), cada um com seu estado, features e atualização de
   versão próprios; `POST /api/ui/plugins/activate` ativa quantos plugins
   conhecidos a chave conceder, e `POST /api/ui/plugins/:code/refresh|
-  deactivate|update/check|update/apply` agem sobre um plugin só. A detecção
+  deactivate|update/check|update/apply` agem sobre um plugin só.
+  `GET /api/ui/plugins/checkout/plans` e
+  `POST /api/ui/plugins/checkout/sessions` são proxies autenticados para o
+  checkout público do license-server. Encaminham só o contrato público de
+  plano/plugin/intervalo/idioma e nunca repassam chave, cookie ou token de
+  licença. A detecção
   da release `pom_core` é outra fronteira, deliberadamente separada
   (`crate::pom_core_update`): `GET /api/ui/pom-update/status`,
   `POST /api/ui/pom-update/check` força a detecção sob demanda, e

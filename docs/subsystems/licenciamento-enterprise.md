@@ -57,6 +57,13 @@ que é uma fronteira de produto separada desde antes e continua sendo).
   independente de qualquer outro plugin e do `pom_core` (ver `## Detecção e
   atualização` mais abaixo, que é sobre o `pom_core`, não sobre isto).
 
+  `PersistedPluginState.installed_at` marca quando o host ficou pronto após a
+  instalação inicial ou a aplicação de uma nova release. `update_checked_at`
+  marca a última consulta bem-sucedida do manifest, mesmo quando não há update;
+  falhas preservam a consulta boa anterior. Ambos aparecem em `PluginStatus` e
+  são campos opcionais com default ao ler estados já persistidos. `last_success_at`
+  segue reservado ao heartbeat e nunca serve como data de instalação.
+
   **Defeito corrigido (2026-09-21):** até esta correção, o heartbeat escrevia o
   `plugin_release_id` recebido do servidor diretamente em
   `installed_release_id` - o mesmo campo que `detect_update` usa como base de

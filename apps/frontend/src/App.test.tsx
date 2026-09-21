@@ -58,6 +58,7 @@ vi.mock("./components/PluginScreen", () => ({
   ),
 }));
 vi.mock("./routes/WholeModels", () => ({ WholeModels: () => <div>tela-modelos</div> }));
+vi.mock("./routes/Plugins", () => ({ Plugins: () => <div>tela-plugins</div> }));
 vi.mock("./routes/Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 vi.mock("./routes/Chat", () => ({ Chat: () => <div>tela-chat</div> }));
 vi.mock("./routes/Preferences", () => ({ Preferences: () => <div>tela-preferencias</div> }));
@@ -87,6 +88,13 @@ describe("guarda de perfil por rota", () => {
     cleanup();
     adminSurface.value = "available";
     pluginUi.plugins = [];
+  });
+
+  it("renderiza Plugins no contêiner full-bleed", async () => {
+    open("/plugins", "admin");
+
+    const content = await screen.findByText("tela-plugins");
+    expect(content.closest(".h-full.w-full")).toBeTruthy();
   });
 
   const fechadas = [

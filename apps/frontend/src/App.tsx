@@ -270,7 +270,13 @@ export default function App() {
       location.pathname === "/implantacoes/logs" ||
       location.pathname === "/redes-publicas" ||
       location.pathname === "/network-chat" ||
-      location.pathname === "/config/keys/api");
+      location.pathname === "/config/keys/api" ||
+      location.pathname === "/modelos" ||
+      location.pathname === "/modelos/remotos" ||
+      location.pathname === "/modelos/fatiar" ||
+      location.pathname === "/fatias" ||
+      location.pathname === "/transferencias" ||
+      location.pathname === "/transferencias/enviar");
   /*
    * O assistente é a única tela que sai da moldura inteira: ele guia a
    * configuração do zero, com barra de progresso e uma pergunta por vez, e o

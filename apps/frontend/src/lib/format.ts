@@ -94,6 +94,17 @@ export function basename(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+/**
+ * Same as `basename`, for an optional path that may not exist — the mmproj
+ * projector sidecar, which a model or shard set may simply not have. Returns
+ * `null` instead of inventing a name.
+ */
+export function optionalBasename(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
 /** Human-readable model label; the catalog identity stays unchanged. */
 export function deployModelDisplayName(name: string): string {
   return name

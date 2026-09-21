@@ -29,7 +29,7 @@
  */
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { BookOpen, ChevronRight, FileText, Layers, Search, X } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronRight, FileText, Layers, Search, X } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Markdown } from "../components/Markdown";
@@ -307,6 +307,14 @@ export function Documentation() {
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const readerRef = useRef<HTMLDivElement>(null);
+  // No celular a barra lateral ocupa a tela inteira e o leitor fica escondido
+  // até uma seleção explícita; um deep link (`?doc=`/`?guia=` já na URL ao
+  // montar) conta como essa seleção e abre direto no conteúdo. `Voltar` no
+  // topo do leitor apenas fecha essa vista - o `?doc=`/`?guia=` continua
+  // valendo, então recarregar a página não perde o lugar.
+  const [mobileReaderOpen, setMobileReaderOpen] = useState(
+    () => Boolean(params.get("doc") || params.get("guia")),
+  );
 
   const entries = manifest.entries;
   const byId = useMemo(() => new Map(entries.map((e) => [e.id, e])), [entries]);
@@ -338,6 +346,7 @@ export function Documentation() {
   const openDoc = useCallback(
     (id: string) => {
       setParams({ tab: "referencia", doc: id }, { replace: true });
+      setMobileReaderOpen(true);
       toTop();
     },
     [setParams, toTop],
@@ -346,6 +355,7 @@ export function Documentation() {
   const openGuide = useCallback(
     (id: string) => {
       setParams({ tab: "guias", guia: id }, { replace: true });
+      setMobileReaderOpen(true);
       toTop();
     },
     [setParams, toTop],
@@ -402,7 +412,18 @@ export function Documentation() {
 
   return (
     <div className="flex h-full min-h-0 w-full">
-      <nav className="flex w-[16.5rem] shrink-0 flex-col border-r border-line bg-surface">
+      {/*
+        No celular esta barra ocupa a tela inteira e o leitor fica escondido
+        até uma seleção; a partir de `sm:` as duas colunas voltam a conviver,
+        independentemente de `mobileReaderOpen` - esse estado só existe para o
+        celular.
+      */}
+      <nav
+        className={clsx(
+          "w-full shrink-0 flex-col border-r border-line bg-surface sm:flex sm:w-[16.5rem]",
+          mobileReaderOpen ? "hidden" : "flex",
+        )}
+      >
         <div className="shrink-0 border-b border-line p-3">
           <TabSwitch tab={tab} onChange={switchTab} />
         </div>
@@ -514,7 +535,30 @@ export function Documentation() {
         </div>
       </nav>
 
-      <div ref={readerRef} className="min-w-0 flex-1 overflow-y-auto">
+      <div
+        ref={readerRef}
+        data-testid="docs-reader"
+        className={clsx(
+          "min-w-0 flex-1 overflow-y-auto sm:block",
+          mobileReaderOpen ? "block" : "hidden",
+        )}
+      >
+        {/* Só faz sentido abaixo de `sm:` - a partir daí as duas colunas
+            convivem e voltar é só escolher outro item na barra, já visível.
+            Montado apenas quando a vista mobile está aberta, para o estado
+            ficar inspecionável sem depender de um breakpoint real. */}
+        {mobileReaderOpen && (
+          <div className="sticky top-0 z-10 flex items-center border-b border-line bg-surface/95 px-2 py-1.5 backdrop-blur-sm sm:hidden">
+            <button
+              type="button"
+              onClick={() => setMobileReaderOpen(false)}
+              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[0.82rem] font-medium text-muted transition-colors hover:text-fg"
+            >
+              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+              {t("docs.back")}
+            </button>
+          </div>
+        )}
         <div className="mx-auto w-full max-w-[62rem] px-6 py-7 sm:px-10">
           {tab === "guias" ? (
             guide ? (

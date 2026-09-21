@@ -174,6 +174,18 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   fatiamento embutido
 - `/fatias` -> Shards;
   `/fatias/implantar` -> redireciona para `/implantar` (link antigo)
+- Essas quatro rotas, mais `/transferencias` e `/transferencias/enviar`, são
+  tela cheia (`isFullBleed` em `App.tsx`), no mesmo contrato de
+  `/implantacoes`/`/implantacoes/logs`: cabeçalho fixo
+  (`FullBleedHeader`/`FullBleedToolbar`, `components/ui.tsx`) e uma tabela ou
+  o conteúdo próprio rolando por dentro, em vez da coluna central com
+  `max-w-[1400px]`. `WholeModels`, `Shards` e a busca de `RemoteModels` viraram
+  tabelas de largura total; `RemoteModelCard`, o cartão que a busca usava
+  antes, foi removido. `WholeModels` e `Shards` mostram uma coluna/nota de
+  visão com o nome do arquivo `mmproj` (`DiscoveredModel.mmproj_path`/
+  `ShardSet.mmproj_path`, já resolvidos no catálogo por
+  `catalog::find_mmproj_sibling`) ou "sem projetor" quando o modelo/rodada não
+  tem um - a tela nunca inventa o nome.
 - `/implantar` -> DeployModel (entrada de primeiro nível para pôr fatias em
   serviço)
 - `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,
@@ -888,7 +900,7 @@ explica que não existem arestas entre peers.
   embutido no bundle por `apps/frontend/scripts/build-docs.mjs` (não há rota no
   nó; a tela lê `manifest.json` + `import.meta.glob`).
 
-Três decisões que não são estética:
+Quatro decisões que não são estética:
 
 - **A tela é de largura total** (`App.tsx` lista `/documentacao` junto de `/`
   em `isFullBleed`) e rola por dentro: a coluna de navegação e a de leitura são
@@ -904,6 +916,15 @@ Três decisões que não são estética:
 - **Recolher funciona.** O chevron alterna, o rótulo abre a visão geral, e a
   seção que contém o documento aberto não é mais forçada a reabrir - esse era
   o defeito: categoria que ficava sempre expandida.
+- **No celular são duas telas com um endereço só.** Abaixo de `sm:` a coluna
+  de navegação ocupa a largura inteira e o leitor fica escondido
+  (`mobileReaderOpen`); escolher um guia ou documento abre o leitor em tela
+  cheia com um botão Voltar fixo no topo (só existe montado enquanto essa
+  vista está aberta). Voltar mexe só nesse estado local - `?doc=`/`?guia=`
+  continuam intactos, então recarregar a página não perde o lugar. Um deep
+  link que já chega com `?doc=`/`?guia=` na URL conta como a mesma seleção e
+  abre direto no leitor. A partir de `sm:` as duas colunas voltam a conviver,
+  independentemente desse estado.
 
 ## A interface com o cluster em TLS
 
@@ -986,9 +1007,17 @@ impressão digital é só modelo + conjunto de faixas.
 
 ## Fatiar, implantar e transferir na tela
 
-- **Fatiar** (`SliceModels`): plano por tamanho (alvo em GB por fatia, vazio =
-  "o resto"), uma faixa específica por início/fim de camada, ou Tensor
-  Parallelism. A faixa específica usa as opções arquiteturais do GGUF, envia
+- **Fatiar** (`SliceModels`): Pipeline e Tensor Parallelism são um par de abas
+  (`role="tablist"`) no topo do painel de origem, não uma caixa de marcar - cada
+  modo tem seus próprios controles embaixo. A aba Tensor Parallelism só existe
+  quando `useNode().data.pom_desenv === true` (`NodeInfo.pom_desenv`, o mesmo
+  `POM_DESENV=1` que já esconde as seções DESENV do `DeploymentInspector`); sem
+  a flag a tela nunca oferece nem envia `mode: "tensor_parallel"` - o único
+  modo possível é pipeline, e um `mode` que já estivesse em `tensor_parallel`
+  quando a resposta de `/api/ui/node` chega depois é revertido. Pipeline
+  oferece plano por tamanho (alvo em GB por fatia, vazio =
+  "o resto") ou uma faixa específica por início/fim de camada; a faixa
+  específica usa as opções arquiteturais do GGUF, envia
   `range: { start_layer, end_layer }` e acrescenta a parte ao manifesto por
   hash, sem substituir nem apagar fatias anteriores. No modo TP, o operador
   escolhe 2..64 ranks e a prévia mostra uma faixa completa por rank com a
@@ -1211,7 +1240,9 @@ impressão digital é só modelo + conjunto de faixas.
   receptor, lida no arranque) aceita toda oferta sem clique - só dev.
   Peers da mesma máquina compartilham o hostname, então o destino e a etiqueta
   de disponibilidade levam o começo do `node_id` quando o nome se repete
-  (`uniqueName`, `routes/Shards.tsx`).
+  (`uniqueName`, `routes/Shards.tsx`). Ofertas, ativas e concluídas em
+  `Transfers` são cada uma uma tabela de largura total (era uma lista de
+  cartões), com a ação de aceitar/rejeitar/cancelar na última coluna.
 
 ### Informações da rede e materiais de entrada
 

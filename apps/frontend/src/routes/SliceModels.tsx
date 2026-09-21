@@ -7,6 +7,7 @@
  * rest", and the rounding to whole layers is shown rather than hidden — the
  * asked-for size, the layer range it became and the real size, side by side.
  */
+import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { Cpu, Layers, Play, Plus, Scissors, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -18,8 +19,8 @@ import {
   ErrorState,
   Field,
   Footnote,
+  FullBleedHeader,
   Input,
-  PageHeader,
   Panel,
   PanelHeader,
   ScrollX,
@@ -28,7 +29,7 @@ import {
 } from "../components/ui";
 import { api } from "../lib/api";
 import { bytes, layerRange, num } from "../lib/format";
-import { useInvalidate, useLocalCatalog } from "../lib/queries";
+import { useInvalidate, useLocalCatalog, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import {
   isWholeModel,
@@ -80,8 +81,13 @@ export function SliceModels() {
   const { t, locale } = useI18n();
   const [params] = useSearchParams();
   const catalog = useLocalCatalog();
+  const node = useNode();
   const toast = useToast();
   const invalidate = useInvalidate();
+  // Tensor Parallelism é um recurso de desenvolvimento: o backend só o marca
+  // disponível com `POM_DESENV=1` (`NodeInfo.pom_desenv`). Fora disso a tela
+  // nem oferece a opção, e o modo nunca sai de "pipeline".
+  const pomDesenv = node.data?.pom_desenv === true;
 
   // Fatiar é sobre modelos inteiros: fatias têm `shard_range` e não podem ser
   // fatiadas de novo.
@@ -103,6 +109,13 @@ export function SliceModels() {
   useEffect(() => {
     if (!path && models.length > 0) setPath(models[0].path);
   }, [models, path]);
+
+  // A flag pode chegar depois do primeiro render (a leitura de `/api/ui/node`
+  // é assíncrona); um modo TP escolhido antes disso não pode sobreviver à
+  // confirmação de que o desenvolvimento está desligado.
+  useEffect(() => {
+    if (!pomDesenv && mode === "tensor_parallel") setMode("pipeline");
+  }, [pomDesenv, mode]);
 
   const model = models.find((m) => m.path === path);
   const metadataComplete = catalog.data?.metadata_complete ?? true;
@@ -269,12 +282,13 @@ export function SliceModels() {
   }
 
   return (
-    <>
-      <PageHeader
+    <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
+      <FullBleedHeader
         title={t("slice.title")}
         subtitle={t("slice.subtitle")}
       />
 
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-4 sm:p-5">
       <div className="mb-5">
         <SlicingJobsPanel />
       </div>
@@ -359,43 +373,77 @@ export function SliceModels() {
                     )}
                   </div>
                 )}
-                <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-raised/60 px-3.5 py-3 transition-colors hover:border-iris/50">
-                  <input
-                    type="checkbox"
-                    checked={tensorMode}
-                    onChange={(e) => setMode(e.target.checked ? "tensor_parallel" : "pipeline")}
-                    className="mt-0.5 h-4 w-4 accent-iris"
-                    aria-label={t("slice.modeTensor")}
-                  />
-                  <span className="min-w-0">
-                    <span className="flex items-center gap-1.5 text-[0.82rem] font-medium text-fg">
-                      <Cpu className="h-3.5 w-3.5 text-iris" />
-                      {t("slice.modeTensor")}
-                    </span>
-                    <span className="mt-1 block text-[0.75rem] leading-relaxed text-muted">
-                      {t("slice.modeTensorHint")}
-                    </span>
-                  </span>
-                </label>
-                <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-raised/60 px-3.5 py-3 transition-colors hover:border-iris/50">
-                  <input
-                    type="checkbox"
-                    checked={singleRange}
-                    onChange={(e) => setSingleRange(e.target.checked)}
-                    disabled={tensorMode}
-                    className="mt-0.5 h-4 w-4 accent-iris"
-                    aria-label={t("slice.singleRange")}
-                  />
-                  <span className="min-w-0">
-                    <span className="text-[0.82rem] font-medium text-fg">
-                      {t("slice.singleRange")}
-                    </span>
-                    <span className="mt-1 block text-[0.75rem] leading-relaxed text-muted">
-                      {t("slice.singleRangeHint")}
-                    </span>
-                  </span>
-                </label>
-                {singleRange && !tensorMode && (
+                {/*
+                  Tensor Parallelism é um recurso de desenvolvimento: o botão
+                  só existe quando o backend confirma `POM_DESENV=1`. Uma vista
+                  só não é escolha, então sem a flag este grupo nem aparece e o
+                  modo nunca sai de "pipeline" (mesmo padrão de
+                  `DeploymentInspector`/`RuntimeParamsForm`).
+                */}
+                {pomDesenv && (
+                  <div
+                    role="tablist"
+                    aria-label={t("slice.modeGroupAria")}
+                    className="flex items-center gap-1 rounded-lg border border-line bg-raised p-1"
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={!tensorMode}
+                      onClick={() => setMode("pipeline")}
+                      className={clsx(
+                        "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.78rem] font-medium transition-colors",
+                        !tensorMode
+                          ? "bg-iris/15 text-fg ring-1 ring-inset ring-iris/25"
+                          : "text-muted hover:text-fg",
+                      )}
+                    >
+                      <Layers className="h-3.5 w-3.5" />
+                      {t("slice.modePipeline")}
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={tensorMode}
+                      onClick={() => setMode("tensor_parallel")}
+                      className={clsx(
+                        "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.78rem] font-medium transition-colors",
+                        tensorMode
+                          ? "bg-iris/15 text-fg ring-1 ring-inset ring-iris/25"
+                          : "text-muted hover:text-fg",
+                      )}
+                    >
+                      <Cpu className="h-3.5 w-3.5" />
+                      {t("slice.modeTensorShort")}
+                    </button>
+                  </div>
+                )}
+                {tensorMode && (
+                  <p className="flex items-start gap-2 text-[0.75rem] leading-relaxed text-muted">
+                    <Cpu className="mt-0.5 h-3.5 w-3.5 shrink-0 text-iris" />
+                    {t("slice.modeTensorHint")}
+                  </p>
+                )}
+                {!tensorMode && (
+                  <>
+                    <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-raised/60 px-3.5 py-3 transition-colors hover:border-iris/50">
+                      <input
+                        type="checkbox"
+                        checked={singleRange}
+                        onChange={(e) => setSingleRange(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 accent-iris"
+                        aria-label={t("slice.singleRange")}
+                      />
+                      <span className="min-w-0">
+                        <span className="text-[0.82rem] font-medium text-fg">
+                          {t("slice.singleRange")}
+                        </span>
+                        <span className="mt-1 block text-[0.75rem] leading-relaxed text-muted">
+                          {t("slice.singleRangeHint")}
+                        </span>
+                      </span>
+                    </label>
+                    {singleRange && (
                   <div className="grid grid-cols-2 gap-3 rounded-xl border border-iris/20 bg-iris/5 px-3.5 py-3">
                     <Field label={t("slice.rangeStart")}>
                       <Select
@@ -430,6 +478,8 @@ export function SliceModels() {
                       </p>
                     )}
                   </div>
+                    )}
+                  </>
                 )}
               </div>
             </Panel>
@@ -716,6 +766,7 @@ export function SliceModels() {
           </Panel>
         </div>
       )}
-    </>
+      </div>
+    </div>
   );
 }

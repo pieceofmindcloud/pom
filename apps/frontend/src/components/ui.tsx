@@ -64,6 +64,58 @@ export function PanelHeader({
   );
 }
 
+/**
+ * The compact header bar shared by every full-bleed table screen (the
+ * contract `Deployments`/`PublicNetworks`/`DeploymentLogs` already use):
+ * a fixed, edge-to-edge bar above a body that scrolls by itself, instead of
+ * the padded, centred column `PageHeader` sits in.
+ */
+export function FullBleedHeader({
+  title,
+  subtitle,
+  actions,
+  className,
+}: {
+  title: string;
+  subtitle?: ReactNode;
+  actions?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <header className={clsx("shrink-0 border-b border-line bg-surface/75", className)}>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 px-3 py-3 sm:px-4">
+        <div className="min-w-0">
+          <h1 className="truncate font-display text-lg font-semibold tracking-tight text-fg">
+            {title}
+          </h1>
+          {subtitle && <p className="mt-0.5 truncate text-[0.7rem] text-muted">{subtitle}</p>}
+        </div>
+        {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+      </div>
+    </header>
+  );
+}
+
+/** The filter/search strip under a `FullBleedHeader`, same bar `PublicNetworks` uses. */
+export function FullBleedToolbar({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={clsx(
+        "flex shrink-0 flex-wrap items-end justify-between gap-3 border-b border-line bg-raised/60 px-4 py-3 sm:px-5",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function PageHeader({
   title,
   subtitle,

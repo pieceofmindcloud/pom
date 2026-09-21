@@ -12,7 +12,7 @@ import {
   Button,
   Empty,
   Field,
-  PageHeader,
+  FullBleedHeader,
   Panel,
   PanelHeader,
   Select,
@@ -65,12 +65,13 @@ export function SendFile() {
   }
 
   return (
-    <>
-      <PageHeader
+    <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
+      <FullBleedHeader
         title={t("sendFile.title")}
         subtitle={t("sendFile.subtitle")}
       />
 
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-4 sm:p-5">
       {cluster.isLoading && <Skeleton className="h-56 w-full" />}
 
       {cluster.data && peers.length === 0 ? (
@@ -149,6 +150,7 @@ export function SendFile() {
           </Panel>
         </div>
       )}
-    </>
+      </div>
+    </div>
   );
 }

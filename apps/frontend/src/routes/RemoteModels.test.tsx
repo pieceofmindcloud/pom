@@ -1,0 +1,86 @@
+// @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { LocaleProvider } from "../i18n/provider";
+import { RemoteModels } from "./RemoteModels";
+
+vi.mock("../components/ModelDownloadsPanel", () => ({
+  ModelDownloadsPanel: () => <div data-testid="model-downloads-panel" />,
+}));
+
+vi.mock("../lib/queries", () => ({
+  keys: { jobs: ["jobs"] },
+  useRemoteModelDetails: () => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  }),
+  useRemoteModelProviderStatus: () => ({
+    data: { cli: { installed: true }, auth: { authenticated: true } },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  }),
+  useRemoteModelSearch: () => ({
+    data: {
+      models: [
+        {
+          repo_id: "org/qwen-gguf",
+          author: "org",
+          description: "A quantised Qwen model.",
+          has_gguf: true,
+          gated: false,
+          private: false,
+          installed: false,
+          downloading: false,
+          tags: ["gguf", "chat"],
+          downloads: 12_345,
+          likes: 42,
+          last_modified: "2026-08-01T00:00:00Z",
+        },
+      ],
+      total: 1,
+      has_next: false,
+    },
+    isLoading: false,
+    isError: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  }),
+}));
+
+afterEach(cleanup);
+
+function renderScreen(initialEntry = "/modelos/remotos?q=qwen") {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter
+        initialEntries={[initialEntry]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="en">
+          <RemoteModels />
+        </LocaleProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe("RemoteModels", () => {
+  it("renders search results as a full-width table", () => {
+    renderScreen();
+    expect(screen.getByRole("table")).toBeTruthy();
+    expect(screen.getByText("org/qwen-gguf")).toBeTruthy();
+    expect(screen.getByText("12,345")).toBeTruthy();
+  });
+
+  it("opens the details dialog when a result row is activated", () => {
+    renderScreen();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByText("org/qwen-gguf"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+});

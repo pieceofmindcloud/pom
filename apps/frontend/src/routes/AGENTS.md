@@ -202,13 +202,23 @@ Per-file list:
   - **Collapsing is honest.** The chevron toggles, the label opens the
     overview, and holding the open document no longer forces a section back
     open (`collapsed` state, explicit `true` wins).
+  - **Mobile is two screens sharing one address.** Below `sm:` the nav column
+    takes the full width and the reader is hidden (`mobileReaderOpen` state);
+    picking a guide/doc entry opens the reader full-screen with a `Voltar`
+    button pinned at its top (`sm:hidden`, only mounted while open). `Voltar`
+    only flips that local state - it never touches `?doc=`/`?guia=`, so the
+    selection survives the round trip. A deep link present at mount
+    (`?doc=`/`?guia=` already in the URL) counts as that same selection and
+    opens straight into the reader. From `sm:` up both columns render side by
+    side regardless of the flag, exactly like before.
   Search filters label, path *and* body, and replaces the tree with a flat
   result list whose hint is the section name, not the file. Test file
   `Documentation.test.tsx` covers the contract: guides first (a person must not
   land on agent markdown), the guide->reference deep link, no `.md` or
   `AGENTS.md` in the list, section header opens the overview, collapse works
   while holding the selection, the two scroll containers, `?doc=`/`?guia=` deep
-  links, search + clear, empty state. Loading the embedded set requires
+  links, search + clear, empty state, and the mobile nav/reader/Voltar
+  contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `About.tsx` - Tela informativa em `/config/sobre`, última folha de
   Configurações. Mostra a licença do POM como placeholder visualmente marcado
@@ -527,7 +537,9 @@ Per-file list:
 - `SendFile.tsx` - offers a `.gguf` from the local catalog via
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
-  it again and the receiver sees only an opaque grant.
+  it again and the receiver sees only an opaque grant. Full-bleed shell
+  (`FullBleedHeader` + scrolling body), same contract as `Deployments`/
+  `PublicNetworks`.
 - `Setup.tsx` - First run (no `pom.json`): real wizard backed by
   `/api/setup/hardware`, `/api/setup/geo-reference`,
   `/api/setup/admin-anchor/preview`, `/api/setup/health` and
@@ -553,9 +565,18 @@ Per-file list:
   rows use the one-based labels `1of2`, `2of2`, and so on, with the zero-based
   rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
   `../lib/deleteModel`. `uniqueName` disambiguates same-hostname peers with
-  the node_id prefix.
-- `SliceModels.tsx` - "Fatiar": the operator chooses pipeline slicing, one
-  explicit layer range, or Tensor Parallelism. Pipeline builds a by-size plan
+  the node_id prefix. Full-bleed shell; each `ShardCard` shows the set's
+  `mmproj_path` basename (`../lib/format::optionalBasename`) next to the coverage bar,
+  or "no projector" when the set has none - never invented.
+- `SliceModels.tsx` - "Fatiar": full-bleed shell. Pipeline and Tensor
+  Parallelism are a segmented tab pair (`role="tablist"`), not a checkbox -
+  each mode owns its own controls (Pipeline: size list, one explicit layer
+  range, or Tensor Parallelism's rank count). The Tensor Parallelism tab only
+  mounts when `useNode().data.pom_desenv === true` (the same
+  `POM_DESENV=1`-gated pattern as `DeploymentInspector`/`RuntimeParamsForm`);
+  without it the screen never offers or sends `mode: "tensor_parallel"`, and an
+  effect snaps a stale selection back to `"pipeline"` if the flag turns out
+  false after the first render. Pipeline builds a by-size plan
   (target GB per slice, empty = "the rest"); a single range uses the GGUF
   architectural starts and ends; TP chooses 2..64 ranks and previews one full
   layer range per rank, labeled `1ofN`. The modes use the debounced
@@ -581,18 +602,28 @@ Per-file list:
   State classification from `../lib/transferStatus`. `cancelled` é
   mostrada como **recusada**, em âmbar, e não como falha vermelha: foi decisão
   de alguém, não erro. Fatias aparecem por modelo e faixa de camadas
-  (`../lib/transferLabel`), com o hash curto ao lado.
-- `WholeModels.tsx` — Full-model catalog from `useLocalCatalog`, one `ModelRow`
-  per model with actions: slice (links to `/modelos/fatiar?path=`), send
-  (`/transferencias/enviar?path=`), delete (`../lib/deleteModel`). `ScannedRoots`
-  lists the scanned folders and per-folder file counts.
+  (`../lib/transferLabel`), com o hash curto ao lado. Full-bleed shell; ofertas,
+  ativas e terminadas são cada uma uma tabela de largura total em vez da lista
+  de cartões anterior, com cabeçalho fixo e ações na última coluna.
+- `WholeModels.tsx` — Full-model catalog from `useLocalCatalog`, one full-width
+  table row (`ModelRow`) per model with actions: slice (links to
+  `/modelos/fatiar?path=`), send (`/transferencias/enviar?path=`), delete
+  (`../lib/deleteModel`). A dedicated "Vision (mmproj)" column shows the
+  projector's basename (`../lib/format::optionalBasename`) when
+  `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the
+  catalog already resolves this file (`crates/node/src/models/catalog.rs::find_mmproj_sibling`),
+  the screen only renders it. `ScannedRoots`
+  lists the scanned folders and per-folder file counts. Full-bleed shell.
 - `RemoteModels.tsx` - mostra primeiro o status do CLI e da autenticação,
   depois busca com debounce em `/api/ui/model-provider/search`, filtro GGUF,
   ordenação, paginação por URL, detalhes lazy e confirmação de download. O
   detalhe resolve a licença pelo provider e marca modelos gated antes do
   download. O diálogo mostra as pastas de modelos resolvidas pelo backend. Os
   jobs aparecem no `ModelDownloadsPanel`, também em Transferências, então trocar
-  de rota ou recarregar não perde uma transferência.
+  de rota ou recarregar não perde uma transferência. Full-bleed shell; os
+  resultados são uma tabela de largura total (nome/tags, estado, downloads,
+  curtidas, atualizado, ação), não mais um grid de cartões - `RemoteModelCard`
+  foi removido por ficar sem uso.
 
 Key logic carriers:
 

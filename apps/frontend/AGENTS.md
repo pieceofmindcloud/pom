@@ -105,6 +105,14 @@ desenhado**, porque uma vista só não é uma escolha.
   detalhes e downloads persistidos no nó); `/modelos/fatiar` -> SliceModels, que também
   mostra os jobs de fatiamento e suas barras de progresso
 - `/fatias` -> Shards; `/fatias/implantar` -> redirects to `/implantar` (kept for old links)
+- `/modelos`, `/modelos/remotos`, `/modelos/fatiar`, `/fatias`,
+  `/transferencias` e `/transferencias/enviar` são full-bleed, no mesmo
+  padrão de `/implantacoes`/`/implantacoes/logs`: cabeçalho fixo
+  (`FullBleedHeader`, `components/ui.tsx`) e tabela ou conteúdo rolando por
+  dentro. Modelos inteiros e Fatias mostram o nome do arquivo `mmproj`
+  quando o modelo/rodada tem visão (`DiscoveredModel.mmproj_path`/
+  `ShardSet.mmproj_path`, já vindos do catálogo - a tela só renderiza). Ver
+  `src/routes/AGENTS.md`.
 - `/implantar` -> DeployModel (first-level entry for putting models in service,
   full-bleed Deploy Studio with central cluster map, property inspector and
   draggable peer strip; whole-model mode accepts exactly one map machine)
@@ -121,7 +129,7 @@ desenhado**, porque uma vista só não é uma escolha.
   quando um plugin ativo as fornece (fora do `<Routes>`, antes da tabela de
   rotas); senão o fallback `EnterpriseFeatureShowcase`.
   `/logs/estatisticas` continua redirecionando para a rota nova.
-- `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
+- `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`). No celular a barra lateral ocupa a tela inteira e o leitor some até uma seleção explícita ou um deep link; selecionar abre o leitor com um botão Voltar no topo, que só fecha a vista mobile (a seleção em `?doc=`/`?guia=` continua).
 - `/config/rede` -> NetworkSettings; a seção principal Rede também reúne
   `/config/rede/participantes`, `/config/administracao` (Administradores),
   `/config/compartilhamento` (TrustAnchor com máquina, raiz e chave de conexão)

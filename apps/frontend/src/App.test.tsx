@@ -153,6 +153,13 @@ describe("guarda de perfil por rota", () => {
     expect(await screen.findByText("tela-modelos")).toBeTruthy();
   });
 
+  it("a tela de modelos ocupa a tela cheia, como Implantações e Painel", async () => {
+    const { container } = open("/modelos", "admin");
+    expect(await screen.findByText("tela-modelos")).toBeTruthy();
+    expect(container.querySelector(".h-full.w-full")).toBeTruthy();
+    expect(container.querySelector(".max-w-\\[1400px\\]")).toBeNull();
+  });
+
   it("abre Preferências para o perfil do nó", async () => {
     open("/config/preferencias", "node");
     expect(await screen.findByText("tela-preferencias")).toBeTruthy();

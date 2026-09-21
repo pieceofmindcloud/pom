@@ -139,4 +139,41 @@ describe("Documentation", () => {
     });
     expect(screen.getByText("No documentation matches")).toBeTruthy();
   });
+
+  describe("navegação mobile", () => {
+    it("começa na barra em tela inteira, sem o leitor nem o botão Voltar", () => {
+      const { container } = renderDoc();
+      expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      expect(container.querySelector("nav")?.className).not.toContain("hidden");
+      expect(screen.getByTestId("docs-reader").className).toContain("hidden");
+    });
+
+    it("selecionar um item abre o leitor em tela cheia com Voltar no topo", () => {
+      const { container } = renderDoc();
+      fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
+
+      expect(screen.getByRole("heading", { name: "Rede P2P e descoberta", level: 2 })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
+      expect(container.querySelector("nav")?.className).toContain("hidden");
+      expect(screen.getByTestId("docs-reader").className).not.toContain("hidden");
+    });
+
+    it("Voltar fecha o leitor sem perder a seleção", () => {
+      const { container } = renderDoc();
+      fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Back" }));
+
+      expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      expect(container.querySelector("nav")?.className).not.toContain("hidden");
+      expect(screen.getByTestId("docs-reader").className).toContain("hidden");
+      // O conteúdo lido continua sendo o mesmo - só a vista mobile mudou.
+      expect(screen.getByRole("heading", { name: "Rede P2P e descoberta", level: 2 })).toBeTruthy();
+    });
+
+    it("um deep link já chega como seleção, abrindo direto no leitor", () => {
+      renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inferencia.md");
+      expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Caminho de inferência", level: 2 })).toBeTruthy();
+    });
+  });
 });

@@ -833,6 +833,7 @@ deployments.versionRedeployStarted,Re-deploying v{n},Reimplantando a v{n}
 deployments.versions,Versions,Versões
 deployments.versionsHint,"Every settings change under this deployment id, newest first.","Cada mudança de parâmetros sob este id de implantação, da mais nova para a mais antiga."
 deployments.viewLogs,View process logs,Ver logs de processo
+docs.back,Back,Voltar
 docs.clearSearch,Clear search,Limpar busca
 docs.collapse,Collapse {section},Recolher {section}
 docs.deeper,Full detail in the reference,"O detalhe completo, na referência"
@@ -1010,6 +1011,9 @@ keys.tokensCoexist,Tokens coexist: creating one does not revoke earlier tokens.,
 keys.unnamed,unnamed,sem nome
 models.architecture,Architecture,Arquitetura
 models.chooseFolders,Choose folders,Escolher as pastas
+models.columnActions,Actions,Ações
+models.columnName,Model,Modelo
+models.columnSource,Source,Fonte
 models.deleteAria,Delete {name} from disk,Excluir {name} do disco
 models.deleteButton,Delete,Excluir
 models.deleteConfirm,Delete {name} from this machine?,Apagar {name} do disco desta máquina?
@@ -1027,6 +1031,8 @@ models.fullTitle,Full models,Modelos inteiros
 models.layers,Layers,Camadas
 models.localSlice,Slicing is local: each machine extracts its own range from its own GGUF copy. No weights travel over the network.,Fatiar é local: cada máquina extrai a própria faixa da própria cópia do GGUF. Nenhum peso trafega pela rede.
 models.machineCount,"{count}{count, plural, =1 { model on this machine} other { models on this machine}}","{count}{count, plural, =1 { modelo nesta máquina} other { modelos nesta máquina}}"
+models.mmproj,Vision (mmproj),Visão (mmproj)
+models.mmprojNone,No projector,Sem projetor
 models.quant,Quantisation,Quantização
 models.rescan,Scan again,Varrer de novo
 models.scannedFolders,Scanned folders,Pastas varridas
@@ -1926,8 +1932,10 @@ slice.file,File on this machine,Arquivo nesta máquina
 slice.footnote,"The node reports the current phase and bytes read before writing starts. Output size includes embeddings, headers, alignment, and other data repeated by each slice.","O nó informa a fase atual e os bytes lidos antes de começar a gravar. O tamanho da saída inclui embeddings, cabeçalhos, alinhamento e outros dados repetidos por cada fatia."
 slice.invalidPlan,"The node returned 200 from /api/ui/slice/plan, but the response body is not a slicing plan.","O nó respondeu 200 em /api/ui/slice/plan, mas o corpo não é um plano de fatiamento."
 slice.layers,Layers,Camadas
-slice.modeTensor,Slice by Tensor Parallelism,Fatiar por Tensor Parallelism
+slice.modeGroupAria,Slicing type,Tipo de fatiamento
+slice.modePipeline,Pipeline,Pipeline
 slice.modeTensorHint,Every rank receives the full layer range with a different tensor shard.,Cada rank recebe toda a faixa de camadas com uma parte diferente dos tensores.
+slice.modeTensorShort,Tensor Parallelism,Tensor Parallelism
 slice.multipartBadge,MULTIPART GGUF,GGUF MULTIPARTE
 slice.multipartNeedsSlicing,This is one logical model split by tensors. Keep all parts together and use POM slicing before distributed use.,Este é um modelo lógico dividido por tensores. Mantenha todas as partes juntas e use o fatiamento do POM antes de distribuir.
 slice.multipartParts,{count} physical parts in this model set,{count} partes físicas neste conjunto
@@ -2018,6 +2026,10 @@ transfers.cancel,Cancel,Cancelar
 transfers.cancelFailed,Could not cancel,Não deu para cancelar
 transfers.cancelled,Transfer cancelled,Transferência cancelada
 transfers.cancelledState,Refused,Recusada
+transfers.columnDetail,Detail,Detalhe
+transfers.columnItem,Item,Item
+transfers.columnProgress,Progress,Andamento
+transfers.columnState,State,Estado
 transfers.completed,completed,concluída
 transfers.failed,failed,falhou
 transfers.finished,Finished,Terminadas

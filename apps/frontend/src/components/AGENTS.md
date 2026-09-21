@@ -50,6 +50,15 @@ Per-file list:
   `ErrorState` (renders `localizeServerText` on the error message),
   `Mono`/`ScrollX`/`Footnote`/`KeyValue`. Everything is token-based class names
   (e.g. `bg-iris`, `border-line`) with `clsx`, no runtime styling.
+  `FullBleedHeader`/`FullBleedToolbar` are the shared contract for a
+  full-viewport table screen (the one `Deployments`/`PublicNetworks`/
+  `DeploymentLogs` already used before these existed): a fixed edge-to-edge
+  header bar and, optionally, a filter strip under it, above a body that
+  scrolls on its own. `WholeModels`, `Shards`, `SliceModels`, `RemoteModels`,
+  `Transfers` and `SendFile` (`../routes/`) all build on these two instead of
+  repeating the bar's markup six times; `Deployments`/`PublicNetworks` keep
+  their own hand-written bar and were not touched, since refactoring a
+  screen nobody asked to change is its own risk.
 - `AlertTooltip` (ui.tsx) - `compact` deixa o ícone do tamanho do `[i]`, sem
   moldura, para caber na coluna de ícones do `DeploymentInspector`; `Meter` e
   `KeyValue` ganharam `compact` pelo mesmo motivo no card de máquina. É o aviso
@@ -543,9 +552,12 @@ Key logic carriers:
   not just the ones opened from `backdrop-blur` ancestors. The `openModals`
   stack (Confirm.tsx:27) is the companion rule: only the top window answers
   Escape.
-- `RemoteModelCard.tsx` / `RemoteModelDetails.tsx` - card comparável e janela
-  sob demanda para modelos do provider, com prioridade para GGUF, quantização,
-  tamanho, licença, revisão e estados instalado/em download.
+- `RemoteModelDetails.tsx` - janela sob demanda para um modelo do provider, com
+  prioridade para GGUF, quantização, tamanho, licença, revisão e estados
+  instalado/em download. `RemoteModels.tsx` (`../routes/`) lista os resultados
+  numa tabela de largura total e abre esta janela ao ativar uma linha;
+  `RemoteModelCard.tsx`, o cartão que a tabela substituiu, foi removido por
+  ficar sem uso.
 - `RemoteModelProviderStatus.tsx` - estado estruturado do CLI do Hugging Face:
   indisponível, login necessário ou autenticado, com mensagem localizada; its
   internal route link uses React Router so the `/admin-ui` basename is kept.

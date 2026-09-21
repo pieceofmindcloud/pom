@@ -268,7 +268,16 @@ desses estados é compartilhado entre plugins nem com o `pom_core`. Uma
 ativação por chave de licença primeiro valida uma vez para descobrir quais
 `plugin_code` ela concede (`licensed_plugins`, códigos puros), depois
 ativa/instala cada um separadamente. As features de cada plugin vêm do
-`feature_set` do manifesto do release, NÃO da licença. Todo heartbeat com SUCESSO marca
+`feature_set` do manifesto do release, NÃO da licença.
+`PersistedPluginState.installed_release_id` (chave JSON `plugin_release_id`,
+preservada por compatibilidade) só avança quando um download é de fato
+instalado (`activate_and_install`/`apply_update`) - o heartbeat não escreve
+nela, só usa seus próprios `release_changed`/`available_release_id` para
+disparar `detect_update` e alimentar `status.available_update` (2026-09-21:
+o heartbeat escrevia ali direto e corrompia a base que `detect_update`
+compara contra o manifest, fazendo "Atualizar" nunca mostrar a atualização
+real). Ver `docs/subsystems/licenciamento-enterprise.md`.
+Todo heartbeat com SUCESSO marca
 o plugin ativo e chama `ensure_host_running` (mesma lógica usada na
 restauração de boot, extraída em um só lugar): se o host daquele plugin
 estiver `None` - porque uma revogação temporária o derrubou, ou porque o

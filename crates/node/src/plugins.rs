@@ -713,7 +713,24 @@ pub(crate) struct PersistedPluginState {
     pub heartbeat_due_at: String,
     pub grace_seconds: u64,
     pub last_success_at: Option<String>,
-    pub plugin_release_id: String,
+    /// A release efetivamente baixada, verificada e instalada nesta máquina.
+    /// Só a instalação de `activate_and_install`/o passo final de
+    /// `activate` (sem download real, usado só nos testes deste módulo) e
+    /// `apply_update` concluídos podem avançar este campo - um heartbeat
+    /// sozinho nunca confirma um download. `#[serde(rename)]` preserva a
+    /// chave `plugin_release_id` já persistida em instalações existentes.
+    ///
+    /// Defeito corrigido (2026-09-21): o heartbeat escrevia aqui o
+    /// `plugin_release_id` que ele mesmo recebe do servidor, mesmo sem
+    /// nenhum download ter ocorrido. Como `detect_update` compara o
+    /// `release_id` do manifest contra exatamente este campo, o clique em
+    /// "Atualizar" (que chama heartbeat e depois `detect_update` na mesma
+    /// ação) corrompia sua própria base de comparação e sempre concluía "sem
+    /// atualização" - sem relação com o formato semver do release (`+build.N`
+    /// funciona normalmente na comparação por string; o problema era a ordem
+    /// de escrita, não o formato). Ver `docs/subsystems/licenciamento-enterprise.md`.
+    #[serde(rename = "plugin_release_id")]
+    pub installed_release_id: String,
     pub plugin_version: String,
     pub features: Vec<String>,
     pub plugin_sha256: String,
@@ -924,7 +941,7 @@ impl PluginRuntime {
         let mut persisted = self.persisted.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
         })?;
-        persisted.plugin_release_id = manifest.manifest.release_id;
+        persisted.installed_release_id = manifest.manifest.release_id;
         persisted.plugin_version = manifest.manifest.version.clone();
         persisted.plugin_sha256 = manifest.manifest.sha256.clone();
         persisted.plugin_path = Some(path.to_string_lossy().into_owned());
@@ -1017,7 +1034,7 @@ impl PluginRuntime {
             heartbeat_due_at: response.heartbeat_due_at,
             grace_seconds: response.grace_seconds,
             last_success_at: None,
-            plugin_release_id: response.plugin_release_id,
+            installed_release_id: response.plugin_release_id,
             plugin_version: response.plugin_manifest.version.clone(),
             features,
             plugin_sha256: response.plugin_manifest.sha256,
@@ -1259,7 +1276,13 @@ impl PluginRuntime {
                     state.lease_expires_at = lease_expires_at.clone();
                     state.heartbeat_due_at = heartbeat_due_at;
                     state.grace_seconds = grace_seconds;
-                    state.plugin_release_id = plugin_release_id.clone();
+                    // `installed_release_id` NÃO é escrito aqui: o heartbeat não baixa
+                    // nem verifica nada, e `detect_update` compara o manifest contra
+                    // exatamente este campo - escrevê-lo aqui corrompia essa própria
+                    // comparação (ver o comentário no campo em `PersistedPluginState`).
+                    // `plugin_release_id`/`release_changed`/`available_release_id` do
+                    // heartbeat continuam consumidos, só que para alimentar
+                    // `status.available_update` (abaixo), nunca esta linha de base.
                     state.signed_grant = grant;
                     state.features = features.clone();
                     state.last_success_at = Some(chrono::Utc::now().to_rfc3339());
@@ -1292,6 +1315,22 @@ impl PluginRuntime {
                 }
                 if let Some(persisted) = updated_persisted {
                     self.ensure_host_running(&persisted).await;
+                }
+                // O heartbeat sinalizou uma release nova; reconsulta o manifest
+                // (via `detect_update`, agora com a base de comparação intacta)
+                // para publicar `status.available_update` com versão e changelog
+                // reais, sem esperar o próximo clique manual em "Atualizar". Isso
+                // também cobre o supervisor de heartbeat periódico
+                // (`spawn_heartbeat_supervisor`), que nunca chamava `detect_update`
+                // por conta própria.
+                if release_changed {
+                    if let Err(error) = self.detect_update().await {
+                        tracing::warn!(
+                            plugin_code = %self.code,
+                            error = %error,
+                            "detecção de atualização após heartbeat falhou"
+                        );
+                    }
                 }
                 Ok(())
             }
@@ -1387,7 +1426,7 @@ impl PluginRuntime {
                 &self.fingerprint.arch,
             )
             .await?;
-        let available = (manifest.manifest.release_id != persisted.plugin_release_id).then(|| {
+        let available = (manifest.manifest.release_id != persisted.installed_release_id).then(|| {
             PluginUpdateInfo {
                 release_id: manifest.manifest.release_id.clone(),
                 version: manifest.manifest.version.clone(),
@@ -1478,7 +1517,7 @@ impl PluginRuntime {
             .map_err(|error| LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string()))?;
         *self.host.lock().await = Some(host);
         let mut persisted = persisted;
-        persisted.plugin_release_id = manifest.manifest.release_id.clone();
+        persisted.installed_release_id = manifest.manifest.release_id.clone();
         persisted.plugin_version = manifest.manifest.version.clone();
         persisted.plugin_sha256 = manifest.manifest.sha256.clone();
         persisted.plugin_path = Some(path.to_string_lossy().into_owned());
@@ -2133,6 +2172,10 @@ pub(crate) mod tests_support {
     pub(crate) struct MockLicenseService {
         responses: Arc<Mutex<HashMap<String, MockResponse>>>,
         heartbeat_error: Arc<Mutex<Option<LicenseErrorCode>>>,
+        /// `Some(release_id)` faz o próximo heartbeat responder
+        /// `release_changed: true` e `available_release_id: Some(release_id)`,
+        /// como o servidor de licenças faz ao detectar uma release nova.
+        heartbeat_release_signal: Arc<Mutex<Option<String>>>,
         artifacts: Arc<Mutex<HashMap<String, Vec<u8>>>>,
         manifest_calls: Arc<Mutex<Vec<String>>>,
         download_calls: Arc<Mutex<u32>>,
@@ -2149,6 +2192,7 @@ pub(crate) mod tests_support {
             Self {
                 responses: Arc::new(Mutex::new(HashMap::new())),
                 heartbeat_error: Arc::new(Mutex::new(None)),
+                heartbeat_release_signal: Arc::new(Mutex::new(None)),
                 artifacts: Arc::new(Mutex::new(HashMap::new())),
                 manifest_calls: Arc::new(Mutex::new(Vec::new())),
                 download_calls: Arc::new(Mutex::new(0)),
@@ -2189,6 +2233,10 @@ pub(crate) mod tests_support {
 
         pub(crate) async fn set_heartbeat_error(&self, code: LicenseErrorCode) {
             *self.heartbeat_error.lock().await = Some(code);
+        }
+
+        pub(crate) async fn signal_heartbeat_release_change(&self, available_release_id: &str) {
+            *self.heartbeat_release_signal.lock().await = Some(available_release_id.to_owned());
         }
 
         pub(crate) async fn clear_heartbeat_error(&self) {
@@ -2271,6 +2319,7 @@ pub(crate) mod tests_support {
             if let Some(code) = *self.heartbeat_error.lock().await {
                 return Err(LicenseClientError::new(code, "mock heartbeat error"));
             }
+            let signal = self.heartbeat_release_signal.lock().await.clone();
             let responses = self.responses.lock().await;
             let Some(MockResponse::Valid(response)) = responses
                 .values()
@@ -2295,9 +2344,9 @@ pub(crate) mod tests_support {
                     lease_expires_at: "2099-01-08T00:00:00Z".into(),
                     heartbeat_due_at: "2099-01-02T00:00:00Z".into(),
                     grace_seconds: 86400,
-                    plugin_release_id: response.plugin_release_id.clone(),
-                    release_changed: false,
-                    available_release_id: None,
+                    plugin_release_id: signal.clone().unwrap_or_else(|| response.plugin_release_id.clone()),
+                    release_changed: signal.is_some(),
+                    available_release_id: signal,
                     grant: response.grant.clone(),
                 },
             })
@@ -2656,6 +2705,84 @@ mod tests {
             .expect("update should be advertised");
         assert_eq!(available.release_id, "ent-2");
         assert_eq!(available.version, "0.2.0");
+    }
+
+    /// Reproduz o bug relatado pelo captain: um heartbeat bem-sucedido não
+    /// pode apagar uma atualização real, mesmo quando o release_id do
+    /// servidor só muda no metadado de build SemVer (`+build.N`) - formato
+    /// que a comparação por igualdade de string já tratava corretamente,
+    /// mas que o heartbeat corrompia ao escrever seu próprio
+    /// `plugin_release_id` como se fosse a release instalada, antes do
+    /// `detect_update` seguinte (mesmo clique em "Atualizar",
+    /// `PluginManager::refresh`) comparar contra essa base já adulterada.
+    /// Sem revogar a release anterior em nenhum momento.
+    #[tokio::test]
+    async fn refresh_button_does_not_lose_an_update_signalled_by_heartbeat() {
+        let mut updated = activation("enterprise", "ent-0.1.0+build.1-linux-x86_64");
+        let service = Arc::new(MockLicenseService::single("enterprise", updated.clone()));
+        let manager = PluginManager::test_manager(&["enterprise"], service.clone());
+        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        activate_ready(&runtime, "PM-test-key", "0.1.0").await;
+        assert!(runtime.status().await.available_update.is_none());
+
+        // O servidor publica a release seguinte, só com o metadado de build
+        // avançado - nunca revogado, nunca desativado.
+        updated.plugin_manifest.release_id = "ent-0.1.0+build.2-linux-x86_64".into();
+        updated.plugin_manifest.version = "0.1.0+build.2".into();
+        service.grant("enterprise", updated, b"plugin-binary".to_vec()).await;
+        // O heartbeat do servidor já sinaliza a mudança, e (como o incidente
+        // relatado) seu próprio campo `plugin_release_id` também avança para
+        // a release nova - sem que nada tenha sido baixado ainda.
+        service
+            .signal_heartbeat_release_change("ent-0.1.0+build.2-linux-x86_64")
+            .await;
+
+        manager.refresh("enterprise").await.expect("refresh");
+
+        let available = runtime
+            .status()
+            .await
+            .available_update
+            .expect("o heartbeat não pode apagar a atualização real");
+        assert_eq!(available.release_id, "ent-0.1.0+build.2-linux-x86_64");
+        assert_eq!(available.version, "0.1.0+build.2");
+        // `installed_release_id` só avança com um download confirmado - o
+        // heartbeat sozinho nunca pode reivindicar tê-lo feito.
+        assert_eq!(
+            runtime.persisted_state().await.expect("persisted").installed_release_id,
+            "ent-0.1.0+build.1-linux-x86_64",
+        );
+    }
+
+    /// O supervisor de heartbeat periódico (`spawn_heartbeat_supervisor`)
+    /// nunca chamava `detect_update` por conta própria; uma release
+    /// sinalizada em segundo plano, sem qualquer clique do operador, também
+    /// precisa aparecer.
+    #[tokio::test]
+    async fn a_background_heartbeat_alone_also_surfaces_the_update() {
+        let mut updated = activation("enterprise", "ent-1");
+        let service = Arc::new(MockLicenseService::single("enterprise", updated.clone()));
+        let manager = PluginManager::test_manager(&["enterprise"], service.clone());
+        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        activate_ready(&runtime, "PM-test-key", "0.1.0").await;
+
+        updated.plugin_manifest.release_id = "ent-2".into();
+        updated.plugin_manifest.version = "0.2.0".into();
+        service.grant("enterprise", updated, b"plugin-binary".to_vec()).await;
+        service.signal_heartbeat_release_change("ent-2").await;
+
+        runtime.heartbeat("nonce-1").await.expect("heartbeat");
+
+        let available = runtime
+            .status()
+            .await
+            .available_update
+            .expect("a release sinalizada em segundo plano deve aparecer");
+        assert_eq!(available.release_id, "ent-2");
+        assert_eq!(
+            runtime.persisted_state().await.expect("persisted").installed_release_id,
+            "ent-1",
+        );
     }
 
     #[tokio::test]

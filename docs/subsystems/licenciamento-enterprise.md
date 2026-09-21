@@ -39,13 +39,39 @@ que é uma fronteira de produto separada desde antes e continua sendo).
   `/v1/licenses/activations` com `plugin_code` no payload. As features de um
   plugin vêm do `feature_set` do manifesto do release, não da licença. O
   heartbeat desserializa o payload rico de renovação e persiste o novo token,
-  expiração, prazo do próximo heartbeat, grant e release informados pelo servidor,
+  expiração, prazo do próximo heartbeat e grant informados pelo servidor,
   sem substituir o prazo por uma estimativa local - tudo isso por
-  `PluginRuntime`, nunca compartilhado entre plugins. Cada `PluginRuntime`
+  `PluginRuntime`, nunca compartilhado entre plugins. `PersistedPluginState`
+  separa duas releases que o heartbeat não pode confundir:
+  `installed_release_id` é a release efetivamente baixada e instalada neste
+  peer, e só `activate`/`activate_and_install`/`apply_update` concluídos podem
+  avançá-la; o heartbeat sozinho nunca baixa nem verifica nada, então nunca
+  escreve nela. `plugin_release_id`, `release_changed` e `available_release_id`
+  do payload do heartbeat continuam consumidos, mas só para alimentar
+  `status.available_update` - disparando `detect_update` (que reconsulta o
+  manifest para trazer versão e changelog reais) quando `release_changed` é
+  verdadeiro, inclusive no supervisor de heartbeat periódico, que antes nunca
+  chamava `detect_update` por conta própria. Cada `PluginRuntime`
   também checa sua PRÓPRIA atualização de versão (`detect_update`/
   `apply_update`), reusando o manifest genérico do seu `plugin_code` -
   independente de qualquer outro plugin e do `pom_core` (ver `## Detecção e
   atualização` mais abaixo, que é sobre o `pom_core`, não sobre isto).
+
+  **Defeito corrigido (2026-09-21):** até esta correção, o heartbeat escrevia o
+  `plugin_release_id` recebido do servidor diretamente em
+  `installed_release_id` - o mesmo campo que `detect_update` usa como base de
+  comparação contra o `release_id` do manifest. Um heartbeat cujo servidor já
+  reportasse a release seguinte (por exemplo, por tratar `0.1.0+build.1` e
+  `0.1.0+build.2` como a mesma versão para fins de entitlement) adotava essa
+  release como "instalada" sem nenhum download real; o clique em "Atualizar"
+  chama heartbeat e depois `detect_update` na mesma ação
+  (`PluginManager::refresh`), então a comparação seguinte via a base já
+  adulterada e sempre concluía "sem atualização" - sem relação com o formato
+  semver do release_id, que a comparação por igualdade de string já tratava
+  corretamente. A regressão está em
+  `refresh_button_does_not_lose_an_update_signalled_by_heartbeat` e
+  `a_background_heartbeat_alone_also_surfaces_the_update`
+  (`crates/node/src/plugins.rs`).
 - `crates/plugin-host` é o processo `pom-plugin-host`. Ele carrega um artefato
   somente por caminho absoluto, valida ABI, tamanho e SHA-256, mantém a
   biblioteca carregada dentro do processo auxiliar e conversa com o cliente por

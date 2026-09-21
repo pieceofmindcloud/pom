@@ -27,16 +27,21 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
   exporta `POM_BUILD_COMMIT` e chama `docker compose build`. Durante esse build,
-  o `Dockerfile` roda `npm run build` em `apps/frontend`, compila `pom` com as
-  features CUDA/Vulkan e compila `pom-plugin-host` separadamente, sem essas
-  features. O script não executa o build da UI diretamente. O commit nao pode
-  ser lido dentro da imagem builder (`.dockerignore` corta `.git/` e a imagem
-  nao tem `git`); sem a variavel o `crates/node/build.rs` carimba
-  "desconhecido" em todo container; ver `TODO.md`, item 26. Construa a imagem
-  por este script, nunca `docker compose build` na mao.
+  o `Dockerfile` roda `npm run build` em `apps/frontend`, compila tres variantes
+  de `pom` (CUDA+Vulkan, somente Vulkan e CPU sem GPU) e compila `pom-plugin-host`
+  separadamente, sem essas features. Todos os servicos compartilham a mesma
+  imagem; `POM_BIN` seleciona a variante em runtime. O script não executa o
+  build da UI diretamente. O commit nao pode ser lido dentro da imagem builder
+  (`.dockerignore` corta `.git/` e a imagem nao tem `git`); sem a variavel o
+  `crates/node/build.rs` carimba "desconhecido" em todo container; ver
+  `TODO.md`, item 26. Construa a imagem por este script, nunca `docker compose
+  build` na mao.
 - `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
   falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
   argumentos.
+- `test-docker-compose.py` - materializa os Compose da Salem e da Ksia e
+  verifica a variante `POM_BIN`, a imagem/build comuns, os volumes persistentes
+  e a visibilidade de NVIDIA/Radeon por serviço.
 - `gen-node-configs.py` - gera um `pom.json` por no em
   `tests/fixtures/node-<N>/`. As portas de cada no vem da config, nao do CLI
   (com `network_mode: host`, colisao de porta e o erro tipico). No 1 =
@@ -181,7 +186,10 @@ invocados pelo binario (ver o `README.md` de la).
   seleciona o ponto de entrada de GPUs NVIDIA. `docker-compose.salem.yml`
   tambem e selecionavel diretamente. Os dois estendem a definicao comum em
   `docker-compose.common.yml`, mantendo os mesmos servicos, contexto, imagem,
-  volumes e variaveis. A UI e reencontrada por
+  volumes e variaveis. Salem escolhe `pom-vulkan` no no Radeon-only e `pom-cpu`
+  no `node-cpu`; Ksia usa `pom-cpu` no `node-cpu`. O helper local
+  `pom-docker.sh` aplica `pom-cpu` aos serviços sem GPU NVIDIA. A UI é
+  reencontrada por
   `POM_UI_DIST=/app/apps/frontend/dist` porque `POM_HOME=/data` nao e o
   `/app` da imagem.
 - `.github/workflows/release.yml` - release so manual (`workflow_dispatch` com

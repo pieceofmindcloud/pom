@@ -399,20 +399,27 @@ offload no primeiro clique.
 
 - **`Dockerfile`**: dois estágios. Builder
   `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala rustup + node, faz
-  `npm run build` em `apps/frontend`, compila `pom` com
-  `cargo build --release --features cuda,vulkan` e compila
-  `cargo build --release -p pom-plugin-host` sem features de GPU, tudo com
-  cache mounts (registry/git/target). Runtime copia os dois binários para
-  `/usr/local/bin`, mantém `LD_LIBRARY_PATH` incluindo `compat/` e
-  `POM_HOME=/app`, e usa `docker-entrypoint.sh`. O `ARG POM_BUILD_COMMIT`
-  recebe o commit do host.
-- **`docker-entrypoint.sh`**: valida os dois binários, exporta
-  `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` e faz `exec` do `pom` com os
-  argumentos recebidos. O `pom` inicia o host como filho somente quando há um
-  plugin Enterprise instalado, passando o artefato como argumento e conectando
-  stdin/stdout por frames JSON de tamanho prefixado. Portanto não há socket
-  Unix nem volume adicional de IPC. `bash scripts/test-docker-entrypoint.sh`
-  cobre esse encaminhamento sem precisar construir a imagem.
+  `npm run build` em `apps/frontend` e compila três variantes de `pom` com
+  cache mounts (registry/git/target): CUDA+Vulkan (`/usr/local/bin/pom`),
+  somente Vulkan (`/usr/local/bin/pom-vulkan`) e CPU sem backends de GPU
+  (`/usr/local/bin/pom-cpu`). Também compila `pom-plugin-host` sem features
+  de GPU. O build verifica que Vulkan e CPU não deixam bibliotecas de runtime
+  ausentes. Runtime copia os quatro binários para `/usr/local/bin`, mantém
+  `LD_LIBRARY_PATH` incluindo `compat/` e `POM_HOME=/app`, e usa
+  `docker-entrypoint.sh`. O `ARG POM_BUILD_COMMIT` recebe o commit do host.
+- **`docker-entrypoint.sh`**: valida o binário selecionado por `POM_BIN` e o
+  `pom-plugin-host`, exporta
+  `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` e faz `exec` do caminho em
+  `POM_BIN` (padrão `/usr/local/bin/pom`) com os argumentos recebidos. Os
+  Compose selecionam `pom-vulkan` para o `node-gpu-3` Radeon da Salem e
+  `pom-cpu` para `node-cpu`; os nós NVIDIA usam o `pom` CUDA+Vulkan. Isso evita
+  exigir `libcuda.so.1` em serviços que não recebem NVIDIA. O `pom` inicia o
+  host como filho somente quando há um plugin Enterprise instalado, passando o
+  artefato como argumento e conectando stdin/stdout por frames JSON de tamanho
+  prefixado. Portanto não há socket Unix nem volume adicional de IPC.
+  `bash scripts/test-docker-entrypoint.sh` cobre o encaminhamento do entrypoint;
+  `python3 scripts/test-docker-compose.py` valida a seleção de variantes e os
+  dispositivos resultantes do Compose.
 - O cache de `target/` também conserva o `CMakeCache.txt` e a árvore nativa do
   `llama.cpp`. Como o fork coleta `src/models/*.cpp` por `file(GLOB ...)` sem
   `CONFIGURE_DEPENDS`, uma árvore gerada antes de um arquivo de modelo existir
@@ -446,8 +453,10 @@ offload no primeiro clique.
   `docker-compose.salem.yml` também pode ser selecionado diretamente. Na
   Ksia, use `COMPOSE_FILE=docker-compose.ksia.yml`: esse ponto de entrada
   remove `/dev/dri`, reserva as NVIDIA 0 e 1 em `node-gpu`, NVIDIA 1 em
-  `node-gpu2`, NVIDIA 0 em `node-gpu-3` e nenhuma GPU em `node-cpu`. Os serviços mantêm os
-  volumes de modelos e de estado em `tests/fixtures/<nome>`. Cada serviço
+  `node-gpu2`, NVIDIA 0 em `node-gpu-3` e nenhuma GPU em `node-cpu`. O
+  `pom-docker.sh` gera o Compose remoto da Ksia com essas reservas e seleciona
+  `pom-cpu` para cada serviço sem GPU NVIDIA. Os serviços mantêm os volumes de
+  modelos e de estado em `tests/fixtures/<nome>`. Cada serviço
   define `POM_HOME=/data`, `POM_UI_DIST=/app/apps/frontend/dist` e o caminho
   explícito `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (a UI não ficaria
   sob o diretório de dados montado). O plugin baixado e `enterprise.db` ficam

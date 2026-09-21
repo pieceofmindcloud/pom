@@ -41,3 +41,5 @@ services:
     extends:
       file: docker-compose.common.yml
       service: node-cpu
+    environment:
+      POM_BIN: /usr/local/bin/pom-cpu

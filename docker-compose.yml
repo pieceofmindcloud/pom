@@ -47,6 +47,8 @@ services:
     extends:
       file: docker-compose.common.yml
       service: node-gpu-3
+    environment:
+      POM_BIN: /usr/local/bin/pom-vulkan
     devices:
       - /dev/dri:/dev/dri
 
@@ -54,3 +56,5 @@ services:
     extends:
       file: docker-compose.common.yml
       service: node-cpu
+    environment:
+      POM_BIN: /usr/local/bin/pom-cpu

@@ -55,6 +55,8 @@ O plano do hot path CUDA heterogêneo alinhado ao FreeToken está em
 `superpowers/plans/2026-09-15-moe-freetoken-performance.md`.
 O plano da correção do contrato rico de heartbeat Enterprise está em
 `superpowers/plans/2026-09-16-enterprise-heartbeat-schema.md`.
+O plano da imagem Docker com variantes CUDA, Vulkan e CPU está em
+`superpowers/plans/2026-09-21-docker-backend-variants.md`.
 
 ## subsystems/
 

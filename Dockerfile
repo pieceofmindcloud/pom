@@ -70,6 +70,17 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/build/target,id=pom-target-${LLAMA_CPP_COMMIT} \
     cargo build --release --features cuda,vulkan && \
     cp target/release/pom /build/pom && \
+    cargo build --release --features vulkan && \
+    cp target/release/pom /build/pom-vulkan && \
+    cargo build --release --no-default-features && \
+    cp target/release/pom /build/pom-cpu && \
+    command -v readelf >/dev/null && \
+    for binary in /build/pom-vulkan /build/pom-cpu; do \
+      if readelf -d "$binary" | grep -q 'Shared library: \[libcuda\.so\.1\]'; then \
+        echo "$binary must not require libcuda.so.1" >&2; \
+        exit 1; \
+      fi; \
+    done && \
     cargo build --release -p pom-plugin-host && \
     cp target/release/pom-plugin-host /build/pom-plugin-host
 
@@ -99,11 +110,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # index the Vulkan index by construction (sysmon::icd_amd / the ksia note).
 RUN find /usr/share/vulkan/icd.d -type f ! -name 'radeon_icd*.json' -delete
 
+# The default binary is CUDA+Vulkan. Radeon-only and CPU services select the
+# sibling variants so their loader never requires the host's libcuda.so.1.
 COPY --from=builder /build/pom /usr/local/bin/pom
+COPY --from=builder /build/pom-vulkan /usr/local/bin/pom-vulkan
+COPY --from=builder /build/pom-cpu /usr/local/bin/pom-cpu
 COPY --from=builder /build/pom-plugin-host /usr/local/bin/pom-plugin-host
 COPY --from=builder /build/apps/frontend/dist /app/apps/frontend/dist
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh && \
+    for binary in /usr/local/bin/pom-vulkan /usr/local/bin/pom-cpu; do \
+      if ldd "$binary" | grep -q 'not found'; then \
+        echo "$binary has unresolved runtime libraries" >&2; \
+        ldd "$binary" >&2; \
+        exit 1; \
+      fi; \
+    done
 
 # P2P UDP, HTTP gateway, inference server
 EXPOSE 42777/udp

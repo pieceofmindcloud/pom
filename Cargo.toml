@@ -3,7 +3,6 @@ members = [
     "crates/brand",
     "crates/enterprise-protocol",
     "crates/enterprise-plugin-fixture",
-    "crates/enterprise-plugin",
     "crates/llama-engine",
     "crates/node",
     "crates/plugin-host",

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { canAccessRoute, homeRoute, isEnterprisePath } from "./lib/access";
 import {
   api,
@@ -10,10 +10,11 @@ import {
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
 import { ChatSessionProvider } from "./lib/chatStore";
-import { useAdminSurface, useEnterpriseStatus } from "./lib/queries";
+import { useAdminSurface } from "./lib/queries";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
+import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
 import { Button, Input, Panel, PanelHeader } from "./components/ui";
 
@@ -100,37 +101,6 @@ function AdminLocalOnly() {
   );
 }
 
-function EnterpriseUnavailable({ manageUrl }: { manageUrl: string }) {
-  const { t } = useI18n();
-  return (
-    <main className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
-      <Panel className="w-full max-w-xl">
-        <PanelHeader
-          eyebrow={t("enterprise.eyebrow")}
-          title={t("enterprise.requiredTitle")}
-          subtitle={t("enterprise.requiredSubtitle")}
-        />
-        <div className="px-5 pb-5">
-          <a
-            href={manageUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex rounded-md bg-iris px-4 py-2 text-sm font-semibold text-ink transition-colors hover:bg-iris/80"
-          >
-            {t("enterprise.learnMore")}
-          </a>
-          <Link
-            to="/plugins"
-            className="ml-2 inline-flex rounded-md border border-line px-4 py-2 text-sm font-semibold text-fg transition-colors hover:border-line-strong hover:bg-line/40"
-          >
-            {t("enterprise.activateHere")}
-          </Link>
-        </div>
-      </Panel>
-    </main>
-  );
-}
-
 function AdminAccessUnavailable() {
   const { t } = useI18n();
   return (
@@ -157,9 +127,7 @@ export const routeLoaders = {
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   networkChat: () => import("./routes/NetworkChat").then(({ NetworkChat }) => NetworkChat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
-  logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
-  statistics: () => import("./routes/Statistics").then(({ Statistics }) => Statistics),
   plugins: () => import("./routes/Plugins").then(({ Plugins }) => Plugins),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
@@ -195,9 +163,7 @@ const PublicNetworks = lazyRoute(routeLoaders.publicNetworks);
 const Chat = lazyRoute(routeLoaders.chat);
 const NetworkChat = lazyRoute(routeLoaders.networkChat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
-const Logs = lazyRoute(routeLoaders.logs);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
-const Statistics = lazyRoute(routeLoaders.statistics);
 const Plugins = lazyRoute(routeLoaders.plugins);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
@@ -257,7 +223,6 @@ export default function App() {
   const { t } = useI18n();
   const location = useLocation();
   const { profile } = useProfile();
-  const enterpriseStatus = useEnterpriseStatus();
   /*
    * O guarda de perfil fica aqui, e não dentro de cada rota, porque aqui ele
    * é um só: `/chat` renderiza fora do `<Routes>` (ver abaixo), então um guarda
@@ -267,13 +232,13 @@ export default function App() {
    * Quem decide é `lib/access.ts`, a mesma tabela que filtra o menu.
    */
   const allowed = canAccessRoute(location.pathname, profile);
+  /*
+   * `/logs` e `/estatisticas` são vitrines informativas do plugin `enterprise`
+   * (extraído para pom-plugin-logs): renderizam sempre, com ou sem licença -
+   * ver `EnterpriseFeatureShowcase` e
+   * `docs/subsystems/licenciamento-enterprise.md`.
+   */
   const enterprisePath = isEnterprisePath(location.pathname);
-  const enterpriseActive = Boolean(
-    enterpriseStatus.data?.active
-      && enterpriseStatus.data.features.includes(
-        location.pathname.startsWith("/logs") ? "request_logs" : "statistics",
-      ),
-  );
   const isChat = allowed && location.pathname === "/chat";
   const isEmbeddedChat = allowed && location.pathname === "/admin-ui/chat";
   // Screens that own the whole viewport and scroll inside themselves, instead
@@ -414,8 +379,12 @@ export default function App() {
                       <Forbidden />
                     </Page>
                   </div>
-                ) : enterprisePath && !enterpriseActive ? (
-                  <EnterpriseUnavailable manageUrl={enterpriseStatus.data?.manage_url ?? "https://pieceofmind.cloud/enterprise"} />
+                ) : location.pathname === "/logs/estatisticas" ? (
+                  // Alias antigo, preservado fora do `<Routes>` porque o
+                  // destino também é uma vitrine Enterprise sem gate.
+                  <Navigate to="/estatisticas" replace />
+                ) : enterprisePath ? (
+                  <EnterpriseFeatureShowcase kind={location.pathname.startsWith("/logs") ? "logs" : "statistics"} />
                 ) : isChat ? (
                   <Chat />
                 ) : (
@@ -436,10 +405,7 @@ export default function App() {
                         <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
                         <Route path="/transferencias" element={<Page><Transfers /></Page>} />
                         <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
-                        <Route path="/logs" element={<Page><Logs /></Page>} />
-                        <Route path="/estatisticas" element={<Page><Statistics /></Page>} />
                         <Route path="/plugins" element={<Page><Plugins /></Page>} />
-                        <Route path="/logs/estatisticas" element={<Navigate to="/estatisticas" replace />} />
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
                         <Route path="/config/rede/participantes" element={<Page><NetworkParticipants /></Page>} />

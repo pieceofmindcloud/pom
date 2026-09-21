@@ -91,6 +91,8 @@ cargo_log="$tmp_dir/cargo.log"
 cargo_env_log="$tmp_dir/cargo-env.log"
 published_output="$(
   PATH="$fake_bin:$PATH" \
+  CUDAARCHS='120' \
+  CMAKE_CUDA_ARCHITECTURES='120' \
   POM_RELEASE_API='https://license.test' \
   POM_RELEASE_TOKEN='test-token' \
   POM_RELEASE_CURL_LOG="$curl_log" \
@@ -98,13 +100,11 @@ published_output="$(
   POM_RDMA_REPO="$root" \
   "$root/pom-release.sh" \
     --platform linux-x86_64 \
-    --plugin enterprise \
-    --plugin-crate enterprise-plugin-fixture \
     --reason 'teste de incremento'
 )"
-assert_contains "$published_output" 'release_id=ent-0.1.0+build.11-linux-x86_64'
+assert_contains "$published_output" 'release_id=pom_core-0.1.0+build.11-linux-x86_64'
 curl_contents="$(cat "$curl_log")"
-assert_contains "$curl_contents" 'plugin=enterprise'
+assert_contains "$curl_contents" 'plugin=pom_core'
 assert_contains "$curl_contents" 'status=all'
 assert_contains "$curl_contents" 'limit=1000'
 assert_contains "$curl_contents" 'version=0.1.0+build.11'
@@ -112,6 +112,8 @@ assert_contains "$curl_contents" 'version=0.1.0+build.11'
 calls_before_manual="$(wc -l < "$curl_log" | tr -d '[:space:]')"
 manual_output="$(
   PATH="$fake_bin:$PATH" \
+  CUDAARCHS='120' \
+  CMAKE_CUDA_ARCHITECTURES='120' \
   POM_RELEASE_API='https://license.test' \
   POM_RELEASE_TOKEN='test-token' \
   POM_RELEASE_CURL_LOG="$curl_log" \
@@ -119,11 +121,9 @@ manual_output="$(
   POM_RDMA_REPO="$root" \
   "$root/pom-release.sh" \
     --platform linux-x86_64 \
-    --plugin enterprise \
-    --plugin-crate enterprise-plugin-fixture \
     --version '9.9.9'
 )"
-assert_contains "$manual_output" 'release_id=ent-9.9.9-linux-x86_64'
+assert_contains "$manual_output" 'release_id=pom_core-9.9.9-linux-x86_64'
 manual_calls="$(tail -n +"$((calls_before_manual + 1))" "$curl_log")"
 if [[ "$manual_calls" == *'/internal/releases?'* ||
       "$manual_calls" == *' /internal/releases '* ||
@@ -135,17 +135,17 @@ fi
 dry_log="$tmp_dir/dry-run-curl.log"
 dry_run_output="$(
   PATH="$fake_bin:$PATH" \
+  CUDAARCHS='120' \
+  CMAKE_CUDA_ARCHITECTURES='120' \
   POM_RELEASE_API='https://license.test' \
   POM_RELEASE_CURL_LOG="$dry_log" \
   POM_RELEASE_CARGO_LOG="$cargo_log" \
   POM_RDMA_REPO="$root" \
   "$root/pom-release.sh" \
     --platform linux-x86_64 \
-    --plugin enterprise \
-    --plugin-crate enterprise-plugin-fixture \
     --dry-run
 )"
-assert_contains "$dry_run_output" 'release_id=ent-0.1.0+build.1-linux-x86_64'
+assert_contains "$dry_run_output" 'release_id=pom_core-0.1.0+build.1-linux-x86_64'
 [[ ! -e "$dry_log" ]]
 
 for platform in linux-x86_64 macos-aarch64 windows-x86_64; do
@@ -159,7 +159,6 @@ for platform in linux-x86_64 macos-aarch64 windows-x86_64; do
     POM_RDMA_REPO="$root" \
     "$root/pom-release.sh" \
       --platform "$platform" \
-      --plugin pom_core \
       --dry-run
   )"
   case "$platform" in
@@ -193,7 +192,6 @@ override_output="$(
   POM_RDMA_REPO="$root" \
   "$root/pom-release.sh" \
     --platform linux-x86_64 \
-    --plugin pom_core \
     --features metal \
     --dry-run
 )"
@@ -213,7 +211,6 @@ core_published_output="$(
   POM_RDMA_REPO="$root" \
   "$root/pom-release.sh" \
     --platform windows-x86_64 \
-    --plugin pom_core \
     --reason 'teste de pom_core'
 )"
 assert_contains "$core_published_output" 'release_id=pom_core-0.1.0+build.11-windows-x86_64'

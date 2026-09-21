@@ -2644,8 +2644,12 @@ pub(crate) mod tests_support {
                     license_id: persisted.license_id.clone(),
                     activation_id: persisted.activation_id.clone(),
                     lease_id: persisted.lease_id.clone(),
-                    licensed_plugins: vec![],
+                    licensed_plugins: persisted.licensed_plugins.clone(),
                     license_expires_at: self.license_expires_at.lock().await.clone(),
+                    activation_count: persisted.activation_count,
+                    max_activations: persisted.max_activations,
+                    plugin_usage: persisted.plugin_usage.clone(),
+                    activation_candidates: persisted.activation_candidates.clone(),
                     lease_expires_at: persisted.lease_expires_at.clone(),
                     grace_ends_at: "2099-01-08T00:00:00Z".into(),
                     plugin_release_id: persisted.installed_release_id.clone(),
@@ -2946,7 +2950,10 @@ mod tests {
         let manager = PluginManager::test_manager(&["enterprise"], service);
         let runtime = manager.runtime_for("enterprise").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
-        assert!(runtime.status().await.license_expires_at.is_none());
+        assert_eq!(
+            runtime.status().await.license_expires_at.as_deref(),
+            Some("2099-12-31T00:00:00Z")
+        );
 
         manager.refresh("enterprise").await.expect("refresh");
 

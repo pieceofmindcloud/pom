@@ -1402,16 +1402,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "enterprise-plugin"
-version = "0.1.0"
-dependencies = [
- "enterprise-protocol",
- "rusqlite",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "enterprise-plugin-fixture"
 version = "0.1.0"
 dependencies = [

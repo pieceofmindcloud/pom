@@ -862,6 +862,21 @@ enterprise.licenseState,License state,Estado da licença
 enterprise.purchaseLink,Buy or manage Enterprise,Comprar ou gerenciar Enterprise
 enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
 enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
+enterprise.showcase.activeNote,This plugin is already active on this cluster.,Este plugin já está ativo neste cluster.
+enterprise.showcase.cta,Buy & install,Comprar e instalar
+enterprise.showcase.logs.bullet1,"Full request trail: prompt, response, hops and timings","Trilha completa da requisição: prompt, resposta, hops e tempos"
+enterprise.showcase.logs.bullet2,"Filter by API key, model, node and date range","Filtre por chave de API, modelo, nó e intervalo de datas"
+enterprise.showcase.logs.bullet3,Per-request inspector with redacted secrets,Inspetor por requisição com segredos redigidos
+enterprise.showcase.logs.description,Request Logs keeps a searchable audit trail of every request this cluster served.,Logs de Requisições mantém uma trilha de auditoria pesquisável de toda requisição que este cluster atendeu.
+enterprise.showcase.logs.screenshotAlt,Preview of the Request Logs screen,Prévia da tela de Logs de Requisições
+enterprise.showcase.logs.title,Request Logs,Logs de Requisições
+enterprise.showcase.pluginNote,Part of the enterprise plugin. Buy and install it from the Enterprise site.,Parte do plugin enterprise. Compre e instale pelo site Enterprise.
+enterprise.showcase.statistics.bullet1,Token volume and throughput by model and day,Volume de tokens e vazão por modelo e dia
+enterprise.showcase.statistics.bullet2,Per-node and per-key consumption breakdown,Detalhamento de consumo por nó e por chave
+enterprise.showcase.statistics.bullet3,Prefix cache hit rate and terminal-state distribution,Taxa de acerto do cache de prefixo e distribuição de estados terminais
+enterprise.showcase.statistics.description,Statistics aggregates the same audit trail into charts for capacity and usage.,Estatísticas agrega a mesma trilha de auditoria em gráficos de capacidade e uso.
+enterprise.showcase.statistics.screenshotAlt,Preview of the Statistics screen,Prévia da tela de Estatísticas
+enterprise.showcase.statistics.title,Statistics,Estatísticas
 errorBoundary.detail,"The rest of the interface is still available: use the menu to open another screen. If it happens again, the detail below is what the browser recorded.","O resto da interface continua de pé: use o menu para ir a outra tela. Se insistir, o detalhe abaixo é o que o navegador registrou."
 errorBoundary.retry,Try rendering again,Tentar montar de novo
 errorBoundary.title,This screen stopped working,Esta tela parou de funcionar

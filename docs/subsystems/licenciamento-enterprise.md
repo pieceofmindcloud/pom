@@ -52,9 +52,13 @@ que é uma fronteira de produto separada desde antes e continua sendo).
   JSON com tamanho prefixado em stdin/stdout. O `pom` não usa `libloading`.
 - `crates/enterprise-plugin-fixture` é uma biblioteca `cdylib` de teste para
   validar a entrada ABI `pom_enterprise_plugin_v1` e o fluxo do host.
-- `crates/enterprise-plugin` é a biblioteca `cdylib` de produção. O domínio de
-  auditoria vive em `enterprise.db`, com schema, índices, listagem filtrada e
-  agregações de estatísticas próprios.
+- A biblioteca `cdylib` de produção do plugin `enterprise` (o domínio de
+  auditoria em `enterprise.db`, com schema, índices, listagem filtrada e
+  agregações de estatísticas próprios) **não mora mais neste repositório**:
+  foi extraída para `https://github.com/pereirajair/pom-plugin-logs` (ver
+  `## Extração para pom-plugin-logs` abaixo). Este repositório mantém somente
+  a fronteira genérica de licenciamento/host, reusável por qualquer
+  `plugin_code` futuro.
 - `crates/node/src/plugin_host.rs` (`PluginHost`, renomeado de
   `EnterpriseHost`) supervisiona o processo auxiliar por IPC assíncrono com
   frames limitados, timeout e encerramento ordenado. Um leitor persistente
@@ -78,6 +82,51 @@ maiores que 16 MiB, usando `enterprise_protocol::MAX_IPC_FRAME_BYTES` nos dois
 processos. Esse limite cobre consultas e eventos do plugin, inclusive a
 telemetria serializada, sem alterar os limites do transporte de inferência
 entre peers.
+
+## Extração para pom-plugin-logs (2026-09-21)
+
+O código de produto do plugin `enterprise` (a lib `cdylib` que grava e
+consulta `enterprise.db`, e as telas de UI `Logs.tsx`/`Statistics.tsx`) saiu
+deste repositório para `https://github.com/pereirajair/pom-plugin-logs`, um
+repositório de licenciamento próprio com seu build, empacotamento e pipeline
+de release separados. O que **fica** aqui é só a fronteira genérica,
+reusável por qualquer `plugin_code` futuro:
+
+- `crates/enterprise-protocol` (DTOs, ABI C v1, `PLUGIN_ABI_VERSION`,
+  `MAX_IPC_FRAME_BYTES`) continua sendo a fonte única do contrato. O novo
+  repositório depende dele via git (`enterprise-protocol = { git =
+  "https://github.com/pereirajair/rdma-p2p", rev = "<commit>" }`), fixado num
+  commit, nunca num branch flutuante - Cargo resolve o pacote dentro do clone
+  completo do workspace sem tentar compilar os outros membros (`node`,
+  `llama-engine` etc.), porque nenhuma dependência de `enterprise-protocol`
+  usa herança `.workspace = true` além de `version`/`edition`.
+- `crates/enterprise-plugin-fixture` e `crates/plugin-host` continuam aqui
+  porque testam/carregam o mecanismo genérico de ABI/IPC, não o domínio de
+  auditoria de um plugin específico.
+- `crates/node/src/plugins.rs` e `plugin_host.rs` não mudaram: o `pom` sempre
+  tratou o artefato do plugin como um `cdylib` opaco baixado por manifest -
+  de onde vem o código-fonte dele é irrelevante para o runtime.
+- `plugin_code` continua sendo `"enterprise"` em `PLUGIN_CATALOG`
+  (`crates/node/src/plugins.rs`) e no `feature_set` (`enterprise.request_logs`,
+  `enterprise.statistics`): só o repositório do código mudou, não a identidade
+  do plugin nem o contrato com o servidor de licenças.
+- `pom-release.sh` não libera mais nada com esse plugin_code: agora libera
+  somente `pom_core`. O release do plugin `enterprise` (build, empacotamento
+  reproduzível para macOS/Linux/Windows, GitHub Actions e a publicação da
+  versão já gerada no GitHub no servidor de licenças) vive inteiramente em
+  `pom-plugin-logs` - ver o `AGENTS.md` desse repositório.
+- No frontend, `/logs` e `/estatisticas` deixaram de embutir a UI interativa
+  (tabela paginada, inspetor, gráficos): essas telas viraram vitrines
+  informativas fixas, com descrição do plugin e link para
+  `https://pieceofmind.cloud/enterprise/index.html` (compra e instalação),
+  independente do estado de ativação. O código-fonte da UI interativa foi
+  preservado em `pom-plugin-logs` como referência (`frontend-reference/`),
+  mas não é compilável isoladamente: depende do kit de design e dos hooks
+  compartilhados de `apps/frontend` (`components/ui`, `lib/queries.ts`,
+  `i18n/`), que continuam privados deste repositório. As rotas
+  `/api/ui/requests` e `/api/ui/requests/stats` não mudaram - continuam
+  servindo JSON autenticado para qualquer cliente que os tenha, inclusive uma
+  futura console Enterprise dedicada.
 
 ## Entitlement e interface
 
@@ -250,10 +299,9 @@ cargo test -p node pom_core_update
 cd apps/frontend && npm test -- src/lib/access.test.ts src/components/nav.test.ts src/App.test.tsx src/routes/Plugins.test.tsx src/routes/About.test.tsx
 ./scripts/build-enterprise-plugin.sh --platform macos-aarch64 --debug
 ./scripts/test_pom_release.sh
-./pom-release.sh --platform linux-x86_64 --plugin enterprise --dry-run
-./pom-release.sh --platform linux-x86_64 --plugin pom_core --dry-run
-./pom-release.sh --platform macos-aarch64 --plugin pom_core --dry-run
-./pom-release.sh --platform windows-x86_64 --plugin pom_core --dry-run
+./pom-release.sh --platform linux-x86_64 --dry-run
+./pom-release.sh --platform macos-aarch64 --dry-run
+./pom-release.sh --platform windows-x86_64 --dry-run
 ```
 
 ## Maintaining this file

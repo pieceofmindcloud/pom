@@ -23,8 +23,13 @@ O catálogo e a implantação carregam a visão como estado explícito: sem
 recusada com `este modelo não tem visão`; arquivos de texto continuam sendo
 aceitos. Com o projetor carregado, o gateway valida imagens `data:image/...`
 em base64, envia-as para o primeiro peer junto do prompt e o prefill usa o
-`mtmd` do llama.cpp. O caminho é intencionalmente separado do prefill textual
-para não reutilizar prefixos ou misturar imagens em batches concorrentes.
+`mtmd` do llama.cpp. O Qwen3.8-Flash-Next segue esse contrato: o GGUF declara
+`general.architecture=qwen4exp` e precisa de `mmproj-BF16.gguf` ou
+`mmproj-F16.gguf` como arquivo irmão. O teste ignorado
+`qwen4exp_initializes_vision_from_separate_mmproj` carrega os dois artefatos
+pelos caminhos reais quando `POM_QWEN4EXP_MODEL` e `POM_QWEN4EXP_MMPROJ` estão
+definidos. O caminho é intencionalmente separado do prefill textual para não
+reutilizar prefixos ou misturar imagens em batches concorrentes.
 
 ### Células de KV e posições lógicas M-RoPE
 

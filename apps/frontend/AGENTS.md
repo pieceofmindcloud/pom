@@ -64,10 +64,14 @@ remain local until the deploy preflight.
 
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
-As telas `/logs` e `/estatisticas` são superfícies Enterprise descobríveis:
-`canAccessRoute` e `navForProfile` mantêm seus itens visíveis para todos os
-perfis, e `App.tsx` mostra o estado Enterprise com link de compra quando o
-entitlement está inativo. A API continua sendo a autoridade e recusa os dados.
+As telas `/logs` e `/estatisticas` são vitrines informativas do plugin
+`enterprise` (código extraído para `pom-plugin-logs`): `canAccessRoute` e
+`navForProfile` mantêm seus itens visíveis para todos os perfis, e `App.tsx`
+renderiza sempre `EnterpriseFeatureShowcase` (`src/components/`) para essas
+duas rotas, com ou sem licença ativa - descrição, prévia ilustrada e link para
+`https://pieceofmind.cloud/enterprise/index.html`. A API (`/api/ui/requests`,
+`/api/ui/requests/stats`) continua sendo a autoridade e recusa os dados sem
+entitlement; ver `docs/subsystems/licenciamento-enterprise.md`.
 
 O perfil `infer` é uma vista reduzida da interface: conversa, Chat da rede,
 documentação, API key e a tela de rede local para pedir entrada no processamento. O valor vem
@@ -111,12 +115,13 @@ desenhado**, porque uma vista só não é uma escolha.
   sem Sidebar nem Topbar. `SetupWizard` continua sendo uma referência visual
   mock, não a tela usada quando o nó está em modo setup.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` -> Logs, tela full-bleed da auditoria SQLite com barra compacta de
-  filtros, tabela densa, scroll infinito e inspetor com Markdown renderizado,
-  expansão para leitura e redação de credenciais; `/estatisticas` -> Statistics,
-  tela full-bleed separada dos agregados da auditoria, sem título duplicado, com
-  filtros de usuário, API key, modelo, nó, prompt e intervalo de datas.
-  `/logs/estatisticas` redireciona para a rota nova.
+- `/logs` e `/estatisticas` -> `EnterpriseFeatureShowcase` (fora do `<Routes>`,
+  como o chat: renderiza sempre que `isEnterprisePath` casa, antes da tabela de
+  rotas). Vitrine estática do plugin `enterprise` - descrição, prévia
+  ilustrada e link de compra/instalação -, com ou sem licença; a UI interativa
+  (tabela paginada de auditoria, inspetor, gráficos) foi extraída para
+  `pom-plugin-logs`. `/logs/estatisticas` continua redirecionando para a rota
+  nova.
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
 - `/config/rede` -> NetworkSettings; a seção principal Rede também reúne
   `/config/rede/participantes`, `/config/administracao` (Administradores),

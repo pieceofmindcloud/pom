@@ -63,27 +63,16 @@ Per-file list:
   **fora** do `<label>` (um `<button>` dentro de `<label>` quebra o nome
   acessível do controle), então o `<label>` continua embrulhando só texto e
   controle. `hint` (texto visível) segue existindo para as outras telas.
-- `RequestInspector.tsx` - inspetor da tela Logs. A aba ENVIADO vem antes de
-  REQUEST e separa a última mensagem de usuário como prompt novo, preservando
-  como contexto todas as demais mensagens, inclusive respostas do assistente e
-  ferramentas que venham depois dela. As duas superfícies usam Markdown
-  renderizado; Resposta usa o mesmo visualizador. `MDEditor.Markdown`
-  de `@uiw/react-md-editor/nohighlight` é somente leitura, sem barra de edição,
-  sem cópia interna, com HTML desabilitado, sanitização de links e sem imagens;
-  cada superfície é limitada a 64 KiB para manter a tela responsiva. O toggle
-  global entre Markdown renderizado e JSON cru persiste em
-  `storageKey("logs.inspector.format")`. O cabeçalho repete os detalhes da
-  linha, reúne cópia da aba ativa, toggle e fechar, e a telemetria continua
-  usando JSON, caminho da requisição e o cartão compartilhado
-  `ExecutionTelemetry`. Cada área Markdown tem um botão de expansão no canto
-  superior direito que abre uma janela `Modal` grande; ela acompanha o toggle
-  global e usa a mesma sanitização e censura de credenciais.
-  A cópia sempre redige credenciais.
-- `CodeViewer.tsx` - superfície de leitura flexível com realce JSON por
-  `highlight.js`. É somente leitura, mas permanece selecionável e copiável pelo
-  navegador, e é usada nas abas REQUEST e TELEMETRIA do inspetor.
+- `EnterpriseFeatureShowcase.tsx` - vitrine estática usada por `/logs` e
+  `/estatisticas` (renderizada fora do `<Routes>` em `App.tsx`, como o chat).
+  Recebe `kind: "logs" | "statistics"`, mostra título, descrição, uma prévia
+  ilustrada em SVG inline (mockup, não captura real), três destaques e o link
+  de compra/instalação `https://pieceofmind.cloud/enterprise/index.html`; com
+  `useEnterpriseStatus()` ativo mostra também um selo "já ativo". Substituiu a
+  auditoria interativa (`RequestInspector.tsx` incluso), extraída para
+  `pom-plugin-logs`. Ver `docs/subsystems/licenciamento-enterprise.md`.
 - `ExecutionTelemetry.tsx` - cartão compartilhado do trace de execução usado
-  pelo Chat e pelo inspetor de Logs. Mantém a tabela de fases, tempos por hop,
+  pelo Chat. Mantém a tabela de fases, tempos por hop,
   rede, ambiente, diagnóstico e demais detalhes em um único componente. Cruza
   também os timings ponta a ponta com o processamento medido no nó, para não
   chamar de gargalo do backend uma espera que ocorreu fora dele. A seção

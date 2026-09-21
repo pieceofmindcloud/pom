@@ -65,8 +65,6 @@ vi.mock("./components/Logo", () => ({
 // marcador é escrito à mão em vez de sair de um auxiliar compartilhado.
 vi.mock("./routes/DeployModel", () => ({ DeployModel: () => <div>tela-implantar</div> }));
 vi.mock("./routes/Deployments", () => ({ Deployments: () => <div>tela-implantacoes</div> }));
-vi.mock("./routes/Logs", () => ({ Logs: () => <div>tela-logs</div> }));
-vi.mock("./routes/Statistics", () => ({ Statistics: () => <div>tela-estatisticas</div> }));
 vi.mock("./routes/WholeModels", () => ({ WholeModels: () => <div>tela-modelos</div> }));
 vi.mock("./routes/Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 vi.mock("./routes/Chat", () => ({ Chat: () => <div>tela-chat</div> }));
@@ -118,12 +116,19 @@ describe("guarda de perfil por rota", () => {
     });
   }
 
-  it("shows the Enterprise purchase state from a direct bookmark without hiding the route", async () => {
+  it("shows the Enterprise showcase from a direct bookmark without hiding the route, with or without a license", async () => {
     enterpriseStatus.active = false;
     open("/logs", "admin");
-    expect(await screen.findByText("Este recurso faz parte do Enterprise")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Conhecer o Enterprise" }).getAttribute("href"))
-      .toBe("https://pieceofmind.cloud/enterprise");
+    expect(await screen.findByText("Logs de Requisições")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Comprar e instalar" }).getAttribute("href"))
+      .toBe("https://pieceofmind.cloud/enterprise/index.html");
+    expect(screen.queryByText("Este plugin já está ativo neste cluster.")).toBeNull();
+    cleanup();
+
+    enterpriseStatus.active = true;
+    open("/estatisticas", "admin");
+    expect(await screen.findByText("Estatísticas")).toBeTruthy();
+    expect(screen.getByText("Este plugin já está ativo neste cluster.")).toBeTruthy();
   });
 
   it("não mexe nas rotas que ninguém restringiu", async () => {

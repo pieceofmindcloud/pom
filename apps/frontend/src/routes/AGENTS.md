@@ -463,24 +463,16 @@ Per-file list:
   aparece com `authority_level` presente. O administrador escolhe o nó ao
   criar e vê os próprios tokens completos, enquanto os tokens de outros nós
   ficam mascarados; node e infer veem e criam somente os seus.
-- `Logs.tsx` - tela autenticada de auditoria em largura total. A barra aplica
-  filtros de API key, prompt, nó e período a `GET /api/ui/requests`; a tela de
-  requisições pagina com `limit`/`offset` e sentinela de IntersectionObserver.
-  `Statistics.tsx` usa a mesma fonte agregada em `GET /api/ui/requests/stats`
-  como tela própria, com filtros de usuário (rótulo da API key), API key,
-  modelo, nó, prompt e intervalo de datas. Clicar em qualquer
-  ponto não interativo da linha abre o inspetor e mantém a linha selecionada
-  destacada com acento visível, inclusive enquanto o mouse está em outra linha;
-  a lupa continua disponível. O cabeçalho do inspetor repete as métricas da
-  linha. ENVIADO destaca a última mensagem de usuário como prompt novo e mantém
-  as demais mensagens do histórico, inclusive mensagens posteriores de
-  assistente/ferramenta, no contexto em Markdown renderizado. Resposta usa o
-  mesmo visualizador e a preferência entre Markdown e JSON cru
-  fica no localStorage. A tablist contém somente as quatro abas; cópia da aba
-  ativa e toggle de formato ficam no cabeçalho. O slot reservado do carregamento
-  deixa o badge de erros fixo à direita. Cada superfície Markdown pode ser
-  aberta em uma janela grande de leitura, que acompanha o toggle e a censura
-  de segredos.
+- `Logs.tsx`/`Statistics.tsx` não existem mais aqui: eram a auditoria
+  interativa (`GET /api/ui/requests`/`/requests/stats`, tabela paginada com
+  `IntersectionObserver`, inspetor com abas ENVIADO/REQUEST/Resposta/
+  TELEMETRIA em Markdown renderizado, gráficos agregados) do plugin
+  `enterprise`, extraída para `pom-plugin-logs` (mantida lá como referência em
+  `frontend-reference/`, não compilável isoladamente - depende deste design
+  system). `/logs` e `/estatisticas` agora renderizam
+  `../components/EnterpriseFeatureShowcase.tsx`, uma vitrine estática sem
+  gate. Ver `docs/subsystems/licenciamento-enterprise.md`, "Extração para
+  pom-plugin-logs".
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and

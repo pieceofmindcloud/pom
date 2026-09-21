@@ -14,6 +14,7 @@ function pluginStatus(code: string, overrides: Record<string, unknown> = {}) {
     manage_url: `https://pieceofmind.cloud/plugins/index.html?plugin=${encodeURIComponent(code)}`,
     plugin_version: null,
     lease_expires_at: null,
+    license_expires_at: null,
     installed_at: null,
     update_checked_at: null,
     available_update: null,
@@ -61,6 +62,7 @@ const mocks = vi.hoisted(() => ({
       manage_url: string;
       plugin_version: string | null;
       lease_expires_at: string | null;
+      license_expires_at: string | null;
       installed_at: string | null;
       update_checked_at: string | null;
       available_update: { release_id: string; version: string; changelog: string | null } | null;
@@ -335,12 +337,16 @@ describe("Plugins", () => {
     expect(within(full as HTMLElement).getByText("Limite atingido")).toBeTruthy();
   });
 
-  it("shows license expiration separately from install and update-check times", () => {
+  it("shows license expiration separately from the lease, install and update-check times", () => {
     mocks.catalog.data = { plugins: [publicPlugin("alpha")] };
     mocks.plugins.data = [pluginStatus("alpha", {
       active: true,
       state: "active",
-      lease_expires_at: "2099-12-31T12:00:00.000Z",
+      // Deliberately different from license_expires_at: the lease is a
+      // short technical renewal deadline the heartbeat rolls forward every
+      // few days, never the purchased license's own validity.
+      lease_expires_at: "2026-09-28T12:00:00.000Z",
+      license_expires_at: "2099-12-31T12:00:00.000Z",
       installed_at: "2026-09-20T10:15:00.000Z",
       update_checked_at: "2026-09-21T14:30:00.000Z",
       available_update: { release_id: "alpha-2", version: "2.0.0", changelog: null },
@@ -354,6 +360,8 @@ describe("Plugins", () => {
       .format(new Date("2026-09-20T10:15:00.000Z"));
     const expirationDate = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" })
       .format(new Date("2099-12-31T12:00:00.000Z"));
+    const leaseDate = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" })
+      .format(new Date("2026-09-28T12:00:00.000Z"));
 
     expect(within(card as HTMLElement).getByText("Última verificação de atualização")).toBeTruthy();
     expect(within(card as HTMLElement).getByText(updateDate)).toBeTruthy();
@@ -361,6 +369,7 @@ describe("Plugins", () => {
     expect(within(card as HTMLElement).getByText(installDate)).toBeTruthy();
     expect(within(card as HTMLElement).getByText("Licença válida até")).toBeTruthy();
     expect(within(card as HTMLElement).getByText(expirationDate)).toBeTruthy();
+    expect(within(card as HTMLElement).queryByText(leaseDate)).toBeNull();
   });
 
   it("hides license activation when every catalog plugin is already active", () => {

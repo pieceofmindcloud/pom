@@ -280,7 +280,11 @@ real). `PluginStatus.update_checked_at` só avança quando a consulta de manifes
 termina com sucesso; `installed_at` só avança quando o host fica pronto após
 instalação ou aplicação. Ambos persistem por plugin, têm `serde(default)` para
 estados existentes e não são derivados de `last_success_at`, que é atualizado
-por heartbeat. Ver `docs/subsystems/licenciamento-enterprise.md`.
+por heartbeat. `PluginStatus.license_expires_at` é a validade da LICENÇA
+(`GET /v1/licenses/status`, consultada em `restore()` e no clique manual em
+"Atualizar" via `refresh_license_status`), nunca o `lease_expires_at` técnico -
+confundir os dois já vazou para a UI uma vez, ver
+`docs/subsystems/licenciamento-enterprise.md`.
 Todo heartbeat com SUCESSO marca
 o plugin ativo e chama `ensure_host_running` (mesma lógica usada na
 restauração de boot, extraída em um só lugar): se o host daquele plugin

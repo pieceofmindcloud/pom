@@ -108,7 +108,11 @@ function PluginCard({
       : "neutral";
   const installedAt = formatDateTime(status?.installed_at, locale);
   const updateCheckedAt = formatDateTime(status?.update_checked_at, locale);
-  const leaseExpiresAt = formatDateTime(status?.lease_expires_at, locale);
+  // The license's own validity, not `lease_expires_at` (a short technical
+  // renewal deadline the heartbeat rolls forward every few days) - showing
+  // the lease here would read as "your license expires tomorrow" while the
+  // purchased license is still valid for months.
+  const licenseExpiresAt = formatDateTime(status?.license_expires_at, locale);
   const monthlyPrice = formatPrice(entry?.pricing.monthly ?? null, locale);
   const annualPrice = formatPrice(entry?.pricing.annual ?? null, locale);
   const screenshots = entry?.screenshot_urls.slice(0, 4) ?? [];
@@ -287,10 +291,10 @@ function PluginCard({
               <dd className="text-sm text-fg">{updateCheckedAt}</dd>
             </div>
           )}
-          {active && leaseExpiresAt && (
+          {active && licenseExpiresAt && (
             <div>
               <dt className="eyebrow mb-1">{t("plugins.licenseExpires")}</dt>
-              <dd className="text-sm text-fg">{leaseExpiresAt}</dd>
+              <dd className="text-sm text-fg">{licenseExpiresAt}</dd>
             </div>
           )}
         </dl>

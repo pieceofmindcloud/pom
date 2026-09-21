@@ -64,6 +64,19 @@ que é uma fronteira de produto separada desde antes e continua sendo).
   são campos opcionais com default ao ler estados já persistidos. `last_success_at`
   segue reservado ao heartbeat e nunca serve como data de instalação.
 
+  `PluginStatus.license_expires_at` é a validade da LICENÇA, distinta do
+  `lease_expires_at` técnico acima: o lease é um prazo curto de renovação que
+  o heartbeat empurra a cada poucos dias, a licença é o que a compra realmente
+  concede (meses ou anos). Vem de `LicenseStatusResponse::license_expires_at`
+  (`GET /v1/licenses/status`, o mesmo endpoint que `restore()` já consultava
+  na inicialização), reconsultado também no clique manual em "Atualizar"
+  (`PluginRuntime::refresh_license_status`, dentro de `PluginManager::refresh`)
+  - nunca no heartbeat periódico, que não traz esse campo. Falha nessa consulta
+  extra é só logada, sem derrubar o `refresh`. A tela mostrava antes o
+  `lease_expires_at` sob o rótulo "Licença válida até", o que confundia um
+  vencimento técnico de dias com a validade real da licença - corrigido
+  reaproveitando o mesmo campo que `restore()` já buscava e descartava.
+
   **Defeito corrigido (2026-09-21):** até esta correção, o heartbeat escrevia o
   `plugin_release_id` recebido do servidor diretamente em
   `installed_release_id` - o mesmo campo que `detect_update` usa como base de

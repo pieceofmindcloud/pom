@@ -205,6 +205,8 @@ export interface PluginStatus {
   manage_url: string;
   plugin_version: string | null;
   lease_expires_at: string | null;
+  /** License validity (not the technical lease above), from GET /v1/licenses/status. */
+  license_expires_at: string | null;
   /** Last time the installed host reported ready for a release. */
   installed_at: string | null;
   /** Last successful manifest lookup, regardless of whether it found an update. */

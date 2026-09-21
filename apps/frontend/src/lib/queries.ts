@@ -203,6 +203,7 @@ function inactivePlugin(code: string): PluginStatus {
     manage_url: "https://pieceofmind.cloud/enterprise",
     plugin_version: null,
     lease_expires_at: null,
+    license_expires_at: null,
     installed_at: null,
     update_checked_at: null,
     available_update: null,

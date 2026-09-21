@@ -208,6 +208,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   controla carregamento, erro e atualização periódica dessa leitura.
   `PluginStatus` também carrega `installed_at` e `update_checked_at` do estado
   real persistido pelo nó; não derive a data da última instalação do heartbeat.
+  `license_expires_at` é a validade da LICENÇA (de `GET /v1/licenses/status`) e
+  é o campo certo para "Licença válida até" na tela de Plugins - nunca
+  `lease_expires_at`, um prazo técnico de renovação de poucos dias que o
+  heartbeat empurra sozinho.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

@@ -767,6 +767,14 @@ pub(crate) struct PluginStatus {
     pub manage_url: String,
     pub plugin_version: Option<String>,
     pub lease_expires_at: Option<String>,
+    /// Validade da LICENÇA, distinta do `lease_expires_at` técnico acima (o
+    /// lease renova a cada heartbeat e costuma vencer em dias; a licença
+    /// comprada costuma vencer em meses ou anos). Lida de
+    /// `LicenseStatusResponse::license_expires_at`
+    /// (`GET /v1/licenses/status`), nunca do lease - mostrar o lease como se
+    /// fosse a validade da licença é a confusão que este campo existe para
+    /// evitar.
+    pub license_expires_at: Option<String>,
     pub installed_at: Option<String>,
     pub update_checked_at: Option<String>,
     pub available_update: Option<PluginUpdateInfo>,
@@ -782,6 +790,7 @@ impl PluginStatus {
             manage_url: enterprise_protocol::PLUGIN_MANAGE_URL.to_owned(),
             plugin_version: None,
             lease_expires_at: None,
+            license_expires_at: None,
             installed_at: None,
             update_checked_at: None,
             available_update: None,
@@ -874,7 +883,11 @@ impl PluginRuntime {
         let this = self.clone();
         tokio::spawn(async move {
             let remote_state = this.service.status(&persisted, &this.fingerprint).await;
-            let allowed = match remote_state {
+            let license_expires_at = remote_state
+                .as_ref()
+                .ok()
+                .and_then(|remote| remote.payload.license_expires_at.clone());
+            let allowed = match &remote_state {
                 Ok(remote) => {
                     remote.payload.activation_id == persisted.activation_id
                         && remote.payload.lease_id == persisted.lease_id
@@ -889,17 +902,18 @@ impl PluginRuntime {
                 return;
             }
             this.ensure_host_running(&persisted).await;
-            this.restore_ready(&persisted).await;
+            this.restore_ready(&persisted, license_expires_at).await;
         });
     }
 
-    async fn restore_ready(&self, persisted: &PersistedPluginState) {
+    async fn restore_ready(&self, persisted: &PersistedPluginState, license_expires_at: Option<String>) {
         let mut status = self.status.write().await;
         status.active = true;
         status.state = LicenseState::Active;
         status.features = persisted.features.clone();
         status.plugin_version = Some(persisted.plugin_version.clone());
         status.lease_expires_at = Some(persisted.lease_expires_at.clone());
+        status.license_expires_at = license_expires_at;
         status.installed_at = persisted.installed_at.clone();
         status.update_checked_at = persisted.update_checked_at.clone();
         status.available_update = None;
@@ -1433,6 +1447,24 @@ impl PluginRuntime {
         std::time::Duration::from_secs(seconds.max(30) as u64)
     }
 
+    /// Reconsulta `/v1/licenses/status` para publicar `license_expires_at`
+    /// atualizado - a validade da LICENÇA, distinta do `lease_expires_at`
+    /// técnico que o heartbeat já renova. Chamado só pelo clique manual em
+    /// "Atualizar" (`PluginManager::refresh`), não pelo supervisor periódico:
+    /// o heartbeat já cobre a checagem de saúde recorrente, e esta é uma
+    /// chamada extra ao mesmo endpoint que `restore()` usa na inicialização.
+    /// Falha aqui nunca derruba o `refresh` chamador - é enriquecimento, não
+    /// prova de validade.
+    async fn refresh_license_status(&self) -> Result<(), LicenseClientError> {
+        let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Nenhum lease local.")
+        })?;
+        let response = self.service.status(&persisted, &self.fingerprint).await?;
+        let mut status = self.status.write().await;
+        status.license_expires_at = response.payload.license_expires_at;
+        Ok(())
+    }
+
     /// Checagem de atualização de versão PRÓPRIA deste plugin - não
     /// compartilhada com outros plugins nem com o `pom_core`. Só publica o
     /// aviso no status; download, troca e reinício do host ficam reservados
@@ -1813,6 +1845,9 @@ impl PluginManager {
         runtime.heartbeat(&uuid::Uuid::new_v4().to_string()).await?;
         if let Err(error) = runtime.detect_update().await {
             tracing::warn!(plugin_code = %code, error = %error, "detecção de atualização do plugin falhou");
+        }
+        if let Err(error) = runtime.refresh_license_status().await {
+            tracing::warn!(plugin_code = %code, error = %error, "checagem de validade da licença falhou");
         }
         Ok(())
     }
@@ -2340,6 +2375,7 @@ pub(crate) mod tests_support {
         artifacts: Arc<Mutex<HashMap<String, Vec<u8>>>>,
         manifest_calls: Arc<Mutex<Vec<String>>>,
         download_calls: Arc<Mutex<u32>>,
+        license_expires_at: Arc<Mutex<Option<String>>>,
     }
 
     #[derive(Clone)]
@@ -2357,6 +2393,7 @@ pub(crate) mod tests_support {
                 artifacts: Arc::new(Mutex::new(HashMap::new())),
                 manifest_calls: Arc::new(Mutex::new(Vec::new())),
                 download_calls: Arc::new(Mutex::new(0)),
+                license_expires_at: Arc::new(Mutex::new(None)),
             }
         }
 
@@ -2410,6 +2447,10 @@ pub(crate) mod tests_support {
 
         pub(crate) async fn download_calls(&self) -> u32 {
             *self.download_calls.lock().await
+        }
+
+        pub(crate) async fn set_license_expires_at(&self, value: Option<&str>) {
+            *self.license_expires_at.lock().await = value.map(str::to_owned);
         }
     }
 
@@ -2570,6 +2611,34 @@ pub(crate) mod tests_support {
             _fingerprint: &Fingerprint,
         ) -> Result<(), LicenseClientError> {
             Ok(())
+        }
+
+        async fn status(
+            &self,
+            persisted: &PersistedPluginState,
+            _fingerprint: &Fingerprint,
+        ) -> Result<
+            ResponseEnvelope<enterprise_protocol::LicenseStatusResponse>,
+            LicenseClientError,
+        > {
+            Ok(ResponseEnvelope {
+                protocol: enterprise_protocol::LICENSE_PROTOCOL.into(),
+                request_id: "mock-status".into(),
+                server_time: "2099-01-01T00:00:00Z".into(),
+                expires_at: None,
+                payload: enterprise_protocol::LicenseStatusResponse {
+                    state: "active".into(),
+                    license_id: persisted.license_id.clone(),
+                    activation_id: persisted.activation_id.clone(),
+                    lease_id: persisted.lease_id.clone(),
+                    licensed_plugins: vec![],
+                    license_expires_at: self.license_expires_at.lock().await.clone(),
+                    lease_expires_at: persisted.lease_expires_at.clone(),
+                    grace_ends_at: "2099-01-08T00:00:00Z".into(),
+                    plugin_release_id: persisted.installed_release_id.clone(),
+                    eligible_release_id: None,
+                },
+            })
         }
     }
 }
@@ -2837,6 +2906,31 @@ mod tests {
             status.lease_expires_at.as_deref(),
             Some("2099-01-08T00:00:00Z")
         );
+    }
+
+    /// O clique manual em "Atualizar" (`PluginManager::refresh`) publica
+    /// `license_expires_at` a partir de `/v1/licenses/status` - a validade da
+    /// LICENÇA, que o heartbeat sozinho não traz (só renova o
+    /// `lease_expires_at` técnico). As duas datas são deliberadamente
+    /// diferentes aqui para provar que a tela nunca mostra o lease no lugar
+    /// da licença.
+    #[tokio::test]
+    async fn refresh_publishes_the_license_expiry_from_the_status_endpoint() {
+        let service = Arc::new(MockLicenseService::single("enterprise", activation("enterprise", "ent-1")));
+        service.set_license_expires_at(Some("2027-09-15T00:00:00.000Z")).await;
+        let manager = PluginManager::test_manager(&["enterprise"], service);
+        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        activate_ready(&runtime, "PM-test-key", "0.1.0").await;
+        assert!(runtime.status().await.license_expires_at.is_none());
+
+        manager.refresh("enterprise").await.expect("refresh");
+
+        let status = manager.status("enterprise").await.expect("status");
+        assert_eq!(
+            status.license_expires_at.as_deref(),
+            Some("2027-09-15T00:00:00.000Z")
+        );
+        assert_ne!(status.license_expires_at, status.lease_expires_at);
     }
 
     #[tokio::test]

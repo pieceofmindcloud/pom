@@ -613,6 +613,11 @@ mod mtp_draft_tests {
                 panic!("load_mtp_draft deveria anexar o rascunho sintético: {error:#}");
             }
         };
+        assert_eq!(
+            loaded.model_architecture().as_deref(),
+            Some("qwen4exp"),
+            "a arquitetura deve ser lida com a chave GGUF exata"
+        );
         assert!(
             loaded.has_nextn_weights(),
             "o rascunho carregado precisa expor pesos nextn"

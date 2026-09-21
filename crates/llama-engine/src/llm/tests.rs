@@ -507,6 +507,64 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// Loads the real Qwen3.8 language model and its separate projector through
+    /// the same `LlmEngine` path used by a deployed node. The test is opt-in
+    /// because the model and `mmproj-BF16.gguf` are large.
+    ///
+    /// ```text
+    /// POM_QWEN4EXP_MODEL=/models/Qwen3.8-Flash-Next-BF16-00001-of-00008.gguf \\
+    /// POM_QWEN4EXP_MMPROJ=/models/mmproj-BF16.gguf \\
+    /// cargo test -p llama-engine qwen4exp_initializes_vision_from_separate_mmproj -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "requires the real Qwen3.8 GGUF and mmproj-BF16.gguf"]
+    fn qwen4exp_initializes_vision_from_separate_mmproj() {
+        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let model_path = std::env::var("POM_QWEN4EXP_MODEL")
+            .expect("POM_QWEN4EXP_MODEL deve apontar para o primeiro shard GGUF");
+        let mmproj_path = std::env::var("POM_QWEN4EXP_MMPROJ")
+            .expect("POM_QWEN4EXP_MMPROJ deve apontar para mmproj-BF16.gguf");
+        let info = crate::gguf::read_info(Path::new(&model_path))
+            .expect("o cabeçalho do modelo Qwen3.8 deve ser legível");
+        assert_eq!(
+            info.architecture.as_deref(),
+            Some("qwen4exp"),
+            "o GGUF deve usar a chave de arquitetura declarada pelo Hub"
+        );
+
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            offload_kqv: false,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
+            fit_memory: false,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            n_batch: 512,
+            n_gpu_layers: 0,
+            n_threads: 2,
+            max_sessions: 1,
+            need_embeddings: false,
+            mtp: false,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+            mmproj_path: Some(mmproj_path),
+            mtp_draft_path: None,
+        };
+        let engine = LlmEngine::load_with_cache(&model_path, &cfg, &ModelCache::new(), false)
+            .expect("o modelo qwen4exp deve carregar com o fork suportado");
+
+        assert_eq!(
+            engine.loaded.model_architecture().as_deref(),
+            Some("qwen4exp")
+        );
+        assert!(
+            engine.vision_enabled(),
+            "o mmproj separado deve inicializar o contexto mtmd"
+        );
+    }
+
     fn mtp_attach_refuses_target_without_loaded_nextn(max_sessions: u32) {
         let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(path) = std::env::var("POM_MTP_MODEL") else {

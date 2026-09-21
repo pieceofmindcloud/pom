@@ -229,7 +229,12 @@ exige revisar a fronteira FFI e testar a destruição de gerações compatíveis
 
 `llm::VisionContext` usa o `mtmd` já fornecido pelo llama.cpp para carregar o
 GGUF `mmproj` separado e transformar imagens em tokens no prefill. O caminho é
-opcional e é validado junto com `NodeConfig.mmproj_path`.
+opcional e é validado junto com `NodeConfig.mmproj_path`. Qwen3.8-Flash-Next
+continua usando esse contrato sidecar: o fork reconhece a arquitetura GGUF
+exata `qwen4exp`, e o teste ignorado
+`qwen4exp_initializes_vision_from_separate_mmproj` valida o modelo real e o
+`mmproj-BF16.gguf` quando `POM_QWEN4EXP_MODEL` e `POM_QWEN4EXP_MMPROJ` estão
+configurados.
 
 `decode_multimodal` devolve `MultimodalDecode`, que separa `n_tokens`
 (células físicas escritas no KV) de `n_past` (posição lógica seguinte). Em

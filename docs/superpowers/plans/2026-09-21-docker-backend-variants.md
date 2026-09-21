@@ -51,4 +51,4 @@
 - [x] Rodar `bash scripts/test-docker-entrypoint.sh` para verificar seleção de executável pelo entrypoint.
 - [x] Validar `docker compose config` para Salem e Ksia; o daemon Docker local não está ativo, então o build da imagem não pode rodar neste worktree.
 - [x] Executar `git diff --check`, revisar o Compose efetivo e confirmar que não houve deploy remoto.
-- [ ] Commitar, fazer fetch e rebase em `origin/feat/enterprise`, publicar sem force-push e conferir o SHA via `git ls-remote`.
+- [x] Commitar, fazer fetch e rebase em `origin/feat/enterprise`, publicar sem force-push e conferir o SHA via `git ls-remote`.

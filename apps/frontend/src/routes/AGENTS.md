@@ -463,15 +463,15 @@ Per-file list:
   aparece com `authority_level` presente. O administrador escolhe o nó ao
   criar e vê os próprios tokens completos, enquanto os tokens de outros nós
   ficam mascarados; node e infer veem e criam somente os seus.
-- `Logs.tsx`/`Statistics.tsx` não existem mais aqui: eram a auditoria
-  interativa (`GET /api/ui/requests`/`/requests/stats`, tabela paginada com
+- `Logs.tsx`/`Statistics.tsx` - auditoria interativa do plugin `enterprise`
+  (`GET /api/ui/requests`/`/requests/stats`, tabela paginada com
   `IntersectionObserver`, inspetor com abas ENVIADO/REQUEST/Resposta/
-  TELEMETRIA em Markdown renderizado, gráficos agregados) do plugin
-  `enterprise`, extraída para `pom-plugin-logs` (mantida lá como referência em
-  `frontend-reference/`, não compilável isoladamente - depende deste design
-  system). `/logs` e `/estatisticas` agora renderizam
-  `../components/EnterpriseFeatureShowcase.tsx`, uma vitrine estática sem
-  gate. Ver `docs/subsystems/licenciamento-enterprise.md`, "Extração para
+  TELEMETRIA em Markdown renderizado, gráficos agregados). Só renderizam com o
+  entitlement ativo (feature `request_logs`/`statistics` em
+  `useEnterpriseStatus()`), decidido em `App.tsx`; sem ele `/logs` e
+  `/estatisticas` mostram `../components/EnterpriseFeatureShowcase.tsx`. O
+  backend recusa os dados sem entitlement de qualquer modo. Ver
+  `docs/subsystems/licenciamento-enterprise.md`, "Extração para
   pom-plugin-logs".
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to

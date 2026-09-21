@@ -862,7 +862,6 @@ enterprise.licenseState,License state,Estado da licença
 enterprise.purchaseLink,Buy or manage Enterprise,Comprar ou gerenciar Enterprise
 enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
 enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
-enterprise.showcase.activeNote,This plugin is already active on this cluster.,Este plugin já está ativo neste cluster.
 enterprise.showcase.cta,Buy & install,Comprar e instalar
 enterprise.showcase.logs.bullet1,"Full request trail: prompt, response, hops and timings","Trilha completa da requisição: prompt, resposta, hops e tempos"
 enterprise.showcase.logs.bullet2,"Filter by API key, model, node and date range","Filtre por chave de API, modelo, nó e intervalo de datas"

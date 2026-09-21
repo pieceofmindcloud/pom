@@ -10,7 +10,7 @@ import {
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
 import { ChatSessionProvider } from "./lib/chatStore";
-import { useAdminSurface } from "./lib/queries";
+import { useAdminSurface, useEnterpriseStatus } from "./lib/queries";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -127,7 +127,9 @@ export const routeLoaders = {
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   networkChat: () => import("./routes/NetworkChat").then(({ NetworkChat }) => NetworkChat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
+  logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
+  statistics: () => import("./routes/Statistics").then(({ Statistics }) => Statistics),
   plugins: () => import("./routes/Plugins").then(({ Plugins }) => Plugins),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
@@ -163,7 +165,9 @@ const PublicNetworks = lazyRoute(routeLoaders.publicNetworks);
 const Chat = lazyRoute(routeLoaders.chat);
 const NetworkChat = lazyRoute(routeLoaders.networkChat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
+const Logs = lazyRoute(routeLoaders.logs);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
+const Statistics = lazyRoute(routeLoaders.statistics);
 const Plugins = lazyRoute(routeLoaders.plugins);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
@@ -223,6 +227,7 @@ export default function App() {
   const { t } = useI18n();
   const location = useLocation();
   const { profile } = useProfile();
+  const enterpriseStatus = useEnterpriseStatus();
   /*
    * O guarda de perfil fica aqui, e não dentro de cada rota, porque aqui ele
    * é um só: `/chat` renderiza fora do `<Routes>` (ver abaixo), então um guarda
@@ -233,12 +238,19 @@ export default function App() {
    */
   const allowed = canAccessRoute(location.pathname, profile);
   /*
-   * `/logs` e `/estatisticas` são vitrines informativas do plugin `enterprise`
-   * (extraído para pom-plugin-logs): renderizam sempre, com ou sem licença -
-   * ver `EnterpriseFeatureShowcase` e
-   * `docs/subsystems/licenciamento-enterprise.md`.
+   * `/logs` e `/estatisticas` são as telas reais do plugin `enterprise`,
+   * protegidas pelo entitlement: com o plugin ativo (e a feature da tela
+   * habilitada) renderizam a tela; sem ele, a vitrine
+   * `EnterpriseFeatureShowcase`. O backend recusa os dados sem entitlement de
+   * qualquer modo - ver `docs/subsystems/licenciamento-enterprise.md`.
    */
   const enterprisePath = isEnterprisePath(location.pathname);
+  const enterpriseActive = Boolean(
+    enterpriseStatus.data?.active
+      && enterpriseStatus.data.features.includes(
+        location.pathname.startsWith("/logs") ? "request_logs" : "statistics",
+      ),
+  );
   const isChat = allowed && location.pathname === "/chat";
   const isEmbeddedChat = allowed && location.pathname === "/admin-ui/chat";
   // Screens that own the whole viewport and scroll inside themselves, instead
@@ -381,9 +393,9 @@ export default function App() {
                   </div>
                 ) : location.pathname === "/logs/estatisticas" ? (
                   // Alias antigo, preservado fora do `<Routes>` porque o
-                  // destino também é uma vitrine Enterprise sem gate.
+                  // destino também passa pela vitrine Enterprise.
                   <Navigate to="/estatisticas" replace />
-                ) : enterprisePath ? (
+                ) : enterprisePath && !enterpriseActive ? (
                   <EnterpriseFeatureShowcase kind={location.pathname.startsWith("/logs") ? "logs" : "statistics"} />
                 ) : isChat ? (
                   <Chat />
@@ -405,6 +417,8 @@ export default function App() {
                         <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
                         <Route path="/transferencias" element={<Page><Transfers /></Page>} />
                         <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
+                        <Route path="/logs" element={<Page><Logs /></Page>} />
+                        <Route path="/estatisticas" element={<Page><Statistics /></Page>} />
                         <Route path="/plugins" element={<Page><Plugins /></Page>} />
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />

@@ -64,11 +64,13 @@ remain local until the deploy preflight.
 
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
-As telas `/logs` e `/estatisticas` são vitrines informativas do plugin
-`enterprise` (código extraído para `pom-plugin-logs`): `canAccessRoute` e
-`navForProfile` mantêm seus itens visíveis para todos os perfis, e `App.tsx`
-renderiza sempre `EnterpriseFeatureShowcase` (`src/components/`) para essas
-duas rotas, com ou sem licença ativa - descrição, prévia ilustrada e link para
+As telas `/logs` e `/estatisticas` são as telas reais do plugin `enterprise`
+(código do plugin em `pom-plugin-logs`), protegidas pelo entitlement:
+`canAccessRoute` e `navForProfile` mantêm os itens visíveis para todos os
+perfis, e `App.tsx` renderiza `Logs`/`Statistics` quando
+`useEnterpriseStatus()` está ativo com a feature da tela (`request_logs`/
+`statistics`); caso contrário renderiza `EnterpriseFeatureShowcase`
+(`src/components/`) com descrição, prévia ilustrada e link para
 `https://pieceofmind.cloud/enterprise/index.html`. A API (`/api/ui/requests`,
 `/api/ui/requests/stats`) continua sendo a autoridade e recusa os dados sem
 entitlement; ver `docs/subsystems/licenciamento-enterprise.md`.
@@ -115,13 +117,11 @@ desenhado**, porque uma vista só não é uma escolha.
   sem Sidebar nem Topbar. `SetupWizard` continua sendo uma referência visual
   mock, não a tela usada quando o nó está em modo setup.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` e `/estatisticas` -> `EnterpriseFeatureShowcase` (fora do `<Routes>`,
-  como o chat: renderiza sempre que `isEnterprisePath` casa, antes da tabela de
-  rotas). Vitrine estática do plugin `enterprise` - descrição, prévia
-  ilustrada e link de compra/instalação -, com ou sem licença; a UI interativa
-  (tabela paginada de auditoria, inspetor, gráficos) foi extraída para
-  `pom-plugin-logs`. `/logs/estatisticas` continua redirecionando para a rota
-  nova.
+- `/logs` e `/estatisticas` -> `Logs`/`Statistics` (dentro do `<Routes>`) com o
+  plugin `enterprise` ativo e a feature da tela habilitada; sem isso,
+  `EnterpriseFeatureShowcase` (fora do `<Routes>`, como o chat, antes da tabela
+  de rotas) - vitrine com descrição, prévia e link de compra/instalação.
+  `/logs/estatisticas` continua redirecionando para a rota nova.
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
 - `/config/rede` -> NetworkSettings; a seção principal Rede também reúne
   `/config/rede/participantes`, `/config/administracao` (Administradores),

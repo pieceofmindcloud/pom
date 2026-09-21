@@ -5,15 +5,14 @@
  * https://github.com/pereirajair/pom-plugin-logs. Its interactive UI moved
  * with it (kept there as a reference, not buildable standalone - it depends
  * on this app's shared design system and hooks). This screen replaces it in
- * the POM bundle: always visible for product discovery, with a preview
- * illustration, a short feature list and a link to buy/install. It renders
- * regardless of activation state - see
+ * the POM bundle: shown only while the plugin is NOT active (App.tsx renders
+ * the real Logs/Statistics screens once the entitlement is active), with a
+ * preview illustration, a short feature list and a link to buy/install - see
  * `docs/subsystems/licenciamento-enterprise.md`, "Extração para
  * pom-plugin-logs".
  */
 import { ExternalLink } from "lucide-react";
-import { Badge, Button, Panel, PanelHeader } from "./ui";
-import { useEnterpriseStatus } from "../lib/queries";
+import { Button, Panel, PanelHeader } from "./ui";
 import { useI18n } from "../i18n/provider";
 
 const ENTERPRISE_SITE_URL = "https://pieceofmind.cloud/enterprise/index.html";
@@ -69,8 +68,6 @@ type ShowcaseKind = "logs" | "statistics";
 
 export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
   const { t } = useI18n();
-  const enterpriseStatus = useEnterpriseStatus();
-  const active = Boolean(enterpriseStatus.data?.active && enterpriseStatus.data.features.includes(kind === "logs" ? "request_logs" : "statistics"));
 
   return (
     <main className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
@@ -79,7 +76,6 @@ export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
           eyebrow={t("enterprise.eyebrow")}
           title={t(`enterprise.showcase.${kind}.title`)}
           subtitle={t(`enterprise.showcase.${kind}.description`)}
-          actions={active ? <Badge tone="aqua">{t("enterprise.showcase.activeNote")}</Badge> : undefined}
         />
         <div className="grid gap-5 p-5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           <div

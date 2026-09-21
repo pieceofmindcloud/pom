@@ -86,7 +86,7 @@ entre peers.
 ## Extração para pom-plugin-logs (2026-09-21)
 
 O código de produto do plugin `enterprise` (a lib `cdylib` que grava e
-consulta `enterprise.db`, e as telas de UI `Logs.tsx`/`Statistics.tsx`) saiu
+consulta `enterprise.db`) saiu
 deste repositório para `https://github.com/pereirajair/pom-plugin-logs`, um
 repositório de licenciamento próprio com seu build, empacotamento e pipeline
 de release separados. O que **fica** aqui é só a fronteira genérica,
@@ -115,18 +115,18 @@ reusável por qualquer `plugin_code` futuro:
   reproduzível para macOS/Linux/Windows, GitHub Actions e a publicação da
   versão já gerada no GitHub no servidor de licenças) vive inteiramente em
   `pom-plugin-logs` - ver o `AGENTS.md` desse repositório.
-- No frontend, `/logs` e `/estatisticas` deixaram de embutir a UI interativa
-  (tabela paginada, inspetor, gráficos): essas telas viraram vitrines
-  informativas fixas, com descrição do plugin e link para
-  `https://pieceofmind.cloud/enterprise/index.html` (compra e instalação),
-  independente do estado de ativação. O código-fonte da UI interativa foi
-  preservado em `pom-plugin-logs` como referência (`frontend-reference/`),
-  mas não é compilável isoladamente: depende do kit de design e dos hooks
-  compartilhados de `apps/frontend` (`components/ui`, `lib/queries.ts`,
-  `i18n/`), que continuam privados deste repositório. As rotas
-  `/api/ui/requests` e `/api/ui/requests/stats` não mudaram - continuam
-  servindo JSON autenticado para qualquer cliente que os tenha, inclusive uma
-  futura console Enterprise dedicada.
+- No frontend, as telas reais de Logs de Requisições e Estatísticas
+  (`routes/Logs.tsx`, `routes/Statistics.tsx`, `components/RequestInspector.tsx`)
+  continuam em `apps/frontend`, porque dependem do kit de design e dos hooks
+  compartilhados daqui. `App.tsx` as renderiza em `/logs` e `/estatisticas`
+  quando o entitlement do plugin `enterprise` está ativo com a feature da tela
+  (`request_logs`/`statistics`); sem ele mostra `EnterpriseFeatureShowcase`, com
+  descrição e link para `https://pieceofmind.cloud/enterprise/index.html`.
+  Uma versão anterior (97bb0e91) exibia só a vitrine mesmo com o plugin ativo
+  ("Este plugin já está ativo neste cluster") - defeito corrigido. As rotas
+  `/api/ui/requests` e `/api/ui/requests/stats` recusam os dados sem
+  entitlement. O `frontend-reference/` de `pom-plugin-logs` é apenas cópia
+  histórica.
 
 ## Entitlement e interface
 

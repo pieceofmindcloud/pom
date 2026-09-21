@@ -448,7 +448,8 @@ mod retention_accounting_tests {
         let mut s = Session::new(0);
         let total = retidos.len() as u32 + rabicho;
         s.prompt_tokens = retidos.to_vec();
-        s.prompt_tokens.extend(std::iter::repeat_n(999, rabicho as usize));
+        s.prompt_tokens
+            .extend(std::iter::repeat_n(999, rabicho as usize));
         s.n_past = total;
         s.prompt_cells = total;
         s.stable_len = retidos.len() as u32;
@@ -469,7 +470,10 @@ mod retention_accounting_tests {
         sessao.apply_retention(prompt_len, false);
 
         assert_eq!(sessao.n_past, 5);
-        assert_eq!(sessao.prompt_cells, 10, "sem poda, a contagem física fica presa no rabicho");
+        assert_eq!(
+            sessao.prompt_cells, 10,
+            "sem poda, a contagem física fica presa no rabicho"
+        );
         assert!(
             !sessao.positions_match_cells(),
             "o portão de reuso tem que recusar um estado fisicamente inconsistente"
@@ -525,7 +529,10 @@ mod retention_accounting_tests {
         let turno2 = vec![10, 11, 20, 21, 22];
         let decisao = plan_prefix_reuse(&sessao.prompt_tokens, sessao.n_past, &turno2);
 
-        assert!(decisao.reused, "o segundo pedido com o mesmo prefixo tem que acertar");
+        assert!(
+            decisao.reused,
+            "o segundo pedido com o mesmo prefixo tem que acertar"
+        );
         assert_eq!(decisao.cached_tokens, 2);
         assert!(
             decisao.matched_tokens > 0,

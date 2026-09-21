@@ -19,7 +19,9 @@ fn read_frame<R: Read>(reader: &mut R) -> io::Result<Option<Value>> {
     let len = u32::from_be_bytes(len_bytes) as usize;
     let mut buffer = vec![0u8; len];
     reader.read_exact(&mut buffer)?;
-    Ok(Some(serde_json::from_slice(&buffer).expect("frame JSON válido")))
+    Ok(Some(
+        serde_json::from_slice(&buffer).expect("frame JSON válido"),
+    ))
 }
 
 fn write_frame<W: Write>(writer: &mut W, value: &Value) -> io::Result<()> {
@@ -61,8 +63,12 @@ fn main() {
                     .append(true)
                     .open(&log_path)
                     .expect("abrir log do fake host");
-                writeln!(file, "{}", request.get("payload").cloned().unwrap_or(Value::Null))
-                    .expect("gravar evento");
+                writeln!(
+                    file,
+                    "{}",
+                    request.get("payload").cloned().unwrap_or(Value::Null)
+                )
+                .expect("gravar evento");
                 write_frame(
                     &mut writer,
                     &json!({"id": id, "ok": true, "result": {}, "error": null}),

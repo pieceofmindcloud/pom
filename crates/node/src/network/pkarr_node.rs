@@ -75,11 +75,6 @@ struct TxtPayload {
 // ── PkarrNode impl ────────────────────────────────────────────────────────────
 
 impl PkarrNode {
-    #[cfg(test)]
-    pub(crate) fn from_client_for_test(client: Client, keypair: Keypair) -> Self {
-        Self { client, keypair }
-    }
-
     /// Load an existing keypair from `key_path`, or generate a fresh one and
     /// persist it there.
     pub fn load_or_create(key_path: &Path) -> Result<Self> {

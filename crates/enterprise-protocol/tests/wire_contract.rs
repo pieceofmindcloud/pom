@@ -54,7 +54,10 @@ fn activation_carries_the_lease_the_grant_and_the_plugin_manifest() {
     assert_eq!(payload.plugin_code, "enterprise");
     assert_eq!(payload.licensed_plugins, vec!["enterprise"]);
     assert_eq!(payload.plugin_release_id, "ent-0.8.0-linux-x86_64");
-    assert_eq!(payload.plugin_manifest.plugin_abi, enterprise_protocol::PLUGIN_ABI_VERSION);
+    assert_eq!(
+        payload.plugin_manifest.plugin_abi,
+        enterprise_protocol::PLUGIN_ABI_VERSION
+    );
     // As features de um plugin vêm do release instalado, não da licença: é o
     // manifesto que diz o que aquela versão entrega.
     assert_eq!(
@@ -80,7 +83,10 @@ fn the_signed_grant_body_is_scoped_to_one_plugin_code() {
     assert_eq!(grant.activation_id, response.payload.activation_id);
     assert_eq!(grant.lease_id, response.payload.lease_id);
     assert_eq!(grant.release_id, response.payload.plugin_release_id);
-    assert_eq!(grant.fingerprint_scheme, enterprise_protocol::FINGERPRINT_SCHEME);
+    assert_eq!(
+        grant.fingerprint_scheme,
+        enterprise_protocol::FINGERPRINT_SCHEME
+    );
 }
 
 #[test]

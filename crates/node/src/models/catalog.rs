@@ -1532,7 +1532,11 @@ mod tests {
         std::fs::write(&draft, vec![0u8; 4096]).unwrap();
 
         let catalog = discover_fast(std::slice::from_ref(&models), &shards);
-        assert_eq!(catalog.models.len(), 1, "o sidecar de rascunho não é um modelo");
+        assert_eq!(
+            catalog.models.len(),
+            1,
+            "o sidecar de rascunho não é um modelo"
+        );
         assert_eq!(catalog.models[0].path, model.to_string_lossy());
 
         std::fs::remove_dir_all(root).ok();

@@ -59,27 +59,6 @@ struct TlsReply {
 ///
 /// Erro aqui é `Err`, e o chamador **mantém o valor local** - ver o parágrafo
 /// sobre fail-closed no topo do módulo.
-pub(crate) async fn fetch_from_principal(
-    clients: &PeerClients,
-    principal_id: &str,
-    base_url: &str,
-    connection_key: &str,
-    signing_key: &ed25519_dalek::SigningKey,
-    authority_principal: &crate::admin_trust::AuthorityPrincipal,
-    trust: &crate::admin_trust::AdminTrust,
-) -> Result<bool> {
-    fetch_from_principal_candidates(
-        clients,
-        principal_id,
-        &[base_url.to_string()],
-        connection_key,
-        signing_key,
-        authority_principal,
-        trust,
-    )
-    .await
-}
-
 pub(crate) async fn fetch_from_principal_candidates(
     clients: &PeerClients,
     principal_id: &str,

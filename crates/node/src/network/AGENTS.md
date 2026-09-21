@@ -152,6 +152,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
   é a fonte, e falha preserva o valor local. A lista de admins para réplica é
   independente dessa catraca e não torna um secundário capaz de mudar a
   política.
+  As consultas de TLS, logs e Chat recebem a lista de gateways candidatos do
+  principal; esse é o único caminho para manter o fallback de endereço e a
+  política TLS da sonda alinhados.
 - `network_chat_enabled` segue o mesmo contrato. O gatilho só é aceito como
   decisão do principal cuja `authority_pubkey` foi confirmada pelo
   `AdminTrust`; o perfil anunciado não identifica autoridade. O interruptor

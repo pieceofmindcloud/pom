@@ -4,10 +4,6 @@ use super::*;
 
 pub(crate) type GatewayReadySender = std::sync::mpsc::SyncSender<()>;
 
-pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
-    start_gateway_with_ready(state, port, None).await
-}
-
 pub(crate) async fn start_gateway_with_ready(
     state: GatewayState,
     port: u16,

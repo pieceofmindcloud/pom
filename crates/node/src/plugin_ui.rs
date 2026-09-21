@@ -111,7 +111,9 @@ fn valid_path(path: &str) -> bool {
         && !path.contains("//")
         && !path.contains("..")
         && !path.contains('\\')
-        && path.chars().all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c))
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c))
 }
 
 fn valid_asset(path: &str) -> bool {
@@ -120,7 +122,9 @@ fn valid_asset(path: &str) -> bool {
         && !path.contains("..")
         && !path.contains("//")
         && !path.contains('\\')
-        && path.chars().all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c))
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c))
 }
 
 fn valid_profiles(profiles: &[String]) -> bool {
@@ -164,7 +168,10 @@ impl PluginUiManifest {
             return Err("i18n sem o idioma en".into());
         }
         for (locale, asset) in &manifest.i18n {
-            if !valid_locale(locale) || !asset.ends_with(".json") || !manifest.assets.contains(asset) {
+            if !valid_locale(locale)
+                || !asset.ends_with(".json")
+                || !manifest.assets.contains(asset)
+            {
                 return Err(format!("catálogo i18n {locale:?} inválido"));
             }
         }
@@ -189,10 +196,24 @@ pub(crate) fn decode_asset(value: &Value) -> Result<(String, Vec<u8>), String> {
     let content_type = value
         .get("content_type")
         .and_then(Value::as_str)
-        .filter(|t| matches!(*t, "text/javascript" | "text/css" | "image/svg+xml" | "application/json" | "font/woff2"))
+        .filter(|t| {
+            matches!(
+                *t,
+                "text/javascript"
+                    | "text/css"
+                    | "image/svg+xml"
+                    | "application/json"
+                    | "font/woff2"
+            )
+        })
         .ok_or("content_type ausente ou não permitido")?;
     let bytes = base64::engine::general_purpose::STANDARD
-        .decode(value.get("base64").and_then(Value::as_str).ok_or("asset sem base64")?)
+        .decode(
+            value
+                .get("base64")
+                .and_then(Value::as_str)
+                .ok_or("asset sem base64")?,
+        )
         .map_err(|e| format!("base64 inválido: {e}"))?;
     if bytes.len() > MAX_ASSET_BYTES {
         return Err("asset acima do teto".into());
@@ -249,7 +270,8 @@ pub(crate) async fn plugin_asset(
     let decoded = decode_asset(&reply).and_then(|(content_type, bytes)| {
         // Catálogo de texto: só sai se o conteúdo obedece ao contrato.
         if manifest.i18n.values().any(|asset| *asset == path) {
-            let parsed: Value = serde_json::from_slice(&bytes).map_err(|e| format!("catálogo ilegível: {e}"))?;
+            let parsed: Value =
+                serde_json::from_slice(&bytes).map_err(|e| format!("catálogo ilegível: {e}"))?;
             validate_catalog(&code, &parsed)?;
         }
         Ok((content_type, bytes))
@@ -309,18 +331,26 @@ mod tests {
         assert!(bad(|v| v["routes"][0]["path"] = json!("/a/../b")));
         assert!(bad(|v| v["menu"][0]["to"] = json!("logs")));
         assert!(bad(|v| v["menu"][0]["label"] = json!({"pt-BR":"x"})));
-        assert!(bad(|v| v["assets"] = json!(["../etc/passwd", "ui/logs.js", "ui/logs.css"])));
+        assert!(bad(
+            |v| v["assets"] = json!(["../etc/passwd", "ui/logs.js", "ui/logs.css"])
+        ));
         assert!(bad(|v| v["assets"] = json!(["ui/logs.js"])));
         assert!(bad(|v| v["i18n"] = json!({"pt-BR":"i18n/pt-BR.json"})));
         assert!(bad(|v| v["i18n"] = json!({"en":"i18n/missing.json"})));
         assert!(bad(|v| v["i18n"] = json!({"en":"ui/logs.js"})));
-        assert!(bad(|v| v["i18n"] = json!({"en":"i18n/en.json","xx_YY":"i18n/pt-BR.json"})));
+        assert!(bad(
+            |v| v["i18n"] = json!({"en":"i18n/en.json","xx_YY":"i18n/pt-BR.json"})
+        ));
         assert!(PluginUiManifest::parse("enterprise", json!({"schema": 1})).is_err());
     }
 
     #[test]
     fn accepts_a_catalog_only_inside_the_plugin_namespace() {
-        assert!(validate_catalog("enterprise", &json!({"enterprise.logs.title":"Logs {n, plural, one {# row} other {# rows}}"})).is_ok());
+        assert!(validate_catalog(
+            "enterprise",
+            &json!({"enterprise.logs.title":"Logs {n, plural, one {# row} other {# rows}}"})
+        )
+        .is_ok());
         assert!(validate_catalog("enterprise", &json!({})).is_ok());
         assert!(validate_catalog("enterprise", &json!({"nav.logs":"hijack"})).is_err());
         assert!(validate_catalog("enterprise", &json!({"enterprisex.a":"x"})).is_err());
@@ -352,13 +382,19 @@ mod tests {
     fn manifest_without_i18n_is_still_valid() {
         let mut value = manifest();
         value.as_object_mut().unwrap().remove("i18n");
-        assert!(PluginUiManifest::parse("enterprise", value).unwrap().i18n.is_empty());
+        assert!(PluginUiManifest::parse("enterprise", value)
+            .unwrap()
+            .i18n
+            .is_empty());
     }
 
     #[test]
     fn decodes_only_allowed_asset_replies() {
         let ok = json!({"content_type":"text/javascript","base64":"YWxlcnQoMSk="});
-        assert_eq!(decode_asset(&ok).unwrap(), ("text/javascript".into(), b"alert(1)".to_vec()));
+        assert_eq!(
+            decode_asset(&ok).unwrap(),
+            ("text/javascript".into(), b"alert(1)".to_vec())
+        );
         assert!(decode_asset(&json!({"content_type":"text/html","base64":"YQ=="})).is_err());
         assert!(decode_asset(&json!({"content_type":"text/css","base64":"***"})).is_err());
         assert!(decode_asset(&json!({"content_type":"text/css"})).is_err());

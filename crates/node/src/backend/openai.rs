@@ -192,15 +192,6 @@ impl ChatMessage {
             && self.tool_calls.as_ref().is_none_or(|c| c.is_empty())
     }
 
-    /// Content text, then each tool call rendered as `<tool_call>` — the
-    /// exact shape the model itself emits, so replayed history stays
-    /// self-consistent with what it wrote.
-    fn rendered_body(&self) -> String {
-        self.rendered_body_with_images()
-            .map(|(body, _)| body)
-            .unwrap_or_default()
-    }
-
     fn rendered_body_with_images(&self) -> Result<(String, Vec<Vec<u8>>), String> {
         let mut parts = Vec::new();
         let (text, images) = self.content.prompt_parts()?;
@@ -788,7 +779,10 @@ async fn completions(
 /// used to get `200` back with a different model's output and no indication
 /// of the substitution. `GET /v1/models` remains the source of truth for the
 /// names a client may pass here.
-pub(crate) async fn resolve_model(state: &GatewayState, requested: String) -> Result<String, String> {
+pub(crate) async fn resolve_model(
+    state: &GatewayState,
+    requested: String,
+) -> Result<String, String> {
     if model_ids(state).await.contains(&requested) {
         return Ok(requested);
     }
@@ -988,7 +982,8 @@ fn finish_reason(
 /// string-or-null slot (unlike Anthropic's ordered content-block array), so
 /// text parts collapse into it rather than interleaving with tool calls.
 /// `tool_calls` collects every call found, `arguments` re-serialized back to
-/// a JSON string — the inverse of `ChatMessage::rendered_body`'s parsing.
+/// a JSON string, matching the form parsed by
+/// `ChatMessage::rendered_body_with_images`.
 fn chat_message_json(parts: &[OutputPart]) -> (serde_json::Value, bool) {
     let mut text = String::new();
     let mut tool_calls = Vec::new();

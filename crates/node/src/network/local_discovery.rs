@@ -130,6 +130,7 @@ struct Inner {
     peers: Vec<LocalDiscoveryPeer>,
     search: Option<SearchSession>,
     session_ttl: Duration,
+    #[cfg(test)]
     outbound_for_test: Vec<LocalAutoDiscoveryMessage>,
 }
 
@@ -153,6 +154,7 @@ impl LocalDiscoveryRuntime {
                 peers: Vec::new(),
                 search: None,
                 session_ttl: SESSION_TTL,
+                #[cfg(test)]
                 outbound_for_test: Vec::new(),
             }),
         })

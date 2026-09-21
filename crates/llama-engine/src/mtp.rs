@@ -923,9 +923,7 @@ mod tests {
             std::env::var("POM_MTP_TARGET_MODEL"),
             std::env::var("POM_MTP_DRAFT_MODEL"),
         ) else {
-            eprintln!(
-                "defina POM_MTP_TARGET_MODEL e POM_MTP_DRAFT_MODEL para rodar esta sonda"
-            );
+            eprintln!("defina POM_MTP_TARGET_MODEL e POM_MTP_DRAFT_MODEL para rodar esta sonda");
             return;
         };
         let cfg = crate::llm::EngineConfig {

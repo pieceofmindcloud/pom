@@ -855,10 +855,10 @@ pub async fn run(
 
     info!("inference server pronto em [::]:{port}");
 
-    // Ver a nota gêmea em `gateway::start_gateway`: sem `tcp_nodelay`, toda
-    // resposta de hop sai com Nagle ligado, e um ack de resposta direta é
-    // exatamente a escrita pequena que ele segura. Quem o aplica agora é o
-    // `serve`, que também decide entre TLS e texto claro por conexão.
+    // Ver a nota gêmea em `gateway::start_gateway_with_ready`: sem
+    // `tcp_nodelay`, toda resposta de hop sai com Nagle ligado. Um ack de
+    // resposta direta é exatamente a escrita pequena que ele segura. Quem o
+    // aplica agora é o `serve`, que também decide entre TLS e texto claro por conexão.
     //
     // O desligamento gracioso virou uma corrida entre o laço de accept e o
     // watch de geração: quando a geração muda, paramos de aceitar. Conexão em

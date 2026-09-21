@@ -201,6 +201,7 @@ pub(crate) mod windows_firewall;
 #[cfg(test)]
 #[path = "windows_firewall_tests.rs"]
 mod windows_firewall_tests;
+#[cfg(any(windows, test))]
 mod windows_status;
 
 use anyhow::{bail, Context, Result};
@@ -2341,6 +2342,7 @@ fn application_log_filter() -> EnvFilter {
         )
 }
 
+#[cfg(any(windows, test))]
 fn windows_diagnostic_log_filename() -> &'static str {
     "pom.log"
 }

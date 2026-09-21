@@ -4271,10 +4271,8 @@ mod tests {
         // identity norm that every other architecture needs on a non-final
         // slice would leave an unclaimed physical tensor, and llama.cpp's
         // loader refuses to load with "wrong number of tensors".
-        let dir = std::env::temp_dir().join(format!(
-            "pom-qwen4exp-no-fake-norm-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pom-qwen4exp-no-fake-norm-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("whole.gguf");
         let out = dir.join("slice.gguf");

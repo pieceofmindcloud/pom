@@ -122,7 +122,8 @@ profile policy remains the effective authorization boundary.
   que a chave configurada e a recebida sejam ambas não vazias; chave vazia
   nunca transforma um processo de setup em membro do enxame.
 - `gateway/` - módulo dividido em estado/seleção, budgets e tipos de geração,
-  geração, snapshots/planejamento, HTTP e testes: `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
+  geração, snapshots/planejamento, HTTP e testes: `GatewayState`,
+  `start_gateway_with_ready`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
   prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), the bounded remote-token
@@ -138,7 +139,7 @@ profile policy remains the effective authorization boundary.
   completed prefill traces for each model/route without waiting on the next
   request, capped by `prefill_chunk_tokens` and `n_batch`, and the `testkit`
   test scaffold (peer/state_with/body_of).
-- `db.rs` - único armazenamento SQLite local: schema criado no arranque,
+- `db.rs` - único armazenamento SQLite local, interno ao crate: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
   conversas e linhas do log de processo por `deploy_id`. Cada admin efetivo
@@ -676,8 +677,8 @@ faz o download autenticado do blob persistido.
   already accepted peer frames are cleaned up by the normal session release.
   Logs `prefix gateway` registram hit/miss e tamanho do prefixo; `prefix rewind`
   registra a confirmação ou recusa por peer e sessão, sem conteúdo do prompt.
-  `start_gateway` faz o bind do listener antes de sinalizar ao shell Windows
-  que o gateway está pronto, e então registra
+  `start_gateway_with_ready` faz o bind do listener antes de sinalizar ao shell
+  Windows que o gateway está pronto, e então registra
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
   `POST /handshake` (session::handle_handshake), `POST /v1/relay-result`,
   `POST /v1/remote-stream-result` and `POST /v1/link`
@@ -1136,7 +1137,7 @@ faz o download autenticado do blob persistido.
   without the capability keep the established route. The stream degrades with
   `peer_without_sliced_mtp_wire` when a peer lacks the MTP wire capability.
   `routing_contract` capability types.
-- Who calls it: `crate::main` (`start_gateway` spawns the router, `warm_catalog`
+- Who calls it: `crate::main` (`start_gateway_with_ready` spawns the router, `warm_catalog`
   runs at startup, setup mode mounts only the dedicated `/api/setup/*` handlers);
   the frontend bundle in `apps/frontend/dist` hits `/api/ui/*`; harnesses hit
   `/v1/*` (OpenAI/Anthropic) and `POST /api/generate`; peers call each other's

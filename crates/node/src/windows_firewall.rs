@@ -139,7 +139,8 @@ fn local_port_available(rule: &FirewallRuleSpec) -> bool {
     }
 }
 
-pub fn should_auto_request(previous: Option<&SetupRecord>, retry: bool) -> bool {
+#[cfg(any(windows, test))]
+pub(crate) fn should_auto_request(previous: Option<&SetupRecord>, retry: bool) -> bool {
     retry || previous.is_none_or(|record| !record.attempted)
 }
 
@@ -240,10 +241,8 @@ fn rules_allowed(_p2p_port: u16, _rule: &FirewallRuleSpec) -> Result<bool, Strin
     }
 }
 
+#[cfg(windows)]
 fn startup_check(database: &PomDb, p2p_port: u16) -> Result<()> {
-    if !cfg!(windows) {
-        return Ok(());
-    }
     let rules = desired_rules(p2p_port).map_err(|error| anyhow!(error))?;
     if rules
         .iter()
@@ -303,13 +302,6 @@ fn request_elevation(database: &PomDb, p2p_port: u16) -> Result<()> {
 #[cfg(windows)]
 pub(crate) fn run_elevated_helper(p2p_port: u16) -> Result<()> {
     apply_rules(p2p_port)
-}
-
-#[cfg(not(windows))]
-pub(crate) fn run_elevated_helper(_p2p_port: u16) -> Result<()> {
-    Err(anyhow!(
-        "o helper do firewall só pode ser executado no Windows"
-    ))
 }
 
 #[cfg(windows)]

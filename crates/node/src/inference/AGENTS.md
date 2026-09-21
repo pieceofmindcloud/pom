@@ -110,12 +110,12 @@ visibilidade dos controles de implantação na UI local.
   O receptor reconfere a `connection_key` e o marcador interno **a cada
   quadro**, porque uma conexão longa autenticada só na abertura manteria
   válido por horas um segredo que foi trocado por outro processo.
-  `send_body_with_session` reutiliza o mesmo canal para frames de callback que
-  carregam `REMOTE_STREAM_RESULT_PATH` quando o chamador precisa do ACK. O
-  retorno normal do `remote-stream` usa
-  `send_body_without_response_with_session`: cada frame é enfileirado no
+  `send_body_without_response_with_session` é o caminho de produção do
+  `remote-stream`: cada frame é enfileirado no
   canal full-duplex sem barreira de ACK por token; a fila limitada mantém
   contrapressão e uma tarefa leitora observa ACKs tardios e falhas do canal.
+  `send_body_with_session` fica apenas nos testes que validam o ACK HTTP no
+  mesmo canal persistente.
   O controle inicial de `/v1/step-stream` continua fora do lote, pois o
   receptor espera o wire de controle dessa rota. Já o handoff normal de
   `/v1/step` com MTP, que carrega `draft` e `mtp_k`, entra como lote de um
@@ -875,7 +875,7 @@ visibilidade dos controles de implantação na UI local.
   recomeça o prefill completo uma vez, nunca apenas o chunk que perdeu o KV;
   `INFERENCE_FRAME_BODY_LIMIT=64 MiB` corta frame impossível no body.
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
-  `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
+  `gateway::start_gateway_with_ready`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
 - `/health` anuncia `relay/v2-direct` e, quando `slot_dir` está configurado,
   `inference/slot-persist-v1` (mantenha em sincronia com `network.rs`

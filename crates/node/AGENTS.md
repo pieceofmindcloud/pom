@@ -145,8 +145,8 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
     memória; a consulta de VRAM e a aplicação ficam em `inference/llm.rs`.
     O gateway é spawnado antes desse `apply`, então lock, fit ou carga de
     modelo não podem fechar a porta de controle.
-12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI). A rota
-    de prévia de capacidade faz somente estimativa analítica, com quatro
+12. `GatewayState` + `start_gateway_with_ready` spawnado (todo nó serve
+    HTTP/UI). A rota de prévia de capacidade faz somente estimativa analítica, com quatro
     admissões por processo e `429` imediato quando todas estão ocupadas.
 13. `ClusterLogs` inicia a captura limitada e as tasks best-effort; o histórico
     usa `INFO` como nível mínimo por padrão, aceita `cluster_logs_min_level` no
@@ -226,8 +226,8 @@ automáticas de uma implantação problemática.
   `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
   `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
   outro mecanismo, e outra chave, que a especulação por lookup).
-- `backend/` - HTTP e estado: `gateway.rs` (`start_gateway`, a fronteira de
-  `AdminAuth` para `/api/ui/**` e `/admin/**`, e o preflight da porta),
+- `backend/` - HTTP e estado: `gateway/` (`start_gateway_with_ready`, a
+  fronteira de `AdminAuth` para `/api/ui/**` e `/admin/**`, e o preflight da porta),
   `generate_stream_with_stops` e o resumo agregado de TTFT, prefill, geração e
   total), `webapp.rs` (serve a UI do disco), `webui.rs`
   (rotas `/api/ui/*`), `auth.rs` (`ApiKeyAuth`, connection key), `admin.rs`,

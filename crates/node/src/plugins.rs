@@ -893,7 +893,12 @@ impl PluginRuntime {
         let Some(persisted) = self
             .database
             .as_ref()
-            .and_then(|database| database.local_setting_json(&self.setting_key()).ok().flatten())
+            .and_then(|database| {
+                database
+                    .local_setting_json(&self.setting_key())
+                    .ok()
+                    .flatten()
+            })
             .and_then(|json| serde_json::from_str::<PersistedPluginState>(&json).ok())
             .filter(|state| state.fingerprint == self.fingerprint)
         else {
@@ -1266,7 +1271,9 @@ impl PluginRuntime {
     /// Manifesto de UI do plugin, pedido ao host (`ui.manifest`) e validado.
     /// `None` quando inativo, sem host, sem UI ou com manifesto inválido.
     pub(crate) async fn ui_manifest(&self) -> Option<crate::plugin_ui::PluginUiManifest> {
-        let value = self.query_audit("ui.manifest", serde_json::json!({})).await?;
+        let value = self
+            .query_audit("ui.manifest", serde_json::json!({}))
+            .await?;
         match crate::plugin_ui::PluginUiManifest::parse(&self.code, value) {
             Ok(manifest) => Some(manifest),
             Err(error) => {
@@ -1276,7 +1283,10 @@ impl PluginRuntime {
         }
     }
 
-    pub(crate) async fn mark_plugin_ready(&self, plugin_version: &str) -> Result<(), LicenseClientError> {
+    pub(crate) async fn mark_plugin_ready(
+        &self,
+        plugin_version: &str,
+    ) -> Result<(), LicenseClientError> {
         let pending = self.pending.lock().await.take().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
@@ -1289,10 +1299,7 @@ impl PluginRuntime {
                 "A ativação não pertence a esta instalação.",
             ));
         }
-        let features = features_for_code(
-            &self.code,
-            &pending.response.plugin_manifest.feature_set,
-        );
+        let features = features_for_code(&self.code, &pending.response.plugin_manifest.feature_set);
         if features.is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
@@ -1306,9 +1313,11 @@ impl PluginRuntime {
         })?;
         persisted.installed_at = Some(installed_at.clone());
         if let Some(database) = &self.database {
-            database.save_local_setting(&self.setting_key(), &persisted).map_err(|error| {
-                LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
-            })?;
+            database
+                .save_local_setting(&self.setting_key(), &persisted)
+                .map_err(|error| {
+                    LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
+                })?;
         }
         *persisted_guard = Some(persisted);
         drop(persisted_guard);
@@ -1323,7 +1332,8 @@ impl PluginRuntime {
         Ok(())
     }
 
-    pub(crate) async fn mark_heartbeat_failure(&self, within_grace: bool) {
+    #[cfg(test)]
+    async fn mark_heartbeat_failure(&self, within_grace: bool) {
         let mut status = self.status.write().await;
         if !status.active {
             return;
@@ -1575,21 +1585,24 @@ impl PluginRuntime {
                 &self.fingerprint.arch,
             )
             .await?;
-        let available = (manifest.manifest.release_id != persisted.installed_release_id).then(|| {
-            PluginUpdateInfo {
-                release_id: manifest.manifest.release_id.clone(),
-                version: manifest.manifest.version.clone(),
-                changelog: manifest.manifest.changelog.clone(),
-            }
-        });
+        let available =
+            (manifest.manifest.release_id != persisted.installed_release_id).then(|| {
+                PluginUpdateInfo {
+                    release_id: manifest.manifest.release_id.clone(),
+                    version: manifest.manifest.version.clone(),
+                    changelog: manifest.manifest.changelog.clone(),
+                }
+            });
         let update_checked_at = chrono::Utc::now().to_rfc3339();
         let mut persisted_guard = self.persisted.lock().await;
         let has_persisted = if let Some(state) = persisted_guard.as_mut() {
             state.update_checked_at = Some(update_checked_at.clone());
             if let Some(database) = &self.database {
-                database.save_local_setting(&self.setting_key(), state).map_err(|error| {
-                    LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
-                })?;
+                database
+                    .save_local_setting(&self.setting_key(), state)
+                    .map_err(|error| {
+                        LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
+                    })?;
             }
             true
         } else {
@@ -1684,7 +1697,9 @@ impl PluginRuntime {
             .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
         let host = crate::plugin_host::PluginHost::start(&path, &database_path)
             .await
-            .map_err(|error| LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string()))?;
+            .map_err(|error| {
+                LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
+            })?;
         *self.host.lock().await = Some(host);
         let mut persisted = persisted;
         persisted.installed_release_id = manifest.manifest.release_id.clone();
@@ -1777,6 +1792,7 @@ impl PluginManager {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn runtime(node_id: &str) -> Arc<Self> {
         let fingerprint = machine_fingerprint(node_id);
         Self::from_catalog(
@@ -1835,7 +1851,11 @@ impl PluginManager {
         statuses
     }
 
-    pub(crate) async fn ingest_audit_event(&self, code: &str, event: crate::reqlog::AuditEvent) -> bool {
+    pub(crate) async fn ingest_audit_event(
+        &self,
+        code: &str,
+        event: crate::reqlog::AuditEvent,
+    ) -> bool {
         match self.runtime_for(code) {
             Some(runtime) => runtime.ingest_audit_event(event).await,
             None => false,
@@ -1851,7 +1871,10 @@ impl PluginManager {
         self.runtime_for(code)?.query_audit(operation, query).await
     }
 
-    pub(crate) async fn ui_manifest(&self, code: &str) -> Option<crate::plugin_ui::PluginUiManifest> {
+    pub(crate) async fn ui_manifest(
+        &self,
+        code: &str,
+    ) -> Option<crate::plugin_ui::PluginUiManifest> {
         self.runtime_for(code)?.ui_manifest().await
     }
 
@@ -1859,7 +1882,10 @@ impl PluginManager {
     /// ela concede, então ativa e instala cada um deles. Concede sucesso se
     /// ao menos um plugin ativou; plugins que falharam ficam só no log - o
     /// operador vê o resultado real na lista de status atualizada.
-    pub(crate) async fn activate(&self, license_key: &str) -> Result<Vec<String>, LicenseClientError> {
+    pub(crate) async fn activate(
+        &self,
+        license_key: &str,
+    ) -> Result<Vec<String>, LicenseClientError> {
         if license_key.trim().is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::InvalidKey,
@@ -1988,7 +2014,11 @@ fn machine_fingerprint(node_id: &str) -> Fingerprint {
 fn features_for_code(code: &str, feature_set: &[String]) -> Vec<String> {
     feature_set
         .iter()
-        .filter_map(|feature| feature.strip_prefix(code).and_then(|rest| rest.strip_prefix('.')))
+        .filter_map(|feature| {
+            feature
+                .strip_prefix(code)
+                .and_then(|rest| rest.strip_prefix('.'))
+        })
         .map(str::to_owned)
         .collect()
 }
@@ -2113,12 +2143,7 @@ pub(crate) async fn plugin_peer_fingerprint(
         )
             .into_response();
     }
-    axum::Json(
-        state
-            .plugins
-            .peer_proof(&challenge, &identity.signing_key),
-    )
-    .into_response()
+    axum::Json(state.plugins.peer_proof(&challenge, &identity.signing_key)).into_response()
 }
 
 pub(crate) fn license_error_response(error: LicenseClientError) -> axum::response::Response {
@@ -2401,12 +2426,20 @@ pub(crate) mod tests_support {
                 .insert(code.to_owned(), artifact);
         }
 
-        pub(crate) async fn grant(&self, code: &str, response: ActivationResponse, artifact: Vec<u8>) {
+        pub(crate) async fn grant(
+            &self,
+            code: &str,
+            response: ActivationResponse,
+            artifact: Vec<u8>,
+        ) {
             self.responses
                 .lock()
                 .await
                 .insert(code.to_owned(), MockResponse::Valid(response));
-            self.artifacts.lock().await.insert(code.to_owned(), artifact);
+            self.artifacts
+                .lock()
+                .await
+                .insert(code.to_owned(), artifact);
         }
 
         pub(crate) async fn deny(&self, code: &str, error: LicenseErrorCode) {
@@ -2559,7 +2592,9 @@ pub(crate) mod tests_support {
                     lease_expires_at: "2099-01-08T00:00:00Z".into(),
                     heartbeat_due_at: "2099-01-02T00:00:00Z".into(),
                     grace_seconds: 86400,
-                    plugin_release_id: signal.clone().unwrap_or_else(|| response.plugin_release_id.clone()),
+                    plugin_release_id: signal
+                        .clone()
+                        .unwrap_or_else(|| response.plugin_release_id.clone()),
                     release_changed: signal.is_some(),
                     available_release_id: signal,
                     grant: response.grant.clone(),
@@ -2575,7 +2610,10 @@ pub(crate) mod tests_support {
             _os: &str,
             _arch: &str,
         ) -> Result<ManifestResponse, LicenseClientError> {
-            self.manifest_calls.lock().await.push(plugin_code.to_owned());
+            self.manifest_calls
+                .lock()
+                .await
+                .push(plugin_code.to_owned());
             let responses = self.responses.lock().await;
             match responses.get(plugin_code) {
                 Some(MockResponse::Valid(response)) => Ok(ManifestResponse {
@@ -2598,12 +2636,7 @@ pub(crate) mod tests_support {
 
         async fn download(&self, grant: &DownloadGrant) -> Result<Vec<u8>, LicenseClientError> {
             *self.download_calls.lock().await += 1;
-            let code = grant
-                .url
-                .rsplit('/')
-                .next()
-                .unwrap_or_default()
-                .to_owned();
+            let code = grant.url.rsplit('/').next().unwrap_or_default().to_owned();
             self.artifacts
                 .lock()
                 .await
@@ -2630,10 +2663,8 @@ pub(crate) mod tests_support {
             &self,
             persisted: &PersistedPluginState,
             _fingerprint: &Fingerprint,
-        ) -> Result<
-            ResponseEnvelope<enterprise_protocol::LicenseStatusResponse>,
-            LicenseClientError,
-        > {
+        ) -> Result<ResponseEnvelope<enterprise_protocol::LicenseStatusResponse>, LicenseClientError>
+        {
             Ok(ResponseEnvelope {
                 protocol: enterprise_protocol::LICENSE_PROTOCOL.into(),
                 request_id: "mock-status".into(),
@@ -2737,8 +2768,13 @@ mod tests {
 
     #[test]
     fn plugin_path_accepts_semver_build_metadata_in_release_id() {
-        let path = plugin_path("enterprise", "ent-0.1.0+build.1-linux-x86_64", "linux", "x86_64")
-            .expect("release_id com '+' de metadado de build deve ser aceito");
+        let path = plugin_path(
+            "enterprise",
+            "ent-0.1.0+build.1-linux-x86_64",
+            "linux",
+            "x86_64",
+        )
+        .expect("release_id com '+' de metadado de build deve ser aceito");
 
         assert!(path
             .to_string_lossy()
@@ -2798,17 +2834,28 @@ mod tests {
     /// host de verdade é integração testada à parte.
     async fn activate_ready(runtime: &Arc<PluginRuntime>, license_key: &str, version: &str) {
         runtime.activate(license_key).await.expect("activate");
-        runtime.mark_plugin_ready(version).await.expect("mark ready");
+        runtime
+            .mark_plugin_ready(version)
+            .await
+            .expect("mark ready");
     }
 
     #[tokio::test]
     async fn two_plugins_activate_and_deactivate_independently() {
         let service = Arc::new(MockLicenseService::new());
         service
-            .grant("enterprise", activation("enterprise", "ent-1"), b"plugin-binary".to_vec())
+            .grant(
+                "enterprise",
+                activation("enterprise", "ent-1"),
+                b"plugin-binary".to_vec(),
+            )
             .await;
         service
-            .grant("sample", activation("sample", "sample-1"), b"plugin-binary".to_vec())
+            .grant(
+                "sample",
+                activation("sample", "sample-1"),
+                b"plugin-binary".to_vec(),
+            )
             .await;
         let manager = PluginManager::test_manager(&["enterprise", "sample"], service.clone());
         let enterprise = manager.runtime_for("enterprise").expect("runtime");
@@ -2819,7 +2866,10 @@ mod tests {
         assert!(manager.status("enterprise").await.expect("status").active);
         assert!(manager.status("sample").await.expect("status").active);
 
-        manager.deactivate("enterprise").await.expect("deactivate enterprise");
+        manager
+            .deactivate("enterprise")
+            .await
+            .expect("deactivate enterprise");
 
         assert!(!manager.status("enterprise").await.expect("status").active);
         assert!(
@@ -2832,7 +2882,11 @@ mod tests {
     async fn activation_requires_a_known_granted_plugin() {
         let service = Arc::new(MockLicenseService::new());
         service
-            .grant("other-product", activation("other-product", "op-1"), Vec::new())
+            .grant(
+                "other-product",
+                activation("other-product", "op-1"),
+                Vec::new(),
+            )
             .await;
         let manager = PluginManager::test_manager(&["enterprise"], service);
 
@@ -2880,7 +2934,9 @@ mod tests {
     #[tokio::test]
     async fn invalid_license_keeps_the_plugin_inactive_and_returns_a_stable_error() {
         let service = Arc::new(MockLicenseService::new());
-        service.deny("enterprise", LicenseErrorCode::InvalidKey).await;
+        service
+            .deny("enterprise", LicenseErrorCode::InvalidKey)
+            .await;
         let manager = PluginManager::test_manager(&["enterprise"], service);
 
         let error = manager
@@ -2945,8 +3001,13 @@ mod tests {
     /// da licença.
     #[tokio::test]
     async fn refresh_publishes_the_license_expiry_from_the_status_endpoint() {
-        let service = Arc::new(MockLicenseService::single("enterprise", activation("enterprise", "ent-1")));
-        service.set_license_expires_at(Some("2027-09-15T00:00:00.000Z")).await;
+        let service = Arc::new(MockLicenseService::single(
+            "enterprise",
+            activation("enterprise", "ent-1"),
+        ));
+        service
+            .set_license_expires_at(Some("2027-09-15T00:00:00.000Z"))
+            .await;
         let manager = PluginManager::test_manager(&["enterprise"], service);
         let runtime = manager.runtime_for("enterprise").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
@@ -2967,7 +3028,10 @@ mod tests {
 
     #[tokio::test]
     async fn transient_heartbeat_failure_enters_degraded_without_deactivating() {
-        let service = Arc::new(MockLicenseService::single("enterprise", activation("enterprise", "ent-1")));
+        let service = Arc::new(MockLicenseService::single(
+            "enterprise",
+            activation("enterprise", "ent-1"),
+        ));
         let manager = PluginManager::test_manager(&["enterprise"], service);
         let runtime = manager.runtime_for("enterprise").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
@@ -2983,10 +3047,18 @@ mod tests {
     async fn revoked_heartbeat_disables_only_that_plugin() {
         let service = Arc::new(MockLicenseService::new());
         service
-            .grant("enterprise", activation("enterprise", "ent-1"), b"plugin-binary".to_vec())
+            .grant(
+                "enterprise",
+                activation("enterprise", "ent-1"),
+                b"plugin-binary".to_vec(),
+            )
             .await;
         service
-            .grant("sample", activation("sample", "sample-1"), b"plugin-binary".to_vec())
+            .grant(
+                "sample",
+                activation("sample", "sample-1"),
+                b"plugin-binary".to_vec(),
+            )
             .await;
         let manager = PluginManager::test_manager(&["enterprise", "sample"], service.clone());
         let enterprise = manager.runtime_for("enterprise").expect("runtime");
@@ -2996,10 +3068,7 @@ mod tests {
         service.set_heartbeat_error(LicenseErrorCode::Revoked).await;
 
         let runtime = manager.runtime_for("enterprise").expect("runtime");
-        let error = runtime
-            .heartbeat("nonce-1")
-            .await
-            .expect_err("revoked");
+        let error = runtime.heartbeat("nonce-1").await.expect_err("revoked");
 
         assert_eq!(error.code(), LicenseErrorCode::Revoked);
         assert!(!manager.status("enterprise").await.expect("status").active);
@@ -3011,13 +3080,16 @@ mod tests {
 
     #[tokio::test]
     async fn persisted_state_never_contains_the_license_key() {
-        let service = Arc::new(MockLicenseService::single("enterprise", activation("enterprise", "ent-1")));
+        let service = Arc::new(MockLicenseService::single(
+            "enterprise",
+            activation("enterprise", "ent-1"),
+        ));
         let manager = PluginManager::test_manager(&["enterprise"], service);
         let runtime = manager.runtime_for("enterprise").expect("runtime");
         activate_ready(&runtime, "PM-secret-license", "0.1.0").await;
 
-        let persisted =
-            serde_json::to_vec(&runtime.persisted_state().await.expect("persisted")).expect("state JSON");
+        let persisted = serde_json::to_vec(&runtime.persisted_state().await.expect("persisted"))
+            .expect("state JSON");
 
         assert!(!String::from_utf8_lossy(&persisted).contains("PM-secret-license"));
         assert!(String::from_utf8_lossy(&persisted).contains("lease-enterprise"));
@@ -3037,13 +3109,21 @@ mod tests {
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         assert!(runtime.status().await.available_update.is_none());
         let installed_at = "2026-09-20T10:15:00.000Z".to_owned();
-        runtime.persisted.lock().await.as_mut().expect("persisted").installed_at = Some(installed_at.clone());
+        runtime
+            .persisted
+            .lock()
+            .await
+            .as_mut()
+            .expect("persisted")
+            .installed_at = Some(installed_at.clone());
         runtime.status.write().await.installed_at = Some(installed_at.clone());
 
         updated.plugin_release_id = "ent-2".into();
         updated.plugin_manifest.release_id = "ent-2".into();
         updated.plugin_manifest.version = "0.2.0".into();
-        service.grant("enterprise", updated, b"plugin-binary".to_vec()).await;
+        service
+            .grant("enterprise", updated, b"plugin-binary".to_vec())
+            .await;
 
         runtime.detect_update().await.expect("detect update");
         let available = runtime
@@ -3054,10 +3134,20 @@ mod tests {
         assert_eq!(available.release_id, "ent-2");
         assert_eq!(available.version, "0.2.0");
         let status = runtime.status().await;
-        let checked_at = status.update_checked_at.expect("successful manifest check timestamp");
+        let checked_at = status
+            .update_checked_at
+            .expect("successful manifest check timestamp");
         assert!(chrono::DateTime::parse_from_rfc3339(&checked_at).is_ok());
         assert_eq!(status.installed_at.as_deref(), Some(installed_at.as_str()));
-        assert_eq!(runtime.persisted_state().await.expect("persisted").installed_at.as_deref(), Some(installed_at.as_str()));
+        assert_eq!(
+            runtime
+                .persisted_state()
+                .await
+                .expect("persisted")
+                .installed_at
+                .as_deref(),
+            Some(installed_at.as_str())
+        );
     }
 
     /// Reproduz o bug relatado pelo captain: um heartbeat bem-sucedido não
@@ -3082,7 +3172,9 @@ mod tests {
         // avançado - nunca revogado, nunca desativado.
         updated.plugin_manifest.release_id = "ent-0.1.0+build.2-linux-x86_64".into();
         updated.plugin_manifest.version = "0.1.0+build.2".into();
-        service.grant("enterprise", updated, b"plugin-binary".to_vec()).await;
+        service
+            .grant("enterprise", updated, b"plugin-binary".to_vec())
+            .await;
         // O heartbeat do servidor já sinaliza a mudança, e (como o incidente
         // relatado) seu próprio campo `plugin_release_id` também avança para
         // a release nova - sem que nada tenha sido baixado ainda.
@@ -3102,7 +3194,11 @@ mod tests {
         // `installed_release_id` só avança com um download confirmado - o
         // heartbeat sozinho nunca pode reivindicar tê-lo feito.
         assert_eq!(
-            runtime.persisted_state().await.expect("persisted").installed_release_id,
+            runtime
+                .persisted_state()
+                .await
+                .expect("persisted")
+                .installed_release_id,
             "ent-0.1.0+build.1-linux-x86_64",
         );
     }
@@ -3121,7 +3217,9 @@ mod tests {
 
         updated.plugin_manifest.release_id = "ent-2".into();
         updated.plugin_manifest.version = "0.2.0".into();
-        service.grant("enterprise", updated, b"plugin-binary".to_vec()).await;
+        service
+            .grant("enterprise", updated, b"plugin-binary".to_vec())
+            .await;
         service.signal_heartbeat_release_change("ent-2").await;
 
         runtime.heartbeat("nonce-1").await.expect("heartbeat");
@@ -3133,7 +3231,11 @@ mod tests {
             .expect("a release sinalizada em segundo plano deve aparecer");
         assert_eq!(available.release_id, "ent-2");
         assert_eq!(
-            runtime.persisted_state().await.expect("persisted").installed_release_id,
+            runtime
+                .persisted_state()
+                .await
+                .expect("persisted")
+                .installed_release_id,
             "ent-1",
         );
     }
@@ -3148,7 +3250,9 @@ mod tests {
 
         updated.plugin_release_id = "ent-2".into();
         updated.plugin_manifest.release_id = "ent-2".into();
-        service.grant("enterprise", updated, b"plugin-binary".to_vec()).await;
+        service
+            .grant("enterprise", updated, b"plugin-binary".to_vec())
+            .await;
         runtime.detect_update().await.expect("detect update");
 
         let error = runtime
@@ -3201,12 +3305,16 @@ mod tests {
         let db = Arc::new(
             crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
         );
-        let service = Arc::new(MockLicenseService::single("enterprise", activation("enterprise", "ent-1")));
+        let service = Arc::new(MockLicenseService::single(
+            "enterprise",
+            activation("enterprise", "ent-1"),
+        ));
         // `test_manager_with_database` não dispara o `restore()` de boot (ver
         // `from_catalog`): aqui o estado é montado à mão logo abaixo, e uma
         // restauração concorrente o sobrescreveria a partir do banco em um
         // instante fora do controle do teste.
-        let manager = PluginManager::test_manager_with_database(&["enterprise"], service.clone(), db);
+        let manager =
+            PluginManager::test_manager_with_database(&["enterprise"], service.clone(), db);
         let runtime = manager.runtime_for("enterprise").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
         {

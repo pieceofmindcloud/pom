@@ -1,8 +1,8 @@
 # Subsistema: API HTTP (gateway) e autenticação
 
 O gateway HTTP é a superfície de rede do nó pom, montada por
-`start_gateway` (`crates/node/src/backend/gateway.rs`) como um router axum
-único. **Todo nó serve o mesmo conjunto de rotas na porta de gateway**
+`start_gateway_with_ready` (`crates/node/src/backend/gateway/http.rs`) como um
+router axum único. **Todo nó serve o mesmo conjunto de rotas na porta de gateway**
 (`--gateway-port`, padrão 8080), então qualquer endereço de peer vale como
 ponto de entrada - não existe "o nó do gateway". O router liga com
 `axum::serve(...).tcp_nodelay(true)` (Nagle atrasava as escritas pequenas do
@@ -34,7 +34,7 @@ provar a identidade do peer.
 
 ## 1. O router e os grupos de rotas
 
-`start_gateway` registra, nesta ordem (webapp é deliberadamente o último):
+`start_gateway_with_ready` registra, nesta ordem (webapp é deliberadamente o último):
 
 - **Base** (`gateway.rs`): `POST /api/generate` (+ alias `POST /generate`),
   `GET /peers`, `GET /health`, `POST /handshake` (`session::handle_handshake`),

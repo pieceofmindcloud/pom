@@ -629,7 +629,7 @@ impl PomDb {
         self.save_setting("windows_firewall_setup", record)
     }
 
-    pub fn public_directory_settings(
+    pub(crate) fn public_directory_settings(
         &self,
     ) -> Result<Option<crate::public_directory::PublicDirectorySettings>> {
         self.with_read("ler ingressos do diretório público", |connection| {
@@ -649,14 +649,14 @@ impl PomDb {
         })
     }
 
-    pub fn save_public_directory_settings(
+    pub(crate) fn save_public_directory_settings(
         &self,
         settings: &crate::public_directory::PublicDirectorySettings,
     ) -> Result<()> {
         self.save_setting("public_directory_settings", settings)
     }
 
-    pub fn public_directory_records(
+    pub(crate) fn public_directory_records(
         &self,
     ) -> Result<Vec<crate::public_directory::SignedPublicDirectoryRecord>> {
         self.with_read("ler cache do diretório público", |connection| {
@@ -676,7 +676,7 @@ impl PomDb {
         })
     }
 
-    pub fn save_public_directory_records(
+    pub(crate) fn save_public_directory_records(
         &self,
         records: &[crate::public_directory::SignedPublicDirectoryRecord],
     ) -> Result<()> {

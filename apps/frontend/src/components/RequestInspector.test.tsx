@@ -173,6 +173,38 @@ describe("RequestInspector", () => {
     expect(screen.queryByText('"messages"')).toBeNull();
   });
 
+  it("keeps assistant and tool messages after the latest user message in the context", () => {
+    const conversationalEntry = {
+      ...entry,
+      request_details: {
+        model: "qwen",
+        messages: [
+          { role: "system", content: "Instruções do agente" },
+          { role: "user", content: "Codifique esta tarefa" },
+          {
+            role: "assistant",
+            content: "",
+            tool_calls: [{ id: "call-1", type: "function", function: { name: "read", arguments: "{}" } }],
+          },
+          { role: "tool", tool_call_id: "call-1", content: "Resultado atualizado da ferramenta" },
+          { role: "assistant", content: "Vou continuar a análise" },
+        ],
+      },
+    };
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RequestInspector entry={conversationalEntry} onClose={() => undefined} />
+      </LocaleProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "ENVIADO" }));
+
+    expect(screen.getByText("Codifique esta tarefa")).toBeTruthy();
+    expect(screen.getByText("Resultado atualizado da ferramenta")).toBeTruthy();
+    expect(screen.getByText("Vou continuar a análise")).toBeTruthy();
+  });
+
   it("renders the response as markdown", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">

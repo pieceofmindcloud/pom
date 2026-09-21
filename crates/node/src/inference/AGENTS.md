@@ -764,27 +764,30 @@ visibilidade dos controles de implantação na UI local.
   estado de sessões (sessions, seq_pool, max_sessions, sampling).
 - `Session` - **duas sequências de KV por sessão**: `prompt_seq`, onde o
   prefill escreve até a fronteira estável medida, e `gen_seq`, aberta por
-  `open_generation` na primeira decodificação de token gerado, como cópia da
-  primeira. A cauda volátil do prompt e a geração ficam na cópia. `seq_id()`
-  devolve a que vale para o passo atual. É o que permite reter o prompt entre
-  turnos sem nunca remover posições do meio do KV; ver `llm::kv_seq_budget` para
-  o par de sequências e o que ele custa.
+  `open_generation` antes do primeiro chunk a partir dessa fronteira, como
+  cópia da primeira. A cauda volátil do prompt e a geração ficam na cópia.
+  `prompt_cells` conta somente células escritas em `prompt_seq`; chunks na
+  cópia não alteram esse contador. `seq_id()` devolve a sequência do passo
+  atual. É o que permite reter o prompt entre turnos sem nunca remover posições
+  do meio do KV; ver `llm::kv_seq_budget` para o par de sequências e o que ele
+  custa.
 - `retain_prompt` - fim de turno: apaga a sequência da geração inteira (remoção
   total, que todo motor aceita) e devolve a sessão a `prompt_len`. O EOS chama
   isto, **não** `finish`; destruir a sessão no EOS era o que fazia o rewind do
   gateway chegar a uma "sessão desconhecida". `finish` continua sendo a
   liberação de vez (release explícito, cancelamento, erro).
-  Também tenta uma remoção de **sufixo** (não de meio) em `prompt_seq`, de
-  `prompt_len` até o fim, para descartar o rabicho volátil do template que o
-  prefill decodificou ali junto com o resto do prompt neste turno - sem isso,
-  `prompt_cells` (célula física) ficava preso acima de `n_past` (posição
-  retida) para sempre, e `positions_match_cells` recusava todo reuso seguinte
-  mesmo com o prefixo fisicamente intacto (`prefix_match_tokens == 0` em
-  100% dos turnos, defeito de produção de 2026-09-18). `Session::apply_retention`
-  só encolhe `prompt_cells`/`prompt_tokens` junto com `n_past` quando a poda
-  bate (motor aceitou, ou não havia rabicho a cortar); um motor
-  recorrente/híbrido que recusa mantém a sessão retida com o prompt inteiro,
-  perde o reuso daquele turno e nunca fica incoerente.
+  `retain_prompt` apaga a sequência de geração e retém `prompt_len` na sequência
+  do prompt. Se há células extras realmente em `prompt_seq`, também tenta uma
+  remoção de **sufixo** (não de meio). `prompt_cells` não inclui o prefill
+  enviado a `gen_seq`: somá-lo como se fosse escrito em `prompt_seq` deixava a
+  posição lógica incompatível com as células físicas na retenção e bloqueava
+  o reuso seguinte. `Session::apply_retention` só ajusta
+  `prompt_cells`/`prompt_tokens` junto com `n_past` se o prompt já estava na
+  fronteira estável ou se a poda foi aceita; um motor recorrente/híbrido que
+  recusa uma poda necessária mantém a sessão retida com o prompt inteiro e
+  perde o reuso daquele turno, sem deixar contagens incoerentes. Logs
+  `prefix peer eligibility`, `prefix peer comparison` e `prefix peer retention`
+  registram o motivo da decisão sem incluir texto do prompt.
 - `plan_prefix_reuse` / `expected_prefill_pos` - a regra do reuso e a posição do
   pedaço, puras e testadas em `prefix_rule_tests`. A regra é só-acrescentar:
   fora dela, a sessão recomeça, o que custa o reuso do turno e nunca a

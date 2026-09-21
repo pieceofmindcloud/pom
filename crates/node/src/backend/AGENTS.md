@@ -671,6 +671,8 @@ faz o download autenticado do blob persistido.
   retry, hop or chunk. The remote-stream callback propagates an asynchronous
   `410 Gone` ACK as `GatewayGone`, so an abandoned remote producer stops too;
   already accepted peer frames are cleaned up by the normal session release.
+  Logs `prefix gateway` registram hit/miss e tamanho do prefixo; `prefix rewind`
+  registra a confirmação ou recusa por peer e sessão, sem conteúdo do prompt.
   `start_gateway` faz o bind do listener antes de sinalizar ao shell Windows
   que o gateway está pronto, e então registra
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,

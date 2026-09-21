@@ -356,8 +356,10 @@ além de tokens de entrada/saída, inferência, TTFT, cache de prefixo e estados
 terminais. Clicar em qualquer área não interativa da linha
   abre o inspetor, preserva a lupa e destaca a linha selecionada com cor de
   acento distinta do hover. O cabeçalho do inspetor repete os detalhes da linha.
-  ENVIADO separa prompt novo e contexto anterior em duas superfícies Markdown
-  renderizado de altura dividida; Resposta usa o mesmo visualizador somente para
+  ENVIADO mostra a última mensagem de usuário como prompt novo e o restante do
+  histórico como contexto, inclusive respostas de assistente/ferramenta que
+  aparecem depois dela, em duas superfícies Markdown renderizadas de altura
+  dividida; Resposta usa o mesmo visualizador somente para
   leitura, sem barra de edição, HTML, imagens ou links com protocolo inseguro.
   O conteúdo exibido é limitado a 64 KiB para preservar a responsividade. A
   preferência global entre Markdown renderizado e JSON cru fica em `localStorage`

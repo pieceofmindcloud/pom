@@ -472,8 +472,10 @@ Per-file list:
   ponto não interativo da linha abre o inspetor e mantém a linha selecionada
   destacada com acento visível, inclusive enquanto o mouse está em outra linha;
   a lupa continua disponível. O cabeçalho do inspetor repete as métricas da
-  linha. ENVIADO separa prompt novo e contexto anterior em Markdown renderizado,
-  Resposta usa o mesmo visualizador e a preferência entre Markdown e JSON cru
+  linha. ENVIADO destaca a última mensagem de usuário como prompt novo e mantém
+  as demais mensagens do histórico, inclusive mensagens posteriores de
+  assistente/ferramenta, no contexto em Markdown renderizado. Resposta usa o
+  mesmo visualizador e a preferência entre Markdown e JSON cru
   fica no localStorage. A tablist contém somente as quatro abas; cópia da aba
   ativa e toggle de formato ficam no cabeçalho. O slot reservado do carregamento
   deixa o badge de erros fixo à direita. Cada superfície Markdown pode ser

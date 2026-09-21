@@ -571,6 +571,16 @@ pub(super) async fn generate_stream_inner(
             }
         }
     }
+    info!(
+        "prefix gateway: session={} lease_hit={} reuse_requested={} cached_tokens={} cached_prompt_bytes={} request_prompt_bytes={} miss_reason={}",
+        &session_id[..8.min(session_id.len())],
+        prefix_lease.is_hit(),
+        reuse_prefix,
+        prefix_lease.cached_tokens,
+        prefix_lease.cached_prompt.len(),
+        cache_prompt.len(),
+        prefix_lease.miss_reason().unwrap_or("none"),
+    );
     record_gateway_span(
         &mut gateway_spans,
         request_started,
@@ -1820,13 +1830,35 @@ pub(super) async fn rewind_sessions(
             Ok(body)
                 if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
                     && body.get("n_past").and_then(|v| v.as_u64())
-                        == Some(retained_tokens as u64) => {}
+                        == Some(retained_tokens as u64) =>
+            {
+                info!(
+                    "prefix rewind confirmado: peer={} session={} retained_tokens={} n_past={}",
+                    step.node_id,
+                    &session_id[..8.min(session_id.len())],
+                    retained_tokens,
+                    body.get("n_past")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_default(),
+                );
+            }
             Ok(body) => {
-                warn!("rewind recusado por {}: {}", step.node_id, body);
+                warn!(
+                    "prefix rewind recusado: peer={} session={} retained_tokens={} resposta={}",
+                    step.node_id,
+                    &session_id[..8.min(session_id.len())],
+                    retained_tokens,
+                    body,
+                );
                 all_ok = false;
             }
             Err(error) => {
-                warn!("rewind em {} falhou: {error}", step.node_id);
+                warn!(
+                    "prefix rewind falhou: peer={} session={} retained_tokens={} erro={error}",
+                    step.node_id,
+                    &session_id[..8.min(session_id.len())],
+                    retained_tokens,
+                );
                 all_ok = false;
             }
         }

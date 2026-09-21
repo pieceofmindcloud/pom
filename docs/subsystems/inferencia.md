@@ -1154,8 +1154,8 @@ e confirmada pela cabeça.
 
 **A geração não acontece na sequência do prompt.** Cada sessão de um peer tem
 duas sequências de KV: `prompt_seq`, onde o prefill escreve apenas até a
-fronteira estável medida para o próximo turno, e `gen_seq`, aberta na primeira
-decodificação depois dessa fronteira como cópia da primeira
+fronteira estável medida para o próximo turno, e `gen_seq`, aberta antes de
+decodificar o primeiro chunk a partir dessa fronteira como cópia da primeira
 (`llama_memory_seq_cp`, metadado apenas - as duas dividem as mesmas células com
 `kv_unified`). A cauda do template, os tokens que completam o prompt atual e a
 geração ficam na cópia. No fim do turno some a sequência da geração **inteira**,
@@ -1173,21 +1173,23 @@ não passam por EOS (limite de tokens, sequência de parada, cliente que
 desligou); é idempotente e não recua nada. Liberar de vez continua sendo ato
 explícito do gateway, por `/v1/session/release`.
 
-`InferState::retain_prompt` também tenta uma remoção de sufixo (nunca de meio)
-em `prompt_seq`, de `prompt_len` até o fim, para descartar fisicamente o
-rabicho volátil que o prefill decodificou ali junto com o resto do prompt
-neste turno. Sem essa poda, a contagem física de células (`prompt_cells`)
-ficava presa acima da posição retida (`n_past`) para sempre, e
-`Session::positions_match_cells` - o portão que `adopt_prompt_prefix` confere
-antes de sequer chamar `plan_prefix_reuse` - recusava todo reuso seguinte
-mesmo com o prefixo fisicamente intacto: `prefix_match_tokens` saía `0` em
-100% dos turnos de qualquer conversa que usasse template de chat, o defeito de
-produção medido em 2026-09-18 (91 a 147 s até a primeira palavra, série de
-turnos crescendo). Quando o motor aceita a poda (ou não havia rabicho a
-cortar), `prompt_cells` e `prompt_tokens` encolhem junto com `n_past` e o
-turno seguinte volta a casar; um motor recorrente/híbrido que recusa mantém a
-sessão retida com o prompt inteiro e perde o reuso daquele turno, sem jamais
-ficar incoerente.
+`prompt_cells` conta células físicas escritas em `prompt_seq`, não o total de
+tokens já processados em `n_past`: depois da fronteira estável, os chunks do
+prefill são escritos em `gen_seq`. Somar esses chunks ao contador da sequência
+retida fazia `retain_prompt` tentar podar posições que só existiam na cópia de
+geração. Em modelos recorrentes/híbridos a poda podia ser recusada; a sessão
+ficava retida, mas `positions_match_cells` bloqueava o próximo reuso apesar de
+o prefixo estável continuar intacto. Agora o contador acompanha o destino real
+de cada decode. `retain_prompt` apaga a cópia e aceita diretamente o prefixo
+quando a contagem física já está na fronteira estável; só pede remoção de
+sufixo quando há células extras de fato em `prompt_seq`. Assim, `prompt_cells`,
+`prompt_tokens` e `n_past` representam o prefixo retido antes do turno seguinte.
+
+Os logs `prefix gateway`, `prefix peer eligibility`, `prefix peer comparison`,
+`prefix peer retention` e `prefix rewind` mostram a cadeia de decisão e o
+resultado por sessão/hop sem registrar prompt nem conteúdo de ferramentas. A
+comparação de tokens aparece uma vez no primeiro chunk; os demais logs são de
+uma etapa por requisição.
 
 O comprimento confirmado no rewind é a fronteira estável medida durante o
 prefill (`retained_tokens`), não necessariamente o total tokenizado do prompt:
@@ -1309,14 +1311,15 @@ Bancadas: `prefix_cache::tests::a_small_concurrent_request_does_not_take_over_a_
 `scheduler::tests::prefill_novo_espera_em_vez_de_despejar_a_sessao_retida`.
 
 Conclusão: a perda da sessão é possível e, em parte, intencional no ciclo de
-vida atual, mas não há telemetria suficiente para dizer qual dos eventos ocorreu
-na máquina do relato. Recomenda-se uma tarefa separada para registrar o motivo
-de cada `finish`, `reap_idle` e `evict_retained`, correlacionar o início do
-processo com o `node_id` e alinhar a capacidade do `prefix_cache` do gateway
-com `max_sessions` dos peers. A recuperação automática continua sendo a
-resposta correta para a perda legítima; sem essa tarefa, ela permanece uma
-proteção contra divergência de estado, não uma prova de que a causa deixou de
-existir.
+vida atual. Os logs `prefix peer eligibility`, `prefix peer retention` e
+`prefix rewind` mostram se a sessão chegou ao peer, se passou pela validação
+KV, se foi retida e se o gateway confirmou o rewind. Eles não identificam
+retrospectivamente a remoção por `finish`, `reap_idle` ou `evict_retained`;
+para isso ainda seria preciso registrar o motivo de cada remoção e correlacionar
+o início do processo com o `node_id`. Também convém alinhar a capacidade do
+`prefix_cache` do gateway com `max_sessions` dos peers. A recuperação automática
+continua sendo a resposta correta para perda legítima; os novos logs tornam a
+decisão observável na próxima execução.
 
 EOS ou fim de turno apenas fecha o acumulador UTF-8 da resposta. O servidor
 mantém a sessão física até receber `/v1/session/rewind` ou `/v1/session/release`,

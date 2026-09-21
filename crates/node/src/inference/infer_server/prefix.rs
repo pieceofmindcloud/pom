@@ -333,6 +333,15 @@ impl Session {
         self.gen_seq.unwrap_or(self.prompt_seq)
     }
 
+    /// Conta somente células escritas na sequência que permanece entre turnos.
+    /// Depois de `open_generation`, chunks restantes do prefill vão para a
+    /// cópia de geração e não alteram o tamanho físico do prefixo retido.
+    pub(super) fn record_prompt_sequence_cells(&mut self, written_seq: u32, cells: u32) {
+        if written_seq == self.prompt_seq {
+            self.prompt_cells = self.prompt_cells.saturating_add(cells);
+        }
+    }
+
     /// Aplica em memória o que `retain_prompt` decidiu sobre o KV.
     ///
     /// `trimmed_to_stable` diz se `prompt_seq` ficou fisicamente com
@@ -412,10 +421,29 @@ mod session_text_tests {
 mod retention_accounting_tests {
     use super::*;
 
-    /// Constrói a sessão exatamente como ela fica ao fim de um turno normal,
-    /// **antes** de `retain_prompt` rodar: `prompt_seq` recebeu o prompt
-    /// inteiro (retido + rabicho volátil do template), então `prompt_cells` e
-    /// `n_past` estão em lockstep, ambos acima da fronteira estável.
+    #[test]
+    fn prefill_cell_count_tracks_only_the_sequence_that_received_the_cells() {
+        let mut session = Session::new(2);
+        let prompt_seq = session.prompt_seq;
+        session.record_prompt_sequence_cells(prompt_seq, 4);
+        session.n_past = 4;
+
+        session.gen_seq = Some(6);
+        let generation_seq = session.seq_id();
+        session.record_prompt_sequence_cells(generation_seq, 3);
+        session.n_past = 7;
+
+        assert_eq!(session.prompt_cells, 4);
+        assert!(!session.positions_match_cells());
+
+        session.apply_retention(4, true);
+        assert_eq!(session.prompt_cells, 4);
+        assert!(session.positions_match_cells());
+    }
+
+    /// Monta um caso em que células extras realmente ficaram em `prompt_seq`,
+    /// para exercitar a recusa de remoção de sufixo. O caminho normal de prefill
+    /// escreve os chunks após a fronteira estável em `gen_seq`.
     fn sessao_de_fim_de_turno(retidos: &[i32], rabicho: u32) -> Session {
         let mut s = Session::new(0);
         let total = retidos.len() as u32 + rabicho;
@@ -427,8 +455,8 @@ mod retention_accounting_tests {
         s
     }
 
-    /// A reprodução exata do relatório: `prompt_cells` (célula física) fica
-    /// maior que `n_past` (posição lógica retida) para sempre quando a poda
+    /// Reproduz uma remoção de sufixo recusada: `prompt_cells` (célula física)
+    /// fica maior que `n_past` (posição lógica retida) quando a poda necessária
     /// não acontece, e por isso `positions_match_cells` - o portão que
     /// `adopt_prompt_prefix` consulta antes de sequer chamar `plan_prefix_reuse`
     /// - nunca mais deixa passar. `prefix_match_tokens` sai 0 mesmo com o

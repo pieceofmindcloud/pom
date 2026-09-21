@@ -64,8 +64,10 @@ Per-file list:
   acessível do controle), então o `<label>` continua embrulhando só texto e
   controle. `hint` (texto visível) segue existindo para as outras telas.
 - `RequestInspector.tsx` - inspetor da tela Logs. A aba ENVIADO vem antes de
-  REQUEST e separa prompt novo e contexto anterior em duas superfícies de
-  Markdown renderizado; Resposta usa o mesmo visualizador. `MDEditor.Markdown`
+  REQUEST e separa a última mensagem de usuário como prompt novo, preservando
+  como contexto todas as demais mensagens, inclusive respostas do assistente e
+  ferramentas que venham depois dela. As duas superfícies usam Markdown
+  renderizado; Resposta usa o mesmo visualizador. `MDEditor.Markdown`
   de `@uiw/react-md-editor/nohighlight` é somente leitura, sem barra de edição,
   sem cópia interna, com HTML desabilitado, sanitização de links e sem imagens;
   cada superfície é limitada a 64 KiB para manter a tela responsiva. O toggle

@@ -244,30 +244,75 @@ impl InferState {
             self.finish(sid);
             return None;
         }
-        let (gen_seq, prompt_seq, prompt_len, prompt_cells, positions_ok) = (
+        let (
+            gen_seq,
+            prompt_seq,
+            prompt_len,
+            prompt_cells,
+            positions_ok,
+            n_past_before,
+            stable_len,
+            prompt_tokens_before,
+        ) = (
             session.gen_seq,
             session.prompt_seq,
             session.prompt_len,
             session.prompt_cells,
             session.positions_match_cells(),
+            session.n_past,
+            session.stable_len,
+            session.prompt_tokens.len(),
         );
         if let Some(gen) = gen_seq {
             let _ = self.engine.kv_remove(gen, 0, -1);
         }
-        // O rabicho volátil do template (o que fica depois da fronteira
-        // estável - ver `Session::stable_len`) foi decodificado em
-        // `prompt_seq` junto com o resto do prompt deste turno: nada até aqui
-        // separa fisicamente as duas partes na mesma sequência. Sem descartar
-        // essas células agora, `prompt_cells` fica maior que o `n_past`
-        // retido para sempre e `positions_match_cells` recusa todo reuso
-        // seguinte mesmo com o prefixo fisicamente intacto. Só tenta quando
-        // sobra o que cortar; um motor que recusa (recorrente/híbrido fora da
-        // janela de snapshot) mantém o prompt inteiro retido e perde o reuso
-        // deste turno, sem jamais corromper a sessão.
-        let trimmed_to_stable = prompt_len >= prompt_cells
-            || (positions_ok && self.engine.kv_remove(prompt_seq, prompt_len as i32, -1));
+        // O prefill depois da fronteira estável foi escrito em `gen_seq`; ao
+        // removê-la, `prompt_seq` já deve conter somente o prefixo retido.
+        // `prompt_cells` acompanha apenas essa sequência. Só tenta remover um
+        // sufixo quando ainda há células extras em `prompt_seq`; um motor que
+        // recusa uma poda necessária mantém o prompt inteiro retido e perde o
+        // reuso deste turno, sem corromper a sessão.
+        let (trimmed_to_stable, trim_reason) = if prompt_len >= prompt_cells {
+            (true, "already-at-stable-boundary")
+        } else if !positions_ok {
+            (false, "physical-logical-position-mismatch")
+        } else if self.engine.kv_remove(prompt_seq, prompt_len as i32, -1) {
+            (true, "suffix-removal-accepted")
+        } else {
+            (false, "engine-rejected-suffix-removal")
+        };
         let session = self.sessions.get_mut(sid).expect("session exists");
         session.apply_retention(prompt_len, trimmed_to_stable);
+        let reusable = session.retained && session.positions_match_cells();
+        if trimmed_to_stable {
+            info!(
+                "prefix peer retention: session={} reusable={} reason={} retained_tokens={} stable_len={} n_past_before={} prompt_cells_before={} prompt_tokens_before={} positions_before={} positions_after={}",
+                &sid[..8.min(sid.len())],
+                reusable,
+                trim_reason,
+                prompt_len,
+                stable_len,
+                n_past_before,
+                prompt_cells,
+                prompt_tokens_before,
+                positions_ok,
+                session.positions_match_cells(),
+            );
+        } else {
+            warn!(
+                "prefix peer retention incompleta: session={} reusable={} reason={} retained_tokens={} stable_len={} n_past_before={} prompt_cells_before={} prompt_tokens_before={} positions_before={} positions_after={}",
+                &sid[..8.min(sid.len())],
+                reusable,
+                trim_reason,
+                prompt_len,
+                stable_len,
+                n_past_before,
+                prompt_cells,
+                prompt_tokens_before,
+                positions_ok,
+                session.positions_match_cells(),
+            );
+        }
         // Uma sessão retida é slot reclamável só depois da carência: acorda o
         // escalonador para ele reavaliar quem espera.
         self.signal_slot_freed();

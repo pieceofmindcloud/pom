@@ -183,6 +183,10 @@ pub const CAP_FRAME_BATCH: &str = "inference/frame-v1-batch";
 /// representation of hidden state. This is all-or-nothing across a plan:
 /// sending f8 through one peer that only knows f16 would corrupt the answer.
 pub const CAP_FRAME_DTYPE_F8: &str = "inference/frame-v1-dtype-f8";
+/// Optional signed-int4 hidden-state representation, 64 values per FP16 scale.
+pub const CAP_FRAME_DTYPE_I4G64: &str = "inference/frame-v1-dtype-i4g64";
+/// Optional signed-int4 hidden-state representation, 128 values per FP16 scale.
+pub const CAP_FRAME_DTYPE_I4G128: &str = "inference/frame-v1-dtype-i4g128";
 
 /// Advertised when a remote complete-model peer can own the autoregressive
 /// loop and return generated tokens through bounded opportunistic batches.
@@ -290,20 +294,19 @@ pub(crate) fn routing_request_from_peers(total_layers: u32, peers: &[PeerInfo]) 
 impl PipelinePlan {
     /// Validate the wire precision before the first request is sent.
     ///
-    /// f16 is the original contract and remains valid for peers that do not
-    /// advertise the optional f8 extension. A selected f8 plan must have the
-    /// explicit capability on every hop, otherwise it fails visibly instead
-    /// of allowing a mixed-version peer to interpret bytes incorrectly.
+    /// f16 is the baseline. Every lossy extension must be advertised by every
+    /// hop, otherwise the request fails before sending ambiguous payloads.
     pub fn validate_wire_dtype(&self, dtype: WireDtype) -> anyhow::Result<()> {
-        if dtype != WireDtype::F8 {
+        let Some(capability) = wire_dtype_capability(dtype) else {
             return Ok(());
-        }
+        };
         for step in &self.steps {
-            if !step.supports(CAP_FRAME_DTYPE_F8) {
+            if !step.supports(capability) {
                 return Err(anyhow::anyhow!(
-                    "o formato f8 do estado oculto não foi negociado: o peer {} não anuncia {}",
+                    "o formato {} do estado oculto não foi negociado: o peer {} não anuncia {}",
+                    dtype.as_str(),
                     step.node_id,
-                    CAP_FRAME_DTYPE_F8
+                    capability
                 ));
             }
         }
@@ -365,6 +368,15 @@ impl PipelinePlan {
                 .steps
                 .last()
                 .is_some_and(|s| s.supports(CAP_SPECULATE_MTP))
+    }
+}
+
+pub fn wire_dtype_capability(dtype: WireDtype) -> Option<&'static str> {
+    match dtype {
+        WireDtype::F32 | WireDtype::F16 => None,
+        WireDtype::F8 => Some(CAP_FRAME_DTYPE_F8),
+        WireDtype::I4G64 => Some(CAP_FRAME_DTYPE_I4G64),
+        WireDtype::I4G128 => Some(CAP_FRAME_DTYPE_I4G128),
     }
 }
 
@@ -826,6 +838,50 @@ mod ipv6_tests {
         assert_eq!(ids.len(), 1, "um pipeline, uma implantação: {ids:?}");
     }
 
+    /// Dois modelos **distintos** carregados ao mesmo tempo, cada um na sua
+    /// própria faixa de peers. `model_pipeline_candidates` filtra por
+    /// igualdade exata de rótulo, então pedir um dos dois nomes nunca deve
+    /// misturar hops do outro - é o mecanismo que já dá ao cliente a escolha
+    /// entre modelos carregados, desde que `resolve_model` (camada HTTP)
+    /// valide o nome contra `GET /v1/models` em vez de trocá-lo calado pelo
+    /// ativo.
+    #[tokio::test]
+    async fn two_distinct_models_route_independently() {
+        let mut a1 = peer("10.0.0.1:42777", 0, 15);
+        let mut a2 = peer("10.0.0.2:42777", 16, 31);
+        let mut b1 = peer("10.0.0.3:42777", 0, 31);
+        for (p, id, model) in [
+            (&mut a1, "a1", "modelo-a"),
+            (&mut a2, "a2", "modelo-a"),
+            (&mut b1, "b1", "modelo-b"),
+        ] {
+            p.node_id = id.to_string();
+            p.model = model.to_string();
+        }
+        let todos = vec![a1, a2, b1];
+        let tracker = LoadTracker::new();
+
+        let plano_a = plan_pipeline(&todos, "modelo-a", None, 32, &tracker)
+            .await
+            .expect("modelo-a cobre 0..31 em dois hops");
+        assert_eq!(plano_a.steps.len(), 2);
+        assert!(plano_a
+            .steps
+            .iter()
+            .all(|s| s.node_id == "a1" || s.node_id == "a2"));
+
+        let plano_b = plan_pipeline(&todos, "modelo-b", None, 32, &tracker)
+            .await
+            .expect("modelo-b cobre 0..31 num hop só");
+        assert_eq!(plano_b.steps.len(), 1);
+        assert_eq!(plano_b.steps[0].node_id, "b1");
+
+        let candidatos_a = model_pipeline_candidates(&todos, "modelo-a", None);
+        assert!(candidatos_a.iter().all(|p| p.model == "modelo-a"));
+        let candidatos_b = model_pipeline_candidates(&todos, "modelo-b", None);
+        assert!(candidatos_b.iter().all(|p| p.model == "modelo-b"));
+    }
+
     /// Um id que ninguém serve não pode cair de volta no rótulo e devolver a
     /// outra implantação calado - seria atender numa configuração que o cliente
     /// explicitamente não pediu.
@@ -1005,6 +1061,28 @@ mod ipv6_tests {
         assert!(plan.validate_wire_dtype(crate::wire::WireDtype::F8).is_ok());
         assert!(plan
             .validate_wire_dtype(crate::wire::WireDtype::F16)
+            .is_ok());
+    }
+
+    #[test]
+    fn groupwise_i4_requires_its_exact_capability_on_every_hop() {
+        let plan = plan_of(vec![
+            step(&[CAP_FRAME_DTYPE_I4G64]),
+            step(&[CAP_FRAME_DTYPE_I4G128]),
+        ]);
+        assert!(plan
+            .validate_wire_dtype(crate::wire::WireDtype::I4G64)
+            .is_err());
+        assert!(plan
+            .validate_wire_dtype(crate::wire::WireDtype::I4G128)
+            .is_err());
+
+        let plan = plan_of(vec![
+            step(&[CAP_FRAME_DTYPE_I4G64]),
+            step(&[CAP_FRAME_DTYPE_I4G64]),
+        ]);
+        assert!(plan
+            .validate_wire_dtype(crate::wire::WireDtype::I4G64)
             .is_ok());
     }
 

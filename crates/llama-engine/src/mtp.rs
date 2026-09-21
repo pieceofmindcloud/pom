@@ -39,6 +39,118 @@
 //! a capacidade. Ver `docs/subsystems/inferencia.md` para a conta do que
 //! custaria estender ao caso fatiado.
 //!
+//! # GGUF de rascunho separado ("shared MTP module")
+//!
+//! Nem todo modelo com MTP embute o bloco `nextn` no próprio arquivo. A
+//! Unsloth distribui o rascunho do Qwen3.8-Flash-Next (arquitetura
+//! `qwen4exp`) num GGUF à parte (`mtp-<modelo>-shared-Q8_0.gguf`) que
+//! reaproveita `token_embd`/`output` do modelo principal em vez de duplicá-los
+//! - o mesmo motivo de espaço que o llama.cpp já resolve para EAGLE3/DFLASH
+//! via `ctx_other` (`llama-ext.h`), embora o formato aqui seja mais simples: o
+//! arquivo de rascunho de fato inclui sua própria cópia pequena de
+//! `token_embd`/`output` (o "mtp_only" que `qwen35.cpp`/`qwen3next.cpp`/
+//! `deepseek4.cpp`/`qwen4exp.cpp` já sabem carregar - `blk.0.<primeiro tensor
+//! de tronco da arquitetura>` ausente marca o arquivo como só-nextn), então
+//! **não precisa** de `ctx_other`: carrega como um
+//! `LoadedModel` inteiramente independente
+//! (`LoadedModel::load_mtp_draft`) e vira o `companion` de
+//! `mtp_model_for_attach`, exatamente como o irmão CPU-only do recuo para RAM
+//! - os dois nunca coexistem.
+//!
+//! `EngineConfig::mtp_draft_path` é onde esse caminho chega. A descoberta
+//! segue o mesmo padrão de `mmproj` (arquivo irmão na pasta de modelos, ver
+//! `models::catalog::find_mtp_draft_sibling` e `find_mmproj_sibling`), e é
+//! automática - **não há um interruptor novo na UI**: o operador já liga MTP
+//! pelo campo que existe hoje, e o rascunho externo entra quando o alvo não
+//! tem `nextn` embutido e o arquivo existe ao lado do GGUF. A descoberta
+//! acontece na própria máquina que carrega o modelo (`run_apply`,
+//! `reconfigure_local`), então só a máquina que serve a fatia final - onde o
+//! MTP roda de fato - precisa ter o arquivo no disco; nem o orquestrador do
+//! deploy nem as demais máquinas do pipeline precisam dele.
+//!
+//! `LoadedModel::load_mtp_draft` sozinho sempre tenta VRAM
+//! (`MtpFitMode::Vram`, `DEFAULT_GPU_LAYERS`) sem medir memória livre - ao
+//! contrário do alvo, cujo `fit_plan` mede a VRAM restante e reduz camadas
+//! antes de carregar. `LlmEngine::load_with_cache` fecha essa lacuna em duas
+//! camadas, cada uma confirmada ao vivo na ksia num teste separado
+//! (2026-09-18):
+//!
+//! 1. **Carga dos pesos.** Quando o `fit_plan` do alvo já decidiu
+//!    `MtpFitMode::Ram` (VRAM saturada), pedir GPU para os pesos do
+//!    rascunho só repete o mesmo `cudaMalloc` que falhou para o alvo -
+//!    visto ao vivo como `mtp_fit_mode=Ram` no log do fit seguido de
+//!    `cudaMalloc failed: out of memory` dentro do próprio
+//!    `llama_model_load_from_file` do rascunho. `load_with_cache` agora
+//!    pula direto para `LoadedModel::load_mtp_draft_cpu`
+//!    (`n_gpu_layers=0`, mesmo padrão de `load_mtp_cpu`) quando o fit já
+//!    disse Ram, com um recuo reativo para a mesma função se
+//!    `load_mtp_draft` falhar mesmo partindo de `Vram`.
+//! 2. **Criação do contexto.** Mesmo com os pesos na CPU (pela camada 1 ou
+//!    organicamente, porque `llama.cpp` não achou espaço tensor por
+//!    tensor), a primeira tentativa de anexar sempre criava o contexto com
+//!    `cfg.offload_kqv` do alvo - com `op_offload=true` o agendador ainda
+//!    reserva buffer de compute na GPU mesmo para pesos já em CPU, e essa
+//!    reserva de pior caso (ubatch cheio) podia estourar a VRAM que sobrou
+//!    (`cudaMalloc failed: out of memory` num teste anterior, mesma
+//!    investigação). Corrigido: o contexto já nasce com
+//!    `offload_kqv=false` quando os pesos entraram pela RAM, e
+//!    `load_with_cache` ainda repete com `offload_kqv=false` se os pesos
+//!    couberam na VRAM mas o contexto não coube.
+//!
+//! As duas camadas só disparam com `mtp_cpu_fallback_enabled` ligado; nunca
+//! recarregam peso além do necessário - a camada 2 nunca recarrega peso
+//! nenhum, só recria o contexto.
+//!
+//! `llm::config::fit_plan` também precisa saber disso, separado de
+//! `load_with_cache`: é ele quem decide `MtpFitMode` (e portanto se MTP
+//! sequer é tentado) antes da carga de verdade, e antes de 2026-09-18 só
+//! olhava `has_nextn_tensors` do arquivo **principal** - reportando
+//! "MTP indisponível" (defeito confirmado ao vivo na ksia/salem) mesmo com um
+//! rascunho externo correto já no disco, porque nunca conferia
+//! `EngineConfig::mtp_draft_path`.
+//!
+//! **Pré-requisito que o rascunho externo não supre sozinho**: o par
+//! `(h_p, x_{p+1})` que a cabeça `nextn` consome exige que o **alvo** exporte
+//! `h_nextn` do próprio grafo (`pom_llama_set_embeddings_nextn`), e isso é
+//! código por arquitetura no fork (`build_arch_graph`/`res->t_h_nextn`) - o
+//! rascunho não pode fornecer o que o alvo nunca calculou. `qwen35.cpp` já
+//! fazia isso; `qwen4exp.cpp` (Qwen3.8-Flash-Next) ganhou o mesmo em
+//! `pereirajair/llama.cpp` (`pom-tensor-parallel`), gated por
+//! `cparams.embeddings_nextn && !cparams.embeddings_nextn_masked` para não
+//! regredir o corte antecipado de linhas que a arquitetura já fazia na
+//! última camada (`inp_out_ids`) - sem MTP pedido esse corte continua
+//! idêntico ao de antes, sem custo extra de FFN/hyper-connection por posição.
+//! `h_nextn` é sempre o estado **largo** pré-mixer (`n_embd*hc` para
+//! arquiteturas de hyper-connection como `qwen4exp`/`deepseek4`, `n_embd`
+//! nas demais) - exportar a versão já colapsada pelo mixer final é um erro
+//! silencioso, não um crash: a cabeça de rascunho ainda decodifica, só que
+//! sobre menos informação, derrubando a taxa de aceitação sem avisar.
+//!
+//! A lista gerada em `build/mtp_arch.rs` (`MTP_GRAPH_ARCHITECTURES`)
+//! certifica quem consegue **construir o grafo `DECODER_MTP`** (a capacidade
+//! do lado do rascunho, checada em `MtpDrafter::attach` contra a arquitetura
+//! do rascunho) - não há checagem estática do lado Rust para quem exporta
+//! `h_nextn` do lado do alvo. As duas coincidem sempre que o rascunho é
+//! `qwen4exp` (embutido ou externo): a mesma `qwen4exp.cpp` exporta o estado
+//! largo do alvo (`graph::graph`) e constrói a cabeça de rascunho
+//! (`graph::graph_mtp`, despachada por `params.gtype ==
+//! LLM_GRAPH_TYPE_DECODER_MTP`) - só o `ctx_type` do contexto muda qual das
+//! duas roda. Um alvo cujo grafo não exporta `h_nextn` simplesmente falha no
+//! primeiro `observe` (`llama_get_embeddings_nextn_ith` devolve `NULL`) e
+//! desliga o MTP daquela sessão com aviso - a mesma degradação que já existe
+//! para um peer velho que não ecoa a composição do lote no MTP fatiado (ver
+//! `docs/subsystems/inferencia.md`, 5.2). Ver a sonda
+//! `an_external_mtp_draft_attaches_to_a_target_without_embedded_nextn` nos
+//! testes deste módulo para o roteiro de validação com os arquivos reais, e
+//! `crates/llama-engine/src/llm/model.rs::mtp_draft_tests` para a
+//! reprodução sintética que provou a causa raiz e a correção.
+//!
+//! **Fatiamento multi-nó do rascunho externo**: fora de escopo por ora. O
+//! mesmo limite da seção acima vale aqui - MTP só roda hoje quando uma máquina
+//! serve o modelo inteiro -, e como o rascunho depende do estado oculto final
+//! do alvo, ele teria que morar na mesma máquina que serve a última fatia,
+//! nunca na cabeça nem numa terceira máquina. Não implementado.
+//!
 //! # De onde veio o algoritmo
 //!
 //! De `llama.cpp/common/speculative.cpp`, `common_speculative_impl_draft_mtp`
@@ -569,6 +681,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         }
     }
 
@@ -714,6 +827,7 @@ mod tests {
             moe_external_executor: false,
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
         };
         let mut engine = crate::llm::LlmEngine::load_with_cache(
             &path,
@@ -774,5 +888,90 @@ mod tests {
             !de_novo.is_empty(),
             "a segunda rodada parou de rascunhar — o estado entre rodadas não sobreviveu"
         );
+    }
+
+    /// Sonda ao vivo do rascunho MTP **externo**: um modelo alvo que não
+    /// embute `nextn` (ex. `qwen4exp`/Qwen3.8-Flash-Next) mais um GGUF de
+    /// rascunho separado ("shared MTP module" da Unsloth, ex.
+    /// `mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf`).
+    ///
+    /// `#[ignore]`, dirigida por `POM_MTP_TARGET_MODEL` (o alvo) e
+    /// `POM_MTP_DRAFT_MODEL` (o rascunho). Diferente da sonda acima, o que
+    /// esta prova primeiro é o **pré-requisito arquitetural** que a integração
+    /// nova introduziu: o alvo precisa exportar `h_nextn` do próprio grafo
+    /// mesmo quando o rascunho é um arquivo à parte - `qwen4exp.cpp` ganhou
+    /// isso em `pereirajair/llama.cpp` (`pom-tensor-parallel`), mas um alvo de
+    /// outra arquitetura sem esse suporte ainda faz `engine.mtp_ready()`
+    /// continuar falso mesmo com um rascunho válido (degrada com aviso, não
+    /// aborta - ver o cabeçalho deste módulo). A asserção abaixo distingue os
+    /// dois desfechos em vez de tratar qualquer `mtp_ready() == false` como
+    /// erro de sonda.
+    ///
+    /// Rode com:
+    ///
+    /// ```text
+    /// POM_MTP_TARGET_MODEL=/caminho/Qwen3.8-Flash-Next-Q8_0.gguf \
+    /// POM_MTP_DRAFT_MODEL=/caminho/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
+    ///   cargo test --release --features metal --bin pom \
+    ///   mtp::tests::an_external_mtp_draft_attaches_to_a_target_without_embedded_nextn \
+    ///   -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn an_external_mtp_draft_attaches_to_a_target_without_embedded_nextn() {
+        let (Ok(target_path), Ok(draft_path)) = (
+            std::env::var("POM_MTP_TARGET_MODEL"),
+            std::env::var("POM_MTP_DRAFT_MODEL"),
+        ) else {
+            eprintln!(
+                "defina POM_MTP_TARGET_MODEL e POM_MTP_DRAFT_MODEL para rodar esta sonda"
+            );
+            return;
+        };
+        let cfg = crate::llm::EngineConfig {
+            n_ctx: 4096,
+            offload_kqv: true,
+            cache_type_k: crate::KvCacheType::F16,
+            cache_type_v: crate::KvCacheType::F16,
+            fit_memory: true,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            n_batch: 512,
+            n_gpu_layers: 99,
+            n_threads: 0,
+            max_sessions: 1,
+            need_embeddings: false,
+            mtp: true,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+            mmproj_path: None,
+            mtp_draft_path: Some(draft_path.clone()),
+        };
+        let engine = crate::llm::LlmEngine::load_with_cache(
+            &target_path,
+            &cfg,
+            &crate::llm::ModelCache::new(),
+            false,
+        )
+        .expect("carregar o alvo");
+
+        if !engine.mtp_ready() {
+            eprintln!(
+                "MTP não ficou pronto: {:?}. Se a razão citar arquitetura sem grafo MTP, o \
+                 alvo ainda precisa da correção no fork (emitir h_nextn do próprio grafo) - \
+                 ver a nota de limitação em `crate::mtp` e o AGENTS.md de models/. Se citar \
+                 outra coisa (arquivo não encontrado, largura incompatível), é o rascunho ou \
+                 o caminho configurado que está errado.",
+                engine.mtp_unavailable_reason()
+            );
+            panic!("MTP não ficou pronto - ver a mensagem acima para qual dos dois motivos");
+        }
+        assert!(
+            matches!(engine.mtp_allocation(), Some("vram" | "ram")),
+            "o runtime precisa publicar onde o MTP foi alocado: {:?}",
+            engine.mtp_allocation()
+        );
+        eprintln!("MTP externo pronto: alocação {:?}", engine.mtp_allocation());
     }
 }

@@ -134,7 +134,10 @@ profile policy remains the effective authorization boundary.
   builds `GatewayState.prefix_disk`, `generate_stream_with_stops` spills each
   retained turn to disk in a detached task and, on a memory miss, restores the
   longest strict-prefix snapshot before prefill (`prefix_reuse_status = "disk"`),
-  and the `testkit` test scaffold (peer/state_with/body_of).
+  the adaptive chunk tuner learns bytes/token, bandwidth, compute and RTT from
+  completed prefill traces for each model/route without waiting on the next
+  request, capped by `prefill_chunk_tokens` and `n_batch`, and the `testkit`
+  test scaffold (peer/state_with/body_of).
 - `db.rs` - único armazenamento SQLite local: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
@@ -179,7 +182,17 @@ profile policy remains the effective authorization boundary.
   storage paths, thermal policy (`GET/POST /api/ui/thermal`), local auto-discovery
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
-  e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`). A
+  e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
+  `GET /api/ui/plugins` lista o catálogo inteiro de plugins independentes
+  (`crate::plugins`), cada um com seu estado, features e atualização de
+  versão próprios; `POST /api/ui/plugins/activate` ativa quantos plugins
+  conhecidos a chave conceder, e `POST /api/ui/plugins/:code/refresh|
+  deactivate|update/check|update/apply` agem sobre um plugin só. A detecção
+  da release `pom_core` é outra fronteira, deliberadamente separada
+  (`crate::pom_core_update`): `GET /api/ui/pom-update/status`,
+  `POST /api/ui/pom-update/check` força a detecção sob demanda, e
+  `POST /api/ui/pom-update/apply` exige a confirmação explícita dessa
+  release antes de baixar e reiniciar. A
   cluster view transporta `SystemLoad.gpus[].power_watts` como telemetria
   opcional, mantendo `null` quando o sistema não expõe consumo da placa.
   leitura `/api/ui/network/geo-reference` entrega a referência SQLite de
@@ -306,8 +319,8 @@ profile policy remains the effective authorization boundary.
   (local or forwarded to a peer).
 - `RuntimeParams.hidden_state_dtype` is persistido e encaminhado pelo mesmo
   caminho de apply/launch dos demais ajustes globais; `NodeInfo` e
-  `DeployPlan.capabilities.hidden_state_f8` expõem a capability de peer usada
-  para bloquear uma implantação f8 incompatível. O redeploy consulta
+  `DeployPlan.capabilities.hidden_state_f8/hidden_state_i4g64/hidden_state_i4g128`
+  expõem as capabilities usadas para bloquear formato não suportado. O redeploy consulta
   `/api/ui/node` de todos os participantes antes de reconfigurar qualquer nó,
   evitando uma implantação parcialmente misturada.
 - **Implantações são versionadas** (`Deployment`, `DEPLOYMENT_VERSION = 2`,
@@ -645,17 +658,21 @@ faz o download autenticado do blob persistido.
   the next turn the instant the stream closes and used to arrive in the middle
   of it; token events still go out live. `release_sessions` tries every
   `inference_candidates` route, remembers which route worked, and remains best
-  effort so a stale address cannot prevent cleanup. A prefill that fails with
-  the prefix enabled is retried once from scratch - reusing is an optimisation, never a
-  reason for the request to fail. A peer that reports an unknown session also
-  triggers that same single cold retry, even when the original request did not
-  use prefix reuse, because a later chunk cannot be reconstructed from hidden
-  state alone. When the stream receiver closes, the event pump observes
+  effort so a stale address cannot prevent cleanup. When every transport proves
+  a prefill chunk was not delivered, the gateway resumes at that absolute
+  position with the same live KV and prefix. It rebuilds the session only for
+  an unknown session, ambiguous delivery, downstream state mismatch or missing
+  absolute progress, and logs the reason. An unknown session also triggers one
+  cold rebuild without prefix reuse, because a later chunk cannot be
+  reconstructed from hidden state alone. When the stream receiver closes, the
+  event pump observes
   `Sender::closed()` even though the generation keeps a sender clone for
   end-of-turn bookkeeping, and cancels the local HTTP future before the next
   retry, hop or chunk. The remote-stream callback propagates an asynchronous
   `410 Gone` ACK as `GatewayGone`, so an abandoned remote producer stops too;
   already accepted peer frames are cleaned up by the normal session release.
+  Logs `prefix gateway` registram hit/miss e tamanho do prefixo; `prefix rewind`
+  registra a confirmação ou recusa por peer e sessão, sem conteúdo do prompt.
   `start_gateway` faz o bind do listener antes de sinalizar ao shell Windows
   que o gateway está pronto, e então registra
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
@@ -715,8 +732,11 @@ faz o download autenticado do blob persistido.
   **every** turn including the first, so one turn's prompt is an exact prefix of
   the next one's - the property the prefix cache rests on; raw, unlabelled text
   is what `/v1/completions` and `/api/generate` are for.
-  `conversation_cache_key` is what the prefix cache keys on (the message array,
-  not the rendered text) and travels as `GenerationInput::cache_key`; a versão
+  `conversation_cache_key` é o prompt renderizado canônico que a cabeça
+  tokeniza e viaja como `GenerationInput::cache_key`; isso mantém a ordenação
+  de system/developer e ferramentas idêntica à execução e evita declarar hit
+  quando essas partes mudam no início do prompt. O gateway registra o motivo
+  local do miss e o tamanho efetivo do chunk no trace. A versão
   Anthropic, `conversation_cache_key_with_budget`, prefixa a identidade do
   orçamento de tarefa para que uma entrada sem orçamento ou com marcador
   diferente não seja reutilizada; o marcador final é injetado a cada pedido,
@@ -727,8 +747,12 @@ faz o download autenticado do blob persistido.
   peer announcements (never the stale CLI default), and keeps an `idle` deployment
   selectable while its weights are unloaded; an unready non-idle peer without
   `runtime_capacity` still hides the model until `/health` confirms it; model objects include both
-  OpenAI and Anthropic discovery fields; `resolve_model` maps unknown names to
-  the active model;
+  OpenAI and Anthropic discovery fields; `resolve_model` only accepts a name a
+  peer actually announces (`model_ids`) or an explicit `<modelo>@<deploy_id>`
+  selector still pending gossip - anything else is refused with HTTP 404
+  before generation starts, never silently swapped for the active model.
+  A request that omits `model` still uses `active_model()`,
+  which is the only remaining implicit default;
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;
   `chat_message_json` (flat content + `tool_calls` array),
   `apply_scan_events_openai` (tool_call deltas), `chunk_json` (+

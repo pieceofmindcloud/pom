@@ -136,23 +136,29 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::CommonOrInternal,
     },
+    // Catálogo de plugins independentes (ver `crate::plugins`): a leitura é
+    // descobrível para qualquer perfil, toda mutação é AdminOnly - inclusive
+    // sob `/api/ui/plugins/:code/...`, porque a regra casa por prefixo de
+    // segmento e um `:code` no meio não muda o escopo de nenhuma ação.
     RouteRule {
-        prefix: "/api/ui/enterprise/status",
-        method: None,
+        prefix: "/api/ui/plugins",
+        method: Some(Method::GET),
         scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
-        prefix: "/api/ui/enterprise/activate",
+        prefix: "/api/ui/plugins",
         method: Some(Method::POST),
         scope: RouteScope::AdminOnly,
     },
+    // Atualização do binário `pom` em si - fronteira separada dos plugins de
+    // propósito, ver `crate::pom_core_update`.
     RouteRule {
-        prefix: "/api/ui/enterprise/refresh",
-        method: Some(Method::POST),
-        scope: RouteScope::AdminOnly,
+        prefix: "/api/ui/pom-update",
+        method: Some(Method::GET),
+        scope: RouteScope::CommonOrInternal,
     },
     RouteRule {
-        prefix: "/api/ui/enterprise/deactivate",
+        prefix: "/api/ui/pom-update",
         method: Some(Method::POST),
         scope: RouteScope::AdminOnly,
     },
@@ -538,14 +544,19 @@ mod policy_tests {
             RouteScope::AdminOnly
         );
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
+        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::CommonOrInternal);
         assert_eq!(
-            scope_of("/api/ui/enterprise/status"),
+            scope_of("/api/ui/pom-update/status"),
             RouteScope::CommonOrInternal
         );
         for path in [
-            "/api/ui/enterprise/activate",
-            "/api/ui/enterprise/refresh",
-            "/api/ui/enterprise/deactivate",
+            "/api/ui/plugins/activate",
+            "/api/ui/plugins/enterprise/refresh",
+            "/api/ui/plugins/enterprise/deactivate",
+            "/api/ui/plugins/enterprise/update/check",
+            "/api/ui/plugins/enterprise/update/apply",
+            "/api/ui/pom-update/check",
+            "/api/ui/pom-update/apply",
         ] {
             assert_eq!(
                 route_scope(&Method::POST, path),

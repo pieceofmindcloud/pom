@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::time::Duration;
 
 /// Prompt tokens pushed through the pipeline per round trip.
 ///
@@ -74,18 +75,20 @@ pub fn is_cancelled(error: &anyhow::Error) -> bool {
     error.downcast_ref::<GenerationCancelled>().is_some()
 }
 
-/// Um pedaço do prefill falhou **depois** de a cadeia já ter aceitado pedaços
-/// anteriores. Viaja anexado ao erro (`anyhow` context) como diagnóstico do
-/// ponto onde uma retomada seria possível apenas se o estado remoto fosse
-/// conhecido. Uma resposta de transporte perdida não prova isso, portanto o
-/// gateway faz reconstrução fria em vez de usar este ponto cegamente. Só é
-/// emitido para `from_chunk > 0`.
-#[derive(Debug, Clone, Copy)]
+/// Próximo chunk que o gateway pode reenviar sem alterar o KV remoto. Só é
+/// criado quando o transporte confirma que o corpo do chunk não foi entregue;
+/// falhas ambíguas usam `PrefillRebuildRequired`.
+#[derive(Debug, Clone)]
 pub struct PrefillResumable {
     pub from_chunk: u32,
     pub start_pos: u32,
     pub prompt_tokens: u32,
     pub cached_tokens: u32,
+    /// A sequência ordenada do relay direto precisa sobreviver à retomada.
+    pub prefill_sequence_id: Option<String>,
+    /// Trace parcial acumulado antes da falha. A retomada acrescenta as novas
+    /// observações sem apagar os chunks que já chegaram ao peer.
+    pub trace: Option<Box<RequestTrace>>,
 }
 
 impl std::fmt::Display for PrefillResumable {
@@ -100,7 +103,45 @@ impl std::fmt::Display for PrefillResumable {
 
 /// O ponto de retomada anexado a um erro de prefill, se houver.
 pub fn resume_point(error: &anyhow::Error) -> Option<PrefillResumable> {
-    error.downcast_ref::<PrefillResumable>().copied()
+    error.downcast_ref::<PrefillResumable>().cloned()
+}
+
+pub(super) fn resume_with_trace(
+    error: anyhow::Error,
+    trace: &RequestTrace,
+    elapsed: Duration,
+) -> anyhow::Error {
+    let Some(mut resume) = resume_point(&error) else {
+        return error;
+    };
+    let mut trace = trace.clone();
+    trace.prefill_ms = trace.prefill_ms.saturating_add(elapsed.as_millis() as u64);
+    resume.trace = Some(Box::new(trace));
+    error.context(resume)
+}
+
+/// A sessão remota pode ter aceitado o chunk, então só é recuperável por uma
+/// reconstrução fria. O motivo é estático para que os logs delimitem com
+/// precisão por que o KV e o cache anterior não podem ser reaproveitados.
+#[derive(Debug, Clone, Copy)]
+pub struct PrefillRebuildRequired {
+    pub from_chunk: u32,
+    pub start_pos: u32,
+    pub reason: &'static str,
+}
+
+impl std::fmt::Display for PrefillRebuildRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "retoma insegura do pedaço {} (posição {}): {}",
+            self.from_chunk, self.start_pos, self.reason
+        )
+    }
+}
+
+pub fn rebuild_required(error: &anyhow::Error) -> Option<PrefillRebuildRequired> {
+    error.downcast_ref::<PrefillRebuildRequired>().copied()
 }
 
 pub(super) fn check_cancelled(cancellation: &Cancellation) -> Result<()> {
@@ -1117,13 +1158,14 @@ pub struct PhaseTrace {
     /// serialização da resposta. Quando presente, explica a produção MTP que
     /// um ciclo de remote-stream aguarda legitimamente.
     pub node_mtp_draft_ms: f64,
-    /// Time to hand the batch to the backend - not the time it ran.
-    pub node_backend_enqueue_ms: f64,
+    /// Time spent in the backend evaluation API call. This is neither queue
+    /// wait nor a guarantee of pure device-kernel time.
+    pub node_backend_call_ms: f64,
     /// Queued backend work plus already-queued output transfer, measured with
-    /// `llama_synchronize`. A zero value means no completion duration was
+    /// `llama_synchronize`. A zero value means no synchronization duration was
     /// recorded; the effective `POM_PROFILE_SYNC` state is published separately
     /// by `/health` and must never be inferred from this timing.
-    pub node_backend_completion_ms: f64,
+    pub node_backend_sync_ms: f64,
     /// Tempo do forward MoE externo, medido fora de `llama_decode`.
     ///
     /// O hook do llama.cpp e opt-in e registra o forward depois que ele
@@ -1295,8 +1337,8 @@ impl PhaseTrace {
         self.node_setup_ms += node_ms("setup_ms");
         self.node_decode_ms += node_decode_ms;
         self.node_mtp_draft_ms += node_ms("mtp_draft_ms");
-        self.node_backend_enqueue_ms += node_ms("backend_enqueue_ms");
-        self.node_backend_completion_ms += node_ms("backend_completion_ms");
+        self.node_backend_call_ms += node_ms("backend_call_ms");
+        self.node_backend_sync_ms += node_ms("backend_sync_ms");
         self.node_moe_forward_ms += node_ms("moe_forward_ms");
         self.node_residual_capture_d2h_sync_ms += node_ms("residual_capture_d2h_sync_ms");
         self.node_residual_ms += node_ms("residual_ms");
@@ -1459,8 +1501,8 @@ impl PhaseTrace {
         self.node_setup_ms += next.node_setup_ms;
         self.node_decode_ms += next.node_decode_ms;
         self.node_mtp_draft_ms += next.node_mtp_draft_ms;
-        self.node_backend_enqueue_ms += next.node_backend_enqueue_ms;
-        self.node_backend_completion_ms += next.node_backend_completion_ms;
+        self.node_backend_call_ms += next.node_backend_call_ms;
+        self.node_backend_sync_ms += next.node_backend_sync_ms;
         self.node_residual_capture_d2h_sync_ms += next.node_residual_capture_d2h_sync_ms;
         self.node_residual_ms += next.node_residual_ms;
         self.node_logits_access_ms += next.node_logits_access_ms;
@@ -1666,6 +1708,13 @@ impl StreamingTrace {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PendingDirectReceipt {
+    inbox: crate::direct::ReplyInbox,
+    ticket_id: String,
+    phase: Phase,
+}
+
 /// União dos intervalos observados em um host. Abrange spans inclusivos e
 /// paralelos uma vez só, por isso não confunde soma de trabalho com caminho
 /// crítico.
@@ -1761,6 +1810,11 @@ pub struct RequestTrace {
     /// quando o reuso veio de um snapshot automático em disco
     /// (`slot_persist_prefix_cache`, ver `inferencia.md` §3.1.1).
     pub prefix_reuse_status: Option<String>,
+    /// Razão local para o gateway não ter encontrado sessão em memória.
+    /// Diferencia cache vazio, rota diferente, prompt que divergiu e lease
+    /// ocupado, sem inferir o motivo a partir do resultado do peer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_prefix_miss_reason: Option<String>,
     /// Tokens que realmente precisaram atravessar a fronteira de inferência.
     /// Em um turno frio, ou após uma divergência parcial, é o prompt inteiro.
     pub prompt_tokens_transmitted: u32,
@@ -1775,6 +1829,9 @@ pub struct RequestTrace {
     pub transport_trace_complete: bool,
     pub prefill_overlap_enabled: bool,
     pub prefill_max_inflight_chunks: u32,
+    /// Tamanho efetivo escolhido para os pedaços nesta rota.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub prefill_chunk_tokens: u32,
     pub prefill_overlapped_chunks: u32,
     /// Maior número de pedaços de prefill que estiveram em voo ao mesmo tempo
     /// nesta requisição. `<= prefill_max_inflight_chunks`; `1` quando a
@@ -1810,6 +1867,10 @@ pub struct RequestTrace {
     pub mtp_acceptance_rate: Option<f64>,
     #[serde(skip)]
     expected_decode_spans: u64,
+    #[serde(skip)]
+    pending_direct_receipts: Vec<PendingDirectReceipt>,
+    #[serde(skip)]
+    direct_transport_receipt_ids: HashSet<String>,
     #[serde(skip)]
     remote_stream_frame_ids: HashSet<String>,
     #[serde(skip)]
@@ -2073,6 +2134,7 @@ impl RequestTrace {
             cached_tokens: 0,
             prefix_match_tokens: 0,
             prefix_reuse_status: None,
+            gateway_prefix_miss_reason: None,
             prompt_tokens_transmitted: 0,
             output_tokens: 0,
             prefill_ms: 0,
@@ -2084,6 +2146,7 @@ impl RequestTrace {
             transport_trace_complete: true,
             prefill_overlap_enabled: false,
             prefill_max_inflight_chunks: 1,
+            prefill_chunk_tokens: 0,
             prefill_overlapped_chunks: 0,
             prefill_pipeline_depth_max: 0,
             telemetry: TelemetrySummary::default(),
@@ -2095,6 +2158,8 @@ impl RequestTrace {
             mtp_draft_tokens_rejected: 0,
             mtp_acceptance_rate: None,
             expected_decode_spans: 0,
+            pending_direct_receipts: Vec::new(),
+            direct_transport_receipt_ids: HashSet::new(),
             remote_stream_frame_ids: HashSet::new(),
             profiling_span_ids: HashSet::new(),
             profiling_token_index: 0,
@@ -2138,6 +2203,134 @@ impl RequestTrace {
         }
         self.spans = spans;
         self.refresh_outside_node_accounting();
+    }
+
+    pub(super) fn track_direct_receipt(
+        &mut self,
+        inbox: crate::direct::ReplyInbox,
+        ticket_id: impl Into<String>,
+        phase: Phase,
+    ) {
+        let ticket_id = ticket_id.into();
+        if !self
+            .pending_direct_receipts
+            .iter()
+            .any(|pending| pending.ticket_id == ticket_id && pending.phase == phase)
+        {
+            self.pending_direct_receipts.push(PendingDirectReceipt {
+                inbox,
+                ticket_id,
+                phase,
+            });
+        }
+    }
+
+    pub(super) fn has_pending_direct_receipt(&self) -> bool {
+        !self.pending_direct_receipts.is_empty()
+    }
+
+    pub(super) fn mark_direct_transport_receipt(
+        &mut self,
+        ticket_id: &str,
+        phase: Phase,
+        hop_index: usize,
+    ) -> bool {
+        self.direct_transport_receipt_ids
+            .insert(format!("{phase:?}:{ticket_id}:{hop_index}"))
+    }
+
+    /// Reconcile direct transport receipts after inference completes. The
+    /// gateway returns the result immediately; some independent transport
+    /// callbacks can arrive later, while the local inbox retains their trace
+    /// snapshot. This reads that snapshot without adding a wait to token flow.
+    pub(crate) fn reconcile_direct_receipts(&mut self) {
+        let pending = std::mem::take(&mut self.pending_direct_receipts);
+        for pending in pending {
+            let Some(snapshot) = pending.inbox.trace_snapshot(&pending.ticket_id) else {
+                self.transport_trace_complete = false;
+                continue;
+            };
+            let traversals = snapshot
+                .get("transport_traversals")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for traversal in &traversals {
+                let Some(destination) = traversal
+                    .get("hop_index")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|index| index as usize)
+                else {
+                    self.transport_trace_complete = false;
+                    continue;
+                };
+                let receipt_id = format!("{:?}:{}:{destination}", pending.phase, pending.ticket_id);
+                if !self.direct_transport_receipt_ids.insert(receipt_id) {
+                    continue;
+                }
+                let Some(to_node_id) = self.hops.get(destination).map(|hop| hop.node_id.clone())
+                else {
+                    self.transport_trace_complete = false;
+                    continue;
+                };
+                let from_node_id = if destination == 0 {
+                    "gateway".to_owned()
+                } else if let Some(hop) = self.hops.get(destination.saturating_sub(1)) {
+                    hop.node_id.clone()
+                } else {
+                    self.transport_trace_complete = false;
+                    continue;
+                };
+                let mut receipt = traversal.clone();
+                let processing_ms = self
+                    .hops
+                    .get(destination)
+                    .map(|hop| match pending.phase {
+                        Phase::Prefill => hop.prefill.processing_ms,
+                        Phase::Decode => hop.decode.processing_ms,
+                    })
+                    .unwrap_or(0);
+                if receipt
+                    .get("processing_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+                    == 0
+                    && processing_ms > 0
+                {
+                    receipt["processing_ms"] = json!(processing_ms);
+                }
+                let transport = TransportTrace::from_json(&receipt);
+                self.record_transport(destination, pending.phase, transport.clone());
+                self.record_cycle_transport(
+                    pending.phase,
+                    &from_node_id,
+                    &to_node_id,
+                    transport.clone(),
+                );
+                if let Some(measured_network_ms) = traversal
+                    .get("transport_rtt_us")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|rtt_us| TransportTrace::measured_network_ms(Some(rtt_us)))
+                {
+                    if let Some(hop) = self.hops.get_mut(destination) {
+                        let phase = match pending.phase {
+                            Phase::Prefill => &mut hop.prefill,
+                            Phase::Decode => &mut hop.decode,
+                        };
+                        phase.network_ms = phase
+                            .network_ms
+                            .saturating_sub(transport.round_trip_ms.saturating_sub(processing_ms))
+                            .saturating_add(measured_network_ms);
+                    }
+                }
+            }
+            let complete = snapshot
+                .get("transport_trace_complete")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                && traversals.len() == self.hops.len();
+            self.transport_trace_complete &= complete;
+        }
     }
 
     #[cfg(test)]
@@ -2672,7 +2865,12 @@ impl RequestTrace {
             .iter()
             .map(|hop| hop.decode.reported_spans)
             .sum::<u64>();
-        let expected_decode_spans = self.expected_decode_spans;
+        // Remote-stream callbacks count accepted tokens directly. The regular
+        // path has no callback frames, so its completed output token count is
+        // the authoritative expected span count for each pipeline hop.
+        let expected_decode_spans = self
+            .expected_decode_spans
+            .max((self.output_tokens as u64).saturating_mul(self.hops.len() as u64));
         let completeness_percent = if expected_decode_spans > 0 {
             (reported_decode_spans as f64 / expected_decode_spans as f64 * 100.0).min(100.0)
         } else if expected_peers > 0 {
@@ -2704,6 +2902,24 @@ impl RequestTrace {
         self.telemetry.completeness_percent = completeness_percent;
         self.telemetry.wall_clock_ms = Some(wall_clock_ms);
         self.telemetry.critical_path_ms = Some(wall_clock_ms);
+        let gateway_span_durations = self
+            .spans
+            .iter()
+            .filter(|span| span.host == "gateway" && span.duration_ms > 0)
+            .map(|span| span.duration_ms)
+            .collect::<Vec<_>>();
+        if gateway_span_durations.is_empty() {
+            self.telemetry.overlap_ms = None;
+            self.telemetry.true_residual_ms = None;
+        } else {
+            let accounted_ms = critical_path_ms(&self.spans, "gateway");
+            let summed_ms = gateway_span_durations
+                .iter()
+                .copied()
+                .fold(0u64, u64::saturating_add);
+            self.telemetry.overlap_ms = Some(summed_ms.saturating_sub(accounted_ms));
+            self.telemetry.true_residual_ms = Some(wall_clock_ms.saturating_sub(accounted_ms));
+        }
         self.telemetry.accumulated_compute_ms = self
             .hops
             .iter()
@@ -2874,6 +3090,15 @@ impl RequestTrace {
     pub fn merge(&mut self, other: &RequestTrace) {
         self.total_bytes_sent += other.total_bytes_sent;
         self.total_bytes_received += other.total_bytes_received;
+        for pending in &other.pending_direct_receipts {
+            if !self.pending_direct_receipts.iter().any(|current| {
+                current.ticket_id == pending.ticket_id && current.phase == pending.phase
+            }) {
+                self.pending_direct_receipts.push(pending.clone());
+            }
+        }
+        self.direct_transport_receipt_ids
+            .extend(other.direct_transport_receipt_ids.iter().cloned());
         self.mtp_draft_tokens_proposed = self
             .mtp_draft_tokens_proposed
             .saturating_add(other.mtp_draft_tokens_proposed);
@@ -2965,10 +3190,14 @@ impl RequestTrace {
         if self.prefix_reuse_status.is_none() {
             self.prefix_reuse_status = other.prefix_reuse_status.clone();
         }
+        if self.gateway_prefix_miss_reason.is_none() {
+            self.gateway_prefix_miss_reason = other.gateway_prefix_miss_reason.clone();
+        }
         self.prefill_overlap_enabled |= other.prefill_overlap_enabled;
         self.prefill_max_inflight_chunks = self
             .prefill_max_inflight_chunks
             .max(other.prefill_max_inflight_chunks);
+        self.prefill_chunk_tokens = self.prefill_chunk_tokens.max(other.prefill_chunk_tokens);
         self.prefill_overlapped_chunks += other.prefill_overlapped_chunks;
         self.prefill_pipeline_depth_max = self
             .prefill_pipeline_depth_max

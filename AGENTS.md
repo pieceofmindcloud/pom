@@ -128,7 +128,8 @@ camadas que serve, e qualquer nó pode ser o gateway: `POST /api/generate` e as
 rotas `/v1` rodam **somente** o pipeline distribuído - sem plano cobrindo
 `0..total_layers` a requisição falha com mensagem, não há fallback para Ollama.
 O servidor de inferência de cada peer (`/v1/prefill`, `/v1/step`) carrega o
-modelo em-processo via `llama-cpp-sys-2` e troca estado oculto em f16.
+modelo em-processo via `llama-cpp-sys-2` e troca estado oculto em f16 por
+padrão; f8 e i4 groupwise são formatos com perda opcionais negociados por hop.
 Concorrência: Tokio, estado compartilhado em `Arc<RwLock<>>`.
 
 Módulos em `crates/node/src/`: `main.rs` (CLI e orquestração), `models/`
@@ -161,12 +162,23 @@ quebra o produto inteiro.
   `admin`, `node` ou `infer` e gera a chave de conexão quando necessário. O perfil
   persistido e suas políticas ficam em `crates/node/src/profile.rs`; a chave
   continua sendo o mecanismo de autenticação. → `api-http.md`, `web-ui.md`
-- **Enterprise é uma fronteira de processo.** O cliente de licença e o estado
-  de entitlement vivem em `crates/node/src/enterprise.rs`; a biblioteca
-  Enterprise só pode ser carregada por `pom-plugin-host` através da ABI C e do
-  IPC versionados em `crates/enterprise-protocol`. As telas de Logs de
-  Requisições e Estatísticas continuam descobríveis no menu sem licença, mas o
-  backend recusa os dados até o entitlement correspondente estar ativo. →
+- **Plugins são independentes entre si e são uma fronteira de processo.** O
+  POM não tem mais uma única "licença Enterprise" de produto: `PluginManager`
+  (`crates/node/src/plugins.rs`) mantém um estado de ativação, lease,
+  heartbeat, host de processo e atualização de versão POR `plugin_code`
+  conhecido (`PLUGIN_CATALOG`), sem nada compartilhado entre eles. Hoje o
+  catálogo só tem `"enterprise"` (Estatísticas/Logs de Requisições), mas a
+  estrutura é genérica para N. Cada plugin só pode ser carregado por
+  `pom-plugin-host` através da ABI C e do IPC versionados em
+  `crates/enterprise-protocol` - o host já suporta várias instâncias
+  concorrentes, uma por plugin ativo. As telas de Logs de Requisições e
+  Estatísticas continuam descobríveis no menu sem licença, mas o backend
+  recusa os dados até o entitlement daquele plugin estar ativo. A atualização
+  do binário `pom` em si NÃO é um plugin e vive à parte, em
+  `crates/node/src/pom_core_update.rs` - vai virar GitHub Releases público sem
+  licença (outra tarefa); até lá, ela empresta o lease do plugin `enterprise`,
+  mas seu código e sua tela (`/config/sobre`) nunca se misturam com os da tela
+  de Plugins (`/plugins`). →
   `docs/subsystems/licenciamento-enterprise.md`
 - **Política de primeira versão.** O produto ainda não foi lançado. Portanto,
   não manter no runtime código de compatibilidade, adapters ou fallbacks para

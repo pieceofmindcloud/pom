@@ -169,6 +169,8 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
             let mut capabilities = vec![
                 crate::pipeline::CAP_FRAME_BATCH.to_string(),
                 crate::pipeline::CAP_FRAME_DTYPE_F8.to_string(),
+                crate::pipeline::CAP_FRAME_DTYPE_I4G64.to_string(),
+                crate::pipeline::CAP_FRAME_DTYPE_I4G128.to_string(),
                 crate::pipeline::CAP_LINK_STREAM.to_string(),
                 "relay/v1-chain".to_string(),
                 "relay/v2-direct".to_string(),

@@ -106,6 +106,12 @@ rotas administrativas concretas. `implantacao.md` e `inferencia.md` mantêm
 o contrato de que deployments `idle` continuam selecionáveis pelo nome, mesmo
 sem capacidade efetiva anunciada, para que a primeira requisição possa acordá-los.
 
+`api-http.md`, `build-execucao.md` e `licenciamento-enterprise.md` documentam o
+aviso diário de release `pom_core` e a aplicação somente após autorização
+explícita na UI. Esse aviso não é um plugin: mora em
+`crates/node/src/pom_core_update.rs`, com rotas e tela próprias
+(`/api/ui/pom-update/*`, `/config/sobre`), separado do catálogo de plugins.
+
 O armazenamento local unificado está especificado em
 `superpowers/specs/2026-09-02-pom-db-unificado-design.md` e implementado no
 backend. O runtime mantém uma conexão SQLite compartilhada por processo,
@@ -193,7 +199,8 @@ da limpeza nativa durante a recarga de um peer ocioso.
 libp2p, validação e retransmissão pelo principal, catraca autenticada do
 interruptor e prioridade do túnel de inferência sobre o tráfego de conversa.
 
-`subsystems/licenciamento-enterprise.md` registra o contrato de licença,
+`subsystems/licenciamento-enterprise.md` registra o contrato de licença por
+`plugin_code` independente (catálogo `PLUGIN_CATALOG`, hoje só `enterprise`),
 entitlement das telas de auditoria, a fronteira `pom`/`pom-plugin-host`, o
 plugin `enterprise.db` e os limites restantes da integração P2P/release.
 

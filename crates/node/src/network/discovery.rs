@@ -483,7 +483,9 @@ impl Discovery {
         // it — same reasoning as `connected_relays`.
         let mut pending_tunnel: HashMap<
             OutboundRequestId,
-            oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>,
+            oneshot::Sender<
+                Result<infer_tunnel::TunnelResponse, infer_tunnel::TunnelDeliveryError>,
+            >,
         > = HashMap::new();
         let mut pending_chat: HashMap<OutboundRequestId, oneshot::Sender<ChatResponse>> =
             HashMap::new();
@@ -517,7 +519,9 @@ impl Discovery {
                     let Some(TunnelOutbound { peer_id, addr_candidates, request, reply }) = out else { break };
                     if !swarm.is_connected(&peer_id) {
                         if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id, &addr_candidates).await {
-                            let _ = reply.send(Err(error));
+                            let _ = reply.send(Err(
+                                infer_tunnel::TunnelDeliveryError::before_request(error),
+                            ));
                             continue;
                         }
                     }
@@ -589,7 +593,7 @@ async fn handle_event(
     http: &reqwest::Client,
     pending_tunnel: &mut HashMap<
         OutboundRequestId,
-        oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>,
+        oneshot::Sender<Result<infer_tunnel::TunnelResponse, infer_tunnel::TunnelDeliveryError>>,
     >,
     pending_chat: &mut HashMap<OutboundRequestId, oneshot::Sender<ChatResponse>>,
     inbound_response_tx: &mpsc::Sender<InboundTunnelResponse>,
@@ -959,7 +963,14 @@ async fn handle_event(
                     peer, error
                 );
                 if let Some(reply) = pending_tunnel.remove(&request_id) {
-                    let _ = reply.send(Err(error.to_string()));
+                    let before_request =
+                        matches!(&error, request_response::OutboundFailure::DialFailure);
+                    let failure = if before_request {
+                        infer_tunnel::TunnelDeliveryError::before_request(error.to_string())
+                    } else {
+                        infer_tunnel::TunnelDeliveryError::after_dispatch(error.to_string())
+                    };
+                    let _ = reply.send(Err(failure));
                 }
             }
             request_response::Event::InboundFailure { peer, error, .. } => {

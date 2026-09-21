@@ -881,6 +881,20 @@ pub(super) fn capabilities_for_plan(
         "pelo menos um peer selecionado não anuncia estado oculto f8",
         "as capacidades runtime de pelo menos um peer não puderam ser lidas",
     );
+    let hidden_state_i4g64 = capability_from_bool(
+        selected_runtime_capability(steps, machines, crate::pipeline::CAP_FRAME_DTYPE_I4G64),
+        "capacidades runtime dos peers selecionados",
+        "todos os peers selecionados anunciam estado oculto i4g64",
+        "pelo menos um peer selecionado não anuncia estado oculto i4g64",
+        "as capacidades runtime de pelo menos um peer não puderam ser lidas",
+    );
+    let hidden_state_i4g128 = capability_from_bool(
+        selected_runtime_capability(steps, machines, crate::pipeline::CAP_FRAME_DTYPE_I4G128),
+        "capacidades runtime dos peers selecionados",
+        "todos os peers selecionados anunciam estado oculto i4g128",
+        "pelo menos um peer selecionado não anuncia estado oculto i4g128",
+        "as capacidades runtime de pelo menos um peer não puderam ser lidas",
+    );
     let model_mtp = selected_final_model_capability(steps, machines, |evidence| evidence.mtp);
     let runtime_mtp = combine_known(
         [
@@ -975,6 +989,8 @@ pub(super) fn capabilities_for_plan(
             speculative_decoding,
             mtp,
             hidden_state_f8,
+            hidden_state_i4g64,
+            hidden_state_i4g128,
         },
         no_embeddings_topology(steps, total_layers, kind),
     )
@@ -988,16 +1004,26 @@ pub(super) fn requested_capability_block(
     crate::capabilities::validate_no_embeddings(no_embeddings, params.no_embeddings)
         .err()
         .or_else(|| {
-            if params.hidden_state_dtype == crate::wire::WireDtype::F8 {
-                match capabilities.hidden_state_f8.state {
+            let requested = match params.hidden_state_dtype {
+                crate::wire::WireDtype::F8 => Some(("f8", &capabilities.hidden_state_f8)),
+                crate::wire::WireDtype::I4G64 => {
+                    Some(("i4g64", &capabilities.hidden_state_i4g64))
+                }
+                crate::wire::WireDtype::I4G128 => {
+                    Some(("i4g128", &capabilities.hidden_state_i4g128))
+                }
+                crate::wire::WireDtype::F32 | crate::wire::WireDtype::F16 => None,
+            };
+            if let Some((dtype, capability)) = requested {
+                match capability.state {
                     crate::capabilities::CapabilityState::Supported => None,
                     crate::capabilities::CapabilityState::Unsupported => Some(format!(
-                        "A precisão f8 do estado oculto foi solicitada, mas {}",
-                        capabilities.hidden_state_f8.reason
+                        "A precisão {dtype} do estado oculto foi solicitada, mas {}",
+                        capability.reason
                     )),
                     crate::capabilities::CapabilityState::Unknown => Some(format!(
-                        "A precisão f8 do estado oculto foi solicitada, mas a capacidade dos peers não pôde ser confirmada: {}",
-                        capabilities.hidden_state_f8.reason
+                        "A precisão {dtype} do estado oculto foi solicitada, mas a capacidade dos peers não pôde ser confirmada: {}",
+                        capability.reason
                     )),
                 }
             } else {

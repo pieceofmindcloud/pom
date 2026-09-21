@@ -73,23 +73,30 @@ pub async fn run_with_options(
             cancellation,
             reuse_prefix,
             overlap_window.clone(),
+            resume,
             trace_id,
         )
         .await;
     }
 
     let started = Instant::now();
-    let mut trace = trace_id
-        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
-        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
+    let mut trace = resume
+        .as_ref()
+        .and_then(|resume| resume.trace.as_deref())
+        .cloned()
+        .unwrap_or_else(|| {
+            trace_id
+                .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+                .unwrap_or_else(|| RequestTrace::from_plan(model, plan))
+        });
     let window = overlap_window.max_inflight_chunks();
     trace.prefill_overlap_enabled = window > 1 && n_peers > 1;
     trace.prefill_max_inflight_chunks = window as u32;
     // Retomada explícita: o laço parte deste pedaço/posição em vez do zero, e
     // os totais do pedaço 0 (que não será revisto) vêm do ponto informado.
-    let first_chunk = resume.map(|r| r.from_chunk).unwrap_or(0);
-    let first_start_pos = resume.map(|r| r.start_pos);
-    let resume_cached_tokens = resume.map(|r| r.cached_tokens).unwrap_or(0);
+    let first_chunk = resume.as_ref().map(|r| r.from_chunk).unwrap_or(0);
+    let first_start_pos = resume.as_ref().map(|r| r.start_pos);
+    let resume_cached_tokens = resume.as_ref().map(|r| r.cached_tokens).unwrap_or(0);
 
     // Um pedaço a caminho da cadeia: a resposta da cabeça (com o estado oculto)
     // mais o permit da janela, que segura a vaga até o downstream deste pedaço
@@ -109,7 +116,12 @@ pub async fn run_with_options(
         _byte_permit: OwnedSemaphorePermit,
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<HeadChunk>(window.max(1));
+    enum HeadPumpMessage {
+        Chunk(HeadChunk),
+        Failure(anyhow::Error),
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<HeadPumpMessage>(window.max(1));
 
     // Bomba da cabeça: despacha os pedaços em série - cada um é uma perna de
     // rede + o decode da cabeça - e entrega o estado oculto de cada um à bomba
@@ -120,7 +132,7 @@ pub async fn run_with_options(
         let mut start_pos: Option<u32> = first_start_pos;
         // Últimos totais confirmados, para o ponto de retomada quando a chamada
         // à cabeça de um pedaço posterior falha.
-        let mut last_prompt_tokens: u32 = resume.map(|r| r.prompt_tokens).unwrap_or(0);
+        let mut last_prompt_tokens: u32 = resume.as_ref().map(|r| r.prompt_tokens).unwrap_or(0);
         let mut last_cached_tokens: u32 = resume_cached_tokens;
         loop {
             check_cancelled(cancellation)?;
@@ -159,24 +171,31 @@ pub async fn run_with_options(
             .await
             {
                 Ok(v) => v,
-                Err(e)
-                    if idx == 0
-                        || is_cancelled(&e)
-                        || crate::relay::is_unknown_session_error(&e) =>
-                {
-                    return Err(e)
-                }
-                Err(e) => {
-                    // Os pedaços 0..idx já foram aceitos pela cabeça. Este
-                    // ponto só é reutilizado quando o chamador garante que a
-                    // retomada é segura; a recuperação de transporte usa o
-                    // prefill frio do gateway.
-                    return Err(e.context(PrefillResumable {
+                Err(e) if idx == 0 || is_cancelled(&e) => return Err(e),
+                Err(e) if crate::relay::is_pre_delivery_error(&e) => {
+                    let failure = e.context(PrefillResumable {
                         from_chunk: idx,
                         start_pos: start_pos.unwrap_or(0),
                         prompt_tokens: last_prompt_tokens,
                         cached_tokens: last_cached_tokens,
-                    }));
+                        prefill_sequence_id: None,
+                        trace: None,
+                    });
+                    let _ = tx.send(HeadPumpMessage::Failure(failure)).await;
+                    return Ok::<(), anyhow::Error>(());
+                }
+                Err(e) => {
+                    let failure = if crate::relay::is_unknown_session_error(&e) {
+                        e
+                    } else {
+                        e.context(PrefillRebuildRequired {
+                            from_chunk: idx,
+                            start_pos: start_pos.unwrap_or(0),
+                            reason: "a resposta da cabeça é ambígua e o KV pode ter avançado",
+                        })
+                    };
+                    let _ = tx.send(HeadPumpMessage::Failure(failure)).await;
+                    return Ok::<(), anyhow::Error>(());
                 }
             };
 
@@ -200,9 +219,31 @@ pub async fn run_with_options(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             let is_final = !more;
-            let chunk_start_pos = observed_prefill_start(&meta, idx, head_reused)?;
+            let chunk_start_pos = match observed_prefill_start(&meta, idx, head_reused) {
+                Ok(position) => position,
+                Err(error) => {
+                    let failure = error.context(PrefillRebuildRequired {
+                        from_chunk: idx,
+                        start_pos: start_pos.unwrap_or(0),
+                        reason: "a resposta da cabeça não informou uma posição absoluta confiável",
+                    });
+                    let _ = tx.send(HeadPumpMessage::Failure(failure)).await;
+                    return Ok::<(), anyhow::Error>(());
+                }
+            };
             let chunk_next_pos = if more {
-                required_prefill_position(&meta, "next_pos", idx)?
+                match required_prefill_position(&meta, "next_pos", idx) {
+                    Ok(position) => position,
+                    Err(error) => {
+                        let failure = error.context(PrefillRebuildRequired {
+                            from_chunk: idx,
+                            start_pos: chunk_start_pos,
+                            reason: "a resposta da cabeça não informou a próxima posição do KV",
+                        });
+                        let _ = tx.send(HeadPumpMessage::Failure(failure)).await;
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                }
             } else {
                 chunk_start_pos
             };
@@ -216,7 +257,7 @@ pub async fn run_with_options(
             let byte_permit = overlap_window.reserve_bytes(tensor_bytes).await;
 
             if tx
-                .send(HeadChunk {
+                .send(HeadPumpMessage::Chunk(HeadChunk {
                     chunk_index: idx,
                     meta,
                     tensor,
@@ -229,7 +270,7 @@ pub async fn run_with_options(
                     cached_tokens,
                     _permit: permit,
                     _byte_permit: byte_permit,
-                })
+                }))
                 .await
                 .is_err()
             {
@@ -250,6 +291,7 @@ pub async fn run_with_options(
     let drain = async {
         let mut inflight = FuturesOrdered::new();
         let mut head_closed = false;
+        let mut head_failure: Option<anyhow::Error> = None;
         let mut prompt_tokens: u32 = 0;
         let mut cached_tokens: u32 = resume_cached_tokens;
         loop {
@@ -257,9 +299,17 @@ pub async fn run_with_options(
             tokio::select! {
                 biased;
                 maybe = rx.recv(), if !head_closed && inflight.len() < window => {
-                    let Some(hc) = maybe else {
+                    let Some(message) = maybe else {
                         head_closed = true;
                         continue;
+                    };
+                    let hc = match message {
+                        HeadPumpMessage::Chunk(hc) => hc,
+                        HeadPumpMessage::Failure(error) => {
+                            head_failure = Some(error);
+                            head_closed = true;
+                            continue;
+                        }
                     };
                     prompt_tokens = hc.prompt_tokens;
                     if hc.chunk_index == 0 {
@@ -313,16 +363,14 @@ pub async fn run_with_options(
                         {
                             return Err(e)
                         }
-                        // Pedaços anteriores já foram aceitos pela cadeia. Um
-                        // chamador que tenha provado a retomada pode marcar o
-                        // ponto; a recuperação normal de transporte reconstrói
-                        // o prompt inteiro para não pedir remoção parcial.
+                        // A cabeça já aceitou este chunk. Uma falha em qualquer
+                        // peer downstream pode ter avançado o KV e não autoriza
+                        // repetir a posição sem reconstruir a sessão.
                         Err(e) if ci > 0 => {
-                            return Err(e.context(PrefillResumable {
+                            return Err(e.context(PrefillRebuildRequired {
                                 from_chunk: ci,
                                 start_pos: chunk_start_pos,
-                                prompt_tokens,
-                                cached_tokens,
+                                reason: "falha downstream depois da cabeça aceitar o chunk; o KV pode ter avançado",
                             }));
                         }
                         Err(e) => return Err(e),
@@ -333,6 +381,9 @@ pub async fn run_with_options(
                     }
                 }
                 else => {
+                    if let Some(error) = head_failure.take() {
+                        return Err(resume_with_trace(error, &trace, started.elapsed()));
+                    }
                     return Err(anyhow!("pipeline de prefill fechou sem o pedaço final"));
                 }
             }
@@ -365,7 +416,9 @@ pub async fn run_with_options(
         chunks,
         trace: {
             trace.finish_prompt(prompt_tokens, cached_tokens);
-            trace.prefill_ms = started.elapsed().as_millis() as u64;
+            trace.prefill_ms = trace
+                .prefill_ms
+                .saturating_add(started.elapsed().as_millis() as u64);
             trace
         },
     })
@@ -484,19 +537,26 @@ pub(super) async fn run_ring(
     cancellation: &Cancellation,
     reuse_prefix: bool,
     _overlap_window: PrefillOverlapWindow,
+    resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
 
-    let mut chunk_index: u32 = 0;
-    let mut prompt_tokens: u32 = 0;
-    let mut cached_tokens: u32 = 0;
-    let mut next_start_pos: Option<u32> = None;
+    let mut chunk_index = resume.as_ref().map(|r| r.from_chunk).unwrap_or(0);
+    let mut prompt_tokens = resume.as_ref().map(|r| r.prompt_tokens).unwrap_or(0);
+    let mut cached_tokens = resume.as_ref().map(|r| r.cached_tokens).unwrap_or(0);
+    let mut next_start_pos = resume.as_ref().map(|r| r.start_pos);
     let started = Instant::now();
-    let mut trace = trace_id
-        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
-        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
+    let mut trace = resume
+        .as_ref()
+        .and_then(|resume| resume.trace.as_deref())
+        .cloned()
+        .unwrap_or_else(|| {
+            trace_id
+                .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+                .unwrap_or_else(|| RequestTrace::from_plan(model, plan))
+        });
 
     loop {
         check_cancelled(cancellation)?;
@@ -528,7 +588,7 @@ pub(super) async fn run_ring(
                 None,
                 dtype,
                 dtype.frame_encoding(),
-                crate::relay::CHUNK_ATTEMPTS, // uma resposta perdida exige rebuild frio
+                crate::relay::CHUNK_ATTEMPTS, // repete só falhas provadas antes da entrega
                 &head.node_id,
                 |_issue| {},
             ),
@@ -538,8 +598,28 @@ pub(super) async fn run_ring(
             if !is_cancelled(&e) {
                 routes.mark_failure(&head.node_id, &head.inference_url);
             }
-            ring_relay_error(&head.node_id, e)
-        })?;
+            let is_safe_resume = chunk_index > 0 && crate::relay::is_pre_delivery_error(&e);
+            let failure = ring_relay_error(&head.node_id, e);
+            if chunk_index == 0 || is_cancelled(&failure) {
+                failure
+            } else if is_safe_resume {
+                failure.context(PrefillResumable {
+                    from_chunk: chunk_index,
+                    start_pos: next_start_pos.unwrap_or(0),
+                    prompt_tokens,
+                    cached_tokens,
+                    prefill_sequence_id: None,
+                    trace: None,
+                })
+            } else {
+                failure.context(PrefillRebuildRequired {
+                    from_chunk: chunk_index,
+                    start_pos: next_start_pos.unwrap_or(0),
+                    reason: "a resposta da cadeia é ambígua e o KV pode ter avançado",
+                })
+            }
+        })
+        .map_err(|error| resume_with_trace(error, &trace, started.elapsed()))?;
 
         for (i, entry) in crate::relay::bubble_hop_timings(&sent)
             .into_iter()
@@ -564,7 +644,13 @@ pub(super) async fn run_ring(
             .unwrap_or(false);
         let is_final_chunk = !more;
         let chunk_next_pos = if more {
-            required_prefill_position(&sent.meta, "next_pos", chunk_index)?
+            required_prefill_position(&sent.meta, "next_pos", chunk_index).map_err(|error| {
+                error.context(PrefillRebuildRequired {
+                    from_chunk: chunk_index,
+                    start_pos: next_start_pos.unwrap_or(0),
+                    reason: "a resposta da cabeça no anel não informou a próxima posição do KV",
+                })
+            })?
         } else {
             0
         };
@@ -599,7 +685,9 @@ pub(super) async fn run_ring(
                 chunks,
                 trace: {
                     trace.finish_prompt(prompt_tokens, cached_tokens);
-                    trace.prefill_ms = started.elapsed().as_millis() as u64;
+                    trace.prefill_ms = trace
+                        .prefill_ms
+                        .saturating_add(started.elapsed().as_millis() as u64);
                     trace
                 },
             });
@@ -642,17 +730,26 @@ pub(super) async fn run_direct(
     let next_hops = &plan.steps[1..];
 
     let started = Instant::now();
-    let mut trace = trace_id
-        .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
-        .unwrap_or_else(|| RequestTrace::from_plan(model, plan));
+    let mut trace = resume
+        .as_ref()
+        .and_then(|resume| resume.trace.as_deref())
+        .cloned()
+        .unwrap_or_else(|| {
+            trace_id
+                .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
+                .unwrap_or_else(|| RequestTrace::from_plan(model, plan))
+        });
     let window = overlap_window.max_inflight_chunks();
     trace.prefill_overlap_enabled = window > 1 && !next_hops.is_empty();
     trace.prefill_max_inflight_chunks = window as u32;
-    let prefill_sequence_id = uuid::Uuid::new_v4().to_string();
+    let prefill_sequence_id = resume
+        .as_ref()
+        .and_then(|r| r.prefill_sequence_id.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     // Retomada: ver `run_with_options`.
-    let first_chunk = resume.map(|r| r.from_chunk).unwrap_or(0);
-    let first_start_pos = resume.map(|r| r.start_pos);
-    let resume_cached_tokens = resume.map(|r| r.cached_tokens).unwrap_or(0);
+    let first_chunk = resume.as_ref().map(|r| r.from_chunk).unwrap_or(0);
+    let first_start_pos = resume.as_ref().map(|r| r.start_pos);
+    let resume_cached_tokens = resume.as_ref().map(|r| r.cached_tokens).unwrap_or(0);
 
     // Um pedaço despachado à cabeça, aguardando o resultado que a cauda entrega
     // direto neste processo (`await_result_with_ack` sobre o `ticket`).
@@ -665,7 +762,12 @@ pub(super) async fn run_direct(
         _permit: OwnedSemaphorePermit,
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<HeadChunkDirect>(window.max(1));
+    enum HeadPumpMessageDirect {
+        Chunk(HeadChunkDirect),
+        Failure(anyhow::Error),
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<HeadPumpMessageDirect>(window.max(1));
 
     // Bomba da cabeça: despacha cada pedaço à cabeça em série. A `next_pos` do
     // pedaço seguinte sai do `prompt_progress` do ACK da cabeça, publicado
@@ -676,7 +778,7 @@ pub(super) async fn run_direct(
     let head_pump = async {
         let mut idx: u32 = first_chunk;
         let mut start_pos: Option<u32> = first_start_pos;
-        let mut last_prompt_tokens: u32 = resume.map(|r| r.prompt_tokens).unwrap_or(0);
+        let mut last_prompt_tokens: u32 = resume.as_ref().map(|r| r.prompt_tokens).unwrap_or(0);
         loop {
             check_cancelled(cancellation)?;
             let permit = overlap_window.acquire().await?;
@@ -706,20 +808,31 @@ pub(super) async fn run_direct(
             .await
             {
                 Ok(v) => v,
-                Err(e)
-                    if idx == 0
-                        || is_cancelled(&e)
-                        || crate::relay::is_unknown_session_error(&e) =>
-                {
-                    return Err(e)
-                }
-                Err(e) => {
-                    return Err(e.context(PrefillResumable {
+                Err(e) if idx == 0 || is_cancelled(&e) => return Err(e),
+                Err(e) if crate::relay::is_pre_delivery_error(&e) => {
+                    let failure = e.context(PrefillResumable {
                         from_chunk: idx,
                         start_pos: start_pos.unwrap_or(0),
                         prompt_tokens: last_prompt_tokens,
                         cached_tokens: resume_cached_tokens,
-                    }));
+                        prefill_sequence_id: Some(prefill_sequence_id.clone()),
+                        trace: None,
+                    });
+                    let _ = tx.send(HeadPumpMessageDirect::Failure(failure)).await;
+                    return Ok::<(), anyhow::Error>(());
+                }
+                Err(e) => {
+                    let failure = if crate::relay::is_unknown_session_error(&e) {
+                        e
+                    } else {
+                        e.context(PrefillRebuildRequired {
+                            from_chunk: idx,
+                            start_pos: start_pos.unwrap_or(0),
+                            reason: "a resposta da cabeça é ambígua e o KV pode ter avançado",
+                        })
+                    };
+                    let _ = tx.send(HeadPumpMessageDirect::Failure(failure)).await;
+                    return Ok::<(), anyhow::Error>(());
                 }
             };
             direct.record_transport(&ticket_id, 0, &head_sent);
@@ -733,20 +846,32 @@ pub(super) async fn run_direct(
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false);
             let next_pos_from_head = if more_from_head {
-                Some(required_prefill_position(progress, "next_pos", idx)?)
+                match required_prefill_position(progress, "next_pos", idx) {
+                    Ok(position) => Some(position),
+                    Err(error) => {
+                        let failure = error.context(PrefillRebuildRequired {
+                            from_chunk: idx,
+                            start_pos: start_pos.unwrap_or(0),
+                            reason:
+                                "a resposta direta da cabeça não informou a próxima posição do KV",
+                        });
+                        let _ = tx.send(HeadPumpMessageDirect::Failure(failure)).await;
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                }
             } else {
                 None
             };
 
             if tx
-                .send(HeadChunkDirect {
+                .send(HeadPumpMessageDirect::Chunk(HeadChunkDirect {
                     chunk_index: idx,
                     start_pos: start_pos.unwrap_or(0),
                     ticket,
                     head_sent,
                     more_from_head,
                     _permit: permit,
-                })
+                }))
                 .await
                 .is_err()
             {
@@ -767,6 +892,7 @@ pub(super) async fn run_direct(
     let drain = async {
         let mut inflight = FuturesOrdered::new();
         let mut head_closed = false;
+        let mut head_failure: Option<anyhow::Error> = None;
         let mut prompt_tokens: u32 = 0;
         let mut cached_tokens: u32 = resume_cached_tokens;
         loop {
@@ -774,9 +900,17 @@ pub(super) async fn run_direct(
             tokio::select! {
                 biased;
                 maybe = rx.recv(), if !head_closed && inflight.len() < window => {
-                    let Some(hc) = maybe else {
+                    let Some(message) = maybe else {
                         head_closed = true;
                         continue;
+                    };
+                    let hc = match message {
+                        HeadPumpMessageDirect::Chunk(hc) => hc,
+                        HeadPumpMessageDirect::Failure(error) => {
+                            head_failure = Some(error);
+                            head_closed = true;
+                            continue;
+                        }
                     };
                     let HeadChunkDirect {
                         chunk_index: ci,
@@ -786,6 +920,12 @@ pub(super) async fn run_direct(
                         more_from_head,
                         _permit,
                     } = hc;
+                    let ticket_id = ticket.id().to_owned();
+                    trace.track_direct_receipt(
+                        direct.trace_inbox(),
+                        ticket_id.clone(),
+                        Phase::Prefill,
+                    );
                     inflight.push_back(async move {
                         let _permit = _permit;
                         let r = cancelable(
@@ -798,7 +938,7 @@ pub(super) async fn run_direct(
                             ),
                         )
                         .await;
-                        (ci, chunk_start_pos, more_from_head, r)
+                        (ci, chunk_start_pos, more_from_head, ticket_id, r)
                     });
                     let depth = inflight.len() as u32;
                     trace.prefill_pipeline_depth_max =
@@ -807,21 +947,32 @@ pub(super) async fn run_direct(
                         trace.prefill_overlapped_chunks += 1;
                     }
                 }
-                Some((ci, chunk_start_pos, more_from_head, r)) = inflight.next(), if !inflight.is_empty() => {
+                Some((ci, chunk_start_pos, more_from_head, ticket_id, r)) = inflight.next(), if !inflight.is_empty() => {
                     // Pedaços anteriores já foram aceitos pela cadeia: em vez de
                     // refazer o prompt inteiro, marca de onde o gateway retoma.
                     // Sessão perdida no peer não é retomável (o KV sumiu) e cai
                     // no retry frio.
                     let mark_resumable = |e: anyhow::Error| {
-                        if ci > 0
-                            && !is_cancelled(&e)
-                            && !crate::relay::is_unknown_session_error(&e)
-                        {
+                        if ci > 0 && crate::relay::is_pre_delivery_error(&e) {
                             e.context(PrefillResumable {
                                 from_chunk: ci,
                                 start_pos: chunk_start_pos,
                                 prompt_tokens,
                                 cached_tokens,
+                                prefill_sequence_id: Some(prefill_sequence_id.clone()),
+                                trace: None,
+                            })
+                        } else if ci > 0
+                            && !is_cancelled(&e)
+                            && !crate::relay::is_unknown_session_error(&e)
+                        {
+                            // O resultado direto pode ter vindo de qualquer
+                            // hop da cadeia; nesse ponto o KV do chunk pode
+                            // ter avançado, então uma repetição exige rebuild.
+                            e.context(PrefillRebuildRequired {
+                                from_chunk: ci,
+                                start_pos: chunk_start_pos,
+                                reason: "a resposta direta é ambígua e o KV pode ter avançado",
                             })
                         } else {
                             e
@@ -833,13 +984,26 @@ pub(super) async fn run_direct(
                             if !is_cancelled(&e) {
                                 routes.mark_failure(&head.node_id, &head.inference_url);
                             }
-                            return Err(mark_resumable(ring_relay_error(&head.node_id, e)));
+                            return Err(resume_with_trace(
+                                mark_resumable(ring_relay_error(&head.node_id, e)),
+                                &trace,
+                                started.elapsed(),
+                            ));
                         }
                     };
                     if let Some(error) = direct_failure(plan, routes, &meta) {
-                        return Err(mark_resumable(error));
+                        return Err(resume_with_trace(
+                            mark_resumable(error),
+                            &trace,
+                            started.elapsed(),
+                        ));
                     }
-                    record_direct_hops(&mut trace, Phase::Prefill, &meta);
+                    record_direct_hops(
+                        &mut trace,
+                        Phase::Prefill,
+                        &meta,
+                        Some(&ticket_id),
+                    );
                     if let Some(n) = meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
                         prompt_tokens = n as u32;
                     }
@@ -856,6 +1020,9 @@ pub(super) async fn run_direct(
                     }
                 }
                 else => {
+                    if let Some(error) = head_failure.take() {
+                        return Err(resume_with_trace(error, &trace, started.elapsed()));
+                    }
                     return Err(anyhow!(
                         "pipeline de prefill (resposta direta) fechou sem o pedaço final"
                     ));
@@ -893,7 +1060,9 @@ pub(super) async fn run_direct(
         chunks,
         trace: {
             trace.finish_prompt(prompt_tokens, cached_tokens);
-            trace.prefill_ms = started.elapsed().as_millis() as u64;
+            trace.prefill_ms = trace
+                .prefill_ms
+                .saturating_add(started.elapsed().as_millis() as u64);
             trace
         },
     })
@@ -996,7 +1165,13 @@ pub(super) fn direct_failure(
 /// O modo direto recebe uma evidência por travessia em uma mensagem separada.
 /// Sem essa lista, o tempo total não pode ser dividido com segurança entre os
 /// hops e o trace deve permanecer incompleto em vez de inventar uma atribuição.
-pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &serde_json::Value) {
+pub(super) fn record_direct_hops(
+    trace: &mut RequestTrace,
+    phase: Phase,
+    meta: &serde_json::Value,
+    ticket_id: Option<&str>,
+) {
+    let awaiting_receipts = ticket_id.is_some() && trace.has_pending_direct_receipt();
     let mut hops: Vec<serde_json::Value> = meta
         .get("hop_timings")
         .and_then(|v| v.as_array())
@@ -1007,22 +1182,35 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
         .and_then(|value| value.as_array())
     {
         if traversals.len() != hops.len() {
-            trace.transport_trace_complete = false;
+            if !awaiting_receipts {
+                trace.transport_trace_complete = false;
+            }
         }
         for traversal in traversals {
             let Some(destination) = traversal.get("hop_index").and_then(|value| value.as_u64())
             else {
-                trace.transport_trace_complete = false;
+                if !awaiting_receipts {
+                    trace.transport_trace_complete = false;
+                }
                 continue;
             };
             let Some(hop) = hops.get_mut(destination as usize) else {
-                trace.transport_trace_complete = false;
+                if !awaiting_receipts {
+                    trace.transport_trace_complete = false;
+                }
                 continue;
             };
             let destination = destination as usize;
+            if let Some(ticket_id) = ticket_id {
+                if !trace.mark_direct_transport_receipt(ticket_id, phase, destination) {
+                    continue;
+                }
+            }
             let Some(to_node_id) = trace.hops.get(destination).map(|hop| hop.node_id.clone())
             else {
-                trace.transport_trace_complete = false;
+                if !awaiting_receipts {
+                    trace.transport_trace_complete = false;
+                }
                 continue;
             };
             let from_node_id = if destination == 0 {
@@ -1030,7 +1218,9 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
             } else if let Some(hop) = trace.hops.get(destination.saturating_sub(1)) {
                 hop.node_id.clone()
             } else {
-                trace.transport_trace_complete = false;
+                if !awaiting_receipts {
+                    trace.transport_trace_complete = false;
+                }
                 continue;
             };
             // A direct hop answers its caller with an ACK before the tail
@@ -1080,7 +1270,9 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
             );
         }
     } else {
-        trace.transport_trace_complete = false;
+        if !awaiting_receipts {
+            trace.transport_trace_complete = false;
+        }
     }
     for (i, entry) in hops.iter().enumerate() {
         trace.record_hop_from_json(i, phase, entry);
@@ -1116,7 +1308,9 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
         .get("transport_trace_complete")
         .and_then(|value| value.as_bool())
     {
-        trace.transport_trace_complete &= complete;
+        if !awaiting_receipts {
+            trace.transport_trace_complete &= complete;
+        }
     }
     trace.total_bytes_received += meta
         .get("result_bytes")
@@ -1124,14 +1318,13 @@ pub(super) fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &
         .unwrap_or(0);
 }
 
-/// One chunk to one peer, retried on transport failure.
-///
-/// Retrying is safe because the peer rewinds its KV cache to this chunk's
-/// position before redoing it — a repeat can never be counted twice. Thin
-/// wrapper over `relay::send_frame`, which also backs the ring-mode relay
-/// calls a hop makes to its own next hop (`infer_server.rs`); this function
-/// just supplies the `/v1/prefill` path, the retry count, and turns
-/// `SendIssue`s into `TraceIssue`s on the gateway's `RequestTrace`.
+/// One chunk to one peer, retried only when the transport proves that the
+/// request body never reached the peer. An ambiguous response is not repeated
+/// because the remote KV may already have advanced. Thin wrapper over
+/// `relay::send_frame`, which also backs the ring-mode relay calls a hop makes
+/// to its own next hop (`infer_server.rs`); this function just supplies the
+/// `/v1/prefill` path, the retry count, and turns `SendIssue`s into
+/// `TraceIssue`s on the gateway's `RequestTrace`.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn send_chunk(
     http: &crate::peer_client::PeerClients,

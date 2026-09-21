@@ -38,6 +38,8 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 - `respawn.rs` - reiniciar este processo preservando o argv do arranque,
   criando uma nova sessão em Unix e redirecionando stdout/stderr para
   `<project_root>/pom.log` para que falhas logo após o reinício deixem rastro.
+  `respawn_at` recebe o caminho capturado antes de uma troca atômica, evitando
+  o caminho `(deleted)` que `current_exe()` pode devolver em Unix.
 - `sysmon.rs` - amostragem de RAM/VRAM/disco por plataforma, com cache.
 - `thermal.rs` - política de temperatura, histerese e cooldown como máquina de
   estados pura, sem dependência de fornecedor ou hardware. A validação exige
@@ -110,6 +112,8 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 - `respawn_self` - spawna `current_exe` + argv original em uma sessão
   independente, com stdout/stderr em `pom.log`, e sai (exit 0); se abrir o log
   ou o spawn falhar retorna o erro e o nó segue vivo para reportar.
+- `respawn_at` - mesma política de `respawn_self`, mas usando o executável
+  fornecido pela atualização autorizada depois do rename.
 
 `sysmon.rs`:
 - `sample` - leitura com cache de 1,2 s (`nvidia-smi` custa um spawn por leitura;

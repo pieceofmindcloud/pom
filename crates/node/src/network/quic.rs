@@ -56,14 +56,15 @@ pub fn inference_quic_port(p2p_port: u16) -> Option<u16> {
     p2p_port.checked_add(INFERENCE_QUIC_OFFSET)
 }
 
-/// Estabelecer a conexão/stream QUIC é caminho de controle: num link vivo
-/// leva um RTT. Se não fechou nesse orçamento, o caminho UDP está morto e o
-/// hop precisa cair para o próximo transporte **sem esperar**.
+/// Limite local do handshake. O orçamento global de estabelecimento também
+/// cobre DNS e abertura do stream, então o fallback não espera a soma destes
+/// limites.
 pub(crate) const QUIC_ESTABLISH_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// O orçamento total para descobrir que o endpoint QUIC não está disponível.
-/// Os endereços anunciados são alternativas, não tentativas independentes:
-/// testar três deles não pode transformar um fallback TCP em três timeouts.
+/// Orçamento curto para descobrir que o endpoint QUIC não está disponível.
+/// O envio do corpo e o processamento remoto usam o orçamento separado da
+/// chamada. Endereços anunciados continuam sendo alternativas dentro deste
+/// teto para que a queda para HTTP não espere uma sequência de timeouts.
 pub(crate) const QUIC_FALLBACK_BUDGET: Duration = Duration::from_millis(300);
 
 /// Teto de uma tentativa completa de transporte, incluindo o handshake, o
@@ -85,10 +86,31 @@ pub(crate) fn transport_deadline(timeout: Duration) -> Duration {
 /// ser sondado depois desta janela para recuperar uma porta que foi reiniciada.
 const QUIC_FAILURE_QUARANTINE: Duration = Duration::from_secs(5);
 
-/// Empurrar o corpo (o estado oculto do prefill são alguns MB) é o único
-/// trecho de envio que pode legitimamente demorar mais que um RTT. Ainda
-/// assim, num link são drena em dezenas de ms; 1,5 s é teto de "algo travou".
-pub(crate) const QUIC_SEND_TIMEOUT: Duration = Duration::from_millis(1500);
+/// Erro QUIC com certeza de entrega. Uma falha antes de abrir/enviar o corpo
+/// pode seguir para outro transporte; depois de iniciar o corpo, repetir pode
+/// executar o mesmo chunk duas vezes no KV remoto.
+#[derive(Debug)]
+pub struct QuicDeliveryError {
+    pub before_body: bool,
+    message: String,
+}
+
+impl QuicDeliveryError {
+    fn new(error: impl std::fmt::Display, before_body: bool) -> Self {
+        Self {
+            before_body,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for QuicDeliveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for QuicDeliveryError {}
 
 /// Sem tráfego reconhecido por este período a conexão fecha com erro - é o
 /// que detecta um caminho UDP morto em ~1 s em vez dos 600 s do frame. O
@@ -156,16 +178,16 @@ impl ClientPool {
         body: Vec<u8>,
         timeout: Duration,
     ) -> Result<QuicResponse> {
-        let mut last_error = anyhow!("nenhum endereço QUIC anunciado para {peer_id}");
+        let mut last_error = "nenhum endereço QUIC anunciado".to_string();
         let fallback_deadline = Instant::now() + QUIC_FALLBACK_BUDGET;
         for advertised in quic_addresses {
             let key = format!("{peer_id}@{}", advertised.trim());
             if let Some(reason) = self.quic_quarantine_reason(&key).await {
-                last_error = anyhow!("{advertised}: endpoint QUIC em quarentena ({reason})");
+                last_error = format!("{advertised}: endpoint QUIC em quarentena ({reason})");
                 continue;
             }
             if remaining_budget(fallback_deadline).is_none() {
-                last_error = anyhow!("orçamento de descoberta QUIC esgotado");
+                last_error = "orçamento de estabelecimento QUIC esgotado".to_string();
                 break;
             }
             match self
@@ -189,12 +211,18 @@ impl ClientPool {
                     return Ok(response);
                 }
                 Err(error) => {
-                    last_error = anyhow!("{advertised}: {error}");
+                    if !error
+                        .downcast_ref::<QuicDeliveryError>()
+                        .is_some_and(|failure| failure.before_body)
+                    {
+                        return Err(error);
+                    }
+                    last_error = format!("{advertised}: {error}");
                     self.quarantine_quic(&key, error.to_string()).await;
                 }
             }
         }
-        Err(last_error)
+        Err(anyhow!(QuicDeliveryError::new(last_error, true)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -217,7 +245,10 @@ impl ClientPool {
         let mut retried_stale_session = false;
         loop {
             let session_timeout = remaining_budget(request_deadline).ok_or_else(|| {
-                anyhow!("deadline de transporte HTTP/3 expirou antes do handshake")
+                anyhow!(QuicDeliveryError::new(
+                    "deadline de transporte HTTP/3 expirou antes do handshake",
+                    true,
+                ))
             })?;
             let (session, reused) = match tokio::time::timeout(
                 session_timeout,
@@ -225,11 +256,14 @@ impl ClientPool {
             )
             .await
             {
-                Ok(result) => result?,
+                Ok(result) => {
+                    result.map_err(|error| anyhow!(QuicDeliveryError::new(error, true)))?
+                }
                 Err(_) => {
-                    return Err(anyhow!(
-                        "deadline de transporte HTTP/3 expirou durante o handshake"
-                    ))
+                    return Err(anyhow!(QuicDeliveryError::new(
+                        "deadline de transporte HTTP/3 expirou durante o handshake",
+                        true,
+                    )))
                 }
             };
             let result = self
@@ -250,7 +284,12 @@ impl ClientPool {
                 return result;
             }
             self.discard_session(key, &session).await;
-            if reused && !retried_stale_session {
+            let before_body = result
+                .as_ref()
+                .err()
+                .and_then(|error| error.downcast_ref::<QuicDeliveryError>())
+                .is_some_and(|failure| failure.before_body);
+            if reused && before_body && !retried_stale_session {
                 // A peer restart invalidates the cached connection, not the
                 // endpoint. Retry once immediately with a new handshake so a
                 // transient reset never reaches the inference fallback.
@@ -275,9 +314,14 @@ impl ClientPool {
         request_deadline: Instant,
         fallback_deadline: Instant,
     ) -> Result<QuicResponse> {
-        let operation_timeout = remaining_budget(request_deadline)
-            .ok_or_else(|| anyhow!("deadline de transporte HTTP/3 expirou antes do stream"))?;
-        match tokio::time::timeout(operation_timeout, async {
+        let operation_timeout = remaining_budget(request_deadline).ok_or_else(|| {
+            anyhow!(QuicDeliveryError::new(
+                "deadline de transporte HTTP/3 expirou antes do stream",
+                true,
+            ))
+        })?;
+        let mut body_may_have_been_sent = false;
+        let response = tokio::time::timeout(operation_timeout, async {
             let mut request_builder = Request::builder()
                 .method("POST")
                 .uri(format!("https://{}{}", authority(base_url)?, path))
@@ -297,18 +341,25 @@ impl ClientPool {
             // `QUIC_ESTABLISH_TIMEOUT` => caminho UDP morto, aborta já para o
             // chamador cair no próximo transporte sem penalidade de espera.
             let stream_timeout = remaining_budget(fallback_deadline)
-                .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do stream"))?;
+                .ok_or_else(|| anyhow!("orçamento de descoberta QUIC esgotado antes do stream"))?
+                .min(QUIC_ESTABLISH_TIMEOUT);
             let mut stream = tokio::time::timeout(stream_timeout, sender.send_request(request))
                 .await
                 .context("abertura do stream HTTP/3 não fechou no orçamento de RTT")??;
-            // `send_data`/`finish` empurram o corpo (o estado oculto do prefill
-            // são alguns MB). Num link são drena em dezenas de ms; passou de
-            // `QUIC_SEND_TIMEOUT` => travou, cai para TCP.
-            tokio::time::timeout(QUIC_SEND_TIMEOUT, stream.send_data(Bytes::from(body)))
+            // Marcar antes de iniciar `send_data`: em uma falha daqui em
+            // diante o peer pode ter recebido parte ou todo o frame. O prazo
+            // deriva do orçamento total restante, não de um limite fixo que
+            // confunda upload de 5,2 MB com handshake.
+            body_may_have_been_sent = true;
+            let body_timeout = remaining_budget(request_deadline)
+                .ok_or_else(|| anyhow!("deadline expirou antes do envio do corpo"))?;
+            tokio::time::timeout(body_timeout, stream.send_data(Bytes::from(body)))
                 .await
                 .context("envio do corpo HTTP/3 travou")?
                 .map_err(|error| anyhow!("envio do corpo HTTP/3 falhou: {error}"))?;
-            tokio::time::timeout(QUIC_SEND_TIMEOUT, stream.finish())
+            let finish_timeout = remaining_budget(request_deadline)
+                .ok_or_else(|| anyhow!("deadline expirou ao finalizar o corpo"))?;
+            tokio::time::timeout(finish_timeout, stream.finish())
                 .await
                 .context("finalização do corpo HTTP/3 travou")?
                 .map_err(|error| anyhow!("finalização do corpo HTTP/3 falhou: {error}"))?;
@@ -333,7 +384,7 @@ impl ClientPool {
                     output.extend_from_slice(&chunk.copy_to_bytes(take));
                 }
             }
-            Ok(QuicResponse {
+            Ok::<QuicResponse, anyhow::Error>(QuicResponse {
                 status: response.status(),
                 body: output,
                 response_headers_ms,
@@ -341,13 +392,20 @@ impl ClientPool {
                 transport_rtt_us: session.connection.rtt().as_micros() as u64,
             })
         })
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(anyhow!(
-                "deadline de transporte HTTP/3 expirou após {:?}",
-                timeout.min(INFERENCE_TRANSPORT_DEADLINE)
-            )),
+        .await;
+        match response {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(error)) => Err(anyhow!(QuicDeliveryError::new(
+                error,
+                !body_may_have_been_sent,
+            ))),
+            Err(_) => Err(anyhow!(QuicDeliveryError::new(
+                format!(
+                    "deadline de transporte HTTP/3 expirou após {:?}",
+                    timeout.min(INFERENCE_TRANSPORT_DEADLINE)
+                ),
+                !body_may_have_been_sent,
+            ))),
         }
     }
 

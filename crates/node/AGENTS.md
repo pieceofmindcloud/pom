@@ -221,8 +221,8 @@ automáticas de uma implantação problemática.
   (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),
   `cycle.rs` (detector de ciclo de saída, lido pelo gateway),
-  `wire.rs` (frame inicial único `[len][JSON][itens][tensor]`, f16 e batch
-  validado), `relay.rs` (chain relay + agrupamento por próximo hop),
+  `wire.rs` (frame inicial único `[len][JSON][itens][tensor]`, f16/f8/i4
+  groupwise e batch validado), `relay.rs` (chain relay + agrupamento por próximo hop),
   `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
   `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
   outro mecanismo, e outra chave, que a especulação por lookup).
@@ -258,16 +258,57 @@ libp2p separado do túnel de inferência. O `GatewayState` compartilha o serviç
 com as rotas `/api/ui/network-chat`; a política de cluster é aplicada pela
 catraca de `network_chat_policy`.
 
-`src/enterprise.rs` mantém o cliente mockável do servidor de licenças, o
-fingerprint, o estado persistido sem a chave e o supervisor de heartbeat. O
-heartbeat consome o payload rico de renovação e persiste prazo, token,
-entitlements, grant e release devolvidos pelo servidor; o prazo não é
-recalculado localmente. O
-`enterprise_host.rs` é o único adaptador do `pom` para o processo auxiliar;
-`enterprise_p2p.rs` assina provas de fingerprint por nonce. O `GatewayState`
-expõe entitlement ao backend, enquanto `webui` publica status/ativação e
-`reqlog` encaminha eventos e consultas ao plugin ativo. A fronteira e os
-limites restantes estão em `docs/subsystems/licenciamento-enterprise.md`.
+`src/plugins.rs` é o gerenciador genérico de N plugins independentes (decisão
+do captain, 2026-09-18): `PluginManager` mantém um `PluginRuntime` por
+`plugin_code` do catálogo fixo (`PLUGIN_CATALOG`, hoje só `"enterprise"`), cada
+um com seu próprio cliente mockável do servidor de licenças, fingerprint
+compartilhado, estado persistido sem a chave (`plugin_license:<code>`),
+supervisor de heartbeat e checagem de atualização de versão PRÓPRIA - nenhum
+desses estados é compartilhado entre plugins nem com o `pom_core`. Uma
+ativação por chave de licença primeiro valida uma vez para descobrir quais
+`plugin_code` ela concede (`licensed_plugins`, códigos puros), depois
+ativa/instala cada um separadamente. As features de cada plugin vêm do
+`feature_set` do manifesto do release, NÃO da licença. Todo heartbeat com SUCESSO marca
+o plugin ativo e chama `ensure_host_running` (mesma lógica usada na
+restauração de boot, extraída em um só lugar): se o host daquele plugin
+estiver `None` - porque uma revogação temporária o derrubou, ou porque o
+handshake `ready` no boot falhou - ele sobe de novo sem esperar um restart
+completo do processo `pom`. `ingest_audit_event` avisa em log quando descarta
+um evento por falta de host, porque antes esse caminho falhava 100%
+silencioso e só dava pra confirmar lendo o banco do plugin direto.
+
+A restauração de boot (`PluginRuntime::restore`) é uma tarefa concorrente que
+sobrescreve o estado em memória com o do banco e pode religar o host por conta
+própria. Por isso `from_catalog` recebe `restore_on_boot`: produção passa
+`true`, e os construtores de teste passam `false`. Um teste que monta estado à
+mão perde a corrida contra ela de forma não determinística - foi o que
+fazia `heartbeat_success_restarts_the_stopped_plugin_host` falhar ora por
+`plugin_path` sumido, ora por host revivido depois da revogação.
+
+`plugin_host.rs` (`PluginHost`) é o único adaptador do `pom` para o processo
+auxiliar `pom-plugin-host` - já suporta várias instâncias concorrentes, uma
+por plugin ativo. `PluginHost::start` usa `kill_on_drop` e mata explicitamente
+o processo quando o handshake `ready` falha ou estoura o timeout de 30s - sem
+isso, um handshake lento (máquina ainda se recuperando de um OOM) deixava
+`pom-plugin-host` órfão no SO enquanto o `PluginRuntime` continuava sem host,
+e a auditoria caía pro fallback legado sem nenhum aviso. O host mantém um
+leitor persistente de stdout e correlaciona respostas pelo ID do pedido; um
+timeout remove somente o registro pendente, e uma resposta tardia é consumida
+sem deslocar o frame da chamada seguinte. `enterprise_p2p.rs`
+assina provas de fingerprint por nonce (uso genérico, não específico de um
+plugin). O `GatewayState` expõe o `PluginManager` ao backend, `webui` publica
+lista/ativação/atualização por plugin e `reqlog` encaminha eventos e consultas
+ao plugin `enterprise` especificamente. Os dois lados do IPC usam o limite
+compartilhado `enterprise_protocol::MAX_IPC_FRAME_BYTES` de 16 MiB.
+
+`src/pom_core_update.rs` é deliberadamente SEPARADO de `src/plugins.rs`: a
+atualização do binário `pom` em si não é um plugin e vai virar GitHub Releases
+público sem licença (outra tarefa). Até essa migração, `PomCoreUpdater`
+empresta o lease do plugin `enterprise` para autenticar o manifest genérico
+`pom_core` e, só com uma confirmação explícita da UI, delega decisão, hash,
+troca atômica e reinício a `core_update.rs` - que continua puro e sem
+dependência de licenciamento. A fronteira e os limites restantes estão em
+`docs/subsystems/licenciamento-enterprise.md`.
 
 ## Ligações
 

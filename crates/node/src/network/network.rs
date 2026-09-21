@@ -1668,6 +1668,8 @@ impl Network {
                 let mut caps = vec![
                     crate::pipeline::CAP_FRAME_BATCH.into(),
                     crate::pipeline::CAP_FRAME_DTYPE_F8.into(),
+                    crate::pipeline::CAP_FRAME_DTYPE_I4G64.into(),
+                    crate::pipeline::CAP_FRAME_DTYPE_I4G128.into(),
                     crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into(),
                     crate::pipeline::CAP_LINK_STREAM.into(),
                     "relay/v1-chain".into(),
@@ -2231,7 +2233,7 @@ impl Network {
             let mut peers = self.peers.write().await;
             if let Some(peer) = peers.get_mut(node_id) {
                 peer.addr_candidates
-                    .retain(|addr| !self.routes.host_is_discredited(node_id, addr));
+                    .retain(|addr| !self.routes.endpoint_is_discredited(node_id, addr));
             }
         }
 
@@ -2760,7 +2762,7 @@ impl Network {
                     // volta.
                     if peer.addr_candidates.is_empty() {
                         for addr in &previous.addr_candidates {
-                            if self.routes.host_is_discredited(&peer.node_id, addr) {
+                            if self.routes.endpoint_is_discredited(&peer.node_id, addr) {
                                 continue;
                             }
                             peer.merge_observed(addr);

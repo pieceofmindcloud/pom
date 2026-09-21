@@ -1336,18 +1336,17 @@ pub async fn list_requests(
     State(state): State<crate::gateway::GatewayState>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
-    if !state
-        .enterprise
-        .status()
-        .await
-        .is_feature_active(enterprise_protocol::EnterpriseFeature::RequestLogs)
-    {
+    let plugin_status = state
+        .plugins
+        .status(crate::plugins::ENTERPRISE_PLUGIN_CODE)
+        .await;
+    if !plugin_status.is_some_and(|status| status.has_feature("request_logs")) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
                 "code": "enterprise_required",
                 "error": "Logs de Requisições exigem uma licença Enterprise.",
-                "manage_url": enterprise_protocol::ENTERPRISE_MANAGE_URL,
+                "manage_url": enterprise_protocol::PLUGIN_MANAGE_URL,
             })),
         )
             .into_response();
@@ -1364,8 +1363,12 @@ pub async fn list_requests(
         offset: query.offset,
     };
     if let Some(response) = state
-        .enterprise
-        .query_audit("list", serde_json::to_value(&query).unwrap_or_default())
+        .plugins
+        .query_audit(
+            crate::plugins::ENTERPRISE_PLUGIN_CODE,
+            "list",
+            serde_json::to_value(&query).unwrap_or_default(),
+        )
         .await
     {
         return (StatusCode::OK, Json(response)).into_response();
@@ -1390,18 +1393,17 @@ pub async fn stats_requests(
     State(state): State<crate::gateway::GatewayState>,
     Query(query): Query<LogQuery>,
 ) -> impl IntoResponse {
-    if !state
-        .enterprise
-        .status()
-        .await
-        .is_feature_active(enterprise_protocol::EnterpriseFeature::Statistics)
-    {
+    let plugin_status = state
+        .plugins
+        .status(crate::plugins::ENTERPRISE_PLUGIN_CODE)
+        .await;
+    if !plugin_status.is_some_and(|status| status.has_feature("statistics")) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
                 "code": "enterprise_required",
                 "error": "Estatísticas exigem uma licença Enterprise.",
-                "manage_url": enterprise_protocol::ENTERPRISE_MANAGE_URL,
+                "manage_url": enterprise_protocol::PLUGIN_MANAGE_URL,
             })),
         )
             .into_response();
@@ -1418,8 +1420,12 @@ pub async fn stats_requests(
         offset: None,
     };
     if let Some(response) = state
-        .enterprise
-        .query_audit("stats", serde_json::to_value(&query).unwrap_or_default())
+        .plugins
+        .query_audit(
+            crate::plugins::ENTERPRISE_PLUGIN_CODE,
+            "stats",
+            serde_json::to_value(&query).unwrap_or_default(),
+        )
         .await
     {
         return (StatusCode::OK, Json(response)).into_response();

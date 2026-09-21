@@ -272,7 +272,8 @@ pub(super) async fn step_direct(
         return Err(error);
     }
 
-    record_direct_hops(&mut trace, Phase::Decode, &meta);
+    trace.track_direct_receipt(direct.trace_inbox(), ticket_id.clone(), Phase::Decode);
+    record_direct_hops(&mut trace, Phase::Decode, &meta, Some(&ticket_id));
 
     speculative_step_from_meta(&meta, trace)
 }

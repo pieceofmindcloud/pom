@@ -82,14 +82,38 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 - `build-enterprise-plugin.sh` - compila somente o crate `cdylib` Enterprise
   para uma plataforma explícita, localiza a extensão correta e copia o artefato
   com SHA-256 e tamanho para o diretório de saída.
+- `resolve-release-version.py` - lê a resposta de `GET /internal/releases` e
+  escolhe o maior SemVer entre todas as plataformas, incrementando o metadado
+  `build.N` para o `pom-release.sh`.
+- `test_pom_release.sh` - smoke test local do incremento automático, override
+  manual e `--dry-run`, usando `curl` e `cargo` falsos. Cobre os caminhos
+  `enterprise` (cdylib) e `pom_core` (binário `pom`/`pom.exe`) nas três
+  plataformas.
 
 O `pom-release.sh` fica na raiz porque opera sobre o checkout remoto do POM:
-busca `origin/feat/enterprise`, cria worktree descartável, compila o artefato
-Enterprise e envia multipart para `/internal/releases/upload`. A opção
-`--plugin enterprise` mantém o contrato do console de releases; o fluxo
-inicial usa o fixture compatível, e `--plugin-crate enterprise-plugin` publica
-o plugin real depois de um build validado. `--dry-run` não exige token nem faz
-chamada HTTP.
+busca `origin/feat/enterprise`, cria worktree descartável e envia multipart
+para `/internal/releases/upload`. Sem `--version`, consulta
+`/internal/releases?plugin=<plugin>&status=all` com o token
+`POM_RELEASE_TOKEN`, agrupa todas as plataformas pela versão SemVer e
+incrementa `+build.N`; `--version` é um override manual e não faz essa consulta.
+`--plugin enterprise` compila o cdylib pelo `build-enterprise-plugin.sh` e
+mantém o `--features` histórico como alias do metadado `feature_set`.
+`--plugin pom_core` compila o binário real do pacote `node` com `cargo build
+--release -p node --target ...`: os defaults são `cuda,vulkan` no Linux (mesmo
+conjunto do `Dockerfile`), `metal` no macOS (workflow de release) e nenhuma
+feature no Windows CPU. Nesse fluxo, `--features` substitui as features do
+build e `--feature-set` altera apenas o metadado do upload. Os artefatos são
+`pom` em Linux/macOS e `pom.exe` no Windows; o wrapper `cargo` do operador
+deve encaminhar o alvo Windows MSVC para `cargo xwin` quando o host não for
+Windows. Antes do Cargo, esse fluxo remove `CMAKE_CUDA_ARCHITECTURES` e força
+`CUDAARCHS=''`: o CMake trata o valor vazio como não definido e o
+`CMakeLists.txt` vendorizado escolhe a lista ampla de arquiteturas CUDA, nunca
+a GPU da máquina de build. Essa limpeza não é aplicada ao cdylib Enterprise,
+que não usa CUDA. O servidor exige `plugin_abi` positivo também para `pom_core`, então
+o script envia `1` como metadado de compatibilidade de transporte, não como
+ABI de cdylib. O `feature_set=core` é apenas metadado e não cria entitlement.
+`--dry-run` não exige token nem faz chamada HTTP e mostra `+build.1` como
+prévia quando a versão não é informada.
 
 ## Python (nao esta na raiz - esta em old/python-inference/)
 

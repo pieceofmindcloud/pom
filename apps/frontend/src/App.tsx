@@ -120,7 +120,7 @@ function EnterpriseUnavailable({ manageUrl }: { manageUrl: string }) {
             {t("enterprise.learnMore")}
           </a>
           <Link
-            to="/enterprise"
+            to="/plugins"
             className="ml-2 inline-flex rounded-md border border-line px-4 py-2 text-sm font-semibold text-fg transition-colors hover:border-line-strong hover:bg-line/40"
           >
             {t("enterprise.activateHere")}
@@ -160,7 +160,7 @@ export const routeLoaders = {
   logs: () => import("./routes/Logs").then(({ Logs }) => Logs),
   deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
   statistics: () => import("./routes/Statistics").then(({ Statistics }) => Statistics),
-  enterprise: () => import("./routes/Enterprise").then(({ Enterprise }) => Enterprise),
+  plugins: () => import("./routes/Plugins").then(({ Plugins }) => Plugins),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
@@ -198,7 +198,7 @@ const Dashboard = lazyRoute(routeLoaders.dashboard);
 const Logs = lazyRoute(routeLoaders.logs);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
 const Statistics = lazyRoute(routeLoaders.statistics);
-const Enterprise = lazyRoute(routeLoaders.enterprise);
+const Plugins = lazyRoute(routeLoaders.plugins);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
@@ -270,9 +270,9 @@ export default function App() {
   const enterprisePath = isEnterprisePath(location.pathname);
   const enterpriseActive = Boolean(
     enterpriseStatus.data?.active
-      && (location.pathname.startsWith("/logs")
-        ? enterpriseStatus.data.features.request_logs
-        : enterpriseStatus.data.features.statistics),
+      && enterpriseStatus.data.features.includes(
+        location.pathname.startsWith("/logs") ? "request_logs" : "statistics",
+      ),
   );
   const isChat = allowed && location.pathname === "/chat";
   const isEmbeddedChat = allowed && location.pathname === "/admin-ui/chat";
@@ -438,7 +438,7 @@ export default function App() {
                         <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
                         <Route path="/logs" element={<Page><Logs /></Page>} />
                         <Route path="/estatisticas" element={<Page><Statistics /></Page>} />
-                        <Route path="/enterprise" element={<Page><Enterprise /></Page>} />
+                        <Route path="/plugins" element={<Page><Plugins /></Page>} />
                         <Route path="/logs/estatisticas" element={<Navigate to="/estatisticas" replace />} />
                         <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                         <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />

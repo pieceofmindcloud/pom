@@ -48,6 +48,8 @@ mod config;
 #[cfg(test)]
 #[path = "backend/continuation_lab.rs"]
 mod continuation_lab;
+#[path = "core_update.rs"]
+mod core_update;
 #[path = "inference/cycle.rs"]
 mod cycle;
 #[path = "backend/db.rs"]
@@ -66,10 +68,6 @@ mod direct_lab;
 mod discovery;
 #[path = "utils/display.rs"]
 mod display;
-#[path = "enterprise.rs"]
-mod enterprise;
-#[path = "enterprise_host.rs"]
-mod enterprise_host;
 #[path = "enterprise_p2p.rs"]
 mod enterprise_p2p;
 #[path = "inference/executor.rs"]
@@ -129,8 +127,14 @@ mod pipeline;
 mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
+#[path = "plugin_host.rs"]
+mod plugin_host;
+#[path = "plugins.rs"]
+mod plugins;
 #[path = "models/pom.rs"]
 mod pom;
+#[path = "pom_core_update.rs"]
+mod pom_core_update;
 #[path = "inference/prefill/mod.rs"]
 mod prefill;
 #[path = "inference/prefix_cache.rs"]
@@ -917,7 +921,8 @@ async fn async_main(
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
-    let enterprise = enterprise::EnterpriseState::runtime_with_database(&node_id, database.clone());
+    let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
+    let pom_core_update = pom_core_update::PomCoreUpdater::runtime(plugins.clone());
 
     let pkarr_peer_keys: Vec<String> = args
         .pkarr_peers
@@ -1254,6 +1259,7 @@ async fn async_main(
             loads: node_runtime.load_tracker(),
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
+            adaptive_chunk_tuner: crate::gateway::AdaptiveChunkTuner::default_arc(),
             peer_http: peer_clients.clone(),
             admission_health: Default::default(),
             runtime: node_runtime.clone(),
@@ -1262,7 +1268,8 @@ async fn async_main(
                 ..crate::cycle::CycleConfig::default()
             },
             audit: audit.clone(),
-            enterprise: enterprise.clone(),
+            plugins: plugins.clone(),
+            pom_core_update: pom_core_update.clone(),
             database: database.clone(),
             gateway_port,
             quic_server: quic_config.clone(),
@@ -1306,6 +1313,7 @@ async fn async_main(
             // Configurado pela linha de comando: não veio de implantação nenhuma.
             model_path: model_name.clone(),
             mmproj_path: None,
+            mtp_draft_path: None,
             model_label: profile.name.clone(),
             deployment_name: profile.name.clone(),
             start_layer: assignment.start_layer,
@@ -2193,6 +2201,8 @@ async fn start_gateway_only(
         admin_trust.clone(),
     );
 
+    let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
+    let pom_core_update = pom_core_update::PomCoreUpdater::runtime(plugins.clone());
     let gw_state = GatewayState {
         network: net.clone(),
         ollama: Arc::new(OllamaClient::new(&ollama_url)),
@@ -2203,6 +2213,7 @@ async fn start_gateway_only(
         // Nó implantado pela UI (sem `--model`): é este o caminho comum, e o
         // cache de prefixo persistente precisa do índice aqui também.
         prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
+        adaptive_chunk_tuner: crate::gateway::AdaptiveChunkTuner::default_arc(),
         peer_http: peer_clients.clone(),
         admission_health: Default::default(),
         runtime: node_runtime.clone(),
@@ -2211,7 +2222,8 @@ async fn start_gateway_only(
             ..crate::cycle::CycleConfig::default()
         },
         audit,
-        enterprise: enterprise::EnterpriseState::runtime_with_database(&node_id, database.clone()),
+        plugins: plugins.clone(),
+        pom_core_update: pom_core_update.clone(),
         database: database.clone(),
         gateway_port,
         auth: auth_state,

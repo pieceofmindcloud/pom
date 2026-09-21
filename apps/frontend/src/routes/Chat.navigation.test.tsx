@@ -92,12 +92,14 @@ vi.mock("../lib/queries", () => ({
   useAdminSurface: () => ({ data: "available", isLoading: false, isError: false }),
   useEnterpriseStatus: () => ({
     data: {
+      code: "enterprise",
       active: true,
       state: "active",
-      features: { request_logs: true, statistics: true },
+      features: ["request_logs", "statistics"],
       manage_url: "https://pieceofmind.cloud/enterprise",
       plugin_version: "test",
       lease_expires_at: null,
+      available_update: null,
     },
     isLoading: false,
     isError: false,

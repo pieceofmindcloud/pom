@@ -33,7 +33,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   com callback MoE, `begin_moe_callback` sinaliza o cancelamento do warmup sem
   aguardar a thread: o caminho quente não fica atrás de uma admissão CUDA
   corrente. O `join` permanece somente na troca explícita de warmup, fora da
-  inferência.
+  inferência. `DecodeTimings::backend_call_us` mede a chamada de avaliação do
+  llama.cpp; `backend_sync_us` mede separadamente a sincronização explícita. A
+  primeira não é tempo puro de kernel, e a segunda pode esperar trabalho de
+  dispositivo e transferências já enfileirados.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   O `build.rs` lê o mesmo checkout preparado pelo `llama-cpp-sys-2`, recebido
@@ -44,6 +47,60 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   Quando o modelo alvo usa MoE externo metadata-only, `LlmEngine::set_moe_runtime`
   instala o mesmo callback também no contexto MTP; o acompanhante CPU do recuo
   mantém o caminho nativo porque seus pesos de experts estão presentes.
+  `EngineConfig.mtp_draft_path` (+ `LoadedModel::load_mtp_draft`) é uma segunda
+  fonte de pesos `nextn`: um GGUF de rascunho separado ("shared MTP module",
+  ex. `qwen4exp`/Qwen3.8-Flash-Next) carregado como `LoadedModel` independente e
+  usado como o mesmo `companion` do recuo para RAM em `mtp_model_for_attach` -
+  os dois nunca coexistem. O rascunho externo depende do alvo exportar
+  `h_nextn` do próprio grafo (código por arquitetura no fork,
+  `res->t_h_nextn`); `qwen4exp.cpp` ganhou isso em `pereirajair/llama.cpp`
+  (`pom-tensor-parallel`), gated por
+  `cparams.embeddings_nextn && !cparams.embeddings_nextn_masked` para não
+  regredir o corte antecipado de linhas da última camada quando MTP não foi
+  pedido. Não há checagem estática do lado Rust dessa capacidade - a lista
+  gerada em `build/mtp_arch.rs` certifica só quem constrói o grafo
+  `DECODER_MTP` (o lado do rascunho); um alvo sem `h_nextn` falha no primeiro
+  `observe` e desliga o MTP daquela sessão com aviso, sem abortar. Ver o
+  cabeçalho de `mtp.rs` para a mecânica completa e a convenção de nome
+  (`catalog::find_mtp_draft_sibling`, prefixo `mtp-`). Para `qwen4exp`, o
+  fork (`pereirajair/llama.cpp`, `pom-tensor-parallel`) porta o padrão de
+  `qwen35.cpp`/`deepseek4.cpp` em `qwen4exp.cpp`: `load_arch_tensors` detecta
+  um rascunho nextn-only (`mtp_only`, mesma sondagem de `blk.0.*`) e libera o
+  tronco e os tensores de nível de modelo (`hc_head_*`) como
+  `TENSOR_NOT_REQUIRED`; a cauda ganha os tensores `layer.nextn.*`
+  (`eh_proj`/`enorm`/`hnorm`/`hc_head_*` próprios); e `build_arch_graph`
+  despacha para uma `graph_mtp` nova quando `params.gtype ==
+  LLM_GRAPH_TYPE_DECODER_MTP`. O `h_nextn` exportado pelo alvo também foi
+  corrigido para o estado **largo** (`n_embd*hc`, pré-mixer) - exportar a
+  versão já colapsada silenciava a cabeça de rascunho sem travar nada.
+  Prova sintética completa (falha antes do porte, contexto MTP reservando
+  depois) em `llm/model.rs::mtp_draft_tests` e fixture/gerador em
+  `tests/fixtures/mtp/`.
+  `LoadedModel::load_mtp_draft` sozinho sempre tenta VRAM
+  (`MtpFitMode::Vram`, `DEFAULT_GPU_LAYERS`) sem medir memória livre - ao
+  contrário do alvo, cujo `fit_plan` mede a VRAM restante e reduz camadas
+  antes de carregar. `load_with_cache` é quem fecha essa lacuna, em duas
+  camadas: (1) na **carga dos pesos**, olha `vram_plan.mtp_mode` (a decisão
+  que o `fit_plan` do alvo já tomou) e pula direto para
+  `LoadedModel::load_mtp_draft_cpu` (mesma carga, `n_gpu_layers=0`) quando
+  já é `Ram`, com um recuo reativo para essa mesma função se
+  `load_mtp_draft` falhar mesmo partindo de `Vram`; (2) na **criação do
+  contexto**, escolhe `offload_kqv=false` de saída quando os pesos já
+  ficaram na RAM (pelas razões acima), e mantém o recuo reativo por trás de
+  `mtp_initial_context_error` para quando os pesos couberam na VRAM mas o
+  buffer de compute do ubatch de pior caso não coube (`op_offload=true`
+  deixa o agendador tentar GPU mesmo com pesos em CPU). As duas camadas
+  falharam ao vivo na ksia em rodadas separadas, 2026-09-18: primeiro
+  `cudaMalloc failed` na criação do contexto (camada 2, corrigida antes),
+  depois `cudaMalloc failed: out of memory` no próprio
+  `llama_model_load_from_file` do rascunho, com `mtp_fit_mode=Ram` já
+  decidido na linha anterior do log (camada 1). Não verificável neste
+  devcontainer: não há GPU aqui, então nenhuma das duas falhas de `cudaMalloc`
+  pode ser reproduzida diretamente; a camada 2 se apoia no teste unitário já
+  existente para o recuo do embutido
+  (`contexto_mtp_para_ram_desliga_o_offload_do_cache` em `mtp.rs`), e a
+  camada 1 no espelhamento exato de `load_mtp_cpu` (mesmo padrão, já usado
+  em produção para o `nextn` embutido).
 - `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em
   `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`. O
   fallback CPU do router executa os experts selecionados em workers escopados
@@ -121,7 +178,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   motivo de falha da coletiva de dentro do decode; `node` instala as funções
   reais (`tp::install_probe`) no arranque. Sem instalação, `is_active()` é
   `false` (caminho não-TP).
-- `wire.rs` - formato binário do estado oculto entre peers (f16/f8, zstd). A
+- `wire.rs` - formato binário do estado oculto entre peers
+  (f16/f8/i4g64/i4g128, zstd). I4 usa valores assinados de 4 bits e uma escala
+  f16 por grupo; o decodificador entrega f32 ao motor. A
   identidade de sessão do `BatchItem` é autoritativa ao decodificar, para que
   um relay não reative uma sessão sintética a partir de metadata antiga. O
   caminho quente não copia o tensor à toa: `encode_batch_items` escreve direto
@@ -130,7 +189,13 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   quem precisa da rota, do `batch_id` ou de uma validação. Detalhe e números em
   `docs/subsystems/inferencia.md` §2.2.
 - `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo modelos
-  multipart. `kv_budget.rs` - orçamento de bytes do cache KV por geometria.
+  multipart. `read_layout` valida arrays por camada usando a tabela unificada
+  de todas as partes físicas. Para `qwen4exp`, mede
+  `per_layer_token_embd.weight` apenas nas faixas que contêm uma camada PLE;
+  os três arrays de estrutura (`layer_multipliers`, `head_offsets` e
+  `head_vocab_sizes`) permanecem completos, enquanto `ple.layers` é filtrado
+  e rebaseado pelo fatiador. `kv_budget.rs` - orçamento de bytes do cache KV
+  por geometria.
 - `kv_cache.rs` - `KvCacheType` (era `node/src/utils/config.rs`; `Config` de
   `node` só o referencia como campo).
 - `sysmon.rs` - monitor de CPU/RAM/disco/GPU. A raiz do projeto que ele mede é
@@ -172,6 +237,10 @@ M-RoPE as duas divergem por desenho do upstream, e `mrope_positions` carrega a
 coordenada `[t, y, x, z]` de cada célula para que o estado oculto atravesse os
 hops sem reduzir as duas contagens a uma só - ver
 `decode_hidden_with_positions` e `crates/node/src/inference/AGENTS.md`.
+Ao criar um bitmap, `decode_multimodal` passa
+`mtmd_helper_init_opt_default()` à API do upstream. As opções passaram a ser
+explícitas, e esse default preserva o comportamento de imagens sem configurar
+parâmetros de vídeo.
 A captura de residual acumula microlotes pelo número de células físicas: o
 `mtmd` pode entregar o trecho textual e o trecho expandido da imagem em
 callbacks separados, enquanto `n_past` continua sendo apenas a posição lógica.

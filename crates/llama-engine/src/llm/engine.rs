@@ -39,10 +39,15 @@ fn write_mrope_position(
 impl LlmEngine {
     /// Escolhe o modelo que pode respaldar o contexto MTP.
     ///
-    /// Um companheiro presente é obrigatório no recuo para RAM: o alvo pode
-    /// ter sido carregado deliberadamente sem `nextn`. A seleção devolve
-    /// `None` antes de qualquer chamada que reserve o grafo MTP quando nem o
-    /// alvo nem o companheiro carregam esses pesos.
+    /// `companion` cobre dois casos, nunca simultâneos: o irmão CPU-only do
+    /// recuo para RAM (mesmo GGUF do alvo, ver `LoadedModel::load_mtp_cpu`) e
+    /// o GGUF de rascunho externo ("shared MTP module", ver
+    /// `LoadedModel::load_mtp_draft`) quando o alvo não embute `nextn`
+    /// nenhum. Em ambos o alvo pode ter sido carregado deliberadamente sem
+    /// `nextn`, então o companheiro - quando presente - é a única fonte
+    /// considerada. A seleção devolve `None` antes de qualquer chamada que
+    /// reserve o grafo MTP quando nem o alvo nem o companheiro carregam esses
+    /// pesos.
     pub(super) fn mtp_model_for_attach<'a>(
         target: &'a LoadedModel,
         companion: Option<&'a LoadedModel>,
@@ -201,6 +206,153 @@ impl LlmEngine {
                 engine.mtp_unavailable_reason = Some(format!(
                     "{vram_reason}; o recuo para a RAM foi recusado pelo operador"
                 ));
+            }
+        }
+
+        // Nem o alvo embute `nextn` nem (se aplicável) a RAM resolveu -
+        // último recurso: um GGUF de rascunho separado ("shared MTP module"),
+        // ver `crate::mtp` e `EngineConfig::mtp_draft_path`. Diferente do
+        // caso acima, este arquivo não é o mesmo do alvo: reaproveita
+        // `token_embd`/`output` próprios em vez de compartilhar os do alvo,
+        // então o alvo em si nunca precisa recarregar - só o contexto, que
+        // por isso é derrubado antes de recriar (`drop(engine)`) para não
+        // manter dois contextos do mesmo modelo vivos ao mesmo tempo.
+        if cfg.mtp && !engine.mtp_ready() {
+            if let Some(draft_path) = cfg.mtp_draft_path.clone() {
+                // Um rascunho externo alimenta o par (h_p, x_{p+1}) com o
+                // estado oculto que o próprio grafo do ALVO exporta
+                // (`h_nextn`) - ver `pom_llama_set_embeddings_nextn` em
+                // `crate::mtp`. Isso é código por arquitetura no fork
+                // (`build_arch_graph`/`t_h_nextn`); não há lista estática no
+                // lado Rust para checar isso de antemão (a lista gerada em
+                // `build/mtp_arch.rs` só cobre quem constrói o grafo
+                // DECODER_MTP, a capacidade do lado do RASCUNHO, não do
+                // alvo). Um alvo que não exporta o estado simplesmente falha
+                // no primeiro `observe` (`llama_get_embeddings_nextn_ith`
+                // devolve NULL) e desliga o MTP com aviso para aquela sessão
+                // - degradação já existente, nunca abort. `attach` já falha
+                // fechado do lado do rascunho.
+                let fit_memory_applied = engine.fit_memory_applied;
+                let effective_n_gpu_layers = engine.effective_n_gpu_layers;
+                let previous_reason = engine.mtp_unavailable_reason.clone();
+                drop(engine);
+                let target_loaded = loaded
+                    .clone()
+                    .expect("o modelo alvo deve permanecer carregado");
+
+                // O `fit_plan` do alvo já mediu a VRAM restante e decidiu se
+                // o MTP cabe nela (`vram_plan.mtp_mode`) - antes mesmo de o
+                // rascunho externo entrar em cena. Pedir GPU para os pesos do
+                // rascunho quando essa resposta já foi "não" só repete o
+                // `cudaMalloc` que falhou para o alvo, agora nos pesos do
+                // rascunho: confirmado ao vivo na ksia em 2026-09-18 -
+                // "mtp_fit_mode=Ram" no log do fit, seguido de
+                // "allocating 2305.68 MiB on device 1: cudaMalloc failed" no
+                // carregamento de `load_mtp_draft`, que sempre pede
+                // `DEFAULT_GPU_LAYERS` sem essa checagem. `load_mtp_draft_cpu`
+                // é o mesmo carregamento sem offload de peso nenhum -
+                // proativo aqui quando o fit já decidiu Ram, e reativo logo
+                // abaixo (`.or_else`) quando o fit achou que cabia mas a VRAM
+                // mudou entre o fit e esta carga.
+                let draft_wants_ram = vram_plan.mtp_mode == MtpFitMode::Ram;
+                let draft_loaded_result = if draft_wants_ram {
+                    LoadedModel::load_mtp_draft_cpu(&draft_path, cfg)
+                } else {
+                    LoadedModel::load_mtp_draft(&draft_path, cfg)
+                };
+                let draft_loaded_result = draft_loaded_result
+                    .map(|draft_loaded| (draft_loaded, draft_wants_ram))
+                    .or_else(|vram_error| {
+                        if draft_wants_ram || !cfg.mtp_cpu_fallback_enabled {
+                            return Err(vram_error);
+                        }
+                        warn!(
+                            "carregamento do rascunho MTP externo na VRAM falhou ({vram_error:#}); \
+                             tentando de novo sem offload de peso (RAM)"
+                        );
+                        LoadedModel::load_mtp_draft_cpu(&draft_path, cfg)
+                            .map(|draft_loaded| (draft_loaded, true))
+                    });
+
+                let draft_result =
+                    draft_loaded_result.and_then(|(draft_loaded, draft_on_cpu)| {
+                        // Pesos na RAM (decidido acima ou pelo recuo reativo)
+                        // já entram com `offload_kqv=false`: tentar VRAM
+                        // primeiro só repetiria a mesma falta de espaço no
+                        // contexto que o round anterior já corrigiu para o
+                        // caso reativo.
+                        let initial_offload_kqv = cfg.offload_kqv && !draft_on_cpu;
+                        let attach = Self::from_loaded_with_mtp_offload(
+                            target_loaded.clone(),
+                            cfg,
+                            fit_memory_applied,
+                            effective_n_gpu_layers,
+                            Some(draft_loaded.clone()),
+                            initial_offload_kqv,
+                        )?;
+                        // Rede de segurança para quando os pesos couberam na
+                        // VRAM mas o contexto (buffer de compute do ubatch de
+                        // pior caso) ainda assim não coube - round 2 desta
+                        // tarefa: `op_offload=true` deixa o agendador tentar
+                        // GPU mesmo sem necessidade. Não se aplica de novo
+                        // quando `draft_on_cpu` já é true (mesma tentativa que
+                        // acabou de rodar).
+                        if !attach.mtp_ready()
+                            && attach.mtp_initial_context_error.is_some()
+                            && !draft_on_cpu
+                            && cfg.mtp_cpu_fallback_enabled
+                        {
+                            let vram_error = attach
+                                .mtp_initial_context_error
+                                .clone()
+                                .unwrap_or_default();
+                            warn!(
+                                "contexto do rascunho MTP externo falhou na VRAM ({vram_error}); \
+                                 tentando de novo com execução no host (offload_kqv=false)"
+                            );
+                            return Self::from_loaded_with_mtp_offload(
+                                target_loaded.clone(),
+                                cfg,
+                                fit_memory_applied,
+                                effective_n_gpu_layers,
+                                Some(draft_loaded),
+                                false,
+                            );
+                        }
+                        Ok(attach)
+                    });
+
+                match draft_result {
+                    Ok(draft_engine) if draft_engine.mtp_ready() => {
+                        tracing::info!(draft_path, "MTP: rascunho externo anexado com sucesso");
+                        engine = draft_engine;
+                        mtp_fallback_used = true;
+                    }
+                    Ok(mut draft_engine) => {
+                        // Arquivo presente mas inutilizável (arquitetura sem
+                        // grafo MTP, largura incompatível com o alvo etc.) -
+                        // o contexto sem MTP que ele já criou serve como o
+                        // engine efetivo; só a razão é substituída.
+                        if draft_engine.mtp_unavailable_reason.is_none() {
+                            draft_engine.mtp_unavailable_reason = previous_reason;
+                        }
+                        engine = draft_engine;
+                    }
+                    Err(error) => {
+                        let reason =
+                            format!("rascunho MTP externo em {draft_path} não anexou: {error:#}");
+                        warn!("{reason}");
+                        engine = Self::from_loaded_with_mtp_offload(
+                            target_loaded,
+                            cfg,
+                            fit_memory_applied,
+                            effective_n_gpu_layers,
+                            None,
+                            cfg.offload_kqv,
+                        )?;
+                        engine.mtp_unavailable_reason = Some(reason);
+                    }
+                }
             }
         }
 
@@ -672,6 +824,7 @@ impl LlmEngine {
                     image.as_ptr(),
                     image.len(),
                     false,
+                    sys::mtmd_helper_init_opt_default(),
                 )
             };
             if wrapper.bitmap.is_null() {
@@ -733,7 +886,7 @@ impl LlmEngine {
         let mrope_positions = self.multimodal_mrope_positions(chunks.0, n_past)?;
         let mut new_n_past = n_past as sys::llama_pos;
         self.reset_capture_slot_with_physical_chunks(n_tokens, true);
-        let started = Instant::now();
+        let backend_call_started = Instant::now();
         self.begin_moe_callback();
         let rc = unsafe {
             sys::mtmd_helper_eval_chunks(
@@ -750,15 +903,16 @@ impl LlmEngine {
         if rc != 0 {
             bail!("mtmd falhou ao avaliar a mensagem multimodal (rc={rc})");
         }
+        let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         let mut timings = DecodeTimings {
-            enqueue_us: started.elapsed().as_micros() as u64,
+            backend_call_us,
             ..Default::default()
         };
         self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
             let sync_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
-            timings.backend_completion_us = sync_started.elapsed().as_micros() as u64;
+            timings.backend_sync_us = sync_started.elapsed().as_micros() as u64;
         }
         self.finish_moe_callback(&mut timings)?;
         let n_past = u32::try_from(new_n_past)
@@ -1244,7 +1398,6 @@ impl LlmEngine {
 
         let n = i32::try_from(layout.total_tokens())
             .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
-        let enqueue_started = Instant::now();
         self.reset_capture_slot(layout.total_tokens());
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
         batch.n_tokens = n;
@@ -1267,12 +1420,14 @@ impl LlmEngine {
             }
         }
         self.begin_moe_callback();
+        let backend_call_started = Instant::now();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode (token batch) failed rc={rc}");
         }
-        self.finish_batch(layout, need_residual, enqueue_started)
+        self.finish_batch(layout, need_residual, backend_call_us)
     }
 
     /// Decodes multiple hidden-state sequences in one llama batch.
@@ -1340,7 +1495,6 @@ impl LlmEngine {
         let input_width = input_width.expect("entries não vazio garante largura de entrada");
         let input_width_i32 = i32::try_from(input_width)
             .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
-        let enqueue_started = Instant::now();
         let has_mrope_positions = entries.iter().any(|entry| entry.mrope_positions.is_some());
         self.reset_capture_slot_with_physical_chunks(layout.total_tokens(), has_mrope_positions);
         let mut flattened_positions = has_mrope_positions
@@ -1395,13 +1549,15 @@ impl LlmEngine {
             batch.pos = storage.as_mut_ptr();
         }
         self.begin_moe_callback();
+        let backend_call_started = Instant::now();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         batch.pos = scalar_positions;
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode (hidden batch) failed rc={rc}");
         }
-        self.finish_batch(layout, need_residual, enqueue_started)
+        self.finish_batch(layout, need_residual, backend_call_us)
     }
 
     pub(super) fn reset_capture_slot(&self, n_tokens: usize) {
@@ -1447,7 +1603,7 @@ impl LlmEngine {
         &self,
         layout: BatchLayout,
         need_residual: bool,
-        enqueue_started: Instant,
+        backend_call_us: u64,
     ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
         crate::tp_probe::set_expected_reduces(
             2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64,
@@ -1473,14 +1629,14 @@ impl LlmEngine {
             .unwrap_or_else(|| vec![0, self.n_embd]);
         let residual = residual.map(|captured| captured.values);
         let mut timings = DecodeTimings {
-            enqueue_us: enqueue_started.elapsed().as_micros() as u64,
+            backend_call_us,
             ..Default::default()
         };
         self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
-            let completion_started = Instant::now();
+            let sync_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
-            timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
+            timings.backend_sync_us = sync_started.elapsed().as_micros() as u64;
         }
         self.finish_moe_callback(&mut timings)?;
         Ok((
@@ -1508,7 +1664,6 @@ impl LlmEngine {
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
         self.reset_capture_slot(tokens.len());
-        let enqueue_started = Instant::now();
         let n = tokens.len() as i32;
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
         batch.n_tokens = n;
@@ -1529,7 +1684,9 @@ impl LlmEngine {
 
         let tp_antes = crate::tp_probe::reduce_count();
         self.begin_moe_callback();
+        let backend_call_started = Instant::now();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode failed rc={rc}");
@@ -1608,14 +1765,14 @@ impl LlmEngine {
         }
 
         let mut timings = DecodeTimings {
-            enqueue_us: enqueue_started.elapsed().as_micros() as u64,
+            backend_call_us,
             ..Default::default()
         };
         self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
-            let completion_started = Instant::now();
+            let sync_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
-            timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
+            timings.backend_sync_us = sync_started.elapsed().as_micros() as u64;
         }
         self.finish_moe_callback(&mut timings)?;
         Ok(timings)
@@ -1670,7 +1827,6 @@ impl LlmEngine {
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
         self.reset_capture_slot_with_physical_chunks(n_tokens, mrope_positions.is_some());
-        let enqueue_started = Instant::now();
         let input_width = validate_hidden_tensor(
             hidden.len(),
             shape,
@@ -1720,7 +1876,9 @@ impl LlmEngine {
         if let Some(storage) = mrope_batch_positions.as_mut() {
             batch.pos = storage.as_mut_ptr();
         }
+        let backend_call_started = Instant::now();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         batch.pos = scalar_positions;
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
@@ -1773,14 +1931,14 @@ impl LlmEngine {
             self.mtp = None;
         }
         let mut timings = DecodeTimings {
-            enqueue_us: enqueue_started.elapsed().as_micros() as u64,
+            backend_call_us,
             ..Default::default()
         };
         self.record_capture_timings(&mut timings);
         if profile_backend_sync_enabled() {
-            let completion_started = Instant::now();
+            let sync_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
-            timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
+            timings.backend_sync_us = sync_started.elapsed().as_micros() as u64;
         }
         self.finish_moe_callback(&mut timings)?;
         Ok(timings)

@@ -5,7 +5,11 @@ pub mod abi;
 
 pub const LICENSE_PROTOCOL: &str = "pom-license/v1";
 pub const IPC_PROTOCOL: &str = "pom-enterprise-ipc/v1";
-pub const ENTERPRISE_MANAGE_URL: &str = "https://pieceofmind.cloud/enterprise";
+/// Maximum encoded JSON frame size for the local `pom` <-> `pom-plugin-host` IPC.
+pub const MAX_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// Where a person goes to buy or manage a plugin license. Not specific to any
+/// one plugin_code - it is the storefront for the whole catalog.
+pub const PLUGIN_MANAGE_URL: &str = "https://pieceofmind.cloud/enterprise";
 pub const FINGERPRINT_SCHEME: &str = "pom-fingerprint-v1";
 pub const PLUGIN_ABI_VERSION: u32 = 1;
 
@@ -18,58 +22,6 @@ pub enum LicenseState {
     Expired,
     Revoked,
     Unavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnterpriseFeatures {
-    pub request_logs: bool,
-    pub statistics: bool,
-}
-
-impl EnterpriseFeatures {
-    pub const fn disabled() -> Self {
-        Self {
-            request_logs: false,
-            statistics: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnterpriseStatus {
-    pub active: bool,
-    pub state: LicenseState,
-    pub features: EnterpriseFeatures,
-    pub manage_url: String,
-    pub plugin_version: Option<String>,
-    pub lease_expires_at: Option<String>,
-}
-
-impl EnterpriseStatus {
-    pub fn inactive() -> Self {
-        Self {
-            active: false,
-            state: LicenseState::NeedsActivation,
-            features: EnterpriseFeatures::disabled(),
-            manage_url: ENTERPRISE_MANAGE_URL.to_owned(),
-            plugin_version: None,
-            lease_expires_at: None,
-        }
-    }
-
-    pub fn is_feature_active(&self, feature: EnterpriseFeature) -> bool {
-        self.active
-            && match feature {
-                EnterpriseFeature::RequestLogs => self.features.request_logs,
-                EnterpriseFeature::Statistics => self.features.statistics,
-            }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnterpriseFeature {
-    RequestLogs,
-    Statistics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +128,7 @@ pub enum LicenseErrorCode {
     FingerprintMismatch,
     LeaseUnknown,
     RateLimited,
+    UpdateUnavailable,
     ServerError,
 }
 
@@ -203,6 +156,8 @@ pub struct PluginManifest {
     pub size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub download_expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changelog: Option<String>,
     pub key_id: String,
     pub signature: String,
 }
@@ -218,6 +173,10 @@ pub struct Grant {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActivationPayload {
     pub license_key: String,
+    /// Which catalog entry this activation is for. A single license may grant
+    /// several plugin_codes; the client activates each one it knows about
+    /// separately, one request per code.
+    pub plugin_code: String,
     pub fingerprint_scheme: String,
     pub fingerprint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -240,7 +199,11 @@ pub struct ValidatePayload {
 pub struct ValidateResponse {
     pub license_id: String,
     pub status: String,
-    pub entitlements: Vec<String>,
+    /// Os `plugin_code` que esta licença concede hoje. O servidor de licenças
+    /// é um catálogo de plugins: a licença concede uma LISTA de códigos, e as
+    /// features de cada plugin vêm do manifesto do release instalado
+    /// (`PluginManifest::feature_set`), não da licença.
+    pub licensed_plugins: Vec<String>,
     pub activation_required: bool,
     pub activation_id: Option<String>,
     pub eligible_release: Option<EligibleRelease>,
@@ -262,11 +225,13 @@ pub struct DownloadGrant {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActivationResponse {
     pub license_id: String,
+    pub plugin_code: String,
     pub activation_id: String,
     pub activation_token: String,
     pub lease_id: String,
     pub lease_token: String,
-    pub entitlements: Vec<String>,
+    /// Os `plugin_code` que a licença concede, como em [`ValidateResponse`].
+    pub licensed_plugins: Vec<String>,
     pub lease_expires_at: String,
     pub heartbeat_due_at: String,
     pub grace_seconds: u64,
@@ -286,12 +251,12 @@ pub struct GrantBody {
     pub v: u32,
     pub iss: String,
     pub product: String,
+    pub plugin_code: String,
     pub license_id: String,
     pub activation_id: String,
     pub lease_id: String,
     pub jti: String,
     pub node_id: String,
-    pub features: Vec<String>,
     pub fingerprint_scheme: String,
     pub fingerprint_hash: String,
     pub cluster_id_hash: Option<String>,
@@ -309,7 +274,8 @@ pub struct LicenseStatusResponse {
     pub license_id: String,
     pub activation_id: String,
     pub lease_id: String,
-    pub entitlements: Vec<String>,
+    /// Os `plugin_code` que a licença concede, como em [`ValidateResponse`].
+    pub licensed_plugins: Vec<String>,
     pub license_expires_at: Option<String>,
     pub lease_expires_at: String,
     pub grace_ends_at: String,
@@ -344,26 +310,6 @@ pub fn decode_response<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn status_serializes_the_stable_frontend_contract() {
-        let status = EnterpriseStatus::inactive();
-
-        assert_eq!(status.active, false);
-        assert_eq!(status.state, LicenseState::NeedsActivation);
-        assert_eq!(status.manage_url, ENTERPRISE_MANAGE_URL);
-        assert_eq!(
-            serde_json::to_value(status).expect("status JSON"),
-            serde_json::json!({
-                "active": false,
-                "state": "needs_activation",
-                "features": {"request_logs": false, "statistics": false},
-                "manage_url": "https://pieceofmind.cloud/enterprise",
-                "plugin_version": null,
-                "lease_expires_at": null,
-            })
-        );
-    }
 
     #[test]
     fn fingerprint_is_versioned_and_does_not_expose_raw_components() {
@@ -418,6 +364,7 @@ mod tests {
     fn activation_payload_matches_the_published_server_wire_contract() {
         let payload = ActivationPayload {
             license_key: "PM-test".into(),
+            plugin_code: "enterprise".into(),
             fingerprint_scheme: FINGERPRINT_SCHEME.into(),
             fingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .into(),
@@ -426,18 +373,19 @@ mod tests {
             ),
             node_id: "node-a".into(),
             cluster_id_hash: None,
-            requested_features: vec!["enterprise.request_logs".into()],
+            requested_features: vec!["request_logs".into()],
         };
 
         assert_eq!(
             serde_json::to_value(payload).expect("activation payload JSON"),
             serde_json::json!({
                 "license_key": "PM-test",
+                "plugin_code": "enterprise",
                 "fingerprint_scheme": "pom-fingerprint-v1",
                 "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "installation_id_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 "node_id": "node-a",
-                "requested_features": ["enterprise.request_logs"],
+                "requested_features": ["request_logs"],
             })
         );
     }

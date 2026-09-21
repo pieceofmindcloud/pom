@@ -1,6 +1,6 @@
 use enterprise_protocol::{
     abi::{ByteSlice, PluginApiV1, PluginEntryV1},
-    IPC_PROTOCOL, PLUGIN_ABI_VERSION,
+    IPC_PROTOCOL, MAX_IPC_FRAME_BYTES, PLUGIN_ABI_VERSION,
 };
 use libloading::Library;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const MAX_FRAME_BYTES: usize = MAX_IPC_FRAME_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IpcRequest {
@@ -397,6 +397,22 @@ mod tests {
         assert_eq!(&bytes[..4], &(bytes.len() as u32 - 4).to_be_bytes());
         let decoded: IpcRequest = read_frame(&mut Cursor::new(bytes)).expect("read frame");
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn ipc_accepts_log_frames_larger_than_one_mib() {
+        let payload = "x".repeat(2 * 1024 * 1024);
+        let request = IpcRequest {
+            id: 8,
+            method: "query".into(),
+            payload: Value::String(payload.clone()),
+        };
+        let mut bytes = Vec::new();
+
+        write_frame(&mut bytes, &request).expect("2 MiB log query response fits the IPC frame");
+        let decoded: IpcRequest = read_frame(&mut Cursor::new(bytes)).expect("read large frame");
+
+        assert_eq!(decoded.payload.as_str(), Some(payload.as_str()));
     }
 
     #[test]

@@ -840,14 +840,14 @@ mod tests {
                 "bytes_received": 2,
                 "node_timings": {
                     "decode_ms": 0.999,
-                    "backend_completion_ms": 0.999,
+                    "backend_sync_ms": 0.999,
                 },
             }),
         );
 
         let phase = &trace.hops[0].decode;
         assert!((phase.node_decode_ms as f64 - 0.999).abs() < 1e-12);
-        assert!((phase.node_backend_completion_ms as f64 - 0.999).abs() < 1e-12);
+        assert!((phase.node_backend_sync_ms as f64 - 0.999).abs() < 1e-12);
     }
 
     #[test]
@@ -1059,7 +1059,7 @@ mod tests {
             1,
             1,
             TlsHop::default(),
-            &json!({"decode_ms": 11, "residual_ms": 4, "top_p_ms": 3, "backend_completion_ms": 9}),
+            &json!({"decode_ms": 11, "residual_ms": 4, "top_p_ms": 3, "backend_sync_ms": 9}),
         );
 
         request.merge(&token);
@@ -1070,7 +1070,7 @@ mod tests {
         assert_eq!(hop.decode.node_decode_ms, 11.0);
         assert_eq!(hop.decode.node_residual_ms, 4.0);
         assert_eq!(hop.decode.node_top_p_ms, 3.0);
-        assert_eq!(hop.decode.node_backend_completion_ms, 9.0);
+        assert_eq!(hop.decode.node_backend_sync_ms, 9.0);
         assert_eq!(hop.decode.node_p50_ms, 11.0);
         assert_eq!(hop.decode.node_p95_ms, 11.0);
         // A decode-only trace must leave prefill untouched.
@@ -1187,6 +1187,7 @@ mod tests {
                     "processing_ms": 0
                 }]
             }),
+            None,
         );
 
         let phase = &trace.hops[0].prefill;
@@ -1194,6 +1195,53 @@ mod tests {
         assert_eq!(phase.network_ms, 3);
         assert_eq!(phase.transport_summary.transports[0].rtt_median_ms, 20);
         assert_eq!(phase.transport_summary.transports[0].net_rtt_median_ms, 3);
+    }
+
+    #[tokio::test]
+    async fn late_direct_transport_receipts_are_reconciled_without_waiting_on_the_reply() {
+        let inbox = crate::direct::ReplyInbox::new();
+        let direct = crate::direct::DirectReply::new(
+            inbox.clone(),
+            vec!["http://127.0.0.1:8080".into()],
+            "gateway".into(),
+        )
+        .unwrap();
+        let ticket = direct.ticket_for_hops(1);
+        let ticket_id = ticket.id().to_owned();
+        let mut meta = json!({
+            "token_id": 7,
+            "hop_timings": [{
+                "round_trip_ms": 23,
+                "processing_ms": 20,
+                "node_timings": {}
+            }]
+        });
+        assert!(inbox.deliver(&ticket_id, meta.clone()));
+        meta = inbox.trace_snapshot(&ticket_id).unwrap();
+
+        let mut trace = RequestTrace::new("qwen", &[("peer-1", 0, 15)]);
+        trace.track_direct_receipt(direct.trace_inbox(), ticket_id.clone(), Phase::Decode);
+        super::pipeline::record_direct_hops(&mut trace, Phase::Decode, &meta, Some(&ticket_id));
+        assert!(trace.transport_trace_complete);
+
+        assert!(inbox.record_transport(
+            &ticket_id,
+            0,
+            json!({
+                "hop_index": 0,
+                "transport": "https",
+                "round_trip_ms": 23,
+                "processing_ms": 0
+            }),
+        ));
+        trace.reconcile_direct_receipts();
+
+        assert!(trace.transport_trace_complete);
+        assert_eq!(trace.hops[0].decode.transport_summary.transports.len(), 1);
+        assert_eq!(
+            trace.hops[0].decode.transport_summary.transports[0].net_rtt_median_ms,
+            3
+        );
     }
 
     #[test]
@@ -1214,6 +1262,45 @@ mod tests {
         assert_eq!(trace.telemetry.expected_decode_spans, 0);
         assert!(!trace.telemetry.decode_span_expectation_available);
         assert_eq!(trace.hops[0].decode.node_decode_ms, 0.0);
+    }
+
+    #[test]
+    fn regular_decode_coverage_uses_output_tokens_per_pipeline_hop() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15), ("no2", 16, 31)]);
+        trace.output_tokens = 3;
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({"span_count": 3, "round_trip_ms": 76, "processing_ms": 75}),
+        );
+        trace.record_hop_from_json(
+            1,
+            Phase::Decode,
+            &json!({"span_count": 2, "round_trip_ms": 76, "processing_ms": 75}),
+        );
+        trace.complete = true;
+        trace.refresh_telemetry(76);
+
+        assert_eq!(trace.telemetry.reported_decode_spans, 5);
+        assert_eq!(trace.telemetry.expected_decode_spans, 6);
+        assert!(trace.telemetry.decode_span_expectation_available);
+        assert_eq!(trace.telemetry.completeness_percent, 83.33333333333334);
+        assert_eq!(trace.telemetry.status, "response_complete");
+    }
+
+    #[test]
+    fn gateway_overlap_and_residual_use_only_explicit_local_intervals() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.profile = crate::telemetry::Profile::Trace;
+        trace.set_accounted_spans(vec![
+            TraceSpan::for_test("validation", "gateway", 0, 10, None),
+            TraceSpan::for_test("stream", "gateway", 5, 10, None),
+            TraceSpan::for_test("remote", "peer", 0, 99, None),
+        ]);
+        trace.refresh_telemetry(30);
+
+        assert_eq!(trace.telemetry.overlap_ms, Some(5));
+        assert_eq!(trace.telemetry.true_residual_ms, Some(15));
     }
 
     #[test]

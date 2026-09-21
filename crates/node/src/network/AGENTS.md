@@ -260,7 +260,8 @@ fallback continua em `addr_candidates` + `RouteTable`.
   servida pelo mesmo router das demais rotas `/v1`. A capability
   `inference/frame-v1-batch` só entra quando o servidor de inferência carregou
   um modelo e o scheduler multi-item está ativo; setup, TP, carregamento e
-  queda não anunciam capacidade de inferência. `runtime_capacity` só entra
+  queda não anunciam capacidade de inferência. Capabilities separadas anunciam
+  f8, i4g64 e i4g128; f16 continua implícito e padrão. `runtime_capacity` só entra
   depois de `/health` confirmar o modelo carregado e leva `n_ctx` e
   `max_new_tokens` (perna); apply, erro, stop e thermal unload limpam o campo
   antes de anunciar. Não existe anúncio ou fallback
@@ -359,8 +360,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `RouteTable::invalidate` **preserva** a memória de falha; só `forget` a apaga.
   Apagá-la em `invalidate` significava que a rotação de IPv6 - o evento que mata
   o endereço - era também o que apagava a prova de que ele morreu.
-- `RouteTable::host_is_discredited` - a mesma pergunta por host, para o gossip
-  decidir se herda um candidato antigo.
+- `RouteTable::endpoint_is_discredited` - compara host e porta ao filtrar
+  candidatos herdados. Falha HTTP no gateway ou na inferência não desacredita a
+  porta P2P/UDP do mesmo host; isso evita remover um endereço de tunnel vivo.
 - `RouteTable::resolve` - endereço escolhido para o node_id; `None` =
   "ainda não medido ou vencido", e o chamador cai no `inference_url` do plano.
 - `RttTable` - guarda `target_node_id`, `rtt_ms` e `transport` localmente;

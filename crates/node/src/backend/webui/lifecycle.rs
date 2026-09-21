@@ -194,11 +194,18 @@ pub(crate) async fn reconfigure_local(
             let inference_port = state.network.inference_port.ok_or_else(|| {
                 "este nó subiu sem --inference-port; não dá para reconfigurar a fatia".to_string()
             })?;
+            // Redescoberto a cada reconfigure, não carregado do snapshot: o
+            // arquivo de rascunho MTP é opcional e pode ter sido adicionado,
+            // removido ou renomeado no disco entre implantações, ao contrário
+            // da identidade da fatia em si. Ver `run_apply` (`jobs_apply.rs`).
+            let mtp_draft_path =
+                crate::catalog::find_mtp_draft_sibling(std::path::Path::new(&model_path));
             NodeConfig {
                 deploy_id: slice.deploy_id,
                 deployment_name: slice.deployment_name,
                 model_path,
                 mmproj_path: slice.mmproj_path,
+                mtp_draft_path,
                 model_label: slice.model_label,
                 start_layer: slice.start_layer,
                 end_layer: slice.end_layer,

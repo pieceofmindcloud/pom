@@ -229,22 +229,23 @@ impl RouteTable {
             .collect()
     }
 
-    /// Se todo endereço já tentado **neste host** falhou recentemente.
+    /// Se a rota para este endpoint exato falhou recentemente.
     ///
-    /// A memória é por URL, e um host tem mais de uma porta. Esta é a pergunta
-    /// que o gossip faz antes de preservar um candidato herdado: o candidato é
-    /// `host:porta-UDP`, e o que falhou foi `http://host:porta-HTTP`. Sem
-    /// comparar por host, um endereço morto ressuscitaria a cada `PeerList`.
-    pub fn host_is_discredited(&self, node_id: &str, addr: &str) -> bool {
-        let alvo = host_of(addr);
-        if alvo.is_empty() {
+    /// Uma falha HTTP na porta do gateway ou da inferência não prova que o
+    /// endpoint P2P/UDP do mesmo host está morto. Comparar somente o host fazia
+    /// o gossip e a redescoberta apagar endereços de transporte que ainda
+    /// serviam o prefill.
+    pub fn endpoint_is_discredited(&self, node_id: &str, addr: &str) -> bool {
+        let Some(alvo) = host_and_port_of(addr) else {
             return false;
-        }
+        };
         let Ok(falhas) = self.falhas.read() else {
             return false;
         };
         falhas.iter().any(|((id, url), falhou_em)| {
-            id == node_id && host_of(url) == alvo && falhou_em.elapsed() < FAILURE_COOLDOWN
+            id == node_id
+                && host_and_port_of(url).is_some_and(|endpoint| endpoint == alvo)
+                && falhou_em.elapsed() < FAILURE_COOLDOWN
         })
     }
 
@@ -385,20 +386,18 @@ impl RouteTable {
     }
 }
 
-/// O host de um endereço, seja ele URL (`http://[::1]:8080`) ou par
-/// `host:porta` cru (`[::1]:42777`). Sem colchetes, para que as duas formas do
-/// mesmo IPv6 comparem iguais.
-fn host_of(addr: &str) -> &str {
+fn host_and_port_of(addr: &str) -> Option<(&str, u16)> {
     let sem_esquema = addr.split_once("://").map_or(addr, |(_, resto)| resto);
-    let sem_caminho = sem_esquema.split('/').next().unwrap_or(sem_esquema);
-    if sem_caminho.starts_with('[') {
-        match sem_caminho.find(']') {
-            Some(fim) => &sem_caminho[1..fim],
-            None => sem_caminho,
-        }
+    let autoridade = sem_esquema.split('/').next().unwrap_or(sem_esquema);
+    let (host, port) = if autoridade.starts_with('[') {
+        let fim_host = autoridade.find(']')?;
+        let host = &autoridade[1..fim_host];
+        let port = autoridade.get(fim_host + 1..)?.strip_prefix(':')?;
+        (host, port)
     } else {
-        sem_caminho.split(':').next().unwrap_or(sem_caminho)
-    }
+        autoridade.rsplit_once(':')?
+    };
+    Some((host, port.parse().ok()?))
 }
 
 /// Uma medição de latência de ida e volta partindo deste nó para um destino.
@@ -788,28 +787,30 @@ mod tests {
         assert_eq!(tabela.resolve("n1"), Some(vivo));
     }
 
-    /// As duas formas do mesmo endereço têm de comparar iguais: o candidato do
-    /// gossip é `host:porta-UDP` cru e o que falhou é uma URL com esquema e
-    /// outra porta. Sem isto a poda de candidato morto nunca casa e o cadáver
-    /// volta a cada `PeerList`.
+    /// A rota com esquema e o endereço cru com a mesma porta comparam iguais,
+    /// mas serviços diferentes no mesmo host continuam independentes.
     #[test]
-    fn the_host_is_the_same_whether_it_comes_as_a_url_or_a_bare_pair() {
-        assert_eq!(host_of("http://[2804:d55::9]:8080"), "2804:d55::9");
-        assert_eq!(host_of("[2804:d55::9]:42777"), "2804:d55::9");
-        assert_eq!(host_of("https://192.168.1.9:8181"), "192.168.1.9");
-        assert_eq!(host_of("192.168.1.9:42777"), "192.168.1.9");
-        assert_eq!(host_of("http://192.168.1.9:8080/health"), "192.168.1.9");
+    fn endpoint_includes_its_port_with_or_without_a_url_scheme() {
+        assert_eq!(
+            host_and_port_of("http://[2804:d55::9]:8080"),
+            Some(("2804:d55::9", 8080))
+        );
+        assert_eq!(
+            host_and_port_of("[2804:d55::9]:42777"),
+            Some(("2804:d55::9", 42777))
+        );
     }
 
-    /// Um endereço desacreditado numa porta desacredita o host para efeito de
-    /// herança de candidato: o candidato do gossip não tem porta HTTP nenhuma.
+    /// Uma falha no gateway não apaga o endereço P2P usado pelo túnel ou
+    /// prefill, mesmo quando ambos resolvem para o mesmo host.
     #[test]
-    fn a_dead_gateway_discredits_the_udp_candidate_on_the_same_host() {
+    fn a_dead_gateway_does_not_discredit_the_peer_transport_port() {
         let tabela = RouteTable::new();
         tabela.mark_failure("n1", "http://[2804:d55::9]:8080");
-        assert!(tabela.host_is_discredited("n1", "[2804:d55::9]:42777"));
-        assert!(!tabela.host_is_discredited("n1", "[2804:d55::a]:42777"));
-        assert!(!tabela.host_is_discredited("n2", "[2804:d55::9]:42777"));
+        assert!(!tabela.endpoint_is_discredited("n1", "[2804:d55::9]:42777"));
+        assert!(tabela.endpoint_is_discredited("n1", "http://[2804:d55::9]:8080"));
+        assert!(!tabela.endpoint_is_discredited("n1", "[2804:d55::a]:42777"));
+        assert!(!tabela.endpoint_is_discredited("n2", "[2804:d55::9]:42777"));
     }
 
     /// `usable` devolve vazio quando tudo falhou, e isso é informação: o

@@ -3,15 +3,16 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CapabilityState {
     Supported,
     Unsupported,
+    #[default]
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Capability {
     pub state: CapabilityState,
     pub source: String,
@@ -30,6 +31,10 @@ pub(crate) struct DeploymentCapabilities {
     pub speculative_decoding: Capability,
     pub mtp: Capability,
     pub hidden_state_f8: Capability,
+    #[serde(default)]
+    pub hidden_state_i4g64: Capability,
+    #[serde(default)]
+    pub hidden_state_i4g128: Capability,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

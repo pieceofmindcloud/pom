@@ -50,7 +50,8 @@ import type {
   TransferJob,
   TrustAnchorView,
   WindowsFirewallStatus,
-  EnterpriseStatus,
+  PluginStatus,
+  PomCoreUpdateStatus,
 } from "./types";
 
 /**
@@ -93,7 +94,8 @@ export const keys = {
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
   requestStats: ["request-stats"] as const,
-  enterpriseStatus: ["enterprise-status"] as const,
+  plugins: ["plugins"] as const,
+  pomCoreUpdate: ["pom-core-update"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
   networkRtt: (nodeIds: string[]) => ["network-rtt", ...nodeIds] as const,
@@ -192,36 +194,65 @@ export function useAdminSurface() {
   });
 }
 
-const inactiveEnterpriseStatus: EnterpriseStatus = {
-  active: false,
-  state: "needs_activation",
-  features: { request_logs: false, statistics: false },
-  manage_url: "https://pieceofmind.cloud/enterprise",
-  plugin_version: null,
-  lease_expires_at: null,
-};
+function inactivePlugin(code: string): PluginStatus {
+  return {
+    code,
+    active: false,
+    state: "needs_activation",
+    features: [],
+    manage_url: "https://pieceofmind.cloud/enterprise",
+    plugin_version: null,
+    lease_expires_at: null,
+    available_update: null,
+  };
+}
 
-/** Public license state. A missing endpoint is treated as Free, fail-closed. */
-export function useEnterpriseStatus() {
-  const client = useQueryClient();
-  const query = useQuery<EnterpriseStatus>({
-    queryKey: keys.enterpriseStatus,
-    queryFn: () =>
-      optional(
-        api.get<EnterpriseStatus>("/api/ui/enterprise/status", { auth: false }),
-        inactiveEnterpriseStatus,
-      ),
+/**
+ * The whole plugin catalog, active or not - what the Plugins screen lists.
+ * A missing endpoint (older node) is treated as an empty catalog, fail-closed.
+ */
+export function usePlugins() {
+  return useQuery<PluginStatus[]>({
+    queryKey: keys.plugins,
+    queryFn: () => optional(api.get<PluginStatus[]>("/api/ui/plugins", { auth: false }), []),
     retry: false,
     refetchInterval: 30_000,
   });
+}
+
+/**
+ * The `"enterprise"` plugin's status specifically (Request Logs/Statistics).
+ * Built on `usePlugins()` so callers gating those two screens do not need to
+ * know about the rest of the catalog.
+ */
+export function useEnterpriseStatus() {
+  const client = useQueryClient();
+  const query = usePlugins();
+  const status = query.data?.find((plugin) => plugin.code === "enterprise") ?? inactivePlugin("enterprise");
 
   useEffect(() => {
-    if (query.data?.active) return;
+    if (status.active) return;
     void client.removeQueries({ queryKey: keys.requests });
     void client.removeQueries({ queryKey: keys.requestStats });
-  }, [client, query.data?.active]);
+  }, [client, status.active]);
 
-  return query;
+  return { ...query, data: status };
+}
+
+/**
+ * The `pom` binary's own update status - never mixed with plugin updates
+ * (see the header of `crates/node/src/pom_core_update.rs`).
+ */
+export function usePomCoreUpdateStatus() {
+  return useQuery<PomCoreUpdateStatus>({
+    queryKey: keys.pomCoreUpdate,
+    queryFn: () =>
+      optional(api.get<PomCoreUpdateStatus>("/api/ui/pom-update/status", { auth: false }), {
+        core_update: null,
+      }),
+    retry: false,
+    refetchInterval: 30_000,
+  });
 }
 
 /** Public metadata needed before the app knows whether to show the password gate. */

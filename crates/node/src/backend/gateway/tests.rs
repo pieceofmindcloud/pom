@@ -4,7 +4,6 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::testkit::body_of;
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
@@ -1769,6 +1768,7 @@ mod budget_tests {
             deploy_id: String::new(),
             model_path: String::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
             model_label: String::new(),
             deployment_name: String::new(),
             start_layer: 0,
@@ -2427,7 +2427,7 @@ mod replicated_admin_logs_tests {
     }
 
     #[tokio::test]
-    async fn enterprise_status_defaults_to_inactive_and_request_logs_are_gated() {
+    async fn plugin_status_defaults_to_inactive_and_request_logs_are_gated() {
         let state = testkit::state_with("enterprise-free", vec![]).await;
         let app = Router::new()
             .merge(crate::webui::routes())
@@ -2436,17 +2436,40 @@ mod replicated_admin_logs_tests {
         let status = app
             .clone()
             .oneshot(
-                Request::get("/api/ui/enterprise/status")
+                Request::get("/api/ui/plugins")
                     .body(axum::body::Body::empty())
                     .expect("status request"),
             )
             .await
             .expect("status response");
         assert_eq!(status.status(), StatusCode::OK);
-        let status: serde_json::Value = body_of(status).await;
-        assert_eq!(status["active"], false);
-        assert_eq!(status["state"], "needs_activation");
-        assert_eq!(status["manage_url"], "https://pieceofmind.cloud/enterprise");
+        let plugins: serde_json::Value = body_of(status).await;
+        let enterprise = plugins
+            .as_array()
+            .expect("plugin list")
+            .iter()
+            .find(|plugin| plugin["code"] == "enterprise")
+            .expect("enterprise plugin entry");
+        assert_eq!(enterprise["active"], false);
+        assert_eq!(enterprise["state"], "needs_activation");
+        assert_eq!(
+            enterprise["manage_url"],
+            "https://pieceofmind.cloud/enterprise"
+        );
+
+        let check = app
+            .clone()
+            .oneshot(
+                Request::post("/api/ui/pom-update/check")
+                    .header("authorization", "Bearer chave")
+                    .body(axum::body::Body::empty())
+                    .expect("check request"),
+            )
+            .await
+            .expect("check response");
+        assert_eq!(check.status(), StatusCode::OK);
+        let check: serde_json::Value = body_of(check).await;
+        assert_eq!(check["core_update"], serde_json::Value::Null);
 
         let request_logs = app
             .clone()
@@ -2765,6 +2788,8 @@ pub(crate) mod testkit {
         }));
         let (network_chat, _) =
             crate::network_chat::NetworkChat::new(database.clone(), auth.clone(), false);
+        let plugins = crate::plugins::PluginManager::runtime(node_id);
+        let pom_core_update = crate::pom_core_update::PomCoreUpdater::runtime(plugins.clone());
         GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new("http://127.0.0.1:1")),
@@ -2773,6 +2798,7 @@ pub(crate) mod testkit {
             loads: Arc::new(LoadTracker::new()),
             prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             prefix_disk: None,
+            adaptive_chunk_tuner: crate::gateway::AdaptiveChunkTuner::default_arc(),
             peer_http: Arc::new(crate::peer_client::PeerClients::new(
                 std::time::Duration::from_secs(600),
             )),
@@ -2780,7 +2806,8 @@ pub(crate) mod testkit {
             runtime: NodeRuntime::new(net, assignment),
             cycle_config: crate::cycle::CycleConfig::default(),
             audit: crate::reqlog::AuditLog::new(database.clone()),
-            enterprise: crate::enterprise::EnterpriseState::runtime(node_id),
+            plugins,
+            pom_core_update,
             database,
             gateway_port: 8080,
             auth,
@@ -2811,6 +2838,7 @@ pub(crate) mod testkit {
             deploy_id: String::new(),
             model_path: String::new(),
             mmproj_path: None,
+            mtp_draft_path: None,
             model_label: "lab".into(),
             deployment_name: "lab".into(),
             start_layer: 0,

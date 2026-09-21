@@ -219,12 +219,23 @@ export function RuntimeParamsForm({
 }) {
   const { t } = useI18n();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const hiddenStateCapability = capabilities?.hidden_state_f8;
   const hiddenStateDtype = value.hidden_state_dtype ?? "f16";
-  const f8Unavailable = hiddenStateCapability
+  const hiddenStateCapability = hiddenStateDtype === "f8"
+    ? capabilities?.hidden_state_f8
+    : hiddenStateDtype === "i4g64"
+      ? capabilities?.hidden_state_i4g64
+      : hiddenStateDtype === "i4g128"
+        ? capabilities?.hidden_state_i4g128
+        : undefined;
+  const f8Unavailable = capabilities?.hidden_state_f8
+    ? capabilities.hidden_state_f8.state !== "supported"
+    : false;
+  const i4g64Unavailable = capabilities?.hidden_state_i4g64?.state !== "supported";
+  const i4g128Unavailable = capabilities?.hidden_state_i4g128?.state !== "supported";
+  const hiddenStateUnavailable = hiddenStateCapability
     ? hiddenStateCapability.state !== "supported"
     : false;
-  const hiddenStateHint = hiddenStateCapability && f8Unavailable
+  const hiddenStateHint = hiddenStateCapability && hiddenStateUnavailable
     ? `${t("deploy.knob.hidden_state_dtypeHint")} ${hiddenStateCapability.reason}`
     : t("deploy.knob.hidden_state_dtypeHint");
 
@@ -286,6 +297,12 @@ export function RuntimeParamsForm({
             <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
             <option value="f8" disabled={f8Unavailable}>
               {t("deploy.knob.hidden_state_dtypeF8")}
+            </option>
+            <option value="i4g64" disabled={i4g64Unavailable}>
+              {t("deploy.knob.hidden_state_dtypeI4G64")}
+            </option>
+            <option value="i4g128" disabled={i4g128Unavailable}>
+              {t("deploy.knob.hidden_state_dtypeI4G128")}
             </option>
           </Select>
         </Field>

@@ -64,8 +64,10 @@ Per-file list:
   acessível do controle), então o `<label>` continua embrulhando só texto e
   controle. `hint` (texto visível) segue existindo para as outras telas.
 - `RequestInspector.tsx` - inspetor da tela Logs. A aba ENVIADO vem antes de
-  REQUEST e separa prompt novo e contexto anterior em duas superfícies de
-  Markdown renderizado; Resposta usa o mesmo visualizador. `MDEditor.Markdown`
+  REQUEST e separa a última mensagem de usuário como prompt novo, preservando
+  como contexto todas as demais mensagens, inclusive respostas do assistente e
+  ferramentas que venham depois dela. As duas superfícies usam Markdown
+  renderizado; Resposta usa o mesmo visualizador. `MDEditor.Markdown`
   de `@uiw/react-md-editor/nohighlight` é somente leitura, sem barra de edição,
   sem cópia interna, com HTML desabilitado, sanitização de links e sem imagens;
   cada superfície é limitada a 64 KiB para manter a tela responsiva. O toggle
@@ -105,10 +107,13 @@ Per-file list:
   mensagem, então a mesma captura permanece disponível em mensagens anteriores.
   O resumo por transporte diferencia RTT de execução, que inclui processamento
   remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
-  medição da conexão quando disponível.
-  Cobertura de decode só é exibida quando há denominador esperado; traces
-  diretos sem essa medição mostram o estado como não medido, e uma coleta de
-  transporte incompleta continua visível mesmo quando a resposta terminou.
+  medição da conexão quando disponível. A linha do backend separa
+  `node_backend_call_ms` (`llama_decode`/avaliação) de
+  `node_backend_sync_ms` (`llama_synchronize`).
+  Cobertura de decode usa callbacks quando disponíveis, ou tokens de saída por
+  hop no caminho normal; sem tokens ou callbacks esperados, mostra não medido.
+  Uma coleta de transporte incompleta continua visível mesmo quando a resposta
+  terminou.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly
@@ -499,7 +504,9 @@ Key logic carriers:
   apresentação, o backend continua aceitando os três modos. Números de ponto
   flutuante passam por `showNumber`, senão a temperatura sai como
   `0.699999988079071`. Os controles de cache KV, fusão de fatias e precisão do
-  estado oculto só aparecem quando quem monta os passa. `VisionControl` segue
+  estado oculto só aparecem quando quem monta os passa. Na edição da precisão,
+  f8 e i4 ficam desabilitados até todos os peers selecionados anunciarem suporte,
+  e o aviso usa a razão da capability do formato escolhido. `VisionControl` segue
   a mesma fronteira: exibe e alterna o mmproj resolvido para modelos inteiros
   e fatias, ou mostra a indisponibilidade localizada quando a rodada fatiada
   não tem projetor. A seção `Configurações POM (DESENV)` só é montada quando
@@ -519,9 +526,10 @@ Key logic carriers:
   estado tri-state retornado pelo plano: oculta incompatíveis, mantém
   indeterminados visíveis, acionáveis e com alerta de risco, e preserva sempre o
   controle `no_embeddings`.
-  O seletor `hidden_state_dtype` mantém f16 como padrão e oferece f8 somente
-  como escolha explícita; uma capability de peer comprovadamente incompatível
-  desabilita a opção e exibe a razão devolvida pelo servidor.
+  O seletor `hidden_state_dtype` mantém f16 como padrão e oferece f8, i4g64 e
+  i4g128 somente como escolhas explícitas. Os formatos com perda ficam
+  desabilitados até todos os peers selecionados anunciarem suporte; a dica
+  mostra o motivo da capability correspondente ao formato selecionado.
   `RuntimeParamsForm` recebe a mesma flag e oculta os controles de ciclo e
   recuo MTP quando ela está desligada.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may

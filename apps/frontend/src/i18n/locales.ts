@@ -143,7 +143,7 @@ export function resolveLocale(
 
 /** Every key in the CSV, kept sorted for stable callers and diffs. */
 export function messageKeys(locale: Locale): string[] {
-  return [...messages[locale].keys()];
+  return [...messages[locale].keys()].sort();
 }
 
 export function formatMessage(locale: Locale, key: string, values: MessageValues = {}): string {

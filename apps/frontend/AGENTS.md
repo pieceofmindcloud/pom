@@ -123,12 +123,21 @@ desenhado**, porque uma vista só não é uma escolha.
   `/config/compartilhamento` (TrustAnchor com máquina, raiz e chave de conexão)
   e `/config/keys/api`. A rota antiga `/config/confianca` continua como alias
   compatível da tela da raiz de confiança.
+- `/plugins` -> Plugins, lista todo plugin do catálogo (ativo ou não), com
+  ativação por chave de licença que indica quais plugins ela concede,
+  atualização de versão própria por plugin e desativação por plugin. Não
+  trata da atualização do binário `pom` em si - isso é só em `/config/sobre`.
+  Substituiu a antiga `/enterprise` de produto único (`Enterprise.tsx`); ver
+  `src/routes/AGENTS.md` e `crates/node/src/plugins.rs`.
 - `/config/preferencias` -> Preferences com exposição, Hugging Face e proteção
   térmica; `/config/armazenamento` -> ModelPaths; `/config/preferencias/admin`
   -> preferências administrativas de TLS, QUIC, logs e chat da rede; e
-  `/config/sobre` -> About, com a licença provisória explícita do POM e o
-  catálogo agrupado por licença das dependências diretas do frontend e do Rust.
-  Sobre é o último item da seção Configurações.
+  `/config/sobre` -> About, com a licença provisória explícita do POM, o
+  catálogo agrupado por licença das dependências diretas do frontend e do
+  Rust, e a ÚNICA verificação/aplicação da atualização do binário `pom`
+  (`/api/ui/pom-update/*`) - deliberadamente separada da tela de Plugins, ver
+  `crates/node/src/pom_core_update.rs`. Sobre é o último item da seção
+  Configurações.
 - `*` -> NotFound
 
 Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-fade wrapper; chat and dashboard get overflow-hidden main, the rest scroll.
@@ -170,7 +179,7 @@ sessão P2P por processo.
 
 ## Links
 
-- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, deployments, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, network/info, network/geo-reference, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.
+- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, deployments, paths, thermal, jobs, requests, requests/stats, chat/telemetry, cluster-logs, plugins list/activate/refresh/deactivate/update, pom-update status/check/apply, network/info, network/geo-reference, network/logs, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key. The process-log console is distinct from `/logs` and uses the principal's persisted arrival order.
 - Auth: `api.ts` sends same-origin credentials so the gateway can use its
   `HttpOnly` admin session. Administrative requests use the cluster connection
   key, while `/v1/*` chat requests use the dedicated `pom-[node_id]` API key

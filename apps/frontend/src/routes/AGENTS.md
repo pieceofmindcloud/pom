@@ -81,6 +81,22 @@ Per-file list:
   Descrição, regras e o campo único de canais Discord ou Telegram são editados
   como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
   mesmo renderer Markdown compartilhado pelo Chat.
+- `Plugins.tsx` - rota `/plugins`. Lista todo `PluginStatus` do catálogo
+  (`GET /api/ui/plugins`), inclusive o que o operador nunca ativou, com estado,
+  funcionalidades concedidas e atualização de versão PRÓPRIA daquele plugin
+  quando existe (`available_update`, aplicada por
+  `POST /api/ui/plugins/:code/update/apply` após a confirmação do release_id).
+  Um único formulário de chave de licença ativa quantos plugins conhecidos a
+  chave conceder (`POST /api/ui/plugins/activate`, resposta `{activated}`
+  nomeia quais); atualizar e desativar são ações por plugin
+  (`POST /api/ui/plugins/:code/refresh|deactivate`). Não trata da atualização
+  do binário `pom` em si - essa fica inteira em `About.tsx`, de propósito
+  separada (ver `crates/node/src/pom_core_update.rs`). O link de comprar/
+  gerenciar de cada card usa o `manage_url` do próprio plugin
+  (`pieceofmind.cloud`). Substituiu a antiga `Enterprise.tsx` de produto único.
+  Tem entrada própria no menu (Configurações > Plugins, antes de "Sobre"): o
+  catálogo é vitrine e precisa ser navegável antes da compra, não só
+  alcançável ao esbarrar numa tela bloqueada, como era a `/enterprise`.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,
@@ -116,6 +132,8 @@ Per-file list:
   `message.trace`/`message.timings` remain the preferred values once available.
   The quick timing summary stays outside the closed details card, so every
   assistant message keeps its summary and full telemetry without a reload.
+  Each hop's backend telemetry separates the llama.cpp evaluation call from
+  explicit backend synchronization.
   O perfil `infer` oculta desta tela a origem, os resumos de tempo e
   throughput e o painel detalhado de telemetria; isso é apresentação, não
   autorização.
@@ -193,12 +211,21 @@ Per-file list:
   links, search + clear, empty state. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `About.tsx` - Tela informativa em `/config/sobre`, última folha de
-  Configurações. Mostra a licença do POM como placeholder visualmente marcado e
-  lista as dependências diretas do frontend e do workspace Rust agrupadas pela
-  licença declarada, com versão, ecossistema, filtro por texto e link do
-  repositório. O catálogo é `../lib/licenses.generated.ts`, gerado por
-  `scripts/build-licenses.mjs`; o teste em `About.test.tsx` cobre o placeholder,
-  os dois ecossistemas, os links e o filtro.
+  Configurações. Mostra a licença do POM como placeholder visualmente marcado
+  e é a ÚNICA tela que trata da atualização do binário `pom` em si: verifica
+  sob demanda pela rota autenticada `/api/ui/pom-update/check`
+  (`usePomCoreUpdateStatus`), e quando há release disponível, mostra e aplica
+  ali mesmo (`/api/ui/pom-update/apply`) - não delega mais para a tela de
+  Plugins. Mostra também, à parte, o estado do plugin `enterprise`
+  (`useEnterpriseStatus`) como contexto de por que a atualização do pom pode
+  estar indisponível (o mecanismo hoje empresta o lease desse plugin - ver
+  `crates/node/src/pom_core_update.rs`); ativar/desativar plugins é feito em
+  `/plugins`, nunca aqui. Também lista as dependências diretas do frontend e
+  do workspace Rust agrupadas pela licença declarada, com versão, ecossistema,
+  filtro por texto e link do repositório. O catálogo é
+  `../lib/licenses.generated.ts`, gerado por `scripts/build-licenses.mjs`; o
+  teste em `About.test.tsx` cobre o placeholder, os dois ecossistemas, os
+  links, o filtro e a verificação/aplicação sob demanda da atualização do pom.
 - `Dashboard.tsx` — Cluster overview: the admin sees cluster
   coverage/machines/model/in-flight stats; node and infer see local model,
   slice and in-flight requests instead. For administrators, the deployment
@@ -445,8 +472,10 @@ Per-file list:
   ponto não interativo da linha abre o inspetor e mantém a linha selecionada
   destacada com acento visível, inclusive enquanto o mouse está em outra linha;
   a lupa continua disponível. O cabeçalho do inspetor repete as métricas da
-  linha. ENVIADO separa prompt novo e contexto anterior em Markdown renderizado,
-  Resposta usa o mesmo visualizador e a preferência entre Markdown e JSON cru
+  linha. ENVIADO destaca a última mensagem de usuário como prompt novo e mantém
+  as demais mensagens do histórico, inclusive mensagens posteriores de
+  assistente/ferramenta, no contexto em Markdown renderizado. Resposta usa o
+  mesmo visualizador e a preferência entre Markdown e JSON cru
   fica no localStorage. A tablist contém somente as quatro abas; cópia da aba
   ativa e toggle de formato ficam no cabeçalho. O slot reservado do carregamento
   deixa o badge de erros fixo à direita. Cada superfície Markdown pode ser

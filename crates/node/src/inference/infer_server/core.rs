@@ -169,8 +169,13 @@ pub(super) struct NodeTimings {
     /// separado de `decode_us` para não classificar produção do próximo
     /// token como rede, fila ou espera do scheduler.
     pub(super) mtp_draft_us: u64,
-    pub(super) backend_enqueue_us: u64,
-    pub(super) backend_completion_us: u64,
+    /// Wall time spent in the llama.cpp evaluation entry point. Queue and
+    /// mutex waits are measured separately; this may include host-side graph
+    /// dispatch, not only device kernels.
+    pub(super) backend_call_us: u64,
+    /// Time spent in explicit `llama_synchronize`, including outstanding
+    /// device work and output transfer when profiling is enabled.
+    pub(super) backend_sync_us: u64,
     pub(super) residual_capture_d2h_sync_us: u64,
     pub(super) residual_capture_ready_wait_us: u64,
     pub(super) residual_capture_copy_us: u64,
@@ -357,8 +362,8 @@ impl NodeTimings {
             "setup_ms": ms(self.setup_us),
             "decode_ms": ms(self.decode_us),
             "mtp_draft_ms": ms(self.mtp_draft_us),
-            "backend_enqueue_ms": ms(self.backend_enqueue_us),
-            "backend_completion_ms": ms(self.backend_completion_us),
+            "backend_call_ms": ms(self.backend_call_us),
+            "backend_sync_ms": ms(self.backend_sync_us),
             "residual_capture_d2h_sync_ms": ms(self.residual_capture_d2h_sync_us),
             "residual_ms": ms(self.residual_us),
             "logits_access_ms": ms(self.logits_access_us),
@@ -1269,7 +1274,8 @@ mod tests {
     fn serializacao_de_timing_preserva_submilissegundos() {
         let timings = NodeTimings {
             frame_decode_us: 999,
-            backend_completion_us: 999,
+            backend_call_us: 999,
+            backend_sync_us: 999,
             residual_capture_ready_wait_us: 1_468_000,
             residual_capture_copy_us: 1_200,
             residual_capture_postprocess_us: 340,
@@ -1285,7 +1291,10 @@ mod tests {
         let json = timings.json();
 
         assert_eq!(json["frame_decode_ms"].as_f64(), Some(0.999));
-        assert_eq!(json["backend_completion_ms"].as_f64(), Some(0.999));
+        assert_eq!(json["backend_call_ms"].as_f64(), Some(0.999));
+        assert_eq!(json["backend_sync_ms"].as_f64(), Some(0.999));
+        assert!(json.get("backend_enqueue_ms").is_none());
+        assert!(json.get("backend_completion_ms").is_none());
         assert_eq!(json["residual_ms"].as_f64(), Some(1.234));
         assert_eq!(
             json["residual_capture_ready_wait_ms"].as_f64(),
@@ -1298,7 +1307,7 @@ mod tests {
         assert_eq!(json["sampling_ms"].as_f64(), Some(0.001));
         assert_eq!(json["first_token_produced_at_ms"], 1_700_000_000_006_u64);
         assert_eq!(json["first_token_serialized_at_ms"], 1_700_000_000_007_u64);
-        assert_ne!(json["backend_completion_ms"], serde_json::json!(0));
+        assert_ne!(json["backend_sync_ms"], serde_json::json!(0));
     }
 
     #[test]
@@ -1640,6 +1649,7 @@ mod tests {
             deploy_id: String::new(),
             model_path: "/nao/existe/modelo.gguf".into(),
             mmproj_path: None,
+            mtp_draft_path: None,
             model_label: "qwen35".into(),
             deployment_name: "qwen35".into(),
             start_layer: 0,

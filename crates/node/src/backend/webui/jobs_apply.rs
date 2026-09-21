@@ -901,11 +901,17 @@ pub(super) async fn run_apply(
     } else {
         None
     };
+    // Sem opt-in: o interruptor que já existe é `mtp_enabled` em
+    // `req.params`. Achar (ou não) o arquivo aqui só decide como o MTP roda
+    // quando o modelo alvo não traz `nextn` embutido - nunca se ele foi
+    // pedido. Ver `models::catalog::find_mtp_draft_sibling`.
+    let mtp_draft_path = crate::catalog::find_mtp_draft_sibling(std::path::Path::new(&model_path));
 
     let cfg = NodeConfig {
         deploy_id: req.deploy_id.clone(),
         model_path: model_path.clone(),
         mmproj_path,
+        mtp_draft_path,
         model_label: label,
         deployment_name: deployment,
         start_layer: req.start_layer,

@@ -31,6 +31,27 @@ fn record_gateway_span(
     ));
 }
 
+fn prefill_rebuild_reason(error: &anyhow::Error) -> Option<&'static str> {
+    if let Some(rebuild) = crate::prefill::rebuild_required(error) {
+        return Some(rebuild.reason);
+    }
+    if crate::relay::is_unknown_session_error(error) {
+        return Some("a sessão remota não existe mais");
+    }
+    if crate::relay::is_delivery_ambiguous(error) {
+        return Some("a resposta se perdeu depois do envio e o peer pode ter processado o chunk");
+    }
+    if crate::relay::is_prefill_state_error(error) {
+        return Some("as posições do KV remoto não coincidem com o próximo chunk");
+    }
+    if crate::relay::is_transport_relay_failure(error)
+        && !crate::relay::is_pre_delivery_error(error)
+    {
+        return Some("um hop downstream falhou depois que a cabeça aceitou o chunk");
+    }
+    None
+}
+
 /// Regista o desfecho de uma requisição que termina antes de planear a
 /// pipeline.
 ///
@@ -492,6 +513,7 @@ pub(super) async fn generate_stream_inner(
             )
         }),
     );
+    let adaptive_chunk_route = format!("{}|{}", prefix_key.model, prefix_key.hops.join("|"));
     // A hit reuses the peer session that stayed parked at the end of the prior
     // prompt. A miss gets a fresh id and is published only after this turn has
     // completed its prefill, so an incomplete session cannot enter the cache.
@@ -549,6 +571,16 @@ pub(super) async fn generate_stream_inner(
             }
         }
     }
+    info!(
+        "prefix gateway: session={} lease_hit={} reuse_requested={} cached_tokens={} cached_prompt_bytes={} request_prompt_bytes={} miss_reason={}",
+        &session_id[..8.min(session_id.len())],
+        prefix_lease.is_hit(),
+        reuse_prefix,
+        prefix_lease.cached_tokens,
+        prefix_lease.cached_prompt.len(),
+        cache_prompt.len(),
+        prefix_lease.miss_reason().unwrap_or("none"),
+    );
     record_gateway_span(
         &mut gateway_spans,
         request_started,
@@ -629,7 +661,13 @@ pub(super) async fn generate_stream_inner(
             // clamp de `prompt_budget_error`, e é ele que vale - não o valor
             // cru do knob.
             cfg.as_ref()
-                .map(prompt_chunk_tokens)
+                .map(|config| {
+                    state.adaptive_chunk_tuner.choose(
+                        &adaptive_chunk_route,
+                        prompt_chunk_tokens(config),
+                        config.n_batch,
+                    )
+                })
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
             cfg.as_ref()
                 .map(|c| c.prefill_max_inflight_chunks as usize)
@@ -745,47 +783,39 @@ pub(super) async fn generate_stream_inner(
         };
         let mut prefill_result = prefill_attempt(reuse_prefix, None).await;
         let mut unknown_session_recovery_attempted = false;
+        let mut cold_recovery_attempted = false;
         if let Err(e) = &prefill_result {
-            let original_unknown_session = crate::relay::is_unknown_session_error(e);
             if crate::relay::is_frame_size_error(e) {
                 warn!(
                     "prefill falhou por limite de frame ({e}); \
                      não é recuperável repetindo o mesmo chunk"
                 );
             } else if !crate::prefill::is_cancelled(e) {
-                // Falha de repasse head->tail causada pelo transporte (caminho
-                // morto, timeout, ou 401/403 de credencial): um gap transitório
-                // na propagação da política de rede some sozinho, então vale um
-                // único prefill frio antes de desistir - `run_direct` trata
-                // qualquer erro no chunk 0 como terminal e não retenta.
-                let original_transport_relay = crate::relay::is_transport_relay_failure(e);
-                // Um erro depois de um chunk aceito não revela se o peer
-                // avançou o KV antes de a resposta se perder. Não se pode
-                // tentar uma remoção parcial: modelos recorrentes recusam-na
-                // e a sessão ficaria corrompida. A recuperação segura é um
-                // prefill frio, que apaga a sessão inteira em cada peer.
                 if let Some(rp) = crate::prefill::resume_point(e) {
                     warn!(
-                        "prefill falhou no pedaço {} (posição {}, {e}); reconstruindo a sessão desde o início",
+                        "prefill falhou antes de entregar o pedaço {} (posição {}, {e}); retomando nesse ponto e preservando o KV",
                         rp.from_chunk, rp.start_pos
+                    );
+                    prefill_result = prefill_attempt(reuse_prefix, Some(rp)).await;
+                } else if let Some(reason) = prefill_rebuild_reason(e) {
+                    unknown_session_recovery_attempted =
+                        crate::relay::is_unknown_session_error(e);
+                    cold_recovery_attempted = true;
+                    warn!(
+                        "prefill precisa de reconstrução fria ({reason}; {e}); limpando as sessões remotas uma vez"
                     );
                     prefill_result = prefill_attempt(false, None).await;
                 }
-                // Uma segunda recuperação fria só é necessária para prefixo
-                // reutilizado, sessão desconhecida ou falha transitória de
-                // transporte. Uma falha durante a reconstrução já tem a sessão
-                // em estado incerto e deve cair direto no cleanup, sem uma nova
-                // tentativa parcial.
-                if let Err(e2) = &prefill_result {
-                    let unknown_session =
-                        original_unknown_session || crate::relay::is_unknown_session_error(e2);
-                    let transport_relay =
-                        original_transport_relay || crate::relay::is_transport_relay_failure(e2);
-                    if reuse_prefix || unknown_session || transport_relay {
-                        unknown_session_recovery_attempted = unknown_session;
+            }
+        }
+        if !cold_recovery_attempted {
+            if let Err(error) = &prefill_result {
+                if !crate::prefill::is_cancelled(error) {
+                    if let Some(reason) = prefill_rebuild_reason(error) {
+                        unknown_session_recovery_attempted =
+                            crate::relay::is_unknown_session_error(error);
                         warn!(
-                            "prefill falhou com estado de sessão incompatível ou transporte \
-                             transitório ({e2}); reconstruindo o prefill inteiro a frio uma vez"
+                            "prefill retomado ainda exige reconstrução fria ({reason}; {error}); limpando as sessões remotas uma vez"
                         );
                         prefill_result = prefill_attempt(false, None).await;
                     }
@@ -794,6 +824,15 @@ pub(super) async fn generate_stream_inner(
         }
         let first = match prefill_result {
             Ok(mut o) => {
+                o.trace.gateway_prefix_miss_reason =
+                    prefix_lease.miss_reason().map(str::to_owned);
+                o.trace.prefill_chunk_tokens = chunk_tokens;
+                state.adaptive_chunk_tuner.observe(
+                    &adaptive_chunk_route,
+                    &o.trace,
+                    o.prompt_tokens,
+                    o.cached_tokens,
+                );
                 if unknown_session_recovery_attempted {
                     o.trace.prefix_reuse_status = Some("session-lost-cold".to_owned());
                 } else if disk_restore_hash.is_some()
@@ -822,6 +861,8 @@ pub(super) async fn generate_stream_inner(
                     || crate::relay::is_unknown_session_error(&e)
                 {
                     "Prefill falhou: um peer perdeu o estado da sessão; o sistema tentou reconstruir o contexto, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
+                } else if cold_recovery_attempted {
+                    "Prefill falhou: uma falha de transporte deixou incerto se o peer processou o último chunk. O sistema tentou reconstruir o contexto uma vez, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
                 } else {
                     format!("Prefill falhou: {e}")
                 };
@@ -1789,13 +1830,35 @@ pub(super) async fn rewind_sessions(
             Ok(body)
                 if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
                     && body.get("n_past").and_then(|v| v.as_u64())
-                        == Some(retained_tokens as u64) => {}
+                        == Some(retained_tokens as u64) =>
+            {
+                info!(
+                    "prefix rewind confirmado: peer={} session={} retained_tokens={} n_past={}",
+                    step.node_id,
+                    &session_id[..8.min(session_id.len())],
+                    retained_tokens,
+                    body.get("n_past")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_default(),
+                );
+            }
             Ok(body) => {
-                warn!("rewind recusado por {}: {}", step.node_id, body);
+                warn!(
+                    "prefix rewind recusado: peer={} session={} retained_tokens={} resposta={}",
+                    step.node_id,
+                    &session_id[..8.min(session_id.len())],
+                    retained_tokens,
+                    body,
+                );
                 all_ok = false;
             }
             Err(error) => {
-                warn!("rewind em {} falhou: {error}", step.node_id);
+                warn!(
+                    "prefix rewind falhou: peer={} session={} retained_tokens={} erro={error}",
+                    step.node_id,
+                    &session_id[..8.min(session_id.len())],
+                    retained_tokens,
+                );
                 all_ok = false;
             }
         }
@@ -2211,7 +2274,7 @@ pub fn spawn_logged_generation_with_stops(
     let logged_prompt = input.prompt.clone();
     let request_details = input.request_details.clone();
     let audit = input.state.audit.clone();
-    let enterprise = input.state.enterprise.clone();
+    let plugins = input.state.plugins.clone();
     let request_id = input
         .trace_id
         .clone()
@@ -2229,10 +2292,13 @@ pub fn spawn_logged_generation_with_stops(
         request_details,
     };
     let audit_for_begin = audit.clone();
-    let enterprise_for_begin = enterprise.clone();
+    let plugins_for_begin = plugins.clone();
     tokio::spawn(async move {
-        if !enterprise_for_begin
-            .ingest_audit_event(crate::reqlog::AuditEvent::Begin(begin.clone()))
+        if !plugins_for_begin
+            .ingest_audit_event(
+                crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                crate::reqlog::AuditEvent::Begin(begin.clone()),
+            )
             .await
         {
             audit_for_begin.begin(begin);
@@ -2336,11 +2402,14 @@ pub fn spawn_logged_generation_with_stops(
             status: audit_status,
             error,
         };
-        if !enterprise
-            .ingest_audit_event(crate::reqlog::AuditEvent::Complete {
-                id: request_id.clone(),
-                completion: completion.clone(),
-            })
+        if !plugins
+            .ingest_audit_event(
+                crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                crate::reqlog::AuditEvent::Complete {
+                    id: request_id.clone(),
+                    completion: completion.clone(),
+                },
+            )
             .await
         {
             audit.complete(request_id, completion);
@@ -2384,18 +2453,24 @@ pub(crate) fn record_rejected(
         error: Some(error),
     };
     let audit = state.audit.clone();
-    let enterprise = state.enterprise.clone();
+    let plugins = state.plugins.clone();
     tokio::spawn(async move {
         let complete = crate::reqlog::AuditEvent::Complete {
             id: id.clone(),
             completion: completion.clone(),
         };
-        if enterprise
-            .ingest_audit_event(crate::reqlog::AuditEvent::Begin(begin.clone()))
+        if plugins
+            .ingest_audit_event(
+                crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                crate::reqlog::AuditEvent::Begin(begin.clone()),
+            )
             .await
         {
-            if !enterprise.ingest_audit_event(complete).await {
-                tracing::warn!(request_id = %id, "conclusão de auditoria Enterprise não entrou no plugin");
+            if !plugins
+                .ingest_audit_event(crate::plugins::ENTERPRISE_PLUGIN_CODE, complete)
+                .await
+            {
+                tracing::warn!(request_id = %id, "conclusão de auditoria não entrou no plugin");
             }
         } else {
             audit.begin(begin);

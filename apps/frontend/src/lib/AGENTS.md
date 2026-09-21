@@ -47,24 +47,25 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `ChatStreamResult` retains trace, generation timings and source so Chat can
   associate the complete telemetry capture with the specific reply while the
   persisted message patch settles.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
   `stream_duration_ms` is measured locally from the first SSE data frame to
   receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
   separate `time_last_token_to_response_end_ms` isolates that tail.
   `chatStream.ts` also carries trace spans, outside-node accounting,
   first-token boundaries, connection counts, decode counts, browser-local stream
   observations and distributed `TelemetrySummary`/`TelemetrySpan`. TTFT keeps
-  separate pipeline/server/client meanings; backend completion timing must not
-  be used to infer `POM_PROFILE_SYNC` or the engine.
+  separate pipeline/server/client meanings; backend synchronization timing
+  must not be used to infer `POM_PROFILE_SYNC` or the engine.
   The remote-stream contract separates producer, downstream, channel, queue
   and callback timing, and `PhaseTrace` carries synchronous MTP draft time
   when reported. `RequestTrace.pipeline_cycle` preserves the measured directional legs of the
   distributed cycle, including the final peer-to-gateway return when the
   transport publishes one; missing legs remain unknown. The Dashboard uses
   this data for the virtual Gateway cost card instead of a topology probe.
-  Decode coverage with no expected span denominator is rendered as not measured,
-  and an incomplete transport receipt remains visible independently of the
-  response-complete state.
+  Decode coverage uses callback expectations when available, otherwise output
+  tokens times pipeline hops; with no output or callbacks it is not measured.
+  An incomplete transport receipt remains visible independently of response
+  completeness.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
   backend cost and time outside the node; compara timings ponta a ponta com o
   processamento medido no nó antes de nomear o gargalo. It refuses to label
@@ -169,7 +170,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   ordered physical files and multipart_error carries the concrete reason a
   declared set cannot be sliced; the UI uses metadata_complete to avoid
   displaying a first-part byte count while enrichment is pending.
-  `RuntimeParams.hidden_state_dtype` is the deployment-wide f16/f8 choice;
+  `RuntimeParams.hidden_state_dtype` is the deployment-wide f16/f8/i4g64/i4g128 choice;
   `RuntimeParams.max_new_tokens` is only the size of one backend leg. The
   cycle detector settings in `RuntimeParams` control the gateway's bounded
   repetition safety stop and can be disabled explicitly. The total output
@@ -185,9 +186,15 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `GpuStat.power_watts` é telemetria opcional: o card de detalhes mostra o
   valor quando NVIDIA ou AMD expõe a potência da placa e mantém desconhecido
   quando não há essa leitura.
-  `EnterpriseStatus` é o contrato do estado de licença consumido por
-  `useEnterpriseStatus`; quando inativo, esse hook remove caches de auditoria
-  para não reexibir dados Enterprise antigos.
+  `PluginStatus` é o contrato de UM plugin independente do catálogo (ver
+  `crates/node/src/plugins.rs`), consumido por `usePlugins`/`useEnterpriseStatus`
+  (o segundo é um seletor sobre o primeiro, para o `plugin_code` `"enterprise"`
+  especificamente). Quando inativo, `useEnterpriseStatus` remove caches de
+  auditoria para não reexibir dados antigos. A atualização do binário `pom`
+  em si é um contrato separado, `PomCoreUpdateStatus`/`usePomCoreUpdateStatus`
+  - nunca misture os dois: a tela de Plugins só aplica atualização de plugin,
+  e `About.tsx` só aplica atualização do `pom`, cada uma após confirmação
+  explícita do operador.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions
@@ -398,7 +405,8 @@ ultrapassam o orçamento, mas imagem só falha se nem a miniatura mínima couber
   `RequestTrace.cached_tokens` is optional on purpose: a node that does not
   report prefix reuse means "unknown", and the chat shows nothing rather than
   claiming savings it cannot prove. The trace also carries prefix candidate and
-  transmitted-token counts, reuse status, bounded prefill-overlap counters, and
+  transmitted-token counts, gateway miss reason and effective adaptive chunk
+  size, reuse status, bounded prefill-overlap counters, and
   per-transport traversal distributions with execution RTT, measured network
   RTT, fallback and switch counts. The
   transport contract is aggregate by default, never one serialized entry per

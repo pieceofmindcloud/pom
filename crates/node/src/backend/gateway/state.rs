@@ -217,6 +217,9 @@ pub struct GatewayState {
     /// + `slot_persist_prefix_cache`). `None` quando o recurso está desligado.
     /// Ver `crate::prefix_cache::PrefixDiskIndex` e `build_prefix_disk_index`.
     pub prefix_disk: Option<Arc<crate::prefix_cache::PrefixDiskIndex>>,
+    /// Perfil adaptativo por rota, atualizado apenas depois de um prefill
+    /// concluído; escolher o chunk não aguarda I/O nem sonda de rede.
+    pub adaptive_chunk_tuner: Arc<crate::gateway::AdaptiveChunkTuner>,
     /// Clientes HTTP de saída, **um por peer**, com o certificado do destino
     /// fixado pelo node_id (`peer_client::PeerClients`).
     ///
@@ -238,8 +241,12 @@ pub struct GatewayState {
     pub cycle_config: crate::cycle::CycleConfig,
     /// Durable audit trail for requests entering this gateway.
     pub audit: Arc<crate::reqlog::AuditLog>,
-    /// License and helper-host state for Enterprise-only request data.
-    pub(crate) enterprise: Arc<crate::enterprise::EnterpriseState>,
+    /// Gerenciador dos plugins independentes (licença, host de processo por
+    /// plugin, atualização própria). Ver `crate::plugins`.
+    pub(crate) plugins: Arc<crate::plugins::PluginManager>,
+    /// Detecção/instalação da release do próprio binário `pom`. Fronteira de
+    /// produto separada dos plugins de propósito - ver `crate::pom_core_update`.
+    pub(crate) pom_core_update: Arc<crate::pom_core_update::PomCoreUpdater>,
     /// Single durable store for local operational state.
     pub database: Arc<crate::db::PomDb>,
     /// HTTP port this node serves the API and UI on.
@@ -878,6 +885,8 @@ impl GatewayState {
                     let mut caps = vec![
                         crate::pipeline::CAP_FRAME_BATCH.into(),
                         crate::pipeline::CAP_FRAME_DTYPE_F8.into(),
+                        crate::pipeline::CAP_FRAME_DTYPE_I4G64.into(),
+                        crate::pipeline::CAP_FRAME_DTYPE_I4G128.into(),
                         crate::pipeline::CAP_REMOTE_TOKEN_STREAM.into(),
                         crate::pipeline::CAP_LINK_STREAM.into(),
                         "relay/v1-chain".into(),

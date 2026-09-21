@@ -65,6 +65,17 @@ describe("navigation structure", () => {
     });
   });
 
+  it("exposes the plugin catalog in the menu, apart from About", () => {
+    // Sem esta entrada a tela de Plugins só era alcançável esbarrando numa
+    // funcionalidade bloqueada - o catálogo existe justamente para ser
+    // navegado antes da compra.
+    const settings = NAV.find((section) => section.labelKey === "nav.settings");
+    const entries = settings?.children?.map((child) => [child.labelKey, child.to]);
+
+    expect(entries).toContainEqual(["nav.plugins", "/plugins"]);
+    expect(entries).toContainEqual(["nav.about", "/config/sobre"]);
+  });
+
   it("keeps network chat separate and removes wizard and connection keys from the menu", () => {
     expect(NAV.map((section) => section.labelKey)).toContain("nav.networkChat");
     expect(NAV.flatMap((section) => section.children ?? []).map((child) => child.labelKey)).not.toContain("nav.setupWizard");
@@ -139,6 +150,7 @@ describe("navForProfile", () => {
       "/config/preferencias",
       "/config/armazenamento",
       "/config/preferencias/admin",
+      "/plugins",
       "/config/sobre",
     ]);
 

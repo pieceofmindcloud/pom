@@ -1,8 +1,11 @@
-import { ExternalLink, Info, PackageOpen, Scale, Search } from "lucide-react";
+import { Download, ExternalLink, Info, PackageOpen, RefreshCw, Scale, Search } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Badge, Input, PageHeader, Panel, PanelHeader } from "../components/ui";
+import { Link } from "react-router-dom";
+import { Badge, Button, Input, PageHeader, Panel, PanelHeader } from "../components/ui";
 import { useI18n } from "../i18n/provider";
+import { api } from "../lib/api";
 import { POM_LICENSE, THIRD_PARTY_LICENSES, type LicenseEntry } from "../lib/licenses.generated";
+import { useEnterpriseStatus, usePomCoreUpdateStatus } from "../lib/queries";
 
 function licenseGroups(entries: readonly LicenseEntry[]) {
   const groups = new Map<string, LicenseEntry[]>();
@@ -16,8 +19,18 @@ function licenseGroups(entries: readonly LicenseEntry[]) {
 
 export function About() {
   const { t } = useI18n();
+  const enterpriseStatus = useEnterpriseStatus();
+  const pomUpdate = usePomCoreUpdateStatus();
   const [query, setQuery] = useState("");
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateCheckFailed, setUpdateCheckFailed] = useState(false);
+  const [applyingUpdate, setApplyingUpdate] = useState(false);
+  const [applyUpdateFailed, setApplyUpdateFailed] = useState(false);
   const normalizedQuery = query.trim().toLocaleLowerCase();
+  const enterpriseActive = Boolean(enterpriseStatus.data?.active);
+  const enterpriseState = enterpriseStatus.data?.state ?? "unavailable";
+  const manageUrl = enterpriseStatus.data?.manage_url ?? "https://pieceofmind.cloud/enterprise";
+  const coreUpdate = pomUpdate.data?.core_update ?? null;
   const filteredEntries = useMemo(
     () => THIRD_PARTY_LICENSES.filter((entry) => {
       if (!normalizedQuery) return true;
@@ -27,6 +40,32 @@ export function About() {
     [normalizedQuery],
   );
   const groups = useMemo(() => licenseGroups(filteredEntries), [filteredEntries]);
+
+  async function checkForUpdates() {
+    setCheckingUpdate(true);
+    setUpdateCheckFailed(false);
+    try {
+      await api.post("/api/ui/pom-update/check");
+      await pomUpdate.refetch();
+    } catch {
+      setUpdateCheckFailed(true);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
+  async function applyUpdate() {
+    if (!coreUpdate) return;
+    setApplyingUpdate(true);
+    setApplyUpdateFailed(false);
+    try {
+      await api.post("/api/ui/pom-update/apply", { release_id: coreUpdate.release_id });
+    } catch {
+      setApplyUpdateFailed(true);
+    } finally {
+      setApplyingUpdate(false);
+    }
+  }
 
   return (
     <>
@@ -43,6 +82,71 @@ export function About() {
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-l-2 border-amber px-5 py-4">
             <span className="font-mono text-sm font-medium text-amber">{t("about.placeholderLicenseValue")}</span>
             <span className="text-sm text-muted">{t("about.placeholderLicenseText")}</span>
+          </div>
+        </Panel>
+
+        <Panel data-core-update-available={Boolean(coreUpdate)} className={coreUpdate ? "border-iris/35 bg-iris/5" : "border-line"}>
+          <PanelHeader
+            eyebrow="POM"
+            title={t("about.pomUpdateTitle")}
+            subtitle={t("about.pomUpdateSubtitle")}
+          />
+          <div className="space-y-4 px-5 py-5">
+            <dl className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <dt className="eyebrow mb-1">{t("about.enterpriseState")}</dt>
+                <dd className="text-sm text-fg">
+                  <Badge tone={enterpriseActive ? "aqua" : "amber"}>{enterpriseActive ? t("about.enterpriseActive") : t("about.enterpriseInactive")}</Badge>
+                </dd>
+              </div>
+              <div>
+                <dt className="eyebrow mb-1">{t("enterprise.licenseState")}</dt>
+                <dd className="font-mono text-sm text-fg">{enterpriseState}</dd>
+              </div>
+            </dl>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="outline"
+                loading={checkingUpdate}
+                icon={<RefreshCw className="h-3.5 w-3.5" />}
+                onClick={() => void checkForUpdates()}
+              >
+                {t("about.enterpriseCheckUpdates")}
+              </Button>
+              {updateCheckFailed && <p role="alert" className="text-xs text-rose">{t("about.enterpriseCheckFailed")}</p>}
+            </div>
+            {coreUpdate && (
+              <div className="space-y-3 rounded-xl border border-iris/35 bg-iris/8 px-4 py-3" role="status">
+                <div>
+                  <p className="text-sm font-medium text-fg">
+                    {t("about.pomUpdateAvailable", { version: coreUpdate.version })}
+                  </p>
+                  <p className="mt-1 font-mono text-xs text-muted">
+                    {t("about.pomUpdateRelease", { release_id: coreUpdate.release_id })}
+                  </p>
+                  {coreUpdate.changelog && <p className="mt-2 text-xs leading-relaxed text-muted">{coreUpdate.changelog}</p>}
+                </div>
+                <Button
+                  variant="primary"
+                  loading={applyingUpdate}
+                  icon={<Download className="h-3.5 w-3.5" />}
+                  onClick={() => void applyUpdate()}
+                >
+                  {t("about.pomUpdateApply")}
+                </Button>
+                {applyUpdateFailed && <p role="alert" className="text-xs text-rose">{t("about.pomUpdateApplyFailed")}</p>}
+              </div>
+            )}
+            {!enterpriseActive && (
+              <p className="text-xs leading-relaxed text-muted">
+                {t("about.pomUpdateNeedsPlugin")}{" "}
+                <Link to="/plugins" className="text-iris hover:text-iris/80">{t("about.pomUpdateOpenPlugins")}</Link>
+                {" "}
+                <a href={manageUrl} target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">
+                  {t("enterprise.purchaseLink")}
+                </a>
+              </p>
+            )}
           </div>
         </Panel>
 

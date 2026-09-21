@@ -8,6 +8,13 @@ build = "build.rs"
 name = "pom"
 path = "src/main.rs"
 
+# Host IPC falso, usado só pelo teste de regressão de
+# `enterprise::heartbeat_success_restarts_stopped_host_...` em
+# `src/enterprise.rs`. Não faz parte do produto.
+[[bin]]
+name = "pom-fake-enterprise-plugin-host"
+path = "tests/support/fake_plugin_host.rs"
+
 [features]
 default = []
 # As features do backend nativo vivem em `llama-engine`, que é quem declara
@@ -33,6 +40,7 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 clap = { version = "4", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
+semver = "1"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
@@ -107,3 +115,4 @@ cc = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+tempfile = "3"

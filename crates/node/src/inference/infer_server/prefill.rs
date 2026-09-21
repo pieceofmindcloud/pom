@@ -1,6 +1,92 @@
 use super::*;
 use base64::Engine as _;
 
+#[derive(Clone, Copy, Default)]
+struct PrefixReuseSnapshot {
+    session_present: bool,
+    retained: bool,
+    contains_media: bool,
+    positions_match: bool,
+    n_past: u32,
+    prompt_cells: u32,
+    prompt_tokens: usize,
+    prompt_len: u32,
+    stable_len: u32,
+}
+
+impl PrefixReuseSnapshot {
+    fn from_session(session: Option<&Session>) -> Self {
+        session.map_or_else(Self::default, |session| Self {
+            session_present: true,
+            retained: session.retained,
+            contains_media: session.contains_media,
+            positions_match: session.positions_match_cells(),
+            n_past: session.n_past,
+            prompt_cells: session.prompt_cells,
+            prompt_tokens: session.prompt_tokens.len(),
+            prompt_len: session.prompt_len,
+            stable_len: session.stable_len,
+        })
+    }
+}
+
+fn prefix_reuse_gate(
+    requested: bool,
+    chunk_index: u32,
+    session: PrefixReuseSnapshot,
+) -> (bool, &'static str) {
+    let reason = if !requested {
+        "gateway-did-not-request"
+    } else if chunk_index != 0 {
+        "not-first-chunk"
+    } else if !session.session_present {
+        "peer-session-missing"
+    } else if !session.retained {
+        "peer-session-not-retained"
+    } else if session.contains_media {
+        "peer-session-contains-media"
+    } else if !session.positions_match {
+        "peer-kv-position-mismatch"
+    } else {
+        "eligible"
+    };
+    (reason == "eligible", reason)
+}
+
+#[cfg(test)]
+mod prefix_reuse_gate_tests {
+    use super::*;
+
+    #[test]
+    fn gate_names_missing_and_inconsistent_peer_sessions() {
+        assert_eq!(
+            prefix_reuse_gate(true, 0, PrefixReuseSnapshot::default()),
+            (false, "peer-session-missing")
+        );
+
+        let mut session = Session::new(0);
+        session.retained = true;
+        session.n_past = 12;
+        session.prompt_cells = 9;
+        let snapshot = PrefixReuseSnapshot::from_session(Some(&session));
+        assert_eq!(
+            prefix_reuse_gate(true, 0, snapshot),
+            (false, "peer-kv-position-mismatch")
+        );
+
+        session.prompt_cells = session.n_past;
+        let snapshot = PrefixReuseSnapshot::from_session(Some(&session));
+        assert_eq!(prefix_reuse_gate(true, 0, snapshot), (true, "eligible"));
+
+        session.contains_media = true;
+        let snapshot = PrefixReuseSnapshot::from_session(Some(&session));
+        assert_eq!(
+            prefix_reuse_gate(true, 0, snapshot),
+            (false, "peer-session-contains-media")
+        );
+    }
+}
+
 pub(super) async fn handle_prefill(
     State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
@@ -753,11 +839,26 @@ pub(super) fn prefill_blocking(
     // Reusar exige a sessão viva aqui. Ela pode ter sido despejada ou reciclada
     // desde o turno anterior; nesse caso este peer simplesmente recomeça, e é a
     // resposta dele (`reuse_prefix` no meta) que os hops seguintes obedecem.
-    let want_reuse = reuse_prefix
-        && chunk_index == 0
-        && s.sessions
-            .get(&sid_key)
-            .is_some_and(|session| session.retained && session.positions_match_cells());
+    let reuse_snapshot = PrefixReuseSnapshot::from_session(s.sessions.get(&sid_key));
+    let (want_reuse, reuse_gate_reason) =
+        prefix_reuse_gate(reuse_prefix, chunk_index, reuse_snapshot);
+    if chunk_index == 0 {
+        info!(
+            "prefix peer eligibility: session={} requested={} eligible={} reason={} retained={} contains_media={} positions_match={} n_past={} prompt_cells={} prompt_tokens={} prompt_len={} stable_len={}",
+            &sid_key[..8.min(sid_key.len())],
+            reuse_prefix,
+            want_reuse,
+            reuse_gate_reason,
+            reuse_snapshot.retained,
+            reuse_snapshot.contains_media,
+            reuse_snapshot.positions_match,
+            reuse_snapshot.n_past,
+            reuse_snapshot.prompt_cells,
+            reuse_snapshot.prompt_tokens,
+            reuse_snapshot.prompt_len,
+            reuse_snapshot.stable_len,
+        );
+    }
     s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
     let mut prefix = PrefixDecision::default();
     // Quem não tokeniza recebe a fronteira de quem tokenizou, para partir o
@@ -781,8 +882,24 @@ pub(super) fn prefill_blocking(
             };
             let add_bos = !use_tmpl;
             let tokens = s.engine.tokenize(&formatted, add_bos, true);
+            let new_prompt_tokens = tokens.len();
             let stable = stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
             prefix = s.adopt_prompt_prefix(&sid_key, tokens, stable, want_reuse)?;
+            if chunk_index == 0 {
+                info!(
+                    "prefix peer comparison: session={} requested={} eligible={} reason={} old_tokens={} new_tokens={} stable_len={} matched_tokens={} reused={} cached_tokens={}",
+                    &sid_key[..8.min(sid_key.len())],
+                    reuse_prefix,
+                    want_reuse,
+                    reuse_gate_reason,
+                    reuse_snapshot.prompt_tokens,
+                    new_prompt_tokens,
+                    stable,
+                    prefix.matched_tokens,
+                    prefix.reused,
+                    prefix.cached_tokens,
+                );
+            }
         }
     }
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
@@ -939,8 +1056,8 @@ pub(super) fn prefill_blocking(
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     timings.tp = crate::tp::take_decode_telemetry();
-    timings.backend_enqueue_us += engine_timing.enqueue_us;
-    timings.backend_completion_us += engine_timing.backend_completion_us;
+    timings.backend_call_us += engine_timing.backend_call_us;
+    timings.backend_sync_us += engine_timing.backend_sync_us;
     timings.merge_engine_capture(&engine_timing);
 
     // ── Session update ───────────────────────────────────────────────────────
@@ -955,10 +1072,10 @@ pub(super) fn prefill_blocking(
         } else if let Some(positions) = mrope_positions.as_deref() {
             session.n_past =
                 logical_end_from_mrope_positions(n_past, positions, n_tokens, next_pos)?;
-            session.prompt_cells = session.prompt_cells.saturating_add(n_tokens as u32);
+            session.record_prompt_sequence_cells(seq_id, n_tokens as u32);
         } else {
             session.n_past += n_tokens as u32;
-            session.prompt_cells = session.prompt_cells.saturating_add(n_tokens as u32);
+            session.record_prompt_sequence_cells(seq_id, n_tokens as u32);
         }
         session.last_used = Instant::now();
     }
@@ -1231,11 +1348,26 @@ pub(super) fn prefill_batch_blocking(
         let result = (|| -> Result<PreparedPrefill> {
             // Mesmo contrato do caminho não-lotado (`prefill_blocking`): reuso
             // só com a sessão viva, e quem tokeniza decide se o prefixo serve.
-            let want_reuse = reuse_prefix
-                && chunk_index == 0
-                && s.sessions.get(&sid_key).is_some_and(|session| {
-                    session.retained && session.prompt_cells == session.n_past
-                });
+            let reuse_snapshot = PrefixReuseSnapshot::from_session(s.sessions.get(&sid_key));
+            let (want_reuse, reuse_gate_reason) =
+                prefix_reuse_gate(reuse_prefix, chunk_index, reuse_snapshot);
+            if chunk_index == 0 {
+                info!(
+                "prefix peer eligibility: session={} requested={} eligible={} reason={} retained={} contains_media={} positions_match={} n_past={} prompt_cells={} prompt_tokens={} prompt_len={} stable_len={}",
+                    &sid_key[..8.min(sid_key.len())],
+                    reuse_prefix,
+                want_reuse,
+                reuse_gate_reason,
+                reuse_snapshot.retained,
+                reuse_snapshot.contains_media,
+                reuse_snapshot.positions_match,
+                    reuse_snapshot.n_past,
+                    reuse_snapshot.prompt_cells,
+                    reuse_snapshot.prompt_tokens,
+                    reuse_snapshot.prompt_len,
+                    reuse_snapshot.stable_len,
+                );
+            }
             s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
             let mut prefix = PrefixDecision::default();
             // Ver `prefill_blocking`: quem não tokeniza recebe a fronteira.
@@ -1253,9 +1385,25 @@ pub(super) fn prefill_batch_blocking(
                         text.to_string()
                     };
                     let tokens = s.engine.tokenize(&formatted, !use_tmpl, true);
+                    let new_prompt_tokens = tokens.len();
                     let stable =
                         stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
                     prefix = s.adopt_prompt_prefix(&sid_key, tokens, stable, want_reuse)?;
+                    if chunk_index == 0 {
+                        info!(
+                            "prefix peer comparison: session={} requested={} eligible={} reason={} old_tokens={} new_tokens={} stable_len={} matched_tokens={} reused={} cached_tokens={}",
+                            &sid_key[..8.min(sid_key.len())],
+                            reuse_prefix,
+                            want_reuse,
+                            reuse_gate_reason,
+                            reuse_snapshot.prompt_tokens,
+                            new_prompt_tokens,
+                            stable,
+                            prefix.matched_tokens,
+                            prefix.reused,
+                            prefix.cached_tokens,
+                        );
+                    }
                 }
             }
 
@@ -1514,10 +1662,10 @@ pub(super) fn prefill_batch_blocking(
                     item.n_tokens,
                     item.next_pos,
                 )?;
-                session.prompt_cells = session.prompt_cells.saturating_add(item.n_tokens as u32);
+                session.record_prompt_sequence_cells(item.seq_id, item.n_tokens as u32);
             } else {
                 session.n_past = session.n_past.saturating_add(item.n_tokens as u32);
-                session.prompt_cells = session.prompt_cells.saturating_add(item.n_tokens as u32);
+                session.record_prompt_sequence_cells(item.seq_id, item.n_tokens as u32);
             }
             session.last_used = Instant::now();
             let total_tokens = session.prompt_tokens.len() as u32;
@@ -1542,8 +1690,8 @@ pub(super) fn prefill_batch_blocking(
                 scheduler_session_existing: item.scheduler_session_existing,
                 pipeline_session: item.pipeline_session,
                 lock_wait_us,
-                decode_us: engine_timings.enqueue_us,
-                backend_completion_us: engine_timings.backend_completion_us,
+                decode_us: engine_timings.backend_call_us,
+                backend_sync_us: engine_timings.backend_sync_us,
                 ..Default::default()
             };
             timings.merge_engine_capture(&engine_timings);
@@ -2050,8 +2198,8 @@ pub(super) fn step_batch_blocking(
                 scheduler_session_existing: item.scheduler_session_existing,
                 pipeline_session: item.pipeline_session,
                 lock_wait_us,
-                decode_us: engine_timings.enqueue_us,
-                backend_completion_us: engine_timings.backend_completion_us,
+                decode_us: engine_timings.backend_call_us,
+                backend_sync_us: engine_timings.backend_sync_us,
                 ..Default::default()
             };
             timings.merge_engine_capture(&engine_timings);

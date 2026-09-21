@@ -26,8 +26,8 @@ function phase(overrides: Partial<PhaseTrace> = {}): PhaseTrace {
     node_lock_wait_ms: 8,
     node_setup_ms: 9,
     node_decode_ms: 10,
-    node_backend_enqueue_ms: 11,
-    node_backend_completion_ms: 12,
+    node_backend_call_ms: 11,
+    node_backend_sync_ms: 12,
     node_residual_capture_d2h_sync_ms: 13,
     node_residual_ms: 14,
     node_logits_access_ms: 15,
@@ -171,6 +171,38 @@ describe("RequestInspector", () => {
     expect(screen.getByText("A resposta anterior")).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "Prompt novo" })).toBeNull();
     expect(screen.queryByText('"messages"')).toBeNull();
+  });
+
+  it("keeps assistant and tool messages after the latest user message in the context", () => {
+    const conversationalEntry = {
+      ...entry,
+      request_details: {
+        model: "qwen",
+        messages: [
+          { role: "system", content: "Instruções do agente" },
+          { role: "user", content: "Codifique esta tarefa" },
+          {
+            role: "assistant",
+            content: "",
+            tool_calls: [{ id: "call-1", type: "function", function: { name: "read", arguments: "{}" } }],
+          },
+          { role: "tool", tool_call_id: "call-1", content: "Resultado atualizado da ferramenta" },
+          { role: "assistant", content: "Vou continuar a análise" },
+        ],
+      },
+    };
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RequestInspector entry={conversationalEntry} onClose={() => undefined} />
+      </LocaleProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "ENVIADO" }));
+
+    expect(screen.getByText("Codifique esta tarefa")).toBeTruthy();
+    expect(screen.getByText("Resultado atualizado da ferramenta")).toBeTruthy();
+    expect(screen.getByText("Vou continuar a análise")).toBeTruthy();
   });
 
   it("renders the response as markdown", () => {

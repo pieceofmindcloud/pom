@@ -166,9 +166,13 @@ function sentMarkdown(entry: RequestLogEntry, noContext: string) {
     -1,
   );
   if (newPromptIndex < 0) return { prompt: entry.prompt, context: noContext };
+  const context = messages
+    .filter((_, index) => index !== newPromptIndex)
+    .map(markdownMessage)
+    .join("\n\n");
   return {
     prompt: contentText(messages[newPromptIndex].content) || entry.prompt,
-    context: newPromptIndex === 0 ? noContext : messages.slice(0, newPromptIndex).map(markdownMessage).join("\n\n"),
+    context: context || noContext,
   };
 }
 

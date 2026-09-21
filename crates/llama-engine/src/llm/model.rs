@@ -233,14 +233,15 @@ impl ModelCache {
     }
 }
 
-/// A diagnostic boundary around `llama_decode`. `backend_completion_us` is
-/// measured with the public `llama_synchronize` API and therefore includes all
-/// queued backend work and output transfers that must complete. It is not
-/// labelled as pure kernel time.
+/// Time spent inside the backend evaluation call, separate from queue
+/// preparation, output capture, and explicit backend synchronization.
+/// `backend_sync_us` is measured with the public `llama_synchronize` API and
+/// includes queued backend work and output transfers. It is not pure kernel
+/// time and is collected only when backend sync profiling is enabled.
 #[derive(Debug, Clone, Default)]
 pub struct DecodeTimings {
-    pub enqueue_us: u64,
-    pub backend_completion_us: u64,
+    pub backend_call_us: u64,
+    pub backend_sync_us: u64,
     /// Compatibility total for the old aggregate field: ready wait plus the
     /// actual device-to-host read.
     pub residual_capture_d2h_sync_us: u64,
@@ -258,7 +259,7 @@ pub struct DecodeTimings {
 ///
 /// O `llama_synchronize` é uma barreira de medição, e a suspeita de que ela
 /// custasse tempo foi o motivo de nascer desligada. Medido em
-/// `logits_access_versus_backend_completion` (fatia final de 16 camadas, Metal,
+/// `logits_access_versus_backend_sync` (fatia final de 16 camadas, Metal,
 /// 16 tokens por rodada, duas rodadas intercaladas de cada modo):
 ///
 /// | | total por token | conclusão | acesso aos logits |
@@ -488,5 +489,148 @@ impl LoadedModel {
         cpu_cfg.moe_external_executor_layers.clear();
         let plan = empty_fit_plan(&cpu_cfg);
         Self::load_with_mtp(model_path, &plan, true)
+    }
+
+    /// Carrega um GGUF de rascunho MTP separado ("shared MTP module"), usado
+    /// quando o modelo alvo não embute pesos `nextn` próprios.
+    ///
+    /// Ao contrário de `load_mtp_cpu` (o mesmo arquivo do alvo, só que
+    /// CPU-only), este é um arquivo **diferente**: pequeno por desenho -
+    /// tipicamente só o bloco `nextn` mais `token_embd`/`output` -, então
+    /// carrega com offload total de GPU em vez de forçar CPU. Sem executor
+    /// externo de MoE: o arquivo de rascunho não traz experts próprios.
+    pub(super) fn load_mtp_draft(draft_path: &str, cfg: &EngineConfig) -> Result<Arc<Self>> {
+        let mut draft_cfg = cfg.clone();
+        draft_cfg.n_gpu_layers = DEFAULT_GPU_LAYERS;
+        draft_cfg.moe_external_executor = false;
+        draft_cfg.moe_external_executor_layers.clear();
+        let plan = empty_fit_plan_with_mtp_mode(&draft_cfg, MtpFitMode::Vram);
+        let loaded = Self::load_with_mtp(draft_path, &plan, true)?;
+        if !loaded.has_nextn_weights() {
+            bail!("o arquivo de rascunho MTP em {draft_path} não traz pesos nextn");
+        }
+        Ok(loaded)
+    }
+
+    /// A mesma carga de `load_mtp_draft`, mas sem tentar GPU nenhuma -
+    /// espelha `load_mtp_cpu` para o caso do arquivo separado. Usada quando
+    /// o `fit_plan` do alvo já decidiu `MtpFitMode::Ram` (a VRAM principal já
+    /// está saturada, então pedir GPU para o rascunho só repetiria o mesmo
+    /// `cudaMalloc` que falhou para o alvo, agora nos pesos - tipicamente
+    /// pequenos, mas ainda maiores que o que sobrou) e como recuo reativo
+    /// quando `load_mtp_draft` falha mesmo com `MtpFitMode::Vram` (a VRAM
+    /// ficou cheia entre o fit e esta carga).
+    pub(super) fn load_mtp_draft_cpu(draft_path: &str, cfg: &EngineConfig) -> Result<Arc<Self>> {
+        let mut draft_cfg = cfg.clone();
+        draft_cfg.n_gpu_layers = 0;
+        draft_cfg.moe_external_executor = false;
+        draft_cfg.moe_external_executor_layers.clear();
+        let plan = empty_fit_plan_with_mtp_mode(&draft_cfg, MtpFitMode::Ram);
+        let loaded = Self::load_with_mtp(draft_path, &plan, true)?;
+        if !loaded.has_nextn_weights() {
+            bail!("o arquivo de rascunho MTP em {draft_path} não traz pesos nextn");
+        }
+        Ok(loaded)
+    }
+}
+
+#[cfg(test)]
+mod mtp_draft_tests {
+    use super::*;
+
+    /// Rascunho MTP externo sintético do arquiteto `qwen4exp`: mesmo desenho
+    /// do "shared MTP module" real da Unsloth (só o bloco final mais
+    /// `token_embd`/`output`/`nextn.*`, sem tronco e sem os três tensores de
+    /// nível de modelo `output_hc_{norm,down,up}` - ver
+    /// `crates/llama-engine/tests/fixtures/mtp/`).
+    ///
+    /// Antes do porte do padrão `qwen35`/`deepseek4` para `qwen4exp.cpp`
+    /// (`mtp_only` + `layer.nextn.*` + `graph_mtp`/`DECODER_MTP`), este
+    /// arquivo não carregava - `check_tensor_dims: tensor 'output_hc_norm.weight'
+    /// not found`, reproduzindo byte a byte o log da ksia de 2026-09-18
+    /// (tarefa sl-mtp-draft-attach, ver `report.md`). Gerado por
+    /// `gerar_gguf_sintetico.py` (mesma pasta).
+    const QWEN4EXP_DRAFT_SEM_OUTPUT_HC: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/mtp/qwen4exp-external-draft-sem-output-hc.gguf"
+    ));
+
+    fn draft_cfg(draft_path: &str) -> EngineConfig {
+        EngineConfig {
+            n_ctx: 64,
+            offload_kqv: true,
+            cache_type_k: crate::KvCacheType::F16,
+            cache_type_v: crate::KvCacheType::F16,
+            fit_memory: true,
+            fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            n_batch: 64,
+            n_gpu_layers: 0,
+            n_threads: 1,
+            max_sessions: 1,
+            need_embeddings: false,
+            mtp: true,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+            mmproj_path: None,
+            mtp_draft_path: Some(draft_path.to_string()),
+        }
+    }
+
+    /// Regressão para o porte do padrão `qwen35`/`deepseek4` em
+    /// `qwen4exp.cpp` (`mtp_only` no `load_arch_tensors`, tensores
+    /// `layer.nextn.*`, `graph_mtp` para `LLM_GRAPH_TYPE_DECODER_MTP`):
+    ///
+    /// 1. `LoadedModel::load_mtp_draft` carrega o rascunho sintético sem o
+    ///    tronco e sem `output_hc_*` de nível de modelo - o mesmo caminho
+    ///    real que `LlmEngine::load_with_cache` usa em produção.
+    /// 2. Um contexto `ctx_type = MTP` sobre esse modelo reserva o grafo
+    ///    `graph_mtp` sem abortar - é a prova de que o fork monta o grafo
+    ///    da cabeça nextn de verdade, não só que os tensores carregam.
+    ///
+    /// Isso prova que a causa raiz (identificada em código e por reprodução
+    /// sintética antes do porte - ver `report.md`) está corrigida para este
+    /// arquivo sintético; o modelo real da Unsloth e o deploy na ksia não
+    /// podem ser verificados aqui.
+    #[test]
+    fn rascunho_qwen4exp_sem_output_hc_anexa() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "pom-qwen4exp-draft-sem-output-hc-{}.gguf",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, QWEN4EXP_DRAFT_SEM_OUTPUT_HC).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+
+        let cfg = draft_cfg(&path_str);
+        let result = LoadedModel::load_mtp_draft(&path_str, &cfg);
+
+        let loaded = match result {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                panic!("load_mtp_draft deveria anexar o rascunho sintético: {error:#}");
+            }
+        };
+        assert!(
+            loaded.has_nextn_weights(),
+            "o rascunho carregado precisa expor pesos nextn"
+        );
+
+        let mut cparams = crate::mtp::context_params_with_offload(&cfg, false);
+        cparams.embeddings = false;
+        let ctx = unsafe { sys::llama_init_from_model(loaded.model_ptr(), cparams) };
+        let ctx_ok = !ctx.is_null();
+        if !ctx.is_null() {
+            unsafe { sys::llama_free(ctx) };
+        }
+
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            ctx_ok,
+            "llama_init_from_model(ctx_type=MTP) devolveu nulo - graph_mtp não reservou"
+        );
     }
 }

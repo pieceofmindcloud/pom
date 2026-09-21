@@ -95,8 +95,9 @@ visibilidade dos controles de implantação na UI local.
 - `link.rs` (860) - a ligação persistente entre andares
   (`transport/link-v1`, `POST /v1/link`): um corpo de ida em fluxo e um corpo
   de volta em fluxo carregando quadros `frame/v1-batch` sucessivos, em vez de
-  uma requisição por ativação. A abertura tem teto de 2 s e testa os candidatos
-  de endereço com memória de falha; a quarentena de 5 min acompanha a memória
+  uma requisição por ativação. A abertura dá até 400 ms por endereço e no
+  máximo 800 ms para testar duas rotas; timeout e recusa entram na memória de
+  falha, e a quarentena de 5 min acompanha a memória
   das rotas e evita reabrir o mesmo
   destino depois de uma falha. Os quadros vão num envelope
   `[tamanho][status][batch_id][corpo]`; o `batch_id` - o mesmo do
@@ -351,8 +352,10 @@ visibilidade dos controles de implantação na UI local.
   apresentar uma fração `N/0` como cobertura completa.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
-  contém peso, tensor ou transporte de arquivo. A chave textual vem do array de
-  mensagens (`openai::conversation_cache_key`), não do prompt renderizado; no
+  contém peso, tensor ou transporte de arquivo. A chave textual é o prompt
+  renderizado canônico (`openai::conversation_cache_key`), na mesma ordem que a
+  cabeça tokeniza. `PrefixLease` identifica miss por cache vazio, sessão
+  correspondente ocupada, prefixo divergente ou rota alterada. No
   caminho Anthropic, `conversation_cache_key_with_budget` também inclui a
   identidade de `task_budget` para impedir que o KV de outro marcador seja
   reutilizado. `PrefixCache::adopt` registra uma sessão restaurada do disco
@@ -749,9 +752,10 @@ visibilidade dos controles de implantação na UI local.
   texto sem sentido (18/08).
 - `wire.rs` - o único lugar que conhece o dtype/codificação do tensor em
   trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
-  `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN na borda,
-  sempre devolvendo f32 ao motor; `prefill/`/`relay.rs` propagam o dtype
-  escolhido e registram bytes enviados, recebidos e formato efetivo por hop.
+  `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN e i4g64/i4g128
+  assinado com escala f16 por grupo na borda, sempre devolvendo f32 ao motor;
+  `prefill/`/`relay.rs` propagam o dtype escolhido e registram bytes enviados,
+  recebidos e formato efetivo por hop.
 
 ## Funções-chave
 
@@ -760,16 +764,30 @@ visibilidade dos controles de implantação na UI local.
   estado de sessões (sessions, seq_pool, max_sessions, sampling).
 - `Session` - **duas sequências de KV por sessão**: `prompt_seq`, onde o
   prefill escreve até a fronteira estável medida, e `gen_seq`, aberta por
-  `open_generation` na primeira decodificação de token gerado, como cópia da
-  primeira. A cauda volátil do prompt e a geração ficam na cópia. `seq_id()`
-  devolve a que vale para o passo atual. É o que permite reter o prompt entre
-  turnos sem nunca remover posições do meio do KV; ver `llm::kv_seq_budget` para
-  o par de sequências e o que ele custa.
+  `open_generation` antes do primeiro chunk a partir dessa fronteira, como
+  cópia da primeira. A cauda volátil do prompt e a geração ficam na cópia.
+  `prompt_cells` conta somente células escritas em `prompt_seq`; chunks na
+  cópia não alteram esse contador. `seq_id()` devolve a sequência do passo
+  atual. É o que permite reter o prompt entre turnos sem nunca remover posições
+  do meio do KV; ver `llm::kv_seq_budget` para o par de sequências e o que ele
+  custa.
 - `retain_prompt` - fim de turno: apaga a sequência da geração inteira (remoção
   total, que todo motor aceita) e devolve a sessão a `prompt_len`. O EOS chama
   isto, **não** `finish`; destruir a sessão no EOS era o que fazia o rewind do
   gateway chegar a uma "sessão desconhecida". `finish` continua sendo a
   liberação de vez (release explícito, cancelamento, erro).
+  `retain_prompt` apaga a sequência de geração e retém `prompt_len` na sequência
+  do prompt. Se há células extras realmente em `prompt_seq`, também tenta uma
+  remoção de **sufixo** (não de meio). `prompt_cells` não inclui o prefill
+  enviado a `gen_seq`: somá-lo como se fosse escrito em `prompt_seq` deixava a
+  posição lógica incompatível com as células físicas na retenção e bloqueava
+  o reuso seguinte. `Session::apply_retention` só ajusta
+  `prompt_cells`/`prompt_tokens` junto com `n_past` se o prompt já estava na
+  fronteira estável ou se a poda foi aceita; um motor recorrente/híbrido que
+  recusa uma poda necessária mantém a sessão retida com o prompt inteiro e
+  perde o reuso daquele turno, sem deixar contagens incoerentes. Logs
+  `prefix peer eligibility`, `prefix peer comparison` e `prefix peer retention`
+  registram o motivo da decisão sem incluir texto do prompt.
 - `plan_prefix_reuse` / `expected_prefill_pos` - a regra do reuso e a posição do
   pedaço, puras e testadas em `prefix_rule_tests`. A regra é só-acrescentar:
   fora dela, a sessão recomeça, o que custa o reuso do turno e nunca a
@@ -966,9 +984,11 @@ visibilidade dos controles de implantação na UI local.
   (default ligado; "0"/"false" desliga), publicado explicitamente por peer em
   `/health`. `NodeTimings` mantém os contadores em microssegundos e serializa os
   campos `*_ms` de diagnóstico como milissegundos fracionários, então uma
-  medição sub-milisegundo não vira zero no wire. `backend_completion_ms` é uma
-  duração medida, não uma fonte de verdade sobre o estado da flag; a telemetria
-  do Chat não deduz esse estado de um timing zero.
+  medição sub-milisegundo não vira zero no wire. `backend_call_ms` mede a
+  chamada de avaliação do llama.cpp, separada de fila e espera pelo mutex;
+  `backend_sync_ms` mede a barreira explícita e pode incluir trabalho de GPU já
+  enfileirado. Nenhum dos dois é tempo puro de kernel ou fonte de verdade sobre
+  `POM_PROFILE_SYNC`; o Chat lê a flag publicada por `/health`.
 - `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
   `Drop` libera só o ctx - os pesos são do `LoadedModel`.
 - `SamplingConfig` - a cada passo, o sampler aplica a penalidade de repetição,
@@ -994,8 +1014,8 @@ visibilidade dos controles de implantação na UI local.
   quando `plan.supports_direct_reply()`, senão `run_ring`/`step_ring` quando
   `supports_relay_chain()`, senão o pipeline hub. `run_with_options` recebe
   `max_inflight_chunks` e um `resume: Option<PrefillResumable>` para uma
-  retomada que o chamador tenha provado segura; a recuperação de transporte
-  usa reconstrução fria.
+  retomada que o chamador tenha provado segura; somente entrega ambígua ou
+  estado remoto divergente exige reconstrução fria.
 - hub e `run_direct` - pipeline em ordem, não par travado: `head_pump`
   (despacho serial à cabeça, lê `next_pos` do ACK) e um `drain` com
   `FuturesOrdered` que leva cada estado oculto pelos hops restantes, até `W`
@@ -1104,9 +1124,11 @@ falha de transporte.
 - `extract_relay_failure` - usado por `forward_direct` para nomear o hop que
   falhou na entrega do erro direto.
 - `RelayFailure{failed_node_id, kind, message}`/`HttpRefusal`/`SendIssue` - o
-  gateway responde 502 atribuindo o hop que falhou. `CHUNK_ATTEMPTS=1` no
-  prefill: uma resposta perdida deixa ambíguo se o chunk já foi aplicado, então
-  o gateway reconstrói a sessão inteira em vez de repetir parcialmente.
+  gateway responde 502 atribuindo o hop que falhou. `CHUNK_ATTEMPTS=3` repete
+  somente falhas comprovadamente anteriores à entrega, com recuo exponencial
+  de 100 ms e 200 ms. Depois de chunks aceitos, o prefill retoma na posição
+  absoluta quando é seguro; entrega ambígua ou sessão divergente exige uma
+  reconstrução fria com motivo explícito.
 
 `direct.rs`:
 - `ReplyInbox`/`Ticket` - mapa ticket→canal oneshot que vive no `GatewayState`

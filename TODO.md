@@ -187,14 +187,6 @@ nova. A revisão atual já descreve a preferência pelo endereço local e o
 cliente de peer limita a abertura TCP a 2 s; elas não são contadas como itens
 atuais desta lista.
 
-## Recusados - decisão tomada, não voltar a propor
-
-- O par do `docker-compose` (`docker-compose.yml` montando fixtures que
-  `scripts/gen-node-configs.py` não escreve, e o `.dockerignore` cortando
-  `pom.json`). **Não é defeito:** são dois ambientes de gente diferente - o
-  gerador serve a máquina do captain, o compose serve a do salem - e os dois
-  esquemas de nome não precisam se encontrar. Registrado em `scripts/AGENTS.md`.
-
 ## Dívida de documentação em aberto
 
 - O grafo do workspace diverge da arquitetura declarada. A pendência está

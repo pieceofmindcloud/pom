@@ -1,4 +1,5 @@
-# 3-node local dev/test cluster.
+# Four-node local dev/test cluster. The same service names are used on Ksia
+# and Salem; docker-compose.salem.yml overrides only Salem's GPU visibility.
 #
 # Host networking is required, same as the manual `docker run --net host`
 # this replaces: P2P discovery broadcasts to 255.255.255.255:42777 and the
@@ -16,12 +17,14 @@
 # points at /app, and the web interface would otherwise be looked for under
 # the (bind-mounted, UI-less) data directory instead.
 #
-# GPU isolation is by container device VISIBILITY (matches the ksia 3-node layout):
-#   node-gpu    : NVIDIA(0) + Radeon(/dev/dri)   -> "as duas placas"
-#   node-gpu2   : NVIDIA(0) only, NO /dev/dri     -> so a NVIDIA
-#   node-gpu-3  : Radeon(/dev/dri) only, NO nvidia -> so a Radeon
-# A Radeon e um unico render node: node-gpu e node-gpu-3 veem-na fisicamente;
-# o pom.json de cada fixture decide o uso real.
+# Default GPU visibility for Ksia (two NVIDIA RTX 5060 Ti, no Radeon):
+#   node-gpu    : NVIDIA devices 0 and 1
+#   node-gpu2   : NVIDIA device 1
+#   node-gpu-3  : NVIDIA device 0
+#   node-cpu    : no GPU reservation
+# Salem has one NVIDIA 3060 and one Radeon; select its overlay with
+# COMPOSE_FILE=docker-compose.yml:docker-compose.salem.yml. Its service names,
+# image, build context, volumes, network and environment remain shared.
 x-node: &node
   build:
     context: .
@@ -74,19 +77,15 @@ services:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
       - ./tests/fixtures/node-gpu:/data
-    # AMD Radeon for the Vulkan/RADV backend: the DRI render node is all the
-    # driver needs (`/dev/kfd` is ROCm-only and unused here).
-    devices:
-      - /dev/dri:/dev/dri
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               capabilities: [gpu]
-              device_ids: ['0']
+              device_ids: ['0', '1']
 
-  # salem-gpu-2 : so NVIDIA(0) - sem /dev/dri
+  # Ksia's second NVIDIA node. Salem's override maps its sole NVIDIA card here.
   node-gpu2:
     <<: *node
     container_name: pom-node-gpu2
@@ -100,9 +99,9 @@ services:
           devices:
             - driver: nvidia
               capabilities: [gpu]
-              device_ids: ['0']
+              device_ids: ['1']
 
-  # salem-gpu-3 : so Radeon - /dev/dri, sem reserva NVIDIA
+  # Ksia's first NVIDIA card. Salem's override maps its Radeon here.
   node-gpu-3:
     <<: *node
     container_name: pom-node-gpu3
@@ -110,17 +109,18 @@ services:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
       - ./tests/fixtures/node-gpu-3:/data
-    devices:
-      - /dev/dri:/dev/dri
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ['0']
 
-#  node-cpu-1:
-#    <<: *node
-#    container_name: pom-node-cpu-1
-#    volumes:
-#      - ./tests/fixtures/node-cpu-1:/data
-
-#  node-cpu-2:
-#    <<: *node
-#    container_name: pom-node-cpu-2
-#    volumes:
-#      - ./tests/fixtures/node-cpu-2:/data
+  node-cpu:
+    <<: *node
+    container_name: pom-node-cpu
+    volumes:
+      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      - ./tests/fixtures/node-cpu:/data

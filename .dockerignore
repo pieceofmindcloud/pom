@@ -1,5 +1,7 @@
 target/
+target-*/
 .git/
+.fm-secondmate/
 venv/
 .venv/
 models/

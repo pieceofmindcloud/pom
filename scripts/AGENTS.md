@@ -174,13 +174,14 @@ invocados pelo binario (ver o `README.md` de la).
   executaveis, fixa o caminho do host e preserva os argumentos do container.
   Nao inicia um host vazio no boot porque o host precisa do caminho do plugin
   Enterprise, que so existe depois da ativacao.
-- `docker-compose.yml` - cluster local de 4 servicos (`node-gpu`, `node-gpu-2`,
-  `node-cpu-1`, `node-cpu-2`) com `network_mode: host`; estado em
-  `tests/fixtures/<nome>` e modelos montados de `./models`. GPU so via
-  `deploy.resources` (exige NVIDIA Container Toolkit no host). UI reencontrada
-  por `POM_UI_DIST=/app/apps/frontend/dist` porque `POM_HOME=/data` nao
-  e o /app da imagem. Sobre os nomes das fixtures, veja "Sobre os nomes das
-  fixtures do docker-compose" abaixo: nao e defeito, sao dois ambientes distintos.
+- `docker-compose.yml` - cluster local de 4 servicos (`node-gpu`, `node-gpu2`,
+  `node-gpu-3`, `node-cpu`) com `network_mode: host`, uma ancora comum de
+  build/imagem e estado persistido em `tests/fixtures/<nome>`. O padrao
+  mapeia a topologia da Ksia; na Salem, `COMPOSE_FILE=docker-compose.yml:docker-compose.salem.yml`
+  troca so a visibilidade das GPUs. Ambos mantem os mesmos servicos, contexto,
+  imagem, volumes e variaveis. A UI e reencontrada por
+  `POM_UI_DIST=/app/apps/frontend/dist` porque `POM_HOME=/data` nao e o
+  `/app` da imagem.
 - `.github/workflows/release.yml` - release so manual (`workflow_dispatch` com
   `version` e `prerelease`). Job `ui` builda a interface uma vez; matriz de 4
   alvos (macOS arm64 Metal, Linux x86_64 CPU, Linux x86_64 CUDA 12.6, Windows
@@ -197,20 +198,21 @@ invocados pelo binario (ver o `README.md` de la).
   buildx e sshd (`root:123`, sandbox local, nao internet). `devcontainer.json`
   monta o docker.sock e a chave ssh do host; `install-buildkit.sh` baixa o
   binario `linux-amd64` do buildx (arm64 precisa de `docker-buildx-plugin`).
-- `.dockerignore` - corta `target/`, `.git/`, `venv/`, `models/`, `*.gguf`,
-  `*.key`, `pom.json`, `docs/` do contexto de build; e por isso que o
-  commit precisa chegar por variavel e a config nao entra na imagem.
+- `.dockerignore` - corta `target/`, `target-*/`, `.fm-secondmate/`,
+  `.git/`, `venv/`, `models/`, `*.gguf`, `*.key`, `pom.json` e
+  `docs/superpowers/` do contexto. Mantem `llama.cpp/` porque o link em
+  `vendor/llama-cpp-sys-2/llama.cpp` precisa do codigo-fonte no build.
 
-## Sobre os nomes das fixtures do docker-compose
+## Sobre os nomes e o estado das fixtures do docker-compose
 
-Os dois itens abaixo ja foram considerados defeito, mas o captain recusou
-trata-los. A razao: sao dois ambientes de gente diferente -
-`gen-node-configs.py` gera a configuracao da maquina do captain, e o
-`docker-compose.yml` serve a maquina do salem. Os dois esquemas de nome
-(`tests/fixtures/node-<N>` e `tests/fixtures/node-gpu`/`node-gpu-2`/etc.)
-**nao precisam se encontrar** - cada um atende a um operador distinto.
-
-Nao e defeito. Nao voltar a propor essa "correcao".
+`docker-compose.yml` e `docker-compose.salem.yml` usam os mesmos quatro
+servicos nas duas maquinas, mas preservam os diretorios de estado ja usados
+por cada no. `gen-node-configs.py` continua gravando em
+`tests/fixtures/node-<N>`; Compose monta as pastas nomeadas por papel de
+hardware. Nao troque os caminhos dos volumes como parte do alinhamento dos
+servicos: isso mudaria a localizacao da persistencia e exige uma migracao
+separada. `tests/` fica fora do contexto da imagem, mas seus diretorios sao
+montados pelo host em runtime.
 
 ## migrar-para-pom.sh
 

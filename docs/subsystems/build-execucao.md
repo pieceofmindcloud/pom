@@ -436,17 +436,25 @@ offload no primeiro clique.
   "desconhecido" em todo container, de propósito.
 - **`scripts/run-docker.sh`**: `docker compose down` + `docker compose up -d`
   (não recria a imagem).
-- **`docker-compose.yml`**: cluster local de 4 serviços (`node-gpu`,
-  `node-gpu-2`, `node-cpu-1`, `node-cpu-2`) com `network_mode: host`; estado
-  em `tests/fixtures/<nome>`, modelos montados de `./models`, GPU só via
-  `deploy.resources` (exige NVIDIA Container Toolkit). Cada serviço define
-  `POM_HOME=/data`, `POM_UI_DIST=/app/apps/frontend/dist` e o caminho explícito
-  `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (a UI não ficaria sob o
-  diretório de dados montado). O plugin baixado e `enterprise.db` ficam no
-  volume `/data`; não há volume de socket, pois o IPC é por pipes filho-pai.
-  As portas de cada nó vêm da config, não do CLI - daí o gerador abaixo. Os nomes de fixture do compose
-  (`node-gpu`, `node-cpu-1`...) e os do gerador (`node-<N>`) são de ambientes
-  diferentes de propósito e não precisam se encontrar - ver `scripts/AGENTS.md`.
+- **`docker-compose.yml`**: quatro serviços compartilhados entre Ksia e Salem:
+  `node-gpu`, `node-gpu2`, `node-gpu-3` e `node-cpu`. Todos herdam a mesma
+  âncora de build, imagem `pom:latest`, contexto e configuração de runtime,
+  com `network_mode: host`. O padrão é a topologia Ksia, com NVIDIA 0 e 1 em
+  `node-gpu`, NVIDIA 1 em `node-gpu2`, NVIDIA 0 em `node-gpu-3` e nenhuma
+  reserva em `node-cpu`. Na Salem, use
+  `COMPOSE_FILE=docker-compose.yml:docker-compose.salem.yml`: o overlay expõe
+  a Radeon por `/dev/dri` em `node-gpu` e `node-gpu-3`, reserva a NVIDIA 0
+  em `node-gpu` e `node-gpu2`, e não dá GPU ao CPU. Os serviços mantêm os
+  volumes de modelos e de estado em `tests/fixtures/<nome>`. Cada serviço
+  define `POM_HOME=/data`, `POM_UI_DIST=/app/apps/frontend/dist` e o caminho
+  explícito `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (a UI não ficaria
+  sob o diretório de dados montado). O plugin baixado e `enterprise.db` ficam
+  no volume `/data`; não há volume de socket, pois o IPC é por pipes filho-pai.
+  As portas de cada nó vêm da config, não do CLI - daí o gerador abaixo. O
+  gerador grava em `tests/fixtures/node-<N>`; os serviços continuam montando
+  os diretórios nomeados por papel de hardware para preservar o estado já
+  persistido. Não altere esses caminhos ao alinhar os nomes dos serviços;
+  ver `scripts/AGENTS.md`.
 - **`scripts/gen-node-configs.py`**: gera um `pom.json` por nó em
   `tests/fixtures/node-<N>` (nó 1 = principal, guarda `connection_key` e
   `api_keys`; demais = node com bootstrap para `127.0.0.1:42777`). Recusa
@@ -456,9 +464,13 @@ offload no primeiro clique.
   `HOST:PORT`, `HOST` é compartilhado e cada config conserva seu `p2p_port`;
   não se deve fazer quatro processos anunciarem o mesmo socket. As portas seguem a série:
   gateway 8080+, p2p 42777+, inferência 8181+ (nó 1 herda a histórica 8092).
-- `.dockerignore` corta `target/`, `.git/`, `venv/`, `models/`, `*.gguf`,
-  `*.key`, `pom.json` e `docs/` do contexto de build - por isso o commit
-  chega por variável e a config não entra na imagem.
+- `.dockerignore` corta `target/`, `target-*/`, `.fm-secondmate/`,
+  `.git/`, `venv/`, `models/`, `*.gguf`, `*.key`, `pom.json` e
+  `docs/superpowers/` do contexto de build - por isso o commit chega por
+  variável e a configuração local não entra na imagem. O diretório
+  `llama.cpp/` permanece no contexto porque
+  `vendor/llama-cpp-sys-2/llama.cpp` aponta para esse código-fonte durante o
+  build da imagem.
 
 ## Python legado e venv
 

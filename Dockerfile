@@ -90,7 +90,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvulkan1 \
     mesa-vulkan-drivers \
     vulkan-tools \
-    nvidia-utils-595 \
     && rm -rf /var/lib/apt/lists/*
 
 # mesa-vulkan-drivers drops an ICD for every Mesa driver (intel, nouveau,

@@ -540,6 +540,7 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_HOME` | Resolução de `project_root()` em primeiro lugar: config, `models/`, `venv/`, UI. Sem ela: cwd que parece o projeto, depois subir do diretório do executável. Dois nós na mesma máquina precisam de casas distintas (identidade `node_id` também mora no project root). |
 | `POM_CONFIG` | Caminho do `pom.json` (padrão `<project_root>/pom.json`). |
 | `POM_DB_DIR` | Diretório de `pom.db` e seus arquivos WAL/SHM. Se ausente ou vazio, usa `<project_root>`; o diretório é criado no arranque. |
+| `POM_DEV` | O Compose comum envia `1` a todos os serviços. O código deste checkout não lê essa variável diretamente. |
 | `POM_UI_DIST` | Onde `webapp.rs` lê o bundle da UI (padrão `<project_root>/apps/frontend/dist`). A imagem Docker a seta explicitamente. |
 | `POM_SLOT_SAVE_PATH` | Diretório de snapshots de KV cache (`--slot-save-path` do llama-server). Vence o campo `slot_save_path` do `pom.json`; a flag `--slot-save-path` vence a env var. Por processo, não persistida. Ausente desliga `POST /v1/session/slot` e `/admin/slots`. Ver `inferencia.md` §3.1.1. |
 | `POM_SLOT_PERSIST_PREFIX_CACHE` | `1`/`true`/`yes`/`on` liga o cache de prefixo persistente (gateway grava/restaura o KV retido entre reinícios). Vence `slot_persist_prefix_cache` do `pom.json`; exige `slot_save_path` em todos os hops. Desligado por padrão. Ver `inferencia.md` §3.1.1. |

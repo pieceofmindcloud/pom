@@ -21,6 +21,7 @@ x-node: &node
     POM_UI_DIST: /app/apps/frontend/dist
     POM_PLUGIN_HOST: /usr/local/bin/pom-plugin-host
     POM_BIN: /usr/local/bin/pom
+    POM_DEV: 1
     POM_PROFILE_SYNC: 1
     POM_PROFILE: trace
     # NVIDIA stays on CUDA. Do not add graphics, which also exposes an

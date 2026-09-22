@@ -37,7 +37,7 @@ Estatísticas mora em `pom-plugin-logs`, não aqui.
 |---|---|
 | `schema`, `plugin_code` | `pom-plugin-ui/v1`; o código tem de ser o do plugin instalado |
 | `menu[]` | `id`, `label` por idioma (`en` obrigatório), `icon` (nome conhecido, senão genérico), `to`, `roles` opcional (`admin`/`node`/`infer`); sem `roles` nem o campo legado `profiles`, todos os perfis são elegíveis. `group` é aceito, mas não organiza itens |
-| `routes[]` | `path`, `screen`, `profiles` (`admin`/`node`/`infer`, não vazio), `full_bleed` |
+| `routes[]` | `path`, `screen`, `roles` opcional (`admin`/`node`/`infer`) ou `profiles` legado (`admin`/`node`/`infer`, não vazio), `full_bleed`; sem os dois, todos os perfis são elegíveis |
 | `screens{}` | `module` (asset ES), `export` (padrão `default`), `styles[]` |
 | `i18n{}` | idioma -> asset JSON; se presente, `en` é obrigatório |
 | `assets[]` | lista fechada; caminhos relativos, sem `..`; tudo o que telas e i18n citam tem de estar aqui |
@@ -70,12 +70,13 @@ em recarga direta e navegação pelo histórico do navegador.
 
 Os perfis da rota decidem quem entra na tela do plugin - inclusive `infer`, cuja
 lista reduzida do POM não se aplica a essas rotas. `menu[].roles` restringe a
-visibilidade do link e a rota direta correspondente; a lista efetiva é a
-interseção com `routes[].profiles`. Para manifests existentes,
+visibilidade do link e a rota direta correspondente; `routes[].roles` tem
+precedência sobre `routes[].profiles`, e a lista efetiva é a interseção com os
+menus que cobrem o destino. Para manifests existentes,
 `menu[].profiles` continua aceito como equivalente quando `roles` não foi
 declarado; `roles` prevalece quando os dois campos aparecem. Sem nenhum dos
-campos, todos os perfis são elegíveis, ainda sujeitos aos perfis da rota. Perfil
-fora da lista efetiva recebe a recusa normal.
+campos do menu ou da rota, todos os perfis são elegíveis. Perfil fora da lista
+efetiva recebe a recusa normal.
 
 ## Telas
 

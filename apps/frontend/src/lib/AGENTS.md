@@ -574,8 +574,9 @@ When updating this file, preserve this bar for all agents and keep entries conci
   rotas nativas `/logs` e `/estatisticas`: `resolvePluginRoute`,
   `pluginRouteProfiles`, `pluginMenuItems`, `pluginLabel`, `pluginAssetUrl`.
   `roles` filtra o item e também limita o acesso direto à rota vinculada;
-  se ausente, usa `profiles` legado ou, sem ele, todos os perfis, sujeito às
-  restrições da rota. Não conhece plugin algum.
+  menus e rotas aceitam `roles` atual ou `profiles` legado, sem exigir ambos.
+  Se os dois aparecem, `roles` prevalece; sem nenhum, todos os perfis são
+  elegíveis. Não conhece plugin algum.
 - `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
   design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
   empacotar cópias próprias.

@@ -43,7 +43,12 @@ pub(crate) struct MenuItem {
 pub(crate) struct RouteSpec {
     pub path: String,
     pub screen: String,
-    pub profiles: Vec<String>,
+    /// Roles do contrato atual; na ausência, consulta `profiles` legado.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<String>>,
+    /// Campo legado. Mantido para manifestos já publicados.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiles: Option<Vec<String>>,
     /// A tela ocupa a viewport inteira (como Painel/Logs), sem coluna central.
     #[serde(default)]
     pub full_bleed: bool,
@@ -163,8 +168,10 @@ impl PluginUiManifest {
             }
         }
         for route in &manifest.routes {
+            let valid_role_fields = route.roles.as_deref().is_none_or(valid_roles)
+                && route.profiles.as_deref().is_none_or(valid_profiles);
             if !valid_path(&route.path)
-                || !valid_profiles(&route.profiles)
+                || !valid_role_fields
                 || !manifest.screens.contains_key(&route.screen)
             {
                 return Err(format!("rota {:?} inválida", route.path));
@@ -353,6 +360,27 @@ mod tests {
 
         let mut invalid_roles = manifest();
         invalid_roles["menu"][0]["roles"] = json!(["root"]);
+        assert!(PluginUiManifest::parse("enterprise", invalid_roles).is_err());
+    }
+
+    #[test]
+    fn accepts_route_roles_without_legacy_profiles() {
+        let mut with_roles = manifest();
+        with_roles["routes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("profiles");
+        with_roles["routes"][0]["roles"] = json!(["admin", "infer"]);
+
+        let parsed = PluginUiManifest::parse("enterprise", with_roles).expect("roles valid");
+        assert_eq!(
+            parsed.routes[0].roles.as_deref().unwrap(),
+            ["admin".to_owned(), "infer".to_owned()]
+        );
+        assert_eq!(parsed.routes[0].profiles, None);
+
+        let mut invalid_roles = manifest();
+        invalid_roles["routes"][0]["roles"] = json!(["root"]);
         assert!(PluginUiManifest::parse("enterprise", invalid_roles).is_err());
     }
 

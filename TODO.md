@@ -4,7 +4,8 @@ Lista de trabalho consolidada em 2026-09-07 a partir da auditoria das anotaçõe
 dos `AGENTS.md`, na revisão `985cfb51183c4fa1b509524e54d39aeda78b1cc8`.
 A evidência completa de cada item está no relatório da auditoria que acompanha
 esta tarefa. A lista atual mantém a numeração da auditoria: 17 defeitos ainda
-existentes e 1 item não verificável nesta máquina.
+existentes e 1 item não verificável nesta máquina. Itens acrescentados depois
+da auditoria seguem a numeração a partir do 27.
 
 ## Regra de manutenção
 
@@ -104,13 +105,32 @@ contexto e não devem voltar a ser propostas como defeitos novos.
 
 - [ ] **26 - Build manual pode perder o commit do binário**
   **Fonte:** `scripts/build-docker.sh:6-17`; `crates/node/build.rs:69-92`;
-  `Dockerfile:48-53`.
+  `Dockerfile` (`ARG POM_BUILD_COMMIT`).
   **Prática:** um `docker compose build` manual sem `POM_BUILD_COMMIT` pode
   produzir o carimbo `desconhecido`.
   **Afetados:** builds manuais e pipelines que não exportam a variável;
   diagnóstico do binário fica degradado.
   **Esforço:** baixo, com validação no Dockerfile ou exigência explícita da
   variável, preservando builds locais sem Docker.
+
+- [ ] **27 - O carimbo do commit relinka o Rust inteiro**
+  **Fonte:** `crates/node/src/main.rs:4` (`env!("POM_BUILD_COMMIT")`);
+  `crates/node/build.rs:105-137`; `Dockerfile` (`ARG POM_BUILD_COMMIT`).
+  **Prática:** o carimbo é compilado no binário, então trocar de commit -
+  ou só sujar a árvore, que acrescenta `-sujo` - reexecuta o build script do
+  `node`, recompila o crate e relinka as três variantes com `lto = "fat"` e
+  `codegen-units = 1`, mesmo quando nenhuma linha de Rust mudou. No Docker um
+  `ARG` em escopo também entra na chave de cache de todo `RUN` abaixo dele, e
+  a interface é reconstruída junto. É o único invalidador que sobrou depois da
+  separação de camadas: um commit que só mexe em `apps/frontend` ainda
+  recompila o backend.
+  **Afetados:** todo build de imagem que acompanha um commit novo; cerca de
+  151 s medidos na salem numa etapa final que não tinha o que compilar.
+  **Esforço:** médio. O caminho é o carimbo deixar de ser compilado: o estágio
+  de runtime passa a exportar `POM_BUILD_COMMIT` (três camadas baratas) e o
+  código prefere o valor do ambiente ao compilado. Muda o que `/api/ui/node`
+  reporta quando a variável existe em runtime, então é decisão de produto, não
+  de build - por isso ficou anotado em vez de corrigido de passagem.
 
 ## Baixa
 

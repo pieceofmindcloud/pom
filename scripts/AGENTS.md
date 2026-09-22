@@ -26,16 +26,34 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   `--origens`, `--repeticoes` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
-  exporta `POM_BUILD_COMMIT` e chama `docker compose build`. Durante esse build,
-  o `Dockerfile` roda `npm run build` em `apps/frontend`, compila tres variantes
-  de `pom` (CUDA+Vulkan, somente Vulkan e CPU sem GPU) e compila `pom-plugin-host`
-  separadamente, sem essas features. Todos os servicos compartilham a mesma
-  imagem; `POM_BIN` seleciona a variante em runtime. O script não executa o
-  build da UI diretamente. O commit nao pode ser lido dentro da imagem builder
-  (`.dockerignore` corta `.git/` e a imagem nao tem `git`); sem a variavel o
-  `crates/node/build.rs` carimba "desconhecido" em todo container; ver
-  `TODO.md`, item 26. Construa a imagem por este script, nunca `docker compose
-  build` na mao.
+  exporta `POM_BUILD_COMMIT` e `LLAMA_CPP_COMMIT` e chama `docker compose
+  build`. Durante esse build, o `Dockerfile` compila tres variantes de `pom`
+  (CUDA+Vulkan, somente Vulkan e CPU sem GPU), compila `pom-plugin-host`
+  separadamente, sem essas features, e so entao roda `npm run build` em
+  `apps/frontend` - a interface e a **ultima** camada, de proposito. Todos os
+  servicos compartilham a mesma imagem; `POM_BIN` seleciona a variante em
+  runtime. O script não executa o build da UI diretamente. O commit nao pode
+  ser lido dentro da imagem builder (`.dockerignore` corta `.git/` e a imagem
+  nao tem `git`); sem a variavel o `crates/node/build.rs` carimba
+  "desconhecido" em todo container; ver `TODO.md`, item 26. **Nao ler o commit
+  do fork e erro fatal**, nao `unknown`: esse valor e um id de cache mount como
+  outro qualquer, e dois checkouts diferentes que falhassem a leitura
+  dividiriam a mesma arvore nativa - a `libllama.a` velha que o id existe para
+  evitar. Construa a imagem por este script, nunca `docker compose build` na
+  mao.
+- `test-docker-build-cache.sh` - prova que a imagem reaproveita o que nao
+  mudou. Primeiro le `Dockerfile` e `.dockerignore` e confere a estrutura de
+  que a ordem depende (sem `COPY . .`, fork acima do backend, backend acima da
+  interface, build da interface como ultimo `RUN`, cache mount de
+  `/build/target` ainda chaveado em `${LLAMA_CPP_COMMIT}`, artefatos locais
+  fora do contexto) - isso roda sem Docker. Depois, se houver daemon, deriva do
+  proprio `Dockerfile` um stub (mesmas instrucoes, mesma ordem, mesmos ARGs e
+  cache mounts; so o `FROM` e os corpos dos `RUN` sao trocados) e constroi com
+  BuildKit de verdade sobre um contexto sintetico, afirmando o que recompilou
+  em seis cenarios: nada mudou, so apareceram artefatos locais, so a
+  `apps/frontend`, frontend + backend, frontend + backend + fork, e mudanca do
+  commit do fork. `POM_CACHE_TEST_DEBUG=1` imprime cada passo com seu grupo e
+  se veio do cache.
 - `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
   falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
   argumentos.

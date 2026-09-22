@@ -1,18 +1,45 @@
-target/
+# A .dockerignore pattern is matched against the WHOLE path, with `*` stopping
+# at `/` - it is not a .gitignore. So `*.log` alone covers the repository root
+# and nothing else, and every artifact that a build or a local run drops deeper
+# in the tree has to be spelled out with `**/`. Each one that is not excluded
+# goes into the build context, and any change to it invalidates the layer that
+# copies its directory - see the header of `Dockerfile` and
+# `scripts/test-docker-build-cache.sh`.
+**/target/
 target-*/
 .git/
 .fm-secondmate/
 venv/
 .venv/
-models/
+models*/
+source-models*/
 tests/
 *.gguf
 *.part
-*.log
+# A node started from the checkout writes `infer_server_<pid>.log` next to
+# `crates/node`. Those files are in .gitignore, so nobody sees them, and each
+# new one used to re-run the whole Rust build.
+**/*.log
 *.key
 pom.json
 pom.db
 pom.db-*
 docs/superpowers/
-apps/frontend/node_modules
+**/node_modules/
 apps/frontend/dist*
+# Written by `npm run build|dev|test` on the host. The image regenerates all of
+# them (`prebuild` runs build-brand.mjs and build-docs.mjs), and a `tsbuildinfo`
+# from the host is worse than useless here: it records the host's paths and
+# timestamps, and `tsc -b` would trust it.
+**/*.tsbuildinfo
+apps/frontend/src/brand/
+apps/frontend/src/docs/
+apps/frontend/public/brand/
+# The fork's own history - the largest single item in the context (396 MB on
+# salem) and one that changes on every fetch in it. Nothing reads it: the
+# builder image has no `git`, and llama.cpp's `cmake/git-vars.cmake` only runs
+# git when `find_package(Git)` succeeds. The fork's commit reaches the build as
+# `LLAMA_CPP_COMMIT`, read on the host by `scripts/build-docker.sh`.
+llama.cpp/.git/
+llama.cpp/build/
+llama.cpp/build-*/

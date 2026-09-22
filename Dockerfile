@@ -35,23 +35,69 @@ RUN rustup component add rustfmt
 
 WORKDIR /build
 
-# The web interface is read from disk at runtime (src/backend/webapp.rs), not
-# embedded in the binary, so building it is independent of the Rust build and
-# only touches this layer's cache when apps/frontend actually changes.
+# ── Build inputs, least volatile first ────────────────────────────────────────
+#
+# Every COPY below names exactly the paths the step under it reads. There is no
+# `COPY . .`, and that is the whole point: with one, a single file anywhere in
+# the tree resets the cache key of the Rust build and of the interface build at
+# the same time, and both ran again with nothing of theirs changed. Measured on
+# the salem checkout with the real context: dropping one `infer_server_*.log`
+# next to `crates/node` - a file a node writes by itself when it is started from
+# the checkout - was enough to re-run `cargo build`. A frontend-only edit did
+# the same. `.dockerignore` keeps such artifacts out of the context; this order
+# keeps a change that IS a real input from reaching the layers above it.
+#
+# The order is dependencies → llama.cpp → backend → interface, so:
+#   - only `apps/frontend` changed → the interface is rebuilt, the backend and
+#     the fork are reused;
+#   - the backend changed too      → both are rebuilt, the fork is reused;
+#   - the fork changed too         → the native tree is rebuilt as well.
+# `scripts/test-docker-build-cache.sh` proves these cases, plus "nothing
+# changed" and "only local build artifacts appeared", against this very file
+# with a real BuildKit.
+
+# ── 1. node_modules ───────────────────────────────────────────────────────────
+# Keyed on the two manifests alone, and placed above the backend on purpose: a
+# Rust change must not reinstall the interface's dependencies. The web interface
+# is read from disk at runtime (src/backend/webapp.rs), not embedded in the
+# binary, so the two builds share nothing but this image.
 COPY apps/frontend/package.json apps/frontend/package-lock.json apps/frontend/
 RUN --mount=type=cache,target=/root/.npm \
     cd apps/frontend && npm ci --no-audit --no-fund
 
-COPY . .
-RUN cd apps/frontend && npm run build
+# ── 2. the llama.cpp fork ─────────────────────────────────────────────────────
+# `vendor/llama-cpp-sys-2/llama.cpp` is a symlink to `../../llama.cpp`, so both
+# trees have to land, and the fork goes first: it is the most expensive input
+# and the one that changes least. A COPY that stays cached also keeps the
+# sources' mtimes frozen (BuildKit preserves them from the context), which is
+# what lets cmake/ninja decide inside the `/build/target` cache mount that
+# nothing has to be compiled again.
+COPY llama.cpp/ llama.cpp/
+COPY vendor/ vendor/
+
+# ── 3. the backend ────────────────────────────────────────────────────────────
+# `brand.json` and `assets/` are inputs of the Rust build, not only of the
+# interface: `crates/brand` embeds the first with `include_str!` and
+# `backend/auth.rs` embeds the logo with `include_bytes!`.
+COPY Cargo.toml Cargo.lock brand.json ./
+COPY .cargo/ .cargo/
+COPY assets/ assets/
+COPY crates/ crates/
+
+ENV CMAKE_CUDA_ARCHITECTURES="86;120"
 
 # The commit the binary reports in the interface (`/api/ui/node`). It cannot be
 # read here: `.dockerignore` excludes `.git/` and this image has no `git`, so
 # `crates/node/build.rs` would stamp "desconhecido" on every container. The host
 # reads it and passes it in — see `scripts/build-docker.sh`.
+#
+# An `ARG` in scope enters the environment of every `RUN` below it and is part
+# of their cache key even when the command never names it, so both ARGs are
+# declared as late as they can be. What is left is deliberate: the stamp is
+# compiled into the binary, so a build of a new commit does recompile the
+# backend - and, because the interface comes after it, rebuilds the interface
+# too. See TODO.md ("O carimbo do commit relinka o Rust inteiro").
 ARG POM_BUILD_COMMIT=""
-ENV POM_BUILD_COMMIT=$POM_BUILD_COMMIT
-ENV CMAKE_CUDA_ARCHITECTURES="86;120"
 
 # Short commit of the vendored llama.cpp fork, passed from the host by
 # scripts/build-docker.sh. The fork's src/CMakeLists.txt collects model
@@ -83,6 +129,19 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     done && \
     cargo build --release -p pom-plugin-host && \
     cp target/release/pom-plugin-host /build/pom-plugin-host
+
+# ── 4. the interface, last ────────────────────────────────────────────────────
+# `npm run build` runs `build-brand.mjs` and `build-docs.mjs` first: they read
+# `brand.json` and `assets/` (already here from the backend layer), the
+# subsystem READMEs, the root AGENTS.md/README.md, `scripts/AGENTS.md` and every
+# AGENTS.md under `crates/` and `apps/frontend/`. `crates/` is already in place
+# too, which is why only the documentation the backend layer does not carry is
+# copied here.
+COPY AGENTS.md README.md ./
+COPY docs/ docs/
+COPY scripts/AGENTS.md scripts/
+COPY apps/frontend/ apps/frontend/
+RUN cd apps/frontend && npm run build
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu24.04

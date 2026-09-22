@@ -398,15 +398,41 @@ offload no primeiro clique.
 ## Docker
 
 - **`Dockerfile`**: dois estágios. Builder
-  `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala rustup + node, faz
-  `npm run build` em `apps/frontend` e compila três variantes de `pom` com
-  cache mounts (registry/git/target): CUDA+Vulkan (`/usr/local/bin/pom`),
-  somente Vulkan (`/usr/local/bin/pom-vulkan`) e CPU sem backends de GPU
-  (`/usr/local/bin/pom-cpu`). Também compila `pom-plugin-host` sem features
-  de GPU. O build verifica que Vulkan e CPU não deixam bibliotecas de runtime
-  ausentes. Runtime copia os quatro binários para `/usr/local/bin`, mantém
-  `LD_LIBRARY_PATH` incluindo `compat/` e `POM_HOME=/app`, e usa
-  `docker-entrypoint.sh`. O `ARG POM_BUILD_COMMIT` recebe o commit do host.
+  `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala rustup + node e compila três
+  variantes de `pom` com cache mounts (registry/git/target): CUDA+Vulkan
+  (`/usr/local/bin/pom`), somente Vulkan (`/usr/local/bin/pom-vulkan`) e CPU
+  sem backends de GPU (`/usr/local/bin/pom-cpu`). Também compila
+  `pom-plugin-host` sem features de GPU, e só depois de tudo isso roda
+  `npm run build` em `apps/frontend`. O build verifica que Vulkan e CPU não
+  deixam bibliotecas de runtime ausentes. Runtime copia os quatro binários
+  para `/usr/local/bin`, mantém `LD_LIBRARY_PATH` incluindo `compat/` e
+  `POM_HOME=/app`, e usa `docker-entrypoint.sh`. O `ARG POM_BUILD_COMMIT`
+  recebe o commit do host.
+- **A ordem das camadas do builder é o contrato de cache**, e cada `COPY` nomeia
+  exatamente o que o passo abaixo dele lê - não existe `COPY . .`. Com um, um
+  único arquivo qualquer da árvore zerava ao mesmo tempo a chave do build Rust
+  e a do build da interface, e os dois rodavam de novo sem nada deles ter
+  mudado. Medido no checkout da salem, com o contexto real: largar um
+  `infer_server_*.log` ao lado de `crates/node` - arquivo que um nó iniciado
+  do checkout escreve sozinho - bastava para reexecutar o `cargo build`; uma
+  edição só na interface fazia o mesmo. A ordem é dependências →
+  `llama.cpp` → backend → interface, e o que ela garante é:
+  - nada mudou → nada recompila;
+  - só apareceram artefatos locais (log, `tsbuildinfo`, `src/docs`, `.git` do
+    fork) → nada recompila, porque ficam fora do contexto;
+  - `apps/frontend` mudou → recompila a interface, reaproveita backend e fork;
+  - `apps/frontend` e o backend mudaram → recompila os dois, reaproveita o
+    fork;
+  - `apps/frontend`, o backend e o fork mudaram → recompila os três.
+
+  `bash scripts/test-docker-build-cache.sh` prova esses cenários contra o
+  próprio `Dockerfile`, com BuildKit de verdade quando há daemon (ver
+  `scripts/AGENTS.md`). Um `ARG` em escopo entra no ambiente - e na chave de
+  cache - de **todo** `RUN` abaixo dele, mesmo o que não o cita, então
+  `POM_BUILD_COMMIT` e `LLAMA_CPP_COMMIT` são declarados o mais tarde
+  possível. O que sobra é deliberado: o carimbo do commit é compilado no
+  binário, então construir um commit novo de fato recompila o backend - e,
+  como a interface vem depois, reconstrói a interface também. Ver `TODO.md`.
 - **`docker-entrypoint.sh`**: valida o binário selecionado por `POM_BIN` e o
   `pom-plugin-host`, exporta
   `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` e faz `exec` do caminho em
@@ -426,19 +452,23 @@ offload no primeiro clique.
   produz `libllama.a` sem o objeto correspondente e falha só no link Rust
   (`undefined symbol: vtable for llama_model_*`). O `build.rs` do
   `llama-cpp-sys-2` chama `always_configure(true)`, mas isso só age quando o
-  Cargo reexecuta o build script - com o cache mount persistente e o `COPY . .`
-  do Docker ele não reexecuta, e a `libllama.a` velha é relinkada a cada build.
+  Cargo reexecuta o build script - com o cache mount persistente ele não
+  reexecuta, e a `libllama.a` velha é relinkada a cada build.
   Por isso o `Dockerfile` chaveia o `id` do cache mount de `/build/target` em
   `pom-target-${LLAMA_CPP_COMMIT}`: cada checkout do fork ganha uma árvore
   nativa limpa. Ids antigos ficam ocupando espaço até um
   `docker builder prune` (`--filter type=exec.cachemount` limpa só os mounts).
   `docker compose build --no-cache` **não** resolve: cache mounts sobrevivem ao
   `--no-cache`.
-- **`scripts/build-docker.sh`**: leia o commit **no host** (`git rev-parse
+- **`scripts/build-docker.sh`**: lê o commit **no host** (`git rev-parse
   --short HEAD`, sufixo `-sujo` se a árvore tem mudanças), exporta
   `POM_BUILD_COMMIT` e `LLAMA_CPP_COMMIT` (`git -C llama.cpp rev-parse --short
-  HEAD`, chaveia o cache mount acima), roda `npm run build` e
-  `docker compose build`.
+  HEAD`, chaveia o cache mount acima) e chama `docker compose build`. Não roda
+  `npm run build`: a interface é construída dentro da imagem, como última
+  camada do builder. Não conseguir ler o commit do fork **aborta** em vez de
+  cair em `unknown` - esse valor é um id de cache mount como outro qualquer, e
+  dois checkouts diferentes que falhassem a leitura dividiriam a mesma árvore
+  nativa, que é exatamente a `libllama.a` velha que o id existe para evitar.
   Construa a imagem por este script; `docker compose build` na mão carimba
   "desconhecido" em todo container, de propósito.
 - **`scripts/run-docker.sh`**: `docker compose down` + `docker compose up -d`
@@ -480,13 +510,26 @@ offload no primeiro clique.
   `HOST:PORT`, `HOST` é compartilhado e cada config conserva seu `p2p_port`;
   não se deve fazer quatro processos anunciarem o mesmo socket. As portas seguem a série:
   gateway 8080+, p2p 42777+, inferência 8181+ (nó 1 herda a histórica 8092).
-- `.dockerignore` corta `target/`, `target-*/`, `.fm-secondmate/`,
-  `.git/`, `venv/`, `models/`, `*.gguf`, `*.key`, `pom.json` e
-  `docs/superpowers/` do contexto de build - por isso o commit chega por
-  variável e a configuração local não entra na imagem. O diretório
+- `.dockerignore` corta `**/target/`, `target-*/`, `.fm-secondmate/`,
+  `.git/`, `venv/`, `models*/`, `source-models*/`, `*.gguf`, `*.key`,
+  `pom.json` e `docs/superpowers/` do contexto de build - por isso o commit
+  chega por variável e a configuração local não entra na imagem. O diretório
   `llama.cpp/` permanece no contexto porque
   `vendor/llama-cpp-sys-2/llama.cpp` aponta para esse código-fonte durante o
-  build da imagem.
+  build da imagem, mas o `.git/` dele **não**: são 396 MB na salem, mudam a
+  cada fetch no fork e ninguém os lê (a imagem builder não tem `git`, e o
+  `cmake/git-vars.cmake` do llama.cpp só roda git quando `find_package(Git)`
+  encontra um). O commit do fork chega por `LLAMA_CPP_COMMIT`.
+  Um padrão de `.dockerignore` casa com o caminho **inteiro** e o `*` para no
+  `/`: não é `.gitignore`. Por isso `*.log` sozinho cobria só a raiz, e todo
+  artefato que um build ou uma execução local deixa mais fundo precisa de
+  `**/` - `**/*.log` (os `infer_server_<pid>.log` ao lado de `crates/node`),
+  `**/*.tsbuildinfo`, `**/node_modules/` e as pastas que o
+  `npm run build` gera no host (`apps/frontend/src/docs/`,
+  `apps/frontend/src/brand/`, `apps/frontend/public/brand/`). Cada um que
+  ficasse de fora entrava no contexto e invalidava a camada que copia o
+  diretório dele. Com isso o contexto caiu de 605 MB para cerca de 194 MB na
+  salem.
 
 ## Python legado e venv
 

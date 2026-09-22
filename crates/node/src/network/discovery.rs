@@ -29,11 +29,20 @@ type InboundTunnelResponse = (
     infer_tunnel::TunnelResponse,
 );
 
-const DEFAULT_RELAY_NODES: &[&str] = &[
-    "/ip4/147.75.87.27/tcp/4001/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-    "/ip4/147.75.195.153/tcp/4001/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-    "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
-];
+/// Relés públicos embutidos.
+///
+/// **A lista está vazia de propósito.** Antes ela trazia três bootstrappers
+/// públicos do IPFS. Bootstrapper não é relé: eles falam Kademlia e identify,
+/// não concedem reserva de Circuit Relay v2 a um par qualquer, e os endereços
+/// fixados aqui já estavam obsoletos. O resultado era uma reserva que nunca
+/// era aceita, sem um erro que dissesse isso - e, sem reserva, o DCuTR nunca
+/// roda, porque o hole punch é coordenado por cima de uma conexão relayed que
+/// não existia. Ver `docs/subsystems/rede-p2p.md`, seção "Travessia de NAT".
+///
+/// Um relé útil para este projeto é um nó pom com IP público rodando
+/// `serve_relay`: só ele honra `max_circuit_bytes` do tamanho de um frame de
+/// prefill. Configure com `--relay-addr`.
+const DEFAULT_RELAY_NODES: &[&str] = &[];
 
 /// Split `host:port`, including the bracketed IPv6 form.
 ///
@@ -140,6 +149,63 @@ async fn ensure_tunnel_peer_address(
         }
     }
     Ok(())
+}
+
+/// Pede uma reserva de Circuit Relay v2 neste relé.
+///
+/// O endereço do circuito é `<relé>/p2p-circuit`; `listen_on` nele faz o swarm
+/// abrir a reserva e passar a anunciar o endereço relayed. Sem esse endereço
+/// não existe conexão relayed, e sem conexão relayed o DCuTR não tem por onde
+/// coordenar o hole punch - era esse o elo que faltava.
+///
+/// O endereço discável do relé sai da lista configurada quando ele está lá, e
+/// do anúncio vivo caso contrário; `listen_addrs` do identify continua fora,
+/// pela política "só Announce disca" desta pasta.
+async fn reserve_circuit(
+    swarm: &mut Swarm<DiscBehaviour>,
+    network: &Network,
+    peer_id: PeerId,
+    relay_peer_addrs: &HashSet<Multiaddr>,
+    circuit_listens: &mut HashSet<PeerId>,
+) {
+    if !circuit_listens.insert(peer_id) {
+        return;
+    }
+    let configured = relay_peer_addrs
+        .iter()
+        .find(|ma| {
+            ma.iter()
+                .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2p(pid) if pid == peer_id))
+        })
+        .cloned();
+    let addresses: Vec<Multiaddr> = match configured {
+        Some(ma) => vec![ma],
+        None => {
+            let peer_id_text = peer_id.to_string();
+            let announced = network
+                .alive_peers()
+                .await
+                .into_iter()
+                .find(|peer| peer.libp2p_peer_id.as_deref() == Some(peer_id_text.as_str()))
+                .map(|peer| peer.libp2p_dialable_addrs())
+                .unwrap_or_default();
+            tunnel_peer_multiaddrs(peer_id, &announced)
+        }
+    };
+    if addresses.is_empty() {
+        circuit_listens.remove(&peer_id);
+        debug!("libp2p: relé {peer_id} sem endereço discável para reservar circuito");
+        return;
+    }
+    for address in addresses {
+        let circuit = address.with(libp2p::multiaddr::Protocol::P2pCircuit);
+        match swarm.listen_on(circuit.clone()) {
+            Ok(_) => info!("libp2p: reservando circuito em {circuit}"),
+            Err(error) => {
+                debug!("libp2p: reserva de circuito em {circuit} não iniciou: {error}")
+            }
+        }
+    }
 }
 
 /// Inverse of `udp_to_libp2p_multiaddr`: extract this node's own `host:port`
@@ -249,6 +315,10 @@ pub struct Discovery {
     relay_peer_addrs: HashSet<Multiaddr>,
     relay_peer_ids: HashSet<PeerId>,
     connected_relays: HashSet<PeerId>,
+    /// Pares para os quais já se pediu `listen_on(.../p2p-circuit)`.
+    /// `listen_on` repetido abre um listener novo a cada chamada; o identify
+    /// de um mesmo relé chega muitas vezes.
+    circuit_listens: HashSet<PeerId>,
     /// Used only to forward an inbound tunnel request to this node's own
     /// inference server on loopback — see `infer_tunnel::serve_loopback`.
     http: reqwest::Client,
@@ -310,6 +380,11 @@ impl Discovery {
                 noise::Config::new,
                 yamux::Config::default,
             )?
+            // QUIC não é otimização de latência aqui: é o que faz o DCuTR
+            // funcionar. O hole punch em TCP depende de simultaneous open, que
+            // a maioria dos NAT domésticos e praticamente todo CGNAT recusa;
+            // o de UDP é o caminho que o DCuTR foi desenhado para usar.
+            .with_quic()
             .with_dns()?
             .with_relay_client(noise::Config::new, yamux::Config::default)?
             .with_behaviour(|key, relay_client| {
@@ -401,6 +476,15 @@ impl Discovery {
         if let Ok(v6_addr) = format!("/ip6/::/tcp/{}", libp2p_port).parse::<Multiaddr>() {
             swarm.listen_on(v6_addr).ok();
         }
+        // Mesma porta do TCP, do outro lado da pilha: o par descobre os dois
+        // pelo identify e o DCuTR escolhe o que conseguir furar.
+        if let Ok(v4_quic) = format!("/ip4/0.0.0.0/udp/{}/quic-v1", libp2p_port).parse::<Multiaddr>()
+        {
+            swarm.listen_on(v4_quic).ok();
+        }
+        if let Ok(v6_quic) = format!("/ip6/::/udp/{}/quic-v1", libp2p_port).parse::<Multiaddr>() {
+            swarm.listen_on(v6_quic).ok();
+        }
 
         swarm.behaviour_mut().gossipsub.subscribe(&topic).ok();
 
@@ -451,6 +535,7 @@ impl Discovery {
             relay_peer_addrs,
             relay_peer_ids,
             connected_relays: HashSet::new(),
+            circuit_listens: HashSet::new(),
             http: reqwest::Client::new(),
         })
     }
@@ -474,6 +559,7 @@ impl Discovery {
             relay_peer_addrs,
             relay_peer_ids,
             mut connected_relays,
+            mut circuit_listens,
             http,
         } = self;
         // Outstanding outbound tunnel calls, keyed by the id the swarm
@@ -496,7 +582,7 @@ impl Discovery {
                 biased;
                 event = swarm.next() => {
                     let Some(ev) = event else { break };
-                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat, &audit_log).await;
+                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &mut circuit_listens, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat, &audit_log).await;
                 }
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
@@ -590,6 +676,7 @@ async fn handle_event(
     relay_peer_addrs: &HashSet<Multiaddr>,
     relay_peer_ids: &HashSet<PeerId>,
     connected_relays: &mut HashSet<PeerId>,
+    circuit_listens: &mut HashSet<PeerId>,
     http: &reqwest::Client,
     pending_tunnel: &mut HashMap<
         OutboundRequestId,
@@ -827,22 +914,23 @@ async fn handle_event(
                     "identify: ignorando {ignored_addresses} listen address(es) de {peer_id}; usando apenas Announce"
                 );
             }
-            if connected_relays.contains(&peer_id) {
-                if let Some(relay_addr) = relay_peer_addrs.iter().find(|ma| {
-                    ma.iter().any(
-                        |p| matches!(p, libp2p::multiaddr::Protocol::P2p(pid) if pid == peer_id),
-                    )
-                }) {
-                    let relay_circuit = relay_addr
-                        .clone()
-                        .with(libp2p::multiaddr::Protocol::P2pCircuit);
-                    swarm.listen_on(relay_circuit).ok();
-                }
+            // Quem oferece o protocolo hop é relé, esteja ou não na lista
+            // configurada. Reservar só nos relés configurados deixava de fora
+            // o caso que mais importa: um nó pom com IP público no próprio
+            // cluster, que é exatamente onde a reserva deve ser feita.
+            let is_relay = connected_relays.contains(&peer_id)
+                || info.protocols.iter().any(|p| *p == relay::HOP_PROTOCOL_NAME);
+            if is_relay {
+                reserve_circuit(swarm, network, peer_id, relay_peer_addrs, circuit_listens).await;
             }
         }
 
         SwarmEvent::NewListenAddr { address, .. } => {
             info!("libp2p listening on {}", address);
+        }
+
+        SwarmEvent::ExternalAddrConfirmed { address } => {
+            info!("libp2p: endereço externo confirmado {address}");
         }
 
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
@@ -889,6 +977,14 @@ async fn handle_event(
             ..
         })) => {
             info!("NAT status: {:?}", new);
+            // Descobrir que se é público e não contar ao swarm não serve para
+            // nada: sem endereço externo confirmado, este nó não o anuncia no
+            // identify, os pares não o aprendem, e o DCuTR não tem o endereço
+            // público para o par discar no momento do punch.
+            if let autonat::NatStatus::Public(address) = new {
+                info!("libp2p: endereço externo confirmado {address}");
+                swarm.add_external_address(address);
+            }
         }
 
         // ── Infer tunnel: inference HTTP calls carried over the swarm as a

@@ -282,19 +282,25 @@ fallback continua em `addr_candidates` + `RouteTable`.
   workers da cadeia.
 
 `discovery.rs`:
-- `Discovery::new` - constrói o swarm (porta TCP = UDP+10000), diala bootstrap
-  convertido por `udp_to_libp2p_multiaddr` e os relays (padrão IPFS + `--relay-peers`).
+- `Discovery::new` - constrói o swarm com TCP **e** QUIC na porta UDP+10000
+  (quatro listen addresses: v4/v6 x tcp/quic-v1), diala bootstrap convertido
+  por `udp_to_libp2p_multiaddr` e os relés de `--relay-peers`. QUIC está ali
+  para o DCuTR: hole punch em TCP depende de simultaneous open, que CGNAT
+  recusa. `DEFAULT_RELAY_NODES` está vazio - os bootstrappers do IPFS que
+  estavam lá não concedem reserva de Circuit Relay v2 e os endereços já eram
+  obsoletos, então nenhuma reserva era aceita e o DCuTR nunca rodava.
 - `handle_event` - Gossipsub Announce vira `PeerInfo` usando
   `addr_candidates.first()` (o literal `0.0.0.0` só sobrevive se nada foi
   anunciado) e registra somente o endpoint canônico como multiaddress
   `/p2p/<peer-id>` antes de aquecer a conexão do túnel; mDNS descobre na LAN e
   só é construído quando não há `advertise_addr` pinado; com pin, nem o
   comportamento mDNS roda. Identify não grava `listen_addrs` no livro de
-  endereços e, para relays conectados, escuta no
-  circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
+  endereços; qualquer par que anuncie `relay::HOP_PROTOCOL_NAME` passa por
+  `reserve_circuit`, que escuta no circuito (`P2pCircuit`) uma vez por par
+  (`circuit_listens`); AutoNAT `Public` vira `Swarm::add_external_address`; requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
   que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT
-  só logam. Os request/responses de logs, auditoria e Chat da rede usam
+  só logam o resto. Os request/responses de logs, auditoria e Chat da rede usam
   behaviours próprios, separados do túnel de inferência. Logs de processo são
   aceitos por todo admin efetivo; eventos de auditoria também são persistidos
   por todo admin efetivo e nenhum evento recebido é retransmitido. O Chat valida no principal,
@@ -304,6 +310,10 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.
+- `reserve_circuit` - pede `listen_on(<relé>/p2p-circuit)`. Endereço do relé
+  vem da lista configurada ou do anúncio vivo, nunca dos `listen_addrs` do
+  identify. Sem circuito publicado não há conexão relayed, e sem ela o DCuTR
+  não tem por onde coordenar o punch.
 - `observed_host_port` - inverso do anterior: tira o `host:port` deste nó do
   `observed_addr` do `identify`. É o "qual é o meu IP público" sem dependência
   de STUN. Recusa endereço privado/CGNAT (`addrs::is_private_or_local`) e

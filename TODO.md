@@ -14,6 +14,65 @@ continua anotado é pior que um defeito não anotado. As notas em
 `## Histórico preservado`, `## Recusados` e `## Dívida de documentação` são
 contexto e não devem voltar a ser propostas como defeitos novos.
 
+## Travessia de NAT (IPv4 sem endereço público)
+
+Trabalho em fases, entrado em 2026-09-22. O diagnóstico completo está em
+`docs/subsystems/rede-p2p.md`, seção "Travessia de NAT". A fase 1 está
+entregue; as fases 2 a 4 continuam abertas e são sequenciais: 2 é o que
+destrava o sintoma, 3 é o que torna a conexão destravada útil ao produto.
+
+- [x] **N1 - Swarm capaz de travessia** (entregue)
+  QUIC no `SwarmBuilder` e nos listen addresses; `DEFAULT_RELAY_NODES`
+  esvaziado, porque bootstrapper do IPFS não concede reserva de Circuit Relay
+  v2; `reserve_circuit` pede reserva a qualquer par que anuncie
+  `relay::HOP_PROTOCOL_NAME`, não só aos configurados; `NatStatus::Public`
+  chama `Swarm::add_external_address`.
+
+- [ ] **N0 - Observabilidade da travessia**
+  **Fonte:** `crates/node/src/network/discovery.rs`.
+  **Prática:** estado do AutoNAT, reservas aceitas e resultado do DCuTR só
+  existem em log. Não há como um operador ver por que dois nós não se falam.
+  **Afetados:** diagnóstico em campo, que hoje depende de `RUST_LOG=debug`.
+  **Esforço:** baixo; expor contadores em `/api/ui/cluster` e na tela de rede.
+
+- [ ] **N2 - Publicar e discar multiaddresses reais**
+  **Fonte:** `crates/node/src/network/network.rs:579`
+  (`libp2p_dialable_addrs`); `crates/node/src/network/discovery.rs`
+  (`udp_to_libp2p_multiaddr`, `tunnel_peer_multiaddrs`);
+  `crates/node/src/network/pkarr_node.rs`.
+  **Prática:** o par publica um único `host:port` e a convenção `porta+10000`
+  não expressa circuito, então uma reserva aceita nunca chega ao outro lado e
+  o DCuTR não tem conexão relayed para coordenar o punch.
+  **Afetados:** todo par atrás de NAT/CGNAT; é o item que destrava o sintoma.
+  **Esforço:** médio. Campo `libp2p_addrs: Vec<String>` com `serde(default)` no
+  `Announce`/`PeerInfo`, alimentado pelos listen/external/circuit addresses do
+  swarm, espelhado no registro pkarr (`multiaddr`/`is_relay` já existem e estão
+  sem uso); `libp2p_dialable_addrs` devolve todos. `udp_to_libp2p_multiaddr`
+  fica só como derivação de compatibilidade quando o campo não vier.
+
+- [ ] **N3 - Plano de controle pelo swarm**
+  **Fonte:** `crates/node/src/network/peer_client.rs`;
+  `crates/node/src/network/infer_tunnel.rs`.
+  **Prática:** `/handshake`, `/api/cluster/network-settings`, watcher do
+  `/health`, transferência e sincronização de admin discam HTTP direto por
+  `host:port`. Como a admissão depende da sonda `/handshake`, um par atrás de
+  NAT não entra em `peers` nem com o túnel de inferência funcionando.
+  **Afetados:** roteamento, UI e pipeline, que só enxergam a tabela `peers`.
+  **Esforço:** médio. `TunnelRequest` já é `{method, path, body, headers}`
+  genérico; generalizar do loopback de inferência para o gateway e usar como
+  fallback no `peer_client` quando a discagem direta falhar. `/handshake`
+  precisa estar incluído, senão o resto não tem efeito.
+
+- [ ] **N4 - Inferência sobre a conexão furada**
+  **Fonte:** `crates/node/src/network/quic.rs`;
+  `crates/node/src/inference/relay.rs`.
+  **Prática:** o caminho QUIC de inferência disca o `host:port` anunciado e não
+  tem travessia própria.
+  **Afetados:** desempenho do pipeline entre pares atrás de NAT.
+  **Esforço:** médio. Levar os frames pelo túnel sobre a conexão QUIC furada
+  pelo DCuTR em vez da discagem direta. Relé é emergência: prefill relayed de
+  vários MB por hop não é regime permanente.
+
 ## Alta
 
 - [ ] **12 - Qualquer papel pode desimplantar a pipeline**

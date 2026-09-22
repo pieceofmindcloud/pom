@@ -3,10 +3,9 @@
 //! Até a decisão do captain (2026-09-18), o POM tinha uma única "licença
 //! Enterprise" para um único produto opcional. Esse modelo virou N plugins
 //! independentes, cada um com seu próprio `plugin_code`, ciclo de ativação,
-//! heartbeat e host de processo. Hoje o catálogo (`PLUGIN_CATALOG`) só tem uma
-//! entrada - `"enterprise"`, o plugin de Estatísticas/Logs de Requisições -
-//! mas a estrutura abaixo é genérica para N: [`PluginManager`] mantém uma
-//! [`PluginRuntime`] por `plugin_code` conhecido, e cada uma tem seu próprio
+//! heartbeat e host de processo. Não há catálogo local de plugins: o servidor
+//! de licenças fornece os `plugin_code` concedidos, e [`PluginManager`] cria
+//! um [`PluginRuntime`] por código quando necessário. Cada runtime tem seu próprio
 //! estado de ativação, lease, host e checagem de atualização de versão,
 //! independentes das demais.
 //!
@@ -45,24 +44,32 @@ use enterprise_protocol::{
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{Mutex, RwLock};
 
-/// Catálogo fixo de plugins conhecidos por este binário. Cada entrada é um
-/// `plugin_code`; a estrutura de dados e o código ao redor são genéricos para
-/// N, mesmo com uma entrada só hoje. Adicionar um plugin novo é adicionar uma
-/// linha aqui - nada mais neste arquivo assume que existe só um.
-pub(crate) const PLUGIN_CATALOG: &[&str] = &["enterprise"];
-
-/// O plugin de Estatísticas/Logs de Requisições, o único do catálogo hoje.
-/// Fica nomeado porque `crate::reqlog`, `crate::backend::gateway::generation`
+/// O plugin de Estatísticas/Logs de Requisições. Fica nomeado porque
+/// `crate::reqlog`, `crate::backend::gateway::generation`
 /// e `crate::pom_core_update` precisam de um `plugin_code` concreto, não do
-/// catálogo inteiro.
+/// código dinâmico de outra instância.
 pub(crate) const ENTERPRISE_PLUGIN_CODE: &str = "enterprise";
 
 const PERSISTED_SETTING_PREFIX: &str = "plugin_license:";
+
+/// Plugin codes vêm do serviço de licenças e também compõem segmentos de URL
+/// e diretórios locais. Aceitamos slugs genéricos, mas nunca separadores ou
+/// segmentos de caminho.
+fn is_valid_plugin_code(code: &str) -> bool {
+    let bytes = code.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 128
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct LicenseClientError {
@@ -1724,14 +1731,16 @@ impl PluginRuntime {
     }
 }
 
-/// Coleção de [`PluginRuntime`], uma por `plugin_code` do catálogo. É o único
+/// Coleção dinâmica de [`PluginRuntime`], uma por `plugin_code` concedido ou
+/// restaurado. É o único
 /// ponto de entrada do resto do backend para o sistema de licenciamento de
 /// plugins - `crate::backend::gateway::GatewayState` mantém um
 /// `Arc<PluginManager>`.
 pub(crate) struct PluginManager {
     fingerprint: Fingerprint,
     service: Arc<dyn LicenseService>,
-    runtimes: HashMap<String, Arc<PluginRuntime>>,
+    database: Option<Arc<crate::db::PomDb>>,
+    runtimes: StdRwLock<HashMap<String, Arc<PluginRuntime>>>,
 }
 
 impl PluginManager {
@@ -1742,31 +1751,33 @@ impl PluginManager {
     /// sobrescreve o estado em memória a partir do banco em um instante que
     /// o teste não controla - deixá-la ligada tornaria qualquer cenário que
     /// monta estado à mão não determinístico, sem cobrir nada a mais.
-    fn from_catalog(
-        catalog: &[&str],
+    fn from_codes(
+        plugin_codes: impl IntoIterator<Item = String>,
         service: Arc<dyn LicenseService>,
         fingerprint: Fingerprint,
         database: Option<Arc<crate::db::PomDb>>,
         restore_on_boot: bool,
     ) -> Arc<Self> {
-        let runtimes = catalog
-            .iter()
+        let runtimes = plugin_codes
+            .into_iter()
+            .filter(|code| is_valid_plugin_code(code))
             .map(|code| {
                 let runtime = Arc::new(PluginRuntime::new(
-                    code,
+                    &code,
                     service.clone(),
                     fingerprint.clone(),
                     database.clone(),
                 ));
-                (code.to_string(), runtime)
+                (code, runtime)
             })
             .collect::<HashMap<_, _>>();
         let manager = Arc::new(Self {
             fingerprint,
             service,
-            runtimes,
+            database,
+            runtimes: StdRwLock::new(runtimes),
         });
-        for runtime in manager.runtimes.values() {
+        for runtime in manager.runtime_values() {
             if restore_on_boot {
                 tokio::spawn({
                     let runtime = runtime.clone();
@@ -1783,8 +1794,22 @@ impl PluginManager {
         database: Arc<crate::db::PomDb>,
     ) -> Arc<Self> {
         let fingerprint = machine_fingerprint(node_id);
-        Self::from_catalog(
-            PLUGIN_CATALOG,
+        let plugin_codes = match database.local_setting_keys_with_prefix(PERSISTED_SETTING_PREFIX) {
+            Ok(keys) => keys
+                .into_iter()
+                .filter_map(|key| {
+                    key.strip_prefix(PERSISTED_SETTING_PREFIX)
+                        .map(str::to_owned)
+                })
+                .filter(|code| is_valid_plugin_code(code))
+                .collect::<Vec<_>>(),
+            Err(error) => {
+                tracing::warn!(error = %error, "licenças de plugins locais não puderam ser enumeradas na inicialização");
+                Vec::new()
+            }
+        };
+        Self::from_codes(
+            plugin_codes,
             Arc::new(HttpLicenseService::new(license_base_url())),
             fingerprint,
             Some(database),
@@ -1795,8 +1820,8 @@ impl PluginManager {
     #[cfg(test)]
     pub(crate) fn runtime(node_id: &str) -> Arc<Self> {
         let fingerprint = machine_fingerprint(node_id);
-        Self::from_catalog(
-            PLUGIN_CATALOG,
+        Self::from_codes(
+            Vec::new(),
             Arc::new(HttpLicenseService::new(license_base_url())),
             fingerprint,
             None,
@@ -1805,20 +1830,34 @@ impl PluginManager {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_manager(catalog: &[&str], service: Arc<dyn LicenseService>) -> Arc<Self> {
-        Self::from_catalog(catalog, service, test_fingerprint(), None, false)
+    pub(crate) fn test_manager(
+        plugin_codes: &[&str],
+        service: Arc<dyn LicenseService>,
+    ) -> Arc<Self> {
+        Self::from_codes(
+            plugin_codes.iter().map(|code| (*code).to_owned()),
+            service,
+            test_fingerprint(),
+            None,
+            false,
+        )
     }
 
-    /// Como `test_manager`, mas com um `PomDb` real - só os poucos testes que
-    /// precisam persistir e restaurar (`plugin_license:<code>`) ou religar um
-    /// host de verdade via `ensure_host_running` precisam disto.
+    /// Como `test_manager`, mas com um `PomDb` real para persistir o código e
+    /// estado de cada plugin.
     #[cfg(test)]
     pub(crate) fn test_manager_with_database(
-        catalog: &[&str],
+        plugin_codes: &[&str],
         service: Arc<dyn LicenseService>,
         database: Arc<crate::db::PomDb>,
     ) -> Arc<Self> {
-        Self::from_catalog(catalog, service, test_fingerprint(), Some(database), false)
+        Self::from_codes(
+            plugin_codes.iter().map(|code| (*code).to_owned()),
+            service,
+            test_fingerprint(),
+            Some(database),
+            false,
+        )
     }
 
     pub(crate) fn fingerprint(&self) -> &Fingerprint {
@@ -1830,21 +1869,61 @@ impl PluginManager {
     }
 
     pub(crate) fn runtime_for(&self, code: &str) -> Option<Arc<PluginRuntime>> {
-        self.runtimes.get(code).cloned()
+        self.runtimes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(code)
+            .cloned()
+    }
+
+    fn get_or_create_runtime(&self, code: &str) -> Result<Arc<PluginRuntime>, LicenseClientError> {
+        if !is_valid_plugin_code(code) {
+            return Err(LicenseClientError::new(
+                LicenseErrorCode::ServerError,
+                "o servidor retornou um plugin_code inválido",
+            ));
+        }
+        let mut runtimes = self
+            .runtimes
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(runtime) = runtimes.get(code) {
+            return Ok(runtime.clone());
+        }
+        let runtime = Arc::new(PluginRuntime::new(
+            code,
+            self.service.clone(),
+            self.fingerprint.clone(),
+            self.database.clone(),
+        ));
+        runtimes.insert(code.to_owned(), runtime.clone());
+        drop(runtimes);
+        runtime.spawn_heartbeat_supervisor();
+        Ok(runtime)
+    }
+
+    fn runtime_values(&self) -> Vec<Arc<PluginRuntime>> {
+        self.runtimes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect()
     }
 
     pub(crate) async fn status(&self, code: &str) -> Option<PluginStatus> {
-        match self.runtimes.get(code) {
+        match self.runtime_for(code) {
             Some(runtime) => Some(runtime.status().await),
             None => None,
         }
     }
 
-    /// Todo o catálogo, na ordem declarada, cada um com seu status atual -
-    /// inclusive os que o operador nunca ativou.
+    /// Status local dos plugins já conhecidos por esta instância, ordenados
+    /// pelo código. A lista pública do servidor é a fonte do catálogo exibido.
     pub(crate) async fn all_statuses(&self) -> Vec<PluginStatus> {
-        let mut statuses = Vec::with_capacity(self.runtimes.len());
-        for runtime in self.runtimes.values() {
+        let runtimes = self.runtime_values();
+        let mut statuses = Vec::with_capacity(runtimes.len());
+        for runtime in runtimes {
             statuses.push(runtime.status().await);
         }
         statuses.sort_by(|a, b| a.code.cmp(&b.code));
@@ -1878,10 +1957,10 @@ impl PluginManager {
         self.runtime_for(code)?.ui_manifest().await
     }
 
-    /// Valida a chave uma vez para descobrir quais `plugin_code` conhecidos
-    /// ela concede, então ativa e instala cada um deles. Concede sucesso se
-    /// ao menos um plugin ativou; plugins que falharam ficam só no log - o
-    /// operador vê o resultado real na lista de status atualizada.
+    /// Valida a chave uma vez para descobrir quais `plugin_code` ela concede,
+    /// cria os runtimes necessários e ativa/instala cada um deles. Concede
+    /// sucesso se ao menos um plugin ativou; plugins que falharam ficam só no
+    /// log - o operador vê o resultado real na lista de status atualizada.
     pub(crate) async fn activate(
         &self,
         license_key: &str,
@@ -1904,25 +1983,29 @@ impl PluginManager {
             },
         );
         let validation = self.service.validate(validate_request).await?;
-        let known_granted = validation
-            .payload
-            .licensed_plugins
-            .into_iter()
-            .filter(|code| self.runtimes.contains_key(code))
-            .collect::<Vec<_>>();
-        if known_granted.is_empty() {
+        let mut seen = HashSet::new();
+        let mut granted_plugins = Vec::new();
+        for code in validation.payload.licensed_plugins {
+            if !is_valid_plugin_code(&code) {
+                return Err(LicenseClientError::new(
+                    LicenseErrorCode::ServerError,
+                    "o servidor retornou um plugin_code inválido",
+                ));
+            }
+            if seen.insert(code.clone()) {
+                granted_plugins.push(code);
+            }
+        }
+        if granted_plugins.is_empty() {
             return Err(LicenseClientError::new(
                 LicenseErrorCode::FeatureNotEntitled,
-                "A chave não concede nenhum plugin conhecido por este nó.",
+                "A chave não concede nenhum plugin.",
             ));
         }
         let mut activated = Vec::new();
         let mut last_error = None;
-        for code in known_granted {
-            let runtime = self
-                .runtimes
-                .get(&code)
-                .expect("filtrado contra runtimes conhecidos");
+        for code in granted_plugins {
+            let runtime = self.get_or_create_runtime(&code)?;
             match runtime.activate_and_install(license_key).await {
                 Ok(()) => activated.push(code),
                 Err(error) => {
@@ -1943,14 +2026,14 @@ impl PluginManager {
     }
 
     pub(crate) async fn deactivate(&self, code: &str) -> Result<(), LicenseClientError> {
-        let runtime = self.runtimes.get(code).ok_or_else(|| {
+        let runtime = self.runtime_for(code).ok_or_else(|| {
             LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
         })?;
         runtime.deactivate().await
     }
 
     pub(crate) async fn refresh(&self, code: &str) -> Result<(), LicenseClientError> {
-        let runtime = self.runtimes.get(code).ok_or_else(|| {
+        let runtime = self.runtime_for(code).ok_or_else(|| {
             LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
         })?;
         runtime.heartbeat(&uuid::Uuid::new_v4().to_string()).await?;
@@ -1964,7 +2047,7 @@ impl PluginManager {
     }
 
     pub(crate) async fn check_update(&self, code: &str) -> Result<(), LicenseClientError> {
-        let runtime = self.runtimes.get(code).ok_or_else(|| {
+        let runtime = self.runtime_for(code).ok_or_else(|| {
             LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
         })?;
         runtime.detect_update().await
@@ -1975,7 +2058,7 @@ impl PluginManager {
         code: &str,
         release_id: &str,
     ) -> Result<(), LicenseClientError> {
-        let runtime = self.runtimes.get(code).ok_or_else(|| {
+        let runtime = self.runtime_for(code).ok_or_else(|| {
             LicenseClientError::new(LicenseErrorCode::ServerError, "plugin desconhecido")
         })?;
         runtime.apply_update(release_id).await
@@ -2386,6 +2469,7 @@ pub(crate) mod tests_support {
         heartbeat_release_signal: Arc<Mutex<Option<String>>>,
         artifacts: Arc<Mutex<HashMap<String, Vec<u8>>>>,
         manifest_calls: Arc<Mutex<Vec<String>>>,
+        manifest_errors: Arc<Mutex<HashMap<String, LicenseErrorCode>>>,
         download_calls: Arc<Mutex<u32>>,
         license_expires_at: Arc<Mutex<Option<String>>>,
     }
@@ -2404,6 +2488,7 @@ pub(crate) mod tests_support {
                 heartbeat_release_signal: Arc::new(Mutex::new(None)),
                 artifacts: Arc::new(Mutex::new(HashMap::new())),
                 manifest_calls: Arc::new(Mutex::new(Vec::new())),
+                manifest_errors: Arc::new(Mutex::new(HashMap::new())),
                 download_calls: Arc::new(Mutex::new(0)),
                 license_expires_at: Arc::new(Mutex::new(None)),
             }
@@ -2463,6 +2548,13 @@ pub(crate) mod tests_support {
 
         pub(crate) async fn manifest_calls(&self) -> Vec<String> {
             self.manifest_calls.lock().await.clone()
+        }
+
+        pub(crate) async fn fail_manifest_for(&self, code: &str, error: LicenseErrorCode) {
+            self.manifest_errors
+                .lock()
+                .await
+                .insert(code.to_owned(), error);
         }
 
         pub(crate) async fn download_calls(&self) -> u32 {
@@ -2614,6 +2706,9 @@ pub(crate) mod tests_support {
                 .lock()
                 .await
                 .push(plugin_code.to_owned());
+            if let Some(error) = self.manifest_errors.lock().await.get(plugin_code) {
+                return Err(LicenseClientError::new(*error, "mock manifest error"));
+            }
             let responses = self.responses.lock().await;
             match responses.get(plugin_code) {
                 Some(MockResponse::Valid(response)) => Ok(ManifestResponse {
@@ -2782,6 +2877,16 @@ mod tests {
     }
 
     #[test]
+    fn plugin_code_validation_accepts_generic_slugs_and_rejects_path_segments() {
+        assert!(is_valid_plugin_code("future.plugin-v2"));
+        assert!(is_valid_plugin_code("analytics_plus"));
+        assert!(!is_valid_plugin_code(""));
+        assert!(!is_valid_plugin_code("../escape"));
+        assert!(!is_valid_plugin_code("plugin/name"));
+        assert!(!is_valid_plugin_code("plugin%2Fname"));
+    }
+
+    #[test]
     fn manifest_signature_is_verified_with_the_published_ed25519_key() {
         use ed25519_dalek::{Signer, SigningKey};
 
@@ -2879,23 +2984,117 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn activation_requires_a_known_granted_plugin() {
+    async fn activation_without_a_granted_plugin_returns_feature_not_entitled() {
+        let service = Arc::new(MockLicenseService::new());
+        let manager = PluginManager::test_manager(&[], service);
+
+        let error = manager
+            .activate("PM-without-plugin-entitlement")
+            .await
+            .expect_err("must reject a key granting no plugins");
+
+        assert_eq!(error.code(), LicenseErrorCode::FeatureNotEntitled);
+    }
+
+    #[tokio::test]
+    async fn plugin_manager_starts_without_a_compiled_in_plugin_catalog() {
+        let manager = PluginManager::test_manager(&[], Arc::new(MockLicenseService::new()));
+
+        assert!(manager.all_statuses().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn production_manager_restores_any_persisted_plugin_code() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database = Arc::new(
+            crate::db::PomDb::open(directory.path().join("pom.db")).expect("abrir banco de teste"),
+        );
+        database
+            .save_local_setting("plugin_license:future.plugin-v2", &serde_json::json!({}))
+            .expect("salvar código de plugin persistido");
+
+        let manager = PluginManager::runtime_with_database("node-dynamic", database);
+
+        assert!(manager.runtime_for("future.plugin-v2").is_some());
+        assert!(manager.runtime_for(ENTERPRISE_PLUGIN_CODE).is_none());
+    }
+
+    #[tokio::test]
+    async fn activation_recognizes_a_license_granted_only_to_base() {
         let service = Arc::new(MockLicenseService::new());
         service
             .grant(
-                "other-product",
-                activation("other-product", "op-1"),
-                Vec::new(),
+                "base",
+                activation("base", "base-1"),
+                b"plugin-binary".to_vec(),
             )
             .await;
-        let manager = PluginManager::test_manager(&["enterprise"], service);
+        service
+            .fail_manifest_for("base", LicenseErrorCode::ServerError)
+            .await;
+        let manager = PluginManager::test_manager(&[], service.clone());
 
         let error = manager
-            .activate("PM-unrelated")
+            .activate("PM-base-only")
             .await
-            .expect_err("must reject a key granting no known plugin");
+            .expect_err("the test fails at manifest lookup after selecting base");
 
-        assert_eq!(error.code(), LicenseErrorCode::FeatureNotEntitled);
+        assert_eq!(error.code(), LicenseErrorCode::ServerError);
+        assert_eq!(service.manifest_calls().await, ["base"]);
+    }
+
+    #[tokio::test]
+    async fn activation_batches_enterprise_and_base_without_a_compiled_catalog() {
+        let service = Arc::new(MockLicenseService::new());
+        for (code, activation_id) in [("enterprise", "ent-1"), ("base", "base-1")] {
+            service
+                .grant(
+                    code,
+                    activation(code, activation_id),
+                    b"plugin-binary".to_vec(),
+                )
+                .await;
+            service
+                .fail_manifest_for(code, LicenseErrorCode::ServerError)
+                .await;
+        }
+        let manager = PluginManager::test_manager(&[], service.clone());
+
+        let error = manager
+            .activate("PM-enterprise-and-base")
+            .await
+            .expect_err("both mock manifests fail after their codes are selected");
+
+        assert_eq!(error.code(), LicenseErrorCode::ServerError);
+        let mut calls = service.manifest_calls().await;
+        calls.sort();
+        assert_eq!(calls, ["base", "enterprise"]);
+        assert!(manager.runtime_for("base").is_some());
+        assert!(manager.runtime_for("enterprise").is_some());
+    }
+
+    #[tokio::test]
+    async fn activation_uses_the_same_per_plugin_path_for_an_arbitrary_plugin_code() {
+        let service = Arc::new(MockLicenseService::new());
+        service
+            .grant(
+                "future_plugin_x",
+                activation("future_plugin_x", "future-1"),
+                b"plugin-binary".to_vec(),
+            )
+            .await;
+        service
+            .fail_manifest_for("future_plugin_x", LicenseErrorCode::ServerError)
+            .await;
+        let manager = PluginManager::test_manager(&[], service.clone());
+
+        let error = manager
+            .activate("PM-future-plugin-only")
+            .await
+            .expect_err("the test fails at manifest lookup after selecting the arbitrary code");
+
+        assert_eq!(error.code(), LicenseErrorCode::ServerError);
+        assert_eq!(service.manifest_calls().await, ["future_plugin_x"]);
     }
 
     #[tokio::test]
@@ -3310,7 +3509,7 @@ mod tests {
             activation("enterprise", "ent-1"),
         ));
         // `test_manager_with_database` não dispara o `restore()` de boot (ver
-        // `from_catalog`): aqui o estado é montado à mão logo abaixo, e uma
+        // `from_codes`): aqui o estado é montado à mão logo abaixo, e uma
         // restauração concorrente o sobrescreveria a partir do banco em um
         // instante fora do controle do teste.
         let manager =

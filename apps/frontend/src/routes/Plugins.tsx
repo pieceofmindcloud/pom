@@ -542,21 +542,10 @@ export function Plugins() {
       if (!licenseStatusByCode.has(code)) licenseStatusByCode.set(code, source);
     }
   }
-  const licensedCodes = new Set(localStatuses.flatMap((status) => status.licensed_plugins));
-  const activationCandidates = new Set(localStatuses.flatMap((status) => status.activation_candidates.map((candidate) => candidate.plugin_code)));
-  const hasLicenseContext = licensedCodes.size > 0 || activationCandidates.size > 0;
-  const activationEligible = publicEntries.some((entry) => {
+  const shouldShowActivation = publicEntries.some((entry) => {
+    if (entry.requires_license !== true) return false;
     const status = localByCode.get(entry.code);
-    return entry.requires_license === true
-      && status !== undefined
-      && !status.active
-      && (
-        !hasLicenseContext
-        || licensedCodes.has(entry.code)
-        || activationCandidates.has(entry.code)
-        || status.state === "expired"
-        || status.state === "revoked"
-      );
+    return status?.active !== true || status.state === "expired" || status.state === "revoked";
   });
   const cards = [
     ...publicEntries.map((entry) => ({
@@ -575,7 +564,7 @@ export function Plugins() {
       <FullBleedHeader title={t("plugins.title")} subtitle={t("plugins.subtitle")} />
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5">
-        <div className={`grid gap-5 ${activationEligible && licenseStatusAvailable ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]" : "grid-cols-1"}`}>
+        <div className={`grid gap-5 ${shouldShowActivation && licenseStatusAvailable ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]" : "grid-cols-1"}`}>
           <div className="min-w-0 space-y-4">
           {catalog.isLoading && (
             <div role="status" aria-label={t("plugins.catalogLoading")} className="space-y-4">
@@ -626,7 +615,7 @@ export function Plugins() {
           )}
           </div>
 
-        {activationEligible && licenseStatusAvailable && <Panel className="self-start">
+        {shouldShowActivation && licenseStatusAvailable && <Panel className="self-start">
           <PanelHeader
             eyebrow={t("plugins.activationEyebrow")}
             title={t("plugins.formTitle")}

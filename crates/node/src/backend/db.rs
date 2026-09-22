@@ -1277,6 +1277,19 @@ impl PomDb {
         })
     }
 
+    pub(crate) fn local_setting_keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.with_read("listar chaves de configuração local", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT setting_key FROM local_settings
+                 WHERE substr(setting_key, 1, length(?1)) = ?1
+                 ORDER BY setting_key",
+            )?;
+            let rows = statement.query_map(params![prefix], |row| row.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .context("listar chaves de configuração local")
+        })
+    }
+
     pub(crate) fn save_local_setting<T: serde::Serialize + ?Sized>(
         &self,
         key: &str,

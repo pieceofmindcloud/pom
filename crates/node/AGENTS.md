@@ -258,17 +258,17 @@ libp2p separado do túnel de inferência. O `GatewayState` compartilha o serviç
 com as rotas `/api/ui/network-chat`; a política de cluster é aplicada pela
 catraca de `network_chat_policy`.
 
-`src/plugins.rs` é o gerenciador genérico de N plugins independentes (decisão
-do captain, 2026-09-18): `PluginManager` mantém um `PluginRuntime` por
-`plugin_code` do catálogo fixo (`PLUGIN_CATALOG`, hoje só `"enterprise"`), cada
-um com seu próprio cliente mockável do servidor de licenças, fingerprint
-compartilhado, estado persistido sem a chave (`plugin_license:<code>`),
-supervisor de heartbeat e checagem de atualização de versão PRÓPRIA - nenhum
-desses estados é compartilhado entre plugins nem com o `pom_core`. Uma
-ativação por chave de licença primeiro valida uma vez para descobrir quais
-`plugin_code` ela concede (`licensed_plugins`, códigos puros), depois
-ativa/instala cada um separadamente. As features de cada plugin vêm do
-`feature_set` do manifesto do release, NÃO da licença.
+`src/plugins.rs` é o gerenciador de plugins independentes: não há lista
+estática de plugins instaláveis no binário. `PluginManager` cria um
+`PluginRuntime` para cada `plugin_code` concedido pelo servidor na validação da
+chave e restaura os códigos com estado local persistido (`plugin_license:<code>`)
+ao iniciar. Cada runtime tem seu próprio ciclo de licença, estado sem a chave,
+supervisor de heartbeat e checagem de atualização - nada disso é compartilhado
+entre plugins nem com o `pom_core`. A ativação em lote valida uma vez, depois
+ativa/instala separadamente cada código concedido. As features de cada plugin
+vêm do `feature_set` do manifesto do release, NÃO da licença. A lista pública
+do servidor alimenta a vitrine do frontend; `GET /api/ui/plugins` publica os
+estados locais já conhecidos pelo nó.
 `PersistedPluginState.installed_release_id` (chave JSON `plugin_release_id`,
 preservada por compatibilidade) só avança quando um download é de fato
 instalado (`activate_and_install`/`apply_update`) - o heartbeat não escreve

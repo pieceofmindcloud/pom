@@ -157,6 +157,8 @@ profile policy remains the effective authorization boundary.
   conexão também faz leituras curtas em ordem, eliminando abertura e DDL por
   operação. O caminho vem de `config::database_path()`; `POM_DB_DIR` aponta
   para um volume e, sem ele, o banco fica na raiz do projeto.
+  `local_setting_keys_with_prefix` permite que o runtime restaure dinamicamente
+  os códigos de plugins persistidos sem manter uma lista compilada no binário.
 - `webapp.rs` - serves the frontend bundle from disk at `/admin-ui/`; `/`
   redirects there and the static surface is covered by the same local-only
   boundary, while nothing is compiled into the binary.
@@ -184,11 +186,11 @@ profile policy remains the effective authorization boundary.
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
-  `GET /api/ui/plugins` (AdminOnly) lista o catálogo inteiro de plugins independentes
-  (`crate::plugins`), cada um com seu estado, features, validade, uso
-  autenticado por plugin e atualização de
-  versão próprios; `POST /api/ui/plugins/activate` ativa quantos plugins
-  conhecidos a chave conceder, e `POST /api/ui/plugins/:code/refresh|
+  `GET /api/ui/plugins` (AdminOnly) lista os estados locais de plugins
+  independentes já restaurados ou vistos pelo runtime (`crate::plugins`), cada
+  um com features, validade, uso autenticado e atualização próprios;
+  `POST /api/ui/plugins/activate` ativa em lote todo `plugin_code` que a chave
+  receber do servidor, e `POST /api/ui/plugins/:code/refresh|
   deactivate|update/check|update/apply` agem sobre um plugin só.
   O catálogo de releases é consultado diretamente pelo browser sem credenciais;
   Comprar envia o operador à loja pública com o código do plugin. A detecção

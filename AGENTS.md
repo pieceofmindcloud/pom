@@ -167,9 +167,9 @@ quebra o produto inteiro.
   POM não tem mais uma única "licença Enterprise" de produto: `PluginManager`
   (`crates/node/src/plugins.rs`) mantém um estado de ativação, lease,
   heartbeat, host de processo e atualização de versão POR `plugin_code`
-  conhecido (`PLUGIN_CATALOG`), sem nada compartilhado entre eles. Hoje o
-  catálogo só tem `"enterprise"` (Estatísticas/Logs de Requisições), mas a
-  estrutura é genérica para N. Cada plugin só pode ser carregado por
+  retornado pelo servidor de licenças ou restaurado do estado local, sem
+  catálogo estático no binário nem estado compartilhado entre plugins. Cada
+  plugin só pode ser carregado por
   `pom-plugin-host` através da ABI C e do IPC versionados em
   `crates/enterprise-protocol` - o host já suporta várias instâncias
   concorrentes, uma por plugin ativo. As telas de Logs de Requisições e

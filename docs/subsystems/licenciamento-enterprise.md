@@ -8,10 +8,10 @@ garantias atuais dos limites restantes. A especificação completa
 **Pivô de produto (2026-09-18):** o POM deixou de ter uma única "licença
 Enterprise" de produto e passou a ter PLUGINS INDEPENDENTES - qualquer
 funcionalidade do menu pode ser um plugin próprio, comprado/ativado/desativado
-separadamente. Hoje o catálogo (`crate::plugins::PLUGIN_CATALOG`) só tem uma
-entrada, `"enterprise"` (o plugin de Estatísticas/Logs de Requisições), mas o
-gerenciador (`PluginManager`/`PluginRuntime` em `crates/node/src/plugins.rs`)
-é genérico para N desde essa mudança: cada `plugin_code` tem seu próprio
+separadamente. O binário não mantém um catálogo estático de plugins
+instaláveis: `PluginManager`/`PluginRuntime` em
+`crates/node/src/plugins.rs` cria runtimes para todo `plugin_code` concedido
+pelo servidor e restaura os códigos persistidos localmente. Cada plugin tem seu próprio
 estado de ativação, lease, heartbeat, host de processo e checagem de
 atualização de versão, sem nada compartilhado entre plugins. O nome deste
 arquivo e do `plugin_code` `"enterprise"` ficaram como estão por não valer o
@@ -26,8 +26,8 @@ que é uma fronteira de produto separada desde antes e continua sendo).
   licença (`pom-license/v1`), o estado de entitlement, a impressão digital
   versionada e os envelopes de ativação e heartbeat.
 - `crates/node/src/plugins.rs` contém o gerenciador genérico
-  (`PluginManager`/`PluginRuntime`, um por `plugin_code` de
-  `PLUGIN_CATALOG`) e o cliente HTTPS mockável. O runtime usa o endpoint real
+  (`PluginManager`/`PluginRuntime`, criado dinamicamente por `plugin_code`)
+  e o cliente HTTPS mockável. O runtime usa o endpoint real
   como configuração padrão, mas os testes usam `MockLicenseService` (uma
   resposta por `plugin_code`, para provar dois plugins independentes); a
   chave de licença só atravessa validação/ativação e não faz parte do
@@ -152,8 +152,8 @@ reusável por qualquer `plugin_code` futuro:
 - `crates/node/src/plugins.rs` e `plugin_host.rs` não mudaram: o `pom` sempre
   tratou o artefato do plugin como um `cdylib` opaco baixado por manifest -
   de onde vem o código-fonte dele é irrelevante para o runtime.
-- `plugin_code` continua sendo `"enterprise"` em `PLUGIN_CATALOG`
-  (`crates/node/src/plugins.rs`) e no `feature_set` (`enterprise.request_logs`,
+- `plugin_code` continua sendo `"enterprise"` no `feature_set`
+  (`enterprise.request_logs`,
   `enterprise.statistics`): só o repositório do código mudou, não a identidade
   do plugin nem o contrato com o servidor de licenças.
 - `pom-release.sh` não libera mais nada com esse plugin_code: agora libera
@@ -175,10 +175,11 @@ reusável por qualquer `plugin_code` futuro:
 
 ## Entitlement e interface
 
-`GET /api/ui/plugins` publica o catálogo inteiro - inclusive plugins que o
-operador nunca ativou - cada entrada com seu próprio estado de entitlement,
-`manage_url` e `available_update`. A resposta de cada plugin começa em
-`needs_activation`. Ativação, grant, manifest, lease e host pronto precisam
+`GET /api/ui/plugins` publica os estados locais dos plugins restaurados ou
+vistos pelo runtime. O catálogo público `GET /v1/plugins` é lido diretamente
+pelo browser e inclui plugins ainda sem estado local. Cada estado local tem
+seu próprio entitlement, `manage_url` e `available_update`. A resposta começa
+em `needs_activation`. Ativação, grant, manifest, lease e host pronto precisam
 existir antes de `active` ficar verdadeiro. Falha transitória de heartbeat
 entra em `degraded` durante a janela de tolerância; licença revogada ou
 expirada desativa as features - de UM plugin, nunca dos outros.
@@ -194,6 +195,11 @@ ao plugin daquela entrada, não aos totais da licença. A tela usa esses dados
 autenticados para distinguir licença ativa, ausente, expirada ou revogada e
 para mostrar uso de ativações. O catálogo público não publica entitlement nem
 uso de licença. Comprar leva à loja pública com o código do plugin na query.
+O formulário de ativação aparece se qualquer plugin público que exige licença
+não estiver ativo no estado local, mesmo quando outro já está ativo ou existe
+contexto de licença. Falta de status local, expiração ou revogação mantém o
+formulário visível; ele some quando todos os plugins licenciáveis conhecidos
+estão ativos.
 
 As rotas autenticadas `/api/ui/requests` e `/api/ui/requests/stats` falham
 fechado com `403` e `code: enterprise_required` quando o plugin `enterprise`
@@ -256,12 +262,13 @@ duas famílias de rotas nunca se misturam, no código nem na UI.
 - **Fase 7 - N plugins independentes (2026-09-18):** entregue o pivô de
   produto. `crates/node/src/enterprise.rs` (um `EnterpriseState` global) virou
   `crates/node/src/plugins.rs` (`PluginManager` com um `PluginRuntime` por
-  `plugin_code` de `PLUGIN_CATALOG`, hoje só `"enterprise"`, estrutura genérica
-  para N); `enterprise_host.rs` virou `plugin_host.rs`
+  `plugin_code`; a lista compilada da primeira implementação foi depois
+  removida para aceitar todo código concedido pelo servidor);
+  `enterprise_host.rs` virou `plugin_host.rs`
   (`PluginHost`, já suportava várias instâncias concorrentes - confirmado, não
   precisou mudar). A UI trocou a tela `Enterprise.tsx` por `Plugins.tsx`
-  (`/plugins`), que lista o catálogo inteiro e ativa/atualiza/desativa por
-  plugin. A detecção/aplicação de atualização do `pom_core` saiu de dentro do
+  (`/plugins`), que lê a vitrine pública e ativa/atualiza/desativa por
+  `plugin_code`. A detecção/aplicação de atualização do `pom_core` saiu de dentro do
   `EnterpriseState` e ganhou arquivo próprio, `pom_core_update.rs`
   (`PomCoreUpdater`), com sua própria tela inteira em `/config/sobre` - nunca
   mais compartilhando código ou UI com a tela de Plugins. **Suposição de

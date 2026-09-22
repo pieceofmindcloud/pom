@@ -223,8 +223,12 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   por `lib/pluginPurchase.ts`. Plugins ativos mostram expiração da
   licença, última instalação/aplicação e última checagem de update como datas
   distintas; a tela lê esses horários do estado persistido pelo nó. A chave de
-  ativação só aparece se houver um plugin licenciado inativo. Desativação pede
-  confirmação. A rota usa `FullBleedHeader` e rolagem interna como `/modelos`.
+  ativação aparece quando qualquer entrada pública que exige licença não está
+  ativa no estado local, mesmo se outro plugin já estiver ativo ou houver
+  contexto de licença; ausência de status local, expiração e revogação mantêm o
+  formulário visível. Ele some quando todos os plugins licenciáveis conhecidos
+  estão ativos. Desativação pede confirmação. A rota usa `FullBleedHeader` e
+  rolagem interna como `/modelos`.
   Carregamento, erro e catálogo vazio têm estados próprios.
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/redes-publicas` -> PublicNetworks, catálogo full-bleed de redes públicas

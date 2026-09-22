@@ -175,12 +175,11 @@ export interface AdminAccessInfo {
 }
 
 /**
- * Um plugin independente do catálogo (ver `crates/node/src/plugins.rs`),
- * comprado/ativado/desativado separadamente dos demais. Hoje o catálogo só
- * tem `"enterprise"` (Estatísticas/Logs de Requisições), mas o tipo é
- * genérico para N plugins - a tela de Plugins lista todo `PluginStatus`
- * conhecido, mesmo quando `active` é `false` (ainda não comprado/ativado
- * nesta instalação).
+ * Estado local de um plugin independente (ver `crates/node/src/plugins.rs`),
+ * comprado/ativado/desativado separadamente dos demais. O nó cria runtimes
+ * dinamicamente para os `plugin_code` concedidos pelo servidor; a tela de
+ * Plugins cruza esses estados locais com a vitrine pública, que também contém
+ * plugins sem status local nesta instalação.
  */
 export type PluginLicenseState =
   | "needs_activation"

@@ -94,11 +94,14 @@ Per-file list:
   interno de `/modelos`. O estado de licença, validade, última instalação,
   última consulta de update, funcionalidades, versão e ações continuam vindo do
   nó; plugins locais ativos permanecem visíveis mesmo quando faltam no catálogo
-  público. Desativação exige confirmação. O formulário de chave aparece quando
-  há plugin concedido ou candidato elegível; para comprar, Comprar redireciona
+  público. Desativação exige confirmação. O formulário de chave aparece se
+  qualquer entrada pública que exige licença não estiver ativa no estado local,
+  mesmo quando outro plugin já tem licença/contexto. Ele também aparece quando
+  falta status local ou o status está expirado/revogado, e some quando todos os
+  plugins licenciáveis conhecidos estão ativos. Para comprar, Comprar redireciona
   à loja pública com `plugin=<code>` codificado em `lib/pluginPurchase.ts`. Um
-  único formulário ativa quantos
-  plugins conhecidos a chave conceder (`POST /api/ui/plugins/activate`, resposta
+  único formulário ativa em lote todo `plugin_code` que o servidor conceder
+  (`POST /api/ui/plugins/activate`, resposta
   `{activated}`); atualizar e desativar continuam por plugin. A atualização do binário
   `pom` em si fica separada em `About.tsx` (ver
   `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,

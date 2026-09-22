@@ -395,7 +395,7 @@ describe("Plugins", () => {
     expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
   });
 
-  it("shows the activation form only for plugin releases eligible on this node", () => {
+  it("shows the activation form for an inactive public plugin that requires a license", () => {
     mocks.catalog.data = { plugins: [publicPlugin("candidate")] };
     mocks.plugins.data = [
       pluginStatus("enterprise", {
@@ -411,7 +411,7 @@ describe("Plugins", () => {
     expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
   });
 
-  it("hides activation when the authenticated license service returns no eligible candidate", () => {
+  it("keeps activation visible for an inactive plugin outside the current license context", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("not-eligible")] };
     mocks.plugins.data = [
       pluginStatus("enterprise", {
@@ -422,10 +422,48 @@ describe("Plugins", () => {
       }),
       pluginStatus("not-eligible"),
     ];
+    mocks.post.mockRejectedValue(new Error("feature_not_entitled"));
     renderPage();
 
-    expect(screen.queryByLabelText("Chave de licença")).toBeNull();
+    const input = screen.getByLabelText("Chave de licença");
+    fireEvent.change(input, { target: { value: "TEST-ONLY-KEY" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ativar licença" }));
+
+    expect(await screen.findByText("Não foi possível ativar a licença.")).toBeTruthy();
+    expect(screen.queryByText("TEST-ONLY-KEY")).toBeNull();
     expect(screen.getByRole("button", { name: "Comprar" })).toBeTruthy();
+  });
+
+  it("shows activation for a licensed public plugin with no local status", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("future_plugin")] };
+    mocks.plugins.data = [];
+    renderPage();
+
+    expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
+  });
+
+  it("shows activation when none of the public licensed plugins is active", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("base"), publicPlugin("future_plugin")] };
+    mocks.plugins.data = [pluginStatus("base"), pluginStatus("future_plugin")];
+    renderPage();
+
+    expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
+  });
+
+  it("keeps activation available for expired and revoked plugins beside another active plugin", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("expired_plugin"), publicPlugin("revoked_plugin")] };
+    mocks.plugins.data = [
+      pluginStatus("enterprise", {
+        active: true,
+        state: "active",
+        licensed_plugins: ["enterprise"],
+      }),
+      pluginStatus("expired_plugin", { state: "expired" }),
+      pluginStatus("revoked_plugin", { state: "revoked" }),
+    ];
+    renderPage();
+
+    expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
   });
 
   it("shows license expiration separately from the lease, install and update-check times", () => {
@@ -463,13 +501,24 @@ describe("Plugins", () => {
     expect(within(card as HTMLElement).queryByText(leaseDate)).toBeNull();
   });
 
-  it("hides license activation when every catalog plugin is already active", () => {
-    mocks.catalog.data = { plugins: [publicPlugin("active-plugin")] };
-    mocks.plugins.data = [pluginStatus("active-plugin", { active: true, state: "active" })];
+  it("hides license activation when every public licensed plugin is active", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("active-plugin"), publicPlugin("another-active")] };
+    mocks.plugins.data = [
+      pluginStatus("active-plugin", { active: true, state: "active" }),
+      pluginStatus("another-active", { active: true, state: "active" }),
+    ];
     renderPage();
 
     expect(screen.queryByLabelText("Chave de licença")).toBeNull();
     expect(screen.getByRole("heading", { name: "active-plugin" })).toBeTruthy();
+  });
+
+  it("does not show license activation when the public catalog has no licensed plugins", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("free-plugin", { requires_license: false })] };
+    mocks.plugins.data = [pluginStatus("free-plugin")];
+    renderPage();
+
+    expect(screen.queryByLabelText("Chave de licença")).toBeNull();
   });
 
   it("requires confirmation before deactivating a plugin", async () => {

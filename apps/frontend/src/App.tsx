@@ -11,7 +11,7 @@ import {
 import { useProfile } from "./lib/profile";
 import { ChatSessionProvider } from "./lib/chatStore";
 import { useAdminSurface, usePluginUi } from "./lib/queries";
-import { resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
+import { pluginUiSnapshot, resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
 import { PluginScreen } from "./components/PluginScreen";
 import { syncPluginCatalogs } from "./lib/pluginI18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -229,10 +229,10 @@ export default function App() {
   const pluginUi = usePluginUi();
   // O registro é lido por `canAccessRoute` e pelo menu; precisa estar em dia
   // antes de qualquer filho consultar o guarda.
-  setPluginUi(pluginUi.data?.plugins ?? []);
+  setPluginUi(pluginUi.data?.plugins);
   const pluginRoute = resolvePluginRoute(location.pathname);
   // Cada plugin traz os próprios textos; acompanha plugins ativos e idioma.
-  const activePlugins = pluginUi.data?.plugins;
+  const activePlugins = pluginUiSnapshot();
   useEffect(() => {
     void syncPluginCatalogs(activePlugins ?? [], locale);
   }, [activePlugins, locale]);
@@ -246,11 +246,10 @@ export default function App() {
    */
   const allowed = canAccessRoute(location.pathname, profile);
   /*
-   * Telas fornecidas por plugins (`lib/pluginUi.ts`) vêm do manifesto do
-   * plugin ativo. `/logs` e `/estatisticas` só caem na vitrine de propaganda
-   * (`EnterpriseFeatureShowcase`) quando nenhum plugin instalado as fornece.
-   * O backend recusa os dados sem entitlement de qualquer modo - ver
-   * `docs/subsystems/licenciamento-enterprise.md` e `plugins-ui.md`.
+   * Telas fornecidas por plugins (`lib/pluginUi.ts`) usam o namespace do
+   * próprio `plugin_code` dentro do basename `/admin-ui`. Um manifesto pode
+   * reivindicar `/logs` ou `/estatisticas` para substituir o fallback nativo
+   * correspondente quando não houver outro plugin com a mesma reivindicação.
    */
   const enterprisePath = isEnterprisePath(location.pathname);
   const isChat = allowed && location.pathname === "/chat";

@@ -28,10 +28,15 @@ pub(crate) struct MenuItem {
     #[serde(default)]
     pub icon: Option<String>,
     pub to: String,
-    /// Seção existente do menu onde entra (`logs`, `settings`...); ausente = raiz.
+    /// Campo antigo preservado no contrato; o frontend atual não agrupa menus.
     #[serde(default)]
     pub group: Option<String>,
-    pub profiles: Vec<String>,
+    /// Perfis do novo contrato; ausente admite todos os perfis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<String>>,
+    /// Campo legado. Mantido para manifestos já publicados.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiles: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -131,6 +136,10 @@ fn valid_profiles(profiles: &[String]) -> bool {
     !profiles.is_empty() && profiles.iter().all(|p| PROFILES.contains(&p.as_str()))
 }
 
+fn valid_roles(roles: &[String]) -> bool {
+    roles.iter().all(|role| PROFILES.contains(&role.as_str()))
+}
+
 impl PluginUiManifest {
     /// Interpreta e valida o JSON devolvido pelo plugin. Recusa em vez de
     /// corrigir: um manifesto torto não pode desenhar menu nem carregar código.
@@ -144,7 +153,9 @@ impl PluginUiManifest {
             return Err("plugin_code do manifesto não é o do plugin instalado".into());
         }
         for item in &manifest.menu {
-            if item.id.is_empty() || !valid_path(&item.to) || !valid_profiles(&item.profiles) {
+            let valid_role_fields = item.roles.as_deref().is_none_or(valid_roles)
+                && item.profiles.as_deref().is_none_or(valid_profiles);
+            if item.id.is_empty() || !valid_path(&item.to) || !valid_role_fields {
                 return Err(format!("item de menu {:?} inválido", item.id));
             }
             if !item.label.contains_key("en") {
@@ -314,6 +325,35 @@ mod tests {
         let parsed = PluginUiManifest::parse("enterprise", manifest()).expect("valid");
         assert!(parsed.serves("ui/logs.js"));
         assert!(!parsed.serves("ui/other.js"));
+    }
+
+    #[test]
+    fn accepts_optional_menu_roles_and_legacy_profiles() {
+        let mut with_roles = manifest();
+        with_roles["menu"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("profiles");
+        with_roles["menu"][0]["roles"] = json!(["admin", "infer"]);
+        let parsed = PluginUiManifest::parse("enterprise", with_roles).expect("roles valid");
+        assert_eq!(
+            parsed.menu[0].roles.as_deref().unwrap(),
+            ["admin".to_owned(), "infer".to_owned()]
+        );
+        assert_eq!(parsed.menu[0].profiles, None);
+
+        let mut without_roles = manifest();
+        without_roles["menu"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("profiles");
+        let parsed = PluginUiManifest::parse("enterprise", without_roles).expect("roles default");
+        assert_eq!(parsed.menu[0].roles, None);
+        assert_eq!(parsed.menu[0].profiles, None);
+
+        let mut invalid_roles = manifest();
+        invalid_roles["menu"][0]["roles"] = json!(["root"]);
+        assert!(PluginUiManifest::parse("enterprise", invalid_roles).is_err());
     }
 
     #[test]

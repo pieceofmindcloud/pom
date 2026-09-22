@@ -327,6 +327,8 @@ compartilhado `enterprise_protocol::MAX_IPC_FRAME_BYTES` de 16 MiB.
 (`PluginUiManifest::parse`, `validate_catalog` para os catálogos i18n), e serve
 `GET /api/ui/plugins/ui` (só plugins ativos com manifesto válido) e
 `GET /api/ui/plugins/:code/assets/*path` (só assets listados, via `ui.asset`).
+Menus aceitam `roles` opcionais; `profiles` continua aceito como campo legado,
+e somente a ausência de ambos libera todos os perfis antes da regra da rota.
 `PluginRuntime::ui_manifest` reaproveita `query_audit`. Contrato completo em
 `docs/subsystems/plugins-ui.md`.
 

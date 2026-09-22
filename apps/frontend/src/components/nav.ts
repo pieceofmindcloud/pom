@@ -165,8 +165,8 @@ function pluginIcon(name?: string | null): LucideIcon {
 
 /**
  * Aplica os itens de menu dos plugins ativos: um item cujo `to` já existe
- * (o fallback de propaganda do POM) o substitui; um novo entra na seção
- * `nav.<group>` ou, sem grupo, na raiz antes da documentação.
+ * substitui esse destino nativo; cada novo item entra na raiz, antes da
+ * documentação, na ordem do manifesto. O formato atual ainda não cria filhos.
  */
 function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] {
   const result: NavSection[] = sections.map((section) => {
@@ -195,14 +195,9 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
       }
     }
     if (placed) continue;
-    const group = item.group ? result.find((s) => s.labelKey === `nav.${item.group}` && s.children) : undefined;
-    if (group) {
-      group.children!.push({ labelKey: key, to: item.to, icon: pluginIcon(item.icon) });
-    } else {
-      const docs = result.findIndex((s) => s.labelKey === "nav.documentation");
-      const entry: NavSection = { labelKey: key, icon: pluginIcon(item.icon), to: item.to };
-      result.splice(docs < 0 ? result.length : docs, 0, entry);
-    }
+    const docs = result.findIndex((s) => s.labelKey === "nav.documentation");
+    const entry: NavSection = { labelKey: key, icon: pluginIcon(item.icon), to: item.to };
+    result.splice(docs < 0 ? result.length : docs, 0, entry);
   }
   return result;
 }

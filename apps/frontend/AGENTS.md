@@ -67,11 +67,18 @@ Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`l
 Telas, menu, rotas e textos de plugin vêm do manifesto `pom-plugin-ui/v1` do
 plugin ativo (`lib/pluginUi.ts`, `components/PluginScreen.tsx`,
 `lib/pluginHost.ts`, `lib/pluginI18n.ts`; ver `docs/subsystems/plugins-ui.md`).
-`canAccessRoute` e `navForProfile` leem o mesmo registro. Sem plugin que forneça
-`/logs` ou `/estatisticas`, o `App.tsx` renderiza o fallback de propaganda
-`EnterpriseFeatureShowcase` (`src/components/`), com link para
-`https://pieceofmind.cloud/enterprise/index.html`. O código de Logs/Estatísticas
-não existe aqui: mora em `pom-plugin-logs`. A API (`/api/ui/requests`,
+`pluginUi.ts` normaliza os caminhos de menu e rota para `/<plugin_code>/...`;
+`canAccessRoute`, `navForProfile` e `App` leem esse mesmo registro. O basename
+`/admin-ui` continua no `BrowserRouter`, então uma rota `/example` do plugin
+`base` abre em `/admin-ui/base/example`. Os plugins podem substituir os pontos
+nativos `/logs` e `/estatisticas` ao declarar esses destinos; sem uma declaração
+única, o `EnterpriseFeatureShowcase` (`src/components/`) continua como fallback.
+Menus novos entram na raiz, na ordem do manifesto, imediatamente antes de
+Documentação. Cada menu pode declarar `roles`; esse campo controla sua
+visibilidade e o acesso direto à rota vinculada. Sem `roles`, `profiles` do
+formato legado continua valendo quando presente; sem nenhum dos dois, os três
+perfis são aceitos conforme as restrições da rota. O código de
+Logs/Estatísticas não existe aqui: mora em `pom-plugin-logs`. A API (`/api/ui/requests`,
 `/api/ui/requests/stats`) continua sendo a autoridade e recusa os dados sem
 entitlement.
 
@@ -125,10 +132,11 @@ desenhado**, porque uma vista só não é uma escolha.
   sem Sidebar nem Topbar. `SetupWizard` continua sendo uma referência visual
   mock, não a tela usada quando o nó está em modo setup.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- Rotas de plugin (por exemplo `/logs` e `/estatisticas`) -> `PluginScreen`
-  quando um plugin ativo as fornece (fora do `<Routes>`, antes da tabela de
-  rotas); senão o fallback `EnterpriseFeatureShowcase`.
-  `/logs/estatisticas` continua redirecionando para a rota nova.
+- Rotas de plugin -> `PluginScreen` sob `/<plugin_code>/<rota do manifesto>`,
+  fora do `<Routes>` e antes da tabela nativa. O basename transforma, por
+  exemplo, `base` + `/plugin-de-base` em `/admin-ui/base/plugin-de-base`.
+  `/logs` e `/estatisticas` continuam sendo rotas nativas de fallback; o alias
+  `/logs/estatisticas` continua redirecionando para `/estatisticas`.
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`). No celular a barra lateral ocupa a tela inteira e o leitor some até uma seleção explícita ou um deep link; selecionar abre o leitor com um botão Voltar no topo, que só fecha a vista mobile (a seleção em `?doc=`/`?guia=` continua).
 - `/config/rede` -> NetworkSettings; a seção principal Rede também reúne
   `/config/rede/participantes`, `/config/administracao` (Administradores),

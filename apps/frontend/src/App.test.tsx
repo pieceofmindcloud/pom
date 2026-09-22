@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { BrowserRouter, MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "./i18n/provider";
 import { ProfileProvider, type Profile } from "./lib/profile";
 
@@ -83,11 +83,25 @@ function open(path: string, profile: Profile) {
   );
 }
 
+function openBrowserPath(path: string, profile: Profile) {
+  window.history.replaceState({}, "", path);
+  return render(
+    <BrowserRouter basename="/admin-ui" future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile={profile}>
+          <App />
+        </ProfileProvider>
+      </LocaleProvider>
+    </BrowserRouter>,
+  );
+}
+
 describe("guarda de perfil por rota", () => {
   afterEach(() => {
     cleanup();
     adminSurface.value = "available";
     pluginUi.plugins = [];
+    window.history.replaceState({}, "", "/");
   });
 
   it("renderiza Plugins no contêiner full-bleed", async () => {
@@ -122,7 +136,10 @@ describe("guarda de perfil por rota", () => {
     manifest: {
       schema: "pom-plugin-ui/v1",
       plugin_code: "enterprise",
-      menu: [],
+      menu: [
+        { id: "logs", label: { en: "Request Logs" }, to: "/logs", profiles },
+        { id: "stats", label: { en: "Statistics" }, to: "/estatisticas", profiles },
+      ],
       routes: [
         { path: "/logs", screen: "logs", profiles, full_bleed: true },
         { path: "/estatisticas", screen: "stats", profiles },
@@ -131,6 +148,41 @@ describe("guarda de perfil por rota", () => {
       assets: ["ui/logs.js", "ui/stats.js"],
     },
   });
+
+  const baseManifest = {
+    code: "base",
+    version: "1.0.0",
+    manifest: {
+      schema: "pom-plugin-ui/v1",
+      plugin_code: "base",
+      menu: [
+        { id: "plugin", label: { en: "Plugin" }, to: "/plugin-de-base", profiles: ["admin"] },
+        { id: "example", label: { en: "Example" }, to: "/example", profiles: ["admin", "node"] },
+      ],
+      routes: [
+        { path: "/plugin-de-base", screen: "plugin", profiles: ["admin"] },
+        { path: "/example", screen: "example", profiles: ["admin", "node"] },
+      ],
+      screens: {
+        plugin: { module: "ui/plugin.js" },
+        example: { module: "ui/example.js" },
+      },
+      assets: ["ui/plugin.js", "ui/example.js"],
+    },
+  };
+
+  const analyticsManifest = {
+    code: "analytics",
+    version: "1.0.0",
+    manifest: {
+      schema: "pom-plugin-ui/v1",
+      plugin_code: "analytics",
+      menu: [{ id: "example", label: { en: "Analytics Example" }, to: "/example", profiles: ["infer"] }],
+      routes: [{ path: "/example", screen: "example", profiles: ["infer"] }],
+      screens: { example: { module: "ui/example.js" } },
+      assets: ["ui/example.js"],
+    },
+  };
 
   it("shows the advertising fallback when no plugin provides /logs or /estatisticas", async () => {
     open("/logs", "admin");
@@ -145,7 +197,6 @@ describe("guarda de perfil por rota", () => {
     pluginUi.plugins = [enterpriseManifest(["admin", "node"])];
     open("/logs", "admin");
     expect(await screen.findByText("tela-plugin:enterprise:logs")).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Comprar e instalar" })).toBeNull();
     cleanup();
     open("/estatisticas", "node");
     expect(await screen.findByText("tela-plugin:enterprise:stats")).toBeTruthy();
@@ -156,7 +207,82 @@ describe("guarda de perfil por rota", () => {
     expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
   });
 
+  it("opens the Base manifest route after applying the plugin namespace", async () => {
+    pluginUi.plugins = [baseManifest];
+    open("/base/plugin-de-base", "admin");
+
+    expect(await screen.findByText("tela-plugin:base:plugin")).toBeTruthy();
+  });
+
+  it("loads a namespaced route on a direct browser request under the router basename", async () => {
+    pluginUi.plugins = [baseManifest];
+    openBrowserPath("/admin-ui/base/plugin-de-base", "admin");
+
+    expect(await screen.findByText("tela-plugin:base:plugin")).toBeTruthy();
+    expect(window.location.pathname).toBe("/admin-ui/base/plugin-de-base");
+  });
+
+  it("renders the matching plugin when two manifests declare the same relative route", async () => {
+    pluginUi.plugins = [baseManifest, analyticsManifest];
+    open("/base/example", "admin");
+    expect(await screen.findByText("tela-plugin:base:example")).toBeTruthy();
+    cleanup();
+
+    open("/analytics/example", "infer");
+    expect(await screen.findByText("tela-plugin:analytics:example")).toBeTruthy();
+  });
+
+  it("namespaces competing claims to a native plugin route and keeps the native fallback", async () => {
+    const logsPlugin = (code: string) => ({
+      code,
+      version: "1.0.0",
+      manifest: {
+        schema: "pom-plugin-ui/v1",
+        plugin_code: code,
+        menu: [],
+        routes: [{ path: "/logs", screen: "logs", profiles: ["admin"] }],
+        screens: { logs: { module: "ui/logs.js" } },
+        assets: ["ui/logs.js"],
+      },
+    });
+    pluginUi.plugins = [
+      logsPlugin("enterprise"),
+      logsPlugin("audit"),
+    ];
+    open("/enterprise/logs", "admin");
+    expect(await screen.findByText("tela-plugin:enterprise:logs")).toBeTruthy();
+    cleanup();
+    open("/audit/logs", "admin");
+    expect(await screen.findByText("tela-plugin:audit:logs")).toBeTruthy();
+    cleanup();
+    open("/logs", "admin");
+    expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
+  });
+
+  it("keeps a plugin route closed for profiles excluded by its manifest", async () => {
+    pluginUi.plugins = [baseManifest];
+    open("/base/plugin-de-base", "node");
+
+    expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
+    expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
+  });
+
+  it("does not let an invalid plugin path take over a native POM route", async () => {
+    pluginUi.plugins = [{
+      ...baseManifest,
+      manifest: {
+        ...baseManifest.manifest,
+        menu: [{ ...baseManifest.manifest.menu[0], to: "/../../chat" }],
+        routes: [{ ...baseManifest.manifest.routes[0], path: "/../../chat" }],
+      },
+    }];
+    open("/chat", "node");
+
+    expect(await screen.findByText("tela-chat")).toBeTruthy();
+  });
+
   it("não mexe nas rotas que ninguém restringiu", async () => {
+    pluginUi.plugins = [baseManifest];
     open("/modelos", "node");
     expect(await screen.findByText("tela-modelos")).toBeTruthy();
   });

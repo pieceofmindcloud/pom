@@ -561,9 +561,14 @@ When updating this file, preserve this bar for all agents and keep entries conci
 
 ## Interface de plugins
 
-- `pluginUi.ts` - tipos do manifesto e o registro (`setPluginUi`) que menu,
-  guarda de perfil e roteador leem: `resolvePluginRoute`, `pluginRouteProfiles`,
-  `pluginMenuItems`, `pluginLabel`, `pluginAssetUrl`. Não conhece plugin algum.
+- `pluginUi.ts` - tipos do manifesto e o registro validado (`setPluginUi`) que
+  menu, guarda de perfil e roteador leem. Normaliza menu e rotas sob
+  `/<plugin_code>/...` no mesmo registro, exceto reivindicação única das
+  rotas nativas `/logs` e `/estatisticas`: `resolvePluginRoute`,
+  `pluginRouteProfiles`, `pluginMenuItems`, `pluginLabel`, `pluginAssetUrl`.
+  `roles` filtra o item e também limita o acesso direto à rota vinculada;
+  se ausente, usa `profiles` legado ou, sem ele, todos os perfis, sujeito às
+  restrições da rota. Não conhece plugin algum.
 - `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
   design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
   empacotar cópias próprias.

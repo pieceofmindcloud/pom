@@ -200,12 +200,18 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   ocorrer primeiro; `cluster_logs_min_level` em `pom.json` controla o nível
   mínimo capturado e assume `info`.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
-  requisições paginadas por scroll infinito e inspetor JSON
-- `/estatisticas` -> Statistics, tela full-bleed própria dos agregados da
-  auditoria, com um único título e filtros de usuário, API key, modelo, nó,
-  prompt e intervalo de datas;
-  `/logs/estatisticas` redireciona para a rota nova
+- `/logs` e `/estatisticas` -> `EnterpriseFeatureShowcase` quando nenhum plugin
+  ativo declara o destino. Uma declaração única do manifesto substitui o
+  fallback nessa URL, inclusive para Enterprise. As demais telas de plugins
+  vêm de `pom-plugin-ui/v1` e ficam sob `/<plugin_code>/<path do manifesto>`;
+  por exemplo, `plugin_code: "base"` e `/example` abrem em
+  `/admin-ui/base/example`. Menu e matcher usam a mesma tabela normalizada;
+  menus novos aparecem na ordem do manifesto, antes de Documentação. Se dois
+  plugins reivindicarem `/logs` ou `/estatisticas`, ambos usam seus namespaces
+  e o fallback nativo permanece. `/logs/estatisticas` continua como alias
+  nativo de `/estatisticas`. `menu[].roles` filtra o menu e o acesso direto à
+  rota correspondente; sem `roles` nem o campo legado `profiles`, os três
+  perfis são aceitos, sempre respeitando os perfis da rota.
 - `/plugins` -> Plugins, vitrine dos itens publicáveis retornados por
   `https://license.pieceofmind.cloud/v1/plugins`, cruzados pelo `code` com o
   estado local de licença e instalação. O browser lê o catálogo público sem
@@ -362,13 +368,15 @@ a própria máquina respondeu zero; falha de leitura permanece desconhecida.
 Da mesma forma, a carga de um peer no mapa de implantação vem do `/api/ui/node`
 do próprio peer, e não do tracker do coordenador.
 
-`src/lib/access.ts` é a tabela: prefixo de rota -> perfis que entram, e rota
-ausente é livre para `admin` e `node`. Hoje `/implantar`, `/implantacoes` e
-`/logs` e `/estatisticas` são só do administrador. Para `infer`,
-`canAccessRoute` permite somente `/chat`, `/documentacao`, `/config/keys/api` e
-`/config/rede`. No Chat, a telemetria da execução e seus resumos também ficam
-ocultos. A chave casa **segmento inteiro**, então
-`/logs` não cobre `/logs-antigos`.
+`src/lib/access.ts` combina as rotas nativas com os perfis do registro de
+plugins (`lib/pluginUi.ts`); rota nativa ausente da tabela é livre para `admin`
+e `node`. Hoje `/implantar` e `/implantacoes` são só do administrador. As
+vitrines nativas `/logs` e `/estatisticas` ficam acessíveis para descoberta; as
+telas do plugin seguem os perfis declarados no manifesto. Para `infer`, a lista
+de rotas nativas permitidas e negadas vive em `INFER_ROUTES` e
+`INFER_DENIED_ROUTES`. No Chat, a telemetria da execução e seus resumos também
+ficam ocultos. A chave casa **segmento inteiro**, então `/logs` não cobre
+`/logs-antigos`.
 
 No Chat, o `infer` recebe um recorte próprio por
 `GET /api/ui/infer/heads?model=...`: a caixa **Entrada da inferência** mostra a

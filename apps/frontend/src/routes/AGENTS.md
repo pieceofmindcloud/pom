@@ -105,7 +105,9 @@ Per-file list:
   `{activated}`); atualizar e desativar continuam por plugin. A atualização do binário
   `pom` em si fica separada em `About.tsx` (ver
   `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,
-  Configurações > Plugins.
+  Configurações > Plugins. A release exibida é escolhida pela combinação
+  `system.os`/`system.arch` do nó local; se o catálogo não publicar esse alvo,
+  a tela mostra ausência em vez de sugerir a release de outra plataforma.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,

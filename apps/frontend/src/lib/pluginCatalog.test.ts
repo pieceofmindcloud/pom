@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchPublicPluginCatalog, PUBLIC_PLUGIN_CATALOG_URL } from "./pluginCatalog";
+import { fetchPublicPluginCatalog, PUBLIC_PLUGIN_CATALOG_URL, releaseForTarget } from "./pluginCatalog";
 
 function release(overrides: Record<string, unknown> = {}) {
   return {
@@ -124,5 +124,20 @@ describe("fetchPublicPluginCatalog", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [] }), { status: 200 })));
 
     await expect(fetchPublicPluginCatalog()).rejects.toThrow("Invalid public plugin catalog");
+  });
+});
+
+describe("releaseForTarget", () => {
+  it("selects the matching target instead of the newest release for another platform", () => {
+    const releases = [
+      release({ os: "macos", arch: "aarch64", version: "2.0.0" }),
+      release({ os: "linux", arch: "x86_64", version: "1.5.0" }),
+    ];
+
+    expect(releaseForTarget(releases, "linux", "x86_64")?.version).toBe("1.5.0");
+  });
+
+  it("returns no release when the target is not published", () => {
+    expect(releaseForTarget([release({ os: "macos", arch: "aarch64" })], "linux", "x86_64")).toBeNull();
   });
 });

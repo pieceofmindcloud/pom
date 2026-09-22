@@ -4,9 +4,9 @@ import type { Tone } from "../components/ui";
 import { Badge, Button, Empty, ErrorState, FullBleedHeader, Input, Panel, PanelHeader, Skeleton } from "../components/ui";
 import { Confirm } from "../components/Confirm";
 import { api } from "../lib/api";
-import { usePlugins, usePublicPluginCatalog } from "../lib/queries";
+import { useNode, usePlugins, usePublicPluginCatalog } from "../lib/queries";
 import type { PluginStatus } from "../lib/types";
-import type { PublicPluginCatalogEntry, PublicPluginPrice } from "../lib/pluginCatalog";
+import { releaseForTarget, type PublicPluginCatalogEntry, type PublicPluginPrice } from "../lib/pluginCatalog";
 import { navigateToPluginPurchase } from "../lib/pluginPurchase";
 import { useI18n } from "../i18n/provider";
 
@@ -56,6 +56,8 @@ type PluginCardProps = {
   updateFailedCode: string | null;
   deactivateFailedCode: string | null;
   locale: string;
+  targetOs: string | null;
+  targetArch: string | null;
   onRefresh: (code: string) => void;
   onDeactivate: (code: string) => void;
   onApplyUpdate: (code: string, releaseId: string) => void;
@@ -71,6 +73,8 @@ function PluginCard({
   updateFailedCode,
   deactivateFailedCode,
   locale,
+  targetOs,
+  targetArch,
   onRefresh,
   onDeactivate,
   onApplyUpdate,
@@ -88,7 +92,7 @@ function PluginCard({
   const description = entry
     ? locale === "pt-BR" ? entry.description_pt_br ?? entry.description : entry.description
     : null;
-  const release = entry?.releases[0] ?? null;
+  const release = entry ? releaseForTarget(entry.releases, targetOs, targetArch) : null;
   const hasRequiredLicense = entry?.requires_license === true;
   const licenseLabel = !licenseStatusAvailable
     ? t("plugins.licenseUnknown")
@@ -453,6 +457,7 @@ export function Plugins() {
   const { t, locale } = useI18n();
   const plugins = usePlugins();
   const catalog = usePublicPluginCatalog();
+  const node = useNode();
   const [licenseKey, setLicenseKey] = useState("");
   const [activateBusy, setActivateBusy] = useState(false);
   const [activateError, setActivateError] = useState(false);
@@ -558,6 +563,8 @@ export function Plugins() {
       .map((status) => ({ entry: null, status, licenseStatus: licenseStatusByCode.get(status.code) ?? status })),
   ];
   const licenseStatusAvailable = !plugins.isLoading && !plugins.isError && plugins.data !== undefined;
+  const targetOs = node.data?.system.os ?? null;
+  const targetArch = node.data?.system.arch ?? null;
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
@@ -598,6 +605,8 @@ export function Plugins() {
               updateFailedCode={updateFailedCode}
               deactivateFailedCode={deactivateFailedCode}
               locale={locale}
+              targetOs={targetOs}
+              targetArch={targetArch}
               onRefresh={(code) => void refresh(code)}
               onDeactivate={(code) => {
                 setDeactivateFailedCode(null);

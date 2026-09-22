@@ -75,6 +75,31 @@ pub fn validate_plugin_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Resolve the ABI entrypoint from the manifest's plugin code.
+///
+/// The host is shared by every plugin, so the symbol must follow the generic
+/// contract instead of naming one product. Validate the code before putting it
+/// into a symbol name so a malformed manifest cannot escape the contract.
+pub fn plugin_entry_symbol(plugin_code: &str) -> io::Result<Vec<u8>> {
+    let bytes = plugin_code.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 128
+        || !bytes[0].is_ascii_alphanumeric()
+        || !bytes[bytes.len() - 1].is_ascii_alphanumeric()
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "plugin_code inválido para o entrypoint do plugin",
+        ));
+    }
+    let mut symbol = format!("pom_{plugin_code}_plugin_v1").into_bytes();
+    symbol.push(0);
+    Ok(symbol)
+}
+
 pub fn validate_artifact(
     path: &Path,
     manifest: &enterprise_protocol::PluginManifest,
@@ -146,11 +171,12 @@ pub struct LoadedPlugin {
 
 impl LoadedPlugin {
     /// Loads the library once and keeps it resident until the host exits.
-    pub unsafe fn load(path: &Path, config: &[u8]) -> io::Result<Self> {
+    pub unsafe fn load(path: &Path, plugin_code: &str, config: &[u8]) -> io::Result<Self> {
         validate_plugin_path(path)?;
         let library = Library::new(path).map_err(|error| io::Error::other(error.to_string()))?;
+        let entry_symbol = plugin_entry_symbol(plugin_code)?;
         let entry = library
-            .get::<PluginEntryV1>(b"pom_enterprise_plugin_v1\0")
+            .get::<PluginEntryV1>(&entry_symbol)
             .map_err(|error| io::Error::other(error.to_string()))?;
         let api_ptr = entry();
         if api_ptr.is_null() {
@@ -310,7 +336,7 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
         ),
         "ready" => {
             let Some(plugin) = plugin else {
-                return error_response(request, "plugin Enterprise não carregado");
+                return error_response(request, "nenhum plugin carregado");
             };
             match plugin.version() {
                 Ok(version) => response(
@@ -323,7 +349,7 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
         "shutdown" => response(request, serde_json::json!({ "status": "shutting_down" })),
         "ingest" => {
             let Some(plugin) = plugin else {
-                return error_response(request, "plugin Enterprise não carregado");
+                return error_response(request, "nenhum plugin carregado");
             };
             let event = request.payload.to_string();
             match plugin.ingest(event.as_bytes()) {
@@ -333,7 +359,7 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
         }
         "query" => {
             let Some(plugin) = plugin else {
-                return error_response(request, "plugin Enterprise não carregado");
+                return error_response(request, "nenhum plugin carregado");
             };
             let query = request.payload.to_string();
             match plugin.query(query.as_bytes()) {
@@ -349,12 +375,22 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
 }
 
 fn run() -> io::Result<()> {
-    let plugin_path = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let plugin = plugin_path.first().map(PathBuf::from);
-    let loaded = plugin
-        .as_deref()
-        .map(|path| unsafe { LoadedPlugin::load(path, b"{}") })
-        .transpose()?;
+    let mut args = std::env::args_os().skip(1);
+    let loaded = match (args.next(), args.next(), args.next()) {
+        (None, None, None) => None,
+        (Some(path), Some(plugin_code), None) => {
+            let plugin_code = plugin_code.into_string().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "plugin_code não é UTF-8")
+            })?;
+            Some(unsafe { LoadedPlugin::load(&PathBuf::from(path), &plugin_code, b"{}") }?)
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "uso: pom-plugin-host [caminho absoluto] [plugin_code]",
+            ))
+        }
+    };
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
     loop {
@@ -431,6 +467,25 @@ mod tests {
             validate_plugin_path(std::path::Path::new("enterprise.so")).expect_err("relative path");
 
         assert!(error.to_string().contains("absoluto"));
+    }
+
+    #[test]
+    fn entrypoint_symbol_is_derived_for_base_and_enterprise_plugins() {
+        assert_eq!(
+            plugin_entry_symbol("base").expect("base symbol"),
+            b"pom_base_plugin_v1\0"
+        );
+        assert_eq!(
+            plugin_entry_symbol("enterprise").expect("enterprise symbol"),
+            b"pom_enterprise_plugin_v1\0"
+        );
+    }
+
+    #[test]
+    fn entrypoint_symbol_rejects_path_injection() {
+        let error = plugin_entry_symbol("../enterprise").expect_err("invalid code");
+
+        assert!(error.to_string().contains("plugin_code"));
     }
 
     #[test]

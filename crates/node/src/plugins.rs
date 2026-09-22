@@ -1019,16 +1019,17 @@ impl PluginRuntime {
             .as_ref()
             .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
             .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
-        let host = match crate::plugin_host::PluginHost::start(&path, &database_path).await {
-            Ok(host) => host,
-            Err(error) => {
-                let _ = std::fs::remove_file(&path);
-                return Err(LicenseClientError::new(
-                    LicenseErrorCode::ServerError,
-                    error.to_string(),
-                ));
-            }
-        };
+        let host =
+            match crate::plugin_host::PluginHost::start(&self.code, &path, &database_path).await {
+                Ok(host) => host,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&path);
+                    return Err(LicenseClientError::new(
+                        LicenseErrorCode::ServerError,
+                        error.to_string(),
+                    ));
+                }
+            };
         *self.host.lock().await = Some(host);
         let mut persisted = self.persisted.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
@@ -1216,7 +1217,7 @@ impl PluginRuntime {
             return;
         };
         let database_path = database.path().with_file_name(format!("{}.db", self.code));
-        match crate::plugin_host::PluginHost::start(&path, &database_path).await {
+        match crate::plugin_host::PluginHost::start(&self.code, &path, &database_path).await {
             Ok(host) => {
                 *self.host.lock().await = Some(host);
                 tracing::info!(plugin_code = %self.code, "host do plugin reiniciado após licença voltar a ficar ativa");
@@ -1702,7 +1703,7 @@ impl PluginRuntime {
             .as_ref()
             .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
             .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
-        let host = crate::plugin_host::PluginHost::start(&path, &database_path)
+        let host = crate::plugin_host::PluginHost::start(&self.code, &path, &database_path)
             .await
             .map_err(|error| {
                 LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())

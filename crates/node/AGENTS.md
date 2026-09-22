@@ -308,7 +308,9 @@ fazia `heartbeat_success_restarts_the_stopped_plugin_host` falhar ora por
 
 `plugin_host.rs` (`PluginHost`) é o único adaptador do `pom` para o processo
 auxiliar `pom-plugin-host` - já suporta várias instâncias concorrentes, uma
-por plugin ativo. `PluginHost::start` usa `kill_on_drop` e mata explicitamente
+por plugin ativo. `PluginHost::start` passa o `plugin_code` para o binário
+auxiliar, que resolve `pom_<plugin_code>_plugin_v1` e usa `POM_PLUGIN_DB`; o
+host usa `kill_on_drop` e mata explicitamente
 o processo quando o handshake `ready` falha ou estoura o timeout de 30s - sem
 isso, um handshake lento (máquina ainda se recuperando de um OOM) deixava
 `pom-plugin-host` órfão no SO enquanto o `PluginRuntime` continuava sem host,

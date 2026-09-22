@@ -95,9 +95,12 @@ que é uma fronteira de produto separada desde antes e continua sendo).
 - `crates/plugin-host` é o processo `pom-plugin-host`. Ele carrega um artefato
   somente por caminho absoluto, valida ABI, tamanho e SHA-256, mantém a
   biblioteca carregada dentro do processo auxiliar e conversa com o cliente por
-  JSON com tamanho prefixado em stdin/stdout. O `pom` não usa `libloading`.
+  JSON com tamanho prefixado em stdin/stdout. O `plugin_code` recebido do
+  manifesto resolve a entrada `pom_<plugin_code>_plugin_v1`; não existe símbolo
+  fixo de um produto. O `pom` não usa `libloading`.
 - `crates/enterprise-plugin-fixture` é uma biblioteca `cdylib` de teste para
-  validar a entrada ABI `pom_enterprise_plugin_v1` e o fluxo do host.
+  validar as entradas ABI `pom_enterprise_plugin_v1` e `pom_base_plugin_v1`,
+  além do fluxo do host.
 - A biblioteca `cdylib` de produção do plugin `enterprise` (o domínio de
   auditoria em `enterprise.db`, com schema, índices, listagem filtrada e
   agregações de estatísticas próprios) **não mora mais neste repositório**:
@@ -149,9 +152,10 @@ reusável por qualquer `plugin_code` futuro:
 - `crates/enterprise-plugin-fixture` e `crates/plugin-host` continuam aqui
   porque testam/carregam o mecanismo genérico de ABI/IPC, não o domínio de
   auditoria de um plugin específico.
-- `crates/node/src/plugins.rs` e `plugin_host.rs` não mudaram: o `pom` sempre
-  tratou o artefato do plugin como um `cdylib` opaco baixado por manifest -
-  de onde vem o código-fonte dele é irrelevante para o runtime.
+- `crates/node/src/plugins.rs` e `plugin_host.rs` passam o `plugin_code` e o
+  caminho do artefato ao host. O `pom` continua tratando o plugin como um
+  `cdylib` opaco baixado por manifest - de onde vem o código-fonte dele é
+  irrelevante para o runtime.
 - `plugin_code` continua sendo `"enterprise"` no `feature_set`
   (`enterprise.request_logs`,
   `enterprise.statistics`): só o repositório do código mudou, não a identidade

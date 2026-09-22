@@ -347,6 +347,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   It also carries `authority_level`, the **effective** administrative
   authority, which is what decides whether a screen offers an administrative
   act - `profile: admin` alone grants nothing.
+### pluginCatalog.ts
+- `releaseForTarget(releases, os, arch)` seleciona somente uma release cujo
+  sistema e arquitetura coincidam com o nó local. Sem alvo conhecido ou sem
+  correspondência, retorna `null` para a UI não apresentar a release de outra
+  plataforma.
 - `usePeerRuntime(nodeId, enabled)` 15s (stale 10s) - o `/health` daquela
   máquina, por `optional` (um nó sem a rota devolve 404 e a seção some). O
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar

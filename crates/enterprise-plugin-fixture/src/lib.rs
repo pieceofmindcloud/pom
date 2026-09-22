@@ -42,6 +42,11 @@ pub unsafe extern "C" fn pom_enterprise_plugin_v1() -> *const PluginApiV1 {
     &API
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn pom_base_plugin_v1() -> *const PluginApiV1 {
+    &API
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,5 +62,11 @@ mod tests {
         assert!(api.query.is_some());
         assert!(api.free_buffer.is_some());
         assert!(api.shutdown.is_some());
+    }
+
+    #[test]
+    fn fixture_exports_the_generic_base_and_enterprise_entrypoints() {
+        assert_eq!(unsafe { pom_base_plugin_v1() }, &API);
+        assert_eq!(unsafe { pom_enterprise_plugin_v1() }, &API);
     }
 }

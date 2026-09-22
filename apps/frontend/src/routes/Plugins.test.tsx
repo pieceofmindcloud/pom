@@ -96,12 +96,16 @@ const mocks = vi.hoisted(() => ({
     error: null as Error | null,
     refetch: vi.fn(),
   },
+  node: {
+    data: { system: { os: "linux", arch: "x86_64" } },
+  },
 }));
 
 vi.mock("../lib/api", () => ({ api: { post: mocks.post } }));
 vi.mock("../lib/queries", () => ({
   usePlugins: () => mocks.plugins,
   usePublicPluginCatalog: () => mocks.catalog,
+  useNode: () => mocks.node,
 }));
 vi.mock("../lib/pluginPurchase", () => ({ navigateToPluginPurchase: mocks.navigateToPluginPurchase }));
 
@@ -129,6 +133,7 @@ describe("Plugins", () => {
     mocks.catalog.isError = false;
     mocks.catalog.error = null;
     mocks.catalog.refetch.mockReset();
+    mocks.node.data = { system: { os: "linux", arch: "x86_64" } };
     mocks.navigateToPluginPurchase.mockReset();
     localStorage.clear();
   });
@@ -217,6 +222,21 @@ describe("Plugins", () => {
     expect(screen.queryByRole("link", { name: "Gerenciar" })).toBeNull();
     expect(screen.getByRole("button", { name: "Desativar" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Instalar atualização" })).toBeTruthy();
+  });
+
+  it("mostra a release do sistema local em vez da última release global", () => {
+    mocks.catalog.data = {
+      plugins: [publicPlugin("cross-platform", {
+        releases: [
+          release({ os: "macos", arch: "aarch64", version: "9.0.0" }),
+          release({ os: "linux", arch: "x86_64", version: "1.5.0" }),
+        ],
+      })],
+    };
+    renderPage();
+
+    expect(screen.getByText("1.5.0 · stable · linux / x86_64")).toBeTruthy();
+    expect(screen.queryByText("9.0.0 · stable · macos / aarch64")).toBeNull();
   });
 
   it("opens the public plugin store with the selected plugin code", () => {

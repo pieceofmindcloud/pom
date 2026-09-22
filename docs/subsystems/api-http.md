@@ -339,6 +339,13 @@ não estão no router principal e só existem antes da configuração inicial.
   `nonce_reused` e `nonce_expired` continuam sendo recusas 403. Um nó antigo,
   que envia o corpo anterior e não sabe repetir com a assinatura, vê 403 e
   nunca é admitido.
+  Esta rota também chega pelo túnel libp2p, junto de `/health` e das rotas
+  `/api/cluster/{tls,quic,logs,network-chat,network-settings}`: é a lista
+  fechada de `infer_tunnel::gateway_path_is_allowed`, o que um par atrás de
+  NAT/CGNAT usa quando nenhum endereço direto responde. A lista é conferida no
+  receptor e a comparação é exata, porque o que sai do túnel chega ao gateway
+  por `127.0.0.1` e a fronteira de loopback é o que libera a instalação da
+  âncora administrativa. Ver `docs/subsystems/rede-p2p.md`, "Travessia de NAT".
 - **`POST /v1/relay-result`** - onde a **cauda** de um pipeline entrega o
   resultado direto (`relay/v2-direct`). Não usa API key de cliente: exige um
   ticket vivo no corpo; ticket morto = `410 Gone`.

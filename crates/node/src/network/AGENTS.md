@@ -96,7 +96,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   cabem no orçamento de 1200 bytes do UDP e remontado antes da validação do
   fingerprint. A preferência fica desligada fora do wizard; o material sensível
   vive apenas em memória e a transferência é limitada a 512 KiB.
-- `peer_client.rs` - `TunnelPeer`/`tunnel_gateway_call` levam uma chamada do
+- `peer_client.rs` - `prefer_tunnel`/`remember_tunnel_win`/`remember_direct_win`
+  são a marca **por peer** de que o caminho direto não responde: ligada, o
+  frame pula QUIC e HTTP na primeira tentativa. Aprendida, não configurada -
+  um sucesso direto a apaga. `relay.rs` a consulta nas duas escadas de envio.
+  `TunnelPeer`/`tunnel_gateway_call` levam uma chamada do
   plano de controle pelo túnel quando nenhum endereço direto responde; é o que
   faz a admissão de um par atrás de NAT concluir.
   `get_internal_from_candidates` tenta os endereços diretos e só então o
@@ -333,6 +337,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.
+- `TraversalStatus`/`traversal_status` (em `network.rs`) - estado do AutoNAT,
+  endereços publicados, reservas aceitas e contagem de hole punches com a
+  última falha. `discovery.rs` alimenta (`set_nat_status`,
+  `remember_reservation`, `remember_hole_punch`) e `/api/ui/cluster` publica no
+  campo `traversal`, que também entra no fingerprint do cache.
 - `publish_swarm_addrs` - recolhe do swarm endereços externos confirmados,
   listeners com IP público e listeners de circuito, acrescenta `/p2p/<self>` e
   grava em `Network::set_libp2p_addrs`. Privado/loopback/não especificado fica

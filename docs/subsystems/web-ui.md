@@ -1292,6 +1292,14 @@ administrador autorizado edita esses campos e salva em
 `POST /api/ui/network/settings`; o backend grava a configuração local,
 propaga a mutação assinada aos peers e republica o rótulo geo público.
 
+Abaixo das métricas, o painel "Travessia de NAT" (`TraversalPanel`) mostra o
+campo `traversal` de `GET /api/ui/cluster`: estado do AutoNAT, endereços
+diretos e circuitos publicados, reservas de relé aceitas e a contagem de hole
+punches com a última falha. Ele existe porque dois nós atrás de NAT que não se
+enxergam falham num de três degraus, e antes dele descobrir qual exigia
+`RUST_LOG=debug` na máquina certa. Nó de binário antigo não manda `traversal` e
+o painel simplesmente não aparece.
+
 O mesmo administrador tem, nessa tela, os controles de copiar e baixar o
 documento `.pom-admin-trust.json`. Em rede local ou privada também aparece a
 chave de conexão para copiar ou baixar. O wizard real oferece os mesmos

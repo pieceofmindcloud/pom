@@ -248,6 +248,9 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
         "config": state.runtime.config().await,
         "active_model": state.active_model().await,
         "detached": state.network.is_detached(),
+        // Sem isto o retrato da travessia congelaria no cache: nem o estado do
+        // AutoNAT nem uma reserva nova mexem em `peers`.
+        "traversal": state.network.traversal_status(),
     }))
 }
 
@@ -639,6 +642,10 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         "routing_edges": routing_edges,
         "candidate_edges": candidate_edges,
         "node": self_node,
+        // Diagnóstico da travessia de NAT deste nó. Ver `TraversalStatus`:
+        // sem isto, "os dois nós não se falam" só se investiga com
+        // `RUST_LOG=debug` na máquina certa.
+        "traversal": state.network.traversal_status(),
     });
 
     let etag = cluster_etag(&body);

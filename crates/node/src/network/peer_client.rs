@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use tracing::debug;
 
 /// Se este nó fala TLS com os peers, visível de qualquer lugar do processo.
 ///
@@ -202,6 +203,9 @@ pub struct PeerClients {
     internal_plain: reqwest::Client,
     per_peer: Arc<RwLock<HashMap<String, reqwest::Client>>>,
     reply_routes: Arc<RwLock<HashMap<String, ReplyRouteState>>>,
+    /// Peers cujo caminho direto já se provou inalcançável e que passam a ser
+    /// tentados **primeiro** pelo túnel. Ver `prefer_tunnel`.
+    tunnel_first: Arc<RwLock<std::collections::HashSet<String>>>,
     auth: Arc<RwLock<Option<crate::auth::AuthState>>>,
 }
 
@@ -266,6 +270,7 @@ impl PeerClients {
                 .expect("cliente HTTP interno sem TLS não pode falhar na construção"),
             per_peer: Arc::new(RwLock::new(HashMap::new())),
             reply_routes: Arc::new(RwLock::new(HashMap::new())),
+            tunnel_first: Arc::new(RwLock::new(std::collections::HashSet::new())),
             auth: Arc::new(RwLock::new(None)),
         }
     }
@@ -598,6 +603,38 @@ impl PeerClients {
     /// gateway a vencer (600 s) e um aviso com o motivo vazio. O que decide se
     /// um endereço serve é a tentativa real; esta função só escolhe a ordem em
     /// que ela é paga.
+    /// O caminho direto para este peer já falhou inteiro e o túnel entregou.
+    ///
+    /// Atrás de NAT/CGNAT nenhum endereço anunciado responde, e sem esta marca
+    /// **cada frame** queima a escada direta completa - timeout de QUIC mais
+    /// timeout de HTTP, em todo prefill e todo decode - antes de chegar ao
+    /// único transporte que funciona. A marca não é permanente: um sucesso
+    /// direto a apaga, e uma falha do túnel devolve a escada direta na
+    /// tentativa seguinte, porque a rota pode voltar (hole punch novo, peer
+    /// que mudou de rede).
+    pub(crate) fn prefer_tunnel(&self, node_id: &str) -> bool {
+        self.tunnel_first
+            .read()
+            .map(|set| set.contains(node_id))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn remember_tunnel_win(&self, node_id: &str) {
+        if let Ok(mut set) = self.tunnel_first.write() {
+            if set.insert(node_id.to_string()) {
+                debug!("{node_id}: o caminho direto não responde; o túnel passa a ser o primeiro");
+            }
+        }
+    }
+
+    pub(crate) fn remember_direct_win(&self, node_id: &str) {
+        if let Ok(mut set) = self.tunnel_first.write() {
+            if set.remove(node_id) {
+                debug!("{node_id}: o caminho direto voltou; deixa de preferir o túnel");
+            }
+        }
+    }
+
     pub(crate) fn route_order(&self, key: &str, candidates: &[String]) -> Vec<String> {
         let Ok(mut routes) = self.reply_routes.write() else {
             return candidates.to_vec();
@@ -765,6 +802,32 @@ mod tests {
     /// Uma entrega apenas lenta não é uma rota morta: o teto de uma tentativa
     /// não pode ser o critério de quarentena. A primeira falha só tira o
     /// endereço da preferência.
+    #[test]
+    /// A marca é aprendizado, não configuração: liga com uma entrega do
+    /// túnel, desliga com um sucesso direto.
+    #[test]
+    fn a_preferencia_pelo_tunel_liga_e_desliga() {
+        let c = PeerClients::new(Duration::from_secs(1));
+        assert!(!c.prefer_tunnel("peer"));
+
+        c.remember_tunnel_win("peer");
+        assert!(c.prefer_tunnel("peer"));
+
+        c.remember_direct_win("peer");
+        assert!(!c.prefer_tunnel("peer"));
+    }
+
+    /// A marca é por peer: um peer atrás de NAT não pode empurrar o vizinho
+    /// alcançável para o túnel.
+    #[test]
+    fn a_preferencia_pelo_tunel_nao_vaza_entre_peers() {
+        let c = PeerClients::new(Duration::from_secs(1));
+        c.remember_tunnel_win("atras-de-nat");
+
+        assert!(c.prefer_tunnel("atras-de-nat"));
+        assert!(!c.prefer_tunnel("na-lan"));
+    }
+
     #[test]
     fn uma_falha_isolada_nao_degrada_a_rota() {
         let c = PeerClients::new(Duration::from_secs(600));

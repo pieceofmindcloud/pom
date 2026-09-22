@@ -158,6 +158,8 @@ textos de documento e de chave são dados do servidor, não mensagens de locale.
 As chaves `network.forgetNetwork*` nomeiam a confirmação e o resultado da
 limpeza local da rede; elas não devem ser confundidas com `network.leave`, que
 tira a máquina do cluster sem apagar sua configuração.
+As chaves `network.traversal*` rotulam o painel de travessia de NAT, incluindo
+os três estados de AutoNAT em `network.traversalNat.{unknown,public,private}`.
 As chaves `publicNetworks.*`, `network.metrics*`, `network.participants*`,
 `keys.*`, `preferences.admin*` e `nav.*` cobrem a reorganização das telas,
 incluindo estados de métrica indisponível, os estados reachable/unreachable do

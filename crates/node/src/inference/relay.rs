@@ -1587,8 +1587,16 @@ async fn send_batch_body(
     let mut last_error = String::new();
     for attempt in 1..=attempts {
         last_error.clear();
-        let ordered = clients.route_order(&route_key, &route_candidates);
-        if ordered.is_empty() {
+        // Peer já provado inalcançável pelo caminho direto: a escada direta é
+        // pulada na primeira tentativa e o túnel vai primeiro. Uma falha do
+        // túnel devolve a escada completa na tentativa seguinte.
+        let skip_direct = attempt == 1 && can_use_tunnel && clients.prefer_tunnel(&step.node_id);
+        let ordered = if skip_direct {
+            Vec::new()
+        } else {
+            clients.route_order(&route_key, &route_candidates)
+        };
+        if ordered.is_empty() && !skip_direct {
             last_error = "nenhuma rota HTTP de inferência disponível".to_string();
         }
         for base in ordered {
@@ -1619,6 +1627,7 @@ async fn send_batch_body(
                             received_at,
                         );
                         clients.remember_route_success(&route_key, &base);
+                        clients.remember_direct_win(&step.node_id);
                         return Ok(BatchTransportResponse {
                             body: response.body,
                             round_trip_ms: started.elapsed().as_millis() as u64,
@@ -1692,6 +1701,7 @@ async fn send_batch_body(
                     wire::validate_batch_bytes(&bytes)?;
                     let client_decode_ms = decode_started.elapsed().as_millis() as u64;
                     clients.remember_route_success(&route_key, &base);
+                    clients.remember_direct_win(&step.node_id);
                     return Ok(BatchTransportResponse {
                         body: bytes,
                         round_trip_ms: started.elapsed().as_millis() as u64,
@@ -1770,6 +1780,7 @@ async fn send_batch_body(
             .await
             {
                 Ok(mut response) => {
+                    clients.remember_tunnel_win(&step.node_id);
                     response.transport_fallback = true;
                     response.transport_fallback_reason = Some(match transport_fallback_reason {
                         Some(previous) => format!("{previous}; http: {direct_error}"),
@@ -2273,41 +2284,64 @@ pub async fn send_frame_or_tunnel(
     let max_attempts = attempts.max(1);
     let mut last_error = String::new();
     for attempt in 1..=max_attempts {
-        let direct = send_frame_with_protocol(
-            clients,
-            &step.node_id,
-            &step.inference_url,
-            &step.inference_candidates,
-            &step.quic_addr_candidates,
-            path,
-            meta,
-            tensor.clone(),
-            dtype,
-            encoding,
-            use_batch_frame,
-            1,
-            peer_label,
-            transport_fallback,
-            transport_fallback_reason.clone(),
-            |issue| on_issue(issue),
-            session_id,
-        )
-        .await;
+        // Peer já provado inalcançável pelo caminho direto: a escada direta é
+        // pulada na primeira tentativa e o túnel vai primeiro. Cada frame
+        // queimava timeout de QUIC mais timeout de HTTP antes do único
+        // transporte que entrega. Uma falha do túnel devolve a escada completa
+        // na tentativa seguinte, porque a rota direta pode voltar.
+        let skip_direct = attempt == 1
+            && can_use_tunnel
+            && tunnel.is_some()
+            && peer_id.is_some()
+            && clients.prefer_tunnel(&step.node_id);
 
-        let direct_error = match direct {
-            Ok(sent) => return Ok(sent),
-            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
-            Err(error) if is_pre_delivery_error(&error) => error,
-            Err(error) => return Err(error),
-        };
-        let direct_stage = if clients.effective_quic_enabled() {
-            format!("quic/http: {direct_error}")
+        let direct_error = if skip_direct {
+            None
         } else {
-            format!("http: {direct_error}")
+            let direct = send_frame_with_protocol(
+                clients,
+                &step.node_id,
+                &step.inference_url,
+                &step.inference_candidates,
+                &step.quic_addr_candidates,
+                path,
+                meta,
+                tensor.clone(),
+                dtype,
+                encoding,
+                use_batch_frame,
+                1,
+                peer_label,
+                transport_fallback,
+                transport_fallback_reason.clone(),
+                |issue| on_issue(issue),
+                session_id,
+            )
+            .await;
+
+            match direct {
+                Ok(sent) => {
+                    clients.remember_direct_win(&step.node_id);
+                    return Ok(sent);
+                }
+                Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+                Err(error) if is_pre_delivery_error(&error) => Some(error),
+                Err(error) => return Err(error),
+            }
         };
-        let direct_reason = match &transport_fallback_reason {
-            Some(previous) => format!("{previous}; {direct_stage}"),
-            None => direct_stage,
+        let direct_reason = match &direct_error {
+            Some(error) => {
+                let direct_stage = if clients.effective_quic_enabled() {
+                    format!("quic/http: {error}")
+                } else {
+                    format!("http: {error}")
+                };
+                match &transport_fallback_reason {
+                    Some(previous) => format!("{previous}; {direct_stage}"),
+                    None => direct_stage,
+                }
+            }
+            None => "direto pulado: este peer só responde pelo túnel".to_string(),
         };
         last_error = direct_reason.clone();
 
@@ -2330,6 +2364,7 @@ pub async fn send_frame_or_tunnel(
             .await
             {
                 Ok(mut sent) => {
+                    clients.remember_tunnel_win(&step.node_id);
                     sent.transport_fallback = true;
                     sent.transport_fallback_reason = Some(direct_reason);
                     return Ok(sent);

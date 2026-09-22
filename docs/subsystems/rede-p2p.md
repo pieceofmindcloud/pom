@@ -593,11 +593,12 @@ listeners com IP público e os listeners de circuito, e os grava em
 `/p2p-circuit`, e duplicar o sufixo faria o swarm discar o relé como se fosse o
 destino.
 
-O registro pkarr continua publicando um multiaddress único, derivado no
-arranque. Espelhar `libp2p_addrs` ali é item à parte (N5 no `TODO.md`): o
-registro é republicado a cada 30 min, então um endereço de circuito publicado
-nele passa a maior parte do tempo obsoleto. O que vale ali é o endereço público
-confirmado, para um nó público ser encontrável a frio.
+O registro pkarr publica o endereço público confirmado pelo AutoNAT quando ele
+existe (`Network::public_libp2p_addr`), e cai no multiaddress derivado no
+arranque quando não. Circuito **não** vai para o registro: ele é republicado a
+cada 30 min e uma reserva não dura previsivelmente tanto, então o registro
+passaria a maior parte do tempo apontando para um relé que não vale mais. O que
+vale no DHT é a descoberta a frio de um nó público.
 
 A fase 3 levou o plano de controle para o mesmo túnel. `TunnelRequest` ganhou
 `target`: `Inference` continua sendo o padrão e o único que um peer de binário
@@ -622,7 +623,32 @@ que ele próprio escolheu.
 O que continua fora do túnel: transferência de arquivos, sincronização de
 admin e o watcher do `/health` entre peers. Nenhum deles participa da
 admissão, então um par atrás de NAT já entra no cluster e roteia sem eles.
-As fases estão em `TODO.md`.
+
+### Preferência aprendida pelo túnel
+
+Furar o NAT não basta se cada frame continua pagando a escada direta inteira.
+`PeerClients::prefer_tunnel` é uma marca **por peer**, aprendida: liga quando o
+túnel entrega depois de a escada direta falhar inteira, e desliga no primeiro
+sucesso direto. Ligada, a primeira tentativa de cada frame pula QUIC e HTTP e
+vai direto ao túnel; uma falha do túnel devolve a escada completa na tentativa
+seguinte, porque a rota direta pode voltar (hole punch novo, peer que mudou de
+rede). Sem ela, atrás de NAT todo prefill e todo decode queimavam timeout de
+QUIC mais timeout de HTTP antes do único transporte que entrega. A marca não é
+configuração e não se propaga entre peers: um par atrás de NAT não empurra o
+vizinho alcançável para o túnel.
+
+### Diagnóstico
+
+`Network::traversal_status` (`TraversalStatus`) guarda o estado do AutoNAT, os
+multiaddresses publicados, os relés que aceitaram reserva e a contagem de hole
+punches com a última falha. Sai em `/api/ui/cluster` no campo `traversal` e na
+tela de Rede, painel "Travessia de NAT". Dois nós atrás de NAT que não se
+enxergam falham num de três degraus - o AutoNAT nunca confirmou endereço,
+nenhum relé aceitou reserva, ou o hole punch falhou - e antes disso a única
+forma de saber qual era ler `RUST_LOG=debug` na máquina certa no momento certo.
+O campo entra no fingerprint do cache do cluster; sem isso o retrato
+congelaria, porque nem o estado do AutoNAT nem uma reserva nova mexem em
+`peers`.
 
 ## 4. Identidade
 

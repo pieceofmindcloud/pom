@@ -315,17 +315,17 @@ chat.telemetry.pipelineRttTitle,Edge RTT (pipeline source -> destination),RTT da
 chat.telemetry.pipelineTitle,Pipeline network,Rede do pipeline
 chat.telemetry.placementMissing,not measured after load,não medido depois da carga
 chat.telemetry.prefill,prefill,prefill
+chat.telemetry.prefillChunk,chunk: {count} tokens,pedaço: {count} tokens
 chat.telemetry.prefillMs,{ms} ms prefill,{ms} ms prefill
 chat.telemetry.prefixCandidate,{count} prefix candidate,{count} candidatos no prefixo
-chat.telemetry.prefixStatus,prefix: {status},prefixo: {status}
 chat.telemetry.prefixMissReason,gateway cache miss: {reason},miss do cache no gateway: {reason}
-chat.telemetry.quicRequestSend,"QUIC request body send and finish {ms} ms over {calls, plural, one {# request} other {# requests}}","envio e finalização do corpo QUIC {ms} ms em {calls, plural, one {# requisição} other {# requisições}}"
-chat.telemetry.prefillChunk,chunk: {count} tokens,pedaço: {count} tokens
+chat.telemetry.prefixStatus,prefix: {status},prefixo: {status}
 chat.telemetry.principalBottleneck,Principal bottleneck,Gargalo principal
 chat.telemetry.profileSync,POM_PROFILE_SYNC: {state},POM_PROFILE_SYNC: {state}
 chat.telemetry.profileSyncActive,active,ativo
 chat.telemetry.profileSyncOff,off,desligado
 chat.telemetry.profileSyncUnknown,not informed,não informado
+chat.telemetry.quicRequestSend,"QUIC request body send and finish {ms} ms over {calls, plural, one {# request} other {# requests}}","envio e finalização do corpo QUIC {ms} ms em {calls, plural, one {# requisição} other {# requisições}}"
 chat.telemetry.ram,RAM: {available} available / {total} total,RAM: {available} disponível / {total} total
 chat.telemetry.remoteStreamCompute,remote compute total {total} ms · p50 {p50} ms · p95 {p95} ms,compute remoto total {total} ms · p50 {p50} ms · p95 {p95} ms
 chat.telemetry.remoteStreamFrames,frames received / sent {received} / {sent} · bytes {bytes},frames recebidos / enviados {received} / {sent} · bytes {bytes}
@@ -335,8 +335,8 @@ chat.telemetry.remoteStreamTokenDelivery,token delivery interval samples {sample
 chat.telemetry.remoteStreamWait,stream wait total {total} ms · p50 {p50} ms · p95 {p95} ms,espera do stream total {total} ms · p50 {p50} ms · p95 {p95} ms
 chat.telemetry.remoteStreamWaitSplit,producer total/p95 {producerTotal}/{producerP95} ms · channel send total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · queued token total/p95 {queueTotal}/{queueP95} ms · prior delivery total/p95 {deliveryTotal}/{deliveryP95} ms,produção total/p95 {producerTotal}/{producerP95} ms · envio ao canal total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · token na fila total/p95 {queueTotal}/{queueP95} ms · entrega anterior total/p95 {deliveryTotal}/{deliveryP95} ms
 chat.telemetry.requestedGpuLayers,Requested GPU layers (intent): {count},Camadas GPU pedidas (intenção): {count}
-chat.telemetry.residualHeader,residual,residual
 chat.telemetry.residualCaptureRow,residual capture: scheduler ask-to-ready {ready} ms · tensor_get wall {tensorGet} ms · postprocess {postprocess} ms · compatibility total {total} ms · {bytes} bytes in {copies} reads,captura residual: scheduler até pronto {ready} ms · tensor_get {tensorGet} ms · pós-processamento {postprocess} ms · total compatível {total} ms · {bytes} bytes em {copies} leituras
+chat.telemetry.residualHeader,residual,residual
 chat.telemetry.residualWireRow,residual wire f8 conversion {f8} ms · frame/header serialization {serialize} ms · residual frame encode count {calls},wire do residual: conversão f8 {f8} ms · serialização do frame/cabeçalho {serialize} ms · contagem de frames codificados {calls}
 chat.telemetry.rttTotal,Aggregate execution RTT: {ms} ms,RTT agregado da execução: {ms} ms
 chat.telemetry.rttTotalMissing,Aggregate execution RTT: not available for this trace,RTT agregado da execução: indisponível neste trace
@@ -630,9 +630,9 @@ deploy.knob.fit_memory_margin_mbHint,"VRAM the automatic fit leaves unused on ea
 deploy.knob.hidden_state_dtype,Hidden-state precision,Precisão do estado oculto
 deploy.knob.hidden_state_dtypeF16,f16 - 2 bytes per value,f16 - 2 bytes por valor
 deploy.knob.hidden_state_dtypeF8,f8 - 1 byte per value,f8 - 1 byte por valor
-deploy.knob.hidden_state_dtypeI4G64,i4g64 - signed int4 with FP16 scale per 64 values,i4g64 - int4 assinado com escala FP16 a cada 64 valores
-deploy.knob.hidden_state_dtypeI4G128,i4g128 - signed int4 with FP16 scale per 128 values,i4g128 - int4 assinado com escala FP16 a cada 128 valores
 deploy.knob.hidden_state_dtypeHint,Controls bytes sent between inference peers. f16 remains the default. f8 and groupwise int4 are opt-in lossy formats and require every selected peer to advertise support.,Controla os bytes enviados entre peers de inferência. f16 continua como padrão. f8 e int4 por grupo são formatos com perda opcionais e exigem suporte anunciado por todos os peers selecionados.
+deploy.knob.hidden_state_dtypeI4G128,i4g128 - signed int4 with FP16 scale per 128 values,i4g128 - int4 assinado com escala FP16 a cada 128 valores
+deploy.knob.hidden_state_dtypeI4G64,i4g64 - signed int4 with FP16 scale per 64 values,i4g64 - int4 assinado com escala FP16 a cada 64 valores
 deploy.knob.hidden_state_dtypeUnavailable,Selected hidden-state format unavailable:,Formato selecionado do estado oculto indisponível:
 deploy.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 deploy.knob.idle_minutesHint,"Minutes without a request before this peer unloads its model.","Minutos sem requisição antes de este peer descarregar o modelo."
@@ -1303,6 +1303,19 @@ network.tlsPropagates,No restart needed. The other nodes confirm the change with
 network.tlsState,Cluster,Cluster
 network.tlsSubtitle,"When on, every HTTP call between peers goes over TLS, and each node''s certificate is verified against the node_id the cluster already knows.","Ligado, todo HTTP entre peers vai por TLS, e o certificado de cada nó é conferido contra o node_id que o cluster já conhece."
 network.tlsTitle,Encryption between nodes,Criptografia entre nós
+network.traversalCircuits,Relay circuits,Circuitos de relé
+network.traversalDirect,Direct addresses,Endereços diretos
+network.traversalEyebrow,Diagnostics,Diagnóstico
+network.traversalHolePunch,Hole punches,Hole punches
+network.traversalHolePunchCounts,"{ok} succeeded, {failed} failed","{ok} concluídos, {failed} falharam"
+network.traversalLastError,"Last hole punch failure: {error}","Última falha de hole punch: {error}"
+network.traversalNat,NAT status,Estado do NAT
+network.traversalNat.private,Behind NAT,Atrás de NAT
+network.traversalNat.public,Publicly reachable,Alcançável publicamente
+network.traversalNat.unknown,Not determined yet,Ainda não determinado
+network.traversalReservations,Relay reservations,Reservas de relé
+network.traversalSubtitle,"Where NAT traversal stands for this node: what it can publish, which relays accepted it, and whether hole punching works.","Em que pé está a travessia de NAT deste nó: o que ele consegue publicar, que relés o aceitaram e se o hole punch funciona."
+network.traversalTitle,NAT traversal,Travessia de NAT
 network.trustDocument,Trust document,Documento de confiança
 network.unblock,Unblock,Liberar
 network.unblockFailed,The node was not unblocked,O nó não foi liberado
@@ -1432,11 +1445,15 @@ placement.title,How the model was loaded,Como o modelo foi carregado
 placement.unavailable,This node did not report where the layers landed. It may be running a build without the diagnostic bridge.,Este nó não informou onde as camadas ficaram. Pode estar rodando uma versão sem a ponte de diagnóstico.
 placement.weights,Weights,Pesos
 placement.weightsDetail,{gpu} on the GPU · {cpu} on the CPU,{gpu} na GPU · {cpu} na CPU
-plugins.screenError.title,This plugin screen could not be loaded.,Não foi possível carregar a tela deste plugin.
 plugins.activate,Activate license,Ativar licença
 plugins.activationEyebrow,License activation,Ativação da licença
 plugins.activationFailed,Could not activate the license.,Não foi possível ativar a licença.
 plugins.activationSucceeded,"Activated: {plugins}","Ativado(s): {plugins}"
+plugins.activationUsage.count,{active} of {max} activations used,{active} de {max} ativações usadas
+plugins.activationUsage.label,License activation usage,Uso de ativações da licença
+plugins.activationUsage.limitReached,Activation limit reached,Limite atingido
+plugins.activationUsage.partial,Partially used,Parcialmente utilizada
+plugins.activationUsage.unused,No activations used,Nenhuma ativação utilizada
 plugins.activeTitle,Active,Ativo
 plugins.annualPrice,{price}/year,{price}/ano
 plugins.availableRelease,Available release,Release disponível
@@ -1454,27 +1471,23 @@ plugins.features,Features,Funcionalidades
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
 plugins.inactiveTitle,Available,Disponível
-plugins.licenseStatusError,Could not read this node's plugin license status.,Não foi possível ler o estado das licenças deste nó.
-plugins.licenseUnknown,License status unavailable,Estado da licença indisponível
+plugins.installedAt,Last installed,Última instalação
 plugins.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
+plugins.lastUpdateCheck,Last update check,Última verificação de atualização
+plugins.licenseExpires,License expires,Licença válida até
 plugins.licenseKeyLabel,License key,Chave de licença
 plugins.licenseKeyPlaceholder,PM-...,PM-...
-plugins.licenseExpires,License expires,Licença válida até
-plugins.activationUsage.count,{active} of {max} activations used,{active} de {max} ativações usadas
-plugins.activationUsage.label,License activation usage,Uso de ativações da licença
-plugins.activationUsage.limitReached,Activation limit reached,Limite atingido
-plugins.activationUsage.partial,Partially used,Parcialmente utilizada
-plugins.activationUsage.unused,No activations used,Nenhuma ativação utilizada
+plugins.licenseStatusError,Could not read this node's plugin license status.,Não foi possível ler o estado das licenças deste nó.
+plugins.licenseUnknown,License status unavailable,Estado da licença indisponível
 plugins.manage,Manage,Gerenciar
 plugins.metadataIncomplete,Some catalog details or images are unavailable.,Alguns detalhes ou imagens do catálogo estão indisponíveis.
 plugins.metadataUnavailable,Description unavailable,Descrição indisponível
-plugins.refresh,Refresh,Atualizar
 plugins.monthlyPrice,{price}/month,{price}/mês
 plugins.noLicenseRequired,No license required,Não exige licença
 plugins.pricing,Pricing,Preços
-plugins.installedAt,Last installed,Última instalação
-plugins.lastUpdateCheck,Last update check,Última verificação de atualização
+plugins.refresh,Refresh,Atualizar
 plugins.releaseUnavailable,No valid release available,Nenhuma release válida disponível
+plugins.screenError.title,This plugin screen could not be loaded.,Não foi possível carregar a tela deste plugin.
 plugins.screenshotAlt,{name} screenshot {number},Captura de tela {number} de {name}
 plugins.screenshotClose,Close screenshot,Fechar captura de tela
 plugins.screenshotNext,Next screenshot,Próxima captura de tela

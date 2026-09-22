@@ -36,7 +36,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   inferência. `DecodeTimings::backend_call_us` mede a chamada de avaliação do
   llama.cpp; `backend_sync_us` mede separadamente a sincronização explícita. A
   primeira não é tempo puro de kernel, e a segunda pode esperar trabalho de
-  dispositivo e transferências já enfileirados.
+  dispositivo e transferências já enfileirados. `llm/sampling.rs` representa a
+  penalidade como overrides esparsos, usa índices `u32` no seletor de `top_k`
+  para vocabulários usuais e não materializa um vetor de IDs quando `top_k` não
+  restringe a distribuição.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   O `build.rs` lê o mesmo checkout preparado pelo `llama-cpp-sys-2`, recebido

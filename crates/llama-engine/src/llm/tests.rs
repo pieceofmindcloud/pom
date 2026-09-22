@@ -367,7 +367,7 @@ mod tests {
         #[test]
         fn top_k_does_not_expand_past_k_on_a_tie() {
             let logits = [7.0, 7.0, 7.0, 1.0];
-            assert_eq!(candidate_ids(&logits, &cfg(1.0, 1, 1.0)).len(), 1);
+            assert_eq!(candidate_ids(&logits, &cfg(1.0, 1, 1.0)), vec![0]);
         }
 
         /// The repetition penalty divides positive logits, which can move a
@@ -382,38 +382,6 @@ mod tests {
             };
             // Index 0 falls to 2.5 and index 1 wins.
             assert_eq!(sample_token(&logits, &[0], &penalised), 1);
-        }
-
-        /// The measurement behind the rewrite, on a real Qwen vocabulary.
-        ///
-        /// Ignored because a wall-clock assertion belongs nowhere near CI, and
-        /// because the debug profile makes the number meaningless. Run it the
-        /// way the claim was made:
-        ///
-        /// ```text
-        /// cargo test -p node --release sampler_cost_on_a_real_vocabulary -- --ignored --nocapture
-        /// ```
-        #[test]
-        #[ignore = "medição de tempo: rode à mão, em --release"]
-        fn sampler_cost_on_a_real_vocabulary() {
-            const V: usize = 151_936; // Qwen3
-            let logits: Vec<f32> = (0..V).map(|i| ((i % 977) as f32) * 0.01).collect();
-            let c = cfg(0.7, 40, 1.0);
-
-            let started = Instant::now();
-            const ROUNDS: u32 = 50;
-            for _ in 0..ROUNDS {
-                std::hint::black_box(sample_token(&logits, &[], &c));
-            }
-            let per_token = started.elapsed() / ROUNDS;
-            println!("amostragem: {per_token:?}/token com vocabulário de {V}");
-
-            // The full-sort version cost ~30 ms/token here. Anything in that
-            // range means the O(V) selection is not being taken.
-            assert!(
-                per_token < std::time::Duration::from_millis(5),
-                "amostragem em {per_token:?}/token — o sort completo voltou?"
-            );
         }
 
         #[test]

@@ -1536,6 +1536,11 @@ antes dela. A chamada pode incluir despacho no host e não é uma medida pura de
 kernels na GPU. `backend_sync_ms` mede separadamente `llama_synchronize`, que
 pode esperar trabalho de dispositivo já enfileirado e transferências de saída.
 Captura D2H, logits, amostragem e os demais limites do bloco seguem separados.
+`logits_clone_ms` permanece zero: a cauda guarda somente os logits ajustados
+dos ids repetidos. `repetition_penalty_ms` mede a construção desses overrides;
+`top_k_ms` mede a seleção e o refinamento quando `top_k` reduz o vocabulário.
+Com `top_k` desabilitado, não há vetor de IDs temporário: a travessia da
+distribuição entra em `softmax_ms`.
 
 `POM_PROFILE_SYNC` fica ligado por padrão e controla se a barreira de
 diagnóstico é executada. `backend_sync_ms` é uma duração e não deve ser usado
@@ -1569,13 +1574,20 @@ reutilizar um prefixo formatado com o modo oposto.
 
 ### 3.4 Amostragem da completion
 
-A cauda prepara a distribuição no `LlmEngine` em uma ordem única: copia os
-logits, aplica a penalidade aos ids distintos da janela final de
-`repeat_last_n`, devolve argmax quando a temperatura não é positiva e, para
-temperatura positiva, seleciona no máximo `top_k` logits. Calcula softmax
-estável apenas nesses sobreviventes, normaliza, ordena por probabilidade e
-mantém o menor prefixo cuja massa alcance `top_p`; após renormalizar esse
-núcleo, faz o sorteio multinomial com o LCG protegido por `Mutex`.
+A cauda prepara a distribuição no `LlmEngine` em uma ordem única sem copiar o
+vetor completo de logits: guarda overrides ordenados apenas para os ids válidos
+e distintos da janela final de `repeat_last_n`. Devolve argmax quando a
+temperatura não é positiva. Com temperatura positiva e `top_k` ativo, seleciona
+os `K + R` maiores logits brutos, onde `R` é a quantidade de overrides, junta
+todos os ids ajustados e refina o top-k pela pontuação final. Esse conjunto
+contém exatamente os K vencedores mesmo quando a penalidade aumenta logits.
+O scratch de índices usa `u32` quando o vocabulário cabe nesse tipo e mantém um
+fallback `usize` para fatias maiores. Quando `top_k` não restringe o
+vocabulário, a cauda percorre logits e ids diretamente, sem criar outro vetor
+de ids. Calcula softmax estável apenas nos sobreviventes, normaliza, ordena por
+probabilidade no próprio vetor e mantém o menor prefixo cuja massa alcance `top_p`;
+após renormalizar esse núcleo, faz o sorteio multinomial com o LCG protegido
+por `Mutex`.
 
 Empates no corte de `top_k` são resolvidos pelo id original e não aumentam o
 conjunto além de K. O corte top-p também mantém somente o prefixo mínimo, mesmo
@@ -1584,6 +1596,18 @@ do sorteio. `repeat_last_n=64` permanece o padrão: a penalidade é unigramátic
 não um detector de ciclos de n-gramas ou blocos inteiros, portanto aumentar a
 janela não garantiria prevenir o ciclo observado e mudaria a política de
 amostragem.
+
+`sampler_profile_regressions::sampler_cost_profiles_on_a_qwen_vocabulary` é um
+benchmark ignorado que compara o caminho atual com a implementação anterior,
+na mesma entrada sintética de 151.936 logits com empates. Ele mede `top_k`
+ligado, os padrões implantados (`temperature=0.7`, `top_p=0.9`, `top_k=40`,
+penalidade 1.15 em 64 tokens) e `top_k` desligado, além de exigir a mesma
+distribuição de candidatos. Rode com
+`cargo test -p llama-engine --release sampler_cost_profiles_on_a_qwen_vocabulary -- --ignored --nocapture`;
+em 100 rodadas neste host, o preparo de candidatos dos padrões implantados caiu
+de cerca de 237 us para 203 us por token e o estágio top-k de 227 us para 200 us;
+com `top_k` desligado, o tempo foi de 3,03 ms para 2,76 ms. A entrada é sintética
+e os tempos variam por host, então não são uma meta universal de latência.
 
 ### 3.5 Detecção de ciclo na saída
 

@@ -1147,12 +1147,14 @@ faz o download autenticado do blob persistido.
 
 ### Visão na implantação e no chat
 
-`deploy::Plan.mmproj_path` vem do catálogo do modelo inteiro ou do
-`ShardSet.mmproj_path` da rodada fatiada. `DeployRequest.vision` só habilita o
-projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
+`deploy::Plan.mmproj_path` e `mmproj_reason` vêm do modelo inteiro ou do
+`ShardSet` escolhido. A seleção da cabeça usa a faixa e o nome do candidato
+escolhido, não o primeiro arquivo de visão da máquina. `DeployRequest.vision`
+só habilita o projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
 `webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
-`openai` extrai imagens base64 dos pedidos multimodais. A recusa de imagem sem
-projetor e a mensagem para o usuário precisam permanecer alinhadas.
+`openai` extrai imagens base64 dos pedidos multimodais. A recusa de visão devolve
+`mmproj_reason`; o caminho também é validado contra o GGUF antes de o runtime
+iniciar, inclusive em configurações antigas.
 O Chat consulta `GET /api/ui/chat/capabilities`, uma rota comum que agrega o
 modelo ativo, a cobertura, o `mmproj_path` e o `no_thinking` da cabeça da
 implantação sem expor topologia ao perfil `infer`. A resposta usa `supported`,

@@ -28,6 +28,7 @@ export interface WholeModelEntry {
   quant: string | null;
   architecture: string | null;
   mmproj_path: string | null;
+  mmproj_reason: string | null;
   /** Node ids that have this file. */
   holders: string[];
 }
@@ -73,6 +74,7 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
           quant: model.quant,
           architecture: model.architecture,
           mmproj_path: model.mmproj_path ?? null,
+          mmproj_reason: model.mmproj_reason ?? null,
           holders: [peer.node_id],
         });
         continue;
@@ -85,6 +87,7 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
       found.quant ??= model.quant;
       found.architecture ??= model.architecture;
       found.mmproj_path ??= model.mmproj_path ?? null;
+      found.mmproj_reason ??= model.mmproj_reason ?? null;
       found.size_bytes = Math.max(found.size_bytes, model.size_bytes);
     }
   }

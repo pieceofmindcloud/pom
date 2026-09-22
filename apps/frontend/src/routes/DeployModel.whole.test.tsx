@@ -666,7 +666,7 @@ describe("DeployModel · modelo inteiro", () => {
     expect(screen.getByText("/lm/mmproj.gguf")).toBeTruthy();
   });
 
-  it("não renderiza opção de visão quando o plano não tem mmproj", async () => {
+  it("mostra por que a visão não está disponível quando o plano não tem mmproj", async () => {
     answerPlans();
     mount();
     chooseWhole();
@@ -674,7 +674,9 @@ describe("DeployModel · modelo inteiro", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
 
     expect(screen.queryByRole("checkbox", { name: "Ativar visão" })).toBeNull();
-    expect(screen.queryByText(/mmproj/)).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Visão indisponível: não foi possível provar a que modelo pertence o projetor.",
+    );
   });
 
   /**

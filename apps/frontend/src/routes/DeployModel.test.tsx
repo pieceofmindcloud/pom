@@ -314,7 +314,9 @@ describe("DeployModel", () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     p.mmproj_path = "/models/mmproj-qwen.gguf";
-    post.mockResolvedValue(p);
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/deploy" ? Promise.resolve({ job_id: "vision-job" }) : Promise.resolve(p),
+    );
     mount();
 
     await waitFor(() => expect(screen.getByRole("tab", { name: "Globais" })).toBeTruthy());
@@ -324,7 +326,16 @@ describe("DeployModel", () => {
     expect(vision).toBeTruthy();
     fireEvent.click(vision);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Implantar$/ })).toBeTruthy());
+    const deploy = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((deploy as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(deploy);
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/api/ui/deploy", expect.objectContaining({
+        group: "qwen",
+        kind: "shards",
+        vision: true,
+      }));
+    });
   });
 
   it("explica quando o plano fatiado não tem mmproj", async () => {
@@ -338,7 +349,7 @@ describe("DeployModel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
 
     expect(screen.getByRole("alert").textContent).toContain(
-      "Visão indisponível: nenhum mmproj foi encontrado para este modelo fatiado.",
+      "Visão indisponível: não foi possível provar a que modelo pertence o projetor.",
     );
     expect(screen.queryByRole("checkbox", { name: "Ativar visão" })).toBeNull();
   });

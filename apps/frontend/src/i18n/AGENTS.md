@@ -34,6 +34,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   espera de envio e finalização do corpo QUIC.
   As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16 permanece
   padrão e que f8/i4g64/i4g128 são opções com perda sujeitas a capability.
+  `deploy.visionUnavailable` orienta que a tela só oferece visão quando a
+  identidade e as dimensões GGUF comprovam a associação do projetor.
 - As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem
   o aviso de miniaturização automática de imagens e a recusa rara quando o
   contexto não comporta nem a resolução mínima.

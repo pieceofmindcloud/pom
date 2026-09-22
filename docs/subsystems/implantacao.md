@@ -406,20 +406,27 @@ abrir uma segunda execução concorrente.
 
 ### Visão opcional
 
-O catálogo registra `mmproj_path` quando encontra, no mesmo diretório, o GGUF
-vizinho que segue a convenção do llama.cpp. Para uma rodada de fatias, o
-`ShardSet` também expõe o projetor adjacente a uma fatia ou ao modelo inteiro
-de origem identificado por `model_label`; o `Plan` resolve o caminho para o
-alvo escolhido na camada 0 sem uma nova varredura do disco. Sem esse caminho,
-a tela mantém a visão indisponível e o backend recusa `vision: true` com a
-mensagem de que nenhum `mmproj` foi encontrado.
+O catálogo lê os headers GGUF do modelo e dos projetores candidatos. Ele aceita
+identidade GGUF comum ou nome de arquivo corroborado por dimensões; nomes
+genéricos também funcionam quando `embedding_length` e
+`clip.vision.projection_dim` identificam uma única associação. Quantização não
+escolhe projetor. Sem prova ou diante de dimensões incompatíveis, o modelo fica
+com `mmproj_path: null` e `mmproj_reason` explica como corrigir o inventário.
+
+Para fatias, `ShardSet.mmproj_path` herda o caminho de um modelo inteiro
+somente quando o rótulo do manifesto identifica esse arquivo e seu SHA-256
+corresponde exatamente ao `pom_id`. O catálogo replica o caminho comprovado nas
+fatias do mesmo grupo. O `Plan` recebe caminho e motivo da cabeça escolhida; ao
+implantar, a tela envia `vision` e o backend faz novo survey antes de resolver
+novamente o plano.
 
 `DeployRequest.vision` só pode ser marcado quando o plano tem projetor. Nesse
 caso, `deploy::lifecycle` marca `use_mmproj` exclusivamente no alvo cujo
 `start_layer` é `0`. Só a cabeça carrega `--mmproj <caminho>` e transforma a
 imagem em estado oculto; os peers seguintes recebem esse estado e nunca tocam
-na imagem crua. A escolha e o caminho local são persistidos em `NodeConfig`,
-para que o chat e as rotas de administração conheçam a visão ativa.
+na imagem crua. Antes de iniciar o servidor, `NodeConfig::validate` relê os
+headers e recusa incompatibilidade dimensional ou identidade GGUF contraditória,
+inclusive em caminho persistido por uma configuração antiga.
 
 ### O modelo e seu tamanho
 

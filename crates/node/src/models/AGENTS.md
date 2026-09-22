@@ -219,20 +219,21 @@ fatias que contêm uma dessas camadas.
 
 ### Projetor multimodal
 
-`catalog.rs::find_mmproj_sibling` segue a convenção do llama.cpp: GGUF `.gguf`
-vizinho no mesmo diretório com `mmproj` no nome, escolhendo a quantização mais
-próxima. `DiscoveredModel.mmproj_path` é a resposta persistida no catálogo;
-`ShardSet.mmproj_path` herda o caminho de uma fatia ou do modelo inteiro de
-origem com o mesmo rótulo. A interface não deve varrer o disco. O projetor não
-é um modelo selecionável.
+`catalog.rs::resolve_mmproj_sibling` lê os headers GGUF dos candidatos e só
+associa um projetor por identidade comum ou dimensão de projeção única no
+diretório; quantização nunca escolhe `mmproj`. A identidade vem de
+`general.name`, `general.basename` e `general.base_model.*`; quando há fatias,
+`ShardSet.mmproj_path` só herda do modelo inteiro se o SHA-256 real corresponder
+ao `pom_id` do manifesto. `mmproj_reason` informa como resolver ausência ou
+ambiguidade. `enrich` replica o caminho comprovado nas fatias do mesmo grupo.
+A interface não deve varrer o disco. O projetor não é um modelo selecionável.
 
 ### Rascunho MTP separado
 
-`catalog.rs::find_mtp_draft_sibling` é o mesmo mecanismo que `find_mmproj_sibling`
-(irmão `.gguf` no mesmo diretório, quantização mais próxima), mas com um
-prefixo em vez de substring - `mtp-` - porque não existe convenção estabelecida
-para esse arquivo fora da própria Unsloth, e substring arriscaria falso
-positivo num modelo cujo nome contenha "mtp". Ao contrário do mmproj, esse
+`catalog.rs::find_mtp_draft_sibling` procura um irmão `.gguf` no mesmo diretório
+com prefixo `mtp-` e escolhe pela quantização mais próxima. Não existe
+convenção estabelecida para esse arquivo fora da própria Unsloth, e substring
+arriscaria falso positivo num modelo cujo nome contenha "mtp". Ao contrário do mmproj, esse
 caminho **não** vive no catálogo central (`DiscoveredModel`/`ShardSet`/`Plan`):
 a descoberta acontece direto na máquina que carrega o modelo
 (`webui::run_apply`, `webui::reconfigure_local`), porque só ela precisa do

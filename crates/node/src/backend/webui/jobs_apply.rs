@@ -967,11 +967,10 @@ fn resolve_mmproj_path(
             std::path::Path::new(path).is_file(),
             "este modelo não tem visão: mmproj não encontrado no caminho informado"
         );
+        crate::catalog::validate_mmproj_pair(model_path, std::path::Path::new(path))?;
         return Ok(path.to_string());
     }
-    crate::catalog::find_mmproj_sibling(model_path).ok_or_else(|| {
-        anyhow::anyhow!("este modelo não tem visão: mmproj não encontrado ao lado do GGUF")
-    })
+    crate::catalog::find_verified_mmproj_sibling(model_path).map_err(anyhow::Error::msg)
 }
 
 #[cfg(test)]
@@ -984,9 +983,17 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let model = root.join("slice.gguf");
         let projector = root.join("projectors/mmproj.gguf");
-        std::fs::write(&model, b"model").unwrap();
+        std::fs::write(
+            &model,
+            crate::catalog::tests::text_model_fixture("Model", "llama", 3072),
+        )
+        .unwrap();
         std::fs::create_dir_all(projector.parent().unwrap()).unwrap();
-        std::fs::write(&projector, b"projector").unwrap();
+        std::fs::write(
+            &projector,
+            crate::catalog::tests::projector_fixture("Model", 3072),
+        )
+        .unwrap();
 
         assert_eq!(
             resolve_mmproj_path(&model, projector.to_str()).unwrap(),

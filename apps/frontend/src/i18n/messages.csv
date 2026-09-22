@@ -755,7 +755,7 @@ deploy.unloadIfIdleHint,"Unload this peer's model after the configured period wi
 deploy.vision,Vision,Visão
 deploy.visionHint,"Loads the projector on the pipeline head so it can turn images into hidden state for the following shards.","Carrega o projetor na cabeça do pipeline para transformar imagens em estado oculto para as fatias seguintes."
 deploy.visionToggle,Enable vision,Ativar visão
-deploy.visionUnavailable,"Vision unavailable: no mmproj was found for this sliced model.","Visão indisponível: nenhum mmproj foi encontrado para este modelo fatiado."
+deploy.visionUnavailable,"Vision unavailable: projector ownership could not be verified. Check the GGUF model identity and projection dimensions.","Visão indisponível: não foi possível provar a que modelo pertence o projetor. Confira a identidade GGUF e as dimensões de projeção."
 deploy.wholeAria,Whole model,Modelo inteiro
 deploy.wholeDetail,Un-sliced models that a cluster machine already has.,Modelos não fatiados que alguma máquina do cluster já tem.
 deploy.wholeEmpty,No whole model on the network,Nenhum modelo inteiro na rede

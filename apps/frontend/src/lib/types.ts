@@ -698,6 +698,8 @@ export interface DiscoveredModel {
   path: string;
   /** GGUF mmproj adjacente escolhido pela convenção do llama.cpp. */
   mmproj_path?: string | null;
+  /** Motivo quando o catálogo não conseguiu provar um projetor compatível. */
+  mmproj_reason?: string | null;
   size_bytes: number;
   /** O GGUF declara split.count > 1 e este item representa o conjunto. */
   multipart?: boolean;
@@ -801,6 +803,8 @@ export interface ShardSet {
   model_label: string;
   /** Projector adjacent to this set or to its original whole model. */
   mmproj_path?: string | null;
+  /** Motivo quando o catálogo não conseguiu provar um projetor compatível. */
+  mmproj_reason?: string | null;
   /** A rodada de fatiamento que produziu estas partes. Identificação, não nome. */
   pom_id: string;
   group: string;
@@ -1718,6 +1722,8 @@ export interface DeployPlan {
   kind?: DeployKind;
   /** Projector adjacente encontrado para o modelo escolhido. */
   mmproj_path?: string | null;
+  /** Motivo quando o catálogo não conseguiu provar um projetor compatível. */
+  mmproj_reason?: string | null;
   /** True only when the surveyed model's actual GGUF metadata is MoE. */
   is_moe?: boolean;
   /** Whether this plan can honor the selected inference mode. */

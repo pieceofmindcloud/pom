@@ -135,9 +135,9 @@ pub struct NodeConfig {
     pub mmproj_path: Option<String>,
     /// GGUF externo de rascunho MTP ("shared MTP module"), presente só na
     /// máquina que serve a última camada do modelo (onde o bloco `nextn`
-    /// rodaria). Descoberto pelo mesmo mecanismo de irmão de arquivo que o
-    /// `mmproj_path`; ver `models::catalog::find_mtp_draft_sibling` e
-    /// `crate::llm::mtp`.
+    /// rodaria). O MTP usa a própria convenção `mtp-` e quantização; o
+    /// `mmproj_path` usa associação verificada por identidade GGUF e dimensão.
+    /// Ver `models::catalog::find_mtp_draft_sibling` e `crate::llm::mtp`.
     #[serde(default)]
     pub mtp_draft_path: Option<String>,
     /// Label shared by every peer of the same model. The pipeline planner only
@@ -566,6 +566,10 @@ impl NodeConfig {
             if !PathBuf::from(mmproj_path).is_file() {
                 bail!("arquivo mmproj não encontrado: {mmproj_path}");
             }
+            crate::catalog::validate_mmproj_pair(
+                std::path::Path::new(&self.model_path),
+                std::path::Path::new(mmproj_path),
+            )?;
         }
         if self.start_layer > self.end_layer {
             bail!(
@@ -2456,6 +2460,35 @@ mod tests {
     #[test]
     fn rejects_missing_file() {
         assert!(cfg().validate().is_err());
+    }
+
+    #[test]
+    fn rejects_a_persisted_projector_with_incompatible_output_dimension() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-runtime-mmproj-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let model = root.join("model.gguf");
+        let projector = root.join("mmproj-model.gguf");
+        std::fs::write(
+            &model,
+            crate::catalog::tests::text_model_fixture("Shared Identity", "llama", 3072),
+        )
+        .unwrap();
+        std::fs::write(
+            &projector,
+            crate::catalog::tests::projector_fixture("Shared Identity", 2048),
+        )
+        .unwrap();
+        let mut config = cfg();
+        config.model_path = model.to_string_lossy().into_owned();
+        config.mmproj_path = Some(projector.to_string_lossy().into_owned());
+
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("mmproj incompatível"), "{error}");
+        assert!(error.contains("3072") && error.contains("2048"), "{error}");
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

@@ -347,18 +347,20 @@ export function DeployModel() {
   }, [cacheTypes.data, cacheTypesLoaded]);
   /** Every slicing round anyone in the cluster holds, named once. */
   const groups = useMemo(() => {
-    const seen = new Map<string, { key: string; label: string; pomId: string; mmprojPath: string | null }>();
+    const seen = new Map<string, { key: string; label: string; pomId: string; mmprojPath: string | null; mmprojReason: string | null }>();
     for (const peer of cluster.data?.peers ?? []) {
       for (const set of peer.shard_sets ?? []) {
         const existing = seen.get(set.group);
         if (existing) {
           if (!existing.mmprojPath && set.mmproj_path) existing.mmprojPath = set.mmproj_path;
+          if (!existing.mmprojReason && set.mmproj_reason) existing.mmprojReason = set.mmproj_reason;
         } else {
           seen.set(set.group, {
             key: set.group,
             label: set.model_label || set.group,
             pomId: set.pom_id ?? "",
             mmprojPath: set.mmproj_path ?? null,
+            mmprojReason: set.mmproj_reason ?? null,
           });
         }
       }
@@ -509,6 +511,10 @@ export function DeployModel() {
   const mmprojPath = p?.mmproj_path !== undefined
     ? p.mmproj_path
     : wholeModel?.mmproj_path ?? slicedMmprojPath;
+  const mmprojReason = p?.mmproj_reason
+    ?? wholeModel?.mmproj_reason
+    ?? groups.find((entry) => entry.key === chosen)?.mmprojReason
+    ?? null;
   const visionAvailable = Boolean(mmprojPath);
   useEffect(() => {
     if (!visionAvailable) setUseVision(false);
@@ -1326,10 +1332,11 @@ export function DeployModel() {
                   : (inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido.")
               }
               showHiddenStateDtype={crossesPeerBoundary}
-              vision={isWhole && !visionAvailable ? undefined : {
+              vision={{
                 available: visionAvailable,
                 enabled: useVision,
                 path: mmprojPath,
+                reason: mmprojReason,
                 onChange: setUseVision,
               }}
             />

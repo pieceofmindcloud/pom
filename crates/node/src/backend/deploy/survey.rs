@@ -23,6 +23,8 @@ pub(super) struct HeldShard {
     pub(super) path: String,
     /// Adjacent llama.cpp projector, when the catalog found one.
     pub(super) mmproj_path: Option<String>,
+    /// Motivo retornado pelo catálogo se a associação não pôde ser provada.
+    pub(super) mmproj_reason: Option<String>,
     pub(super) size_bytes: u64,
     /// sha256 da parte, quando ela é endereçada por conteúdo.
     ///
@@ -583,14 +585,16 @@ pub(super) async fn survey(
                     .flat_map(|set| {
                         let pom_id = set.get("pom_id").and_then(|value| value.as_str());
                         let mmproj_path = set.get("mmproj_path").and_then(|value| value.as_str());
+                        let mmproj_reason =
+                            set.get("mmproj_reason").and_then(|value| value.as_str());
                         set.get("shards")
                             .and_then(|v| v.as_array())
                             .into_iter()
                             .flatten()
-                            .map(move |shard| (shard, pom_id, mmproj_path))
+                            .map(move |shard| (shard, pom_id, mmproj_path, mmproj_reason))
                     })
-                    .filter_map(|(shard, pom_id, mmproj_path)| {
-                        parse_shard(shard, pom_id, mmproj_path)
+                    .filter_map(|(shard, pom_id, mmproj_path, mmproj_reason)| {
+                        parse_shard(shard, pom_id, mmproj_path, mmproj_reason)
                     })
                     .collect(),
                 DeployKind::Whole => {
@@ -616,14 +620,16 @@ pub(super) async fn survey(
                             let pom_id = set.get("pom_id").and_then(|value| value.as_str());
                             let mmproj_path =
                                 set.get("mmproj_path").and_then(|value| value.as_str());
+                            let mmproj_reason =
+                                set.get("mmproj_reason").and_then(|value| value.as_str());
                             set.get("shards")
                                 .and_then(|v| v.as_array())
                                 .into_iter()
                                 .flatten()
-                                .map(move |shard| (shard, pom_id, mmproj_path))
+                                .map(move |shard| (shard, pom_id, mmproj_path, mmproj_reason))
                         })
-                        .filter_map(|(shard, pom_id, mmproj_path)| {
-                            parse_shard(shard, pom_id, mmproj_path)
+                        .filter_map(|(shard, pom_id, mmproj_path, mmproj_reason)| {
+                            parse_shard(shard, pom_id, mmproj_path, mmproj_reason)
                         })
                         .collect::<Vec<_>>();
                     models.append(&mut slices);
@@ -644,14 +650,16 @@ pub(super) async fn survey(
                             let pom_id = set.get("pom_id").and_then(|value| value.as_str());
                             let mmproj_path =
                                 set.get("mmproj_path").and_then(|value| value.as_str());
+                            let mmproj_reason =
+                                set.get("mmproj_reason").and_then(|value| value.as_str());
                             set.get("tp_parts")
                                 .and_then(|v| v.as_array())
                                 .into_iter()
                                 .flatten()
-                                .map(move |shard| (shard, pom_id, mmproj_path))
+                                .map(move |shard| (shard, pom_id, mmproj_path, mmproj_reason))
                         })
-                        .filter_map(|(shard, pom_id, mmproj_path)| {
-                            parse_shard(shard, pom_id, mmproj_path)
+                        .filter_map(|(shard, pom_id, mmproj_path, mmproj_reason)| {
+                            parse_shard(shard, pom_id, mmproj_path, mmproj_reason)
                         })
                         .collect();
                     if parts.is_empty() {
@@ -789,6 +797,7 @@ pub(super) fn parse_shard(
     v: &serde_json::Value,
     pom_id: Option<&str>,
     set_mmproj_path: Option<&str>,
+    set_mmproj_reason: Option<&str>,
 ) -> Option<HeldShard> {
     let range = v.get("shard_range")?.as_array()?;
     Some(HeldShard {
@@ -806,6 +815,11 @@ pub(super) fn parse_shard(
             .get("mmproj_path")
             .and_then(|value| value.as_str())
             .or(set_mmproj_path)
+            .map(str::to_string),
+        mmproj_reason: v
+            .get("mmproj_reason")
+            .and_then(|value| value.as_str())
+            .or(set_mmproj_reason)
             .map(str::to_string),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
         sha256: v
@@ -870,6 +884,10 @@ pub(super) fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShar
         path: v.get("path")?.as_str()?.to_string(),
         mmproj_path: v
             .get("mmproj_path")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        mmproj_reason: v
+            .get("mmproj_reason")
             .and_then(|value| value.as_str())
             .map(str::to_string),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),

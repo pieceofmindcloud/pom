@@ -620,7 +620,7 @@ Per-file list:
   (`../lib/deleteModel`). A dedicated "Vision (mmproj)" column shows the
   projector's basename (`../lib/format::optionalBasename`) when
   `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the
-  catalog already resolves this file (`crates/node/src/models/catalog.rs::find_mmproj_sibling`),
+  catalog already resolves this file from GGUF identity and projection dimensions,
   the screen only renders it. `ScannedRoots`
   lists the scanned folders and per-folder file counts. Full-bleed shell.
 - `RemoteModels.tsx` - mostra primeiro o status do CLI e da autenticação,
@@ -712,8 +712,10 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 ### Deploy e chat multimodais
 
 `DeployModel.tsx` exibe a opção de visão para modelo inteiro e para conjunto de
-fatias quando o plano resolve `mmproj_path`; conjuntos sem projetor mostram a
-indisponibilidade sem checkbox morto, e a escolha segue para a implantação.
+fatias quando o plano resolve `mmproj_path`; sem associação comprovada, mostra
+`mmproj_reason` ou uma orientação localizada. A tela envia a intenção
+`vision`, e a rota de implantação refaz o survey e o plano antes de usar o
+caminho validado para a cabeça.
 `Chat.tsx` usa um único
 campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
 visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens

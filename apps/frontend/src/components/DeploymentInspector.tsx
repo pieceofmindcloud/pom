@@ -128,6 +128,7 @@ export interface VisionControl {
   available: boolean;
   enabled: boolean;
   path?: string | null;
+  reason?: string | null;
   onChange: (next: boolean) => void;
 }
 
@@ -478,7 +479,7 @@ export function DeploymentInspector({
             </>
           ) : (
             <p role="alert" className="px-0.5 text-[0.6rem] leading-relaxed text-amber">
-              {t("deploy.visionUnavailable")}
+              {vision.reason || t("deploy.visionUnavailable")}
             </p>
           )}
         </Section>

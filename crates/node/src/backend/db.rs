@@ -2642,6 +2642,8 @@ mod tests {
             source_label: source.label(),
             path: path.display().to_string(),
             mmproj_path: None,
+            mmproj_reason: None,
+            identity_names: Vec::new(),
             size_bytes,
             multipart: false,
             multipart_parts: Vec::new(),

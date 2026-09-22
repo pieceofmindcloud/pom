@@ -275,11 +275,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   em voo de `PeerView` é `null` quando o relatório vivo do peer não chegou;
   zero só representa um peer que de fato reportou estar ocioso.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
-  `model_label`, `pom_id` and optional local `mmproj_path`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
+  `model_label`, `pom_id`, optional local `mmproj_path` and `mmproj_reason`;
+  `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
   `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen
   shapes. `DeployPlan` also carries the operational name, strategy, RTT route
-  alternatives and projected load, while `DeployMachine` carries GPU/RAM
-  capacity plus optional live GPU/RAM usage percentages. Its live load and
+  alternatives, projected load and the selected head projector reason, while
+  `DeployMachine` carries GPU/RAM capacity plus optional live GPU/RAM usage
+  percentages. Its live load and
   route load distribution are nullable when the survey could not read the
   peer, so the deploy screen can say that the value is unavailable.
   `DeployStep.parts`

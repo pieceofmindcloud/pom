@@ -183,9 +183,9 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   tabelas de largura total; `RemoteModelCard`, o cartão que a busca usava
   antes, foi removido. `WholeModels` e `Shards` mostram uma coluna/nota de
   visão com o nome do arquivo `mmproj` (`DiscoveredModel.mmproj_path`/
-  `ShardSet.mmproj_path`, já resolvidos no catálogo por
-  `catalog::find_mmproj_sibling`) ou "sem projetor" quando o modelo/rodada não
-  tem um - a tela nunca inventa o nome.
+  `ShardSet.mmproj_path`, resolvidos pelo catálogo com identidade GGUF e
+  dimensões compatíveis) ou "sem projetor" com o motivo da recusa. A tela nunca
+  inventa o nome.
 - `/implantar` -> DeployModel (entrada de primeiro nível para pôr fatias em
   serviço)
 - `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,

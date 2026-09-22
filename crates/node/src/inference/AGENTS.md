@@ -1416,6 +1416,10 @@ unidade mas **não** tem número medido de ponta a ponta.
 está configurado. O prefill da cabeça transporta as imagens em base64 apenas
 no primeiro chunk; os peers as decodificam e o `mtmd` faz o prefill em ordem.
 Imagens não usam reuso de prefixo nem batching concorrente.
+Antes de aplicar uma configuração, `NodeConfig::validate` lê os dois headers
+GGUF e recusa um caminho que não seja projetor ou cuja identidade/dimensão de
+saída contradiga o modelo. Isso também impede que um `mmproj_path` incompatível
+persistido anteriormente chegue ao servidor.
 
 **Célula de KV não é posição lógica.** Uma imagem escreve `n_tokens` células
 de embedding no KV, mas em M-RoPE ocupa apenas

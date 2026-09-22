@@ -509,8 +509,8 @@ Key logic carriers:
   f8 e i4 ficam desabilitados até todos os peers selecionados anunciarem suporte,
   e o aviso usa a razão da capability do formato escolhido. `VisionControl` segue
   a mesma fronteira: exibe e alterna o mmproj resolvido para modelos inteiros
-  e fatias, ou mostra a indisponibilidade localizada quando a rodada fatiada
-  não tem projetor. A seção `Configurações POM (DESENV)` só é montada quando
+  e fatias, ou mostra `mmproj_reason` com a orientação localizada quando a
+  associação não foi comprovada. A seção `Configurações POM (DESENV)` só é montada quando
   `NodeInfo.pom_desenv` vem verdadeiro de `/api/ui/node`; quando a flag está
   desligada, os controles somem, mas os valores recebidos continuam no estado
   e seguem no pedido quando um controle visível é editado. O modo ausente é

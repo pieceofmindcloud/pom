@@ -191,9 +191,11 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   copiar, e `peek_batch_header`/`validate_batch_bytes` leem só o cabeçalho para
   quem precisa da rota, do `batch_id` ou de uma validação. Detalhe e números em
   `docs/subsystems/inferencia.md` §2.2.
-- `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo modelos
-  multipart. `read_layout` valida arrays por camada usando a tabela unificada
-  de todas as partes físicas. Para `qwen4exp`, mede
+- `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo nomes de
+  identidade (`general.name`, `general.basename` e `general.base_model.*`),
+  `embedding_length` textual e `clip.vision.projection_dim` para associar
+  projetores, além de modelos multipart. `read_layout` valida arrays por camada
+  usando a tabela unificada de todas as partes físicas. Para `qwen4exp`, mede
   `per_layer_token_embd.weight` apenas nas faixas que contêm uma camada PLE;
   os três arrays de estrutura (`layer_multipliers`, `head_offsets` e
   `head_vocab_sizes`) permanecem completos, enquanto `ple.layers` é filtrado

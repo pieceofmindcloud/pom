@@ -82,11 +82,17 @@ pub struct DiscoveredModel {
     pub source_label: &'static str,
     /// Absolute path of the `.gguf` file.
     pub path: String,
-    /// Adjacent llama.cpp multimodal projector, when the sibling convention
-    /// found one. `None` is also the catalog's fast answer for text-only
-    /// models, so callers never need to scan the directory again.
+    /// Adjacent llama.cpp multimodal projector, only when the catalog proved
+    /// its identity and dimensional compatibility with this GGUF.
     #[serde(default)]
     pub mmproj_path: Option<String>,
+    /// Motivo pelo qual o catálogo não conseguiu provar um projetor para este modelo.
+    #[serde(default)]
+    pub mmproj_reason: Option<String>,
+    /// Nomes de identidade do cabeçalho, mantidos só em memória para relacionar
+    /// fatias ao modelo lógico sem expor metadados duplicados na API.
+    #[serde(skip)]
+    pub(crate) identity_names: Vec<String>,
     pub size_bytes: u64,
     /// True when the source GGUF declares a tensor-split set with more than
     /// one part. The catalog exposes only the first part as the selectable
@@ -177,6 +183,9 @@ pub struct ShardSet {
     /// The path is local to this peer and is only used by the pipeline head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mmproj_path: Option<String>,
+    /// Motivo acionável quando nenhuma associação pôde ser provada.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mmproj_reason: Option<String>,
     /// O hash do modelo original. Identificação, não nome.
     #[serde(default)]
     pub pom_id: String,
@@ -221,6 +230,28 @@ type HeaderKey = (String, u64, u64);
 fn header_cache() -> &'static Mutex<HashMap<HeaderKey, Result<GgufInfo, String>>> {
     static CACHE: OnceLock<Mutex<HashMap<HeaderKey, Result<GgufInfo, String>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn source_hash_cache() -> &'static Mutex<HashMap<MetadataIdentity, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<MetadataIdentity, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_content_hash(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let identity = metadata_identity(path, &metadata);
+    if let Some(hash) = source_hash_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&identity).cloned())
+    {
+        return Some(hash);
+    }
+    let (hash, _) = crate::pom::hash_file(path).ok()?;
+    if let Ok(mut cache) = source_hash_cache().lock() {
+        cache.insert(identity, hash.clone());
+    }
+    Some(hash)
 }
 
 fn cached_info(path: &Path, size: u64, mtime: u64) -> Result<GgufInfo, String> {
@@ -565,7 +596,9 @@ fn describe(
         source,
         source_label: source.label(),
         path: path.to_string_lossy().into_owned(),
-        mmproj_path: find_mmproj_sibling(path),
+        mmproj_path: None,
+        mmproj_reason: Some("aguardando leitura dos metadados GGUF para validar o projetor".into()),
+        identity_names: Vec::new(),
         size_bytes,
         multipart: false,
         multipart_parts: Vec::new(),
@@ -593,43 +626,312 @@ fn describe(
     })
 }
 
-/// Match llama.cpp's local projector discovery: a `.gguf` sibling in the same
-/// directory whose filename contains `mmproj`, choosing the closest
-/// quantisation when more than one candidate exists.
-pub(crate) fn find_mmproj_sibling(model: &Path) -> Option<String> {
-    let parent = model.parent()?;
-    let model_name = model.file_name()?.to_string_lossy();
-    let model_bits = parse_quant_bits(&model_name);
-    let mut candidates = std::fs::read_dir(parent)
-        .ok()?
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            let name = path.file_name()?.to_string_lossy().into_owned();
-            if path == model
-                || !path.is_file()
-                || !name.to_ascii_lowercase().contains("mmproj")
-                || !name.to_ascii_lowercase().ends_with(".gguf")
-            {
-                return None;
+#[derive(Debug)]
+struct ProjectorResolution {
+    path: Option<String>,
+    reason: Option<String>,
+}
+
+/// Resolve a sibling only when GGUF identity evidence, or a unique dimensional
+/// match across the directory, supports the association. Quantization is never
+/// used to select a projector.
+fn resolve_mmproj_sibling(model: &Path, model_info: &GgufInfo) -> ProjectorResolution {
+    let Some(parent) = model.parent() else {
+        return no_projector("o modelo não tem diretório pai para procurar projetores");
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return no_projector("não foi possível ler o diretório do modelo para procurar projetores");
+    };
+    let mut projectors = Vec::new();
+    let mut sibling_models = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+            continue;
+        };
+        if path == model || !path.is_file() || !extension.eq_ignore_ascii_case("gguf") {
+            continue;
+        }
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let Ok(info) = cached_info(&path, metadata.len(), file_mtime_fingerprint(&metadata)) else {
+            continue;
+        };
+        let is_projector = info.architecture.as_deref() == Some("clip")
+            || filename.to_ascii_lowercase().contains("mmproj");
+        if is_projector {
+            projectors.push((path, filename, info));
+        } else if let Some(dim) = info.embedding_length {
+            sibling_models.push((dim, filename, info.identity_names));
+        }
+    }
+    if projectors.is_empty() {
+        return no_projector("nenhum projetor GGUF foi encontrado neste diretório");
+    }
+
+    let model_name = model
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let mut identity_matches = Vec::new();
+    let mut dimension_matches = Vec::new();
+    let mut identity_dimension_mismatches = Vec::new();
+    for (path, filename, info) in &projectors {
+        let dimensions_known =
+            model_info.embedding_length.is_some() && info.projector_projection_dim.is_some();
+        let dimensions_match = match (model_info.embedding_length, info.projector_projection_dim) {
+            (Some(model_dim), Some(projector_dim)) => model_dim == projector_dim,
+            _ => true,
+        };
+        let identity_match = identities_match(&model_info.identity_names, &info.identity_names);
+        let filename_match = identities_match(
+            &[filename_identity(&model_name, false)],
+            &[filename_identity(filename, true)],
+        );
+        let metadata_conflict = has_identity_evidence(&model_info.identity_names)
+            && has_identity_evidence(&info.identity_names)
+            && !identity_match;
+        if identity_match {
+            if dimensions_match {
+                identity_matches.push(path.clone());
+            } else {
+                identity_dimension_mismatches
+                    .push((model_info.embedding_length, info.projector_projection_dim));
             }
-            let distance = match (model_bits, parse_quant_bits(&name)) {
-                (Some(model_bits), Some(projector_bits)) => model_bits.abs_diff(projector_bits),
-                _ => u32::MAX,
+        } else if !metadata_conflict && filename_match && dimensions_known && dimensions_match {
+            // Names corroborate dimensions but are never accepted by themselves.
+            dimension_matches.push(path.clone());
+        }
+    }
+
+    let selected = if identity_matches.len() == 1 {
+        identity_matches.pop()
+    } else if identity_matches.len() > 1 {
+        return no_projector(
+            "mais de um projetor tem identidade GGUF compatível; renomeie ou separe os arquivos para desambiguar",
+        );
+    } else if dimension_matches.len() == 1 {
+        dimension_matches.pop()
+    } else if dimension_matches.len() > 1 {
+        return no_projector(
+            "mais de um projetor tem nome e dimensão compatíveis; inclua uma identidade GGUF correspondente",
+        );
+    } else {
+        // Generic sidecar names remain supported when both dimensions are
+        // present and uniquely identify this model among its directory peers.
+        let matching_projectors = projectors
+            .iter()
+            .filter(|(_, _, info)| {
+                model_info.embedding_length.is_some()
+                    && info.projector_projection_dim == model_info.embedding_length
+                    && (!has_identity_evidence(&model_info.identity_names)
+                        || !has_identity_evidence(&info.identity_names)
+                        || identities_match(&model_info.identity_names, &info.identity_names))
+            })
+            .count();
+        let model_name_identities = model_info
+            .identity_names
+            .iter()
+            .cloned()
+            .chain(std::iter::once(filename_identity(&model_name, false)))
+            .collect::<Vec<_>>();
+        let matching_models = model_info.embedding_length.map_or(0, |dimension| {
+            1 + sibling_models
+                .iter()
+                .filter(|(candidate_dim, _, _)| *candidate_dim == dimension)
+                .filter(|(_, filename, identities)| {
+                    !identities_match(
+                        &model_name_identities,
+                        &identities
+                            .iter()
+                            .cloned()
+                            .chain(std::iter::once(filename_identity(filename, false)))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .count()
+        });
+        if matching_projectors == 1 && matching_models == 1 {
+            projectors
+                .iter()
+                .find(|(_, _, info)| info.projector_projection_dim == model_info.embedding_length)
+                .map(|(path, _, _)| path.clone())
+        } else {
+            None
+        }
+    };
+
+    if let Some(path) = selected {
+        return ProjectorResolution {
+            path: Some(path.to_string_lossy().into_owned()),
+            reason: None,
+        };
+    }
+    if let Some((model_dim, projector_dim)) = identity_dimension_mismatches.first() {
+        return no_projector(&format!(
+            "projetor identificado para este modelo tem dimensão incompatível: o modelo exige embedding_length={}, mas o mmproj declara clip.vision.projection_dim={}; use o projetor compatível",
+            model_dim.map_or_else(|| "desconhecido".into(), |value| value.to_string()),
+            projector_dim.map_or_else(|| "desconhecida".into(), |value| value.to_string()),
+        ));
+    }
+    no_projector(
+        "não foi possível provar a associação do projetor; confirme general.name/base_model nos GGUF ou dimensões únicas compatíveis, e separe modelos ambíguos",
+    )
+}
+
+pub(crate) fn find_verified_mmproj_sibling(model: &Path) -> Result<String, String> {
+    let info = gguf::read_info(model)
+        .map_err(|error| format!("não foi possível ler o cabeçalho GGUF do modelo: {error:#}"))?;
+    let resolution = resolve_mmproj_sibling(model, &info);
+    resolution.path.ok_or_else(|| {
+        resolution
+            .reason
+            .unwrap_or_else(|| "não foi possível provar a associação do projetor".into())
+    })
+}
+
+fn no_projector(reason: &str) -> ProjectorResolution {
+    ProjectorResolution {
+        path: None,
+        reason: Some(reason.to_string()),
+    }
+}
+
+fn filename_identity(filename: &str, projector: bool) -> String {
+    let stem = filename
+        .strip_suffix(".gguf")
+        .or_else(|| filename.strip_suffix(".GGUF"))
+        .unwrap_or(filename);
+    let mut value = stem.to_ascii_lowercase();
+    if projector {
+        value = value.replace("mmproj", " ");
+    }
+    strip_quant_suffix(&value)
+}
+
+fn strip_quant_suffix(value: &str) -> String {
+    let Some(quant) = parse_quant(value) else {
+        return value.to_string();
+    };
+    let uppercase = value.to_ascii_uppercase();
+    uppercase
+        .find(&quant)
+        .map(|index| value[..index].to_string())
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn identities_match(left: &[String], right: &[String]) -> bool {
+    left.iter().any(|left| {
+        let a = identity_tokens(left);
+        right.iter().any(|right| {
+            let b = identity_tokens(right);
+            if a.is_empty() || b.is_empty() {
+                return false;
+            }
+            let robust_whole_name = |tokens: &[String]| {
+                tokens.len() >= 2 || tokens.iter().any(|token| token.len() >= 5)
             };
-            Some((distance, name, path))
+            if (a == b && robust_whole_name(&a))
+                || (b.len() >= 2 && contains_tokens(&a, &b))
+                || (a.len() >= 2 && contains_tokens(&b, &a))
+            {
+                return true;
+            }
+            let shared = a
+                .iter()
+                .filter(|token| b.contains(token))
+                .collect::<Vec<_>>();
+            shared.len() >= 2
         })
-        .collect::<Vec<_>>();
-    candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    candidates
-        .first()
-        .map(|(_, _, path)| path.to_string_lossy().into_owned())
+    })
+}
+
+fn has_identity_evidence(names: &[String]) -> bool {
+    names.iter().any(|name| !identity_tokens(name).is_empty())
+}
+
+fn contains_tokens(haystack: &[String], needle: &[String]) -> bool {
+    needle.len() <= haystack.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn identity_tokens(value: &str) -> Vec<String> {
+    let stop_words = [
+        "base",
+        "chat",
+        "clip",
+        "for",
+        "gguf",
+        "instruct",
+        "mmproj",
+        "model",
+        "multimodal",
+        "projector",
+    ];
+    strip_quant_suffix(value)
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_ascii_lowercase)
+        .filter(|token| {
+            !stop_words.contains(&token.as_str())
+                && parse_quant(token).is_none()
+                && !token.chars().all(|character| character.is_ascii_digit())
+        })
+        .collect()
+}
+
+/// Validate an explicitly persisted projector against the selected GGUF. This
+/// catches stale configurations before the inference server is touched.
+pub(crate) fn validate_mmproj_pair(model: &Path, projector: &Path) -> anyhow::Result<()> {
+    let model_info = gguf::read_info(model)
+        .map_err(|error| anyhow::anyhow!("não foi possível ler o GGUF do modelo: {error:#}"))?;
+    let projector_info = gguf::read_info(projector)
+        .map_err(|error| anyhow::anyhow!("não foi possível ler o GGUF mmproj: {error:#}"))?;
+    anyhow::ensure!(
+        projector_info.architecture.as_deref() == Some("clip")
+            || projector.file_name().is_some_and(|name| name
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("mmproj")),
+        "o arquivo configurado não se identifica como projetor multimodal GGUF"
+    );
+    let dimensions_match = if let (Some(model_dim), Some(projector_dim)) = (
+        model_info.embedding_length,
+        projector_info.projector_projection_dim,
+    ) {
+        anyhow::ensure!(
+            model_dim == projector_dim,
+            "mmproj incompatível: o modelo exige embedding_length={model_dim}, mas o projetor declara clip.vision.projection_dim={projector_dim}"
+        );
+        true
+    } else {
+        false
+    };
+    let metadata_identity_match =
+        identities_match(&model_info.identity_names, &projector_info.identity_names);
+    anyhow::ensure!(
+        metadata_identity_match
+            || (dimensions_match
+                && (!has_identity_evidence(&model_info.identity_names)
+                    || !has_identity_evidence(&projector_info.identity_names))),
+        "não foi possível provar que este mmproj pertence ao modelo; associe metadados general.name/base_model compatíveis e dimensões GGUF iguais"
+    );
+    Ok(())
 }
 
 /// A `.gguf` sibling in the same directory whose filename starts with
 /// `mtp-`, choosing the closest quantisation when more than one candidate
-/// exists. Same mechanism as [`find_mmproj_sibling`], for the separate MTP
-/// draft head ("shared MTP module") some architectures ship instead of
+/// exists. This is separate from the verified projector association above:
+/// some architectures ship an MTP draft head ("shared MTP module") instead of
 /// embedding `nextn` weights in the main GGUF - see `crate::llm::mtp`.
 ///
 /// The `mtp-` prefix is the convention observed in the wild (e.g. Unsloth's
@@ -731,13 +1033,6 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
         return EnrichResult::Failed;
     };
     let identity = metadata_identity(&path, &meta);
-    if model
-        .metadata_identity
-        .as_ref()
-        .is_some_and(|previous| previous == &identity)
-    {
-        return EnrichResult::Ready;
-    }
     model.metadata_identity = Some(identity);
     model.size_bytes = meta.len();
     if model.size_bytes < 1024 {
@@ -765,6 +1060,10 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
         return EnrichResult::Drop;
     }
 
+    model.identity_names = info.identity_names.clone();
+    let projector = resolve_mmproj_sibling(&path, &info);
+    model.mmproj_path = projector.path;
+    model.mmproj_reason = projector.reason;
     model.architecture = info.architecture.clone();
     model.is_moe = info.is_moe();
     if let Err(error) = fill_multipart_metadata(model, &path, &info) {
@@ -1322,47 +1621,62 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
                 .chain(tp_parts.iter())
                 .find_map(|s| s.pom_id.clone())
                 .unwrap_or_default();
-            let origin_name = pom_id
-                .is_empty()
-                .then(|| group.clone())
-                .or_else(|| {
-                    let suffix = format!("-{}", crate::pom::short_id(&pom_id));
-                    group.strip_suffix(&suffix).map(str::to_string)
-                })
-                .unwrap_or_else(|| group.clone());
-            let origin_quant = shards
+            let direct_projectors = shards
                 .iter()
                 .chain(tp_parts.iter())
-                .find_map(|s| s.quant.as_deref());
-            let mmproj_path = shards
+                .filter_map(|shard| shard.mmproj_path.clone())
+                .collect::<std::collections::HashSet<_>>();
+            let (mmproj_path, mmproj_reason) = if direct_projectors.len() == 1 {
+                (direct_projectors.into_iter().next(), None)
+            } else if direct_projectors.len() > 1 {
+                (None, Some("as fatias do mesmo conjunto declaram projetores diferentes; revise o manifesto e os arquivos locais".into()))
+            } else if let Some(label) = shards
                 .iter()
                 .chain(tp_parts.iter())
-                .find_map(|s| s.mmproj_path.clone())
-                .or_else(|| {
-                    models
-                        .iter()
-                        .filter(|model| !model.is_shard())
-                        .find(|model| {
-                            let stem = model
-                                .name
-                                .strip_suffix(".gguf")
-                                .or_else(|| model.name.strip_suffix(".GGUF"))
-                                .unwrap_or(&model.name);
-                            let exact = [model.name.as_str(), stem].into_iter().any(|name| {
-                                name == model_label || name == group || name == origin_name
-                            });
-                            let quantized = origin_quant.is_some_and(|quant| {
-                                stem == format!("{origin_name}-{quant}")
-                                    || stem == format!("{origin_name}_{quant}")
-                            });
-                            exact || quantized
+                .find_map(|shard| shard.model_label.as_deref())
+            {
+                let label_matches = models
+                    .iter()
+                    .filter(|model| !model.is_shard())
+                    .filter(|model| {
+                        identities_match(
+                            &model
+                                .identity_names
+                                .iter()
+                                .cloned()
+                                .chain(std::iter::once(model.name.clone()))
+                                .collect::<Vec<_>>(),
+                            &[label.to_string()],
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let matches = if crate::pom::is_sha256_hex(&pom_id) {
+                    label_matches
+                        .into_iter()
+                        .filter(|model| {
+                            cached_content_hash(Path::new(&model.path)).as_deref()
+                                == Some(pom_id.as_str())
                         })
-                        .and_then(|model| model.mmproj_path.clone())
-                });
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                match matches.as_slice() {
+                    [source] => (
+                        source.mmproj_path.clone(),
+                        source.mmproj_reason.clone().filter(|_| source.mmproj_path.is_none()),
+                    ),
+                    [] => (None, Some("não foi possível provar pelo pom_id que um modelo GGUF inteiro no catálogo é a origem destas fatias; mantenha a cópia original cujo SHA-256 corresponda ao manifesto".into())),
+                    _ => (None, Some("mais de um modelo inteiro corresponde ao rótulo do manifesto; a associação do projetor é ambígua".into())),
+                }
+            } else {
+                (None, Some("as fatias não têm identidade de manifesto suficiente para herdar um projetor".into()))
+            };
 
             ShardSet {
                 model_label,
                 mmproj_path,
+                mmproj_reason,
                 pom_id,
                 group,
                 total_layers,
@@ -1432,6 +1746,16 @@ pub fn enrich(mut catalog: Catalog) -> Catalog {
         .models
         .retain_mut(|model| !matches!(enrich_model(model), EnrichResult::Drop));
     catalog.shard_sets = build_shard_sets(&catalog.models);
+    for set in &catalog.shard_sets {
+        for shard in catalog
+            .models
+            .iter_mut()
+            .filter(|model| model.shard_group.as_deref() == Some(set.group.as_str()))
+        {
+            shard.mmproj_path = set.mmproj_path.clone();
+            shard.mmproj_reason = set.mmproj_reason.clone();
+        }
+    }
     catalog.metadata_complete = true;
     catalog
 }
@@ -1449,8 +1773,76 @@ pub fn discover(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    fn gguf_header_fixture(metadata: &[(&str, u32)], strings: &[(&str, &str)]) -> Vec<u8> {
+        const GGUF_MAGIC: u32 = 0x4655_4747;
+        const TYPE_UINT32: u32 = 4;
+        const TYPE_STRING: u32 = 8;
+        let encoded_string = |value: &str| {
+            let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let mut entries = Vec::new();
+        for (key, value) in strings {
+            let mut entry = encoded_string(key);
+            entry.extend_from_slice(&TYPE_STRING.to_le_bytes());
+            entry.extend_from_slice(&encoded_string(value));
+            entries.push(entry);
+        }
+        for (key, value) in metadata {
+            let mut entry = encoded_string(key);
+            entry.extend_from_slice(&TYPE_UINT32.to_le_bytes());
+            entry.extend_from_slice(&value.to_le_bytes());
+            entries.push(entry);
+        }
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        for entry in entries {
+            bytes.extend_from_slice(&entry);
+        }
+        bytes.resize(4096, 0);
+        bytes
+    }
+
+    pub(crate) fn text_model_fixture(
+        name: &str,
+        architecture: &str,
+        embedding_length: u32,
+    ) -> Vec<u8> {
+        let embedding_key = format!("{architecture}.embedding_length");
+        let layers_key = format!("{architecture}.block_count");
+        gguf_header_fixture(
+            &[
+                (embedding_key.as_str(), embedding_length),
+                (layers_key.as_str(), 32),
+            ],
+            &[
+                ("general.architecture", architecture),
+                ("general.name", name),
+            ],
+        )
+    }
+
+    pub(crate) fn projector_fixture(name: &str, projection_dim: u32) -> Vec<u8> {
+        gguf_header_fixture(
+            &[("clip.vision.projection_dim", projection_dim)],
+            &[("general.architecture", "clip"), ("general.name", name)],
+        )
+    }
+
+    fn generic_projector_fixture(projection_dim: u32) -> Vec<u8> {
+        gguf_header_fixture(
+            &[("clip.vision.projection_dim", projection_dim)],
+            &[("general.architecture", "clip"), ("general.name", "mmproj")],
+        )
+    }
 
     #[test]
     fn parses_quant_tags() {
@@ -1470,7 +1862,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_records_the_llama_mmproj_sibling_without_listing_it() {
+    fn catalog_records_the_verified_mmproj_sibling_without_listing_it() {
         let root = std::env::temp_dir().join(format!(
             "pom-mmproj-catalog-{}",
             uuid::Uuid::new_v4().simple()
@@ -1481,12 +1873,198 @@ mod tests {
         std::fs::create_dir_all(&shards).unwrap();
         let model = models.join("gemma-3-4b-it-Q4_K_M.gguf");
         let projector = models.join("mmproj-gemma-3-4b-it-f16.gguf");
-        std::fs::write(&model, crate::splitter::test_gguf_bytes(8)).unwrap();
-        std::fs::write(&projector, vec![0u8; 4096]).unwrap();
+        std::fs::write(&model, text_model_fixture("Gemma 3 4B IT", "gemma", 2560)).unwrap();
+        std::fs::write(&projector, projector_fixture("Gemma 3 4B IT", 2560)).unwrap();
 
-        let catalog = discover_fast(std::slice::from_ref(&models), &shards);
+        let catalog = discover(std::slice::from_ref(&models), &shards);
         assert_eq!(catalog.models.len(), 1);
         assert_eq!(catalog.models[0].mmproj_path.as_deref(), projector.to_str());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_pairs_models_with_their_projectors_instead_of_nearest_quantization() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-model-pairing-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+
+        let ornith = models.join("Ornith-1.5-Q4_K_M.gguf");
+        let qwen = models.join("Qwen3.8-Flash-Next-Q4_K_M.gguf");
+        let ornith_projector = models.join("mmproj-Ornith-1.5-F16.gguf");
+        let qwen_projector = models.join("mmproj-Qwen3.8-Flash-Next-Q4_K_M.gguf");
+        std::fs::write(&ornith, text_model_fixture("Ornith 1.5", "llama", 3072)).unwrap();
+        std::fs::write(
+            &qwen,
+            text_model_fixture("Qwen3.8 Flash Next", "qwen3", 2048),
+        )
+        .unwrap();
+        std::fs::write(&ornith_projector, projector_fixture("Ornith 1.5", 3072)).unwrap();
+        std::fs::write(
+            &qwen_projector,
+            projector_fixture("Qwen3.8 Flash Next", 2048),
+        )
+        .unwrap();
+
+        let catalog = discover(std::slice::from_ref(&models), &shards);
+        let model = |path: &Path| {
+            catalog
+                .models
+                .iter()
+                .find(|model| Path::new(&model.path) == path)
+                .unwrap()
+        };
+        assert_eq!(
+            catalog.models.len(),
+            2,
+            "projetores não são modelos listáveis"
+        );
+        assert_eq!(
+            model(&ornith).mmproj_path.as_deref(),
+            Some(ornith_projector.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            model(&qwen).mmproj_path.as_deref(),
+            Some(qwen_projector.to_string_lossy().as_ref())
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_supports_generic_projector_name_when_dimension_identifies_one_model() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-generic-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let model = models.join("base.gguf");
+        let projector = models.join("vision.gguf");
+        std::fs::write(&model, text_model_fixture("Base Model", "llama", 4096)).unwrap();
+        std::fs::write(&projector, generic_projector_fixture(4096)).unwrap();
+
+        let catalog = discover(std::slice::from_ref(&models), &shards);
+        let discovered = catalog
+            .models
+            .iter()
+            .find(|item| item.path == model.to_string_lossy())
+            .unwrap();
+        assert_eq!(discovered.mmproj_path.as_deref(), projector.to_str());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_does_not_use_a_filename_without_header_evidence() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-filename-only-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let model = models.join("Model-X-Q4_K_M.gguf");
+        let projector = models.join("mmproj-Model-X-F16.gguf");
+        std::fs::write(&model, text_model_fixture("Model X", "llama", 3072)).unwrap();
+        std::fs::write(
+            &projector,
+            gguf_header_fixture(&[], &[("general.architecture", "clip")]),
+        )
+        .unwrap();
+
+        let catalog = discover(std::slice::from_ref(&models), &shards);
+        let discovered = catalog
+            .models
+            .iter()
+            .find(|item| item.path == model.to_string_lossy())
+            .unwrap();
+        assert!(discovered.mmproj_path.is_none());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_refuses_ambiguous_generic_projectors_and_models() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-ambiguous-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let model = models.join("base-a.gguf");
+        std::fs::write(&model, text_model_fixture("Base A", "llama", 4096)).unwrap();
+        std::fs::write(
+            models.join("base-b.gguf"),
+            text_model_fixture("Base B", "llama", 4096),
+        )
+        .unwrap();
+        std::fs::write(
+            models.join("vision-a.gguf"),
+            generic_projector_fixture(4096),
+        )
+        .unwrap();
+        std::fs::write(
+            models.join("vision-b.gguf"),
+            generic_projector_fixture(4096),
+        )
+        .unwrap();
+
+        let catalog = discover(std::slice::from_ref(&models), &shards);
+        let discovered = catalog
+            .models
+            .iter()
+            .find(|item| item.path == model.to_string_lossy())
+            .unwrap();
+        assert!(discovered.mmproj_path.is_none());
+        assert!(discovered
+            .mmproj_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("provar") || reason.contains("ambíguo")));
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_rejects_identity_matched_projector_with_incompatible_dimension() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-dimension-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let model = models.join("model-Q4_K_M.gguf");
+        std::fs::write(&model, text_model_fixture("Shared Identity", "llama", 3072)).unwrap();
+        std::fs::write(
+            models.join("mmproj-model-F16.gguf"),
+            projector_fixture("Shared Identity", 2048),
+        )
+        .unwrap();
+
+        let catalog = discover(std::slice::from_ref(&models), &shards);
+        let discovered = catalog
+            .models
+            .iter()
+            .find(|item| item.path == model.to_string_lossy())
+            .unwrap();
+        assert!(discovered.mmproj_path.is_none());
+        assert!(discovered
+            .mmproj_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("dimensão incompatível")));
+        assert!(validate_mmproj_pair(&model, &models.join("mmproj-model-F16.gguf")).is_err());
 
         std::fs::remove_dir_all(root).ok();
     }
@@ -1576,6 +2154,8 @@ mod tests {
             source_label: "Local",
             path: format!("/tmp/s_{start}_{end}.gguf"),
             mmproj_path: None,
+            mmproj_reason: None,
+            identity_names: Vec::new(),
             size_bytes: 4096,
             architecture: None,
             is_moe: false,
@@ -1605,7 +2185,7 @@ mod tests {
     }
 
     #[test]
-    fn shard_set_inherits_projector_from_original_model() {
+    fn shard_set_does_not_inherit_projector_without_verified_manifest_identity() {
         let source = DiscoveredModel {
             id: "source".into(),
             name: "vision-model.gguf".into(),
@@ -1613,6 +2193,8 @@ mod tests {
             source_label: "Local".into(),
             path: "/models/vision-model.gguf".into(),
             mmproj_path: Some("/models/mmproj-vision-model.gguf".into()),
+            mmproj_reason: None,
+            identity_names: vec!["vision-model".into()],
             size_bytes: 4096,
             architecture: None,
             is_moe: false,
@@ -1649,21 +2231,32 @@ mod tests {
 
         let sets = build_shard_sets(&[source, slice, second]);
         assert_eq!(sets.len(), 1);
-        assert_eq!(
-            sets[0].mmproj_path.as_deref(),
-            Some("/models/mmproj-vision-model.gguf")
-        );
+        assert_eq!(sets[0].mmproj_path, None);
+        assert!(sets[0]
+            .mmproj_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("pom_id")));
     }
 
     #[test]
     fn shard_set_finds_projector_for_a_quantized_original_model() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-shard-pom-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let source_path = root.join("vision-model-Q4_K_M.gguf");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&source_path, b"the source GGUF bytes").unwrap();
+        let (pom_id, _) = crate::pom::hash_file(&source_path).unwrap();
         let source = DiscoveredModel {
             id: "source".into(),
             name: "vision-model-Q4_K_M.gguf".into(),
             source: ModelSource::Local,
             source_label: "Local",
-            path: "/models/vision-model-Q4_K_M.gguf".into(),
+            path: source_path.to_string_lossy().into_owned(),
             mmproj_path: Some("/models/mmproj-vision-model-f16.gguf".into()),
+            mmproj_reason: None,
+            identity_names: vec!["vision-model".into()],
             size_bytes: 4096,
             architecture: None,
             is_moe: false,
@@ -1690,9 +2283,9 @@ mod tests {
         slice.path = "/shards/vision-part-0.gguf".into();
         slice.mmproj_path = None;
         slice.shard_range = Some((0, 15));
-        slice.shard_group = Some("vision-model-aaaaaaaa".into());
+        slice.shard_group = Some(format!("vision-model-{}", crate::pom::short_id(&pom_id)));
         slice.model_label = Some("vision-model".into());
-        slice.pom_id = Some("a".repeat(64));
+        slice.pom_id = Some(pom_id);
         let mut second = slice.clone();
         second.id = "slice-2".into();
         second.name = "vision-part-1.gguf".into();
@@ -1704,6 +2297,7 @@ mod tests {
             sets[0].mmproj_path.as_deref(),
             Some("/models/mmproj-vision-model-f16.gguf")
         );
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -1715,6 +2309,8 @@ mod tests {
                 source: ModelSource::Local,
                 source_label: "Local".into(),
                 path: format!("/tmp/{id}.gguf"),
+                mmproj_reason: None,
+                identity_names: Vec::new(),
                 size_bytes: 4096,
                 architecture: None,
                 is_moe: false,
@@ -1844,6 +2440,8 @@ mod tests {
             source_label: "Local",
             path: format!("/tmp/qwen_{start}_{end}.gguf"),
             mmproj_path: None,
+            mmproj_reason: None,
+            identity_names: Vec::new(),
             size_bytes: 4096,
             architecture: None,
             is_moe: false,

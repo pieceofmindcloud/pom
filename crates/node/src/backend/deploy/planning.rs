@@ -190,6 +190,8 @@ pub struct Plan {
     pub(super) kind: DeployKind,
     /// Projector selected by the catalog for the model, if any.
     pub(super) mmproj_path: Option<String>,
+    /// Motivo do catálogo quando nenhum projetor pôde ser associado.
+    pub(super) mmproj_reason: Option<String>,
     /// True only when the surveyed GGUF metadata reports more than one expert.
     /// The UI must never infer this from a filename or architecture label.
     pub(super) is_moe: bool,
@@ -1170,16 +1172,29 @@ pub(super) fn plan_with_rtt_options(
     // Vision belongs to the selected pipeline head, not to whichever peer
     // happened to report a layer-0 file first. Downstream peers receive hidden
     // state and must never be asked to load the raw image projector.
-    let mmproj_path = chosen
+    let selected_head_projector = chosen
         .iter()
         .find(|(index, target, _)| !target.is_empty() && available[*index].start_layer == 0)
-        .and_then(|(_, target, _)| machines.iter().find(|machine| machine.node_id == *target))
-        .and_then(|machine| {
-            machine
-                .held
+        .and_then(|(index, target, _)| {
+            let candidate = &available[*index];
+            machines
                 .iter()
-                .find(|shard| shard.mmproj_path.is_some())
-                .and_then(|shard| shard.mmproj_path.clone())
+                .find(|machine| machine.node_id == *target)
+                .and_then(|machine| {
+                    machine.held.iter().find(|shard| {
+                        shard.start_layer == candidate.start_layer
+                            && shard.end_layer == candidate.end_layer
+                            && shard.name == candidate.name
+                    })
+                })
+        });
+    let mmproj_path = selected_head_projector.and_then(|shard| shard.mmproj_path.clone());
+    let mmproj_reason = selected_head_projector
+        .and_then(|shard| shard.mmproj_reason.clone())
+        .or_else(|| {
+            mmproj_path.is_none().then(|| {
+                "o catálogo não comprovou um projetor pertencente ao modelo selecionado".into()
+            })
         });
 
     for (i, ..) in &chosen {
@@ -1798,6 +1813,7 @@ pub(super) fn plan_with_rtt_options(
         strategy,
         kind,
         mmproj_path,
+        mmproj_reason,
         tp,
         is_moe,
         inference_mode_supported,

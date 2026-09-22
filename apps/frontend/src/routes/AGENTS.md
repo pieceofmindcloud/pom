@@ -656,7 +656,10 @@ Key logic carriers:
   and end-to-end total, including an explicit unavailable state when a rate has
   no measurable interval. The AI action sends
   both tables as private request content, while the initial model is shown as
-  a non-turn mark before chat messages.
+  a non-turn mark before chat messages. Decode rows separate scheduler-ready,
+  `tensor_get`, residual postprocess and wire encoding/serialization timings;
+  QUIC summaries show request body send/finish wall separately from response
+  header wait.
 - `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime
   knobs, including `prefill_max_inflight_chunks` (prefill pipeline depth, 1..8)
   and `fit_memory_margin_mb` (per-device VRAM safety reserve).

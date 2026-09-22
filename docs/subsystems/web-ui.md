@@ -899,6 +899,13 @@ um botão de cópia. A mensagem genérica de resposta vazia só aparece quando o
 stream termina sem tokens e sem erro.
 Cada fase também mostra os bytes de estado oculto enviados e recebidos na
 travessia e o `dtype` efetivamente usado, para comparar execuções f16/f8.
+No decode, a linha do backend separa a prontidão observada pelo scheduler, a
+wall de `ggml_backend_tensor_get` e o pós-processamento da captura, além da
+conversão f8 e da serialização do frame residual. O total antigo de
+captura permanece identificado como compatível; `tensor_get` pode incluir a
+cópia D2H e o sync interno do backend CUDA. A tabela de transporte QUIC também
+mostra a espera em `send_data` e `finish`, separada da espera por headers e do
+RTT.
 Ao terminar o stream, o Chat pede um snapshot de `/api/ui/chat/telemetry` para
 os pares adjacentes do trace e `/api/ui/peer/:node_id/runtime` para cada máquina
 do trace. O painel mostra o RTT total observado das chamadas, o RTT de cada

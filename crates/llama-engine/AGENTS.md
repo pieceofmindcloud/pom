@@ -252,12 +252,15 @@ parâmetros de vídeo.
 A captura de residual acumula microlotes pelo número de células físicas: o
 `mtmd` pode entregar o trecho textual e o trecho expandido da imagem em
 callbacks separados, enquanto `n_past` continua sendo apenas a posição lógica.
-Na captura, `ready_wait_us` mede o intervalo entre a consulta do scheduler e
-a prontidão do tensor, `copy_us` mede somente a leitura D2H bulk em f32 e
-`postprocess_us` mede a conversão/registro. O campo legado
-`residual_capture_d2h_sync_us` é a soma dos dois primeiros e não deve ser
-interpretado como largura de banda D2H; o primeiro intervalo pode conter a
-sincronização do backend exigida pelo scheduler.
+Na captura, `ready_wait_us` mede do callback de consulta do scheduler até o
+callback de prontidão e inclui avaliação do grafo e sincronização do scheduler.
+`copy_us` mede a chamada `ggml_backend_tensor_get` inteira; no backend CUDA,
+ela pode incluir a cópia D2H e a sincronização da stream, portanto não isola
+DMA nem espera de GPU. `postprocess_us` mede a conversão e o registro. O campo
+legado `residual_capture_d2h_sync_us` soma prontidão e `tensor_get` e não é uma
+medida de largura de banda D2H. A stream CUDA e a vida útil do tensor não são
+expostas por essa API, então a captura não pode mover a cópia para uma operação
+assíncrona com segurança sem mudar a fronteira nativa.
 
 ## Maintaining this file
 

@@ -117,6 +117,8 @@ fallback continua em `addr_candidates` + `RouteTable`.
   A configuração do listener é independente do `tls_required` do TCP, porque
   QUIC leva seu próprio TLS 1.3. Cada resposta também expõe o RTT suavizado da
   conexão Quinn em microssegundos, separado do processamento do handler remoto.
+  `request_body_send_us` mede a espera por `send_data` e `finish` do corpo
+  HTTP/3; não é o tempo de resposta nem uma confirmação de entrega pelo peer.
   Cada tentativa completa, do handshake ao corpo da resposta, compartilha um
   deadline de transporte de 30 s em produção, sem confundir esse teto com o
   timeout de processamento do frame.

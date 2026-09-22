@@ -1536,6 +1536,26 @@ antes dela. A chamada pode incluir despacho no host e não é uma medida pura de
 kernels na GPU. `backend_sync_ms` mede separadamente `llama_synchronize`, que
 pode esperar trabalho de dispositivo já enfileirado e transferências de saída.
 Captura D2H, logits, amostragem e os demais limites do bloco seguem separados.
+Na captura do residual, `residual_capture_ready_wait_ms` é o wall do callback
+de consulta do scheduler até o callback de prontidão. Ele inclui a avaliação
+do grafo e a sincronização feita pelo scheduler; não é espera ociosa. A chamada
+`ggml_backend_tensor_get` é publicada como `residual_capture_tensor_get_ms` e
+inclui o wall da API. O backend CUDA pode fazer `cudaMemcpyAsync` seguido de
+`cudaStreamSynchronize` dentro dessa chamada, então esse campo não separa DMA
+de sync. `residual_capture_postprocess_ms` mede o arranjo e o registro do
+tensor. `residual_capture_copy_ms` continua como alias de compatibilidade, e
+`residual_capture_d2h_sync_ms` é a soma de ask-to-ready e `tensor_get`, não uma
+medida de cópia D2H isolada. `backend_sync_ms` permanece a barreira explícita
+`llama_synchronize`, medida à parte.
+
+Na resposta de hidden state do decode, `residual_wire_f8_conversion_ms` mede o
+loop `f32_to_f8_bits` quando f8 é o dtype selecionado e vale zero para os
+demais dtypes. Ele não inclui a montagem do buffer. Depois dele,
+`residual_wire_frame_serialize_ms` mede validação, JSON do header, alocação e
+montagem do frame. São intervalos sequenciais dentro do encoder, sem contagem
+dupla. `residual_wire_encode_calls` e os contadores de captura/bytes permitem
+conferir o denominador usado no agregado. A equivalência do encoder perfilado
+é testada contra os bytes de f8 e f16 do caminho normal.
 `logits_clone_ms` permanece zero: a cauda guarda somente os logits ajustados
 dos ids repetidos. `repetition_penalty_ms` mede a construção desses overrides;
 `top_k_ms` mede a seleção e o refinamento quando `top_k` reduz o vocabulário.
@@ -2376,6 +2396,11 @@ Chat.
   `transport_trace_complete=false` deixa a perda explícita. As amostras usadas
   para quantis são limitadas internamente, portanto a resposta de produção não
   cresce com o número de tokens.
+  Para QUIC, cada entrada também soma `quic_request_body_send_us` e conta
+  `quic_request_body_send_calls`: wall aguardado em `send_data` e `finish`, antes
+  de esperar pelos headers da resposta. Um frame em lote compartilha uma
+  operação física, que é atribuída uma única vez. Esse tempo mede a aceitação
+  local do corpo com contrapressão da stream, não confirmação de entrega remota.
 
 - **`telemetry`** - resumo da integridade da coleta distribuída. O callback
   `remote-stream` preserva a participação de cada hop e seus `span_count`,

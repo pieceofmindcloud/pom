@@ -187,6 +187,12 @@ visibilidade dos controles de implantação na UI local.
   remoto e um emissor separado: cada um usa a mesma decodificação existente,
   mas os tokens retornam ao gateway em lotes oportunistas limitados, com
   timeout de entrega de 500 ms e contrapressão.
+  `node_timings` publica a captura em limites explícitos: ask-to-ready do
+  scheduler, wall da chamada `ggml_backend_tensor_get`, pós-processamento e
+  encode do payload e do frame residual. Ask-to-ready inclui compute e sync do
+  scheduler; `tensor_get` em CUDA pode incluir D2H e sync da stream, sem expor
+  esses custos internos separadamente. O wire mede o loop de conversão f8
+  separado da serialização do cabeçalho/frame.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
   inicializa o backend para que o sysmon possa consultar descricoes de
   dispositivos, decode, hidden state com
@@ -622,7 +628,9 @@ visibilidade dos controles de implantação na UI local.
   interface.
 - `relay.rs` - `BatchCoordinator` agenda o flush imediatamente e ainda agrupa
   chamadas concorrentes para o mesmo próximo hop no mesmo ciclo do executor;
-  envia um frame único e distribui respostas por `item_id`. Não há mais um
+  envia um frame único e distribui respostas por `item_id`. QUIC também
+  publica em microssegundos o tempo aguardado em `send_data` e `finish`; num
+  lote, o tempo compartilhado é agregado uma vez. Não há mais um
   timer fixo no relay; `bubble_hop_timings` mantém a telemetria por salto.
 - `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, injeta os tipos de
   cache globais do `pom.json` e guarda o
@@ -754,8 +762,10 @@ visibilidade dos controles de implantação na UI local.
   trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
   `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN e i4g64/i4g128
   assinado com escala f16 por grupo na borda, sempre devolvendo f32 ao motor;
-  `prefill/`/`relay.rs` propagam o dtype escolhido e registram bytes enviados,
-  recebidos e formato efetivo por hop.
+  `encode_profiled` mede o loop f8 e a serialização do cabeçalho/frame em
+  limites separados. `prefill/`
+  e `relay.rs` propagam o dtype escolhido e registram bytes enviados, recebidos
+  e formato efetivo por hop.
 
 ## Funções-chave
 

@@ -28,7 +28,10 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   As métricas do card de máquina usam aqui os rótulos de GPUs, uso e potência
   para manter o detalhe disponível nas duas línguas.
   `chat.telemetry.backendRow` distingue chamada de avaliação e sincronização,
-  sem rotular o tempo de avaliação como enqueue.
+  sem rotular o tempo de avaliação como enqueue. As linhas de captura e wire
+  residual distinguem ask-to-ready, wall do tensor-get, pós-processamento,
+  conversão f8 e serialização do frame; o resumo de transporte também nomeia a
+  espera de envio e finalização do corpo QUIC.
   As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16 permanece
   padrão e que f8/i4g64/i4g128 são opções com perda sujeitas a capability.
 - As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem

@@ -303,6 +303,9 @@ pub struct TransportTrace {
     pub network_ms: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    /// QUIC request body send plus `finish` wait, when measured. It is absent
+    /// for other transports.
+    pub request_body_send_us: Option<u64>,
 }
 
 pub(super) const TELEMETRY_SAMPLE_LIMIT: usize = 1_024;
@@ -772,6 +775,10 @@ pub struct TransportSummaryEntry {
     pub calls: u32,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    /// Aggregate QUIC request body send and finish wait. A batch records this
+    /// once for the shared physical request, not once per contained item.
+    pub quic_request_body_send_us: u64,
+    pub quic_request_body_send_calls: u32,
     /// RTT cheio, incluindo o compute do nó remoto. Mantido para o total de
     /// RTT de execução e compatibilidade com o front antigo.
     pub rtt_min_ms: u64,
@@ -799,6 +806,8 @@ impl TransportSummaryEntry {
             calls: 0,
             bytes_sent: 0,
             bytes_received: 0,
+            quic_request_body_send_us: 0,
+            quic_request_body_send_calls: 0,
             rtt_min_ms: 0,
             rtt_median_ms: 0,
             rtt_p95_ms: 0,
@@ -817,6 +826,14 @@ impl TransportSummaryEntry {
         self.calls = self.calls.saturating_add(1);
         self.bytes_sent = self.bytes_sent.saturating_add(trace.bytes_sent);
         self.bytes_received = self.bytes_received.saturating_add(trace.bytes_received);
+        if trace.transport == crate::relay::InferenceTransport::Quic {
+            if let Some(send_us) = trace.request_body_send_us {
+                self.quic_request_body_send_us =
+                    self.quic_request_body_send_us.saturating_add(send_us);
+                self.quic_request_body_send_calls =
+                    self.quic_request_body_send_calls.saturating_add(1);
+            }
+        }
         if trace.fallback {
             self.fallback_calls = self.fallback_calls.saturating_add(1);
         }
@@ -829,6 +846,12 @@ impl TransportSummaryEntry {
         self.calls = self.calls.saturating_add(other.calls);
         self.bytes_sent = self.bytes_sent.saturating_add(other.bytes_sent);
         self.bytes_received = self.bytes_received.saturating_add(other.bytes_received);
+        self.quic_request_body_send_us = self
+            .quic_request_body_send_us
+            .saturating_add(other.quic_request_body_send_us);
+        self.quic_request_body_send_calls = self
+            .quic_request_body_send_calls
+            .saturating_add(other.quic_request_body_send_calls);
         self.fallback_calls = self.fallback_calls.saturating_add(other.fallback_calls);
         self.rtt.merge(&other.rtt);
         self.net_rtt.merge(&other.net_rtt);
@@ -1057,6 +1080,7 @@ impl TransportTrace {
                 .unwrap_or_else(|| sent.round_trip_ms.saturating_sub(processing_ms)),
             bytes_sent: sent.bytes_sent,
             bytes_received: sent.bytes_received,
+            request_body_send_us: sent.request_body_send_us,
         }
     }
 
@@ -1084,6 +1108,9 @@ impl TransportTrace {
                 .unwrap_or_else(|| round_trip_ms.saturating_sub(processing_ms)),
             bytes_sent: get("bytes_sent"),
             bytes_received: get("bytes_received"),
+            request_body_send_us: entry
+                .get("request_body_send_us")
+                .and_then(|value| value.as_u64()),
         }
     }
 }
@@ -1174,6 +1201,17 @@ pub struct PhaseTrace {
     pub node_moe_forward_ms: f64,
     /// Device-to-host copy of the residual, measured inside the capture hook.
     pub node_residual_capture_d2h_sync_ms: f64,
+    /// Scheduler ask-to-ready wall, including graph evaluation and its sync.
+    pub node_residual_capture_ready_wait_ms: f64,
+    /// `ggml_backend_tensor_get` call wall. CUDA may include D2H and stream
+    /// synchronization; this is not an isolated DMA measurement.
+    pub node_residual_capture_tensor_get_ms: f64,
+    pub node_residual_capture_postprocess_ms: f64,
+    pub node_residual_capture_bytes: u64,
+    pub node_residual_capture_copies: u64,
+    pub node_residual_wire_f8_conversion_ms: f64,
+    pub node_residual_wire_frame_serialize_ms: f64,
+    pub node_residual_wire_encode_calls: u64,
     pub node_residual_ms: f64,
     pub node_logits_access_ms: f64,
     pub node_logits_clone_ms: f64,
@@ -1341,6 +1379,26 @@ impl PhaseTrace {
         self.node_backend_sync_ms += node_ms("backend_sync_ms");
         self.node_moe_forward_ms += node_ms("moe_forward_ms");
         self.node_residual_capture_d2h_sync_ms += node_ms("residual_capture_d2h_sync_ms");
+        self.node_residual_capture_ready_wait_ms += node_ms("residual_capture_ready_wait_ms");
+        self.node_residual_capture_tensor_get_ms += node_ms("residual_capture_tensor_get_ms");
+        self.node_residual_capture_postprocess_ms += node_ms("residual_capture_postprocess_ms");
+        self.node_residual_capture_bytes = self.node_residual_capture_bytes.saturating_add(
+            node.get("residual_capture_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
+        self.node_residual_capture_copies = self.node_residual_capture_copies.saturating_add(
+            node.get("residual_capture_copies")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
+        self.node_residual_wire_f8_conversion_ms += node_ms("residual_wire_f8_conversion_ms");
+        self.node_residual_wire_frame_serialize_ms += node_ms("residual_wire_frame_serialize_ms");
+        self.node_residual_wire_encode_calls = self.node_residual_wire_encode_calls.saturating_add(
+            node.get("residual_wire_encode_calls")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
         self.node_residual_ms += node_ms("residual_ms");
         self.node_logits_access_ms += node_ms("logits_access_ms");
         self.node_logits_clone_ms += node_ms("logits_clone_ms");
@@ -1504,6 +1562,20 @@ impl PhaseTrace {
         self.node_backend_call_ms += next.node_backend_call_ms;
         self.node_backend_sync_ms += next.node_backend_sync_ms;
         self.node_residual_capture_d2h_sync_ms += next.node_residual_capture_d2h_sync_ms;
+        self.node_residual_capture_ready_wait_ms += next.node_residual_capture_ready_wait_ms;
+        self.node_residual_capture_tensor_get_ms += next.node_residual_capture_tensor_get_ms;
+        self.node_residual_capture_postprocess_ms += next.node_residual_capture_postprocess_ms;
+        self.node_residual_capture_bytes = self
+            .node_residual_capture_bytes
+            .saturating_add(next.node_residual_capture_bytes);
+        self.node_residual_capture_copies = self
+            .node_residual_capture_copies
+            .saturating_add(next.node_residual_capture_copies);
+        self.node_residual_wire_f8_conversion_ms += next.node_residual_wire_f8_conversion_ms;
+        self.node_residual_wire_frame_serialize_ms += next.node_residual_wire_frame_serialize_ms;
+        self.node_residual_wire_encode_calls = self
+            .node_residual_wire_encode_calls
+            .saturating_add(next.node_residual_wire_encode_calls);
         self.node_residual_ms += next.node_residual_ms;
         self.node_logits_access_ms += next.node_logits_access_ms;
         self.node_logits_clone_ms += next.node_logits_clone_ms;

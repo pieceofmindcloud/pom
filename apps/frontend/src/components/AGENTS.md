@@ -107,7 +107,10 @@ Per-file list:
   remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
   medição da conexão quando disponível. A linha do backend separa
   `node_backend_call_ms` (`llama_decode`/avaliação) de
-  `node_backend_sync_ms` (`llama_synchronize`).
+  `node_backend_sync_ms` (`llama_synchronize`). A linha da captura mostra o
+  ask-to-ready do scheduler, a chamada opaca `tensor_get`, o pós-processamento,
+  bytes e contagem de leituras; a conversão f8, a serialização do frame residual
+  e a espera de envio/finalização do corpo QUIC aparecem em linhas próprias.
   Cobertura de decode usa callbacks quando disponíveis, ou tokens de saída por
   hop no caminho normal; sem tokens ou callbacks esperados, mostra não medido.
   Uma coleta de transporte incompleta continua visível mesmo quando a resposta

@@ -794,6 +794,11 @@ também para o HTTP/HTTPS usado no fallback.
 A telemetria por hop publica o transporte efetivo como `http`, `https` ou
 `quic`. Para QUIC, `transport_rtt_us` é o RTT medido pela conexão UDP e os
 quantis de rede ficam separados do tempo de processamento remoto.
+`quic_request_body_send_us` soma o wall aguardado por `send_data` e `finish`
+antes da leitura dos headers de resposta. O resumo conta as operações físicas
+medidas, então um upload de batch compartilhado é registrado uma vez. Esse
+campo mede contrapressão e aceitação local do corpo, não confirmação de entrega
+remota.
 
 ## Logs de processo do cluster
 

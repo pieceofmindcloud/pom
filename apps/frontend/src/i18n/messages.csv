@@ -234,6 +234,7 @@ chat.telemetry.analysisPrompt,Analyze this execution,Analise esta execução
 chat.telemetry.analyze,Analyze with AI,Analisar com IA
 chat.telemetry.backendHeader,backend,backend
 chat.telemetry.backendRow,backend: evaluation call {call} ms · sync {sync} ms · D2H capture {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms,backend: chamada de avaliação {call} ms · sincronização {sync} ms · D2H da captura {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms
+chat.telemetry.backendRowCurrent,backend: evaluation call {call} ms · sync {sync} ms · decode p50 {p50} ms · p95 {p95} ms,backend: chamada de avaliação {call} ms · sincronização {sync} ms · decode p50 {p50} ms · p95 {p95} ms
 chat.telemetry.bytesHeader,bytes,bytes
 chat.telemetry.calls,calls,chamadas
 chat.telemetry.capacity,Capacity,Capacidade
@@ -318,6 +319,7 @@ chat.telemetry.prefillMs,{ms} ms prefill,{ms} ms prefill
 chat.telemetry.prefixCandidate,{count} prefix candidate,{count} candidatos no prefixo
 chat.telemetry.prefixStatus,prefix: {status},prefixo: {status}
 chat.telemetry.prefixMissReason,gateway cache miss: {reason},miss do cache no gateway: {reason}
+chat.telemetry.quicRequestSend,"QUIC request body send and finish {ms} ms over {calls, plural, one {# request} other {# requests}}","envio e finalização do corpo QUIC {ms} ms em {calls, plural, one {# requisição} other {# requisições}}"
 chat.telemetry.prefillChunk,chunk: {count} tokens,pedaço: {count} tokens
 chat.telemetry.principalBottleneck,Principal bottleneck,Gargalo principal
 chat.telemetry.profileSync,POM_PROFILE_SYNC: {state},POM_PROFILE_SYNC: {state}
@@ -334,6 +336,8 @@ chat.telemetry.remoteStreamWait,stream wait total {total} ms · p50 {p50} ms · 
 chat.telemetry.remoteStreamWaitSplit,producer total/p95 {producerTotal}/{producerP95} ms · channel send total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · queued token total/p95 {queueTotal}/{queueP95} ms · prior delivery total/p95 {deliveryTotal}/{deliveryP95} ms,produção total/p95 {producerTotal}/{producerP95} ms · envio ao canal total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · token na fila total/p95 {queueTotal}/{queueP95} ms · entrega anterior total/p95 {deliveryTotal}/{deliveryP95} ms
 chat.telemetry.requestedGpuLayers,Requested GPU layers (intent): {count},Camadas GPU pedidas (intenção): {count}
 chat.telemetry.residualHeader,residual,residual
+chat.telemetry.residualCaptureRow,residual capture: scheduler ask-to-ready {ready} ms · tensor_get wall {tensorGet} ms · postprocess {postprocess} ms · compatibility total {total} ms · {bytes} bytes in {copies} reads,captura residual: scheduler até pronto {ready} ms · tensor_get {tensorGet} ms · pós-processamento {postprocess} ms · total compatível {total} ms · {bytes} bytes em {copies} leituras
+chat.telemetry.residualWireRow,residual wire f8 conversion {f8} ms · frame/header serialization {serialize} ms · residual frame encode count {calls},wire do residual: conversão f8 {f8} ms · serialização do frame/cabeçalho {serialize} ms · contagem de frames codificados {calls}
 chat.telemetry.rttTotal,Aggregate execution RTT: {ms} ms,RTT agregado da execução: {ms} ms
 chat.telemetry.rttTotalMissing,Aggregate execution RTT: not available for this trace,RTT agregado da execução: indisponível neste trace
 chat.telemetry.runtimeLoading,Reading effective runtime state...,Lendo o estado efetivo do runtime...

@@ -415,20 +415,43 @@ não começa.
 (tópico `pom/announce/1.0.0`, heartbeat 1 s, autenticação assinada e validação
 estrita),
 Kademlia em modo `Server`, mDNS, identify, relay (cliente **e** servidor),
-DCuTR, AutoNAT e o behaviour de bitswap. Escuta em `/ip4/0.0.0.0/tcp/<udp+10000>`
-e em `/ip6/::`.
+DCuTR, AutoNAT e o behaviour de bitswap. Escuta na mesma porta `udp+10000` em
+quatro endereços: `/ip4/0.0.0.0/tcp/<porta>`, `/ip6/::/tcp/<porta>`,
+`/ip4/0.0.0.0/udp/<porta>/quic-v1` e `/ip6/::/udp/<porta>/quic-v1`.
 
 - **Bootstrap libp2p:** os mesmos nós bootstrap do UDP, convertidos por
   `udp_to_libp2p_multiaddr` (IPv4/IPv6/hostname na porta TCP). A porta TCP é
   `udp+10000` usando a porta UDP efetivamente ligada; porta UDP zero é recusada.
   Um bootstrap IPv6 colado em `/ip4/` falhava o parse e era dialado sem palavra
   no log.
-- **Relays:** por padrão diala os relays públicos do IPFS
-  (`DEFAULT_RELAY_NODES`) e os de `--relay-peers` (resolvidos antes por pkarr,
-  filtrando `is_relay`); `--no-default-relays` tira os públicos, inclusive no
-  caminho gateway-only sem modelo. Com `--serve-relay` o servidor de relay
-  aceita reservas (128 slots, 4 por peer,
-  1 h de reserva, circuitos de 120 s / 128 kB); sem ele, `max_reservations: 0`.
+- **Transportes:** TCP e QUIC (`quic-v1`), os dois construídos no
+  `SwarmBuilder`. QUIC não está ali por latência: o hole punch do DCuTR em TCP
+  depende de simultaneous open, que a maioria dos NAT domésticos e
+  praticamente todo CGNAT recusa. O caminho de UDP é o que o DCuTR foi
+  desenhado para usar, e é o que torna a travessia viável sem IPv6.
+- **Relays:** `DEFAULT_RELAY_NODES` está **vazio**. A lista trazia três
+  bootstrappers públicos do IPFS, que não são relés: não concedem reserva de
+  Circuit Relay v2 a um par qualquer, e os endereços fixados já estavam
+  obsoletos. Relé útil aqui é um nó pom com IP público rodando `--serve-relay`,
+  configurado em `--relay-peers` (resolvidos antes por pkarr, filtrando
+  `is_relay`); só ele honra `max_circuit_bytes` do tamanho de um frame de
+  prefill. `--no-default-relays` continua aceito e hoje não tem efeito prático.
+  Com `--serve-relay` o servidor de relay aceita reservas (128 slots, 4 por
+  peer, 1 h de reserva, circuitos de 120 s e `wire::MAX_FRAME_PAYLOAD_BYTES`);
+  sem ele, `max_reservations: 0`.
+- **Reserva de circuito:** `reserve_circuit` pede `listen_on(<relé>/p2p-circuit)`
+  para qualquer par cujo identify anuncie `relay::HOP_PROTOCOL_NAME`, não
+  apenas para os relés configurados - o caso que mais importa é um nó pom com
+  IP público dentro do próprio cluster. O endereço discável do relé sai da
+  lista configurada quando ele está lá, e do anúncio vivo caso contrário;
+  `listen_addrs` do identify continua fora, pela política "só Announce disca".
+  `circuit_listens` guarda quem já foi pedido, porque `listen_on` repetido
+  abre um listener novo a cada chamada e o identify do mesmo relé chega muitas
+  vezes.
+- **AutoNAT:** `NatStatus::Public(addr)` chama `Swarm::add_external_address`.
+  Descobrir que se é público sem contar ao swarm não servia para nada: o
+  endereço não ia no identify, os pares não o aprendiam, e o DCuTR ficava sem o
+  endereço público que o par precisa discar no instante do punch.
 - **Gossipsub:** `main.rs` publica o `Announce` a cada 5 s, com ou sem
   assignment, e o quadro é o mesmo do UDP (`Network::gossip_announce_bytes` ->
   `self_announce`); `handle_event` converte a mensagem em `PeerInfo` preferindo
@@ -525,6 +548,43 @@ rede privada antes de reiniciar. Assim um peer público não recebe bootstrap ou
 endereços privados e não há interface pública paralela para encaminhar até a
 rede privada. A alcançabilidade do endpoint listado continua sendo uma
 propriedade separada, verificada pelo navegador e dependente da rota real.
+
+### Travessia de NAT: o que já funciona e o que ainda falta
+
+Dois nós atrás de NAT ou CGNAT ainda não se alcançam. A causa não é ajuste de
+parâmetro: é que **nenhum caminho do código produz um endereço discável de um
+par atrás de NAT**.
+
+`PeerInfo::libp2p_dialable_addrs` (`network.rs`) devolve o *primeiro*
+`host:port` válido de `addr`/`addr_candidates`, e `tunnel_peer_multiaddrs`
+(`discovery.rs`) o converte por `udp_to_libp2p_multiaddr`, que só sabe emitir
+`/ip4|ip6/<host>/tcp|udp/<porta>`. Daí saem três consequências encadeadas:
+
+1. Atrás de NAT os candidatos anunciados são endereços RFC 1918 ou 100.64. A
+   discagem vai para um endereço privado e falha, sempre.
+2. A convenção `host:port` **não consegue expressar um circuito**. O endereço
+   `/ip4/<relé>/tcp/<porta>/p2p/<relé>/p2p-circuit/p2p/<par>` não tem forma
+   `host:port`, então um par com reserva aceita não tem como contá-la a
+   ninguém.
+3. O DCuTR coordena o hole punch **por cima de uma conexão relayed**. Sem
+   endereço de circuito publicado não há conexão relayed, e sem ela o DCuTR
+   nunca roda.
+
+O que a fase 1 entregou remove os pré-requisitos que faltavam do lado do swarm
+(QUIC, relé de verdade, reserva em qualquer par com hop, endereço externo
+confirmado). O elo que falta é publicar e discar multiaddresses reais, e é o
+que a fase 2 faz: um campo `libp2p_addrs: Vec<String>` no `Announce` e no
+`PeerInfo`, alimentado pelos listen/external/circuit addresses do swarm,
+espelhado no registro pkarr (`multiaddr`/`is_relay` já existem lá e estão sem
+uso), com `libp2p_dialable_addrs` devolvendo todos eles.
+
+Mesmo com isso, o plano de controle continua fora: `peer_client` disca
+`http(s)://host:port` direto com reqwest para `/handshake`,
+`/api/cluster/network-settings`, o watcher do `/health`, transferência e
+sincronização de admin. Como a admissão exige a sonda `/handshake` (ver
+"Admissão antes da tabela `peers`"), um par atrás de NAT não entra em `peers`
+mesmo com o hole punch perfeito - roteamento, UI e pipeline continuam cegos
+para ele. É a fase 3. As fases estão em `TODO.md`.
 
 ## 4. Identidade
 
@@ -895,6 +955,16 @@ contrapressão e a medição de latência ficam em
   requisição é atendida, nenhum bloco é servido. A transferência real vai por
   HTTP Range (`backend/transfer.rs`). O protocolo existe mas ninguém implementa
   o lado servidor.
+- **DEFEITO ANOTADO: par atrás de NAT não tem endereço discável** -
+  `libp2p_dialable_addrs` (`network.rs`) devolve um único `host:port`, e
+  `udp_to_libp2p_multiaddr` (`discovery.rs`) não sabe emitir circuito. Atrás de
+  NAT/CGNAT o resultado é um endereço privado, o circuito nunca é publicado e o
+  DCuTR nunca roda. Ver "Travessia de NAT" nesta página e os itens de fase 2 a
+  4 no `TODO.md`.
+- **DEFEITO ANOTADO: plano de controle não passa pelo swarm** - `peer_client`
+  disca HTTP direto por `host:port`, inclusive o `/handshake` de que a admissão
+  depende. Um par atrás de NAT não entra em `peers` nem com o túnel de
+  inferência funcionando. Fase 3 no `TODO.md`.
 - **DEFEITO ANOTADO: chave pkarr relativa ao cwd** (`main.rs`,
   `Path::new(".pom.key")`) - diferente de `identity::key_path()`, que
   resolve contra `project_root()`. Rodar o binário de outro diretório

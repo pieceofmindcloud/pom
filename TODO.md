@@ -17,63 +17,33 @@ contexto e não devem voltar a ser propostas como defeitos novos.
 
 ## Travessia de NAT (IPv4 sem endereço público)
 
-Trabalho em fases, entrado em 2026-09-22. O diagnóstico completo está em
-`docs/subsystems/rede-p2p.md`, seção "Travessia de NAT". N1 e N2 estão
-entregues e são o que destrava o sintoma; N3 tornou a conexão destravada útil
-ao produto, levando a admissão e as catracas de política para o túnel. Seguem
-abertos N0, N4 e N5.
+Entregue em 2026-09-22, em seis partes. O diagnóstico e o desenho final estão
+em `docs/subsystems/rede-p2p.md`, seção "Travessia de NAT"; esta lista fica
+como registro do que foi feito e não tem item aberto.
 
-- [x] **N1 - Swarm capaz de travessia** (entregue)
-  QUIC no `SwarmBuilder` e nos listen addresses; `DEFAULT_RELAY_NODES`
-  esvaziado, porque bootstrapper do IPFS não concede reserva de Circuit Relay
-  v2; `reserve_circuit` pede reserva a qualquer par que anuncie
-  `relay::HOP_PROTOCOL_NAME`, não só aos configurados; `NatStatus::Public`
+- [x] **N1 - Swarm capaz de travessia.** QUIC no `SwarmBuilder` e nos listen
+  addresses; `DEFAULT_RELAY_NODES` esvaziado, porque bootstrapper do IPFS não
+  concede reserva de Circuit Relay v2; `reserve_circuit` pede reserva a
+  qualquer par que anuncie `relay::HOP_PROTOCOL_NAME`; `NatStatus::Public`
   chama `Swarm::add_external_address`.
-
-- [ ] **N0 - Observabilidade da travessia**
-  **Fonte:** `crates/node/src/network/discovery.rs`.
-  **Prática:** estado do AutoNAT, reservas aceitas e resultado do DCuTR só
-  existem em log. Não há como um operador ver por que dois nós não se falam.
-  **Afetados:** diagnóstico em campo, que hoje depende de `RUST_LOG=debug`.
-  **Esforço:** baixo; expor contadores em `/api/ui/cluster` e na tela de rede.
-
-- [x] **N2 - Publicar e discar multiaddresses reais** (entregue)
-  `Announce`/`PeerInfo` levam `libp2p_addrs`, alimentado por
-  `publish_swarm_addrs` a partir dos endereços externos confirmados, listeners
-  públicos e listeners de circuito do swarm; `libp2p_dialable_addrs` devolve
-  todos; `tunnel_peer_multiaddrs` aceita multiaddress completo e `host:port`
-  legado. O espelho no pkarr ficou de fora e virou o N5.
-
-- [ ] **N5 - Espelhar o endereço público confirmado no pkarr**
-  **Fonte:** `crates/node/src/network/pkarr_node.rs` (`TxtPayload`,
-  `publish`); `crates/node/src/main.rs` (`PkarrPublishHandle`).
-  **Prática:** o registro leva um multiaddress único derivado no arranque, que
-  não é o endereço externo que o AutoNAT confirmou depois. `is_relay` é
-  publicado e lido; o resto do payload não é usado para discar.
-  **Afetados:** descoberta a frio de um nó público por quem nunca o viu.
-  **Esforço:** baixo/médio. Publicar o endereço externo confirmado em vez do
-  derivado. Circuito **não** deve ir para o registro: ele é republicado a cada
-  30 min e o endereço passaria a maior parte do tempo obsoleto.
-
-- [x] **N3 - Plano de controle pelo swarm** (entregue)
-  `TunnelRequest.target` escolhe entre o servidor de inferência e o gateway;
-  `gateway_path_is_allowed` é a lista fechada de rotas que o túnel entrega,
+- [x] **N2 - Publicar e discar multiaddresses reais.** `Announce`/`PeerInfo`
+  levam `libp2p_addrs`, alimentado por `publish_swarm_addrs`;
+  `libp2p_dialable_addrs` devolve todos; `tunnel_peer_multiaddrs` aceita
+  multiaddress completo e `host:port` legado.
+- [x] **N3 - Plano de controle pelo swarm.** `TunnelRequest.target` escolhe
+  entre inferência e gateway; `gateway_path_is_allowed` é a lista fechada
   conferida no receptor, porque o que sai do túnel chega ao gateway por
-  `127.0.0.1` e `install_trust_anchor` libera a administração da rede olhando
-  só isso. A sonda `/handshake` da admissão e as catracas de política caem no
-  túnel depois de todos os endereços diretos falharem. Transferência,
-  sincronização de admin e o watcher do `/health` continuam diretos; nenhum
-  participa da admissão.
-
-- [ ] **N4 - Inferência sobre a conexão furada**
-  **Fonte:** `crates/node/src/network/quic.rs`;
-  `crates/node/src/inference/relay.rs`.
-  **Prática:** o caminho QUIC de inferência disca o `host:port` anunciado e não
-  tem travessia própria.
-  **Afetados:** desempenho do pipeline entre pares atrás de NAT.
-  **Esforço:** médio. Levar os frames pelo túnel sobre a conexão QUIC furada
-  pelo DCuTR em vez da discagem direta. Relé é emergência: prefill relayed de
-  vários MB por hop não é regime permanente.
+  `127.0.0.1`. A sonda `/handshake` da admissão e as catracas de política caem
+  no túnel depois de todos os endereços diretos falharem.
+- [x] **N4 - Preferência aprendida pelo túnel.** `PeerClients::prefer_tunnel`
+  liga com uma entrega do túnel depois de a escada direta falhar inteira e
+  desliga no primeiro sucesso direto; ligada, o frame pula QUIC e HTTP na
+  primeira tentativa.
+- [x] **N5 - pkarr publica o endereço confirmado.** `public_libp2p_addr`
+  vence o multiaddress derivado no arranque. Circuito fica fora: o registro é
+  republicado a cada 30 min e a reserva não dura previsivelmente tanto.
+- [x] **N0 - Observabilidade.** `TraversalStatus` em `/api/ui/cluster` e no
+  painel "Travessia de NAT" da tela de Rede.
 
 ## Alta
 

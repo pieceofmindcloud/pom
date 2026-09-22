@@ -282,6 +282,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "idle" | "failed" | "thermal"`; `idle` means a live peer unloaded its model, while thermal is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
+  `ClusterView.traversal` (`TraversalView`) é o diagnóstico da travessia de NAT
+  do nó que respondeu, não do cluster; é opcional porque nó antigo não o manda.
   `PeerView.rediscovering` distingue "endereço morreu, a rede já foi perguntada"
   de `unreachable` ("atendeu e a leitura quebrou"); `ModelCoverage.unreadable_nodes`
   nomeia as máquinas de que a cobertura depende sem conseguir ler, e é o que

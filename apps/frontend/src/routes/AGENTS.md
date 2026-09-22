@@ -69,7 +69,12 @@ Per-file list:
   visibilidade e localização; um administrador autorizado pode editar o bloco
   completo. A edição grava no nó, propaga o envelope assinado aos peers e
   atualiza a descoberta pública. País e cidade usam a referência de geografia
-  do nó em selects, sem expor o código do país. A tela também agrega nós,
+  do nó em selects, sem expor o código do país. `TraversalPanel` mostra o campo
+  `traversal` de `/api/ui/cluster` - estado do AutoNAT, endereços diretos e
+  circuitos publicados, reservas de relé e hole punches - porque dois nós atrás
+  de NAT que não se enxergam falham num de três degraus e antes disso descobrir
+  qual exigia log de depuração na máquina certa; nó antigo não manda o campo e
+  o painel não aparece. A tela também agrega nós,
   latência média, VRAM e modelos conhecidos. A lista de participantes foi
   movida para a rota `/config/rede/participantes`, apenas para `admin` e
   `node`. O painel de informações também oferece `Esquecer rede`, que pede

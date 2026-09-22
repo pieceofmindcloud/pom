@@ -1316,6 +1316,19 @@ network.tlsPropagates,No restart needed. The other nodes confirm the change with
 network.tlsState,Cluster,Cluster
 network.tlsSubtitle,"When on, every HTTP call between peers goes over TLS, and each node''s certificate is verified against the node_id the cluster already knows.","Ligado, todo HTTP entre peers vai por TLS, e o certificado de cada nó é conferido contra o node_id que o cluster já conhece."
 network.tlsTitle,Encryption between nodes,Criptografia entre nós
+network.traversalCircuits,Relay circuits,Circuitos de relé
+network.traversalDirect,Direct addresses,Endereços diretos
+network.traversalEyebrow,Diagnostics,Diagnóstico
+network.traversalHolePunch,Hole punches,Hole punches
+network.traversalHolePunchCounts,"{ok} succeeded, {failed} failed","{ok} concluídos, {failed} falharam"
+network.traversalLastError,"Last hole punch failure: {error}","Última falha de hole punch: {error}"
+network.traversalNat,NAT status,Estado do NAT
+network.traversalNat.private,Behind NAT,Atrás de NAT
+network.traversalNat.public,Publicly reachable,Alcançável publicamente
+network.traversalNat.unknown,Not determined yet,Ainda não determinado
+network.traversalReservations,Relay reservations,Reservas de relé
+network.traversalSubtitle,"Where NAT traversal stands for this node: what it can publish, which relays accepted it, and whether hole punching works.","Em que pé está a travessia de NAT deste nó: o que ele consegue publicar, que relés o aceitaram e se o hole punch funciona."
+network.traversalTitle,NAT traversal,Travessia de NAT
 network.trustDocument,Trust document,Documento de confiança
 network.unblock,Unblock,Liberar
 network.unblockFailed,The node was not unblocked,O nó não foi liberado

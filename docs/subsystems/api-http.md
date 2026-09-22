@@ -965,6 +965,14 @@ somente `system.sampled_at`, que é ruído de amostragem; métricas e topologia
 continuam invalidando a versão. `x-state-version` é monotônico para snapshots
 alterados.
 
+O payload de `/api/ui/cluster` traz `traversal`, o diagnóstico da travessia de
+NAT **deste** nó: estado do AutoNAT (`unknown`/`public`/`private`), os
+multiaddresses publicados (`addrs`, circuito incluído), os relés que aceitaram
+reserva (`reservations`), e a contagem de hole punches com a última falha. Ele
+entra no fingerprint do cache, senão o retrato congelaria - nem o estado do
+AutoNAT nem uma reserva nova mexem em `peers`. Ver
+`docs/subsystems/rede-p2p.md`, "Travessia de NAT".
+
 No payload de `/api/ui/cluster`, `PeerView.load` é a leitura de requisições em
 voo publicada pelo próprio peer. Para o peer local o gateway consulta seu
 `LoadTracker`; para peers remotos usa o campo `load` do respectivo

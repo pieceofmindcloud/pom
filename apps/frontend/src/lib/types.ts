@@ -726,6 +726,23 @@ export interface ClusterView {
   routing_edges: RoutingEdge[];
   candidate_edges: RoutingEdge[];
   node: NodeInfo | null;
+  /** Diagnóstico da travessia de NAT deste nó. Ausente em nó antigo. */
+  traversal?: TraversalView;
+}
+
+/**
+ * Em que degrau a travessia de NAT parou. Sem isto, "os dois nós não se
+ * falam" só se investiga com log de depuração na máquina certa.
+ */
+export interface TraversalView {
+  nat: "unknown" | "public" | "private";
+  /** Multiaddresses publicados, inclusive o circuito de relé. */
+  addrs: string[];
+  /** PeerId dos relés que aceitaram reserva. */
+  reservations: string[];
+  hole_punch_ok: number;
+  hole_punch_failed: number;
+  last_hole_punch_error: string | null;
 }
 
 /** Aggregate facts the Chat may read from every profile without topology access. */

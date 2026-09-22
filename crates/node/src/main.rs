@@ -1179,6 +1179,7 @@ async fn async_main(
             profile.name.clone(),
             assignment_shared.clone(),
             args.serve_relay,
+            Some(net.clone()),
         ))
     });
 
@@ -2148,6 +2149,7 @@ async fn start_gateway_only(
             String::new(),
             assignment_shared.clone(),
             false,
+            Some(net.clone()),
         ))
     });
     if let Some(publisher) = pkarr_publisher.clone() {

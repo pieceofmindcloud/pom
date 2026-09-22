@@ -1071,6 +1071,7 @@ async fn handle_event(
             relay::client::Event::ReservationReqAccepted { relay_peer_id, .. },
         )) => {
             info!("Relay slot reserved on {}", relay_peer_id);
+            network.remember_reservation(&relay_peer_id.to_string());
             // A reserva vira um listener de circuito; é esse endereço que o
             // `Announce` precisa levar para o outro lado ter o que discar.
             publish_swarm_addrs(swarm, network);
@@ -1087,12 +1088,14 @@ async fn handle_event(
                     "Direct connection to {} (hole punch succeeded)",
                     remote_peer_id
                 );
+                network.remember_hole_punch(Ok(()));
             }
             Err(e) => {
                 warn!(
                     "DCuTR failed for {} ({:?}) — relay fallback active",
                     remote_peer_id, e
                 );
+                network.remember_hole_punch(Err(format!("{remote_peer_id}: {e}")));
             }
         },
 
@@ -1102,6 +1105,11 @@ async fn handle_event(
             ..
         })) => {
             info!("NAT status: {:?}", new);
+            network.set_nat_status(match &new {
+                autonat::NatStatus::Public(_) => "public",
+                autonat::NatStatus::Private => "private",
+                autonat::NatStatus::Unknown => "unknown",
+            });
             // Descobrir que se é público e não contar ao swarm não serve para
             // nada: sem endereço externo confirmado, este nó não o anuncia no
             // identify, os pares não o aprendem, e o DCuTR não tem o endereço

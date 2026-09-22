@@ -138,6 +138,36 @@ pub struct RuntimeCapacity {
     pub max_new_tokens: u32,
 }
 
+/// O que este nó sabe sobre a própria travessia de NAT.
+///
+/// Existe porque diagnosticar "os dois nós não se falam" dependia de
+/// `RUST_LOG=debug` na máquina certa no momento certo. Estado do AutoNAT,
+/// reservas de circuito e resultado do DCuTR são exatamente o que diz em que
+/// degrau a travessia parou.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TraversalStatus {
+    /// `unknown`, `public` ou `private`, como o AutoNAT reportou.
+    pub nat: String,
+    /// Multiaddresses que este nó publica hoje (inclui circuito).
+    pub addrs: Vec<String>,
+    /// `PeerId` dos relés que aceitaram reserva.
+    pub reservations: Vec<String>,
+    /// Hole punches concluídos e falhados desde o arranque.
+    pub hole_punch_ok: u64,
+    pub hole_punch_failed: u64,
+    /// Última falha de DCuTR, para dizer *por que* parou.
+    pub last_hole_punch_error: Option<String>,
+}
+
+impl TraversalStatus {
+    fn new() -> Self {
+        Self {
+            nat: "unknown".to_string(),
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct RuntimeCapacityState {
     generation: u64,
@@ -890,6 +920,8 @@ pub struct Network {
     /// `Discovery` (ver `set_libp2p_addrs`). Vivem aqui, e não no `Discovery`,
     /// porque quem monta o `Announce` é o `Network`.
     libp2p_addrs: std::sync::RwLock<Vec<String>>,
+    /// Diagnóstico da travessia, mantido por `Discovery`. Ver `TraversalStatus`.
+    traversal: std::sync::RwLock<TraversalStatus>,
     /// Peers cujo endereço este nó está a reencontrar. Ver
     /// `request_peer_addresses`.
     rediscovery: std::sync::RwLock<HashMap<String, Rediscovery>>,
@@ -1294,6 +1326,7 @@ impl Network {
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
             libp2p_addrs: std::sync::RwLock::new(Vec::new()),
+            traversal: std::sync::RwLock::new(TraversalStatus::new()),
             rediscovery: std::sync::RwLock::new(HashMap::new()),
         }
     }
@@ -1458,8 +1491,56 @@ impl Network {
         if *guard == addrs {
             return false;
         }
-        *guard = addrs;
+        *guard = addrs.clone();
+        drop(guard);
+        self.traversal.write().expect("traversal lock").addrs = addrs;
         true
+    }
+
+    /// Um multiaddress público e direto deste nó, quando existe.
+    ///
+    /// Circuito fica de fora de propósito: o registro pkarr é republicado a
+    /// cada 30 min e uma reserva não dura previsivelmente tanto, então
+    /// publicar um circuito ali deixaria o registro apontando a maior parte do
+    /// tempo para um relé que não vale mais. O que vale no DHT é o endereço
+    /// que o AutoNAT confirmou, para um nó público ser encontrável a frio.
+    /// Retrato da travessia para a UI e para o operador.
+    pub fn traversal_status(&self) -> TraversalStatus {
+        self.traversal.read().expect("traversal lock").clone()
+    }
+
+    pub fn set_nat_status(&self, nat: &str) {
+        self.traversal.write().expect("traversal lock").nat = nat.to_string();
+    }
+
+    pub fn remember_reservation(&self, relay_peer_id: &str) {
+        let mut guard = self.traversal.write().expect("traversal lock");
+        if !guard.reservations.iter().any(|id| id == relay_peer_id) {
+            guard.reservations.push(relay_peer_id.to_string());
+        }
+    }
+
+    pub fn remember_hole_punch(&self, result: Result<(), String>) {
+        let mut guard = self.traversal.write().expect("traversal lock");
+        match result {
+            Ok(()) => {
+                guard.hole_punch_ok += 1;
+                guard.last_hole_punch_error = None;
+            }
+            Err(error) => {
+                guard.hole_punch_failed += 1;
+                guard.last_hole_punch_error = Some(error);
+            }
+        }
+    }
+
+    pub fn public_libp2p_addr(&self) -> Option<String> {
+        self.libp2p_addrs
+            .read()
+            .expect("libp2p_addrs lock")
+            .iter()
+            .find(|addr| !addr.contains("/p2p-circuit"))
+            .cloned()
     }
 
     pub fn libp2p_addrs(&self) -> Vec<String> {

@@ -97,6 +97,9 @@ pub(crate) struct PkarrPublishHandle {
     model_name: String,
     assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
     serve_relay: bool,
+    /// Fonte do endereço publicado, quando o AutoNAT já confirmou um. O `addr`
+    /// derivado no arranque continua sendo o fallback.
+    network: Option<Arc<crate::network::Network>>,
 }
 
 impl PkarrPublishHandle {
@@ -108,6 +111,7 @@ impl PkarrPublishHandle {
         model_name: String,
         assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
         serve_relay: bool,
+        network: Option<Arc<crate::network::Network>>,
     ) -> Self {
         Self {
             node,
@@ -117,6 +121,7 @@ impl PkarrPublishHandle {
             model_name,
             assignment,
             serve_relay,
+            network,
         }
     }
 
@@ -134,9 +139,16 @@ impl PkarrPublishHandle {
                 )
             })
             .unwrap_or((0, 0, 0));
+        // O endereço confirmado pelo AutoNAT vence o derivado no arranque: é o
+        // que um nó que nunca viu este aqui precisa para discar a frio.
+        let addr = self
+            .network
+            .as_ref()
+            .and_then(|network| network.public_libp2p_addr())
+            .unwrap_or_else(|| self.addr.clone());
         self.node
             .publish(
-                &self.addr,
+                &addr,
                 self.gateway_port,
                 self.inference_port,
                 &self.model_name,

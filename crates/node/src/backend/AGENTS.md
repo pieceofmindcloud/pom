@@ -821,6 +821,9 @@ faz o download autenticado do blob persistido.
   refresh tenha trocado o `Arc` do inventário: a reconciliação usa caminho,
   tamanho e mtime do arquivo. O cache instala um placeholder antes da primeira
   varredura, ordena as raízes e mantém single-flight para scans e enriquecimentos;
+  as rotas de seleção de modelo distinguem esse placeholder de um arquivo
+  ausente: quando `metadata_complete` é falso, devolvem que a descoberta ainda
+  está em andamento e não a mensagem de que o arquivo não pertence ao peer;
   a varredura rápida não calcula SHA-256 de modelos inteiros para montar
   `shard_sets`, então um volume grande publica seus caminhos e raízes antes da
   validação de `pom_id` usada para herdar projetores. Essa validação fica na

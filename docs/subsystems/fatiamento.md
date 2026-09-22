@@ -59,6 +59,9 @@ catálogo não percorre a tabela de tensores, não cria `mmap` e não toca o
 payload. Quando o operador escolhe um modelo inteiro ainda pendente, o planner
 chama `POST /api/ui/model-metadata` com o caminho já listado e publica apenas
 esse cabeçalho; os vizinhos continuam em background sem bloquear a seleção.
+Se a enumeração ainda não listou o caminho, as rotas de seleção devolvem o
+estado de descoberta pendente em vez de afirmar que o arquivo não pertence ao
+peer; a UI deve aguardar `metadata_complete: true` e tentar novamente.
 Hash integral continua restrito à fronteira de identidade, fatiamento ou
 transferência.
 

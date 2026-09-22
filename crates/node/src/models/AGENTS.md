@@ -23,6 +23,10 @@ transferência.
   `discover` combina as duas fases para callers síncronos que ainda precisam da
   resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
   manifestos ou do nome de uma fatia são apenas dados de identidade.
+  Enquanto `metadata_complete` é falso, a ausência de um caminho significa que
+  a enumeração ainda não terminou, não que o arquivo esteja fora do catálogo;
+  os handlers de seleção devem expor esse estado para o cliente tentar
+  novamente.
   Valores numéricos do cabeçalho GGUF são aceitos pela semântica de inteiro não
   negativo, independentemente de o produtor tê-los escrito como signed ou
   unsigned; valores negativos e overflow são recusados. Isso inclui

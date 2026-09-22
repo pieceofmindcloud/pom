@@ -300,6 +300,12 @@ não estão no router principal e só existem antes da configuração inicial.
   `mtp_draft_tokens_accepted`, `mtp_draft_tokens_rejected` e
   `mtp_acceptance_rate` (`accepted / proposed`, ou `null` sem proposta MTP).
   `proposed` conta somente o draft que chegou à verificação do alvo.
+- **Catálogo durante o aquecimento** - `GET /api/ui/models` pode publicar
+  `metadata_complete: false` enquanto a enumeração e o enriquecimento rodam em
+  background. Se uma rota de seleção recebe um caminho que ainda não apareceu
+  nesse inventário parcial, ela informa que a descoberta está em andamento;
+  não trata o arquivo como ausente do peer. O cliente deve esperar a próxima
+  resposta com `metadata_complete: true` e repetir a seleção.
 - **`GET /peers`** - `{ peers: [PeerSummary], count }`. `PeerSummary` traz
   `node_id` (12 primeiros chars), `addr`, `model`, `layers`, `ollama_url`,
   `inference_url`, `load` (carga em voo).

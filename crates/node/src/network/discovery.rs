@@ -1103,34 +1103,56 @@ async fn handle_event(
                 request_response::Message::Request {
                     request, channel, ..
                 } => {
-                    match network.inference_port {
-                        Some(inference_port) => {
+                    // O destino é escolhido pelo emissor e **resolvido aqui**:
+                    // o peer remoto nomeia um dos dois servidores deste nó,
+                    // nunca uma porta. No gateway, a lista fechada de rotas é
+                    // conferida antes de encaminhar - ver
+                    // `gateway_path_is_allowed`, que explica por que um túnel
+                    // aberto para o gateway seria escalada de privilégio.
+                    let target = match request.target {
+                        infer_tunnel::TunnelTarget::Inference => {
+                            network.inference_port.ok_or((
+                                503u16,
+                                "no inference server on this node".to_string(),
+                            ))
+                        }
+                        infer_tunnel::TunnelTarget::Gateway => {
+                            if infer_tunnel::gateway_path_is_allowed(&request.path) {
+                                network
+                                    .gateway_port
+                                    .ok_or((503u16, "no gateway on this node".to_string()))
+                            } else {
+                                warn!(
+                                    "infer-tunnel: {} pediu a rota {} pelo gateway; fora da lista",
+                                    peer, request.path
+                                );
+                                Err((403u16, "route not carried by the tunnel".to_string()))
+                            }
+                        }
+                    };
+                    match target {
+                        Ok(port) => {
                             debug!(
                                 "infer-tunnel: {} → loopback :{} {}",
-                                peer, inference_port, request.path
+                                peer, port, request.path
                             );
                             let response_tx = inbound_response_tx.clone();
-                            spawn_loopback_request(
-                                http,
-                                inference_port,
-                                request,
-                                move |response| async move {
-                                    let _ = response_tx.send((channel, response)).await;
-                                },
-                            );
+                            spawn_loopback_request(http, port, request, move |response| async move {
+                                let _ = response_tx.send((channel, response)).await;
+                            });
                         }
-                        None => {
-                            // Nothing to forward to — this node has no
-                            // inference server running (no layer assignment
-                            // yet, or a pure-relay node). Answer rather than
-                            // dropping the channel silently, so the caller's
-                            // fallback logic gets a definite failure instead
-                            // of a timeout.
+                        Err((status, message)) => {
+                            // Nothing to forward to — this node has no such
+                            // server running (no layer assignment yet, a
+                            // pure-relay node), or the route is not one the
+                            // tunnel carries. Answer rather than dropping the
+                            // channel silently, so the caller's fallback logic
+                            // gets a definite failure instead of a timeout.
                             let _ = swarm.behaviour_mut().infer_tunnel.send_response(
                                 channel,
                                 infer_tunnel::TunnelResponse {
-                                    status: 503,
-                                    body: b"no inference server on this node".to_vec(),
+                                    status,
+                                    body: message.into_bytes(),
                                 },
                             );
                         }
@@ -1423,7 +1445,7 @@ async fn relay_chat(
 /// per-peer GossipSub send queue.
 fn spawn_loopback_request<F, Fut>(
     http: &reqwest::Client,
-    inference_port: u16,
+    port: u16,
     request: infer_tunnel::TunnelRequest,
     on_response: F,
 ) where
@@ -1432,7 +1454,7 @@ fn spawn_loopback_request<F, Fut>(
 {
     let http = http.clone();
     tokio::spawn(async move {
-        let response = infer_tunnel::serve_loopback(&http, inference_port, request).await;
+        let response = infer_tunnel::serve_loopback(&http, port, request).await;
         on_response(response).await;
     });
 }

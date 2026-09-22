@@ -40,6 +40,9 @@ consomem a tabela depois desse ponto.
   considera a resposta `approved` ou `challenge_required` como prova de que o
   destino conhece a chave compartilhada. Chave errada, chave ausente, peer
   sem gateway ou timeout são recusados. A chave não aparece no `Announce`.
+  Esgotados os endereços diretos, a mesma sonda vai pelo túnel libp2p; para um
+  par atrás de NAT/CGNAT esse é o único caminho que chega, e sem ele a
+  admissão nunca concluiria.
 - Em rede pública, a âncora local precisa ser válida, e o rigor depende do
   `network.access_policy`. Em ambos os casos a chave pública legada precisa
   derivar o `node_id`, a chave de autoridade precisa derivar o `libp2p peer_id`,
@@ -596,13 +599,30 @@ registro é republicado a cada 30 min, então um endereço de circuito publicado
 nele passa a maior parte do tempo obsoleto. O que vale ali é o endereço público
 confirmado, para um nó público ser encontrável a frio.
 
-Mesmo com isso, o plano de controle continua fora: `peer_client` disca
-`http(s)://host:port` direto com reqwest para `/handshake`,
-`/api/cluster/network-settings`, o watcher do `/health`, transferência e
-sincronização de admin. Como a admissão exige a sonda `/handshake` (ver
-"Admissão antes da tabela `peers`"), um par atrás de NAT não entra em `peers`
-mesmo com o hole punch perfeito - roteamento, UI e pipeline continuam cegos
-para ele. É a fase 3. As fases estão em `TODO.md`.
+A fase 3 levou o plano de controle para o mesmo túnel. `TunnelRequest` ganhou
+`target`: `Inference` continua sendo o padrão e o único que um peer de binário
+anterior conhece; `Gateway` é atendido pelo gateway do destino. Com isso a
+sonda `/handshake` da admissão e as catracas de política
+(`/api/cluster/{tls,quic,logs,network-chat,network-settings}`) alcançam um par
+que nenhum endereço direto alcança - sem isso ele não entrava em `peers` nem
+com o hole punch perfeito, e roteamento, UI e pipeline continuavam cegos para
+ele.
+
+**A lista de rotas do gateway é fechada, e isso é uma invariante de segurança,
+não uma conveniência.** Tudo que sai do túnel chega ao gateway por
+`127.0.0.1`, e o gateway decide o que é local pelo endereço do socket
+(`serve::PeerAddr`): `install_trust_anchor` libera a administração da rede
+olhando **só** isso. Um túnel que encaminhasse caminho arbitrário daria a
+qualquer peer do swarm um caminho para se tornar administrador. Por isso
+`infer_tunnel::gateway_path_is_allowed` compara o caminho exato, sem prefixo
+nem curinga, e a conferência é do lado que recebe. O emissor escolhe a
+variante de `target`; quem resolve a porta é o receptor, com as duas portas
+que ele próprio escolheu.
+
+O que continua fora do túnel: transferência de arquivos, sincronização de
+admin e o watcher do `/health` entre peers. Nenhum deles participa da
+admissão, então um par atrás de NAT já entra no cluster e roteia sem eles.
+As fases estão em `TODO.md`.
 
 ## 4. Identidade
 
@@ -969,10 +989,6 @@ contrapressão e a medição de latência ficam em
   requisição é atendida, nenhum bloco é servido. A transferência real vai por
   HTTP Range (`backend/transfer.rs`). O protocolo existe mas ninguém implementa
   o lado servidor.
-- **DEFEITO ANOTADO: plano de controle não passa pelo swarm** - `peer_client`
-  disca HTTP direto por `host:port`, inclusive o `/handshake` de que a admissão
-  depende. Um par atrás de NAT não entra em `peers` nem com o túnel de
-  inferência funcionando. Fase 3 no `TODO.md`.
 - **DEFEITO ANOTADO: chave pkarr relativa ao cwd** (`main.rs`,
   `Path::new(".pom.key")`) - diferente de `identity::key_path()`, que
   resolve contra `project_root()`. Rodar o binário de outro diretório

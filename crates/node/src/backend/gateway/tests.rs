@@ -396,6 +396,7 @@ mod tests {
             state.authority_signing_key.as_ref(),
             &state.authority_principal,
             state.admin_trust.as_ref(),
+            None,
         )
         .await
         .unwrap());
@@ -407,6 +408,7 @@ mod tests {
             state.authority_signing_key.as_ref(),
             &state.authority_principal,
             state.admin_trust.as_ref(),
+            None,
         )
         .await
         .unwrap());
@@ -418,6 +420,7 @@ mod tests {
             state.authority_signing_key.as_ref(),
             &state.authority_principal,
             state.admin_trust.as_ref(),
+            None,
         )
         .await
         .unwrap());

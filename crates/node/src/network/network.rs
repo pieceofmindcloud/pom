@@ -3008,23 +3008,59 @@ impl Network {
             "nonce": null,
             "signature": null,
         });
+        let approves = |status: u16, body: &serde_json::Value| {
+            body.get("approved").and_then(serde_json::Value::as_bool) == Some(true)
+                || (status == reqwest::StatusCode::FORBIDDEN.as_u16()
+                    && body.get("reason").and_then(serde_json::Value::as_str)
+                        == Some("challenge_required"))
+        };
         for url in self.admission_urls(peer) {
             let Ok(response) = client.post(&url).json(&body).send().await else {
                 continue;
             };
-            let status = response.status();
-            let Ok(body) = response.json::<serde_json::Value>().await else {
+            let status = response.status().as_u16();
+            let Ok(parsed) = response.json::<serde_json::Value>().await else {
                 continue;
             };
-            if body.get("approved").and_then(serde_json::Value::as_bool) == Some(true)
-                || (status == reqwest::StatusCode::FORBIDDEN
-                    && body.get("reason").and_then(serde_json::Value::as_str)
-                        == Some("challenge_required"))
-            {
+            if approves(status, &parsed) {
                 return true;
             }
         }
-        false
+        // Último recurso, e para um par atrás de NAT/CGNAT o **único** que
+        // chega: a sonda pelo túnel libp2p. Sem ela a admissão nunca conclui
+        // para esse par, ele não entra na tabela `peers`, e roteamento, UI e
+        // pipeline continuam cegos para ele mesmo com o hole punch pronto.
+        let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(peer) else {
+            return false;
+        };
+        let Ok(encoded) = serde_json::to_vec(&body) else {
+            return false;
+        };
+        let response = crate::peer_client::tunnel_gateway_call(
+            &tunnel,
+            "POST",
+            "/handshake",
+            encoded,
+            vec![(
+                reqwest::header::CONTENT_TYPE.to_string(),
+                "application/json".to_string(),
+            )],
+            ADMISSION_TIMEOUT,
+        )
+        .await;
+        match response {
+            Ok(response) => match response.json::<serde_json::Value>() {
+                Ok(parsed) => approves(response.status, &parsed),
+                Err(_) => false,
+            },
+            Err(error) => {
+                debug!(
+                    "admissão de {} pelo túnel não concluiu: {error}",
+                    short(&peer.node_id)
+                );
+                false
+            }
+        }
     }
 
     /// Confere pertencimento antes de qualquer efeito derivado do peer.

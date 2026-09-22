@@ -26,8 +26,19 @@ fallback continua em `addr_candidates` + `RouteTable`.
   cliente direto pinado como fallback. `TunnelRequest` leva método, caminho,
   corpo e cabeçalhos, inclusive a `connection_key` e o marcador interno da
   porta de inferência;
-  `serve_loopback` repassa POSTs para o servidor de inferência e GETs para a
-  sonda `/health`. POSTs sem `Content-Type` recebem o padrão binário, mas um
+  `serve_loopback` repassa a chamada para o loopback, sempre em texto claro
+  (`serve::plain_allowed` libera loopback mesmo em TLS estrito e o certificado
+  do nó não cobre `127.0.0.1`). `TunnelTarget` escolhe **qual** servidor local
+  atende: `Inference` (padrão, e o único que um peer de binário anterior
+  conhece) ou `Gateway`, o plano de controle. O emissor nomeia a variante; o
+  receptor é que a mapeia para uma das duas portas que ele próprio escolheu -
+  um peer remoto nunca nomeia porta. Para o gateway vale
+  `gateway_path_is_allowed`, lista **fechada** e de comparação exata
+  (`/handshake`, `/health`, `/api/cluster/{tls,quic,logs,network-chat,network-settings}`):
+  tudo que sai do túnel chega ao gateway por `127.0.0.1`, e o gateway decide o
+  que é local pelo endereço do socket - `install_trust_anchor` libera a
+  administração da rede olhando só isso. Túnel aberto para o gateway seria
+  escalada de privilégio para qualquer peer do swarm. POSTs sem `Content-Type` recebem o padrão binário, mas um
   `Content-Type` explícito, como `application/json` no ciclo de vida da sessão,
   nunca é duplicado nem sobrescrito. `measure_rtt` mede a ida e volta pelo
   mesmo túnel Noise.
@@ -85,7 +96,13 @@ fallback continua em `addr_candidates` + `RouteTable`.
   cabem no orçamento de 1200 bytes do UDP e remontado antes da validação do
   fingerprint. A preferência fica desligada fora do wizard; o material sensível
   vive apenas em memória e a transferência é limitada a 512 KiB.
-- `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
+- `peer_client.rs` - `TunnelPeer`/`tunnel_gateway_call` levam uma chamada do
+  plano de controle pelo túnel quando nenhum endereço direto responde; é o que
+  faz a admissão de um par atrás de NAT concluir.
+  `get_internal_from_candidates` tenta os endereços diretos e só então o
+  túnel, e devolve `InternalResponse` (status + corpo já lido), porque o túnel
+  não produz um `reqwest::Response`.
+  `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
   quem colcheta IPv6, além da preferência e da quarentena temporária de rotas

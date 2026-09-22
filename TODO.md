@@ -18,9 +18,9 @@ contexto e não devem voltar a ser propostas como defeitos novos.
 
 Trabalho em fases, entrado em 2026-09-22. O diagnóstico completo está em
 `docs/subsystems/rede-p2p.md`, seção "Travessia de NAT". N1 e N2 estão
-entregues e são o que destrava o sintoma; N3 é o que torna a conexão
-destravada útil ao produto, porque a admissão depende de uma sonda HTTP que
-ainda não passa pelo swarm.
+entregues e são o que destrava o sintoma; N3 tornou a conexão destravada útil
+ao produto, levando a admissão e as catracas de política para o túnel. Seguem
+abertos N0, N4 e N5.
 
 - [x] **N1 - Swarm capaz de travessia** (entregue)
   QUIC no `SwarmBuilder` e nos listen addresses; `DEFAULT_RELAY_NODES`
@@ -54,18 +54,15 @@ ainda não passa pelo swarm.
   derivado. Circuito **não** deve ir para o registro: ele é republicado a cada
   30 min e o endereço passaria a maior parte do tempo obsoleto.
 
-- [ ] **N3 - Plano de controle pelo swarm**
-  **Fonte:** `crates/node/src/network/peer_client.rs`;
-  `crates/node/src/network/infer_tunnel.rs`.
-  **Prática:** `/handshake`, `/api/cluster/network-settings`, watcher do
-  `/health`, transferência e sincronização de admin discam HTTP direto por
-  `host:port`. Como a admissão depende da sonda `/handshake`, um par atrás de
-  NAT não entra em `peers` nem com o túnel de inferência funcionando.
-  **Afetados:** roteamento, UI e pipeline, que só enxergam a tabela `peers`.
-  **Esforço:** médio. `TunnelRequest` já é `{method, path, body, headers}`
-  genérico; generalizar do loopback de inferência para o gateway e usar como
-  fallback no `peer_client` quando a discagem direta falhar. `/handshake`
-  precisa estar incluído, senão o resto não tem efeito.
+- [x] **N3 - Plano de controle pelo swarm** (entregue)
+  `TunnelRequest.target` escolhe entre o servidor de inferência e o gateway;
+  `gateway_path_is_allowed` é a lista fechada de rotas que o túnel entrega,
+  conferida no receptor, porque o que sai do túnel chega ao gateway por
+  `127.0.0.1` e `install_trust_anchor` libera a administração da rede olhando
+  só isso. A sonda `/handshake` da admissão e as catracas de política caem no
+  túnel depois de todos os endereços diretos falharem. Transferência,
+  sincronização de admin e o watcher do `/health` continuam diretos; nenhum
+  participa da admissão.
 
 - [ ] **N4 - Inferência sobre a conexão furada**
   **Fonte:** `crates/node/src/network/quic.rs`;

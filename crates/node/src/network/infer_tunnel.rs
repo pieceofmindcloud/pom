@@ -24,8 +24,49 @@ use tokio::sync::{mpsc, oneshot};
 
 pub const INFER_TUNNEL_PROTOCOL: &str = "/pom/infer-tunnel/1.0.0";
 
+/// Qual servidor local atende a chamada que chegou pelo túnel.
+///
+/// O destino é escolhido pelo emissor mas **resolvido** pelo receptor: ele
+/// mapeia a variante para uma das duas portas que ele próprio escolheu
+/// (`inference_port`, `gateway_port`). Um par remoto nunca nomeia porta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TunnelTarget {
+    /// Servidor de inferência embutido (`/v1/prefill`, `/v1/step`, ...).
+    #[default]
+    Inference,
+    /// Gateway: o plano de controle. Ver `gateway_path_is_allowed`.
+    Gateway,
+}
+
+/// Rotas do gateway que o túnel entrega. **Lista fechada, conferida no
+/// receptor.**
+///
+/// Encaminhar uma chamada do túnel para o gateway a faz chegar lá por
+/// `127.0.0.1`, e o gateway usa o endereço do socket (`serve::PeerAddr`) para
+/// decidir o que é local: `install_trust_anchor` libera a administração da
+/// rede com base **só** nisso. Um túnel que aceitasse qualquer caminho daria a
+/// qualquer peer do swarm um caminho para se tornar administrador. Por isso
+/// aqui não há prefixo nem curinga: só as rotas de que a admissão e as
+/// catracas de política precisam, cada uma já autenticada por conta própria.
+pub fn gateway_path_is_allowed(path: &str) -> bool {
+    // Query string não muda a rota, mas não pode servir para escapar da
+    // comparação exata.
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    matches!(
+        path,
+        "/handshake"
+            | "/health"
+            | "/api/cluster/tls"
+            | "/api/cluster/quic"
+            | "/api/cluster/logs"
+            | "/api/cluster/network-chat"
+            | "/api/cluster/network-settings"
+    )
+}
+
 /// A single generic inference call, forwarded to the receiving peer's own
-/// loopback inference server (`http://127.0.0.1:<inference_port><path>`)
+/// loopback server chosen by `target` (`http://127.0.0.1:<porta><path>`)
 /// once it arrives — see `discovery.rs`'s handling of
 /// `DiscBehaviourEvent::InferTunnel`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +75,10 @@ pub struct TunnelRequest {
     /// esse campo e continuam sendo tratados como chamadas POST.
     #[serde(default = "default_method")]
     pub method: String,
+    /// Servidor local que atende. Ausente num peer de binário anterior, que só
+    /// sabia falar com o servidor de inferência.
+    #[serde(default)]
+    pub target: TunnelTarget,
     pub path: String,
     pub body: Vec<u8>,
     /// Cabeçalhos necessários por rotas que não carregam seu metadado no corpo
@@ -50,6 +95,7 @@ impl TunnelRequest {
     pub fn post(path: impl Into<String>, body: Vec<u8>, headers: Vec<(String, String)>) -> Self {
         Self {
             method: "POST".to_string(),
+            target: TunnelTarget::Inference,
             path: path.into(),
             body,
             headers,
@@ -59,9 +105,26 @@ impl TunnelRequest {
     pub fn get(path: impl Into<String>) -> Self {
         Self {
             method: "GET".to_string(),
+            target: TunnelTarget::Inference,
             path: path.into(),
             body: Vec::new(),
             headers: Vec::new(),
+        }
+    }
+
+    /// Chamada do plano de controle, atendida pelo gateway do destino.
+    pub fn gateway(
+        method: &str,
+        path: impl Into<String>,
+        body: Vec<u8>,
+        headers: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            method: method.to_string(),
+            target: TunnelTarget::Gateway,
+            path: path.into(),
+            body,
+            headers,
         }
     }
 }
@@ -392,10 +455,13 @@ pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutbound
 /// de `/health` usado pela medição direcional de RTT.
 pub async fn serve_loopback(
     http: &reqwest::Client,
-    inference_port: u16,
+    port: u16,
     request: TunnelRequest,
 ) -> TunnelResponse {
-    let url = format!("http://127.0.0.1:{inference_port}{}", request.path);
+    // Sempre texto claro no loopback: `serve::plain_allowed` libera loopback
+    // mesmo com o cluster em TLS estrito, e o certificado do nó não cobre
+    // `127.0.0.1`.
+    let url = format!("http://127.0.0.1:{port}{}", request.path);
     let has_content_type = request
         .headers
         .iter()
@@ -436,6 +502,55 @@ pub async fn serve_loopback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A escalada que a lista fechada existe para impedir: `install_trust_anchor`
+    /// libera a administração da rede olhando só se o socket é loopback, e
+    /// tudo que sai do túnel chega ao gateway por `127.0.0.1`.
+    #[test]
+    fn o_tunel_nao_carrega_rota_administrativa() {
+        assert!(!gateway_path_is_allowed("/api/ui/trust/anchor"));
+        assert!(!gateway_path_is_allowed("/api/ui/plan"));
+        assert!(!gateway_path_is_allowed("/admin/config"));
+        assert!(!gateway_path_is_allowed("/api/generate"));
+        assert!(!gateway_path_is_allowed("/"));
+    }
+
+    /// As rotas de que a admissão e as catracas de política dependem. Sem
+    /// `/handshake` aqui, um par atrás de NAT nunca entra na tabela `peers`.
+    #[test]
+    fn o_tunel_carrega_o_plano_de_controle() {
+        for path in [
+            "/handshake",
+            "/health",
+            "/api/cluster/tls",
+            "/api/cluster/quic",
+            "/api/cluster/logs",
+            "/api/cluster/network-chat",
+            "/api/cluster/network-settings",
+        ] {
+            assert!(gateway_path_is_allowed(path), "{path} devia passar");
+        }
+    }
+
+    /// Comparação exata, não prefixo: um sufixo não pode pendurar outra rota
+    /// numa permitida, e query string não pode servir de escape.
+    #[test]
+    fn a_comparacao_da_lista_e_exata() {
+        assert!(!gateway_path_is_allowed("/handshake/../api/ui/trust/anchor"));
+        assert!(!gateway_path_is_allowed("/health/../admin"));
+        assert!(!gateway_path_is_allowed("/api/cluster/tlsx"));
+        assert!(gateway_path_is_allowed("/api/cluster/tls?verbose=1"));
+    }
+
+    /// Um peer de binário anterior não manda `target`, e só sabia falar com o
+    /// servidor de inferência.
+    #[test]
+    fn um_pedido_sem_target_vai_para_a_inferencia() {
+        let json = br#"{"path":"/v1/step","body":[]}"#;
+        let request: TunnelRequest = serde_json::from_slice(json).expect("parse");
+        assert_eq!(request.target, TunnelTarget::Inference);
+        assert_eq!(request.method, "POST");
+    }
     use futures::io::Cursor;
 
     /// A request/response has to survive the exact framing a real

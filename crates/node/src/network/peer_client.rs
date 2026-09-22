@@ -61,6 +61,90 @@ pub fn peer_scheme() -> &'static str {
 #[cfg(test)]
 pub static POLITICA_GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+
+/// Um peer alcançável pelo swarm, para o plano de controle cair no túnel
+/// quando a discagem HTTP direta não chega.
+///
+/// Atrás de NAT/CGNAT a discagem direta nunca chega, e a admissão depende de
+/// uma sonda HTTP (`/handshake`): sem este caminho, um par atrás de NAT não
+/// entra na tabela `peers` nem com o hole punch funcionando, e roteamento, UI
+/// e pipeline continuam cegos para ele.
+#[derive(Debug, Clone)]
+pub(crate) struct TunnelPeer {
+    pub peer_id: libp2p::PeerId,
+    pub addrs: Vec<String>,
+}
+
+impl TunnelPeer {
+    /// `None` quando o peer não anuncia o túnel ou não tem `PeerId` válido.
+    pub(crate) fn from_peer(peer: &crate::network::PeerInfo) -> Option<Self> {
+        if !peer
+            .inference_frame_capabilities
+            .iter()
+            .any(|capability| capability == "transport/libp2p-tunnel-v1")
+        {
+            return None;
+        }
+        let peer_id = peer.libp2p_peer_id.as_deref()?.parse().ok()?;
+        Some(Self {
+            peer_id,
+            addrs: peer.libp2p_dialable_addrs(),
+        })
+    }
+}
+
+/// Resposta já lida, porque o túnel não produz um `reqwest::Response`.
+#[derive(Debug, Clone)]
+pub(crate) struct InternalResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+impl InternalResponse {
+    pub(crate) fn is_success(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+
+    pub(crate) fn json<T: serde::de::DeserializeOwned>(&self) -> anyhow::Result<T> {
+        Ok(serde_json::from_slice(&self.body)?)
+    }
+}
+
+/// Despacha uma chamada do plano de controle pelo túnel libp2p.
+///
+/// O destino é `TunnelTarget::Gateway`; a rota ainda passa pela lista fechada
+/// conferida no receptor (`infer_tunnel::gateway_path_is_allowed`).
+pub(crate) async fn tunnel_gateway_call(
+    tunnel: &TunnelPeer,
+    method: &str,
+    path: &str,
+    body: Vec<u8>,
+    headers: Vec<(String, String)>,
+    timeout: std::time::Duration,
+) -> Result<InternalResponse> {
+    let Some(sender) = crate::infer_tunnel::tunnel_sender() else {
+        anyhow::bail!("o túnel libp2p não está disponível neste processo");
+    };
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    sender
+        .send(crate::infer_tunnel::TunnelOutbound {
+            peer_id: tunnel.peer_id,
+            addr_candidates: tunnel.addrs.clone(),
+            request: crate::infer_tunnel::TunnelRequest::gateway(method, path, body, headers),
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("a fila do túnel libp2p fechou"))?;
+    let response = tokio::time::timeout(timeout, reply_rx)
+        .await
+        .map_err(|_| anyhow::anyhow!("o túnel libp2p não respondeu em {timeout:?}"))?
+        .map_err(|_| anyhow::anyhow!("o túnel libp2p descartou a resposta"))??;
+    Ok(InternalResponse {
+        status: response.status,
+        body: response.body,
+    })
+}
+
 /// `https` quando o cluster está cifrado, `http` quando não.
 pub fn scheme(tls: bool) -> &'static str {
     if tls {
@@ -383,6 +467,9 @@ impl PeerClients {
     /// caiu em outro nó (ou num processo fantasma), portanto uma resposta HTTP
     /// de erro também precisa deixar a sonda tentar o próximo candidato. A
     /// identidade TLS continua fixada no peer_id para todas as tentativas.
+    /// `tunnel` é a última tentativa, depois de todos os endereços diretos.
+    /// Para um peer atrás de NAT ele costuma ser a **única** que chega; a rota
+    /// continua sendo conferida contra a lista fechada no receptor.
     pub(crate) async fn get_internal_from_candidates(
         &self,
         peer_id: &str,
@@ -390,9 +477,10 @@ impl PeerClients {
         path: &str,
         connection_key: &str,
         extra_headers: &reqwest::header::HeaderMap,
-    ) -> Result<reqwest::Response> {
+        tunnel: Option<&TunnelPeer>,
+    ) -> Result<InternalResponse> {
         let http = self.for_peer(peer_id)?;
-        let mut failures = Vec::with_capacity(base_urls.len());
+        let mut failures = Vec::with_capacity(base_urls.len() + 1);
         for base in base_urls {
             let url = format!("{base}{path}");
             let mut request = http.get(&url).headers(extra_headers.clone());
@@ -400,9 +488,41 @@ impl PeerClients {
                 request = request.bearer_auth(connection_key);
             }
             match request.timeout(crate::webui::PEER_TIMEOUT).send().await {
-                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) if response.status().is_success() => {
+                    let status = response.status().as_u16();
+                    let body = response.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
+                    return Ok(InternalResponse { status, body });
+                }
                 Ok(response) => failures.push(format!("{url}: {}", response.status())),
                 Err(error) => failures.push(format!("{url}: {error}")),
+            }
+        }
+        if let Some(tunnel) = tunnel {
+            let mut headers: Vec<(String, String)> = extra_headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    Some((name.to_string(), value.to_str().ok()?.to_string()))
+                })
+                .collect();
+            if !connection_key.is_empty() {
+                headers.push((
+                    reqwest::header::AUTHORIZATION.to_string(),
+                    format!("Bearer {connection_key}"),
+                ));
+            }
+            match tunnel_gateway_call(
+                tunnel,
+                "GET",
+                path,
+                Vec::new(),
+                headers,
+                crate::webui::PEER_TIMEOUT,
+            )
+            .await
+            {
+                Ok(response) if response.is_success() => return Ok(response),
+                Ok(response) => failures.push(format!("túnel libp2p: {}", response.status)),
+                Err(error) => failures.push(format!("túnel libp2p: {error}")),
             }
         }
         anyhow::bail!(

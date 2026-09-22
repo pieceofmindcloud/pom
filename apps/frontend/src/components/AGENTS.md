@@ -79,7 +79,9 @@ Per-file list:
   de compra/instalação `https://pieceofmind.cloud/enterprise/index.html`.
 - `PluginScreen.tsx` - carrega o módulo ES de uma tela de plugin (asset servido
   pelo nó) e o monta na árvore do POM, com estilos do plugin e cartão de erro
-  se a carga ou a renderização falhar. Ver `docs/subsystems/plugins-ui.md`.
+  se a carga ou a renderização falhar. A rota normalizada faz parte da
+  identidade da montagem para a troca entre telas do mesmo plugin não reter o
+  componente anterior. Ver `docs/subsystems/plugins-ui.md`.
 - `ExecutionTelemetry.tsx` - cartão compartilhado do trace de execução usado
   pelo Chat. Mantém a tabela de fases, tempos por hop,
   rede, ambiente, diagnóstico e demais detalhes em um único componente. Cruza

@@ -82,7 +82,9 @@ efetiva recebe a recusa normal.
 
 `components/PluginScreen.tsx` importa o módulo do asset (mesma origem, a sessão
 vale) e monta o export declarado como componente React da própria árvore, com
-`ErrorBoundary`; falha vira um cartão de erro. O plugin não empacota outro
+`ErrorBoundary`; falha vira um cartão de erro. O host remonta a tela quando a
+rota normalizada muda, inclusive entre destinos do mesmo `plugin_code`, para
+que uma navegação interna não retenha o componente da rota anterior. O plugin não empacota outro
 React: `lib/pluginHost.ts` expõe em `globalThis.__POM_HOST__` React, ReactDOM,
 o runtime JSX, React Query, o kit de design (`components/ui`), `format`,
 `useI18n`, `useTheme`, `useCluster`, `api.get`, `Modal`, `ExecutionTelemetry`,

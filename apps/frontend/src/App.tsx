@@ -404,7 +404,10 @@ export default function App() {
                   <Navigate to="/estatisticas" replace />
                 ) : pluginRoute ? (
                   <div className={pluginRoute.route.full_bleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
-                    <PluginScreen resolved={pluginRoute} />
+                    <PluginScreen
+                      key={`${pluginRoute.code}:${pluginRoute.route.path}`}
+                      resolved={pluginRoute}
+                    />
                   </div>
                 ) : enterprisePath ? (
                   <EnterpriseFeatureShowcase kind={location.pathname.startsWith("/logs") ? "logs" : "statistics"} />

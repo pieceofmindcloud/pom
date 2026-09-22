@@ -135,8 +135,10 @@ desenhado**, porque uma vista só não é uma escolha.
 - Rotas de plugin -> `PluginScreen` sob `/<plugin_code>/<rota do manifesto>`,
   fora do `<Routes>` e antes da tabela nativa. O basename transforma, por
   exemplo, `base` + `/plugin-de-base` em `/admin-ui/base/plugin-de-base`.
-  `/logs` e `/estatisticas` continuam sendo rotas nativas de fallback; o alias
-  `/logs/estatisticas` continua redirecionando para `/estatisticas`.
+  A identidade do componente inclui a rota normalizada, então navegar entre
+  duas telas do mesmo plugin remonta a tela correta. `/logs` e `/estatisticas`
+  continuam sendo rotas nativas de fallback quando nenhum plugin as reivindica;
+  o alias `/logs/estatisticas` continua redirecionando para `/estatisticas`.
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`). No celular a barra lateral ocupa a tela inteira e o leitor some até uma seleção explícita ou um deep link; selecionar abre o leitor com um botão Voltar no topo, que só fecha a vista mobile (a seleção em `?doc=`/`?guia=` continua).
 - `/config/rede` -> NetworkSettings; a seção principal Rede também reúne
   `/config/rede/participantes`, `/config/administracao` (Administradores),

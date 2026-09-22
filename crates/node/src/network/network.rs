@@ -238,6 +238,16 @@ pub enum P2PMessage {
         /// libp2p NAT-tunnel fallback (`transport/libp2p-tunnel-v1`).
         #[serde(default)]
         libp2p_peer_id: Option<String>,
+        /// Multiaddresses libp2p que este nó publica, já com `/p2p/<peer-id>`.
+        ///
+        /// É a única forma capaz de expressar um circuito de relay
+        /// (`.../p2p/<relé>/p2p-circuit/p2p/<self>`): a convenção `host:port`
+        /// com porta `UDP+10000` não tem como carregar um, e era por isso que
+        /// uma reserva aceita nunca chegava ao outro lado e o DCuTR nunca
+        /// tinha conexão relayed para coordenar o hole punch. Vazio num peer
+        /// antigo, e aí quem disca volta a derivar o endereço do `addr`.
+        #[serde(default)]
+        libp2p_addrs: Vec<String>,
         /// Identidade de tensor parallelism, quando este nó é primary/worker de
         /// um grupo. Ausente = nó sem TP (o caso de hoje).
         #[serde(default)]
@@ -347,6 +357,9 @@ pub struct PeerInfo {
     /// See `P2PMessage::Announce::libp2p_peer_id`.
     #[serde(default)]
     pub libp2p_peer_id: Option<String>,
+    /// Ver `P2PMessage::Announce::libp2p_addrs`.
+    #[serde(default)]
+    pub libp2p_addrs: Vec<String>,
     /// Ver `P2PMessage::Announce::tp`.
     #[serde(default)]
     pub tp: Option<TpIdentity>,
@@ -576,7 +589,17 @@ impl PeerInfo {
     /// listen interface, while the pipeline must dial the endpoint selected
     /// by the peer's Announce. Keep the multi-address fallback policy for UDP
     /// control traffic, but use one announced endpoint for the tunnel.
+    /// Endereços que o swarm pode discar para alcançar este peer.
+    ///
+    /// Os multiaddresses anunciados vêm primeiro e são devolvidos **todos**:
+    /// é onde mora o endereço de circuito, e devolver só o primeiro endereço
+    /// deixava um peer atrás de NAT sem nenhum destino alcançável. A derivação
+    /// por `addr`/`addr_candidates` fica como compatibilidade com um peer que
+    /// ainda não publica `libp2p_addrs`.
     pub fn libp2p_dialable_addrs(&self) -> Vec<String> {
+        if !self.libp2p_addrs.is_empty() {
+            return self.libp2p_addrs.clone();
+        }
         is_valid_destination(&self.addr)
             .then_some(self.addr.as_str())
             .or_else(|| {
@@ -863,6 +886,10 @@ pub struct Network {
     /// node with nothing to offer remote peers but a private LAN IP from
     /// local-interface enumeration. See `set_observed_addr`.
     observed_addr: std::sync::RwLock<Option<String>>,
+    /// Multiaddresses que o swarm libp2p publica hoje, mantidas por
+    /// `Discovery` (ver `set_libp2p_addrs`). Vivem aqui, e não no `Discovery`,
+    /// porque quem monta o `Announce` é o `Network`.
+    libp2p_addrs: std::sync::RwLock<Vec<String>>,
     /// Peers cujo endereço este nó está a reencontrar. Ver
     /// `request_peer_addresses`.
     rediscovery: std::sync::RwLock<HashMap<String, Rediscovery>>,
@@ -1266,6 +1293,7 @@ impl Network {
             policy_principal_pubkey: std::sync::RwLock::new(None),
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
+            libp2p_addrs: std::sync::RwLock::new(Vec::new()),
             rediscovery: std::sync::RwLock::new(HashMap::new()),
         }
     }
@@ -1419,6 +1447,28 @@ impl Network {
     /// `host_port`'s host is still private/loopback/link-local
     /// (`addrs::is_private_or_local`) — that's not new information, just a
     /// peer on the same LAN or a NAT rewriting within another private range.
+    /// Publica no `Announce` os multiaddresses que o swarm escuta hoje.
+    ///
+    /// Chamado por `Discovery` sempre que um listener, um endereço externo
+    /// confirmado ou uma reserva de circuito entra ou sai. Devolve `true`
+    /// quando a lista mudou, para o chamador logar a mudança; o anúncio novo
+    /// sai no gossip seguinte, em no máximo 5 s.
+    pub fn set_libp2p_addrs(&self, addrs: Vec<String>) -> bool {
+        let mut guard = self.libp2p_addrs.write().expect("libp2p_addrs lock");
+        if *guard == addrs {
+            return false;
+        }
+        *guard = addrs;
+        true
+    }
+
+    pub fn libp2p_addrs(&self) -> Vec<String> {
+        self.libp2p_addrs
+            .read()
+            .expect("libp2p_addrs lock")
+            .clone()
+    }
+
     pub fn set_observed_addr(&self, host_port: &str) {
         if !has_nonzero_port(host_port) {
             return;
@@ -1715,6 +1765,7 @@ impl Network {
             disk_total_mb: 0,
             disk_free_mb: 0,
             libp2p_peer_id: self.libp2p_peer_id.clone(),
+            libp2p_addrs: self.libp2p_addrs(),
             tp: self.tp.read().expect("tp lock").clone(),
             runtime_capacity: self
                 .runtime_capacity
@@ -2525,6 +2576,7 @@ impl Network {
                 disk_total_mb,
                 disk_free_mb,
                 libp2p_peer_id,
+                libp2p_addrs,
                 tp,
                 runtime_capacity,
                 cluster_logs_enabled,
@@ -2575,6 +2627,7 @@ impl Network {
                     disk_free_mb,
                     api_keys_active: 0,
                     libp2p_peer_id,
+                    libp2p_addrs,
                     tp,
                     runtime_capacity,
                     idle,
@@ -3602,6 +3655,20 @@ mod tests {
         assert_eq!(candidates, vec!["100.122.132.97:42777"]);
     }
 
+    /// O que o peer publicou vence a derivação por `host:port`, e vem
+    /// inteiro: o endereço de circuito costuma ser o segundo da lista, e
+    /// devolver só o primeiro deixava um par atrás de NAT sem destino.
+    #[test]
+    fn os_multiaddresses_anunciados_vencem_e_vem_todos() {
+        let mut peer = peer_com_candidatos(vec!["192.168.100.210:42777"]);
+        peer.libp2p_addrs = vec![
+            "/ip4/203.0.113.7/udp/52777/quic-v1".to_string(),
+            "/ip4/198.51.100.4/tcp/4001/p2p/12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK/p2p-circuit".to_string(),
+        ];
+
+        assert_eq!(peer.libp2p_dialable_addrs(), peer.libp2p_addrs);
+    }
+
     #[test]
     fn libp2p_dial_uses_addr_canonico_e_ignora_candidatos_legados() {
         let mut peer = peer_com_candidatos(vec!["192.168.100.210:42777", "172.17.0.1:42777"]);
@@ -3743,6 +3810,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -3794,6 +3862,7 @@ mod tests {
             disk_free_mb: 200000,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -3885,6 +3954,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -4027,6 +4097,7 @@ mod tests {
                 disk_total_mb: 0,
                 disk_free_mb: 0,
                 libp2p_peer_id: None,
+                libp2p_addrs: Vec::new(),
                 tp: None,
                 runtime_capacity: None,
                 idle: false,
@@ -4344,6 +4415,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -4430,6 +4502,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,

@@ -2168,6 +2168,7 @@ mod peer_visibility_tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -2665,6 +2666,7 @@ pub(crate) mod testkit {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: Some("peer-eu".into()),
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: Some(RuntimeCapacity {
                 n_ctx: 8_192,

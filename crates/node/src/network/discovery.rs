@@ -93,14 +93,36 @@ fn udp_to_libp2p_multiaddr(addr: &str) -> Option<Multiaddr> {
 /// addresses with the swarm is required before `swarm.dial(peer_id)` can work;
 /// a peer learned only through gossip otherwise has an identity but no dialable
 /// address and libp2p returns `Failed to dial the requested peer`.
+/// Multiaddresses discáveis de um peer, a partir do que ele anunciou.
+///
+/// Aceita as duas formas: um multiaddress completo (`/ip4/.../quic-v1`,
+/// `/ip4/<relé>/.../p2p-circuit/...`), que é o que `Announce.libp2p_addrs`
+/// leva, e o `host:port` legado, derivado pela convenção `UDP+10000`. Um
+/// circuito só existe na primeira forma.
+///
+/// O `/p2p/<peer-id>` final é acrescentado quando falta. Num endereço de
+/// circuito ele identifica o destino **depois** do relé, que já aparece antes
+/// do `/p2p-circuit`; acrescentar de novo faria o swarm discar o relé como se
+/// fosse o destino.
 fn tunnel_peer_multiaddrs(peer_id: PeerId, advertised: &[String]) -> Vec<Multiaddr> {
     use libp2p::multiaddr::Protocol;
 
     let mut seen = HashSet::new();
     advertised
         .iter()
-        .filter_map(|addr| udp_to_libp2p_multiaddr(addr))
-        .map(|addr| addr.with(Protocol::P2p(peer_id)))
+        .filter_map(|addr| {
+            addr.parse::<Multiaddr>()
+                .ok()
+                .filter(|ma| ma.iter().next().is_some())
+                .or_else(|| udp_to_libp2p_multiaddr(addr))
+        })
+        .map(|addr| {
+            if matches!(addr.iter().last(), Some(Protocol::P2p(pid)) if pid == peer_id) {
+                addr
+            } else {
+                addr.with(Protocol::P2p(peer_id))
+            }
+        })
         .filter(|addr| seen.insert(addr.clone()))
         .collect()
 }
@@ -149,6 +171,64 @@ async fn ensure_tunnel_peer_address(
         }
     }
     Ok(())
+}
+
+/// Recolhe do swarm os endereços que outro nó poderia discar e os publica no
+/// `Announce` (`Network::set_libp2p_addrs`).
+///
+/// Três origens, todas do próprio swarm e nenhuma inventada aqui:
+/// os endereços externos confirmados (AutoNAT), os listeners com IP público, e
+/// os listeners de circuito - que são o ponto inteiro do exercício, porque é o
+/// único endereço que um nó atrás de CGNAT tem para oferecer.
+///
+/// Endereço privado, loopback ou não especificado fica de fora: publicá-lo só
+/// gasta uma discagem que vai falhar. A exceção é o circuito, cujo IP é o do
+/// relé e não precisa ser público para este nó estar alcançável por ele.
+fn publish_swarm_addrs(swarm: &Swarm<DiscBehaviour>, network: &Network) {
+    use libp2p::multiaddr::Protocol;
+
+    let local = *swarm.local_peer_id();
+    let is_circuit = |ma: &Multiaddr| ma.iter().any(|p| matches!(p, Protocol::P2pCircuit));
+    let is_dialable = |ma: &Multiaddr| {
+        if is_circuit(ma) {
+            return true;
+        }
+        ma.iter().any(|p| match p {
+            Protocol::Ip4(v4) => {
+                !v4.is_unspecified() && !crate::addrs::is_private_or_local(&v4.to_string())
+            }
+            Protocol::Ip6(v6) => {
+                !v6.is_unspecified() && !crate::addrs::is_private_or_local(&v6.to_string())
+            }
+            Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) => true,
+            _ => false,
+        })
+    };
+
+    let mut seen = HashSet::new();
+    let mut addrs = Vec::new();
+    for ma in swarm
+        .external_addresses()
+        .cloned()
+        .chain(swarm.listeners().cloned())
+    {
+        if !is_dialable(&ma) {
+            continue;
+        }
+        let ma = if matches!(ma.iter().last(), Some(Protocol::P2p(pid)) if pid == local) {
+            ma
+        } else {
+            ma.with(Protocol::P2p(local))
+        };
+        let text = ma.to_string();
+        if seen.insert(text.clone()) {
+            addrs.push(text);
+        }
+    }
+
+    if network.set_libp2p_addrs(addrs.clone()) {
+        info!("libp2p: anunciando {} multiaddress(es): {:?}", addrs.len(), addrs);
+    }
 }
 
 /// Pede uma reserva de Circuit Relay v2 neste relé.
@@ -746,6 +826,7 @@ async fn handle_event(
                 disk_total_mb,
                 disk_free_mb,
                 libp2p_peer_id,
+                libp2p_addrs,
                 tp,
                 runtime_capacity,
                 cluster_logs_enabled,
@@ -771,14 +852,21 @@ async fn handle_event(
                             .any(|c| c == "transport/libp2p-tunnel-v1")
                     });
                 let tunnel_peer_addrs = dial_for_tunnel.map(|peer_id| {
-                    // `addr` is the sender's canonical advertised endpoint.
-                    // Do not turn the optional legacy candidate list into a
-                    // libp2p dial fan-out: identify/listen addresses are not
-                    // part of the cluster's advertised endpoint contract.
-                    let advertised = vec![addr_candidates
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| addr.clone())];
+                    // Os multiaddresses anunciados são a fonte quando existem:
+                    // é onde vem o endereço de circuito, e sem ele um peer
+                    // atrás de NAT não tem destino algum. Sem eles, `addr` é o
+                    // endpoint canônico do emissor; a lista de candidatos
+                    // legada não vira fan-out de discagem, porque listen
+                    // addresses do identify não fazem parte do contrato de
+                    // endpoint anunciado do cluster.
+                    let advertised = if libp2p_addrs.is_empty() {
+                        vec![addr_candidates
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| addr.clone())]
+                    } else {
+                        libp2p_addrs.clone()
+                    };
                     (peer_id, tunnel_peer_multiaddrs(peer_id, &advertised))
                 });
 
@@ -816,6 +904,7 @@ async fn handle_event(
                     disk_free_mb,
                     api_keys_active: 0,
                     libp2p_peer_id: libp2p_peer_id.clone(),
+                    libp2p_addrs: libp2p_addrs.clone(),
                     tp,
                     runtime_capacity,
                     idle,
@@ -948,10 +1037,22 @@ async fn handle_event(
 
         SwarmEvent::NewListenAddr { address, .. } => {
             info!("libp2p listening on {}", address);
+            publish_swarm_addrs(swarm, network);
+        }
+
+        SwarmEvent::ExpiredListenAddr { address, .. } => {
+            info!("libp2p: listener expirou em {address}");
+            publish_swarm_addrs(swarm, network);
         }
 
         SwarmEvent::ExternalAddrConfirmed { address } => {
             info!("libp2p: endereço externo confirmado {address}");
+            publish_swarm_addrs(swarm, network);
+        }
+
+        SwarmEvent::ExternalAddrExpired { address } => {
+            info!("libp2p: endereço externo expirou {address}");
+            publish_swarm_addrs(swarm, network);
         }
 
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
@@ -970,6 +1071,9 @@ async fn handle_event(
             relay::client::Event::ReservationReqAccepted { relay_peer_id, .. },
         )) => {
             info!("Relay slot reserved on {}", relay_peer_id);
+            // A reserva vira um listener de circuito; é esse endereço que o
+            // `Announce` precisa levar para o outro lado ter o que discar.
+            publish_swarm_addrs(swarm, network);
         }
 
         // ── DCuTR: hole punch result ─────────────────────────────────────────
@@ -1005,6 +1109,7 @@ async fn handle_event(
             if let autonat::NatStatus::Public(address) = new {
                 info!("libp2p: endereço externo confirmado {address}");
                 swarm.add_external_address(address);
+                publish_swarm_addrs(swarm, network);
             }
         }
 
@@ -1366,6 +1471,58 @@ fn spawn_loopback_request<F, Fut>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// O endereço de circuito é a única forma que um par atrás de CGNAT tem
+    /// para se oferecer, e ele não cabe na convenção `host:port`. Tem de
+    /// atravessar `tunnel_peer_multiaddrs` intacto.
+    #[test]
+    fn um_endereco_de_circuito_anunciado_e_discavel() {
+        let peer: PeerId = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
+            .parse()
+            .expect("peer id");
+        let relay = "12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK";
+        let circuit = format!("/ip4/203.0.113.7/udp/52777/quic-v1/p2p/{relay}/p2p-circuit");
+
+        let addrs = tunnel_peer_multiaddrs(peer, &[circuit.clone()]);
+
+        assert_eq!(
+            addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            vec![format!("{circuit}/p2p/{peer}")]
+        );
+    }
+
+    /// O `/p2p/<destino>` já vem no endereço que o próprio swarm publicou.
+    /// Acrescentar de novo produzia um multiaddress que ninguém disca.
+    #[test]
+    fn o_sufixo_p2p_nao_e_duplicado() {
+        let peer: PeerId = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
+            .parse()
+            .expect("peer id");
+        let completo = format!("/ip4/203.0.113.7/udp/52777/quic-v1/p2p/{peer}");
+
+        let addrs = tunnel_peer_multiaddrs(peer, &[completo.clone()]);
+
+        assert_eq!(
+            addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            vec![completo]
+        );
+    }
+
+    /// Um peer em binário anterior não publica `libp2p_addrs`; a derivação
+    /// legada por `UDP+10000` continua sendo o caminho dele.
+    #[test]
+    fn o_host_port_legado_continua_derivando() {
+        let peer: PeerId = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
+            .parse()
+            .expect("peer id");
+
+        let addrs = tunnel_peer_multiaddrs(peer, &["203.0.113.7:42777".to_string()]);
+
+        assert_eq!(
+            addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            vec![format!("/ip4/203.0.113.7/tcp/52777/p2p/{peer}")]
+        );
+    }
 
     /// An IPv6 bootstrap used to be dropped in silence: the address went into an
     /// `/ip4/` multiaddr, the parse failed, and `None` skipped the dial.

@@ -89,7 +89,7 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 
 - **`Announce`** - auto-apresentação: `node_id`, `pubkey`, `authority_pubkey`,
   `cluster_id` (se houver uma cadeia pública ancorada),
-  `libp2p_peer_id`, `addr`, `addr_candidates`,
+  `libp2p_peer_id`, `libp2p_addrs`, `addr`, `addr_candidates`,
   `model`, `start_layer`, `end_layer`, `total_layers`, `memory_mb`, `timestamp`,
   `ollama_port`, `inference_port`, `inference_quic_port`,
   `inference_frame_capabilities`, `gateway_port`, `gateway_quic_port`,
@@ -114,6 +114,14 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
   admin envia `Secret`, cifrado com X25519 e ChaCha20-Poly1305, contendo a
   `connection_key`. Não há resposta nem material sensível para uma escuta
   passiva.
+
+`libp2p_addrs` é a lista de multiaddresses libp2p que o nó publica, já com
+`/p2p/<peer-id>`. É a única forma capaz de expressar um circuito de relay
+(`.../p2p/<relé>/p2p-circuit/p2p/<self>`), que a convenção `host:port` com
+porta `UDP+10000` não carrega. Vem de `Network::set_libp2p_addrs`, que o
+`Discovery` atualiza a cada listener, endereço externo confirmado ou reserva de
+circuito; o anúncio novo sai no gossip seguinte, em no máximo 5 s. Vazio num
+peer de binário anterior, e aí quem disca volta a derivar do `addr`.
 
 `PeerInfo` espelha os campos do `Announce` mais `last_seen`,
 `connection_verified` e `api_keys_active`. `PeerInfo::is_alive()` compara
@@ -570,13 +578,23 @@ par atrás de NAT**.
    endereço de circuito publicado não há conexão relayed, e sem ela o DCuTR
    nunca roda.
 
-O que a fase 1 entregou remove os pré-requisitos que faltavam do lado do swarm
-(QUIC, relé de verdade, reserva em qualquer par com hop, endereço externo
-confirmado). O elo que falta é publicar e discar multiaddresses reais, e é o
-que a fase 2 faz: um campo `libp2p_addrs: Vec<String>` no `Announce` e no
-`PeerInfo`, alimentado pelos listen/external/circuit addresses do swarm,
-espelhado no registro pkarr (`multiaddr`/`is_relay` já existem lá e estão sem
-uso), com `libp2p_dialable_addrs` devolvendo todos eles.
+As fases 1 e 2 fecharam esse caminho. A 1 deu ao swarm a capacidade de
+atravessar (QUIC, relé de verdade, reserva em qualquer par com hop, endereço
+externo confirmado). A 2 publica e disca multiaddresses reais:
+`publish_swarm_addrs` recolhe do swarm os endereços externos confirmados, os
+listeners com IP público e os listeners de circuito, e os grava em
+`Network::set_libp2p_addrs`; o `Announce` os leva em `libp2p_addrs`;
+`PeerInfo::libp2p_dialable_addrs` os devolve **todos**, em vez do primeiro
+`host:port`; e `tunnel_peer_multiaddrs` aceita as duas formas, acrescentando
+`/p2p/<peer-id>` só quando falta - num circuito o relé já aparece antes do
+`/p2p-circuit`, e duplicar o sufixo faria o swarm discar o relé como se fosse o
+destino.
+
+O registro pkarr continua publicando um multiaddress único, derivado no
+arranque. Espelhar `libp2p_addrs` ali é item à parte (N5 no `TODO.md`): o
+registro é republicado a cada 30 min, então um endereço de circuito publicado
+nele passa a maior parte do tempo obsoleto. O que vale ali é o endereço público
+confirmado, para um nó público ser encontrável a frio.
 
 Mesmo com isso, o plano de controle continua fora: `peer_client` disca
 `http(s)://host:port` direto com reqwest para `/handshake`,
@@ -955,12 +973,6 @@ contrapressão e a medição de latência ficam em
   requisição é atendida, nenhum bloco é servido. A transferência real vai por
   HTTP Range (`backend/transfer.rs`). O protocolo existe mas ninguém implementa
   o lado servidor.
-- **DEFEITO ANOTADO: par atrás de NAT não tem endereço discável** -
-  `libp2p_dialable_addrs` (`network.rs`) devolve um único `host:port`, e
-  `udp_to_libp2p_multiaddr` (`discovery.rs`) não sabe emitir circuito. Atrás de
-  NAT/CGNAT o resultado é um endereço privado, o circuito nunca é publicado e o
-  DCuTR nunca roda. Ver "Travessia de NAT" nesta página e os itens de fase 2 a
-  4 no `TODO.md`.
 - **DEFEITO ANOTADO: plano de controle não passa pelo swarm** - `peer_client`
   disca HTTP direto por `host:port`, inclusive o `/handshake` de que a admissão
   depende. Um par atrás de NAT não entra em `peers` nem com o túnel de

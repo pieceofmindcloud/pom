@@ -929,6 +929,7 @@ impl GatewayState {
                 disk_free_mb: 0,
                 api_keys_active: 0,
                 libp2p_peer_id: self.network.libp2p_peer_id.clone(),
+                libp2p_addrs: self.network.libp2p_addrs(),
                 tp: self.network.tp_identity(),
                 runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
                 idle: self.network.is_idle(),

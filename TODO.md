@@ -17,9 +17,10 @@ contexto e não devem voltar a ser propostas como defeitos novos.
 ## Travessia de NAT (IPv4 sem endereço público)
 
 Trabalho em fases, entrado em 2026-09-22. O diagnóstico completo está em
-`docs/subsystems/rede-p2p.md`, seção "Travessia de NAT". A fase 1 está
-entregue; as fases 2 a 4 continuam abertas e são sequenciais: 2 é o que
-destrava o sintoma, 3 é o que torna a conexão destravada útil ao produto.
+`docs/subsystems/rede-p2p.md`, seção "Travessia de NAT". N1 e N2 estão
+entregues e são o que destrava o sintoma; N3 é o que torna a conexão
+destravada útil ao produto, porque a admissão depende de uma sonda HTTP que
+ainda não passa pelo swarm.
 
 - [x] **N1 - Swarm capaz de travessia** (entregue)
   QUIC no `SwarmBuilder` e nos listen addresses; `DEFAULT_RELAY_NODES`
@@ -35,20 +36,23 @@ destrava o sintoma, 3 é o que torna a conexão destravada útil ao produto.
   **Afetados:** diagnóstico em campo, que hoje depende de `RUST_LOG=debug`.
   **Esforço:** baixo; expor contadores em `/api/ui/cluster` e na tela de rede.
 
-- [ ] **N2 - Publicar e discar multiaddresses reais**
-  **Fonte:** `crates/node/src/network/network.rs:579`
-  (`libp2p_dialable_addrs`); `crates/node/src/network/discovery.rs`
-  (`udp_to_libp2p_multiaddr`, `tunnel_peer_multiaddrs`);
-  `crates/node/src/network/pkarr_node.rs`.
-  **Prática:** o par publica um único `host:port` e a convenção `porta+10000`
-  não expressa circuito, então uma reserva aceita nunca chega ao outro lado e
-  o DCuTR não tem conexão relayed para coordenar o punch.
-  **Afetados:** todo par atrás de NAT/CGNAT; é o item que destrava o sintoma.
-  **Esforço:** médio. Campo `libp2p_addrs: Vec<String>` com `serde(default)` no
-  `Announce`/`PeerInfo`, alimentado pelos listen/external/circuit addresses do
-  swarm, espelhado no registro pkarr (`multiaddr`/`is_relay` já existem e estão
-  sem uso); `libp2p_dialable_addrs` devolve todos. `udp_to_libp2p_multiaddr`
-  fica só como derivação de compatibilidade quando o campo não vier.
+- [x] **N2 - Publicar e discar multiaddresses reais** (entregue)
+  `Announce`/`PeerInfo` levam `libp2p_addrs`, alimentado por
+  `publish_swarm_addrs` a partir dos endereços externos confirmados, listeners
+  públicos e listeners de circuito do swarm; `libp2p_dialable_addrs` devolve
+  todos; `tunnel_peer_multiaddrs` aceita multiaddress completo e `host:port`
+  legado. O espelho no pkarr ficou de fora e virou o N5.
+
+- [ ] **N5 - Espelhar o endereço público confirmado no pkarr**
+  **Fonte:** `crates/node/src/network/pkarr_node.rs` (`TxtPayload`,
+  `publish`); `crates/node/src/main.rs` (`PkarrPublishHandle`).
+  **Prática:** o registro leva um multiaddress único derivado no arranque, que
+  não é o endereço externo que o AutoNAT confirmou depois. `is_relay` é
+  publicado e lido; o resto do payload não é usado para discar.
+  **Afetados:** descoberta a frio de um nó público por quem nunca o viu.
+  **Esforço:** baixo/médio. Publicar o endereço externo confirmado em vez do
+  derivado. Circuito **não** deve ir para o registro: ele é republicado a cada
+  30 min e o endereço passaria a maior parte do tempo obsoleto.
 
 - [ ] **N3 - Plano de controle pelo swarm**
   **Fonte:** `crates/node/src/network/peer_client.rs`;

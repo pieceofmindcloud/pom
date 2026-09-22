@@ -307,9 +307,21 @@ fallback continua em `addr_candidates` + `RouteTable`.
   retransmite sem segredo e recusa relays que não vieram de um administrador.
   O `select!` é biased para o swarm e o túnel de inferência; filas de Chat usam
   `try_send`, descartam sob pressão e nunca esperam SQLite.
+- `tunnel_peer_multiaddrs` - endereços discáveis de um peer. Aceita
+  multiaddress completo (o que `Announce.libp2p_addrs` leva, inclusive
+  circuito) e o `host:port` legado, derivado por `udp_to_libp2p_multiaddr`. O
+  `/p2p/<peer-id>` final entra só quando falta: num circuito o relé já aparece
+  antes do `/p2p-circuit`, e duplicar o sufixo faria discar o relé no lugar do
+  destino.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.
+- `publish_swarm_addrs` - recolhe do swarm endereços externos confirmados,
+  listeners com IP público e listeners de circuito, acrescenta `/p2p/<self>` e
+  grava em `Network::set_libp2p_addrs`. Privado/loopback/não especificado fica
+  de fora; circuito entra sempre, porque o IP ali é o do relé. Chamado em
+  `NewListenAddr`, `ExpiredListenAddr`, `ExternalAddrConfirmed`,
+  `ExternalAddrExpired`, AutoNAT `Public` e reserva aceita.
 - `reserve_circuit` - pede `listen_on(<relé>/p2p-circuit)`. Endereço do relé
   vem da lista configurada ou do anúncio vivo, nunca dos `listen_addrs` do
   identify. Sem circuito publicado não há conexão relayed, e sem ela o DCuTR

@@ -727,6 +727,7 @@ mod ipv6_tests {
             api_keys_active: 0,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,

@@ -821,6 +821,10 @@ faz o download autenticado do blob persistido.
   refresh tenha trocado o `Arc` do inventário: a reconciliação usa caminho,
   tamanho e mtime do arquivo. O cache instala um placeholder antes da primeira
   varredura, ordena as raízes e mantém single-flight para scans e enriquecimentos;
+  a varredura rápida não calcula SHA-256 de modelos inteiros para montar
+  `shard_sets`, então um volume grande publica seus caminhos e raízes antes da
+  validação de `pom_id` usada para herdar projetores. Essa validação fica na
+  tarefa de enriquecimento ou no caminho síncrono que precisa provar a origem.
   F5 ou seleção repetida não empilha trabalho. Uma configuração nova fica em
   fila para o scan atual terminar. O enriquecimento registra início e conclusão
   (inclusive descarte), e uma falha terminal marca `metadata_error` no item e

@@ -485,7 +485,7 @@ pub(super) fn pending_metadata(catalog: &Catalog) -> Catalog {
     pending
         .models
         .retain(|model| !catalog::metadata_is_current(model));
-    catalog::rebuild_shard_sets(&mut pending);
+    catalog::rebuild_shard_sets_fast(&mut pending);
     pending.metadata_complete = false;
     pending
 }

@@ -30,6 +30,8 @@ use crate::gguf::{self, GgufInfo, ModelCapabilityEvidence};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use tracing::debug;
@@ -237,7 +239,22 @@ fn source_hash_cache() -> &'static Mutex<HashMap<MetadataIdentity, String>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(test)]
+static CONTENT_HASH_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+fn reset_content_hash_calls() {
+    CONTENT_HASH_CALLS.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn content_hash_calls() -> usize {
+    CONTENT_HASH_CALLS.load(Ordering::SeqCst)
+}
+
 fn cached_content_hash(path: &Path) -> Option<String> {
+    #[cfg(test)]
+    CONTENT_HASH_CALLS.fetch_add(1, Ordering::SeqCst);
     let metadata = std::fs::metadata(path).ok()?;
     let identity = metadata_identity(path, &metadata);
     if let Some(hash) = source_hash_cache()
@@ -1542,6 +1559,20 @@ fn identity_path(dir: &Path) -> PathBuf {
 /// Group slices by their shared base name and report whether the set covers the
 /// model end to end.
 fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
+    build_shard_sets_with_source_hash(models, true)
+}
+
+/// Build the fast inventory without reading an entire source model just to
+/// compare its content hash with a manifest. The background catalog may use
+/// the slower verified form after the inventory is visible.
+fn build_shard_sets_fast(models: &[DiscoveredModel]) -> Vec<ShardSet> {
+    build_shard_sets_with_source_hash(models, false)
+}
+
+fn build_shard_sets_with_source_hash(
+    models: &[DiscoveredModel],
+    verify_source_hash: bool,
+) -> Vec<ShardSet> {
     let mut groups: HashMap<String, (Vec<DiscoveredModel>, Vec<DiscoveredModel>)> = HashMap::new();
     for m in models.iter().filter(|m| m.is_shard()) {
         let key = m.shard_group.clone().unwrap_or_else(|| m.name.clone());
@@ -1650,7 +1681,7 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
                         )
                     })
                     .collect::<Vec<_>>();
-                let matches = if crate::pom::is_sha256_hex(&pom_id) {
+                let matches = if verify_source_hash && crate::pom::is_sha256_hex(&pom_id) {
                     label_matches
                         .into_iter()
                         .filter(|model| {
@@ -1727,7 +1758,7 @@ pub fn discover_fast(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
             .then(a.path.cmp(&b.path))
     });
 
-    let shard_sets = build_shard_sets(&models);
+    let shard_sets = build_shard_sets_fast(&models);
     Catalog {
         models,
         shard_sets,
@@ -1764,6 +1795,13 @@ pub fn enrich(mut catalog: Catalog) -> Catalog {
 /// copied into another.
 pub(crate) fn rebuild_shard_sets(catalog: &mut Catalog) {
     catalog.shard_sets = build_shard_sets(&catalog.models);
+}
+
+/// Rebuild the derived slice groups without hashing whole source models.
+/// Background inventory publication uses this form so manifest verification
+/// cannot hold the cache lock while a large model is read from disk.
+pub(crate) fn rebuild_shard_sets_fast(catalog: &mut Catalog) {
+    catalog.shard_sets = build_shard_sets_fast(&catalog.models);
 }
 
 /// Full discovery for non-UI callers that still need a complete answer before
@@ -2491,6 +2529,64 @@ pub(crate) mod tests {
         let complete = enrich(fast);
         assert!(complete.metadata_complete);
         assert_eq!(complete.models[0].total_layers, Some(8));
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn fast_discovery_does_not_hash_whole_models_to_build_shard_sets() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-cat-fast-no-hash-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        let run = shards.join("model-aaaaaaaa");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&run).unwrap();
+
+        // The source model is deliberately not named by its content hash. A
+        // manifest-backed slice with the same label used to make the fast
+        // inventory hash this entire file before publishing any catalog data.
+        std::fs::write(
+            models.join("model-thing-Q4_K_M.gguf"),
+            vec![0u8; 1024 * 1024],
+        )
+        .unwrap();
+        let part_sha = "b".repeat(64);
+        let part = crate::pom::part_path(&run, &part_sha).unwrap();
+        std::fs::write(&part, vec![1u8; 4096]).unwrap();
+        let manifest = crate::pom::PomManifest::new(
+            crate::pom::PomModel {
+                name: "model-thing".into(),
+                label: "model thing".into(),
+                total_layers: 32,
+                quant: Some("Q4_K_M".into()),
+            },
+            crate::pom::PomKind::Layers,
+            "test",
+            "a".repeat(64),
+            vec![crate::pom::PomPart {
+                sha256: part_sha,
+                bytes: 4096,
+                start_layer: 0,
+                end_layer: 31,
+                is_first: true,
+                is_last: true,
+                tp: None,
+            }],
+        );
+        crate::pom::write_atomic(&run, &manifest).unwrap();
+
+        reset_content_hash_calls();
+        let fast = discover_fast(std::slice::from_ref(&models), &shards);
+
+        assert_eq!(fast.models.len(), 2);
+        assert_eq!(
+            content_hash_calls(),
+            0,
+            "a varredura rápida não pode ler o payload inteiro do modelo de origem"
+        );
 
         std::fs::remove_dir_all(root).ok();
     }

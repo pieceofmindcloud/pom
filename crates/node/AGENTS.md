@@ -211,7 +211,9 @@ automáticas de uma implantação problemática.
 - `utils/` - config, TUI, respawn, sysmon. Ver `crates/node/src/utils/AGENTS.md`.
 - `models/` - perfis de modelo e catálogo de GGUFs: `model.rs`
   (`ModelProfile`, `calculate_assignment`), `catalog.rs` (varredura de
-  `model_dirs`), `gguf.rs` (leitor de cabeçalho/tensor table), `plan.rs`
+  `model_dirs`; a varredura rápida publica raízes e arquivos sem calcular SHA-256
+  de modelos inteiros, deixando a validação de `pom_id` para o enriquecimento),
+  `gguf.rs` (leitor de cabeçalho/tensor table), `plan.rs`
   (fatiamento por orçamento/tamanho), `splitter.rs` (split e merge),
   `memory.rs` (carregar camadas), `lastslice.rs` (fatia anotada com estado
   Pending/Serving), `ollama.rs` (`OllamaClient`), `provider.rs` (contrato

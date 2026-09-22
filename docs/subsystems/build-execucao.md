@@ -461,7 +461,12 @@ offload no primeiro clique.
   explícito `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (a UI não ficaria
   sob o diretório de dados montado). O plugin baixado e `enterprise.db` ficam
   no volume `/data`; não há volume de socket, pois o IPC é por pipes filho-pai.
-  As portas de cada nó vêm da config, não do CLI - daí o gerador abaixo. O
+  Os nós configurados usam as portas persistidas em `pom.json`, daí o gerador
+  abaixo. Para o primeiro boot sem `/data/pom.json`, `node-cpu` passa
+  `--port 42807 --gateway-port 8083`: são portas de contingência apenas para o
+  modo setup e evitam disputar os listeners padrão do primeiro nó GPU em rede
+  `host`. Não passe `--inference-port` nesse serviço, pois a opção CLI
+  substituiria a porta de inferência persistida. O
   gerador grava em `tests/fixtures/node-<N>`; os serviços continuam montando
   os diretórios nomeados por papel de hardware para preservar o estado já
   persistido. Não altere esses caminhos ao alinhar os nomes dos serviços;

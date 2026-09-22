@@ -56,6 +56,9 @@ services:
   node-cpu:
     <<: *node
     container_name: pom-node-cpu
+    # Fresh setup has no pom.json to provide per-node ports yet. Keep its
+    # temporary discovery and setup UI listeners distinct on host networking.
+    command: ["--port", "42807", "--gateway-port", "8083"]
     volumes:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models

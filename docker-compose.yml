@@ -2,8 +2,10 @@
 #
 # Host networking is required, same as the manual docker run --net host:
 # P2P discovery broadcasts to 255.255.255.255:42777 and gateway/inference
-# ports are reachable that way. Each node's pom.json must use distinct
-# gateway_port, p2p_port, and inference_port values.
+# ports are reachable that way. Each configured node's pom.json must use
+# distinct gateway_port, p2p_port, and inference_port values. The shared
+# node-cpu service has distinct CLI fallback ports for a fresh setup without
+# pom.json.
 #
 # State lives in each node's tests/fixtures directory. POM_UI_DIST is pinned
 # to the image path because POM_HOME points to the bind-mounted /data volume.

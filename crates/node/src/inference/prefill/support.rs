@@ -106,18 +106,43 @@ pub fn resume_point(error: &anyhow::Error) -> Option<PrefillResumable> {
     error.downcast_ref::<PrefillResumable>().cloned()
 }
 
+#[derive(Debug, Clone)]
+pub struct PartialPrefillTrace {
+    pub trace: Box<RequestTrace>,
+}
+
+impl std::fmt::Display for PartialPrefillTrace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("telemetria parcial do prefill")
+    }
+}
+
+impl std::error::Error for PartialPrefillTrace {}
+
+/// Partial trace retained by a failed prefill, whether or not it can resume.
+pub fn partial_trace(error: &anyhow::Error) -> Option<RequestTrace> {
+    error
+        .downcast_ref::<PartialPrefillTrace>()
+        .map(|partial| (*partial.trace).clone())
+        .or_else(|| resume_point(error).and_then(|resume| resume.trace.map(|trace| *trace)))
+}
+
 pub(super) fn resume_with_trace(
     error: anyhow::Error,
     trace: &RequestTrace,
     elapsed: Duration,
 ) -> anyhow::Error {
-    let Some(mut resume) = resume_point(&error) else {
-        return error;
-    };
     let mut trace = trace.clone();
     trace.prefill_ms = trace.prefill_ms.saturating_add(elapsed.as_millis() as u64);
-    resume.trace = Some(Box::new(trace));
-    error.context(resume)
+    let partial = PartialPrefillTrace {
+        trace: Box::new(trace.clone()),
+    };
+    if let Some(mut resume) = resume_point(&error) {
+        resume.trace = Some(Box::new(trace));
+        error.context(resume).context(partial)
+    } else {
+        error.context(partial)
+    }
 }
 
 /// A sessão remota pode ter aceitado o chunk, então só é recuperável por uma

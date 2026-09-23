@@ -975,6 +975,10 @@ async fn conversa_com_hops_fault_kind(
                     medido.falhou = Some(e);
                     true
                 }
+                crate::gateway::GenEvent::FailedWithTelemetry { error, .. } => {
+                    medido.falhou = Some(error);
+                    true
+                }
             };
             if terminal && !esperar_o_fim {
                 break;

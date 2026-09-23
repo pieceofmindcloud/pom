@@ -1255,7 +1255,9 @@ fn sse_stream(
                         s.phase = Phase::Ended;
                         continue;
                     }
-                    Some(GenEvent::Failed(err)) => {
+                    Some(
+                        GenEvent::Failed(err) | GenEvent::FailedWithTelemetry { error: err, .. },
+                    ) => {
                         s.phase = Phase::Ended;
                         return Some((
                             Ok(ev(

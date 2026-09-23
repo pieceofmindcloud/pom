@@ -658,7 +658,10 @@ faz o download autenticado do blob persistido.
   optional outside-node total/accounted/unaccounted values only when an
   explicit residual is measured, cold/warm state, connection reuse counts and
   first-token boundaries. The historical
-  `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops` collapses it. The terminal event
+  `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops`
+  collapses it. Failed prefill events carry the trace observed by the prefill
+  pipeline into the audit completion; timings stay null unless a successful
+  summary measured them. The terminal event
   (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
   (`rewind_sessions` or `release_sessions`) has finished, because a chat sends
   the next turn the instant the stream closes and used to arrive in the middle

@@ -129,6 +129,7 @@ mod pkarr_node;
 mod plan;
 #[path = "plugin_host.rs"]
 mod plugin_host;
+mod plugin_proxy;
 mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;
@@ -1299,6 +1300,7 @@ async fn async_main(
         let gw_port = gateway_port;
         crate::windows_firewall::spawn_startup_check(database.clone(), net.bind_addr.port());
         crate::webui::spawn_network_settings_ratchet(gw_state.clone());
+        crate::plugins::spawn_host_context(gw_state.clone());
         crate::gateway::spawn_public_directory_republisher(gw_state.clone());
         tokio::spawn(async move {
             if let Err(e) =

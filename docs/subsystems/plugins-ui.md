@@ -93,6 +93,50 @@ objeto na hora de empacotar; hooks e contextos são os da aplicação. A
 superfície é versionada (`PLUGIN_HOST_VERSION`) e só cresce de forma
 compatível. O CSS do plugin usa os mesmos tokens de cor (variáveis CSS) do POM.
 
+## Contexto do nó (`host.configure`)
+
+Um plugin que chama os modelos do nó não embute endereço nem credencial: o
+nó os entrega pelo `query` genérico, na operação `host.configure`:
+
+```json
+{"operation": "host.configure",
+ "gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": "sk-..."}}
+```
+
+`openai_base_url` é o gateway do próprio nó em loopback (texto claro de
+loopback é sempre aceito, mesmo com TLS). `api_key` é a chave de chat do nó
+(`pom-<node_id>`), a mesma que o Chat da interface usa, para que também
+funcione num nó sem autoridade administrativa. O nó entrega o contexto a todo
+host que sobe e de novo quando ele muda (chave revogada e recriada); plugins
+que não conhecem a operação respondem erro, que é ignorado.
+
+## Interface web servida pelo plugin (`/api/ui/plugins/:code/proxy/*`)
+
+Uma tela de plugin pode depender de um servidor HTTP que o próprio plugin roda
+em loopback - por exemplo uma aplicação web inteira. O plugin anuncia onde ele
+está pela operação `ui.upstream`:
+
+```json
+{"status": "ready", "port": 43127, "token": "<segredo de 16 a 512 bytes ASCII>"}
+```
+
+(`{"status": "starting"}` e `{"status": "error", "error": "..."}` viram 503.)
+`crates/node/src/plugin_proxy.rs` monta esse servidor em
+`/api/ui/plugins/<code>/proxy/`, na mesma origem da interface, e encaminha:
+
+- HTTP com corpo em streaming nos dois sentidos, e upgrades (WebSocket);
+- o caminho depois do prefixo, byte a byte, e a query intacta;
+- `x-pom-plugin-token: <token>`, para que só o nó alcance o servidor do plugin;
+- `x-forwarded-prefix`, `x-forwarded-host` e `x-forwarded-proto`, para que o
+  plugin gere URLs sob o prefixo.
+
+Nunca seguem para o plugin o cookie de sessão, `Authorization` nem
+`x-pom-access-token`, e o nó descarta `Set-Cookie` das respostas. A rota é
+AdminOnly e usa a autorização da superfície administrativa, porque scripts,
+WebSockets e `EventSource` do navegador não carregam o `Authorization` da
+interface; em troca, recusa (403) `Origin` diferente do próprio nó,
+`Sec-Fetch-Site` fora de `same-origin`/`none` e chamadas entre nós.
+
 ## i18n do plugin
 
 Cada plugin leva os próprios textos: `{"<plugin_code>.chave": "texto ICU"}` por
@@ -107,7 +151,12 @@ no `en` ou na chave. **O POM não é dono de nenhum texto de plugin.**
 ## Testes
 
 - Rust: `cargo test -p node --bin pom plugin_ui` (manifesto, caminhos, perfis,
-  catálogos, o manifesto real do plugin `enterprise`).
+  catálogos, o manifesto real do plugin `enterprise`); `plugin_proxy`
+  (`ui.upstream`, barreira de origem, cabeçalhos filtrados, HTTP e WebSocket
+  contra um servidor real); e
+  `plugins::tests::host_context_and_ui_proxy_reach_a_real_plugin_host`
+  (`host.configure` na subida, na troca e no reinício de um host real, e o
+  proxy pelo router da interface).
 - Frontend: `lib/pluginUi.test.ts` (registro, namespaces, colisões, caminhos,
   perfis e menu), `lib/pluginI18n.test.ts` (instalação, idiomas selecionados,
   ausência/invalidez), `App.test.tsx` (fallback, tela por perfil, duas rotas

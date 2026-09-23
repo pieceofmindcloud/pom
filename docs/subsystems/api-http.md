@@ -683,6 +683,17 @@ ativando-os separadamente. Comprar redireciona à loja pública com
 `plugin=<plugin_code>` codificado. A página pública continua sendo responsável
 pelo checkout e não recebe credenciais do nó.
 
+`ANY /api/ui/plugins/:code/proxy` e `/api/ui/plugins/:code/proxy/*path` são o
+proxy das interfaces web servidas pelos próprios plugins
+(`crates/node/src/plugin_proxy.rs`, contrato em `plugins-ui.md`). AdminOnly em
+todos os métodos. Não usam `ConnectionAuth`: scripts, WebSockets e
+`EventSource` do navegador não carregam o `Authorization` da interface, então a
+credencial é a da superfície administrativa (loopback em `localhost`, cookie de
+sessão em `network`), e a rota recusa com 403 toda requisição cuja `Origin`
+não seja a do próprio nó ou cujo `Sec-Fetch-Site` não seja `same-origin`/`none`,
+além de qualquer chamada entre nós. O corpo não tem teto (uploads atravessam a
+rota). O servidor HTTP do gateway aceita upgrades de conexão por causa dela.
+
 `GET /api/ui/enterprise/status` é uma leitura comum que inclui
 `core_update: { release_id, version, changelog } | null`. O nó só preenche esse
 aviso depois de um heartbeat Enterprise aceito e enquanto a licença está ativa;

@@ -392,7 +392,7 @@ async fn handle_conn(
                     .store(comecou.elapsed().as_millis() as u64, Ordering::Relaxed);
             }
             Builder::new(TokioExecutor::new())
-                .serve_connection(TokioIo::new(tls_stream), svc)
+                .serve_connection_with_upgrades(TokioIo::new(tls_stream), svc)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
@@ -403,7 +403,7 @@ async fn handle_conn(
         }
         (false, _) => {
             Builder::new(TokioExecutor::new())
-                .serve_connection(TokioIo::new(stream), svc)
+                .serve_connection_with_upgrades(TokioIo::new(stream), svc)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }

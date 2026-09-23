@@ -858,7 +858,13 @@ pub(crate) struct PluginRuntime {
     database: Option<Arc<crate::db::PomDb>>,
     host: Arc<Mutex<Option<crate::plugin_host::PluginHost>>>,
     update_lock: Arc<Mutex<()>>,
+    /// Contexto que o nó entrega a todo host de plugin (`host.configure`),
+    /// compartilhado com o [`PluginManager`]. `None` até o gateway ficar pronto.
+    host_context: HostContext,
 }
+
+/// O que o nó entrega a cada host de plugin pela operação `host.configure`.
+type HostContext = Arc<StdRwLock<Option<serde_json::Value>>>;
 
 impl PluginRuntime {
     fn new(
@@ -866,6 +872,7 @@ impl PluginRuntime {
         service: Arc<dyn LicenseService>,
         fingerprint: Fingerprint,
         database: Option<Arc<crate::db::PomDb>>,
+        host_context: HostContext,
     ) -> Self {
         Self {
             code: code.to_owned(),
@@ -877,6 +884,53 @@ impl PluginRuntime {
             database,
             host: Arc::new(Mutex::new(None)),
             update_lock: Arc::new(Mutex::new(())),
+            host_context,
+        }
+    }
+
+    /// Sobe o host do plugin e já lhe entrega o contexto do nó, se houver.
+    async fn start_host(
+        &self,
+        path: &std::path::Path,
+        database_path: &std::path::Path,
+    ) -> anyhow::Result<crate::plugin_host::PluginHost> {
+        let host = crate::plugin_host::PluginHost::start(&self.code, path, database_path).await?;
+        self.configure_host(&host).await;
+        Ok(host)
+    }
+
+    /// `host.configure`: o endpoint OpenAI local e a API key que o plugin
+    /// usa para chamar os modelos do nó. Um plugin que não conhece a operação
+    /// responde erro, e isso não é falha - ele simplesmente não precisa dela.
+    async fn configure_host(&self, host: &crate::plugin_host::PluginHost) {
+        let context = self
+            .host_context
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(mut payload) = context else {
+            return;
+        };
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("operation".into(), "host.configure".into());
+        }
+        if let Err(error) = host.query(payload).await {
+            tracing::debug!(plugin_code = %self.code, %error, "plugin não aceitou host.configure");
+        }
+    }
+
+    #[cfg(test)]
+    async fn stop_host_for_test(&self) {
+        if let Some(host) = self.host.lock().await.take() {
+            let _ = host.stop().await;
+        }
+    }
+
+    /// Reentrega o contexto ao host em execução, depois de o nó mudá-lo.
+    async fn reconfigure_running_host(&self) {
+        let host = self.host.lock().await.clone();
+        if let Some(host) = host {
+            self.configure_host(&host).await;
         }
     }
 
@@ -1019,17 +1073,16 @@ impl PluginRuntime {
             .as_ref()
             .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
             .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
-        let host =
-            match crate::plugin_host::PluginHost::start(&self.code, &path, &database_path).await {
-                Ok(host) => host,
-                Err(error) => {
-                    let _ = std::fs::remove_file(&path);
-                    return Err(LicenseClientError::new(
-                        LicenseErrorCode::ServerError,
-                        error.to_string(),
-                    ));
-                }
-            };
+        let host = match self.start_host(&path, &database_path).await {
+            Ok(host) => host,
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(LicenseClientError::new(
+                    LicenseErrorCode::ServerError,
+                    error.to_string(),
+                ));
+            }
+        };
         *self.host.lock().await = Some(host);
         let mut persisted = self.persisted.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
@@ -1217,7 +1270,7 @@ impl PluginRuntime {
             return;
         };
         let database_path = database.path().with_file_name(format!("{}.db", self.code));
-        match crate::plugin_host::PluginHost::start(&self.code, &path, &database_path).await {
+        match self.start_host(&path, &database_path).await {
             Ok(host) => {
                 *self.host.lock().await = Some(host);
                 tracing::info!(plugin_code = %self.code, "host do plugin reiniciado após licença voltar a ficar ativa");
@@ -1703,7 +1756,8 @@ impl PluginRuntime {
             .as_ref()
             .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
             .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
-        let host = crate::plugin_host::PluginHost::start(&self.code, &path, &database_path)
+        let host = self
+            .start_host(&path, &database_path)
             .await
             .map_err(|error| {
                 LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
@@ -1742,6 +1796,7 @@ pub(crate) struct PluginManager {
     service: Arc<dyn LicenseService>,
     database: Option<Arc<crate::db::PomDb>>,
     runtimes: StdRwLock<HashMap<String, Arc<PluginRuntime>>>,
+    host_context: HostContext,
 }
 
 impl PluginManager {
@@ -1759,6 +1814,7 @@ impl PluginManager {
         database: Option<Arc<crate::db::PomDb>>,
         restore_on_boot: bool,
     ) -> Arc<Self> {
+        let host_context = HostContext::default();
         let runtimes = plugin_codes
             .into_iter()
             .filter(|code| is_valid_plugin_code(code))
@@ -1768,6 +1824,7 @@ impl PluginManager {
                     service.clone(),
                     fingerprint.clone(),
                     database.clone(),
+                    host_context.clone(),
                 ));
                 (code, runtime)
             })
@@ -1777,6 +1834,7 @@ impl PluginManager {
             service,
             database,
             runtimes: StdRwLock::new(runtimes),
+            host_context,
         });
         for runtime in manager.runtime_values() {
             if restore_on_boot {
@@ -1869,6 +1927,24 @@ impl PluginManager {
         self.service.clone()
     }
 
+    /// Troca o contexto entregue aos hosts de plugin e o reentrega aos que já
+    /// estão rodando. Hosts iniciados depois recebem o novo ao subir.
+    pub(crate) async fn set_host_context(&self, context: serde_json::Value) {
+        {
+            let mut current = self
+                .host_context
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if current.as_ref() == Some(&context) {
+                return;
+            }
+            *current = Some(context);
+        }
+        for runtime in self.runtime_values() {
+            runtime.reconfigure_running_host().await;
+        }
+    }
+
     pub(crate) fn runtime_for(&self, code: &str) -> Option<Arc<PluginRuntime>> {
         self.runtimes
             .read()
@@ -1896,6 +1972,7 @@ impl PluginManager {
             self.service.clone(),
             self.fingerprint.clone(),
             self.database.clone(),
+            self.host_context.clone(),
         ));
         runtimes.insert(code.to_owned(), runtime.clone());
         drop(runtimes);
@@ -2088,6 +2165,36 @@ fn machine_fingerprint(node_id: &str) -> Fingerprint {
         &board_component(),
         &installation_component(),
     )
+}
+
+/// Mantém o contexto de `host.configure` em dia: o endpoint OpenAI deste nó
+/// em loopback (texto claro de loopback é sempre aceito, mesmo com TLS) e a
+/// chave de chat do nó. Reavaliado periodicamente para acompanhar uma chave
+/// revogada e recriada; um nó que ainda não alcança o principal tenta de novo.
+pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
+    const REFRESH: std::time::Duration = std::time::Duration::from_secs(600);
+    const RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+    tokio::spawn(async move {
+        loop {
+            let wait = match crate::admin::node_chat_key(&state).await {
+                Ok((key, _)) => {
+                    let context = serde_json::json!({
+                        "gateway": {
+                            "openai_base_url": format!("http://127.0.0.1:{}/v1", state.gateway_port),
+                            "api_key": key.key,
+                        }
+                    });
+                    state.plugins.set_host_context(context).await;
+                    REFRESH
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "contexto dos plugins sem API key; nova tentativa em 30 s");
+                    RETRY
+                }
+            };
+            tokio::time::sleep(wait).await;
+        }
+    });
 }
 
 /// As features que UM `plugin_code` entrega, lidas do `feature_set` do
@@ -3468,8 +3575,167 @@ mod tests {
     /// `pom` inteiro reiniciar) precisa colocá-lo de pé de novo, senão
     /// Logs de Requisições/Estatísticas ficam mudos indefinidamente até o
     /// próximo restart completo.
+    /// Os testes que sobem um host real mudam `POM_PLUGIN_HOST` e o log do
+    /// fake host, variáveis do processo inteiro: rodam um de cada vez.
+    static REAL_HOST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn fake_host_binary() -> std::path::PathBuf {
+        let fake_host = std::env::current_exe()
+            .expect("localizar binário de teste")
+            .parent()
+            .and_then(|deps| deps.parent())
+            .expect("localizar diretório target/<profile>")
+            .join(if cfg!(windows) {
+                "pom-fake-enterprise-plugin-host.exe"
+            } else {
+                "pom-fake-enterprise-plugin-host"
+            });
+        assert!(
+            fake_host.is_file(),
+            "binário auxiliar {} não foi compilado; rode `cargo test -p node` (não `--lib`) para produzir todos os alvos [[bin]]",
+            fake_host.display()
+        );
+        fake_host
+    }
+
+    /// Contexto do nó (`host.configure`) chega ao host na subida, no
+    /// reinício e quando muda; e o proxy da UI encaminha pelo router real até
+    /// o servidor que o plugin anuncia em `ui.upstream`.
+    #[tokio::test]
+    async fn host_context_and_ui_proxy_reach_a_real_plugin_host() {
+        let _serial = REAL_HOST.lock().await;
+        // Servidor web "do plugin": devolve o que recebeu.
+        let upstream = axum::Router::new().fallback(|request: axum::extract::Request| async move {
+            let token = request
+                .headers()
+                .get(crate::plugin_proxy::PROXY_TOKEN_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            axum::Json(serde_json::json!({
+                "uri": request.uri().to_string(),
+                "token": token,
+                "cookie": request.headers().contains_key("cookie"),
+            }))
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, upstream).await });
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plugin_path = dir.path().join("enterprise-plugin.bin");
+        std::fs::write(&plugin_path, b"fake-plugin").expect("escrever plugin fake");
+        let host_log = dir.path().join("host.log");
+        let token = "t".repeat(32);
+        // SAFETY: serializado por `REAL_HOST`.
+        std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
+        std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
+        std::env::set_var(
+            "POM_FAKE_HOST_UPSTREAM",
+            serde_json::json!({"status": "ready", "port": upstream_port, "token": token})
+                .to_string(),
+        );
+
+        let db = Arc::new(
+            crate::db::PomDb::open(dir.path().join("pom.db")).expect("abrir banco de teste"),
+        );
+        let service = Arc::new(MockLicenseService::single(
+            "enterprise",
+            activation("enterprise", "ent-1"),
+        ));
+        let manager =
+            PluginManager::test_manager_with_database(&["enterprise"], service.clone(), db);
+        let context = |key: &str| serde_json::json!({"gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": key}});
+        manager.set_host_context(context("sk-first")).await;
+
+        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        activate_ready(&runtime, "PM-test-key", "0.1.0").await;
+        {
+            let mut persisted = runtime.persisted.lock().await;
+            persisted.as_mut().unwrap().plugin_path =
+                Some(plugin_path.to_string_lossy().into_owned());
+        }
+        let persisted = runtime.persisted_state().await.expect("persisted");
+        runtime.ensure_host_running(&persisted).await;
+        let configures = |key: &str| {
+            std::fs::read_to_string(&host_log)
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| line.contains("\"host.configure\"") && line.contains(key))
+                .count()
+        };
+        assert_eq!(
+            configures("sk-first"),
+            1,
+            "host recém-iniciado recebe o contexto"
+        );
+
+        manager.set_host_context(context("sk-first")).await;
+        assert_eq!(configures("sk-first"), 1, "contexto igual não é reenviado");
+        manager.set_host_context(context("sk-second")).await;
+        assert_eq!(
+            configures("sk-second"),
+            1,
+            "host em execução recebe o contexto novo"
+        );
+
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.plugins = manager.clone();
+        let app = axum::Router::new()
+            .merge(crate::webui::routes())
+            .with_state(state);
+        let request = |uri: &str, origin: Option<&str>| {
+            let mut builder = axum::http::Request::get(uri)
+                .header("host", "salem:8080")
+                .header("cookie", "pom_admin_session=secret");
+            if let Some(origin) = origin {
+                builder = builder.header("origin", origin);
+            }
+            builder.body(axum::body::Body::empty()).unwrap()
+        };
+        use tower::ServiceExt;
+
+        let response = app
+            .clone()
+            .oneshot(request("/api/ui/plugins/enterprise/proxy/hello?x=1", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["uri"], "/hello?x=1");
+        assert_eq!(body["token"], token.as_str());
+        assert_eq!(body["cookie"], false, "a sessão do POM não chega ao plugin");
+
+        let forged = app
+            .clone()
+            .oneshot(request(
+                "/api/ui/plugins/enterprise/proxy/hello",
+                Some("http://evil.example"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(forged.status(), axum::http::StatusCode::FORBIDDEN);
+
+        let unknown = app
+            .oneshot(request("/api/ui/plugins/nope/proxy/hello", None))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), axum::http::StatusCode::NOT_FOUND);
+
+        runtime.stop_host_for_test().await;
+        runtime.ensure_host_running(&persisted).await;
+        assert_eq!(
+            configures("sk-second"),
+            2,
+            "host reiniciado recebe o contexto atual"
+        );
+        std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
+        runtime.stop_host_for_test().await;
+    }
+
     #[tokio::test]
     async fn heartbeat_success_restarts_the_stopped_plugin_host() {
+        let _serial = REAL_HOST.lock().await;
         // `CARGO_BIN_EXE_*` só é injetado em testes de integração
         // (`tests/*.rs`); este é um teste de unidade dentro do binário `pom`,
         // então localizamos o binário auxiliar do mesmo jeito que

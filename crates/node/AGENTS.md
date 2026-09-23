@@ -337,6 +337,27 @@ libera todos os perfis antes da regra de acesso.
 `PluginRuntime::ui_manifest` reaproveita `query_audit`. Contrato completo em
 `docs/subsystems/plugins-ui.md`.
 
+Todo host de plugin recebe o contexto do nó pela operação `host.configure` do
+`query`: `{"gateway": {"openai_base_url", "api_key"}}`. `plugins::spawn_host_context`
+(iniciado no `main.rs` ao montar o gateway) monta esse JSON com
+`http://127.0.0.1:<gateway_port>/v1` e a chave de chat do nó
+(`admin::node_chat_key`, a mesma do Chat da interface, porque é a única classe
+de chave que um nó sem autoridade registra no principal) e o reavalia a cada
+10 min, ou a cada 30 s enquanto a chave não sai. `PluginManager::set_host_context`
+reentrega aos hosts em execução quando o contexto muda, e `PluginRuntime::start_host`
+o entrega a todo host que sobe. Plugin que não conhece a operação responde
+erro, e isso é ignorado. Nada disso vai por variável de ambiente nem argv.
+
+`src/plugin_proxy.rs` é o proxy reverso `/api/ui/plugins/:code/proxy/*` das
+interfaces web que um plugin serve em loopback: pergunta `ui.upstream` ao host
+(`{"status":"ready","port","token"}`), encaminha HTTP em streaming e upgrades
+(WebSocket; por isso `serve.rs` usa `serve_connection_with_upgrades`) para
+`127.0.0.1:<port>` com `x-pom-plugin-token` e `x-forwarded-prefix`, e nunca
+repassa cookie, `Authorization` ou `x-pom-access-token` nem aceita `Set-Cookie`
+do plugin. A autorização é a da superfície administrativa (AdminOnly), a
+falsificação entre sites é barrada por `same_origin`, e chamadas entre nós são
+recusadas.
+
 `src/pom_core_update.rs` é deliberadamente SEPARADO de `src/plugins.rs`: a
 atualização do binário `pom` em si não é um plugin e vai virar GitHub Releases
 público sem licença (outra tarefa). Até essa migração, `PomCoreUpdater`

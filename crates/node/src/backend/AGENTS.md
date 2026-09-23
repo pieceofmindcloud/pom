@@ -554,7 +554,9 @@ profile policy remains the effective authorization boundary.
   e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
   `peer_http.plain()`.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
-  request e serve TLS ou texto claro na mesma porta TCP. O endpoint HTTP/3
+  request e serve TLS ou texto claro na mesma porta TCP, com upgrades de
+  conexão habilitados (o WebSocket do proxy de plugins,
+  `crate::plugin_proxy`). O endpoint HTTP/3
   recebe configuração QUIC separada e sobe na porta UDP dedicada anunciada,
   mesmo quando o TCP está em HTTP puro; `TlsServer` cobre somente o certificado
   TCP, modo estrito e duração do último handshake. Ver

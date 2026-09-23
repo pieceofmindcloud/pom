@@ -564,6 +564,25 @@ mod policy_tests {
                 "rota={path}"
             );
         }
+        // O proxy de interfaces de plugin atende qualquer método e herda o
+        // fechamento por prefixo: AdminOnly em todos, inclusive nos sem regra.
+        for method in [
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ] {
+            assert_eq!(
+                route_scope(
+                    &method,
+                    "/api/ui/plugins/deepseek_harness/proxy/api/remote.mux"
+                ),
+                RouteScope::AdminOnly,
+                "método={method}"
+            );
+        }
         assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);
         assert_eq!(
             scope_of("/api/ui/model-provider/status"),

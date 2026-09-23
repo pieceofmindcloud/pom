@@ -55,6 +55,18 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/plugins/:code/update/apply",
             post(crate::plugins::apply_plugin_update),
         )
+        // Interface web servida pelo próprio plugin (ver `crate::plugin_proxy`).
+        // Uploads atravessam o proxy, então o corpo não tem o teto padrão.
+        .route(
+            "/api/ui/plugins/:code/proxy",
+            axum::routing::any(crate::plugin_proxy::plugin_proxy)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/ui/plugins/:code/proxy/*path",
+            axum::routing::any(crate::plugin_proxy::plugin_proxy)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route(
             "/api/ui/pom-update/check",
             post(crate::pom_core_update::check_pom_update),

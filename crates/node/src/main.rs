@@ -1,7 +1,24 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-/// Commit this binary was built from, stamped by `build.rs`.
+/// Build-time commit fallback, stamped by `build.rs` for non-container builds.
 pub const BUILD_COMMIT: &str = env!("POM_BUILD_COMMIT");
+
+/// Runtime image metadata wins over the compiled fallback. Docker sets this in
+/// the final stage so changing commits does not invalidate the Cargo build.
+pub fn build_commit() -> String {
+    build_commit_from(
+        std::env::var("POM_BUILD_COMMIT").ok().as_deref(),
+        BUILD_COMMIT,
+    )
+}
+
+fn build_commit_from(runtime: Option<&str>, compiled: &str) -> String {
+    runtime
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(compiled)
+        .to_owned()
+}
 
 /// Development-only controls are enabled only by an explicit process setting.
 pub(crate) const POM_DESENV_ENV: &str = "POM_DESENV";
@@ -2516,6 +2533,16 @@ mod main_tests {
 
         let with_flag = Args::parse_from(["pom", "--cycle-detection"]);
         assert!(with_flag.cycle_detection);
+    }
+
+    #[test]
+    fn runtime_build_commit_overrides_the_compiled_fallback() {
+        assert_eq!(
+            build_commit_from(Some(" 97ec1e4 "), "desconhecido"),
+            "97ec1e4"
+        );
+        assert_eq!(build_commit_from(Some("  "), "2a456c8"), "2a456c8");
+        assert_eq!(build_commit_from(None, "2a456c8"), "2a456c8");
     }
 
     #[test]

@@ -31,17 +31,17 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 
 ## build.rs
 
-- Carimba `POM_BUILD_COMMIT` no binário (`cargo:rustc-env`). Precedência:
-  variável `POM_BUILD_COMMIT` (o Dockerfile não tem `git` nem `.git`) →
+- `build.rs` carimba o fallback `POM_BUILD_COMMIT` no binário:
   `git rev-parse --short HEAD` + sufixo `-sujo` se `git status --porcelain`
-  mostrar mudanças → `desconhecido`.
-- `rerun-if-changed` em `.git/HEAD` e `.git/index`, e `rerun-if-env-changed` na
-  variável - sem isto o carimbo congela no primeiro build.
+  mostrar mudanças → `desconhecido`. `build_commit()` prefere a variável de
+  runtime `POM_BUILD_COMMIT` quando não vazia. No Docker, o commit do host é
+  exportado só no estágio runtime para não invalidar Cargo.
+- `rerun-if-changed` em `.git/HEAD` e `.git/index` atualiza o fallback local.
 - O comentário no topo avisa: a UI **não** é embutida aqui, é lida do disco
   (`webapp.rs` + `config::ui_dist_dir`); `npm run build` em `apps/frontend` é
   um passo separado.
-- Lido em `main.rs:1` (`BUILD_COMMIT`) e exposto em `/api/ui/node` - é como se
-  descobre um peer com binário velho sem shell na máquina.
+- `build_commit()` em `main.rs` é exposto em `/api/ui/node` e usado na checagem
+  de atualizações - identifica peer ou executável sem shell local.
 - `main.rs` lê `POM_DESENV` uma vez no startup; somente o valor exato `1` habilita
   controles de desenvolvimento, e `NodeInfo.pom_desenv` publica essa decisão
   para a interface. A flag só controla a visibilidade local: os handlers de

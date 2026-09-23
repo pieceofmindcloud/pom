@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 ARG CUDA_VERSION=13.2.1
 
-FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 as builder
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS build-base
 
 ARG CUDA_VERSION
 
@@ -27,48 +27,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     glslc \
     && rm -rf /var/lib/apt/lists/*
 
-ENV CARGO_HOME=/root/.cargo \
-    RUSTUP_HOME=/root/.rustup \
-    PATH=/root/.cargo/bin:$PATH
-
-ARG RUST_TOOLCHAIN=stable
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path
-RUN rustup component add rustfmt
-
 WORKDIR /build
 
-# ── Build inputs, least volatile first ────────────────────────────────────────
-#
-# Every COPY below names exactly the paths the step under it reads. There is no
-# `COPY . .`, and that is the whole point: with one, a single file anywhere in
-# the tree resets the cache key of the Rust build and of the interface build at
-# the same time, and both ran again with nothing of theirs changed. Measured on
-# the salem checkout with the real context: dropping one `infer_server_*.log`
-# next to `crates/node` - a file a node writes by itself when it is started from
-# the checkout - was enough to re-run `cargo build`. A frontend-only edit did
-# the same. `.dockerignore` keeps such artifacts out of the context; this order
-# keeps a change that IS a real input from reaching the layers above it.
-#
-# The order is dependencies → llama.cpp → backend → interface, so:
-#   - only `apps/frontend` changed → the interface is rebuilt, the backend and
-#     the fork are reused;
-#   - the backend changed too      → both are rebuilt, the fork is reused;
-#   - the fork changed too         → the native tree is rebuilt as well.
-# `scripts/test-docker-build-cache.sh` proves these cases, plus "nothing
-# changed" and "only local build artifacts appeared", against this very file
-# with a real BuildKit.
-
-# ── 1. node_modules ───────────────────────────────────────────────────────────
-# Keyed on the two manifests alone, and placed above the backend on purpose: a
-# Rust change must not reinstall the interface's dependencies. The web interface
-# is read from disk at runtime (src/backend/webapp.rs), not embedded in the
-# binary, so the two builds share nothing but this image.
+# node_modules is shared by the independent Rust and frontend stages. Rust or
+# CUDA build inputs cannot invalidate this layer.
 COPY apps/frontend/package.json apps/frontend/package-lock.json apps/frontend/
 RUN --mount=type=cache,target=/root/.npm \
     cd apps/frontend && npm ci --no-audit --no-fund
 
-# ── 2. the llama.cpp fork ─────────────────────────────────────────────────────
+# ── Rust builder ──────────────────────────────────────────────────────────────
+FROM build-base AS builder
+
+# ── Build inputs, least volatile first ────────────────────────────────────────
+#
+# Every COPY names only the paths consumed by that stage; there is no
+# `COPY . .`. The previous whole-context copy made an unrelated
+# `infer_server_*.log` or a frontend-only edit rerun Cargo as well. The explicit
+# inputs and sibling stages below keep changes from reaching unrelated builds.
+#
+# The Rust builder and frontend builder are siblings. Their inputs are copied
+# only into the stage that consumes them, so a frontend edit never reruns Cargo
+# and a fork/toolchain/CUDA-architecture change never rebuilds the UI.
+# `scripts/test-docker-build-cache.sh` proves these cases, plus "nothing
+# changed" and "only local build artifacts appeared", against this very file
+# with a real BuildKit.
+
+# ── 1. the llama.cpp fork ─────────────────────────────────────────────────────
 # `vendor/llama-cpp-sys-2/llama.cpp` is a symlink to `../../llama.cpp`, so both
 # trees have to land, and the fork goes first: it is the most expensive input
 # and the one that changes least. A COPY that stays cached also keeps the
@@ -78,7 +62,7 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY llama.cpp/ llama.cpp/
 COPY vendor/ vendor/
 
-# ── 3. the backend ────────────────────────────────────────────────────────────
+# ── 2. the backend ────────────────────────────────────────────────────────────
 # `brand.json` and `assets/` are inputs of the Rust build, not only of the
 # interface: `crates/brand` embeds the first with `include_str!` and
 # `backend/auth.rs` embeds the logo with `include_bytes!`.
@@ -87,22 +71,6 @@ COPY .cargo/ .cargo/
 COPY assets/ assets/
 COPY crates/ crates/
 
-ARG POM_CUDA_ARCHITECTURES="86;120"
-ENV CMAKE_CUDA_ARCHITECTURES=${POM_CUDA_ARCHITECTURES}
-
-# The commit the binary reports in the interface (`/api/ui/node`). It cannot be
-# read here: `.dockerignore` excludes `.git/` and this image has no `git`, so
-# `crates/node/build.rs` would stamp "desconhecido" on every container. The host
-# reads it and passes it in — see `scripts/build-docker.sh`.
-#
-# An `ARG` in scope enters the environment of every `RUN` below it and is part
-# of their cache key even when the command never names it, so both ARGs are
-# declared as late as they can be. A new commit changes the stamp input, so
-# Cargo rebuilds and relinks the `node` binary; unchanged crates remain
-# reusable in their persistent target directories. Since this ARG also reaches
-# the later interface RUN, that layer reruns too.
-ARG POM_BUILD_COMMIT=""
-
 # Fork cache identity passed from the host by scripts/build-docker.sh. It
 # combines the commit and local source delta. The fork's src/CMakeLists.txt
 # collects model sources with a plain file(GLOB) (no CONFIGURE_DEPENDS), so a
@@ -110,6 +78,18 @@ ARG POM_BUILD_COMMIT=""
 # .cpp added since, failing with `undefined symbol: vtable for llama_model_*`.
 # Keying the target cache id to this source identity gives every fork source
 # state its own clean native tree; stale ids are dropped by `docker builder prune`.
+ENV CARGO_HOME=/root/.cargo \
+    RUSTUP_HOME=/root/.rustup \
+    PATH=/root/.cargo/bin:$PATH
+ARG RUST_TOOLCHAIN=stable
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path
+RUN rustup component add rustfmt
+
+# Build-only arguments are declared after source COPYs and after rustup so
+# changing them invalidates only the Rust build, not source layers or the UI.
+ARG POM_CUDA_ARCHITECTURES="86;120"
+ENV CMAKE_CUDA_ARCHITECTURES=${POM_CUDA_ARCHITECTURES}
 ARG LLAMA_CPP_CACHE_KEY="unknown"
 ARG POM_CUDA_ARCH_CACHE_KEY="86-120"
 
@@ -136,14 +116,19 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     CARGO_TARGET_DIR=/build/target/plugin-host cargo build --release -p pom-plugin-host && \
     cp /build/target/plugin-host/release/pom-plugin-host /build/pom-plugin-host
 
-# ── 4. the interface, last ────────────────────────────────────────────────────
+# ── Frontend builder ──────────────────────────────────────────────────────────
+# This is a sibling of the Rust builder, not its descendant: fork/toolchain/CUDA
+# build ARGs therefore cannot invalidate the frontend build cache.
+FROM build-base AS frontend
+
 # `npm run build` runs `build-brand.mjs` and `build-docs.mjs` first: they read
-# `brand.json` and `assets/` (already here from the backend layer), the
-# subsystem READMEs, the root AGENTS.md/README.md, `scripts/AGENTS.md` and every
-# AGENTS.md under `crates/` and `apps/frontend/`. `crates/` is already in place
-# too, which is why only the documentation the backend layer does not carry is
-# copied here.
-COPY AGENTS.md README.md ./
+# `brand.json`, `assets/`, the subsystem READMEs, root AGENTS.md/README.md,
+# `scripts/AGENTS.md` and every AGENTS.md under `crates/` and `apps/frontend/`.
+COPY AGENTS.md README.md brand.json ./
+COPY assets/ assets/
+# build-docs.mjs reads crate AGENTS.md files, not Rust sources; copying only
+# these documents prevents backend code edits from invalidating the UI bundle.
+COPY --parents ./crates/**/AGENTS.md ./
 COPY docs/ docs/
 COPY scripts/AGENTS.md scripts/
 COPY apps/frontend/ apps/frontend/
@@ -181,7 +166,7 @@ COPY --from=builder /build/pom /usr/local/bin/pom
 COPY --from=builder /build/pom-vulkan /usr/local/bin/pom-vulkan
 COPY --from=builder /build/pom-cpu /usr/local/bin/pom-cpu
 COPY --from=builder /build/pom-plugin-host /usr/local/bin/pom-plugin-host
-COPY --from=builder /build/apps/frontend/dist /app/apps/frontend/dist
+COPY --from=frontend /build/apps/frontend/dist /app/apps/frontend/dist
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh && \
     for binary in /usr/local/bin/pom-vulkan /usr/local/bin/pom-cpu; do \
@@ -204,4 +189,8 @@ ENV POM_HOME=/app
 ENV POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host
 
 WORKDIR /app
+# The commit is runtime metadata. Keeping this ARG out of both build stages means
+# a new app commit can update the stamp without invalidating Cargo or npm layers.
+ARG POM_BUILD_COMMIT=""
+ENV POM_BUILD_COMMIT=${POM_BUILD_COMMIT}
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

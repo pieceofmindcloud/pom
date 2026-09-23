@@ -3,12 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# The commit has to be read here, on the host. Inside the builder image it
-# cannot be: `.dockerignore` keeps `.git/` out of the build context and the
-# image has no `git` binary, so `crates/node/build.rs` would stamp
-# "desconhecido" and the interface would show that for every container — the
-# one build where "which binary is this peer running?" is hardest to answer
-# another way.
+# The commit is read on the host and passed only to the final runtime stage.
+# It does not enter the builder's Cargo or frontend cache keys.
 commit=$(git rev-parse --short HEAD 2>/dev/null || echo desconhecido)
 if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
   commit="${commit}-sujo"
@@ -47,6 +43,5 @@ export POM_CUDA_ARCHITECTURES="$cuda_architectures"
 export POM_CUDA_ARCH_CACHE_KEY=$(printf '%s' "$cuda_architectures" | sed 's/[^[:alnum:]]\+/-/g; s/^-//; s/-$//')
 echo "CUDA architectures: $POM_CUDA_ARCHITECTURES (cache key: $POM_CUDA_ARCH_CACHE_KEY)"
 
-# The interface is built inside the image, as the last step of the builder
-# stage, and read from disk at runtime - there is nothing to build here.
+# The interface is built in its own image stage and read from disk at runtime.
 docker compose -f docker-compose.ksia.yml build

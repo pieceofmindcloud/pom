@@ -330,19 +330,14 @@ continuam com o nome anterior.
 
 ## Carimbo de commit (crates/node/build.rs)
 
-O binário carimba o commit de que foi construído, exposto em `/api/ui/node`
-(`build_commit`) - é como se descobre um peer com binário velho sem shell na
-máquina. Precedência:
-
-1. Variável `POM_BUILD_COMMIT` (é como o commit entra num container: o
-   `.dockerignore` corta `.git/` do contexto e a imagem builder não tem `git`,
-   então ler dentro dela falha e carimbaria "desconhecido").
-2. `git rev-parse --short HEAD` + sufixo `-sujo` se `git status --porcelain`
-   mostrar mudanças.
-3. `desconhecido` se não der para ler nada.
-
-`rerun-if-env-changed` na variável e `rerun-if-changed` em `.git/HEAD` e
-`.git/index` impedem o carimbo de congelar no primeiro build.
+O commit mostrado em `/api/ui/node` (`build_commit`) identifica um peer sem
+shell. `build.rs` compila um fallback: `git rev-parse --short HEAD` + sufixo
+`-sujo` se `git status --porcelain` mostrar mudanças, ou `desconhecido` se git
+não puder ser lido. Em runtime, `build_commit()` prefere `POM_BUILD_COMMIT`
+quando não vazia. O Docker injeta essa variável no estágio final a partir do
+commit lido no host; ela não entra no ambiente de compilação e não invalida
+Cargo nem npm. `rerun-if-changed` em `.git/HEAD` e `.git/index` atualiza o
+fallback dos builds locais.
 
 ## Atualização licenciada do executável
 
@@ -357,8 +352,9 @@ manifest `pom_core` no servidor de licenças e publica o resultado em
 UI autoriza uma release específica por `POST /api/ui/pom-update/apply`; só
 então o cliente baixa o artefato assinado, confere tamanho/SHA-256, troca o
 executável e agenda o reinício preservando o argv. O `release_id` publicado
-para esse plugin precisa ser o mesmo commit curto que `build.rs` grava em
-`POM_BUILD_COMMIT`; a comparação de versão é SemVer e não permite downgrade.
+para esse plugin precisa ser o mesmo commit curto que `build_commit()` retorna
+(compilado localmente ou injetado no runtime Docker); a comparação de versão é
+SemVer e não permite downgrade.
 
 Em Linux e macOS o arquivo temporário fica no mesmo diretório e o `rename`
 substitui o executável em uso pela semântica Unix de unlink-on-exec. No Windows
@@ -397,17 +393,16 @@ offload no primeiro clique.
 
 ## Docker
 
-- **`Dockerfile`**: dois estágios. Builder
-  `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala rustup + node e compila três
+- **`Dockerfile`**: estágios independentes de dependências, Rust, frontend e
+  runtime. A base `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala dependências
+  comuns e `node_modules`; o estágio Rust instala rustup e compila três
   variantes de `pom` com cache mounts (registry/git/target): CUDA+Vulkan
   (`/usr/local/bin/pom`), somente Vulkan (`/usr/local/bin/pom-vulkan`) e CPU
-  sem backends de GPU (`/usr/local/bin/pom-cpu`). Também compila
-  `pom-plugin-host` sem features de GPU, e só depois de tudo isso roda
-  `npm run build` em `apps/frontend`. O build verifica que Vulkan e CPU não
-  deixam bibliotecas de runtime ausentes. Runtime copia os quatro binários
-  para `/usr/local/bin`, mantém `LD_LIBRARY_PATH` incluindo `compat/` e
-  `POM_HOME=/app`, e usa `docker-entrypoint.sh`. O `ARG POM_BUILD_COMMIT`
-  recebe o commit do host.
+  sem backends de GPU (`/usr/local/bin/pom-cpu`), além de `pom-plugin-host` sem
+  GPU. Um estágio irmão roda `npm run build` em `apps/frontend`. O runtime
+  combina os quatro binários e o bundle da UI, mantém `LD_LIBRARY_PATH`
+  incluindo `compat/`, define `POM_HOME=/app` e usa `docker-entrypoint.sh`.
+  `POM_BUILD_COMMIT` é exportado como `ENV` somente no runtime.
 - **A ordem das camadas do builder é o contrato de cache**, e cada `COPY` nomeia
   exatamente o que o passo abaixo dele lê - não existe `COPY . .`. Com um, um
   único arquivo qualquer da árvore zerava ao mesmo tempo a chave do build Rust
@@ -415,30 +410,27 @@ offload no primeiro clique.
   mudado. Medido no checkout da salem, com o contexto real: largar um
   `infer_server_*.log` ao lado de `crates/node` - arquivo que um nó iniciado
   do checkout escreve sozinho - bastava para reexecutar o `cargo build`; uma
-  edição só na interface fazia o mesmo. A ordem é dependências →
-  `llama.cpp` → backend → interface, e o que ela garante é:
+  edição só na interface fazia o mesmo. Os estágios Rust e frontend são
+  irmãos, com entradas separadas, e o que a estrutura garante é:
   - nada mudou → nada recompila;
   - só apareceram artefatos locais (log, `tsbuildinfo`, `src/docs`, `.git` do
     fork) → nada recompila, porque ficam fora do contexto;
   - `apps/frontend` mudou → recompila a interface, reaproveita backend e fork;
   - `apps/frontend` e o backend mudaram → recompila os dois, reaproveita o
     fork;
-  - `apps/frontend`, o backend e o fork mudaram → recompila os três.
+  - fork, arquitetura CUDA, toolchain Rust ou carimbo do app mudaram → não
+    recompila a UI; trocar o toolkit CUDA muda a base e invalida os estágios.
 
   `bash scripts/test-docker-build-cache.sh` prova esses cenários contra o
   próprio `Dockerfile`, com BuildKit de verdade quando há daemon (ver
-  `scripts/AGENTS.md`). Um `ARG` em escopo entra no ambiente - e na chave de
-  cache - de **todo** `RUN` abaixo dele, mesmo o que não o cita, então
-  `POM_BUILD_COMMIT` e `LLAMA_CPP_CACHE_KEY` são declarados o mais tarde
-  possível. Uma mudança no commit ainda reexecuta o `RUN` Cargo e invalida a
-  camada da interface, mas o cache mount persiste: Cargo recompila o `node`
-  por causa do carimbo e reutiliza crates cujo fingerprint não mudou.
-  Separadamente, cada variante de features usa seu próprio
+  `scripts/AGENTS.md`). Um `ARG` em escopo entra na chave de todo `RUN` abaixo
+  dele, mesmo que o comando não o cite. Por isso `POM_BUILD_COMMIT` existe só
+  no estágio runtime, enquanto fork, arquitetura e toolchain só existem no
+  estágio Rust. Uma alteração só no carimbo refaz apenas a camada final da
+  imagem, sem executar Cargo ou npm. Cada variante usa seu próprio
   `CARGO_TARGET_DIR` (`cuda-vulkan`, `vulkan`, `cpu`, `plugin-host`). Antes,
-  as quatro invocações alternavam as features no mesmo target; ao fim de cada
-  build o target guardava a última combinação e o seguinte recompilava crates
-  como `llama-engine`/MOE ao voltar para CUDA. A prova também cobre a mudança
-  isolada de commit.
+  as quatro invocações alternavam as features no mesmo target e recompilavam
+  crates como `llama-engine`/MOE ao voltar para CUDA.
 - **`docker-entrypoint.sh`**: valida o binário selecionado por `POM_BIN` e o
   `pom-plugin-host`, exporta
   `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` e faz `exec` do caminho em
@@ -474,9 +466,8 @@ offload no primeiro clique.
   `POM_BUILD_COMMIT` e `LLAMA_CPP_CACHE_KEY` (commit do fork mais hash das
   mudanças locais rastreadas e fontes não rastreadas), deriva
   `POM_CUDA_ARCH_CACHE_KEY` da lista CUDA efetiva, e chama
-  `docker compose build`. Não roda
-  `npm run build`: a interface é construída dentro da imagem, como última
-  camada do builder. Não conseguir ler o commit do fork **aborta** em vez de
+  `docker compose build`. Não roda `npm run build`: a interface é construída
+  em estágio próprio. Não conseguir ler o commit do fork **aborta** em vez de
   cair em `unknown` - esse valor é um id de cache mount como outro qualquer, e
   dois checkouts diferentes que falhassem a leitura dividiriam a mesma árvore
   nativa, que é exatamente a `libllama.a` velha que o id existe para evitar.
@@ -605,7 +596,7 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_DEV_UPDATE` | `=1` liga o portão de "Atualizar e reiniciar" no card do peer (`devupdate.rs`). Por processo, nunca na config. |
 | `POM_BUILD_FEATURES` | Features com que a máquina compila no devupdate (`cuda`/`metal`); sem ela a ksia perde a GPU no primeiro clique. |
 | `POM_CUDA_GRAPHS` | `=1`, `true`, `yes` ou `on` habilita CUDA Graphs no build CUDA. O padrão é desligado para reduzir o risco de OOM no lançamento do grafo. É uma opção de compilação, então exige reconstruir o binário. |
-| `POM_BUILD_COMMIT` | Commit carimbado pelo `build.rs` (usado pelo build-docker.sh; `.dockerignore` corta `.git/`). |
+| `POM_BUILD_COMMIT` | Commit exibido em `/api/ui/node`; em Docker é passado pelo `build-docker.sh` como variável de runtime, fora do cache de Cargo/npm. Sem ela, usa o fallback compilado por `build.rs`. |
 | `LLAMA_SOURCE` | Checkout local de `llama.cpp` já preparado; precisa conter `ggml`, é normalizado para caminho absoluto e evita copiar o fork para o worktree. |
 | `POM_LLAMA_CPP_REPOSITORY` / `POM_LLAMA_CPP_REF` | Remoto e branch usados pela preparação automática quando o fork está ausente. Os padrões são o fork público e `pom-tensor-parallel`. |
 | `POM_LLAMA_CPP_AUTOCLONE` | Use `=0` para impedir o download automático e receber somente a mensagem com o procedimento manual. |

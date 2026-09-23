@@ -26,37 +26,30 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   `--origens`, `--repeticoes` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
-  exporta `POM_BUILD_COMMIT`, `LLAMA_CPP_CACHE_KEY` (fork commit mais delta
-  de fontes locais) e deriva `POM_CUDA_ARCH_CACHE_KEY` da lista real de
-  arquiteturas antes de chamar `docker compose
-  build`. Durante esse build, o `Dockerfile` compila tres variantes de `pom`
-  (CUDA+Vulkan, somente Vulkan e CPU sem GPU), compila `pom-plugin-host`
-  separadamente, sem essas features, e so entao roda `npm run build` em
-  `apps/frontend` - a interface e a **ultima** camada, de proposito. Todos os
-  servicos compartilham a mesma imagem; `POM_BIN` seleciona a variante em
-  runtime. O script não executa o build da UI diretamente. O commit nao pode
-  ser lido dentro da imagem builder (`.dockerignore` corta `.git/` e a imagem
-  nao tem `git`); sem a variavel o `crates/node/build.rs` carimba
-  "desconhecido" em todo container; ver `TODO.md`, item 26. **Nao ler o commit
+  exporta `POM_BUILD_COMMIT` (usado apenas no runtime), `LLAMA_CPP_CACHE_KEY`
+  (fork commit mais delta de fontes locais) e deriva `POM_CUDA_ARCH_CACHE_KEY`
+  da lista real de arquiteturas antes de chamar `docker compose build`. O
+  `Dockerfile` compila tres variantes de `pom` (CUDA+Vulkan, somente Vulkan e
+  CPU sem GPU) e `pom-plugin-host` no estagio Rust; um estagio frontend
+  independente roda `npm run build`. Assim mudanças de commit, fork, toolkit,
+  arquitetura ou toolchain não invalidam o cache da UI. Todos os servicos
+  compartilham a mesma imagem; `POM_BIN` seleciona a variante em runtime. O
+  commit nao pode ser lido dentro da imagem builder (`.dockerignore` corta
+  `.git/` e a imagem nao tem `git`); sem a variavel o binario compilado fica
+  com `desconhecido`; ver `TODO.md`, item 26. **Nao ler o commit
   do fork e erro fatal**, nao `unknown`: esse valor e um id de cache mount como
   outro qualquer, e dois checkouts diferentes que falhassem a leitura
   dividiriam a mesma arvore nativa - a `libllama.a` velha que o id existe para
   evitar. Construa a imagem por este script, nunca `docker compose build` na
   mao.
 - `test-docker-build-cache.sh` - prova que a imagem reaproveita o que nao
-  mudou. Primeiro le `Dockerfile` e `.dockerignore` e confere a estrutura de
-  que a ordem depende (sem `COPY . .`, fork acima do backend, backend acima da
-  interface, build da interface como ultimo `RUN`, cache mount de
-  `/build/target` chaveado por fork, toolkit CUDA, seletor Rust e arquitetura; diretórios
-  Cargo separados por conjunto de features; artefatos locais fora do contexto)
-  - isso roda sem Docker. Depois, se houver daemon, deriva do proprio
-  `Dockerfile` um stub (mesmas instrucoes, mesma ordem, mesmos ARGs e cache
-  mounts; so o `FROM` e os corpos dos `RUN` sao trocados) e constroi com
-  BuildKit de verdade sobre um contexto sintetico, afirmando o que recompilou
-  em cenarios de fonte/UI, commit do app, fork, e artefatos locais. A parte
-  estrutural prova também que os quatro conjuntos de features têm targets
-  persistentes distintos. `POM_CACHE_TEST_DEBUG=1` imprime cada passo com seu grupo e
-  se veio do cache.
+  mudou. A parte estrutural verifica os estagios Rust/frontend independentes,
+  a exclusao do carimbo de commit dos estagios de build, o cache mount de
+  `/build/target` e os quatro diretórios Cargo por conjunto de features. Depois,
+  se houver daemon, deriva do Dockerfile um stub e usa BuildKit sobre um
+  contexto sintetico para verificar cache em cenarios de fonte, commit, fork,
+  CUDA, toolchain e artefatos locais. `POM_CACHE_TEST_DEBUG=1` imprime cada
+  passo, grupo e estado do cache.
 - `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
   falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
   argumentos.
@@ -191,13 +184,14 @@ invocados pelo binario (ver o `README.md` de la).
 
 ## Infra de build e dev na raiz
 
-- `Dockerfile` - dois estagios: builder `nvidia/cuda:13.2.1-devel-ubuntu24.04`
-  compila `pom` com CUDA/Vulkan e `pom-plugin-host` sem features, com cache
-  mounts (registry/git/target), e monta a UI (`apps/frontend/dist`). O runtime
-  copia os dois binarios e usa `docker-entrypoint.sh`, que faz `exec` do `pom`
-  e exporta `POM_PLUGIN_HOST`; na ativacao, o `pom` inicia o host como filho
-  com o plugin baixado e IPC por stdin/stdout, sem socket ou volume de IPC.
-  `ARG POM_BUILD_COMMIT` recebe o commit do host (ver `build-docker.sh`).
+- `Dockerfile` - estagios compartilhados de dependencias, Rust, frontend e
+  runtime. O Rust compila tres variantes de `pom` e `pom-plugin-host`, com
+  cache mounts (registry/git/target); o frontend e independente e o runtime
+  combina seus artefatos. O commit recebido do host só vira `ENV
+  POM_BUILD_COMMIT` no runtime, sem invalidar as camadas Cargo/npm. O
+  `docker-entrypoint.sh` faz `exec` do `pom` e exporta `POM_PLUGIN_HOST`; na
+  ativacao, o `pom` inicia o host como filho com o plugin baixado e IPC por
+  stdin/stdout, sem socket ou volume de IPC.
 - `docker-entrypoint.sh` - valida que `pom` e `pom-plugin-host` estao
   executaveis, fixa o caminho do host e preserva os argumentos do container.
   Nao inicia um host vazio no boot porque o host precisa do caminho do plugin

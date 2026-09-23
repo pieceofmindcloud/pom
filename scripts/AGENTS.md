@@ -26,7 +26,9 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   `--origens`, `--repeticoes` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
-  exporta `POM_BUILD_COMMIT` e `LLAMA_CPP_COMMIT` e chama `docker compose
+  exporta `POM_BUILD_COMMIT`, `LLAMA_CPP_CACHE_KEY` (fork commit mais delta
+  de fontes locais) e deriva `POM_CUDA_ARCH_CACHE_KEY` da lista real de
+  arquiteturas antes de chamar `docker compose
   build`. Durante esse build, o `Dockerfile` compila tres variantes de `pom`
   (CUDA+Vulkan, somente Vulkan e CPU sem GPU), compila `pom-plugin-host`
   separadamente, sem essas features, e so entao roda `npm run build` em
@@ -45,21 +47,24 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   mudou. Primeiro le `Dockerfile` e `.dockerignore` e confere a estrutura de
   que a ordem depende (sem `COPY . .`, fork acima do backend, backend acima da
   interface, build da interface como ultimo `RUN`, cache mount de
-  `/build/target` ainda chaveado em `${LLAMA_CPP_COMMIT}`, artefatos locais
-  fora do contexto) - isso roda sem Docker. Depois, se houver daemon, deriva do
-  proprio `Dockerfile` um stub (mesmas instrucoes, mesma ordem, mesmos ARGs e
-  cache mounts; so o `FROM` e os corpos dos `RUN` sao trocados) e constroi com
+  `/build/target` chaveado por fork, toolkit CUDA, seletor Rust e arquitetura; diretórios
+  Cargo separados por conjunto de features; artefatos locais fora do contexto)
+  - isso roda sem Docker. Depois, se houver daemon, deriva do proprio
+  `Dockerfile` um stub (mesmas instrucoes, mesma ordem, mesmos ARGs e cache
+  mounts; so o `FROM` e os corpos dos `RUN` sao trocados) e constroi com
   BuildKit de verdade sobre um contexto sintetico, afirmando o que recompilou
-  em seis cenarios: nada mudou, so apareceram artefatos locais, so a
-  `apps/frontend`, frontend + backend, frontend + backend + fork, e mudanca do
-  commit do fork. `POM_CACHE_TEST_DEBUG=1` imprime cada passo com seu grupo e
+  em cenarios de fonte/UI, commit do app, fork, e artefatos locais. A parte
+  estrutural prova também que os quatro conjuntos de features têm targets
+  persistentes distintos. `POM_CACHE_TEST_DEBUG=1` imprime cada passo com seu grupo e
   se veio do cache.
 - `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
   falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
   argumentos.
-- `test-docker-compose.py` - materializa os Compose da Salem e da Ksia e
-  verifica a variante `POM_BIN`, a imagem/build comuns, os volumes persistentes
-  e a visibilidade de NVIDIA/Radeon por serviço.
+- `test-docker-compose.py` - materializa os Compose da Salem e da Ksia. Valida
+  variantes `POM_BIN`, imagem/build comuns, volumes e visibilidade de
+  NVIDIA/Radeon nos Compose da Salem; a entrada Ksia atual tem um serviço
+  `node-1`, que deve selecionar o executável CUDA+Vulkan com as GPUs 0 e 1 e
+  os argumentos de arquitetura/cache coerentes.
 - `gen-node-configs.py` - gera um `pom.json` por no em
   `tests/fixtures/node-<N>/`. As portas de cada no vem da config, nao do CLI
   (com `network_mode: host`, colisao de porta e o erro tipico). No 1 =

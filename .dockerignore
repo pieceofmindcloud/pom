@@ -38,8 +38,9 @@ apps/frontend/public/brand/
 # The fork's own history - the largest single item in the context (396 MB on
 # salem) and one that changes on every fetch in it. Nothing reads it: the
 # builder image has no `git`, and llama.cpp's `cmake/git-vars.cmake` only runs
-# git when `find_package(Git)` succeeds. The fork's commit reaches the build as
-# `LLAMA_CPP_COMMIT`, read on the host by `scripts/build-docker.sh`.
+# git when `find_package(Git)` succeeds. The fork cache identity reaches the
+# build as `LLAMA_CPP_CACHE_KEY`, computed on the host by
+# `scripts/build-docker.sh`.
 llama.cpp/.git/
 llama.cpp/build/
 llama.cpp/build-*/

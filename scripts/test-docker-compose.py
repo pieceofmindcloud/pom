@@ -118,15 +118,31 @@ SALEM_BINS = {
 SALEM_GPUS = {"node-gpu": ["0"], "node-gpu2": ["0"]}
 SALEM_RADEON = {"node-gpu", "node-gpu-3"}
 
-KSIA_BINS = {
-    "node-gpu": CUDA_BIN,
-    "node-gpu2": CUDA_BIN,
-    "node-gpu-3": CUDA_BIN,
-    "node-cpu": CPU_BIN,
-}
-KSIA_GPUS = {"node-gpu": ["0", "1"], "node-gpu2": ["1"], "node-gpu-3": ["0"]}
+def check_ksia_config() -> None:
+    filename = "docker-compose.ksia.yml"
+    services = compose_config(filename)["services"]
+    if set(services) != {"node-1"}:
+        fail(f"{filename}: servicos encontrados {sorted(services)}")
+
+    service = services["node-1"]
+    if service["image"] != "pom:ksia":
+        fail(f"{filename}: imagem inesperada {service['image']!r}")
+    if service["build"].get("dockerfile") != "Dockerfile":
+        fail(f"{filename}: Dockerfile de build incorreto")
+    if service.get("network_mode") != "host":
+        fail(f"{filename}: node-1 perdeu network_mode: host")
+    if nvidia_ids(service) != ["0", "1"]:
+        fail(f"{filename}: node-1 deve reservar as NVIDIA 0 e 1")
+    if service.get("environment", {}).get("POM_BIN", CUDA_BIN) != CUDA_BIN:
+        fail(f"{filename}: node-1 deve usar o binário CUDA+Vulkan compartilhado")
+    args = service["build"].get("args", {})
+    if args.get("POM_CUDA_ARCHITECTURES") != "86;120" or args.get(
+        "POM_CUDA_ARCH_CACHE_KEY"
+    ) != "86-120":
+        fail(f"{filename}: arquitetura CUDA e cache key devem corresponder")
+
 
 check_config("docker-compose.yml", SALEM_BINS, SALEM_GPUS, SALEM_RADEON)
 check_config("docker-compose.salem.yml", SALEM_BINS, SALEM_GPUS, SALEM_RADEON)
-check_config("docker-compose.ksia.yml", KSIA_BINS, KSIA_GPUS, set())
+check_ksia_config()
 print("Docker Compose backend and GPU configuration passed")

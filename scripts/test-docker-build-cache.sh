@@ -157,10 +157,26 @@ else
     fail "ARG POM_BUILD_COMMIT (#$i_commit_arg) must come after the llama.cpp (#$i_llama) and crates (#$i_crates) COPYs"
 fi
 
-if printf '%s\n' "$instructions" | grep -q 'id=pom-target-\${LLAMA_CPP_COMMIT}'; then
-    pass "the /build/target cache mount is still keyed to \${LLAMA_CPP_COMMIT}"
+if printf '%s\n' "$instructions" | grep -q 'id=pom-target-\${LLAMA_CPP_CACHE_KEY}-\${CUDA_VERSION}-\${POM_CUDA_ARCH_CACHE_KEY}-\${RUST_TOOLCHAIN}'; then
+    pass "the native target mount is keyed to fork, CUDA toolkit, Rust toolchain, and architecture"
 else
-    fail "the /build/target cache mount lost its \${LLAMA_CPP_COMMIT} id - a fork bump would relink a stale libllama.a"
+    fail "the native target mount must key fork, CUDA toolkit, architecture, and Rust toolchain"
+fi
+
+for target in cuda-vulkan vulkan cpu plugin-host; do
+    if printf '%s\n' "$instructions" | grep -Fq "CARGO_TARGET_DIR=/build/target/$target"; then
+        pass "Cargo preserves the $target feature set in its own target directory"
+    else
+        fail "Cargo target directory missing for $target"
+    fi
+done
+
+if grep -q '^ARG POM_CUDA_ARCHITECTURES=' "$dockerfile" \
+   && grep -q '^ARG POM_CUDA_ARCH_CACHE_KEY=' "$dockerfile" \
+   && grep -q '^ENV CMAKE_CUDA_ARCHITECTURES=\${POM_CUDA_ARCHITECTURES}' "$dockerfile"; then
+    pass "the CUDA architecture used by CMake is an explicit cache input"
+else
+    fail "the CMake CUDA architecture must be an explicit cache input"
 fi
 
 printf '\n2. .dockerignore keeps local build artifacts out of the context\n'
@@ -251,7 +267,11 @@ seed crates/node/src/probe.rs 'v1'
 seed apps/frontend/src/probe.tsx 'v1'
 
 build_commit=abc1234
-llama_commit=def5678
+llama_cache_key=def5678-clean
+cuda_version=13.2.1
+cuda_architectures='86;120'
+cuda_arch_key=86-120
+rust_toolchain=stable
 
 # Prints the layer groups whose steps did not all come back CACHED, sorted.
 # `--progress=plain` names every step (`#7 [builder 5/14] COPY crates/ crates/`)
@@ -260,7 +280,11 @@ llama_commit=def5678
 rebuilt_groups() {
     docker build --progress=plain --target "$builder" \
         --build-arg "POM_BUILD_COMMIT=$build_commit" \
-        --build-arg "LLAMA_CPP_COMMIT=$llama_commit" \
+        --build-arg "LLAMA_CPP_CACHE_KEY=$llama_cache_key" \
+        --build-arg "CUDA_VERSION=$cuda_version" \
+        --build-arg "POM_CUDA_ARCHITECTURES=$cuda_architectures" \
+        --build-arg "POM_CUDA_ARCH_CACHE_KEY=$cuda_arch_key" \
+        --build-arg "RUST_TOOLCHAIN=$rust_toolchain" \
         -f "$stub" -t pom-cache-test:probe "$ctx" 2>&1 \
     | awk -v stage="$builder" -v debug="${POM_CACHE_TEST_DEBUG:-}" '
         # A stubbed RUN carries its own tag; a COPY is placed by what it copies.
@@ -318,7 +342,11 @@ scenario() { # scenario <name> <expected groups>
 
 if ! docker build --progress=plain --target "$builder" \
     --build-arg "POM_BUILD_COMMIT=$build_commit" \
-    --build-arg "LLAMA_CPP_COMMIT=$llama_commit" \
+    --build-arg "LLAMA_CPP_CACHE_KEY=$llama_cache_key" \
+    --build-arg "CUDA_VERSION=$cuda_version" \
+    --build-arg "POM_CUDA_ARCHITECTURES=$cuda_architectures" \
+    --build-arg "POM_CUDA_ARCH_CACHE_KEY=$cuda_arch_key" \
+    --build-arg "RUST_TOOLCHAIN=$rust_toolchain" \
     -f "$stub" -t pom-cache-test:probe "$ctx" >"$work/cold.log" 2>&1; then
     fail "the derived stub does not build - see $work/cold.log"
     tail -n 5 "$work/cold.log" || true
@@ -326,6 +354,10 @@ if ! docker build --progress=plain --target "$builder" \
 fi
 
 scenario "nothing changed" ""
+
+build_commit=def4567
+scenario "app commit changed (Cargo step reruns with persistent target mounts)" "backend ui"
+build_commit=abc1234
 
 # The reproduced defect: a node started from the checkout writes a log next to
 # its crate, `npm run build` leaves a tsbuildinfo and a generated src/docs, and
@@ -346,8 +378,21 @@ scenario "apps/frontend and the backend changed" "backend ui"
 seed llama.cpp/ggml/src/probe.c 'v2'
 scenario "apps/frontend, the backend and the fork changed" "backend llama ui"
 
-llama_commit=0bad1dea
+llama_cache_key=0bad1dea-clean
 scenario "the fork's commit changed (new target cache id)" "backend ui"
+
+llama_cache_key=def5678-dirty-contents
+scenario "fork source changed without a commit change" "backend ui"
+
+llama_cache_key=def5678-clean
+cuda_arch_key=86
+scenario "the CUDA architecture cache key changed" "backend"
+cuda_arch_key=86-120
+cuda_version=13.2.2
+scenario "the CUDA toolkit cache key changed" "backend"
+cuda_version=13.2.1
+rust_toolchain=1.90.0
+scenario "the Rust toolchain cache key changed" "backend"
 
 docker rmi -f pom-cache-test:probe >/dev/null 2>&1 || true
 

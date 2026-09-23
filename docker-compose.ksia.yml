@@ -3,7 +3,10 @@ x-node: &node
     context: "/home/jairpereira/workspace/rdma-p2p"
     args:
       POM_BUILD_COMMIT: "${POM_BUILD_COMMIT:-}"
-      LLAMA_CPP_COMMIT: "${LLAMA_CPP_COMMIT:-unknown}"
+      LLAMA_CPP_CACHE_KEY: "${LLAMA_CPP_CACHE_KEY:-unknown}"
+      POM_CUDA_ARCHITECTURES: "${POM_CUDA_ARCHITECTURES:-86;120}"
+      POM_CUDA_ARCH_CACHE_KEY: "${POM_CUDA_ARCH_CACHE_KEY:-86-120}"
+      RUST_TOOLCHAIN: "${RUST_TOOLCHAIN:-stable}"
   image: "pom:ksia"
   network_mode: host
   restart: unless-stopped

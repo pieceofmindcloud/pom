@@ -429,10 +429,16 @@ offload no primeiro clique.
   próprio `Dockerfile`, com BuildKit de verdade quando há daemon (ver
   `scripts/AGENTS.md`). Um `ARG` em escopo entra no ambiente - e na chave de
   cache - de **todo** `RUN` abaixo dele, mesmo o que não o cita, então
-  `POM_BUILD_COMMIT` e `LLAMA_CPP_COMMIT` são declarados o mais tarde
-  possível. O que sobra é deliberado: o carimbo do commit é compilado no
-  binário, então construir um commit novo de fato recompila o backend - e,
-  como a interface vem depois, reconstrói a interface também. Ver `TODO.md`.
+  `POM_BUILD_COMMIT` e `LLAMA_CPP_CACHE_KEY` são declarados o mais tarde
+  possível. Uma mudança no commit ainda reexecuta o `RUN` Cargo e invalida a
+  camada da interface, mas o cache mount persiste: Cargo recompila o `node`
+  por causa do carimbo e reutiliza crates cujo fingerprint não mudou.
+  Separadamente, cada variante de features usa seu próprio
+  `CARGO_TARGET_DIR` (`cuda-vulkan`, `vulkan`, `cpu`, `plugin-host`). Antes,
+  as quatro invocações alternavam as features no mesmo target; ao fim de cada
+  build o target guardava a última combinação e o seguinte recompilava crates
+  como `llama-engine`/MOE ao voltar para CUDA. A prova também cobre a mudança
+  isolada de commit.
 - **`docker-entrypoint.sh`**: valida o binário selecionado por `POM_BIN` e o
   `pom-plugin-host`, exporta
   `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` e faz `exec` do caminho em
@@ -455,15 +461,20 @@ offload no primeiro clique.
   Cargo reexecuta o build script - com o cache mount persistente ele não
   reexecuta, e a `libllama.a` velha é relinkada a cada build.
   Por isso o `Dockerfile` chaveia o `id` do cache mount de `/build/target` em
-  `pom-target-${LLAMA_CPP_COMMIT}`: cada checkout do fork ganha uma árvore
-  nativa limpa. Ids antigos ficam ocupando espaço até um
+  `pom-target-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN}`:
+  fork, toolkit CUDA, seletor Rust e arquitetura recebem árvores nativas
+  isoladas. Cargo
+  também confere fingerprints de fontes, manifests, dependências e rustc.
+  IDs antigos ficam ocupando espaço até um
   `docker builder prune` (`--filter type=exec.cachemount` limpa só os mounts).
   `docker compose build --no-cache` **não** resolve: cache mounts sobrevivem ao
   `--no-cache`.
 - **`scripts/build-docker.sh`**: lê o commit **no host** (`git rev-parse
   --short HEAD`, sufixo `-sujo` se a árvore tem mudanças), exporta
-  `POM_BUILD_COMMIT` e `LLAMA_CPP_COMMIT` (`git -C llama.cpp rev-parse --short
-  HEAD`, chaveia o cache mount acima) e chama `docker compose build`. Não roda
+  `POM_BUILD_COMMIT` e `LLAMA_CPP_CACHE_KEY` (commit do fork mais hash das
+  mudanças locais rastreadas e fontes não rastreadas), deriva
+  `POM_CUDA_ARCH_CACHE_KEY` da lista CUDA efetiva, e chama
+  `docker compose build`. Não roda
   `npm run build`: a interface é construída dentro da imagem, como última
   camada do builder. Não conseguir ler o commit do fork **aborta** em vez de
   cair em `unknown` - esse valor é um id de cache mount como outro qualquer, e
@@ -481,11 +492,12 @@ offload no primeiro clique.
   Radeon em `node-gpu`, NVIDIA 0 em `node-gpu2`, Radeon em `node-gpu-3` e
   nenhuma reserva em `node-cpu`. Salem usa `docker-compose.yml` por padrão;
   `docker-compose.salem.yml` também pode ser selecionado diretamente. Na
-  Ksia, use `COMPOSE_FILE=docker-compose.ksia.yml`: esse ponto de entrada
-  remove `/dev/dri`, reserva as NVIDIA 0 e 1 em `node-gpu`, NVIDIA 1 em
-  `node-gpu2`, NVIDIA 0 em `node-gpu-3` e nenhuma GPU em `node-cpu`. O
-  `pom-docker.sh` gera o Compose remoto da Ksia com essas reservas e seleciona
-  `pom-cpu` para cada serviço sem GPU NVIDIA. Os serviços mantêm os volumes de
+  Ksia, `docker-compose.ksia.yml` define atualmente só `node-1` (`pom-gpu`),
+  sem `/dev/dri`, com as NVIDIA 0 e 1. Esse serviço usa o executável padrão
+  CUDA+Vulkan da imagem `pom:ksia`; IDs de device, volumes e dados são
+  configuração de runtime, não requisitos distintos de build. O
+  `pom-docker.sh` também gera Compose remoto com reservas de GPU para Ksia.
+  Os serviços mantêm os volumes de
   modelos e de estado em `tests/fixtures/<nome>`. Cada serviço
   define `POM_HOME=/data`, `POM_UI_DIST=/app/apps/frontend/dist` e o caminho
   explícito `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (a UI não ficaria
@@ -519,7 +531,8 @@ offload no primeiro clique.
   build da imagem, mas o `.git/` dele **não**: são 396 MB na salem, mudam a
   cada fetch no fork e ninguém os lê (a imagem builder não tem `git`, e o
   `cmake/git-vars.cmake` do llama.cpp só roda git quando `find_package(Git)`
-  encontra um). O commit do fork chega por `LLAMA_CPP_COMMIT`.
+  encontra um). A chave do fork, incluindo mudanças locais, chega por
+  `LLAMA_CPP_CACHE_KEY`.
   Um padrão de `.dockerignore` casa com o caminho **inteiro** e o `*` para no
   `/`: não é `.gitignore`. Por isso `*.log` sozinho cobria só a raiz, e todo
   artefato que um build ou uma execução local deixa mais fundo precisa de

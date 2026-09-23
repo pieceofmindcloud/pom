@@ -3,6 +3,8 @@ ARG CUDA_VERSION=13.2.1
 
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 as builder
 
+ARG CUDA_VERSION
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Download and import the NodeSource security keys and repository (Node 22 example)
@@ -29,8 +31,9 @@ ENV CARGO_HOME=/root/.cargo \
     RUSTUP_HOME=/root/.rustup \
     PATH=/root/.cargo/bin:$PATH
 
+ARG RUST_TOOLCHAIN=stable
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path
+    | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path
 RUN rustup component add rustfmt
 
 WORKDIR /build
@@ -84,7 +87,8 @@ COPY .cargo/ .cargo/
 COPY assets/ assets/
 COPY crates/ crates/
 
-ENV CMAKE_CUDA_ARCHITECTURES="86;120"
+ARG POM_CUDA_ARCHITECTURES="86;120"
+ENV CMAKE_CUDA_ARCHITECTURES=${POM_CUDA_ARCHITECTURES}
 
 # The commit the binary reports in the interface (`/api/ui/node`). It cannot be
 # read here: `.dockerignore` excludes `.git/` and this image has no `git`, so
@@ -93,33 +97,35 @@ ENV CMAKE_CUDA_ARCHITECTURES="86;120"
 #
 # An `ARG` in scope enters the environment of every `RUN` below it and is part
 # of their cache key even when the command never names it, so both ARGs are
-# declared as late as they can be. What is left is deliberate: the stamp is
-# compiled into the binary, so a build of a new commit does recompile the
-# backend - and, because the interface comes after it, rebuilds the interface
-# too. See TODO.md ("O carimbo do commit relinka o Rust inteiro").
+# declared as late as they can be. A new commit changes the stamp input, so
+# Cargo rebuilds and relinks the `node` binary; unchanged crates remain
+# reusable in their persistent target directories. Since this ARG also reaches
+# the later interface RUN, that layer reruns too.
 ARG POM_BUILD_COMMIT=""
 
-# Short commit of the vendored llama.cpp fork, passed from the host by
-# scripts/build-docker.sh. The fork's src/CMakeLists.txt collects model
-# sources with a plain file(GLOB) (no CONFIGURE_DEPENDS), so a /build/target
-# cache produced against an older checkout can link a libllama.a that is
-# missing a model .cpp added since — the "undefined symbol: vtable for
-# llama_model_*" link failure. Keying the target cache id to this commit
-# gives every fork checkout its own clean native tree; stale ids are dropped
-# by `docker builder prune`.
-ARG LLAMA_CPP_COMMIT="unknown"
+# Fork cache identity passed from the host by scripts/build-docker.sh. It
+# combines the commit and local source delta. The fork's src/CMakeLists.txt
+# collects model sources with a plain file(GLOB) (no CONFIGURE_DEPENDS), so a
+# native cache from an older source state can link a libllama.a missing a model
+# .cpp added since, failing with `undefined symbol: vtable for llama_model_*`.
+# Keying the target cache id to this source identity gives every fork source
+# state its own clean native tree; stale ids are dropped by `docker builder prune`.
+ARG LLAMA_CPP_CACHE_KEY="unknown"
+ARG POM_CUDA_ARCH_CACHE_KEY="86-120"
 
 # Cache mounts persist the registry, git checkouts, and incremental build
-# artifacts across builds, so unchanged dependencies aren't recompiled.
+# artifacts across builds. Separate target directories retain each feature
+# set's Cargo fingerprints; the mount id also isolates native CMake output by
+# fork, CUDA toolkit, Rust toolchain selector, and architecture.
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/build/target,id=pom-target-${LLAMA_CPP_COMMIT} \
-    cargo build --release --features cuda,vulkan && \
-    cp target/release/pom /build/pom && \
-    cargo build --release --features vulkan && \
-    cp target/release/pom /build/pom-vulkan && \
-    cargo build --release --no-default-features && \
-    cp target/release/pom /build/pom-cpu && \
+    --mount=type=cache,target=/build/target,id=pom-target-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN} \
+    CARGO_TARGET_DIR=/build/target/cuda-vulkan cargo build --release --features cuda,vulkan && \
+    cp /build/target/cuda-vulkan/release/pom /build/pom && \
+    CARGO_TARGET_DIR=/build/target/vulkan cargo build --release --features vulkan && \
+    cp /build/target/vulkan/release/pom /build/pom-vulkan && \
+    CARGO_TARGET_DIR=/build/target/cpu cargo build --release --no-default-features && \
+    cp /build/target/cpu/release/pom /build/pom-cpu && \
     command -v readelf >/dev/null && \
     for binary in /build/pom-vulkan /build/pom-cpu; do \
       if readelf -d "$binary" | grep -q 'Shared library: \[libcuda\.so\.1\]'; then \
@@ -127,8 +133,8 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
         exit 1; \
       fi; \
     done && \
-    cargo build --release -p pom-plugin-host && \
-    cp target/release/pom-plugin-host /build/pom-plugin-host
+    CARGO_TARGET_DIR=/build/target/plugin-host cargo build --release -p pom-plugin-host && \
+    cp /build/target/plugin-host/release/pom-plugin-host /build/pom-plugin-host
 
 # ── 4. the interface, last ────────────────────────────────────────────────────
 # `npm run build` runs `build-brand.mjs` and `build-docs.mjs` first: they read

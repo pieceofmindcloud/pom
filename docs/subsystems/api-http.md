@@ -813,6 +813,14 @@ nunca do nome do arquivo. Em modelo denso a UI oculta a escolha; quando uma
 combinação ainda não é suportada, a razão permanece visível e o deploy é
 recusado para não apresentar uma preferência que não será respeitada.
 
+Em implantações com visão, `DeployPlan.mmproj_candidates` lista os caminhos
+locais compatíveis no peer que serve a camada 0. A interface pré-seleciona um
+deles e pode enviar `DeployRequest.mmproj_path` para escolher outro formato.
+`DeployRequest.vision` continua habilitando o projetor somente na cabeça. O
+backend refaz o survey, confere o caminho escolhido contra os headers GGUF no
+apply do peer e não calcula SHA-256 do payload do `mmproj` para descobrir ou
+selecionar candidatos.
+
 **`GET` e `POST /api/ui/model-provider/config`** exigem `ConnectionAuth` e
 controlam o token opcional do Hugging Face. O GET devolve somente
 `{ configured, masked, source }`, nunca o segredo. O POST recebe `{ token }` -

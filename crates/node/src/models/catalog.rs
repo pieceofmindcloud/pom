@@ -28,10 +28,8 @@
 
 use crate::gguf::{self, GgufInfo, ModelCapabilityEvidence};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use tracing::debug;
@@ -84,11 +82,16 @@ pub struct DiscoveredModel {
     pub source_label: &'static str,
     /// Absolute path of the `.gguf` file.
     pub path: String,
-    /// Adjacent llama.cpp multimodal projector, only when the catalog proved
-    /// its identity and dimensional compatibility with this GGUF.
+    /// Preferred adjacent llama.cpp multimodal projector. This is a UI
+    /// suggestion, not a persisted binding: deployment may choose another
+    /// compatible candidate from `mmproj_candidates`.
     #[serde(default)]
     pub mmproj_path: Option<String>,
-    /// Motivo pelo qual o catálogo não conseguiu provar um projetor para este modelo.
+    /// All adjacent projectors compatible by GGUF header identity/dimensions.
+    /// No source payload hash is read to build this list.
+    #[serde(default)]
+    pub mmproj_candidates: Vec<String>,
+    /// Motivo pelo qual o catálogo não conseguiu sugerir um projetor para este modelo.
     #[serde(default)]
     pub mmproj_reason: Option<String>,
     /// Nomes de identidade do cabeçalho, mantidos só em memória para relacionar
@@ -185,6 +188,9 @@ pub struct ShardSet {
     /// The path is local to this peer and is only used by the pipeline head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mmproj_path: Option<String>,
+    /// Projetores compatíveis herdados do modelo inteiro ou encontrados nas fatias.
+    #[serde(default)]
+    pub mmproj_candidates: Vec<String>,
     /// Motivo acionável quando nenhuma associação pôde ser provada.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mmproj_reason: Option<String>,
@@ -232,43 +238,6 @@ type HeaderKey = (String, u64, u64);
 fn header_cache() -> &'static Mutex<HashMap<HeaderKey, Result<GgufInfo, String>>> {
     static CACHE: OnceLock<Mutex<HashMap<HeaderKey, Result<GgufInfo, String>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn source_hash_cache() -> &'static Mutex<HashMap<MetadataIdentity, String>> {
-    static CACHE: OnceLock<Mutex<HashMap<MetadataIdentity, String>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[cfg(test)]
-static CONTENT_HASH_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(test)]
-fn reset_content_hash_calls() {
-    CONTENT_HASH_CALLS.store(0, Ordering::SeqCst);
-}
-
-#[cfg(test)]
-fn content_hash_calls() -> usize {
-    CONTENT_HASH_CALLS.load(Ordering::SeqCst)
-}
-
-fn cached_content_hash(path: &Path) -> Option<String> {
-    #[cfg(test)]
-    CONTENT_HASH_CALLS.fetch_add(1, Ordering::SeqCst);
-    let metadata = std::fs::metadata(path).ok()?;
-    let identity = metadata_identity(path, &metadata);
-    if let Some(hash) = source_hash_cache()
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(&identity).cloned())
-    {
-        return Some(hash);
-    }
-    let (hash, _) = crate::pom::hash_file(path).ok()?;
-    if let Ok(mut cache) = source_hash_cache().lock() {
-        cache.insert(identity, hash.clone());
-    }
-    Some(hash)
 }
 
 fn cached_info(path: &Path, size: u64, mtime: u64) -> Result<GgufInfo, String> {
@@ -614,6 +583,7 @@ fn describe(
         source_label: source.label(),
         path: path.to_string_lossy().into_owned(),
         mmproj_path: None,
+        mmproj_candidates: Vec::new(),
         mmproj_reason: Some("aguardando leitura dos metadados GGUF para validar o projetor".into()),
         identity_names: Vec::new(),
         size_bytes,
@@ -646,12 +616,13 @@ fn describe(
 #[derive(Debug)]
 struct ProjectorResolution {
     path: Option<String>,
+    candidates: Vec<String>,
     reason: Option<String>,
 }
 
-/// Resolve a sibling only when GGUF identity evidence, or a unique dimensional
-/// match across the directory, supports the association. Quantization is never
-/// used to select a projector.
+/// Resolve compatible siblings from header evidence. The first path is only a
+/// deterministic UI suggestion; deployment may select any returned candidate.
+/// Quantization is never used to select a projector, and no payload hash is read.
 fn resolve_mmproj_sibling(model: &Path, model_info: &GgufInfo) -> ProjectorResolution {
     let Some(parent) = model.parent() else {
         return no_projector("o modelo não tem diretório pai para procurar projetores");
@@ -728,31 +699,13 @@ fn resolve_mmproj_sibling(model: &Path, model_info: &GgufInfo) -> ProjectorResol
         }
     }
 
-    let selected = if identity_matches.len() == 1 {
-        identity_matches.pop()
-    } else if identity_matches.len() > 1 {
-        return no_projector(
-            "mais de um projetor tem identidade GGUF compatível; renomeie ou separe os arquivos para desambiguar",
-        );
-    } else if dimension_matches.len() == 1 {
-        dimension_matches.pop()
-    } else if dimension_matches.len() > 1 {
-        return no_projector(
-            "mais de um projetor tem nome e dimensão compatíveis; inclua uma identidade GGUF correspondente",
-        );
+    let selected = if !identity_matches.is_empty() {
+        identity_matches
+    } else if !dimension_matches.is_empty() {
+        dimension_matches
     } else {
         // Generic sidecar names remain supported when both dimensions are
         // present and uniquely identify this model among its directory peers.
-        let matching_projectors = projectors
-            .iter()
-            .filter(|(_, _, info)| {
-                model_info.embedding_length.is_some()
-                    && info.projector_projection_dim == model_info.embedding_length
-                    && (!has_identity_evidence(&model_info.identity_names)
-                        || !has_identity_evidence(&info.identity_names)
-                        || identities_match(&model_info.identity_names, &info.identity_names))
-            })
-            .count();
         let model_name_identities = model_info
             .identity_names
             .iter()
@@ -775,19 +728,33 @@ fn resolve_mmproj_sibling(model: &Path, model_info: &GgufInfo) -> ProjectorResol
                 })
                 .count()
         });
-        if matching_projectors == 1 && matching_models == 1 {
+        if matching_models == 1 {
             projectors
                 .iter()
-                .find(|(_, _, info)| info.projector_projection_dim == model_info.embedding_length)
+                .filter(|(_, _, info)| {
+                    model_info.embedding_length.is_some()
+                        && info.projector_projection_dim == model_info.embedding_length
+                        && (!has_identity_evidence(&model_info.identity_names)
+                            || !has_identity_evidence(&info.identity_names)
+                            || identities_match(&model_info.identity_names, &info.identity_names))
+                })
                 .map(|(path, _, _)| path.clone())
+                .collect()
         } else {
-            None
+            Vec::new()
         }
     };
 
-    if let Some(path) = selected {
+    if !selected.is_empty() {
+        let mut candidates = selected
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        candidates.sort();
+        candidates.dedup();
         return ProjectorResolution {
-            path: Some(path.to_string_lossy().into_owned()),
+            path: candidates.first().cloned(),
+            candidates,
             reason: None,
         };
     }
@@ -817,6 +784,7 @@ pub(crate) fn find_verified_mmproj_sibling(model: &Path) -> Result<String, Strin
 fn no_projector(reason: &str) -> ProjectorResolution {
     ProjectorResolution {
         path: None,
+        candidates: Vec::new(),
         reason: Some(reason.to_string()),
     }
 }
@@ -1080,6 +1048,7 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     model.identity_names = info.identity_names.clone();
     let projector = resolve_mmproj_sibling(&path, &info);
     model.mmproj_path = projector.path;
+    model.mmproj_candidates = projector.candidates;
     model.mmproj_reason = projector.reason;
     model.architecture = info.architecture.clone();
     model.is_moe = info.is_moe();
@@ -1559,20 +1528,17 @@ fn identity_path(dir: &Path) -> PathBuf {
 /// Group slices by their shared base name and report whether the set covers the
 /// model end to end.
 fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
-    build_shard_sets_with_source_hash(models, true)
+    build_shard_sets_without_source_hash(models)
 }
 
-/// Build the fast inventory without reading an entire source model just to
-/// compare its content hash with a manifest. The background catalog may use
-/// the slower verified form after the inventory is visible.
+/// Build the shard inventory without reading an entire source model. Projector
+/// candidates are carried by catalog metadata and selected later by the
+/// operator, so this path never compares a source SHA-256 with `pom_id`.
 fn build_shard_sets_fast(models: &[DiscoveredModel]) -> Vec<ShardSet> {
-    build_shard_sets_with_source_hash(models, false)
+    build_shard_sets_without_source_hash(models)
 }
 
-fn build_shard_sets_with_source_hash(
-    models: &[DiscoveredModel],
-    verify_source_hash: bool,
-) -> Vec<ShardSet> {
+fn build_shard_sets_without_source_hash(models: &[DiscoveredModel]) -> Vec<ShardSet> {
     let mut groups: HashMap<String, (Vec<DiscoveredModel>, Vec<DiscoveredModel>)> = HashMap::new();
     for m in models.iter().filter(|m| m.is_shard()) {
         let key = m.shard_group.clone().unwrap_or_else(|| m.name.clone());
@@ -1655,12 +1621,23 @@ fn build_shard_sets_with_source_hash(
             let direct_projectors = shards
                 .iter()
                 .chain(tp_parts.iter())
-                .filter_map(|shard| shard.mmproj_path.clone())
-                .collect::<std::collections::HashSet<_>>();
-            let (mmproj_path, mmproj_reason) = if direct_projectors.len() == 1 {
-                (direct_projectors.into_iter().next(), None)
-            } else if direct_projectors.len() > 1 {
-                (None, Some("as fatias do mesmo conjunto declaram projetores diferentes; revise o manifesto e os arquivos locais".into()))
+                .flat_map(|shard| {
+                    shard
+                        .mmproj_candidates
+                        .iter()
+                        .cloned()
+                        .chain(shard.mmproj_path.iter().cloned())
+                })
+                .collect::<HashSet<_>>();
+            let (mmproj_path, mmproj_candidates, mmproj_reason) = if !direct_projectors.is_empty() {
+                let mut candidates = direct_projectors.into_iter().collect::<Vec<_>>();
+                candidates.sort();
+                let preferred = shards
+                    .iter()
+                    .chain(tp_parts.iter())
+                    .find_map(|shard| shard.mmproj_path.clone())
+                    .or_else(|| candidates.first().cloned());
+                (preferred, candidates, None)
             } else if let Some(label) = shards
                 .iter()
                 .chain(tp_parts.iter())
@@ -1681,32 +1658,49 @@ fn build_shard_sets_with_source_hash(
                         )
                     })
                     .collect::<Vec<_>>();
-                let matches = if verify_source_hash && crate::pom::is_sha256_hex(&pom_id) {
-                    label_matches
-                        .into_iter()
-                        .filter(|model| {
-                            cached_content_hash(Path::new(&model.path)).as_deref()
-                                == Some(pom_id.as_str())
-                        })
-                        .collect::<Vec<_>>()
+                let mut candidates = label_matches
+                    .iter()
+                    .flat_map(|source| {
+                        source
+                            .mmproj_candidates
+                            .iter()
+                            .cloned()
+                            .chain(source.mmproj_path.iter().cloned())
+                    })
+                    .collect::<Vec<_>>();
+                candidates.sort();
+                candidates.dedup();
+                let preferred = label_matches
+                    .iter()
+                    .find_map(|source| source.mmproj_path.clone())
+                    .or_else(|| candidates.first().cloned());
+                if !candidates.is_empty() {
+                    (preferred, candidates, None)
+                } else if label_matches.is_empty() {
+                    (
+                        None,
+                        Vec::new(),
+                        Some("nenhum modelo inteiro com o rótulo do manifesto foi encontrado; selecione um mmproj compatível na implantação".into()),
+                    )
                 } else {
-                    Vec::new()
-                };
-                match matches.as_slice() {
-                    [source] => (
-                        source.mmproj_path.clone(),
-                        source.mmproj_reason.clone().filter(|_| source.mmproj_path.is_none()),
-                    ),
-                    [] => (None, Some("não foi possível provar pelo pom_id que um modelo GGUF inteiro no catálogo é a origem destas fatias; mantenha a cópia original cujo SHA-256 corresponda ao manifesto".into())),
-                    _ => (None, Some("mais de um modelo inteiro corresponde ao rótulo do manifesto; a associação do projetor é ambígua".into())),
+                    (
+                        None,
+                        Vec::new(),
+                        Some("nenhum projetor compatível foi encontrado para o rótulo do manifesto; selecione um mmproj compatível na implantação".into()),
+                    )
                 }
             } else {
-                (None, Some("as fatias não têm identidade de manifesto suficiente para herdar um projetor".into()))
+                (
+                    None,
+                    Vec::new(),
+                    Some("as fatias não têm identidade de manifesto suficiente para sugerir um projetor".into()),
+                )
             };
 
             ShardSet {
                 model_label,
                 mmproj_path,
+                mmproj_candidates,
                 mmproj_reason,
                 pom_id,
                 group,
@@ -1784,6 +1778,7 @@ pub fn enrich(mut catalog: Catalog) -> Catalog {
             .filter(|model| model.shard_group.as_deref() == Some(set.group.as_str()))
         {
             shard.mmproj_path = set.mmproj_path.clone();
+            shard.mmproj_candidates = set.mmproj_candidates.clone();
             shard.mmproj_reason = set.mmproj_reason.clone();
         }
     }
@@ -1917,6 +1912,47 @@ pub(crate) mod tests {
         let catalog = discover(std::slice::from_ref(&models), &shards);
         assert_eq!(catalog.models.len(), 1);
         assert_eq!(catalog.models[0].mmproj_path.as_deref(), projector.to_str());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_exposes_multiple_compatible_mmproj_formats_without_hashing() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-mmproj-catalog-multiple-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let model = models.join("gemma-3-4b-it-Q4_K_M.gguf");
+        let projector_f16 = models.join("mmproj-gemma-3-4b-it-f16.gguf");
+        let projector_q8 = models.join("mmproj-gemma-3-4b-it-q8_0.gguf");
+        std::fs::write(&model, text_model_fixture("Gemma 3 4B IT", "gemma", 2560)).unwrap();
+        for projector in [&projector_f16, &projector_q8] {
+            std::fs::write(projector, projector_fixture("Gemma 3 4B IT", 2560)).unwrap();
+        }
+
+        let catalog = discover(std::slice::from_ref(&models), &shards);
+        let discovered = catalog
+            .models
+            .iter()
+            .find(|item| item.path == model.to_string_lossy())
+            .unwrap();
+        let mut candidates = discovered.mmproj_candidates.clone();
+        candidates.sort();
+        assert_eq!(
+            candidates,
+            vec![
+                projector_f16.to_string_lossy().into_owned(),
+                projector_q8.to_string_lossy().into_owned(),
+            ]
+        );
+        assert_eq!(
+            discovered.mmproj_path.as_deref(),
+            Some(candidates[0].as_str())
+        );
 
         std::fs::remove_dir_all(root).ok();
     }
@@ -2192,6 +2228,7 @@ pub(crate) mod tests {
             source_label: "Local",
             path: format!("/tmp/s_{start}_{end}.gguf"),
             mmproj_path: None,
+            mmproj_candidates: Vec::new(),
             mmproj_reason: None,
             identity_names: Vec::new(),
             size_bytes: 4096,
@@ -2223,7 +2260,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn shard_set_does_not_inherit_projector_without_verified_manifest_identity() {
+    fn shard_set_inherits_projector_by_catalog_identity_without_source_hash() {
         let source = DiscoveredModel {
             id: "source".into(),
             name: "vision-model.gguf".into(),
@@ -2231,6 +2268,7 @@ pub(crate) mod tests {
             source_label: "Local".into(),
             path: "/models/vision-model.gguf".into(),
             mmproj_path: Some("/models/mmproj-vision-model.gguf".into()),
+            mmproj_candidates: vec!["/models/mmproj-vision-model.gguf".into()],
             mmproj_reason: None,
             identity_names: vec!["vision-model".into()],
             size_bytes: 4096,
@@ -2258,6 +2296,7 @@ pub(crate) mod tests {
         slice.name = "vision-0-15.gguf".into();
         slice.path = "/shards/vision-0-15.gguf".into();
         slice.mmproj_path = None;
+        slice.mmproj_candidates = Vec::new();
         slice.shard_range = Some((0, 15));
         slice.shard_group = Some("vision-slices".into());
         slice.model_label = Some("vision-model".into());
@@ -2269,15 +2308,14 @@ pub(crate) mod tests {
 
         let sets = build_shard_sets(&[source, slice, second]);
         assert_eq!(sets.len(), 1);
-        assert_eq!(sets[0].mmproj_path, None);
-        assert!(sets[0]
-            .mmproj_reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("pom_id")));
+        assert_eq!(
+            sets[0].mmproj_path.as_deref(),
+            Some("/models/mmproj-vision-model.gguf")
+        );
     }
 
     #[test]
-    fn shard_set_finds_projector_for_a_quantized_original_model() {
+    fn shard_set_finds_all_projectors_for_a_quantized_original_model_without_hash() {
         let root = std::env::temp_dir().join(format!(
             "pom-mmproj-shard-pom-{}",
             uuid::Uuid::new_v4().simple()
@@ -2285,7 +2323,7 @@ pub(crate) mod tests {
         let source_path = root.join("vision-model-Q4_K_M.gguf");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(&source_path, b"the source GGUF bytes").unwrap();
-        let (pom_id, _) = crate::pom::hash_file(&source_path).unwrap();
+        let pom_id = "a".repeat(64);
         let source = DiscoveredModel {
             id: "source".into(),
             name: "vision-model-Q4_K_M.gguf".into(),
@@ -2293,6 +2331,7 @@ pub(crate) mod tests {
             source_label: "Local",
             path: source_path.to_string_lossy().into_owned(),
             mmproj_path: Some("/models/mmproj-vision-model-f16.gguf".into()),
+            mmproj_candidates: vec!["/models/mmproj-vision-model-f16.gguf".into()],
             mmproj_reason: None,
             identity_names: vec!["vision-model".into()],
             size_bytes: 4096,
@@ -2320,6 +2359,7 @@ pub(crate) mod tests {
         slice.name = "vision-part-0.gguf".into();
         slice.path = "/shards/vision-part-0.gguf".into();
         slice.mmproj_path = None;
+        slice.mmproj_candidates = Vec::new();
         slice.shard_range = Some((0, 15));
         slice.shard_group = Some(format!("vision-model-{}", crate::pom::short_id(&pom_id)));
         slice.model_label = Some("vision-model".into());
@@ -2368,6 +2408,7 @@ pub(crate) mod tests {
                 multipart_error: None,
                 metadata_error: None,
                 mmproj_path: None,
+                mmproj_candidates: Vec::new(),
                 metadata_identity: None,
             };
             if tensor_parallel {
@@ -2478,6 +2519,7 @@ pub(crate) mod tests {
             source_label: "Local",
             path: format!("/tmp/qwen_{start}_{end}.gguf"),
             mmproj_path: None,
+            mmproj_candidates: Vec::new(),
             mmproj_reason: None,
             identity_names: Vec::new(),
             size_bytes: 4096,
@@ -2534,7 +2576,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn fast_discovery_does_not_hash_whole_models_to_build_shard_sets() {
+    fn fast_discovery_keeps_source_model_unhashed() {
         let root = std::env::temp_dir().join(format!(
             "pom-cat-fast-no-hash-{}",
             uuid::Uuid::new_v4().simple()
@@ -2578,15 +2620,10 @@ pub(crate) mod tests {
         );
         crate::pom::write_atomic(&run, &manifest).unwrap();
 
-        reset_content_hash_calls();
         let fast = discover_fast(std::slice::from_ref(&models), &shards);
 
         assert_eq!(fast.models.len(), 2);
-        assert_eq!(
-            content_hash_calls(),
-            0,
-            "a varredura rápida não pode ler o payload inteiro do modelo de origem"
-        );
+        assert!(!fast.metadata_complete);
 
         std::fs::remove_dir_all(root).ok();
     }

@@ -190,6 +190,8 @@ pub struct Plan {
     pub(super) kind: DeployKind,
     /// Projector selected by the catalog for the model, if any.
     pub(super) mmproj_path: Option<String>,
+    /// All compatible projectors reported by the selected pipeline head.
+    pub(super) mmproj_candidates: Vec<String>,
     /// Motivo do catálogo quando nenhum projetor pôde ser associado.
     pub(super) mmproj_reason: Option<String>,
     /// True only when the surveyed GGUF metadata reports more than one expert.
@@ -669,6 +671,7 @@ pub(super) fn plan_with_options(
         preferred_node_ids,
         &PairwiseRtt::default(),
         None,
+        None,
     )
 }
 
@@ -1059,6 +1062,7 @@ pub(super) fn plan_with_rtt_options(
     preferred_node_ids: &[String],
     pairwise_rtt: &PairwiseRtt,
     layer_options: Option<WholeLayerOptions>,
+    requested_mmproj_path: Option<&str>,
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
@@ -1188,7 +1192,20 @@ pub(super) fn plan_with_rtt_options(
                     })
                 })
         });
-    let mmproj_path = selected_head_projector.and_then(|shard| shard.mmproj_path.clone());
+    let mut mmproj_candidates = selected_head_projector
+        .map(|shard| shard.mmproj_candidates.clone())
+        .unwrap_or_default();
+    if let Some(path) = selected_head_projector.and_then(|shard| shard.mmproj_path.clone()) {
+        if !mmproj_candidates.iter().any(|candidate| candidate == &path) {
+            mmproj_candidates.push(path);
+        }
+    }
+    mmproj_candidates.sort();
+    mmproj_candidates.dedup();
+    let mmproj_path = requested_mmproj_path
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .or_else(|| selected_head_projector.and_then(|shard| shard.mmproj_path.clone()));
     let mmproj_reason = selected_head_projector
         .and_then(|shard| shard.mmproj_reason.clone())
         .or_else(|| {
@@ -1196,6 +1213,18 @@ pub(super) fn plan_with_rtt_options(
                 "o catálogo não comprovou um projetor pertencente ao modelo selecionado".into()
             })
         });
+    if let Some(requested) = requested_mmproj_path.filter(|path| !path.is_empty()) {
+        if !mmproj_candidates.is_empty()
+            && !mmproj_candidates
+                .iter()
+                .any(|candidate| candidate == requested)
+        {
+            blocked = Some(
+                "o projetor selecionado não está entre os candidatos compatíveis do peer da cabeça"
+                    .into(),
+            );
+        }
+    }
 
     for (i, ..) in &chosen {
         available[*i].selected = true;
@@ -1813,6 +1842,7 @@ pub(super) fn plan_with_rtt_options(
         strategy,
         kind,
         mmproj_path,
+        mmproj_candidates,
         mmproj_reason,
         tp,
         is_moe,

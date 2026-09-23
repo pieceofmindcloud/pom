@@ -826,8 +826,9 @@ faz o download autenticado do blob persistido.
   está em andamento e não a mensagem de que o arquivo não pertence ao peer;
   a varredura rápida não calcula SHA-256 de modelos inteiros para montar
   `shard_sets`, então um volume grande publica seus caminhos e raízes antes da
-  validação de `pom_id` usada para herdar projetores. Essa validação fica na
-  tarefa de enriquecimento ou no caminho síncrono que precisa provar a origem.
+  leitura dos headers GGUF usados para sugerir projetores. A escolha do
+  projetor não calcula SHA-256 do payload; a validação estrutural do caminho
+  escolhido fica no apply do peer que vai carregá-lo.
   F5 ou seleção repetida não empilha trabalho. Uma configuração nova fica em
   fila para o scan atual terminar. O enriquecimento registra início e conclusão
   (inclusive descarte), e uma falha terminal marca `metadata_error` no item e
@@ -1154,10 +1155,12 @@ faz o download autenticado do blob persistido.
 
 ### Visão na implantação e no chat
 
-`deploy::Plan.mmproj_path` e `mmproj_reason` vêm do modelo inteiro ou do
-`ShardSet` escolhido. A seleção da cabeça usa a faixa e o nome do candidato
-escolhido, não o primeiro arquivo de visão da máquina. `DeployRequest.vision`
-só habilita o projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
+`deploy::Plan.mmproj_path`, `mmproj_candidates` e `mmproj_reason` vêm do modelo
+inteiro ou do `ShardSet` escolhido. A interface pré-seleciona o primeiro
+candidato compatível e pode enviar `DeployRequest.mmproj_path` para escolher
+outro formato na cabeça selecionada. A seleção da cabeça usa a faixa e o nome
+do candidato escolhido, não o primeiro arquivo de visão da máquina.
+`DeployRequest.vision` só habilita o projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
 `webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
 `openai` extrai imagens base64 dos pedidos multimodais. A recusa de visão devolve
 `mmproj_reason`; o caminho também é validado contra o GGUF antes de o runtime

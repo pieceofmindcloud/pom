@@ -65,6 +65,16 @@ peer; a UI deve aguardar `metadata_complete: true` e tentar novamente.
 Hash integral continua restrito à fronteira de identidade, fatiamento ou
 transferência.
 
+### Projetores multimodais
+
+O catálogo lê os headers GGUF dos `mmproj` adjacentes e publica
+`mmproj_candidates` para cada modelo e conjunto de fatias. Quando a fatia não
+tem projetor local, os candidatos do modelo inteiro são herdados pelo rótulo do
+manifesto. Essa associação não compara o payload do modelo com `pom_id` e não
+calcula SHA-256 para descobrir ou escolher o projetor. A interface ordena e
+pré-seleciona o primeiro caminho, mas o operador pode escolher outro formato
+compatível durante a implantação.
+
 Depois do enriquecimento, `webui.rs` registra o catálogo em `pom.db`. O registro
 guarda o caminho como identidade local do modelo inteiro, a identidade do
 conjunto de fatias, tamanho, hash de parte quando disponível, total de camadas,

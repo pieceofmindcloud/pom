@@ -313,7 +313,11 @@ describe("DeployModel", () => {
   it("mostra e envia a visão quando o plano fatiado encontra um mmproj", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
-    p.mmproj_path = "/models/mmproj-qwen.gguf";
+    p.mmproj_path = "/models/mmproj-qwen-f16.gguf";
+    p.mmproj_candidates = [
+      "/models/mmproj-qwen-f16.gguf",
+      "/models/mmproj-qwen-q8_0.gguf",
+    ];
     post.mockImplementation((url: string) =>
       url === "/api/ui/deploy" ? Promise.resolve({ job_id: "vision-job" }) : Promise.resolve(p),
     );
@@ -324,6 +328,9 @@ describe("DeployModel", () => {
 
     const vision = screen.getByRole("checkbox", { name: "Ativar visão" });
     expect(vision).toBeTruthy();
+    const projector = screen.getByRole("combobox", { name: "Projetor de visão" });
+    expect((projector as HTMLSelectElement).value).toBe("/models/mmproj-qwen-f16.gguf");
+    fireEvent.change(projector, { target: { value: "/models/mmproj-qwen-q8_0.gguf" } });
     fireEvent.click(vision);
 
     const deploy = await screen.findByRole("button", { name: /^Implantar$/ });
@@ -334,6 +341,7 @@ describe("DeployModel", () => {
         group: "qwen",
         kind: "shards",
         vision: true,
+        mmproj_path: "/models/mmproj-qwen-q8_0.gguf",
       }));
     });
   });

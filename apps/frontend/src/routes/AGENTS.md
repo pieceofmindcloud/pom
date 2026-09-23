@@ -714,10 +714,11 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 ### Deploy e chat multimodais
 
 `DeployModel.tsx` exibe a opção de visão para modelo inteiro e para conjunto de
-fatias quando o plano resolve `mmproj_path`; sem associação comprovada, mostra
-`mmproj_reason` ou uma orientação localizada. A tela envia a intenção
-`vision`, e a rota de implantação refaz o survey e o plano antes de usar o
-caminho validado para a cabeça.
+fatias quando o plano expõe `mmproj_candidates`. A lista é pré-selecionada pelo
+primeiro caminho compatível e permite escolher outro formato local na hora da
+implantação. Sem candidatos, mostra `mmproj_reason` ou uma orientação
+localizada. A tela envia `vision` e `mmproj_path`, e a rota de implantação refaz
+o survey e o plano antes de validar o caminho escolhido para a cabeça.
 `Chat.tsx` usa um único
 campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
 visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens

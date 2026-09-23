@@ -223,14 +223,16 @@ fatias que contêm uma dessas camadas.
 
 ### Projetor multimodal
 
-`catalog.rs::resolve_mmproj_sibling` lê os headers GGUF dos candidatos e só
-associa um projetor por identidade comum ou dimensão de projeção única no
-diretório; quantização nunca escolhe `mmproj`. A identidade vem de
+`catalog.rs::resolve_mmproj_sibling` lê somente os headers GGUF dos candidatos e
+expõe todos os projetores compatíveis por identidade comum ou dimensão de
+projeção. Quantização nunca escolhe `mmproj`. A identidade vem de
 `general.name`, `general.basename` e `general.base_model.*`; quando há fatias,
-`ShardSet.mmproj_path` só herda do modelo inteiro se o SHA-256 real corresponder
-ao `pom_id` do manifesto. `mmproj_reason` informa como resolver ausência ou
-ambiguidade. `enrich` replica o caminho comprovado nas fatias do mesmo grupo.
-A interface não deve varrer o disco. O projetor não é um modelo selecionável.
+`ShardSet.mmproj_candidates` herda os candidatos do modelo inteiro pelo rótulo
+do manifesto, sem comparar o payload do modelo nem calcular SHA-256. O primeiro
+candidato ordenado é apenas a pré-seleção da interface. `mmproj_reason` informa
+como resolver ausência. A interface não deve varrer o disco: ela exibe os
+candidatos e envia a escolha explícita na implantação. O projetor não é um
+modelo selecionável no catálogo geral.
 
 ### Rascunho MTP separado
 

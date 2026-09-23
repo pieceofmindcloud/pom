@@ -275,7 +275,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   em voo de `PeerView` é `null` quando o relatório vivo do peer não chegou;
   zero só representa um peer que de fato reportou estar ocioso.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
-  `model_label`, `pom_id`, optional local `mmproj_path` and `mmproj_reason`;
+  `model_label`, `pom_id`, optional local `mmproj_path`,
+  `mmproj_candidates` and `mmproj_reason`; `DeployPlan` carries the same
+  candidate list so the deployment inspector can submit an explicit projector
+  path without any source SHA-256 lookup;
   `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
   `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen
   shapes. `DeployPlan` also carries the operational name, strategy, RTT route

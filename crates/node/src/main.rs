@@ -1298,10 +1298,7 @@ async fn async_main(
             pkarr_publisher: pkarr_publisher.clone(),
         };
         let gw_port = gateway_port;
-        crate::windows_firewall::spawn_startup_check(database.clone(), net.bind_addr.port());
-        crate::webui::spawn_network_settings_ratchet(gw_state.clone());
-        crate::plugins::spawn_host_context(gw_state.clone());
-        crate::gateway::spawn_public_directory_republisher(gw_state.clone());
+        spawn_gateway_companions(&gw_state, &database, net.bind_addr.port());
         tokio::spawn(async move {
             if let Err(e) =
                 gateway::start_gateway_with_ready(gw_state, gw_port, gateway_ready).await
@@ -2001,6 +1998,17 @@ fn gateway_only_use_default_relays(no_default_relays: bool) -> bool {
     !no_default_relays
 }
 
+/// Tarefas de fundo que acompanham todo gateway, com ou sem `--model`. Os dois
+/// caminhos de arranque (`main()` e `start_gateway_only`) chamam só esta
+/// função, para que uma tarefa nova não fique restrita a um deles - foi assim
+/// que o `host.configure` dos plugins deixou de sair num nó sem modelo.
+fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, bind_port: u16) {
+    crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
+    crate::webui::spawn_network_settings_ratchet(gw_state.clone());
+    crate::plugins::spawn_host_context(gw_state.clone());
+    crate::gateway::spawn_public_directory_republisher(gw_state.clone());
+}
+
 async fn start_gateway_only(
     gateway_port: u16,
     database: Arc<db::PomDb>,
@@ -2261,9 +2269,7 @@ async fn start_gateway_only(
         "Gateway running at http://localhost:{} (model not yet configured)",
         gateway_port
     );
-    crate::windows_firewall::spawn_startup_check(database.clone(), net.bind_addr.port());
-    crate::webui::spawn_network_settings_ratchet(gw_state.clone());
-    crate::gateway::spawn_public_directory_republisher(gw_state.clone());
+    spawn_gateway_companions(&gw_state, &database, net.bind_addr.port());
     let gateway_task = tokio::spawn(async move {
         crate::gateway::start_gateway_with_ready(gw_state, gateway_port, gateway_ready).await
     });

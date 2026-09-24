@@ -77,46 +77,23 @@ function mountTopbarWithRoutes() {
 describe("TlsChip", () => {
   afterEach(cleanup);
 
-  it("distingue TLS ligado só pelo ícone, com nome acessível", () => {
-    nodeData = fakeNode({ tls_required: true });
-    mount();
-    const indicator = screen.getByTestId("tls-indicator");
-    expect(indicator.getAttribute("data-tls-state")).toBe("on");
-    expect(indicator.getAttribute("aria-label")).toMatch(/cifrada/i);
-    expect(screen.queryByText("TLS")).toBeNull();
-  });
-
-  it("distingue texto claro só pelo ícone, com nome acessível", () => {
-    nodeData = fakeNode({ tls_required: false });
-    mount();
-    const indicator = screen.getByTestId("tls-indicator");
-    expect(indicator.getAttribute("data-tls-state")).toBe("off");
-    expect(indicator.getAttribute("aria-label")).toMatch(/texto claro/i);
-    expect(screen.queryByText(/sem TLS/i)).toBeNull();
-  });
-
-  it("leva a Configurações / Preferências, que é onde se muda isso", () => {
+  it("não renderiza o indicador TLS", () => {
     nodeData = fakeNode({ tls_required: true });
     const { container } = mount();
-    expect(container.querySelector('a[href="/config/preferencias"]')).toBeTruthy();
-  });
-
-  it("não renderiza nada enquanto o nó não respondeu", () => {
-    nodeData = undefined;
-    const { container } = mount();
-    expect(container.textContent).toBe("");
+    expect(container.querySelector('[data-testid="tls-indicator"]')).toBeNull();
   });
 });
 
 describe("perfil na toolbar", () => {
   afterEach(cleanup);
 
-  it("mostra o perfil oficial vindo do contexto e não oferece seletor", () => {
+  it("oculta o botão Este nó e mantém o perfil oficial na toolbar", () => {
     nodeData = fakeNode({ profile: "infer" });
     mountTopbar("infer");
 
     expect(screen.getByTestId("node-profile").textContent).toBe("infer");
     expect(screen.queryByText(/perfil em visualização/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Este nó" })).toBeNull();
     expect(screen.queryByRole("button", { name: /administrador|node|infer/i })).toBeNull();
   });
 

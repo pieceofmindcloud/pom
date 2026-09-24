@@ -18,7 +18,26 @@ vi.mock("../lib/queries", () => ({
     isError: false,
   }),
   useRemoteModelProviderStatus: () => ({
-    data: { cli: { installed: true }, auth: { authenticated: true } },
+    data: { cli: { installed: true, authenticated: false } },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  }),
+  useTrendingPublicModels: () => ({
+    data: [{
+      repo_id: "public/trending-GGUF",
+      author: "public",
+      description: null,
+      downloads: 25,
+      likes: 4,
+      private: false,
+      gated: false,
+      tags: ["gguf"],
+      last_modified: "2026-09-01T00:00:00Z",
+      has_gguf: true,
+      installed: false,
+      downloading: false,
+    }],
     isLoading: false,
     isError: false,
     refetch: vi.fn(),
@@ -75,6 +94,16 @@ describe("RemoteModels", () => {
     expect(screen.getByRole("table")).toBeTruthy();
     expect(screen.getByText("org/qwen-gguf")).toBeTruthy();
     expect(screen.getByText("12,345")).toBeTruthy();
+  });
+
+  it("shows public trending models on first load and requires login in the search bar", () => {
+    renderScreen("/modelos/remotos");
+    expect(screen.getByText("public/trending-GGUF")).toBeTruthy();
+    expect(screen.getByText("Trending GGUF models")).toBeTruthy();
+    expect(screen.getByText("Log in to Hugging Face to search").closest("a")?.getAttribute("href"))
+      .toBe("/config/preferencias#hugging-face");
+    expect(screen.getByRole("button", { name: "Search" })).toBeTruthy();
+    expect(screen.queryByText("Provider status")).toBeNull();
   });
 
   it("opens the details dialog when a result row is activated", () => {

@@ -23,6 +23,7 @@ import {
   setConnectionKey,
 } from "./api";
 import { modelDownloadJobs } from "./modelProvider";
+import { getTrendingModels } from "./publicModelDiscovery";
 import { fetchPublicPluginCatalog } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
@@ -681,6 +682,15 @@ export function useRemoteModelSearch(options: {
     enabled: options.enabled !== false && options.query.trim().length > 0,
     staleTime: 15_000,
     retry: false,
+  });
+}
+
+export function useTrendingPublicModels() {
+  return useQuery({
+    queryKey: ["public-trending-models", "hugging-face", "gguf"],
+    queryFn: ({ signal }) => getTrendingModels(signal),
+    staleTime: 5 * 60_000,
+    retry: 1,
   });
 }
 

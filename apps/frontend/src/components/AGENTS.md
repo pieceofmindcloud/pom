@@ -170,10 +170,9 @@ Per-file list:
   `navForProfile(profile)`, não `NAV` cru. `Section`/`Leaf` render it with an animated
   active pill; a section holding the current path stays open. The desktop
   sidebar can be minimized and persists that choice in `localStorage`; the
-  minimized state renders icon-only links and hover/focus flyout menus for
-  sections with children. `SidebarBrand` is the header and, on desktop, the
-  lockup itself is the accessible expand/collapse button: only an explicit click
-  or touch toggles it.
+  minimized state renders icon-only links and child flyouts on hover, focus or
+  click. `SidebarBrand` is a 64px header and, on desktop, the lockup itself is
+  the accessible expand/collapse button: only an explicit click or touch toggles it.
   In the mobile drawer it remains a passive lockup. The menu below it keeps a
   5px top gap so the first item does not touch that line - the hash sits **on the identity** because in
   a multi-machine cluster "which build is that?" is unanswerable without a
@@ -187,9 +186,7 @@ Per-file list:
   target here is whoever opened the panel in the wrong language - the language
   name stays in `aria-label`/`title`, because a flag is not a language to a
   screen reader. Plus the dark/light toggle (`../lib/theme`). `TlsIndicator.tsx`
-  keeps the TLS policy link beside those flags only for `admin`: icon-only, with different icon
-  and tone for encrypted versus cleartext and the meaning in
-  `aria-label`/`title`. Para `infer`, o rodapé também renderiza documentação e
+  currently renders no TLS icon in the Sidebar. Para `infer`, o rodapé também renderiza documentação e
   API keys, enquanto a coluna principal é substituída por `ChatSessionList` e
   o link da rede. O histórico mantém o botão de nova conversa e a rede fora da
   área rolável, para uma lista longa não empurrar nenhuma ação para fora.
@@ -210,8 +207,8 @@ Per-file list:
   the principal; refusal states remain explicit.
 - `Topbar.tsx` - Sticky header: `NodeChip` (hostname, short_id, peer count,
   coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela
-  maior, the bell (`Notifications`) and `NodeActions` for unloading this
-  node's slice. Mobile drawer renders `SidebarContent` inside an animated
+  maior e o sino (`Notifications`). O botão `Este nó` não é renderizado.
+  Mobile drawer renders `SidebarContent` inside an animated
   panel whose fixed backdrop unmounts synchronously when navigation closes it,
   so an invisible exit layer never blocks the next hamburger click. A ação de
   sair da rede não fica exposta no menu.
@@ -564,9 +561,10 @@ Key logic carriers:
   numa tabela de largura total e abre esta janela ao ativar uma linha;
   `RemoteModelCard.tsx`, o cartão que a tabela substituiu, foi removido por
   ficar sem uso.
-- `RemoteModelProviderStatus.tsx` - estado estruturado do CLI do Hugging Face:
-  indisponível, login necessário ou autenticado, com mensagem localizada; its
-  internal route link uses React Router so the `/admin-ui` basename is kept.
+- `RemoteModelProviderStatus.tsx` - apresentação completa do estado estruturado
+  do CLI do Hugging Face. `RemoteModels` usa somente o link compacto de login
+  dentro da barra de busca; a descoberta de tendências é pública e não depende
+  do CLI.
 - `HuggingFaceSettingsPanel.tsx` - campo de senha para o token opcional. O
   valor salvo nunca é pré-preenchido nem renderizado: a API fornece só máscara
   e fonte efetiva, e o painel invalida status/configuração depois de salvar.

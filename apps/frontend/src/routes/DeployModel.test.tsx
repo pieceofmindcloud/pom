@@ -19,11 +19,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeployPlan, DeployStep, Job } from "../lib/types";
 
 const post = vi.fn();
+let pomDesenv = false;
 let jobsResponse: { jobs: Job[] } = { jobs: [] };
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((url: string) =>
-      url === "/api/ui/jobs"
+      url === "/api/ui/node"
+        ? Promise.resolve({ connection_key: "", pom_desenv: pomDesenv })
+        : url === "/api/ui/jobs"
         ? Promise.resolve(jobsResponse)
         : url === "/api/ui/cluster"
           ? Promise.resolve({ peers: [] })
@@ -184,7 +187,8 @@ function planWithUnassignedMiddleRange(): DeployPlan {
   return plan;
 }
 
-function mount(metadata_complete: boolean | undefined = true) {
+function mount(metadata_complete: boolean | undefined = true, dev = false) {
+  pomDesenv = dev;
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
@@ -214,6 +218,7 @@ describe("DeployModel", () => {
   beforeEach(() => {
     post.mockReset();
     jobsResponse = { jobs: [] };
+    pomDesenv = false;
     localStorage.clear();
   });
   afterEach(cleanup);
@@ -779,11 +784,19 @@ describe("DeployModel", () => {
     });
   });
 
+  it("oculta controles de desenvolvimento sem POM_DESENV", () => {
+    mount();
+    expect(screen.queryByRole("radio", { name: "Tensor" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Simples" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Completa" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Voltar ao plano do nó" })).toBeNull();
+  });
+
   it("manda todos os peers como candidatos quando a estratégia é completa", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockResolvedValue(p);
-    mount();
+    mount(true, true);
 
     await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Completa" }));

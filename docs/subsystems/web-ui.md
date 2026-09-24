@@ -152,8 +152,9 @@ relógio (`History`): as duas seções usavam `Boxes`, o mesmo ícone de
 folha `/implantar` mantém `Rocket` sem colidir com a seção, porque a Sidebar
 não desenha ícone de folha. Dentro de `Modelos`, a ordem é `Encontrar Modelos HF`, `Modelos
 inteiros`, `Fatiar modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
-somente ícones, e as seções com folhas exibem um submenu ao passar o mouse ou
-receber foco. A escolha fica persistida no navegador. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
+somente ícones, com cabeçalho da marca de 64px para alinhar à toolbar. Seções
+com folhas exibem submenu ao passar o mouse, receber foco ou clicar; selecionar
+uma folha navega para sua rota. A escolha minimizada fica persistida no navegador. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
 `/api/ui/node` com `auth: false`; 404 = só existe o router de setup). Rotas:
 
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
@@ -257,8 +258,11 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
   participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
   `/config/preferencias/admin` -> preferências administrativas;
-  `/config/sobre` -> About, último item de Configurações, com a licença
-  provisória do POM, o estado do plugin associado à atualização do `pom_core`
+  `/config/sobre` -> About, último item de Configurações, com links para o
+  `LICENSE` AGPL-3.0 do repositório e a página GNU oficial, aviso de
+  privacidade/segurança LGPD e links do site, formulário de contato
+  (`https://pieceofmind.cloud/contact.html`) e repositórios oficiais; também
+  mostra o estado do plugin associado à atualização do `pom_core`
   e a verificação sob demanda. Quando há atualização disponível, a própria
   tela oferece aplicar e reiniciar; também mostra o catálogo de dependências
   diretas agrupado por licença;
@@ -318,9 +322,11 @@ mock de referência visual. Não são usados pelo primeiro acesso real.
 
 ### Modelos remotos
 
-`RemoteModels` consulta primeiro `GET /api/ui/model-provider/status` e mostra
-se o CLI do Hugging Face está ausente, se a autenticação é necessária ou se a
-sessão está autenticada. Depois da busca, o detalhe resolve a licença pelo
+`RemoteModels` carrega ao abrir os modelos GGUF em alta pela API pública do
+Hugging Face (`/api/models?sort=trendingScore&limit=20&filter=gguf`), sem enviar
+credenciais. A busca do provider continua usando o nó autenticado; o status de
+login fica compacto dentro da barra, junto ao botão Buscar. Depois da busca, o
+detalhe resolve a licença pelo
 provider e exibe o marcador de modelo gated antes da confirmação de download;
 assim a tela não presume uma licença nem inicia uma operação protegida sem
 explicar a autenticação exigida.
@@ -350,7 +356,9 @@ pela i18n.
 O mesmo retrato traz `pom_desenv`, verdadeiro somente quando o processo foi
 iniciado com `POM_DESENV=1` exatamente. `DeployModel`, Histórico e a caixa de
 reimplantar escondem por completo `Configurações POM (DESENV)` quando a flag é
-falsa. Isso é somente visibilidade local: a UI e o backend preservam os valores
+falsa. Na tela `/implantar`, Tensor, as estratégias Simples/Completa e o botão
+"Voltar ao plano do nó" também ficam ocultos quando `pom_desenv` é falso. Isso é
+somente visibilidade local: a UI e o backend preservam os valores
 da implantação recebidos pela rede, mesmo quando o nó não pode editá-los.
 
 No Dashboard, a leitura é separada por responsabilidade. O `admin` vê os
@@ -488,13 +496,11 @@ a âncora costuma ser um `node` ou um `infer`. Por isso `/config/confianca` não
 está em `RESTRICTED` (`lib/access.ts`), aparece no menu de Configurações e é
 promovida ao menu principal do `infer`.
 
-O `admin` recebe na Sidebar, junto das bandeiras de idioma, o selo de
-criptografia do cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em
-`aqua` quando a política está ligada e `ShieldOff` em `amber` quando não. Ele
-é só ícone, mas o link para `/config/preferencias/admin` conserva o significado
-em `aria-label` e `title`. Node e infer não renderizam esse selo, conforme a
-regra de apresentação dos perfis. O dado sai do `useNode()`, que já é polled:
-nenhuma chamada nova.
+O cabeçalho da `Topbar` mantém identificação do nó, perfil, notificações e o
+atalho de janela nativa; o botão `Este nó` não é renderizado. O indicador TLS
+da Sidebar (`components/TlsIndicator.tsx`) também está oculto para todos os
+perfis. A política continua disponível em Preferências administrativas; nenhuma
+configuração ou comportamento TLS foi alterado.
 
 Na tela `TokenKeys`, node e infer veem apenas as chaves do próprio nó, não
 escolhem outro nó e mantêm a criação vinculada a essa identidade. O admin pode
@@ -648,7 +654,9 @@ portas fecham juntas - o `ViewSwitch` some do Painel e o duplo clique no card do
 canvas deixa de abrir a `PeerDetailDialog` -, porque esconder o seletor e
 continuar abrindo o card pelo desenho seria a mesma tela em dois estados. A
 regra fica ao lado da tabela de rotas por ser a mesma pergunta: o que este
-perfil enxerga.
+perfil enxerga. Para o admin, sem `ClusterView.active_model` a vista inicial é
+Detalhes e o botão Adicionar não aparece; com modelo ativo, a vista inicial
+continua sendo Fluxo. A escolha manual da vista prevalece sobre esse padrão.
 
 Detalhes lista a **rede inteira**, não a pipeline: `networkPeers`
 (`src/lib/networkPeers.ts`) separa quem serve o modelo ativo na ordem das

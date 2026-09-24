@@ -1,4 +1,5 @@
 key,en,pt-BR
+about.contactLink,Contact POM,Contato do POM
 about.dependenciesCount,"Showing {visible} of {total} dependencies","Mostrando {visible} de {total} dependências"
 about.dependenciesSubtitle,"Direct frontend and Rust dependencies, grouped by their declared license.","Dependências diretas do frontend e do Rust, agrupadas pela licença declarada."
 about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
@@ -11,11 +12,13 @@ about.enterpriseCheckUpdates,Check for updates,Verificar atualizações
 about.enterpriseInactive,Inactive,Inativa
 about.enterpriseState,State,Estado
 about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
-about.placeholderBody,"The POM software license has not been defined officially yet. This screen shows an example only.","A licença do software POM ainda não foi definida oficialmente. Esta tela mostra apenas um exemplo."
-about.placeholderLicense,Provisional license (example),Licença provisória (exemplo)
-about.placeholderLicenseText,"AGPL-3.0 + registered-trademark clause - subject to final definition","AGPL-3.0 + cláusula de marca registrada - sujeita à definição final"
-about.placeholderLicenseValue,AGPL-3.0 + registered-trademark clause,AGPL-3.0 + cláusula de marca registrada
+about.placeholderBody,"POM is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). The complete license is available in this repository and from the Free Software Foundation.","O POM é licenciado sob a GNU Affero General Public License, versão 3 (AGPL-3.0). A licença completa está disponível neste repositório e na Free Software Foundation."
+about.placeholderLicense,AGPL-3.0,AGPL-3.0
+about.placeholderLicenseText,"GNU Affero General Public License, Version 3 (19 November 2007).","GNU Affero General Public License, versão 3 (19 de novembro de 2007)."
+about.placeholderLicenseValue,AGPL-3.0,AGPL-3.0
 about.placeholderTitle,POM software license,Licença do software POM
+about.pluginBaseDescription,"POM plugins are built from the Plugin Base template and SDK. Follow its README to create a repository, implement the plugin manifest and UI, then build and publish releases for POM to install.","Plugins POM podem ser criados a partir do template e SDK do Plugin Base. Siga o README para criar um repositório, implementar o manifesto e a interface do plugin, e então compilar e publicar releases para instalação no POM."
+about.pluginBaseLink,POM Plugin Base,POM Plugin Base
 about.pomUpdateApply,Install and restart,Instalar e reiniciar
 about.pomUpdateApplyFailed,Could not apply the POM update.,Não foi possível aplicar a atualização do POM.
 about.pomUpdateAvailable,POM update available: {version},Atualização do POM disponível: {version}
@@ -25,11 +28,18 @@ about.pomUpdateRelease,Release {release_id},Release {release_id}
 about.pomUpdateSubtitle,"On-demand check and, once confirmed, installation of a new POM build.","Verificação sob demanda e, após confirmação, instalação de uma nova versão do POM."
 about.pomUpdateTitle,POM update,Atualização do POM
 about.repository,Repository,Repositório
+about.repositoryLicenseLink,Repository LICENSE file,Arquivo LICENSE do repositório
+about.repositoryLink,Official POM GitHub repository,Repositório oficial do POM no GitHub
+about.safetyBody,"POM can process and transmit prompts, model data and other content between machines. The LGPD requires appropriate care with personal data, but POM cannot guarantee security or privacy on public networks or when communicating with unknown computers.","O POM pode processar e transmitir prompts, dados de modelos e outros conteúdos entre máquinas. A LGPD exige cuidado adequado com dados pessoais, mas o POM não pode garantir segurança ou privacidade em redes públicas nem ao se comunicar com computadores desconhecidos."
+about.safetyRisks,"Other risks include interception or exposure of transmitted content, untrusted peers or administrators accessing data, compromised computers or software, malicious or vulnerable models, and loss of availability or resources. Only connect to computers and networks you trust, avoid sending sensitive or personal data unless you have assessed the risks and legal basis, and configure access controls and network protections appropriate to your environment.","Outros riscos incluem interceptação ou exposição do conteúdo transmitido, acesso a dados por peers ou administradores não confiáveis, computadores ou softwares comprometidos, modelos maliciosos ou vulneráveis, além de indisponibilidade ou consumo de recursos. Conecte-se somente a computadores e redes confiáveis, evite enviar dados pessoais ou sensíveis sem avaliar os riscos e a base legal, e configure controles de acesso e proteções de rede adequados ao seu ambiente."
+about.safetyTitle,Privacy and security notice (LGPD),Aviso de privacidade e segurança (LGPD)
+about.safetyWarning,"You are responsible for deciding what data to send and which computers to trust. POM is provided without a guarantee of network security or confidentiality.","Você é responsável por decidir quais dados enviar e em quais computadores confiar. O POM é fornecido sem garantia de segurança da rede ou confidencialidade."
 about.searchLabel,Search dependencies,Buscar dependências
 about.searchPlaceholder,Search by package,Buscar por pacote
 about.subtitle,The software and libraries that make POM possible.,Os softwares e bibliotecas que tornam o POM possível.
 about.title,About,Sobre
 about.version,Version,Versão
+about.websiteLink,POM website,Site do POM
 accessGate.eyebrow,Administrative surface,Superfície administrativa
 accessGate.invalid,That token was not accepted.,Esse token não foi aceito.
 accessGate.label,Administrative access token,Token de acesso administrativo
@@ -1653,6 +1663,7 @@ remoteModels.insufficientSpace,There is not enough disk space for this model.,N�
 remoteModels.license,License,Licença
 remoteModels.licenseUnknown,License not identified,Licença não identificada
 remoteModels.likes,Likes,Curtidas
+remoteModels.loginRequired,Log in to Hugging Face to search,Entre no Hugging Face para buscar
 remoteModels.modelInstalled,This model is already installed.,Este modelo já está instalado.
 remoteModels.noResults,No models match this search,Nenhum modelo corresponde à busca
 remoteModels.noResultsDetail,"Try an author, repository id, or a broader term.","Tente um autor, repo_id ou termo mais amplo."
@@ -1671,6 +1682,7 @@ remoteModels.retry,Try again,Tentar de novo
 remoteModels.revision,Revision,Revisão
 remoteModels.savedTo,Saved to,Salvo em
 remoteModels.searchAria,Search remote models,Buscar modelos remotos
+remoteModels.searchButton,Search,Buscar
 remoteModels.searchHint,"Search by model name, repository, author, or related terms.","Busque por nome, repositório, autor ou termos relacionados."
 remoteModels.searchLabel,Search models,Buscar modelos
 remoteModels.searchPlaceholder,"Qwen, DeepSeek, Gemma, author…","Qwen, DeepSeek, Gemma, autor…"
@@ -1681,6 +1693,8 @@ remoteModels.starting,Starting,Começando
 remoteModels.subtitle,"Search the model provider, inspect GGUF files, and download one into this node''s model folders.","Busque no provedor, inspecione os arquivos GGUF e baixe um modelo para as pastas desta máquina."
 remoteModels.tags,Tags,Tags
 remoteModels.title,Find models on Hugging Face,Encontrar modelos no Hugging Face
+remoteModels.trending,Trending GGUF models,Modelos GGUF em alta
+remoteModels.trendingSubtitle,Public Hugging Face discovery, without signing in.,Descoberta pública do Hugging Face, sem precisar entrar.
 remoteModels.updated,Updated,Atualizado
 remoteModels.verifying,Verifying,Verificando
 sendFile.choose,Choose…,Escolher…

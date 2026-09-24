@@ -1,19 +1,13 @@
-import clsx from "clsx";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 import {
-  ChevronDown,
   Menu,
-  PowerOff,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { api } from "../lib/api";
+import { useState } from "react";
 import { isServing } from "../lib/format";
-import { useCluster, useInvalidate, useNode } from "../lib/queries";
+import { useCluster, useNode } from "../lib/queries";
 import { useProfile } from "../lib/profile";
-import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
-import { Confirm } from "./Confirm";
 import { Notifications } from "./Notifications";
 import { SidebarContent } from "./Sidebar";
 import { Badge, Dot, Skeleton } from "./ui";
@@ -77,117 +71,6 @@ function ProfileBadge() {
   );
 }
 
-type PendingAction = "unload" | null;
-
-function NodeActions() {
-  const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const [pending, setPending] = useState<PendingAction>(null);
-  const [busy, setBusy] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const node = useNode();
-  const toast = useToast();
-  const invalidate = useInvalidate();
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
-  }, [open]);
-
-  const loaded = node.data?.config != null || isServing(node.data?.status.state);
-  async function run(action: Exclude<PendingAction, null>) {
-    setBusy(true);
-    try {
-      if (action === "unload") {
-        await api.post("/api/ui/unload");
-        toast.success(t("topbar.unloaded"), t("topbar.unloadedDetail"));
-      }
-      invalidate();
-    } catch (e) {
-      toast.fromError(
-        t("topbar.unloadFailed"),
-        e,
-      );
-    } finally {
-      setBusy(false);
-      setPending(null);
-    }
-  }
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className={clsx(
-          "flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-[0.82rem] transition-colors duration-150",
-          open
-            ? "border-iris/40 bg-iris/12 text-iris"
-            : "border-line bg-raised text-muted hover:border-line-strong hover:text-fg",
-        )}
-      >
-        <span className="hidden sm:inline">{t("topbar.thisNode")}</span>
-        <ChevronDown
-          className={clsx("h-3.5 w-3.5 transition-transform duration-200", open && "rotate-180")}
-        />
-      </button>
-
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -6, scale: 0.98 }}
-            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-            className="absolute right-0 top-11 z-50 w-72 origin-top-right overflow-hidden rounded-xl border border-line bg-surface p-1.5 shadow-lift"
-          >
-            <button
-              disabled={!loaded}
-              onClick={() => {
-                setOpen(false);
-                setPending("unload");
-              }}
-              className="flex w-full items-start gap-3 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-line/50 disabled:pointer-events-none disabled:opacity-45"
-            >
-              <PowerOff className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
-              <span className="min-w-0">
-                <span className="block text-[0.84rem] font-medium text-fg">
-                  {t("topbar.unloadModel")}
-                </span>
-                <span className="block text-xs leading-relaxed text-muted">
-                  {loaded
-                    ? t("topbar.unloadDetail")
-                    : t("topbar.noModel")}
-                </span>
-              </span>
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <Confirm
-        open={pending === "unload"}
-        title={t("topbar.unloadTitle")}
-        description={
-          t("topbar.unloadRangeDescription", {
-            range: node.data?.config
-              ? `${node.data.config.start_layer}–${node.data.config.end_layer}`
-              : t("topbar.thisNode"),
-          })
-        }
-        confirmLabel={t("topbar.unload")}
-        tone="danger"
-        busy={busy}
-        onConfirm={() => run("unload")}
-        onCancel={() => setPending(null)}
-      />
-    </div>
-  );
-}
 
 export function Topbar() {
   const { t } = useI18n();
@@ -212,7 +95,6 @@ export function Topbar() {
           <OpenNativeChatWindowButton />
           <ProfileBadge />
           <Notifications />
-          <NodeActions />
         </div>
       </header>
 

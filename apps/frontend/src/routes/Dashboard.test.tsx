@@ -172,6 +172,17 @@ describe("Dashboard", () => {
     expect(screen.queryByText("A rede esta vazia")).toBeNull();
   });
 
+  it("sem modelo ativo oculta Adicionar e abre Detalhes por padrão", async () => {
+    mount(fakeCluster([], ""));
+
+    const details = await screen.findByRole("button", { name: /Detalhes/ });
+    const flow = screen.getByRole("button", { name: /Fluxo/ });
+    expect(details.getAttribute("aria-pressed")).toBe("true");
+    expect(flow.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Adicionar" })).toBeNull();
+    expect(screen.getAllByText(/Nenhuma m.quina na rede/i).some((el) => el.closest(".hidden") == null)).toBe(true);
+  });
+
   it("mostra no fluxo do Painel o RTT das arestas da implantação", async () => {
     const cluster = fakeCluster([
       fakeSlicePeer("a", 0, 15),
@@ -279,6 +290,7 @@ describe("Dashboard", () => {
     mount(cluster, "admin");
 
     await waitFor(() => expect(screen.getByRole("button", { name: /Fluxo/ })).toBeTruthy());
+    expect(screen.getByRole("button", { name: /Fluxo/ }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: /Detalhes/ })).toBeTruthy();
   });
 

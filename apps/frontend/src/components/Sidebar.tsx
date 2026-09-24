@@ -33,7 +33,7 @@ function SidebarBrand({
     <div
       className={clsx(
         "relative flex shrink-0 items-center justify-center border-b border-line transition-[height] duration-200",
-        collapsed ? "h-[68px]" : "h-[92px]",
+        "h-16",
       )}
     >
       {onToggle && (
@@ -246,6 +246,7 @@ function CollapsedSection({
   const holdsPath = sectionHoldsPath(section, pathname);
   const label = t(section.labelKey);
   const Icon = section.icon;
+  const [open, setOpen] = useState(false);
 
   if (section.to) {
     return (
@@ -279,6 +280,8 @@ function CollapsedSection({
         aria-label={label}
         title={label}
         aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
         className={clsx(
           "flex h-10 w-full items-center justify-center rounded-lg transition-colors duration-150",
           holdsPath ? "bg-iris/12 text-iris ring-1 ring-inset ring-iris/25" : "text-muted hover:bg-line/40 hover:text-fg",
@@ -286,7 +289,10 @@ function CollapsedSection({
       >
         <Icon className="h-[1.05rem] w-[1.05rem]" />
       </button>
-      <div className="pointer-events-none absolute left-full top-0 z-50 pl-2 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+      <div className={clsx(
+        "pointer-events-none absolute left-full top-0 z-50 pl-2 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+        open ? "pointer-events-auto opacity-100" : "opacity-0",
+      )}>
         <div className="w-56 rounded-xl border border-line-strong bg-surface p-2 shadow-2xl shadow-black/30">
           <p className="px-2.5 py-2 font-mono text-[0.68rem] uppercase tracking-[0.16em] text-faint">
             {label}

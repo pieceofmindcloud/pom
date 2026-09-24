@@ -242,8 +242,10 @@ Per-file list:
   contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `About.tsx` - Tela informativa em `/config/sobre`, última folha de
-  Configurações. Mostra a licença do POM como placeholder visualmente marcado
-  e é a ÚNICA tela que trata da atualização do binário `pom` em si: verifica
+  Configurações. Mostra o `LICENSE` AGPL-3.0 do repositório e a página oficial
+  GNU, o aviso de risco/LGPD e links para o site (`pieceofmind.cloud`), contato
+  (`contact.html`) e repositórios oficiais. É a ÚNICA tela que trata da atualização do binário
+  `pom` em si: verifica
   sob demanda pela rota autenticada `/api/ui/pom-update/check`
   (`usePomCoreUpdateStatus`), e quando há release disponível, mostra e aplica
   ali mesmo (`/api/ui/pom-update/apply`) - não delega mais para a tela de
@@ -255,11 +257,14 @@ Per-file list:
   do workspace Rust agrupadas pela licença declarada, com versão, ecossistema,
   filtro por texto e link do repositório. O catálogo é
   `../lib/licenses.generated.ts`, gerado por `scripts/build-licenses.mjs`; o
-  teste em `About.test.tsx` cobre o placeholder, os dois ecossistemas, os
-  links, o filtro e a verificação/aplicação sob demanda da atualização do pom.
+  teste em `About.test.tsx` cobre a licença, o aviso e links, os dois
+  ecossistemas, o filtro e a verificação/aplicação sob demanda da atualização.
 - `Dashboard.tsx` — Cluster overview: the admin sees cluster
   coverage/machines/model/in-flight stats; node and infer see local model,
-  slice and in-flight requests instead. For administrators, the deployment
+  slice and in-flight requests instead. Admins see the Add button only when
+  `ClusterView.active_model` is nonempty. With no active model, Details is the
+  initial view; with an active model, Flow remains the initial view. Manual
+  view selection overrides that default. For administrators, the deployment
   properties inspector selects the `is_default` row for the active model,
   preferring a serving default and falling back to the live or latest local
   record so old deployment history cannot hide the map toggle. A graph view
@@ -321,7 +326,8 @@ Per-file list:
   unavailable, never as an empty model, incomplete pipeline or zero.
 - `DeployModel.tsx` — "Implantar na rede". Full-bleed Deploy Studio with a
   top mode bar, separate technical model and operational deployment name,
-  Simple/Complete strategy, central peer map, compact property inspector
+  central peer map and compact property inspector. Tensor mode, Simple/Complete
+  strategy and "Voltar ao plano do nó" are visible only when `pom_desenv` is true.
   (`../components/DeploymentInspector`, o mesmo componente que o Histórico usa
   em somente leitura) and draggable bottom peer strip. O que continua no
   `DeployModel` e não migrou para o inspetor são as seções que só a tela de
@@ -635,9 +641,11 @@ Per-file list:
   catalog already resolves this file from GGUF identity and projection dimensions,
   the screen only renders it. `ScannedRoots`
   lists the scanned folders and per-folder file counts. Full-bleed shell.
-- `RemoteModels.tsx` - mostra primeiro o status do CLI e da autenticação,
-  depois busca com debounce em `/api/ui/model-provider/search`, filtro GGUF,
-  ordenação, paginação por URL, detalhes lazy e confirmação de download. O
+- `RemoteModels.tsx` - mostra modelos GGUF em alta pela API pública do Hugging
+  Face ao abrir, sem credenciais; a busca autenticada usa debounce em
+  `/api/ui/model-provider/search`, com filtro, ordenação, paginação por URL,
+  detalhes lazy e confirmação de download. O status de login fica compacto
+  dentro da barra de busca, com ação explícita de Buscar. O
   detalhe resolve a licença pelo provider e marca modelos gated antes do
   download. O diálogo mostra as pastas de modelos resolvidas pelo backend. Os
   jobs aparecem no `ModelDownloadsPanel`, também em Transferências, então trocar

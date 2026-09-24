@@ -1,11 +1,10 @@
 import { ArrowUpRight, ChevronLeft, ChevronRight, Download, LockKeyhole, Search, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { DownloadModelDialog } from "../components/DownloadModelDialog";
 import { ModelDownloadsPanel } from "../components/ModelDownloadsPanel";
 import { RemoteModelDetails } from "../components/RemoteModelDetails";
-import { RemoteModelProviderStatus } from "../components/RemoteModelProviderStatus";
 import {
   Badge,
   Button,
@@ -21,7 +20,7 @@ import {
 } from "../components/ui";
 import { useI18n } from "../i18n/provider";
 import { num, since } from "../lib/format";
-import { keys, useRemoteModelProviderStatus, useRemoteModelSearch } from "../lib/queries";
+import { keys, useRemoteModelProviderStatus, useRemoteModelSearch, useTrendingPublicModels } from "../lib/queries";
 import type { RemoteGgufFile, RemoteModelDetails as RemoteModelDetailsData, RemoteModelSummary } from "../lib/types";
 
 const PAGE_SIZE = 20;
@@ -116,6 +115,7 @@ export function RemoteModels() {
   const [detailsRepo, setDetailsRepo] = useState<string | null>(null);
   const [download, setDownload] = useState<{ file: RemoteGgufFile; details: RemoteModelDetailsData } | null>(null);
   const providerStatus = useRemoteModelProviderStatus();
+  const trending = useTrendingPublicModels();
   const search = useRemoteModelSearch({
     query,
     ggufOnly,
@@ -176,9 +176,14 @@ export function RemoteModels() {
     setParams(next, { replace: true });
   }
 
-  const models = useMemo(() => sortedModels(search.data?.models ?? [], sort), [search.data?.models, sort]);
+  const models = useMemo(
+    () => sortedModels(query ? search.data?.models ?? [] : trending.data ?? [], sort),
+    [query, search.data?.models, sort, trending.data],
+  );
   const data = search.data;
   const hasQuery = query.length > 0;
+  const displayTotal = data?.total ?? models.length;
+  const displayHasNext = data?.has_next ?? false;
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
@@ -186,32 +191,39 @@ export function RemoteModels() {
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         <div className="space-y-4 p-4 sm:p-5">
-          {providerStatus.isLoading && <Skeleton className="h-9 w-full" />}
-          {providerStatus.isError && (
-            <ErrorState error={providerStatus.error} onRetry={() => void providerStatus.refetch()} />
-          )}
-          {providerStatus.data && <RemoteModelProviderStatus status={providerStatus.data} />}
-
           <ModelDownloadsPanel />
         </div>
 
         <FullBleedToolbar>
           <Field label={t("remoteModels.searchLabel")} className="min-w-[16rem] flex-1">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
-              <Input
-                value={input}
-                onChange={(event) => setInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    submit(input);
-                  }
-                }}
-                className="pl-9"
-                placeholder={t("remoteModels.searchPlaceholder")}
-                aria-label={t("remoteModels.searchAria")}
-              />
+            <div className="flex min-w-0 gap-2">
+              <div className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
+                <Input
+                  value={input}
+                  onChange={(event) => setInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      submit(input);
+                    }
+                  }}
+                  className={providerStatus.data?.cli.authenticated ? "pl-9" : "pl-9 pr-48"}
+                  placeholder={t("remoteModels.searchPlaceholder")}
+                  aria-label={t("remoteModels.searchAria")}
+                />
+                {providerStatus.data && !providerStatus.data.cli.authenticated && (
+                  <Link
+                    to="/config/preferencias#hugging-face"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 truncate text-[0.68rem] font-medium text-amber hover:text-amber/80"
+                  >
+                    {t("remoteModels.loginRequired")}
+                  </Link>
+                )}
+              </div>
+              <Button size="sm" icon={<Search className="h-3.5 w-3.5" />} onClick={() => submit(input)}>
+                {t("remoteModels.searchButton")}
+              </Button>
             </div>
           </Field>
           <label className="flex h-9 items-center gap-2 rounded-lg border border-line bg-raised px-3 text-sm text-fg">
@@ -232,12 +244,13 @@ export function RemoteModels() {
           </Field>
         </FullBleedToolbar>
 
-        {!hasQuery && (
-          <Empty icon={<Search className="h-5 w-5" />} title={t("remoteModels.title")}>
-            {t("remoteModels.searchHint")}
-          </Empty>
+        {!hasQuery && trending.isLoading && (
+          <div className="space-y-2 p-5">{[0, 1, 2, 3, 4].map((index) => <Skeleton key={index} className="h-12 w-full" />)}</div>
         )}
-        {search.isError && (
+        {!hasQuery && trending.isError && (
+          <div className="p-5"><ErrorState error={trending.error} onRetry={() => void trending.refetch()} /></div>
+        )}
+        {search.isError && hasQuery && (
           <div className="p-5">
             <ErrorState error={search.error} onRetry={() => void search.refetch()} />
           </div>
@@ -254,13 +267,19 @@ export function RemoteModels() {
             {t("remoteModels.noResultsDetail")}
           </Empty>
         )}
-        {hasQuery && data && models.length > 0 && (
+        {!hasQuery && !trending.isLoading && !trending.isError && models.length === 0 && (
+          <Empty icon={<Search className="h-5 w-5" />} title={t("remoteModels.trending")}>
+            {t("remoteModels.trendingSubtitle")}
+          </Empty>
+        )}
+        {models.length > 0 && (!hasQuery || Boolean(data)) && (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-2.5 text-xs text-faint">
               <span className="flex items-center gap-2">
                 <SlidersHorizontal className="h-3.5 w-3.5" />
-                {t("remoteModels.results", { count: data.total })}
+                {!hasQuery ? t("remoteModels.trending") : t("remoteModels.results", { count: displayTotal })}
               </span>
+              {!hasQuery && <span>{t("remoteModels.trendingSubtitle")}</span>}
               {search.isFetching && <span>{t("remoteModels.searchHint")}</span>}
             </div>
             <ScrollX>
@@ -286,13 +305,13 @@ export function RemoteModels() {
                 </tbody>
               </table>
             </ScrollX>
-            {(page > 1 || data.has_next) && (
+            {hasQuery && (page > 1 || displayHasNext) && (
               <div className="flex items-center justify-between gap-3 border-t border-line px-5 py-3">
                 <Button size="sm" variant="ghost" disabled={page <= 1} icon={<ChevronLeft className="h-3.5 w-3.5" />} onClick={() => changePage(page - 1)}>
                   {t("common.previous")}
                 </Button>
                 <span className="font-mono text-xs text-faint">{page}</span>
-                <Button size="sm" variant="ghost" disabled={!data.has_next} icon={<ChevronRight className="h-3.5 w-3.5" />} onClick={() => changePage(page + 1)}>
+                <Button size="sm" variant="ghost" disabled={!displayHasNext} icon={<ChevronRight className="h-3.5 w-3.5" />} onClick={() => changePage(page + 1)}>
                   {t("common.next")}
                 </Button>
               </div>

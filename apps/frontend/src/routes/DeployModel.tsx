@@ -820,6 +820,9 @@ export function DeployModel() {
 
   /** The settings in force: the operator's edit or the plan's received values. */
   const pomDesenv = node.data?.pom_desenv === true;
+  useEffect(() => {
+    if (!pomDesenv && pickedKind === "tensor_parallel") setPickedKind(null);
+  }, [pomDesenv, pickedKind]);
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
   /** The server's GGUF metadata is the only source of truth for MoE. */
   const isMoePlan = p?.is_moe === true;
@@ -1170,7 +1173,7 @@ export function DeployModel() {
               {([
                 ["shards", "Fatias"],
                 ["whole", "Modelo inteiro"],
-                ["tensor_parallel", "Tensor"],
+                ...(pomDesenv ? [["tensor_parallel", "Tensor"] as [DeployKind, string]] : []),
               ] as [DeployKind, string][]).map(([value, label]) => (
                 <button
                   key={value}
@@ -1231,7 +1234,7 @@ export function DeployModel() {
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
               />
             </div>
-            <div className="flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
+            {pomDesenv && <div className="flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
               {(["simple", "complete"] as DeployStrategy[]).map((value) => (
                 <button
                   key={value}
@@ -1252,8 +1255,8 @@ export function DeployModel() {
                   {value === "simple" ? "Simples" : "Completa"}
                 </button>
               ))}
-            </div>
-            <Button
+            </div>}
+            {pomDesenv && <Button
               variant="outline"
               size="sm"
               type="button"
@@ -1261,7 +1264,7 @@ export function DeployModel() {
               onClick={restoreNodePlan}
             >
               Voltar ao plano do nó
-            </Button>
+            </Button>}
             <Button
               variant="primary"
               size="sm"

@@ -68,9 +68,9 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   cinco recusas do servidor por código (`trustAnchor.refusal.*`). A tela mostra
   a recusa traduzida e só cai no texto do servidor para um código que ela não
   conhece.
-- O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
-  detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
-  retry e erros do provider nas duas línguas. Não coloque texto do CLI ou
+- O grupo `remoteModels.*` cobre status compacto de login, busca, modelos
+  públicos em alta, detalhes, licença desconhecida, confirmação, fila, progresso,
+  cancelamento, retry e erros do provider nas duas línguas. Não coloque texto do CLI ou
   caminho local nesses valores.
 - O grupo `huggingFace.*` cobre o campo de token da tela de Preferências. O valor
   persistido nunca entra numa mensagem; a UI mostra somente a máscara e a
@@ -83,9 +83,11 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
 - O grupo `deploymentLogs.*` cobre o console de processo da réplica local:
   estado do auto-scroll, cópia das últimas 500 linhas, retorno da cópia, filtro
   e estados de coleta.
-- O grupo `about.*` cobre a tela Sobre: licença provisória do POM, status
-  Enterprise e verificação sob demanda de atualização do `pom_core`, contagem e
-  filtro do catálogo, rótulos de ecossistema, versão, repositório e estado vazio.
+- O grupo `about.*` cobre a licença AGPL-3.0 publicada em `LICENSE`, os links
+  para o texto GNU e para o arquivo do repositório, o aviso de
+  segurança/privacidade LGPD e a explicação de criação de plugins; também cobre
+  status Enterprise, atualização do `pom_core`, contagem e filtro do catálogo,
+  rótulos de ecossistema, versão e repositório.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 Os identificadores oficiais de perfil são `admin`, `node` e `infer`. O rótulo

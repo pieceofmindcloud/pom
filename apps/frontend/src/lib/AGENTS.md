@@ -150,7 +150,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `modelProvider.ts` - serializa a busca remota, filtra jobs de download,
   calcula a cadência derivada e só calcula percentual quando o backend conhece
   o total de bytes. `useRemoteModelProviderStatus` em `queries.ts` lê o estado
-  estruturado do CLI e da sessão Hugging Face antes da busca remota.
+  estruturado do CLI e da sessão Hugging Face; `publicModelDiscovery.ts` consulta
+  a API pública do Hugging Face para listar GGUFs em alta sem credenciais.
 - `api.ts` e `queries.ts` também expõem `getHuggingFaceTokenConfig`,
   `saveHuggingFaceToken` e `useHuggingFaceTokenConfig`; o tipo de resposta
   contém apenas `configured`, `masked` e `source`, nunca o token bruto.

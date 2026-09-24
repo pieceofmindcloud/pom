@@ -64,12 +64,21 @@ afterEach(() => {
 });
 
 describe("About", () => {
-  it("mostra a licença provisória do POM e dependências dos dois ecossistemas", () => {
+  it("mostra a licença AGPL, aviso LGPD e links dos projetos", () => {
     mount();
 
     expect(screen.getByRole("heading", { name: "Sobre" })).toBeTruthy();
-    expect(screen.getByText("Licença provisória (exemplo)")).toBeTruthy();
-    expect(screen.getByText("AGPL-3.0 + cláusula de marca registrada - sujeita à definição final")).toBeTruthy();
+    expect(screen.getAllByText("AGPL-3.0").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("Aviso de privacidade e segurança (LGPD)")).toBeTruthy();
+    expect(screen.getByText(/não pode garantir segurança ou privacidade em redes públicas/i)).toBeTruthy();
+    expect(screen.getByRole("link", { name: /AGPL-3.0/i }).getAttribute("href")).toBe("https://www.gnu.org/licenses/agpl-3.0.html");
+    expect(screen.getByRole("link", { name: "Arquivo LICENSE do repositório" }).getAttribute("href")).toBe(
+      "https://github.com/pereirajair/rdma-p2p/blob/feat/enterprise/LICENSE",
+    );
+    expect(screen.getByRole("link", { name: "Site do POM" }).getAttribute("href")).toBe("https://pieceofmind.cloud");
+    expect(screen.getByRole("link", { name: "Contato do POM" }).getAttribute("href")).toBe("https://pieceofmind.cloud/contact.html");
+    expect(screen.getByRole("link", { name: "Repositório oficial do POM no GitHub" }).getAttribute("href")).toBe("https://github.com/pereirajair/rdma-p2p");
+    expect(screen.getByRole("link", { name: "POM Plugin Base" }).getAttribute("href")).toBe("https://github.com/pereirajair/pom-plugin-base");
     expect(screen.getByText("@tanstack/react-query")).toBeTruthy();
     expect(screen.getByText("tokio")).toBeTruthy();
     expect(screen.getAllByText("Frontend").length).toBeGreaterThan(0);
@@ -88,7 +97,7 @@ describe("About", () => {
 
     expect(screen.getByText("tokio")).toBeTruthy();
     expect(screen.queryByText("@tanstack/react-query")).toBeNull();
-    expect(screen.getByText("Licença provisória (exemplo)")).toBeTruthy();
+    expect(screen.getByText("Aviso de privacidade e segurança (LGPD)")).toBeTruthy();
   });
 
   it("permite verificar atualizações do pom sob demanda, separado dos plugins", async () => {

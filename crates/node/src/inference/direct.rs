@@ -406,6 +406,12 @@ pub struct DirectReply {
     inbox: ReplyInbox,
     urls: Vec<String>,
     quic_addresses: Vec<String>,
+    /// `PeerId` e multiaddresses do gateway, para a entrega cair no túnel
+    /// libp2p quando nenhuma URL de `urls` é alcançável de onde a cauda está.
+    /// Atrás de NAT/CGNAT esse é o caso normal, não a exceção: as URLs saem
+    /// das interfaces locais do gateway e não valem nada na outra ponta.
+    libp2p_peer_id: Option<String>,
+    libp2p_addrs: Vec<String>,
     /// node_id de quem vai receber a resposta.
     ///
     /// Viaja no `reply_to` porque quem entrega precisa dele para fixar o
@@ -427,8 +433,18 @@ impl DirectReply {
             inbox,
             urls,
             quic_addresses: Vec::new(),
+            libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             node_id,
         })
+    }
+
+    /// Identidade libp2p deste gateway, para a volta ter um caminho quando
+    /// nenhuma URL direta é alcançável.
+    pub fn with_libp2p(mut self, peer_id: Option<String>, addrs: Vec<String>) -> Self {
+        self.libp2p_peer_id = peer_id;
+        self.libp2p_addrs = addrs;
+        self
     }
 
     /// Endereços `host:porta` do endpoint QUIC do gateway. Eles são separados
@@ -447,6 +463,8 @@ impl DirectReply {
         json!({
             "urls": self.urls,
             "quic_addresses": self.quic_addresses,
+            "libp2p_peer_id": self.libp2p_peer_id,
+            "libp2p_addrs": self.libp2p_addrs,
             "ticket": ticket,
             "node_id": self.node_id,
         })
@@ -1085,6 +1103,15 @@ async fn deliver_meta_at(
             }
         }
     }
+    // Nenhuma URL direta chegou. Atrás de NAT/CGNAT esse é o caso normal: as
+    // URLs de `reply_to` saem das interfaces locais do gateway e não valem
+    // nada de fora da rede dele. O túnel libp2p é o mesmo caminho que a ida já
+    // usa, só que na volta - sem ele o quadro morre calado no prazo de
+    // `DIRECT_REPLY_DEADLINE`, que é dez minutos de silêncio por token.
+    if let Some(delivery) = deliver_via_tunnel(reply_to, path, &base_meta, &last).await {
+        return delivery;
+    }
+
     // Motivo vazio era a assinatura do defeito da lista de candidatos vazia.
     // Hoje `route_order` nunca esvazia a lista, então só sobra o caso de o
     // `reply_to` não trazer endereço nenhum - e isso se diz com todas as
@@ -1094,6 +1121,82 @@ async fn deliver_meta_at(
     }
     warn!("resultado direto não chegou ao gateway ({last})");
     Delivery::Failed
+}
+
+/// Última via da entrega: o túnel libp2p até o gateway.
+///
+/// `None` quando o `reply_to` não traz identidade libp2p (gateway em binário
+/// anterior) ou quando o próprio túnel não entrega - nos dois casos o chamador
+/// segue para o log de falha e o gateway fecha no prazo. A rota entra pela
+/// lista fechada de `infer_tunnel::gateway_path_is_allowed`.
+async fn deliver_via_tunnel(
+    reply_to: &Value,
+    path: &str,
+    base_meta: &Value,
+    direct_error: &str,
+) -> Option<Delivery> {
+    let peer_id = reply_to.get("libp2p_peer_id").and_then(Value::as_str)?;
+    let addrs: Vec<String> = reply_to
+        .get("libp2p_addrs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let tunnel = crate::peer_client::TunnelPeer::from_parts(peer_id, addrs)?;
+
+    // O transporte anotado é o que de fato levou o quadro: publicar "http"
+    // aqui faria o trace do gateway mentir sobre o caminho da volta.
+    let attempt_meta = delivery_meta(
+        base_meta,
+        path,
+        "libp2p-tunnel",
+        true,
+        (!direct_error.is_empty()).then_some(direct_error),
+        None,
+    );
+    let body = match encode_delivery_body(&attempt_meta) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            warn!("resultado direto não pôde ser codificado para o túnel: {error}");
+            return None;
+        }
+    };
+
+    match crate::peer_client::tunnel_gateway_call(
+        &tunnel,
+        "POST",
+        path,
+        body,
+        vec![(
+            reqwest::header::CONTENT_TYPE.to_string(),
+            "application/octet-stream".to_string(),
+        )],
+        LAST_DELIVERY_TIMEOUT,
+    )
+    .await
+    {
+        Ok(response) if response.is_success() => {
+            debug!("resultado direto entregue pelo túnel libp2p ({direct_error})");
+            Some(Delivery::Accepted)
+        }
+        Ok(response) if response.status == StatusCode::GONE.as_u16() => {
+            debug!("gateway já havia desistido do quadro entregue pelo túnel");
+            Some(Delivery::GatewayGone)
+        }
+        Ok(response) => {
+            warn!(
+                "túnel libp2p respondeu {} ao resultado direto",
+                response.status
+            );
+            None
+        }
+        Err(error) => {
+            warn!("resultado direto não chegou pelo túnel libp2p: {error}");
+            None
+        }
+    }
 }
 
 fn tcp_transport_for_url(url: &str) -> &'static str {
@@ -1841,6 +1944,44 @@ mod tests {
                 8080
             ),
             vec!["http://127.0.0.1:8080".to_string()]
+        );
+    }
+
+    /// O `reply_to` tem de carregar a identidade libp2p do gateway: sem ela a
+    /// cauda atrás de NAT não tem como devolver o quadro, e o gateway fecha
+    /// no prazo sem dizer por quê.
+    #[test]
+    fn o_reply_to_carrega_a_identidade_libp2p_do_gateway() {
+        let reply = DirectReply::new(
+            ReplyInbox::new(),
+            vec!["http://192.168.100.210:8080".to_string()],
+            "n1".into(),
+        )
+        .expect("endereço presente")
+        .with_libp2p(
+            Some("12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN".to_string()),
+            vec!["/ip4/203.0.113.7/udp/52777/quic-v1".to_string()],
+        );
+
+        let value = reply.reply_to("t1");
+
+        assert_eq!(
+            value["libp2p_peer_id"].as_str(),
+            Some("12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN")
+        );
+        assert_eq!(value["libp2p_addrs"][0].as_str(), Some("/ip4/203.0.113.7/udp/52777/quic-v1"));
+    }
+
+    /// Gateway em binário anterior não manda os campos, e a entrega tem de
+    /// seguir sem eles em vez de quebrar.
+    #[tokio::test]
+    async fn sem_identidade_libp2p_a_entrega_pelo_tunel_nao_e_tentada() {
+        let reply_to = json!({ "ticket": "t1", "urls": [] });
+
+        assert!(
+            deliver_via_tunnel(&reply_to, RELAY_RESULT_PATH, &json!({}), "sem rota")
+                .await
+                .is_none()
         );
     }
 

@@ -77,6 +77,15 @@ pub(crate) struct TunnelPeer {
 }
 
 impl TunnelPeer {
+    /// A partir do que viaja num `reply_to`: o `PeerId` e os multiaddresses do
+    /// gateway, sem um `PeerInfo` por perto. `None` se o `PeerId` não parseia.
+    pub(crate) fn from_parts(peer_id: &str, addrs: Vec<String>) -> Option<Self> {
+        Some(Self {
+            peer_id: peer_id.parse().ok()?,
+            addrs,
+        })
+    }
+
     /// `None` quando o peer não anuncia o túnel ou não tem `PeerId` válido.
     pub(crate) fn from_peer(peer: &crate::network::PeerInfo) -> Option<Self> {
         if !peer

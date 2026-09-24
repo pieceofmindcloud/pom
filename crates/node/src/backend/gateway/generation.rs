@@ -654,7 +654,14 @@ pub(super) async fn generate_stream_inner(
         ),
         state.network.node_id.clone(),
     )
-    .map(|reply| reply.with_quic_addresses(state.network.gateway_quic_addr_candidates()));
+    .map(|reply| {
+        reply
+            .with_quic_addresses(state.network.gateway_quic_addr_candidates())
+            .with_libp2p(
+                state.network.libp2p_peer_id.clone(),
+                state.network.libp2p_addrs(),
+            )
+    });
 
     info!(
         "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} (perna {}) resposta={}",

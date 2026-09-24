@@ -1073,6 +1073,17 @@ impl PluginRuntime {
         self.persisted.lock().await.clone()
     }
 
+    async fn persisted_with_semver(
+        &self,
+    ) -> Result<(PersistedPluginState, semver::Version), LicenseClientError> {
+        let persisted = self.persisted.lock().await.clone().ok_or_else(|| {
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
+        })?;
+        let version = semver::Version::parse(&persisted.plugin_version)
+            .map_err(|_| update_unavailable("versão instalada do plugin não é SemVer válida"))?;
+        Ok((persisted, version))
+    }
+
     async fn save_preferences(
         &self,
         values: enterprise_protocol::PluginPreferences,
@@ -2108,17 +2119,7 @@ impl PluginRuntime {
         if manifest.release_id != update.release_id || manifest.version != update.version {
             return Err(update_unavailable("a release GitHub confirmada mudou"));
         }
-        let installed_version = self
-            .persisted
-            .lock()
-            .await
-            .as_ref()
-            .map(|persisted| persisted.plugin_version.as_str())
-            .ok_or_else(|| {
-                LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
-            })?;
-        let installed_version = semver::Version::parse(installed_version)
-            .map_err(|_| update_unavailable("versão instalada do plugin não é SemVer válida"))?;
+        let (previous, installed_version) = self.persisted_with_semver().await?;
         let update_version = semver::Version::parse(&manifest.version)
             .map_err(|_| update_unavailable("versão GitHub não é SemVer válida"))?;
         if update_version <= installed_version {
@@ -2156,9 +2157,6 @@ impl PluginRuntime {
             }
             install_plugin_atomically(&path, &bytes)?;
         }
-        let previous = self.persisted.lock().await.clone().ok_or_else(|| {
-            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
-        })?;
         let mut persisted = previous.clone();
         persisted.installed_release_id = installed_id;
         persisted.plugin_version = manifest.version.clone();
@@ -3917,6 +3915,21 @@ mod tests {
             preferences,
             "local preferences survive a runtime restart"
         );
+    }
+
+    #[tokio::test]
+    async fn persisted_semver_is_owned_after_the_database_lock_is_released() {
+        let service = Arc::new(MockLicenseService::new());
+        let manager = PluginManager::test_manager(&["enterprise"], service);
+        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        activate_ready(&runtime, "PM-enterprise", "0.1.0").await;
+
+        let (persisted, version) = runtime
+            .persisted_with_semver()
+            .await
+            .expect("owned installed version");
+        assert_eq!(version, semver::Version::new(0, 1, 0));
+        assert_eq!(version.to_string(), persisted.plugin_version);
     }
 
     #[tokio::test]

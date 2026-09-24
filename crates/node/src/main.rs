@@ -340,6 +340,15 @@ struct Args {
     #[arg(long, default_value = "8080")]
     gateway_port: u16,
 
+    /// IP the setup page listens on while the node has no pom.json. Defaults to
+    /// every interface so a fresh node (including one in a container with a
+    /// published port) is reachable for first access; hardening happens in the
+    /// setup itself. Pass 127.0.0.1 to keep the unauthenticated setup local.
+    /// The configured gateway always listens on every interface and ignores
+    /// this flag.
+    #[arg(long, default_value = "0.0.0.0")]
+    setup_bind: std::net::IpAddr,
+
     /// Force this node to start at a specific layer (overrides auto gap-filling).
     /// Example: --start-layer 10  means this node owns layers 10..N.
     #[arg(long)]
@@ -741,6 +750,7 @@ async fn async_main(
             .as_ref()
             .map_or(args.gateway_port, |config| config.gateway_port);
         start_setup_mode(
+            args.setup_bind,
             gateway_port,
             args.port,
             existing_config,
@@ -1556,6 +1566,7 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
 }
 
 async fn start_setup_mode(
+    bind_ip: std::net::IpAddr,
     gateway_port: u16,
     p2p_port: u16,
     preserved: Option<config::Config>,
@@ -1674,8 +1685,12 @@ async fn start_setup_mode(
         })
         .layer(tower_http::compression::CompressionLayer::new());
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], gateway_port));
-    info!("Setup page available at http://localhost:{}", gateway_port);
+    let addr = SocketAddr::new(bind_ip, gateway_port);
+    if bind_ip.is_loopback() {
+        info!("Setup page available at http://localhost:{}", gateway_port);
+    } else {
+        warn!("Setup page listening on {addr} without authentication until setup is saved");
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     if let Some(ready) = gateway_ready {

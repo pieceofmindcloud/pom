@@ -1694,7 +1694,7 @@ remoteModels.subtitle,"Search the model provider, inspect GGUF files, and downlo
 remoteModels.tags,Tags,Tags
 remoteModels.title,Find models on Hugging Face,Encontrar modelos no Hugging Face
 remoteModels.trending,Trending GGUF models,Modelos GGUF em alta
-remoteModels.trendingSubtitle,Public Hugging Face discovery, without signing in.,Descoberta pública do Hugging Face, sem precisar entrar.
+remoteModels.trendingSubtitle,"Public Hugging Face discovery, without signing in.","Descoberta pública do Hugging Face, sem precisar entrar."
 remoteModels.updated,Updated,Atualizado
 remoteModels.verifying,Verifying,Verificando
 sendFile.choose,Choose…,Escolher…

@@ -499,8 +499,8 @@ export function SidebarContent({
         /* O menu existente permanece intocado para administrador e node. */
         <nav
           className={clsx(
-            "flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pb-4 pt-[5px]",
-            collapsed ? "overflow-visible px-2" : "px-3",
+            "flex min-h-0 flex-1 flex-col gap-1 pb-4 pt-[5px]",
+            collapsed ? "overflow-visible px-2" : "overflow-y-auto overflow-x-hidden px-3",
           )}
         >
           {navForProfile(profile).map((s) => (

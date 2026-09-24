@@ -171,7 +171,10 @@ Per-file list:
   active pill; a section holding the current path stays open. The desktop
   sidebar can be minimized and persists that choice in `localStorage`; the
   minimized state renders icon-only links and child flyouts on hover, focus or
-  click. `SidebarBrand` is a 64px header and, on desktop, the lockup itself is
+  click. Keep the minimized navigation `overflow-visible` without
+  `overflow-y-auto`: CSS computes the visible x-axis to auto when the other
+  axis scrolls, clipping the flyout; increasing its z-index cannot escape that
+  clip. `SidebarBrand` is a 64px header and, on desktop, the lockup itself is
   the accessible expand/collapse button: only an explicit click or touch toggles it.
   In the mobile drawer it remains a passive lockup. The menu below it keeps a
   5px top gap so the first item does not touch that line - the hash sits **on the identity** because in

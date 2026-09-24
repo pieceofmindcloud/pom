@@ -339,8 +339,10 @@ não estão no router principal e só existem antes da configuração inicial.
   `nonce_reused` e `nonce_expired` continuam sendo recusas 403. Um nó antigo,
   que envia o corpo anterior e não sabe repetir com a assinatura, vê 403 e
   nunca é admitido.
-  Esta rota também chega pelo túnel libp2p, junto de `/health` e das rotas
-  `/api/cluster/{tls,quic,logs,network-chat,network-settings}`: é a lista
+  Esta rota também chega pelo túnel libp2p, junto de `/health`, das rotas
+  `/api/cluster/{tls,quic,logs,network-chat,network-settings}` e da volta da
+  resposta direta (`/v1/relay-result`, `/v1/remote-stream-result`, cada uma
+  autenticada pelo ticket único do quadro): é a lista
   fechada de `infer_tunnel::gateway_path_is_allowed`, o que um par atrás de
   NAT/CGNAT usa quando nenhum endereço direto responde. A lista é conferida no
   receptor e a comparação é exata, porque o que sai do túnel chega ao gateway

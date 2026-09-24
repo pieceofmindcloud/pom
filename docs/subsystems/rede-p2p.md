@@ -620,6 +620,15 @@ nem curinga, e a conferência é do lado que recebe. O emissor escolhe a
 variante de `target`; quem resolve a porta é o receptor, com as duas portas
 que ele próprio escolheu.
 
+A **volta** da resposta direta usa o mesmo túnel. O gateway manda no `reply_to`
+os endereços por onde ele mesmo é alcançável, e eles saem das interfaces locais
+dele: com o gateway atrás de NAT, a cauda em outra rede disca
+`http://192.168.x.x:8080/v1/relay-result` e nunca chega. Desde então o
+`reply_to` carrega também o `libp2p_peer_id` e os `libp2p_addrs` do gateway, e
+`direct::deliver_via_tunnel` é a última via depois de todas as URLs falharem.
+Era o buraco que sobrava: a ida já atravessava o NAT e a volta morria calada
+até o `DIRECT_REPLY_DEADLINE`, dez minutos por token.
+
 O que continua fora do túnel: transferência de arquivos, sincronização de
 admin e o watcher do `/health` entre peers. Nenhum deles participa da
 admissão, então um par atrás de NAT já entra no cluster e roteia sem eles.

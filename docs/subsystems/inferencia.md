@@ -640,7 +640,11 @@ tradicionais:
    `PipelinePlan::supports_direct_reply()`: todos os passos anunciam
    `relay/v2-direct` **e** a cadeia tem pelo menos 2 hops. O gateway despacha
    cada quadro uma vez para a cabeça, carregando um `reply_to`; a cauda entrega
-   o resultado direto ao gateway por `/v1/relay-result`.
+   o resultado direto ao gateway por `/v1/relay-result`. As URLs do `reply_to`
+   são as interfaces locais do gateway; quando nenhuma responde - o caso normal
+   com o gateway atrás de NAT/CGNAT - a entrega cai no túnel libp2p, usando o
+   `libp2p_peer_id` e os `libp2p_addrs` que o `reply_to` também carrega. Ver
+   `docs/subsystems/rede-p2p.md`, "Travessia de NAT".
 3. **Anel borbulhado** (`relay/v1-chain`, `run_ring`/`step_ring`) - quando
    `supports_relay_chain()`: o gateway faz **uma** chamada (para a cabeça) e
    cada hop repassa ao seu próximo via `next_hops`; o resultado volta borbulhando

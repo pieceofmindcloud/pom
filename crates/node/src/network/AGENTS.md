@@ -34,7 +34,8 @@ fallback continua em `addr_candidates` + `RouteTable`.
   receptor é que a mapeia para uma das duas portas que ele próprio escolheu -
   um peer remoto nunca nomeia porta. Para o gateway vale
   `gateway_path_is_allowed`, lista **fechada** e de comparação exata
-  (`/handshake`, `/health`, `/api/cluster/{tls,quic,logs,network-chat,network-settings}`):
+  (`/handshake`, `/health`, `/api/cluster/{tls,quic,logs,network-chat,network-settings}`,
+  `/v1/relay-result`, `/v1/remote-stream-result`):
   tudo que sai do túnel chega ao gateway por `127.0.0.1`, e o gateway decide o
   que é local pelo endereço do socket - `install_trust_anchor` libera a
   administração da rede olhando só isso. Túnel aberto para o gateway seria

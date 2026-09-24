@@ -88,6 +88,14 @@ visibilidade dos controles de implantação na UI local.
   resultado direto pode ser liberado antes de recibos de transporte tardios; o
   `ReplyInbox` retém um snapshot limitado, deduplica por ticket e índice de hop
   e o reconcilia até a expiração.
+  As URLs de `reply_to` saem das interfaces locais do gateway, então atrás de
+  NAT/CGNAT nenhuma delas vale na outra ponta: `deliver_via_tunnel` é a última
+  via, pelo túnel libp2p até o `libp2p_peer_id`/`libp2p_addrs` que o `reply_to`
+  passou a carregar. Sem ela o quadro morria calado até o
+  `DIRECT_REPLY_DEADLINE`, dez minutos por token. O transporte anotado na
+  metadata é `libp2p-tunnel`, para o trace do gateway não publicar como HTTP um
+  caminho que não foi. Gateway em binário anterior não manda os campos e a
+  entrega segue sem a última via.
 - `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
   token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia

@@ -14,28 +14,102 @@ fi
 export POM_BUILD_COMMIT="$commit"
 echo "build commit: $POM_BUILD_COMMIT"
 
-# Key the native cache by the fork commit and its local source delta. A commit
-# alone misses staged/unstaged edits and untracked source files; those can leave
-# CMake's cached model-file glob stale even though COPY invalidates the RUN.
-if ! llama_commit=$(git -C llama.cpp rev-parse --short HEAD 2>/dev/null); then
-  echo "não foi possível ler o commit do fork em ./llama.cpp." >&2
-  echo "prepare o checkout (ver docs/subsystems/build-execucao.md) antes de construir a imagem." >&2
-  exit 1
+# Select an exact published fork release or compile the local checkout.
+mode=${POM_LLAMA_CPP_MODE:-release}
+case "$mode" in
+  release|source) ;;
+  *) echo "POM_LLAMA_CPP_MODE deve ser 'release' ou 'source' (recebido: $mode)." >&2; exit 1 ;;
+esac
+export POM_LLAMA_CPP_MODE="$mode"
+export POM_LLAMA_CPP_RELEASE_REPOSITORY=${POM_LLAMA_CPP_RELEASE_REPOSITORY:-pereirajair/llama.cpp}
+export POM_LLAMA_CPP_REF=${POM_LLAMA_CPP_REF:-pom-tensor-parallel}
+
+llama_docker_context=$(mktemp -d "${TMPDIR:-/tmp}/pom-llama-context.XXXXXX")
+trap 'rm -rf "$llama_docker_context"' EXIT
+if [ "$mode" = source ]; then
+  llama_source_dir=${POM_LLAMA_CPP_SOURCE_DIR:-llama.cpp}
+  if ! llama_source_dir=$(cd "$llama_source_dir" 2>/dev/null && pwd -P); then
+    echo "não foi possível localizar POM_LLAMA_CPP_SOURCE_DIR=${POM_LLAMA_CPP_SOURCE_DIR:-llama.cpp}." >&2
+    exit 1
+  fi
+  if [ ! -d "$llama_source_dir/ggml" ]; then
+    echo "POM_LLAMA_CPP_SOURCE_DIR precisa conter ggml/: $llama_source_dir" >&2
+    exit 1
+  fi
+  (
+    cd "$llama_source_dir"
+    tar --exclude=.git --exclude=build --exclude='build-*' --exclude=models \
+      --exclude='*.gguf' --exclude=node_modules -cf - .
+  ) | (cd "$llama_docker_context" && tar -xf -)
+else
+  touch "$llama_docker_context/.keep"
 fi
-if ! llama_source_hash=$(
-  {
-    git -C llama.cpp diff HEAD --binary
-    git -C llama.cpp ls-files --others --exclude-standard -z |
-      while IFS= read -r -d '' path; do
-        shasum -a 256 "llama.cpp/$path"
-      done
-  } | shasum -a 256 | awk '{ print $1 }'
-); then
-  echo "não foi possível calcular a impressão das fontes do fork llama.cpp." >&2
-  exit 1
+printf '.git/\nbuild/\nbuild-*/\nmodels/\n*.gguf\nnode_modules/\n' \
+  > "$llama_docker_context/.dockerignore"
+export POM_LLAMA_CPP_SOURCE_CONTEXT="$llama_docker_context"
+
+if [ "$mode" = release ]; then
+  if [ -z "${POM_LLAMA_CPP_RELEASE_TAG:-}" ]; then
+    if ! shallow=$(git -C llama.cpp rev-parse --is-shallow-repository 2>/dev/null); then
+      echo "não foi possível consultar o histórico do fork em ./llama.cpp." >&2
+      exit 1
+    fi
+    fetch_args=(--quiet --no-tags --filter=blob:none)
+    if [ "$shallow" = true ]; then
+      fetch_args+=(--unshallow)
+    fi
+    if ! git -C llama.cpp fetch "${fetch_args[@]}" \
+      "https://github.com/${POM_LLAMA_CPP_RELEASE_REPOSITORY}.git" \
+      "refs/heads/${POM_LLAMA_CPP_REF}"; then
+      echo "não foi possível consultar a branch ${POM_LLAMA_CPP_REF} do fork." >&2
+      exit 1
+    fi
+    remote_commit=$(git -C llama.cpp rev-parse --verify FETCH_HEAD)
+    build_number=$(git -C llama.cpp rev-list --count "$remote_commit")
+    short_hash=$(git -C llama.cpp rev-parse --short=7 "$remote_commit")
+    safe_ref=${POM_LLAMA_CPP_REF//\//-}
+    if [ "$POM_LLAMA_CPP_REF" = master ] || [ "$POM_LLAMA_CPP_REF" = "b${build_number}" ]; then
+      POM_LLAMA_CPP_RELEASE_TAG="b${build_number}"
+    else
+      POM_LLAMA_CPP_RELEASE_TAG="${safe_ref}-b${build_number}-${short_hash}"
+    fi
+  fi
+  if [[ ! "$POM_LLAMA_CPP_RELEASE_TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "POM_LLAMA_CPP_RELEASE_TAG contém caracteres inválidos." >&2
+    exit 1
+  fi
+  export POM_LLAMA_CPP_RELEASE_TAG
+  export LLAMA_CPP_CACHE_KEY="release-${POM_LLAMA_CPP_RELEASE_TAG}"
+  export CUDA_RUNTIME_FLAVOR=${CUDA_RUNTIME_FLAVOR:-runtime}
+  if [ "$CUDA_RUNTIME_FLAVOR" != runtime ]; then
+    echo "o modo release requer CUDA_RUNTIME_FLAVOR=runtime para carregar cuBLAS." >&2
+    exit 1
+  fi
+  echo "llama.cpp release: ${POM_LLAMA_CPP_RELEASE_REPOSITORY}@${POM_LLAMA_CPP_RELEASE_TAG}"
+else
+  if ! llama_commit=$(git -C "$llama_source_dir" rev-parse --short HEAD 2>/dev/null); then
+    echo "não foi possível ler o commit do fork em $llama_source_dir." >&2
+    echo "prepare o checkout (ver docs/subsystems/build-execucao.md) antes de construir a imagem." >&2
+    exit 1
+  fi
+  if ! llama_source_hash=$(
+    {
+      git -C "$llama_source_dir" diff HEAD --binary
+      git -C "$llama_source_dir" ls-files --others --exclude-standard -z |
+        while IFS= read -r -d '' path; do
+          shasum -a 256 "$llama_source_dir/$path"
+        done
+    } | shasum -a 256 | awk '{ print $1 }'
+  ); then
+    echo "não foi possível calcular a impressão das fontes do fork llama.cpp." >&2
+    exit 1
+  fi
+  export LLAMA_CPP_CACHE_KEY="${llama_commit}-${llama_source_hash}"
+  export POM_LLAMA_CPP_RELEASE_TAG=${POM_LLAMA_CPP_RELEASE_TAG:-}
+  export CUDA_RUNTIME_FLAVOR=${CUDA_RUNTIME_FLAVOR:-base}
+  echo "llama.cpp source cache key: $LLAMA_CPP_CACHE_KEY"
 fi
-export LLAMA_CPP_CACHE_KEY="${llama_commit}-${llama_source_hash}"
-echo "llama.cpp fork cache key: $LLAMA_CPP_CACHE_KEY"
+echo "llama.cpp mode: $POM_LLAMA_CPP_MODE (CUDA runtime: $CUDA_RUNTIME_FLAVOR)"
 
 # Derive the native-cache slug from the actual CMake architecture list so a
 # caller cannot change the compiled GPU targets while accidentally reusing the

@@ -25,23 +25,23 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   repositorio. Veja o cabecalho do script para as colunas, URLs e opcoes
   `--origens`, `--repeticoes` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
-  (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
-  exporta `POM_BUILD_COMMIT` (usado apenas no runtime), `LLAMA_CPP_CACHE_KEY`
-  (fork commit mais delta de fontes locais) e deriva `POM_CUDA_ARCH_CACHE_KEY`
-  da lista real de arquiteturas antes de chamar `docker compose build`. O
-  `Dockerfile` compila tres variantes de `pom` (CUDA+Vulkan, somente Vulkan e
-  CPU sem GPU) e `pom-plugin-host` no estagio Rust; um estagio frontend
-  independente roda `npm run build`. Assim mudanças de commit, fork, toolkit,
-  arquitetura ou toolchain não invalidam o cache da UI. Todos os servicos
-  compartilham a mesma imagem; `POM_BIN` seleciona a variante em runtime. O
-  commit nao pode ser lido dentro da imagem builder (`.dockerignore` corta
-  `.git/` e a imagem nao tem `git`); sem a variavel o binario compilado fica
-  com `desconhecido`; ver `TODO.md`, item 26. **Nao ler o commit
-  do fork e erro fatal**, nao `unknown`: esse valor e um id de cache mount como
-  outro qualquer, e dois checkouts diferentes que falhassem a leitura
-  dividiriam a mesma arvore nativa - a `libllama.a` velha que o id existe para
-  evitar. Construa a imagem por este script, nunca `docker compose build` na
-  mao.
+  (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes) e
+  exporta `POM_BUILD_COMMIT` apenas para o runtime. Por padrao resolve a tag da
+  branch remota `pom-tensor-parallel` (mesmo algoritmo da action de release,
+  completando a historia de um clone raso sem baixar blobs) e usa
+  `POM_LLAMA_CPP_MODE=release`; o `LLAMA_CPP_CACHE_KEY` passa a incluir essa
+  tag. `POM_LLAMA_CPP_RELEASE_TAG` fixa uma release existente.
+  `POM_LLAMA_CPP_MODE=source` compila o fork local;
+  `POM_LLAMA_CPP_SOURCE_DIR` pode apontar para outro clone Git, cujo conteudo e
+  preparado num named context temporario sem `.git`, modelos ou builds; o cache
+  e chaveado por commit e delta. O script deriva
+  `POM_CUDA_ARCH_CACHE_KEY` da lista real de arquiteturas e chama
+  `docker compose build`. `build-docker-ksia.sh` escolhe o Compose Ksia e
+  delega a este script. O `Dockerfile` compila tres variantes de `pom` e
+  `pom-plugin-host`; um estagio frontend independente roda `npm run build`.
+  Fork/tag, toolkit, arquitetura e toolchain nao invalidam a UI. Todos os
+  servicos compartilham uma imagem; `POM_BIN` seleciona a variante em runtime.
+  Construa por estes scripts, nao rode `docker compose build` diretamente.
 - `test-docker-build-cache.sh` - prova que a imagem reaproveita o que nao
   mudou. A parte estrutural verifica os estagios Rust/frontend independentes,
   a exclusao do carimbo de commit dos estagios de build, o cache mount de
@@ -50,6 +50,9 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   contexto sintetico para verificar cache em cenarios de fonte, commit, fork,
   CUDA, toolchain e artefatos locais. `POM_CACHE_TEST_DEBUG=1` imprime cada
   passo, grupo e estado do cache.
+- `test-docker-build-mode.sh` - testa os modos release/source com um `docker`
+  falso: source prepara um named context sem `.git` a partir de outro clone;
+  release mantém apenas um marcador e propaga a tag e o cache key fixados.
 - `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
   falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
   argumentos.

@@ -174,17 +174,47 @@ build. A estratégia foi validada offline por inspeção dos workflows, do
 `vendor/llama-cpp-sys-2/build.rs` e das chaves; nenhuma execução do workflow foi
 disparada.
 
-### Por que não há `LLAMA_CPP_LIB_DIR`
+### Docker dev com release ou fork local
 
-O build nativo do llama.cpp não é apenas um arquivo `.a` isolado. O
-`vendor/llama-cpp-sys-2/build.rs` configura o CMake, gera bindings e metadados
-no `OUT_DIR` e liga as bibliotecas produzidas para a combinação exata de
-checkout, plataforma, features e compilador. Um diretório apontado por
-`LLAMA_CPP_LIB_DIR` não carregaria prova suficiente de que esses itens são
-compatíveis; reutilizá-lo poderia produzir um binário silenciosamente ligado
-à revisão ou às flags erradas. Por isso esta mudança não adiciona um caminho
-prebuilt: o target comum reduz a cópia do resultado para o mesmo commit e o
-sccache reutiliza cada compilação de forma verificável pelas entradas do CAS.
+Os builds Docker da Ksia e da Salem usam por padrão `POM_LLAMA_CPP_MODE=release`.
+`build-docker.sh` consulta a branch remota `pom-tensor-parallel`, deriva a mesma
+tag que `get-tag-name` no workflow e passa a tag exata ao Docker. Também aceita
+`POM_LLAMA_CPP_RELEASE_TAG` para fixar uma release já escolhida. O workflow do
+fork deve terminar e publicar os assets antes desse build: um tag sem os
+pacotes CPU x64, CUDA 13.2 x64, Vulkan x64 e o source archive falha sem fallback.
+O dispatch manual deve usar a branch `pom-tensor-parallel`; o push dessa branch
+não dispara a regra automática, que é restrita a `master`.
+
+O source archive da tag fornece os headers e fontes usados por bindgen, MTP e
+pelas pontes do POM; no builder ele ocupa `/build/llama.cpp`, destino do
+symlink vendorizado, e `LLAMA_SOURCE` explícito tem precedência sobre esse
+symlink. Isso evita que o named context vazio da release seja confundido com
+um checkout incompleto. `POM_LLAMA_CPP_PREBUILT_LIB_DIR` faz o
+`vendor/llama-cpp-sys-2/build.rs` validar e copiar `libllama.so`, `libggml.so`,
+`libggml-base.so` e `libllama-common.so`, e pular somente o CMake do llama.cpp.
+O wrapper C++, mtmd, bindgen e os kernels CUDA MoE próprios do POM continuam no
+build local. A imagem runtime `CUDA_VERSION-runtime` fornece cudart/cuBLAS; os
+plugins CUDA, Vulkan e CPU ficam ao lado apenas da variante de executável que
+pode carregá-los. Assim CPU/Vulkan não tentam abrir o plugin CUDA nem dependem
+do driver NVIDIA.
+
+Para compilar contra um checkout local, inclusive fora da raiz do POM:
+
+```bash
+POM_LLAMA_CPP_MODE=source \
+POM_LLAMA_CPP_SOURCE_DIR=/storage/nvme1/projects/llama.cpp \
+  ./scripts/build-docker.sh
+# Na Ksia, use ./scripts/build-docker-ksia.sh no lugar.
+```
+
+O script prepara um named context temporário sem `.git`, builds antigos ou
+modelos, mas preserva fontes locais não commitadas; o target cache é isolado
+pelo commit e delta desse checkout. Em `source`, o Dockerfile mantém o build
+CMake normal e escolhe a imagem CUDA `base`. Em `release`, usa o cache keyed
+pelo tag e a imagem `runtime`. Os builds Cargo/GitHub Actions do POM continuam
+compilando o fork por fonte; este modo prebuilt é apenas para Docker de
+ desenvolvimento. `scripts/test-docker-build-mode.sh` testa a seleção sem
+Docker real.
 
 ### Medição no macOS
 
@@ -399,9 +429,12 @@ offload no primeiro clique.
   variantes de `pom` com cache mounts (registry/git/target): CUDA+Vulkan
   (`/usr/local/bin/pom`), somente Vulkan (`/usr/local/bin/pom-vulkan`) e CPU
   sem backends de GPU (`/usr/local/bin/pom-cpu`), além de `pom-plugin-host` sem
-  GPU. Um estágio irmão roda `npm run build` em `apps/frontend`. O runtime
-  combina os quatro binários e o bundle da UI, mantém `LD_LIBRARY_PATH`
-  incluindo `compat/`, define `POM_HOME=/app` e usa `docker-entrypoint.sh`.
+  GPU. Em `release`, o core compartilhado e os plugins vêm de uma tag publicada
+  do fork; em `source`, o CMake compila o checkout escolhido por
+  `POM_LLAMA_CPP_SOURCE_DIR`. Um estágio irmão roda `npm run build` em
+  `apps/frontend`. O runtime combina binários e UI, usa a imagem CUDA `runtime`
+  para cuBLAS no modo release (`base` no source), mantém o loader Vulkan e o
+  RADV, define `POM_HOME=/app` e usa `docker-entrypoint.sh`.
   `POM_BUILD_COMMIT` é exportado como `ENV` somente no runtime.
 - **A ordem das camadas do builder é o contrato de cache**, e cada `COPY` nomeia
   exatamente o que o passo abaixo dele lê - não existe `COPY . .`. Com um, um
@@ -454,19 +487,23 @@ offload no primeiro clique.
   reexecuta, e a `libllama.a` velha é relinkada a cada build.
   Por isso o `Dockerfile` chaveia o `id` do cache mount de `/build/target` em
   `pom-target-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN}`:
-  fork, toolkit CUDA, seletor Rust e arquitetura recebem árvores nativas
-  isoladas. Cargo
+  o `LLAMA_CPP_CACHE_KEY` é a tag publicada em `release` ou o commit/delta da
+  pasta local em `source`; toolkit CUDA, seletor Rust e arquitetura também
+  recebem árvores nativas isoladas. Cargo
   também confere fingerprints de fontes, manifests, dependências e rustc.
   IDs antigos ficam ocupando espaço até um
   `docker builder prune` (`--filter type=exec.cachemount` limpa só os mounts).
   `docker compose build --no-cache` **não** resolve: cache mounts sobrevivem ao
   `--no-cache`.
 - **`scripts/build-docker.sh`**: lê o commit **no host** (`git rev-parse
-  --short HEAD`, sufixo `-sujo` se a árvore tem mudanças), exporta
-  `POM_BUILD_COMMIT` e `LLAMA_CPP_CACHE_KEY` (commit do fork mais hash das
-  mudanças locais rastreadas e fontes não rastreadas), deriva
-  `POM_CUDA_ARCH_CACHE_KEY` da lista CUDA efetiva, e chama
-  `docker compose build`. Não roda `npm run build`: a interface é construída
+  --short HEAD`, sufixo `-sujo` se a árvore tem mudanças), resolve o modo do
+  fork (release publicada por padrão ou source local), prepara um named context
+  temporário e exporta `POM_BUILD_COMMIT`, `LLAMA_CPP_CACHE_KEY`, tag/repo da
+  release e `POM_CUDA_ARCH_CACHE_KEY` antes de chamar `docker compose build`.
+  `POM_LLAMA_CPP_SOURCE_DIR` pode apontar a outro clone Git local; a pasta de
+  contexto exclui `.git` e dados/builds grandes. `build-docker-ksia.sh` escolhe
+  o Compose Ksia e delega ao mesmo script. Não roda `npm run build`: a
+  interface é construída
   em estágio próprio. Não conseguir ler o commit do fork **aborta** em vez de
   cair em `unknown` - esse valor é um id de cache mount como outro qualquer, e
   dois checkouts diferentes que falhassem a leitura dividiriam a mesma árvore

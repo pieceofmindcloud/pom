@@ -51,7 +51,7 @@ all_instructions=$(parse_instructions "$dockerfile")
 base=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "FROM" && $3 ~ / AS build-base$/ { print $1; exit }')
 builder=builder
 frontend=frontend
-runtime=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "FROM" && $3 ~ /-base-ubuntu/ { print $1; exit }')
+runtime=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "FROM" && $3 ~ / AS runtime$/ { print $1; exit }')
 in_stage() { printf '%s\n' "$all_instructions" | awk -F '\t' -v s="$1" '$1 == s { print $2 "\t" $3 }'; }
 base_instructions=$(in_stage "$base")
 builder_instructions=$(in_stage "$builder")
@@ -66,7 +66,7 @@ ordered() {
 }
 
 printf '1. Dockerfile structure (shared: %s, Rust: %s, frontend: %s, runtime: %s)\n' "$base" "$builder" "$frontend" "$runtime"
-whole_context=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "COPY" { line=$3; sub(/^(--[^ ]+ )+/, "", line); n=split(line,tok," "); for(i=1;i<n;i++) if(tok[i]=="." || tok[i]=="./") {print; exit} }')
+whole_context=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "COPY" && $3 !~ /--from=/ { line=$3; sub(/^(--[^ ]+ )+/, "", line); n=split(line,tok," "); for(i=1;i<n;i++) if(tok[i]=="." || tok[i]=="./") {print; exit} }')
 if [ -n "$whole_context" ]; then fail "a stage copies the whole context (COPY $whole_context)"; else pass "no COPY of the whole build context"; fi
 
 ordered "npm dependencies are installed in the shared base" \
@@ -99,7 +99,7 @@ else
     fail "runtime stage must export POM_BUILD_COMMIT from its build arg"
 fi
 
-for arg in LLAMA_CPP_CACHE_KEY POM_CUDA_ARCH_CACHE_KEY POM_CUDA_ARCHITECTURES RUST_TOOLCHAIN; do
+for arg in LLAMA_CPP_CACHE_KEY POM_CUDA_ARCH_CACHE_KEY POM_CUDA_ARCHITECTURES POM_LLAMA_CPP_MODE POM_LLAMA_CPP_RELEASE_TAG POM_LLAMA_CPP_RELEASE_REPOSITORY RUST_TOOLCHAIN; do
     if printf '%s\n' "$builder_instructions" | grep -q "^ARG[[:space:]]$arg="; then
         pass "$arg is scoped to the Rust builder"
     else
@@ -182,11 +182,11 @@ printf '%s\n' "$all_instructions" | awk -F '\t' -v base="$base" -v b="$builder" 
 done
 
 run_id="$(date +%s)-$$"
-mkdir -p "$ctx/llama.cpp/ggml/src" "$ctx/crates/node/src" "$ctx/apps/frontend/src"
+mkdir -p "$ctx/llama-fork/ggml/src" "$ctx/crates/node/src" "$ctx/apps/frontend/src"
 printf 'crate docs\n' > "$ctx/crates/AGENTS.md"
 printf 'node docs\n' > "$ctx/crates/node/AGENTS.md"
 seed() { printf '%s %s\n' "$2" "$run_id" > "$ctx/$1"; }
-seed llama.cpp/ggml/src/probe.c v1
+seed llama-fork/ggml/src/probe.c v1
 seed crates/node/src/probe.rs v1
 seed apps/frontend/src/probe.tsx v1
 
@@ -195,16 +195,25 @@ llama_cache_key=def5678-clean
 cuda_version=13.2.1
 cuda_architectures='86;120'
 cuda_arch_key=86-120
+llama_mode=release
+llama_release_tag=sample-release-tag
+llama_release_repository=pereirajair/llama.cpp
+cuda_runtime_flavor=runtime
 rust_toolchain=stable
 
 build_target_groups() {
     local target=$1
     docker build --progress=plain --target "$target" \
+        --build-context "llama-fork=$ctx/llama-fork" \
         --build-arg "POM_BUILD_COMMIT=$build_commit" \
         --build-arg "LLAMA_CPP_CACHE_KEY=$llama_cache_key" \
         --build-arg "CUDA_VERSION=$cuda_version" \
         --build-arg "POM_CUDA_ARCHITECTURES=$cuda_architectures" \
         --build-arg "POM_CUDA_ARCH_CACHE_KEY=$cuda_arch_key" \
+        --build-arg "POM_LLAMA_CPP_MODE=$llama_mode" \
+        --build-arg "POM_LLAMA_CPP_RELEASE_TAG=$llama_release_tag" \
+        --build-arg "POM_LLAMA_CPP_RELEASE_REPOSITORY=$llama_release_repository" \
+        --build-arg "CUDA_RUNTIME_FLAVOR=$cuda_runtime_flavor" \
         --build-arg "RUST_TOOLCHAIN=$rust_toolchain" \
         -f "$stub" -t pom-cache-test:probe "$ctx" 2>&1 \
     | awk -v base="$base" -v builder="$builder" -v frontend="$frontend" -v debug="${POM_CACHE_TEST_DEBUG:-}" '
@@ -275,7 +284,7 @@ seed apps/frontend/src/probe.tsx v2
 scenario "apps/frontend changed" "ui"
 seed crates/node/src/probe.rs v2
 scenario "backend Rust source changed while UI is cached" "backend"
-seed llama.cpp/ggml/src/probe.c v2
+seed llama-fork/ggml/src/probe.c v2
 scenario "fork changed while frontend sources stay unchanged" "backend llama"
 
 llama_cache_key=0bad1dea-clean

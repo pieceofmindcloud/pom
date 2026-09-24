@@ -16,9 +16,18 @@ def fail(message: str) -> None:
     raise AssertionError(message)
 
 
-def compose_config(filename: str) -> dict:
+def compose_config(filename: str, overrides: dict[str, str] | None = None) -> dict:
     environment = os.environ.copy()
     environment.pop("COMPOSE_FILE", None)
+    for variable in (
+        "POM_LLAMA_CPP_MODE",
+        "POM_LLAMA_CPP_RELEASE_TAG",
+        "POM_LLAMA_CPP_RELEASE_REPOSITORY",
+        "POM_LLAMA_CPP_SOURCE_CONTEXT",
+        "CUDA_RUNTIME_FLAVOR",
+    ):
+        environment.pop(variable, None)
+    environment.update(overrides or {})
     environment["COMPOSE_FILE"] = filename
     result = subprocess.run(
         ["docker", "compose", "config", "--format", "json"],
@@ -68,9 +77,18 @@ def check_config(
     images = {service["image"] for service in services.values()}
     if len(builds) != 1 or images != {"pom:latest"}:
         fail(f"{filename}: servicos nao compartilham imagem e build")
+    build_args = next(iter(services.values()))["build"].get("args", {})
+    if build_args.get("POM_LLAMA_CPP_MODE") != "release":
+        fail(f"{filename}: build de desenvolvimento deve usar llama.cpp release por padrão")
+    if build_args.get("CUDA_RUNTIME_FLAVOR") != "runtime":
+        fail(f"{filename}: release prebuilt requer a imagem CUDA runtime")
+    if build_args.get("POM_LLAMA_CPP_RELEASE_REPOSITORY") != "pereirajair/llama.cpp":
+        fail(f"{filename}: repositório da release prebuilt incorreto")
     if any(
         service["build"].get("context") != str(ROOT)
         or service["build"].get("dockerfile") != "Dockerfile"
+        or service["build"].get("additional_contexts", {}).get("llama-fork")
+        != str(ROOT / "llama.cpp")
         for service in services.values()
     ):
         fail(f"{filename}: contexto ou Dockerfile incorreto")
@@ -129,6 +147,8 @@ def check_ksia_config() -> None:
         fail(f"{filename}: imagem inesperada {service['image']!r}")
     if service["build"].get("dockerfile") != "Dockerfile":
         fail(f"{filename}: Dockerfile de build incorreto")
+    if service["build"].get("additional_contexts", {}).get("llama-fork") != str(ROOT / "llama.cpp"):
+        fail(f"{filename}: named context do fork incorreto")
     if service.get("network_mode") != "host":
         fail(f"{filename}: node-1 perdeu network_mode: host")
     if nvidia_ids(service) != ["0", "1"]:
@@ -136,6 +156,8 @@ def check_ksia_config() -> None:
     if service.get("environment", {}).get("POM_BIN", CUDA_BIN) != CUDA_BIN:
         fail(f"{filename}: node-1 deve usar o binário CUDA+Vulkan compartilhado")
     args = service["build"].get("args", {})
+    if args.get("POM_LLAMA_CPP_MODE") != "release" or args.get("CUDA_RUNTIME_FLAVOR") != "runtime":
+        fail(f"{filename}: build deve usar release prebuilt com CUDA runtime")
     if args.get("POM_CUDA_ARCHITECTURES") != "86;120" or args.get(
         "POM_CUDA_ARCH_CACHE_KEY"
     ) != "86-120":
@@ -145,4 +167,23 @@ def check_ksia_config() -> None:
 check_config("docker-compose.yml", SALEM_BINS, SALEM_GPUS, SALEM_RADEON)
 check_config("docker-compose.salem.yml", SALEM_BINS, SALEM_GPUS, SALEM_RADEON)
 check_ksia_config()
+
+for filename, service_name in (
+    ("docker-compose.yml", "node-gpu"),
+    ("docker-compose.ksia.yml", "node-1"),
+):
+    build = compose_config(
+        filename,
+        {
+            "POM_LLAMA_CPP_MODE": "source",
+            "POM_LLAMA_CPP_SOURCE_CONTEXT": "/tmp/local-llama-context",
+            "CUDA_RUNTIME_FLAVOR": "base",
+        },
+    )["services"][service_name]["build"]
+    args = build.get("args", {})
+    if args.get("POM_LLAMA_CPP_MODE") != "source" or args.get("CUDA_RUNTIME_FLAVOR") != "base":
+        fail(f"{filename}: nao permite selecionar o fork fonte local")
+    if build.get("additional_contexts", {}).get("llama-fork") != "/tmp/local-llama-context":
+        fail(f"{filename}: nao permite apontar o fork fonte local")
+
 print("Docker Compose backend and GPU configuration passed")

@@ -102,8 +102,13 @@ Per-file list:
   à loja pública com `plugin=<code>` codificado em `lib/pluginPurchase.ts`. Um
   único formulário ativa em lote todo `plugin_code` que o servidor conceder
   (`POST /api/ui/plugins/activate`, resposta
-  `{activated}`); atualizar e desativar continuam por plugin. A atualização do binário
-  `pom` em si fica separada em `About.tsx` (ver
+  `{activated}`); atualizar e desativar continuam por plugin. Cada card também
+  cadastra uma URL canônica pública do GitHub, permite remover/verificar a origem
+  e mostra o download compatível separado da atualização licenciada; baixar nunca
+  instala nem reinicia, e aplicar exige confirmação explícita com licença ativa.
+  O editor de preferências usa o schema opcional do manifesto instalado, mostra
+  defaults tipados boolean/diretório e envia valores só à rota local do nó.
+  A atualização do binário `pom` em si fica separada em `About.tsx` (ver
   `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,
   Configurações > Plugins. A release exibida é escolhida pela combinação
   `system.os`/`system.arch` do nó local; se o catálogo não publicar esse alvo,

@@ -64,6 +64,7 @@ function activationCandidate(plugin_code: string) {
 
 const mocks = vi.hoisted(() => ({
   post: vi.fn(),
+  del: vi.fn(),
   navigateToPluginPurchase: vi.fn(),
   plugins: {
     data: [] as Array<{
@@ -101,7 +102,7 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../lib/api", () => ({ api: { post: mocks.post } }));
+vi.mock("../lib/api", () => ({ api: { post: mocks.post, del: mocks.del } }));
 vi.mock("../lib/queries", () => ({
   usePlugins: () => mocks.plugins,
   usePublicPluginCatalog: () => mocks.catalog,
@@ -123,6 +124,7 @@ describe("Plugins", () => {
   afterEach(() => {
     cleanup();
     mocks.post.mockReset();
+    mocks.del.mockReset();
     mocks.plugins.data = [];
     mocks.plugins.isLoading = false;
     mocks.plugins.isError = false;
@@ -620,6 +622,93 @@ describe("Plugins", () => {
       "/api/ui/plugins/sigma/update/apply",
       { release_id: "sigma-2" },
     ));
+  });
+
+  it("registers and removes a public GitHub source by plugin code", async () => {
+    mocks.catalog.data = { plugins: [publicPlugin("base")] };
+    mocks.plugins.data = [pluginStatus("base", {
+      github_repository: "https://github.com/example/base-plugin",
+    })];
+    mocks.post.mockResolvedValue({});
+    mocks.del.mockResolvedValue({});
+    renderPage();
+
+    const repository = screen.getByLabelText("URL do repositório público do GitHub");
+    fireEvent.change(repository, { target: { value: "https://github.com/example/another-plugin" } });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar repositório" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/base/github-source",
+      { repository_url: "https://github.com/example/another-plugin" },
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "Remover origem" }));
+    await waitFor(() => expect(mocks.del).toHaveBeenCalledWith("/api/ui/plugins/base/github-source"));
+  });
+
+  it("shows source registration failures without hiding the existing release status", async () => {
+    mocks.catalog.data = { plugins: [publicPlugin("base")] };
+    mocks.plugins.data = [pluginStatus("base", {
+      github_repository: "https://github.com/example/base-plugin",
+      github_update: { release_id: "v1.2.0", version: "1.2.0", changelog: null, downloaded: true },
+    })];
+    mocks.post.mockRejectedValue(new Error("private repository"));
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Verificar atualizações" }));
+
+    expect(await screen.findByText(/Não foi possível cadastrar ou atualizar/)).toBeTruthy();
+    expect(screen.getByText("Atualização verificada do GitHub baixada: 1.2.0")).toBeTruthy();
+  });
+
+  it("applies a downloaded GitHub update only through the explicit action", async () => {
+    mocks.catalog.data = { plugins: [publicPlugin("base")] };
+    mocks.plugins.data = [pluginStatus("base", {
+      active: true,
+      state: "active",
+      github_repository: "https://github.com/example/base-plugin",
+      github_update: { release_id: "v1.2.0", version: "1.2.0", changelog: "Update", downloaded: true },
+    })];
+    mocks.post.mockResolvedValue({});
+    renderPage();
+
+    expect(screen.getByText("Atualização verificada do GitHub baixada: 1.2.0")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Instalar atualização baixada" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/base/github-source/apply",
+      { release_id: "v1.2.0" },
+    ));
+  });
+
+  it("edits typed preference defaults and submits only to the local preferences route", async () => {
+    mocks.catalog.data = { plugins: [publicPlugin("base")] };
+    mocks.plugins.data = [pluginStatus("base", {
+      active: true,
+      state: "active",
+      preferences_schema: {
+        features: [{
+          key: "include_headers",
+          label: "Incluir cabeçalhos",
+          default: false,
+          description: "Opção de exemplo",
+        }],
+        storage_directory: { label: "Pasta de dados", default: null },
+      },
+      preferences: { features: { include_headers: false }, storage_directory: null },
+    })];
+    mocks.post.mockResolvedValue({});
+    renderPage();
+
+    fireEvent.click(screen.getByLabelText("Incluir cabeçalhos"));
+    fireEvent.change(screen.getByLabelText("Pasta de dados"), {
+      target: { value: "/tmp/plugin-data" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar preferências" }));
+
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/base/preferences",
+      { preferences: { features: { include_headers: true }, storage_directory: "/tmp/plugin-data" } },
+    ));
+    expect(mocks.post).not.toHaveBeenCalledWith("/api/ui/plugins/activate", expect.anything());
   });
 
   it("desativa um plugin sem chamar rota de atualização do pom_core", async () => {

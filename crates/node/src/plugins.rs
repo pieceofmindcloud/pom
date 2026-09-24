@@ -56,6 +56,8 @@ use tokio::sync::{Mutex, RwLock};
 pub(crate) const ENTERPRISE_PLUGIN_CODE: &str = "enterprise";
 
 const PERSISTED_SETTING_PREFIX: &str = "plugin_license:";
+const GITHUB_SETTING_PREFIX: &str = "plugin_github:";
+const PREFERENCES_SETTING_PREFIX: &str = "plugin_preferences:";
 
 /// Plugin codes vêm do serviço de licenças e também compõem segmentos de URL
 /// e diretórios locais. Aceitamos slugs genéricos, mas nunca separadores ou
@@ -769,6 +771,8 @@ pub(crate) struct PersistedPluginState {
     pub features: Vec<String>,
     pub plugin_sha256: String,
     pub plugin_path: Option<String>,
+    #[serde(default)]
+    pub preferences_schema: Option<enterprise_protocol::PluginPreferencesSchema>,
 }
 
 /// Uma atualização de versão disponível para instalação - do próprio plugin,
@@ -809,6 +813,18 @@ pub(crate) struct PluginStatus {
     pub installed_at: Option<String>,
     pub update_checked_at: Option<String>,
     pub available_update: Option<PluginUpdateInfo>,
+    /// Public repository URL configured locally, if any.
+    #[serde(default)]
+    pub github_repository: Option<String>,
+    /// Verified GitHub release downloaded locally, waiting for explicit install.
+    #[serde(default)]
+    pub github_update: Option<crate::plugin_github::GithubUpdateInfo>,
+    #[serde(default)]
+    pub github_error: Option<String>,
+    #[serde(default)]
+    pub preferences_schema: Option<enterprise_protocol::PluginPreferencesSchema>,
+    #[serde(default)]
+    pub preferences: Option<enterprise_protocol::PluginPreferences>,
 }
 
 impl PluginStatus {
@@ -830,6 +846,11 @@ impl PluginStatus {
             installed_at: None,
             update_checked_at: None,
             available_update: None,
+            github_repository: None,
+            github_update: None,
+            github_error: None,
+            preferences_schema: None,
+            preferences: None,
         }
     }
 
@@ -858,6 +879,7 @@ pub(crate) struct PluginRuntime {
     database: Option<Arc<crate::db::PomDb>>,
     host: Arc<Mutex<Option<crate::plugin_host::PluginHost>>>,
     update_lock: Arc<Mutex<()>>,
+    github: Arc<RwLock<crate::plugin_github::GithubPluginState>>,
     /// Contexto que o nó entrega a todo host de plugin (`host.configure`),
     /// compartilhado com o [`PluginManager`]. `None` até o gateway ficar pronto.
     host_context: HostContext,
@@ -874,6 +896,16 @@ impl PluginRuntime {
         database: Option<Arc<crate::db::PomDb>>,
         host_context: HostContext,
     ) -> Self {
+        let github = database
+            .as_ref()
+            .and_then(|database| {
+                database
+                    .local_setting_json(&format!("{GITHUB_SETTING_PREFIX}{code}"))
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
         Self {
             code: code.to_owned(),
             service,
@@ -884,6 +916,7 @@ impl PluginRuntime {
             database,
             host: Arc::new(Mutex::new(None)),
             update_lock: Arc::new(Mutex::new(())),
+            github: Arc::new(RwLock::new(github)),
             host_context,
         }
     }
@@ -913,6 +946,18 @@ impl PluginRuntime {
         };
         if let Some(object) = payload.as_object_mut() {
             object.insert("operation".into(), "host.configure".into());
+            if let Some(schema) = self
+                .persisted
+                .lock()
+                .await
+                .as_ref()
+                .and_then(|state| state.preferences_schema.clone())
+            {
+                object.insert(
+                    "preferences".into(),
+                    serde_json::to_value(self.preferences_for(&schema)).unwrap_or_default(),
+                );
+            }
         }
         if let Err(error) = host.query(payload).await {
             tracing::debug!(plugin_code = %self.code, %error, "plugin não aceitou host.configure");
@@ -938,12 +983,126 @@ impl PluginRuntime {
         format!("{PERSISTED_SETTING_PREFIX}{}", self.code)
     }
 
+    fn preferences_key(&self) -> String {
+        format!("{PREFERENCES_SETTING_PREFIX}{}", self.code)
+    }
+
+    fn github_key(&self) -> String {
+        format!("{GITHUB_SETTING_PREFIX}{}", self.code)
+    }
+
+    fn github_download_path(
+        &self,
+        release_id: &str,
+        sha256: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        let root = self
+            .database
+            .as_ref()
+            .and_then(|database| database.path().parent())
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(crate::config::project_root);
+        crate::plugin_github::downloaded_asset_path(
+            &root,
+            &self.code,
+            release_id,
+            sha256,
+            &self.fingerprint.platform,
+            &self.fingerprint.arch,
+        )
+    }
+
+    fn preferences_for(
+        &self,
+        schema: &enterprise_protocol::PluginPreferencesSchema,
+    ) -> enterprise_protocol::PluginPreferences {
+        let mut preferences = default_preferences(schema);
+        if let Some(database) = &self.database {
+            if let Ok(Some(json)) = database.local_setting_json(&self.preferences_key()) {
+                if let Ok(saved) =
+                    serde_json::from_str::<enterprise_protocol::PluginPreferences>(&json)
+                {
+                    if validate_preferences(schema, &saved).is_ok() {
+                        preferences = merge_preferences(schema, saved);
+                    }
+                }
+            }
+        }
+        preferences
+    }
+
     pub(crate) async fn status(&self) -> PluginStatus {
-        self.status.read().await.clone()
+        let mut status = self.status.read().await.clone();
+        let github = self.github.read().await.clone();
+        status.github_repository = github.repository_url;
+        status.github_update = github.update;
+        status.github_error = github.check_error;
+        if let Some(installed_version) = status
+            .plugin_version
+            .as_deref()
+            .and_then(|version| semver::Version::parse(version).ok())
+        {
+            if status
+                .available_update
+                .as_ref()
+                .and_then(|update| semver::Version::parse(&update.version).ok())
+                .is_some_and(|version| version <= installed_version)
+            {
+                status.available_update = None;
+            }
+            if status
+                .github_update
+                .as_ref()
+                .and_then(|update| semver::Version::parse(&update.version).ok())
+                .is_some_and(|version| version <= installed_version)
+            {
+                status.github_update = None;
+            }
+        }
+        if let Some(persisted) = self.persisted.lock().await.as_ref() {
+            if let Some(schema) = &persisted.preferences_schema {
+                status.preferences_schema = Some(schema.clone());
+                status.preferences = Some(self.preferences_for(schema));
+            }
+        }
+        status
     }
 
     pub(crate) async fn persisted_state(&self) -> Option<PersistedPluginState> {
         self.persisted.lock().await.clone()
+    }
+
+    async fn save_preferences(
+        &self,
+        values: enterprise_protocol::PluginPreferences,
+    ) -> Result<(), LicenseClientError> {
+        if !self.status.read().await.active {
+            return Err(LicenseClientError::new(
+                LicenseErrorCode::FeatureNotEntitled,
+                "Ative o plugin antes de editar suas preferências.",
+            ));
+        }
+        let schema = self
+            .persisted
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|persisted| persisted.preferences_schema.clone())
+            .ok_or_else(|| update_unavailable("este release não declara preferências"))?;
+        validate_preferences(&schema, &values).map_err(|message| {
+            LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, message)
+        })?;
+        let values = merge_preferences(&schema, values);
+        if let Some(database) = &self.database {
+            database
+                .save_local_setting(&self.preferences_key(), &values)
+                .map_err(|error| {
+                    LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
+                })?;
+        }
+        self.reconfigure_running_host().await;
+        Ok(())
     }
 
     /// Restaura o estado persistido (se houver) e, se o plugin já tinha um
@@ -1091,6 +1250,7 @@ impl PluginRuntime {
         persisted.plugin_version = manifest.manifest.version.clone();
         persisted.plugin_sha256 = manifest.manifest.sha256.clone();
         persisted.plugin_path = Some(path.to_string_lossy().into_owned());
+        persisted.preferences_schema = manifest.manifest.preferences.clone();
         persisted.last_success_at = Some(chrono::Utc::now().to_rfc3339());
         if let Some(database) = &self.database {
             if let Err(error) = database.save_local_setting(&self.setting_key(), &persisted) {
@@ -1196,6 +1356,7 @@ impl PluginRuntime {
             features,
             plugin_sha256: response.plugin_manifest.sha256,
             plugin_path: None,
+            preferences_schema: response.plugin_manifest.preferences.clone(),
         };
         if let Some(database) = &self.database {
             database
@@ -1646,6 +1807,7 @@ impl PluginRuntime {
                 &self.fingerprint.arch,
             )
             .await?;
+        validate_manifest_for_runtime(&self.code, &manifest.manifest)?;
         let available =
             (manifest.manifest.release_id != persisted.installed_release_id).then(|| {
                 PluginUpdateInfo {
@@ -1739,6 +1901,7 @@ impl PluginRuntime {
                 "a atualização confirmada já não é uma release nova disponível",
             ));
         }
+        validate_manifest_for_runtime(&self.code, &manifest.manifest)?;
         let bytes = self.service.download(&manifest.download).await?;
         validate_download(&manifest.manifest, &bytes)?;
         let path = plugin_path(
@@ -1768,6 +1931,7 @@ impl PluginRuntime {
         persisted.plugin_version = manifest.manifest.version.clone();
         persisted.plugin_sha256 = manifest.manifest.sha256.clone();
         persisted.plugin_path = Some(path.to_string_lossy().into_owned());
+        persisted.preferences_schema = manifest.manifest.preferences.clone();
         persisted.installed_at = Some(chrono::Utc::now().to_rfc3339());
         persisted.last_success_at = Some(chrono::Utc::now().to_rfc3339());
         if let Some(database) = &self.database {
@@ -1782,6 +1946,306 @@ impl PluginRuntime {
         status.plugin_version = Some(manifest.manifest.version);
         status.installed_at = persisted.installed_at.clone();
         status.available_update = None;
+        drop(status);
+        self.reconfigure_running_host().await;
+        Ok(())
+    }
+
+    async fn persist_github_state(
+        &self,
+        github: &crate::plugin_github::GithubPluginState,
+    ) -> Result<(), String> {
+        let previous = self.github.read().await.clone();
+        if let Some(database) = &self.database {
+            database
+                .save_local_setting(&self.github_key(), github)
+                .map_err(|error| error.to_string())?;
+        }
+        *self.github.write().await = github.clone();
+        if let Some(previous_manifest) = previous.manifest {
+            let retained = github.manifest.as_ref().is_some_and(|current| {
+                current.release_id == previous_manifest.release_id
+                    && current.sha256 == previous_manifest.sha256
+            });
+            if !retained {
+                if let Ok(path) = self
+                    .github_download_path(&previous_manifest.release_id, &previous_manifest.sha256)
+                {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn fetch_github_update(
+        &self,
+        repository_url: &str,
+        client: &crate::plugin_github::GithubReleaseClient,
+    ) -> Result<crate::plugin_github::GithubPluginState, String> {
+        let current_version = self
+            .persisted
+            .lock()
+            .await
+            .as_ref()
+            .map(|state| state.plugin_version.clone());
+        let update = client
+            .check_and_download(
+                repository_url,
+                &self.code,
+                &self.fingerprint.platform,
+                &self.fingerprint.arch,
+                current_version.as_deref(),
+            )
+            .await?;
+        let mut github = self.github.read().await.clone();
+        github.repository_url = Some(repository_url.to_owned());
+        github.checked_at = Some(chrono::Utc::now().to_rfc3339());
+        github.check_error = None;
+        if let Some(downloaded) = update {
+            let path = self.github_download_path(
+                &downloaded.manifest.release_id,
+                &downloaded.manifest.sha256,
+            )?;
+            let already_staged = std::fs::read(&path).ok().is_some_and(|bytes| {
+                crate::plugin_github::validate_integrity(&downloaded.manifest, &bytes, None).is_ok()
+            });
+            if !already_staged {
+                if path.exists() {
+                    std::fs::remove_file(&path).map_err(|error| error.to_string())?;
+                }
+                crate::plugin_github::write_downloaded_asset(&path, &downloaded.bytes)?;
+            }
+            github.update = Some(crate::plugin_github::GithubUpdateInfo {
+                release_id: downloaded.manifest.release_id.clone(),
+                version: downloaded.manifest.version.clone(),
+                changelog: downloaded.manifest.changelog.clone(),
+                downloaded: true,
+            });
+            github.manifest = Some(downloaded.manifest);
+        } else {
+            github.update = None;
+            github.manifest = None;
+        }
+        Ok(github)
+    }
+
+    async fn register_github_source(
+        &self,
+        repository_url: &str,
+        client: &crate::plugin_github::GithubReleaseClient,
+    ) -> Result<(), String> {
+        let _guard = self.update_lock.lock().await;
+        let repository_url = crate::plugin_github::canonical_repository(repository_url)?;
+        // Probe first. An invalid, private or inaccessible repository never
+        // replaces a previously working source.
+        let github = self.fetch_github_update(&repository_url, client).await?;
+        self.persist_github_state(&github).await
+    }
+
+    async fn check_github_source(
+        &self,
+        client: &crate::plugin_github::GithubReleaseClient,
+    ) -> Result<(), String> {
+        let _guard = self.update_lock.lock().await;
+        let current = self.github.read().await.clone();
+        let Some(repository_url) = current.repository_url else {
+            return Ok(());
+        };
+        match self.fetch_github_update(&repository_url, client).await {
+            Ok(github) => self.persist_github_state(&github).await,
+            Err(error) => {
+                let mut retained = self.github.read().await.clone();
+                retained.check_error = Some(error.clone());
+                if let Err(persist_error) = self.persist_github_state(&retained).await {
+                    tracing::warn!(plugin_code = %self.code, error = %persist_error, "GitHub plugin state could not persist");
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn remove_github_source(&self) -> Result<(), String> {
+        let _guard = self.update_lock.lock().await;
+        let github = self.github.read().await.clone();
+        if let Some(database) = &self.database {
+            database
+                .delete_local_setting(&self.github_key())
+                .map_err(|error| error.to_string())?;
+        }
+        *self.github.write().await = crate::plugin_github::GithubPluginState::default();
+        if let Some(manifest) = github.manifest {
+            if let Ok(path) = self.github_download_path(&manifest.release_id, &manifest.sha256) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_github_update(&self, release_id: &str) -> Result<(), LicenseClientError> {
+        let _guard = self.update_lock.lock().await;
+        let status = self.status.read().await.clone();
+        if !status.active
+            || !status
+                .licensed_plugins
+                .iter()
+                .any(|code| code == &self.code)
+        {
+            return Err(LicenseClientError::new(
+                LicenseErrorCode::FeatureNotEntitled,
+                "este plugin precisa estar ativo pela licença para instalar a atualização",
+            ));
+        }
+        let github = self.github.read().await.clone();
+        let update = github
+            .update
+            .as_ref()
+            .filter(|update| update.release_id == release_id && update.downloaded)
+            .ok_or_else(|| update_unavailable("a release GitHub não está baixada"))?;
+        let manifest = github
+            .manifest
+            .ok_or_else(|| update_unavailable("manifest GitHub ausente"))?;
+        if manifest.release_id != update.release_id || manifest.version != update.version {
+            return Err(update_unavailable("a release GitHub confirmada mudou"));
+        }
+        let installed_version = self
+            .persisted
+            .lock()
+            .await
+            .as_ref()
+            .map(|persisted| persisted.plugin_version.as_str())
+            .ok_or_else(|| {
+                LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
+            })?;
+        let installed_version = semver::Version::parse(installed_version)
+            .map_err(|_| update_unavailable("versão instalada do plugin não é SemVer válida"))?;
+        let update_version = semver::Version::parse(&manifest.version)
+            .map_err(|_| update_unavailable("versão GitHub não é SemVer válida"))?;
+        if update_version <= installed_version {
+            return Err(update_unavailable(
+                "esta release GitHub não é mais nova que a instalada",
+            ));
+        }
+        if let Some(preferences) = &manifest.preferences {
+            crate::plugin_github::validate_preferences_schema(preferences)
+                .map_err(|error| LicenseClientError::new(LicenseErrorCode::ServerError, error))?;
+        }
+        let staged_path = self
+            .github_download_path(&manifest.release_id, &manifest.sha256)
+            .map_err(|error| LicenseClientError::new(LicenseErrorCode::ServerError, error))?;
+        let bytes = std::fs::read(&staged_path).map_err(io_error)?;
+        crate::plugin_github::validate_integrity(&manifest, &bytes, None)
+            .map_err(|error| LicenseClientError::new(LicenseErrorCode::ServerError, error))?;
+        let digest = manifest
+            .sha256
+            .strip_prefix("sha256:")
+            .unwrap_or(&manifest.sha256);
+        let installed_id = format!("github-{}-{digest}", manifest.release_id);
+        let path = plugin_path(
+            &self.code,
+            &installed_id,
+            &self.fingerprint.platform,
+            &self.fingerprint.arch,
+        )?;
+        let already_installed = std::fs::read(&path).ok().is_some_and(|installed| {
+            crate::plugin_github::validate_integrity(&manifest, &installed, None).is_ok()
+        });
+        if !already_installed {
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(io_error)?;
+            }
+            install_plugin_atomically(&path, &bytes)?;
+        }
+        let previous = self.persisted.lock().await.clone().ok_or_else(|| {
+            LicenseClientError::new(LicenseErrorCode::LeaseUnknown, "Ativação local ausente.")
+        })?;
+        let mut persisted = previous.clone();
+        persisted.installed_release_id = installed_id;
+        persisted.plugin_version = manifest.version.clone();
+        persisted.plugin_sha256 = manifest.sha256.clone();
+        persisted.plugin_path = Some(path.to_string_lossy().into_owned());
+        persisted.features = features_for_code(&self.code, &manifest.feature_set);
+        persisted.preferences_schema = manifest.preferences.clone();
+        persisted.installed_at = Some(chrono::Utc::now().to_rfc3339());
+        let old_path = previous.plugin_path.clone();
+        let database_path = self
+            .database
+            .as_ref()
+            .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
+            .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
+        *self.persisted.lock().await = Some(persisted.clone());
+        if let Some(old_host) = self.host.lock().await.take() {
+            let _ = old_host.stop().await;
+        }
+        let host = match self.start_host(&path, &database_path).await {
+            Ok(host) => host,
+            Err(error) => {
+                *self.persisted.lock().await = Some(previous.clone());
+                if let Some(old_path) = old_path
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .filter(|path| path.is_file())
+                {
+                    match self.start_host(old_path, &database_path).await {
+                        Ok(host) => *self.host.lock().await = Some(host),
+                        Err(restart_error) => {
+                            tracing::error!(plugin_code = %self.code, error = %restart_error, "previous plugin host could not be restored after GitHub update failure")
+                        }
+                    }
+                }
+                return Err(LicenseClientError::new(
+                    LicenseErrorCode::ServerError,
+                    error.to_string(),
+                ));
+            }
+        };
+        if let Some(database) = &self.database {
+            if let Err(error) = database.save_local_setting(&self.setting_key(), &persisted) {
+                let _ = host.stop().await;
+                *self.persisted.lock().await = Some(previous);
+                if let Some(old_path) = old_path
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .filter(|path| path.is_file())
+                {
+                    match self.start_host(old_path, &database_path).await {
+                        Ok(host) => *self.host.lock().await = Some(host),
+                        Err(restart_error) => {
+                            tracing::error!(plugin_code = %self.code, error = %restart_error, "previous plugin host could not be restored after GitHub state persistence failure")
+                        }
+                    }
+                }
+                return Err(LicenseClientError::new(
+                    LicenseErrorCode::ServerError,
+                    error.to_string(),
+                ));
+            }
+        }
+        *self.host.lock().await = Some(host);
+        *self.persisted.lock().await = Some(persisted.clone());
+        let mut status = self.status.write().await;
+        status.plugin_version = Some(persisted.plugin_version);
+        status.features = persisted.features;
+        status.installed_at = persisted.installed_at;
+        drop(status);
+        let mut github = self.github.read().await.clone();
+        if github
+            .update
+            .as_ref()
+            .is_some_and(|update| update.release_id == release_id)
+        {
+            github.update = None;
+            github.manifest = None;
+            match self.persist_github_state(&github).await {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(staged_path);
+                }
+                Err(error) => {
+                    *self.github.write().await = github;
+                    tracing::warn!(plugin_code = %self.code, error = %error, "GitHub plugin update state could not be cleared after install");
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -1797,6 +2261,7 @@ pub(crate) struct PluginManager {
     database: Option<Arc<crate::db::PomDb>>,
     runtimes: StdRwLock<HashMap<String, Arc<PluginRuntime>>>,
     host_context: HostContext,
+    github_client: crate::plugin_github::GithubReleaseClient,
 }
 
 impl PluginManager {
@@ -1813,6 +2278,24 @@ impl PluginManager {
         fingerprint: Fingerprint,
         database: Option<Arc<crate::db::PomDb>>,
         restore_on_boot: bool,
+    ) -> Arc<Self> {
+        Self::from_codes_with_github(
+            plugin_codes,
+            service,
+            fingerprint,
+            database,
+            restore_on_boot,
+            crate::plugin_github::GithubReleaseClient::new(),
+        )
+    }
+
+    fn from_codes_with_github(
+        plugin_codes: impl IntoIterator<Item = String>,
+        service: Arc<dyn LicenseService>,
+        fingerprint: Fingerprint,
+        database: Option<Arc<crate::db::PomDb>>,
+        restore_on_boot: bool,
+        github_client: crate::plugin_github::GithubReleaseClient,
     ) -> Arc<Self> {
         let host_context = HostContext::default();
         let runtimes = plugin_codes
@@ -1835,15 +2318,35 @@ impl PluginManager {
             database,
             runtimes: StdRwLock::new(runtimes),
             host_context,
+            github_client,
         });
+        let mut restore_tasks = Vec::new();
         for runtime in manager.runtime_values() {
             if restore_on_boot {
-                tokio::spawn({
+                restore_tasks.push(tokio::spawn({
                     let runtime = runtime.clone();
                     async move { runtime.restore().await }
-                });
+                }));
             }
             runtime.spawn_heartbeat_supervisor();
+        }
+        if restore_on_boot {
+            let manager = manager.clone();
+            tokio::spawn(async move {
+                for restore in restore_tasks {
+                    let _ = restore.await;
+                }
+                loop {
+                    for runtime in manager.runtime_values() {
+                        if let Err(error) =
+                            runtime.check_github_source(&manager.github_client).await
+                        {
+                            tracing::warn!(plugin_code = %runtime.code, error = %error, "GitHub plugin update check failed");
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(6 * 60 * 60)).await;
+                }
+            });
         }
         manager
     }
@@ -1854,14 +2357,23 @@ impl PluginManager {
     ) -> Arc<Self> {
         let fingerprint = machine_fingerprint(node_id);
         let plugin_codes = match database.local_setting_keys_with_prefix(PERSISTED_SETTING_PREFIX) {
-            Ok(keys) => keys
-                .into_iter()
-                .filter_map(|key| {
-                    key.strip_prefix(PERSISTED_SETTING_PREFIX)
-                        .map(str::to_owned)
-                })
-                .filter(|code| is_valid_plugin_code(code))
-                .collect::<Vec<_>>(),
+            Ok(mut keys) => {
+                keys.extend(
+                    database
+                        .local_setting_keys_with_prefix(GITHUB_SETTING_PREFIX)
+                        .unwrap_or_default(),
+                );
+                keys.into_iter()
+                    .filter_map(|key| {
+                        key.strip_prefix(PERSISTED_SETTING_PREFIX)
+                            .or_else(|| key.strip_prefix(GITHUB_SETTING_PREFIX))
+                            .map(str::to_owned)
+                    })
+                    .filter(|code| is_valid_plugin_code(code))
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            }
             Err(error) => {
                 tracing::warn!(error = %error, "licenças de plugins locais não puderam ser enumeradas na inicialização");
                 Vec::new()
@@ -1916,6 +2428,25 @@ impl PluginManager {
             test_fingerprint(),
             Some(database),
             false,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_manager_with_github_database(
+        plugin_codes: &[&str],
+        service: Arc<dyn LicenseService>,
+        database: Arc<crate::db::PomDb>,
+        api_base: &str,
+    ) -> Arc<Self> {
+        let github = crate::plugin_github::GithubReleaseClient::with_api_base(api_base)
+            .expect("test GitHub API endpoint");
+        Self::from_codes_with_github(
+            plugin_codes.iter().map(|code| (*code).to_owned()),
+            service,
+            test_fingerprint(),
+            Some(database),
+            false,
+            github,
         )
     }
 
@@ -2006,6 +2537,63 @@ impl PluginManager {
         }
         statuses.sort_by(|a, b| a.code.cmp(&b.code));
         statuses
+    }
+
+    pub(crate) async fn set_github_source(
+        &self,
+        code: &str,
+        repository_url: &str,
+    ) -> Result<(), LicenseClientError> {
+        if !is_valid_plugin_code(code) {
+            return Err(update_unavailable("plugin_code inválido"));
+        }
+        let runtime = self.get_or_create_runtime(code)?;
+        runtime
+            .register_github_source(repository_url, &self.github_client)
+            .await
+            .map_err(|error| LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, error))
+    }
+
+    pub(crate) async fn remove_github_source(&self, code: &str) -> Result<(), LicenseClientError> {
+        let runtime = self
+            .runtime_for(code)
+            .ok_or_else(|| update_unavailable("plugin desconhecido"))?;
+        runtime
+            .remove_github_source()
+            .await
+            .map_err(|error| LicenseClientError::new(LicenseErrorCode::ServerError, error))
+    }
+
+    pub(crate) async fn check_github_update(&self, code: &str) -> Result<(), LicenseClientError> {
+        let runtime = self
+            .runtime_for(code)
+            .ok_or_else(|| update_unavailable("plugin desconhecido"))?;
+        runtime
+            .check_github_source(&self.github_client)
+            .await
+            .map_err(|error| LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, error))
+    }
+
+    pub(crate) async fn apply_github_update(
+        &self,
+        code: &str,
+        release_id: &str,
+    ) -> Result<(), LicenseClientError> {
+        let runtime = self
+            .runtime_for(code)
+            .ok_or_else(|| update_unavailable("plugin desconhecido"))?;
+        runtime.apply_github_update(release_id).await
+    }
+
+    pub(crate) async fn save_preferences(
+        &self,
+        code: &str,
+        preferences: enterprise_protocol::PluginPreferences,
+    ) -> Result<(), LicenseClientError> {
+        let runtime = self
+            .runtime_for(code)
+            .ok_or_else(|| update_unavailable("plugin desconhecido"))?;
+        runtime.save_preferences(preferences).await
     }
 
     pub(crate) async fn ingest_audit_event(
@@ -2214,6 +2802,69 @@ fn features_for_code(code: &str, feature_set: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn default_preferences(
+    schema: &enterprise_protocol::PluginPreferencesSchema,
+) -> enterprise_protocol::PluginPreferences {
+    enterprise_protocol::PluginPreferences {
+        features: schema
+            .features
+            .iter()
+            .map(|preference| (preference.key.clone(), preference.default))
+            .collect(),
+        storage_directory: schema
+            .storage_directory
+            .as_ref()
+            .and_then(|preference| preference.default.clone()),
+    }
+}
+
+fn merge_preferences(
+    schema: &enterprise_protocol::PluginPreferencesSchema,
+    values: enterprise_protocol::PluginPreferences,
+) -> enterprise_protocol::PluginPreferences {
+    let mut merged = default_preferences(schema);
+    for (key, value) in values.features {
+        if merged.features.contains_key(&key) {
+            merged.features.insert(key, value);
+        }
+    }
+    if schema.storage_directory.is_some() {
+        // Defaults apply only when there is no locally saved preference set.
+        // An explicit `null` from the editor clears a non-null manifest default.
+        merged.storage_directory = values.storage_directory;
+    }
+    merged
+}
+
+fn validate_preferences(
+    schema: &enterprise_protocol::PluginPreferencesSchema,
+    values: &enterprise_protocol::PluginPreferences,
+) -> Result<(), String> {
+    crate::plugin_github::validate_preferences_schema(schema)?;
+    if values.features.keys().any(|key| {
+        !schema
+            .features
+            .iter()
+            .any(|preference| preference.key == *key)
+    }) {
+        return Err("preferência booleana desconhecida para este plugin".into());
+    }
+    match (&schema.storage_directory, &values.storage_directory) {
+        (None, Some(_)) => return Err("este plugin não aceita diretório de armazenamento".into()),
+        (Some(_), Some(directory)) => {
+            if directory.trim().is_empty() || directory.len() > 4096 || directory.contains('\0') {
+                return Err("diretório de armazenamento inválido".into());
+            }
+            let path = std::path::Path::new(directory);
+            if !path.is_absolute() || !path.is_dir() {
+                return Err("o diretório de armazenamento precisa existir e ser absoluto".into());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn plugin_usage_for_code<'a>(
     code: &str,
     usage: &'a [enterprise_protocol::PluginUsage],
@@ -2304,6 +2955,86 @@ pub(crate) async fn apply_plugin_update(
     axum::Json(request): axum::Json<PluginUpdateApplyRequest>,
 ) -> axum::response::Response {
     match state.plugins.apply_update(&code, &request.release_id).await {
+        Ok(()) => axum::Json(state.plugins.all_statuses().await).into_response(),
+        Err(error) => license_error_response(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GithubSourceRequest {
+    pub repository_url: String,
+}
+
+pub(crate) async fn set_plugin_github_source(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::extract::Path(code): axum::extract::Path<String>,
+    axum::Json(request): axum::Json<GithubSourceRequest>,
+) -> axum::response::Response {
+    match state
+        .plugins
+        .set_github_source(&code, &request.repository_url)
+        .await
+    {
+        Ok(()) => axum::Json(state.plugins.all_statuses().await).into_response(),
+        Err(error) => license_error_response(error),
+    }
+}
+
+pub(crate) async fn remove_plugin_github_source(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::extract::Path(code): axum::extract::Path<String>,
+) -> axum::response::Response {
+    match state.plugins.remove_github_source(&code).await {
+        Ok(()) => axum::Json(state.plugins.all_statuses().await).into_response(),
+        Err(error) => license_error_response(error),
+    }
+}
+
+pub(crate) async fn check_plugin_github_update(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::extract::Path(code): axum::extract::Path<String>,
+) -> axum::response::Response {
+    match state.plugins.check_github_update(&code).await {
+        Ok(()) => axum::Json(state.plugins.all_statuses().await).into_response(),
+        Err(error) => license_error_response(error),
+    }
+}
+
+pub(crate) async fn apply_plugin_github_update(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::extract::Path(code): axum::extract::Path<String>,
+    axum::Json(request): axum::Json<PluginUpdateApplyRequest>,
+) -> axum::response::Response {
+    match state
+        .plugins
+        .apply_github_update(&code, &request.release_id)
+        .await
+    {
+        Ok(()) => axum::Json(state.plugins.all_statuses().await).into_response(),
+        Err(error) => license_error_response(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PluginPreferencesRequest {
+    pub preferences: enterprise_protocol::PluginPreferences,
+}
+
+pub(crate) async fn save_plugin_preferences(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::extract::Path(code): axum::extract::Path<String>,
+    axum::Json(request): axum::Json<PluginPreferencesRequest>,
+) -> axum::response::Response {
+    match state
+        .plugins
+        .save_preferences(&code, request.preferences)
+        .await
+    {
         Ok(()) => axum::Json(state.plugins.all_statuses().await).into_response(),
         Err(error) => license_error_response(error),
     }
@@ -2461,18 +3192,35 @@ fn validate_manifest(
     activation: &ActivationResponse,
     manifest: &enterprise_protocol::PluginManifest,
 ) -> Result<(), LicenseClientError> {
+    if manifest.release_id != activation.plugin_release_id || activation.plugin_code != code {
+        return Err(LicenseClientError::new(
+            LicenseErrorCode::ServerError,
+            "manifest do plugin incompatível com a ativação",
+        ));
+    }
+    validate_manifest_for_runtime(code, manifest)
+}
+
+fn validate_manifest_for_runtime(
+    code: &str,
+    manifest: &enterprise_protocol::PluginManifest,
+) -> Result<(), LicenseClientError> {
     if manifest.product != "pom"
         || manifest.plugin_abi != enterprise_protocol::PLUGIN_ABI_VERSION
-        || manifest.release_id != activation.plugin_release_id
         || manifest.os != std::env::consts::OS
         || manifest.arch != std::env::consts::ARCH
         || manifest.signature.trim().is_empty()
-        || activation.plugin_code != code
+        || !is_valid_plugin_code(code)
+        || plugin_path(code, &manifest.release_id, &manifest.os, &manifest.arch).is_err()
     {
         return Err(LicenseClientError::new(
             LicenseErrorCode::ServerError,
             "manifest do plugin incompatível com esta instalação",
         ));
+    }
+    if let Some(preferences) = &manifest.preferences {
+        crate::plugin_github::validate_preferences_schema(preferences)
+            .map_err(|error| LicenseClientError::new(LicenseErrorCode::ServerError, error))?;
     }
     Ok(())
 }
@@ -2945,6 +3693,7 @@ mod tests {
                 size: b"plugin-binary".len() as u64,
                 download_expires_at: None,
                 changelog: None,
+                preferences: None,
                 key_id: "test".into(),
                 signature: "test-signature".into(),
             },
@@ -3051,6 +3800,200 @@ mod tests {
             .mark_plugin_ready(version)
             .await
             .expect("mark ready");
+    }
+
+    #[tokio::test]
+    async fn plugin_preferences_use_manifest_defaults_and_persist_locally_by_code() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database =
+            Arc::new(crate::db::PomDb::open(directory.path().join("pom.db")).expect("database"));
+        let service = Arc::new(MockLicenseService::new());
+        let mut response = activation("enterprise", "ent-1");
+        response.plugin_manifest.preferences = Some(enterprise_protocol::PluginPreferencesSchema {
+            features: vec![enterprise_protocol::PluginBooleanPreference {
+                key: "include_headers".into(),
+                label: "Include request headers".into(),
+                default: false,
+                description: Some("Example local toggle".into()),
+            }],
+            storage_directory: Some(enterprise_protocol::PluginStorageDirectoryPreference {
+                label: "Plugin data directory".into(),
+                default: None,
+            }),
+        });
+        service
+            .grant("enterprise", response, b"plugin-binary".to_vec())
+            .await;
+        let manager = PluginManager::test_manager_with_database(
+            &["enterprise"],
+            service.clone(),
+            database.clone(),
+        );
+        let runtime = manager.runtime_for("enterprise").expect("runtime");
+        activate_ready(&runtime, "PM-enterprise", "0.1.0").await;
+        let schema = runtime
+            .persisted_state()
+            .await
+            .unwrap()
+            .preferences_schema
+            .unwrap();
+        assert_eq!(
+            runtime.preferences_for(&schema),
+            enterprise_protocol::PluginPreferences {
+                features: [("include_headers".into(), false)].into(),
+                storage_directory: None,
+            }
+        );
+        let default_storage = directory.path().join("schema-default");
+        std::fs::create_dir(&default_storage).expect("default storage directory");
+        let mut schema_with_default = schema.clone();
+        schema_with_default.storage_directory =
+            Some(enterprise_protocol::PluginStorageDirectoryPreference {
+                label: "Default data directory".into(),
+                default: Some(default_storage.to_string_lossy().into_owned()),
+            });
+        assert_eq!(
+            default_preferences(&schema_with_default).storage_directory,
+            Some(default_storage.to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            merge_preferences(
+                &schema_with_default,
+                enterprise_protocol::PluginPreferences {
+                    features: [("include_headers".into(), false)].into(),
+                    storage_directory: None,
+                },
+            )
+            .storage_directory,
+            None,
+            "an explicit null clears a storage-directory default"
+        );
+
+        let storage = directory.path().join("plugin-data");
+        std::fs::create_dir(&storage).expect("storage directory");
+        let preferences = enterprise_protocol::PluginPreferences {
+            features: [("include_headers".into(), true)].into(),
+            storage_directory: Some(storage.to_string_lossy().into_owned()),
+        };
+        let invalid_key = enterprise_protocol::PluginPreferences {
+            features: [("unknown_toggle".into(), true)].into(),
+            storage_directory: None,
+        };
+        assert!(manager
+            .save_preferences("enterprise", invalid_key)
+            .await
+            .is_err());
+        let invalid_directory = enterprise_protocol::PluginPreferences {
+            features: [("include_headers".into(), true)].into(),
+            storage_directory: Some("relative/path".into()),
+        };
+        assert!(manager
+            .save_preferences("enterprise", invalid_directory)
+            .await
+            .is_err());
+        manager
+            .save_preferences("enterprise", preferences.clone())
+            .await
+            .expect("save local preferences");
+        assert_eq!(
+            runtime.preferences_for(&schema),
+            preferences,
+            "local values must override schema defaults"
+        );
+        let persisted = database
+            .local_setting_json("plugin_license:enterprise")
+            .unwrap()
+            .expect("license record");
+        assert!(!persisted.contains(&storage.to_string_lossy().to_string()));
+
+        let restored =
+            PluginManager::test_manager_with_database(&["enterprise"], service, database);
+        let restored_runtime = restored
+            .runtime_for("enterprise")
+            .expect("restored runtime");
+        restored_runtime.restore().await;
+        assert_eq!(
+            restored_runtime.preferences_for(&schema),
+            preferences,
+            "local preferences survive a runtime restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn github_download_is_staged_and_last_good_result_survives_network_failure_and_restart() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database =
+            Arc::new(crate::db::PomDb::open(directory.path().join("pom.db")).expect("database"));
+        let (_client, api_base, server) =
+            crate::plugin_github::tests::github_stub(200, false, None, false).await;
+        let service = Arc::new(MockLicenseService::new());
+        let manager = PluginManager::test_manager_with_github_database(
+            &["analytics"],
+            service.clone(),
+            database.clone(),
+            &api_base,
+        );
+        manager
+            .set_github_source("analytics", "https://github.com/pom/test-plugin")
+            .await
+            .expect("register and download public release");
+        let status = manager.status("analytics").await.expect("plugin status");
+        assert!(!status.active, "GitHub source cannot activate a plugin");
+        assert!(manager
+            .apply_github_update("analytics", "v1.2.0")
+            .await
+            .is_err());
+        assert_eq!(
+            status.github_repository.as_deref(),
+            Some("https://github.com/pom/test-plugin")
+        );
+        let last_good = status.github_update.expect("downloaded GitHub update");
+        assert!(last_good.downloaded);
+        let runtime = manager.runtime_for("analytics").expect("runtime");
+        let manifest = runtime
+            .github
+            .read()
+            .await
+            .manifest
+            .clone()
+            .expect("persisted GitHub manifest");
+        let staged_path = runtime
+            .github_download_path(&manifest.release_id, &manifest.sha256)
+            .expect("staging path");
+        assert_eq!(
+            std::fs::read(&staged_path).expect("downloaded asset"),
+            b"test plugin binary"
+        );
+
+        server.abort();
+        assert!(manager.check_github_update("analytics").await.is_err());
+        let retained = manager
+            .status("analytics")
+            .await
+            .expect("status after failure");
+        assert_eq!(retained.github_update, Some(last_good.clone()));
+        assert!(retained.github_error.is_some());
+        assert!(
+            staged_path.is_file(),
+            "network failure must retain the last good file"
+        );
+
+        let restarted = PluginManager::test_manager_with_github_database(
+            &["analytics"],
+            service,
+            database,
+            "http://127.0.0.1:1",
+        );
+        let restored = restarted
+            .status("analytics")
+            .await
+            .expect("restored status");
+        assert_eq!(restored.github_update, Some(last_good));
+        assert_eq!(
+            restored.github_repository.as_deref(),
+            Some("https://github.com/pom/test-plugin")
+        );
+        assert!(staged_path.is_file());
     }
 
     #[tokio::test]

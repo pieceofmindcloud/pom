@@ -353,6 +353,7 @@ mod tests {
                 size: b"plugin-binary".len() as u64,
                 download_expires_at: None,
                 changelog: None,
+                preferences: None,
                 key_id: "test".into(),
                 signature: "test-signature".into(),
             },
@@ -381,6 +382,7 @@ mod tests {
             size: artifact.len() as u64,
             download_expires_at: None,
             changelog: None,
+            preferences: None,
             key_id: "release-key".into(),
             signature: "signed-manifest".into(),
         }

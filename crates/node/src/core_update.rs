@@ -217,6 +217,7 @@ mod tests {
             size: 8,
             download_expires_at: None,
             changelog: None,
+            preferences: None,
             key_id: "release-key".into(),
             signature: "signed".into(),
         }

@@ -144,6 +144,7 @@ mod pipeline;
 mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
+mod plugin_github;
 #[path = "plugin_host.rs"]
 mod plugin_host;
 mod plugin_proxy;

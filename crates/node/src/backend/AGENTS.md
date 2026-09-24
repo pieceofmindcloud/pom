@@ -191,7 +191,11 @@ profile policy remains the effective authorization boundary.
   um com features, validade, uso autenticado e atualização próprios;
   `POST /api/ui/plugins/activate` ativa em lote todo `plugin_code` que a chave
   receber do servidor, e `POST /api/ui/plugins/:code/refresh|
-  deactivate|update/check|update/apply` agem sobre um plugin só.
+  deactivate|update/check|update/apply` agem sobre um plugin só. O mesmo prefixo
+  AdminOnly registra/remove a origem pública com `POST/DELETE
+  /api/ui/plugins/:code/github-source`, verifica e instala downloads GitHub por
+  confirmação explícita, e salva preferências tipadas localmente em
+  `/api/ui/plugins/:code/preferences`; nenhuma dessas rotas ativa licença.
   O catálogo de releases é consultado diretamente pelo browser sem credenciais;
   Comprar envia o operador à loja pública com o código do plugin. A detecção
   da release `pom_core` é outra fronteira, deliberadamente separada

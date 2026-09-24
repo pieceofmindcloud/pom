@@ -681,7 +681,17 @@ público diretamente em `/v1/plugins`, sem credenciais. A ativação valida a
 chave uma vez e cria os runtimes para todos os `plugin_code` concedidos,
 ativando-os separadamente. Comprar redireciona à loja pública com
 `plugin=<plugin_code>` codificado. A página pública continua sendo responsável
-pelo checkout e não recebe credenciais do nó.
+pelo checkout e não recebe credenciais do nó. As rotas AdminOnly da origem de
+releases públicas são `POST /api/ui/plugins/:code/github-source` com
+`{repository_url}`, `DELETE` no mesmo caminho para removê-la,
+`POST .../github-source/check` para verificar agora e
+`POST .../github-source/apply` com `{release_id}` para instalar um download
+verificado após confirmação. A checagem periódica baixa ao staging sem trocar o
+host, e falha de rede conserva a última release boa. `POST
+/api/ui/plugins/:code/preferences` recebe `{preferences}` e persiste somente no
+`pom.db`, sob o código do plugin; não chama o servidor de licenças.
+`PluginStatus.github_repository`, `github_update`, `github_error`,
+`preferences_schema` e `preferences` expõem o estado local sem tokens.
 
 `ANY /api/ui/plugins/:code/proxy` e `/api/ui/plugins/:code/proxy/*path` são o
 proxy das interfaces web servidas pelos próprios plugins

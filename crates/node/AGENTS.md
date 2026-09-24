@@ -286,7 +286,12 @@ por heartbeat. `PluginStatus.license_expires_at` é a validade da LICENÇA
 (`GET /v1/licenses/status`, consultada em `restore()` e no clique manual em
 "Atualizar" via `refresh_license_status`), nunca o `lease_expires_at` técnico -
 confundir os dois já vazou para a UI uma vez, ver
-`docs/subsystems/licenciamento-enterprise.md`.
+`docs/subsystems/licenciamento-enterprise.md`. A origem pública GitHub é
+independente da ativação: `plugin_github.rs` valida manifestos por SO/arquitetura,
+SHA-256 e tamanho, baixa para staging e preserva o último resultado em falha.
+Instalar segue sendo ação explícita e exige plugin ativo pela licença. As
+preferências opcionais do manifesto são guardadas localmente por
+`plugin_preferences:<code>`, fora do snapshot/licença.
 O `PluginStatus` também publica a expiração, os plugins concedidos, candidatos
 com release elegível e uso autenticado por `plugin_code`, preservados da
 validação/ativação/heartbeat. `GET /api/ui/plugins` é AdminOnly; esse JSON não

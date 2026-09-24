@@ -211,7 +211,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `license_expires_at` é a validade da LICENÇA (de `GET /v1/licenses/status`) e
   é o campo certo para "Licença válida até" na tela de Plugins - nunca
   `lease_expires_at`, um prazo técnico de renovação de poucos dias que o
-  heartbeat empurra sozinho.
+  heartbeat empurra sozinho. O status também expõe a origem GitHub registrada
+  localmente, a release verificada em staging e seu erro de checagem; isso não
+  muda `licensed_plugins`. `preferences_schema` vem do manifesto instalado,
+  enquanto `preferences` são valores locais, enviados somente à rota local de
+  configuração do plugin e nunca à API de licenças.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

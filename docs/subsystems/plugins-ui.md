@@ -93,6 +93,24 @@ objeto na hora de empacotar; hooks e contextos são os da aplicação. A
 superfície é versionada (`PLUGIN_HOST_VERSION`) e só cresce de forma
 compatível. O CSS do plugin usa os mesmos tokens de cor (variáveis CSS) do POM.
 
+## Preferências de release e contexto do host
+
+As preferências locais não fazem parte do contrato de tela `pom-plugin-ui/v1`
+acima. O schema tipado é opcional em `PluginManifest.preferences` no contrato
+de release/licença (`crates/enterprise-protocol`): toggles booleanos e um
+campo opcional de diretório de armazenamento. O POM valida esse schema, aplica
+os defaults, persiste os valores por `plugin_code` no `pom.db` e nunca envia os
+valores ao servidor de licenças nem os trata como entitlement. A tela Plugins
+edita os valores apenas enquanto o plugin está ativo.
+
+`host.configure` inclui os valores locais sob `preferences`, junto do contexto
+do gateway, para o próprio plugin ativo. Isso é IPC entre o nó e o host local,
+não tráfego para o license-server. A atualização pública por GitHub é uma
+origem separada: seus manifestos por plataforma são assets
+`pom-plugin-<os>-<arch>.json`, e um binário baixado fica em staging até o
+operador confirmar a instalação. Ver `licenciamento-enterprise.md` para campos
+exigidos, hash e ciclo de checagem.
+
 ## Contexto do nó (`host.configure`)
 
 Um plugin que chama os modelos do nó não embute endereço nem credencial: o
@@ -100,7 +118,8 @@ nó os entrega pelo `query` genérico, na operação `host.configure`:
 
 ```json
 {"operation": "host.configure",
- "gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": "sk-..."}}
+ "gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": "sk-..."},
+ "preferences": {"features": {"capture_headers": false}, "storage_directory": null}}
 ```
 
 `openai_base_url` é o gateway do próprio nó em loopback (texto claro de

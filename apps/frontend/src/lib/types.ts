@@ -209,6 +209,30 @@ export interface PluginActivationUsage {
   max_activations: number;
 }
 
+export interface PluginBooleanPreference {
+  key: string;
+  label: string;
+  default: boolean;
+  description?: string | null;
+}
+
+export interface PluginPreferencesSchema {
+  features: PluginBooleanPreference[];
+  storage_directory?: { label: string; default?: string | null } | null;
+}
+
+export interface PluginPreferences {
+  features: Record<string, boolean>;
+  storage_directory?: string | null;
+}
+
+export interface GithubPluginUpdate {
+  release_id: string;
+  version: string;
+  changelog: string | null;
+  downloaded: boolean;
+}
+
 export interface PluginStatus {
   code: string;
   active: boolean;
@@ -233,6 +257,11 @@ export interface PluginStatus {
   /** Last successful manifest lookup, regardless of whether it found an update. */
   update_checked_at: string | null;
   available_update: PluginUpdateInfo | null;
+  github_repository?: string | null;
+  github_update?: GithubPluginUpdate | null;
+  github_error?: string | null;
+  preferences_schema?: PluginPreferencesSchema | null;
+  preferences?: PluginPreferences | null;
 }
 
 /**

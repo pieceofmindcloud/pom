@@ -192,12 +192,16 @@ profile policy remains the effective authorization boundary.
   `POST /api/ui/plugins/activate` ativa em lote todo `plugin_code` que a chave
   receber do servidor, e `POST /api/ui/plugins/:code/refresh|
   deactivate|update/check|update/apply` agem sobre um plugin só. O mesmo prefixo
-  AdminOnly registra/remove a origem pública com `POST/DELETE
-  /api/ui/plugins/:code/github-source`, verifica e instala downloads GitHub por
-  confirmação explícita, e salva preferências tipadas localmente em
-  `/api/ui/plugins/:code/preferences`; nenhuma dessas rotas ativa licença.
-  O catálogo de releases é consultado diretamente pelo browser sem credenciais;
-  Comprar envia o operador à loja pública com o código do plugin. A detecção
+  AdminOnly registra/remove a origem local com `POST/DELETE
+  /api/ui/plugins/:code/github-source`, verifica e aplica releases com confirmação,
+  e instala gratuitamente somente o `github_repository` publicado como
+  `requires_license: false` em `/api/ui/plugins/:code/github-source/install`.
+  Essa instalação revalida o catálogo HTTPS e persiste em
+  `plugin_public_install:<code>` sem lease ou grant. Preferências tipadas ficam
+  locais em `/api/ui/plugins/:code/preferences`; essas rotas não ativam licença.
+  O catálogo público é consultado pelo browser sem credenciais e também pelo nó
+  para autorizar instalações grátis. Comprar envia o operador à loja pública com
+  o código do plugin. A detecção
   da release `pom_core` é outra fronteira, deliberadamente separada
   (`crate::pom_core_update`): `GET /api/ui/pom-update/status`,
   `POST /api/ui/pom-update/check` força a detecção sob demanda, e

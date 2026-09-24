@@ -22,6 +22,7 @@ export interface PublicPluginCatalogEntry {
   description: string | null;
   description_pt_br: string | null;
   requires_license: boolean | null;
+  github_repository: string | null;
   icon_url: string | null;
   screenshot_urls: string[];
   pricing: {
@@ -57,6 +58,21 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function publicGithubRepository(value: unknown): string | null {
+  const candidate = nonEmptyString(value);
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    const match = /^\/([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})\/?$/.exec(url.pathname);
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password
+      || url.search || url.hash || !match || match[1] === "." || match[1] === ".."
+      || match[2] === "." || match[2] === ".." || match[2]!.toLowerCase().endsWith(".git")) return null;
+    return `https://github.com/${match[1]}/${match[2]}`;
+  } catch {
+    return null;
+  }
 }
 
 function publicImageUrl(value: unknown): string | null {
@@ -118,11 +134,12 @@ function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
   const releases = Array.isArray(value.releases)
     ? value.releases.map(validRelease).filter((release): release is PublicPluginRelease => release !== null)
     : [];
-  if (releases.length === 0) return null;
   releases.sort(compareReleaseDates);
 
   const pricing = isRecord(value.pricing) ? value.pricing : {};
   const requiresLicense = typeof value.requires_license === "boolean" ? value.requires_license : null;
+  const githubRepository = publicGithubRepository(value.github_repository);
+  if (releases.length === 0 && !githubRepository) return null;
 
   return {
     code,
@@ -130,6 +147,7 @@ function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
     description: nonEmptyString(value.description),
     description_pt_br: nonEmptyString(value.description_pt_br),
     requires_license: requiresLicense,
+    github_repository: githubRepository,
     icon_url: publicImageUrl(value.icon_url),
     screenshot_urls: Array.isArray(value.screenshot_urls)
       ? value.screenshot_urls.map(publicImageUrl).filter((url): url is string => url !== null).slice(0, MAX_SCREENSHOTS)

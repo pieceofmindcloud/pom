@@ -262,11 +262,12 @@ catraca de `network_chat_policy`.
 
 `src/plugins.rs` é o gerenciador de plugins independentes: não há lista
 estática de plugins instaláveis no binário. `PluginManager` cria um
-`PluginRuntime` para cada `plugin_code` concedido pelo servidor na validação da
-chave e restaura os códigos com estado local persistido (`plugin_license:<code>`)
-ao iniciar. Cada runtime tem seu próprio ciclo de licença, estado sem a chave,
-supervisor de heartbeat e checagem de atualização - nada disso é compartilhado
-entre plugins nem com o `pom_core`. A ativação em lote valida uma vez, depois
+`PluginRuntime` para cada `plugin_code` concedido pelo servidor ou conhecido por
+origem GitHub/instalação pública, e restaura os estados locais
+(`plugin_license:<code>`, `plugin_github:<code>` e
+`plugin_public_install:<code>`) ao iniciar. Um runtime licenciado tem seu próprio
+ciclo de licença e supervisor de heartbeat; uma instalação pública não cria
+lease nem `licensed_plugins`. A ativação em lote valida uma vez, depois
 ativa/instala separadamente cada código concedido. As features de cada plugin
 vêm do `feature_set` do manifesto do release, NÃO da licença. A lista pública
 do servidor alimenta a vitrine do frontend; `GET /api/ui/plugins` publica os
@@ -282,15 +283,18 @@ real). `PluginStatus.update_checked_at` só avança quando a consulta de manifes
 termina com sucesso; `installed_at` só avança quando o host fica pronto após
 instalação ou aplicação. Ambos persistem por plugin, têm `serde(default)` para
 estados existentes e não são derivados de `last_success_at`, que é atualizado
-por heartbeat. `PluginStatus.license_expires_at` é a validade da LICENÇA
+por heartbeat. `public_install` identifica um host público sem lease e
+`PluginStatus.licensed_plugins` continua vazio nesse caso. `PluginStatus.license_expires_at` é a validade da LICENÇA
 (`GET /v1/licenses/status`, consultada em `restore()` e no clique manual em
 "Atualizar" via `refresh_license_status`), nunca o `lease_expires_at` técnico -
 confundir os dois já vazou para a UI uma vez, ver
 `docs/subsystems/licenciamento-enterprise.md`. A origem pública GitHub é
 independente da ativação: `plugin_github.rs` valida manifestos por SO/arquitetura,
 SHA-256 e tamanho, baixa para staging e preserva o último resultado em falha.
-Instalar segue sendo ação explícita e exige plugin ativo pela licença. As
-preferências opcionais do manifesto são guardadas localmente por
+O update de plugin pago exige que ele continue ativo pela licença. A instalação
+pública revalida `requires_license: false` e `github_repository` no catálogo
+HTTPS do servidor e persiste em `plugin_public_install:<code>`, sem lease.
+As preferências opcionais do manifesto são guardadas localmente por
 `plugin_preferences:<code>`, fora do snapshot/licença.
 O `PluginStatus` também publica a expiração, os plugins concedidos, candidatos
 com release elegível e uso autenticado por `plugin_code`, preservados da

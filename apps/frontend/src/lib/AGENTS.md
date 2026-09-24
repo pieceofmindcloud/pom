@@ -199,7 +199,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `pluginCatalog.ts` - consulta diretamente o catálogo público de plugins do
   servidor de licenças, com `credentials: "omit"`; não usa `api.ts` nem envia a
   chave de conexão ou a sessão administrativa. Valida os campos obrigatórios de
-  cada release, descarta plugins sem release válida, mantém campos opcionais
+  cada release e a URL canônica opcional `github_repository`; descarta plugins
+  sem release válida e sem origem GitHub, mantém campos opcionais
   ausentes como dados desconhecidos e aceita imagens somente do host público
   esperado, sem credenciais embutidas na URL. Também valida `description_pt_br`
   quando publicados. Estado de licença, candidatos e uso por `plugin_code` vêm
@@ -207,8 +208,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `pluginPurchase.ts` constrói a URL da loja pública com o `plugin_code` em
   parâmetro codificado e não envia credenciais. `usePublicPluginCatalog` em `queries.ts`
   controla carregamento, erro e atualização periódica dessa leitura.
-  `PluginStatus` também carrega `installed_at` e `update_checked_at` do estado
-  real persistido pelo nó; não derive a data da última instalação do heartbeat.
+  `PluginStatus` também carrega `installed_at`, `update_checked_at` e
+  `public_install` do estado real persistido pelo nó; não derive a data da última
+  instalação do heartbeat. Uma instalação pública mantém `licensed_plugins`
+  vazio e usa estado local próprio, sem lease.
   `license_expires_at` é a validade da LICENÇA (de `GET /v1/licenses/status`) e
   é o campo certo para "Licença válida até" na tela de Plugins - nunca
   `lease_expires_at`, um prazo técnico de renovação de poucos dias que o

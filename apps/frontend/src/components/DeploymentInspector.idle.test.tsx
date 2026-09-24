@@ -138,6 +138,7 @@ describe("DeploymentInspector idle policy", () => {
       enabled: false,
       path: null,
       candidates: [],
+      reason: null,
       onChange: vi.fn(),
       onPathChange: vi.fn(),
     });

@@ -84,8 +84,8 @@ Per-file list:
 - `Plugins.tsx` - rota `/plugins`. Cruza o catálogo público de
   `https://license.pieceofmind.cloud/v1/plugins` com o estado local de
   `GET /api/ui/plugins`, usando `code` como identidade. O cliente público fica
-  em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita somente
-  plugins com pelo menos uma release válida; dados de imagem incompletos viram
+  em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita plugins com
+  release compatível ou uma origem GitHub pública canônica; dados de imagem incompletos viram
   placeholders, e até quatro screenshots abrem em lightbox com Escape e foco
   restaurado. Descrições usam português brasileiro quando disponível e têm
   fallback para inglês. Validade, plugins concedidos, candidatos de ativação e
@@ -98,14 +98,17 @@ Per-file list:
   qualquer entrada pública que exige licença não estiver ativa no estado local,
   mesmo quando outro plugin já tem licença/contexto. Ele também aparece quando
   falta status local ou o status está expirado/revogado, e some quando todos os
-  plugins licenciáveis conhecidos estão ativos. Para comprar, Comprar redireciona
-  à loja pública com `plugin=<code>` codificado em `lib/pluginPurchase.ts`. Um
-  único formulário ativa em lote todo `plugin_code` que o servidor conceder
+  plugins licenciáveis conhecidos estão ativos. Comprar redireciona plugins
+  licenciados à loja pública com `plugin=<code>` codificado em
+  `lib/pluginPurchase.ts`; um GitHub público marcado sem licença oferece Instalar
+  e consulta o catálogo autenticado por HTTPS antes de executar o host, sem criar
+  grant ou lease. Um único formulário ativa em lote todo `plugin_code` que o servidor conceder
   (`POST /api/ui/plugins/activate`, resposta
-  `{activated}`); atualizar e desativar continuam por plugin. Cada card também
-  cadastra uma URL canônica pública do GitHub, permite remover/verificar a origem
-  e mostra o download compatível separado da atualização licenciada; baixar nunca
-  instala nem reinicia, e aplicar exige confirmação explícita com licença ativa.
+  `{activated}`); atualizar e desativar continuam por plugin. Um único card
+  global sob a ativação administra origens GitHub e versões baixadas para os
+  plugins. Instalar exige confirmação; um plugin pago exige licença ativa, e um
+  plugin gratuito só instala da URL `github_repository` publicada pelo servidor.
+  Baixar uma atualização nunca substitui o host em execução.
   O editor de preferências usa o schema opcional do manifesto instalado, mostra
   defaults tipados boolean/diretório e envia valores só à rota local do nó.
   A atualização do binário `pom` em si fica separada em `About.tsx` (ver

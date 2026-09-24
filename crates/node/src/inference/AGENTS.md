@@ -1134,7 +1134,9 @@ falha de transporte.
   na frente (ordem head→tail) e dobra `processing_ms`+`node_timings` do callee
   com o round-trip do caller.
 - `extract_relay_failure` - usado por `forward_direct` para nomear o hop que
-  falhou na entrega do erro direto.
+  falhou na entrega do erro direto. `is_unknown_session_error` percorre toda a
+  cadeia `anyhow`, porque `PartialPrefillTrace` envolve a recusa no caminho
+  direto; olhar só a frase externa perdia o marcador e impedia a reconstrução fria.
 - `RelayFailure{failed_node_id, kind, message}`/`HttpRefusal`/`SendIssue` - o
   gateway responde 502 atribuindo o hop que falhou. `CHUNK_ATTEMPTS=3` repete
   somente falhas comprovadamente anteriores à entrega, com recuo exponencial
@@ -1208,10 +1210,11 @@ falha de transporte.
 - Rede emulada por sítio: cada hop e o gateway moram num sítio e toda mensagem
   entre sítios diferentes custa `LINK_MS=50` de mão única, cobrada na chegada e
   de novo na volta - é o que faz a bancada medir travessias em vez da máquina
-  onde ela roda.
+  onde ela roda. O teste de custo pausa o relógio Tokio para que escalonamento
+  do restante da suíte não seja contado como uma perna de rede.
 - `the_cost_per_token_does_not_depend_on_where_the_entry_point_is` - para
   N=2,3,4 com o gateway na cabeça, no meio e na cauda, pernas por token
-  ≈ `minimum_legs` (tolerância 0,45 perna); as duas pontas empatam; a pior
+  ≈ `minimum_legs` (tolerância 1 perna para acomodar overhead do frame); as duas pontas empatam; a pior
   entrada (meio) custa no máximo uma perna a mais que a cabeça; e o anel
   borbulhado com a cabeça remota paga 4 pernas (o caso que doía, a queda de 25
   para 14 tok/s do captain), provando que é correção e não o comportamento de
@@ -1253,8 +1256,10 @@ falha de transporte.
 - `spawn_health_watch` - o único ponto que promove a carga: depois de duas
   sondagens consecutivas de `/health` com `model_loaded`, promove a anotação
   de Pending para **Serving**. Um primeiro retorno não limpa o journal, pois a
-  queda do processo pode ocorrer exatamente ao construir essa resposta. Só a
-  anotação `Serving` autoriza retomar a fatia num reinício.
+  queda do processo pode ocorrer exatamente ao construir essa resposta. O
+  watcher captura o caminho do journal quando sobe; outra instância/teste que
+  altere `POM_CONFIG` depois não pode redirecionar sua anotação. Só `Serving`
+  autoriza retomar a fatia num reinício.
 - `note_unloadable_slice` - marca a fatia como não retomável e põe a razão no
   `status.detail` (o que o painel mostra); é o que um nó vazio diz em vez de
   calar - um nó vazio e calado é indistinguível de uma máquina que nunca

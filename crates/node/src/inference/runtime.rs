@@ -1552,6 +1552,10 @@ impl NodeRuntime {
     /// correct `total_layers` from the shard's GGUF metadata.
     fn spawn_health_watch(&self, cfg: NodeConfig, generation: u64) {
         let port = cfg.inference_port;
+        // Capture the configuration-specific annotation path before spawning:
+        // tests can change process environment, and two POM instances may use
+        // distinct POM_CONFIG values in the same host process.
+        let last_slice_path = crate::lastslice::path();
         let status = StatusWriter {
             status: self.status_handle(),
             changed: self.status_changed.clone(),
@@ -1645,8 +1649,11 @@ impl NodeRuntime {
                 // consecutivas. Um primeiro retorno não basta: a confirmação
                 // de carregamento pode ser justamente o caminho que derruba
                 // o processo nativo.
-                if let Err(e) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Serving)
-                {
+                if let Err(e) = crate::lastslice::save_at(
+                    &last_slice_path,
+                    &cfg,
+                    crate::lastslice::SliceState::Serving,
+                ) {
                     warn!("não deu para anotar a fatia servida: {e}");
                 }
 
@@ -1919,7 +1926,9 @@ mod tests {
     /// `--refresh` e o stdout não sobrevive.
     #[tokio::test]
     async fn a_porta_presa_aparece_no_status_e_no_log() {
-        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!("pom-porta-presa-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("POM_HOME", &dir);
@@ -2229,7 +2238,19 @@ mod tests {
     /// que ele prova é o contrato entre o watch e o disco, não o llama.cpp.
     #[tokio::test]
     async fn o_health_e_quem_promove_a_anotacao_para_servindo() {
-        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct RestoreConfigEnv(Option<std::ffi::OsString>);
+        impl Drop for RestoreConfigEnv {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("POM_CONFIG", value),
+                    None => std::env::remove_var("POM_CONFIG"),
+                }
+            }
+        }
+        let _restore_config = RestoreConfigEnv(std::env::var_os("POM_CONFIG"));
         let dir = std::env::temp_dir().join(format!("pom-health-watch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg_path = dir.join("pom.json");
@@ -2289,6 +2310,9 @@ mod tests {
             ),
             "um único model_loaded não confirma a implantação"
         );
+        let alternate_config = dir.join("alternate-pom.json");
+        std::env::set_var("POM_CONFIG", &alternate_config);
+        std::fs::remove_file(crate::lastslice::path()).ok();
         health_release.store(true, std::sync::atomic::Ordering::SeqCst);
 
         for _ in 0..40 {
@@ -2306,12 +2330,19 @@ mod tests {
         assert!(
             matches!(
                 crate::lastslice::inspect(),
+                crate::lastslice::LastSlice::Nothing
+            ),
+            "o watcher não pode trocar de configuração junto com o ambiente do processo"
+        );
+        std::env::set_var("POM_CONFIG", &cfg_path);
+        assert!(
+            matches!(
+                crate::lastslice::inspect(),
                 crate::lastslice::LastSlice::Serving(_)
             ),
-            "uma fatia vista carregada tem que voltar no próximo arranque"
+            "a anotação volta para a configuração capturada quando /health confirmou"
         );
 
-        std::env::remove_var("POM_CONFIG");
         std::fs::remove_dir_all(&dir).ok();
     }
 

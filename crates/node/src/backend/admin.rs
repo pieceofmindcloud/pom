@@ -2414,7 +2414,9 @@ mod tests {
 
     #[tokio::test]
     async fn infer_promotion_reaches_admin_and_returns_over_a_live_candidate() {
-        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _scheme_lock = crate::peer_client::POLITICA_GLOBAL.lock().unwrap();
         crate::peer_client::set_tls_ativo(false);
         let config_path = std::env::temp_dir().join(format!(

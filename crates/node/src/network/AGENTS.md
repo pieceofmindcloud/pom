@@ -330,8 +330,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
   Medido em 2026-08-16 no MacBook: a primeira resposta de `identify` veio por
   um peer alcançado pelo tailnet e reportou `100.122.132.97`, que o nó adotou
   como endereço *público* e anunciou ao cluster inteiro.
-- `local_addrs` - `ifconfig` (macOS) / `ip -o addr` (Linux); Windows vazio
-  (cai no endereço observado pelo peer).
+- `local_addrs` - `/sbin/ifconfig` (macOS) / `ip -o addr` (Linux); macOS usa
+  caminho absoluto porque processos iniciados pela GUI podem não ter `/sbin` no
+  `PATH`. Windows vazio (cai no endereço observado pelo peer).
 
 `identity.rs`:
 - `Identity::load_or_create` - carrega a chave ou gera; regenerar a cada boot

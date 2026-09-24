@@ -567,7 +567,10 @@ offload no primeiro clique.
   abaixo. Para o primeiro boot sem `/data/pom.json`, `node-cpu` passa
   `--port 42807 --gateway-port 8083`: são portas de contingência apenas para o
   modo setup e evitam disputar os listeners padrão do primeiro nó GPU em rede
-  `host`. Não passe `--inference-port` nesse serviço, pois a opção CLI
+  `host`. Fora de rede `host` (bridge com `-p 8080:8080`), o modo setup
+  já é alcançável pela porta publicada: ele liga em `0.0.0.0` por padrão
+  (`--setup-bind` troca o IP). Depois do save o gateway configurado liga em
+  `[::]`. Não passe `--inference-port` nesse serviço, pois a opção CLI
   substituiria a porta de inferência persistida. O
   gerador grava em `tests/fixtures/node-<N>`; os serviços continuam montando
   os diretórios nomeados por papel de hardware para preservar o estado já

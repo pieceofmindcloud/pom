@@ -102,7 +102,12 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    config respawna o processo. Sem config, a porta P2P do setup segue
    `--port`, o que permite isolar um segundo nó local; com config pendente, a
    porta persistida continua sendo a autoridade. O modo setup preserva
-   preferências locais após sair da rede.
+   preferências locais após sair da rede. O listener HTTP do setup não tem
+   autenticação e liga em `0.0.0.0` por padrão, para o primeiro acesso
+   alcançar um nó novo (inclusive num container com porta publicada); o
+   endurecimento é escolhido no próprio setup. `--setup-bind <IP>` troca o IP
+   (`127.0.0.1` mantém o setup só local). A flag não
+   afeta o gateway configurado, que sempre liga em `[::]` dual-stack.
 3. Com config: valida a porta da interface e faz o preflight de disponibilidade
    antes de carregar modelos; porta P2P/HTTP vêm da config; `inference_port` =
    flag ou default 8181.

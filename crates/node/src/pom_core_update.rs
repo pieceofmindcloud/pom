@@ -125,7 +125,7 @@ impl PomCoreUpdater {
             .map_err(core_update_error)?;
         let available = crate::core_update::is_newer_release(
             env!("CARGO_PKG_VERSION"),
-            crate::BUILD_COMMIT,
+            &crate::build_commit(),
             &manifest.manifest,
         )
         .then(|| CoreUpdate {
@@ -188,7 +188,7 @@ impl PomCoreUpdater {
         if manifest.manifest.release_id != requested_release_id
             || !crate::core_update::is_newer_release(
                 env!("CARGO_PKG_VERSION"),
-                crate::BUILD_COMMIT,
+                &crate::build_commit(),
                 &manifest.manifest,
             )
         {
@@ -353,6 +353,7 @@ mod tests {
                 size: b"plugin-binary".len() as u64,
                 download_expires_at: None,
                 changelog: None,
+                preferences: None,
                 key_id: "test".into(),
                 signature: "test-signature".into(),
             },
@@ -381,6 +382,7 @@ mod tests {
             size: artifact.len() as u64,
             download_expires_at: None,
             changelog: None,
+            preferences: None,
             key_id: "release-key".into(),
             signature: "signed-manifest".into(),
         }

@@ -35,18 +35,30 @@ O binário estará em `./target/release/pom`.
 ### Build
 
 ```bash
-docker build -t pom .
+./scripts/build-docker.sh
+# Ksia:
+./scripts/build-docker-ksia.sh
 ```
 
-O build usa dois estágios. O builder parte de
-`nvidia/cuda:13.0.3-devel-ubuntu24.04`, compila o binário com suporte a CUDA
-(`cargo build --release --features cuda`) e constrói o frontend (`npm run build`
-em `apps/frontend/`). A imagem final é `nvidia/cuda:13.0.3-base-ubuntu24.04` e
-fica com `libstdc++6` e `libgomp1` apenas.
+Salem e Ksia compilam o mesmo executável `pom` com CPU, CUDA e Vulkan e o
+`pom-plugin-host`; os módulos GGML escolhem o backend disponível em runtime. O
+frontend é um estágio independente. Os builds de desenvolvimento usam por
+padrão as bibliotecas da release exata do fork `pereirajair/llama.cpp`, CUDA
+13.2.1, para evitar recompilar o núcleo nativo. A release correspondente deve
+estar publicada antes do build; `POM_LLAMA_CPP_RELEASE_TAG` pode fixar uma tag
+específica. Para compilar o fork local, inclusive uma cópia
+fora do POM ou com alterações não commitadas:
 
-Use `scripts/build-docker.sh` para construir: ele lê o commit do host e o passa
-como `ARG POM_BUILD_COMMIT` (o `.dockerignore` corta `.git/` do contexto, então
-sem isso o binário carimba `desconhecido` em `/api/ui/node`).
+```bash
+POM_LLAMA_CPP_MODE=source \
+POM_LLAMA_CPP_SOURCE_DIR=/caminho/para/llama.cpp \
+  ./scripts/build-docker.sh
+```
+
+`build-docker-ksia.sh` aceita os mesmos overrides. O script lê o commit do POM
+no host e o passa apenas ao runtime como `POM_BUILD_COMMIT`; o `.dockerignore`
+corta `.git/` do contexto, então sem isso o binário carimba `desconhecido` em
+`/api/ui/node`. A publicação de binários do POM não depende desse modo Docker.
 
 ### Executar
 

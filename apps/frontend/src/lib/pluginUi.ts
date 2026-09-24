@@ -24,7 +24,10 @@ export interface PluginMenuItem {
 export interface PluginRoute {
   path: string;
   screen: string;
-  profiles: Profile[];
+  /** Roles do contrato atual; na ausência, consulta `profiles` legado. */
+  roles?: Profile[];
+  /** Campo legado de rotas. Continua aceito quando `roles` não foi declarado. */
+  profiles?: Profile[];
   full_bleed?: boolean;
 }
 
@@ -104,6 +107,14 @@ function isMenuRoleArray(value: unknown): value is Profile[] {
     Array.isArray(value) &&
     value.every((role) => role === "admin" || role === "node" || role === "infer")
   );
+}
+
+function effectiveRouteProfiles(route: PluginRoute): Profile[] {
+  return route.roles !== undefined
+    ? [...route.roles]
+    : route.profiles !== undefined
+      ? [...route.profiles]
+      : [...ALL_PROFILES];
 }
 
 /**
@@ -206,7 +217,8 @@ function normalizePlugin(
       !isRecord(candidate) ||
       !isNonEmptyString(candidate.screen) ||
       !Object.prototype.hasOwnProperty.call(screens, candidate.screen) ||
-      !isProfileArray(candidate.profiles) ||
+      (candidate.roles !== undefined && !isMenuRoleArray(candidate.roles)) ||
+      (candidate.profiles !== undefined && !isProfileArray(candidate.profiles)) ||
       (candidate.full_bleed !== undefined && typeof candidate.full_bleed !== "boolean")
     ) {
       return null;
@@ -215,16 +227,19 @@ function normalizePlugin(
     const screen = screens[candidate.screen];
     if (!path || !screen || routePaths.has(path)) return null;
     routePaths.add(path);
+    const profiles = effectiveRouteProfiles(candidate as unknown as PluginRoute);
     const route: PluginRoute = {
       path,
       screen: candidate.screen,
-      profiles: [...candidate.profiles],
+      profiles,
+      ...(candidate.roles !== undefined ? { roles: [...(candidate.roles as Profile[])] } : {}),
       ...(candidate.full_bleed !== undefined ? { full_bleed: candidate.full_bleed } : {}),
     };
     rawRoutes.push({
       path: candidate.path as string,
       screen: candidate.screen,
-      profiles: [...candidate.profiles],
+      ...(candidate.roles !== undefined ? { roles: [...(candidate.roles as Profile[])] } : {}),
+      ...(candidate.profiles !== undefined ? { profiles: [...(candidate.profiles as Profile[])] } : {}),
       ...(candidate.full_bleed !== undefined ? { full_bleed: candidate.full_bleed } : {}),
     });
     routes.push({ code, route, screen, version: (value.version as string | null | undefined) ?? null });
@@ -364,9 +379,9 @@ function profilesForPluginPath(
   route: ResolvedPluginRoute,
 ): readonly Profile[] {
   const applicableMenus = plugin.menu.filter((item) => isUnder(path, item.to));
-  if (applicableMenus.length === 0) return route.route.profiles;
+  if (applicableMenus.length === 0) return effectiveRouteProfiles(route.route);
   const menuRoles = new Set(applicableMenus.flatMap((item) => item.roles));
-  return route.route.profiles.filter((profile) => menuRoles.has(profile));
+  return effectiveRouteProfiles(route.route).filter((profile) => menuRoles.has(profile));
 }
 
 /** Perfis que um plugin admite numa rota dele; `null` se a rota não é de plugin. */

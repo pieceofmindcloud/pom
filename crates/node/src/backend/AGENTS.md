@@ -191,7 +191,11 @@ profile policy remains the effective authorization boundary.
   um com features, validade, uso autenticado e atualização próprios;
   `POST /api/ui/plugins/activate` ativa em lote todo `plugin_code` que a chave
   receber do servidor, e `POST /api/ui/plugins/:code/refresh|
-  deactivate|update/check|update/apply` agem sobre um plugin só.
+  deactivate|update/check|update/apply` agem sobre um plugin só. O mesmo prefixo
+  AdminOnly registra/remove a origem pública com `POST/DELETE
+  /api/ui/plugins/:code/github-source`, verifica e instala downloads GitHub por
+  confirmação explícita, e salva preferências tipadas localmente em
+  `/api/ui/plugins/:code/preferences`; nenhuma dessas rotas ativa licença.
   O catálogo de releases é consultado diretamente pelo browser sem credenciais;
   Comprar envia o operador à loja pública com o código do plugin. A detecção
   da release `pom_core` é outra fronteira, deliberadamente separada
@@ -554,7 +558,9 @@ profile policy remains the effective authorization boundary.
   e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
   `peer_http.plain()`.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
-  request e serve TLS ou texto claro na mesma porta TCP. O endpoint HTTP/3
+  request e serve TLS ou texto claro na mesma porta TCP, com upgrades de
+  conexão habilitados (o WebSocket do proxy de plugins,
+  `crate::plugin_proxy`). O endpoint HTTP/3
   recebe configuração QUIC separada e sobe na porta UDP dedicada anunciada,
   mesmo quando o TCP está em HTTP puro; `TlsServer` cobre somente o certificado
   TCP, modo estrito e duração do último handshake. Ver
@@ -658,7 +664,10 @@ faz o download autenticado do blob persistido.
   optional outside-node total/accounted/unaccounted values only when an
   explicit residual is measured, cold/warm state, connection reuse counts and
   first-token boundaries. The historical
-  `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops` collapses it. The terminal event
+  `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops`
+  collapses it. Failed prefill events carry the trace observed by the prefill
+  pipeline into the audit completion; timings stay null unless a successful
+  summary measured them. The terminal event
   (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
   (`rewind_sessions` or `release_sessions`) has finished, because a chat sends
   the next turn the instant the stream closes and used to arrive in the middle
@@ -821,6 +830,14 @@ faz o download autenticado do blob persistido.
   refresh tenha trocado o `Arc` do inventário: a reconciliação usa caminho,
   tamanho e mtime do arquivo. O cache instala um placeholder antes da primeira
   varredura, ordena as raízes e mantém single-flight para scans e enriquecimentos;
+  as rotas de seleção de modelo distinguem esse placeholder de um arquivo
+  ausente: quando `metadata_complete` é falso, devolvem que a descoberta ainda
+  está em andamento e não a mensagem de que o arquivo não pertence ao peer;
+  a varredura rápida não calcula SHA-256 de modelos inteiros para montar
+  `shard_sets`, então um volume grande publica seus caminhos e raízes antes da
+  leitura dos headers GGUF usados para sugerir projetores. A escolha do
+  projetor não calcula SHA-256 do payload; a validação estrutural do caminho
+  escolhido fica no apply do peer que vai carregá-lo.
   F5 ou seleção repetida não empilha trabalho. Uma configuração nova fica em
   fila para o scan atual terminar. O enriquecimento registra início e conclusão
   (inclusive descarte), e uma falha terminal marca `metadata_error` no item e
@@ -1147,10 +1164,12 @@ faz o download autenticado do blob persistido.
 
 ### Visão na implantação e no chat
 
-`deploy::Plan.mmproj_path` e `mmproj_reason` vêm do modelo inteiro ou do
-`ShardSet` escolhido. A seleção da cabeça usa a faixa e o nome do candidato
-escolhido, não o primeiro arquivo de visão da máquina. `DeployRequest.vision`
-só habilita o projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
+`deploy::Plan.mmproj_path`, `mmproj_candidates` e `mmproj_reason` vêm do modelo
+inteiro ou do `ShardSet` escolhido. A interface pré-seleciona o primeiro
+candidato compatível e pode enviar `DeployRequest.mmproj_path` para escolher
+outro formato na cabeça selecionada. A seleção da cabeça usa a faixa e o nome
+do candidato escolhido, não o primeiro arquivo de visão da máquina.
+`DeployRequest.vision` só habilita o projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
 `webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
 `openai` extrai imagens base64 dos pedidos multimodais. A recusa de visão devolve
 `mmproj_reason`; o caminho também é validado contra o GGUF antes de o runtime

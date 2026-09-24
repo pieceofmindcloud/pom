@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserRouter, MemoryRouter } from "react-router-dom";
+import { BrowserRouter, MemoryRouter, useNavigate } from "react-router-dom";
+import { useState } from "react";
 import { LocaleProvider } from "./i18n/provider";
 import { ProfileProvider, type Profile } from "./lib/profile";
 
@@ -53,9 +54,19 @@ vi.mock("./components/Logo", () => ({
 vi.mock("./routes/DeployModel", () => ({ DeployModel: () => <div>tela-implantar</div> }));
 vi.mock("./routes/Deployments", () => ({ Deployments: () => <div>tela-implantacoes</div> }));
 vi.mock("./components/PluginScreen", () => ({
-  PluginScreen: ({ resolved }: { resolved: { code: string; route: { screen: string } } }) => (
-    <div>{`tela-plugin:${resolved.code}:${resolved.route.screen}`}</div>
-  ),
+  PluginScreen: ({ resolved }: { resolved: { code: string; route: { path: string; screen: string } } }) => {
+    // Simula a tela real mantendo o componente carregado enquanto o pai troca
+    // a rota. O App precisa remontá-la por identidade de rota para não deixar
+    // a tela anterior presa quando dois destinos compartilham o mesmo módulo.
+    const [initialPath] = useState(resolved.route.path);
+    const [initialScreen] = useState(resolved.route.screen);
+    return (
+      <>
+        <div>{`tela-plugin:${resolved.code}:${initialScreen}`}</div>
+        <div>{`tela-plugin:${resolved.code}:${initialPath}`}</div>
+      </>
+    );
+  },
 }));
 vi.mock("./routes/WholeModels", () => ({ WholeModels: () => <div>tela-modelos</div> }));
 vi.mock("./routes/Plugins", () => ({ Plugins: () => <div>tela-plugins</div> }));
@@ -93,6 +104,36 @@ function openBrowserPath(path: string, profile: Profile) {
         </ProfileProvider>
       </LocaleProvider>
     </BrowserRouter>,
+  );
+}
+
+function RouteDriver() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => navigate("/base/example")}>
+        ir para exemplo
+      </button>
+      <button type="button" onClick={() => navigate("/estatisticas")}>
+        ir para estatísticas
+      </button>
+    </>
+  );
+}
+
+function openWithRouteDriver(path: string, profile: Profile) {
+  return render(
+    <MemoryRouter
+      initialEntries={[path]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <RouteDriver />
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile={profile}>
+          <App />
+        </ProfileProvider>
+      </LocaleProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -212,6 +253,21 @@ describe("guarda de perfil por rota", () => {
     open("/base/plugin-de-base", "admin");
 
     expect(await screen.findByText("tela-plugin:base:plugin")).toBeTruthy();
+  });
+
+  it("remounts a plugin screen when navigation changes route within the same plugin", async () => {
+    pluginUi.plugins = [baseManifest];
+    openWithRouteDriver("/base/plugin-de-base", "admin");
+
+    expect(await screen.findByText("tela-plugin:base:/base/plugin-de-base")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "ir para exemplo" }));
+    expect(await screen.findByText("tela-plugin:base:/base/example")).toBeTruthy();
+    expect(screen.queryByText("tela-plugin:base:/base/plugin-de-base")).toBeNull();
+
+    // The legacy POM branch changes identity and must not retain the plugin
+    // screen. This is the transition that previously masked the same-plugin bug.
+    fireEvent.click(screen.getByRole("button", { name: "ir para estatísticas" }));
+    expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
   });
 
   it("loads a namespaced route on a direct browser request under the router basename", async () => {

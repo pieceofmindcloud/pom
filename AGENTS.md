@@ -79,12 +79,15 @@ cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 
 A imagem Docker também compila `pom-plugin-host` e o coloca ao lado de `pom`;
 o entrypoint mantém o caminho explícito e o próprio `pom` inicia o host após
-baixar o plugin Enterprise, usando IPC por stdin/stdout.
+baixar o plugin Enterprise, usando IPC por stdin/stdout. Os builds Docker de
+desenvolvimento usam por padrão bibliotecas da release exata do fork; para
+compilar fontes locais, use `POM_LLAMA_CPP_MODE=source` e, opcionalmente,
+`POM_LLAMA_CPP_SOURCE_DIR=/caminho/para/llama.cpp` com os scripts de build.
 
 ## Preparo do build
 
-O build depende do fork do `llama.cpp` na branch `pom-tensor-parallel`,
-ignorado pelo Git (ver `.gitignore`) e alcançado por
+Os builds Cargo e o modo Docker `source` dependem do fork do `llama.cpp` na
+branch `pom-tensor-parallel`, ignorado pelo Git (ver `.gitignore`) e alcançado por
 `vendor/llama-cpp-sys-2/llama.cpp`. O `build.rs` prepara automaticamente um
 clone raso quando o checkout está ausente. Para reutilizar uma cópia existente,
 use `LLAMA_SOURCE=/caminho/para/llama.cpp cargo build`; o diretório precisa
@@ -109,7 +112,9 @@ o build nativo anterior e o cargo não percebe a troca.
 
 A interface é **lida do disco** em `apps/frontend/dist` em tempo de execução
 (`config::ui_dist_dir()`, `$POM_UI_DIST` sobrescreve), não embutida no
-binário: `cargo build` não reconstrói a tela e não precisa de Node.
+binário: `cargo build` não reconstrói a tela e não precisa de Node. No Docker,
+o frontend é compilado em estágio independente e sua cópia para o runtime é a
+última camada; uma edição só da UI não invalida o backend.
 
 ```bash
 ./target/release/pom --list-models

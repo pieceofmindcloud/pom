@@ -82,7 +82,7 @@ export function PluginScreen({ resolved }: { resolved: ResolvedPluginRoute }) {
     return () => {
       cancelled = true;
     };
-  }, [resolved.code, resolved.screen.module, resolved.version]);
+  }, [resolved.code, resolved.route.path, resolved.screen.module, resolved.screen.export, resolved.version]);
   if (state.error) return <PluginError message={state.error} />;
   if (!state.Screen) return null;
   const { Screen } = state;

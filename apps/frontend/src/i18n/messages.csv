@@ -1470,6 +1470,18 @@ plugins.deactivateFailed,Could not deactivate this plugin.,Não foi possível de
 plugins.features,Features,Funcionalidades
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
+plugins.githubCheck,Check for updates,Verificar atualizações
+plugins.githubCheckFailed,GitHub release check failed. The last verified update is retained.,A verificação de releases do GitHub falhou. A última atualização verificada foi mantida.
+plugins.githubRemove,Remove source,Remover origem
+plugins.githubRepositoryLabel,Public GitHub repository URL,URL do repositório público do GitHub
+plugins.githubSourceDescription,Register a public repository. Compatible releases are checked and downloaded locally; installation always requires your confirmation and an active license.,Cadastre um repositório público. Releases compatíveis são verificadas e baixadas localmente; a instalação sempre exige sua confirmação e uma licença ativa.
+plugins.githubSourceFailed,Could not register or update this GitHub source. Check that it is a public repository with a compatible release.,Não foi possível cadastrar ou atualizar esta origem do GitHub. Verifique se o repositório é público e tem uma release compatível.
+plugins.githubSourceRegister,Register repository,Cadastrar repositório
+plugins.githubSourceSave,Save repository,Salvar repositório
+plugins.githubSourceTitle,Public GitHub Releases,Releases públicas do GitHub
+plugins.githubUpdateApply,Install downloaded update,Instalar atualização baixada
+plugins.githubUpdateAvailable,Verified GitHub update downloaded: {version},Atualização verificada do GitHub baixada: {version}
+plugins.githubUpdateNeedsActivation,The update is downloaded. Activate this plugin with a valid license before installing it.,A atualização foi baixada. Ative este plugin com uma licença válida antes de instalá-la.
 plugins.inactiveTitle,Available,Disponível
 plugins.installedAt,Last installed,Última instalação
 plugins.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
@@ -1484,6 +1496,10 @@ plugins.metadataIncomplete,Some catalog details or images are unavailable.,Algun
 plugins.metadataUnavailable,Description unavailable,Descrição indisponível
 plugins.monthlyPrice,{price}/month,{price}/mês
 plugins.noLicenseRequired,No license required,Não exige licença
+plugins.preferencesLocalOnly,These values are stored on this node and are never sent to the license server.,Estes valores ficam armazenados neste nó e nunca são enviados ao servidor de licenças.
+plugins.preferencesSave,Save preferences,Salvar preferências
+plugins.preferencesSaveFailed,Could not save these preferences locally.,Não foi possível salvar estas preferências localmente.
+plugins.preferencesTitle,Plugin preferences,Preferências do plugin
 plugins.pricing,Pricing,Preços
 plugins.refresh,Refresh,Atualizar
 plugins.releaseUnavailable,No valid release available,Nenhuma release válida disponível

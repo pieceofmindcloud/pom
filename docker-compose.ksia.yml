@@ -1,45 +1,39 @@
-# Ksia hardware Compose entrypoint: two NVIDIA RTX 5060 Ti and no Radeon.
-# The common image/build/runtime definitions are extended from one file.
+x-node: &node
+  build:
+    context: "/storage/nvme1/projects/pom"
+    target: runtime
+    additional_contexts:
+      llama-fork: "${POM_LLAMA_CPP_SOURCE_CONTEXT:-./llama.cpp}"
+    args:
+      POM_BUILD_COMMIT: "${POM_BUILD_COMMIT:-}"
+      LLAMA_CPP_CACHE_KEY: "${LLAMA_CPP_CACHE_KEY:-unknown}"
+      POM_LLAMA_CPP_MODE: "${POM_LLAMA_CPP_MODE:-release}"
+      POM_LLAMA_CPP_RELEASE_TAG: "${POM_LLAMA_CPP_RELEASE_TAG:-}"
+      POM_LLAMA_CPP_RELEASE_REPOSITORY: "${POM_LLAMA_CPP_RELEASE_REPOSITORY:-pereirajair/llama.cpp}"
+      CUDA_RUNTIME_FLAVOR: "${CUDA_RUNTIME_FLAVOR:-runtime}"
+      POM_CUDA_ARCHITECTURES: "${POM_CUDA_ARCHITECTURES:-86;120}"
+      POM_CUDA_ARCH_CACHE_KEY: "${POM_CUDA_ARCH_CACHE_KEY:-86-120}"
+      RUST_TOOLCHAIN: "${RUST_TOOLCHAIN:-stable}"
+  image: "pom:ksia"
+  network_mode: host
+  restart: unless-stopped
+  environment:
+      POM_HOME: /data
+      POM_DEV: 1
+      POM_UI_DIST: /app/apps/frontend/dist
 services:
-  node-gpu:
-    extends:
-      file: docker-compose.common.yml
-      service: node-gpu
+  node-1:
+    <<: *node
+    container_name: pom-gpu
+    volumes:
+      - "./tests/fixtures/node-gpu:/data"
+      - /storage/nvme1/models_full:/storage/nvme1/models_full
+      - /storage/nvme2/models_sliced:/storage/nvme2/models_sliced
+      - /storage/hd1/models_full:/storage/hd1/models_full
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
+              device_ids: ["0", "1"]
               capabilities: [gpu]
-              device_ids: ['0', '1']
-
-  node-gpu2:
-    extends:
-      file: docker-compose.common.yml
-      service: node-gpu2
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
-              device_ids: ['1']
-
-  node-gpu-3:
-    extends:
-      file: docker-compose.common.yml
-      service: node-gpu-3
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
-              device_ids: ['0']
-
-  node-cpu:
-    extends:
-      file: docker-compose.common.yml
-      service: node-cpu
-    environment:
-      POM_BIN: /usr/local/bin/pom-cpu

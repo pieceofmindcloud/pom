@@ -211,7 +211,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `license_expires_at` é a validade da LICENÇA (de `GET /v1/licenses/status`) e
   é o campo certo para "Licença válida até" na tela de Plugins - nunca
   `lease_expires_at`, um prazo técnico de renovação de poucos dias que o
-  heartbeat empurra sozinho.
+  heartbeat empurra sozinho. O status também expõe a origem GitHub registrada
+  localmente, a release verificada em staging e seu erro de checagem; isso não
+  muda `licensed_plugins`. `preferences_schema` vem do manifesto instalado,
+  enquanto `preferences` são valores locais, enviados somente à rota local de
+  configuração do plugin e nunca à API de licenças.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions
@@ -277,7 +281,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   em voo de `PeerView` é `null` quando o relatório vivo do peer não chegou;
   zero só representa um peer que de fato reportou estar ocioso.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
-  `model_label`, `pom_id`, optional local `mmproj_path` and `mmproj_reason`;
+  `model_label`, `pom_id`, optional local `mmproj_path`,
+  `mmproj_candidates` and `mmproj_reason`; `DeployPlan` carries the same
+  candidate list so the deployment inspector can submit an explicit projector
+  path without any source SHA-256 lookup;
   `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
   `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen
   shapes. `DeployPlan` also carries the operational name, strategy, RTT route
@@ -349,6 +356,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   It also carries `authority_level`, the **effective** administrative
   authority, which is what decides whether a screen offers an administrative
   act - `profile: admin` alone grants nothing.
+### pluginCatalog.ts
+- `releaseForTarget(releases, os, arch)` seleciona somente uma release cujo
+  sistema e arquitetura coincidam com o nó local. Sem alvo conhecido ou sem
+  correspondência, retorna `null` para a UI não apresentar a release de outra
+  plataforma.
 - `usePeerRuntime(nodeId, enabled)` 15s (stale 10s) - o `/health` daquela
   máquina, por `optional` (um nó sem a rota devolve 404 e a seção some). O
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar
@@ -571,8 +583,9 @@ When updating this file, preserve this bar for all agents and keep entries conci
   rotas nativas `/logs` e `/estatisticas`: `resolvePluginRoute`,
   `pluginRouteProfiles`, `pluginMenuItems`, `pluginLabel`, `pluginAssetUrl`.
   `roles` filtra o item e também limita o acesso direto à rota vinculada;
-  se ausente, usa `profiles` legado ou, sem ele, todos os perfis, sujeito às
-  restrições da rota. Não conhece plugin algum.
+  menus e rotas aceitam `roles` atual ou `profiles` legado, sem exigir ambos.
+  Se os dois aparecem, `roles` prevalece; sem nenhum, todos os perfis são
+  elegíveis. Não conhece plugin algum.
 - `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
   design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
   empacotar cópias próprias.

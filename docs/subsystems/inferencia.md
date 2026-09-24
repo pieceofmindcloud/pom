@@ -259,7 +259,10 @@ duplicatas, recibos tardios, peers ausentes, wall-clock, caminho crítico e
 acumulados de compute/transporte. Esses acumulados não são uma decomposição
 exclusiva do wall-clock: a UI não calcula `outside-node` por
 `E2E - soma(processing)`. `overlap_ms` e `true_residual_ms` ficam ausentes
-enquanto não houver intervalos sincronizáveis para sustentá-los.
+enquanto não houver intervalos sincronizáveis para sustentá-los. Se o prefill
+falhar depois de progresso parcial, a auditoria de erro recebe o trace parcial
+observado pelo pipeline; campos não observados e `timings` continuam nulos,
+sem estimativa substituta.
 
 No `remote-stream`, o head envia `hop_timings` dos peers downstream junto ao
 lote de tokens. O modo normal agrega frames, bytes, abertura, lifetime,

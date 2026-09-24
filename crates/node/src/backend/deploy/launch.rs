@@ -54,6 +54,7 @@ pub(super) async fn deploy_endpoint(
         &req.preferred_node_ids,
         &pairwise_rtt,
         layer_options,
+        req.mmproj_path.as_deref(),
     );
     if req.vision && plan.mmproj_path.is_none() {
         return bad(json!({
@@ -931,6 +932,7 @@ pub(super) fn add_virtual_whole_slices(
             name: format!("{group} L{start_layer}-{end_layer}"),
             path: whole.path.clone(),
             mmproj_path: whole.mmproj_path.clone(),
+            mmproj_candidates: whole.mmproj_candidates.clone(),
             mmproj_reason: whole.mmproj_reason.clone(),
             size_bytes,
             sha256: None,

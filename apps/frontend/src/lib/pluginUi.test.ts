@@ -84,6 +84,27 @@ describe("plugin UI registry", () => {
     expect(canAccessRoute("/logs", "admin")).toBe(true);
   });
 
+  it("accepts route roles without requiring legacy profiles", () => {
+    const rolesOnly: ActivePluginUi = {
+      ...basePlugin,
+      code: "roles",
+      manifest: {
+        ...basePlugin.manifest,
+        plugin_code: "roles",
+        menu: [{ ...basePlugin.manifest.menu[0], to: "/roles-only", roles: ["infer"], profiles: undefined }],
+        routes: [{ path: "/roles-only", screen: "plugin", roles: ["infer"] }],
+      },
+    };
+    setPluginUi([rolesOnly]);
+
+    expect(pluginUiSnapshot()[0]?.manifest.routes[0]).toMatchObject({
+      path: "/roles-only",
+      roles: ["infer"],
+    });
+    expect(canAccessRoute("/roles/roles-only", "infer")).toBe(true);
+    expect(canAccessRoute("/roles/roles-only", "admin")).toBe(false);
+  });
+
   it("uses each plugin namespace for matching and its displayed menu links", () => {
     setPluginUi([basePlugin, otherPlugin]);
 

@@ -158,8 +158,53 @@ pub struct PluginManifest {
     pub download_expires_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changelog: Option<String>,
+    /// Optional, typed plugin-local preference definitions. Values configured
+    /// by the operator are stored by POM locally and are never license data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferences: Option<PluginPreferencesSchema>,
     pub key_id: String,
     pub signature: String,
+}
+
+/// Preference definitions shipped with a plugin manifest. This is a UI/config
+/// schema only; it does not grant features or change license entitlement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginPreferencesSchema {
+    #[serde(default)]
+    pub features: Vec<PluginBooleanPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_directory: Option<PluginStorageDirectoryPreference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginBooleanPreference {
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginStorageDirectoryPreference {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
+/// Locally persisted preference values, deliberately separate from license
+/// request/response DTOs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginPreferences {
+    #[serde(default)]
+    pub features: std::collections::BTreeMap<String, bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_directory: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

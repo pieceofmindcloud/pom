@@ -315,8 +315,10 @@ visibilidade dos controles de implantação na UI local.
   ponto depois de uma falha de transporte: a resposta perdida não prova se o
   peer já gravou o chunk, e a reentrada poderia pedir remoção parcial de KV.
   A recuperação segura recria a sessão inteira a frio, uma vez; se ela falhar,
-  o cleanup libera os hops alcançados. O modo anel continua serializado pelo
-  contrato aninhado e ignora a janela. A telemetria
+  o cleanup libera os hops alcançados. Mesmo sem ponto de retomada, o erro
+  carrega o `RequestTrace` parcial observado até a falha para a auditoria; isso
+  não muda a retentativa nem preenche tempos ausentes. O modo anel continua
+  serializado pelo contrato aninhado e ignora a janela. A telemetria
   também registra `prefix_match_tokens`, `prefix_reuse_status`,
   `prompt_tokens_transmitted`, `prefill_pipeline_depth_max` e transporte por
   travessia. `RequestTrace` acrescenta o `trace_id`, spans locais do gateway,

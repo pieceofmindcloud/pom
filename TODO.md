@@ -4,7 +4,8 @@ Lista de trabalho consolidada em 2026-09-07 a partir da auditoria das anotaçõe
 dos `AGENTS.md`, na revisão `985cfb51183c4fa1b509524e54d39aeda78b1cc8`.
 A evidência completa de cada item está no relatório da auditoria que acompanha
 esta tarefa. A lista atual mantém a numeração da auditoria: 17 defeitos ainda
-existentes e 1 item não verificável nesta máquina.
+existentes e 1 item não verificável nesta máquina. Itens acrescentados depois
+da auditoria seguem a numeração a partir do 27.
 
 ## Regra de manutenção
 
@@ -133,8 +134,7 @@ como registro do que foi feito e não tem item aberto.
   serialização e testes de compatibilidade.
 
 - [ ] **26 - Build manual pode perder o commit do binário**
-  **Fonte:** `scripts/build-docker.sh:6-17`; `crates/node/build.rs:69-92`;
-  `Dockerfile:48-53`.
+  **Fonte:** `scripts/build-docker.sh`; `Dockerfile` (runtime `ARG POM_BUILD_COMMIT`).
   **Prática:** um `docker compose build` manual sem `POM_BUILD_COMMIT` pode
   produzir o carimbo `desconhecido`.
   **Afetados:** builds manuais e pipelines que não exportam a variável;

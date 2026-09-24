@@ -575,6 +575,9 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
                     .unwrap_or_default();
             }
             crate::gateway::GenEvent::Failed(e) => visto.falhou = Some(e),
+            crate::gateway::GenEvent::FailedWithTelemetry { error, .. } => {
+                visto.falhou = Some(error)
+            }
         }
     }
     let _ = bg.await;

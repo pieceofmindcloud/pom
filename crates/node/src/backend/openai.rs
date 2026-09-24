@@ -1396,7 +1396,9 @@ fn sse_stream(
                         s.phase = Phase::Ended;
                         continue;
                     }
-                    Some(GenEvent::Failed(err)) => {
+                    Some(
+                        GenEvent::Failed(err) | GenEvent::FailedWithTelemetry { error: err, .. },
+                    ) => {
                         let payload =
                             json!({ "error": { "message": err, "type": "server_error" } });
                         s.queue

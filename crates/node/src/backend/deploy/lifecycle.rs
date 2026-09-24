@@ -313,6 +313,7 @@ pub(super) async fn run(
                 "a implantação com visão precisa de um alvo que comece na camada 0".to_string()
             })?;
         head.use_mmproj = true;
+        head.mmproj_path = plan.mmproj_path.clone();
     }
     if params.no_embeddings {
         // O planner já validou atomicamente a topologia. Marcar cada alvo

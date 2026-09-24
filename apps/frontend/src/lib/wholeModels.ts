@@ -28,6 +28,7 @@ export interface WholeModelEntry {
   quant: string | null;
   architecture: string | null;
   mmproj_path: string | null;
+  mmproj_candidates: string[];
   mmproj_reason: string | null;
   /** Node ids that have this file. */
   holders: string[];
@@ -67,6 +68,10 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
       if (!isWholeModel(model)) continue;
       const found = byName.get(model.name);
       if (!found) {
+        const candidates = [...(model.mmproj_candidates ?? [])];
+        if (model.mmproj_path && !candidates.includes(model.mmproj_path)) {
+          candidates.push(model.mmproj_path);
+        }
         byName.set(model.name, {
           name: model.name,
           total_layers: model.total_layers,
@@ -74,6 +79,7 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
           quant: model.quant,
           architecture: model.architecture,
           mmproj_path: model.mmproj_path ?? null,
+          mmproj_candidates: candidates,
           mmproj_reason: model.mmproj_reason ?? null,
           holders: [peer.node_id],
         });
@@ -87,6 +93,12 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
       found.quant ??= model.quant;
       found.architecture ??= model.architecture;
       found.mmproj_path ??= model.mmproj_path ?? null;
+      for (const candidate of model.mmproj_candidates ?? []) {
+        if (!found.mmproj_candidates.includes(candidate)) found.mmproj_candidates.push(candidate);
+      }
+      if (model.mmproj_path && !found.mmproj_candidates.includes(model.mmproj_path)) {
+        found.mmproj_candidates.push(model.mmproj_path);
+      }
       found.mmproj_reason ??= model.mmproj_reason ?? null;
       found.size_bytes = Math.max(found.size_bytes, model.size_bytes);
     }

@@ -96,6 +96,52 @@ mod tests {
         assert_eq!(first, second);
     }
 
+    #[tokio::test]
+    async fn model_metadata_distinguishes_pending_catalog_from_missing_model() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-catalog-pending-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        let requested = models.join("pending.gguf");
+        std::fs::write(&requested, b"not-yet-scanned").unwrap();
+
+        let state = crate::gateway::testkit::state_with("catalog-pending", vec![]).await;
+        {
+            let mut config = state.auth.write().await;
+            config.model_dirs = Some(vec![models.to_string_lossy().into_owned()]);
+            config.shard_dir = Some(shards.to_string_lossy().into_owned());
+        }
+        let roots = normalize_catalog_roots(vec![models], shards);
+        *catalog_cache().lock().await = Some(CachedCatalog {
+            at: Instant::now(),
+            roots: roots.clone(),
+            catalog: Arc::new(Catalog {
+                models: Vec::new(),
+                shard_sets: Vec::new(),
+                scanned: Vec::new(),
+                metadata_complete: false,
+            }),
+            refreshing: Some(roots),
+            enriching: None,
+            pending_refresh: None,
+        });
+
+        let error = model_metadata_local(&state, &requested.to_string_lossy())
+            .await
+            .expect_err("um catálogo pendente não pode ser tratado como pronto");
+        assert!(
+            error.contains("catálogo deste peer ainda está sendo descoberto"),
+            "erro inesperado: {error}"
+        );
+
+        *catalog_cache().lock().await = None;
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn slice_folder_cannot_equal_or_nest_inside_a_whole_model_folder() {
         let root = std::env::temp_dir().join(format!("pom-paths-{}", std::process::id()));

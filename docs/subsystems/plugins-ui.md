@@ -37,7 +37,7 @@ Estatísticas mora em `pom-plugin-logs`, não aqui.
 |---|---|
 | `schema`, `plugin_code` | `pom-plugin-ui/v1`; o código tem de ser o do plugin instalado |
 | `menu[]` | `id`, `label` por idioma (`en` obrigatório), `icon` (nome conhecido, senão genérico), `to`, `roles` opcional (`admin`/`node`/`infer`); sem `roles` nem o campo legado `profiles`, todos os perfis são elegíveis. `group` é aceito, mas não organiza itens |
-| `routes[]` | `path`, `screen`, `profiles` (`admin`/`node`/`infer`, não vazio), `full_bleed` |
+| `routes[]` | `path`, `screen`, `roles` opcional (`admin`/`node`/`infer`) ou `profiles` legado (`admin`/`node`/`infer`, não vazio), `full_bleed`; sem os dois, todos os perfis são elegíveis |
 | `screens{}` | `module` (asset ES), `export` (padrão `default`), `styles[]` |
 | `i18n{}` | idioma -> asset JSON; se presente, `en` é obrigatório |
 | `assets[]` | lista fechada; caminhos relativos, sem `..`; tudo o que telas e i18n citam tem de estar aqui |
@@ -70,18 +70,21 @@ em recarga direta e navegação pelo histórico do navegador.
 
 Os perfis da rota decidem quem entra na tela do plugin - inclusive `infer`, cuja
 lista reduzida do POM não se aplica a essas rotas. `menu[].roles` restringe a
-visibilidade do link e a rota direta correspondente; a lista efetiva é a
-interseção com `routes[].profiles`. Para manifests existentes,
+visibilidade do link e a rota direta correspondente; `routes[].roles` tem
+precedência sobre `routes[].profiles`, e a lista efetiva é a interseção com os
+menus que cobrem o destino. Para manifests existentes,
 `menu[].profiles` continua aceito como equivalente quando `roles` não foi
 declarado; `roles` prevalece quando os dois campos aparecem. Sem nenhum dos
-campos, todos os perfis são elegíveis, ainda sujeitos aos perfis da rota. Perfil
-fora da lista efetiva recebe a recusa normal.
+campos do menu ou da rota, todos os perfis são elegíveis. Perfil fora da lista
+efetiva recebe a recusa normal.
 
 ## Telas
 
 `components/PluginScreen.tsx` importa o módulo do asset (mesma origem, a sessão
 vale) e monta o export declarado como componente React da própria árvore, com
-`ErrorBoundary`; falha vira um cartão de erro. O plugin não empacota outro
+`ErrorBoundary`; falha vira um cartão de erro. O host remonta a tela quando a
+rota normalizada muda, inclusive entre destinos do mesmo `plugin_code`, para
+que uma navegação interna não retenha o componente da rota anterior. O plugin não empacota outro
 React: `lib/pluginHost.ts` expõe em `globalThis.__POM_HOST__` React, ReactDOM,
 o runtime JSX, React Query, o kit de design (`components/ui`), `format`,
 `useI18n`, `useTheme`, `useCluster`, `api.get`, `Modal`, `ExecutionTelemetry`,
@@ -89,6 +92,69 @@ o runtime JSX, React Query, o kit de design (`components/ui`), `format`,
 objeto na hora de empacotar; hooks e contextos são os da aplicação. A
 superfície é versionada (`PLUGIN_HOST_VERSION`) e só cresce de forma
 compatível. O CSS do plugin usa os mesmos tokens de cor (variáveis CSS) do POM.
+
+## Preferências de release e contexto do host
+
+As preferências locais não fazem parte do contrato de tela `pom-plugin-ui/v1`
+acima. O schema tipado é opcional em `PluginManifest.preferences` no contrato
+de release/licença (`crates/enterprise-protocol`): toggles booleanos e um
+campo opcional de diretório de armazenamento. O POM valida esse schema, aplica
+os defaults, persiste os valores por `plugin_code` no `pom.db` e nunca envia os
+valores ao servidor de licenças nem os trata como entitlement. A tela Plugins
+edita os valores apenas enquanto o plugin está ativo.
+
+`host.configure` inclui os valores locais sob `preferences`, junto do contexto
+do gateway, para o próprio plugin ativo. Isso é IPC entre o nó e o host local,
+não tráfego para o license-server. A atualização pública por GitHub é uma
+origem separada: seus manifestos por plataforma são assets
+`pom-plugin-<os>-<arch>.json`, e um binário baixado fica em staging até o
+operador confirmar a instalação. Ver `licenciamento-enterprise.md` para campos
+exigidos, hash e ciclo de checagem.
+
+## Contexto do nó (`host.configure`)
+
+Um plugin que chama os modelos do nó não embute endereço nem credencial: o
+nó os entrega pelo `query` genérico, na operação `host.configure`:
+
+```json
+{"operation": "host.configure",
+ "gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": "sk-..."},
+ "preferences": {"features": {"capture_headers": false}, "storage_directory": null}}
+```
+
+`openai_base_url` é o gateway do próprio nó em loopback (texto claro de
+loopback é sempre aceito, mesmo com TLS). `api_key` é a chave de chat do nó
+(`pom-<node_id>`), a mesma que o Chat da interface usa, para que também
+funcione num nó sem autoridade administrativa. O nó entrega o contexto a todo
+host que sobe e de novo quando ele muda (chave revogada e recriada); plugins
+que não conhecem a operação respondem erro, que é ignorado.
+
+## Interface web servida pelo plugin (`/api/ui/plugins/:code/proxy/*`)
+
+Uma tela de plugin pode depender de um servidor HTTP que o próprio plugin roda
+em loopback - por exemplo uma aplicação web inteira. O plugin anuncia onde ele
+está pela operação `ui.upstream`:
+
+```json
+{"status": "ready", "port": 43127, "token": "<segredo de 16 a 512 bytes ASCII>"}
+```
+
+(`{"status": "starting"}` e `{"status": "error", "error": "..."}` viram 503.)
+`crates/node/src/plugin_proxy.rs` monta esse servidor em
+`/api/ui/plugins/<code>/proxy/`, na mesma origem da interface, e encaminha:
+
+- HTTP com corpo em streaming nos dois sentidos, e upgrades (WebSocket);
+- o caminho depois do prefixo, byte a byte, e a query intacta;
+- `x-pom-plugin-token: <token>`, para que só o nó alcance o servidor do plugin;
+- `x-forwarded-prefix`, `x-forwarded-host` e `x-forwarded-proto`, para que o
+  plugin gere URLs sob o prefixo.
+
+Nunca seguem para o plugin o cookie de sessão, `Authorization` nem
+`x-pom-access-token`, e o nó descarta `Set-Cookie` das respostas. A rota é
+AdminOnly e usa a autorização da superfície administrativa, porque scripts,
+WebSockets e `EventSource` do navegador não carregam o `Authorization` da
+interface; em troca, recusa (403) `Origin` diferente do próprio nó,
+`Sec-Fetch-Site` fora de `same-origin`/`none` e chamadas entre nós.
 
 ## i18n do plugin
 
@@ -104,7 +170,12 @@ no `en` ou na chave. **O POM não é dono de nenhum texto de plugin.**
 ## Testes
 
 - Rust: `cargo test -p node --bin pom plugin_ui` (manifesto, caminhos, perfis,
-  catálogos, o manifesto real do plugin `enterprise`).
+  catálogos, o manifesto real do plugin `enterprise`); `plugin_proxy`
+  (`ui.upstream`, barreira de origem, cabeçalhos filtrados, HTTP e WebSocket
+  contra um servidor real); e
+  `plugins::tests::host_context_and_ui_proxy_reach_a_real_plugin_host`
+  (`host.configure` na subida, na troca e no reinício de um host real, e o
+  proxy pelo router da interface).
 - Frontend: `lib/pluginUi.test.ts` (registro, namespaces, colisões, caminhos,
   perfis e menu), `lib/pluginI18n.test.ts` (instalação, idiomas selecionados,
   ausência/invalidez), `App.test.tsx` (fallback, tela por perfil, duas rotas

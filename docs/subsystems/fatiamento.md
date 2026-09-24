@@ -59,8 +59,21 @@ catálogo não percorre a tabela de tensores, não cria `mmap` e não toca o
 payload. Quando o operador escolhe um modelo inteiro ainda pendente, o planner
 chama `POST /api/ui/model-metadata` com o caminho já listado e publica apenas
 esse cabeçalho; os vizinhos continuam em background sem bloquear a seleção.
+Se a enumeração ainda não listou o caminho, as rotas de seleção devolvem o
+estado de descoberta pendente em vez de afirmar que o arquivo não pertence ao
+peer; a UI deve aguardar `metadata_complete: true` e tentar novamente.
 Hash integral continua restrito à fronteira de identidade, fatiamento ou
 transferência.
+
+### Projetores multimodais
+
+O catálogo lê os headers GGUF dos `mmproj` adjacentes e publica
+`mmproj_candidates` para cada modelo e conjunto de fatias. Quando a fatia não
+tem projetor local, os candidatos do modelo inteiro são herdados pelo rótulo do
+manifesto. Essa associação não compara o payload do modelo com `pom_id` e não
+calcula SHA-256 para descobrir ou escolher o projetor. A interface ordena e
+pré-seleciona o primeiro caminho, mas o operador pode escolher outro formato
+compatível durante a implantação.
 
 Depois do enriquecimento, `webui.rs` registra o catálogo em `pom.db`. O registro
 guarda o caminho como identidade local do modelo inteiro, a identidade do

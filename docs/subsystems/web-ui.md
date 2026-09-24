@@ -1227,8 +1227,10 @@ impressão digital é só modelo + conjunto de faixas.
   A resposta inicial do catálogo pode conter somente nome, caminho, tamanho e
   dados do manifesto, enquanto o nó lê os cabeçalhos GGUF em background. A
   tela mostra o inventário imediatamente. O catálogo lê somente o KV header e
-  `stat` das partes: não percorre a tabela de tensores, não calcula hash e não
-  mapeia os pesos. O botão e o endpoint de execução verificam somente os
+  `stat` das partes na varredura rápida: não percorre a tabela de tensores, não
+  calcula hash de modelos inteiros e não mapeia os pesos. A tarefa de
+  enriquecimento pode validar o `pom_id` de uma origem para herdar um projetor,
+  depois que o inventário já foi publicado. O botão e o endpoint de execução verificam somente os
   metadados necessários para a seleção atual: para um modelo inteiro pendente,
   o planner envia seu caminho já listado a `POST /api/ui/model-metadata`, que
   enriquece esse item sem esperar os vizinhos. Outro modelo ainda em

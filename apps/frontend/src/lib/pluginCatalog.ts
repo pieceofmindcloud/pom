@@ -35,6 +35,20 @@ export interface PublicPluginCatalog {
   plugins: PublicPluginCatalogEntry[];
 }
 
+/** Pick a release only when the catalog identifies the current node target. */
+export function releaseForTarget(
+  releases: PublicPluginRelease[],
+  os: string | null | undefined,
+  arch: string | null | undefined,
+): PublicPluginRelease | null {
+  if (!os || !arch) return null;
+  const targetOs = os.trim().toLowerCase();
+  const targetArch = arch.trim().toLowerCase();
+  if (!targetOs || !targetArch) return null;
+  return releases.find((release) =>
+    release.os.toLowerCase() === targetOs && release.arch.toLowerCase() === targetArch) ?? null;
+}
+
 type UnknownRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is UnknownRecord {

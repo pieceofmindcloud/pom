@@ -159,6 +159,10 @@ pub struct DeployRequest {
     /// Start the selected model with its catalogued mmproj projector.
     #[serde(default)]
     pub vision: bool,
+    /// Optional projector selected by the operator. The path is local to the
+    /// selected pipeline head and is validated there before launch.
+    #[serde(default)]
+    pub mmproj_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

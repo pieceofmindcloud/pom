@@ -45,6 +45,7 @@ pub(super) async fn plan_endpoint(
         &req.preferred_node_ids,
         &pairwise_rtt,
         layer_options,
+        None,
     );
     if req.kind == DeployKind::TensorParallel && p.blocked.is_none() && !has_tp_parts(&machines) {
         if let Some(tp) = &req.tp {

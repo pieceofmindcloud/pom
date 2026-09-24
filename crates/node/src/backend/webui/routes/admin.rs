@@ -56,6 +56,35 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugins::apply_plugin_update),
         )
         .route(
+            "/api/ui/plugins/:code/github-source",
+            post(crate::plugins::set_plugin_github_source)
+                .delete(crate::plugins::remove_plugin_github_source),
+        )
+        .route(
+            "/api/ui/plugins/:code/github-source/check",
+            post(crate::plugins::check_plugin_github_update),
+        )
+        .route(
+            "/api/ui/plugins/:code/github-source/apply",
+            post(crate::plugins::apply_plugin_github_update),
+        )
+        .route(
+            "/api/ui/plugins/:code/preferences",
+            post(crate::plugins::save_plugin_preferences),
+        )
+        // Interface web servida pelo próprio plugin (ver `crate::plugin_proxy`).
+        // Uploads atravessam o proxy, então o corpo não tem o teto padrão.
+        .route(
+            "/api/ui/plugins/:code/proxy",
+            axum::routing::any(crate::plugin_proxy::plugin_proxy)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/ui/plugins/:code/proxy/*path",
+            axum::routing::any(crate::plugin_proxy::plugin_proxy)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
             "/api/ui/pom-update/check",
             post(crate::pom_core_update::check_pom_update),
         )

@@ -322,6 +322,49 @@ mod generation_pump_tests {
         assert!(result.is_none());
         assert!(cancellation.is_cancelled());
     }
+
+    #[tokio::test]
+    async fn falha_de_prefill_preserva_telemetria_parcial_ate_a_auditoria() {
+        let mut trace = crate::prefill::RequestTrace::from_plan(
+            "test-model",
+            &crate::pipeline::PipelinePlan {
+                steps: Vec::new(),
+                edges: Vec::new(),
+            },
+        );
+        trace.prefill_ms = 37;
+        trace.input_tokens = 45_647;
+        trace.cached_tokens = 13;
+        let transport_failure = anyhow::Error::new(crate::prefill::PartialPrefillTrace {
+            trace: Box::new(trace),
+        });
+        let partial_trace = crate::prefill::partial_trace(&transport_failure)
+            .expect("erro de transporte preserva trace parcial");
+        let (client_tx, _client_rx) = mpsc::channel(1);
+        let (inner_tx, inner_rx) = mpsc::channel(1);
+        let cancellation = crate::prefill::Cancellation::new();
+        inner_tx
+            .send(GenEvent::FailedWithTelemetry {
+                error: "transporte falhou após progresso".into(),
+                trace: Some(partial_trace),
+            })
+            .await
+            .unwrap();
+        let result = forward_generation_events(client_tx, inner_rx, cancellation)
+            .await
+            .expect("falha terminal preservada");
+        let GenEvent::FailedWithTelemetry {
+            trace: Some(trace), ..
+        } = result
+        else {
+            panic!("o evento terminal deve preservar trace parcial")
+        };
+        let response_telemetry = audit_telemetry(None, Some(trace)).unwrap();
+        assert_eq!(response_telemetry["model"], "test-model");
+        assert_eq!(response_telemetry["prefill_ms"], 37);
+        assert_eq!(response_telemetry["input_tokens"], 45_647);
+        assert_eq!(response_telemetry["cached_tokens"], 13);
+    }
 }
 
 pub(super) async fn generate_stream_inner(
@@ -782,6 +825,10 @@ pub(super) async fn generate_stream_inner(
             )
         };
         let mut prefill_result = prefill_attempt(reuse_prefix, None).await;
+        let mut prefill_failure_trace = prefill_result
+            .as_ref()
+            .err()
+            .and_then(crate::prefill::partial_trace);
         let mut unknown_session_recovery_attempted = false;
         let mut cold_recovery_attempted = false;
         if let Err(e) = &prefill_result {
@@ -797,6 +844,13 @@ pub(super) async fn generate_stream_inner(
                         rp.from_chunk, rp.start_pos
                     );
                     prefill_result = prefill_attempt(reuse_prefix, Some(rp)).await;
+                    if let Some(trace) = prefill_result
+                        .as_ref()
+                        .err()
+                        .and_then(crate::prefill::partial_trace)
+                    {
+                        prefill_failure_trace = Some(trace);
+                    }
                 } else if let Some(reason) = prefill_rebuild_reason(e) {
                     unknown_session_recovery_attempted =
                         crate::relay::is_unknown_session_error(e);
@@ -805,6 +859,13 @@ pub(super) async fn generate_stream_inner(
                         "prefill precisa de reconstrução fria ({reason}; {e}); limpando as sessões remotas uma vez"
                     );
                     prefill_result = prefill_attempt(false, None).await;
+                    if let Some(trace) = prefill_result
+                        .as_ref()
+                        .err()
+                        .and_then(crate::prefill::partial_trace)
+                    {
+                        prefill_failure_trace = Some(trace);
+                    }
                 }
             }
         }
@@ -818,6 +879,13 @@ pub(super) async fn generate_stream_inner(
                             "prefill retomado ainda exige reconstrução fria ({reason}; {error}); limpando as sessões remotas uma vez"
                         );
                         prefill_result = prefill_attempt(false, None).await;
+                        if let Some(trace) = prefill_result
+                            .as_ref()
+                            .err()
+                            .and_then(crate::prefill::partial_trace)
+                        {
+                            prefill_failure_trace = Some(trace);
+                        }
                     }
                 }
             }
@@ -867,7 +935,10 @@ pub(super) async fn generate_stream_inner(
                     format!("Prefill falhou: {e}")
                 };
                 let _ = tx
-                    .send(GenEvent::Failed(message))
+                    .send(GenEvent::FailedWithTelemetry {
+                        error: message,
+                        trace: prefill_failure_trace,
+                    })
                     .await;
                 return;
             }
@@ -1661,7 +1732,9 @@ async fn forward_generation_events(
             break;
         };
         match event {
-            event @ (GenEvent::Done(_) | GenEvent::Failed(_)) => {
+            event @ (GenEvent::Done(_)
+            | GenEvent::Failed(_)
+            | GenEvent::FailedWithTelemetry { .. }) => {
                 terminal = Some(event);
                 break;
             }
@@ -2253,6 +2326,16 @@ pub(super) fn rate(tokens: u32, secs: f64) -> f64 {
     }
 }
 
+/// Serialize only trace data that was observed before completion or failure.
+fn audit_telemetry(
+    summary_trace: Option<crate::prefill::RequestTrace>,
+    failure_trace: Option<crate::prefill::RequestTrace>,
+) -> Option<serde_json::Value> {
+    summary_trace
+        .or(failure_trace)
+        .and_then(|trace| serde_json::to_value(trace).ok())
+}
+
 /// Start a generation and write down what it did, without the generator having
 /// to know who asked for it.
 ///
@@ -2314,6 +2397,7 @@ pub fn spawn_logged_generation_with_stops(
         // `None` means the client hung up before the generation ended, which is
         // its own outcome and worth seeing in the log.
         let mut outcome: Option<Result<GenSummary, String>> = None;
+        let mut failure_trace: Option<crate::prefill::RequestTrace> = None;
 
         while let Some(event) = inner_rx.recv().await {
             let terminal = match &event {
@@ -2324,6 +2408,10 @@ pub fn spawn_logged_generation_with_stops(
                 }
                 GenEvent::Done(summary) => Some(Ok(summary.clone())),
                 GenEvent::Failed(e) => Some(Err(e.clone())),
+                GenEvent::FailedWithTelemetry { error, trace } => {
+                    failure_trace = trace.clone();
+                    Some(Err(error.clone()))
+                }
             };
             if tx.send(event).await.is_err() {
                 break;
@@ -2334,13 +2422,13 @@ pub fn spawn_logged_generation_with_stops(
             }
         }
 
-        let telemetry = outcome.as_ref().and_then(|outcome| {
+        let summary_trace = outcome.as_ref().and_then(|outcome| {
             outcome
                 .as_ref()
                 .ok()
                 .and_then(|summary| summary.trace.clone())
-                .and_then(|trace| serde_json::to_value(trace).ok())
         });
+        let telemetry = audit_telemetry(summary_trace, failure_trace.clone());
         let timings = outcome
             .as_ref()
             .and_then(|outcome| outcome.as_ref().ok().map(|summary| summary.timings.clone()));
@@ -2348,6 +2436,7 @@ pub fn spawn_logged_generation_with_stops(
             .as_ref()
             .and_then(|outcome| outcome.as_ref().ok())
             .and_then(|summary| summary.trace.as_ref().map(|trace| trace.input_tokens))
+            .or_else(|| failure_trace.as_ref().map(|trace| trace.input_tokens))
             .or(Some(prompt_tokens));
         let (source, hops, completion_tokens, duration_ms, status, error) = match outcome {
             Some(Ok(s)) => (
@@ -2494,6 +2583,7 @@ pub async fn generate_blocking_with_stops(
             GenEvent::Token(t) => text.push_str(&t),
             GenEvent::Done(summary) => return Ok((text, summary)),
             GenEvent::Failed(e) => return Err(e),
+            GenEvent::FailedWithTelemetry { error, .. } => return Err(error),
         }
     }
     Err("geração terminou sem resposta".to_string())

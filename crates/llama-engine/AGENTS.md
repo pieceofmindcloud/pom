@@ -14,7 +14,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
 `docs/subsystems/build-execucao.md`.
 
 `build.rs` aceita `CCACHE` como comando wrapper para o `nvcc`; portanto
-`CCACHE=sccache` e valido. As pontes C/C++ compiladas por `cc` tambem herdam o
+`CCACHE=sccache` e valido. `CUDAARCHS` seleciona todas as arquiteturas dos
+kernels próprios (por exemplo, `86;120` vira dois alvos, com 120 normalizado
+para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
 `RUSTC_WRAPPER` e o helper comum de `scripts/build-env.sh` cobre os dois casos.
 
 ## Módulos (`src/`)

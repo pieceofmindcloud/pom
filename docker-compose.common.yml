@@ -1,8 +1,11 @@
 # Shared image, runtime environment, network, and data mounts.
-# Host-specific entrypoints select POM_BIN and set GPU visibility for these services.
+# Host-specific entrypoints expose hardware; the one POM executable selects an available backend.
 x-node: &node
   build:
     context: .
+    target: runtime
+    additional_contexts:
+      llama-fork: ${POM_LLAMA_CPP_SOURCE_CONTEXT:-./llama.cpp}
     args:
       # Empty here on purpose: crates/node/build.rs falls back to reading git
       # when this is blank, and inside the builder that read always fails
@@ -12,7 +15,14 @@ x-node: &node
       # Keys the Dockerfile's /build/target cache mount id. A bump of the
       # vendored llama.cpp fork gets a clean native tree instead of a stale
       # libllama.a. build-docker.sh exports it from the fork checkout.
-      LLAMA_CPP_COMMIT: ${LLAMA_CPP_COMMIT:-unknown}
+      LLAMA_CPP_CACHE_KEY: ${LLAMA_CPP_CACHE_KEY:-unknown}
+      POM_LLAMA_CPP_MODE: ${POM_LLAMA_CPP_MODE:-release}
+      POM_LLAMA_CPP_RELEASE_TAG: ${POM_LLAMA_CPP_RELEASE_TAG:-}
+      POM_LLAMA_CPP_RELEASE_REPOSITORY: ${POM_LLAMA_CPP_RELEASE_REPOSITORY:-pereirajair/llama.cpp}
+      CUDA_RUNTIME_FLAVOR: ${CUDA_RUNTIME_FLAVOR:-runtime}
+      POM_CUDA_ARCHITECTURES: ${POM_CUDA_ARCHITECTURES:-86;120}
+      POM_CUDA_ARCH_CACHE_KEY: ${POM_CUDA_ARCH_CACHE_KEY:-86-120}
+      RUST_TOOLCHAIN: ${RUST_TOOLCHAIN:-stable}
   image: pom:latest
   network_mode: host
   restart: always

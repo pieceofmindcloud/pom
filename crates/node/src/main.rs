@@ -1,7 +1,24 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-/// Commit this binary was built from, stamped by `build.rs`.
+/// Build-time commit fallback, stamped by `build.rs` for non-container builds.
 pub const BUILD_COMMIT: &str = env!("POM_BUILD_COMMIT");
+
+/// Runtime image metadata wins over the compiled fallback. Docker sets this in
+/// the final stage so changing commits does not invalidate the Cargo build.
+pub fn build_commit() -> String {
+    build_commit_from(
+        std::env::var("POM_BUILD_COMMIT").ok().as_deref(),
+        BUILD_COMMIT,
+    )
+}
+
+fn build_commit_from(runtime: Option<&str>, compiled: &str) -> String {
+    runtime
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(compiled)
+        .to_owned()
+}
 
 /// Development-only controls are enabled only by an explicit process setting.
 pub(crate) const POM_DESENV_ENV: &str = "POM_DESENV";
@@ -127,8 +144,10 @@ mod pipeline;
 mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
+mod plugin_github;
 #[path = "plugin_host.rs"]
 mod plugin_host;
+mod plugin_proxy;
 mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;
@@ -1298,9 +1317,7 @@ async fn async_main(
             pkarr_publisher: pkarr_publisher.clone(),
         };
         let gw_port = gateway_port;
-        crate::windows_firewall::spawn_startup_check(database.clone(), net.bind_addr.port());
-        crate::webui::spawn_network_settings_ratchet(gw_state.clone());
-        crate::gateway::spawn_public_directory_republisher(gw_state.clone());
+        spawn_gateway_companions(&gw_state, &database, net.bind_addr.port());
         tokio::spawn(async move {
             if let Err(e) =
                 gateway::start_gateway_with_ready(gw_state, gw_port, gateway_ready).await
@@ -2000,6 +2017,17 @@ fn gateway_only_use_default_relays(no_default_relays: bool) -> bool {
     !no_default_relays
 }
 
+/// Tarefas de fundo que acompanham todo gateway, com ou sem `--model`. Os dois
+/// caminhos de arranque (`main()` e `start_gateway_only`) chamam só esta
+/// função, para que uma tarefa nova não fique restrita a um deles - foi assim
+/// que o `host.configure` dos plugins deixou de sair num nó sem modelo.
+fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, bind_port: u16) {
+    crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
+    crate::webui::spawn_network_settings_ratchet(gw_state.clone());
+    crate::plugins::spawn_host_context(gw_state.clone());
+    crate::gateway::spawn_public_directory_republisher(gw_state.clone());
+}
+
 async fn start_gateway_only(
     gateway_port: u16,
     database: Arc<db::PomDb>,
@@ -2261,9 +2289,7 @@ async fn start_gateway_only(
         "Gateway running at http://localhost:{} (model not yet configured)",
         gateway_port
     );
-    crate::windows_firewall::spawn_startup_check(database.clone(), net.bind_addr.port());
-    crate::webui::spawn_network_settings_ratchet(gw_state.clone());
-    crate::gateway::spawn_public_directory_republisher(gw_state.clone());
+    spawn_gateway_companions(&gw_state, &database, net.bind_addr.port());
     let gateway_task = tokio::spawn(async move {
         crate::gateway::start_gateway_with_ready(gw_state, gateway_port, gateway_ready).await
     });
@@ -2510,6 +2536,16 @@ mod main_tests {
 
         let with_flag = Args::parse_from(["pom", "--cycle-detection"]);
         assert!(with_flag.cycle_detection);
+    }
+
+    #[test]
+    fn runtime_build_commit_overrides_the_compiled_fallback() {
+        assert_eq!(
+            build_commit_from(Some(" 97ec1e4 "), "desconhecido"),
+            "97ec1e4"
+        );
+        assert_eq!(build_commit_from(Some("  "), "2a456c8"), "2a456c8");
+        assert_eq!(build_commit_from(None, "2a456c8"), "2a456c8");
     }
 
     #[test]

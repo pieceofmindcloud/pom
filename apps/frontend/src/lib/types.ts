@@ -209,6 +209,30 @@ export interface PluginActivationUsage {
   max_activations: number;
 }
 
+export interface PluginBooleanPreference {
+  key: string;
+  label: string;
+  default: boolean;
+  description?: string | null;
+}
+
+export interface PluginPreferencesSchema {
+  features: PluginBooleanPreference[];
+  storage_directory?: { label: string; default?: string | null } | null;
+}
+
+export interface PluginPreferences {
+  features: Record<string, boolean>;
+  storage_directory?: string | null;
+}
+
+export interface GithubPluginUpdate {
+  release_id: string;
+  version: string;
+  changelog: string | null;
+  downloaded: boolean;
+}
+
 export interface PluginStatus {
   code: string;
   active: boolean;
@@ -233,6 +257,11 @@ export interface PluginStatus {
   /** Last successful manifest lookup, regardless of whether it found an update. */
   update_checked_at: string | null;
   available_update: PluginUpdateInfo | null;
+  github_repository?: string | null;
+  github_update?: GithubPluginUpdate | null;
+  github_error?: string | null;
+  preferences_schema?: PluginPreferencesSchema | null;
+  preferences?: PluginPreferences | null;
 }
 
 /**
@@ -715,7 +744,9 @@ export interface DiscoveredModel {
   path: string;
   /** GGUF mmproj adjacente escolhido pela convenção do llama.cpp. */
   mmproj_path?: string | null;
-  /** Motivo quando o catálogo não conseguiu provar um projetor compatível. */
+  /** Todos os projetores compatíveis para escolha na implantação. */
+  mmproj_candidates?: string[];
+  /** Motivo quando o catálogo não conseguiu sugerir um projetor compatível. */
   mmproj_reason?: string | null;
   size_bytes: number;
   /** O GGUF declara split.count > 1 e este item representa o conjunto. */
@@ -820,7 +851,9 @@ export interface ShardSet {
   model_label: string;
   /** Projector adjacent to this set or to its original whole model. */
   mmproj_path?: string | null;
-  /** Motivo quando o catálogo não conseguiu provar um projetor compatível. */
+  /** Todos os projetores compatíveis para escolha na implantação. */
+  mmproj_candidates?: string[];
+  /** Motivo quando o catálogo não conseguiu sugerir um projetor compatível. */
   mmproj_reason?: string | null;
   /** A rodada de fatiamento que produziu estas partes. Identificação, não nome. */
   pom_id: string;
@@ -1739,7 +1772,9 @@ export interface DeployPlan {
   kind?: DeployKind;
   /** Projector adjacente encontrado para o modelo escolhido. */
   mmproj_path?: string | null;
-  /** Motivo quando o catálogo não conseguiu provar um projetor compatível. */
+  /** Todos os projetores compatíveis no peer da cabeça. */
+  mmproj_candidates?: string[];
+  /** Motivo quando o catálogo não conseguiu sugerir um projetor compatível. */
   mmproj_reason?: string | null;
   /** True only when the surveyed model's actual GGUF metadata is MoE. */
   is_moe?: boolean;

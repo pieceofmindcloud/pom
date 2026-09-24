@@ -1779,6 +1779,31 @@ pub(crate) async fn chat_key(
     _auth: ConnectionAuth,
     State(state): State<crate::gateway::GatewayState>,
 ) -> impl IntoResponse {
+    match node_chat_key(&state).await {
+        Ok((key, created)) => {
+            let status = if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
+            (status, Json(key)).into_response()
+        }
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "não foi possível preparar a chave do chat" })),
+        )
+            .into_response(),
+    }
+}
+
+/// A API key que este nó usa para chamar a própria `/v1`: a do Chat da
+/// interface e a entregue aos plugins (`host.configure`). É a única classe de
+/// chave que um nó sem autoridade administrativa pode registrar no principal
+/// (`is_self_owned_chat_key`), por isso os plugins não recebem uma própria.
+/// Devolve a chave e se ela acabou de ser criada.
+pub(crate) async fn node_chat_key(
+    state: &crate::gateway::GatewayState,
+) -> anyhow::Result<(ApiKey, bool)> {
     let node_id = state.network.node_id.clone();
     let label = format!("pom-{node_id}");
     if let Ok(Some(key)) = state.database.active_api_key_named(&label, &node_id) {
@@ -1788,17 +1813,10 @@ pub(crate) async fn chat_key(
             &key.origin_node_id
         };
         if origin == &node_id {
-            return (StatusCode::OK, Json(key)).into_response();
+            return Ok((key, false));
         }
     }
-    match create_key(&state, label, node_id).await {
-        Ok(key) => (StatusCode::CREATED, Json(key)).into_response(),
-        Err(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "não foi possível preparar a chave do chat" })),
-        )
-            .into_response(),
-    }
+    Ok((create_key(state, label, node_id).await?, true))
 }
 
 async fn revoke_api_key(

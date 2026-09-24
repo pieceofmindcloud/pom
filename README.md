@@ -40,7 +40,8 @@ O binário estará em `./target/release/pom`.
 ./scripts/build-docker-ksia.sh
 ```
 
-A imagem compila CUDA+Vulkan, Vulkan e CPU, além de `pom-plugin-host`; o
+Salem e Ksia compilam o mesmo executável `pom` com CPU, CUDA e Vulkan e o
+`pom-plugin-host`; os módulos GGML escolhem o backend disponível em runtime. O
 frontend é um estágio independente. Os builds de desenvolvimento usam por
 padrão as bibliotecas da release exata do fork `pereirajair/llama.cpp`, CUDA
 13.2.1, para evitar recompilar o núcleo nativo. A release correspondente deve

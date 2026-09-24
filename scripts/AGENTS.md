@@ -33,34 +33,37 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   tag. `POM_LLAMA_CPP_RELEASE_TAG` fixa uma release existente.
   `POM_LLAMA_CPP_MODE=source` compila o fork local;
   `POM_LLAMA_CPP_SOURCE_DIR` pode apontar para outro clone Git, cujo conteudo e
-  preparado num named context temporario sem `.git`, modelos ou builds; o cache
-  e chaveado por commit e delta. O script deriva
+  preparado num named context temporario sem `.git`, modelos, builds, chaves ou
+  arquivos dotenv; o cache e chaveado por commit e delta. O contexto principal
+  ignora a copia local de `llama.cpp`, pois o fork entra somente pelo named
+  context. O script deriva
   `POM_CUDA_ARCH_CACHE_KEY` da lista real de arquiteturas e chama
   `docker compose build`. `build-docker-ksia.sh` escolhe o Compose Ksia e
-  delega a este script. O `Dockerfile` compila tres variantes de `pom` e
-  `pom-plugin-host`; um estagio frontend independente roda `npm run build`.
-  Fork/tag, toolkit, arquitetura e toolchain nao invalidam a UI. Todos os
-  servicos compartilham uma imagem; `POM_BIN` seleciona a variante em runtime.
+  delega a este script. Salem e Ksia usam o mesmo target `runtime`, com um
+  `pom` universal CUDA+Vulkan e os módulos CPU/Vulkan/CUDA no mesmo runtime.
+  O frontend é um estágio independente e sua cópia de `dist` é a última camada
+  da imagem; Fork/tag, toolkit, arquitetura e toolchain não invalidam a UI, e
+  uma edição da UI não refaz Cargo. Todos os serviços usam `/usr/local/bin/pom`.
   Construa por estes scripts, nao rode `docker compose build` diretamente.
 - `test-docker-build-cache.sh` - prova que a imagem reaproveita o que nao
   mudou. A parte estrutural verifica os estagios Rust/frontend independentes,
-  a exclusao do carimbo de commit dos estagios de build, o cache mount de
-  `/build/target` e os quatro diretórios Cargo por conjunto de features. Depois,
-  se houver daemon, deriva do Dockerfile um stub e usa BuildKit sobre um
+  a cópia final do frontend, o `.dockerignore`, a exclusao do carimbo de commit
+  dos estagios de build e que só há uma build POM combinando CPU, CUDA e Vulkan.
+  Depois, se houver daemon, deriva do Dockerfile um stub e usa BuildKit sobre um
   contexto sintetico para verificar cache em cenarios de fonte, commit, fork,
   CUDA, toolchain e artefatos locais. `POM_CACHE_TEST_DEBUG=1` imprime cada
   passo, grupo e estado do cache.
 - `test-docker-build-mode.sh` - testa os modos release/source com um `docker`
-  falso: source prepara um named context sem `.git` a partir de outro clone;
-  release mantém apenas um marcador e propaga a tag e o cache key fixados.
+  falso: source prepara um named context sem `.git`, modelos, builds, GGUFs e
+  credenciais a partir de outro clone; release mantém apenas um marcador e
+  propaga a tag e o cache key fixados.
 - `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
   falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
   argumentos.
 - `test-docker-compose.py` - materializa os Compose da Salem e da Ksia. Valida
-  variantes `POM_BIN`, imagem/build comuns, volumes e visibilidade de
-  NVIDIA/Radeon nos Compose da Salem; a entrada Ksia atual tem um serviço
-  `node-1`, que deve selecionar o executável CUDA+Vulkan com as GPUs 0 e 1 e
-  os argumentos de arquitetura/cache coerentes.
+  que todos os nós usam a mesma imagem/build/binário, além de volumes e
+  visibilidade de NVIDIA/Radeon; a entrada Ksia tem um serviço `node-1` com as
+  GPUs 0 e 1 e os argumentos de arquitetura/cache coerentes.
 - `gen-node-configs.py` - gera um `pom.json` por no em
   `tests/fixtures/node-<N>/`. As portas de cada no vem da config, nao do CLI
   (com `network_mode: host`, colisao de porta e o erro tipico). No 1 =
@@ -188,9 +191,9 @@ invocados pelo binario (ver o `README.md` de la).
 ## Infra de build e dev na raiz
 
 - `Dockerfile` - estagios compartilhados de dependencias, Rust, frontend e
-  runtime. O Rust compila tres variantes de `pom` e `pom-plugin-host`, com
-  cache mounts (registry/git/target); o frontend e independente e o runtime
-  combina seus artefatos. O commit recebido do host só vira `ENV
+  runtime. Salem e Ksia compilam um executável `pom` com CPU, CUDA e Vulkan,
+  mais `pom-plugin-host`; os builds usam cache mounts e o frontend é
+  independente. O commit do host vira `ENV
   POM_BUILD_COMMIT` no runtime, sem invalidar as camadas Cargo/npm. O
   `docker-entrypoint.sh` faz `exec` do `pom` e exporta `POM_PLUGIN_HOST`; na
   ativacao, o `pom` inicia o host como filho com o plugin baixado e IPC por
@@ -206,9 +209,8 @@ invocados pelo binario (ver o `README.md` de la).
   seleciona o ponto de entrada de GPUs NVIDIA. `docker-compose.salem.yml`
   tambem e selecionavel diretamente. Os dois estendem a definicao comum em
   `docker-compose.common.yml`, mantendo os mesmos servicos, contexto, imagem,
-  volumes e variaveis. Salem escolhe `pom-vulkan` no no Radeon-only e `pom-cpu`
-  no `node-cpu`; Ksia usa `pom-cpu` no `node-cpu`. O helper local
-  `pom-docker.sh` aplica `pom-cpu` aos serviços sem GPU NVIDIA. A UI é
+  volumes e variaveis. Todos os nós Salem/Ksia usam o mesmo executável; o
+  backend é descoberto a partir dos dispositivos visíveis. A UI é
   reencontrada por
   `POM_UI_DIST=/app/apps/frontend/dist` porque `POM_HOME=/data` nao e o
   `/app` da imagem.

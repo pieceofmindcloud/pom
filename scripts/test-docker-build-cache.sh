@@ -51,11 +51,13 @@ all_instructions=$(parse_instructions "$dockerfile")
 base=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "FROM" && $3 ~ / AS build-base$/ { print $1; exit }')
 builder=builder
 frontend=frontend
+runtime_base=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "FROM" && $3 ~ / AS runtime-base$/ { print $1; exit }')
 runtime=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "FROM" && $3 ~ / AS runtime$/ { print $1; exit }')
 in_stage() { printf '%s\n' "$all_instructions" | awk -F '\t' -v s="$1" '$1 == s { print $2 "\t" $3 }'; }
 base_instructions=$(in_stage "$base")
 builder_instructions=$(in_stage "$builder")
 frontend_instructions=$(in_stage "$frontend")
+runtime_base_instructions=$(in_stage "$runtime_base")
 runtime_instructions=$(in_stage "$runtime")
 
 index_in() {
@@ -69,9 +71,12 @@ printf '1. Dockerfile structure (shared: %s, Rust: %s, frontend: %s, runtime: %s
 whole_context=$(printf '%s\n' "$all_instructions" | awk -F '\t' '$2 == "COPY" && $3 !~ /--from=/ { line=$3; sub(/^(--[^ ]+ )+/, "", line); n=split(line,tok," "); for(i=1;i<n;i++) if(tok[i]=="." || tok[i]=="./") {print; exit} }')
 if [ -n "$whole_context" ]; then fail "a stage copies the whole context (COPY $whole_context)"; else pass "no COPY of the whole build context"; fi
 
-ordered "npm dependencies are installed in the shared base" \
-    "$(index_in "$base_instructions" '^COPY .*apps/frontend/package')" \
-    "$(index_in "$base_instructions" '^RUN .*npm ci')"
+ordered "npm dependencies are isolated in the frontend stage" \
+    "$(index_in "$frontend_instructions" '^COPY .*apps/frontend/package')" \
+    "$(index_in "$frontend_instructions" '^RUN .*npm ci')"
+ordered "rustup is cached before backend source copies" \
+    "$(index_in "$builder_instructions" '^RUN .*sh.rustup.rs')" \
+    "$(index_in "$builder_instructions" '^COPY --from=llama-fork')"
 ordered "the llama.cpp fork precedes backend sources" \
     "$(index_in "$builder_instructions" '^COPY .*llama\.cpp/')" \
     "$(index_in "$builder_instructions" '^COPY .*crates/')"
@@ -92,11 +97,11 @@ if printf '%s\n' "$all_instructions" | awk -F '\t' -v b="$builder" -v f="$fronte
 else
     pass "POM_BUILD_COMMIT is excluded from Cargo and frontend cache keys"
 fi
-if printf '%s\n' "$runtime_instructions" | grep -q '^ARG[[:space:]]POM_BUILD_COMMIT' \
-   && printf '%s\n' "$runtime_instructions" | grep -q '^ENV[[:space:]]POM_BUILD_COMMIT=\${POM_BUILD_COMMIT}'; then
-    pass "runtime stage exports the host commit stamp"
+if printf '%s\n' "$runtime_base_instructions" | grep -q '^ARG[[:space:]]POM_BUILD_COMMIT' \
+   && printf '%s\n' "$runtime_base_instructions" | grep -q '^ENV[[:space:]]POM_BUILD_COMMIT=\${POM_BUILD_COMMIT}'; then
+    pass "runtime base exports the host commit stamp"
 else
-    fail "runtime stage must export POM_BUILD_COMMIT from its build arg"
+    fail "runtime base must export POM_BUILD_COMMIT from its build arg"
 fi
 
 for arg in LLAMA_CPP_CACHE_KEY POM_CUDA_ARCH_CACHE_KEY POM_CUDA_ARCHITECTURES POM_LLAMA_CPP_MODE POM_LLAMA_CPP_RELEASE_TAG POM_LLAMA_CPP_RELEASE_REPOSITORY RUST_TOOLCHAIN; do
@@ -111,19 +116,39 @@ if printf '%s\n' "$builder_instructions" | grep -q 'id=pom-target-\${LLAMA_CPP_C
 else
     fail "native target cache key is missing a native build input"
 fi
-for target in cuda-vulkan vulkan cpu plugin-host; do
-    if printf '%s\n' "$builder_instructions" | grep -Fq "CARGO_TARGET_DIR=/build/target/$target"; then pass "Cargo keeps $target in its own target directory"; else fail "Cargo target directory missing for $target"; fi
+if printf '%s\n' "$builder_instructions" | grep -Fq 'cargo build --release --features cuda,vulkan' \
+   && ! printf '%s\n' "$builder_instructions" | grep -Fq 'cargo build --release --features vulkan' \
+   && ! printf '%s\n' "$builder_instructions" | grep -Fq 'cargo build --release --no-default-features' \
+   && printf '%s\n' "$builder_instructions" | grep -Fq 'libggml-cpu-*.so* /build/llama-runtime/cuda-vulkan/' \
+   && printf '%s\n' "$builder_instructions" | grep -Fq 'libggml-vulkan*.so* /build/llama-runtime/cuda-vulkan/'; then
+    pass "one POM build combines CUDA+Vulkan with CPU/Vulkan/CUDA runtime modules"
+else
+    fail "the universal POM must compile once and package all runtime backend modules together"
+fi
+for target in cuda-vulkan plugin-host; do
+    if printf '%s\n' "$builder_instructions" | grep -Fq "CARGO_TARGET_DIR=/build/target/$target"; then pass "Cargo target is present for $target"; else fail "Cargo target missing for $target"; fi
 done
 if [ "$(index_in "$frontend_instructions" '^RUN .*npm run build')" -eq "$(printf '%s\n' "$frontend_instructions" | awk -F '\t' '$1=="RUN" {n=NR} END {print n+0}')" ]; then
     pass "the frontend build is the last RUN in its independent stage"
 else
     fail "frontend npm build should be the last RUN in its stage"
 fi
+runtime_last_instruction=$(printf '%s\n' "$runtime_instructions" | tail -n 1 | tr '\t' ' ')
+if [ "$runtime_last_instruction" = 'COPY --from=frontend /build/apps/frontend/dist /app/apps/frontend/dist' ]; then
+    pass "the frontend bundle is the final runtime image layer"
+else
+    fail "the final runtime instruction must copy only the frontend bundle"
+fi
 
-printf '\n2. .dockerignore keeps local build artifacts out of the context\n'
-for pattern in '\*\*/\*\.log' '\*\*/\*\.tsbuildinfo' 'apps/frontend/src/docs/' 'apps/frontend/src/brand/' 'apps/frontend/public/brand/' 'llama\.cpp/\.git/' '\*\*/node_modules/'; do
+printf '\n2. .dockerignore keeps local build artifacts and secrets out of the context\n'
+for pattern in '\*\*/target/' '\*\*/\.git/' '\*\*/\*\.log' '\*\*/\*\.tsbuildinfo' '\*\*/\*\.gguf' '\*\*/\*\.part' '\*\*/\*\.key' '\*\*/\*\.pem' '\*\*/\.env' '\*\*/\.env\.\*' 'tests/' 'apps/frontend/src/docs/' 'apps/frontend/src/brand/' 'apps/frontend/public/brand/' 'llama\.cpp/' '\*\*/node_modules/'; do
     if grep -qE "^${pattern}$" "$dockerignore"; then pass "$(printf '%s' "$pattern" | sed 's/\\//g')"; else fail "$pattern is not excluded"; fi
 done
+if grep -qE '^\*\*/tests/?$' "$dockerignore"; then
+    fail "do not exclude nested tests; Cargo needs crates/node/tests/support/fake_plugin_host.rs"
+else
+    pass "nested Cargo test-support target sources remain available"
+fi
 
 printf '\n3. BuildKit cache behaviour\n'
 if ! command -v docker >/dev/null 2>&1 || ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
@@ -163,7 +188,8 @@ mkdir -p "$ctx"
         $2 == "RUN" {
             body=$3; flags=""
             while (match(body, /^--[^ ]+ /)) { flags=flags substr(body,RSTART,RLENGTH); body=substr(body,RSTART+RLENGTH) }
-            printf "RUN %secho POM-STEP:%s\n", flags, tag_for(body)
+            suffix=(body ~ /rustup/ ? " ${RUST_TOOLCHAIN}" : "")
+            printf "RUN %secho POM-STEP:%s%s\n", flags, tag_for(body), suffix
             next
         }
         { printf "%s %s\n", $2, $3 }
@@ -185,10 +211,14 @@ run_id="$(date +%s)-$$"
 mkdir -p "$ctx/llama-fork/ggml/src" "$ctx/crates/node/src" "$ctx/apps/frontend/src"
 printf 'crate docs\n' > "$ctx/crates/AGENTS.md"
 printf 'node docs\n' > "$ctx/crates/node/AGENTS.md"
-seed() { printf '%s %s\n' "$2" "$run_id" > "$ctx/$1"; }
+seed() {
+    mkdir -p "$ctx/$(dirname "$1")"
+    printf '%s %s\n' "$2" "$run_id" > "$ctx/$1"
+}
 seed llama-fork/ggml/src/probe.c v1
 seed crates/node/src/probe.rs v1
 seed apps/frontend/src/probe.tsx v1
+seed apps/frontend/package-lock.json deps-v1
 
 build_commit=abc1234
 llama_cache_key=def5678-clean
@@ -221,7 +251,7 @@ build_target_groups() {
             if (instr ~ /POM-STEP:cargo/) return "backend"
             if (instr ~ /POM-STEP:ui-build/) return "ui"
             if (instr ~ /POM-STEP:npm-ci/ || instr ~ /apps\/frontend\/package/) return "npm-deps"
-            if (instr ~ /POM-STEP:rustup/) return "backend"
+            if (instr ~ /POM-STEP:rustup/) return "toolchain"
             if (instr ~ /POM-STEP:apt/) return "base"
             if (instr ~ /llama\.cpp\// || instr ~ /^COPY vendor\//) return "llama"
             if (stage == "frontend") return "ui"
@@ -278,7 +308,13 @@ seed crates/node/infer_server_4242.log 'runtime log'
 seed apps/frontend/tsconfig.app.tsbuildinfo '{"stale":true}'
 seed apps/frontend/src/docs/AGENTS.md '# generated'
 seed llama.cpp/.git/HEAD 'ref: refs/heads/pom-tensor-parallel'
-scenario "only local build artifacts appeared" ""
+seed crates/node/local.gguf 'not a build input'
+seed crates/node/identity.key 'not a build input'
+seed crates/node/.env.local 'not a build input'
+scenario "only local build artifacts and credentials appeared" ""
+seed apps/frontend/package-lock.json deps-v2
+scenario "frontend dependencies changed" "npm-deps ui"
+seed apps/frontend/package-lock.json deps-v1
 
 seed apps/frontend/src/probe.tsx v2
 scenario "apps/frontend changed" "ui"
@@ -296,7 +332,9 @@ cuda_arch_key=86
 scenario "CUDA architecture cache key changed" "backend"
 cuda_arch_key=86-120
 rust_toolchain=1.90.0
-scenario "Rust toolchain changed" "backend"
+# The toolchain ARG and rustup layer precede source COPYs so source edits reuse
+# rustup; changing the toolchain therefore also refreshes those later COPYs.
+scenario "Rust toolchain changed" "backend llama toolchain"
 docker rmi -f pom-cache-test:probe >/dev/null 2>&1 || true
 printf '\n'
 if [ "$failures" -eq 0 ]; then printf 'docker build cache test passed\n'; exit 0; fi

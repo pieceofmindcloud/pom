@@ -193,10 +193,10 @@ um checkout incompleto. `POM_LLAMA_CPP_PREBUILT_LIB_DIR` faz o
 `vendor/llama-cpp-sys-2/build.rs` validar e copiar `libllama.so`, `libggml.so`,
 `libggml-base.so` e `libllama-common.so`, e pular somente o CMake do llama.cpp.
 O wrapper C++, mtmd, bindgen e os kernels CUDA MoE próprios do POM continuam no
-build local. A imagem runtime `CUDA_VERSION-runtime` fornece cudart/cuBLAS; os
-plugins CUDA, Vulkan e CPU ficam ao lado apenas da variante de executável que
-pode carregá-los. Assim CPU/Vulkan não tentam abrir o plugin CUDA nem dependem
-do driver NVIDIA.
+build local. Salem e Ksia usam o mesmo executável `pom`, compilado com CUDA e
+Vulkan; os módulos GGML CPU, Vulkan e CUDA ficam juntos ao lado do binário e o
+runtime escolhe o backend conforme os dispositivos visíveis. A imagem
+`CUDA_VERSION-runtime` fornece cudart/cuBLAS e o loader Vulkan/RADV.
 
 Para compilar contra um checkout local, inclusive fora da raiz do POM:
 
@@ -424,18 +424,32 @@ offload no primeiro clique.
 ## Docker
 
 - **`Dockerfile`**: estágios independentes de dependências, Rust, frontend e
-  runtime. A base `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala dependências
-  comuns e `node_modules`; o estágio Rust instala rustup e compila três
-  variantes de `pom` com cache mounts (registry/git/target): CUDA+Vulkan
-  (`/usr/local/bin/pom`), somente Vulkan (`/usr/local/bin/pom-vulkan`) e CPU
-  sem backends de GPU (`/usr/local/bin/pom-cpu`), além de `pom-plugin-host` sem
-  GPU. Em `release`, o core compartilhado e os plugins vêm de uma tag publicada
-  do fork; em `source`, o CMake compila o checkout escolhido por
-  `POM_LLAMA_CPP_SOURCE_DIR`. Um estágio irmão roda `npm run build` em
-  `apps/frontend`. O runtime combina binários e UI, usa a imagem CUDA `runtime`
-  para cuBLAS no modo release (`base` no source), mantém o loader Vulkan e o
-  RADV, define `POM_HOME=/app` e usa `docker-entrypoint.sh`.
-  `POM_BUILD_COMMIT` é exportado como `ENV` somente no runtime.
+  runtime. A base de build `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala as
+  ferramentas nativas; o estágio Rust compila um único `pom` com
+  `--features cuda,vulkan` e `pom-plugin-host`, enquanto o estágio frontend
+  instala npm e roda `npm run build`. O CPU continua disponível pelo módulo
+  GGML CPU; CUDA e Vulkan são módulos do mesmo executável, descobertos conforme
+  o hardware. Salem e Ksia usam o mesmo target `runtime`, portanto não repetem
+  builds de CPU-only e Vulkan-only nem selecionam binários distintos por nó. Em
+  `release`, o core e os módulos vêm de uma tag publicada do fork; em `source`,
+  o CMake compila o checkout escolhido por `POM_LLAMA_CPP_SOURCE_DIR`. O runtime
+  usa a imagem CUDA `runtime` para cuBLAS no modo release (`base` no source),
+  mantém o loader Vulkan e o RADV, define `POM_HOME=/app` e usa
+  `docker-entrypoint.sh`. `POM_BUILD_COMMIT` é exportado como `ENV` somente no
+  runtime.
+- **Contexto e conteúdo da imagem**: o contexto principal ignora a cópia local
+  `llama.cpp/`; o fork entra apenas como named context, e o script de build
+  remove `.git`, builds, modelos, credenciais e arquivos dotenv desse contexto.
+  O `.dockerignore` também exclui os fixtures de Compose na raiz, GGUFs, logs,
+  ambientes virtuais e artefatos gerados pelo frontend. Não exclui
+  `crates/**/tests` como diretório porque o Cargo resolve um binário de suporte
+  declarado no `Cargo.toml` do node mesmo no build release. A imagem final não
+  recebe fontes Rust/C++, `node_modules` nem ferramentas de build. Recebe apenas
+  `pom`, `pom-plugin-host`, as bibliotecas GGML/llama.cpp, o entrypoint e o `dist` do
+  frontend. A cópia do `dist` é a última instrução/camada runtime, então uma
+  alteração só na UI não refaz as camadas de montagem do backend nem Cargo.
+  `vulkan-tools` fica instalado somente para diagnóstico operacional com
+  `vulkaninfo`; o POM não depende dele para inferência.
 - **A ordem das camadas do builder é o contrato de cache**, e cada `COPY` nomeia
   exatamente o que o passo abaixo dele lê - não existe `COPY . .`. Com um, um
   único arquivo qualquer da árvore zerava ao mesmo tempo a chave do build Rust
@@ -446,8 +460,9 @@ offload no primeiro clique.
   edição só na interface fazia o mesmo. Os estágios Rust e frontend são
   irmãos, com entradas separadas, e o que a estrutura garante é:
   - nada mudou → nada recompila;
-  - só apareceram artefatos locais (log, `tsbuildinfo`, `src/docs`, `.git` do
-    fork) → nada recompila, porque ficam fora do contexto;
+  - só apareceram artefatos locais (log, `tsbuildinfo`, `src/docs`, testes,
+    modelos, credenciais ou a árvore primária do fork) → nada recompila, porque
+    ficam fora do contexto;
   - `apps/frontend` mudou → recompila a interface, reaproveita backend e fork;
   - `apps/frontend` e o backend mudaram → recompila os dois, reaproveita o
     fork;
@@ -460,17 +475,18 @@ offload no primeiro clique.
   dele, mesmo que o comando não o cite. Por isso `POM_BUILD_COMMIT` existe só
   no estágio runtime, enquanto fork, arquitetura e toolchain só existem no
   estágio Rust. Uma alteração só no carimbo refaz apenas a camada final da
-  imagem, sem executar Cargo ou npm. Cada variante usa seu próprio
-  `CARGO_TARGET_DIR` (`cuda-vulkan`, `vulkan`, `cpu`, `plugin-host`). Antes,
-  as quatro invocações alternavam as features no mesmo target e recompilavam
-  crates como `llama-engine`/MOE ao voltar para CUDA.
+  imagem, sem executar Cargo ou npm. O binário POM tem um único target Cargo
+  (`cuda-vulkan`); o host de plugins tem target separado. O build comum passa a
+  executar uma compilação do executável em Salem e Ksia, sem alternar features
+  no mesmo cache nem recompilar `llama-engine`/MoE nas variantes Vulkan-only e
+  CPU que deixaram de existir como binários separados.
 - **`docker-entrypoint.sh`**: valida o binário selecionado por `POM_BIN` e o
   `pom-plugin-host`, exporta
   `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` e faz `exec` do caminho em
   `POM_BIN` (padrão `/usr/local/bin/pom`) com os argumentos recebidos. Os
-  Compose selecionam `pom-vulkan` para o `node-gpu-3` Radeon da Salem e
-  `pom-cpu` para `node-cpu`; os nós NVIDIA usam o `pom` CUDA+Vulkan. Isso evita
-  exigir `libcuda.so.1` em serviços que não recebem NVIDIA. O `pom` inicia o
+  Compose passam o mesmo `/usr/local/bin/pom` em todos os nós; ele inclui os
+  módulos CPU/Vulkan/CUDA para escolher conforme os dispositivos visíveis. O
+  `pom` inicia o
   host como filho somente quando há um plugin Enterprise instalado, passando o
   artefato como argumento e conectando stdin/stdout por frames JSON de tamanho
   prefixado. Portanto não há socket Unix nem volume adicional de IPC.

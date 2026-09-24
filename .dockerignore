@@ -6,21 +6,29 @@
 # copies its directory - see the header of `Dockerfile` and
 # `scripts/test-docker-build-cache.sh`.
 **/target/
-target-*/
-.git/
-.fm-secondmate/
-venv/
-.venv/
+**/target-*/
+**/.git/
+**/.fm-secondmate/
+**/venv/
+**/.venv/
 models*/
 source-models*/
+# Only the root Compose fixtures are excluded; Cargo needs a bin source under
+# crates/node/tests/support even for the release build.
 tests/
-*.gguf
-*.part
+**/*.gguf
+**/*.part
 # A node started from the checkout writes `infer_server_<pid>.log` next to
 # `crates/node`. Those files are in .gitignore, so nobody sees them, and each
 # new one used to re-run the whole Rust build.
 **/*.log
-*.key
+# Runtime credentials and local dotenv files never belong in the build context.
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/.env
+**/.env.*
 pom.json
 pom.db
 pom.db-*
@@ -35,12 +43,8 @@ apps/frontend/dist*
 apps/frontend/src/brand/
 apps/frontend/src/docs/
 apps/frontend/public/brand/
-# The fork's own history - the largest single item in the context (396 MB on
-# salem) and one that changes on every fetch in it. Nothing reads it: the
-# builder image has no `git`, and llama.cpp's `cmake/git-vars.cmake` only runs
-# git when `find_package(Git)` succeeds. The fork cache identity reaches the
-# build as `LLAMA_CPP_CACHE_KEY`, computed on the host by
-# `scripts/build-docker.sh`.
-llama.cpp/.git/
-llama.cpp/build/
-llama.cpp/build-*/
+# The local fork is passed to Docker as the separate `llama-fork` named
+# context; the primary project context must not duplicate its source, models,
+# or Git history. The build script strips build outputs and secrets from that
+# named context separately.
+llama.cpp/

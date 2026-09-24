@@ -1,8 +1,9 @@
 # Shared image, runtime environment, network, and data mounts.
-# Host-specific entrypoints select POM_BIN and set GPU visibility for these services.
+# Host-specific entrypoints expose hardware; the one POM executable selects an available backend.
 x-node: &node
   build:
     context: .
+    target: runtime
     additional_contexts:
       llama-fork: ${POM_LLAMA_CPP_SOURCE_CONTEXT:-./llama.cpp}
     args:

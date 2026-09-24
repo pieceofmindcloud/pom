@@ -1,6 +1,7 @@
 x-node: &node
   build:
     context: "/storage/nvme1/projects/pom"
+    target: runtime
     additional_contexts:
       llama-fork: "${POM_LLAMA_CPP_SOURCE_CONTEXT:-./llama.cpp}"
     args:

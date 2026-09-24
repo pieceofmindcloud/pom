@@ -39,12 +39,14 @@ if [ "$mode" = source ]; then
   (
     cd "$llama_source_dir"
     tar --exclude=.git --exclude=build --exclude='build-*' --exclude=models \
-      --exclude='*.gguf' --exclude=node_modules -cf - .
+      --exclude='*.gguf' --exclude=node_modules --exclude='*.key' \
+      --exclude='*.pem' --exclude='*.p12' --exclude='*.pfx' \
+      --exclude='.env' --exclude='.env.*' -cf - .
   ) | (cd "$llama_docker_context" && tar -xf -)
 else
   touch "$llama_docker_context/.keep"
 fi
-printf '.git/\nbuild/\nbuild-*/\nmodels/\n*.gguf\nnode_modules/\n' \
+printf '.git/\nbuild/\nbuild-*/\nmodels/\n**/*.gguf\nnode_modules/\n**/*.key\n**/*.pem\n**/*.p12\n**/*.pfx\n**/.env\n**/.env.*\n' \
   > "$llama_docker_context/.dockerignore"
 export POM_LLAMA_CPP_SOURCE_CONTEXT="$llama_docker_context"
 

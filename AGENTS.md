@@ -112,7 +112,9 @@ o build nativo anterior e o cargo não percebe a troca.
 
 A interface é **lida do disco** em `apps/frontend/dist` em tempo de execução
 (`config::ui_dist_dir()`, `$POM_UI_DIST` sobrescreve), não embutida no
-binário: `cargo build` não reconstrói a tela e não precisa de Node.
+binário: `cargo build` não reconstrói a tela e não precisa de Node. No Docker,
+o frontend é compilado em estágio independente e sua cópia para o runtime é a
+última camada; uma edição só da UI não invalida o backend.
 
 ```bash
 ./target/release/pom --list-models

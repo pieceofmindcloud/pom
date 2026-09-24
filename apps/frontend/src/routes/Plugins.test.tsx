@@ -698,7 +698,7 @@ describe("Plugins", () => {
     mocks.post.mockResolvedValue({});
     renderPage();
 
-    fireEvent.click(screen.getByLabelText("Incluir cabeçalhos"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Incluir cabeçalhos/ }));
     fireEvent.change(screen.getByLabelText("Pasta de dados"), {
       target: { value: "/tmp/plugin-data" },
     });

@@ -785,6 +785,7 @@ describe("DeployModel", () => {
   });
 
   it("oculta controles de desenvolvimento sem POM_DESENV", () => {
+    post.mockResolvedValue(planOutOfLayerOrder());
     mount();
     expect(screen.queryByRole("radio", { name: "Tensor" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Simples" })).toBeNull();

@@ -4,7 +4,7 @@ use crate::network::{is_valid_destination, Network, P2PMessage, PeerInfo};
 use crate::network_chat::{
     self, ChatOutbound, ChatRequest, ChatResponse, NetworkChat, NetworkChatCodec,
 };
-use crate::reqlog::{self, AuditCodec, AuditLog, AuditOutbound};
+use crate::reqlog::{self, AuditCodec, AuditEvent, AuditLog, AuditOutbound};
 use crate::wire;
 use anyhow::Result;
 use futures::StreamExt;
@@ -246,6 +246,7 @@ pub struct Discovery {
     chat: Arc<NetworkChat>,
     audit_rx: mpsc::Receiver<AuditOutbound>,
     audit_log: Arc<AuditLog>,
+    remote_audit_tx: mpsc::Sender<Vec<AuditEvent>>,
     relay_peer_addrs: HashSet<Multiaddr>,
     relay_peer_ids: HashSet<PeerId>,
     connected_relays: HashSet<PeerId>,
@@ -284,6 +285,7 @@ impl Discovery {
         chat: Arc<NetworkChat>,
         audit_rx: mpsc::Receiver<AuditOutbound>,
         audit_log: Arc<AuditLog>,
+        plugins: Arc<crate::plugins::PluginManager>,
     ) -> Result<Self> {
         let libp2p_port = udp_port.saturating_add(10000);
         let topic = gossipsub::IdentTopic::new(GOSSIP_TOPIC);
@@ -433,6 +435,22 @@ impl Discovery {
 
         let (announce_tx, announce_rx) = mpsc::channel(64);
         let (dial_tx, dial_rx) = mpsc::channel(64);
+        let (remote_audit_tx, mut remote_audit_rx) =
+            mpsc::channel::<Vec<AuditEvent>>(reqlog::AUDIT_TRANSPORT_QUEUE_CAPACITY);
+        let remote_audit_log = audit_log.clone();
+        tokio::spawn(async move {
+            while let Some(events) = remote_audit_rx.recv().await {
+                for event in events {
+                    if !plugins
+                        .ingest_audit_event(crate::plugins::ENTERPRISE_PLUGIN_CODE, event.clone())
+                        .await
+                        && !remote_audit_log.try_ingest_remote_ordered(event)
+                    {
+                        warn!("auditoria recebida não entrou no plugin nem no fallback local");
+                    }
+                }
+            }
+        });
         Ok(Discovery {
             announce_tx,
             dial_tx,
@@ -448,6 +466,7 @@ impl Discovery {
             chat,
             audit_rx,
             audit_log,
+            remote_audit_tx,
             relay_peer_addrs,
             relay_peer_ids,
             connected_relays: HashSet::new(),
@@ -471,6 +490,7 @@ impl Discovery {
             chat,
             mut audit_rx,
             audit_log,
+            remote_audit_tx,
             relay_peer_addrs,
             relay_peer_ids,
             mut connected_relays,
@@ -496,7 +516,7 @@ impl Discovery {
                 biased;
                 event = swarm.next() => {
                     let Some(ev) = event else { break };
-                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat, &audit_log).await;
+                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat, &audit_log, &remote_audit_tx).await;
                 }
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
@@ -600,6 +620,7 @@ async fn handle_event(
     logs: &ClusterLogs,
     chat: &Arc<NetworkChat>,
     audit_log: &AuditLog,
+    remote_audit_tx: &mpsc::Sender<Vec<AuditEvent>>,
 ) {
     match event {
         // ── Gossipsub: peer announced itself ────────────────────────────────
@@ -1099,7 +1120,17 @@ async fn handle_event(
                 request_response::Message::Request {
                     request, channel, ..
                 } => {
-                    let accepted = audit_log.try_ingest_remote(request);
+                    let accepted = match audit_log.order_remote_events(request) {
+                        Some(events) if events.is_empty() => true,
+                        Some(events) => match remote_audit_tx.try_send(events) {
+                            Ok(()) => true,
+                            Err(error) => error
+                                .into_inner()
+                                .into_iter()
+                                .all(|event| audit_log.try_ingest_remote_ordered(event)),
+                        },
+                        None => false,
+                    };
                     if !accepted {
                         debug!("request-audit: evento recusado de {peer}");
                     }

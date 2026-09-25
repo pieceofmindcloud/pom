@@ -533,29 +533,27 @@ profile policy remains the effective authorization boundary.
   segunda perna; retries automáticos da mesma mutação assinada são evitados para
   não transformar timeout em falso replay administrativo. O testkit de admin
   sobe dois listeners TCP locais e prova promoção e recusa ponta a ponta.
-- `reqlog.rs` - adaptador de auditoria e fallback de migração. No caminho
-  Enterprise ativo, o host grava em `enterprise.db`; `AuditLog` enqueues
-  best-effort writes on a dedicated bounded thread, replica eventos `begin` e
-  `complete` aos admins efetivos por libp2p e executa as escritas no `PomDb`
-  compartilhado;
-  `AuditDb` cria o schema e o índice FTS5 somente no adaptador de teste,
-  abre requests em `in_progress`, completa a mesma linha, marca registros
-  antigos como `incomplete` e serve consultas autenticadas paginadas mais
-  estatísticas no servidor. As consultas aceitam `node_id`, identidade de API
-  key, rótulo de usuário, modelo, prompt e intervalo de entrada; o usuário é o
-  rótulo humano da API key porque a auditoria não armazena uma conta separada.
-  Falha de enfileiramento ou gravação registra
+- `reqlog.rs` - adaptador de auditoria e fallback de migração. Com o plugin
+  ativo, o host grava em `enterprise.db`; independentemente desse destino, o
+  `AuditLog` do POM replica `begin` e `complete` aos admins efetivos por libp2p.
+  O receptor ordena os eventos numa fila limitada e os entrega ao próprio host
+  ativo; se ele não os aceitar, persiste no `pom.db` legado. Eventos recebidos
+  nunca são retransmitidos. `AuditDb` cria o schema e o índice FTS5 somente no
+  adaptador de teste, abre requests em `in_progress`, completa a mesma linha,
+  marca registros antigos como `incomplete` e serve consultas autenticadas
+  paginadas mais estatísticas no servidor. As consultas aceitam `node_id`,
+  identidade de API key, rótulo de usuário, modelo, prompt e intervalo de
+  entrada; o usuário é o rótulo humano da API key porque a auditoria não
+  armazena uma conta separada. Falha de enfileiramento ou gravação registra
   sempre a operação e o request id. Pedidos e conversas ficam no `pom.db`; a
   auditoria Enterprise fica no `enterprise.db` isolado, enquanto o adaptador
   legado permanece como fallback. Permissões dos bancos e dos sidecars WAL/SHM
   são aplicadas no arranque. Filtros de usuário e modelo vazios são ignorados
-  antes da consulta
-  SQL, preservando a busca ampla quando o campo não foi preenchido. As rotas
-  `/api/ui/requests` e `/api/ui/requests/stats` são Enterprise e falham fechado
-  com `enterprise_required` sem entitlement. Com entitlement ativo, os
-  handlers encaminham listagem e estatísticas ao processo
-  `pom-plugin-host`; o `AuditLog` legado só é fallback transitório quando o
-  plugin não está disponível.
+  antes da consulta SQL, preservando a busca ampla quando o campo não foi
+  preenchido. As rotas `/api/ui/requests` e `/api/ui/requests/stats` são
+  Enterprise e falham fechado com `enterprise_required` sem entitlement. Com
+  entitlement ativo, os handlers encaminham listagem e estatísticas ao processo
+  `pom-plugin-host`.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,

@@ -1038,6 +1038,7 @@ async fn async_main(
         tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
         audit: audit.clone(),
+        plugins: plugins.clone(),
         primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
         network_chat_enabled: app_config.network_chat_enabled,
@@ -1769,6 +1770,7 @@ struct P2pStackArgs {
     tls_required: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     audit: Arc<reqlog::AuditLog>,
+    plugins: Arc<plugins::PluginManager>,
     primary_authority_pubkey: String,
     cluster_logs_enabled: bool,
     network_chat_enabled: bool,
@@ -1826,6 +1828,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     infer_tunnel::set_local_node_id(args.node_id.clone());
     let cluster_logs = args.cluster_logs.clone();
     let primary_authority_pubkey = args.primary_authority_pubkey.clone();
+    let plugins = args.plugins.clone();
     cluster_logs.set_identity(args.node_id.clone(), args.node_display_name.clone());
     // Keep the startup behavior of the existing process-log receiver until
     // the authenticated trust document is loaded below; the final receiver
@@ -1960,6 +1963,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         network_chat.clone(),
         audit_rx,
         audit,
+        plugins,
     ) {
         Ok(disc) => {
             let ann_tx = disc.announce_tx.clone();
@@ -2045,6 +2049,7 @@ async fn start_gateway_only(
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
+    let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
 
     let node_display_name = match app_config.node_name.clone() {
         Some(name) => name,
@@ -2082,6 +2087,7 @@ async fn start_gateway_only(
         tls_required: app_config.tls_required,
         cluster_logs: cluster_logs.clone(),
         audit: audit.clone(),
+        plugins: plugins.clone(),
         primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
         cluster_logs_enabled: app_config.cluster_logs_enabled,
         network_chat_enabled: app_config.network_chat_enabled,
@@ -2231,7 +2237,6 @@ async fn start_gateway_only(
         admin_trust.clone(),
     );
 
-    let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
     let pom_core_update = pom_core_update::PomCoreUpdater::runtime(plugins.clone());
     let gw_state = GatewayState {
         network: net.clone(),

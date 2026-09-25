@@ -40,8 +40,10 @@ fallback continua em `addr_candidates` + `RouteTable`.
   mantém sete dias e no máximo 500.000 linhas, em lotes de 256 com pausa e
   tentativa não bloqueante.
 - `reqlog.rs` - protocolo request/response da auditoria de requisições
-  (`/pom/request-audit/1.0.0`); cada admin efetivo mantém uma cópia local dos
-  eventos `begin` e `complete`, sem retransmitir eventos recebidos.
+  (`/pom/request-audit/1.0.0`); o POM replica `begin` e `complete` para todo
+  admin conhecido tanto quando o plugin grava localmente quanto no fallback.
+  O receptor mantém a ordem dos eventos, entrega ao host do plugin ativo ou
+  persiste no `pom.db` se ele não aceitar, sem retransmitir cópias recebidas.
 - `cluster_logs_policy.rs` - catraca autenticada do interruptor de logs; o
   campo anunciado só dispara a leitura da política no principal.
 - `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/
@@ -52,9 +54,10 @@ fallback continua em `addr_candidates` + `RouteTable`.
   rede; o booleano anunciado é gatilho e a leitura autenticada no principal é
   a fonte efetiva.
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
-  (cliente e servidor), DCuTR, AutoNAT, túnel de inferência e o
-  protocolo de logs do cluster, da auditoria de requisições e do Chat da rede.
-  Põe peers no `Network` somente
+  (cliente e servidor), DCuTR, AutoNAT, túnel de inferência e os protocolos de
+  logs do cluster, auditoria de requisições e Chat da rede. A auditoria recebida
+  entra numa fila limitada fora do loop do swarm e segue para o plugin ativo ou
+  o fallback local. Põe peers no `Network` somente
   depois da catraca de admissão, e reidrata no swarm os endereços dos peers
   admitidos antes de enviar pelo túnel quando o anúncio chegou antes do
   registro de rota. A assinatura nativa do gossipsub prova a origem do

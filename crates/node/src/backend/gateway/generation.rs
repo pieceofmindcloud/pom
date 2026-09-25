@@ -2336,6 +2336,140 @@ fn audit_telemetry(
         .and_then(|trace| serde_json::to_value(trace).ok())
 }
 
+async fn route_audit_event_to_local_store<F>(
+    audit: &crate::reqlog::AuditLog,
+    event: crate::reqlog::AuditEvent,
+    plugin_ingest: F,
+) where
+    F: std::future::Future<Output = bool>,
+{
+    if plugin_ingest.await {
+        audit.replicate_event(event);
+    } else {
+        audit.ingest_local_event(event);
+    }
+}
+
+#[cfg(test)]
+mod audit_replication_tests {
+    use super::*;
+    use crate::reqlog::{AuditCompletion, AuditEvent, AuditRequest, Caller};
+    use libp2p::PeerId;
+    use std::collections::{HashMap, HashSet};
+
+    // Reprodução representativa pela visão dos admins:
+    // Setup: um admin emissor e dois admins receptores em Network::testkit,
+    // sem UDP, serviços ou dados de produção.
+    // Entrada: um AuditEvent Begin e Complete aceito pelo host do plugin.
+    // Gatilho: a resposta positiva do plugin deve acionar o fanout do POM.
+    // Máscara: quando o plugin não está ativo, o fallback AuditLog já replicava.
+    // Sintoma: com plugin ativo, os dois admins remotos não recebiam nenhum evento.
+    // Este teste cobre o fanout até a fila libp2p, não os processos POM reais nem
+    // o cdylib extraído; não afirma equivalência com essa execução E2E completa.
+    #[tokio::test]
+    async fn plugin_accepted_inference_log_reaches_every_admin_peer() {
+        let network = Arc::new(
+            crate::network::Network::testkit(
+                "admin-source".into(),
+                "source-key".into(),
+                vec![],
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("rede isolada"),
+        );
+        network.set_profile(crate::profile::NodeProfile::Admin);
+
+        let mut expected_peers = HashSet::new();
+        for node_id in ["admin-secondary-a", "admin-secondary-b"] {
+            let peer_id = PeerId::random();
+            expected_peers.insert(peer_id.clone());
+            let mut peer = crate::gateway::testkit::peer(node_id, node_id, 8080);
+            peer.profile = crate::profile::NodeProfile::Admin;
+            peer.libp2p_peer_id = Some(peer_id.to_string());
+            network.peers.write().await.insert(node_id.into(), peer);
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "pom-plugin-audit-fanout-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let database = Arc::new(crate::db::PomDb::open(&path).expect("banco isolado"));
+        let audit = crate::reqlog::AuditLog::new(database);
+        let (outbound, mut received) = mpsc::channel(8);
+        audit.start_replication(network, outbound);
+
+        let request = AuditRequest {
+            id: "request-plugin-replica".into(),
+            received_at: "2026-09-23T12:00:00Z".into(),
+            route: "/v1/chat/completions".into(),
+            model: "test-model".into(),
+            caller: Caller::operator(),
+            entry_node_id: "admin-source".into(),
+            prompt: "isolated replication check".into(),
+            request_details: serde_json::json!({"stream": false}),
+        };
+        let completion = AuditCompletion {
+            completed_at: "2026-09-23T12:00:01Z".into(),
+            result: Some("done".into()),
+            telemetry: None,
+            timings: None,
+            source: "pipeline:worker-a".into(),
+            hops: vec!["worker-a".into()],
+            prompt_tokens: Some(4),
+            completion_tokens: Some(1),
+            duration_ms: Some(1000),
+            status: crate::reqlog::AuditStatus::Ok,
+            error: None,
+        };
+
+        route_audit_event_to_local_store(&audit, AuditEvent::Begin(request.clone()), async {
+            true
+        })
+        .await;
+        route_audit_event_to_local_store(
+            &audit,
+            AuditEvent::Complete {
+                id: request.id,
+                completion,
+            },
+            async { true },
+        )
+        .await;
+
+        let mut received_by_peer: HashMap<PeerId, Vec<AuditEvent>> = HashMap::new();
+        while received_by_peer.values().map(Vec::len).sum::<usize>() < 4 {
+            let delivery = tokio::time::timeout(Duration::from_secs(2), received.recv())
+                .await
+                .expect("fanout para os admins no prazo")
+                .expect("canal de replicação aberto");
+            received_by_peer
+                .entry(delivery.peer_id)
+                .or_default()
+                .push(delivery.event);
+        }
+
+        assert_eq!(
+            received_by_peer.keys().cloned().collect::<HashSet<_>>(),
+            expected_peers
+        );
+        assert!(received_by_peer.values().all(|events| {
+            matches!(
+                events.as_slice(),
+                [AuditEvent::Begin(_), AuditEvent::Complete { .. }]
+            )
+        }));
+
+        drop(audit);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+}
+
 /// Start a generation and write down what it did, without the generator having
 /// to know who asked for it.
 ///
@@ -2377,15 +2511,15 @@ pub fn spawn_logged_generation_with_stops(
     let audit_for_begin = audit.clone();
     let plugins_for_begin = plugins.clone();
     tokio::spawn(async move {
-        if !plugins_for_begin
-            .ingest_audit_event(
+        route_audit_event_to_local_store(
+            &audit_for_begin,
+            crate::reqlog::AuditEvent::Begin(begin.clone()),
+            plugins_for_begin.ingest_audit_event(
                 crate::plugins::ENTERPRISE_PLUGIN_CODE,
-                crate::reqlog::AuditEvent::Begin(begin.clone()),
-            )
-            .await
-        {
-            audit_for_begin.begin(begin);
-        }
+                crate::reqlog::AuditEvent::Begin(begin),
+            ),
+        )
+        .await;
     });
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
@@ -2491,18 +2625,21 @@ pub fn spawn_logged_generation_with_stops(
             status: audit_status,
             error,
         };
-        if !plugins
-            .ingest_audit_event(
+        route_audit_event_to_local_store(
+            &audit,
+            crate::reqlog::AuditEvent::Complete {
+                id: request_id.clone(),
+                completion: completion.clone(),
+            },
+            plugins.ingest_audit_event(
                 crate::plugins::ENTERPRISE_PLUGIN_CODE,
                 crate::reqlog::AuditEvent::Complete {
-                    id: request_id.clone(),
-                    completion: completion.clone(),
+                    id: request_id,
+                    completion,
                 },
-            )
-            .await
-        {
-            audit.complete(request_id, completion);
-        }
+            ),
+        )
+        .await;
     });
 }
 
@@ -2544,26 +2681,30 @@ pub(crate) fn record_rejected(
     let audit = state.audit.clone();
     let plugins = state.plugins.clone();
     tokio::spawn(async move {
-        let complete = crate::reqlog::AuditEvent::Complete {
+        let begin_event = crate::reqlog::AuditEvent::Begin(begin.clone());
+        let complete_event = crate::reqlog::AuditEvent::Complete {
             id: id.clone(),
             completion: completion.clone(),
         };
         if plugins
-            .ingest_audit_event(
-                crate::plugins::ENTERPRISE_PLUGIN_CODE,
-                crate::reqlog::AuditEvent::Begin(begin.clone()),
-            )
+            .ingest_audit_event(crate::plugins::ENTERPRISE_PLUGIN_CODE, begin_event.clone())
             .await
         {
-            if !plugins
-                .ingest_audit_event(crate::plugins::ENTERPRISE_PLUGIN_CODE, complete)
+            audit.replicate_event(begin_event);
+            if plugins
+                .ingest_audit_event(
+                    crate::plugins::ENTERPRISE_PLUGIN_CODE,
+                    complete_event.clone(),
+                )
                 .await
             {
+                audit.replicate_event(complete_event);
+            } else {
                 tracing::warn!(request_id = %id, "conclusão de auditoria não entrou no plugin");
             }
         } else {
-            audit.begin(begin);
-            audit.complete(id, completion);
+            audit.ingest_local_event(begin_event);
+            audit.ingest_local_event(complete_event);
         }
     });
 }

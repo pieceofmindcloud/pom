@@ -156,6 +156,12 @@ reusável por qualquer `plugin_code` futuro:
   caminho do artefato ao host. O `pom` continua tratando o plugin como um
   `cdylib` opaco baixado por manifest - de onde vem o código-fonte dele é
   irrelevante para o runtime.
+- O transporte de auditoria entre admins continua no POM (`reqlog.rs` e
+  `network/discovery.rs`), que replica os DTOs `Begin` e `Complete` mesmo
+  quando o host local aceitou o evento. Cada receptor encaminha a cópia
+  ordenada ao host ativo; o plugin continua dono da persistência e das consultas
+  em `enterprise.db`. Não há transporte P2P dentro do plugin nem é necessário
+  publicar um artefato novo para restaurar o fanout.
 - `plugin_code` continua sendo `"enterprise"` no `feature_set`
   (`enterprise.request_logs`,
   `enterprise.statistics`): só o repositório do código mudou, não a identidade

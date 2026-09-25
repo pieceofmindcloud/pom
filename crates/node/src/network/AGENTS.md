@@ -376,6 +376,12 @@ fallback continua em `addr_candidates` + `RouteTable`.
   é feita sem colchetes dos dois lados - `fixado` vem colchetado de
   `effective_host` e o local vem cru, e comparar as duas formas duplicava o
   IPv6 no anúncio.
+- `Network::effective_host` (via `choose_effective_host`) - host pelo qual o
+  nó se descreve: fixado, depois o público atual da interface, depois o
+  observado. Sempre devolve IPv6 **entre colchetes**, porque quem o usa
+  concatena `:porta` (a entrada do próprio nó em `all_peers`, que a tela de
+  participantes mostra) ou o passa por `ip_host` (`self_reply_hosts`). O
+  endereço da interface vem cru de `filter_candidates` e é colchetado ali.
 - `is_private_or_local` - decide se um endereço observado por um peer é notícia
   sobre o IP público deste nó. Além de RFC 1918 e `fc00::/7`, recusa
   **`100.64/10` (RFC 6598)**: é a faixa do CGNAT e é a que a Tailscale usa.

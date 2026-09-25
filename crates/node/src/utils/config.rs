@@ -219,6 +219,12 @@ pub struct Config {
     pub inference_port: Option<u16>,
     #[serde(default)]
     pub bootstrap_nodes: Vec<String>,
+    /// Chaves pkarr (`pk:...`) de relés para a travessia de NAT, somadas às de
+    /// `--relay-peers`. Resolvidas uma vez no arranque; só entra o registro
+    /// que se declara relé. Um relé que este nó já alcança como bootstrap não
+    /// precisa estar aqui (ver `relay_reservation_addrs` em `discovery.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relay_peers: Vec<String>,
     /// Address other nodes should keep for this one, e.g.
     /// `"[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777"` or just the bare IPv6.
     ///
@@ -1035,6 +1041,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],
@@ -1139,6 +1146,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec!["192.168.1.1:42777".into()],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],
@@ -1180,6 +1188,18 @@ mod tests {
         .to_string();
         assert!(error.contains("campo `role` foi removido"));
         assert!(error.contains("use `profile`"));
+    }
+
+    #[test]
+    fn relay_peers_are_read_from_the_config_and_empty_stays_out_of_it() {
+        let cfg: Config =
+            serde_json::from_str(r#"{"profile":"node","relay_peers":["pk:relay"]}"#).unwrap();
+        assert_eq!(cfg.relay_peers, vec!["pk:relay"]);
+
+        let cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        assert!(cfg.relay_peers.is_empty());
+        let saved = serde_json::to_value(&cfg).unwrap();
+        assert!(saved.get("relay_peers").is_none());
     }
 
     #[test]
@@ -1264,6 +1284,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],
@@ -1421,6 +1442,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![

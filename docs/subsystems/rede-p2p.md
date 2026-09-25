@@ -459,8 +459,9 @@ quatro endereços: `/ip4/0.0.0.0/tcp/<porta>`, `/ip6/::/tcp/<porta>`,
   bootstrappers públicos do IPFS, que não são relés: não concedem reserva de
   Circuit Relay v2 a um par qualquer, e os endereços fixados já estavam
   obsoletos. Relé útil aqui é um nó pom com IP público rodando `--serve-relay`,
-  configurado em `--relay-peers` (resolvidos antes por pkarr, filtrando
-  `is_relay`); só ele honra `max_circuit_bytes` do tamanho de um frame de
+  configurado em `--relay-peers` ou em `relay_peers` no `pom.json` (as duas
+  listas se somam; chaves `pk:...` resolvidas uma vez no arranque por pkarr,
+  filtrando `is_relay`); só ele honra `max_circuit_bytes` do tamanho de um frame de
   prefill. `--no-default-relays` continua aceito e hoje não tem efeito prático.
   Com `--serve-relay` o servidor de relay aceita reservas (128 slots, 4 por
   peer, 1 h de reserva, circuitos de 120 s e `wire::MAX_FRAME_PAYLOAD_BYTES`);

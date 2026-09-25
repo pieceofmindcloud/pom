@@ -2803,6 +2803,7 @@ pub(crate) mod testkit {
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             api_keys: vec![],
             blocked_nodes: vec![],

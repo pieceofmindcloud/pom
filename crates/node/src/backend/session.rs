@@ -294,6 +294,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],

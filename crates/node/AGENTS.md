@@ -86,7 +86,9 @@ como `primary` na config de inferência montada pela linha de comando),
 `--prefill-chunk-tokens` (512), `--temperature`/`--top-p`/`--top-k`/
 `--repeat-penalty`/`--repeat-last-n`, `--cycle-detection` (desligado por padrão), `--no-thinking`, `--single-peer`,
 `--pkarr-peers`, `--public-addr`, `--relay-peers`, `--serve-relay`,
-`--no-default-relays`, `--no-discovery`.
+`--no-default-relays`, `--no-discovery`. `--relay-peers` soma-se a
+`relay_peers` do `pom.json` (`merged_relay_peers`, config primeiro), como
+`--bootstrap` a `bootstrap_nodes`.
 
 Não existe um teto absoluto adicional no `pom.json`. A capacidade de saída é
 derivada do `n_ctx` efetivo confirmado por cada runtime e agregada entre os

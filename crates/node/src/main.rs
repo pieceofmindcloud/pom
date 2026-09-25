@@ -465,6 +465,7 @@ struct Args {
     public_addr: String,
 
     /// Pkarr keys of relay nodes to use for NAT traversal (comma-separated, format: pk:zbase32...).
+    /// Added to `relay_peers` in pom.json.
     #[arg(long, default_value = "")]
     relay_peers: String,
 
@@ -859,7 +860,7 @@ async fn async_main(
             args.no_discovery,
             args.no_default_relays,
             merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap),
-            comma_list(&args.relay_peers),
+            merged_relay_peers(&app_config.relay_peers, &args.relay_peers),
             args.serve_relay,
             args.advertise_addr.clone(),
             args.public_addr.clone(),
@@ -960,7 +961,7 @@ async fn async_main(
 
     let pkarr_peer_keys = comma_list(&args.pkarr_peers);
 
-    let relay_peer_keys = comma_list(&args.relay_peers);
+    let relay_peer_keys = merged_relay_peers(&app_config.relay_peers, &args.relay_peers);
     let bootstrap_nodes = merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap);
 
     // CLI wins over the config file, same as --bootstrap. `--public-addr`
@@ -1579,6 +1580,7 @@ async fn start_setup_mode(
         p2p_port: setup_p2p_port,
         inference_port: None,
         bootstrap_nodes: vec![],
+        relay_peers: vec![],
         advertise_addr: None,
         network: Default::default(),
         api_keys: vec![],
@@ -2018,6 +2020,23 @@ fn comma_list(raw: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// Relay pkarr keys from `pom.json` (`relay_peers`) plus `--relay-peers`,
+/// config first, without duplicates. Both start paths call this, same as
+/// `merged_bootstrap_nodes`.
+fn merged_relay_peers(from_config: &[String], cli: &str) -> Vec<String> {
+    let mut keys: Vec<String> = from_config
+        .iter()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .collect();
+    for key in comma_list(cli) {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys
 }
 
 /// Bootstrap nodes from `pom.json` plus the `--bootstrap` extras, without
@@ -2518,6 +2537,19 @@ mod main_tests {
                 "[2001:db8::10]:42777",
                 "relay.example:42777"
             ]
+        );
+    }
+
+    #[test]
+    fn relay_peers_merge_config_first_without_duplicates() {
+        assert_eq!(
+            merged_relay_peers(&["pk:relay-a".into(), " ".into()], "pk:relay-b, pk:relay-a"),
+            vec!["pk:relay-a", "pk:relay-b"]
+        );
+        assert_eq!(merged_relay_peers(&[], "pk:relay-b"), vec!["pk:relay-b"]);
+        assert_eq!(
+            merged_relay_peers(&["pk:relay-a".into()], ""),
+            vec!["pk:relay-a"]
         );
     }
 

@@ -48,7 +48,10 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 - `test-docker-build-cache.sh` - prova que a imagem reaproveita o que nao
   mudou. A parte estrutural verifica os estagios Rust/frontend independentes,
   a cópia final do frontend, o `.dockerignore`, a exclusao do carimbo de commit
-  dos estagios de build e que só há uma build POM combinando CPU, CUDA e Vulkan.
+  dos estagios de build, que só há uma build POM combinando CPU, CUDA e Vulkan,
+  e que o kache é instalado depois do rustup e antes das fontes, com
+  `kache init` antes do `cargo build` e `XDG_CACHE_HOME=/build/target`. O
+  `cargo install` do kache conta no grupo `toolchain`.
   Depois, se houver daemon, deriva do Dockerfile um stub e usa BuildKit sobre um
   contexto sintetico para verificar cache em cenarios de fonte, commit, fork,
   CUDA, toolchain e artefatos locais. `POM_CACHE_TEST_DEBUG=1` imprime cada
@@ -313,3 +316,12 @@ web, `pom-mark.png`, ícones Linux, `favicon.ico`, `pom.ico` e `pom.icns`.
 `pom-logo-light.png` e `pom-logo-dark.png` são lockups-fonte e não são
 redimensionados por este script. Rode `python3 scripts/generate-brand-assets.py`
 depois de atualizar a arte manual para manter todas as plataformas alinhadas.
+
+## Defeitos anotados
+
+- `test-docker-build-cache.sh`, cenário "Rust toolchain changed": falha também
+  sem mudança no Dockerfile. O `RUN` que baixa a release do fork vem depois do
+  rustup, reconstrói quando a toolchain muda e cai no grupo `base`, que o
+  cenário não espera. E como a toolchain de teste é fixa (`1.90.0`), a partir
+  da segunda execução no mesmo builder a camada já está em cache e o grupo
+  `toolchain` some do resultado.

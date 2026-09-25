@@ -45,6 +45,13 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path && \
     rustup component add rustfmt
 
+# kache is the compiler cache for rustc and the build-script C/C++ (the fork's
+# CMake build). Installed right after the toolchain so source edits reuse the
+# layer; `kache init` runs in the build step below, next to the sources.
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    cargo install --locked kache
+
 ARG POM_LLAMA_CPP_MODE=release
 ARG POM_LLAMA_CPP_RELEASE_TAG=""
 ARG POM_LLAMA_CPP_RELEASE_REPOSITORY=pereirajair/llama.cpp
@@ -129,8 +136,15 @@ ARG POM_CUDA_ARCHITECTURES="86;120"
 ENV CMAKE_CUDA_ARCHITECTURES=${POM_CUDA_ARCHITECTURES}
 ARG LLAMA_CPP_CACHE_KEY="unknown"
 ARG POM_CUDA_ARCH_CACHE_KEY="86-120"
+# kache keeps its store in `$XDG_CACHE_HOME/kache`. Pointing it at the target
+# cache mount persists the store across builds, under the same cache key as the
+# Cargo output, and keeps store and targets on one filesystem so kache can link
+# cached artifacts instead of copying them.
+ENV XDG_CACHE_HOME=/build/target
 # Build one executable with all runtime backends. GGML CPU/Vulkan/CUDA modules
 # load dynamically; POM's custom CUDA MoE kernels are linked into this executable.
+# `kache init` sets Cargo's `rustc-wrapper` and the build-script C/C++ `[env]`
+# keys; `--no-service` because a build container has no service manager.
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target,id=pom-target-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN} \
@@ -143,6 +157,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
       unset POM_LLAMA_CPP_PREBUILT_LIB_DIR LLAMA_BUILD_SHARED_LIBS; \
     fi; \
     export CUDAARCHS="$POM_CUDA_ARCHITECTURES"; \
+    kache init --no-service --yes && \
     CARGO_TARGET_DIR=/build/target/cuda-vulkan cargo build --release --features cuda,vulkan && \
     cp /build/target/cuda-vulkan/release/pom /build/pom && \
     CARGO_TARGET_DIR=/build/target/plugin-host cargo build --release -p pom-plugin-host && \

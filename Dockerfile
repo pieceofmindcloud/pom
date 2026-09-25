@@ -183,8 +183,13 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/pom/common:/usr/local/cuda/lib64:/usr/local/c
 # RADV ICD (/usr/share/vulkan/icd.d/radeon_icd.*.json + libvulkan_radeon.so)
 # that `sysmon::icd_amd()` also looks for. `vulkan-tools` ships `vulkaninfo`
 # for `docker exec <container> vulkaninfo --summary` when a card is missing.
+# `iproute2` provides `ip`, which `addrs::local_addrs` runs to list this
+# node's own addresses; without it the node announces none, not even its
+# public IPv6, and remote peers end up dialing the LAN address relayed by
+# local peers.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    iproute2 \
     libstdc++6 \
     libgomp1 \
     libssl3t64 \

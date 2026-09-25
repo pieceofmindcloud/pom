@@ -309,7 +309,11 @@ a quebra parecia unilateral). Há teste que fala IPv4 de verdade
 ### Endereços anunciados (`addrs.rs` + `network.rs`)
 
 - `self_addr_candidates` enumera as interfaces (`ifconfig` no macOS, `ip -o addr`
-  no Linux; Windows fica vazio e cai no endereço observado) e filtra com
+  no Linux; Windows fica vazio e cai no endereço observado). Sem o `ip` (imagem
+  Docker sem `iproute2`) a lista também fica vazia, com um aviso único no log:
+  o nó não anuncia nem o IPv6 público, os peers da LAN guardam a origem privada
+  do pacote e a repassam no `PeerList`, e um peer remoto passa a discar o IP da
+  LAN e filtra com
   `filter_candidates`: descarta loopback/link-local/deprecated e interfaces
   virtuais de container (`docker0`, `br-*`, `veth*`, `cni*`, `podman*` e
   equivalentes), mantém endereço estável antes de temporário e limita a 2 por

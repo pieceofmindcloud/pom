@@ -355,8 +355,10 @@ fallback continua em `addr_candidates` + `RouteTable`.
   `NewListenAddr`, `ExpiredListenAddr`, `ExternalAddrConfirmed`,
   `ExternalAddrExpired`, AutoNAT `Public` e reserva aceita.
 - `reserve_circuit` - pede `listen_on(<relé>/p2p-circuit)`. Endereço do relé
-  vem da lista configurada ou do anúncio vivo, nunca dos `listen_addrs` do
-  identify. Sem circuito publicado não há conexão relayed, e sem ela o DCuTR
+  vem de `relay_reservation_addrs`: lista configurada, anúncio vivo e, por
+  último, o endereço que este nó discou (`dialed_addrs`, anotado no
+  `ConnectionEstablished`) - é o caso do relé dedicado fora da rede. Nunca dos
+  `listen_addrs` do identify. Sem circuito publicado não há conexão relayed, e sem ela o DCuTR
   não tem por onde coordenar o punch.
 - `observed_host_port` - inverso do anterior: tira o `host:port` deste nó do
   `observed_addr` do `identify`. É o "qual é o meu IP público" sem dependência

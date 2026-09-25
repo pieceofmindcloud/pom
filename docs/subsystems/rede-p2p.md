@@ -472,9 +472,16 @@ quatro endereços: `/ip4/0.0.0.0/tcp/<porta>`, `/ip6/::/tcp/<porta>`,
 - **Reserva de circuito:** `reserve_circuit` pede `listen_on(<relé>/p2p-circuit)`
   para qualquer par cujo identify anuncie `relay::HOP_PROTOCOL_NAME`, não
   apenas para os relés configurados - o caso que mais importa é um nó pom com
-  IP público dentro do próprio cluster. O endereço discável do relé sai da
-  lista configurada quando ele está lá, e do anúncio vivo caso contrário;
-  `listen_addrs` do identify continua fora, pela política "só Announce disca".
+  IP público dentro do próprio cluster. O endereço discável do relé sai de
+  `relay_reservation_addrs`, nesta ordem: a lista configurada
+  (`--relay-peers`), o anúncio vivo (relé membro admitido) e, por último, o
+  endereço que este nó discou para chegar ao relé, guardado no
+  `ConnectionEstablished` (`dialed_addrs`, só conexão direta). O terceiro é o
+  que atende um relé dedicado fora da rede: ele não está em `--relay-peers`
+  nem na tabela `peers`, e sem esse recurso a reserva nunca acontecia - o
+  bootstrap no relé não bastava. `listen_addrs` do identify continua fora,
+  pela política "só Announce disca"; um endereço que o próprio nó discou não é
+  informação do par.
   `circuit_listens` guarda quem já foi pedido, porque `listen_on` repetido
   abre um listener novo a cada chamada e o identify do mesmo relé chega muitas
   vezes.

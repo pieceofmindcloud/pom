@@ -636,8 +636,7 @@ faz o download autenticado do blob persistido.
   (log says `resposta=direta|anel|hub`: direta when `direct` is Some and the
   plan supports direct reply, anel for `relay/v1-chain`, hub as the fallback);
   prefill in hub and direct paths runs as an ordered pipeline of configurable
-  depth (`prefill_max_inflight_chunks`, effective 1..8, default 8, also
-  `--prefill-max-inflight-chunks`), bounded also by a 512 MiB hidden-state byte
+  depth (`prefill_max_inflight_chunks`, effective 1..8, default 8), bounded also by a 512 MiB hidden-state byte
   budget; a chunk that fails after earlier chunks were accepted is rebuilt from
   chunk 0 because the lost response makes partial KV removal unsafe, while the
   ring stays serialized by its nested response contract; the request trace

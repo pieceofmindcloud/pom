@@ -581,8 +581,7 @@ offload no primeiro clique.
   `host`. Fora de rede `host` (bridge com `-p 8080:8080`), o modo setup
   já é alcançável pela porta publicada: ele liga em `0.0.0.0` por padrão
   (`--setup-bind` troca o IP). Depois do save o gateway configurado liga em
-  `[::]`. Não passe `--inference-port` nesse serviço, pois a opção CLI
-  substituiria a porta de inferência persistida. O
+  `[::]`. O
   gerador grava em `tests/fixtures/node-<N>`; os serviços continuam montando
   os diretórios nomeados por papel de hardware para preservar o estado já
   persistido. Não altere esses caminhos ao alinhar os nomes dos serviços;
@@ -633,7 +632,8 @@ externamente é o `gen-node-configs.py` (não é do build, é de operação).
 ## Scripts de cluster
 
 Os lançadores (`run-p1.sh`, `run-p2.sh`, `request.sh`) **não estão na raiz**:
-vivem em `old/scripts/` e são referência de operador (o binário não os usa).
+vivem em `old/scripts/` e são histórico: passam `--model` e flags de
+inferência que o binário não aceita mais, então não sobem um nó atual.
 O procedimento de subida está em `operacao.md`.
 
 - `old/scripts/run-p1.sh` - peer 1 (MacBook, Metal): camadas 0-15, `--port
@@ -672,7 +672,7 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_DB_DIR` | Diretório de `pom.db` e seus arquivos WAL/SHM. Se ausente ou vazio, usa `<project_root>`; o diretório é criado no arranque. |
 | `POM_DEV` | O Compose comum envia `1` a todos os serviços. O código deste checkout não lê essa variável diretamente. |
 | `POM_UI_DIST` | Onde `webapp.rs` lê o bundle da UI (padrão `<project_root>/apps/frontend/dist`). A imagem Docker a seta explicitamente. |
-| `POM_SLOT_SAVE_PATH` | Diretório de snapshots de KV cache (`--slot-save-path` do llama-server). Vence o campo `slot_save_path` do `pom.json`; a flag `--slot-save-path` vence a env var. Por processo, não persistida. Ausente desliga `POST /v1/session/slot` e `/admin/slots`. Ver `inferencia.md` §3.1.1. |
+| `POM_SLOT_SAVE_PATH` | Diretório de snapshots de KV cache (`--slot-save-path` do llama-server). Vence o campo `slot_save_path` do `pom.json`. Por processo, não persistida. Ausente desliga `POST /v1/session/slot` e `/admin/slots`. Ver `inferencia.md` §3.1.1. |
 | `POM_SLOT_PERSIST_PREFIX_CACHE` | `1`/`true`/`yes`/`on` liga o cache de prefixo persistente (gateway grava/restaura o KV retido entre reinícios). Vence `slot_persist_prefix_cache` do `pom.json`; exige `slot_save_path` em todos os hops. Desligado por padrão. Ver `inferencia.md` §3.1.1. |
 | `POM_SLOT_AUTO_TTL_SECS` | TTL de um snapshot automático de prefixo sem uso, em segundos (padrão 7 dias). Vence `slot_auto_ttl_secs` do `pom.json`. Lido no arranque do gateway. |
 | `POM_DEV_AUTO_ACCEPT_TRANSFERS` | `=1` faz o nó **receptor** aceitar toda oferta de transferência sem clique. Só desenvolvimento; lida uma vez no arranque. O remetente não pode pedi-la. |

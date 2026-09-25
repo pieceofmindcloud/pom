@@ -192,7 +192,8 @@ pub(crate) async fn reconfigure_local(
             // em `[::]:0` (porta efêmera) num redeploy, e o túnel/HTTP direto
             // não achava mais o peer.
             let inference_port = state.network.inference_port.ok_or_else(|| {
-                "este nó subiu sem --inference-port; não dá para reconfigurar a fatia".to_string()
+                "este nó não anuncia porta de inferência; não dá para reconfigurar a fatia"
+                    .to_string()
             })?;
             // Redescoberto a cada reconfigure, não carregado do snapshot: o
             // arquivo de rascunho MTP é opcional e pode ter sido adicionado,

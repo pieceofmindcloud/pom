@@ -119,8 +119,10 @@ o frontend é compilado em estágio independente e sua cópia para o runtime é 
 ```bash
 ./target/release/pom --list-models
 ./target/release/pom                       # sem args: usa pom.json
-./target/release/pom --model split_0_15.gguf --port 42777 --inference-port 8181
+./target/release/pom --port 42778 --gateway-port 8091   # segundo nó local
 ```
+
+O modelo nunca vem da linha de comando: é implantado pela interface.
 
 Todo nó serve a UI e a API na `--gateway-port` (8080): abra
 `http://<peer>:8080/`. Ver `docs/subsystems/operacao.md` para a subida completa
@@ -142,7 +144,7 @@ Módulos em `crates/node/src/`: `main.rs` (CLI e orquestração), `models/`
 (catálogo, GGUF, perfis, splitter), `network/` (descoberta, identidade,
 transporte, túnel), `routing/` (planejador de pipeline), `backend/` (gateway,
 APIs, admin, transferência, deploy, UI), `inference/` (servidor embutido, llm,
-wire, relay, direct, especulativa), `utils/` (config, TUI, sysmon).
+wire, relay, direct, especulativa), `utils/` (config, sysmon).
 
 ## Invariantes que valem em todo lugar
 

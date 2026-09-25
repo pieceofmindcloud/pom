@@ -465,8 +465,8 @@ quatro endereços: `/ip4/0.0.0.0/tcp/<porta>`, `/ip6/::/tcp/<porta>`,
   prefill. `--no-default-relays` continua aceito e hoje não tem efeito prático.
   Com `--serve-relay` o servidor de relay aceita reservas (128 slots, 4 por
   peer, 1 h de reserva, circuitos de 120 s e `wire::MAX_FRAME_PAYLOAD_BYTES`);
-  sem ele, `max_reservations: 0`. As flags valem com ou sem `--model`: um relé
-  dedicado não serve modelo e roda pelo caminho `start_gateway_only`.
+  sem ele, `max_reservations: 0`. Um relé dedicado é um nó comum, que
+  simplesmente não recebe implantação.
   `examples/relay-node/docker-compose.yml` é o exemplo de um relé dedicado,
   fora da rede que ele atende. Os nós atrás de NAT só precisam dele como
   bootstrap: a reserva é pedida a todo par conectado que oferece relé.

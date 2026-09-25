@@ -1086,10 +1086,10 @@ impl NodeRuntime {
             let installation = auth.read().await;
             cfg.cache_type_k = installation.cache_type_k;
             cfg.cache_type_v = installation.cache_type_v;
-            // Precedência: o que já veio no `cfg` (a flag `--slot-save-path` da
-            // linha de comando) vence; senão `POM_SLOT_SAVE_PATH` e depois o
-            // campo do `pom.json` (`slot_save_path_effective`). Uma implantação
-            // pela UI chega aqui com `None` e adota o valor da instalação.
+            // Precedência: o que já veio no `cfg` vence; senão
+            // `POM_SLOT_SAVE_PATH` e depois o campo do `pom.json`
+            // (`slot_save_path_effective`). Uma implantação pela UI chega aqui
+            // com `None` e adota o valor da instalação.
             cfg.slot_save_path = cfg
                 .slot_save_path
                 .take()
@@ -1690,9 +1690,9 @@ pub fn log_file_path(port: u16) -> PathBuf {
 
 /// Anexa uma linha ao log do servidor de inferência.
 ///
-/// A TUI limpa a tela a cada `--refresh`, então o stdout do processo é o pior
-/// lugar possível para o histórico de arranque e queda do servidor: quando o
-/// operador vai olhar, a linha já rolou. O arquivo é o que sobra, e é ele que
+/// O stdout do processo mistura tudo e rola, então é um lugar ruim para o
+/// histórico de arranque e queda do servidor: quando o operador vai olhar, a
+/// linha já passou. O arquivo é o que sobra, e é ele que
 /// `RuntimeStatus::log_path` aponta.
 fn append_log(port: u16, line: &str) {
     use std::io::Write;
@@ -1919,11 +1919,10 @@ mod tests {
     /// Com o ocupante não identificável (ou não matável, como aqui: quem segura
     /// a porta é o próprio processo de teste, e o supervisor nunca se mata), o
     /// servidor morre com "Address already in use" a cada tentativa. Antes, o
-    /// operador via só "carregando" até `MAX_RESTARTS` esgotar, com a TUI
-    /// anunciando saúde o tempo todo; o peer só quebrava na hora da inferência.
-    /// O motivo tem que estar no status desde a primeira tentativa - e o
-    /// arquivo de log tem que existir, porque a TUI limpa a tela a cada
-    /// `--refresh` e o stdout não sobrevive.
+    /// operador via só "carregando" até `MAX_RESTARTS` esgotar; o peer só
+    /// quebrava na hora da inferência. O motivo tem que estar no status desde a
+    /// primeira tentativa - e o arquivo de log tem que existir, porque o stdout
+    /// não guarda o histórico.
     #[tokio::test]
     async fn a_porta_presa_aparece_no_status_e_no_log() {
         let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
@@ -2046,15 +2045,6 @@ mod tests {
 
         pending_supervisor.abort();
         assert!(pending_supervisor.await.is_err());
-    }
-
-    /// A TUI mostra o estado do servidor, não um rótulo fixo.
-    #[test]
-    fn o_rotulo_da_tui_muda_com_o_estado() {
-        let mut s = RuntimeStatus::new(ServerState::Failed, "porta 8181 continua ocupada");
-        assert!(crate::runtime_mem_source(&s).contains("porta 8181"));
-        s.state = ServerState::Ready;
-        assert_eq!(crate::runtime_mem_source(&s), "inference_server");
     }
 
     /// A garantia que torna seguro reconfigurar uma implantação no ar: mexer

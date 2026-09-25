@@ -63,68 +63,56 @@ corta `.git/` do contexto, então sem isso o binário carimba `desconhecido` em
 ### Executar
 
 ```bash
-# Nó simples com models montado em volume
+# Nó simples, com o estado (pom.json, chaves, modelos) num volume
 docker run --rm \
     -p 8080:8080 -p 42777:42777/udp -p 8181:8181 \
-    -v ./models:/models \
-    pom --model /models/meu-modelo.gguf \
-             --gateway --gateway-port 8080 --inference-port 8181
+    -v ./data:/data -e POM_HOME=/data -e POM_UI_DIST=/app/apps/frontend/dist \
+    pom
 
 # Nó conectando a bootstrap
 docker run --rm \
-    -p 8080:8080 -p 42778:42778/udp -p 8182:8182 \
-    -v ./models:/models \
-    pom --model /models/shard_16_31.gguf \
-             --port 42778 --bootstrap 192.168.1.10:42777 \
-             --gateway --gateway-port 8080 --inference-port 8182
+    -p 8080:8080 -p 42777:42777/udp -p 8181:8181 \
+    -v ./data:/data -e POM_HOME=/data -e POM_UI_DIST=/app/apps/frontend/dist \
+    pom --bootstrap 192.168.1.10:42777
 ```
 
-A interface web fica disponível em `http://localhost:8080/` assim que o contêiner sobe.
+A interface web fica disponível em `http://localhost:8080/` assim que o
+contêiner sobe. No primeiro acesso ela conduz a configuração do nó; os modelos
+são implantados por ela, nunca pela linha de comando.
 
 ---
 
 ## Uso
 
 ```bash
-# Ver modelos suportados
-./pom --list-models
-
-# Iniciar um nó com 10GB para o modelo gemma3
-./pom --model gemma3 --memory 10GB
+# Iniciar um nó (sem pom.json, abre a configuração inicial em :8080)
+./pom
 
 # Nó com porta customizada e bootstrap
-./pom --model gemma3 --memory 4GB --port 42777 --bootstrap 192.168.1.10:42777
+./pom --port 42777 --bootstrap 192.168.1.10:42777
 
 # Nó conectando a bootstrap remoto (internet)
-./pom --model llama3:70b --memory 16GB --bootstrap 45.33.32.156:42777
+./pom --bootstrap 45.33.32.156:42777
 ```
+
+Depois de configurado, abra `http://<nó>:8080/` e implante o modelo pela
+interface: ela fatia o GGUF, distribui as camadas entre os nós e carrega cada
+fatia no seu peer.
 
 ---
 
 ## Como funciona
 
-### 1. Descoberta de camadas
+### 1. Descoberta
 Ao iniciar, o nó:
-1. Envia `PeerRequest` para bootstrap nodes
+1. Envia `PeerRequest` para os bootstrap nodes
 2. Faz broadcast UDP local (mDNS-style)
-3. Aguarda 2 segundos para coletar respostas
-4. Analisa quais camadas já estão cobertas na rede
+3. Entra no gossip libp2p para peers fora da LAN
 
-### 2. Cálculo de assignment
-```
-Memória disponível = --memory - overhead do modelo (~10-20%)
-Camadas que cabem  = memória disponível / MB por camada
-Início             = primeiro gap não coberto pelos peers
-```
-
-**Exemplo com gemma3 (28 camadas, 180MB/camada):**
-```
-10GB disponível → ~9.5GB usável → ~52 camadas caberiam
-Mas gemma3 só tem 28 → pega todas as 28
-
-4GB disponível → ~3.8GB usável → ~21 camadas
-Peers cobrem 0-10 → este nó pega 11-21 (próximo gap)
-```
+### 2. Implantação
+A implantação é feita pela interface web: ela mede o que cada nó tem de memória
+e GPU, planeja quais camadas cada um serve, e cada peer extrai a própria faixa
+da própria cópia do modelo. Ver `docs/subsystems/implantacao.md`.
 
 ### 3. Gossip P2P
 Cada 5 segundos o nó:
@@ -146,7 +134,7 @@ crates/
 │   ├── src/network/            # descoberta, identidade e transporte P2P
 │   ├── src/routing/            # planejador de pipeline atual
 │   ├── src/backend/            # gateway HTTP, API e interface administrativa
-│   └── src/utils/              # configuração, TUI e monitoramento
+│   └── src/utils/              # configuração e monitoramento
 ├── routing-contract/           # contrato serializável e versionado de roteamento
 ├── routing-base/               # planejador determinístico independente de infraestrutura
 ├── config/                     # ponto de extração para esquemas de configuração públicos

@@ -1002,9 +1002,7 @@ pub(super) async fn handle_generate(
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(GenerateResponse {
-                response: format!(
-                    "Inference failed. Error: {e}. Start peers with --inference-port."
-                ),
+                response: format!("Inference failed. Error: {e}."),
                 source: "none".to_string(),
                 tokens_generated: 0,
                 tokens_per_sec: 0.0,

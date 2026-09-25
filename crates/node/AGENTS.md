@@ -72,23 +72,20 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 
 ## src/main.rs - fluxo de arranque e CLI
 
-Responsabilidades: parse de CLI, orquestração de startup, resolução de modelo,
-subida do gateway HTTP e do servidor de inferência (Rust, em-processo), spawn
-das tasks de fundo, loop da TUI.
+Responsabilidades: parse de CLI, orquestração de startup, subida do gateway
+HTTP e do servidor de inferência (Rust, em-processo) e spawn das tasks de
+fundo. **O modelo nunca vem da linha de comando**: ele é implantado pela
+interface, e num reinício volta pelo journal da fatia (`lastslice`).
 
-**Flags (clap derive, `Args`):** `-m/--model`, `-M/--memory`, `-p/--port`
-(42777), `-b/--bootstrap`, `--advertise-addr`, `--refresh` (3), `--list-models`,
-`--ollama-url`, `--gateway` (deprecated: o único efeito que resta é marcar o nó
-como `primary` na config de inferência montada pela linha de comando),
-`--gateway-port` (8080), `--start-layer`/`--end-layer`,
-`--inference-port`, `--n-gpu-layers` (0), `--n-ctx` (8192 por sessão), `--n-batch` (512),
-`--max-new-tokens` (512), `--max-sessions` (1), `--kv-cache-ram`,
-`--prefill-chunk-tokens` (512), `--temperature`/`--top-p`/`--top-k`/
-`--repeat-penalty`/`--repeat-last-n`, `--cycle-detection` (desligado por padrão), `--no-thinking`, `--single-peer`,
-`--pkarr-peers`, `--public-addr`, `--relay-peers`, `--serve-relay`,
-`--no-default-relays`, `--no-discovery`. `--relay-peers` soma-se a
-`relay_peers` do `pom.json` (`merged_relay_peers`, config primeiro), como
-`--bootstrap` a `bootstrap_nodes`.
+**Flags (clap derive, `Args`):** `-p/--port` (42777), `-b/--bootstrap`,
+`--advertise-addr`, `--list-models`, `--ollama-url`, `--gateway-port` (8080),
+`--setup-bind`, `--cycle-detection` (desligado por padrão), `--pkarr-peers`,
+`--public-addr`, `--relay-peers`, `--serve-relay`, `--no-default-relays`,
+`--no-discovery`. `--relay-peers` soma-se a `relay_peers` do `pom.json`
+(`merged_relay_peers`, config primeiro), como `--bootstrap` a
+`bootstrap_nodes`. Não há flag de modelo, memória, faixa de camadas, amostragem
+nem porta de inferência: isso vem da implantação (`runtime::NodeConfig`) e do
+`pom.json` (`inference_port`, padrão 8181; `slot_save_path`).
 
 Não existe um teto absoluto adicional no `pom.json`. A capacidade de saída é
 derivada do `n_ctx` efetivo confirmado por cada runtime e agregada entre os
@@ -110,67 +107,55 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    endurecimento é escolhido no próprio setup. `--setup-bind <IP>` troca o IP
    (`127.0.0.1` mantém o setup só local). A flag não
    afeta o gateway configurado, que sempre liga em `[::]` dual-stack.
-3. Com config: valida a porta da interface e faz o preflight de disponibilidade
-   antes de carregar modelos; porta P2P/HTTP vêm da config; `inference_port` =
-   flag ou default 8181.
+3. Com config: valida a porta da interface e faz o preflight de
+   disponibilidade; portas P2P, HTTP e de inferência vêm da config.
 4. `--list-models` imprime perfis + modelos do Ollama e sai.
-5. **Sem `--model`** → `start_gateway_only`: P2P + todas as rotas no ar, sem
-   modelo; inspeciona o journal persistente da fatia e restaura somente
-   `Serving` ou `Idle`. Uma fatia `Pending` conta tentativas no disco e,
-   depois de `MAX_AUTOMATIC_ATTEMPTS=10`, sobe vazia com
-   `note_unloadable_slice`. É o caminho normal do produto. `--bootstrap`,
-   `--serve-relay`, `--relay-peers` e `--no-default-relays` valem aqui como no
-   caminho com `--model` - é o caminho de um relé dedicado, que não serve
-   modelo (`examples/relay-node/`). O registro pkarr sai com `r` igual a
-   `--serve-relay`.
-6. **Com `--model`**: exige `--memory` (a menos que `--inference-port` esteja
-   setado). Resolução do perfil, nesta ordem: `ModelProfile::find` (nome do
-   arquivo, depois nome cru) → Ollama `/api/tags` (perfil por tamanho real,
-   `from_ollama_model`) → `guess_from_name`.
-7. Identidade `Identity::load_or_create`; chave pkarr em `.pom.key`, ambas
-   resolvidas contra `config::project_root()`.
-8. Bootstrap = config + `--bootstrap`, ambos passando por
-   `config::normalize_peer_addr` em `merged_bootstrap_nodes`, que os dois
-   caminhos de arranque chamam. `--advertise-addr` vence a config.
-9. `Network::new` recebe a política TLS inicial e a catraca de admissão antes
-   de `start` (receive, gossip 5 s, medição de rotas 30 s) e
-   `bootstrap_discovery`. Rede privada prova `connection_key` pelo
-   `/handshake`; rede pública exige `cluster_id` e uma principal/concessão da
-   cadeia em `.pom-admin-trust.json`. Isso garante que a primeira sonda use o
-   mesmo esquema anunciado pela UI e que nenhum Announce não autenticado entre
-   em `peers`; a rede pública ainda conserva uma `connection_key` local para a
-   UI do administrador, mas ela não é compartilhada nem usada na admissão;
-   `--no-discovery` → `detach`.
-10. Faixa de camadas, por precedência: `--start-layer/--end-layer` → nome do
-    arquivo (`parse_layers_from_filename`, ex. `qwen_0_15.gguf`) →
-    `calculate_assignment` (gap-filling). O journal é lido por
-    `lastslice::inspect()` e só é removido por uma decisão explícita.
-11. Antes de restaurar ou aplicar um modelo, inicia o monitor térmico do
-    `NodeRuntime`; com `--inference-port`, monta `runtime::NodeConfig` e chama
-    `NodeRuntime::apply` (sobe o servidor de inferência Rust **em-processo** e
-    o supervisa). Uma GPU acima do limite remove a atribuição e o estado
-    `thermal` aguarda o cooldown configurado. O `NodeConfig` carregado pela
-    implantação leva também a reserva configurável do ajuste automático de
-    memória; a consulta de VRAM e a aplicação ficam em `inference/llm.rs`.
-    O gateway é spawnado antes desse `apply`, então lock, fit ou carga de
-    modelo não podem fechar a porta de controle.
-12. `GatewayState` + `start_gateway_with_ready` spawnado (todo nó serve
-    HTTP/UI). A rota de prévia de capacidade faz somente estimativa analítica, com quatro
-    admissões por processo e `429` imediato quando todas estão ocupadas.
-13. `ClusterLogs` inicia a captura limitada e as tasks best-effort; o histórico
-    usa `INFO` como nível mínimo por padrão, aceita `cluster_logs_min_level` no
-    `pom.json`, e o principal poda sete dias ou 500.000 linhas em lotes com
-    contenção não bloqueante. O `Discovery` mantém o behaviour request/response de logs separado do túnel
-    de inferência e só envia lotes ao principal. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
-    a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
-    UDP, com ou sem assignment) + diala `--pkarr-peers` + pkarr initial publish e republish a
-    cada 30 min. O Mainline DHT usado pelo pkarr mantém um ator em thread própria;
-    no Windows o timeout ocioso de leitura do socket aparece como WSAETIMEDOUT
-    (10060) a cada 50 ms na dependência, e `application_log_filter` oculta
-    somente esse aviso esperado. Ele não bloqueia o runtime da UI nem o
-    carregamento do modelo.
-14. Loop da TUI: limpa a tela a cada `--refresh`, imprime assignment, mapa de
-    camadas, peers, health, aviso de buraco anterior.
+5. `start_node`, o único caminho de um nó configurado:
+   - Identidade `Identity::load_or_create`; chave pkarr em `.pom.key`, ambas
+     resolvidas contra `config::project_root()`.
+   - Bootstrap = config + `--bootstrap`, ambos passando por
+     `config::normalize_peer_addr` em `merged_bootstrap_nodes`; relés =
+     `relay_peers` + `--relay-peers`. `--advertise-addr` vence
+     `--public-addr`, que vence a config.
+   - `start_p2p_stack`: `Network::new` recebe a política TLS inicial e a
+     catraca de admissão antes de `start` (receive, gossip 5 s, medição de
+     rotas 30 s) e `bootstrap_discovery`. Rede privada prova `connection_key`
+     pelo `/handshake`; rede pública exige `cluster_id` e uma
+     principal/concessão da cadeia em `.pom-admin-trust.json`. Isso garante que
+     a primeira sonda use o mesmo esquema anunciado pela UI e que nenhum
+     Announce não autenticado entre em `peers`; a rede pública ainda conserva
+     uma `connection_key` local para a UI do administrador, mas ela não é
+     compartilhada nem usada na admissão; `--no-discovery` → `detach`.
+     `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
+     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
+     UDP, com ou sem assignment).
+   - pkarr: publicação inicial com `r` igual a `--serve-relay` (é o caminho de
+     um relé dedicado, `examples/relay-node/`) e as chaves de `--pkarr-peers`
+     resolvidas e discadas em segundo plano. O Mainline DHT usado pelo pkarr
+     mantém um ator em thread própria; no Windows o timeout ocioso de leitura
+     do socket aparece como WSAETIMEDOUT (10060) a cada 50 ms na dependência,
+     e `application_log_filter` oculta somente esse aviso esperado.
+   - `ClusterLogs` inicia a captura limitada e as tasks best-effort; o
+     histórico usa `INFO` como nível mínimo por padrão, aceita
+     `cluster_logs_min_level` no `pom.json`, e o principal poda sete dias ou
+     500.000 linhas em lotes com contenção não bloqueante. O `Discovery`
+     mantém o behaviour request/response de logs separado do túnel de
+     inferência e só envia lotes ao principal.
+   - Monitor térmico do `NodeRuntime`, depois `GatewayState` +
+     `start_gateway_with_ready` spawnado (todo nó serve HTTP/UI). A rota de
+     prévia de capacidade faz somente estimativa analítica, com quatro
+     admissões por processo e `429` imediato quando todas estão ocupadas.
+   - Só com o gateway no ar inspeciona o journal persistente da fatia
+     (`lastslice::inspect()`) e restaura somente `Serving` ou `Idle`. Uma
+     fatia `Pending` conta tentativas no disco e, depois de
+     `MAX_AUTOMATIC_ATTEMPTS=10`, sobe vazia com `note_unloadable_slice`. A
+     implantação pela UI chama `NodeRuntime::apply` com o `NodeConfig` dela
+     (sobe o servidor de inferência Rust **em-processo** e o supervisa); o
+     `NodeConfig` leva também a reserva configurável do ajuste automático de
+     memória, e a consulta de VRAM e a aplicação ficam em `inference/llm.rs`.
+     Uma GPU acima do limite remove a atribuição e o estado `thermal` aguarda o
+     cooldown configurado. Lock, fit ou carga de modelo não podem fechar a
+     porta de controle.
 
 No macOS, `main` resolve a porta persistida do gateway, move o serviço Tokio
 para uma thread de fundo e entrega a thread principal ao item de status
@@ -204,9 +189,9 @@ O servidor QUIC mantém o bind em `[::]`, mas cria o `UdpSocket` com
 mesmo endpoint aceita IPv4 e IPv6 no Windows, Linux e macOS; o construtor de
 cliente do Quinn já aplica a mesma opção.
 
-`start_setup_mode` e `start_gateway_only` estão em `main.rs` (não num módulo
+`start_setup_mode` e `start_node` estão em `main.rs` (não num módulo
 separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do
-`--ollama-url` e a anuncia **sempre**, com ou sem `--gateway`.
+`--ollama-url` e a anuncia **sempre**.
 
 No Windows, o processo pai supervisiona o filho nativo: uma saída anormal
 relança o POM, mas `Sair do POM` retorna código zero e não relança.
@@ -217,14 +202,14 @@ automáticas de uma implantação problemática.
 
 - `network/` - P2P UDP + libp2p/pkarr. Ver `crates/node/src/network/AGENTS.md`.
 - `routing/` - planejador do pipeline. Ver `crates/node/src/routing/AGENTS.md`.
-- `utils/` - config, TUI, respawn, sysmon. Ver `crates/node/src/utils/AGENTS.md`.
+- `utils/` - config, respawn, sysmon. Ver `crates/node/src/utils/AGENTS.md`.
 - `models/` - perfis de modelo e catálogo de GGUFs: `model.rs`
-  (`ModelProfile`, `calculate_assignment`), `catalog.rs` (varredura de
+  (`ModelProfile`, `LayerAssignment`), `catalog.rs` (varredura de
   `model_dirs`; a varredura rápida publica raízes e arquivos sem calcular SHA-256
   de modelos inteiros, deixando a validação de `pom_id` para o enriquecimento),
   `gguf.rs` (leitor de cabeçalho/tensor table), `plan.rs`
   (fatiamento por orçamento/tamanho), `splitter.rs` (split e merge),
-  `memory.rs` (carregar camadas), `lastslice.rs` (fatia anotada com estado
+  `lastslice.rs` (fatia anotada com estado
   Pending/Serving), `ollama.rs` (`OllamaClient`), `provider.rs` (contrato
   agnóstico de provider) e `huggingface.rs` (`HuggingFaceProvider` HTTP
   nativo).

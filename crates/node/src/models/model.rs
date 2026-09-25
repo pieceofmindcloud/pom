@@ -88,22 +88,6 @@ impl ModelProfile {
         })
     }
 
-    /// Build a ModelProfile from an Ollama model's file size (best-effort estimate).
-    pub fn from_ollama_model(name: &str, size_bytes: u64) -> ModelProfile {
-        let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
-        let overhead_mb = size_mb * 0.10;
-        let usable_mb = size_mb - overhead_mb;
-        let total_layers = ((usable_mb / 220.0).round() as u32).clamp(8, 96);
-        let memory_per_layer_mb = usable_mb / total_layers as f64;
-        ModelProfile {
-            name: name.to_string(),
-            total_layers,
-            memory_per_layer_mb,
-            overhead_mb,
-            description: format!("Ollama model ({:.0}MB)", size_mb),
-        }
-    }
-
     /// Estimate a profile from the model name alone (no Ollama needed).
     /// Parses parameter counts like "8b", "70b", etc. from the name.
     pub fn guess_from_name(name: &str) -> ModelProfile {
@@ -155,9 +139,9 @@ pub struct LayerAssignment {
     pub model: String,
     /// A implantação de que este nó faz parte, quando ele veio de uma.
     ///
-    /// Vazio num nó configurado pela linha de comando e no que um peer de
-    /// versão anterior anuncia - e é justamente esse vazio que faz o
-    /// agrupamento cair de volta no rótulo do modelo. Ver `deployment.rs`.
+    /// Vazio no que um peer de versão anterior anuncia - e é justamente esse
+    /// vazio que faz o agrupamento cair de volta no rótulo do modelo. Ver
+    /// `deployment.rs`.
     #[serde(default)]
     pub deploy_id: String,
     pub total_layers: u32,
@@ -175,108 +159,5 @@ impl LayerAssignment {
 
     pub fn contains_layer(&self, layer: u32) -> bool {
         layer >= self.start_layer && layer <= self.end_layer
-    }
-}
-
-/// Decides how many layers fit in the given memory, and which layers to take
-/// given what's already covered by peers in the network.
-///
-/// `start_override` pins the starting layer instead of using the gap-filling
-/// algorithm — useful when you want explicit control over layer placement.
-pub fn calculate_assignment(
-    profile: &ModelProfile,
-    memory_mb: f64,
-    covered_layers: &[u32], // layers already claimed by other peers
-    start_override: Option<u32>,
-) -> LayerAssignment {
-    let usable_mb = memory_mb - profile.overhead_mb.min(memory_mb * 0.2);
-    let max_layers =
-        ((usable_mb / profile.memory_per_layer_mb).floor() as u32).min(profile.total_layers);
-
-    let start_layer = match start_override {
-        Some(s) => s.min(profile.total_layers - 1),
-        None => find_best_start(profile.total_layers, max_layers, covered_layers),
-    };
-    let end_layer = (start_layer + max_layers - 1).min(profile.total_layers - 1);
-    let actual_count = end_layer - start_layer + 1;
-
-    LayerAssignment {
-        deploy_id: String::new(),
-        model: profile.name.clone(),
-        total_layers: profile.total_layers,
-        start_layer,
-        end_layer,
-        layers_count: actual_count,
-        memory_used_mb: actual_count as f64 * profile.memory_per_layer_mb + profile.overhead_mb,
-        memory_allocated_mb: memory_mb,
-    }
-}
-
-fn find_best_start(total_layers: u32, want_layers: u32, covered: &[u32]) -> u32 {
-    if covered.is_empty() {
-        return 0;
-    }
-
-    // Try to find contiguous uncovered range
-    let mut best_start = 0u32;
-    let mut best_uncovered = 0u32;
-
-    for candidate_start in 0..total_layers {
-        let candidate_end = (candidate_start + want_layers - 1).min(total_layers - 1);
-        let range: Vec<u32> = (candidate_start..=candidate_end).collect();
-        let uncovered = range.iter().filter(|l| !covered.contains(l)).count() as u32;
-
-        if uncovered > best_uncovered {
-            best_uncovered = uncovered;
-            best_start = candidate_start;
-        }
-        if best_uncovered == want_layers {
-            break;
-        }
-    }
-
-    best_start
-}
-
-pub fn parse_memory(s: &str) -> anyhow::Result<f64> {
-    let s = s.trim().to_uppercase();
-    if let Some(n) = s.strip_suffix("GB") {
-        Ok(n.trim().parse::<f64>()? * 1024.0)
-    } else if let Some(n) = s.strip_suffix("MB") {
-        Ok(n.trim().parse::<f64>()?)
-    } else {
-        // assume GB if no unit
-        Ok(s.parse::<f64>()? * 1024.0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_gemma3_10gb() {
-        let profile = ModelProfile::find("gemma3").unwrap();
-        let assignment = calculate_assignment(&profile, 10.0 * 1024.0, &[], None);
-        println!("{:?}", assignment);
-        assert!(assignment.layers_count > 0);
-        assert!(assignment.layers_count <= profile.total_layers);
-    }
-
-    #[test]
-    fn test_gap_filling() {
-        let profile = ModelProfile::find("gemma3").unwrap();
-        let covered: Vec<u32> = (0..5).collect();
-        let assignment = calculate_assignment(&profile, 10.0 * 1024.0, &covered, None);
-        println!("Gap fill: {:?}", assignment);
-        assert!(assignment.start_layer >= 5 || assignment.end_layer >= 5);
-    }
-
-    #[test]
-    fn test_start_override() {
-        let profile = ModelProfile::find("gemma3").unwrap();
-        let assignment = calculate_assignment(&profile, 4.0 * 1024.0, &[], Some(10));
-        assert_eq!(assignment.start_layer, 10);
-        assert!(assignment.end_layer >= 10);
     }
 }

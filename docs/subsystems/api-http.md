@@ -12,8 +12,8 @@ também leva a reserva HTTP da pipeline; a proteção da administração é uma
 fronteira de rota aplicada no servidor.
 
 Portas, para situar: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000 (52777),
-gateway HTTP `--gateway-port` (8080), e o servidor de inferência
-`--inference-port` (8181, `inference/infer_server.rs`, um router separado que
+gateway HTTP `--gateway-port` (8080), e o servidor de inferência em
+`inference_port` do `pom.json` (8181, `inference/infer_server.rs`, um router separado que
 serve `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/health` - não
 passa por este gateway). O gateway também registra `/v1/link` para o retorno
 full-duplex do `remote-stream`; os dois listeners usam o mesmo enquadramento,
@@ -258,7 +258,7 @@ sem caminho de volta que não fosse recarregar na mão.
 
 As rotas da pipeline não entram nessa fronteira: `/api/generate`, `/generate`,
 `/v1/**`, `/health`, `/peers` e `/handshake`, além das rotas do servidor de
-inferência em `--inference-port`, continuam acessíveis por IPv4 e IPv6 para
+inferência em `inference_port`, continuam acessíveis por IPv4 e IPv6 para
 que o HTTP de reserva do túnel libp2p não seja interrompido. `GET /api/access`
 é a única exceção pública da administração, pois informa apenas o modo, a
 necessidade de senha e a porta para a tela decidir se deve mostrar a catraca.
@@ -639,7 +639,7 @@ acrescenta uma revogação com o `node_id` do operador autenticado e o horário.
 Uma segunda tentativa é idempotente e não cria outro evento; a chave nunca
 volta a autenticar.
 
-#### Snapshots de KV cache (`--slot-save-path`)
+#### Snapshots de KV cache (`slot_save_path`)
 
 `GET /admin/slots` devolve `{slot_persist_enabled, slot_count}` lidos do
 `/health` da porta de inferência **local** (vista rápida deste nó), mais

@@ -7,12 +7,13 @@ medidas em campo.
 ## Como as peças se encaixam
 
 - **Um processo por máquina.** O binário Rust sobe o servidor de inferência
-  embutido (`inference/infer_server.rs`) quando `--inference-port` é passado; o
+  embutido (`inference/infer_server.rs`) quando uma fatia é implantada; o
   modelo é carregado em-processo por `inference/llm.rs`. Não há processo Python -
   `old/python-inference/` é legado.
-- **As camadas saem do nome do arquivo.** `parse_layers_from_filename()` lê os
-  dois últimos campos separados por `_`: `qwen_0_15.gguf` → 0-15,
-  `qwen_16_31.gguf` → 16-31. Não é preciso `--start-layer`.
+- **O modelo e as camadas vêm da implantação.** O binário não aceita modelo,
+  faixa de camadas nem parâmetros de inferência pela linha de comando: a
+  interface planeja a faixa de cada peer e cada um extrai a própria fatia (ver
+  `implantacao.md`). Num reinício, a fatia volta pelo journal (`lastslice`).
 - **O nome do modelo tem que bater entre os peers.**
   `ModelProfile::guess_from_name()` reduz o nome do arquivo a um rótulo
   (qualquer nome contendo `qwen` vira `qwen35`). O planejador
@@ -21,22 +22,21 @@ medidas em campo.
 - **Portas:** UDP P2P `--port` (42777), QUIC de inferência UDP = P2P + 1000
   (43777), QUIC do gateway UDP = P2P + 2000 (44777), libp2p TCP = UDP + 10000 (52777),
   gateway HTTP `--gateway-port` (8080, servido por *todos* os nós), inference
-  server `--inference-port` (8181). Máquinas distintas podem usar os mesmos
-  números.
-- **Contexto por sessão:** `--n-ctx` é a janela completa de cada sessão.
-  `--max-sessions` (padrão 1) multiplica a capacidade total do cache KV, sem
-  reduzir a janela individual (`n_ctx_total = n_ctx * max_sessions`, em
+  server em `inference_port` do `pom.json` (8181). Máquinas distintas podem usar
+  os mesmos números.
+- **Contexto por sessão:** `n_ctx` da implantação é a janela completa de cada
+  sessão. `max_sessions` (padrão 1) multiplica a capacidade total do cache KV,
+  sem reduzir a janela individual (`n_ctx_total = n_ctx * max_sessions`, em
   `llm.rs`); o orçamento de prompt de cada requisição é `n_ctx` menos
-  `--max-new-tokens` (ver `inferencia.md`, "Limite de prompt").
+  `max_new_tokens` (ver `inferencia.md`, "Limite de prompt").
 - **Tipo do cache KV:** `cache_type_k` e `cache_type_v` ficam no `pom.json` de
   cada instalação e valem para todos os contextos daquela instalação. O padrão
   é `f16`; os tipos aceitos e a confirmação em `/health` estão em
   `inferencia.md`. Eles não são escolhas por máquina no deploy.
 - **Snapshots de KV cache:** o diretório onde cada peer grava e relê snapshots
   de KV, como o `--slot-save-path` do llama-server. Propriedade da máquina, não
-  do deploy. Três fontes, nesta precedência: a flag `--slot-save-path`, a
-  variável `POM_SLOT_SAVE_PATH` e o campo `slot_save_path` do `pom.json`. A env
-  var é por processo e não é persistida no `pom.json`. Ausente em todas desliga
+  do deploy. Duas fontes, nesta precedência: a variável `POM_SLOT_SAVE_PATH` e
+  o campo `slot_save_path` do `pom.json`. A env var é por processo e não é persistida no `pom.json`. Ausente em todas desliga
   o recurso e `POST /v1/session/slot` / `POST /admin/slots/{name}` respondem
   "não configurado". Ver `inferencia.md` §3.1.1 e `api-http.md`.
 - **Cache de prefixo persistente:** `slot_persist_prefix_cache` no `pom.json`
@@ -107,10 +107,9 @@ tabela final mostra as medianas de `fichas/chamada`, `generation_tok/s`,
 `p-prefill-aleatorio` usa 1200 palavras hexadecimais novas por chamada e
 limita a saída a 8 tokens, como o benchmark de referência.
 
-`--n-gpu-layers` (padrão 0) decide quantas camadas vão para a VRAM; sem a
+`n_gpu_layers` da implantação decide quantas camadas vão para a VRAM; sem a
 feature de build correta (`metal`/`cuda`) o modelo roda todo em CPU. Para
-conferir o offload, veja a VRAM durante o carregamento - a TUI mostra
-"Mem loaded" mas não discrimina GPU/CPU.
+conferir o offload, veja a VRAM durante o carregamento.
 
 ## Pegadinhas encontradas
 
@@ -127,8 +126,6 @@ conferir o offload, veja a VRAM durante o carregamento - a TUI mostra
   cluster. Zerar esse "não sei" foi o bug de 2026-08-10: o plano se dizia
   completo e todo `apply` morria em `NodeConfig::validate`, depois de `launch` já
   ter parado a inferência das máquinas alvo.
-- **A TUI limpa a tela a cada `--refresh` segundos.** Para ver logs, redirecione
-  para arquivo (`./old/scripts/run-p1.sh > /tmp/p1.out 2>&1`) e leia de lá.
 - **`pkill -f "target/release/pom"` por ssh mata o próprio shell do ssh** -
   o padrão casa com a linha de comando do `bash -c` remoto, e o ssh volta com
   exit 255 sem ter matado o peer. Use um padrão que não se auto-inclua, ou
@@ -162,9 +159,10 @@ B=/caminho/pom-b
 mkdir -p $B && cd $B
 for f in models apps; do ln -s ../pom/$f $f; done
 # a config nao e herdada: sem ela o no sobe em modo setup e nao carrega modelo.
-# copie a do peer A trocando gateway_port, p2p_port e bootstrap_nodes.
-POM_HOME=$B ../pom/target/release/pom --model ./models/qwen/qwen_16_31.gguf \
-    --port 42778 --bootstrap 127.0.0.1:42777 --gateway-port 8091 --inference-port 8182
+# copie a do peer A trocando gateway_port, p2p_port, inference_port e
+# bootstrap_nodes; a fatia de cada peer vem da implantacao pela interface.
+POM_HOME=$B ../pom/target/release/pom \
+    --port 42778 --bootstrap 127.0.0.1:42777 --gateway-port 8091
 ```
 
 A UI é lida do disco em `<POM_HOME>/apps/frontend/dist`, daí o symlink de
@@ -228,7 +226,7 @@ OPENCODE_CONFIG=/caminho/opencode.json opencode run --pure --agent curto "..."
 Números medidos: o OpenCode 1.18.21 manda ~2200 caracteres na chamada de título
 e ~54k no agente padrão, com `max_tokens: 32000`, ferramentas e
 `stream_options.include_usage`. Config que fez funcionar para o agente padrão:
-`--n-ctx 32768 --n-batch 3072 --max-new-tokens 256` → orçamento de 32768 menos
+`n_ctx` 32768, `n_batch` 3072 e `max_new_tokens` 256 na implantação → orçamento de 32768 menos
 256 tokens. Se o prompt excede o orçamento, `/v1/chat/completions` agora
 responde HTTP 413 antes do SSE; isso deixa o erro visível no OpenCode em vez de
 deixá-lo aguardando um evento de erro que não tem formato de chunk.

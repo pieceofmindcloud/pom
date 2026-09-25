@@ -331,8 +331,8 @@ pub struct Config {
     /// Diretório onde os snapshots de KV cache são gravados e lidos, como o
     /// `--slot-save-path` do llama-server. Propriedade da máquina, não da
     /// implantação: cada peer grava a fatia dele aqui. A variável de ambiente
-    /// `POM_SLOT_SAVE_PATH` e a flag `--slot-save-path` têm precedência sobre
-    /// este campo - use `slot_save_path_effective()`, nunca o campo cru.
+    /// `POM_SLOT_SAVE_PATH` tem precedência sobre este campo - use
+    /// `slot_save_path_effective()`, nunca o campo cru.
     /// Ausente/vazio em todas as fontes desliga o recurso e as rotas de
     /// snapshot respondem "não configurado".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -481,12 +481,9 @@ pub fn normalize_peer_addr(raw: &str) -> String {
 
 /// Port the local inference server listens on when the config does not name one.
 ///
-/// A node configured through the web UI never passes `--inference-port`, and
-/// without a port `apply` refused every model with "este nó subiu sem
-/// --inference-port" — the UI could configure nothing at all. Advertising it
-/// up front matches what `run-p1.sh`/`run-p2.sh` already do: the port is
-/// announced before the Python server exists, and the server is spawned when a
-/// slice is actually assigned.
+/// Every node advertises it from startup, before any slice is assigned:
+/// without a port `apply` refused every model and the UI could configure
+/// nothing at all. The server is spawned when a slice is actually assigned.
 pub const DEFAULT_INFERENCE_PORT: u16 = 8181;
 
 /// Directory `pom.json`, `models/` and `venv/` are resolved against.

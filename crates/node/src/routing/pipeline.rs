@@ -192,7 +192,7 @@ pub const CAP_FRAME_DTYPE_I4G128: &str = "inference/frame-v1-dtype-i4g128";
 /// loop and return generated tokens through bounded opportunistic batches.
 pub const CAP_REMOTE_TOKEN_STREAM: &str = "inference/remote-token-stream-v1";
 
-/// Advertised when this peer has a `--slot-save-path` configured and can save
+/// Advertised when this peer has a `slot_save_path` configured and can save
 /// or restore a session's KV cache to local disk via `POST /v1/session/slot`.
 /// A deployment snapshot is all-or-nothing: `gateway::snapshot_deployment`
 /// refuses unless every hop advertises this.

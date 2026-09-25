@@ -891,7 +891,7 @@ pub struct Network {
     /// Peers com sonda de admissão em andamento fora do laço do swarm (ver
     /// `admit_in_background`), para um anúncio a cada 5 s não empilhar sondas.
     pending_admissions: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Este nó tem `--slot-save-path` configurado e serve `POST
+    /// Este nó tem `slot_save_path` configurado e serve `POST
     /// /v1/session/slot`. Vira verdadeiro no `apply` de uma implantação e volta
     /// a falso ao parar; o gateway exige a cap de todos os hops antes de
     /// orquestrar um snapshot de implantação.
@@ -2454,23 +2454,6 @@ impl Network {
         if let Ok(mut pedidos) = self.rediscovery.write() {
             pedidos.remove(node_id);
         }
-    }
-
-    /// Get all covered layers in the network (by other peers)
-    pub async fn get_covered_layers(&self, model: &str) -> Vec<u32> {
-        let peers = self.peers.read().await;
-        let mut covered = Vec::new();
-        for peer in peers.values() {
-            if peer.is_alive() && peer.model == model {
-                for layer in peer.start_layer..=peer.end_layer {
-                    if !covered.contains(&layer) {
-                        covered.push(layer);
-                    }
-                }
-            }
-        }
-        covered.sort();
-        covered
     }
 
     /// Start background tasks: gossip, heartbeat, receive loop

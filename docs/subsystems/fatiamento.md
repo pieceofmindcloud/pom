@@ -565,12 +565,8 @@ contador de memória e morre com o processo). Reprodução E2E em
 ## 7. Estimativa de memória e perfis
 
 `model.rs` tem os perfis embutidos (`ModelProfile { name, total_layers,
-memory_per_layer_mb, overhead_mb, description }`), `from_ollama_model` para
-perfis por tamanho de arquivo real, e `guess_from_name` como último recurso
-(ver defeitos abaixo). `memory.rs` carrega a faixa de camadas para a RAM com três
-estratégias em ordem (GGUF-aware por offsets reais, proporcional por byte,
-`vec![0]` como pior caso), tocando cada página 4K para trazer a faixa para a
-RAM física.
+memory_per_layer_mb, overhead_mb, description }`), listados por
+`--list-models`, e `guess_from_name` como último recurso (ver defeitos abaixo).
 
 ## 8. Rotas
 

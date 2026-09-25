@@ -888,6 +888,9 @@ pub struct Network {
     /// reais sempre a configuram antes de iniciar a Network.
     admission: Option<Arc<PeerAdmission>>,
     admission_cache: std::sync::RwLock<HashMap<String, AdmissionCacheEntry>>,
+    /// Peers com sonda de admissão em andamento fora do laço do swarm (ver
+    /// `admit_in_background`), para um anúncio a cada 5 s não empilhar sondas.
+    pending_admissions: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Este nó tem `--slot-save-path` configurado e serve `POST
     /// /v1/session/slot`. Vira verdadeiro no `apply` de uma implantação e volta
     /// a falso ao parar; o gateway exige a cap de todos os hops antes de
@@ -1338,6 +1341,7 @@ impl Network {
             batching_ready: Arc::new(AtomicBool::new(false)),
             admission: None,
             admission_cache: std::sync::RwLock::new(HashMap::new()),
+            pending_admissions: std::sync::Mutex::new(std::collections::HashSet::new()),
             slot_persist_ready: Arc::new(AtomicBool::new(false)),
             tls: Arc::new(AtomicBool::new(false)),
             tls_probe: std::sync::RwLock::new(None),
@@ -3170,32 +3174,14 @@ impl Network {
     /// compartilhada; concluir a assinatura do nonce seria uma prova de
     /// identidade adicional, não necessária para a admissão privada atual.
     pub(crate) async fn admit_peer(&self, peer: &PeerInfo) -> bool {
+        if let Some(allowed) = self.admission_without_probe(peer).await {
+            return allowed;
+        }
         let Some(admission) = self.admission.as_ref() else {
             return true;
         };
-        let (connection_key, is_public_network, access_policy) = {
-            let config = admission.auth.read().await;
-            (
-                config.connection_key.clone(),
-                config.network.visibility == crate::config::NetworkVisibility::Public,
-                config.network.access_policy,
-            )
-        };
-        if is_public_network {
-            return Self::public_peer_is_admitted(peer, admission, access_policy);
-        }
-        if connection_key.is_empty() {
-            return false;
-        }
-
+        let connection_key = admission.auth.read().await.connection_key.clone();
         let cache_key = self.admission_cache_key(peer, &connection_key);
-        if let Ok(cache) = self.admission_cache.read() {
-            if let Some(entry) = cache.get(&cache_key) {
-                if entry.expires_at > Instant::now() {
-                    return entry.allowed;
-                }
-            }
-        }
         let allowed = self.private_peer_is_admitted(peer, &connection_key).await;
         if let Ok(mut cache) = self.admission_cache.write() {
             cache.insert(
@@ -3212,6 +3198,73 @@ impl Network {
             );
         }
         allowed
+    }
+
+    /// O que `admit_peer` responde sem abrir conexão: a rede pública e a chave
+    /// vazia se decidem localmente, e a rede privada pelo cache. `None` quando
+    /// a resposta depende da sonda `/handshake`.
+    pub(crate) async fn admission_without_probe(&self, peer: &PeerInfo) -> Option<bool> {
+        let Some(admission) = self.admission.as_ref() else {
+            return Some(true);
+        };
+        let (connection_key, is_public_network, access_policy) = {
+            let config = admission.auth.read().await;
+            (
+                config.connection_key.clone(),
+                config.network.visibility == crate::config::NetworkVisibility::Public,
+                config.network.access_policy,
+            )
+        };
+        if is_public_network {
+            return Some(Self::public_peer_is_admitted(
+                peer,
+                admission,
+                access_policy,
+            ));
+        }
+        if connection_key.is_empty() {
+            return Some(false);
+        }
+        let cache_key = self.admission_cache_key(peer, &connection_key);
+        let cache = self.admission_cache.read().ok()?;
+        cache
+            .get(&cache_key)
+            .filter(|entry| entry.expires_at > Instant::now())
+            .map(|entry| entry.allowed)
+    }
+
+    /// Roda a sonda de admissão numa tarefa própria e só aquece o cache: o
+    /// próximo anúncio do peer (no máximo 5 s depois) encontra o veredito e
+    /// segue o caminho normal de `discovery.rs`.
+    ///
+    /// Existe por causa do laço do swarm. A sonda cai, por último, no túnel
+    /// libp2p, e o pedido do túnel é atendido por esse mesmo laço. Aguardada
+    /// dentro dele, a sonda esperava por si mesma até o `ADMISSION_TIMEOUT` e
+    /// falhava sempre: um peer que só o relé alcança era admitido uma vez
+    /// enquanto alguma rota direta funcionava, e saía da tabela (`Removed
+    /// timed-out peers`) quando o cache vencia. As sondas diretas, 2 s por
+    /// endereço, também paravam o swarm inteiro enquanto esperavam.
+    pub(crate) fn admit_in_background(self: &Arc<Self>, peer: PeerInfo) {
+        match self.pending_admissions.lock() {
+            Ok(mut pending) => {
+                if !pending.insert(peer.node_id.clone()) {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+        let network = Arc::clone(self);
+        tokio::spawn(async move {
+            let allowed = network.admit_peer(&peer).await;
+            if let Ok(mut pending) = network.pending_admissions.lock() {
+                pending.remove(&peer.node_id);
+            }
+            debug!(
+                "admissão de {} concluída fora do swarm: {}",
+                short(&peer.node_id),
+                if allowed { "admitido" } else { "recusado" }
+            );
+        });
     }
 
     /// A rede pública tem uma porta de descoberta aberta, mas isso não é uma
@@ -4729,6 +4782,95 @@ mod tests {
         );
         valid.insert_peer(admission_peer(gateway_port)).await;
         assert_eq!(valid.peer_count().await, 1);
+
+        server.abort();
+    }
+
+    /// Sem veredito no cache a resposta é `None`, sem sonda: é o que o laço do
+    /// swarm consulta, e ali uma sonda esperaria pelo próprio laço (ver
+    /// `admit_in_background`).
+    #[tokio::test]
+    async fn a_cache_miss_is_answered_without_probing() {
+        let identity = crate::identity::Identity::generate();
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config("correct", crate::config::NetworkVisibility::Private),
+            Arc::new(crate::admin_trust::AdminTrust::empty()),
+        );
+        // Porta 1: nada escuta ali, a sonda direta falha.
+        let peer = admission_peer(1);
+
+        assert_eq!(network.admission_without_probe(&peer).await, None);
+        assert!(!network.admit_peer(&peer).await);
+        assert_eq!(network.admission_without_probe(&peer).await, Some(false));
+    }
+
+    /// A sonda em segundo plano só aquece o cache, uma vez por peer, e não
+    /// mexe na tabela: quem insere é o próximo anúncio.
+    #[tokio::test]
+    async fn background_admission_warms_the_cache_once() {
+        let remote = admission_config("correct", crate::config::NetworkVisibility::Private);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gateway_port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/handshake",
+                axum::routing::post(crate::session::handle_handshake),
+            )
+            .with_state(remote);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let identity = crate::identity::Identity::generate();
+        let network = Arc::new(
+            Network::testkit(
+                identity.node_id.0.clone(),
+                identity.public_key_hex(),
+                vec![],
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config("correct", crate::config::NetworkVisibility::Private),
+                Arc::new(crate::admin_trust::AdminTrust::empty()),
+            ),
+        );
+        let peer = admission_peer(gateway_port);
+
+        network.admit_in_background(peer.clone());
+        network.admit_in_background(peer.clone());
+        assert_eq!(network.pending_admissions.lock().unwrap().len(), 1);
+
+        let verdict = tokio::time::timeout(StdDuration::from_secs(5), async {
+            loop {
+                if let Some(allowed) = network.admission_without_probe(&peer).await {
+                    return allowed;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a sonda em segundo plano deve concluir");
+        assert!(verdict);
+        assert_eq!(network.peer_count().await, 0);
+        tokio::time::timeout(StdDuration::from_secs(1), async {
+            while !network.pending_admissions.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a marca de sonda pendente deve sair");
 
         server.abort();
     }

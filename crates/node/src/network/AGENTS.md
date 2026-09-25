@@ -70,7 +70,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
   logs do cluster, auditoria de requisições e Chat da rede. A auditoria recebida
   entra numa fila limitada fora do loop do swarm e segue para o plugin ativo ou
   o fallback local. Põe peers no `Network` somente
-  depois da catraca de admissão, e reidrata no swarm os endereços dos peers
+  depois da catraca de admissão, que no gossipsub nunca sonda dentro do laço
+  do swarm (`admission_without_probe`, e sem veredito `admit_in_background`):
+  a sonda cai no túnel, que esse laço atende. Reidrata no swarm os endereços dos peers
   admitidos antes de enviar pelo túnel quando o anúncio chegou antes do
   registro de rota. A assinatura nativa do gossipsub prova a origem do
   transporte, mas não substitui a prova de pertencimento do enxame.

@@ -117,7 +117,6 @@ o frontend é compilado em estágio independente e sua cópia para o runtime é 
 última camada; uma edição só da UI não invalida o backend.
 
 ```bash
-./target/release/pom --list-models
 ./target/release/pom                       # sem args: usa pom.json
 ./target/release/pom --port 42778 --gateway-port 8091   # segundo nó local
 ```

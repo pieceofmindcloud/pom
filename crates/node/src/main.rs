@@ -224,7 +224,6 @@ use clap::Parser;
 use clap::Subcommand;
 use discovery::Discovery;
 use gateway::GatewayState;
-use model::ModelProfile;
 use network::Network;
 use ollama::OllamaClient;
 #[cfg(windows)]
@@ -303,10 +302,6 @@ struct Args {
     /// a temporary IPv6 that rotates.
     #[arg(long, default_value = "")]
     advertise_addr: String,
-
-    /// List built-in model profiles and Ollama models, then exit
-    #[arg(long)]
-    list_models: bool,
 
     /// Ollama base URL (model resolution, /health, e a porta anunciada aos peers)
     #[arg(long, default_value = "http://localhost:11434")]
@@ -685,39 +680,6 @@ async fn async_main(
         }
     }
     let gateway_port = app_config.gateway_port;
-
-    // ── list-models ─────────────────────────────────────────────────────────
-    if args.list_models {
-        println!("\nBuilt-in model profiles:\n");
-        for m in ModelProfile::known_models() {
-            println!(
-                "  {:20} {:5} layers  {:.0}MB/layer  {}",
-                m.name, m.total_layers, m.memory_per_layer_mb, m.description
-            );
-        }
-
-        println!("\nOllama models at {}:\n", args.ollama_url);
-        let ollama = OllamaClient::new(&args.ollama_url);
-        match ollama.list_models().await {
-            Ok(models) if models.is_empty() => {
-                println!("  (no models found — is Ollama running?)");
-            }
-            Ok(models) => {
-                for m in &models {
-                    let size_mb = m.size as f64 / (1024.0 * 1024.0);
-                    let profile_tag = if ModelProfile::find(&m.name).is_some() {
-                        " ← built-in profile"
-                    } else {
-                        ""
-                    };
-                    println!("  {:45} {:>8.0}MB{}", m.name, size_mb, profile_tag);
-                }
-            }
-            Err(e) => println!("  (could not reach Ollama: {})", e),
-        }
-        println!();
-        return Ok(());
-    }
 
     crate::gateway::ensure_gateway_port_available(app_config.gateway_port, None).await?;
 

@@ -564,9 +564,9 @@ contador de memória e morre com o processo). Reprodução E2E em
 
 ## 7. Estimativa de memória e perfis
 
-`model.rs` tem os perfis embutidos (`ModelProfile { name, total_layers,
-memory_per_layer_mb, overhead_mb, description }`), listados por
-`--list-models`, e `guess_from_name` como último recurso (ver defeitos abaixo).
+`model.rs` tem `ModelProfile { name, total_layers, memory_per_layer_mb,
+overhead_mb, description }` e `guess_from_name`, que estima o perfil pelo nome
+do arquivo quando a fatia não traz a metadata (ver defeitos abaixo).
 
 ## 8. Rotas
 

@@ -78,7 +78,7 @@ fundo. **O modelo nunca vem da linha de comando**: ele é implantado pela
 interface, e num reinício volta pelo journal da fatia (`lastslice`).
 
 **Flags (clap derive, `Args`):** `-p/--port` (42777), `-b/--bootstrap`,
-`--advertise-addr`, `--list-models`, `--ollama-url`, `--gateway-port` (8080),
+`--advertise-addr`, `--ollama-url`, `--gateway-port` (8080),
 `--setup-bind`, `--cycle-detection` (desligado por padrão), `--pkarr-peers`,
 `--public-addr`, `--relay-peers`, `--serve-relay`, `--no-default-relays`,
 `--no-discovery`. `--relay-peers` soma-se a `relay_peers` do `pom.json`
@@ -109,8 +109,7 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    afeta o gateway configurado, que sempre liga em `[::]` dual-stack.
 3. Com config: valida a porta da interface e faz o preflight de
    disponibilidade; portas P2P, HTTP e de inferência vêm da config.
-4. `--list-models` imprime perfis + modelos do Ollama e sai.
-5. `start_node`, o único caminho de um nó configurado:
+4. `start_node`, o único caminho de um nó configurado:
    - Identidade `Identity::load_or_create`; chave pkarr em `.pom.key`, ambas
      resolvidas contra `config::project_root()`.
    - Bootstrap = config + `--bootstrap`, ambos passando por
@@ -170,7 +169,7 @@ serviço Tokio de longa duração ainda não tem um canal de cancelamento
 cooperativo. Quando o serviço termina por conta própria, a ponte apenas para o
 laço de eventos e o acorda; ela não encerra o processo, porque o `join()` Rust
 precisa propagar a mensagem e o código de saída de falhas como `pom.json`
-inválido. Isso mantém `--list-models` saindo sozinho sem engolir erros. Fora do macOS o ponto de
+inválido. Isso faz um arranque que falha sair sozinho sem engolir o erro. Fora do macOS o ponto de
 entrada continua um CLI Tokio normal, sem nenhuma dependência de interface
 gráfica.
 

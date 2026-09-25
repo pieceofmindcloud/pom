@@ -87,6 +87,16 @@ interface, e num reinício volta pelo journal da fatia (`lastslice`).
 nem porta de inferência: isso vem da implantação (`runtime::NodeConfig`) e do
 `pom.json` (`inference_port`, padrão 8181; `slot_save_path`).
 
+**Toda flag tem variável de ambiente** (`ARG_ENV`, nome por
+`brand::env_var`: `--gateway-port` → `POM_GATEWAY_PORT`), aplicada por
+`cli_command` com o builder do clap, porque o derive só aceita literal. A flag
+vence a variável, que vence o padrão; as booleanas usam `BoolishValueParser`.
+A variável vence o `pom.json`: `apply_env_overrides` troca `p2p_port` e
+`gateway_port` gravados quando `parse_args` viu o valor vir do ambiente
+(`ValueSource::EnvVariable`). Na linha de comando essas duas continuam cedendo à
+config - só valem no modo setup, e é isso que mantém uma troca de porta feita
+pela interface depois do respawn, que repete o argv.
+
 Não existe um teto absoluto adicional no `pom.json`. A capacidade de saída é
 derivada do `n_ctx` efetivo confirmado por cada runtime e agregada entre os
 peers vivos; `max_new_tokens` continua sendo apenas o tamanho de uma perna.

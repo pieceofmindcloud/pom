@@ -360,6 +360,82 @@ struct Args {
     /// Configurações › Rede brings it into the network when you want it there.
     #[arg(long)]
     no_discovery: bool,
+
+    /// `--port` veio da variável de ambiente, não da linha de comando.
+    /// Preenchido por `parse_args`; ver `apply_env_overrides`.
+    #[arg(skip)]
+    port_from_env: bool,
+
+    /// `--gateway-port` veio da variável de ambiente. Ver `port_from_env`.
+    #[arg(skip)]
+    gateway_port_from_env: bool,
+}
+
+/// Variável de ambiente de cada opção da linha de comando, pelo id do clap.
+///
+/// Toda opção tem a sua: a linha de comando vence a variável, que vence o
+/// padrão (a ordem do clap). O nome sai de `brand::env_var`, por isso não pode
+/// ir no atributo `env` do derive, que exige literal.
+const ARG_ENV: &[(&str, &str)] = &[
+    ("port", "PORT"),
+    ("bootstrap", "BOOTSTRAP"),
+    ("advertise_addr", "ADVERTISE_ADDR"),
+    ("ollama_url", "OLLAMA_URL"),
+    ("gateway_port", "GATEWAY_PORT"),
+    ("setup_bind", "SETUP_BIND"),
+    ("cycle_detection", "CYCLE_DETECTION"),
+    ("pkarr_peers", "PKARR_PEERS"),
+    ("public_addr", "PUBLIC_ADDR"),
+    ("relay_peers", "RELAY_PEERS"),
+    ("serve_relay", "SERVE_RELAY"),
+    ("no_default_relays", "NO_DEFAULT_RELAYS"),
+    ("no_discovery", "NO_DISCOVERY"),
+];
+
+/// A linha de comando com as variáveis de `ARG_ENV`. As flags booleanas leem a
+/// variável como `1/0`, `true/false`, `yes/no` ou `on/off`, como as outras
+/// variáveis booleanas do projeto.
+fn cli_command() -> clap::Command {
+    let mut command = <Args as clap::CommandFactory>::command();
+    for (id, suffix) in ARG_ENV {
+        command = command.mut_arg(*id, |arg| {
+            let arg = arg.env(brand::env_var(suffix));
+            if matches!(arg.get_action(), clap::ArgAction::SetTrue) {
+                arg.value_parser(clap::builder::BoolishValueParser::new())
+            } else {
+                arg
+            }
+        });
+    }
+    command
+}
+
+fn parse_args() -> Args {
+    let matches = cli_command().get_matches();
+    let from_env =
+        |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::EnvVariable);
+    let mut args = <Args as clap::FromArgMatches>::from_arg_matches(&matches)
+        .unwrap_or_else(|error| error.exit());
+    args.port_from_env = from_env("port");
+    args.gateway_port_from_env = from_env("gateway_port");
+    args
+}
+
+/// A variável de ambiente vence o `pom.json`.
+///
+/// Nas outras opções isso já sai da precedência normal, porque a linha de
+/// comando vence ou se soma à config. `--port` e `--gateway-port` são a
+/// exceção: na linha de comando elas só valem para o modo setup, e a porta
+/// gravada vence - é o que mantém uma troca de porta feita pela interface
+/// depois do respawn, que repete o argv. Vindas do ambiente, elas vencem a
+/// config.
+fn apply_env_overrides(config: &mut config::Config, args: &Args) {
+    if args.port_from_env {
+        config.p2p_port = args.port;
+    }
+    if args.gateway_port_from_env {
+        config.gateway_port = args.gateway_port;
+    }
 }
 
 /// O nó é um serviço Tokio, e a thread principal é dele em toda plataforma
@@ -407,7 +483,7 @@ fn main() -> Result<()> {
     sysmon::set_disk_root(config::project_root());
     tp::install_probe();
 
-    let args = Args::parse();
+    let args = parse_args();
     #[cfg(windows)]
     if let Some(port) = args.windows_firewall_helper {
         return windows_firewall::run_elevated_helper(port);
@@ -582,6 +658,9 @@ fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn configured_gateway_port(args: &Args) -> u16 {
+    if args.gateway_port_from_env {
+        return args.gateway_port;
+    }
     let persisted = config::Config::load()
         .ok()
         .map(|config| config.gateway_port);
@@ -607,11 +686,14 @@ async fn async_main(
     // serve only the setup page. The latter keeps pom.json as a local
     // preference shell, so checking only for file existence would boot the old
     // network again.
-    let existing_config = if config::Config::exists() {
+    let mut existing_config = if config::Config::exists() {
         Some(config::Config::load()?)
     } else {
         None
     };
+    if let Some(config) = existing_config.as_mut() {
+        apply_env_overrides(config, &args);
+    }
     if existing_config
         .as_ref()
         .is_none_or(|config| config.setup_pending)
@@ -1733,6 +1815,49 @@ mod main_tests {
             merged_relay_peers(&["pk:relay-a".into()], ""),
             vec!["pk:relay-a"]
         );
+    }
+
+    /// Toda opção visível da linha de comando tem variável de ambiente, com o
+    /// nome derivado da marca e sem repetir. `mut_arg` com id errado entra em
+    /// pânico: montar o comando aqui também prova que a tabela bate com `Args`.
+    #[test]
+    fn every_cli_option_has_its_env_var() {
+        let command = cli_command();
+        let mut names = std::collections::HashSet::new();
+        for arg in command.get_arguments() {
+            if arg.get_long().is_none() || arg.is_hide_set() {
+                continue;
+            }
+            let id = arg.get_id().as_str();
+            let (_, suffix) = ARG_ENV
+                .iter()
+                .find(|(arg_id, _)| *arg_id == id)
+                .unwrap_or_else(|| panic!("--{id} sem variável de ambiente em ARG_ENV"));
+            let env = arg.get_env().expect("variável aplicada por cli_command");
+            assert_eq!(env.to_str(), Some(brand::env_var(suffix).as_str()));
+            assert!(names.insert(env.to_owned()), "variável repetida: {env:?}");
+        }
+    }
+
+    /// As portas vindas do ambiente vencem o `pom.json`; da linha de comando,
+    /// não - a gravada continua valendo.
+    #[test]
+    fn env_ports_override_the_config_and_cli_ports_do_not() {
+        let config: config::Config =
+            serde_json::from_str(r#"{"profile":"node","p2p_port":42777,"gateway_port":8080}"#)
+                .unwrap();
+
+        let mut from_cli = config.clone();
+        let cli = Args::parse_from(["pom", "--port", "43000", "--gateway-port", "9000"]);
+        apply_env_overrides(&mut from_cli, &cli);
+        assert_eq!((from_cli.p2p_port, from_cli.gateway_port), (42777, 8080));
+
+        let mut from_env = config;
+        let mut env = cli;
+        env.port_from_env = true;
+        env.gateway_port_from_env = true;
+        apply_env_overrides(&mut from_env, &env);
+        assert_eq!((from_env.p2p_port, from_env.gateway_port), (43000, 9000));
     }
 
     #[test]

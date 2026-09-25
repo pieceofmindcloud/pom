@@ -668,6 +668,7 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | Variável | Efeito |
 |---|---|
 | `POM_HOME` | Resolução de `project_root()` em primeiro lugar: config, `models/`, `venv/`, UI. Sem ela: cwd que parece o projeto, depois subir do diretório do executável. Dois nós na mesma máquina precisam de casas distintas (identidade `node_id` também mora no project root). |
+| `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_SETUP_BIND`, `POM_CYCLE_DETECTION`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY` | Uma por opção da linha de comando (`--port`, `--bootstrap`, ...; tabela `ARG_ENV` em `main.rs`). A flag vence a variável, que vence o padrão; as booleanas aceitam `1/0`, `true/false`, `yes/no`, `on/off`. A variável vence o `pom.json`: `POM_PORT` e `POM_GATEWAY_PORT` substituem a porta gravada, ao contrário de `--port`/`--gateway-port`, que só valem no modo setup; `POM_BOOTSTRAP` e `POM_RELAY_PEERS` se somam às listas da config, como as flags. |
 | `POM_CONFIG` | Caminho do `pom.json` (padrão `<project_root>/pom.json`). |
 | `POM_DB_DIR` | Diretório de `pom.db` e seus arquivos WAL/SHM. Se ausente ou vazio, usa `<project_root>`; o diretório é criado no arranque. |
 | `POM_DEV` | O Compose comum envia `1` a todos os serviços. O código deste checkout não lê essa variável diretamente. |

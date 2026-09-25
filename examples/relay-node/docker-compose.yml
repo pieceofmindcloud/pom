@@ -1,0 +1,65 @@
+# Relay-only node: a POM node on a public address that serves no model and is
+# not a participant of your network. It only helps nodes behind NAT reach each
+# other: they reserve a slot on it, connect to each other through it, and the
+# connection is upgraded to a direct one by hole punching (DCuTR) when the NATs
+# allow it. Traffic stays relayed when they don't.
+#
+# ── Image ────────────────────────────────────────────────────────────────────
+# Build it from the repository root with scripts/build-docker.sh, which tags
+# `pom:latest`. The relay needs no GPU; the same image runs on a CPU-only host.
+#
+# ── First start ──────────────────────────────────────────────────────────────
+# With no pom.json in ./data the node starts in setup mode, where libp2p does
+# not run. Open http://<relay-public-ip>:8080/ once and create a standalone
+# network with its own connection key, NOT your cluster's key: the relay must
+# not show up as a participant of your network. Deploy no model on it.
+#
+# ── Ports (open them in the host/cloud firewall) ─────────────────────────────
+# With the default P2P port 42777:
+#   42777/udp  UDP discovery - NAT'd nodes use this host as --bootstrap
+#   52777/tcp  libp2p over TCP  (P2P port + 10000): reservations and circuits
+#   52777/udp  libp2p over QUIC (P2P port + 10000): what hole punching uses
+#   8080/tcp   web UI - only needed for the first setup; close it afterwards
+#              or restrict it to your own address.
+# If you change p2p_port in the relay's pom.json, shift all three accordingly.
+#
+# ── The NAT'd nodes (admin and the others) ───────────────────────────────────
+# Point them at this relay with `--bootstrap <relay-public-ip>:42777` or
+# `bootstrap_nodes: ["<relay-public-ip>:42777"]` in their pom.json. They need
+# no --relay-peers: a node requests a reservation from every connected peer
+# that offers relaying. Do not set their advertise_addr to a LAN address: with
+# advertise_addr set, a node announces only that one address.
+#
+# Usage:
+#   RELAY_PUBLIC_IP=203.0.113.10 docker compose up -d
+# An IPv6 relay needs the brackets, or the port cannot be told apart:
+#   RELAY_PUBLIC_IP='[2001:db8::10]' docker compose up -d
+services:
+  relay:
+    image: pom:latest
+    container_name: pom-relay
+    # Host networking keeps the observed and announced addresses equal to the
+    # host's, which is what the NAT'd nodes must dial. With a bridge network,
+    # replace it with the `ports:` block below.
+    network_mode: host
+    # ports:
+    #   - "42777:42777/udp"
+    #   - "52777:52777/tcp"
+    #   - "52777:52777/udp"
+    #   - "8080:8080/tcp"
+    restart: unless-stopped
+    command:
+      - --serve-relay
+      # HOST:PORT, where PORT is the UDP P2P port; libp2p uses PORT + 10000.
+      - --public-addr
+      - ${RELAY_PUBLIC_IP:?set RELAY_PUBLIC_IP to this host's public address}:42777
+    environment:
+      POM_HOME: /data
+      POM_UI_DIST: /app/apps/frontend/dist
+      POM_PLUGIN_HOST: /usr/local/bin/pom-plugin-host
+      POM_BIN: /usr/local/bin/pom
+    volumes:
+      # pom.json and the node identity keys (.pom-node.key, .pom.key) live
+      # here. Keep this directory: deleting the keys makes the relay a new
+      # peer with a new PeerId.
+      - ./data:/data

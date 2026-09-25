@@ -116,10 +116,11 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
    modelo; inspeciona o journal persistente da fatia e restaura somente
    `Serving` ou `Idle`. Uma fatia `Pending` conta tentativas no disco e,
    depois de `MAX_AUTOMATIC_ATTEMPTS=10`, sobe vazia com
-   `note_unloadable_slice`. É o caminho normal do produto. O flag
-   `--no-default-relays` também é respeitado neste caminho ao montar a rede,
-   evitando que um gateway local de
-   teste disque relays públicos por engano.
+   `note_unloadable_slice`. É o caminho normal do produto. `--bootstrap`,
+   `--serve-relay`, `--relay-peers` e `--no-default-relays` valem aqui como no
+   caminho com `--model` - é o caminho de um relé dedicado, que não serve
+   modelo (`examples/relay-node/`). O registro pkarr sai com `r` igual a
+   `--serve-relay`.
 6. **Com `--model`**: exige `--memory` (a menos que `--inference-port` esteja
    setado). Resolução do perfil, nesta ordem: `ModelProfile::find` (nome do
    arquivo, depois nome cru) → Ollama `/api/tags` (perfil por tamanho real,
@@ -127,7 +128,8 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
 7. Identidade `Identity::load_or_create`; chave pkarr em `.pom.key`, ambas
    resolvidas contra `config::project_root()`.
 8. Bootstrap = config + `--bootstrap`, ambos passando por
-   `config::normalize_peer_addr`. `--advertise-addr` vence a config.
+   `config::normalize_peer_addr` em `merged_bootstrap_nodes`, que os dois
+   caminhos de arranque chamam. `--advertise-addr` vence a config.
 9. `Network::new` recebe a política TLS inicial e a catraca de admissão antes
    de `start` (receive, gossip 5 s, medição de rotas 30 s) e
    `bootstrap_discovery`. Rede privada prova `connection_key` pelo

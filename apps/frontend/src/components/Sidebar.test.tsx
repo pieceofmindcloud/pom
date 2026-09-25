@@ -64,6 +64,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("complementary").className).toContain("w-[68px]");
     const navigation = screen.getByRole("navigation");
     expect(navigation.className).toContain("overflow-visible");
+    expect(navigation.className).toContain("overscroll-y-contain");
     expect(navigation.className).not.toContain("overflow-y-auto");
     expect(screen.getByRole("button", { name: "Modelos" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Fatiar modelos" })).toBeTruthy();

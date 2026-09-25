@@ -83,9 +83,12 @@ Per-file list:
   mesmo renderer Markdown compartilhado pelo Chat.
 - `Plugins.tsx` - rota `/plugins`. Cruza o catálogo público de
   `https://license.pieceofmind.cloud/v1/plugins` com o estado local de
-  `GET /api/ui/plugins`, usando `code` como identidade. O cliente público fica
-  em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita plugins com
-  release compatível ou uma origem GitHub pública canônica; dados de imagem incompletos viram
+  `GET /api/ui/plugins`, usando `code` como identidade. A lista tem um
+  contêiner de rolagem próprio com `overscroll-y-contain`, para a rolagem no
+  limite dos plugins não deslocar o restante da interface. O cliente público
+  fica em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita plugins
+  com release compatível ou uma origem GitHub pública canônica; dados de imagem
+  incompletos viram
   placeholders, e até quatro screenshots abrem em lightbox com Escape e foco
   restaurado. Descrições usam português brasileiro quando disponível e têm
   fallback para inglês. Validade, plugins concedidos, candidatos de ativação e

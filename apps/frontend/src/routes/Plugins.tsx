@@ -916,7 +916,7 @@ export function Plugins() {
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
       <FullBleedHeader title={t("plugins.title")} subtitle={t("plugins.subtitle")} />
 
-      <div className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5">
+      <div data-testid="plugins-scroll-area" className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-y-contain px-5 py-5">
         <div className={`grid gap-5 ${showSidebar ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]" : "grid-cols-1"}`}>
           <div className="min-w-0 space-y-4">
           {catalog.isLoading && (

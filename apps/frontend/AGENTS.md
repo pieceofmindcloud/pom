@@ -162,7 +162,7 @@ desenhado**, porque uma vista só não é uma escolha.
   Configurações.
 - `*` -> NotFound
 
-Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-fade wrapper; chat and dashboard get overflow-hidden main, the rest scroll.
+Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-fade wrapper; chat and dashboard get overflow-hidden main, the rest scroll inside the app shell. The document itself is not scrollable, and nested panes use `overscroll-y-contain` so a wheel event at a pane's boundary cannot move an outer page.
 
 ### index.css design tokens
 

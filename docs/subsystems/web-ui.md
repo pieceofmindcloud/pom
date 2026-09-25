@@ -239,7 +239,10 @@ ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
   contexto de licença; ausência de status local, expiração e revogação mantêm o
   formulário visível. Ele some quando todos os plugins licenciáveis conhecidos
   estão ativos. Desativação pede confirmação. A rota usa `FullBleedHeader` e
-  rolagem interna como `/modelos`.
+  rolagem interna como `/modelos`; o painel de Plugins usa
+  `overscroll-y-contain` para não propagar a rolagem ao limite para a página.
+  O documento permanece sem rolagem; as áreas internas definem seus próprios
+  limites.
   Carregamento, erro e catálogo vazio têm estados próprios.
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/redes-publicas` -> PublicNetworks, catálogo full-bleed de redes públicas

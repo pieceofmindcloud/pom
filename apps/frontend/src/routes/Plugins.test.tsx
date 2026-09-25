@@ -142,6 +142,11 @@ describe("Plugins", () => {
     localStorage.clear();
   });
 
+  it("contains wheel scrolling at the end of the plugins content pane", () => {
+    renderPage();
+    expect(screen.getByTestId("plugins-scroll-area").className).toContain("overscroll-y-contain");
+  });
+
   it("envia a license key uma vez, limpa o campo e nunca a grava no storage", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("alpha")] };
     mocks.plugins.data = [pluginStatus("alpha")];

@@ -74,9 +74,10 @@ body,
 
 body {
   @apply bg-ink text-fg font-sans antialiased;
-  /* Nothing in this app scrolls sideways. Panels that hold wide content
-     scroll inside themselves; the page never does. */
-  overflow-x: hidden;
+  /* This is a full-screen app: scroll belongs to internal panels, never the
+     document. Keep wheel input at a pane's boundary from moving the whole UI. */
+  overflow: hidden;
+  overscroll-behavior: none;
   text-rendering: optimizeLegibility;
 }
 

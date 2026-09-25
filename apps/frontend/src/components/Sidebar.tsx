@@ -499,7 +499,7 @@ export function SidebarContent({
         /* O menu existente permanece intocado para administrador e node. */
         <nav
           className={clsx(
-            "flex min-h-0 flex-1 flex-col gap-1 pb-4 pt-[5px]",
+            "flex min-h-0 flex-1 flex-col gap-1 pb-4 pt-[5px] overscroll-y-contain",
             collapsed ? "overflow-visible px-2" : "overflow-y-auto overflow-x-hidden px-3",
           )}
         >

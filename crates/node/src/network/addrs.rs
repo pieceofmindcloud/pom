@@ -210,12 +210,25 @@ pub fn local_addrs() -> Vec<LocalAddr> {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run(programa: &str, args: &[&str]) -> String {
-    std::process::Command::new(programa)
-        .args(args)
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default()
+    match std::process::Command::new(programa).args(args).output() {
+        Ok(o) => String::from_utf8(o.stdout).unwrap_or_default(),
+        Err(error) => {
+            // Sem o programa, o no nao conhece nenhum endereco proprio e nao
+            // anuncia candidato algum - nem o IPv6 publico. Os peers da LAN
+            // guardam a origem privada do pacote e a repassam no `PeerList`
+            // a peers remotos, que discam um IP que nao alcancam. Aconteceu na
+            // imagem Docker sem `iproute2`. Chamado a cada anuncio: avisa uma vez.
+            static AVISADO: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !AVISADO.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "nao foi possivel executar `{programa}` para listar as interfaces ({error}); \
+                     este no nao anunciara os proprios enderecos"
+                );
+            }
+            String::new()
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]

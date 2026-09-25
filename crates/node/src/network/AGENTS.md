@@ -384,7 +384,10 @@ fallback continua em `addr_candidates` + `RouteTable`.
   como endereço *público* e anunciou ao cluster inteiro.
 - `local_addrs` - `/sbin/ifconfig` (macOS) / `ip -o addr` (Linux); macOS usa
   caminho absoluto porque processos iniciados pela GUI podem não ter `/sbin` no
-  `PATH`. Windows vazio (cai no endereço observado pelo peer).
+  `PATH`. Windows vazio (cai no endereço observado pelo peer). Se o programa
+  não puder ser executado, `run` avisa uma vez no log e devolve vazio: o nó
+  então não anuncia endereço próprio. Por isso a imagem Docker instala
+  `iproute2`.
 
 `identity.rs`:
 - `Identity::load_or_create` - carrega a chave ou gera; regenerar a cada boot

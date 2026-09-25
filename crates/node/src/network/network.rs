@@ -508,6 +508,32 @@ fn current_public_local_host(local: Vec<crate::addrs::LocalAddr>) -> Option<Stri
         .find(|ip| !crate::addrs::is_private_or_local(bare_host(ip)))
 }
 
+/// Host this node describes itself by, IPv6 always in brackets.
+///
+/// The pinned and observed hosts come out of `ip_host`, which keeps the
+/// brackets of `[v6]:port`. The local-interface host comes from
+/// `filter_candidates`, which returns the bare address - and callers append
+/// `:port` to this host or feed it back to `ip_host`, so a bare IPv6 became
+/// `2804:...:5eb8:42777` in the self entry and `2804` in `self_reply_hosts`.
+fn choose_effective_host(
+    pinned: Option<String>,
+    local: Vec<crate::addrs::LocalAddr>,
+    observed: Option<String>,
+) -> Option<String> {
+    if pinned.is_some() {
+        return pinned;
+    }
+    if let Some(current) = current_public_local_host(local) {
+        let host = bare_host(&current);
+        return Some(if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        });
+    }
+    observed.map(|addr| ip_host(&addr).to_string())
+}
+
 fn choose_announce_addr(
     pinned_addr: Option<String>,
     observed_addr: Option<String>,
@@ -1582,17 +1608,11 @@ impl Network {
     /// `pub` because `GatewayState::all_peers` uses the same choice for the
     /// node's own dashboard entry.
     pub fn effective_host(&self) -> Option<String> {
-        let pinned = self.advertised_host();
-        if pinned.is_some() {
-            return pinned;
-        }
-
-        if let Some(current) = current_public_local_host(crate::addrs::local_addrs()) {
-            return Some(current);
-        }
-
-        let observed = self.observed_addr();
-        observed.map(|addr| ip_host(&addr).to_string())
+        choose_effective_host(
+            self.advertised_host(),
+            crate::addrs::local_addrs(),
+            self.observed_addr(),
+        )
     }
 
     /// Enderecos que este no anuncia de si.
@@ -3654,6 +3674,42 @@ mod tests {
         assert_eq!(
             local_candidates_by_preference(None, observed.as_deref(), local),
             vec!["2001:db8::1", "2001:db8::2", "203.0.113.5"]
+        );
+    }
+
+    /// O host efetivo sai sempre com o IPv6 entre colchetes, venha de onde
+    /// vier. O da interface local vinha cru, e a entrada do próprio nó virava
+    /// `2804:...:5eb8:42777` na tela de participantes e `2804` para quem
+    /// passa o host por `ip_host`.
+    #[test]
+    fn the_effective_host_brackets_ipv6_from_every_source() {
+        let local = |ip: &str| {
+            vec![crate::addrs::LocalAddr {
+                ip: ip.into(),
+                interface: None,
+                deprecated: false,
+                temporary: false,
+            }]
+        };
+        let from_interface = choose_effective_host(None, local("2001:db8::1"), None);
+        assert_eq!(from_interface.as_deref(), Some("[2001:db8::1]"));
+        assert_eq!(
+            ip_host(&format!("{}:42777", from_interface.unwrap())),
+            "[2001:db8::1]"
+        );
+
+        assert_eq!(
+            choose_effective_host(None, vec![], Some("[2001:db8::9]:9999".into())).as_deref(),
+            Some("[2001:db8::9]")
+        );
+        assert_eq!(
+            choose_effective_host(Some("[2001:db8::7]".into()), local("2001:db8::1"), None)
+                .as_deref(),
+            Some("[2001:db8::7]")
+        );
+        assert_eq!(
+            choose_effective_host(None, local("203.0.113.5"), None).as_deref(),
+            Some("203.0.113.5")
         );
     }
 

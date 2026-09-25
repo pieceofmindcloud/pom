@@ -42,7 +42,18 @@ consomem a tabela depois desse ponto.
   sem gateway ou timeout são recusados. A chave não aparece no `Announce`.
   Esgotados os endereços diretos, a mesma sonda vai pelo túnel libp2p; para um
   par atrás de NAT/CGNAT esse é o único caminho que chega, e sem ele a
-  admissão nunca concluiria.
+  admissão nunca concluiria. O veredito fica em cache por 30 s (recusa: 5 s).
+- **O `Announce` do gossipsub nunca sonda dentro do laço do swarm.** O pedido
+  do túnel é atendido por esse mesmo laço, então uma sonda aguardada ali
+  esperava por si mesma até o timeout de 2 s e falhava sempre. O sintoma: um
+  par que só o relé alcança entrava enquanto alguma rota direta respondia e
+  saía com `Removed timed-out peers` quando o cache vencia, porque os anúncios
+  seguintes eram descartados. `discovery.rs` consulta
+  `Network::admission_without_probe` (rede pública, chave vazia ou cache);
+  sem veredito, `Network::admit_in_background` roda a sonda em outra tarefa,
+  uma por peer, e o anúncio atual é descartado - o próximo, em até 5 s,
+  encontra o cache. Os anúncios UDP continuam sondando em linha, no laço de
+  recepção UDP, que não é o do túnel.
 - Em rede pública, a âncora local precisa ser válida, e o rigor depende do
   `network.access_policy`. Em ambos os casos a chave pública legada precisa
   derivar o `node_id`, a chave de autoridade precisa derivar o `libp2p peer_id`,

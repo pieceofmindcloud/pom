@@ -751,7 +751,7 @@ impl Discovery {
 
 async fn handle_event(
     swarm: &mut Swarm<DiscBehaviour>,
-    network: &Network,
+    network: &Arc<Network>,
     event: SwarmEvent<DiscBehaviourEvent>,
     relay_peer_addrs: &HashSet<Multiaddr>,
     relay_peer_ids: &HashSet<PeerId>,
@@ -889,12 +889,27 @@ async fn handle_event(
                     idle,
                 };
                 network.remember_public_discovery_peer(&peer).await;
-                if !network.admit_peer(&peer).await {
-                    debug!(
-                        "libp2p: descartei Announce de {} sem prova de pertencimento",
-                        crate::network::short(&node_id)
-                    );
-                    return;
+                // Nunca `admit_peer` aqui: a sonda pode precisar do túnel
+                // libp2p, que só anda quando este laço volta a girar. Sem
+                // veredito no cache, a sonda roda em outra tarefa e o próximo
+                // anúncio do peer encontra a resposta. Ver `admit_in_background`.
+                match network.admission_without_probe(&peer).await {
+                    Some(true) => {}
+                    Some(false) => {
+                        debug!(
+                            "libp2p: descartei Announce de {} sem prova de pertencimento",
+                            crate::network::short(&node_id)
+                        );
+                        return;
+                    }
+                    None => {
+                        debug!(
+                            "libp2p: Announce de {} aguarda a sonda de admissão",
+                            crate::network::short(&node_id)
+                        );
+                        network.admit_in_background(peer);
+                        return;
+                    }
                 }
                 network.insert_admitted_peer(peer).await;
 

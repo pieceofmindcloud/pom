@@ -561,6 +561,7 @@ mod policy_tests {
             "/api/ui/plugins/enterprise/update/check",
             "/api/ui/plugins/enterprise/update/apply",
             "/api/ui/plugins/enterprise/github-source",
+            "/api/ui/plugins/enterprise/github-source/install",
             "/api/ui/plugins/enterprise/github-source/check",
             "/api/ui/plugins/enterprise/github-source/apply",
             "/api/ui/plugins/enterprise/preferences",

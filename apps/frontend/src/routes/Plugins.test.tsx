@@ -23,6 +23,7 @@ function pluginStatus(code: string, overrides: Record<string, unknown> = {}) {
     installed_at: null,
     update_checked_at: null,
     available_update: null,
+    public_install: false,
     ...overrides,
   };
 }
@@ -45,6 +46,7 @@ function publicPlugin(code: string, overrides: Record<string, unknown> = {}) {
     description: `${code} description`,
     description_pt_br: null,
     requires_license: true,
+    github_repository: null,
     icon_url: null,
     screenshot_urls: [],
     pricing: { monthly: null, annual: null },
@@ -624,6 +626,35 @@ describe("Plugins", () => {
     ));
   });
 
+  it("shows one GitHub manager and installs a free catalog plugin instead of opening checkout", async () => {
+    mocks.catalog.data = {
+      plugins: [
+        publicPlugin("base", {
+          display_name: "Base Plugin",
+          requires_license: false,
+          github_repository: "https://github.com/example/base-plugin",
+          releases: [],
+        }),
+        publicPlugin("free_tools", {
+          requires_license: false,
+          github_repository: "https://github.com/example/free-tools",
+          releases: [],
+        }),
+      ],
+    };
+    mocks.plugins.data = [pluginStatus("base"), pluginStatus("free_tools")];
+    mocks.post.mockResolvedValue({});
+    renderPage();
+
+    expect(screen.getAllByRole("heading", { name: "Releases públicas do GitHub" })).toHaveLength(1);
+    const card = screen.getByRole("heading", { name: "Base Plugin" }).closest(".panel");
+    fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Instalar pelo GitHub" }));
+
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/base/github-source/install"));
+    expect(mocks.navigateToPluginPurchase).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Buy" })).toBeNull();
+  });
+
   it("registers and removes a public GitHub source by plugin code", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("base")] };
     mocks.plugins.data = [pluginStatus("base", {
@@ -698,8 +729,8 @@ describe("Plugins", () => {
     mocks.post.mockResolvedValue({});
     renderPage();
 
-    fireEvent.click(screen.getByLabelText("Incluir cabeçalhos"));
-    fireEvent.change(screen.getByLabelText("Pasta de dados"), {
+    fireEvent.click(await screen.findByRole("checkbox", { name: /Incluir cabeçalhos/ }));
+    fireEvent.change(await screen.findByLabelText("Pasta de dados"), {
       target: { value: "/tmp/plugin-data" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Salvar preferências" }));

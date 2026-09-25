@@ -1135,7 +1135,9 @@ resposta de transporte perdida não dá essa certeza: o gateway não reentra em
 `k`, porque isso poderia pedir `kv_remove` no meio do KV. Ele faz uma única
 reconstrução fria desde o pedaço 0, que reseta a sessão inteira em todos os
 hops. Sessão perdida no peer segue a mesma reconstrução; se ela falhar, a
-sessão termina limpa e o gateway libera os hops alcançados.
+sessão termina limpa e o gateway libera os hops alcançados. A classificação de
+sessão desconhecida percorre toda a cadeia de erro, porque a telemetria parcial
+pode envolver a recusa direta e esconder sua mensagem no nível externo.
 
 O modo anel permanece serializado pelo contrato de resposta aninhada, para não
 abrir uma segunda requisição na mesma sessão sem a confirmação da anterior; ele

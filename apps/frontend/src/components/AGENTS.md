@@ -9,8 +9,9 @@ for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
 `UndeployPipeline`), and `PeerDetailCard`, the one card for a machine shown in
 the Dashboard details tab and in the window the Flow canvas opens. Test files
-present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `GpuTemperature.test.tsx`, `LeaveNode.test.tsx`,
-`UndeployPipeline.test.tsx`, `ModelNetworkCanvas.test.tsx`,
+present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `DeploymentInspector.idle.test.tsx`,
+`GpuTemperature.test.tsx`, `LeaveNode.test.tsx`, `UndeployPipeline.test.tsx`,
+`ModelNetworkCanvas.test.tsx`,
 `PeerDetailCard.test.tsx`. Fake peers for these tests come from
 `../test/fixtures.ts` and must have the *full* shape the node serves. A partial
 `node` can slip past one component's `?.` and crash the next; the maintenance
@@ -171,7 +172,10 @@ Per-file list:
   active pill; a section holding the current path stays open. The desktop
   sidebar can be minimized and persists that choice in `localStorage`; the
   minimized state renders icon-only links and child flyouts on hover, focus or
-  click. `SidebarBrand` is a 64px header and, on desktop, the lockup itself is
+  click. Keep the minimized navigation `overflow-visible` without
+  `overflow-y-auto`: CSS computes the visible x-axis to auto when the other
+  axis scrolls, clipping the flyout; increasing its z-index cannot escape that
+  clip. `SidebarBrand` is a 64px header and, on desktop, the lockup itself is
   the accessible expand/collapse button: only an explicit click or touch toggles it.
   In the mobile drawer it remains a passive lockup. The menu below it keeps a
   5px top gap so the first item does not touch that line - the hash sits **on the identity** because in
@@ -509,7 +513,8 @@ Key logic carriers:
   e o aviso usa a razão da capability do formato escolhido. `VisionControl` segue
   a mesma fronteira: exibe e alterna o mmproj pré-selecionado para modelos
   inteiros e fatias, oferece os `mmproj_candidates` compatíveis para escolha de
-  formato e mostra `mmproj_reason` quando não há candidatos. A seção
+  formato e mostra `mmproj_reason` quando não há candidatos. O teste de idle
+  fornece `candidates`, `reason` e `onPathChange` do contrato completo. A seção
   `Configurações POM (DESENV)` só é montada quando
   `NodeInfo.pom_desenv` vem verdadeiro de `/api/ui/node`; quando a flag está
   desligada, os controles somem, mas os valores recebidos continuam no estado

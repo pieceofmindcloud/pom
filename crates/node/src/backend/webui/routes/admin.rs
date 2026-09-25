@@ -61,6 +61,10 @@ pub(super) fn routes() -> Router<GatewayState> {
                 .delete(crate::plugins::remove_plugin_github_source),
         )
         .route(
+            "/api/ui/plugins/:code/github-source/install",
+            post(crate::plugins::install_public_github_plugin),
+        )
+        .route(
             "/api/ui/plugins/:code/github-source/check",
             post(crate::plugins::check_plugin_github_update),
         )

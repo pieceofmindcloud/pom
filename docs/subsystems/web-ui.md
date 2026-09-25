@@ -154,7 +154,11 @@ não desenha ícone de folha. Dentro de `Modelos`, a ordem é `Encontrar Modelos
 inteiros`, `Fatiar modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
 somente ícones, com cabeçalho da marca de 64px para alinhar à toolbar. Seções
 com folhas exibem submenu ao passar o mouse, receber foco ou clicar; selecionar
-uma folha navega para sua rota. A escolha minimizada fica persistida no navegador. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
+uma folha navega para sua rota. No estado minimizado, a navegação usa
+`overflow-visible` sem `overflow-y-auto`, pois a combinação faz o navegador
+calcular overflow horizontal como auto e recorta os submenus; `z-index` não
+ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
+`App` decide setup vs painel com `useIsSetupMode()` (probe de
 `/api/ui/node` com `auth: false`; 404 = só existe o router de setup). Rotas:
 
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é

@@ -257,6 +257,8 @@ export interface PluginStatus {
   /** Last successful manifest lookup, regardless of whether it found an update. */
   update_checked_at: string | null;
   available_update: PluginUpdateInfo | null;
+  /** Installed and running from a public GitHub source without a license lease. */
+  public_install?: boolean;
   github_repository?: string | null;
   github_update?: GithubPluginUpdate | null;
   github_error?: string | null;

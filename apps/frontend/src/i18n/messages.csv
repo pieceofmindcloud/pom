@@ -1480,15 +1480,23 @@ plugins.deactivateFailed,Could not deactivate this plugin.,Não foi possível de
 plugins.features,Features,Funcionalidades
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
+plugins.githubCatalogSource,Source from the public catalog:,Origem no catálogo público:
 plugins.githubCheck,Check for updates,Verificar atualizações
 plugins.githubCheckFailed,GitHub release check failed. The last verified update is retained.,A verificação de releases do GitHub falhou. A última atualização verificada foi mantida.
+plugins.githubInstall,Install from GitHub,Instalar pelo GitHub
+plugins.githubNoPlugins,There are no plugins in the catalog to manage.,Não há plugins no catálogo para gerenciar.
+plugins.githubPluginLabel,Plugin,Plugin
+plugins.githubReleaseSource,GitHub Releases,Releases do GitHub
 plugins.githubRemove,Remove source,Remover origem
 plugins.githubRepositoryLabel,Public GitHub repository URL,URL do repositório público do GitHub
-plugins.githubSourceDescription,Register a public repository. Compatible releases are checked and downloaded locally; installation always requires your confirmation and an active license.,Cadastre um repositório público. Releases compatíveis são verificadas e baixadas localmente; a instalação sempre exige sua confirmação e uma licença ativa.
+plugins.githubSourceDescription,"Choose a public GitHub source. Compatible releases are checked and downloaded locally; every installation needs your confirmation, and paid plugins still need an active license.","Escolha uma origem pública do GitHub. Releases compatíveis são verificadas e baixadas localmente; toda instalação exige sua confirmação, e plugins pagos ainda precisam de uma licença ativa."
 plugins.githubSourceFailed,Could not register or update this GitHub source. Check that it is a public repository with a compatible release.,Não foi possível cadastrar ou atualizar esta origem do GitHub. Verifique se o repositório é público e tem uma release compatível.
 plugins.githubSourceRegister,Register repository,Cadastrar repositório
 plugins.githubSourceSave,Save repository,Salvar repositório
 plugins.githubSourceTitle,Public GitHub Releases,Releases públicas do GitHub
+plugins.githubUninstall,Uninstall plugin,Desinstalar plugin
+plugins.githubUninstallConfirmDescription,This removes the public GitHub plugin from this node. You can install it again later.,Isso remove o plugin público do GitHub deste nó. Você poderá instalá-lo novamente depois.
+plugins.githubUninstallConfirmTitle,Uninstall {name}?,Desinstalar {name}?
 plugins.githubUpdateApply,Install downloaded update,Instalar atualização baixada
 plugins.githubUpdateAvailable,Verified GitHub update downloaded: {version},Atualização verificada do GitHub baixada: {version}
 plugins.githubUpdateNeedsActivation,The update is downloaded. Activate this plugin with a valid license before installing it.,A atualização foi baixada. Ative este plugin com uma licença válida antes de instalá-la.

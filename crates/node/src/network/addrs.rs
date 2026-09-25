@@ -194,7 +194,9 @@ pub fn preferred_local_advertise_ip() -> Option<String> {
 pub fn local_addrs() -> Vec<LocalAddr> {
     #[cfg(target_os = "macos")]
     {
-        parse_ifconfig(&run("ifconfig", &[]))
+        // macOS keeps system administration tools under /sbin, which is not
+        // guaranteed to be present in a GUI-launched process's PATH.
+        parse_ifconfig(&run("/sbin/ifconfig", &[]))
     }
     #[cfg(target_os = "linux")]
     {

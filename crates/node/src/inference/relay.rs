@@ -701,8 +701,10 @@ pub fn is_frame_size_error(error: &anyhow::Error) -> bool {
 /// ou dentro de um `RelayFailure` serializado pelo anel/resposta direta, mas
 /// `anyhow::Error::to_string` preserva o texto nos dois casos.
 pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
-    let text = error.to_string().to_lowercase();
-    text.contains("sessão") && text.contains("desconhecida")
+    error.chain().any(|cause| {
+        let text = cause.to_string().to_lowercase();
+        text.contains("sessão") && text.contains("desconhecida")
+    })
 }
 
 /// Erros que provam divergência do KV remoto. Diferente de uma falha de
@@ -2728,6 +2730,9 @@ mod tests {
         });
 
         assert!(is_unknown_session_error(&unknown));
+        assert!(is_unknown_session_error(
+            &unknown.context("telemetria parcial do prefill")
+        ));
         assert!(!is_unknown_session_error(&other));
     }
 

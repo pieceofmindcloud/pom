@@ -183,6 +183,7 @@ function mount(
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
   client.setQueryData(keys.jobs, { jobs: [] });
+  client.setQueryData(keys.node, { connection_key: "", pom_desenv: true });
   client.setQueryData(keys.clusterModels, {
     peers: [
       {

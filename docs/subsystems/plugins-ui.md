@@ -105,11 +105,14 @@ edita os valores apenas enquanto o plugin está ativo.
 
 `host.configure` inclui os valores locais sob `preferences`, junto do contexto
 do gateway, para o próprio plugin ativo. Isso é IPC entre o nó e o host local,
-não tráfego para o license-server. A atualização pública por GitHub é uma
-origem separada: seus manifestos por plataforma são assets
-`pom-plugin-<os>-<arch>.json`, e um binário baixado fica em staging até o
-operador confirmar a instalação. Ver `licenciamento-enterprise.md` para campos
-exigidos, hash e ciclo de checagem.
+não tráfego para o license-server. A tela Plugins tem um único card global de
+GitHub abaixo do formulário de ativação, com seletor de `plugin_code`. Seus
+manifestos por plataforma são assets `pom-plugin-<os>-<arch>.json`, e um binário
+baixado fica em staging até o operador confirmar a instalação. Plugins pagos
+continuam exigindo licença ativa; um item publicado com
+`requires_license: false` e `github_repository` é revalidado no catálogo HTTPS
+do license-server e pode ser instalado sem criar lease ou entitlement. Ver
+`licenciamento-enterprise.md` para integrity, persistência e ciclo de checagem.
 
 ## Contexto do nó (`host.configure`)
 

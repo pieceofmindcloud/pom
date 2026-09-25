@@ -571,7 +571,9 @@ mod tests {
     /// anúncio já carrega o endereço novo.
     #[tokio::test]
     async fn an_infer_node_can_save_its_own_address_and_announce_it_next() {
-        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = testkit::state_with("infer-node", vec![]).await;
         {
             let mut auth = state.auth.write().await;
@@ -2432,7 +2434,18 @@ mod replicated_admin_logs_tests {
 
     #[tokio::test]
     async fn plugin_status_requires_admin_and_defaults_to_inactive() {
-        let state = testkit::state_with("enterprise-free", vec![]).await;
+        let mut state = testkit::state_with("enterprise-free", vec![]).await;
+        state
+            .database
+            .save_local_setting(
+                "plugin_github:enterprise",
+                &crate::plugin_github::GithubPluginState::default(),
+            )
+            .expect("register an inactive runtime for the test");
+        state.plugins = crate::plugins::PluginManager::runtime_with_database(
+            "enterprise-free",
+            state.database.clone(),
+        );
         let app = Router::new()
             .merge(crate::webui::routes())
             .with_state(state);

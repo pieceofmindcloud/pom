@@ -1,4 +1,4 @@
-import { Check, ChevronLeft, ChevronRight, Download, ExternalLink, KeyRound, Package, RefreshCw, Save, ShieldCheck, Trash2, X, XCircle } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, KeyRound, Package, RefreshCw, Save, ShieldCheck, X, XCircle } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Tone } from "../components/ui";
 import { Badge, Button, Empty, ErrorState, FullBleedHeader, Input, Panel, PanelHeader, Skeleton } from "../components/ui";
@@ -54,7 +54,6 @@ type PluginCardProps = {
   licenseStatusAvailable: boolean;
   busyCode: string | null;
   updateFailedCode: string | null;
-  sourceFailedCode: string | null;
   preferencesFailedCode: string | null;
   deactivateFailedCode: string | null;
   locale: string;
@@ -63,10 +62,7 @@ type PluginCardProps = {
   onRefresh: (code: string) => void;
   onDeactivate: (code: string) => void;
   onApplyUpdate: (code: string, releaseId: string) => void;
-  onSetGithubSource: (code: string, repositoryUrl: string) => void;
-  onRemoveGithubSource: (code: string) => void;
-  onCheckGithubUpdate: (code: string) => void;
-  onApplyGithubUpdate: (code: string, releaseId: string) => void;
+  onInstallPublicGithub: (code: string) => void;
   onSavePreferences: (code: string, preferences: PluginPreferences) => void;
   onBuy: (entry: PublicPluginCatalogEntry) => void;
 };
@@ -78,7 +74,6 @@ function PluginCard({
   licenseStatusAvailable,
   busyCode,
   updateFailedCode,
-  sourceFailedCode,
   preferencesFailedCode,
   deactivateFailedCode,
   locale,
@@ -87,10 +82,7 @@ function PluginCard({
   onRefresh,
   onDeactivate,
   onApplyUpdate,
-  onSetGithubSource,
-  onRemoveGithubSource,
-  onCheckGithubUpdate,
-  onApplyGithubUpdate,
+  onInstallPublicGithub,
   onSavePreferences,
   onBuy,
 }: PluginCardProps) {
@@ -100,7 +92,6 @@ function PluginCard({
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const returnFocusRef = useRef<HTMLButtonElement | null>(null);
   const [activeScreenshotIndex, setActiveScreenshotIndex] = useState<number | null>(null);
-  const [repositoryUrl, setRepositoryUrl] = useState(status?.github_repository ?? "");
   const [preferenceDraft, setPreferenceDraft] = useState<PluginPreferences | null>(status?.preferences ?? null);
   const code = entry?.code ?? status?.code ?? "";
   const name = entry?.display_name ?? code;
@@ -110,19 +101,20 @@ function PluginCard({
     : null;
   const release = entry ? releaseForTarget(entry.releases, targetOs, targetArch) : null;
   const hasRequiredLicense = entry?.requires_license === true;
-  const licenseLabel = !licenseStatusAvailable
-    ? t("plugins.licenseUnknown")
-    : status
-      ? t(`plugins.state.${status.state}`)
-      : entry?.requires_license === false
-        ? t("plugins.noLicenseRequired")
+  const isPublicGithubPlugin = entry?.requires_license === false && Boolean(entry.github_repository);
+  const licenseLabel = entry?.requires_license === false || status?.public_install
+    ? t("plugins.noLicenseRequired")
+    : !licenseStatusAvailable
+      ? t("plugins.licenseUnknown")
+      : status
+        ? t(`plugins.state.${status.state}`)
         : entry?.requires_license === true
           ? t("plugins.state.needs_activation")
           : t("plugins.licenseUnknown");
-  const badgeTone = status?.state
-    ? stateTone(status.state)
-    : entry?.requires_license === false && licenseStatusAvailable
-      ? "aqua"
+  const badgeTone = entry?.requires_license === false || status?.public_install
+    ? "aqua"
+    : status?.state
+      ? stateTone(status.state)
       : "neutral";
   const installedAt = formatDateTime(status?.installed_at, locale);
   const updateCheckedAt = formatDateTime(status?.update_checked_at, locale);
@@ -138,8 +130,10 @@ function PluginCard({
   const annualPrice = formatPrice(entry?.pricing.annual ?? null, locale);
   const screenshots = entry?.screenshot_urls.slice(0, 4) ?? [];
   const isLicenseEnded = status?.state === "expired" || status?.state === "revoked";
-  const hasLicense = status?.active === true
-    || (!isLicenseEnded && licenseStatus?.licensed_plugins.includes(code) === true);
+  const hasLicense = entry?.requires_license !== false
+    && status?.public_install !== true
+    && (status?.active === true
+      || (!isLicenseEnded && licenseStatus?.licensed_plugins.includes(code) === true));
   const directCount = status?.activation_count;
   const directMaximum = status?.max_activations;
   const directUsage = directCount !== null && directCount !== undefined
@@ -187,7 +181,6 @@ function PluginCard({
     };
   }, [preferenceSchemaKey, savedPreferencesKey]);
 
-  useEffect(() => setRepositoryUrl(status?.github_repository ?? ""), [status?.github_repository]);
   useEffect(() => setPreferenceDraft(preferenceDraftDefaults), [preferenceDraftDefaults]);
 
   useEffect(() => {
@@ -239,6 +232,7 @@ function PluginCard({
         subtitle={description ?? t("plugins.metadataUnavailable")}
         actions={(
           <div className="flex items-center gap-2">
+            {(entry?.github_repository || status?.github_repository) && <Badge tone="neutral">GitHub</Badge>}
             {entry?.icon_url ? (
               <img
                 src={entry.icon_url}
@@ -321,7 +315,9 @@ function PluginCard({
             <dd className="font-mono text-sm text-fg">
               {release
                 ? `${release.version} · ${release.channel} · ${release.os} / ${release.arch}`
-                : t("plugins.releaseUnavailable")}
+                : entry?.github_repository
+                  ? t("plugins.githubReleaseSource")
+                  : t("plugins.releaseUnavailable")}
             </dd>
           </div>
           {active && status && (
@@ -416,7 +412,7 @@ function PluginCard({
         )}
 
         <div className="flex flex-wrap gap-2">
-          {active && (
+          {active && status?.public_install !== true && (
             <>
               <Button
                 variant="outline"
@@ -436,6 +432,26 @@ function PluginCard({
               </Button>
             </>
           )}
+          {active && status?.public_install === true && (
+            <Button
+              variant="outline"
+              loading={busyCode === code}
+              icon={<XCircle className="h-3.5 w-3.5" />}
+              onClick={() => onDeactivate(code)}
+            >
+              {t("plugins.githubUninstall")}
+            </Button>
+          )}
+          {!active && isPublicGithubPlugin && entry && !status?.github_update && (
+            <Button
+              variant="primary"
+              loading={busyCode === code}
+              icon={<Download className="h-3.5 w-3.5" />}
+              onClick={() => onInstallPublicGithub(code)}
+            >
+              {t("plugins.githubInstall")}
+            </Button>
+          )}
           {!active && hasRequiredLicense && licenseStatusAvailable && entry && !hasLicense && (
             <Button
               variant="ghost"
@@ -448,68 +464,6 @@ function PluginCard({
             </Button>
           )}
         </div>
-
-        <section className="space-y-3 rounded-xl border border-line bg-raised/35 p-4" aria-labelledby={`github-source-${code}`}>
-          <div>
-            <h3 id={`github-source-${code}`} className="text-sm font-semibold text-fg">{t("plugins.githubSourceTitle")}</h3>
-            <p className="mt-1 text-xs text-muted">{t("plugins.githubSourceDescription")}</p>
-          </div>
-          <form
-            className="flex flex-col gap-2 sm:flex-row"
-            onSubmit={(event) => {
-              event.preventDefault();
-              onSetGithubSource(code, repositoryUrl);
-            }}
-          >
-            <label className="min-w-0 flex-1">
-              <span className="sr-only">{t("plugins.githubRepositoryLabel")}</span>
-              <Input
-                type="url"
-                value={repositoryUrl}
-                onChange={(event) => setRepositoryUrl(event.target.value)}
-                placeholder="https://github.com/owner/repository"
-                aria-label={t("plugins.githubRepositoryLabel")}
-                autoComplete="url"
-              />
-            </label>
-            <Button variant="outline" type="submit" loading={busyCode === code} icon={<Check className="h-3.5 w-3.5" />}>
-              {status?.github_repository ? t("plugins.githubSourceSave") : t("plugins.githubSourceRegister")}
-            </Button>
-          </form>
-          {status?.github_repository && (
-            <div className="flex flex-wrap gap-2">
-              <Button variant="ghost" loading={busyCode === code} icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => onCheckGithubUpdate(code)}>
-                {t("plugins.githubCheck")}
-              </Button>
-              <Button variant="ghost" loading={busyCode === code} icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => onRemoveGithubSource(code)}>
-                {t("plugins.githubRemove")}
-              </Button>
-            </div>
-          )}
-          {sourceFailedCode === code && <p role="alert" className="text-xs text-rose">{t("plugins.githubSourceFailed")}</p>}
-          {status?.github_error && <p role="alert" className="text-xs text-rose">{t("plugins.githubCheckFailed")}</p>}
-          {status?.github_update && (
-            <div className="space-y-3 rounded-lg border border-iris/35 bg-iris/8 px-3.5 py-3" role="status">
-              <div>
-                <p className="text-sm font-medium text-fg">{t("plugins.githubUpdateAvailable", { version: status.github_update.version })}</p>
-                <p className="mt-1 font-mono text-xs text-muted">{t("plugins.updateRelease", { release_id: status.github_update.release_id })}</p>
-                {status.github_update.changelog && <p className="mt-2 text-xs leading-relaxed text-muted">{status.github_update.changelog}</p>}
-              </div>
-              {active ? (
-                <Button
-                  variant="primary"
-                  loading={busyCode === code}
-                  icon={<Download className="h-3.5 w-3.5" />}
-                  onClick={() => onApplyGithubUpdate(code, status.github_update!.release_id)}
-                >
-                  {t("plugins.githubUpdateApply")}
-                </Button>
-              ) : (
-                <p className="text-xs text-muted">{t("plugins.githubUpdateNeedsActivation")}</p>
-              )}
-            </div>
-          )}
-        </section>
 
         {active && preferenceSchema && preferenceDraft && (
           <section className="space-y-3 rounded-xl border border-line bg-raised/35 p-4" aria-labelledby={`plugin-preferences-${code}`}>
@@ -598,6 +552,175 @@ function PluginCard({
   );
 }
 
+type GithubTarget = {
+  code: string;
+  name: string;
+  repository: string | null;
+  requiresLicense: boolean | null;
+  status: PluginStatus | null;
+};
+
+type GithubReleasesManagerProps = {
+  targets: GithubTarget[];
+  busyCode: string | null;
+  sourceFailedCode: string | null;
+  sourceFailureMessage: string | null;
+  onSetSource: (code: string, repositoryUrl: string) => void;
+  onRemoveSource: (code: string) => void;
+  onCheck: (code: string) => void;
+  onApply: (code: string, releaseId: string) => void;
+  onInstall: (code: string) => void;
+  onUninstall: (code: string) => void;
+};
+
+function GithubReleasesManager({
+  targets,
+  busyCode,
+  sourceFailedCode,
+  sourceFailureMessage,
+  onSetSource,
+  onRemoveSource,
+  onCheck,
+  onApply,
+  onInstall,
+  onUninstall,
+}: GithubReleasesManagerProps) {
+  const { t } = useI18n();
+  const [selectedCode, setSelectedCode] = useState("");
+  const selected = targets.find((target) => target.code === selectedCode) ?? targets[0] ?? null;
+  const selectedCodeForForm = selected?.code ?? "";
+  const [repositoryUrl, setRepositoryUrl] = useState("");
+
+  useEffect(() => {
+    if (!selectedCode && targets[0]) setSelectedCode(targets[0].code);
+    else if (selectedCode && !targets.some((target) => target.code === selectedCode)) {
+      setSelectedCode(targets[0]?.code ?? "");
+    }
+  }, [selectedCode, targets]);
+
+  useEffect(() => {
+    setRepositoryUrl(selected?.status?.github_repository ?? selected?.repository ?? "");
+  }, [selected?.code, selected?.status?.github_repository, selected?.repository]);
+
+  const registered = Boolean(selected?.status?.github_repository);
+  const hasPublicSource = Boolean(selected?.repository);
+  const canInstallFree = selected?.requiresLicense === false && hasPublicSource;
+  const update = selected?.status?.github_update;
+
+  return (
+    <Panel className="border-line">
+      <PanelHeader
+        eyebrow="GitHub"
+        title={t("plugins.githubSourceTitle")}
+        subtitle={t("plugins.githubSourceDescription")}
+      />
+      <div className="space-y-4 px-5 py-5">
+        {targets.length === 0 ? (
+          <p className="text-sm text-muted">{t("plugins.githubNoPlugins")}</p>
+        ) : (
+          <>
+            <label className="block">
+              <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">{t("plugins.githubPluginLabel")}</span>
+              <select
+                aria-label={t("plugins.githubPluginLabel")}
+                value={selectedCodeForForm}
+                onChange={(event) => setSelectedCode(event.target.value)}
+                className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+              >
+                {targets.map((target) => (
+                  <option key={target.code} value={target.code}>{target.name} · {target.code}</option>
+                ))}
+              </select>
+            </label>
+            {selected && (
+              <>
+                {selected.repository && (
+                  <p className="text-xs text-muted">
+                    {t("plugins.githubCatalogSource")} <a className="break-all text-iris underline" href={selected.repository} target="_blank" rel="noreferrer">{selected.repository}</a>
+                  </p>
+                )}
+                <form
+                  className="flex flex-col gap-2 sm:flex-row"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    onSetSource(selected.code, repositoryUrl);
+                  }}
+                >
+                  <label className="min-w-0 flex-1">
+                    <span className="sr-only">{t("plugins.githubRepositoryLabel")}</span>
+                    <Input
+                      type="url"
+                      value={repositoryUrl}
+                      onChange={(event) => setRepositoryUrl(event.target.value)}
+                      placeholder="https://github.com/owner/repository"
+                      aria-label={t("plugins.githubRepositoryLabel")}
+                      autoComplete="url"
+                    />
+                  </label>
+                  <Button variant="outline" type="submit" loading={busyCode === selected.code}>
+                    {registered ? t("plugins.githubSourceSave") : t("plugins.githubSourceRegister")}
+                  </Button>
+                </form>
+                <div className="flex flex-wrap gap-2">
+                  {registered && (
+                    <>
+                      <Button variant="ghost" loading={busyCode === selected.code} icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => onCheck(selected.code)}>
+                        {t("plugins.githubCheck")}
+                      </Button>
+                      {selected.status?.public_install === true && !selected.status.active && (
+                        <Button variant="ghost" loading={busyCode === selected.code} icon={<XCircle className="h-3.5 w-3.5" />} onClick={() => onUninstall(selected.code)}>
+                          {t("plugins.githubUninstall")}
+                        </Button>
+                      )}
+                      {selected.status?.public_install !== true && (
+                        <Button variant="ghost" loading={busyCode === selected.code} icon={<XCircle className="h-3.5 w-3.5" />} onClick={() => onRemoveSource(selected.code)}>
+                          {t("plugins.githubRemove")}
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
+                {sourceFailedCode === selected.code && (
+                  <p role="alert" className="text-xs text-rose">
+                    {t("plugins.githubSourceFailed")}
+                    {sourceFailureMessage && <span className="mt-1 block break-words">{sourceFailureMessage}</span>}
+                  </p>
+                )}
+                {selected.status?.github_error && (
+                  <p role="alert" className="text-xs text-rose">
+                    {t("plugins.githubCheckFailed")}
+                    <span className="mt-1 block break-words">{selected.status.github_error}</span>
+                  </p>
+                )}
+                {update && (
+                  <div className="space-y-3 rounded-lg border border-iris/35 bg-iris/8 px-3.5 py-3" role="status">
+                    <div>
+                      <p className="text-sm font-medium text-fg">{t("plugins.githubUpdateAvailable", { version: update.version })}</p>
+                      <p className="mt-1 font-mono text-xs text-muted">{t("plugins.updateRelease", { release_id: update.release_id })}</p>
+                      {update.changelog && <p className="mt-2 text-xs leading-relaxed text-muted">{update.changelog}</p>}
+                    </div>
+                    {selected.status?.active ? (
+                      <Button variant="primary" loading={busyCode === selected.code} icon={<Download className="h-3.5 w-3.5" />} onClick={() => onApply(selected.code, update.release_id)}>
+                        {t("plugins.githubUpdateApply")}
+                      </Button>
+                    ) : canInstallFree ? (
+                      <Button variant="primary" loading={busyCode === selected.code} icon={<Download className="h-3.5 w-3.5" />} onClick={() => onInstall(selected.code)}>
+                        {t("plugins.githubInstall")}
+                      </Button>
+                    ) : (
+                      <p className="text-xs text-muted">{t("plugins.githubUpdateNeedsActivation")}</p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 export function Plugins() {
   const { t, locale } = useI18n();
   const plugins = usePlugins();
@@ -610,6 +733,7 @@ export function Plugins() {
   const [busyCode, setBusyCode] = useState<string | null>(null);
   const [updateFailedCode, setUpdateFailedCode] = useState<string | null>(null);
   const [sourceFailedCode, setSourceFailedCode] = useState<string | null>(null);
+  const [sourceFailureMessage, setSourceFailureMessage] = useState<string | null>(null);
   const [preferencesFailedCode, setPreferencesFailedCode] = useState<string | null>(null);
   const [deactivateTarget, setDeactivateTarget] = useState<string | null>(null);
   const [deactivateFailedCode, setDeactivateFailedCode] = useState<string | null>(null);
@@ -678,10 +802,12 @@ export function Plugins() {
   async function runPluginAction(code: string, action: () => Promise<unknown>) {
     setBusyCode(code);
     setSourceFailedCode(null);
+    setSourceFailureMessage(null);
     try {
       await action();
-    } catch {
+    } catch (error) {
       setSourceFailedCode(code);
+      setSourceFailureMessage(error instanceof Error ? error.message : null);
     } finally {
       await plugins.refetch();
       setBusyCode(null);
@@ -708,6 +834,10 @@ export function Plugins() {
     }));
   }
 
+  function installPublicGithub(code: string) {
+    void runPluginAction(code, () => api.post(`/api/ui/plugins/${encodeURIComponent(code)}/github-source/install`));
+  }
+
   async function savePreferences(code: string, preferences: PluginPreferences) {
     setBusyCode(code);
     setPreferencesFailedCode(null);
@@ -729,6 +859,24 @@ export function Plugins() {
   const localStatuses = plugins.data ?? [];
   const localByCode = new Map(localStatuses.map((plugin) => [plugin.code, plugin]));
   const publicCodes = new Set(publicEntries.map((plugin) => plugin.code));
+  const githubTargets: GithubTarget[] = [
+    ...publicEntries.map((entry) => ({
+      code: entry.code,
+      name: entry.display_name ?? entry.code,
+      repository: entry.github_repository,
+      requiresLicense: entry.requires_license,
+      status: localByCode.get(entry.code) ?? null,
+    })),
+    ...localStatuses
+      .filter((status) => !publicCodes.has(status.code) && (status.github_repository || status.public_install))
+      .map((status) => ({
+        code: status.code,
+        name: status.code,
+        repository: null,
+        requiresLicense: status.public_install ? false : null,
+        status,
+      })),
+  ];
   const licenseStatusByCode = new Map<string, PluginStatus>();
   for (const source of localStatuses) {
     if (source.licensed_plugins.includes(source.code)) {
@@ -756,15 +904,20 @@ export function Plugins() {
       .map((status) => ({ entry: null, status, licenseStatus: licenseStatusByCode.get(status.code) ?? status })),
   ];
   const licenseStatusAvailable = !plugins.isLoading && !plugins.isError && plugins.data !== undefined;
+  const showGithubManager = githubTargets.length > 0;
+  const showSidebar = licenseStatusAvailable && (shouldShowActivation || showGithubManager);
   const targetOs = node.data?.system.os ?? null;
   const targetArch = node.data?.system.arch ?? null;
+  const deactivateCard = cards.find(({ status }) => status?.code === deactivateTarget);
+  const deactivateName = deactivateCard?.entry?.display_name ?? deactivateTarget ?? "";
+  const uninstallingPublicPlugin = deactivateCard?.status?.public_install === true;
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
       <FullBleedHeader title={t("plugins.title")} subtitle={t("plugins.subtitle")} />
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5">
-        <div className={`grid gap-5 ${shouldShowActivation && licenseStatusAvailable ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]" : "grid-cols-1"}`}>
+        <div className={`grid gap-5 ${showSidebar ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]" : "grid-cols-1"}`}>
           <div className="min-w-0 space-y-4">
           {catalog.isLoading && (
             <div role="status" aria-label={t("plugins.catalogLoading")} className="space-y-4">
@@ -796,7 +949,6 @@ export function Plugins() {
               licenseStatusAvailable={licenseStatusAvailable}
               busyCode={busyCode}
               updateFailedCode={updateFailedCode}
-              sourceFailedCode={sourceFailedCode}
               preferencesFailedCode={preferencesFailedCode}
               deactivateFailedCode={deactivateFailedCode}
               locale={locale}
@@ -808,10 +960,7 @@ export function Plugins() {
                 setDeactivateTarget(code);
               }}
               onApplyUpdate={(code, releaseId) => void applyUpdate(code, releaseId)}
-              onSetGithubSource={setGithubSource}
-              onRemoveGithubSource={removeGithubSource}
-              onCheckGithubUpdate={checkGithubUpdate}
-              onApplyGithubUpdate={applyGithubUpdate}
+              onInstallPublicGithub={installPublicGithub}
               onSavePreferences={savePreferences}
               onBuy={(entry) => void buy(entry)}
             />
@@ -824,7 +973,8 @@ export function Plugins() {
           )}
           </div>
 
-        {shouldShowActivation && licenseStatusAvailable && <Panel className="self-start">
+        {showSidebar && <div className="min-w-0 space-y-4 self-start">
+        {shouldShowActivation && <Panel>
           <PanelHeader
             eyebrow={t("plugins.activationEyebrow")}
             title={t("plugins.formTitle")}
@@ -861,15 +1011,35 @@ export function Plugins() {
             <p className="text-xs leading-relaxed text-faint">{t("plugins.keyPrivacy")}</p>
           </form>
         </Panel>}
+        {showGithubManager && (
+          <GithubReleasesManager
+            targets={githubTargets}
+            busyCode={busyCode}
+            sourceFailedCode={sourceFailedCode}
+            sourceFailureMessage={sourceFailureMessage}
+            onSetSource={setGithubSource}
+            onRemoveSource={removeGithubSource}
+            onCheck={checkGithubUpdate}
+            onApply={applyGithubUpdate}
+            onInstall={installPublicGithub}
+            onUninstall={(code) => {
+              setDeactivateFailedCode(null);
+              setDeactivateTarget(code);
+            }}
+          />
+        )}
+        </div>}
         </div>
       </div>
       <Confirm
         open={deactivateTarget !== null}
-        title={t("plugins.deactivateConfirmTitle", {
-          name: cards.find(({ status }) => status?.code === deactivateTarget)?.entry?.display_name ?? deactivateTarget ?? "",
-        })}
-        description={t("plugins.deactivateConfirmDescription")}
-        confirmLabel={t("plugins.deactivate")}
+        title={uninstallingPublicPlugin
+          ? t("plugins.githubUninstallConfirmTitle", { name: deactivateName })
+          : t("plugins.deactivateConfirmTitle", { name: deactivateName })}
+        description={uninstallingPublicPlugin
+          ? t("plugins.githubUninstallConfirmDescription")
+          : t("plugins.deactivateConfirmDescription")}
+        confirmLabel={uninstallingPublicPlugin ? t("plugins.githubUninstall") : t("plugins.deactivate")}
         tone="danger"
         busy={deactivateTarget !== null && busyCode === deactivateTarget}
         onConfirm={() => deactivateTarget && void deactivate(deactivateTarget)}

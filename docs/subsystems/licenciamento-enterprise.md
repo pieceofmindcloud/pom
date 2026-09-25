@@ -256,14 +256,19 @@ rate limit ou resposta incompatível só preenche `github_error`: release,
 manifesto e arquivo da última detecção boa continuam disponíveis. Remover a
 origem remove apenas o download em staging.
 
-Instalar é uma segunda ação explícita da tela Plugins. O handler confere a
-release selecionada, refaz hash/tamanho no arquivo em staging e exige que o
-runtime ainda esteja ativo e tenha `plugin_code` entre os códigos concedidos
-pela licença. Só então cria um caminho versionado, reinicia o host e avança a
-release instalada. GitHub fornece bytes, não entitlement: sem ativação válida
-não há como instalar ou executar uma release, e nenhuma falha de update altera
-a ativação existente. A atualização/licença pelo servidor segue intacta e
-continua exibida separadamente.
+A tela Plugins tem um único card global de GitHub, logo abaixo da ativação da
+licença; ele seleciona o `plugin_code`, administra a origem e mostra os
+candidatos. A instalação continua explícita. Para um plugin pago, o handler
+confere a release, refaz hash/tamanho no staging e exige runtime ativo com o
+`plugin_code` concedido pela licença antes de trocar o host. Para um plugin
+público gratuito, `POST /api/ui/plugins/:code/github-source/install` consulta o
+catálogo público do license-server por HTTPS e exige `requires_license: false`
+e a mesma URL `github_repository`; só então baixa e executa a release sem
+criar ativação, grant ou lease. O snapshot desse runtime fica em
+`plugin_public_install:<code>`, separado de `plugin_license:<code>`, e
+`PluginStatus.public_install` deixa essa distinção visível. Uma release paga
+continua exigindo licença válida; os bytes do GitHub não concedem entitlement.
+
 
 `PluginManifest.preferences` é opcional e omitido na serialização quando não
 existe, mantendo manifests antigos e a canonicalização assinada. O schema

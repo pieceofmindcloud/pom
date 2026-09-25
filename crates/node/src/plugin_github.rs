@@ -1,6 +1,6 @@
-//! Public GitHub Releases source for plugin artifacts. This module has no
-//! license-server dependency: GitHub only supplies release bytes and metadata;
-//! activation remains the responsibility of `plugins::PluginRuntime`.
+//! Public GitHub Releases source for plugin artifacts. The GitHub client is
+//! unauthenticated; free installation eligibility is separately confirmed from
+//! the public license-server catalog. Paid activation remains in `plugins`.
 
 use enterprise_protocol::PluginPreferencesSchema;
 use reqwest::{header, StatusCode};
@@ -10,6 +10,7 @@ use std::path::Path;
 
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_GITHUB_METADATA_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PUBLIC_CATALOG_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PLUGIN_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +292,70 @@ struct CanonicalRepository {
     repo: String,
 }
 
+pub(crate) async fn public_free_plugin_repository(
+    license_base_url: &str,
+    plugin_code: &str,
+) -> Result<String, String> {
+    let base = reqwest::Url::parse(license_base_url.trim_end_matches('/'))
+        .map_err(|_| "license-server URL is invalid".to_owned())?;
+    let allow_custom_http = std::env::var("POM_LICENSE_ALLOW_CUSTOM_BASE_URL")
+        .ok()
+        .as_deref()
+        == Some("1");
+    if base.scheme() != "https" && !cfg!(test) && !allow_custom_http {
+        return Err("public plugin catalog requires HTTPS".into());
+    }
+    let catalog_url = format!("{}/v1/plugins", base.as_str().trim_end_matches('/'));
+    let response = reqwest::Client::builder()
+        .user_agent(concat!("pom/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| error.to_string())?
+        .get(catalog_url)
+        .send()
+        .await
+        .map_err(|error| format!("public plugin catalog request failed: {error}"))?;
+    if response.status() != StatusCode::OK {
+        return Err(format!(
+            "public plugin catalog request failed with HTTP {}",
+            response.status()
+        ));
+    }
+    let bytes = read_limited(response, MAX_PUBLIC_CATALOG_BYTES, "public plugin catalog").await?;
+    let catalog: PublicPluginCatalogResponse = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid public plugin catalog: {error}"))?;
+    let plugin = catalog
+        .plugins
+        .into_iter()
+        .find(|plugin| plugin.code == plugin_code)
+        .ok_or_else(|| "plugin is not listed in the public catalog".to_owned())?;
+    if plugin.requires_license {
+        return Err("this plugin requires an active license".into());
+    }
+    let repository = plugin
+        .github_repository
+        .ok_or_else(|| "this plugin has no public GitHub source".to_owned())?;
+    let canonical = canonical_repository(&repository)?;
+    if canonical != repository {
+        return Err("public GitHub repository URL is not canonical".into());
+    }
+    Ok(canonical)
+}
+
+#[derive(Deserialize)]
+struct PublicPluginCatalogResponse {
+    plugins: Vec<PublicPluginCatalogEntry>,
+}
+
+#[derive(Deserialize)]
+struct PublicPluginCatalogEntry {
+    code: String,
+    requires_license: bool,
+    github_repository: Option<String>,
+}
+
 pub(crate) fn canonical_repository(value: &str) -> Result<String, String> {
     let parsed = reqwest::Url::parse(value.trim())
         .map_err(|_| "enter a canonical public GitHub repository URL".to_owned())?;
@@ -359,7 +424,8 @@ struct GithubRelease {
 struct GithubAsset {
     name: String,
     size: u64,
-    #[serde(alias = "browser_download_url")]
+    /// GitHub's release API returns both `url` (the API asset endpoint) and
+    /// `browser_download_url`; the POM must download through the API endpoint.
     url: String,
     #[serde(default)]
     digest: Option<String>,
@@ -587,6 +653,22 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
+    fn github_assets_accept_both_api_and_browser_download_urls() {
+        let asset: GithubAsset = serde_json::from_value(serde_json::json!({
+            "name": "pom-plugin-macos-aarch64.json",
+            "size": 123,
+            "url": "https://api.github.com/repos/owner/repo/releases/assets/1",
+            "browser_download_url": "https://github.com/owner/repo/releases/download/v1/manifest.json",
+            "digest": "sha256:abc"
+        }))
+        .expect("GitHub API asset has both URL fields");
+        assert_eq!(
+            asset.url,
+            "https://api.github.com/repos/owner/repo/releases/assets/1"
+        );
+    }
+
+    #[test]
     fn repository_urls_are_canonical_and_public_only() {
         assert_eq!(
             canonical_repository("https://github.com/pom-org/request-logs/").unwrap(),
@@ -734,24 +816,50 @@ pub(crate) mod tests {
         use axum::response::IntoResponse;
         use axum::routing::get;
         use axum::{Json, Router};
+        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
-        #[derive(Clone)]
         struct StubState {
             repository_status: u16,
+            fail_repository: AtomicBool,
             private: bool,
             manifest: Vec<u8>,
             binary: Vec<u8>,
             asset_base: String,
         }
 
+        async fn public_catalog() -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "plugins": [
+                    {
+                        "code": "analytics",
+                        "requires_license": false,
+                        "github_repository": "https://github.com/pom/test-plugin"
+                    },
+                    {
+                        "code": "paid_plugin",
+                        "requires_license": true,
+                        "github_repository": "https://github.com/pom/paid-plugin"
+                    }
+                ]
+            }))
+        }
+
         async fn repository(State(state): State<Arc<StubState>>) -> axum::response::Response {
-            if state.repository_status != 200 {
-                return HttpStatus::from_u16(state.repository_status)
-                    .unwrap()
-                    .into_response();
+            let status = if state.fail_repository.load(Ordering::SeqCst) {
+                503
+            } else {
+                state.repository_status
+            };
+            if status != 200 {
+                return HttpStatus::from_u16(status).unwrap().into_response();
             }
             Json(serde_json::json!({ "private": state.private, "archived": false })).into_response()
+        }
+
+        async fn fail_repository(State(state): State<Arc<StubState>>) -> HttpStatus {
+            state.fail_repository.store(true, Ordering::SeqCst);
+            HttpStatus::NO_CONTENT
         }
 
         async fn release(State(state): State<Arc<StubState>>) -> Json<serde_json::Value> {
@@ -814,12 +922,15 @@ pub(crate) mod tests {
         let manifest = serde_json::to_vec(&manifest).unwrap();
         let state = Arc::new(StubState {
             repository_status: repo_status,
+            fail_repository: AtomicBool::new(false),
             private,
             manifest,
             binary,
             asset_base: format!("http://{address}"),
         });
         let app = Router::new()
+            .route("/v1/plugins", get(public_catalog))
+            .route("/test/fail", axum::routing::post(fail_repository))
             .route("/repos/pom/test-plugin", get(repository))
             .route("/repos/pom/test-plugin/releases/latest", get(release))
             .route("/assets/manifest", get(manifest_asset))
@@ -830,6 +941,24 @@ pub(crate) mod tests {
         });
         let client = GithubReleaseClient::with_api_base(&format!("http://{address}")).unwrap();
         (client, format!("http://{address}"), server)
+    }
+
+    #[tokio::test]
+    async fn free_install_source_comes_only_from_the_public_license_catalog() {
+        let (_client, api_base, server) = github_stub(200, false, None, false).await;
+        assert_eq!(
+            public_free_plugin_repository(&api_base, "analytics")
+                .await
+                .expect("free GitHub plugin"),
+            "https://github.com/pom/test-plugin"
+        );
+        assert!(public_free_plugin_repository(&api_base, "enterprise")
+            .await
+            .is_err());
+        assert!(public_free_plugin_repository(&api_base, "paid_plugin")
+            .await
+            .is_err());
+        server.abort();
     }
 
     #[test]

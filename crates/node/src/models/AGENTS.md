@@ -202,7 +202,9 @@ estado efetivo. Os tipos do cache continuam sendo repostos a partir do
 parâmetros da implantação. Os parâmetros do detector de ciclos
 (`cycle_detection_*`) também fazem parte do `NodeConfig` achatado, para que o
 gateway preserve a mesma política depois de um restart e a fatia anotada não
-volte a gerar com uma configuração diferente.
+volte a gerar com uma configuração diferente. `save_at` é crate-private para o
+watcher de `/health` gravar no caminho de configuração que capturou ao iniciar,
+sem seguir uma mudança posterior de `POM_CONFIG` no processo.
 
 O fatiador primeiro classifica arrays GGUF pelo namespace: somente arrays sob o
 namespace da arquitetura, exceto os arrays estruturais de rope, podem ser

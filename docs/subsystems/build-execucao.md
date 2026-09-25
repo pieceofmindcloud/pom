@@ -527,6 +527,17 @@ offload no primeiro clique.
   `docker builder prune` (`--filter type=exec.cachemount` limpa só os mounts).
   `docker compose build --no-cache` **não** resolve: cache mounts sobrevivem ao
   `--no-cache`.
+- **kache** é o cache de compilação do estágio Rust. `cargo install --locked
+  kache` roda logo depois do rustup, numa camada que edições de fonte não
+  invalidam; `kache init --no-service` roda no mesmo `RUN` do `cargo build`,
+  antes dele, e grava o `rustc-wrapper` e as chaves `[env]` de C/C++ dos build
+  scripts (o CMake do fork) na config do Cargo. `--no-service` porque o
+  container de build não tem gerenciador de serviços. `XDG_CACHE_HOME=/build/target`
+  põe o store em `/build/target/kache`, dentro do cache mount de `target/`:
+  ele sobrevive entre builds, herda o mesmo `id` (fork, CUDA, arquitetura,
+  toolchain) e fica no mesmo sistema de arquivos dos targets, o que deixa o
+  kache ligar os artefatos em vez de copiá-los. Um build pode ignorar o cache
+  com `KACHE_DISABLED=1`.
 - **`scripts/build-docker.sh`**: lê o commit **no host** (`git rev-parse
   --short HEAD`, sufixo `-sujo` se a árvore tem mudanças), resolve o modo do
   fork (release publicada por padrão ou source local), prepara um named context

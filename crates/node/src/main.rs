@@ -858,6 +858,9 @@ async fn async_main(
             args.ollama_url,
             args.no_discovery,
             args.no_default_relays,
+            merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap),
+            comma_list(&args.relay_peers),
+            args.serve_relay,
             args.advertise_addr.clone(),
             args.public_addr.clone(),
             args.cycle_detection,
@@ -955,39 +958,10 @@ async fn async_main(
     let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
     let pom_core_update = pom_core_update::PomCoreUpdater::runtime(plugins.clone());
 
-    let pkarr_peer_keys: Vec<String> = args
-        .pkarr_peers
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let pkarr_peer_keys = comma_list(&args.pkarr_peers);
 
-    let relay_peer_keys: Vec<String> = args
-        .relay_peers
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    // ── Bootstrap nodes: config + CLI extras ─────────────────────────────────
-    // Normalised on the way in, config file included: an entry saved before
-    // there was any validation is exactly the one that fails at send time.
-    let mut bootstrap_nodes: Vec<String> = app_config
-        .bootstrap_nodes
-        .iter()
-        .map(|b| config::normalize_peer_addr(b))
-        .filter(|s| !s.is_empty())
-        .collect();
-    for b in args
-        .bootstrap
-        .split(',')
-        .map(config::normalize_peer_addr)
-        .filter(|s| !s.is_empty())
-    {
-        if !bootstrap_nodes.contains(&b) {
-            bootstrap_nodes.push(b);
-        }
-    }
+    let relay_peer_keys = comma_list(&args.relay_peers);
+    let bootstrap_nodes = merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap);
 
     // CLI wins over the config file, same as --bootstrap. `--public-addr`
     // used to only reach the pkarr DHT record (below) — an operator who set
@@ -2037,6 +2011,40 @@ fn gateway_only_use_default_relays(no_default_relays: bool) -> bool {
     !no_default_relays
 }
 
+/// A comma-separated CLI list (`--relay-peers`, `--pkarr-peers`), trimmed and
+/// without empty entries.
+fn comma_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Bootstrap nodes from `pom.json` plus the `--bootstrap` extras, without
+/// duplicates. Normalised on the way in, config file included: an entry saved
+/// before there was any validation is exactly the one that fails at send time.
+///
+/// Both start paths call this. The one without `--model` used to read only
+/// `pom.json`, so `--bootstrap` on a node whose models come from the web UI -
+/// the common case - had no effect, silently.
+fn merged_bootstrap_nodes(from_config: &[String], cli: &str) -> Vec<String> {
+    let mut nodes: Vec<String> = from_config
+        .iter()
+        .map(|b| config::normalize_peer_addr(b))
+        .filter(|s| !s.is_empty())
+        .collect();
+    for b in cli
+        .split(',')
+        .map(config::normalize_peer_addr)
+        .filter(|s| !s.is_empty())
+    {
+        if !nodes.contains(&b) {
+            nodes.push(b);
+        }
+    }
+    nodes
+}
+
 /// Tarefas de fundo que acompanham todo gateway, com ou sem `--model`. Os dois
 /// caminhos de arranque (`main()` e `start_gateway_only`) chamam só esta
 /// função, para que uma tarefa nova não fique restrita a um deles - foi assim
@@ -2055,6 +2063,9 @@ async fn start_gateway_only(
     ollama_url: String,
     no_discovery: bool,
     no_default_relays: bool,
+    bootstrap_nodes: Vec<String>,
+    relay_peer_keys: Vec<String>,
+    serve_relay: bool,
     advertise_addr_cli: String,
     public_addr_cli: String,
     cycle_detection_enabled: bool,
@@ -2092,7 +2103,7 @@ async fn start_gateway_only(
         node_id: node_id.clone(),
         pubkey: pubkey.clone(),
         p2p_port: app_config.p2p_port,
-        bootstrap_nodes: app_config.bootstrap_nodes.clone(),
+        bootstrap_nodes,
         ollama_port,
         inference_port,
         inference_quic_port,
@@ -2112,10 +2123,8 @@ async fn start_gateway_only(
         auth: auth_state.clone(),
         admin_trust: admin_trust.clone(),
         database: database.clone(),
-        // No CLI here to source pkarr/relay peer keys from — see the plan's
-        // addendum on deferred parity for `start_gateway_only`.
-        relay_peer_keys: vec![],
-        serve_relay: false,
+        relay_peer_keys,
+        serve_relay,
         use_default_relays: gateway_only_use_default_relays(no_default_relays),
         no_discovery,
     })
@@ -2163,7 +2172,7 @@ async fn start_gateway_only(
             None,
             String::new(),
             assignment_shared.clone(),
-            false,
+            serve_relay,
             Some(net.clone()),
         ))
     });
@@ -2484,6 +2493,38 @@ mod main_tests {
     fn persisted_gateway_port_wins_over_cli_fallback() {
         assert_eq!(select_gateway_port(Some(9123), 8080), 9123);
         assert_eq!(select_gateway_port(None, 8080), 8080);
+    }
+
+    /// `--bootstrap` alone must reach the node. The start path without
+    /// `--model` read only `pom.json`, and a NAT'd node pointed at a relay by
+    /// the CLI never dialled it.
+    #[test]
+    fn cli_bootstrap_counts_without_any_in_the_config() {
+        assert_eq!(
+            merged_bootstrap_nodes(&[], "203.0.113.10:42777"),
+            vec!["203.0.113.10:42777"]
+        );
+    }
+
+    #[test]
+    fn bootstrap_merge_keeps_config_first_and_drops_duplicates() {
+        assert_eq!(
+            merged_bootstrap_nodes(
+                &["203.0.113.10:42777".into(), " ".into()],
+                "203.0.113.10:42777, 2001:db8::10:42777,,relay.example:42777",
+            ),
+            vec![
+                "203.0.113.10:42777",
+                "[2001:db8::10]:42777",
+                "relay.example:42777"
+            ]
+        );
+    }
+
+    #[test]
+    fn comma_list_trims_and_drops_empty_entries() {
+        assert_eq!(comma_list(" pk:a, ,pk:b,"), vec!["pk:a", "pk:b"]);
+        assert!(comma_list("").is_empty());
     }
 
     #[test]

@@ -453,7 +453,11 @@ quatro endereços: `/ip4/0.0.0.0/tcp/<porta>`, `/ip6/::/tcp/<porta>`,
   prefill. `--no-default-relays` continua aceito e hoje não tem efeito prático.
   Com `--serve-relay` o servidor de relay aceita reservas (128 slots, 4 por
   peer, 1 h de reserva, circuitos de 120 s e `wire::MAX_FRAME_PAYLOAD_BYTES`);
-  sem ele, `max_reservations: 0`.
+  sem ele, `max_reservations: 0`. As flags valem com ou sem `--model`: um relé
+  dedicado não serve modelo e roda pelo caminho `start_gateway_only`.
+  `examples/relay-node/docker-compose.yml` é o exemplo de um relé dedicado,
+  fora da rede que ele atende. Os nós atrás de NAT só precisam dele como
+  bootstrap: a reserva é pedida a todo par conectado que oferece relé.
 - **Reserva de circuito:** `reserve_circuit` pede `listen_on(<relé>/p2p-circuit)`
   para qualquer par cujo identify anuncie `relay::HOP_PROTOCOL_NAME`, não
   apenas para os relés configurados - o caso que mais importa é um nó pom com

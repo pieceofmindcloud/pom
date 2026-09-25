@@ -274,53 +274,50 @@ impl LlmEngine {
                             .map(|draft_loaded| (draft_loaded, true))
                     });
 
-                let draft_result =
-                    draft_loaded_result.and_then(|(draft_loaded, draft_on_cpu)| {
-                        // Pesos na RAM (decidido acima ou pelo recuo reativo)
-                        // já entram com `offload_kqv=false`: tentar VRAM
-                        // primeiro só repetiria a mesma falta de espaço no
-                        // contexto que o round anterior já corrigiu para o
-                        // caso reativo.
-                        let initial_offload_kqv = cfg.offload_kqv && !draft_on_cpu;
-                        let attach = Self::from_loaded_with_mtp_offload(
+                let draft_result = draft_loaded_result.and_then(|(draft_loaded, draft_on_cpu)| {
+                    // Pesos na RAM (decidido acima ou pelo recuo reativo)
+                    // já entram com `offload_kqv=false`: tentar VRAM
+                    // primeiro só repetiria a mesma falta de espaço no
+                    // contexto que o round anterior já corrigiu para o
+                    // caso reativo.
+                    let initial_offload_kqv = cfg.offload_kqv && !draft_on_cpu;
+                    let attach = Self::from_loaded_with_mtp_offload(
+                        target_loaded.clone(),
+                        cfg,
+                        fit_memory_applied,
+                        effective_n_gpu_layers,
+                        Some(draft_loaded.clone()),
+                        initial_offload_kqv,
+                    )?;
+                    // Rede de segurança para quando os pesos couberam na
+                    // VRAM mas o contexto (buffer de compute do ubatch de
+                    // pior caso) ainda assim não coube - round 2 desta
+                    // tarefa: `op_offload=true` deixa o agendador tentar
+                    // GPU mesmo sem necessidade. Não se aplica de novo
+                    // quando `draft_on_cpu` já é true (mesma tentativa que
+                    // acabou de rodar).
+                    if !attach.mtp_ready()
+                        && attach.mtp_initial_context_error.is_some()
+                        && !draft_on_cpu
+                        && cfg.mtp_cpu_fallback_enabled
+                    {
+                        let vram_error =
+                            attach.mtp_initial_context_error.clone().unwrap_or_default();
+                        warn!(
+                            "contexto do rascunho MTP externo falhou na VRAM ({vram_error}); \
+                                 tentando de novo com execução no host (offload_kqv=false)"
+                        );
+                        return Self::from_loaded_with_mtp_offload(
                             target_loaded.clone(),
                             cfg,
                             fit_memory_applied,
                             effective_n_gpu_layers,
-                            Some(draft_loaded.clone()),
-                            initial_offload_kqv,
-                        )?;
-                        // Rede de segurança para quando os pesos couberam na
-                        // VRAM mas o contexto (buffer de compute do ubatch de
-                        // pior caso) ainda assim não coube - round 2 desta
-                        // tarefa: `op_offload=true` deixa o agendador tentar
-                        // GPU mesmo sem necessidade. Não se aplica de novo
-                        // quando `draft_on_cpu` já é true (mesma tentativa que
-                        // acabou de rodar).
-                        if !attach.mtp_ready()
-                            && attach.mtp_initial_context_error.is_some()
-                            && !draft_on_cpu
-                            && cfg.mtp_cpu_fallback_enabled
-                        {
-                            let vram_error = attach
-                                .mtp_initial_context_error
-                                .clone()
-                                .unwrap_or_default();
-                            warn!(
-                                "contexto do rascunho MTP externo falhou na VRAM ({vram_error}); \
-                                 tentando de novo com execução no host (offload_kqv=false)"
-                            );
-                            return Self::from_loaded_with_mtp_offload(
-                                target_loaded.clone(),
-                                cfg,
-                                fit_memory_applied,
-                                effective_n_gpu_layers,
-                                Some(draft_loaded),
-                                false,
-                            );
-                        }
-                        Ok(attach)
-                    });
+                            Some(draft_loaded),
+                            false,
+                        );
+                    }
+                    Ok(attach)
+                });
 
                 match draft_result {
                     Ok(draft_engine) if draft_engine.mtp_ready() => {

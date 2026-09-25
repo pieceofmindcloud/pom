@@ -15,7 +15,7 @@ pub(crate) enum InstallResult {
 
 /// Decide whether a manifest identifies a build newer than this executable.
 ///
-/// Release IDs are the build commit stamped by `crates/node/build.rs`. A
+/// Release IDs are the build commit returned by `crate::build_commit()`. A
 /// release with a higher SemVer wins; for the same version a different commit
 /// is a new build, but an older version is never installed.
 pub(crate) fn is_newer_release(
@@ -217,6 +217,7 @@ mod tests {
             size: 8,
             download_expires_at: None,
             changelog: None,
+            preferences: None,
             key_id: "release-key".into(),
             signature: "signed".into(),
         }

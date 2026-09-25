@@ -1,16 +1,50 @@
-target/
-.git/
-venv/
-.venv/
-models/
+# A .dockerignore pattern is matched against the WHOLE path, with `*` stopping
+# at `/` - it is not a .gitignore. So `*.log` alone covers the repository root
+# and nothing else, and every artifact that a build or a local run drops deeper
+# in the tree has to be spelled out with `**/`. Each one that is not excluded
+# goes into the build context, and any change to it invalidates the layer that
+# copies its directory - see the header of `Dockerfile` and
+# `scripts/test-docker-build-cache.sh`.
+**/target/
+**/target-*/
+**/.git/
+**/.fm-secondmate/
+**/venv/
+**/.venv/
+models*/
+source-models*/
+# Only the root Compose fixtures are excluded; Cargo needs a bin source under
+# crates/node/tests/support even for the release build.
 tests/
-*.gguf
-*.part
-*.log
-*.key
+**/*.gguf
+**/*.part
+# A node started from the checkout writes `infer_server_<pid>.log` next to
+# `crates/node`. Those files are in .gitignore, so nobody sees them, and each
+# new one used to re-run the whole Rust build.
+**/*.log
+# Runtime credentials and local dotenv files never belong in the build context.
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/.env
+**/.env.*
 pom.json
 pom.db
 pom.db-*
 docs/superpowers/
-apps/frontend/node_modules
+**/node_modules/
 apps/frontend/dist*
+# Written by `npm run build|dev|test` on the host. The image regenerates all of
+# them (`prebuild` runs build-brand.mjs and build-docs.mjs), and a `tsbuildinfo`
+# from the host is worse than useless here: it records the host's paths and
+# timestamps, and `tsc -b` would trust it.
+**/*.tsbuildinfo
+apps/frontend/src/brand/
+apps/frontend/src/docs/
+apps/frontend/public/brand/
+# The local fork is passed to Docker as the separate `llama-fork` named
+# context; the primary project context must not duplicate its source, models,
+# or Git history. The build script strips build outputs and secrets from that
+# named context separately.
+llama.cpp/

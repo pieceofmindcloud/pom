@@ -28,9 +28,14 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   As métricas do card de máquina usam aqui os rótulos de GPUs, uso e potência
   para manter o detalhe disponível nas duas línguas.
   `chat.telemetry.backendRow` distingue chamada de avaliação e sincronização,
-  sem rotular o tempo de avaliação como enqueue.
+  sem rotular o tempo de avaliação como enqueue. As linhas de captura e wire
+  residual distinguem ask-to-ready, wall do tensor-get, pós-processamento,
+  conversão f8 e serialização do frame; o resumo de transporte também nomeia a
+  espera de envio e finalização do corpo QUIC.
   As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16 permanece
   padrão e que f8/i4g64/i4g128 são opções com perda sujeitas a capability.
+  `deploy.visionUnavailable` orienta que a tela só oferece visão quando a
+  identidade e as dimensões GGUF comprovam a associação do projetor.
 - As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem
   o aviso de miniaturização automática de imagens e a recusa rara quando o
   contexto não comporta nem a resolução mínima.
@@ -41,6 +46,18 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   recusas concretas, confirmações e resultado das ações. O grupo
   `notifications.*` também nomeia ofertas de sucessão e de promoção
   infer-to-node, além do aviso sem botões de descida para infer.
+- O grupo `plugins.*` cobre o estado de carregamento, erro e catálogo vazio,
+  metadados ausentes, release disponível, preços, licença ativa ou não exigida,
+  uso e limite de ativações por plugin, link de compra à loja pública, lightbox
+  de screenshots, ativação e ações por plugin, um único card global para
+  cadastro/checagem de releases GitHub, instalação de plugins gratuitos e edição
+  local das preferências tipadas. Os erros de release incluem o detalhe validado
+  pelo nó. Todos os rótulos precisam existir nas colunas
+  `en` e `pt-BR`; nomes, descrições, códigos, releases e URLs de imagem são
+  dados do catálogo público, não traduções fixas. A descrição do catálogo tem
+  fallback para inglês quando o idioma selecionado não está disponível. Validade
+  da licença, última instalação/aplicação e última consulta de update são datas
+  distintas do contrato do nó e recebem formatação no locale escolhido.
 - `locales.ts` - parser CSV pequeno, carregamento síncrono do `?raw`, cache de
   `IntlMessageFormat` e a API pública de locale. Não coloque traduções novas
   aqui. O fallback continua sendo locale solicitado, depois inglês, depois a
@@ -53,28 +70,26 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   cinco recusas do servidor por código (`trustAnchor.refusal.*`). A tela mostra
   a recusa traduzida e só cai no texto do servidor para um código que ela não
   conhece.
-- O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
-  detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
-  retry e erros do provider nas duas línguas. Não coloque texto do CLI ou
+- O grupo `remoteModels.*` cobre status compacto de login, busca, modelos
+  públicos em alta, detalhes, licença desconhecida, confirmação, fila, progresso,
+  cancelamento, retry e erros do provider nas duas línguas. Não coloque texto do CLI ou
   caminho local nesses valores.
 - O grupo `huggingFace.*` cobre o campo de token da tela de Preferências. O valor
   persistido nunca entra numa mensagem; a UI mostra somente a máscara e a
   fonte efetiva.
-- O grupo `tokenLogs.*` cobre a auditoria de requisições: barra de filtros,
-  abas de requisições e estatísticas, métricas agregadas, abas ENVIADO,
-  REQUEST, Resposta e TELEMETRIA, visualizadores Markdown, toggle persistente
-  de JSON cru ou Markdown renderizado, caminho da requisição e cópia segura da
-  aba ativa. Também nomeia os botões de expansão e a janela grande de leitura.
-  O aviso
-  sobre JSON selecionável foi removido; nenhuma mensagem dessa tela recebe o
-  segredo da chave. Nas mensagens pt-BR, `Tokens` é o termo de produto para
-  contagens e velocidades de tokens; não use `Fichas`.
+- Textos de plugin **não** ficam neste CSV: cada plugin leva os próprios
+  catálogos (o antigo grupo `tokenLogs.*` foi para `pom-plugin-logs/i18n/`).
+  `locales.ts` só oferece `setPluginMessages`/`clearPluginMessages`, que colocam
+  as chaves `<plugin_code>.*` no mapa de `formatMessage` e nunca sobrescrevem
+  chave do POM. Ver `docs/subsystems/plugins-ui.md`.
 - O grupo `deploymentLogs.*` cobre o console de processo da réplica local:
   estado do auto-scroll, cópia das últimas 500 linhas, retorno da cópia, filtro
   e estados de coleta.
-- O grupo `about.*` cobre a tela Sobre: licença provisória do POM, status
-  Enterprise e verificação sob demanda de atualização do `pom_core`, contagem e
-  filtro do catálogo, rótulos de ecossistema, versão, repositório e estado vazio.
+- O grupo `about.*` cobre a licença AGPL-3.0 publicada em `LICENSE`, os links
+  para o texto GNU e para o arquivo do repositório, o aviso de
+  segurança/privacidade LGPD e a explicação de criação de plugins; também cobre
+  status Enterprise, atualização do `pom_core`, contagem e filtro do catálogo,
+  rótulos de ecossistema, versão e repositório.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 Os identificadores oficiais de perfil são `admin`, `node` e `infer`. O rótulo

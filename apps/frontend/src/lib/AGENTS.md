@@ -47,7 +47,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `ChatStreamResult` retains trace, generation timings and source so Chat can
   associate the complete telemetry capture with the specific reply while the
   persisted message patch settles.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Capture stages distinguish scheduler ask-to-ready from tensor-get call wall and postprocess; f8 conversion, frame serialization and QUIC body-send wait have separate totals. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
   `stream_duration_ms` is measured locally from the first SSE data frame to
   receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
   separate `time_last_token_to_response_end_ms` isolates that tail.
@@ -150,7 +150,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `modelProvider.ts` - serializa a busca remota, filtra jobs de download,
   calcula a cadência derivada e só calcula percentual quando o backend conhece
   o total de bytes. `useRemoteModelProviderStatus` em `queries.ts` lê o estado
-  estruturado do CLI e da sessão Hugging Face antes da busca remota.
+  estruturado do CLI e da sessão Hugging Face; `publicModelDiscovery.ts` consulta
+  a API pública do Hugging Face para listar GGUFs em alta sem credenciais.
 - `api.ts` e `queries.ts` também expõem `getHuggingFaceTokenConfig`,
   `saveHuggingFaceToken` e `useHuggingFaceTokenConfig`; o tipo de resposta
   contém apenas `configured`, `masked` e `source`, nunca o token bruto.
@@ -186,7 +187,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `GpuStat.power_watts` é telemetria opcional: o card de detalhes mostra o
   valor quando NVIDIA ou AMD expõe a potência da placa e mantém desconhecido
   quando não há essa leitura.
-  `PluginStatus` é o contrato de UM plugin independente do catálogo (ver
+  `PluginStatus` é o contrato local de UM plugin independente (ver
   `crates/node/src/plugins.rs`), consumido por `usePlugins`/`useEnterpriseStatus`
   (o segundo é um seletor sobre o primeiro, para o `plugin_code` `"enterprise"`
   especificamente). Quando inativo, `useEnterpriseStatus` remove caches de
@@ -195,6 +196,30 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   - nunca misture os dois: a tela de Plugins só aplica atualização de plugin,
   e `About.tsx` só aplica atualização do `pom`, cada uma após confirmação
   explícita do operador.
+- `pluginCatalog.ts` - consulta diretamente o catálogo público de plugins do
+  servidor de licenças, com `credentials: "omit"`; não usa `api.ts` nem envia a
+  chave de conexão ou a sessão administrativa. Valida os campos obrigatórios de
+  cada release e a URL canônica opcional `github_repository`; descarta plugins
+  sem release válida e sem origem GitHub, mantém campos opcionais
+  ausentes como dados desconhecidos e aceita imagens somente do host público
+  esperado, sem credenciais embutidas na URL. Também valida `description_pt_br`
+  quando publicados. Estado de licença, candidatos e uso por `plugin_code` vêm
+  da API autenticada do nó (`PluginStatus`), nunca do catálogo público.
+  `pluginPurchase.ts` constrói a URL da loja pública com o `plugin_code` em
+  parâmetro codificado e não envia credenciais. `usePublicPluginCatalog` em `queries.ts`
+  controla carregamento, erro e atualização periódica dessa leitura.
+  `PluginStatus` também carrega `installed_at`, `update_checked_at` e
+  `public_install` do estado real persistido pelo nó; não derive a data da última
+  instalação do heartbeat. Uma instalação pública mantém `licensed_plugins`
+  vazio e usa estado local próprio, sem lease.
+  `license_expires_at` é a validade da LICENÇA (de `GET /v1/licenses/status`) e
+  é o campo certo para "Licença válida até" na tela de Plugins - nunca
+  `lease_expires_at`, um prazo técnico de renovação de poucos dias que o
+  heartbeat empurra sozinho. O status também expõe a origem GitHub registrada
+  localmente, a release verificada em staging e seu erro de checagem; isso não
+  muda `licensed_plugins`. `preferences_schema` vem do manifesto instalado,
+  enquanto `preferences` são valores locais, enviados somente à rota local de
+  configuração do plugin e nunca à API de licenças.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions
@@ -258,11 +283,16 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   em voo de `PeerView` é `null` quando o relatório vivo do peer não chegou;
   zero só representa um peer que de fato reportou estar ocioso.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
-  `model_label`, `pom_id` and optional local `mmproj_path`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
+  `model_label`, `pom_id`, optional local `mmproj_path`,
+  `mmproj_candidates` and `mmproj_reason`; `DeployPlan` carries the same
+  candidate list so the deployment inspector can submit an explicit projector
+  path without any source SHA-256 lookup;
+  `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
   `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen
   shapes. `DeployPlan` also carries the operational name, strategy, RTT route
-  alternatives and projected load, while `DeployMachine` carries GPU/RAM
-  capacity plus optional live GPU/RAM usage percentages. Its live load and
+  alternatives, projected load and the selected head projector reason, while
+  `DeployMachine` carries GPU/RAM capacity plus optional live GPU/RAM usage
+  percentages. Its live load and
   route load distribution are nullable when the survey could not read the
   peer, so the deploy screen can say that the value is unavailable.
   `DeployStep.parts`
@@ -328,6 +358,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   It also carries `authority_level`, the **effective** administrative
   authority, which is what decides whether a screen offers an administrative
   act - `profile: admin` alone grants nothing.
+### pluginCatalog.ts
+- `releaseForTarget(releases, os, arch)` seleciona somente uma release cujo
+  sistema e arquitetura coincidam com o nó local. Sem alvo conhecido ou sem
+  correspondência, retorna `null` para a UI não apresentar a release de outra
+  plataforma.
 - `usePeerRuntime(nodeId, enabled)` 15s (stale 10s) - o `/health` daquela
   máquina, por `optional` (um nó sem a rota devolve 404 e a seção some). O
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar
@@ -338,10 +373,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   aggregated for the active model), `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)`
   60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s
   while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while
-  waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, user,
-  api_key, model, prompt, from, to, limit, offset})` 3s,
-  `useRequestStats({node_id, user, api_key, model, prompt, from, to}, enabled)`
-  30s while the statistics tab is open,
+  waiting or 10s idle, `useAdminNodes()` 8s, `usePluginUi()` 30s (manifestos `pom-plugin-ui/v1` dos plugins ativos),
   `useServableModels()` 30s. The latter preserves `context_length` and
   `max_input_tokens` from `/v1/models` for the Chat attachment guard. A refusal
   or transport failure in the capability read becomes the explicit
@@ -544,3 +576,20 @@ Keep this file for knowledge useful to almost every future agent session in this
 Do not repeat what the codebase already shows; point to the authoritative file or command instead.
 Prefer rewriting or pruning existing entries over appending new ones.
 When updating this file, preserve this bar for all agents and keep entries concise.
+
+## Interface de plugins
+
+- `pluginUi.ts` - tipos do manifesto e o registro validado (`setPluginUi`) que
+  menu, guarda de perfil e roteador leem. Normaliza menu e rotas sob
+  `/<plugin_code>/...` no mesmo registro, exceto reivindicação única das
+  rotas nativas `/logs` e `/estatisticas`: `resolvePluginRoute`,
+  `pluginRouteProfiles`, `pluginMenuItems`, `pluginLabel`, `pluginAssetUrl`.
+  `roles` filtra o item e também limita o acesso direto à rota vinculada;
+  menus e rotas aceitam `roles` atual ou `profiles` legado, sem exigir ambos.
+  Se os dois aparecem, `roles` prevalece; sem nenhum, todos os perfis são
+  elegíveis. Não conhece plugin algum.
+- `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
+  design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
+  empacotar cópias próprias.
+- `pluginI18n.ts` - carrega/valida/instala os catálogos de texto do plugin
+  (`syncPluginCatalogs`), nos idiomas selecionados. Ver `docs/subsystems/plugins-ui.md`.

@@ -9,6 +9,11 @@ por `plugin_code`, não de um produto único: `ActivationPayload`,
 pode conceder vários. Os DTOs precisam continuar compatíveis com o servidor
 em `license.pieceofmind.cloud`, inclusive com envelope, manifests/grants
 assinados e estados de lease.
+As respostas autenticadas também trazem plugins concedidos, candidatos com
+release ativável, expiração e uso de ativações por `plugin_code`; o POM mantém
+esses dados no status local sem expor tokens. `PluginManifest.preferences` é
+opcional e tipado para preservar respostas antigas; define somente o schema da
+interface de preferências locais e nunca é entitlement.
 
 Também publica `MAX_IPC_FRAME_BYTES`, o limite compartilhado dos frames JSON
 na comunicação local por stdin/stdout entre `pom` e `pom-plugin-host`.

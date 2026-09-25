@@ -671,11 +671,18 @@ pub(crate) fn step_blocking(
         reply_meta["mtp_k"] = json!(k);
     }
     let encode_started = Instant::now();
-    let bytes = wire::encode(
+    let (bytes, wire_timing) = wire::encode_profiled(
         &reply_meta,
         Some((&residual.values, residual.shape.clone())),
         wire_dtype,
     )?;
+    timings.residual_wire_f8_conversion_us = timings
+        .residual_wire_f8_conversion_us
+        .saturating_add(wire_timing.f8_conversion_us);
+    timings.residual_wire_frame_serialize_us = timings
+        .residual_wire_frame_serialize_us
+        .saturating_add(wire_timing.frame_serialize_us);
+    timings.residual_wire_encode_calls = timings.residual_wire_encode_calls.saturating_add(1);
     timings.encode_us += encode_started.elapsed().as_micros() as u64;
     if let Some(context) = profiling.as_ref() {
         timings.record_profile_span(

@@ -219,7 +219,7 @@ pub struct GatewayState {
     pub prefix_disk: Option<Arc<crate::prefix_cache::PrefixDiskIndex>>,
     /// Perfil adaptativo por rota, atualizado apenas depois de um prefill
     /// concluído; escolher o chunk não aguarda I/O nem sonda de rede.
-    pub adaptive_chunk_tuner: Arc<crate::gateway::AdaptiveChunkTuner>,
+    pub(crate) adaptive_chunk_tuner: Arc<crate::gateway::AdaptiveChunkTuner>,
     /// Clientes HTTP de saída, **um por peer**, com o certificado do destino
     /// fixado pelo node_id (`peer_client::PeerClients`).
     ///

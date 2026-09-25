@@ -443,14 +443,25 @@ mod tests {
 
     #[tokio::test]
     async fn changing_visibility_preserves_the_internal_credential() {
-        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = state_with("admin", vec![]).await;
+        struct RestoreConfig(Option<std::ffi::OsString>);
+        impl Drop for RestoreConfig {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("POM_CONFIG", value),
+                    None => std::env::remove_var("POM_CONFIG"),
+                }
+            }
+        }
+        let _restore_config = RestoreConfig(std::env::var_os("POM_CONFIG"));
         let config_path = std::env::temp_dir().join(format!(
             "pom-network-visibility-{}-{}.json",
             std::process::id(),
             uuid::Uuid::new_v4().simple()
         ));
-        let previous_config = std::env::var_os("POM_CONFIG");
         std::env::set_var("POM_CONFIG", &config_path);
 
         let private = NetworkSettings {
@@ -492,10 +503,6 @@ mod tests {
         );
         drop(private_config);
 
-        match previous_config {
-            Some(value) => std::env::set_var("POM_CONFIG", value),
-            None => std::env::remove_var("POM_CONFIG"),
-        }
         std::fs::remove_file(config_path).ok();
     }
 }

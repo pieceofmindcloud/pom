@@ -190,6 +190,10 @@ pub struct Plan {
     pub(super) kind: DeployKind,
     /// Projector selected by the catalog for the model, if any.
     pub(super) mmproj_path: Option<String>,
+    /// All compatible projectors reported by the selected pipeline head.
+    pub(super) mmproj_candidates: Vec<String>,
+    /// Motivo do catálogo quando nenhum projetor pôde ser associado.
+    pub(super) mmproj_reason: Option<String>,
     /// True only when the surveyed GGUF metadata reports more than one expert.
     /// The UI must never infer this from a filename or architecture label.
     pub(super) is_moe: bool,
@@ -667,6 +671,7 @@ pub(super) fn plan_with_options(
         preferred_node_ids,
         &PairwiseRtt::default(),
         None,
+        None,
     )
 }
 
@@ -1057,6 +1062,7 @@ pub(super) fn plan_with_rtt_options(
     preferred_node_ids: &[String],
     pairwise_rtt: &PairwiseRtt,
     layer_options: Option<WholeLayerOptions>,
+    requested_mmproj_path: Option<&str>,
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
@@ -1170,17 +1176,55 @@ pub(super) fn plan_with_rtt_options(
     // Vision belongs to the selected pipeline head, not to whichever peer
     // happened to report a layer-0 file first. Downstream peers receive hidden
     // state and must never be asked to load the raw image projector.
-    let mmproj_path = chosen
+    let selected_head_projector = chosen
         .iter()
         .find(|(index, target, _)| !target.is_empty() && available[*index].start_layer == 0)
-        .and_then(|(_, target, _)| machines.iter().find(|machine| machine.node_id == *target))
-        .and_then(|machine| {
-            machine
-                .held
+        .and_then(|(index, target, _)| {
+            let candidate = &available[*index];
+            machines
                 .iter()
-                .find(|shard| shard.mmproj_path.is_some())
-                .and_then(|shard| shard.mmproj_path.clone())
+                .find(|machine| machine.node_id == *target)
+                .and_then(|machine| {
+                    machine.held.iter().find(|shard| {
+                        shard.start_layer == candidate.start_layer
+                            && shard.end_layer == candidate.end_layer
+                            && shard.name == candidate.name
+                    })
+                })
         });
+    let mut mmproj_candidates = selected_head_projector
+        .map(|shard| shard.mmproj_candidates.clone())
+        .unwrap_or_default();
+    if let Some(path) = selected_head_projector.and_then(|shard| shard.mmproj_path.clone()) {
+        if !mmproj_candidates.iter().any(|candidate| candidate == &path) {
+            mmproj_candidates.push(path);
+        }
+    }
+    mmproj_candidates.sort();
+    mmproj_candidates.dedup();
+    let mmproj_path = requested_mmproj_path
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .or_else(|| selected_head_projector.and_then(|shard| shard.mmproj_path.clone()));
+    let mmproj_reason = selected_head_projector
+        .and_then(|shard| shard.mmproj_reason.clone())
+        .or_else(|| {
+            mmproj_path.is_none().then(|| {
+                "o catálogo não comprovou um projetor pertencente ao modelo selecionado".into()
+            })
+        });
+    if let Some(requested) = requested_mmproj_path.filter(|path| !path.is_empty()) {
+        if !mmproj_candidates.is_empty()
+            && !mmproj_candidates
+                .iter()
+                .any(|candidate| candidate == requested)
+        {
+            blocked = Some(
+                "o projetor selecionado não está entre os candidatos compatíveis do peer da cabeça"
+                    .into(),
+            );
+        }
+    }
 
     for (i, ..) in &chosen {
         available[*i].selected = true;
@@ -1798,6 +1842,8 @@ pub(super) fn plan_with_rtt_options(
         strategy,
         kind,
         mmproj_path,
+        mmproj_candidates,
+        mmproj_reason,
         tp,
         is_moe,
         inference_mode_supported,

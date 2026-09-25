@@ -186,6 +186,68 @@ mod whole_route_tests {
         assert_eq!(available[0]["name"], "qwen3.5-9b");
     }
 
+    /// Reproduz a listagem observada na Salem com os dois projetores ao lado
+    /// dos modelos. Exercita a rota HTTP de planejamento via testkit local, sem
+    /// credenciais, Docker ou envio de implantação a outro peer.
+    #[tokio::test]
+    async fn salem_ornith_plan_keeps_its_own_projector_beside_qwen() {
+        let mut catalog = catalog();
+        catalog["models"] = json!([
+            {
+                "id": "ornith",
+                "name": "Ornith 1.5",
+                "source": "folder",
+                "source_label": "Pasta",
+                "path": "/data/source-models/Ornith-1.5-Q4_K_M.gguf",
+                "mmproj_path": "/data/source-models/mmproj-Ornith-1.5-F16.gguf",
+                "size_bytes": 5_368_709_120u64,
+                "architecture": "llama",
+                "total_layers": 32,
+                "quant": "Q4_K_M",
+                "shard_range": null,
+                "shard_group": null,
+            },
+            {
+                "id": "qwen",
+                "name": "Qwen3.8 Flash Next",
+                "source": "folder",
+                "source_label": "Pasta",
+                "path": "/data/source-models/Qwen3.8-Flash-Next-Q4_K_M.gguf",
+                "mmproj_path": "/data/source-models/mmproj-Qwen3.8-Flash-Next-Q4_K_M.gguf",
+                "size_bytes": 5_368_709_120u64,
+                "architecture": "qwen3",
+                "total_layers": 32,
+                "quant": "Q4_K_M",
+                "shard_range": null,
+                "shard_group": null,
+            }
+        ]);
+        let port = catalog_machine(catalog).await;
+        let body = plan_body(
+            state_seeing_only(port).await,
+            json!({
+                "group": "Ornith 1.5",
+                "kind": "whole",
+                "selection": [{
+                    "start_layer": 0,
+                    "end_layer": 31,
+                    "target_node_id": "ksia"
+                }]
+            }),
+        )
+        .await;
+
+        assert!(body["blocked"].is_null(), "{}", body["blocked"]);
+        assert_eq!(
+            body["mmproj_path"],
+            "/data/source-models/mmproj-Ornith-1.5-F16.gguf"
+        );
+        assert_ne!(
+            body["mmproj_path"],
+            "/data/source-models/mmproj-Qwen3.8-Flash-Next-Q4_K_M.gguf"
+        );
+    }
+
     #[tokio::test]
     async fn the_plan_ignores_unrelated_catalog_enrichment() {
         let mut pending = catalog();

@@ -7,6 +7,7 @@
  * refetching while the tab is hidden, which keeps an open panel from loading a
  * node nobody is watching.
  */
+import type { ActivePluginUi } from "./pluginUi";
 import { useQueries, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import {
@@ -22,6 +23,8 @@ import {
   setConnectionKey,
 } from "./api";
 import { modelDownloadJobs } from "./modelProvider";
+import { getTrendingModels } from "./publicModelDiscovery";
+import { fetchPublicPluginCatalog } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
   ChatCapabilities,
@@ -45,8 +48,6 @@ import type {
   PathsResponse,
   PeerCatalog,
   PeerRuntime,
-  RequestLogResponse,
-  RequestStats,
   TransferJob,
   TrustAnchorView,
   WindowsFirewallStatus,
@@ -92,9 +93,8 @@ export const keys = {
   geoReference: ["geo-reference"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
-  requests: ["requests"] as const,
-  requestStats: ["request-stats"] as const,
   plugins: ["plugins"] as const,
+  publicPluginCatalog: ["public-plugin-catalog"] as const,
   pomCoreUpdate: ["pom-core-update"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
@@ -102,6 +102,7 @@ export const keys = {
   inferenceHeads: (model: string) => ["inference-heads", model] as const,
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
+  pluginUi: ["plugin-ui"] as const,
   clusterLogs: (deployId: string | undefined) => ["cluster-logs", deployId ?? "all"] as const,
   remoteModels: (query: string, ggufOnly: boolean, page: number) =>
     ["remote-models", query, ggufOnly, page] as const,
@@ -203,6 +204,14 @@ function inactivePlugin(code: string): PluginStatus {
     manage_url: "https://pieceofmind.cloud/enterprise",
     plugin_version: null,
     lease_expires_at: null,
+    license_expires_at: null,
+    activation_count: null,
+    max_activations: null,
+    licensed_plugins: [],
+    plugin_usage: [],
+    activation_candidates: [],
+    installed_at: null,
+    update_checked_at: null,
     available_update: null,
   };
 }
@@ -214,7 +223,32 @@ function inactivePlugin(code: string): PluginStatus {
 export function usePlugins() {
   return useQuery<PluginStatus[]>({
     queryKey: keys.plugins,
-    queryFn: () => optional(api.get<PluginStatus[]>("/api/ui/plugins", { auth: false }), []),
+    queryFn: () => optional(api.get<PluginStatus[]>("/api/ui/plugins"), []),
+    retry: false,
+    refetchInterval: 30_000,
+  });
+}
+
+/** Public store metadata is fetched directly without node credentials or cookies. */
+export function usePublicPluginCatalog() {
+  return useQuery({
+    queryKey: keys.publicPluginCatalog,
+    queryFn: ({ signal }) => fetchPublicPluginCatalog(signal),
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
+ * UI manifests of the active plugins (`pom-plugin-ui/v1`). An older node, an
+ * inactive plugin or a failed request all mean "no plugin UI": the POM keeps
+ * showing only its advertising fallbacks.
+ */
+export function usePluginUi() {
+  return useQuery<{ plugins: ActivePluginUi[] }>({
+    queryKey: keys.pluginUi,
+    queryFn: () => optional(api.get<{ plugins: ActivePluginUi[] }>("/api/ui/plugins/ui", { auth: false }), { plugins: [] }),
     retry: false,
     refetchInterval: 30_000,
   });
@@ -226,15 +260,8 @@ export function usePlugins() {
  * know about the rest of the catalog.
  */
 export function useEnterpriseStatus() {
-  const client = useQueryClient();
   const query = usePlugins();
   const status = query.data?.find((plugin) => plugin.code === "enterprise") ?? inactivePlugin("enterprise");
-
-  useEffect(() => {
-    if (status.active) return;
-    void client.removeQueries({ queryKey: keys.requests });
-    void client.removeQueries({ queryKey: keys.requestStats });
-  }, [client, status.active]);
 
   return { ...query, data: status };
 }
@@ -621,80 +648,6 @@ export function useApiKeys() {
   });
 }
 
-export function useRequestLog(
-  params: {
-    node_id?: string;
-    user?: string;
-    api_key?: string;
-    model?: string;
-    prompt?: string;
-    from?: string;
-    to?: string;
-    limit?: number;
-    offset?: number;
-  } = {},
-) {
-  const search = new URLSearchParams();
-  if (params.node_id) search.set("node_id", params.node_id);
-  if (params.user) search.set("user", params.user);
-  if (params.api_key) search.set("api_key", params.api_key);
-  if (params.model) search.set("model", params.model);
-  if (params.prompt) search.set("prompt", params.prompt);
-  if (params.from) search.set("from", params.from);
-  if (params.to) search.set("to", params.to);
-  if (params.limit !== undefined) search.set("limit", String(params.limit));
-  if (params.offset !== undefined) search.set("offset", String(params.offset));
-  const qs = search.toString();
-  return useQuery({
-    queryKey: [...keys.requests, qs],
-    queryFn: () =>
-      optional(
-        api.get<RequestLogResponse>(
-          `/api/ui/requests${qs ? `?${qs}` : ""}`,
-        ),
-        {
-          entries: [],
-          total: 0,
-          errors: 0,
-          incomplete: 0,
-          by_token: {},
-          by_node: {},
-          storage: "unavailable",
-        },
-      ),
-    refetchInterval: 3000,
-  });
-}
-
-export function useRequestStats(
-  params: {
-    node_id?: string;
-    user?: string;
-    api_key?: string;
-    model?: string;
-    prompt?: string;
-    from?: string;
-    to?: string;
-  } = {},
-  enabled = true,
-) {
-  const search = new URLSearchParams();
-  if (params.node_id) search.set("node_id", params.node_id);
-  if (params.user) search.set("user", params.user);
-  if (params.api_key) search.set("api_key", params.api_key);
-  if (params.model) search.set("model", params.model);
-  if (params.prompt) search.set("prompt", params.prompt);
-  if (params.from) search.set("from", params.from);
-  if (params.to) search.set("to", params.to);
-  const qs = search.toString();
-  return useQuery({
-    queryKey: [...keys.requestStats, qs],
-    enabled,
-    queryFn: () => api.get<RequestStats>(`/api/ui/requests/stats${qs ? `?${qs}` : ""}`),
-    refetchInterval: enabled ? 30_000 : false,
-  });
-}
-
 export function useServableModels() {
   return useQuery({
     queryKey: keys.openaiModels,
@@ -729,6 +682,15 @@ export function useRemoteModelSearch(options: {
     enabled: options.enabled !== false && options.query.trim().length > 0,
     staleTime: 15_000,
     retry: false,
+  });
+}
+
+export function useTrendingPublicModels() {
+  return useQuery({
+    queryKey: ["public-trending-models", "hugging-face", "gguf"],
+    queryFn: ({ signal }) => getTrendingModels(signal),
+    staleTime: 5 * 60_000,
+    retry: 1,
   });
 }
 

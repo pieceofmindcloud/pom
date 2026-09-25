@@ -8,6 +8,7 @@ pub struct NodeInfo {
     pub hostname: String,
     /// Commit this binary was built from, so "which build is that peer running?"
     /// is answerable without a shell on the machine.
+    /// test
     pub build_commit: String,
     /// Este nó aceita atualizar-se pela interface. A tela só desenha o botão
     /// quando isto é verdade, para nunca oferecer o que vai dar 403.
@@ -154,7 +155,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         // `with_identity` (main.rs) actually announces to peers — the same
         // value `/admin/nodes` already shows correctly on the Network tab.
         hostname: state.network.hostname.clone(),
-        build_commit: crate::BUILD_COMMIT.to_string(),
+        build_commit: crate::build_commit(),
         dev_update: crate::devupdate::enabled(),
         pom_desenv: crate::pom_desenv_enabled(),
         profile,
@@ -485,7 +486,7 @@ pub(super) fn pending_metadata(catalog: &Catalog) -> Catalog {
     pending
         .models
         .retain(|model| !catalog::metadata_is_current(model));
-    catalog::rebuild_shard_sets(&mut pending);
+    catalog::rebuild_shard_sets_fast(&mut pending);
     pending.metadata_complete = false;
     pending
 }

@@ -468,58 +468,68 @@ impl AuditLog {
         }
     }
 
-    /// Queue the initial row without waiting for SQLite or the filesystem.
-    pub fn begin(&self, request: AuditRequest) {
-        let request_id = request.id.clone();
-        let replication = AuditEvent::Begin(request.clone());
-        if let Err(e) = self.sender.try_send(Command::Begin(request)) {
+    /// Fan out an event already stored by the request-log plugin. The POM
+    /// owns peer discovery and transport; plugin hosts remain the data store.
+    pub(crate) fn replicate_event(&self, event: AuditEvent) {
+        self.replicate(event);
+    }
+
+    /// Queue a local event in the legacy store and fan it out. This remains the
+    /// migration fallback when the request-log plugin is unavailable.
+    pub(crate) fn ingest_local_event(&self, event: AuditEvent) {
+        let replication = event.clone();
+        let (operation, request_id, result) = match event {
+            AuditEvent::Begin(request) => {
+                let request_id = request.id.clone();
+                (
+                    "iniciar auditoria",
+                    request_id,
+                    self.sender.try_send(Command::Begin(request)),
+                )
+            }
+            AuditEvent::Complete { id, completion } => (
+                "concluir auditoria",
+                id.clone(),
+                self.sender.try_send(Command::Complete { id, completion }),
+            ),
+        };
+        if let Err(error) = result {
             error!(
-                operation = "iniciar auditoria",
+                operation,
                 request_id = %request_id,
-                error = %e,
+                error = %error,
                 "operação de auditoria perdida antes da gravação"
             );
         }
         self.replicate(replication);
+    }
+
+    /// Queue the initial row without waiting for SQLite or the filesystem.
+    pub fn begin(&self, request: AuditRequest) {
+        self.ingest_local_event(AuditEvent::Begin(request));
     }
 
     /// Queue completion data for the same request id.
     pub fn complete(&self, id: String, completion: AuditCompletion) {
-        let request_id = id.clone();
-        let replication = AuditEvent::Complete {
-            id: id.clone(),
-            completion: completion.clone(),
-        };
-        if let Err(e) = self.sender.try_send(Command::Complete { id, completion }) {
-            error!(
-                operation = "concluir auditoria",
-                request_id = %request_id,
-                error = %e,
-                "operação de auditoria perdida antes da gravação"
-            );
-        }
-        self.replicate(replication);
+        self.ingest_local_event(AuditEvent::Complete { id, completion });
     }
 
-    /// Persist a remote event locally without re-replicating it. A completion
-    /// can arrive before its begin because each peer has an independent swarm
-    /// queue, so it is held briefly until the matching begin is observed.
-    pub fn try_ingest_remote(&self, event: AuditEvent) -> bool {
+    /// Order an event received from another admin without selecting its local
+    /// sink. This keeps completion-before-begin handling identical whether the
+    /// destination stores the event in PomDb or forwards it to a plugin host.
+    pub(crate) fn order_remote_events(&self, event: AuditEvent) -> Option<Vec<AuditEvent>> {
         if !self
             .admin_receiver
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            return false;
+            return None;
         }
-        let mut state = match self.remote_state.lock() {
-            Ok(state) => state,
-            Err(_) => return false,
-        };
+        let mut state = self.remote_state.lock().ok()?;
         match event {
             AuditEvent::Begin(request) => {
                 let id = request.id.clone();
                 if state.begun.contains(&id) {
-                    return true;
+                    return Some(Vec::new());
                 }
                 if state.begun.len() >= MAX_REMOTE_AUDIT_IDS {
                     if let Some(oldest) = state.begun.iter().next().cloned() {
@@ -528,13 +538,11 @@ impl AuditLog {
                 }
                 let completed = state.completions_waiting_for_begin.remove(&id);
                 state.begun.insert(id.clone());
-                if self.sender.try_send(Command::Begin(request)).is_err() {
-                    return false;
-                }
+                let mut events = vec![AuditEvent::Begin(request)];
                 if let Some(completion) = completed {
-                    let _ = self.sender.try_send(Command::Complete { id, completion });
+                    events.push(AuditEvent::Complete { id, completion });
                 }
-                true
+                Some(events)
             }
             AuditEvent::Complete { id, completion } => {
                 if !state.begun.remove(&id) {
@@ -546,13 +554,38 @@ impl AuditLog {
                         }
                     }
                     state.completions_waiting_for_begin.insert(id, completion);
-                    return true;
+                    return Some(Vec::new());
                 }
-                self.sender
-                    .try_send(Command::Complete { id, completion })
-                    .is_ok()
+                Some(vec![AuditEvent::Complete { id, completion }])
             }
         }
+    }
+
+    /// Persist an already ordered remote event without replicating it again.
+    pub(crate) fn try_ingest_remote_ordered(&self, event: AuditEvent) -> bool {
+        if !self
+            .admin_receiver
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        let command = match event {
+            AuditEvent::Begin(request) => Command::Begin(request),
+            AuditEvent::Complete { id, completion } => Command::Complete { id, completion },
+        };
+        self.sender.try_send(command).is_ok()
+    }
+
+    /// Persist a remote event locally without re-replicating it. A completion
+    /// can arrive before its begin because each peer has an independent swarm
+    /// queue, so it is held briefly until the matching begin is observed.
+    pub fn try_ingest_remote(&self, event: AuditEvent) -> bool {
+        let Some(ordered) = self.order_remote_events(event) else {
+            return false;
+        };
+        ordered
+            .into_iter()
+            .all(|event| self.try_ingest_remote_ordered(event))
     }
 
     pub async fn list(&self, query: AuditQuery) -> Result<AuditList> {

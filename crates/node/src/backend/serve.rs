@@ -199,7 +199,12 @@ pub fn plain_allowed(peer: SocketAddr, strict: bool) -> bool {
 ///
 /// `tls: None` é o comportamento anterior a esta feature, e é o que o `testkit`
 /// e os servidores de teste em `127.0.0.1:0` usam.
-pub async fn serve(listener: TcpListener, app: Router, tls: Option<TlsServer>) -> Result<()> {
+#[cfg(test)]
+pub(crate) async fn serve(
+    listener: TcpListener,
+    app: Router,
+    tls: Option<TlsServer>,
+) -> Result<()> {
     serve_with_shutdown(listener, app, tls, std::future::pending::<()>()).await
 }
 
@@ -223,7 +228,8 @@ const QUIC_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(2);
 /// desgarradas (`tokio::spawn` sem dono), então uma conexão em keep-alive
 /// parada — o pool do gateway deixa várias — segurava o motor vivo depois do
 /// `undeploy` e a VRAM nunca voltava. Ver `LlmEngine::unload`.
-pub async fn serve_with_shutdown(
+#[cfg(test)]
+pub(crate) async fn serve_with_shutdown(
     listener: TcpListener,
     app: Router,
     tls: Option<TlsServer>,
@@ -386,7 +392,7 @@ async fn handle_conn(
                     .store(comecou.elapsed().as_millis() as u64, Ordering::Relaxed);
             }
             Builder::new(TokioExecutor::new())
-                .serve_connection(TokioIo::new(tls_stream), svc)
+                .serve_connection_with_upgrades(TokioIo::new(tls_stream), svc)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
@@ -397,7 +403,7 @@ async fn handle_conn(
         }
         (false, _) => {
             Builder::new(TokioExecutor::new())
-                .serve_connection(TokioIo::new(stream), svc)
+                .serve_connection_with_upgrades(TokioIo::new(stream), svc)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }

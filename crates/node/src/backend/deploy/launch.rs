@@ -54,10 +54,11 @@ pub(super) async fn deploy_endpoint(
         &req.preferred_node_ids,
         &pairwise_rtt,
         layer_options,
+        req.mmproj_path.as_deref(),
     );
     if req.vision && plan.mmproj_path.is_none() {
         return bad(json!({
-            "error": "este modelo não tem visão: nenhum mmproj foi encontrado ao lado do GGUF"
+            "error": plan.mmproj_reason.as_deref().unwrap_or("este modelo não tem visão: nenhum projetor compatível foi comprovado para o GGUF")
         }));
     }
 
@@ -800,7 +801,7 @@ pub(super) async fn whole_layer_options_for_plan(
                     granularity: None,
                     rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
                     reason: Some(error),
-                })
+                });
             }
         };
         let status = response.status();
@@ -816,7 +817,7 @@ pub(super) async fn whole_layer_options_for_plan(
                     reason: Some(format!(
                         "resposta inválida das regras de fatiamento: {error}"
                     )),
-                })
+                });
             }
         };
         if !status.is_success() {
@@ -931,6 +932,8 @@ pub(super) fn add_virtual_whole_slices(
             name: format!("{group} L{start_layer}-{end_layer}"),
             path: whole.path.clone(),
             mmproj_path: whole.mmproj_path.clone(),
+            mmproj_candidates: whole.mmproj_candidates.clone(),
+            mmproj_reason: whole.mmproj_reason.clone(),
             size_bytes,
             sha256: None,
             pom_id: None,

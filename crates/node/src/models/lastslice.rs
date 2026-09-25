@@ -92,7 +92,7 @@ pub fn save(cfg: &NodeConfig, state: SliceState) -> Result<()> {
     save_at(&path(), cfg, state)
 }
 
-fn save_at(p: &Path, cfg: &NodeConfig, state: SliceState) -> Result<()> {
+pub(crate) fn save_at(p: &Path, cfg: &NodeConfig, state: SliceState) -> Result<()> {
     let anot = Annotation {
         state,
         attempts: (state == SliceState::Pending).then_some(1).unwrap_or(0),

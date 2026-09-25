@@ -5,9 +5,12 @@
 //! servidor. O artefato é distribuído depois pelo transporte autenticado já
 //! existente do cluster.
 
+#[cfg(test)]
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
+use ed25519_dalek::Signer;
+#[cfg(test)]
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use enterprise_protocol::Fingerprint;
 use serde::{Deserialize, Serialize};
 
@@ -32,16 +35,6 @@ pub(crate) struct PeerFingerprintProof {
     pub pom_version: String,
     pub public_key: String,
     pub signature: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct EnterpriseActivationPeer {
-    pub node_id: String,
-    pub fingerprint_scheme: String,
-    pub fingerprint: String,
-    pub installation_id_hash: String,
-    pub platform: String,
-    pub arch: String,
 }
 
 fn signing_bytes(proof: &PeerFingerprintProof) -> Vec<u8> {
@@ -83,10 +76,8 @@ pub(crate) fn answer_challenge(
     proof
 }
 
-pub(crate) fn verify_proof(
-    challenge: &PeerFingerprintChallenge,
-    proof: &PeerFingerprintProof,
-) -> Result<()> {
+#[cfg(test)]
+fn verify_proof(challenge: &PeerFingerprintChallenge, proof: &PeerFingerprintProof) -> Result<()> {
     if proof.protocol != PEER_PROTOCOL || proof.nonce != challenge.nonce {
         anyhow::bail!("prova Enterprise fora do desafio atual");
     }
@@ -102,17 +93,6 @@ pub(crate) fn verify_proof(
     verifying_key
         .verify(&signing_bytes(proof), &signature)
         .context("assinatura do fingerprint Enterprise não confere")
-}
-
-pub(crate) fn activation_peer_from_proof(proof: &PeerFingerprintProof) -> EnterpriseActivationPeer {
-    EnterpriseActivationPeer {
-        node_id: proof.node_id.clone(),
-        fingerprint_scheme: proof.fingerprint_scheme.clone(),
-        fingerprint: proof.fingerprint.clone(),
-        installation_id_hash: proof.installation_id_hash.clone(),
-        platform: proof.platform.clone(),
-        arch: proof.arch.clone(),
-    }
 }
 
 #[cfg(test)]

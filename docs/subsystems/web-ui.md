@@ -152,8 +152,13 @@ relógio (`History`): as duas seções usavam `Boxes`, o mesmo ícone de
 folha `/implantar` mantém `Rocket` sem colidir com a seção, porque a Sidebar
 não desenha ícone de folha. Dentro de `Modelos`, a ordem é `Encontrar Modelos HF`, `Modelos
 inteiros`, `Fatiar modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
-somente ícones, e as seções com folhas exibem um submenu ao passar o mouse ou
-receber foco. A escolha fica persistida no navegador. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
+somente ícones, com cabeçalho da marca de 64px para alinhar à toolbar. Seções
+com folhas exibem submenu ao passar o mouse, receber foco ou clicar; selecionar
+uma folha navega para sua rota. No estado minimizado, a navegação usa
+`overflow-visible` sem `overflow-y-auto`, pois a combinação faz o navegador
+calcular overflow horizontal como auto e recorta os submenus; `z-index` não
+ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
+`App` decide setup vs painel com `useIsSetupMode()` (probe de
 `/api/ui/node` com `auth: false`; 404 = só existe o router de setup). Rotas:
 
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
@@ -174,6 +179,18 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   fatiamento embutido
 - `/fatias` -> Shards;
   `/fatias/implantar` -> redireciona para `/implantar` (link antigo)
+- Essas quatro rotas, mais `/transferencias` e `/transferencias/enviar`, são
+  tela cheia (`isFullBleed` em `App.tsx`), no mesmo contrato de
+  `/implantacoes`/`/implantacoes/logs`: cabeçalho fixo
+  (`FullBleedHeader`/`FullBleedToolbar`, `components/ui.tsx`) e uma tabela ou
+  o conteúdo próprio rolando por dentro, em vez da coluna central com
+  `max-w-[1400px]`. `WholeModels`, `Shards` e a busca de `RemoteModels` viraram
+  tabelas de largura total; `RemoteModelCard`, o cartão que a busca usava
+  antes, foi removido. `WholeModels` e `Shards` mostram uma coluna/nota de
+  visão com o nome do arquivo `mmproj` (`DiscoveredModel.mmproj_path`/
+  `ShardSet.mmproj_path`, resolvidos pelo catálogo com identidade GGUF e
+  dimensões compatíveis) ou "sem projetor" com o motivo da recusa. A tela nunca
+  inventa o nome.
 - `/implantar` -> DeployModel (entrada de primeiro nível para pôr fatias em
   serviço)
 - `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,
@@ -188,12 +205,45 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   ocorrer primeiro; `cluster_logs_min_level` em `pom.json` controla o nível
   mínimo capturado e assume `info`.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` -> Logs, tela full-bleed da auditoria SQLite com filtros compactos,
-  requisições paginadas por scroll infinito e inspetor JSON
-- `/estatisticas` -> Statistics, tela full-bleed própria dos agregados da
-  auditoria, com um único título e filtros de usuário, API key, modelo, nó,
-  prompt e intervalo de datas;
-  `/logs/estatisticas` redireciona para a rota nova
+- `/logs` e `/estatisticas` -> `EnterpriseFeatureShowcase` quando nenhum plugin
+  ativo declara o destino. Uma declaração única do manifesto substitui o
+  fallback nessa URL, inclusive para Enterprise. As demais telas de plugins
+  vêm de `pom-plugin-ui/v1` e ficam sob `/<plugin_code>/<path do manifesto>`;
+  por exemplo, `plugin_code: "base"` e `/example` abrem em
+  `/admin-ui/base/example`. Menu e matcher usam a mesma tabela normalizada;
+  menus novos aparecem na ordem do manifesto, antes de Documentação. Se dois
+  plugins reivindicarem `/logs` ou `/estatisticas`, ambos usam seus namespaces
+  e o fallback nativo permanece. `/logs/estatisticas` continua como alias
+  nativo de `/estatisticas`. `menu[].roles` filtra o menu e o acesso direto à
+  rota correspondente; sem `roles` nem o campo legado `profiles`, os três
+  perfis são aceitos, sempre respeitando os perfis da rota.
+- `/plugins` -> Plugins, vitrine dos itens publicáveis retornados por
+  `https://license.pieceofmind.cloud/v1/plugins`, cruzados pelo `code` com o
+  estado local de licença e instalação. O browser lê o catálogo público sem
+  credenciais do nó, e o cliente só aceita plugins com releases válidas. A tela
+  mostra ícone, até quatro screenshots, descrição, preço e release quando o
+  servidor fornece esses dados; campos e imagens ausentes têm fallback visual.
+  A descrição usa a versão pt-BR se existir, senão a descrição inglesa. Até
+  quatro screenshots podem ser ampliados em um diálogo de tela cheia, com
+  Escape e foco devolvido ao controle que abriu. Expiração e uso de ativações
+  por plugin vêm do estado autenticado publicado pelo nó, nunca do catálogo
+  público.
+  Plugins ativos no nó continuam listados mesmo quando faltam no catálogo
+  público, com as ações locais preservadas. Quando a licença exigida não está
+  ativa, Comprar redireciona para a loja pública com o `plugin_code` codificado
+  por `lib/pluginPurchase.ts`. Plugins ativos mostram expiração da
+  licença, última instalação/aplicação e última checagem de update como datas
+  distintas; a tela lê esses horários do estado persistido pelo nó. A chave de
+  ativação aparece quando qualquer entrada pública que exige licença não está
+  ativa no estado local, mesmo se outro plugin já estiver ativo ou houver
+  contexto de licença; ausência de status local, expiração e revogação mantêm o
+  formulário visível. Ele some quando todos os plugins licenciáveis conhecidos
+  estão ativos. Desativação pede confirmação. A rota usa `FullBleedHeader` e
+  rolagem interna como `/modelos`; o painel de Plugins usa
+  `overscroll-y-contain` para não propagar a rolagem ao limite para a página.
+  O documento permanece sem rolagem; as áreas internas definem seus próprios
+  limites.
+  Carregamento, erro e catálogo vazio têm estados próprios.
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/redes-publicas` -> PublicNetworks, catálogo full-bleed de redes públicas
   descobertas pela camada pkarr. A tabela agrupa por país/cidade e ordena pela
@@ -215,11 +265,14 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
   participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
   `/config/preferencias/admin` -> preferências administrativas;
-  `/config/sobre` -> About, último item de Configurações, com a licença
-  provisória do POM, o estado Enterprise e a verificação sob demanda de
-  atualização do `pom_core`; quando há atualização, a tela encaminha para
-  `/enterprise`, onde fica a confirmação de aplicar e reiniciar, e também
-  mostra o catálogo de dependências diretas agrupado por licença;
+  `/config/sobre` -> About, último item de Configurações, com links para o
+  `LICENSE` AGPL-3.0 do repositório e a página GNU oficial, aviso de
+  privacidade/segurança LGPD e links do site, formulário de contato
+  (`https://pieceofmind.cloud/contact.html`) e repositórios oficiais; também
+  mostra o estado do plugin associado à atualização do `pom_core`
+  e a verificação sob demanda. Quando há atualização disponível, a própria
+  tela oferece aplicar e reiniciar; também mostra o catálogo de dependências
+  diretas agrupado por licença;
   `/config/confianca` reúne esta máquina, compartilhamento e chaves de conexão;
   `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias). O wizard de configuração não aparece
@@ -276,9 +329,11 @@ mock de referência visual. Não são usados pelo primeiro acesso real.
 
 ### Modelos remotos
 
-`RemoteModels` consulta primeiro `GET /api/ui/model-provider/status` e mostra
-se o CLI do Hugging Face está ausente, se a autenticação é necessária ou se a
-sessão está autenticada. Depois da busca, o detalhe resolve a licença pelo
+`RemoteModels` carrega ao abrir os modelos GGUF em alta pela API pública do
+Hugging Face (`/api/models?sort=trendingScore&limit=20&filter=gguf`), sem enviar
+credenciais. A busca do provider continua usando o nó autenticado; o status de
+login fica compacto dentro da barra, junto ao botão Buscar. Depois da busca, o
+detalhe resolve a licença pelo
 provider e exibe o marcador de modelo gated antes da confirmação de download;
 assim a tela não presume uma licença nem inicia uma operação protegida sem
 explicar a autenticação exigida.
@@ -308,7 +363,9 @@ pela i18n.
 O mesmo retrato traz `pom_desenv`, verdadeiro somente quando o processo foi
 iniciado com `POM_DESENV=1` exatamente. `DeployModel`, Histórico e a caixa de
 reimplantar escondem por completo `Configurações POM (DESENV)` quando a flag é
-falsa. Isso é somente visibilidade local: a UI e o backend preservam os valores
+falsa. Na tela `/implantar`, Tensor, as estratégias Simples/Completa e o botão
+"Voltar ao plano do nó" também ficam ocultos quando `pom_desenv` é falso. Isso é
+somente visibilidade local: a UI e o backend preservam os valores
 da implantação recebidos pela rede, mesmo quando o nó não pode editá-los.
 
 No Dashboard, a leitura é separada por responsabilidade. O `admin` vê os
@@ -326,13 +383,15 @@ a própria máquina respondeu zero; falha de leitura permanece desconhecida.
 Da mesma forma, a carga de um peer no mapa de implantação vem do `/api/ui/node`
 do próprio peer, e não do tracker do coordenador.
 
-`src/lib/access.ts` é a tabela: prefixo de rota -> perfis que entram, e rota
-ausente é livre para `admin` e `node`. Hoje `/implantar`, `/implantacoes` e
-`/logs` e `/estatisticas` são só do administrador. Para `infer`,
-`canAccessRoute` permite somente `/chat`, `/documentacao`, `/config/keys/api` e
-`/config/rede`. No Chat, a telemetria da execução e seus resumos também ficam
-ocultos. A chave casa **segmento inteiro**, então
-`/logs` não cobre `/logs-antigos`.
+`src/lib/access.ts` combina as rotas nativas com os perfis do registro de
+plugins (`lib/pluginUi.ts`); rota nativa ausente da tabela é livre para `admin`
+e `node`. Hoje `/implantar` e `/implantacoes` são só do administrador. As
+vitrines nativas `/logs` e `/estatisticas` ficam acessíveis para descoberta; as
+telas do plugin seguem os perfis declarados no manifesto. Para `infer`, a lista
+de rotas nativas permitidas e negadas vive em `INFER_ROUTES` e
+`INFER_DENIED_ROUTES`. No Chat, a telemetria da execução e seus resumos também
+ficam ocultos. A chave casa **segmento inteiro**, então `/logs` não cobre
+`/logs-antigos`.
 
 No Chat, o `infer` recebe um recorte próprio por
 `GET /api/ui/infer/heads?model=...`: a caixa **Entrada da inferência** mostra a
@@ -444,13 +503,11 @@ a âncora costuma ser um `node` ou um `infer`. Por isso `/config/confianca` não
 está em `RESTRICTED` (`lib/access.ts`), aparece no menu de Configurações e é
 promovida ao menu principal do `infer`.
 
-O `admin` recebe na Sidebar, junto das bandeiras de idioma, o selo de
-criptografia do cluster (`components/TlsIndicator.tsx`): `ShieldCheck` em
-`aqua` quando a política está ligada e `ShieldOff` em `amber` quando não. Ele
-é só ícone, mas o link para `/config/preferencias/admin` conserva o significado
-em `aria-label` e `title`. Node e infer não renderizam esse selo, conforme a
-regra de apresentação dos perfis. O dado sai do `useNode()`, que já é polled:
-nenhuma chamada nova.
+O cabeçalho da `Topbar` mantém identificação do nó, perfil, notificações e o
+atalho de janela nativa; o botão `Este nó` não é renderizado. O indicador TLS
+da Sidebar (`components/TlsIndicator.tsx`) também está oculto para todos os
+perfis. A política continua disponível em Preferências administrativas; nenhuma
+configuração ou comportamento TLS foi alterado.
 
 Na tela `TokenKeys`, node e infer veem apenas as chaves do próprio nó, não
 escolhem outro nó e mantêm a criação vinculada a essa identidade. O admin pode
@@ -604,7 +661,9 @@ portas fecham juntas - o `ViewSwitch` some do Painel e o duplo clique no card do
 canvas deixa de abrir a `PeerDetailDialog` -, porque esconder o seletor e
 continuar abrindo o card pelo desenho seria a mesma tela em dois estados. A
 regra fica ao lado da tabela de rotas por ser a mesma pergunta: o que este
-perfil enxerga.
+perfil enxerga. Para o admin, sem `ClusterView.active_model` a vista inicial é
+Detalhes e o botão Adicionar não aparece; com modelo ativo, a vista inicial
+continua sendo Fluxo. A escolha manual da vista prevalece sobre esse padrão.
 
 Detalhes lista a **rede inteira**, não a pipeline: `networkPeers`
 (`src/lib/networkPeers.ts`) separa quem serve o modelo ativo na ordem das
@@ -863,6 +922,13 @@ um botão de cópia. A mensagem genérica de resposta vazia só aparece quando o
 stream termina sem tokens e sem erro.
 Cada fase também mostra os bytes de estado oculto enviados e recebidos na
 travessia e o `dtype` efetivamente usado, para comparar execuções f16/f8.
+No decode, a linha do backend separa a prontidão observada pelo scheduler, a
+wall de `ggml_backend_tensor_get` e o pós-processamento da captura, além da
+conversão f8 e da serialização do frame residual. O total antigo de
+captura permanece identificado como compatível; `tensor_get` pode incluir a
+cópia D2H e o sync interno do backend CUDA. A tabela de transporte QUIC também
+mostra a espera em `send_data` e `finish`, separada da espera por headers e do
+RTT.
 Ao terminar o stream, o Chat pede um snapshot de `/api/ui/chat/telemetry` para
 os pares adjacentes do trace e `/api/ui/peer/:node_id/runtime` para cada máquina
 do trace. O painel mostra o RTT total observado das chamadas, o RTT de cada
@@ -888,7 +954,7 @@ explica que não existem arestas entre peers.
   embutido no bundle por `apps/frontend/scripts/build-docs.mjs` (não há rota no
   nó; a tela lê `manifest.json` + `import.meta.glob`).
 
-Três decisões que não são estética:
+Quatro decisões que não são estética:
 
 - **A tela é de largura total** (`App.tsx` lista `/documentacao` junto de `/`
   em `isFullBleed`) e rola por dentro: a coluna de navegação e a de leitura são
@@ -904,6 +970,15 @@ Três decisões que não são estética:
 - **Recolher funciona.** O chevron alterna, o rótulo abre a visão geral, e a
   seção que contém o documento aberto não é mais forçada a reabrir - esse era
   o defeito: categoria que ficava sempre expandida.
+- **No celular são duas telas com um endereço só.** Abaixo de `sm:` a coluna
+  de navegação ocupa a largura inteira e o leitor fica escondido
+  (`mobileReaderOpen`); escolher um guia ou documento abre o leitor em tela
+  cheia com um botão Voltar fixo no topo (só existe montado enquanto essa
+  vista está aberta). Voltar mexe só nesse estado local - `?doc=`/`?guia=`
+  continuam intactos, então recarregar a página não perde o lugar. Um deep
+  link que já chega com `?doc=`/`?guia=` na URL conta como a mesma seleção e
+  abre direto no leitor. A partir de `sm:` as duas colunas voltam a conviver,
+  independentemente desse estado.
 
 ## A interface com o cluster em TLS
 
@@ -986,9 +1061,17 @@ impressão digital é só modelo + conjunto de faixas.
 
 ## Fatiar, implantar e transferir na tela
 
-- **Fatiar** (`SliceModels`): plano por tamanho (alvo em GB por fatia, vazio =
-  "o resto"), uma faixa específica por início/fim de camada, ou Tensor
-  Parallelism. A faixa específica usa as opções arquiteturais do GGUF, envia
+- **Fatiar** (`SliceModels`): Pipeline e Tensor Parallelism são um par de abas
+  (`role="tablist"`) no topo do painel de origem, não uma caixa de marcar - cada
+  modo tem seus próprios controles embaixo. A aba Tensor Parallelism só existe
+  quando `useNode().data.pom_desenv === true` (`NodeInfo.pom_desenv`, o mesmo
+  `POM_DESENV=1` que já esconde as seções DESENV do `DeploymentInspector`); sem
+  a flag a tela nunca oferece nem envia `mode: "tensor_parallel"` - o único
+  modo possível é pipeline, e um `mode` que já estivesse em `tensor_parallel`
+  quando a resposta de `/api/ui/node` chega depois é revertido. Pipeline
+  oferece plano por tamanho (alvo em GB por fatia, vazio =
+  "o resto") ou uma faixa específica por início/fim de camada; a faixa
+  específica usa as opções arquiteturais do GGUF, envia
   `range: { start_layer, end_layer }` e acrescenta a parte ao manifesto por
   hash, sem substituir nem apagar fatias anteriores. No modo TP, o operador
   escolhe 2..64 ranks e a prévia mostra uma faixa completa por rank com a
@@ -1159,8 +1242,10 @@ impressão digital é só modelo + conjunto de faixas.
   A resposta inicial do catálogo pode conter somente nome, caminho, tamanho e
   dados do manifesto, enquanto o nó lê os cabeçalhos GGUF em background. A
   tela mostra o inventário imediatamente. O catálogo lê somente o KV header e
-  `stat` das partes: não percorre a tabela de tensores, não calcula hash e não
-  mapeia os pesos. O botão e o endpoint de execução verificam somente os
+  `stat` das partes na varredura rápida: não percorre a tabela de tensores, não
+  calcula hash de modelos inteiros e não mapeia os pesos. A tarefa de
+  enriquecimento pode validar o `pom_id` de uma origem para herdar um projetor,
+  depois que o inventário já foi publicado. O botão e o endpoint de execução verificam somente os
   metadados necessários para a seleção atual: para um modelo inteiro pendente,
   o planner envia seu caminho já listado a `POST /api/ui/model-metadata`, que
   enriquece esse item sem esperar os vizinhos. Outro modelo ainda em
@@ -1211,7 +1296,9 @@ impressão digital é só modelo + conjunto de faixas.
   receptor, lida no arranque) aceita toda oferta sem clique - só dev.
   Peers da mesma máquina compartilham o hostname, então o destino e a etiqueta
   de disponibilidade levam o começo do `node_id` quando o nome se repete
-  (`uniqueName`, `routes/Shards.tsx`).
+  (`uniqueName`, `routes/Shards.tsx`). Ofertas, ativas e concluídas em
+  `Transfers` são cada uma uma tabela de largura total (era uma lista de
+  cartões), com a ação de aceitar/rejeitar/cancelar na última coluna.
 
 ### Informações da rede e materiais de entrada
 

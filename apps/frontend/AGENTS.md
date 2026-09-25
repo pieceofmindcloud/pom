@@ -20,7 +20,7 @@ remain local until the deploy preflight.
 
 - Vite 6 + `@vitejs/plugin-react`; React 18, TypeScript 5.7 (project references), Tailwind 3.4 via PostCSS (`postcss.config.js`: `tailwindcss` + `autoprefixer`).
 - `vite.config.ts` - dev server on port 5199, `strictPort`, base `/admin-ui/`, and a proxy of every node-owned path (`/api`, `/v1`, `^/admin(?!-ui)`, `/peers`, `/health`, `/generate`) to `VITE_API_TARGET` (default `http://127.0.0.1:8080`; point it at a real node, e.g. `VITE_API_TARGET=http://192.168.100.138:8090`). **`/admin-ui` não é encaminhado**, ainda que o nó também o sirva: é o `base` desta aplicação, e encaminhá-lo fazia o `npm run dev` devolver o bundle já construído do nó em vez do código local - a tela não mudava por mais que se editasse. E `/admin` precisa ser expressão regular, porque a chave de texto do proxy do Vite casa por prefixo de string e não por segmento: `/admin-ui/src/App.tsx` começa com `/admin`. There is no sample backend - every screen reads a live node. `cacheDir` is pinned to `node_modules/.vite` because the default fallback silently loses config (no PostCSS, no proxy) when a branch switch restarts the dev server mid-rewrite. `build.outDir = "dist"`, no sourcemaps. Production chunks split the route screens, common vendors and each generated reference document; `npm run build` verifies the resulting sizes.
-- Tailwind colors are named after CSS variables declared in `src/index.css` (`tailwind.config.js` maps `ink/surface/raised/line/fg/muted/faint/iris/aqua/amber/rose/sky/lime`); fonts Space Grotesk (display), IBM Plex Sans (sans), JetBrains Mono (mono).
+- Tailwind colors are named after CSS variables declared in `src/index.css` (`tailwind.config.js` maps `ink/surface/raised/line/fg/muted/faint/iris/aqua/amber/rose/sky/lime`); plugin purchase colors are theme-specific custom tokens; fonts Space Grotesk (display), IBM Plex Sans (sans), JetBrains Mono (mono).
 - Vitest 3 - `npm test` = `vitest run`. There is no vitest config file; test files that need a DOM opt in per file with the `// @vitest-environment jsdom` pragma (e.g. `routes/Chat.telemetry.test.tsx`, `i18n/provider.test.tsx`).
 - tsconfig: `tsconfig.app.json` (strict, `noUnusedLocals/Parameters`, `@/* -> ./src/*` alias, excludes `*.test.*`) and `tsconfig.node.json` for the build config itself.
 - `scripts/build-brand.mjs` - brings the product identity into the bundle. Runs before dev/build/test via the same npm pre-hooks: reads `brand.json` at the repository root (the file the Rust binary embeds with `include_str!`), copies a URL-rewritten manifest to `src/brand/brand.json` and the images it points at to `public/brand/`. Both are gitignored - build output, and a committed copy is a copy that drifts. Vite cannot import from outside its root, which is the whole reason this step exists. **Published names carry a content hash** (`pom-icon-512.f95e6ea3.png`): the node serves everything except `index.html` as `immutable, max-age=1y` on the premise that asset names are hashed, and files under `public/` are copied verbatim by Vite - a fixed name pinned the old logo in the browser for a year, which is exactly what happened the first time this ran. `vite.config.ts`'s `brandHtml` plugin reads the **generated** manifest for the same reason, and the folder is recreated each run so old hashes do not pile up in `dist/`.
@@ -64,14 +64,23 @@ remain local until the deploy preflight.
 
 Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`lib/access.ts`). Rota fechada renderiza `Forbidden` no lugar da tela, e o guarda fica no `<main>`, antes do `isChat`, porque o chat renderiza fora do `<Routes>` - um guarda por rota deixaria justamente ele de fora. `isFullBleed` também depende do guarda: barrada, a tela volta para a coluna central. O menu lê a mesma tabela via `navForProfile`. Testes: `src/App.test.tsx`.
 
-As telas `/logs` e `/estatisticas` são vitrines informativas do plugin
-`enterprise` (código extraído para `pom-plugin-logs`): `canAccessRoute` e
-`navForProfile` mantêm seus itens visíveis para todos os perfis, e `App.tsx`
-renderiza sempre `EnterpriseFeatureShowcase` (`src/components/`) para essas
-duas rotas, com ou sem licença ativa - descrição, prévia ilustrada e link para
-`https://pieceofmind.cloud/enterprise/index.html`. A API (`/api/ui/requests`,
+Telas, menu, rotas e textos de plugin vêm do manifesto `pom-plugin-ui/v1` do
+plugin ativo (`lib/pluginUi.ts`, `components/PluginScreen.tsx`,
+`lib/pluginHost.ts`, `lib/pluginI18n.ts`; ver `docs/subsystems/plugins-ui.md`).
+`pluginUi.ts` normaliza os caminhos de menu e rota para `/<plugin_code>/...`;
+`canAccessRoute`, `navForProfile` e `App` leem esse mesmo registro. O basename
+`/admin-ui` continua no `BrowserRouter`, então uma rota `/example` do plugin
+`base` abre em `/admin-ui/base/example`. Os plugins podem substituir os pontos
+nativos `/logs` e `/estatisticas` ao declarar esses destinos; sem uma declaração
+única, o `EnterpriseFeatureShowcase` (`src/components/`) continua como fallback.
+Menus novos entram na raiz, na ordem do manifesto, imediatamente antes de
+Documentação. Cada menu pode declarar `roles`; esse campo controla sua
+visibilidade e o acesso direto à rota vinculada. Sem `roles`, `profiles` do
+formato legado continua valendo quando presente; sem nenhum dos dois, os três
+perfis são aceitos conforme as restrições da rota. O código de
+Logs/Estatísticas não existe aqui: mora em `pom-plugin-logs`. A API (`/api/ui/requests`,
 `/api/ui/requests/stats`) continua sendo a autoridade e recusa os dados sem
-entitlement; ver `docs/subsystems/licenciamento-enterprise.md`.
+entitlement.
 
 O perfil `infer` é uma vista reduzida da interface: conversa, Chat da rede,
 documentação, API key e a tela de rede local para pedir entrada no processamento. O valor vem
@@ -103,6 +112,14 @@ desenhado**, porque uma vista só não é uma escolha.
   detalhes e downloads persistidos no nó); `/modelos/fatiar` -> SliceModels, que também
   mostra os jobs de fatiamento e suas barras de progresso
 - `/fatias` -> Shards; `/fatias/implantar` -> redirects to `/implantar` (kept for old links)
+- `/modelos`, `/modelos/remotos`, `/modelos/fatiar`, `/fatias`,
+  `/transferencias` e `/transferencias/enviar` são full-bleed, no mesmo
+  padrão de `/implantacoes`/`/implantacoes/logs`: cabeçalho fixo
+  (`FullBleedHeader`, `components/ui.tsx`) e tabela ou conteúdo rolando por
+  dentro. Modelos inteiros e Fatias mostram o nome do arquivo `mmproj`
+  quando o modelo/rodada tem visão (`DiscoveredModel.mmproj_path`/
+  `ShardSet.mmproj_path`, já vindos do catálogo - a tela só renderiza). Ver
+  `src/routes/AGENTS.md`.
 - `/implantar` -> DeployModel (first-level entry for putting models in service,
   full-bleed Deploy Studio with central cluster map, property inspector and
   draggable peer strip; whole-model mode accepts exactly one map machine)
@@ -115,14 +132,14 @@ desenhado**, porque uma vista só não é uma escolha.
   sem Sidebar nem Topbar. `SetupWizard` continua sendo uma referência visual
   mock, não a tela usada quando o nó está em modo setup.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` e `/estatisticas` -> `EnterpriseFeatureShowcase` (fora do `<Routes>`,
-  como o chat: renderiza sempre que `isEnterprisePath` casa, antes da tabela de
-  rotas). Vitrine estática do plugin `enterprise` - descrição, prévia
-  ilustrada e link de compra/instalação -, com ou sem licença; a UI interativa
-  (tabela paginada de auditoria, inspetor, gráficos) foi extraída para
-  `pom-plugin-logs`. `/logs/estatisticas` continua redirecionando para a rota
-  nova.
-- `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
+- Rotas de plugin -> `PluginScreen` sob `/<plugin_code>/<rota do manifesto>`,
+  fora do `<Routes>` e antes da tabela nativa. O basename transforma, por
+  exemplo, `base` + `/plugin-de-base` em `/admin-ui/base/plugin-de-base`.
+  A identidade do componente inclui a rota normalizada, então navegar entre
+  duas telas do mesmo plugin remonta a tela correta. `/logs` e `/estatisticas`
+  continuam sendo rotas nativas de fallback quando nenhum plugin as reivindica;
+  o alias `/logs/estatisticas` continua redirecionando para `/estatisticas`.
+- `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`). No celular a barra lateral ocupa a tela inteira e o leitor some até uma seleção explícita ou um deep link; selecionar abre o leitor com um botão Voltar no topo, que só fecha a vista mobile (a seleção em `?doc=`/`?guia=` continua).
 - `/config/rede` -> NetworkSettings; a seção principal Rede também reúne
   `/config/rede/participantes`, `/config/administracao` (Administradores),
   `/config/compartilhamento` (TrustAnchor com máquina, raiz e chave de conexão)
@@ -145,13 +162,13 @@ desenhado**, porque uma vista só não é uma escolha.
   Configurações.
 - `*` -> NotFound
 
-Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-fade wrapper; chat and dashboard get overflow-hidden main, the rest scroll.
+Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-fade wrapper; chat and dashboard get overflow-hidden main, the rest scroll inside the app shell. The document itself is not scrollable, and nested panes use `overscroll-y-contain` so a wheel event at a pane's boundary cannot move an outer page.
 
 ### index.css design tokens
 
 - One token table, two themes: light on bare `:root`, dark under both `@media (prefers-color-scheme)` coverage via `:root[data-theme="dark"]` (Tailwind's `darkMode` is `class`/`data-theme`). Tokens are space-separated RGB triplets consumed as `rgb(var(--ink) / <alpha-value>)`, so Tailwind alpha modifiers work.
 - Neutrals: `--ink` (page), `--surface`, `--raised`, `--line`, `--line-strong`, `--fg`, `--muted`, `--faint`; accents: `--iris`, `--aqua`, `--amber`, `--rose`, `--sky`, `--lime`; `color-scheme` matches the theme.
-- Component classes: `.panel`, `.eyebrow`, `.hairline`; `.break-path` (long ids/paths wrap or truncate, never widen); `indeterminate`/`ping` keyframes; thin scrollbars; `:focus-visible` iris outline; `prefers-reduced-motion` kills all animation; `.hljs` re-themed from the app tokens so code blocks match.
+- Component classes: `.panel`, `.eyebrow`, `.hairline`, and `.plugin-buy-button` (theme-specific high-contrast purchase action); `.break-path` (long ids/paths wrap or truncate, never widen); `indeterminate`/`ping` keyframes; thin scrollbars; `:focus-visible` iris outline; `prefers-reduced-motion` kills all animation; `.hljs` re-themed from the app tokens so code blocks match.
 
 ## src/ subfolders
 

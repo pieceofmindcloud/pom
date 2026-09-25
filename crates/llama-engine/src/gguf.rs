@@ -64,6 +64,10 @@ pub struct GgufInfo {
     pub architecture: Option<String>,
     /// `general.name` as written by the producer.
     pub name: Option<String>,
+    /// GGUF-declared model identifiers that can link a projector to its text
+    /// model. Includes `general.name`, `general.basename`, and base-model
+    /// names/repository URLs when present.
+    pub identity_names: Vec<String>,
     /// `<arch>.block_count` — layers present *in this file*.
     pub block_count: Option<u32>,
     /// `pom.original_block_count` — layers in the model this file was sliced from.
@@ -73,6 +77,9 @@ pub struct GgufInfo {
     pub shard_range: Option<(u32, u32)>,
     /// `<arch>.embedding_length`.
     pub embedding_length: Option<u32>,
+    /// `clip.vision.projection_dim`, the output width expected by the text
+    /// model. It is distinct from the vision encoder's embedding length.
+    pub projector_projection_dim: Option<u32>,
     /// `<arch>.attention.head_count_kv`, scalar ou valor por camada.
     pub attention_head_count_kv: Option<Vec<u32>>,
     /// `<arch>.attention.key_length`, scalar ou valor por camada.
@@ -522,7 +529,23 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
 
         match key.as_str() {
             "general.architecture" if vtype == T_STRING => info.architecture = Some(r.string()?),
-            "general.name" if vtype == T_STRING => info.name = Some(r.string()?),
+            "general.name" if vtype == T_STRING => {
+                let name = r.string()?;
+                info.identity_names.push(name.clone());
+                info.name = Some(name);
+            }
+            "general.basename" if vtype == T_STRING => {
+                info.identity_names.push(r.string()?);
+            }
+            k if k.starts_with("general.base_model.")
+                && (k.ends_with(".name") || k.ends_with(".repo_url"))
+                && vtype == T_STRING =>
+            {
+                info.identity_names.push(r.string()?);
+            }
+            "general.repo_url" if vtype == T_STRING => {
+                info.identity_names.push(r.string()?);
+            }
             "general.size_label" if vtype == T_STRING => info.size_label = Some(r.string()?),
             "tokenizer.chat_template" if vtype == T_STRING => {
                 info.chat_template = Some(r.string()?)
@@ -554,6 +577,9 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             k if k.ends_with(".block_count") => info.block_count = r.value_as_u32(vtype)?,
             k if k.ends_with(".embedding_length") => {
                 info.embedding_length = r.value_as_u32(vtype)?
+            }
+            "clip.vision.projection_dim" => {
+                info.projector_projection_dim = r.value_as_u32(vtype)?
             }
             k if k.ends_with(".expert_count") => info.expert_count = r.value_as_u32(vtype)?,
             k if k.ends_with(".expert_used_count") => {
@@ -1619,6 +1645,45 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
 
         assert!(read_info(&path).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reads_model_identity_and_multimodal_projection_dimension() {
+        let string = |value: &str| value.as_bytes().to_vec();
+        let path = std::env::temp_dir().join(format!(
+            "pom-mmproj-metadata-{}.gguf",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let bytes = header_only_gguf(&[
+            ("general.name", T_STRING, string("Ornith 1.5")),
+            ("general.basename", T_STRING, string("ornith-1.5")),
+            (
+                "general.base_model.0.name",
+                T_STRING,
+                string("publisher/ornith-1.5"),
+            ),
+            (
+                "llama.embedding_length",
+                T_UINT32,
+                3072u32.to_le_bytes().to_vec(),
+            ),
+            (
+                "clip.vision.projection_dim",
+                T_UINT32,
+                3072u32.to_le_bytes().to_vec(),
+            ),
+        ]);
+        std::fs::write(&path, bytes).unwrap();
+
+        let info = read_info(&path).unwrap();
+
+        assert_eq!(info.embedding_length, Some(3072));
+        assert_eq!(info.projector_projection_dim, Some(3072));
+        assert_eq!(
+            info.identity_names,
+            vec!["Ornith 1.5", "ornith-1.5", "publisher/ornith-1.5"]
+        );
         let _ = std::fs::remove_file(path);
     }
 

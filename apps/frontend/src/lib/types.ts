@@ -175,12 +175,11 @@ export interface AdminAccessInfo {
 }
 
 /**
- * Um plugin independente do catálogo (ver `crates/node/src/plugins.rs`),
- * comprado/ativado/desativado separadamente dos demais. Hoje o catálogo só
- * tem `"enterprise"` (Estatísticas/Logs de Requisições), mas o tipo é
- * genérico para N plugins - a tela de Plugins lista todo `PluginStatus`
- * conhecido, mesmo quando `active` é `false` (ainda não comprado/ativado
- * nesta instalação).
+ * Estado local de um plugin independente (ver `crates/node/src/plugins.rs`),
+ * comprado/ativado/desativado separadamente dos demais. O nó cria runtimes
+ * dinamicamente para os `plugin_code` concedidos pelo servidor; a tela de
+ * Plugins cruza esses estados locais com a vitrine pública, que também contém
+ * plugins sem status local nesta instalação.
  */
 export type PluginLicenseState =
   | "needs_activation"
@@ -197,6 +196,43 @@ export interface PluginUpdateInfo {
   changelog: string | null;
 }
 
+export interface PluginActivationCandidate {
+  plugin_code: string;
+  display_name: string;
+  release_id: string;
+  version: string;
+}
+
+export interface PluginActivationUsage {
+  plugin_code: string;
+  activation_count: number;
+  max_activations: number;
+}
+
+export interface PluginBooleanPreference {
+  key: string;
+  label: string;
+  default: boolean;
+  description?: string | null;
+}
+
+export interface PluginPreferencesSchema {
+  features: PluginBooleanPreference[];
+  storage_directory?: { label: string; default?: string | null } | null;
+}
+
+export interface PluginPreferences {
+  features: Record<string, boolean>;
+  storage_directory?: string | null;
+}
+
+export interface GithubPluginUpdate {
+  release_id: string;
+  version: string;
+  changelog: string | null;
+  downloaded: boolean;
+}
+
 export interface PluginStatus {
   code: string;
   active: boolean;
@@ -205,7 +241,29 @@ export interface PluginStatus {
   manage_url: string;
   plugin_version: string | null;
   lease_expires_at: string | null;
+  /** License validity (not the technical lease above), from GET /v1/licenses/status. */
+  license_expires_at: string | null;
+  /** Per-license activation usage; null means the server supplied no value. */
+  activation_count: number | null;
+  max_activations: number | null;
+  /** Plugin codes this license grants. */
+  licensed_plugins: string[];
+  /** Per-plugin activation usage returned by the authenticated license server. */
+  plugin_usage: PluginActivationUsage[];
+  /** Other catalog products with a release eligible for this node. */
+  activation_candidates: PluginActivationCandidate[];
+  /** Last time the installed host reported ready for a release. */
+  installed_at: string | null;
+  /** Last successful manifest lookup, regardless of whether it found an update. */
+  update_checked_at: string | null;
   available_update: PluginUpdateInfo | null;
+  /** Installed and running from a public GitHub source without a license lease. */
+  public_install?: boolean;
+  github_repository?: string | null;
+  github_update?: GithubPluginUpdate | null;
+  github_error?: string | null;
+  preferences_schema?: PluginPreferencesSchema | null;
+  preferences?: PluginPreferences | null;
 }
 
 /**
@@ -671,6 +729,10 @@ export interface DiscoveredModel {
   path: string;
   /** GGUF mmproj adjacente escolhido pela convenção do llama.cpp. */
   mmproj_path?: string | null;
+  /** Todos os projetores compatíveis para escolha na implantação. */
+  mmproj_candidates?: string[];
+  /** Motivo quando o catálogo não conseguiu sugerir um projetor compatível. */
+  mmproj_reason?: string | null;
   size_bytes: number;
   /** O GGUF declara split.count > 1 e este item representa o conjunto. */
   multipart?: boolean;
@@ -774,6 +836,10 @@ export interface ShardSet {
   model_label: string;
   /** Projector adjacent to this set or to its original whole model. */
   mmproj_path?: string | null;
+  /** Todos os projetores compatíveis para escolha na implantação. */
+  mmproj_candidates?: string[];
+  /** Motivo quando o catálogo não conseguiu sugerir um projetor compatível. */
+  mmproj_reason?: string | null;
   /** A rodada de fatiamento que produziu estas partes. Identificação, não nome. */
   pom_id: string;
   group: string;
@@ -1233,50 +1299,6 @@ export interface GenerationTimings {
   total_tokens_per_sec: number;
 }
 
-/** One inference request, as the node recorded it. `src/reqlog.rs`. */
-export interface RequestLogEntry {
-  id: string;
-  received_at: string;
-  completed_at: string | null;
-  route: string;
-  model: string;
-  /** Stable API-key identity. The secret is never part of this contract. */
-  api_key_id: string;
-  /** Label of the API key, or "chave de conexão". */
-  api_key_label: string;
-  /** Node the API key is assigned to, when it is assigned to one. */
-  api_key_node_id: string | null;
-  /** Node that received the request. */
-  entry_node_id: string;
-  /** Exact prompt sent to the inference pipeline. */
-  prompt: string;
-  /** Parsed request body, excluding headers and credentials. */
-  request_details: Record<string, unknown>;
-  /** Result text, when any was produced. */
-  result: string | null;
-  /** Per-request telemetry, or null before the generation completes. */
-  telemetry: Record<string, unknown> | null;
-  /** Ordered node ids the generation actually went through. */
-  hops: string[];
-  source: string;
-  prompt_tokens: number | null;
-  completion_tokens: number | null;
-  duration_ms: number | null;
-  timings?: GenerationTimings | null;
-  status: "in_progress" | "ok" | "partial" | "error" | "abandoned" | "incomplete" | string;
-  error: string | null;
-}
-
-export interface RequestLogResponse {
-  entries: RequestLogEntry[];
-  total: number;
-  errors: number;
-  incomplete: number;
-  by_token: Record<string, number>;
-  by_node: Record<string, number>;
-  storage: "sqlite" | string;
-}
-
 /** Linha do log de processo persistida pelo nó principal. */
 export interface ClusterLogEntry {
   received_seq: number;
@@ -1293,48 +1315,6 @@ export interface ClusterLogEntry {
 export interface ClusterLogResponse {
   entries: ClusterLogEntry[];
   dropped: number;
-}
-
-export interface RequestUsageStats {
-  requests: number;
-  input_tokens: number;
-  output_tokens: number;
-}
-
-export interface RequestModelStats {
-  requests: number;
-  average_tokens_per_sec: number | null;
-  average_inference_ms: number | null;
-}
-
-export interface RequestPeerStats {
-  requests: number;
-  bytes_sent: number;
-  bytes_received: number;
-  network_ms: number;
-}
-
-export interface RequestCacheStats {
-  eligible_requests: number;
-  hit_requests: number;
-  input_tokens: number;
-  cached_tokens: number;
-}
-
-export interface RequestStats {
-  total: number;
-  input_tokens: number;
-  output_tokens: number;
-  average_inference_ms: number | null;
-  average_ttft_ms: number | null;
-  by_token: Record<string, number>;
-  by_node: Record<string, number>;
-  by_day: Record<string, RequestUsageStats>;
-  by_model: Record<string, RequestModelStats>;
-  peer_consumption: Record<string, RequestPeerStats>;
-  terminal_states: Record<string, number>;
-  cache: RequestCacheStats;
-  storage: "sqlite" | string;
 }
 
 /** One slice of a size-driven plan. `src/plan.rs` — `SizedRange`. */
@@ -1777,6 +1757,10 @@ export interface DeployPlan {
   kind?: DeployKind;
   /** Projector adjacente encontrado para o modelo escolhido. */
   mmproj_path?: string | null;
+  /** Todos os projetores compatíveis no peer da cabeça. */
+  mmproj_candidates?: string[];
+  /** Motivo quando o catálogo não conseguiu sugerir um projetor compatível. */
+  mmproj_reason?: string | null;
   /** True only when the surveyed model's actual GGUF metadata is MoE. */
   is_moe?: boolean;
   /** Whether this plan can honor the selected inference mode. */

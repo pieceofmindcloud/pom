@@ -62,9 +62,39 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Minimizar menu" }));
 
     expect(screen.getByRole("complementary").className).toContain("w-[68px]");
+    const navigation = screen.getByRole("navigation");
+    expect(navigation.className).toContain("overflow-visible");
+    expect(navigation.className).toContain("overscroll-y-contain");
+    expect(navigation.className).not.toContain("overflow-y-auto");
     expect(screen.getByRole("button", { name: "Modelos" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Fatiar modelos" })).toBeTruthy();
     expect(window.localStorage.getItem("pom.sidebar.collapsed")).toBe("true");
+  });
+
+  it("abre o submenu minimizado por clique e navega pelo destino escolhido", () => {
+    render(
+      <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <Sidebar />
+          <RouteProbe />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Minimizar menu" }));
+    const models = screen.getByRole("button", { name: "Modelos" });
+    fireEvent.click(models);
+    expect(models.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(screen.getByRole("link", { name: "Encontrar Modelos HF" }));
+    expect(screen.getByTestId("route").textContent).toBe("/modelos/remotos");
+  });
+
+  it("mantém o cabeçalho da logo com 64px, igual à toolbar", () => {
+    render(
+      <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR"><Sidebar /></LocaleProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("complementary").firstElementChild?.className).toContain("h-16");
   });
 
   it("reabre pelo clique na logo quando o menu está minimizado", () => {
@@ -159,7 +189,7 @@ describe("Sidebar", () => {
     expect(screen.getByTestId("network-chat-unread").textContent).toBe("2");
   });
 
-  it("mostra o estado TLS junto às bandeiras e sem texto visível", () => {
+  it("oculta o indicador TLS das bandeiras", () => {
     sidebarNodeData = fakeNode({ tls_required: true });
     render(
       <MemoryRouter
@@ -173,9 +203,7 @@ describe("Sidebar", () => {
     );
 
     const controls = screen.getByRole("group", { name: "Idioma" });
-    const indicator = within(controls).getByTestId("tls-indicator");
-    expect(indicator.getAttribute("data-tls-state")).toBe("on");
-    expect(indicator.textContent).toBe("");
+    expect(within(controls).queryByTestId("tls-indicator")).toBeNull();
   });
 
   it("transforma o menu do infer em histórico acionável e deixa docs/config no rodapé", () => {

@@ -794,6 +794,11 @@ também para o HTTP/HTTPS usado no fallback.
 A telemetria por hop publica o transporte efetivo como `http`, `https` ou
 `quic`. Para QUIC, `transport_rtt_us` é o RTT medido pela conexão UDP e os
 quantis de rede ficam separados do tempo de processamento remoto.
+`quic_request_body_send_us` soma o wall aguardado por `send_data` e `finish`
+antes da leitura dos headers de resposta. O resumo conta as operações físicas
+medidas, então um upload de batch compartilhado é registrado uma vez. Esse
+campo mede contrapressão e aceitação local do corpo, não confirmação de entrega
+remota.
 
 ## Logs de processo do cluster
 
@@ -806,12 +811,16 @@ confere sua própria autoridade efetiva em `AdminTrust`; um perfil `admin` sem
 concessão não vira destino de leitura nem aceita a cópia.
 
 A auditoria de requisições segue a mesma topologia em
-`/pom/request-audit/1.0.0`: `AuditLog` replica os eventos `Begin` e `Complete`
-para todos os admins conhecidos, e o receptor grava a cópia sem retransmiti-la.
-Com isso, `/api/ui/cluster-logs`, `/api/ui/requests` e suas estatísticas não
-dependem de o principal estar acessível depois que a réplica local foi
-recebida. Uma conclusão que chega antes do início fica retida numa fila
-limitada até o evento de início.
+`/pom/request-audit/1.0.0`: o transporte do POM replica `Begin` e `Complete`
+para todos os admins conhecidos, mesmo quando o evento local foi aceito pelo
+plugin `pom-plugin-logs`. Esse plugin continua dono do armazenamento e da
+consulta em `enterprise.db`; o POM cuida da descoberta dos admins, do fanout e
+do transporte. No receptor, uma fila limitada preserva a ordem e entrega os
+eventos ao host do plugin ativo. Se o host não aceitar, o POM usa o adaptador
+legado em `pom.db`. Cópias recebidas nunca são retransmitidas. Assim,
+`/api/ui/cluster-logs`, `/api/ui/requests` e suas estatísticas não dependem de o
+principal estar acessível depois que a réplica local foi recebida. Uma
+conclusão que chega antes do início fica retida até o evento de início.
 
 `cluster_logs_enabled` no `Announce` é somente gatilho. Quando diverge da
 política local, o nó faz uma busca autenticada em `GET /api/cluster/logs` no

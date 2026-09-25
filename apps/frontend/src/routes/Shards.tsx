@@ -14,14 +14,14 @@ import {
   Empty,
   ErrorState,
   Footnote,
-  PageHeader,
+  FullBleedHeader,
   Panel,
   PanelHeader,
   Select,
   Skeleton,
 } from "../components/ui";
 import { api } from "../lib/api";
-import { bytes, layerRange, num } from "../lib/format";
+import { bytes, layerRange, num, optionalBasename } from "../lib/format";
 import { deleteModel } from "../lib/deleteModel";
 import { uniquePeerName } from "../lib/peerName";
 import { useClusterCatalog, useCluster, useLocalCatalog } from "../lib/queries";
@@ -176,6 +176,7 @@ function ShardCard({
       return groups;
     }, new Map<number, DiscoveredModel[]>()),
   ).sort(([a], [b]) => a - b);
+  const mmprojName = optionalBasename(set.mmproj_path);
   return (
     <Panel>
       <PanelHeader
@@ -192,6 +193,16 @@ function ShardCard({
           </Badge>
         }
       />
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5 text-[0.78rem]">
+        <span className="text-faint">{t("models.mmproj")}:</span>
+        {mmprojName ? (
+          <span className="break-path font-mono text-fg" title={set.mmproj_path ?? undefined}>
+            {mmprojName}
+          </span>
+        ) : (
+          <span className="text-faint">{t("models.mmprojNone")}</span>
+        )}
+      </div>
       {set.shards.length > 0 && (
         <div className="px-5 py-3">
           <CoverageBar set={set} />
@@ -273,14 +284,10 @@ export function Shards() {
   }
 
   return (
-    <>
-      <PageHeader
+    <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
+      <FullBleedHeader
         title={t("shards.title")}
-        subtitle={
-          selfId
-            ? t("shards.subtitle")
-            : undefined
-        }
+        subtitle={selfId ? t("shards.subtitle") : undefined}
         actions={
           <Button
             icon={<RefreshCw className="h-3.5 w-3.5" />}
@@ -295,38 +302,40 @@ export function Shards() {
         }
       />
 
-      {catalog.isError && (
-        <ErrorState error={catalog.error} onRetry={() => void catalog.refetch()} />
-      )}
-      {catalog.isLoading && <Skeleton className="h-56 w-full" />}
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-4 sm:p-5">
+        {catalog.isError && (
+          <ErrorState error={catalog.error} onRetry={() => void catalog.refetch()} />
+        )}
+        {catalog.isLoading && <Skeleton className="h-56 w-full" />}
 
-      {catalog.data && sets.length === 0 && (
-        <Panel>
-          <Empty
-            icon={<PackageOpen className="h-5 w-5" />}
-            title={t("shards.empty")}
-          >
-            {t("shards.emptyDetail")}
-          </Empty>
-        </Panel>
-      )}
+        {catalog.data && sets.length === 0 && (
+          <Panel>
+            <Empty
+              icon={<PackageOpen className="h-5 w-5" />}
+              title={t("shards.empty")}
+            >
+              {t("shards.emptyDetail")}
+            </Empty>
+          </Panel>
+        )}
 
-      <div className="space-y-5">
-        {sets.map((set) => (
-          <ShardCard
-            key={set.group}
-            set={set}
-            peersMissing={peersMissing}
-            aloneInNetwork={others.length === 0}
-            onSend={(shard, nodeId) => void send(shard, nodeId)}
-            onDelete={(shard) => void remove(shard)}
-          />
-        ))}
+        <div className="space-y-5">
+          {sets.map((set) => (
+            <ShardCard
+              key={set.group}
+              set={set}
+              peersMissing={peersMissing}
+              aloneInNetwork={others.length === 0}
+              onSend={(shard, nodeId) => void send(shard, nodeId)}
+              onDelete={(shard) => void remove(shard)}
+            />
+          ))}
+        </div>
       </div>
 
       {sets.length > 0 && (
         <Footnote
-          className="mt-4"
+          className="shrink-0 border-t border-line px-4 py-2.5"
           icon={<Layers className="h-3.5 w-3.5" />}
         >
           {sending
@@ -334,6 +343,6 @@ export function Shards() {
             : t("shards.offerDetail")}
         </Footnote>
       )}
-    </>
+    </div>
   );
 }

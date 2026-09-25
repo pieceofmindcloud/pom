@@ -48,6 +48,10 @@ web-ui/dist/
 /dist-release/
 *.tsbuildinfo
 
+/tests/
+/web-ui/
+/web/
+
 # conteudo da rota Documentacao: gerado pelo apps/frontend/scripts/build-docs.mjs
 # no npm build/dev a partir dos AGENTS.md/READMEs do repo. Nunca commitar - a
 # fonte e o repo; src/docs e so o snapshot embutido.

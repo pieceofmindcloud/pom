@@ -128,7 +128,10 @@ export interface VisionControl {
   available: boolean;
   enabled: boolean;
   path?: string | null;
+  candidates: string[];
+  reason?: string | null;
   onChange: (next: boolean) => void;
+  onPathChange: (next: string) => void;
 }
 
 function Section({
@@ -470,15 +473,31 @@ export function DeploymentInspector({
                   onToggle={() => vision.onChange(!vision.enabled)}
                 />
               </InspectorRow>
-              {vision.path && (
+              {vision.candidates.length > 1 ? (
+                <InspectorRow label="Modelo de visão" tip="Escolha o projetor compatível que será usado na cabeça da implantação.">
+                  <Select
+                    aria-label="Projetor de visão"
+                    value={vision.path ?? ""}
+                    disabled={readOnly}
+                    onChange={(event) => vision.onPathChange(event.target.value)}
+                    className="h-7 min-w-0 w-full text-[0.58rem]"
+                  >
+                    {vision.candidates.map((candidate) => (
+                      <option key={candidate} value={candidate}>
+                        {candidate.split("/").pop() ?? candidate}
+                      </option>
+                    ))}
+                  </Select>
+                </InspectorRow>
+              ) : vision.path ? (
                 <p className="break-all px-0.5 text-[0.6rem] leading-relaxed text-faint">
                   {vision.path}
                 </p>
-              )}
+              ) : null}
             </>
           ) : (
             <p role="alert" className="px-0.5 text-[0.6rem] leading-relaxed text-amber">
-              {t("deploy.visionUnavailable")}
+              {vision.reason || t("deploy.visionUnavailable")}
             </p>
           )}
         </Section>

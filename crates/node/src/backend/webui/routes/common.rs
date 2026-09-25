@@ -7,6 +7,11 @@ pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/node", get(node_info))
         .route("/api/ui/plugins", get(crate::plugins::list_plugins))
+        .route("/api/ui/plugins/ui", get(crate::plugin_ui::list_plugin_ui))
+        .route(
+            "/api/ui/plugins/:code/assets/*path",
+            get(crate::plugin_ui::plugin_asset),
+        )
         .route(
             "/api/ui/pom-update/status",
             get(crate::pom_core_update::pom_update_status),
@@ -42,4 +47,3 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(trust_anchor).post(install_trust_anchor),
         )
 }
-

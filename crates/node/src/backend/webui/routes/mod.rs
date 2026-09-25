@@ -136,18 +136,23 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::CommonOrInternal,
     },
-    // Catálogo de plugins independentes (ver `crate::plugins`): a leitura é
-    // descobrível para qualquer perfil, toda mutação é AdminOnly - inclusive
+    // Estado privado e fontes locais dos plugins independentes (ver
+    // `crate::plugins`): leitura e mutação são AdminOnly - inclusive
     // sob `/api/ui/plugins/:code/...`, porque a regra casa por prefixo de
     // segmento e um `:code` no meio não muda o escopo de nenhuma ação.
     RouteRule {
         prefix: "/api/ui/plugins",
         method: Some(Method::GET),
-        scope: RouteScope::CommonOrInternal,
+        scope: RouteScope::AdminOnly,
     },
     RouteRule {
         prefix: "/api/ui/plugins",
         method: Some(Method::POST),
+        scope: RouteScope::AdminOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/plugins",
+        method: Some(Method::DELETE),
         scope: RouteScope::AdminOnly,
     },
     // Atualização do binário `pom` em si - fronteira separada dos plugins de
@@ -544,7 +549,7 @@ mod policy_tests {
             RouteScope::AdminOnly
         );
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::CommonOrInternal);
+        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::AdminOnly);
         assert_eq!(
             scope_of("/api/ui/pom-update/status"),
             RouteScope::CommonOrInternal
@@ -555,6 +560,11 @@ mod policy_tests {
             "/api/ui/plugins/enterprise/deactivate",
             "/api/ui/plugins/enterprise/update/check",
             "/api/ui/plugins/enterprise/update/apply",
+            "/api/ui/plugins/enterprise/github-source",
+            "/api/ui/plugins/enterprise/github-source/install",
+            "/api/ui/plugins/enterprise/github-source/check",
+            "/api/ui/plugins/enterprise/github-source/apply",
+            "/api/ui/plugins/enterprise/preferences",
             "/api/ui/pom-update/check",
             "/api/ui/pom-update/apply",
         ] {
@@ -562,6 +572,29 @@ mod policy_tests {
                 route_scope(&Method::POST, path),
                 RouteScope::AdminOnly,
                 "rota={path}"
+            );
+        }
+        assert_eq!(
+            route_scope(&Method::DELETE, "/api/ui/plugins/enterprise/github-source"),
+            RouteScope::AdminOnly
+        );
+        // O proxy de interfaces de plugin atende qualquer método e herda o
+        // fechamento por prefixo: AdminOnly em todos, inclusive nos sem regra.
+        for method in [
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ] {
+            assert_eq!(
+                route_scope(
+                    &method,
+                    "/api/ui/plugins/deepseek_harness/proxy/api/remote.mux"
+                ),
+                RouteScope::AdminOnly,
+                "método={method}"
             );
         }
         assert_eq!(scope_of("/api/ui/models"), RouteScope::NodeAdmin);

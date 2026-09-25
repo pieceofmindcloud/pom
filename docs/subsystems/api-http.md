@@ -1,8 +1,8 @@
 # Subsistema: API HTTP (gateway) e autenticação
 
 O gateway HTTP é a superfície de rede do nó pom, montada por
-`start_gateway` (`crates/node/src/backend/gateway.rs`) como um router axum
-único. **Todo nó serve o mesmo conjunto de rotas na porta de gateway**
+`start_gateway_with_ready` (`crates/node/src/backend/gateway/http.rs`) como um
+router axum único. **Todo nó serve o mesmo conjunto de rotas na porta de gateway**
 (`--gateway-port`, padrão 8080), então qualquer endereço de peer vale como
 ponto de entrada - não existe "o nó do gateway". O router liga com
 `axum::serve(...).tcp_nodelay(true)` (Nagle atrasava as escritas pequenas do
@@ -34,7 +34,7 @@ provar a identidade do peer.
 
 ## 1. O router e os grupos de rotas
 
-`start_gateway` registra, nesta ordem (webapp é deliberadamente o último):
+`start_gateway_with_ready` registra, nesta ordem (webapp é deliberadamente o último):
 
 - **Base** (`gateway.rs`): `POST /api/generate` (+ alias `POST /generate`),
   `GET /peers`, `GET /health`, `POST /handshake` (`session::handle_handshake`),
@@ -300,6 +300,12 @@ não estão no router principal e só existem antes da configuração inicial.
   `mtp_draft_tokens_accepted`, `mtp_draft_tokens_rejected` e
   `mtp_acceptance_rate` (`accepted / proposed`, ou `null` sem proposta MTP).
   `proposed` conta somente o draft que chegou à verificação do alvo.
+- **Catálogo durante o aquecimento** - `GET /api/ui/models` pode publicar
+  `metadata_complete: false` enquanto a enumeração e o enriquecimento rodam em
+  background. Se uma rota de seleção recebe um caminho que ainda não apareceu
+  nesse inventário parcial, ela informa que a descoberta está em andamento;
+  não trata o arquivo como ausente do peer. O cliente deve esperar a próxima
+  resposta com `metadata_complete: true` e repetir a seleção.
 - **`GET /peers`** - `{ peers: [PeerSummary], count }`. `PeerSummary` traz
   `node_id` (12 primeiros chars), `addr`, `model`, `layers`, `ollama_url`,
   `inference_url`, `load` (carga em voo).
@@ -665,6 +671,47 @@ durável de conversas), `dev/update` +
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
+`GET /api/ui/plugins` é AdminOnly e entrega os estados locais dos plugins já
+restaurados ou vistos pelo runtime, incluindo `licensed_plugins`,
+`activation_candidates`, `plugin_usage` por
+`plugin_code`, `license_expires_at` e contadores de ativação daquele plugin.
+Esses dados vêm das respostas autenticadas de validação, ativação e heartbeat;
+tokens de licença não aparecem no status JSON. O browser consulta o catálogo
+público diretamente em `/v1/plugins`, sem credenciais. A ativação valida a
+chave uma vez e cria os runtimes para todos os `plugin_code` concedidos,
+ativando-os separadamente. Comprar redireciona plugins licenciados à loja pública
+com `plugin=<plugin_code>` codificado. Uma entrada com `requires_license: false`
+e `github_repository` oferece Instalar, não checkout: o nó reconsulta `/v1/plugins`
+por HTTPS, exige que o servidor ainda publique o mesmo código como gratuito e
+usa essa URL para detectar e baixar a release. Esse caminho não cria licença,
+grant ou lease; seu estado vive em `plugin_public_install:<code>`. Plugins pagos
+continuam exigindo ativação licenciada para executar ou aplicar atualização.
+A página pública não recebe credenciais do nó. As rotas AdminOnly de releases
+públicas incluem `POST /api/ui/plugins/:code/github-source` com
+`{repository_url}` para origem local, `DELETE` no mesmo caminho,
+`POST .../github-source/install` para instalar o plugin gratuito declarado pelo
+catálogo, `POST .../github-source/check` para verificar agora e
+`POST .../github-source/apply` com `{release_id}` para instalar explicitamente um
+download verificado. A tela mostra um único card global de GitHub abaixo do
+formulário de ativação. A checagem periódica baixa ao staging sem trocar o host,
+e falha de rede conserva a última release boa. `POST
+/api/ui/plugins/:code/preferences` recebe `{preferences}` e persiste somente no
+`pom.db`, sob o código do plugin; não chama o servidor de licenças.
+`PluginStatus.github_repository`, `github_update`, `github_error`,
+`public_install`, `preferences_schema` e `preferences` expõem o estado local sem
+tokens nem entitlement sintético.
+
+`ANY /api/ui/plugins/:code/proxy` e `/api/ui/plugins/:code/proxy/*path` são o
+proxy das interfaces web servidas pelos próprios plugins
+(`crates/node/src/plugin_proxy.rs`, contrato em `plugins-ui.md`). AdminOnly em
+todos os métodos. Não usam `ConnectionAuth`: scripts, WebSockets e
+`EventSource` do navegador não carregam o `Authorization` da interface, então a
+credencial é a da superfície administrativa (loopback em `localhost`, cookie de
+sessão em `network`), e a rota recusa com 403 toda requisição cuja `Origin`
+não seja a do próprio nó ou cujo `Sec-Fetch-Site` não seja `same-origin`/`none`,
+além de qualquer chamada entre nós. O corpo não tem teto (uploads atravessam a
+rota). O servidor HTTP do gateway aceita upgrades de conexão por causa dela.
+
 `GET /api/ui/enterprise/status` é uma leitura comum que inclui
 `core_update: { release_id, version, changelog } | null`. O nó só preenche esse
 aviso depois de um heartbeat Enterprise aceito e enquanto a licença está ativa;
@@ -794,6 +841,14 @@ também devolve `is_moe`, `inference_mode_supported` e
 nunca do nome do arquivo. Em modelo denso a UI oculta a escolha; quando uma
 combinação ainda não é suportada, a razão permanece visível e o deploy é
 recusado para não apresentar uma preferência que não será respeitada.
+
+Em implantações com visão, `DeployPlan.mmproj_candidates` lista os caminhos
+locais compatíveis no peer que serve a camada 0. A interface pré-seleciona um
+deles e pode enviar `DeployRequest.mmproj_path` para escolher outro formato.
+`DeployRequest.vision` continua habilitando o projetor somente na cabeça. O
+backend refaz o survey, confere o caminho escolhido contra os headers GGUF no
+apply do peer e não calcula SHA-256 do payload do `mmproj` para descobrir ou
+selecionar candidatos.
 
 **`GET` e `POST /api/ui/model-provider/config`** exigem `ConnectionAuth` e
 controlam o token opcional do Hugging Face. O GET devolve somente

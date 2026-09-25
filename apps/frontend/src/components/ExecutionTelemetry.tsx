@@ -403,21 +403,29 @@ function transportLine(
 ) {
   const summary = phase.transport_summary;
   if (!summary || summary.transports.length === 0) return t("chat.telemetry.transportMissing");
-  const transports = summary.transports.map((entry) => t("chat.telemetry.transportSummary", {
-    transport: entry.transport,
-    calls: entry.calls,
-    sent: bytes(entry.bytes_sent),
-    received: bytes(entry.bytes_received),
-    min: entry.rtt_min_ms,
-    median: entry.rtt_median_ms,
-    p95: entry.rtt_p95_ms,
-    max: entry.rtt_max_ms,
-    netMin: entry.net_rtt_min_ms,
-    netMedian: entry.net_rtt_median_ms,
-    netP95: entry.net_rtt_p95_ms,
-    netMax: entry.net_rtt_max_ms,
-    fallback: entry.fallback_calls,
-  }));
+  const transports = summary.transports.map((entry) => {
+    const base = t("chat.telemetry.transportSummary", {
+      transport: entry.transport,
+      calls: entry.calls,
+      sent: bytes(entry.bytes_sent),
+      received: bytes(entry.bytes_received),
+      min: entry.rtt_min_ms,
+      median: entry.rtt_median_ms,
+      p95: entry.rtt_p95_ms,
+      max: entry.rtt_max_ms,
+      netMin: entry.net_rtt_min_ms,
+      netMedian: entry.net_rtt_median_ms,
+      netP95: entry.net_rtt_p95_ms,
+      netMax: entry.net_rtt_max_ms,
+      fallback: entry.fallback_calls,
+    });
+    if (entry.transport !== "quic" || !(entry.quic_request_body_send_calls ?? 0)) return base;
+    const requestSend = t("chat.telemetry.quicRequestSend", {
+      ms: (entry.quic_request_body_send_us ?? 0) / 1_000,
+      calls: entry.quic_request_body_send_calls ?? 0,
+    });
+    return `${base} · ${requestSend}`;
+  });
   const switches = summary.transport_switches.map((switchEntry) => t("chat.telemetry.transportSwitch", {
     from: switchEntry.from,
     to: switchEntry.to,
@@ -485,7 +493,20 @@ function PhaseRow({
     <tr className="text-faint">
       <td className="pb-1.5 pr-3 align-top" colSpan={9}>
         <span className="block">{t("chat.telemetry.nodeRow", { frame: phase.node_frame_decode_ms, prepare: phase.node_input_prepare_ms, queue: phase.node_queue_ms, engineWait: phase.node_lock_wait_ms, setup: phase.node_setup_ms, mtpDraft: phase.node_mtp_draft_ms ?? 0, frameOut: phase.node_encode_ms })}{nodeResidual > 0 ? ` · ${t("chat.telemetry.nodeResidual", { ms: nodeResidual })}` : ""}</span>
-        <span className="block">{t("chat.telemetry.backendRow", { call: phase.node_backend_call_ms, sync: phase.node_backend_sync_ms, d2hCapture: phase.node_residual_capture_d2h_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}</span>
+        <span className="block">{t("chat.telemetry.backendRowCurrent", { call: phase.node_backend_call_ms, sync: phase.node_backend_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}</span>
+        <span className="block">{t("chat.telemetry.residualCaptureRow", {
+          ready: phase.node_residual_capture_ready_wait_ms ?? 0,
+          tensorGet: phase.node_residual_capture_tensor_get_ms ?? 0,
+          postprocess: phase.node_residual_capture_postprocess_ms ?? 0,
+          total: phase.node_residual_capture_d2h_sync_ms,
+          bytes: phase.node_residual_capture_bytes ?? 0,
+          copies: phase.node_residual_capture_copies ?? 0,
+        })}</span>
+        <span className="block">{t("chat.telemetry.residualWireRow", {
+          f8: phase.node_residual_wire_f8_conversion_ms ?? 0,
+          serialize: phase.node_residual_wire_frame_serialize_ms ?? 0,
+          calls: phase.node_residual_wire_encode_calls ?? 0,
+        })}</span>
         <span className="block">{t("chat.telemetry.samplingRow", { access: phase.node_logits_access_ms, clone: phase.node_logits_clone_ms, penalty: phase.node_repetition_penalty_ms, softmax: phase.node_softmax_ms, topK: phase.node_top_k_ms, topP: phase.node_top_p_ms, selection: phase.node_selection_ms, text: phase.node_token_text_ms })}</span>
         <span className="block">{t("chat.telemetry.gatewayRow", { encode: phase.client_encode_ms, headers: phase.response_headers_ms, body: phase.response_body_ms, decode: phase.client_decode_ms })}</span>
         {phase.hidden_state_dtype && (

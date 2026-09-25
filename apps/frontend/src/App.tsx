@@ -10,7 +10,10 @@ import {
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
 import { ChatSessionProvider } from "./lib/chatStore";
-import { useAdminSurface } from "./lib/queries";
+import { useAdminSurface, usePluginUi } from "./lib/queries";
+import { pluginUiSnapshot, resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
+import { PluginScreen } from "./components/PluginScreen";
+import { syncPluginCatalogs } from "./lib/pluginI18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -220,9 +223,19 @@ function RouteFallback({ fullScreen = false }: { fullScreen?: boolean }) {
  * page transition: unmounting it to animate would drop tokens mid-answer.
  */
 export default function App() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const location = useLocation();
   const { profile } = useProfile();
+  const pluginUi = usePluginUi();
+  // O registro é lido por `canAccessRoute` e pelo menu; precisa estar em dia
+  // antes de qualquer filho consultar o guarda.
+  setPluginUi(pluginUi.data?.plugins);
+  const pluginRoute = resolvePluginRoute(location.pathname);
+  // Cada plugin traz os próprios textos; acompanha plugins ativos e idioma.
+  const activePlugins = pluginUiSnapshot();
+  useEffect(() => {
+    void syncPluginCatalogs(activePlugins ?? [], locale);
+  }, [activePlugins, locale]);
   /*
    * O guarda de perfil fica aqui, e não dentro de cada rota, porque aqui ele
    * é um só: `/chat` renderiza fora do `<Routes>` (ver abaixo), então um guarda
@@ -233,10 +246,10 @@ export default function App() {
    */
   const allowed = canAccessRoute(location.pathname, profile);
   /*
-   * `/logs` e `/estatisticas` são vitrines informativas do plugin `enterprise`
-   * (extraído para pom-plugin-logs): renderizam sempre, com ou sem licença -
-   * ver `EnterpriseFeatureShowcase` e
-   * `docs/subsystems/licenciamento-enterprise.md`.
+   * Telas fornecidas por plugins (`lib/pluginUi.ts`) usam o namespace do
+   * próprio `plugin_code` dentro do basename `/admin-ui`. Um manifesto pode
+   * reivindicar `/logs` ou `/estatisticas` para substituir o fallback nativo
+   * correspondente quando não houver outro plugin com a mesma reivindicação.
    */
   const enterprisePath = isEnterprisePath(location.pathname);
   const isChat = allowed && location.pathname === "/chat";
@@ -252,12 +265,18 @@ export default function App() {
       location.pathname === "/documentacao" ||
       location.pathname === "/implantar" ||
       location.pathname === "/implantacoes" ||
-      location.pathname === "/logs" ||
+      pluginRoute?.route.full_bleed === true ||
       location.pathname === "/implantacoes/logs" ||
       location.pathname === "/redes-publicas" ||
       location.pathname === "/network-chat" ||
-      location.pathname === "/estatisticas" ||
-      location.pathname === "/config/keys/api");
+      location.pathname === "/config/keys/api" ||
+      location.pathname === "/modelos" ||
+      location.pathname === "/modelos/remotos" ||
+      location.pathname === "/modelos/fatiar" ||
+      location.pathname === "/plugins" ||
+      location.pathname === "/fatias" ||
+      location.pathname === "/transferencias" ||
+      location.pathname === "/transferencias/enviar");
   /*
    * O assistente é a única tela que sai da moldura inteira: ele guia a
    * configuração do zero, com barra de progresso e uma pergunta por vez, e o
@@ -361,7 +380,7 @@ export default function App() {
             className={
               isChat || isFullBleed
                 ? "min-h-0 flex-1 overflow-hidden"
-                : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+                : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain"
             }
           >
             <ErrorBoundary resetKey={location.pathname}>
@@ -381,8 +400,15 @@ export default function App() {
                   </div>
                 ) : location.pathname === "/logs/estatisticas" ? (
                   // Alias antigo, preservado fora do `<Routes>` porque o
-                  // destino também é uma vitrine Enterprise sem gate.
+                  // destino também é uma rota de plugin ou a vitrine Enterprise.
                   <Navigate to="/estatisticas" replace />
+                ) : pluginRoute ? (
+                  <div className={pluginRoute.route.full_bleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
+                    <PluginScreen
+                      key={`${pluginRoute.code}:${pluginRoute.route.path}`}
+                      resolved={pluginRoute}
+                    />
+                  </div>
                 ) : enterprisePath ? (
                   <EnterpriseFeatureShowcase kind={location.pathname.startsWith("/logs") ? "logs" : "statistics"} />
                 ) : isChat ? (

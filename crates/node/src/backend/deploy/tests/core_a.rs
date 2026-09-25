@@ -332,6 +332,8 @@
                         name: format!("m_{a}_{b}.gguf"),
                         path: format!("/models/m_{a}_{b}.gguf"),
                         mmproj_path: None,
+                        mmproj_candidates: Vec::new(),
+                        mmproj_reason: None,
                         sha256: None,
                         pom_id: None,
                         virtual_slice: false,
@@ -1256,6 +1258,7 @@
             "qwen",
             &[],
             &rtts,
+            None,
             None,
         );
         let values: Vec<_> = p.route_options.iter().map(|route| route.rtt_ms).collect();

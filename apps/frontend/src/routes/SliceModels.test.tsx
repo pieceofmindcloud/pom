@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 
-const { post, jobsState } = vi.hoisted(() => ({
+const { post, jobsState, nodeState } = vi.hoisted(() => ({
   post: vi.fn(),
   jobsState: { value: { jobs: [] as unknown[] } },
+  nodeState: { value: { pom_desenv: true } as { pom_desenv: boolean } | undefined },
 }));
 
 vi.mock("../lib/api", () => ({
@@ -82,6 +83,13 @@ vi.mock("../lib/queries", () => ({
     error: null,
     refetch: vi.fn(),
   }),
+  useNode: () => ({
+    data: nodeState.value,
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  }),
 }));
 
 vi.mock("../lib/toast", () => ({
@@ -96,6 +104,7 @@ import { SliceModels } from "./SliceModels";
 describe("SliceModels", () => {
   beforeEach(() => {
     post.mockReset();
+    nodeState.value = { pom_desenv: true };
     jobsState.value = {
       jobs: [
         {
@@ -451,7 +460,7 @@ describe("SliceModels", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByLabelText("Fatiar por Tensor Parallelism"));
+    fireEvent.click(await screen.findByRole("tab", { name: "Tensor Parallelism" }));
     fireEvent.change(screen.getByLabelText("Quantidade de ranks TP"), {
       target: { value: "2" },
     });
@@ -468,6 +477,53 @@ describe("SliceModels", () => {
     );
     expect(await screen.findByText("rank 0")).toBeTruthy();
     expect(await screen.findByText("1of2")).toBeTruthy();
+  });
+
+  it("hides Tensor Parallelism entirely when POM_DESENV is off", async () => {
+    nodeState.value = { pom_desenv: false };
+
+    render(
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <SliceModels />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole("tab", { name: "Tensor Parallelism" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Pipeline" })).toBeNull();
+    expect(screen.queryByLabelText("Quantidade de ranks TP")).toBeNull();
+
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        "/api/ui/slice/plan",
+        expect.objectContaining({ mode: "pipeline" }),
+      ),
+    );
+    expect(post.mock.calls.some((call) => (call[1] as { mode?: string })?.mode === "tensor_parallel")).toBe(
+      false,
+    );
+  });
+
+  it("also hides Tensor Parallelism when the node info has not answered yet", async () => {
+    nodeState.value = undefined;
+
+    render(
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <SliceModels />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getAllByRole("textbox")).toHaveLength(1));
+    expect(screen.queryByRole("tab", { name: "Tensor Parallelism" })).toBeNull();
   });
 
   it("shows the summed size and every physical part of a multipart model", async () => {

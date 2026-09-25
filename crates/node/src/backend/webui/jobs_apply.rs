@@ -538,6 +538,19 @@ pub(super) async fn model_metadata(
     }
 }
 
+fn catalog_path_error(requested: &std::path::Path, metadata_complete: bool) -> String {
+    if !metadata_complete {
+        return format!(
+            "o catálogo deste peer ainda está sendo descoberto; aguarde metadata_complete=true antes de selecionar {}",
+            requested.display()
+        );
+    }
+    format!(
+        "o arquivo {} não pertence ao catálogo deste peer",
+        requested.display()
+    )
+}
+
 pub(crate) async fn model_metadata_local(
     state: &GatewayState,
     requested: &str,
@@ -557,12 +570,7 @@ pub(crate) async fn model_metadata_local(
                 .is_some_and(|path| path == canonical)
         })
         .cloned()
-        .ok_or_else(|| {
-            format!(
-                "o arquivo {} não pertence ao catálogo deste peer",
-                requested_path.display()
-            )
-        })?;
+        .ok_or_else(|| catalog_path_error(requested_path, catalog.metadata_complete))?;
 
     if !catalog::metadata_is_current(&model) {
         model = tokio::task::spawn_blocking(move || {
@@ -606,10 +614,7 @@ pub(crate) async fn model_identity_local(
             .is_some_and(|path| path == canonical)
     });
     if !listed {
-        return Err(format!(
-            "o arquivo {} não pertence ao catálogo deste peer",
-            requested.display()
-        ));
+        return Err(catalog_path_error(requested, catalog.metadata_complete));
     }
     let sha256 = if calculate_hash {
         Some(
@@ -654,10 +659,18 @@ pub(crate) async fn model_layer_options_local(
             && model.shard_range.is_none()
     });
     if !listed {
-        return Err(format!(
-            "o arquivo {} não é um modelo inteiro do catálogo deste peer",
-            requested_path.display()
-        ));
+        let error = if !catalog.metadata_complete {
+            format!(
+                "o catálogo deste peer ainda está sendo descoberto; aguarde metadata_complete=true antes de selecionar {}",
+                requested_path.display()
+            )
+        } else {
+            format!(
+                "o arquivo {} não é um modelo inteiro do catálogo deste peer",
+                requested_path.display()
+            )
+        };
+        return Err(error);
     }
     let layout = layout_of(&canonical).await?;
     let total_layers = layout.layer_count();
@@ -967,11 +980,10 @@ fn resolve_mmproj_path(
             std::path::Path::new(path).is_file(),
             "este modelo não tem visão: mmproj não encontrado no caminho informado"
         );
+        crate::catalog::validate_mmproj_pair(model_path, std::path::Path::new(path))?;
         return Ok(path.to_string());
     }
-    crate::catalog::find_mmproj_sibling(model_path).ok_or_else(|| {
-        anyhow::anyhow!("este modelo não tem visão: mmproj não encontrado ao lado do GGUF")
-    })
+    crate::catalog::find_verified_mmproj_sibling(model_path).map_err(anyhow::Error::msg)
 }
 
 #[cfg(test)]
@@ -984,9 +996,17 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let model = root.join("slice.gguf");
         let projector = root.join("projectors/mmproj.gguf");
-        std::fs::write(&model, b"model").unwrap();
+        std::fs::write(
+            &model,
+            crate::catalog::tests::text_model_fixture("Model", "llama", 3072),
+        )
+        .unwrap();
         std::fs::create_dir_all(projector.parent().unwrap()).unwrap();
-        std::fs::write(&projector, b"projector").unwrap();
+        std::fs::write(
+            &projector,
+            crate::catalog::tests::projector_fixture("Model", 3072),
+        )
+        .unwrap();
 
         assert_eq!(
             resolve_mmproj_path(&model, projector.to_str()).unwrap(),

@@ -23,6 +23,7 @@ pub struct SamplingConfig {
 /// soma sem avisar.
 #[derive(Debug, Clone, Default)]
 pub struct SamplingTimings {
+    /// Kept in the telemetry shape; sparse repetition adjustments avoid this copy.
     pub logits_clone_us: u64,
     pub repetition_penalty_us: u64,
     pub softmax_us: u64,
@@ -99,54 +100,89 @@ pub(super) fn sampling_candidates_profiled(
     cfg: &SamplingConfig,
     timings: &mut SamplingTimings,
 ) -> Vec<(usize, f32)> {
-    let clone_started = Instant::now();
-    let mut adjusted = logits.to_vec();
-    timings.logits_clone_us = clone_started.elapsed().as_micros() as u64;
-
     let repetition_started = Instant::now();
-    apply_repetition_penalty(&mut adjusted, recent, cfg);
+    let adjustments = repetition_adjustments(logits, recent, cfg);
     timings.repetition_penalty_us = repetition_started.elapsed().as_micros() as u64;
 
     if cfg.temperature <= 0.0 {
-        return vec![(argmax(&adjusted) as usize, 1.0)];
+        return vec![(argmax_adjusted(logits, &adjustments) as usize, 1.0)];
     }
 
-    // Selecting the k largest raw logits is O(V): positive-temperature softmax
-    // preserves their order, and index breaks a tie without widening the set.
-    let top_k_started = Instant::now();
-    let ids = top_k_ids(&adjusted, cfg.top_k);
-    timings.top_k_us = top_k_started.elapsed().as_micros() as u64;
+    // Positive-temperature softmax preserves logit order. Repeated IDs are
+    // adjusted before top-k refinement, and token ID resolves every tie.
+    let selects_top_k = cfg.top_k > 0 && (cfg.top_k as usize) < logits.len();
+    let mut candidates = if selects_top_k {
+        let top_k_started = Instant::now();
+        let ids = top_k_ids_adjusted(logits, &adjustments, cfg.top_k as usize);
+        timings.top_k_us = top_k_started.elapsed().as_micros() as u64;
 
-    let softmax_started = Instant::now();
-    let max_l = ids
-        .iter()
-        .map(|&i| adjusted[i])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let mut candidates = ids
-        .into_iter()
-        .map(|i| (i, ((adjusted[i] - max_l) / cfg.temperature).exp()))
-        .collect::<Vec<_>>();
-    normalise_candidates(&mut candidates, &adjusted);
-    timings.softmax_us = softmax_started.elapsed().as_micros() as u64;
+        let softmax_started = Instant::now();
+        let max_l = ids
+            .iter()
+            .map(|&id| adjusted_logit_at(logits, &adjustments, id))
+            .fold(f32::NEG_INFINITY, f32::max);
+        let mut candidates = ids
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    ((adjusted_logit_at(logits, &adjustments, id) - max_l) / cfg.temperature).exp(),
+                )
+            })
+            .collect::<Vec<_>>();
+        normalise_candidates_with_fallback(&mut candidates, || {
+            argmax_adjusted(logits, &adjustments) as usize
+        });
+        timings.softmax_us = softmax_started.elapsed().as_micros() as u64;
+        candidates
+    } else {
+        // With top-k disabled, stream token IDs directly into the probability
+        // vector. Materializing a second vocabulary-sized ID list is redundant.
+        let softmax_started = Instant::now();
+        let max_l = if adjustments.is_empty() {
+            logits.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+        } else {
+            adjusted_logits(logits, &adjustments)
+                .map(|(_, logit)| logit)
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        let mut candidates = if adjustments.is_empty() {
+            logits
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(id, logit)| (id, ((logit - max_l) / cfg.temperature).exp()))
+                .collect::<Vec<_>>()
+        } else {
+            adjusted_logits(logits, &adjustments)
+                .map(|(id, logit)| (id, ((logit - max_l) / cfg.temperature).exp()))
+                .collect::<Vec<_>>()
+        };
+        normalise_candidates_with_fallback(&mut candidates, || {
+            argmax_adjusted(logits, &adjustments) as usize
+        });
+        timings.softmax_us = softmax_started.elapsed().as_micros() as u64;
+        candidates
+    };
 
     let top_p_started = Instant::now();
     if cfg.top_p < 1.0 {
-        let mut ranked = candidates.clone();
-        ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let target = cfg.top_p.max(0.0);
         let mut mass = 0.0;
         let mut keep = 0;
-        for (_, probability) in &ranked {
+        for (_, probability) in &candidates {
             mass += *probability;
             keep += 1;
             if mass >= target {
                 break;
             }
         }
-        ranked.truncate(keep);
-        ranked.sort_unstable_by_key(|(id, _)| *id);
-        candidates = ranked;
-        normalise_candidates(&mut candidates, &adjusted);
+        candidates.truncate(keep);
+        candidates.sort_unstable_by_key(|(id, _)| *id);
+        normalise_candidates_with_fallback(&mut candidates, || {
+            argmax_adjusted(logits, &adjustments) as usize
+        });
     }
     timings.top_p_us = top_p_started.elapsed().as_micros() as u64;
     candidates
@@ -161,6 +197,7 @@ pub(super) fn sampling_candidates(
     sampling_candidates_profiled(logits, recent, cfg, &mut SamplingTimings::default())
 }
 
+#[cfg(test)]
 pub(super) fn apply_repetition_penalty(logits: &mut [f32], recent: &[i32], cfg: &SamplingConfig) {
     if cfg.repeat_penalty == 1.0 || recent.is_empty() {
         return;
@@ -179,22 +216,486 @@ pub(super) fn apply_repetition_penalty(logits: &mut [f32], recent: &[i32], cfg: 
     }
 }
 
-pub(super) fn top_k_ids(logits: &[f32], top_k: i32) -> Vec<usize> {
-    if top_k <= 0 || (top_k as usize) >= logits.len() {
+fn repetition_adjustments(
+    logits: &[f32],
+    recent: &[i32],
+    cfg: &SamplingConfig,
+) -> Vec<(usize, f32)> {
+    if cfg.repeat_penalty == 1.0 || recent.is_empty() {
+        return Vec::new();
+    }
+
+    let window_start = recent.len().saturating_sub(cfg.repeat_last_n);
+    let window: std::collections::HashSet<i32> = recent[window_start..].iter().copied().collect();
+    let mut ids: Vec<usize> = window
+        .into_iter()
+        .filter_map(|token| usize::try_from(token).ok())
+        .filter(|&token| token < logits.len())
+        .collect();
+    ids.sort_unstable();
+    ids.into_iter()
+        .map(|id| {
+            let logit = logits[id];
+            let adjusted = if logit > 0.0 {
+                logit / cfg.repeat_penalty
+            } else {
+                logit * cfg.repeat_penalty
+            };
+            (id, adjusted)
+        })
+        .collect()
+}
+
+fn adjusted_logit_at(logits: &[f32], adjustments: &[(usize, f32)], id: usize) -> f32 {
+    if adjustments.is_empty() {
+        return logits[id];
+    }
+    match adjustments.binary_search_by_key(&id, |(adjusted_id, _)| *adjusted_id) {
+        Ok(index) => adjustments[index].1,
+        Err(_) => logits[id],
+    }
+}
+
+fn adjusted_logits<'a>(
+    logits: &'a [f32],
+    adjustments: &'a [(usize, f32)],
+) -> impl Iterator<Item = (usize, f32)> + 'a {
+    let mut adjustment_index = 0;
+    logits.iter().copied().enumerate().map(move |(id, logit)| {
+        while adjustment_index < adjustments.len() && adjustments[adjustment_index].0 < id {
+            adjustment_index += 1;
+        }
+        if adjustment_index < adjustments.len() && adjustments[adjustment_index].0 == id {
+            let adjusted = adjustments[adjustment_index].1;
+            adjustment_index += 1;
+            (id, adjusted)
+        } else {
+            (id, logit)
+        }
+    })
+}
+
+fn argmax_adjusted(logits: &[f32], adjustments: &[(usize, f32)]) -> i32 {
+    if adjustments.is_empty() {
+        return argmax(logits);
+    }
+    adjusted_logits(logits, adjustments)
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .map(|(id, _)| id as i32)
+        .unwrap_or(0)
+}
+
+fn top_k_ids_adjusted(logits: &[f32], adjustments: &[(usize, f32)], k: usize) -> Vec<usize> {
+    if adjustments.is_empty() {
+        return top_k_ids_compact(logits, k);
+    }
+
+    // At most one adjusted token can displace one raw top-k token. Keeping the
+    // raw top (k + adjusted_count) and every adjusted ID therefore contains the
+    // exact adjusted top-k, including penalties that raise a logit.
+    let raw_count = k.saturating_add(adjustments.len()).min(logits.len());
+    let mut ids = top_k_ids_compact(logits, raw_count);
+    ids.extend(adjustments.iter().map(|(id, _)| *id));
+    ids.sort_unstable();
+    ids.dedup();
+
+    let mut ranked: Vec<(usize, f32)> = ids
+        .into_iter()
+        .map(|id| (id, adjusted_logit_at(logits, adjustments, id)))
+        .collect();
+    ranked.select_nth_unstable_by(k - 1, |a, b| {
+        b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0))
+    });
+    ranked.truncate(k);
+    ranked.sort_unstable_by_key(|(id, _)| *id);
+    ranked.into_iter().map(|(id, _)| id).collect()
+}
+
+/// Select the highest `k` token indices and return them in ID order.
+///
+/// A real model vocabulary fits in a `u32`; using that compact scratch vector
+/// halves the per-token allocation and memory traffic on the full-vocabulary
+/// selection. Keep the wider fallback for slices too large to represent.
+pub(super) fn top_k_ids_compact(logits: &[f32], k: usize) -> Vec<usize> {
+    if k == 0 || k >= logits.len() {
         return (0..logits.len()).collect();
     }
 
-    let k = top_k as usize;
-    let mut ids: Vec<usize> = (0..logits.len()).collect();
-    ids.select_nth_unstable_by(k - 1, |&a, &b| {
-        logits[b].total_cmp(&logits[a]).then_with(|| a.cmp(&b))
-    });
-    ids.truncate(k);
-    ids.sort_unstable();
-    ids
+    if logits.len() <= u32::MAX as usize {
+        let mut ids: Vec<u32> = (0..logits.len() as u32).collect();
+        ids.select_nth_unstable_by(k - 1, |&a, &b| {
+            logits[b as usize]
+                .total_cmp(&logits[a as usize])
+                .then_with(|| a.cmp(&b))
+        });
+        ids.truncate(k);
+        ids.sort_unstable();
+        ids.into_iter().map(|id| id as usize).collect()
+    } else {
+        let mut ids: Vec<usize> = (0..logits.len()).collect();
+        ids.select_nth_unstable_by(k - 1, |&a, &b| {
+            logits[b].total_cmp(&logits[a]).then_with(|| a.cmp(&b))
+        });
+        ids.truncate(k);
+        ids.sort_unstable();
+        ids
+    }
 }
 
+#[cfg(test)]
+mod compact_top_k_tests {
+    use super::*;
+
+    fn full_sort_reference(logits: &[f32], k: usize) -> Vec<usize> {
+        let mut ids: Vec<usize> = (0..logits.len()).collect();
+        ids.sort_unstable_by(|&a, &b| logits[b].total_cmp(&logits[a]).then_with(|| a.cmp(&b)));
+        ids.truncate(k);
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn compact_indices_match_full_sort_with_ties_and_total_float_order() {
+        let cases = [
+            (vec![7.0, 7.0, 7.0, 1.0], 1),
+            (vec![3.0, 3.0, 2.0, 2.0, 1.0], 3),
+            (
+                vec![f32::NAN, 0.0, -0.0, f32::INFINITY, f32::NEG_INFINITY],
+                3,
+            ),
+            ((0..257).map(|i| ((i % 11) as f32) - 5.0).collect(), 40),
+        ];
+
+        for (logits, k) in cases {
+            assert_eq!(
+                top_k_ids_compact(&logits, k),
+                full_sort_reference(&logits, k)
+            );
+        }
+    }
+
+    #[test]
+    fn compact_indices_match_full_sort_on_a_large_tied_vocabulary() {
+        const VOCAB: usize = 151_936;
+        let logits: Vec<f32> = (0..VOCAB)
+            .map(|i| ((i.wrapping_mul(48_271) % 32_768) as i32 - 16_384) as f32 * 0.125)
+            .collect();
+
+        assert_eq!(
+            top_k_ids_compact(&logits, 40),
+            full_sort_reference(&logits, 40)
+        );
+    }
+}
+
+#[cfg(test)]
+mod sampler_profile_regressions {
+    use super::*;
+
+    fn cfg(temperature: f32, top_k: i32, top_p: f32) -> SamplingConfig {
+        SamplingConfig {
+            temperature,
+            top_p,
+            top_k,
+            repeat_penalty: 1.0,
+            repeat_last_n: 0,
+        }
+    }
+
+    fn candidate_ids(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> Vec<usize> {
+        sampling_candidates(logits, recent, cfg)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    fn legacy_top_k_ids(logits: &[f32], top_k: i32) -> Vec<usize> {
+        if top_k <= 0 || (top_k as usize) >= logits.len() {
+            return (0..logits.len()).collect();
+        }
+        let k = top_k as usize;
+        let mut ids: Vec<usize> = (0..logits.len()).collect();
+        ids.select_nth_unstable_by(k - 1, |&a, &b| {
+            logits[b].total_cmp(&logits[a]).then_with(|| a.cmp(&b))
+        });
+        ids.truncate(k);
+        ids.sort_unstable();
+        ids
+    }
+
+    fn legacy_sampling_candidates_profiled(
+        logits: &[f32],
+        recent: &[i32],
+        cfg: &SamplingConfig,
+        timings: &mut SamplingTimings,
+    ) -> Vec<(usize, f32)> {
+        let clone_started = Instant::now();
+        let mut adjusted = logits.to_vec();
+        timings.logits_clone_us = clone_started.elapsed().as_micros() as u64;
+
+        let repetition_started = Instant::now();
+        apply_repetition_penalty(&mut adjusted, recent, cfg);
+        timings.repetition_penalty_us = repetition_started.elapsed().as_micros() as u64;
+        if cfg.temperature <= 0.0 {
+            return vec![(argmax(&adjusted) as usize, 1.0)];
+        }
+
+        let top_k_started = Instant::now();
+        let ids = legacy_top_k_ids(&adjusted, cfg.top_k);
+        timings.top_k_us = top_k_started.elapsed().as_micros() as u64;
+        let softmax_started = Instant::now();
+        let max_logit = ids
+            .iter()
+            .map(|&id| adjusted[id])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let mut candidates: Vec<(usize, f32)> = ids
+            .into_iter()
+            .map(|id| (id, ((adjusted[id] - max_logit) / cfg.temperature).exp()))
+            .collect();
+        normalise_candidates(&mut candidates, &adjusted);
+        timings.softmax_us = softmax_started.elapsed().as_micros() as u64;
+
+        let top_p_started = Instant::now();
+        if cfg.top_p < 1.0 {
+            let mut ranked = candidates.clone();
+            ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let target = cfg.top_p.max(0.0);
+            let mut mass = 0.0;
+            let mut keep = 0;
+            for (_, probability) in &ranked {
+                mass += *probability;
+                keep += 1;
+                if mass >= target {
+                    break;
+                }
+            }
+            ranked.truncate(keep);
+            ranked.sort_unstable_by_key(|(id, _)| *id);
+            candidates = ranked;
+            normalise_candidates(&mut candidates, &adjusted);
+        }
+        timings.top_p_us = top_p_started.elapsed().as_micros() as u64;
+        candidates
+    }
+
+    fn measure_candidates(
+        sampler: fn(&[f32], &[i32], &SamplingConfig, &mut SamplingTimings) -> Vec<(usize, f32)>,
+        logits: &[f32],
+        recent: &[i32],
+        cfg: &SamplingConfig,
+        rounds: usize,
+    ) -> (f64, SamplingTimings) {
+        let mut totals = SamplingTimings::default();
+        let started = Instant::now();
+        for _ in 0..rounds {
+            let mut timings = SamplingTimings::default();
+            std::hint::black_box(sampler(logits, recent, cfg, &mut timings));
+            totals.logits_clone_us += timings.logits_clone_us;
+            totals.repetition_penalty_us += timings.repetition_penalty_us;
+            totals.softmax_us += timings.softmax_us;
+            totals.top_k_us += timings.top_k_us;
+            totals.top_p_us += timings.top_p_us;
+        }
+        (
+            started.elapsed().as_secs_f64() * 1_000.0 / rounds as f64,
+            totals,
+        )
+    }
+
+    #[test]
+    #[ignore = "benchmark manual em release para comparar o caminho anterior e o atual"]
+    fn sampler_cost_profiles_on_a_qwen_vocabulary() {
+        const VOCAB: usize = 151_936;
+        const ROUNDS: usize = 100;
+        let logits: Vec<f32> = (0..VOCAB).map(|i| ((i % 977) as f32) * 0.01).collect();
+        let recent: Vec<i32> = (0..64).map(|i| (i * 1979 % VOCAB) as i32).collect();
+        let actual_defaults = SamplingConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            repeat_penalty: 1.15,
+            repeat_last_n: 64,
+        };
+        let cases = [
+            ("top_k_enabled", cfg(0.7, 40, 1.0), &[][..]),
+            ("deployed_defaults", actual_defaults, recent.as_slice()),
+            ("top_k_disabled", cfg(0.7, 0, 0.9), &[][..]),
+        ];
+
+        for (name, config, recent) in cases {
+            assert_eq!(
+                legacy_sampling_candidates_profiled(
+                    &logits,
+                    recent,
+                    &config,
+                    &mut SamplingTimings::default()
+                ),
+                sampling_candidates_profiled(
+                    &logits,
+                    recent,
+                    &config,
+                    &mut SamplingTimings::default()
+                ),
+                "candidate distribution changed for {name}"
+            );
+            let legacy = measure_candidates(
+                legacy_sampling_candidates_profiled,
+                &logits,
+                recent,
+                &config,
+                ROUNDS,
+            );
+            let current = measure_candidates(
+                sampling_candidates_profiled,
+                &logits,
+                recent,
+                &config,
+                ROUNDS,
+            );
+            let avg = |total: u64| total as f64 / ROUNDS as f64;
+            println!(
+                "{name}: legacy wall={:.1}us clone={:.1}us repetition={:.1}us softmax={:.1}us top_k={:.1}us top_p={:.1}us; current wall={:.1}us clone={:.1}us repetition={:.1}us softmax={:.1}us top_k={:.1}us top_p={:.1}us",
+                legacy.0 * 1_000.0,
+                avg(legacy.1.logits_clone_us),
+                avg(legacy.1.repetition_penalty_us),
+                avg(legacy.1.softmax_us),
+                avg(legacy.1.top_k_us),
+                avg(legacy.1.top_p_us),
+                current.0 * 1_000.0,
+                avg(current.1.logits_clone_us),
+                avg(current.1.repetition_penalty_us),
+                avg(current.1.softmax_us),
+                avg(current.1.top_k_us),
+                avg(current.1.top_p_us),
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_adjustments_preserve_candidates_across_sampling_options() {
+        let logits = [4.0, 4.0, 1.0, -2.0, -2.0, 0.5, 3.0];
+        let recent = [0, 0, 3, 5, -1, 99];
+        let configs = [
+            SamplingConfig {
+                repeat_penalty: 1.15,
+                repeat_last_n: 5,
+                ..cfg(0.7, 3, 0.9)
+            },
+            SamplingConfig {
+                repeat_penalty: 0.5,
+                repeat_last_n: 6,
+                ..cfg(1.2, 0, 0.5)
+            },
+            SamplingConfig {
+                repeat_penalty: 2.0,
+                repeat_last_n: 4,
+                ..cfg(0.0, 2, 0.1)
+            },
+            cfg(1.0, 40, 1.0),
+        ];
+
+        for config in configs {
+            let expected = legacy_sampling_candidates_profiled(
+                &logits,
+                &recent,
+                &config,
+                &mut SamplingTimings::default(),
+            );
+            assert_eq!(
+                sampling_candidates(&logits, &recent, &config),
+                expected,
+                "config={config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn active_repetition_penalty_does_not_clone_the_full_vocabulary() {
+        const VOCAB: usize = 151_936;
+        let logits: Vec<f32> = (0..VOCAB).map(|i| ((i % 977) as f32) * 0.01).collect();
+        let recent: Vec<i32> = (0..64).map(|i| (i * 1979 % VOCAB) as i32).collect();
+        let config = SamplingConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            repeat_penalty: 1.15,
+            repeat_last_n: 64,
+        };
+
+        let expected = legacy_sampling_candidates_profiled(
+            &logits,
+            &recent,
+            &config,
+            &mut SamplingTimings::default(),
+        );
+        assert_eq!(sampling_candidates(&logits, &recent, &config), expected);
+        let (_, timings) = sample_token_profiled(&logits, &recent, &config);
+        assert_eq!(timings.logits_clone_us, 0);
+    }
+
+    #[test]
+    fn disabled_top_k_does_not_materialize_a_vocabulary_sized_id_list() {
+        const VOCAB: usize = 151_936;
+        let logits = vec![0.25; VOCAB];
+        let config = cfg(0.7, 0, 1.0);
+
+        let (_, timings) = sample_token_profiled(&logits, &[], &config);
+        assert_eq!(timings.top_k_us, 0);
+        assert!(timings.softmax_us > 0);
+    }
+
+    #[test]
+    fn repetition_penalty_is_applied_before_top_k() {
+        let cfg = SamplingConfig {
+            repeat_penalty: 2.0,
+            repeat_last_n: 4,
+            ..cfg(1.0, 2, 1.0)
+        };
+
+        assert_eq!(candidate_ids(&[10.0, 9.0, 8.0, 7.0], &[0, 0], &cfg), [1, 2]);
+    }
+
+    #[test]
+    fn repetition_penalty_below_one_can_raise_a_token_into_top_k() {
+        let cfg = SamplingConfig {
+            repeat_penalty: 0.5,
+            repeat_last_n: 4,
+            ..cfg(1.0, 2, 1.0)
+        };
+
+        assert_eq!(
+            candidate_ids(&[9.0, 8.0, 7.0, 6.0, 5.0], &[4], &cfg),
+            [0, 4]
+        );
+    }
+
+    #[test]
+    fn disabled_top_k_keeps_the_full_distribution_for_top_p() {
+        assert_eq!(
+            candidate_ids(&[3.0, 2.0, 1.0], &[], &cfg(1.0, 0, 0.8)),
+            [0, 1]
+        );
+    }
+
+    #[test]
+    fn top_k_and_top_p_ties_keep_the_lowest_token_ids() {
+        assert_eq!(
+            candidate_ids(&[7.0, 7.0, 7.0, 1.0], &[], &cfg(1.0, 1, 1.0)),
+            [0]
+        );
+        assert_eq!(candidate_ids(&[1.0; 4], &[], &cfg(1.0, 0, 0.5)), [0, 1]);
+    }
+}
+
+#[cfg(test)]
 pub(super) fn normalise_candidates(candidates: &mut Vec<(usize, f32)>, adjusted: &[f32]) {
+    normalise_candidates_with_fallback(candidates, || argmax(adjusted) as usize);
+}
+
+fn normalise_candidates_with_fallback(
+    candidates: &mut Vec<(usize, f32)>,
+    fallback: impl FnOnce() -> usize,
+) {
     let total = candidates
         .iter()
         .map(|(_, probability)| *probability)
@@ -205,7 +706,7 @@ pub(super) fn normalise_candidates(candidates: &mut Vec<(usize, f32)>, adjusted:
         }
     } else {
         candidates.clear();
-        candidates.push((argmax(adjusted) as usize, 1.0));
+        candidates.push((fallback(), 1.0));
     }
 }
 

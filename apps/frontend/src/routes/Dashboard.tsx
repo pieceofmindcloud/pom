@@ -42,6 +42,7 @@ function ViewSwitch({ view, onChange }: { view: View; onChange: (v: View) => voi
           <button
             key={o.id}
             onClick={() => onChange(o.id)}
+            aria-pressed={active}
             className={clsx(
               "relative flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[0.8rem] font-medium",
               "transition-colors duration-150",
@@ -132,7 +133,7 @@ function otherRangesFor(pipeline: PeerView[], peer: PeerView): [number, number][
 
 export function Dashboard() {
   const { t } = useI18n();
-  const [view, setView] = useState<View>("minima");
+  const [viewOverride, setViewOverride] = useState<View | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [showProperties, setShowProperties] = useState(true);
@@ -154,6 +155,8 @@ export function Dashboard() {
     ? networkPeers(c)
     : { pipeline: [] as PeerView[], others: [] as PeerView[] };
   const group = c?.active_model ?? "";
+  const hasActiveModel = Boolean(group);
+  const view: View = viewOverride ?? (hasActiveModel ? "minima" : "estendida");
   const modelDeployments = deployments.data?.deployments.filter(
     (row) => row.deployment.model.label === group,
   ) ?? [];
@@ -270,7 +273,7 @@ export function Dashboard() {
         )}
       </div>
       <div className="flex items-center gap-2">
-        {isAdmin && (
+        {isAdmin && hasActiveModel && (
           <>
             <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
               <Plus className="h-3.5 w-3.5" />
@@ -288,7 +291,7 @@ export function Dashboard() {
             )}
           </>
         )}
-        {detailed && <ViewSwitch view={view} onChange={setView} />}
+        {detailed && <ViewSwitch view={view} onChange={(next) => setViewOverride(next)} />}
       </div>
     </div>
 

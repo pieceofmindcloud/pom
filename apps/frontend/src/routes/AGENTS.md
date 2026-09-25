@@ -81,22 +81,44 @@ Per-file list:
   Descrição, regras e o campo único de canais Discord ou Telegram são editados
   como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
   mesmo renderer Markdown compartilhado pelo Chat.
-- `Plugins.tsx` - rota `/plugins`. Lista todo `PluginStatus` do catálogo
-  (`GET /api/ui/plugins`), inclusive o que o operador nunca ativou, com estado,
-  funcionalidades concedidas e atualização de versão PRÓPRIA daquele plugin
-  quando existe (`available_update`, aplicada por
-  `POST /api/ui/plugins/:code/update/apply` após a confirmação do release_id).
-  Um único formulário de chave de licença ativa quantos plugins conhecidos a
-  chave conceder (`POST /api/ui/plugins/activate`, resposta `{activated}`
-  nomeia quais); atualizar e desativar são ações por plugin
-  (`POST /api/ui/plugins/:code/refresh|deactivate`). Não trata da atualização
-  do binário `pom` em si - essa fica inteira em `About.tsx`, de propósito
-  separada (ver `crates/node/src/pom_core_update.rs`). O link de comprar/
-  gerenciar de cada card usa o `manage_url` do próprio plugin
-  (`pieceofmind.cloud`). Substituiu a antiga `Enterprise.tsx` de produto único.
-  Tem entrada própria no menu (Configurações > Plugins, antes de "Sobre"): o
-  catálogo é vitrine e precisa ser navegável antes da compra, não só
-  alcançável ao esbarrar numa tela bloqueada, como era a `/enterprise`.
+- `Plugins.tsx` - rota `/plugins`. Cruza o catálogo público de
+  `https://license.pieceofmind.cloud/v1/plugins` com o estado local de
+  `GET /api/ui/plugins`, usando `code` como identidade. A lista tem um
+  contêiner de rolagem próprio com `overscroll-y-contain`, para a rolagem no
+  limite dos plugins não deslocar o restante da interface. O cliente público
+  fica em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita plugins
+  com release compatível ou uma origem GitHub pública canônica; dados de imagem
+  incompletos viram
+  placeholders, e até quatro screenshots abrem em lightbox com Escape e foco
+  restaurado. Descrições usam português brasileiro quando disponível e têm
+  fallback para inglês. Validade, plugins concedidos, candidatos de ativação e
+  uso por `plugin_code` vêm do estado autenticado do nó, nunca do catálogo
+  público. A tela full-bleed segue o cabeçalho e o contêiner
+  interno de `/modelos`. O estado de licença, validade, última instalação,
+  última consulta de update, funcionalidades, versão e ações continuam vindo do
+  nó; plugins locais ativos permanecem visíveis mesmo quando faltam no catálogo
+  público. Desativação exige confirmação. O formulário de chave aparece se
+  qualquer entrada pública que exige licença não estiver ativa no estado local,
+  mesmo quando outro plugin já tem licença/contexto. Ele também aparece quando
+  falta status local ou o status está expirado/revogado, e some quando todos os
+  plugins licenciáveis conhecidos estão ativos. Comprar redireciona plugins
+  licenciados à loja pública com `plugin=<code>` codificado em
+  `lib/pluginPurchase.ts`; um GitHub público marcado sem licença oferece Instalar
+  e consulta o catálogo autenticado por HTTPS antes de executar o host, sem criar
+  grant ou lease. Um único formulário ativa em lote todo `plugin_code` que o servidor conceder
+  (`POST /api/ui/plugins/activate`, resposta
+  `{activated}`); atualizar e desativar continuam por plugin. Um único card
+  global sob a ativação administra origens GitHub e versões baixadas para os
+  plugins. Instalar exige confirmação; um plugin pago exige licença ativa, e um
+  plugin gratuito só instala da URL `github_repository` publicada pelo servidor.
+  Baixar uma atualização nunca substitui o host em execução.
+  O editor de preferências usa o schema opcional do manifesto instalado, mostra
+  defaults tipados boolean/diretório e envia valores só à rota local do nó.
+  A atualização do binário `pom` em si fica separada em `About.tsx` (ver
+  `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,
+  Configurações > Plugins. A release exibida é escolhida pela combinação
+  `system.os`/`system.arch` do nó local; se o catálogo não publicar esse alvo,
+  a tela mostra ausência em vez de sugerir a release de outra plataforma.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,
@@ -202,17 +224,29 @@ Per-file list:
   - **Collapsing is honest.** The chevron toggles, the label opens the
     overview, and holding the open document no longer forces a section back
     open (`collapsed` state, explicit `true` wins).
+  - **Mobile is two screens sharing one address.** Below `sm:` the nav column
+    takes the full width and the reader is hidden (`mobileReaderOpen` state);
+    picking a guide/doc entry opens the reader full-screen with a `Voltar`
+    button pinned at its top (`sm:hidden`, only mounted while open). `Voltar`
+    only flips that local state - it never touches `?doc=`/`?guia=`, so the
+    selection survives the round trip. A deep link present at mount
+    (`?doc=`/`?guia=` already in the URL) counts as that same selection and
+    opens straight into the reader. From `sm:` up both columns render side by
+    side regardless of the flag, exactly like before.
   Search filters label, path *and* body, and replaces the tree with a flat
   result list whose hint is the section name, not the file. Test file
   `Documentation.test.tsx` covers the contract: guides first (a person must not
   land on agent markdown), the guide->reference deep link, no `.md` or
   `AGENTS.md` in the list, section header opens the overview, collapse works
   while holding the selection, the two scroll containers, `?doc=`/`?guia=` deep
-  links, search + clear, empty state. Loading the embedded set requires
+  links, search + clear, empty state, and the mobile nav/reader/Voltar
+  contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `About.tsx` - Tela informativa em `/config/sobre`, última folha de
-  Configurações. Mostra a licença do POM como placeholder visualmente marcado
-  e é a ÚNICA tela que trata da atualização do binário `pom` em si: verifica
+  Configurações. Mostra o `LICENSE` AGPL-3.0 do repositório e a página oficial
+  GNU, o aviso de risco/LGPD e links para o site (`pieceofmind.cloud`), contato
+  (`contact.html`) e repositórios oficiais. É a ÚNICA tela que trata da atualização do binário
+  `pom` em si: verifica
   sob demanda pela rota autenticada `/api/ui/pom-update/check`
   (`usePomCoreUpdateStatus`), e quando há release disponível, mostra e aplica
   ali mesmo (`/api/ui/pom-update/apply`) - não delega mais para a tela de
@@ -224,11 +258,14 @@ Per-file list:
   do workspace Rust agrupadas pela licença declarada, com versão, ecossistema,
   filtro por texto e link do repositório. O catálogo é
   `../lib/licenses.generated.ts`, gerado por `scripts/build-licenses.mjs`; o
-  teste em `About.test.tsx` cobre o placeholder, os dois ecossistemas, os
-  links, o filtro e a verificação/aplicação sob demanda da atualização do pom.
+  teste em `About.test.tsx` cobre a licença, o aviso e links, os dois
+  ecossistemas, o filtro e a verificação/aplicação sob demanda da atualização.
 - `Dashboard.tsx` — Cluster overview: the admin sees cluster
   coverage/machines/model/in-flight stats; node and infer see local model,
-  slice and in-flight requests instead. For administrators, the deployment
+  slice and in-flight requests instead. Admins see the Add button only when
+  `ClusterView.active_model` is nonempty. With no active model, Details is the
+  initial view; with an active model, Flow remains the initial view. Manual
+  view selection overrides that default. For administrators, the deployment
   properties inspector selects the `is_default` row for the active model,
   preferring a serving default and falling back to the live or latest local
   record so old deployment history cannot hide the map toggle. A graph view
@@ -290,7 +327,8 @@ Per-file list:
   unavailable, never as an empty model, incomplete pipeline or zero.
 - `DeployModel.tsx` — "Implantar na rede". Full-bleed Deploy Studio with a
   top mode bar, separate technical model and operational deployment name,
-  Simple/Complete strategy, central peer map, compact property inspector
+  central peer map and compact property inspector. Tensor mode, Simple/Complete
+  strategy and "Voltar ao plano do nó" are visible only when `pom_desenv` is true.
   (`../components/DeploymentInspector`, o mesmo componente que o Histórico usa
   em somente leitura) and draggable bottom peer strip. O que continua no
   `DeployModel` e não migrou para o inspetor são as seções que só a tela de
@@ -448,7 +486,7 @@ Per-file list:
   `deploy_id`; mantém apenas o terminal em preto, acompanha o fim enquanto o
   leitor está no fim, pausa o acompanhamento ao rolar para cima, oferece um
   botão de estado visível para reativá-lo e copia as últimas 500 linhas. Não é a
-  auditoria paginada de requisições em `Logs.tsx`.
+  auditoria de requisições, que é do plugin `enterprise`.
 - `Keys.tsx` - Two screens in one file. `TokenKeys` delega a tabela full-bleed
   `ApiKeysTable`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
@@ -463,16 +501,10 @@ Per-file list:
   aparece com `authority_level` presente. O administrador escolhe o nó ao
   criar e vê os próprios tokens completos, enquanto os tokens de outros nós
   ficam mascarados; node e infer veem e criam somente os seus.
-- `Logs.tsx`/`Statistics.tsx` não existem mais aqui: eram a auditoria
-  interativa (`GET /api/ui/requests`/`/requests/stats`, tabela paginada com
-  `IntersectionObserver`, inspetor com abas ENVIADO/REQUEST/Resposta/
-  TELEMETRIA em Markdown renderizado, gráficos agregados) do plugin
-  `enterprise`, extraída para `pom-plugin-logs` (mantida lá como referência em
-  `frontend-reference/`, não compilável isoladamente - depende deste design
-  system). `/logs` e `/estatisticas` agora renderizam
-  `../components/EnterpriseFeatureShowcase.tsx`, uma vitrine estática sem
-  gate. Ver `docs/subsystems/licenciamento-enterprise.md`, "Extração para
-  pom-plugin-logs".
+- Logs de Requisições e Estatísticas **não existem aqui**: são telas do plugin
+  `enterprise`, entregues por `pom-plugin-logs` pelo mecanismo de UI de plugin
+  (`docs/subsystems/plugins-ui.md`). `App.tsx` mostra o fallback
+  `../components/EnterpriseFeatureShowcase.tsx` quando o plugin não está ativo.
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
@@ -533,7 +565,9 @@ Per-file list:
 - `SendFile.tsx` - offers a `.gguf` from the local catalog via
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
-  it again and the receiver sees only an opaque grant.
+  it again and the receiver sees only an opaque grant. Full-bleed shell
+  (`FullBleedHeader` + scrolling body), same contract as `Deployments`/
+  `PublicNetworks`.
 - `Setup.tsx` - First run (no `pom.json`): real wizard backed by
   `/api/setup/hardware`, `/api/setup/geo-reference`,
   `/api/setup/admin-anchor/preview`, `/api/setup/health` and
@@ -559,9 +593,18 @@ Per-file list:
   rows use the one-based labels `1of2`, `2of2`, and so on, with the zero-based
   rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
   `../lib/deleteModel`. `uniqueName` disambiguates same-hostname peers with
-  the node_id prefix.
-- `SliceModels.tsx` - "Fatiar": the operator chooses pipeline slicing, one
-  explicit layer range, or Tensor Parallelism. Pipeline builds a by-size plan
+  the node_id prefix. Full-bleed shell; each `ShardCard` shows the set's
+  `mmproj_path` basename (`../lib/format::optionalBasename`) next to the coverage bar,
+  or "no projector" when the set has none - never invented.
+- `SliceModels.tsx` - "Fatiar": full-bleed shell. Pipeline and Tensor
+  Parallelism are a segmented tab pair (`role="tablist"`), not a checkbox -
+  each mode owns its own controls (Pipeline: size list, one explicit layer
+  range, or Tensor Parallelism's rank count). The Tensor Parallelism tab only
+  mounts when `useNode().data.pom_desenv === true` (the same
+  `POM_DESENV=1`-gated pattern as `DeploymentInspector`/`RuntimeParamsForm`);
+  without it the screen never offers or sends `mode: "tensor_parallel"`, and an
+  effect snaps a stale selection back to `"pipeline"` if the flag turns out
+  false after the first render. Pipeline builds a by-size plan
   (target GB per slice, empty = "the rest"); a single range uses the GGUF
   architectural starts and ends; TP chooses 2..64 ranks and previews one full
   layer range per rank, labeled `1ofN`. The modes use the debounced
@@ -587,18 +630,30 @@ Per-file list:
   State classification from `../lib/transferStatus`. `cancelled` é
   mostrada como **recusada**, em âmbar, e não como falha vermelha: foi decisão
   de alguém, não erro. Fatias aparecem por modelo e faixa de camadas
-  (`../lib/transferLabel`), com o hash curto ao lado.
-- `WholeModels.tsx` — Full-model catalog from `useLocalCatalog`, one `ModelRow`
-  per model with actions: slice (links to `/modelos/fatiar?path=`), send
-  (`/transferencias/enviar?path=`), delete (`../lib/deleteModel`). `ScannedRoots`
-  lists the scanned folders and per-folder file counts.
-- `RemoteModels.tsx` - mostra primeiro o status do CLI e da autenticação,
-  depois busca com debounce em `/api/ui/model-provider/search`, filtro GGUF,
-  ordenação, paginação por URL, detalhes lazy e confirmação de download. O
+  (`../lib/transferLabel`), com o hash curto ao lado. Full-bleed shell; ofertas,
+  ativas e terminadas são cada uma uma tabela de largura total em vez da lista
+  de cartões anterior, com cabeçalho fixo e ações na última coluna.
+- `WholeModels.tsx` — Full-model catalog from `useLocalCatalog`, one full-width
+  table row (`ModelRow`) per model with actions: slice (links to
+  `/modelos/fatiar?path=`), send (`/transferencias/enviar?path=`), delete
+  (`../lib/deleteModel`). A dedicated "Vision (mmproj)" column shows the
+  projector's basename (`../lib/format::optionalBasename`) when
+  `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the
+  catalog already resolves this file from GGUF identity and projection dimensions,
+  the screen only renders it. `ScannedRoots`
+  lists the scanned folders and per-folder file counts. Full-bleed shell.
+- `RemoteModels.tsx` - mostra modelos GGUF em alta pela API pública do Hugging
+  Face ao abrir, sem credenciais; a busca autenticada usa debounce em
+  `/api/ui/model-provider/search`, com filtro, ordenação, paginação por URL,
+  detalhes lazy e confirmação de download. O status de login fica compacto
+  dentro da barra de busca, com ação explícita de Buscar. O
   detalhe resolve a licença pelo provider e marca modelos gated antes do
   download. O diálogo mostra as pastas de modelos resolvidas pelo backend. Os
   jobs aparecem no `ModelDownloadsPanel`, também em Transferências, então trocar
-  de rota ou recarregar não perde uma transferência.
+  de rota ou recarregar não perde uma transferência. Full-bleed shell; os
+  resultados são uma tabela de largura total (nome/tags, estado, downloads,
+  curtidas, atualizado, ação), não mais um grid de cartões - `RemoteModelCard`
+  foi removido por ficar sem uso.
 
 Key logic carriers:
 
@@ -622,7 +677,10 @@ Key logic carriers:
   and end-to-end total, including an explicit unavailable state when a rate has
   no measurable interval. The AI action sends
   both tables as private request content, while the initial model is shown as
-  a non-turn mark before chat messages.
+  a non-turn mark before chat messages. Decode rows separate scheduler-ready,
+  `tensor_get`, residual postprocess and wire encoding/serialization timings;
+  QUIC summaries show request body send/finish wall separately from response
+  header wait.
 - `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime
   knobs, including `prefill_max_inflight_chunks` (prefill pipeline depth, 1..8)
   and `fit_memory_margin_mb` (per-device VRAM safety reserve).
@@ -675,8 +733,11 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 ### Deploy e chat multimodais
 
 `DeployModel.tsx` exibe a opção de visão para modelo inteiro e para conjunto de
-fatias quando o plano resolve `mmproj_path`; conjuntos sem projetor mostram a
-indisponibilidade sem checkbox morto, e a escolha segue para a implantação.
+fatias quando o plano expõe `mmproj_candidates`. A lista é pré-selecionada pelo
+primeiro caminho compatível e permite escolher outro formato local na hora da
+implantação. Sem candidatos, mostra `mmproj_reason` ou uma orientação
+localizada. A tela envia `vision` e `mmproj_path`, e a rota de implantação refaz
+o survey e o plano antes de validar o caminho escolhido para a cabeça.
 `Chat.tsx` usa um único
 campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
 visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens

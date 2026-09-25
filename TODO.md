@@ -4,7 +4,8 @@ Lista de trabalho consolidada em 2026-09-07 a partir da auditoria das anotaçõe
 dos `AGENTS.md`, na revisão `985cfb51183c4fa1b509524e54d39aeda78b1cc8`.
 A evidência completa de cada item está no relatório da auditoria que acompanha
 esta tarefa. A lista atual mantém a numeração da auditoria: 17 defeitos ainda
-existentes e 1 item não verificável nesta máquina.
+existentes e 1 item não verificável nesta máquina. Itens acrescentados depois
+da auditoria seguem a numeração a partir do 27.
 
 ## Regra de manutenção
 
@@ -103,8 +104,7 @@ contexto e não devem voltar a ser propostas como defeitos novos.
   serialização e testes de compatibilidade.
 
 - [ ] **26 - Build manual pode perder o commit do binário**
-  **Fonte:** `scripts/build-docker.sh:6-17`; `crates/node/build.rs:69-92`;
-  `Dockerfile:48-53`.
+  **Fonte:** `scripts/build-docker.sh`; `Dockerfile` (runtime `ARG POM_BUILD_COMMIT`).
   **Prática:** um `docker compose build` manual sem `POM_BUILD_COMMIT` pode
   produzir o carimbo `desconhecido`.
   **Afetados:** builds manuais e pipelines que não exportam a variável;
@@ -186,14 +186,6 @@ As notas antigas sobre alternância do endereço observado e sobre o timeout de
 nova. A revisão atual já descreve a preferência pelo endereço local e o
 cliente de peer limita a abertura TCP a 2 s; elas não são contadas como itens
 atuais desta lista.
-
-## Recusados - decisão tomada, não voltar a propor
-
-- O par do `docker-compose` (`docker-compose.yml` montando fixtures que
-  `scripts/gen-node-configs.py` não escreve, e o `.dockerignore` cortando
-  `pom.json`). **Não é defeito:** são dois ambientes de gente diferente - o
-  gerador serve a máquina do captain, o compose serve a do salem - e os dois
-  esquemas de nome não precisam se encontrar. Registrado em `scripts/AGENTS.md`.
 
 ## Dívida de documentação em aberto
 

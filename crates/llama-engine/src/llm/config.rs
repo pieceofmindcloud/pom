@@ -788,8 +788,11 @@ mod fit_memory_margin_tests {
         // `DECODER_MTP`, e essa checagem não deve nem rodar quando quem tem
         // `nextn` é o rascunho, não o alvo.
         let target_path = dir.join("target-sem-nextn.gguf");
-        std::fs::write(&target_path, minimal_gguf_with_tensor_names(&["token_embd.weight"]))
-            .unwrap();
+        std::fs::write(
+            &target_path,
+            minimal_gguf_with_tensor_names(&["token_embd.weight"]),
+        )
+        .unwrap();
         let draft_path = dir.join("mtp-target-sem-nextn-shared.gguf");
         std::fs::write(
             &draft_path,
@@ -827,8 +830,11 @@ mod fit_memory_margin_tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let target_path = dir.join("target-sem-nextn.gguf");
-        std::fs::write(&target_path, minimal_gguf_with_tensor_names(&["token_embd.weight"]))
-            .unwrap();
+        std::fs::write(
+            &target_path,
+            minimal_gguf_with_tensor_names(&["token_embd.weight"]),
+        )
+        .unwrap();
 
         let cfg = cfg_for_fit_plan();
         let plan = fit_plan(target_path.to_str().unwrap(), &cfg, MtpFitMode::Vram)
@@ -990,7 +996,9 @@ pub(super) fn fit_plan(
                 .mtp_draft_path
                 .as_deref()
                 .map(std::path::Path::new)
-                .is_some_and(|draft_path| crate::gguf::has_nextn_tensors(draft_path).unwrap_or(false));
+                .is_some_and(|draft_path| {
+                    crate::gguf::has_nextn_tensors(draft_path).unwrap_or(false)
+                });
 
         if has_nextn {
             // Embutido: o grafo do próprio alvo precisa saber construir a
@@ -999,8 +1007,7 @@ pub(super) fn fit_plan(
             let architecture = crate::gguf::read_info(path)
                 .ok()
                 .and_then(|info| info.architecture);
-            let (mode, reason) =
-                mtp_fit_mode_for_model(mtp_mode, true, architecture.as_deref());
+            let (mode, reason) = mtp_fit_mode_for_model(mtp_mode, true, architecture.as_deref());
             if let Some(reason) = reason.as_deref() {
                 warn!(model = %model_path, reason, "MTP indisponível para a arquitetura do modelo");
             }

@@ -19,9 +19,11 @@ pub(super) struct CaptureSlot {
     /// llama.cpp may reuse graph buffers between microbatches, so postponing
     /// the read until `llama_decode` returns would lose earlier residual rows.
     pub(super) capture_requested_at: Option<Instant>,
-    /// Time from the scheduler's ask callback until the bulk read begins.
-    /// This is intentionally separate from the device-to-host read itself.
+    /// Time from the scheduler's ask callback until the ready callback. This
+    /// includes graph evaluation and scheduler synchronization before capture.
     pub(super) ready_wait_us: u64,
+    /// Wall time inside `ggml_backend_tensor_get`. CUDA backends may include
+    /// both D2H transfer and stream synchronization in this opaque call.
     pub(super) copy_us: u64,
     pub(super) postprocess_us: u64,
     pub(super) copy_bytes: u64,
@@ -1089,9 +1091,8 @@ pub(super) unsafe extern "C" fn capture_callback(
     if ask {
         if matches {
             // Preserve the scheduler split: its ready callback is the only
-            // point where this microbatch's graph buffer is stable. Record
-            // the interval separately so it cannot be mistaken for the bulk
-            // device-to-host copy below.
+            // point where this microbatch's graph buffer is stable. The
+            // interval includes graph evaluation and scheduler synchronization.
             slot.capture_requested_at = Some(Instant::now());
         }
         return matches;

@@ -288,6 +288,9 @@ export interface TransportSummaryEntry {
   calls: number;
   bytes_sent: number;
   bytes_received: number;
+  /** QUIC request body send plus finish wait, summed over physical requests. */
+  quic_request_body_send_us?: number;
+  quic_request_body_send_calls?: number;
   rtt_min_ms: number;
   rtt_median_ms: number;
   rtt_p95_ms: number;
@@ -371,6 +374,16 @@ export interface PhaseTrace {
   /** Explicit llama_synchronize duration; never infer POM_PROFILE_SYNC from it. */
   node_backend_sync_ms: number;
   node_residual_capture_d2h_sync_ms: number;
+  /** Scheduler ask-to-ready wall, including graph evaluation and sync. */
+  node_residual_capture_ready_wait_ms?: number;
+  /** Backend tensor-get call wall, possibly including CUDA D2H and stream sync. */
+  node_residual_capture_tensor_get_ms?: number;
+  node_residual_capture_postprocess_ms?: number;
+  node_residual_capture_bytes?: number;
+  node_residual_capture_copies?: number;
+  node_residual_wire_f8_conversion_ms?: number;
+  node_residual_wire_frame_serialize_ms?: number;
+  node_residual_wire_encode_calls?: number;
   node_residual_ms: number;
   node_logits_access_ms: number;
   node_logits_clone_ms: number;

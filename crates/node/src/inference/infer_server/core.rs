@@ -176,12 +176,14 @@ pub(super) struct NodeTimings {
     /// Time spent in explicit `llama_synchronize`, including outstanding
     /// device work and output transfer when profiling is enabled.
     pub(super) backend_sync_us: u64,
-    pub(super) residual_capture_d2h_sync_us: u64,
     pub(super) residual_capture_ready_wait_us: u64,
     pub(super) residual_capture_copy_us: u64,
     pub(super) residual_capture_postprocess_us: u64,
     pub(super) residual_capture_bytes: u64,
     pub(super) residual_capture_copies: u64,
+    pub(super) residual_wire_f8_conversion_us: u64,
+    pub(super) residual_wire_frame_serialize_us: u64,
+    pub(super) residual_wire_encode_calls: u64,
     pub(super) residual_us: u64,
     pub(super) logits_access_us: u64,
     pub(super) logits_clone_us: u64,
@@ -303,9 +305,6 @@ impl NodeTimings {
     }
 
     pub(super) fn merge_engine_capture(&mut self, other: &crate::llm::DecodeTimings) {
-        self.residual_capture_d2h_sync_us = self
-            .residual_capture_d2h_sync_us
-            .saturating_add(other.residual_capture_d2h_sync_us);
         self.residual_capture_ready_wait_us = self
             .residual_capture_ready_wait_us
             .saturating_add(other.residual_capture_ready_wait_us);
@@ -364,7 +363,10 @@ impl NodeTimings {
             "mtp_draft_ms": ms(self.mtp_draft_us),
             "backend_call_ms": ms(self.backend_call_us),
             "backend_sync_ms": ms(self.backend_sync_us),
-            "residual_capture_d2h_sync_ms": ms(self.residual_capture_d2h_sync_us),
+            "residual_capture_d2h_sync_ms": ms(
+                self.residual_capture_ready_wait_us
+                    .saturating_add(self.residual_capture_copy_us),
+            ),
             "residual_ms": ms(self.residual_us),
             "logits_access_ms": ms(self.logits_access_us),
             "logits_clone_ms": ms(self.logits_clone_us),
@@ -420,11 +422,19 @@ impl NodeTimings {
         value["pipeline_session"] = Value::from(self.pipeline_session);
         value["residual_capture_ready_wait_ms"] =
             Value::from(ms(self.residual_capture_ready_wait_us));
+        value["residual_capture_tensor_get_ms"] = Value::from(ms(self.residual_capture_copy_us));
+        // Compatibility alias. This is the opaque tensor_get call wall, not
+        // an isolated DMA duration.
         value["residual_capture_copy_ms"] = Value::from(ms(self.residual_capture_copy_us));
         value["residual_capture_postprocess_ms"] =
             Value::from(ms(self.residual_capture_postprocess_us));
         value["residual_capture_bytes"] = Value::from(self.residual_capture_bytes);
         value["residual_capture_copies"] = Value::from(self.residual_capture_copies);
+        value["residual_wire_f8_conversion_ms"] =
+            Value::from(ms(self.residual_wire_f8_conversion_us));
+        value["residual_wire_frame_serialize_ms"] =
+            Value::from(ms(self.residual_wire_frame_serialize_us));
+        value["residual_wire_encode_calls"] = Value::from(self.residual_wire_encode_calls);
         if let Some(spans) = &self.profiling_spans {
             value["profiling_spans"] = serde_json::to_value(spans).unwrap_or_else(|_| json!([]));
         }
@@ -1279,6 +1289,9 @@ mod tests {
             residual_capture_ready_wait_us: 1_468_000,
             residual_capture_copy_us: 1_200,
             residual_capture_postprocess_us: 340,
+            residual_wire_f8_conversion_us: 210,
+            residual_wire_frame_serialize_us: 90,
+            residual_wire_encode_calls: 1,
             residual_capture_bytes: 1_048_576,
             residual_capture_copies: 2,
             residual_us: 1_234,
@@ -1296,12 +1309,20 @@ mod tests {
         assert!(json.get("backend_enqueue_ms").is_none());
         assert!(json.get("backend_completion_ms").is_none());
         assert_eq!(json["residual_ms"].as_f64(), Some(1.234));
+        assert_eq!(json["residual_capture_d2h_sync_ms"].as_f64(), Some(1_469.2));
         assert_eq!(
             json["residual_capture_ready_wait_ms"].as_f64(),
             Some(1_468.0)
         );
+        assert_eq!(json["residual_capture_tensor_get_ms"].as_f64(), Some(1.2));
         assert_eq!(json["residual_capture_copy_ms"].as_f64(), Some(1.2));
         assert_eq!(json["residual_capture_postprocess_ms"].as_f64(), Some(0.34));
+        assert_eq!(json["residual_wire_f8_conversion_ms"].as_f64(), Some(0.21));
+        assert_eq!(
+            json["residual_wire_frame_serialize_ms"].as_f64(),
+            Some(0.09)
+        );
+        assert_eq!(json["residual_wire_encode_calls"], 1_u64);
         assert_eq!(json["residual_capture_bytes"], 1_048_576_u64);
         assert_eq!(json["residual_capture_copies"], 2_u64);
         assert_eq!(json["sampling_ms"].as_f64(), Some(0.001));

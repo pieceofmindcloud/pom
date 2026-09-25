@@ -10,10 +10,13 @@ use walkdir::DirEntry;
 
 #[path = "src/build_support.rs"]
 mod build_support;
+#[path = "src/prebuilt.rs"]
+mod prebuilt;
 use build_support::{
     build_tool_path, clone_destination, destination_can_be_replaced, source_can_be_used_directly,
     source_include_dirs, source_root,
 };
+use prebuilt::prepare_prebuilt_libraries;
 
 fn cuda_option_enabled(value: Option<&str>) -> bool {
     value.is_some_and(|value| {
@@ -83,6 +86,13 @@ fn source_symlink_target(source: &Path) -> Result<Option<PathBuf>, String> {
 }
 
 fn ensure_llama_source(manifest_dir: &Path) -> Result<PathBuf, String> {
+    // An explicit source must take precedence over the vendored symlink. In
+    // Docker release mode that symlink may resolve to an empty named context,
+    // while LLAMA_SOURCE points to the matching release source archive.
+    if let Ok(local_source) = env::var("LLAMA_SOURCE") {
+        return canonical_local_source(PathBuf::from(local_source));
+    }
+
     let source = manifest_dir.join("llama.cpp");
     let symlink_target = source_symlink_target(&source)?;
     // Windows checkouts may leave the versioned symlink as a reparse point or
@@ -104,10 +114,6 @@ fn ensure_llama_source(manifest_dir: &Path) -> Result<PathBuf, String> {
                 source.display(),
             ));
         }
-    }
-
-    if let Ok(local_source) = env::var("LLAMA_SOURCE") {
-        return canonical_local_source(PathBuf::from(local_source));
     }
 
     let destination = clone_destination(
@@ -628,6 +634,15 @@ fn main() {
     let build_shared_libs = std::env::var("LLAMA_BUILD_SHARED_LIBS")
         .map(|v| v == "1")
         .unwrap_or(build_shared_libs);
+    println!("cargo:rerun-if-env-changed=POM_LLAMA_CPP_PREBUILT_LIB_DIR");
+    let prebuilt_lib_dir = env::var_os("POM_LLAMA_CPP_PREBUILT_LIB_DIR").map(PathBuf::from);
+    if prebuilt_lib_dir.is_some() {
+        assert!(build_shared_libs, "prebuilt llama.cpp requires shared linking");
+        assert!(
+            matches!(&target_os, TargetOs::Linux),
+            "prebuilt llama.cpp is supported only on Linux"
+        );
+    }
     let profile = env::var("LLAMA_LIB_PROFILE").unwrap_or("Release".to_string());
     let static_crt = env::var("LLAMA_STATIC_CRT")
         .map(|v| v == "1")
@@ -1362,7 +1377,13 @@ fn main() {
         // checked-out model source out of libllama.a.
         .always_configure(true);
 
-    let build_dir = config.build();
+    let build_dir = if let Some(prebuilt_dir) = prebuilt_lib_dir.as_deref() {
+        prepare_prebuilt_libraries(prebuilt_dir, &out_dir)
+            .unwrap_or_else(|error| panic!("invalid prebuilt llama.cpp libraries: {error}"));
+        out_dir.clone()
+    } else {
+        config.build()
+    };
 
     // The CMake targets are static archives. Their NCCL dependency is therefore
     // not propagated to the final Rust link, so add the imported library here
@@ -1507,7 +1528,7 @@ fn main() {
         }
     }
 
-    if cfg!(feature = "cuda") && !build_shared_libs {
+    if cfg!(feature = "cuda") {
         // Re-run build script if CUDA_PATH environment variable changes
         println!("cargo:rerun-if-env-changed=CUDA_PATH");
 
@@ -1530,20 +1551,21 @@ fn main() {
             if !cfg!(feature = "cuda-no-vmm") {
                 println!("cargo:rustc-link-lib=cuda");
             }
+        } else if build_shared_libs {
+            // The backend is a runtime-loaded module, but POM's own CUDA kernels
+            // are linked into the executable and need the CUDA runtime.
+            println!("cargo:rustc-link-lib=dylib=cudart");
+            if !cfg!(feature = "cuda-no-vmm") {
+                println!("cargo:rustc-link-lib=dylib=cuda");
+            }
         } else {
-            // ✅ On non-Windows platforms (e.g., Linux), static linking is preferred and supported.
             // Static libraries like cudart_static and cublas_static depend on culibos.
-
             println!("cargo:rustc-link-lib=static=cudart_static");
             println!("cargo:rustc-link-lib=static=cublas_static");
             println!("cargo:rustc-link-lib=static=cublasLt_static");
-
-            // Link to CUDA driver API (libcuda.so)
             if !cfg!(feature = "cuda-no-vmm") {
                 println!("cargo:rustc-link-lib=cuda");
             }
-
-            // culibos is required when statically linking cudart_static
             println!("cargo:rustc-link-lib=static=culibos");
         }
     }

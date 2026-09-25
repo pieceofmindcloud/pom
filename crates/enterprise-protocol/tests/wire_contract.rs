@@ -54,15 +54,71 @@ fn activation_carries_the_lease_the_grant_and_the_plugin_manifest() {
     assert_eq!(payload.plugin_code, "enterprise");
     assert_eq!(payload.licensed_plugins, vec!["enterprise"]);
     assert_eq!(payload.plugin_release_id, "ent-0.8.0-linux-x86_64");
-    assert_eq!(payload.plugin_manifest.plugin_abi, enterprise_protocol::PLUGIN_ABI_VERSION);
+    assert_eq!(
+        payload.plugin_manifest.plugin_abi,
+        enterprise_protocol::PLUGIN_ABI_VERSION
+    );
     // As features de um plugin vêm do release instalado, não da licença: é o
     // manifesto que diz o que aquela versão entrega.
     assert_eq!(
         payload.plugin_manifest.feature_set,
         vec!["enterprise.request_logs", "enterprise.statistics"]
     );
+    // Existing server responses omit the optional preference schema, and
+    // serializing them preserves the old signed manifest shape.
+    assert_eq!(payload.plugin_manifest.preferences, None);
+    assert!(!serde_json::to_value(&payload.plugin_manifest)
+        .expect("manifest JSON")
+        .as_object()
+        .expect("manifest object")
+        .contains_key("preferences"));
     assert_eq!(payload.grant.alg, "Ed25519");
     assert!(!payload.grant.body.is_empty());
+}
+
+#[test]
+fn plugin_manifests_accept_typed_optional_preferences_without_changing_the_contract_id() {
+    let mut value: serde_json::Value = serde_json::from_str(ACTIVATE).expect("activation fixture");
+    value["payload"]["plugin_manifest"]["preferences"] = serde_json::json!({
+        "features": [{
+            "key": "include_headers",
+            "label": "Include request headers",
+            "default": false,
+            "description": "Capture approved request metadata"
+        }],
+        "storage_directory": {
+            "label": "Storage directory",
+            "default": "/var/lib/pom/plugin-data"
+        }
+    });
+    let extended = serde_json::to_vec(&value).expect("extended activation JSON");
+    let response = decode_response::<ActivationResponse>(&extended).expect("extended manifest");
+    let schema = response
+        .payload
+        .plugin_manifest
+        .preferences
+        .expect("preferences");
+    assert_eq!(schema.features[0].key, "include_headers");
+    assert!(!schema.features[0].default);
+    assert_eq!(
+        schema.storage_directory.unwrap().default.as_deref(),
+        Some("/var/lib/pom/plugin-data")
+    );
+    assert_eq!(enterprise_protocol::LICENSE_PROTOCOL, "pom-license/v1");
+
+    let values = enterprise_protocol::PluginPreferences {
+        features: [("include_headers".to_owned(), true)].into(),
+        storage_directory: Some("/tmp/plugin-data".into()),
+    };
+    assert_eq!(
+        serde_json::from_value::<enterprise_protocol::PluginPreferences>(
+            serde_json::to_value(values).expect("preferences JSON")
+        )
+        .expect("typed local values")
+        .storage_directory
+        .as_deref(),
+        Some("/tmp/plugin-data")
+    );
 }
 
 #[test]
@@ -80,7 +136,10 @@ fn the_signed_grant_body_is_scoped_to_one_plugin_code() {
     assert_eq!(grant.activation_id, response.payload.activation_id);
     assert_eq!(grant.lease_id, response.payload.lease_id);
     assert_eq!(grant.release_id, response.payload.plugin_release_id);
-    assert_eq!(grant.fingerprint_scheme, enterprise_protocol::FINGERPRINT_SCHEME);
+    assert_eq!(
+        grant.fingerprint_scheme,
+        enterprise_protocol::FINGERPRINT_SCHEME
+    );
 }
 
 #[test]

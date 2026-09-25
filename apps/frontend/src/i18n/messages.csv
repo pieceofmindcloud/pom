@@ -1,4 +1,5 @@
 key,en,pt-BR
+about.contactLink,Contact POM,Contato do POM
 about.dependenciesCount,"Showing {visible} of {total} dependencies","Mostrando {visible} de {total} dependências"
 about.dependenciesSubtitle,"Direct frontend and Rust dependencies, grouped by their declared license.","Dependências diretas do frontend e do Rust, agrupadas pela licença declarada."
 about.dependenciesTitle,Third-party dependencies,Dependências de terceiros
@@ -11,11 +12,13 @@ about.enterpriseCheckUpdates,Check for updates,Verificar atualizações
 about.enterpriseInactive,Inactive,Inativa
 about.enterpriseState,State,Estado
 about.licenseCount,"{count, plural, =1 {1 dependency} other {# dependencies}}","{count, plural, =1 {1 dependência} other {# dependências}}"
-about.placeholderBody,"The POM software license has not been defined officially yet. This screen shows an example only.","A licença do software POM ainda não foi definida oficialmente. Esta tela mostra apenas um exemplo."
-about.placeholderLicense,Provisional license (example),Licença provisória (exemplo)
-about.placeholderLicenseText,"AGPL-3.0 + registered-trademark clause - subject to final definition","AGPL-3.0 + cláusula de marca registrada - sujeita à definição final"
-about.placeholderLicenseValue,AGPL-3.0 + registered-trademark clause,AGPL-3.0 + cláusula de marca registrada
+about.placeholderBody,"POM is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). The complete license is available in this repository and from the Free Software Foundation.","O POM é licenciado sob a GNU Affero General Public License, versão 3 (AGPL-3.0). A licença completa está disponível neste repositório e na Free Software Foundation."
+about.placeholderLicense,AGPL-3.0,AGPL-3.0
+about.placeholderLicenseText,"GNU Affero General Public License, Version 3 (19 November 2007).","GNU Affero General Public License, versão 3 (19 de novembro de 2007)."
+about.placeholderLicenseValue,AGPL-3.0,AGPL-3.0
 about.placeholderTitle,POM software license,Licença do software POM
+about.pluginBaseDescription,"POM plugins are built from the Plugin Base template and SDK. Follow its README to create a repository, implement the plugin manifest and UI, then build and publish releases for POM to install.","Plugins POM podem ser criados a partir do template e SDK do Plugin Base. Siga o README para criar um repositório, implementar o manifesto e a interface do plugin, e então compilar e publicar releases para instalação no POM."
+about.pluginBaseLink,POM Plugin Base,POM Plugin Base
 about.pomUpdateApply,Install and restart,Instalar e reiniciar
 about.pomUpdateApplyFailed,Could not apply the POM update.,Não foi possível aplicar a atualização do POM.
 about.pomUpdateAvailable,POM update available: {version},Atualização do POM disponível: {version}
@@ -25,11 +28,18 @@ about.pomUpdateRelease,Release {release_id},Release {release_id}
 about.pomUpdateSubtitle,"On-demand check and, once confirmed, installation of a new POM build.","Verificação sob demanda e, após confirmação, instalação de uma nova versão do POM."
 about.pomUpdateTitle,POM update,Atualização do POM
 about.repository,Repository,Repositório
+about.repositoryLicenseLink,Repository LICENSE file,Arquivo LICENSE do repositório
+about.repositoryLink,Official POM GitHub repository,Repositório oficial do POM no GitHub
+about.safetyBody,"POM can process and transmit prompts, model data and other content between machines. The LGPD requires appropriate care with personal data, but POM cannot guarantee security or privacy on public networks or when communicating with unknown computers.","O POM pode processar e transmitir prompts, dados de modelos e outros conteúdos entre máquinas. A LGPD exige cuidado adequado com dados pessoais, mas o POM não pode garantir segurança ou privacidade em redes públicas nem ao se comunicar com computadores desconhecidos."
+about.safetyRisks,"Other risks include interception or exposure of transmitted content, untrusted peers or administrators accessing data, compromised computers or software, malicious or vulnerable models, and loss of availability or resources. Only connect to computers and networks you trust, avoid sending sensitive or personal data unless you have assessed the risks and legal basis, and configure access controls and network protections appropriate to your environment.","Outros riscos incluem interceptação ou exposição do conteúdo transmitido, acesso a dados por peers ou administradores não confiáveis, computadores ou softwares comprometidos, modelos maliciosos ou vulneráveis, além de indisponibilidade ou consumo de recursos. Conecte-se somente a computadores e redes confiáveis, evite enviar dados pessoais ou sensíveis sem avaliar os riscos e a base legal, e configure controles de acesso e proteções de rede adequados ao seu ambiente."
+about.safetyTitle,Privacy and security notice (LGPD),Aviso de privacidade e segurança (LGPD)
+about.safetyWarning,"You are responsible for deciding what data to send and which computers to trust. POM is provided without a guarantee of network security or confidentiality.","Você é responsável por decidir quais dados enviar e em quais computadores confiar. O POM é fornecido sem garantia de segurança da rede ou confidencialidade."
 about.searchLabel,Search dependencies,Buscar dependências
 about.searchPlaceholder,Search by package,Buscar por pacote
 about.subtitle,The software and libraries that make POM possible.,Os softwares e bibliotecas que tornam o POM possível.
 about.title,About,Sobre
 about.version,Version,Versão
+about.websiteLink,POM website,Site do POM
 accessGate.eyebrow,Administrative surface,Superfície administrativa
 accessGate.invalid,That token was not accepted.,Esse token não foi aceito.
 accessGate.label,Administrative access token,Token de acesso administrativo
@@ -234,6 +244,7 @@ chat.telemetry.analysisPrompt,Analyze this execution,Analise esta execução
 chat.telemetry.analyze,Analyze with AI,Analisar com IA
 chat.telemetry.backendHeader,backend,backend
 chat.telemetry.backendRow,backend: evaluation call {call} ms · sync {sync} ms · D2H capture {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms,backend: chamada de avaliação {call} ms · sincronização {sync} ms · D2H da captura {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms
+chat.telemetry.backendRowCurrent,backend: evaluation call {call} ms · sync {sync} ms · decode p50 {p50} ms · p95 {p95} ms,backend: chamada de avaliação {call} ms · sincronização {sync} ms · decode p50 {p50} ms · p95 {p95} ms
 chat.telemetry.bytesHeader,bytes,bytes
 chat.telemetry.calls,calls,chamadas
 chat.telemetry.capacity,Capacity,Capacidade
@@ -314,16 +325,17 @@ chat.telemetry.pipelineRttTitle,Edge RTT (pipeline source -> destination),RTT da
 chat.telemetry.pipelineTitle,Pipeline network,Rede do pipeline
 chat.telemetry.placementMissing,not measured after load,não medido depois da carga
 chat.telemetry.prefill,prefill,prefill
+chat.telemetry.prefillChunk,chunk: {count} tokens,pedaço: {count} tokens
 chat.telemetry.prefillMs,{ms} ms prefill,{ms} ms prefill
 chat.telemetry.prefixCandidate,{count} prefix candidate,{count} candidatos no prefixo
-chat.telemetry.prefixStatus,prefix: {status},prefixo: {status}
 chat.telemetry.prefixMissReason,gateway cache miss: {reason},miss do cache no gateway: {reason}
-chat.telemetry.prefillChunk,chunk: {count} tokens,pedaço: {count} tokens
+chat.telemetry.prefixStatus,prefix: {status},prefixo: {status}
 chat.telemetry.principalBottleneck,Principal bottleneck,Gargalo principal
 chat.telemetry.profileSync,POM_PROFILE_SYNC: {state},POM_PROFILE_SYNC: {state}
 chat.telemetry.profileSyncActive,active,ativo
 chat.telemetry.profileSyncOff,off,desligado
 chat.telemetry.profileSyncUnknown,not informed,não informado
+chat.telemetry.quicRequestSend,"QUIC request body send and finish {ms} ms over {calls, plural, one {# request} other {# requests}}","envio e finalização do corpo QUIC {ms} ms em {calls, plural, one {# requisição} other {# requisições}}"
 chat.telemetry.ram,RAM: {available} available / {total} total,RAM: {available} disponível / {total} total
 chat.telemetry.remoteStreamCompute,remote compute total {total} ms · p50 {p50} ms · p95 {p95} ms,compute remoto total {total} ms · p50 {p50} ms · p95 {p95} ms
 chat.telemetry.remoteStreamFrames,frames received / sent {received} / {sent} · bytes {bytes},frames recebidos / enviados {received} / {sent} · bytes {bytes}
@@ -333,7 +345,9 @@ chat.telemetry.remoteStreamTokenDelivery,token delivery interval samples {sample
 chat.telemetry.remoteStreamWait,stream wait total {total} ms · p50 {p50} ms · p95 {p95} ms,espera do stream total {total} ms · p50 {p50} ms · p95 {p95} ms
 chat.telemetry.remoteStreamWaitSplit,producer total/p95 {producerTotal}/{producerP95} ms · channel send total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · queued token total/p95 {queueTotal}/{queueP95} ms · prior delivery total/p95 {deliveryTotal}/{deliveryP95} ms,produção total/p95 {producerTotal}/{producerP95} ms · envio ao canal total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · token na fila total/p95 {queueTotal}/{queueP95} ms · entrega anterior total/p95 {deliveryTotal}/{deliveryP95} ms
 chat.telemetry.requestedGpuLayers,Requested GPU layers (intent): {count},Camadas GPU pedidas (intenção): {count}
+chat.telemetry.residualCaptureRow,residual capture: scheduler ask-to-ready {ready} ms · tensor_get wall {tensorGet} ms · postprocess {postprocess} ms · compatibility total {total} ms · {bytes} bytes in {copies} reads,captura residual: scheduler até pronto {ready} ms · tensor_get {tensorGet} ms · pós-processamento {postprocess} ms · total compatível {total} ms · {bytes} bytes em {copies} leituras
 chat.telemetry.residualHeader,residual,residual
+chat.telemetry.residualWireRow,residual wire f8 conversion {f8} ms · frame/header serialization {serialize} ms · residual frame encode count {calls},wire do residual: conversão f8 {f8} ms · serialização do frame/cabeçalho {serialize} ms · contagem de frames codificados {calls}
 chat.telemetry.rttTotal,Aggregate execution RTT: {ms} ms,RTT agregado da execução: {ms} ms
 chat.telemetry.rttTotalMissing,Aggregate execution RTT: not available for this trace,RTT agregado da execução: indisponível neste trace
 chat.telemetry.runtimeLoading,Reading effective runtime state...,Lendo o estado efetivo do runtime...
@@ -626,9 +640,9 @@ deploy.knob.fit_memory_margin_mbHint,"VRAM the automatic fit leaves unused on ea
 deploy.knob.hidden_state_dtype,Hidden-state precision,Precisão do estado oculto
 deploy.knob.hidden_state_dtypeF16,f16 - 2 bytes per value,f16 - 2 bytes por valor
 deploy.knob.hidden_state_dtypeF8,f8 - 1 byte per value,f8 - 1 byte por valor
-deploy.knob.hidden_state_dtypeI4G64,i4g64 - signed int4 with FP16 scale per 64 values,i4g64 - int4 assinado com escala FP16 a cada 64 valores
-deploy.knob.hidden_state_dtypeI4G128,i4g128 - signed int4 with FP16 scale per 128 values,i4g128 - int4 assinado com escala FP16 a cada 128 valores
 deploy.knob.hidden_state_dtypeHint,Controls bytes sent between inference peers. f16 remains the default. f8 and groupwise int4 are opt-in lossy formats and require every selected peer to advertise support.,Controla os bytes enviados entre peers de inferência. f16 continua como padrão. f8 e int4 por grupo são formatos com perda opcionais e exigem suporte anunciado por todos os peers selecionados.
+deploy.knob.hidden_state_dtypeI4G128,i4g128 - signed int4 with FP16 scale per 128 values,i4g128 - int4 assinado com escala FP16 a cada 128 valores
+deploy.knob.hidden_state_dtypeI4G64,i4g64 - signed int4 with FP16 scale per 64 values,i4g64 - int4 assinado com escala FP16 a cada 64 valores
 deploy.knob.hidden_state_dtypeUnavailable,Selected hidden-state format unavailable:,Formato selecionado do estado oculto indisponível:
 deploy.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 deploy.knob.idle_minutesHint,"Minutes without a request before this peer unloads its model.","Minutos sem requisição antes de este peer descarregar o modelo."
@@ -751,7 +765,7 @@ deploy.unloadIfIdleHint,"Unload this peer's model after the configured period wi
 deploy.vision,Vision,Visão
 deploy.visionHint,"Loads the projector on the pipeline head so it can turn images into hidden state for the following shards.","Carrega o projetor na cabeça do pipeline para transformar imagens em estado oculto para as fatias seguintes."
 deploy.visionToggle,Enable vision,Ativar visão
-deploy.visionUnavailable,"Vision unavailable: no mmproj was found for this sliced model.","Visão indisponível: nenhum mmproj foi encontrado para este modelo fatiado."
+deploy.visionUnavailable,"Vision unavailable: projector ownership could not be verified. Check the GGUF model identity and projection dimensions.","Visão indisponível: não foi possível provar a que modelo pertence o projetor. Confira a identidade GGUF e as dimensões de projeção."
 deploy.wholeAria,Whole model,Modelo inteiro
 deploy.wholeDetail,Un-sliced models that a cluster machine already has.,Modelos não fatiados que alguma máquina do cluster já tem.
 deploy.wholeEmpty,No whole model on the network,Nenhum modelo inteiro na rede
@@ -833,6 +847,7 @@ deployments.versionRedeployStarted,Re-deploying v{n},Reimplantando a v{n}
 deployments.versions,Versions,Versões
 deployments.versionsHint,"Every settings change under this deployment id, newest first.","Cada mudança de parâmetros sob este id de implantação, da mais nova para a mais antiga."
 deployments.viewLogs,View process logs,Ver logs de processo
+docs.back,Back,Voltar
 docs.clearSearch,Clear search,Limpar busca
 docs.collapse,Collapse {section},Recolher {section}
 docs.deeper,Full detail in the reference,"O detalhe completo, na referência"
@@ -862,7 +877,6 @@ enterprise.licenseState,License state,Estado da licença
 enterprise.purchaseLink,Buy or manage Enterprise,Comprar ou gerenciar Enterprise
 enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
 enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
-enterprise.showcase.activeNote,This plugin is already active on this cluster.,Este plugin já está ativo neste cluster.
 enterprise.showcase.cta,Buy & install,Comprar e instalar
 enterprise.showcase.logs.bullet1,"Full request trail: prompt, response, hops and timings","Trilha completa da requisição: prompt, resposta, hops e tempos"
 enterprise.showcase.logs.bullet2,"Filter by API key, model, node and date range","Filtre por chave de API, modelo, nó e intervalo de datas"
@@ -1011,6 +1025,9 @@ keys.tokensCoexist,Tokens coexist: creating one does not revoke earlier tokens.,
 keys.unnamed,unnamed,sem nome
 models.architecture,Architecture,Arquitetura
 models.chooseFolders,Choose folders,Escolher as pastas
+models.columnActions,Actions,Ações
+models.columnName,Model,Modelo
+models.columnSource,Source,Fonte
 models.deleteAria,Delete {name} from disk,Excluir {name} do disco
 models.deleteButton,Delete,Excluir
 models.deleteConfirm,Delete {name} from this machine?,Apagar {name} do disco desta máquina?
@@ -1028,6 +1045,8 @@ models.fullTitle,Full models,Modelos inteiros
 models.layers,Layers,Camadas
 models.localSlice,Slicing is local: each machine extracts its own range from its own GGUF copy. No weights travel over the network.,Fatiar é local: cada máquina extrai a própria faixa da própria cópia do GGUF. Nenhum peso trafega pela rede.
 models.machineCount,"{count}{count, plural, =1 { model on this machine} other { models on this machine}}","{count}{count, plural, =1 { modelo nesta máquina} other { modelos nesta máquina}}"
+models.mmproj,Vision (mmproj),Visão (mmproj)
+models.mmprojNone,No projector,Sem projetor
 models.quant,Quantisation,Quantização
 models.rescan,Scan again,Varrer de novo
 models.scannedFolders,Scanned folders,Pastas varridas
@@ -1427,20 +1446,76 @@ plugins.activate,Activate license,Ativar licença
 plugins.activationEyebrow,License activation,Ativação da licença
 plugins.activationFailed,Could not activate the license.,Não foi possível ativar a licença.
 plugins.activationSucceeded,"Activated: {plugins}","Ativado(s): {plugins}"
+plugins.activationUsage.count,{active} of {max} activations used,{active} de {max} ativações usadas
+plugins.activationUsage.label,License activation usage,Uso de ativações da licença
+plugins.activationUsage.limitReached,Activation limit reached,Limite atingido
+plugins.activationUsage.partial,Partially used,Parcialmente utilizada
+plugins.activationUsage.unused,No activations used,Nenhuma ativação utilizada
 plugins.activeTitle,Active,Ativo
+plugins.annualPrice,{price}/year,{price}/ano
+plugins.availableRelease,Available release,Release disponível
 plugins.buy,Buy,Comprar
 plugins.catalog.enterprise.description,Request Logs and Statistics for this node.,Logs de Requisições e Estatísticas para este nó.
 plugins.catalog.enterprise.name,Statistics & Request Logs,Estatísticas e Logs de Requisições
+plugins.catalogEmpty,No plugins are available right now.,Nenhum plugin disponível no momento.
+plugins.catalogError,Could not load the public plugin catalog.,Não foi possível carregar o catálogo público.
+plugins.catalogLoading,Loading the public plugin catalog,Carregando o catálogo público de plugins
 plugins.deactivate,Deactivate,Desativar
+plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
+plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
+plugins.deactivateFailed,Could not deactivate this plugin.,Não foi possível desativar este plugin.
 plugins.features,Features,Funcionalidades
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
+plugins.githubCatalogSource,Source from the public catalog:,Origem no catálogo público:
+plugins.githubCheck,Check for updates,Verificar atualizações
+plugins.githubCheckFailed,GitHub release check failed. The last verified update is retained.,A verificação de releases do GitHub falhou. A última atualização verificada foi mantida.
+plugins.githubInstall,Install from GitHub,Instalar pelo GitHub
+plugins.githubNoPlugins,There are no plugins in the catalog to manage.,Não há plugins no catálogo para gerenciar.
+plugins.githubPluginLabel,Plugin,Plugin
+plugins.githubReleaseSource,GitHub Releases,Releases do GitHub
+plugins.githubRemove,Remove source,Remover origem
+plugins.githubRepositoryLabel,Public GitHub repository URL,URL do repositório público do GitHub
+plugins.githubSourceDescription,"Choose a public GitHub source. Compatible releases are checked and downloaded locally; every installation needs your confirmation, and paid plugins still need an active license.","Escolha uma origem pública do GitHub. Releases compatíveis são verificadas e baixadas localmente; toda instalação exige sua confirmação, e plugins pagos ainda precisam de uma licença ativa."
+plugins.githubSourceFailed,Could not register or update this GitHub source. Check that it is a public repository with a compatible release.,Não foi possível cadastrar ou atualizar esta origem do GitHub. Verifique se o repositório é público e tem uma release compatível.
+plugins.githubSourceRegister,Register repository,Cadastrar repositório
+plugins.githubSourceSave,Save repository,Salvar repositório
+plugins.githubSourceTitle,Public GitHub Releases,Releases públicas do GitHub
+plugins.githubUninstall,Uninstall plugin,Desinstalar plugin
+plugins.githubUninstallConfirmDescription,This removes the public GitHub plugin from this node. You can install it again later.,Isso remove o plugin público do GitHub deste nó. Você poderá instalá-lo novamente depois.
+plugins.githubUninstallConfirmTitle,Uninstall {name}?,Desinstalar {name}?
+plugins.githubUpdateApply,Install downloaded update,Instalar atualização baixada
+plugins.githubUpdateAvailable,Verified GitHub update downloaded: {version},Atualização verificada do GitHub baixada: {version}
+plugins.githubUpdateNeedsActivation,The update is downloaded. Activate this plugin with a valid license before installing it.,A atualização foi baixada. Ative este plugin com uma licença válida antes de instalá-la.
 plugins.inactiveTitle,Available,Disponível
+plugins.installedAt,Last installed,Última instalação
 plugins.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
+plugins.lastUpdateCheck,Last update check,Última verificação de atualização
+plugins.licenseExpires,License expires,Licença válida até
 plugins.licenseKeyLabel,License key,Chave de licença
 plugins.licenseKeyPlaceholder,PM-...,PM-...
+plugins.licenseStatusError,Could not read this node's plugin license status.,Não foi possível ler o estado das licenças deste nó.
+plugins.licenseUnknown,License status unavailable,Estado da licença indisponível
 plugins.manage,Manage,Gerenciar
+plugins.metadataIncomplete,Some catalog details or images are unavailable.,Alguns detalhes ou imagens do catálogo estão indisponíveis.
+plugins.metadataUnavailable,Description unavailable,Descrição indisponível
+plugins.monthlyPrice,{price}/month,{price}/mês
+plugins.noLicenseRequired,No license required,Não exige licença
+plugins.preferencesLocalOnly,These values are stored on this node and are never sent to the license server.,Estes valores ficam armazenados neste nó e nunca são enviados ao servidor de licenças.
+plugins.preferencesSave,Save preferences,Salvar preferências
+plugins.preferencesSaveFailed,Could not save these preferences locally.,Não foi possível salvar estas preferências localmente.
+plugins.preferencesTitle,Plugin preferences,Preferências do plugin
+plugins.pricing,Pricing,Preços
 plugins.refresh,Refresh,Atualizar
+plugins.releaseUnavailable,No valid release available,Nenhuma release válida disponível
+plugins.screenError.title,This plugin screen could not be loaded.,Não foi possível carregar a tela deste plugin.
+plugins.screenshotAlt,{name} screenshot {number},Captura de tela {number} de {name}
+plugins.screenshotClose,Close screenshot,Fechar captura de tela
+plugins.screenshotNext,Next screenshot,Próxima captura de tela
+plugins.screenshotOpen,Open screenshot {number} of {name},Abrir captura de tela {number} de {name}
+plugins.screenshotPrevious,Previous screenshot,Captura de tela anterior
+plugins.screenshots,Screenshots,Capturas de tela
+plugins.screenshotsTitle,Screenshots for {name},Capturas de tela de {name}
 plugins.state.active,Active,Ativo
 plugins.state.degraded,Degraded,Degradado
 plugins.state.expired,Expired,Expirado
@@ -1596,6 +1671,7 @@ remoteModels.insufficientSpace,There is not enough disk space for this model.,N�
 remoteModels.license,License,Licença
 remoteModels.licenseUnknown,License not identified,Licença não identificada
 remoteModels.likes,Likes,Curtidas
+remoteModels.loginRequired,Log in to Hugging Face to search,Entre no Hugging Face para buscar
 remoteModels.modelInstalled,This model is already installed.,Este modelo já está instalado.
 remoteModels.noResults,No models match this search,Nenhum modelo corresponde à busca
 remoteModels.noResultsDetail,"Try an author, repository id, or a broader term.","Tente um autor, repo_id ou termo mais amplo."
@@ -1614,6 +1690,7 @@ remoteModels.retry,Try again,Tentar de novo
 remoteModels.revision,Revision,Revisão
 remoteModels.savedTo,Saved to,Salvo em
 remoteModels.searchAria,Search remote models,Buscar modelos remotos
+remoteModels.searchButton,Search,Buscar
 remoteModels.searchHint,"Search by model name, repository, author, or related terms.","Busque por nome, repositório, autor ou termos relacionados."
 remoteModels.searchLabel,Search models,Buscar modelos
 remoteModels.searchPlaceholder,"Qwen, DeepSeek, Gemma, author…","Qwen, DeepSeek, Gemma, autor…"
@@ -1624,6 +1701,8 @@ remoteModels.starting,Starting,Começando
 remoteModels.subtitle,"Search the model provider, inspect GGUF files, and download one into this node''s model folders.","Busque no provedor, inspecione os arquivos GGUF e baixe um modelo para as pastas desta máquina."
 remoteModels.tags,Tags,Tags
 remoteModels.title,Find models on Hugging Face,Encontrar modelos no Hugging Face
+remoteModels.trending,Trending GGUF models,Modelos GGUF em alta
+remoteModels.trendingSubtitle,"Public Hugging Face discovery, without signing in.","Descoberta pública do Hugging Face, sem precisar entrar."
 remoteModels.updated,Updated,Atualizado
 remoteModels.verifying,Verifying,Verificando
 sendFile.choose,Choose…,Escolher…
@@ -1926,8 +2005,10 @@ slice.file,File on this machine,Arquivo nesta máquina
 slice.footnote,"The node reports the current phase and bytes read before writing starts. Output size includes embeddings, headers, alignment, and other data repeated by each slice.","O nó informa a fase atual e os bytes lidos antes de começar a gravar. O tamanho da saída inclui embeddings, cabeçalhos, alinhamento e outros dados repetidos por cada fatia."
 slice.invalidPlan,"The node returned 200 from /api/ui/slice/plan, but the response body is not a slicing plan.","O nó respondeu 200 em /api/ui/slice/plan, mas o corpo não é um plano de fatiamento."
 slice.layers,Layers,Camadas
-slice.modeTensor,Slice by Tensor Parallelism,Fatiar por Tensor Parallelism
+slice.modeGroupAria,Slicing type,Tipo de fatiamento
+slice.modePipeline,Pipeline,Pipeline
 slice.modeTensorHint,Every rank receives the full layer range with a different tensor shard.,Cada rank recebe toda a faixa de camadas com uma parte diferente dos tensores.
+slice.modeTensorShort,Tensor Parallelism,Tensor Parallelism
 slice.multipartBadge,MULTIPART GGUF,GGUF MULTIPARTE
 slice.multipartNeedsSlicing,This is one logical model split by tensors. Keep all parts together and use POM slicing before distributed use.,Este é um modelo lógico dividido por tensores. Mantenha todas as partes juntas e use o fatiamento do POM antes de distribuir.
 slice.multipartParts,{count} physical parts in this model set,{count} partes físicas neste conjunto
@@ -1980,115 +2061,6 @@ slice.tpRankCount,{size} ranks,{size} ranks
 slice.tpSize,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeAria,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeHint,Choose the number of machines that will hold this tensor-parallel model.,Escolha quantas máquinas vão guardar este modelo em tensor parallelism.
-tokenLogs.allLoaded,All requests loaded,Todas as requisições foram carregadas
-tokenLogs.allNodes,All nodes,Todos os nós
-tokenLogs.apiKey,API key identity,Identidade da API key
-tokenLogs.apiKeyPlaceholder,"label, id or node","rótulo, id ou nó"
-tokenLogs.applyFilters,Apply filters,Aplicar filtros
-tokenLogs.averageInference,Average inference,Tempo médio de inferência
-tokenLogs.averageTokPerSec,Average tokens/s,Média de Tokens/s
-tokenLogs.averageTtft,Average TTFT,TTFT médio
-tokenLogs.byNode,By network node,Por nó da rede
-tokenLogs.byToken,By API token,Por API token
-tokenLogs.bytesReceived,Received,Recebidos
-tokenLogs.bytesSent,Sent,Enviados
-tokenLogs.closeInspector,Close inspector,Fechar inspetor
-tokenLogs.copied,Copied,Copiado
-tokenLogs.copyInspectorTab,Copy content from the {tab} tab,Copiar conteúdo da aba {tab}
-tokenLogs.copyRequestData,Copy request data,Copiar dados da requisição
-tokenLogs.count,"{count}{count, plural, =1 { request} other { requests}}","{count}{count, plural, =1 { requisição} other { requisições}}"
-tokenLogs.duration,Duration,Duração
-tokenLogs.empty,Nothing recorded yet,Nada registrado ainda
-tokenLogs.emptyDetail,"When the network serves a request, it appears here. You can trigger one from chat.","Assim que a rede atender uma requisição, ela aparece aqui. Você pode provocar uma no chat."
-tokenLogs.entryNode,Entry node,Nó de entrada
-tokenLogs.errors,"{count}{count, plural, =1 { error} other { errors}}","{count}{count, plural, =1 { erro} other { erros}}"
-tokenLogs.expandInspectorContent,Expand content: {label},Expandir conteúdo: {label}
-tokenLogs.expandedInspectorTitle,Expanded reading: {label},Leitura ampliada: {label}
-tokenLogs.filter,Filter by node,Filtrar por nó
-tokenLogs.filters,Find a request,Encontrar uma requisição
-tokenLogs.filtersHint,"Search by key identity, prompt text or arrival period. Secrets are never used here.","Busque pela identidade da chave, texto do prompt ou período de entrada. Segredos nunca são usados aqui."
-tokenLogs.from,From,De
-tokenLogs.generation,generation {value},geração {value}
-tokenLogs.inputTokens,Input,Entrada
-tokenLogs.inputTokensDetail,Across filtered requests,Nas requisições filtradas
-tokenLogs.inspect,Inspect request,Inspecionar requisição
-tokenLogs.inspectorFormat,Inspector format,Formato do inspetor
-tokenLogs.inspectorFormatFormattedState,Current format: formatted. Switch to raw JSON,Formato atual: pré-formatado. Alternar para JSON cru
-tokenLogs.inspectorFormatRawState,Current format: raw JSON. Switch to rendered Markdown,Formato atual: JSON cru. Alternar para Markdown renderizado
-tokenLogs.inspectorFormatted,Formatted,Pré-formatado
-tokenLogs.inspectorRaw,Raw JSON,JSON cru
-tokenLogs.inspectorRequest,REQUEST,REQUEST
-tokenLogs.inspectorResponse,Response,Resposta
-tokenLogs.inspectorSent,SENT,ENVIADO
-tokenLogs.inspectorTabs,Request object sections,Seções do objeto da requisição
-tokenLogs.inspectorTelemetry,TELEMETRY,TELEMETRIA
-tokenLogs.inspectorTitle,Request inspector,Inspetor de requisição
-tokenLogs.loadingMore,Loading more,Carregando mais
-tokenLogs.model,Model,Modelo
-tokenLogs.modelPlaceholder,model name,nome do modelo
-tokenLogs.modelSpeedSubtitle,"Mean total generation speed, in tokens per second.","Velocidade média total de geração, em Tokens por segundo."
-tokenLogs.newPrompt,New prompt,Prompt novo
-tokenLogs.noHops,No hops recorded yet.,Nenhum salto registrado ainda.
-tokenLogs.noPipeline,no pipeline,sem pipeline
-tokenLogs.noPreviousContext,No previous context.,Nenhum contexto anterior.
-tokenLogs.noRequests,No requests recorded yet.,Nenhuma requisição registrada ainda.
-tokenLogs.outputTokens,Output,Saída
-tokenLogs.outputTokensDetail,Across filtered requests,Nas requisições filtradas
-tokenLogs.path,Path,Caminho
-tokenLogs.peerConsumptionSubtitle,Bytes exchanged and network time from recorded hops.,Bytes trocados e tempo de rede dos saltos registrados.
-tokenLogs.performance,Performance,Desempenho
-tokenLogs.prefill,prefill {value},pré-processamento {value}
-tokenLogs.prefixCache,Prefix cache,Cache de prefixo
-tokenLogs.prefixCacheDetail,{hits} hits in {eligible} eligible requests,{hits} acertos em {eligible} requisições elegíveis
-tokenLogs.previousContext,Previous context,Contexto anterior
-tokenLogs.promptPlaceholder,words from the prompt,palavras do prompt
-tokenLogs.promptSearch,Text in prompt,Texto no prompt
-tokenLogs.rateUnavailable,not measurable,não mensurável
-tokenLogs.requestPath,Request path,Caminho da requisição
-tokenLogs.requestPathNone,No execution path recorded,Nenhum caminho de execução registrado
-tokenLogs.requests,Requests,Requisições
-tokenLogs.requestsSubtitle,Count of matching requests.,Quantidade de requisições correspondentes.
-tokenLogs.requestsTab,REQUESTS,REQUISIÇÕES
-tokenLogs.route,Route,Rota
-tokenLogs.screenTabs,Log view,Visão dos logs
-tokenLogs.scrollForMore,Scroll for more,Role para carregar mais
-tokenLogs.search,Search,Buscar
-tokenLogs.source,Source,Origem
-tokenLogs.sqliteDetail,"Persisted in SQLite on this node. Open a row to inspect the exact prompt, request body, result and telemetry.","Persistido no SQLite deste nó. Abra uma linha para inspecionar prompt exato, corpo da requisição, resultado e telemetria."
-tokenLogs.statsByDay,Usage by day,Consumo por dia
-tokenLogs.statsByModel,Average speed by model,Média de velocidade por modelo
-tokenLogs.statsByNode,Requests by network node,Requisições por nó da rede
-tokenLogs.statsByToken,Requests by API token,Requisições por API token
-tokenLogs.statsEmpty,No statistics yet,Ainda não há estatísticas
-tokenLogs.statsEmptyDetail,Statistics appear after the network records a request.,As estatísticas aparecem depois que a rede registra uma requisição.
-tokenLogs.statsPeerConsumption,Consumption by peer,Consumo por peer
-tokenLogs.statsSubtitle,Aggregated request usage across the network.,Consumo agregado de requisições na rede.
-tokenLogs.statsTab,STATISTICS,ESTATÍSTICAS
-tokenLogs.statsTerminalStates,Terminal states,Estados terminais
-tokenLogs.statsTitle,Statistics,Estatísticas
-tokenLogs.statsTokensSubtitle,Input and output tokens recorded by the audit trail.,Tokens de entrada e saída registradas na auditoria.
-tokenLogs.status,Status,Estado
-tokenLogs.statusAbandoned,client left,cliente saiu
-tokenLogs.statusCompleted,completed,concluída
-tokenLogs.statusError,error,erro
-tokenLogs.statusInProgress,in progress,em andamento
-tokenLogs.statusIncomplete,incomplete,incompleta
-tokenLogs.statusPartial,partial,parcial
-tokenLogs.subtitle,"Requests served by the network, with their path, usage and performance.","Requisições atendidas pela rede, com caminho, consumo e desempenho."
-tokenLogs.terminalStatesSubtitle,"How requests ended, excluding requests still in progress.","Como as requisições terminaram, sem as ainda em andamento."
-tokenLogs.time,Time,Hora
-tokenLogs.title,Logs,Logs
-tokenLogs.to,To,Até
-tokenLogs.token,Token,Token
-tokenLogs.tokens,Tokens,Tokens
-tokenLogs.tokensPerSecondUnit,tokens/s,tokens/s
-tokenLogs.total,total {value},total {value}
-tokenLogs.totalInputTokens,Input tokens,Tokens de entrada
-tokenLogs.totalOutputTokens,Output tokens,Tokens de saída
-tokenLogs.ttft,TTFT {value},TTFT {value}
-tokenLogs.unavailable,not available,indisponível
-tokenLogs.user,User,Usuário
-tokenLogs.userPlaceholder,API key label,rótulo da API key
 topbar.apiTitle,OpenAI-compatible API served by this node,API compatível com OpenAI servida por este nó
 topbar.closeMenu,Close menu,Fechar menu
 topbar.layers,{covered}/{total} layers,{covered}/{total} camadas
@@ -2127,6 +2099,10 @@ transfers.cancel,Cancel,Cancelar
 transfers.cancelFailed,Could not cancel,Não deu para cancelar
 transfers.cancelled,Transfer cancelled,Transferência cancelada
 transfers.cancelledState,Refused,Recusada
+transfers.columnDetail,Detail,Detalhe
+transfers.columnItem,Item,Item
+transfers.columnProgress,Progress,Andamento
+transfers.columnState,State,Estado
 transfers.completed,completed,concluída
 transfers.failed,failed,falhou
 transfers.finished,Finished,Terminadas

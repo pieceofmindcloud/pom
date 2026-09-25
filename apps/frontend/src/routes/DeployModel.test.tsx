@@ -19,11 +19,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeployPlan, DeployStep, Job } from "../lib/types";
 
 const post = vi.fn();
+let pomDesenv = false;
 let jobsResponse: { jobs: Job[] } = { jobs: [] };
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((url: string) =>
-      url === "/api/ui/jobs"
+      url === "/api/ui/node"
+        ? Promise.resolve({ connection_key: "", pom_desenv: pomDesenv })
+        : url === "/api/ui/jobs"
         ? Promise.resolve(jobsResponse)
         : url === "/api/ui/cluster"
           ? Promise.resolve({ peers: [] })
@@ -184,7 +187,8 @@ function planWithUnassignedMiddleRange(): DeployPlan {
   return plan;
 }
 
-function mount(metadata_complete: boolean | undefined = true) {
+function mount(metadata_complete: boolean | undefined = true, dev = false) {
+  pomDesenv = dev;
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
@@ -214,6 +218,7 @@ describe("DeployModel", () => {
   beforeEach(() => {
     post.mockReset();
     jobsResponse = { jobs: [] };
+    pomDesenv = false;
     localStorage.clear();
   });
   afterEach(cleanup);
@@ -313,8 +318,14 @@ describe("DeployModel", () => {
   it("mostra e envia a visão quando o plano fatiado encontra um mmproj", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
-    p.mmproj_path = "/models/mmproj-qwen.gguf";
-    post.mockResolvedValue(p);
+    p.mmproj_path = "/models/mmproj-qwen-f16.gguf";
+    p.mmproj_candidates = [
+      "/models/mmproj-qwen-f16.gguf",
+      "/models/mmproj-qwen-q8_0.gguf",
+    ];
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/deploy" ? Promise.resolve({ job_id: "vision-job" }) : Promise.resolve(p),
+    );
     mount();
 
     await waitFor(() => expect(screen.getByRole("tab", { name: "Globais" })).toBeTruthy());
@@ -322,9 +333,22 @@ describe("DeployModel", () => {
 
     const vision = screen.getByRole("checkbox", { name: "Ativar visão" });
     expect(vision).toBeTruthy();
+    const projector = screen.getByRole("combobox", { name: "Projetor de visão" });
+    expect((projector as HTMLSelectElement).value).toBe("/models/mmproj-qwen-f16.gguf");
+    fireEvent.change(projector, { target: { value: "/models/mmproj-qwen-q8_0.gguf" } });
     fireEvent.click(vision);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Implantar$/ })).toBeTruthy());
+    const deploy = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((deploy as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(deploy);
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/api/ui/deploy", expect.objectContaining({
+        group: "qwen",
+        kind: "shards",
+        vision: true,
+        mmproj_path: "/models/mmproj-qwen-q8_0.gguf",
+      }));
+    });
   });
 
   it("explica quando o plano fatiado não tem mmproj", async () => {
@@ -338,7 +362,7 @@ describe("DeployModel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
 
     expect(screen.getByRole("alert").textContent).toContain(
-      "Visão indisponível: nenhum mmproj foi encontrado para este modelo fatiado.",
+      "Visão indisponível: não foi possível provar a que modelo pertence o projetor.",
     );
     expect(screen.queryByRole("checkbox", { name: "Ativar visão" })).toBeNull();
   });
@@ -760,11 +784,20 @@ describe("DeployModel", () => {
     });
   });
 
+  it("oculta controles de desenvolvimento sem POM_DESENV", () => {
+    post.mockResolvedValue(planOutOfLayerOrder());
+    mount();
+    expect(screen.queryByRole("radio", { name: "Tensor" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Simples" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Completa" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Voltar ao plano do nó" })).toBeNull();
+  });
+
   it("manda todos os peers como candidatos quando a estratégia é completa", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;
     post.mockResolvedValue(p);
-    mount();
+    mount(true, true);
 
     await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Completa" }));

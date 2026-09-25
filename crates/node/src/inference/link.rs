@@ -793,11 +793,10 @@ pub async fn send_batch_with_session_profile(
     )))
 }
 
-/// Envia um frame já enquadrado pelo canal persistente, sem exigir que a
-/// resposta seja outro frame de inferência. O retorno remoto do
-/// `remote-stream` usa exatamente esta variante: cada lote é um frame do
-/// canal, mas o peer responde apenas com o ACK HTTP do callback.
-pub async fn send_body_with_session(
+/// Variante de ACK HTTP exercitada pelos testes do canal persistente. O
+/// caminho de produção do `remote-stream` usa a variante sem espera por ACK.
+#[cfg(test)]
+async fn send_body_with_session(
     clients: &crate::peer_client::PeerClients,
     node_id: &str,
     base_url: &str,

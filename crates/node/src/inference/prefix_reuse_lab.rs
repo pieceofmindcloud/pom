@@ -817,6 +817,11 @@ async fn conversa_com_hops_fault_kind(
     fault: Option<(usize, u32, usize)>,
     fault_kind: FaultKind,
 ) -> Medida {
+    // Os peers falsos só servem HTTP; `PeerInfo::inference_candidates` lê a
+    // política TLS global, que outros testes alternam em paralelo.
+    let _scheme_lock = crate::peer_client::POLITICA_GLOBAL.lock();
+    crate::peer_client::set_tls_ativo(false);
+
     assert!(hop_count >= 1);
     let motores: Vec<Arc<Mutex<Engine>>> = (0..hop_count)
         .map(|_| Arc::new(Mutex::new(Engine::default())))
@@ -968,6 +973,10 @@ async fn conversa_com_hops_fault_kind(
                 }
                 crate::gateway::GenEvent::Failed(e) => {
                     medido.falhou = Some(e);
+                    true
+                }
+                crate::gateway::GenEvent::FailedWithTelemetry { error, .. } => {
+                    medido.falhou = Some(error);
                     true
                 }
             };

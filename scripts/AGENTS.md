@@ -25,18 +25,45 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   repositorio. Veja o cabecalho do script para as colunas, URLs e opcoes
   `--origens`, `--repeticoes` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
-  (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
-  exporta `POM_BUILD_COMMIT` e chama `docker compose build`. Durante esse build,
-  o `Dockerfile` roda `npm run build` em `apps/frontend`, compila `pom` com as
-  features CUDA/Vulkan e compila `pom-plugin-host` separadamente, sem essas
-  features. O script não executa o build da UI diretamente. O commit nao pode
-  ser lido dentro da imagem builder (`.dockerignore` corta `.git/` e a imagem
-  nao tem `git`); sem a variavel o `crates/node/build.rs` carimba
-  "desconhecido" em todo container; ver `TODO.md`, item 26. Construa a imagem
-  por este script, nunca `docker compose build` na mao.
+  (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes) e
+  exporta `POM_BUILD_COMMIT` apenas para o runtime. Por padrao resolve a tag da
+  branch remota `pom-tensor-parallel` (mesmo algoritmo da action de release,
+  completando a historia de um clone raso sem baixar blobs) e usa
+  `POM_LLAMA_CPP_MODE=release`; o `LLAMA_CPP_CACHE_KEY` passa a incluir essa
+  tag. `POM_LLAMA_CPP_RELEASE_TAG` fixa uma release existente.
+  `POM_LLAMA_CPP_MODE=source` compila o fork local;
+  `POM_LLAMA_CPP_SOURCE_DIR` pode apontar para outro clone Git, cujo conteudo e
+  preparado num named context temporario sem `.git`, modelos, builds, chaves ou
+  arquivos dotenv; o cache e chaveado por commit e delta. O contexto principal
+  ignora a copia local de `llama.cpp`, pois o fork entra somente pelo named
+  context. O script deriva
+  `POM_CUDA_ARCH_CACHE_KEY` da lista real de arquiteturas e chama
+  `docker compose build`. `build-docker-ksia.sh` escolhe o Compose Ksia e
+  delega a este script. Salem e Ksia usam o mesmo target `runtime`, com um
+  `pom` universal CUDA+Vulkan e os módulos CPU/Vulkan/CUDA no mesmo runtime.
+  O frontend é um estágio independente e sua cópia de `dist` é a última camada
+  da imagem; Fork/tag, toolkit, arquitetura e toolchain não invalidam a UI, e
+  uma edição da UI não refaz Cargo. Todos os serviços usam `/usr/local/bin/pom`.
+  Construa por estes scripts, nao rode `docker compose build` diretamente.
+- `test-docker-build-cache.sh` - prova que a imagem reaproveita o que nao
+  mudou. A parte estrutural verifica os estagios Rust/frontend independentes,
+  a cópia final do frontend, o `.dockerignore`, a exclusao do carimbo de commit
+  dos estagios de build e que só há uma build POM combinando CPU, CUDA e Vulkan.
+  Depois, se houver daemon, deriva do Dockerfile um stub e usa BuildKit sobre um
+  contexto sintetico para verificar cache em cenarios de fonte, commit, fork,
+  CUDA, toolchain e artefatos locais. `POM_CACHE_TEST_DEBUG=1` imprime cada
+  passo, grupo e estado do cache.
+- `test-docker-build-mode.sh` - testa os modos release/source com um `docker`
+  falso: source prepara um named context sem `.git`, modelos, builds, GGUFs e
+  credenciais a partir de outro clone; release mantém apenas um marcador e
+  propaga a tag e o cache key fixados.
 - `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
   falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
   argumentos.
+- `test-docker-compose.py` - materializa os Compose da Salem e da Ksia. Valida
+  que todos os nós usam a mesma imagem/build/binário, além de volumes e
+  visibilidade de NVIDIA/Radeon; a entrada Ksia tem um serviço `node-1` com as
+  GPUs 0 e 1 e os argumentos de arquitetura/cache coerentes.
 - `gen-node-configs.py` - gera um `pom.json` por no em
   `tests/fixtures/node-<N>/`. As portas de cada no vem da config, nao do CLI
   (com `network_mode: host`, colisao de porta e o erro tipico). No 1 =
@@ -163,24 +190,30 @@ invocados pelo binario (ver o `README.md` de la).
 
 ## Infra de build e dev na raiz
 
-- `Dockerfile` - dois estagios: builder `nvidia/cuda:13.2.1-devel-ubuntu24.04`
-  compila `pom` com CUDA/Vulkan e `pom-plugin-host` sem features, com cache
-  mounts (registry/git/target), e monta a UI (`apps/frontend/dist`). O runtime
-  copia os dois binarios e usa `docker-entrypoint.sh`, que faz `exec` do `pom`
-  e exporta `POM_PLUGIN_HOST`; na ativacao, o `pom` inicia o host como filho
-  com o plugin baixado e IPC por stdin/stdout, sem socket ou volume de IPC.
-  `ARG POM_BUILD_COMMIT` recebe o commit do host (ver `build-docker.sh`).
+- `Dockerfile` - estagios compartilhados de dependencias, Rust, frontend e
+  runtime. Salem e Ksia compilam um executável `pom` com CPU, CUDA e Vulkan,
+  mais `pom-plugin-host`; os builds usam cache mounts e o frontend é
+  independente. O commit do host vira `ENV
+  POM_BUILD_COMMIT` no runtime, sem invalidar as camadas Cargo/npm. O
+  `docker-entrypoint.sh` faz `exec` do `pom` e exporta `POM_PLUGIN_HOST`; na
+  ativacao, o `pom` inicia o host como filho com o plugin baixado e IPC por
+  stdin/stdout, sem socket ou volume de IPC.
 - `docker-entrypoint.sh` - valida que `pom` e `pom-plugin-host` estao
   executaveis, fixa o caminho do host e preserva os argumentos do container.
   Nao inicia um host vazio no boot porque o host precisa do caminho do plugin
   Enterprise, que so existe depois da ativacao.
-- `docker-compose.yml` - cluster local de 4 servicos (`node-gpu`, `node-gpu-2`,
-  `node-cpu-1`, `node-cpu-2`) com `network_mode: host`; estado em
-  `tests/fixtures/<nome>` e modelos montados de `./models`. GPU so via
-  `deploy.resources` (exige NVIDIA Container Toolkit no host). UI reencontrada
-  por `POM_UI_DIST=/app/apps/frontend/dist` porque `POM_HOME=/data` nao
-  e o /app da imagem. Sobre os nomes das fixtures, veja "Sobre os nomes das
-  fixtures do docker-compose" abaixo: nao e defeito, sao dois ambientes distintos.
+- `docker-compose.yml` - cluster local de 4 servicos (`node-gpu`, `node-gpu2`,
+  `node-gpu-3`, `node-cpu`) com `network_mode: host`, uma ancora comum de
+  build/imagem e estado persistido em `tests/fixtures/<nome>`. O padrao
+  mapeia a topologia da Salem; na Ksia, `COMPOSE_FILE=docker-compose.ksia.yml`
+  seleciona o ponto de entrada de GPUs NVIDIA. `docker-compose.salem.yml`
+  tambem e selecionavel diretamente. Os dois estendem a definicao comum em
+  `docker-compose.common.yml`, mantendo os mesmos servicos, contexto, imagem,
+  volumes e variaveis. Todos os nós Salem/Ksia usam o mesmo executável; o
+  backend é descoberto a partir dos dispositivos visíveis. A UI é
+  reencontrada por
+  `POM_UI_DIST=/app/apps/frontend/dist` porque `POM_HOME=/data` nao e o
+  `/app` da imagem.
 - `.github/workflows/release.yml` - release so manual (`workflow_dispatch` com
   `version` e `prerelease`). Job `ui` builda a interface uma vez; matriz de 4
   alvos (macOS arm64 Metal, Linux x86_64 CPU, Linux x86_64 CUDA 12.6, Windows
@@ -197,20 +230,23 @@ invocados pelo binario (ver o `README.md` de la).
   buildx e sshd (`root:123`, sandbox local, nao internet). `devcontainer.json`
   monta o docker.sock e a chave ssh do host; `install-buildkit.sh` baixa o
   binario `linux-amd64` do buildx (arm64 precisa de `docker-buildx-plugin`).
-- `.dockerignore` - corta `target/`, `.git/`, `venv/`, `models/`, `*.gguf`,
-  `*.key`, `pom.json`, `docs/` do contexto de build; e por isso que o
-  commit precisa chegar por variavel e a config nao entra na imagem.
+- `.dockerignore` - corta `target/`, `target-*/`, `.fm-secondmate/`,
+  `.git/`, `venv/`, `models/`, `*.gguf`, `*.key`, `pom.json` e
+  `docs/superpowers/` do contexto. Mantem `llama.cpp/` porque o link em
+  `vendor/llama-cpp-sys-2/llama.cpp` precisa do codigo-fonte no build.
 
-## Sobre os nomes das fixtures do docker-compose
+## Sobre os nomes e o estado das fixtures do docker-compose
 
-Os dois itens abaixo ja foram considerados defeito, mas o captain recusou
-trata-los. A razao: sao dois ambientes de gente diferente -
-`gen-node-configs.py` gera a configuracao da maquina do captain, e o
-`docker-compose.yml` serve a maquina do salem. Os dois esquemas de nome
-(`tests/fixtures/node-<N>` e `tests/fixtures/node-gpu`/`node-gpu-2`/etc.)
-**nao precisam se encontrar** - cada um atende a um operador distinto.
-
-Nao e defeito. Nao voltar a propor essa "correcao".
+`docker-compose.yml`, `docker-compose.salem.yml` e
+`docker-compose.ksia.yml` estendem `docker-compose.common.yml` para usar os
+mesmos quatro servicos nas duas maquinas,
+mas preservam os diretorios de estado ja usados
+por cada no. `gen-node-configs.py` continua gravando em
+`tests/fixtures/node-<N>`; Compose monta as pastas nomeadas por papel de
+hardware. Nao troque os caminhos dos volumes como parte do alinhamento dos
+servicos: isso mudaria a localizacao da persistencia e exige uma migracao
+separada. `tests/` fica fora do contexto da imagem, mas seus diretorios sao
+montados pelo host em runtime.
 
 ## migrar-para-pom.sh
 

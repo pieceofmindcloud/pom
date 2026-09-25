@@ -333,6 +333,7 @@ export function DeployModel() {
   const [cacheTypesLoaded, setCacheTypesLoaded] = useState(false);
   const [savingCacheTypes, setSavingCacheTypes] = useState(false);
   const [useVision, setUseVision] = useState(false);
+  const [selectedMmprojPath, setSelectedMmprojPath] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const toast = useToast();
   const invalidate = useInvalidate();
@@ -347,18 +348,38 @@ export function DeployModel() {
   }, [cacheTypes.data, cacheTypesLoaded]);
   /** Every slicing round anyone in the cluster holds, named once. */
   const groups = useMemo(() => {
-    const seen = new Map<string, { key: string; label: string; pomId: string; mmprojPath: string | null }>();
+    const seen = new Map<string, {
+      key: string;
+      label: string;
+      pomId: string;
+      mmprojPath: string | null;
+      mmprojCandidates: string[];
+      mmprojReason: string | null;
+    }>();
     for (const peer of cluster.data?.peers ?? []) {
       for (const set of peer.shard_sets ?? []) {
         const existing = seen.get(set.group);
         if (existing) {
           if (!existing.mmprojPath && set.mmproj_path) existing.mmprojPath = set.mmproj_path;
+          for (const candidate of set.mmproj_candidates ?? []) {
+            if (!existing.mmprojCandidates.includes(candidate)) existing.mmprojCandidates.push(candidate);
+          }
+          if (set.mmproj_path && !existing.mmprojCandidates.includes(set.mmproj_path)) {
+            existing.mmprojCandidates.push(set.mmproj_path);
+          }
+          if (!existing.mmprojReason && set.mmproj_reason) existing.mmprojReason = set.mmproj_reason;
         } else {
+          const mmprojCandidates = [...(set.mmproj_candidates ?? [])];
+          if (set.mmproj_path && !mmprojCandidates.includes(set.mmproj_path)) {
+            mmprojCandidates.push(set.mmproj_path);
+          }
           seen.set(set.group, {
             key: set.group,
             label: set.model_label || set.group,
             pomId: set.pom_id ?? "",
             mmprojPath: set.mmproj_path ?? null,
+            mmprojCandidates,
+            mmprojReason: set.mmproj_reason ?? null,
           });
         }
       }
@@ -480,6 +501,7 @@ export function DeployModel() {
       merge == null ? "merge-padrão" : `merge-${merge}`,
       strategy,
       JSON.stringify(preferredNodeIds),
+      selectedMmprojPath ?? "sem-mmproj-selecionado",
       // TP: o plano revalida quando o primary/workers mudam — a checagem de
       // shardabilidade roda no nó, então a troca precisa re-disparar a query.
       isTp ? JSON.stringify(tpPayload()) : "sem-tp",
@@ -492,6 +514,7 @@ export function DeployModel() {
         preferred_node_ids: preferredNodeIds,
         ...(settled ? { selection: settled } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
+        ...(selectedMmprojPath ? { mmproj_path: selectedMmprojPath } : {}),
         // A whole model is one machine, so there is nothing to join and the
         // toggle is not on screen. Sending it anyway would be sending a value
         // the operator was never shown.
@@ -503,13 +526,46 @@ export function DeployModel() {
   });
 
   const p = plan.data;
+  const currentPlan = p && p.group === chosen && kindOf(p) === kind ? p : undefined;
   // The plan is authoritative once answered; the catalog is useful while the
   // first plan is loading so the vision control does not flicker into view.
-  const slicedMmprojPath = groups.find((entry) => entry.key === chosen)?.mmprojPath ?? null;
-  const mmprojPath = p?.mmproj_path !== undefined
-    ? p.mmproj_path
-    : wholeModel?.mmproj_path ?? slicedMmprojPath;
-  const visionAvailable = Boolean(mmprojPath);
+  const slicedGroup = groups.find((entry) => entry.key === chosen);
+  const catalogMmprojPath = wholeModel?.mmproj_path ?? slicedGroup?.mmprojPath ?? null;
+  const catalogMmprojCandidates = wholeModel?.mmproj_candidates
+    ?? slicedGroup?.mmprojCandidates
+    ?? [];
+  const mmprojCandidates = useMemo(() => {
+    const candidates = [
+      ...(currentPlan?.mmproj_candidates ?? []),
+      ...catalogMmprojCandidates,
+      ...(currentPlan?.mmproj_path ? [currentPlan.mmproj_path] : []),
+      ...(catalogMmprojPath ? [catalogMmprojPath] : []),
+    ];
+    return [...new Set(candidates)];
+  }, [catalogMmprojCandidates, catalogMmprojPath, currentPlan]);
+  const preferredMmprojPath = currentPlan?.mmproj_path ?? catalogMmprojPath;
+  const mmprojPath = selectedMmprojPath ?? preferredMmprojPath;
+  const mmprojReason = currentPlan?.mmproj_reason
+    ?? wholeModel?.mmproj_reason
+    ?? slicedGroup?.mmprojReason
+    ?? null;
+  const visionAvailable = mmprojCandidates.length > 0 || Boolean(mmprojPath);
+  useEffect(() => {
+    setSelectedMmprojPath(null);
+  }, [chosen, kind]);
+  useEffect(() => {
+    if (mmprojCandidates.length === 0) {
+      setSelectedMmprojPath(null);
+      return;
+    }
+    setSelectedMmprojPath((current) => {
+      if (current && mmprojCandidates.includes(current)) return current;
+      if (preferredMmprojPath && mmprojCandidates.includes(preferredMmprojPath)) {
+        return preferredMmprojPath;
+      }
+      return mmprojCandidates[0];
+    });
+  }, [mmprojCandidates, preferredMmprojPath]);
   useEffect(() => {
     if (!visionAvailable) setUseVision(false);
   }, [visionAvailable]);
@@ -764,6 +820,9 @@ export function DeployModel() {
 
   /** The settings in force: the operator's edit or the plan's received values. */
   const pomDesenv = node.data?.pom_desenv === true;
+  useEffect(() => {
+    if (!pomDesenv && pickedKind === "tensor_parallel") setPickedKind(null);
+  }, [pomDesenv, pickedKind]);
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
   /** The server's GGUF metadata is the only source of truth for MoE. */
   const isMoePlan = p?.is_moe === true;
@@ -912,6 +971,7 @@ export function DeployModel() {
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
         vision: useVision,
+        ...(selectedMmprojPath ? { mmproj_path: selectedMmprojPath } : {}),
       });
       setJobId(started.job_id);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
@@ -1113,7 +1173,7 @@ export function DeployModel() {
               {([
                 ["shards", "Fatias"],
                 ["whole", "Modelo inteiro"],
-                ["tensor_parallel", "Tensor"],
+                ...(pomDesenv ? [["tensor_parallel", "Tensor"] as [DeployKind, string]] : []),
               ] as [DeployKind, string][]).map(([value, label]) => (
                 <button
                   key={value}
@@ -1174,7 +1234,7 @@ export function DeployModel() {
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
               />
             </div>
-            <div className="flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
+            {pomDesenv && <div className="flex items-center gap-1 rounded-lg border border-line bg-ink p-1">
               {(["simple", "complete"] as DeployStrategy[]).map((value) => (
                 <button
                   key={value}
@@ -1195,8 +1255,8 @@ export function DeployModel() {
                   {value === "simple" ? "Simples" : "Completa"}
                 </button>
               ))}
-            </div>
-            <Button
+            </div>}
+            {pomDesenv && <Button
               variant="outline"
               size="sm"
               type="button"
@@ -1204,7 +1264,7 @@ export function DeployModel() {
               onClick={restoreNodePlan}
             >
               Voltar ao plano do nó
-            </Button>
+            </Button>}
             <Button
               variant="primary"
               size="sm"
@@ -1326,11 +1386,14 @@ export function DeployModel() {
                   : (inferenceModeReason ?? "Este caminho não pode honrar o motor escolhido.")
               }
               showHiddenStateDtype={crossesPeerBoundary}
-              vision={isWhole && !visionAvailable ? undefined : {
+              vision={{
                 available: visionAvailable,
                 enabled: useVision,
                 path: mmprojPath,
+                candidates: mmprojCandidates,
+                reason: mmprojReason,
                 onChange: setUseVision,
+                onPathChange: setSelectedMmprojPath,
               }}
             />
             {isMoePlan && !inferenceModeSupported && (

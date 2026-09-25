@@ -123,6 +123,9 @@ pub(crate) const QUIC_KEEP_ALIVE: Duration = Duration::from_millis(250);
 pub struct QuicResponse {
     pub status: StatusCode,
     pub body: Vec<u8>,
+    /// Wall time awaiting request body send and stream finish. This is not
+    /// the response-header wait or the QUIC path RTT.
+    pub request_body_send_us: u64,
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
     /// Smoothed RTT measured by QUIC for the path, independent of handler
@@ -353,6 +356,7 @@ impl ClientPool {
             body_may_have_been_sent = true;
             let body_timeout = remaining_budget(request_deadline)
                 .ok_or_else(|| anyhow!("deadline expirou antes do envio do corpo"))?;
+            let request_body_send_started = std::time::Instant::now();
             tokio::time::timeout(body_timeout, stream.send_data(Bytes::from(body)))
                 .await
                 .context("envio do corpo HTTP/3 travou")?
@@ -363,6 +367,7 @@ impl ClientPool {
                 .await
                 .context("finalização do corpo HTTP/3 travou")?
                 .map_err(|error| anyhow!("finalização do corpo HTTP/3 falhou: {error}"))?;
+            let request_body_send_us = request_body_send_started.elapsed().as_micros() as u64;
             let headers_started = std::time::Instant::now();
             // A espera da resposta cobre o processamento remoto (prefill/decode
             // legítimos passam de 1 s), mas a tentativa inteira já está dentro
@@ -387,6 +392,7 @@ impl ClientPool {
             Ok::<QuicResponse, anyhow::Error>(QuicResponse {
                 status: response.status(),
                 body: output,
+                request_body_send_us,
                 response_headers_ms,
                 response_body_ms: body_started.elapsed().as_millis() as u64,
                 transport_rtt_us: session.connection.rtt().as_micros() as u64,

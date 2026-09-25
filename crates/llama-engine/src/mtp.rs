@@ -58,8 +58,9 @@
 //! - os dois nunca coexistem.
 //!
 //! `EngineConfig::mtp_draft_path` é onde esse caminho chega. A descoberta
-//! segue o mesmo padrão de `mmproj` (arquivo irmão na pasta de modelos, ver
-//! `models::catalog::find_mtp_draft_sibling` e `find_mmproj_sibling`), e é
+//! fica junto ao GGUF e segue a convenção própria `mtp-` (ver
+//! `models::catalog::find_mtp_draft_sibling`). O `mmproj` usa identidade GGUF
+//! e compatibilidade dimensional, e é
 //! automática - **não há um interruptor novo na UI**: o operador já liga MTP
 //! pelo campo que existe hoje, e o rascunho externo entra quando o alvo não
 //! tem `nextn` embutido e o arquivo existe ao lado do GGUF. A descoberta
@@ -923,9 +924,7 @@ mod tests {
             std::env::var("POM_MTP_TARGET_MODEL"),
             std::env::var("POM_MTP_DRAFT_MODEL"),
         ) else {
-            eprintln!(
-                "defina POM_MTP_TARGET_MODEL e POM_MTP_DRAFT_MODEL para rodar esta sonda"
-            );
+            eprintln!("defina POM_MTP_TARGET_MODEL e POM_MTP_DRAFT_MODEL para rodar esta sonda");
             return;
         };
         let cfg = crate::llm::EngineConfig {

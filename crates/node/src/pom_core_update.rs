@@ -125,7 +125,7 @@ impl PomCoreUpdater {
             .map_err(core_update_error)?;
         let available = crate::core_update::is_newer_release(
             env!("CARGO_PKG_VERSION"),
-            crate::BUILD_COMMIT,
+            &crate::build_commit(),
             &manifest.manifest,
         )
         .then(|| CoreUpdate {
@@ -151,7 +151,9 @@ impl PomCoreUpdater {
         let _guard = self.update_lock.lock().await;
         let requested_release_id = requested_release_id.trim();
         let Some(available) = self.status.read().await.clone() else {
-            return Err(update_unavailable("nenhuma atualização do pom está disponível"));
+            return Err(update_unavailable(
+                "nenhuma atualização do pom está disponível",
+            ));
         };
         if available.release_id != requested_release_id {
             return Err(update_unavailable(
@@ -186,7 +188,7 @@ impl PomCoreUpdater {
         if manifest.manifest.release_id != requested_release_id
             || !crate::core_update::is_newer_release(
                 env!("CARGO_PKG_VERSION"),
-                crate::BUILD_COMMIT,
+                &crate::build_commit(),
                 &manifest.manifest,
             )
         {
@@ -196,7 +198,8 @@ impl PomCoreUpdater {
         }
 
         let bytes = self.service.download(&manifest.download).await?;
-        crate::core_update::validate_download(&manifest.manifest, &bytes).map_err(core_update_error)?;
+        crate::core_update::validate_download(&manifest.manifest, &bytes)
+            .map_err(core_update_error)?;
         let executable = std::env::current_exe().map_err(io_error)?;
         match crate::core_update::install_atomically(&executable, &bytes).map_err(io_error)? {
             crate::core_update::InstallResult::Replaced => {
@@ -264,7 +267,8 @@ pub(crate) async fn pom_update_status(
     axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    axum::Json(serde_json::json!({ "core_update": state.pom_core_update.status().await })).into_response()
+    axum::Json(serde_json::json!({ "core_update": state.pom_core_update.status().await }))
+        .into_response()
 }
 
 pub(crate) async fn check_pom_update(
@@ -318,6 +322,15 @@ mod tests {
             lease_id: "lease-1".into(),
             lease_token: "plt-test".into(),
             licensed_plugins: vec![ENTERPRISE_PLUGIN_CODE.into()],
+            license_expires_at: Some("2099-12-31T00:00:00Z".into()),
+            activation_count: Some(1),
+            max_activations: Some(5),
+            plugin_usage: vec![enterprise_protocol::PluginUsage {
+                plugin_code: ENTERPRISE_PLUGIN_CODE.into(),
+                activation_count: 1,
+                max_activations: 5,
+            }],
+            activation_candidates: Vec::new(),
             lease_expires_at: "2099-01-01T00:00:00Z".into(),
             heartbeat_due_at: "2099-01-01T00:00:00Z".into(),
             grace_seconds: 172800,
@@ -340,6 +353,7 @@ mod tests {
                 size: b"plugin-binary".len() as u64,
                 download_expires_at: None,
                 changelog: None,
+                preferences: None,
                 key_id: "test".into(),
                 signature: "test-signature".into(),
             },
@@ -368,6 +382,7 @@ mod tests {
             size: artifact.len() as u64,
             download_expires_at: None,
             changelog: None,
+            preferences: None,
             key_id: "release-key".into(),
             signature: "signed-manifest".into(),
         }
@@ -405,9 +420,17 @@ mod tests {
             )
             .await;
         let manager = PluginManager::test_manager(&["enterprise"], service.clone());
-        let enterprise = manager.runtime_for(ENTERPRISE_PLUGIN_CODE).expect("runtime");
-        enterprise.activate("PM-test-key").await.expect("activate enterprise");
-        enterprise.mark_plugin_ready("0.1.0").await.expect("mark ready");
+        let enterprise = manager
+            .runtime_for(ENTERPRISE_PLUGIN_CODE)
+            .expect("runtime");
+        enterprise
+            .activate("PM-test-key")
+            .await
+            .expect("activate enterprise");
+        enterprise
+            .mark_plugin_ready("0.1.0")
+            .await
+            .expect("mark ready");
         let updater = PomCoreUpdater::new(manager);
 
         updater.detect().await.expect("detect core update");
@@ -438,9 +461,17 @@ mod tests {
             )
             .await;
         let manager = PluginManager::test_manager(&["enterprise"], service.clone());
-        let enterprise = manager.runtime_for(ENTERPRISE_PLUGIN_CODE).expect("runtime");
-        enterprise.activate("PM-test-key").await.expect("activate enterprise");
-        enterprise.mark_plugin_ready("0.1.0").await.expect("mark ready");
+        let enterprise = manager
+            .runtime_for(ENTERPRISE_PLUGIN_CODE)
+            .expect("runtime");
+        enterprise
+            .activate("PM-test-key")
+            .await
+            .expect("activate enterprise");
+        enterprise
+            .mark_plugin_ready("0.1.0")
+            .await
+            .expect("mark ready");
         let updater = PomCoreUpdater::new(manager);
         updater.detect().await.expect("detect core update");
 

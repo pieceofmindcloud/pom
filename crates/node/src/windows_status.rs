@@ -10,7 +10,9 @@
 pub const TRAY_SHOW_ID: &str = "pom.show";
 pub const TRAY_QUIT_ID: &str = "pom.quit";
 pub const WINDOW_SIZE: (f64, f64) = (1120.0, 880.0);
+#[cfg(windows)]
 pub const SUPERVISED_CHILD_ENV: &str = "POM_WINDOWS_SUPERVISED_CHILD";
+#[cfg(windows)]
 pub const CRASH_RELAUNCH_DELAY_SECS: u64 = 1;
 
 fn wait_for_gateway_ready(receiver: &std::sync::mpsc::Receiver<()>) -> Result<(), String> {

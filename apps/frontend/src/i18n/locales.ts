@@ -142,6 +142,58 @@ export function resolveLocale(
 }
 
 /** Every key in the CSV, kept sorted for stable callers and diffs. */
+/*
+ * Textos que pertencem a plugins. Cada plugin leva seu próprio catálogo
+ * (`lib/pluginI18n.ts` carrega e valida); aqui eles só entram no mesmo mapa que
+ * `formatMessage` já consulta, na chave `<plugin_code>.*`, e saem quando o
+ * plugin sai. Chave que já existe no catálogo do POM nunca é sobrescrita.
+ */
+const pluginKeys = new Map<string, Set<string>>();
+const pluginListeners = new Set<() => void>();
+let pluginVersion = 0;
+
+function notifyPluginMessages() {
+  pluginVersion += 1;
+  for (const listener of pluginListeners) listener();
+}
+
+export function subscribePluginMessages(listener: () => void): () => void {
+  pluginListeners.add(listener);
+  return () => pluginListeners.delete(listener);
+}
+
+export const pluginMessagesVersion = () => pluginVersion;
+
+/** Substitui todos os textos deste plugin nos idiomas dados. */
+export function setPluginMessages(code: string, catalogs: Partial<Record<Locale, Record<string, string>>>): void {
+  clearPluginMessages(code, false);
+  const owned = new Set<string>();
+  for (const locale of SUPPORTED_LOCALES) {
+    for (const [key, text] of Object.entries(catalogs[locale] ?? {})) {
+      const reserved = messages[locale].has(key) && !owned.has(`${locale}:${key}`);
+      if (reserved) continue;
+      messages[locale].set(key, text);
+      owned.add(`${locale}:${key}`);
+      messageFormatters.delete(`${locale}:${key}`);
+      for (const match of text.matchAll(/\{(__truthy_([A-Za-z_$][\w$]*)), select,/g)) truthySources.add(match[2]);
+      for (const match of text.matchAll(/\{(__notZero_([A-Za-z_$][\w$]*)), select,/g)) nonZeroSources.add(match[2]);
+    }
+  }
+  pluginKeys.set(code, owned);
+  notifyPluginMessages();
+}
+
+export function clearPluginMessages(code: string, notify = true): void {
+  for (const entry of pluginKeys.get(code) ?? []) {
+    const [locale, ...rest] = entry.split(":");
+    const key = rest.join(":");
+    messages[locale as Locale].delete(key);
+    messageFormatters.delete(`${locale}:${key}`);
+  }
+  pluginKeys.delete(code);
+  if (notify) notifyPluginMessages();
+}
+
 export function messageKeys(locale: Locale): string[] {
   return [...messages[locale].keys()].sort();
 }

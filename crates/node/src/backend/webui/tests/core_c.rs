@@ -78,6 +78,9 @@ mod dead_address_tests {
     /// registado como tal para não voltar a ser discado.
     #[tokio::test]
     async fn a_dead_announced_address_is_forgotten_and_the_peer_is_read_at_the_new_one() {
+        let _scheme_lock = crate::peer_client::POLITICA_GLOBAL.lock();
+        crate::peer_client::set_tls_ativo(false);
+
         let (port, hits) = live_node("macbook").await;
         let p = peer_com_endereco_morto(port);
         let morto = format!("http://{}:{port}", dead_host());

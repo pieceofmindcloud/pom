@@ -110,12 +110,12 @@ visibilidade dos controles de implantação na UI local.
   O receptor reconfere a `connection_key` e o marcador interno **a cada
   quadro**, porque uma conexão longa autenticada só na abertura manteria
   válido por horas um segredo que foi trocado por outro processo.
-  `send_body_with_session` reutiliza o mesmo canal para frames de callback que
-  carregam `REMOTE_STREAM_RESULT_PATH` quando o chamador precisa do ACK. O
-  retorno normal do `remote-stream` usa
-  `send_body_without_response_with_session`: cada frame é enfileirado no
+  `send_body_without_response_with_session` é o caminho de produção do
+  `remote-stream`: cada frame é enfileirado no
   canal full-duplex sem barreira de ACK por token; a fila limitada mantém
   contrapressão e uma tarefa leitora observa ACKs tardios e falhas do canal.
+  `send_body_with_session` fica apenas nos testes que validam o ACK HTTP no
+  mesmo canal persistente.
   O controle inicial de `/v1/step-stream` continua fora do lote, pois o
   receptor espera o wire de controle dessa rota. Já o handoff normal de
   `/v1/step` com MTP, que carrega `draft` e `mtp_k`, entra como lote de um
@@ -187,6 +187,12 @@ visibilidade dos controles de implantação na UI local.
   remoto e um emissor separado: cada um usa a mesma decodificação existente,
   mas os tokens retornam ao gateway em lotes oportunistas limitados, com
   timeout de entrega de 500 ms e contrapressão.
+  `node_timings` publica a captura em limites explícitos: ask-to-ready do
+  scheduler, wall da chamada `ggml_backend_tensor_get`, pós-processamento e
+  encode do payload e do frame residual. Ask-to-ready inclui compute e sync do
+  scheduler; `tensor_get` em CUDA pode incluir D2H e sync da stream, sem expor
+  esses custos internos separadamente. O wire mede o loop de conversão f8
+  separado da serialização do cabeçalho/frame.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
   inicializa o backend para que o sysmon possa consultar descricoes de
   dispositivos, decode, hidden state com
@@ -309,8 +315,10 @@ visibilidade dos controles de implantação na UI local.
   ponto depois de uma falha de transporte: a resposta perdida não prova se o
   peer já gravou o chunk, e a reentrada poderia pedir remoção parcial de KV.
   A recuperação segura recria a sessão inteira a frio, uma vez; se ela falhar,
-  o cleanup libera os hops alcançados. O modo anel continua serializado pelo
-  contrato aninhado e ignora a janela. A telemetria
+  o cleanup libera os hops alcançados. Mesmo sem ponto de retomada, o erro
+  carrega o `RequestTrace` parcial observado até a falha para a auditoria; isso
+  não muda a retentativa nem preenche tempos ausentes. O modo anel continua
+  serializado pelo contrato aninhado e ignora a janela. A telemetria
   também registra `prefix_match_tokens`, `prefix_reuse_status`,
   `prompt_tokens_transmitted`, `prefill_pipeline_depth_max` e transporte por
   travessia. `RequestTrace` acrescenta o `trace_id`, spans locais do gateway,
@@ -622,7 +630,9 @@ visibilidade dos controles de implantação na UI local.
   interface.
 - `relay.rs` - `BatchCoordinator` agenda o flush imediatamente e ainda agrupa
   chamadas concorrentes para o mesmo próximo hop no mesmo ciclo do executor;
-  envia um frame único e distribui respostas por `item_id`. Não há mais um
+  envia um frame único e distribui respostas por `item_id`. QUIC também
+  publica em microssegundos o tempo aguardado em `send_data` e `finish`; num
+  lote, o tempo compartilhado é agregado uma vez. Não há mais um
   timer fixo no relay; `bubble_hop_timings` mantém a telemetria por salto.
 - `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, injeta os tipos de
   cache globais do `pom.json` e guarda o
@@ -754,8 +764,10 @@ visibilidade dos controles de implantação na UI local.
   trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
   `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN e i4g64/i4g128
   assinado com escala f16 por grupo na borda, sempre devolvendo f32 ao motor;
-  `prefill/`/`relay.rs` propagam o dtype escolhido e registram bytes enviados,
-  recebidos e formato efetivo por hop.
+  `encode_profiled` mede o loop f8 e a serialização do cabeçalho/frame em
+  limites separados. `prefill/`
+  e `relay.rs` propagam o dtype escolhido e registram bytes enviados, recebidos
+  e formato efetivo por hop.
 
 ## Funções-chave
 
@@ -875,7 +887,7 @@ visibilidade dos controles de implantação na UI local.
   recomeça o prefill completo uma vez, nunca apenas o chunk que perdeu o KV;
   `INFERENCE_FRAME_BODY_LIMIT=64 MiB` corta frame impossível no body.
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
-  `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
+  `gateway::start_gateway_with_ready`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
 - `/health` anuncia `relay/v2-direct` e, quando `slot_dir` está configurado,
   `inference/slot-persist-v1` (mantenha em sincronia com `network.rs`
@@ -1122,7 +1134,9 @@ falha de transporte.
   na frente (ordem head→tail) e dobra `processing_ms`+`node_timings` do callee
   com o round-trip do caller.
 - `extract_relay_failure` - usado por `forward_direct` para nomear o hop que
-  falhou na entrega do erro direto.
+  falhou na entrega do erro direto. `is_unknown_session_error` percorre toda a
+  cadeia `anyhow`, porque `PartialPrefillTrace` envolve a recusa no caminho
+  direto; olhar só a frase externa perdia o marcador e impedia a reconstrução fria.
 - `RelayFailure{failed_node_id, kind, message}`/`HttpRefusal`/`SendIssue` - o
   gateway responde 502 atribuindo o hop que falhou. `CHUNK_ATTEMPTS=3` repete
   somente falhas comprovadamente anteriores à entrega, com recuo exponencial
@@ -1196,10 +1210,11 @@ falha de transporte.
 - Rede emulada por sítio: cada hop e o gateway moram num sítio e toda mensagem
   entre sítios diferentes custa `LINK_MS=50` de mão única, cobrada na chegada e
   de novo na volta - é o que faz a bancada medir travessias em vez da máquina
-  onde ela roda.
+  onde ela roda. O teste de custo pausa o relógio Tokio para que escalonamento
+  do restante da suíte não seja contado como uma perna de rede.
 - `the_cost_per_token_does_not_depend_on_where_the_entry_point_is` - para
   N=2,3,4 com o gateway na cabeça, no meio e na cauda, pernas por token
-  ≈ `minimum_legs` (tolerância 0,45 perna); as duas pontas empatam; a pior
+  ≈ `minimum_legs` (tolerância 1 perna para acomodar overhead do frame); as duas pontas empatam; a pior
   entrada (meio) custa no máximo uma perna a mais que a cabeça; e o anel
   borbulhado com a cabeça remota paga 4 pernas (o caso que doía, a queda de 25
   para 14 tok/s do captain), provando que é correção e não o comportamento de
@@ -1241,8 +1256,10 @@ falha de transporte.
 - `spawn_health_watch` - o único ponto que promove a carga: depois de duas
   sondagens consecutivas de `/health` com `model_loaded`, promove a anotação
   de Pending para **Serving**. Um primeiro retorno não limpa o journal, pois a
-  queda do processo pode ocorrer exatamente ao construir essa resposta. Só a
-  anotação `Serving` autoriza retomar a fatia num reinício.
+  queda do processo pode ocorrer exatamente ao construir essa resposta. O
+  watcher captura o caminho do journal quando sobe; outra instância/teste que
+  altere `POM_CONFIG` depois não pode redirecionar sua anotação. Só `Serving`
+  autoriza retomar a fatia num reinício.
 - `note_unloadable_slice` - marca a fatia como não retomável e põe a razão no
   `status.detail` (o que o painel mostra); é o que um nó vazio diz em vez de
   calar - um nó vazio e calado é indistinguível de uma máquina que nunca
@@ -1406,6 +1423,10 @@ unidade mas **não** tem número medido de ponta a ponta.
 está configurado. O prefill da cabeça transporta as imagens em base64 apenas
 no primeiro chunk; os peers as decodificam e o `mtmd` faz o prefill em ordem.
 Imagens não usam reuso de prefixo nem batching concorrente.
+Antes de aplicar uma configuração, `NodeConfig::validate` lê os dois headers
+GGUF e recusa um caminho que não seja projetor ou cuja identidade/dimensão de
+saída contradiga o modelo. Isso também impede que um `mmproj_path` incompatível
+persistido anteriormente chegue ao servidor.
 
 **Célula de KV não é posição lógica.** Uma imagem escreve `n_tokens` células
 de embedding no KV, mas em M-RoPE ocupa apenas

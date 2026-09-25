@@ -1,8 +1,10 @@
 //! Host IPC mínimo, só para o teste de regressão em `plugins.rs`. Fala o
 //! mesmo protocolo de frame (u32 big-endian + JSON) que `plugin_host.rs`
 //! usa contra o `pom-plugin-host` real, mas sem nenhuma lógica de plugin: só
-//! responde `ready`, registra cada `ingest` numa linha do arquivo apontado
-//! por `POM_FAKE_HOST_LOG` e sai em `shutdown`.
+//! responde `ready`, registra cada `ingest` e cada `query` numa linha do
+//! arquivo apontado por `POM_FAKE_HOST_LOG` e sai em `shutdown`. Das
+//! consultas, aceita `host.configure` e responde `ui.upstream` com o JSON de
+//! `POM_FAKE_HOST_UPSTREAM`, quando definido.
 
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -19,7 +21,9 @@ fn read_frame<R: Read>(reader: &mut R) -> io::Result<Option<Value>> {
     let len = u32::from_be_bytes(len_bytes) as usize;
     let mut buffer = vec![0u8; len];
     reader.read_exact(&mut buffer)?;
-    Ok(Some(serde_json::from_slice(&buffer).expect("frame JSON válido")))
+    Ok(Some(
+        serde_json::from_slice(&buffer).expect("frame JSON válido"),
+    ))
 }
 
 fn write_frame<W: Write>(writer: &mut W, value: &Value) -> io::Result<()> {
@@ -61,13 +65,45 @@ fn main() {
                     .append(true)
                     .open(&log_path)
                     .expect("abrir log do fake host");
-                writeln!(file, "{}", request.get("payload").cloned().unwrap_or(Value::Null))
-                    .expect("gravar evento");
+                writeln!(
+                    file,
+                    "{}",
+                    request.get("payload").cloned().unwrap_or(Value::Null)
+                )
+                .expect("gravar evento");
                 write_frame(
                     &mut writer,
                     &json!({"id": id, "ok": true, "result": {}, "error": null}),
                 )
                 .expect("responder ingest");
+            }
+            "query" => {
+                let payload = request.get("payload").cloned().unwrap_or(Value::Null);
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .expect("abrir log do fake host");
+                writeln!(file, "query {payload}").expect("gravar consulta");
+                let operation = payload
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let upstream = std::env::var("POM_FAKE_HOST_UPSTREAM")
+                    .ok()
+                    .and_then(|value| serde_json::from_str::<Value>(&value).ok());
+                let reply = match (operation, upstream) {
+                    ("host.configure", _) => {
+                        json!({"id": id, "ok": true, "result": {"status": "configured"}, "error": null})
+                    }
+                    ("ui.upstream", Some(upstream)) => {
+                        json!({"id": id, "ok": true, "result": upstream, "error": null})
+                    }
+                    _ => {
+                        json!({"id": id, "ok": false, "result": null, "error": "operação desconhecida"})
+                    }
+                };
+                write_frame(&mut writer, &reply).expect("responder query");
             }
             "shutdown" => {
                 write_frame(

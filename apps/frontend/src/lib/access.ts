@@ -19,6 +19,7 @@
  * numa lista.
  */
 import type { Profile } from "./profile";
+import { pluginRouteProfiles } from "./pluginUi";
 
 /**
  * Prefixo de rota -> perfis que entram.
@@ -82,6 +83,10 @@ export function routeProfiles(path: string): readonly Profile[] | null {
 
 /** Se este perfil pode abrir esta rota, incluindo superfícies Enterprise. */
 export function canAccessRoute(path: string, profile: Profile): boolean {
+  // Rota fornecida por plugin: quem decide são os perfis do manifesto, que
+  // valem também para `infer` (a lista reduzida abaixo é só do POM).
+  const pluginProfiles = pluginRouteProfiles(path);
+  if (pluginProfiles) return pluginProfiles.includes(profile);
   if (isEnterprisePath(path)) return true;
   if (profile === "infer") {
     if (INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;

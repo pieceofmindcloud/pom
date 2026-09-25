@@ -263,7 +263,7 @@ pub fn encode_batch_items(
     let mut out = frame_prefix(&header, payload_len)?;
     for item in items {
         if let Some((values, shape)) = item.tensor.as_ref() {
-            encode_values_into(values, shape, item.dtype, &mut out)?;
+            encode_values_into(values, shape, item.dtype, &mut out, None)?;
         }
     }
     Ok(out)
@@ -411,6 +411,39 @@ pub fn encode_batch_single(
     tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
 ) -> Result<Vec<u8>> {
+    encode_batch_single_inner(meta, tensor, dtype, None)
+}
+
+/// Timings for the disjoint payload-encoding and frame-serialization stages.
+/// `total_us` also includes validation and metadata preparation around them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WireEncodeTiming {
+    pub f8_conversion_us: u64,
+    pub frame_serialize_us: u64,
+    pub total_us: u64,
+}
+
+/// Encode one request while recording non-overlapping payload and frame work.
+/// The same encoder is used for profiled and unprofiled requests so bytes,
+/// dtype conversion, layout, and error behavior stay identical.
+pub fn encode_profiled(
+    meta: &Value,
+    tensor: Option<(&[f32], TensorShape)>,
+    dtype: WireDtype,
+) -> Result<(Vec<u8>, WireEncodeTiming)> {
+    let started = std::time::Instant::now();
+    let mut timing = WireEncodeTiming::default();
+    let bytes = encode_batch_single_inner(meta, tensor, dtype, Some(&mut timing))?;
+    timing.total_us = started.elapsed().as_micros() as u64;
+    Ok((bytes, timing))
+}
+
+fn encode_batch_single_inner(
+    meta: &Value,
+    tensor: Option<(&[f32], TensorShape)>,
+    dtype: WireDtype,
+    mut timing: Option<&mut WireEncodeTiming>,
+) -> Result<Vec<u8>> {
     let (shape, payload) = match tensor {
         Some((values, shape)) => {
             let expected_values = checked_tensor_values(&shape)?;
@@ -421,7 +454,11 @@ pub fn encode_batch_single(
                     shape
                 ));
             }
-            let payload = encode_values(values, &shape, dtype)?;
+            let payload = if let Some(timing) = timing.as_deref_mut() {
+                encode_values_profiled(values, &shape, dtype, &mut timing.f8_conversion_us)?
+            } else {
+                encode_values(values, &shape, dtype)?
+            };
             (shape, payload)
         }
         None => (vec![0, 0], Vec::new()),
@@ -441,7 +478,8 @@ pub fn encode_batch_single(
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .unwrap_or("__session__");
-    encode_batch(&BatchFrame {
+    let serialize_started = std::time::Instant::now();
+    let bytes = encode_batch(&BatchFrame {
         version: BATCH_FRAME_VERSION,
         kind: "inference".into(),
         batch_id: batch_id.into(),
@@ -455,7 +493,11 @@ pub fn encode_batch_single(
             meta: meta.clone(),
         }],
         payload,
-    })
+    })?;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.frame_serialize_us += serialize_started.elapsed().as_micros() as u64;
+    }
+    Ok(bytes)
 }
 
 /// Decode a one-item frame for call sites that need the convenient historical
@@ -791,8 +833,26 @@ pub fn tensor_payload_len(
 }
 
 fn encode_values(values: &[f32], shape: &[usize], dtype: WireDtype) -> Result<Vec<u8>> {
+    encode_values_inner(values, shape, dtype, None)
+}
+
+fn encode_values_profiled(
+    values: &[f32],
+    shape: &[usize],
+    dtype: WireDtype,
+    f8_conversion_us: &mut u64,
+) -> Result<Vec<u8>> {
+    encode_values_inner(values, shape, dtype, Some(f8_conversion_us))
+}
+
+fn encode_values_inner(
+    values: &[f32],
+    shape: &[usize],
+    dtype: WireDtype,
+    f8_conversion_us: Option<&mut u64>,
+) -> Result<Vec<u8>> {
     let mut payload = Vec::with_capacity(checked_tensor_bytes(shape, dtype)?);
-    encode_values_into(values, shape, dtype, &mut payload)?;
+    encode_values_into(values, shape, dtype, &mut payload, f8_conversion_us)?;
     Ok(payload)
 }
 
@@ -804,6 +864,7 @@ fn encode_values_into(
     shape: &[usize],
     dtype: WireDtype,
     out: &mut Vec<u8>,
+    mut f8_conversion_us: Option<&mut u64>,
 ) -> Result<()> {
     let expected_values = checked_tensor_values(shape)?;
     if values.len() != expected_values {
@@ -841,8 +902,15 @@ fn encode_values_into(
         WireDtype::F8 => {
             let mut staging = [0u8; BLOCO];
             for block in values.chunks(BLOCO) {
+                let conversion_started =
+                    f8_conversion_us.as_ref().map(|_| std::time::Instant::now());
                 for (slot, value) in staging.iter_mut().zip(block) {
                     *slot = f32_to_f8_bits(*value)?;
+                }
+                if let (Some(total), Some(started)) =
+                    (f8_conversion_us.as_deref_mut(), conversion_started)
+                {
+                    *total = total.saturating_add(started.elapsed().as_micros() as u64);
                 }
                 out.extend_from_slice(&staging[..block.len()]);
             }
@@ -1441,6 +1509,27 @@ mod tests {
         assert_eq!(shape, vec![1, 2]);
         assert!((decoded_values[0] - values[0]).abs() < 0.001);
         assert!((decoded_values[1] - values[1]).abs() < 0.001);
+    }
+
+    #[test]
+    fn encoder_com_profile_mantem_bytes_e_tempos_sem_sobreposicao() {
+        let meta = serde_json::json!({"session_id": "profile-session"});
+        let values = vec![0.5_f32; 16_384];
+        for dtype in [WireDtype::F8, WireDtype::F16] {
+            let expected =
+                encode_batch_single(&meta, Some((&values, vec![1, values.len()])), dtype).unwrap();
+            let (actual, timing) =
+                encode_profiled(&meta, Some((&values, vec![1, values.len()])), dtype).unwrap();
+
+            assert_eq!(actual, expected);
+            assert!(timing.total_us >= timing.frame_serialize_us);
+            assert!(timing.total_us >= timing.f8_conversion_us + timing.frame_serialize_us);
+            if dtype == WireDtype::F8 {
+                assert!(timing.f8_conversion_us > 0);
+            } else {
+                assert_eq!(timing.f8_conversion_us, 0);
+            }
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { Badge, Button, Input, PageHeader, Panel, PanelHeader } from "../components/ui";
 import { useI18n } from "../i18n/provider";
 import { api } from "../lib/api";
-import { POM_LICENSE, THIRD_PARTY_LICENSES, type LicenseEntry } from "../lib/licenses.generated";
+import { THIRD_PARTY_LICENSES, type LicenseEntry } from "../lib/licenses.generated";
 import { useEnterpriseStatus, usePomCoreUpdateStatus } from "../lib/queries";
 
 function licenseGroups(entries: readonly LicenseEntry[]) {
@@ -72,16 +72,36 @@ export function About() {
       <PageHeader title={t("about.title")} subtitle={t("about.subtitle")} />
 
       <div className="space-y-5">
-        <Panel data-license-status={POM_LICENSE.status} className="overflow-hidden border-amber/35 bg-amber/5">
+        <Panel className="overflow-hidden border-line">
           <PanelHeader
             eyebrow="POM"
             title={t("about.placeholderTitle")}
             subtitle={t("about.placeholderBody")}
-            actions={<Badge tone="amber"><Info className="h-3.5 w-3.5" />{t("about.placeholderLicense")}</Badge>}
+            actions={<Badge tone="amber"><Info className="h-3.5 w-3.5" />AGPL-3.0</Badge>}
           />
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-l-2 border-amber px-5 py-4">
-            <span className="font-mono text-sm font-medium text-amber">{t("about.placeholderLicenseValue")}</span>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-l-2 border-aqua px-5 py-4">
+            <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 font-mono text-sm font-medium text-aqua hover:text-aqua/80">
+              {t("about.placeholderLicenseValue")} <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+            <a href="https://github.com/pereirajair/rdma-p2p/blob/feat/enterprise/LICENSE" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm text-iris hover:text-iris/80">
+              {t("about.repositoryLicenseLink")} <ExternalLink className="h-3.5 w-3.5" />
+            </a>
             <span className="text-sm text-muted">{t("about.placeholderLicenseText")}</span>
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHeader eyebrow="LGPD" title={t("about.safetyTitle")} subtitle={t("about.safetyBody")} />
+          <div className="space-y-3 px-5 py-4 text-sm leading-relaxed text-muted">
+            <p>{t("about.safetyRisks")}</p>
+            <p className="font-medium text-fg">{t("about.safetyWarning")}</p>
+            <div className="flex flex-wrap gap-x-5 gap-y-2 border-t border-line pt-3">
+              <a href="https://pieceofmind.cloud" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.websiteLink")}</a>
+              <a href="https://pieceofmind.cloud/contact.html" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.contactLink")}</a>
+              <a href="https://github.com/pereirajair/rdma-p2p" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.repositoryLink")}</a>
+              <a href="https://github.com/pereirajair/pom-plugin-base" target="_blank" rel="noreferrer" className="text-iris hover:text-iris/80">{t("about.pluginBaseLink")}</a>
+            </div>
+            <p>{t("about.pluginBaseDescription")}</p>
           </div>
         </Panel>
 

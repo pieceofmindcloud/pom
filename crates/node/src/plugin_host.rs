@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::time::{timeout, Duration};
 
@@ -200,11 +200,12 @@ impl IpcConnection {
 }
 
 impl PluginHost {
-    pub(crate) async fn start(plugin: &Path, database: &Path) -> Result<Self> {
+    pub(crate) async fn start(plugin_code: &str, plugin: &Path, database: &Path) -> Result<Self> {
         let host = host_executable()?;
         let mut child = Command::new(&host)
             .arg(plugin)
-            .env("POM_ENTERPRISE_DB", database)
+            .arg(plugin_code)
+            .env("POM_PLUGIN_DB", database)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())

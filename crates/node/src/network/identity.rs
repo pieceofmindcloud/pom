@@ -131,7 +131,9 @@ mod tests {
     /// caminho continua saindo do project root.
     #[test]
     fn the_pkarr_key_lives_under_the_project_root_not_the_cwd() {
-        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK.lock().unwrap();
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let cwd_antes = std::env::current_dir().unwrap();
         let home_antes = std::env::var("POM_PKARR_KEY").ok();
         std::env::remove_var("POM_PKARR_KEY");

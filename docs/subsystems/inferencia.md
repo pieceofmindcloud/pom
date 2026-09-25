@@ -259,7 +259,10 @@ duplicatas, recibos tardios, peers ausentes, wall-clock, caminho crítico e
 acumulados de compute/transporte. Esses acumulados não são uma decomposição
 exclusiva do wall-clock: a UI não calcula `outside-node` por
 `E2E - soma(processing)`. `overlap_ms` e `true_residual_ms` ficam ausentes
-enquanto não houver intervalos sincronizáveis para sustentá-los.
+enquanto não houver intervalos sincronizáveis para sustentá-los. Se o prefill
+falhar depois de progresso parcial, a auditoria de erro recebe o trace parcial
+observado pelo pipeline; campos não observados e `timings` continuam nulos,
+sem estimativa substituta.
 
 No `remote-stream`, o head envia `hop_timings` dos peers downstream junto ao
 lote de tokens. O modo normal agrega frames, bytes, abertura, lifetime,
@@ -1128,7 +1131,9 @@ resposta de transporte perdida não dá essa certeza: o gateway não reentra em
 `k`, porque isso poderia pedir `kv_remove` no meio do KV. Ele faz uma única
 reconstrução fria desde o pedaço 0, que reseta a sessão inteira em todos os
 hops. Sessão perdida no peer segue a mesma reconstrução; se ela falhar, a
-sessão termina limpa e o gateway libera os hops alcançados.
+sessão termina limpa e o gateway libera os hops alcançados. A classificação de
+sessão desconhecida percorre toda a cadeia de erro, porque a telemetria parcial
+pode envolver a recusa direta e esconder sua mensagem no nível externo.
 
 O modo anel permanece serializado pelo contrato de resposta aninhada, para não
 abrir uma segunda requisição na mesma sessão sem a confirmação da anterior; ele
@@ -1536,6 +1541,31 @@ antes dela. A chamada pode incluir despacho no host e não é uma medida pura de
 kernels na GPU. `backend_sync_ms` mede separadamente `llama_synchronize`, que
 pode esperar trabalho de dispositivo já enfileirado e transferências de saída.
 Captura D2H, logits, amostragem e os demais limites do bloco seguem separados.
+Na captura do residual, `residual_capture_ready_wait_ms` é o wall do callback
+de consulta do scheduler até o callback de prontidão. Ele inclui a avaliação
+do grafo e a sincronização feita pelo scheduler; não é espera ociosa. A chamada
+`ggml_backend_tensor_get` é publicada como `residual_capture_tensor_get_ms` e
+inclui o wall da API. O backend CUDA pode fazer `cudaMemcpyAsync` seguido de
+`cudaStreamSynchronize` dentro dessa chamada, então esse campo não separa DMA
+de sync. `residual_capture_postprocess_ms` mede o arranjo e o registro do
+tensor. `residual_capture_copy_ms` continua como alias de compatibilidade, e
+`residual_capture_d2h_sync_ms` é a soma de ask-to-ready e `tensor_get`, não uma
+medida de cópia D2H isolada. `backend_sync_ms` permanece a barreira explícita
+`llama_synchronize`, medida à parte.
+
+Na resposta de hidden state do decode, `residual_wire_f8_conversion_ms` mede o
+loop `f32_to_f8_bits` quando f8 é o dtype selecionado e vale zero para os
+demais dtypes. Ele não inclui a montagem do buffer. Depois dele,
+`residual_wire_frame_serialize_ms` mede validação, JSON do header, alocação e
+montagem do frame. São intervalos sequenciais dentro do encoder, sem contagem
+dupla. `residual_wire_encode_calls` e os contadores de captura/bytes permitem
+conferir o denominador usado no agregado. A equivalência do encoder perfilado
+é testada contra os bytes de f8 e f16 do caminho normal.
+`logits_clone_ms` permanece zero: a cauda guarda somente os logits ajustados
+dos ids repetidos. `repetition_penalty_ms` mede a construção desses overrides;
+`top_k_ms` mede a seleção e o refinamento quando `top_k` reduz o vocabulário.
+Com `top_k` desabilitado, não há vetor de IDs temporário: a travessia da
+distribuição entra em `softmax_ms`.
 
 `POM_PROFILE_SYNC` fica ligado por padrão e controla se a barreira de
 diagnóstico é executada. `backend_sync_ms` é uma duração e não deve ser usado
@@ -1569,13 +1599,20 @@ reutilizar um prefixo formatado com o modo oposto.
 
 ### 3.4 Amostragem da completion
 
-A cauda prepara a distribuição no `LlmEngine` em uma ordem única: copia os
-logits, aplica a penalidade aos ids distintos da janela final de
-`repeat_last_n`, devolve argmax quando a temperatura não é positiva e, para
-temperatura positiva, seleciona no máximo `top_k` logits. Calcula softmax
-estável apenas nesses sobreviventes, normaliza, ordena por probabilidade e
-mantém o menor prefixo cuja massa alcance `top_p`; após renormalizar esse
-núcleo, faz o sorteio multinomial com o LCG protegido por `Mutex`.
+A cauda prepara a distribuição no `LlmEngine` em uma ordem única sem copiar o
+vetor completo de logits: guarda overrides ordenados apenas para os ids válidos
+e distintos da janela final de `repeat_last_n`. Devolve argmax quando a
+temperatura não é positiva. Com temperatura positiva e `top_k` ativo, seleciona
+os `K + R` maiores logits brutos, onde `R` é a quantidade de overrides, junta
+todos os ids ajustados e refina o top-k pela pontuação final. Esse conjunto
+contém exatamente os K vencedores mesmo quando a penalidade aumenta logits.
+O scratch de índices usa `u32` quando o vocabulário cabe nesse tipo e mantém um
+fallback `usize` para fatias maiores. Quando `top_k` não restringe o
+vocabulário, a cauda percorre logits e ids diretamente, sem criar outro vetor
+de ids. Calcula softmax estável apenas nos sobreviventes, normaliza, ordena por
+probabilidade no próprio vetor e mantém o menor prefixo cuja massa alcance `top_p`;
+após renormalizar esse núcleo, faz o sorteio multinomial com o LCG protegido
+por `Mutex`.
 
 Empates no corte de `top_k` são resolvidos pelo id original e não aumentam o
 conjunto além de K. O corte top-p também mantém somente o prefixo mínimo, mesmo
@@ -1584,6 +1621,18 @@ do sorteio. `repeat_last_n=64` permanece o padrão: a penalidade é unigramátic
 não um detector de ciclos de n-gramas ou blocos inteiros, portanto aumentar a
 janela não garantiria prevenir o ciclo observado e mudaria a política de
 amostragem.
+
+`sampler_profile_regressions::sampler_cost_profiles_on_a_qwen_vocabulary` é um
+benchmark ignorado que compara o caminho atual com a implementação anterior,
+na mesma entrada sintética de 151.936 logits com empates. Ele mede `top_k`
+ligado, os padrões implantados (`temperature=0.7`, `top_p=0.9`, `top_k=40`,
+penalidade 1.15 em 64 tokens) e `top_k` desligado, além de exigir a mesma
+distribuição de candidatos. Rode com
+`cargo test -p llama-engine --release sampler_cost_profiles_on_a_qwen_vocabulary -- --ignored --nocapture`;
+em 100 rodadas neste host, o preparo de candidatos dos padrões implantados caiu
+de cerca de 237 us para 203 us por token e o estágio top-k de 227 us para 200 us;
+com `top_k` desligado, o tempo foi de 3,03 ms para 2,76 ms. A entrada é sintética
+e os tempos variam por host, então não são uma meta universal de latência.
 
 ### 3.5 Detecção de ciclo na saída
 
@@ -2352,6 +2401,11 @@ Chat.
   `transport_trace_complete=false` deixa a perda explícita. As amostras usadas
   para quantis são limitadas internamente, portanto a resposta de produção não
   cresce com o número de tokens.
+  Para QUIC, cada entrada também soma `quic_request_body_send_us` e conta
+  `quic_request_body_send_calls`: wall aguardado em `send_data` e `finish`, antes
+  de esperar pelos headers da resposta. Um frame em lote compartilha uma
+  operação física, que é atribuída uma única vez. Esse tempo mede a aceitação
+  local do corpo com contrapressão da stream, não confirmação de entrega remota.
 
 - **`telemetry`** - resumo da integridade da coleta distribuída. O callback
   `remote-stream` preserva a participação de cada hop e seus `span_count`,

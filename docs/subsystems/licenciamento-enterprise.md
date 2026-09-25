@@ -8,10 +8,10 @@ garantias atuais dos limites restantes. A especificação completa
 **Pivô de produto (2026-09-18):** o POM deixou de ter uma única "licença
 Enterprise" de produto e passou a ter PLUGINS INDEPENDENTES - qualquer
 funcionalidade do menu pode ser um plugin próprio, comprado/ativado/desativado
-separadamente. Hoje o catálogo (`crate::plugins::PLUGIN_CATALOG`) só tem uma
-entrada, `"enterprise"` (o plugin de Estatísticas/Logs de Requisições), mas o
-gerenciador (`PluginManager`/`PluginRuntime` em `crates/node/src/plugins.rs`)
-é genérico para N desde essa mudança: cada `plugin_code` tem seu próprio
+separadamente. O binário não mantém um catálogo estático de plugins
+instaláveis: `PluginManager`/`PluginRuntime` em
+`crates/node/src/plugins.rs` cria runtimes para todo `plugin_code` concedido
+pelo servidor e restaura os códigos persistidos localmente. Cada plugin tem seu próprio
 estado de ativação, lease, heartbeat, host de processo e checagem de
 atualização de versão, sem nada compartilhado entre plugins. O nome deste
 arquivo e do `plugin_code` `"enterprise"` ficaram como estão por não valer o
@@ -26,8 +26,8 @@ que é uma fronteira de produto separada desde antes e continua sendo).
   licença (`pom-license/v1`), o estado de entitlement, a impressão digital
   versionada e os envelopes de ativação e heartbeat.
 - `crates/node/src/plugins.rs` contém o gerenciador genérico
-  (`PluginManager`/`PluginRuntime`, um por `plugin_code` de
-  `PLUGIN_CATALOG`) e o cliente HTTPS mockável. O runtime usa o endpoint real
+  (`PluginManager`/`PluginRuntime`, criado dinamicamente por `plugin_code`)
+  e o cliente HTTPS mockável. O runtime usa o endpoint real
   como configuração padrão, mas os testes usam `MockLicenseService` (uma
   resposta por `plugin_code`, para provar dois plugins independentes); a
   chave de licença só atravessa validação/ativação e não faz parte do
@@ -39,19 +39,68 @@ que é uma fronteira de produto separada desde antes e continua sendo).
   `/v1/licenses/activations` com `plugin_code` no payload. As features de um
   plugin vêm do `feature_set` do manifesto do release, não da licença. O
   heartbeat desserializa o payload rico de renovação e persiste o novo token,
-  expiração, prazo do próximo heartbeat, grant e release informados pelo servidor,
+  expiração, prazo do próximo heartbeat e grant informados pelo servidor,
   sem substituir o prazo por uma estimativa local - tudo isso por
-  `PluginRuntime`, nunca compartilhado entre plugins. Cada `PluginRuntime`
+  `PluginRuntime`, nunca compartilhado entre plugins. `PersistedPluginState`
+  separa duas releases que o heartbeat não pode confundir:
+  `installed_release_id` é a release efetivamente baixada e instalada neste
+  peer, e só `activate`/`activate_and_install`/`apply_update` concluídos podem
+  avançá-la; o heartbeat sozinho nunca baixa nem verifica nada, então nunca
+  escreve nela. `plugin_release_id`, `release_changed` e `available_release_id`
+  do payload do heartbeat continuam consumidos, mas só para alimentar
+  `status.available_update` - disparando `detect_update` (que reconsulta o
+  manifest para trazer versão e changelog reais) quando `release_changed` é
+  verdadeiro, inclusive no supervisor de heartbeat periódico, que antes nunca
+  chamava `detect_update` por conta própria. Cada `PluginRuntime`
   também checa sua PRÓPRIA atualização de versão (`detect_update`/
   `apply_update`), reusando o manifest genérico do seu `plugin_code` -
   independente de qualquer outro plugin e do `pom_core` (ver `## Detecção e
   atualização` mais abaixo, que é sobre o `pom_core`, não sobre isto).
+
+  `PersistedPluginState.installed_at` marca quando o host ficou pronto após a
+  instalação inicial ou a aplicação de uma nova release. `update_checked_at`
+  marca a última consulta bem-sucedida do manifest, mesmo quando não há update;
+  falhas preservam a consulta boa anterior. Ambos aparecem em `PluginStatus` e
+  são campos opcionais com default ao ler estados já persistidos. `last_success_at`
+  segue reservado ao heartbeat e nunca serve como data de instalação.
+
+  `PluginStatus.license_expires_at` é a validade da LICENÇA, distinta do
+  `lease_expires_at` técnico acima: o lease é um prazo curto de renovação que
+  o heartbeat empurra a cada poucos dias, a licença é o que a compra realmente
+  concede (meses ou anos). Vem de `LicenseStatusResponse::license_expires_at`
+  (`GET /v1/licenses/status`, o mesmo endpoint que `restore()` já consultava
+  na inicialização), reconsultado também no clique manual em "Atualizar"
+  (`PluginRuntime::refresh_license_status`, dentro de `PluginManager::refresh`)
+  - nunca no heartbeat periódico, que não traz esse campo. Falha nessa consulta
+  extra é só logada, sem derrubar o `refresh`. A tela mostrava antes o
+  `lease_expires_at` sob o rótulo "Licença válida até", o que confundia um
+  vencimento técnico de dias com a validade real da licença - corrigido
+  reaproveitando o mesmo campo que `restore()` já buscava e descartava.
+
+  **Defeito corrigido (2026-09-21):** até esta correção, o heartbeat escrevia o
+  `plugin_release_id` recebido do servidor diretamente em
+  `installed_release_id` - o mesmo campo que `detect_update` usa como base de
+  comparação contra o `release_id` do manifest. Um heartbeat cujo servidor já
+  reportasse a release seguinte (por exemplo, por tratar `0.1.0+build.1` e
+  `0.1.0+build.2` como a mesma versão para fins de entitlement) adotava essa
+  release como "instalada" sem nenhum download real; o clique em "Atualizar"
+  chama heartbeat e depois `detect_update` na mesma ação
+  (`PluginManager::refresh`), então a comparação seguinte via a base já
+  adulterada e sempre concluía "sem atualização" - sem relação com o formato
+  semver do release_id, que a comparação por igualdade de string já tratava
+  corretamente. A regressão está em
+  `refresh_button_does_not_lose_an_update_signalled_by_heartbeat` e
+  `a_background_heartbeat_alone_also_surfaces_the_update`
+  (`crates/node/src/plugins.rs`).
 - `crates/plugin-host` é o processo `pom-plugin-host`. Ele carrega um artefato
   somente por caminho absoluto, valida ABI, tamanho e SHA-256, mantém a
   biblioteca carregada dentro do processo auxiliar e conversa com o cliente por
-  JSON com tamanho prefixado em stdin/stdout. O `pom` não usa `libloading`.
+  JSON com tamanho prefixado em stdin/stdout. O `plugin_code` recebido do
+  manifesto resolve a entrada `pom_<plugin_code>_plugin_v1`; não existe símbolo
+  fixo de um produto. O `pom` não usa `libloading`.
 - `crates/enterprise-plugin-fixture` é uma biblioteca `cdylib` de teste para
-  validar a entrada ABI `pom_enterprise_plugin_v1` e o fluxo do host.
+  validar as entradas ABI `pom_enterprise_plugin_v1` e `pom_base_plugin_v1`,
+  além do fluxo do host.
 - A biblioteca `cdylib` de produção do plugin `enterprise` (o domínio de
   auditoria em `enterprise.db`, com schema, índices, listagem filtrada e
   agregações de estatísticas próprios) **não mora mais neste repositório**:
@@ -86,7 +135,7 @@ entre peers.
 ## Extração para pom-plugin-logs (2026-09-21)
 
 O código de produto do plugin `enterprise` (a lib `cdylib` que grava e
-consulta `enterprise.db`, e as telas de UI `Logs.tsx`/`Statistics.tsx`) saiu
+consulta `enterprise.db`) saiu
 deste repositório para `https://github.com/pereirajair/pom-plugin-logs`, um
 repositório de licenciamento próprio com seu build, empacotamento e pipeline
 de release separados. O que **fica** aqui é só a fronteira genérica,
@@ -103,11 +152,18 @@ reusável por qualquer `plugin_code` futuro:
 - `crates/enterprise-plugin-fixture` e `crates/plugin-host` continuam aqui
   porque testam/carregam o mecanismo genérico de ABI/IPC, não o domínio de
   auditoria de um plugin específico.
-- `crates/node/src/plugins.rs` e `plugin_host.rs` não mudaram: o `pom` sempre
-  tratou o artefato do plugin como um `cdylib` opaco baixado por manifest -
-  de onde vem o código-fonte dele é irrelevante para o runtime.
-- `plugin_code` continua sendo `"enterprise"` em `PLUGIN_CATALOG`
-  (`crates/node/src/plugins.rs`) e no `feature_set` (`enterprise.request_logs`,
+- `crates/node/src/plugins.rs` e `plugin_host.rs` passam o `plugin_code` e o
+  caminho do artefato ao host. O `pom` continua tratando o plugin como um
+  `cdylib` opaco baixado por manifest - de onde vem o código-fonte dele é
+  irrelevante para o runtime.
+- O transporte de auditoria entre admins continua no POM (`reqlog.rs` e
+  `network/discovery.rs`), que replica os DTOs `Begin` e `Complete` mesmo
+  quando o host local aceitou o evento. Cada receptor encaminha a cópia
+  ordenada ao host ativo; o plugin continua dono da persistência e das consultas
+  em `enterprise.db`. Não há transporte P2P dentro do plugin nem é necessário
+  publicar um artefato novo para restaurar o fanout.
+- `plugin_code` continua sendo `"enterprise"` no `feature_set`
+  (`enterprise.request_logs`,
   `enterprise.statistics`): só o repositório do código mudou, não a identidade
   do plugin nem o contrato com o servidor de licenças.
 - `pom-release.sh` não libera mais nada com esse plugin_code: agora libera
@@ -115,25 +171,25 @@ reusável por qualquer `plugin_code` futuro:
   reproduzível para macOS/Linux/Windows, GitHub Actions e a publicação da
   versão já gerada no GitHub no servidor de licenças) vive inteiramente em
   `pom-plugin-logs` - ver o `AGENTS.md` desse repositório.
-- No frontend, `/logs` e `/estatisticas` deixaram de embutir a UI interativa
-  (tabela paginada, inspetor, gráficos): essas telas viraram vitrines
-  informativas fixas, com descrição do plugin e link para
-  `https://pieceofmind.cloud/enterprise/index.html` (compra e instalação),
-  independente do estado de ativação. O código-fonte da UI interativa foi
-  preservado em `pom-plugin-logs` como referência (`frontend-reference/`),
-  mas não é compilável isoladamente: depende do kit de design e dos hooks
-  compartilhados de `apps/frontend` (`components/ui`, `lib/queries.ts`,
-  `i18n/`), que continuam privados deste repositório. As rotas
-  `/api/ui/requests` e `/api/ui/requests/stats` não mudaram - continuam
-  servindo JSON autenticado para qualquer cliente que os tenha, inclusive uma
-  futura console Enterprise dedicada.
+- No frontend, o POM **não** contém mais as telas de Logs de Requisições e
+  Estatísticas: elas vivem em `pom-plugin-logs` (`ui/`) e chegam pelo
+  mecanismo genérico de UI de plugin (manifesto, telas e i18n instalados junto
+  do backend) - ver `plugins-ui.md`. O POM mantém só o fallback de propaganda
+  (`EnterpriseFeatureShowcase`, com link para
+  `https://pieceofmind.cloud/enterprise/index.html`) para `/logs` e
+  `/estatisticas` quando o plugin não está ativo. Uma versão anterior
+  (97bb0e91) exibia só a vitrine mesmo com o plugin ativo ("Este plugin já está
+  ativo neste cluster") - defeito corrigido. As rotas `/api/ui/requests` e
+  `/api/ui/requests/stats` continuam no nó, AdminOnly, e recusam os dados sem
+  entitlement.
 
 ## Entitlement e interface
 
-`GET /api/ui/plugins` publica o catálogo inteiro - inclusive plugins que o
-operador nunca ativou - cada entrada com seu próprio estado de entitlement,
-`manage_url` e `available_update`. A resposta de cada plugin começa em
-`needs_activation`. Ativação, grant, manifest, lease e host pronto precisam
+`GET /api/ui/plugins` publica os estados locais dos plugins restaurados ou
+vistos pelo runtime. O catálogo público `GET /v1/plugins` é lido diretamente
+pelo browser e inclui plugins ainda sem estado local. Cada estado local tem
+seu próprio entitlement, `manage_url` e `available_update`. A resposta começa
+em `needs_activation`. Ativação, grant, manifest, lease e host pronto precisam
 existir antes de `active` ficar verdadeiro. Falha transitória de heartbeat
 entra em `degraded` durante a janela de tolerância; licença revogada ou
 expirada desativa as features - de UM plugin, nunca dos outros.
@@ -141,6 +197,19 @@ expirada desativa as features - de UM plugin, nunca dos outros.
 `plugin_code`: a resposta `{activated: [...]}` nomeia quais plugins aquela
 chave concedeu e instalou). `POST /api/ui/plugins/:code/refresh|deactivate`
 e `POST /api/ui/plugins/:code/update/check|apply` agem sobre um plugin só.
+
+`GET /api/ui/plugins` é AdminOnly. Seu `PluginStatus` carrega `licensed_plugins`,
+`activation_candidates` com release elegível, `license_expires_at` e
+`plugin_usage` por `plugin_code`; os contadores no status escalar correspondem
+ao plugin daquela entrada, não aos totais da licença. A tela usa esses dados
+autenticados para distinguir licença ativa, ausente, expirada ou revogada e
+para mostrar uso de ativações. O catálogo público não publica entitlement nem
+uso de licença. Comprar leva à loja pública com o código do plugin na query.
+O formulário de ativação aparece se qualquer plugin público que exige licença
+não estiver ativo no estado local, mesmo quando outro já está ativo ou existe
+contexto de licença. Falta de status local, expiração ou revogação mantém o
+formulário visível; ele some quando todos os plugins licenciáveis conhecidos
+estão ativos.
 
 As rotas autenticadas `/api/ui/requests` e `/api/ui/requests/stats` falham
 fechado com `403` e `code: enterprise_required` quando o plugin `enterprise`
@@ -161,6 +230,64 @@ A tela **Plugins** (`/plugins`, `apps/frontend/src/routes/Plugins.tsx`) é a
 `GET /api/ui/pom-update/status` e `POST /api/ui/pom-update/check|apply` - ver
 `## Detecção e atualização autorizada do binário` abaixo. As duas telas e as
 duas famílias de rotas nunca se misturam, no código nem na UI.
+
+## Origem pública GitHub e preferências locais
+
+Cada `plugin_code` pode cadastrar, separadamente da licença, uma URL canônica
+`https://github.com/<owner>/<repository>`. O nó confirma que a API pública
+consegue ler o repositório e sua última release estável; URL malformada, repo
+privado/inacessível, release incompatível e metadados inválidos são recusados.
+Não há token GitHub nem credencial do license-server nesse caminho.
+
+Cada release multi-plataforma publica um asset de metadados por alvo,
+`pom-plugin-<os>-<arch>.json`, e o binário nomeado pelo campo `asset`. O JSON
+usa `schema: 1` e contém `plugin_code`, `release_id` igual ao tag público,
+versão SemVer, `os`, `arch`, `plugin_abi`, `asset`, `sha256`, `size`,
+`feature_set` namespaced e `preferences` opcional. O cliente só escolhe o
+manifesto do SO/arquitetura local, exige ABI atual, confere plugin/tag e limita
+o tamanho; então verifica tamanho e SHA-256 do binário, além de conferir o
+`digest` do asset informado pela API quando houver. O manifest incompatível ou
+qualquer integridade inválida não produz download instalável.
+`pom-plugin-base/release/manifest.json` é o exemplo de release: um toggle
+booleano e uma preferência de diretório; `scripts/package.sh` cria o manifesto
+por plataforma e a workflow o publica junto do binário.
+
+Cadastrar a origem faz uma verificação imediata. Repositórios salvos são
+checados em background a cada seis horas e podem ser verificados manualmente.
+Um artefato compatível e mais novo é baixado e gravado atomicamente em staging
+sob `plugins/<code>/github-downloads/`; isso não muda o caminho instalado, não
+para nem reinicia o host e não ativa licença. O estado `github_update` e o
+manifesto ficam em `pom.db` sob `plugin_github:<code>`. Erro de rede, API 403/
+rate limit ou resposta incompatível só preenche `github_error`: release,
+manifesto e arquivo da última detecção boa continuam disponíveis. Remover a
+origem remove apenas o download em staging.
+
+A tela Plugins tem um único card global de GitHub, logo abaixo da ativação da
+licença; ele seleciona o `plugin_code`, administra a origem e mostra os
+candidatos. A instalação continua explícita. Para um plugin pago, o handler
+confere a release, refaz hash/tamanho no staging e exige runtime ativo com o
+`plugin_code` concedido pela licença antes de trocar o host. Para um plugin
+público gratuito, `POST /api/ui/plugins/:code/github-source/install` consulta o
+catálogo público do license-server por HTTPS e exige `requires_license: false`
+e a mesma URL `github_repository`; só então baixa e executa a release sem
+criar ativação, grant ou lease. O snapshot desse runtime fica em
+`plugin_public_install:<code>`, separado de `plugin_license:<code>`, e
+`PluginStatus.public_install` deixa essa distinção visível. Uma release paga
+continua exigindo licença válida; os bytes do GitHub não concedem entitlement.
+
+
+`PluginManifest.preferences` é opcional e omitido na serialização quando não
+existe, mantendo manifests antigos e a canonicalização assinada. O schema
+versionless atual enumera toggles `features[]` (`key`, `label`, `default`,
+`description?`) e um `storage_directory?` (`label`, `default?`). O POM valida
+identificadores únicos e limites de tamanho; os valores digitados são um DTO
+separado, com mapa bool e caminho opcional. Defaults são aplicados ao ler o
+estado. O diretório escolhido precisa ser absoluto, existir e ser diretório.
+Os valores ficam em `plugin_preferences:<code>` no `pom.db`, nunca no snapshot
+`plugin_license:<code>`, em pedidos ao license-server ou em entitlement. O
+editor por plugin só aparece quando há schema no release instalado e o plugin
+está ativo. `host.configure` pode entregar esses valores ao host local do
+próprio plugin; nenhum endpoint de licenças recebe valores de preferências.
 
 ## Fases e limites desta entrega
 
@@ -203,12 +330,13 @@ duas famílias de rotas nunca se misturam, no código nem na UI.
 - **Fase 7 - N plugins independentes (2026-09-18):** entregue o pivô de
   produto. `crates/node/src/enterprise.rs` (um `EnterpriseState` global) virou
   `crates/node/src/plugins.rs` (`PluginManager` com um `PluginRuntime` por
-  `plugin_code` de `PLUGIN_CATALOG`, hoje só `"enterprise"`, estrutura genérica
-  para N); `enterprise_host.rs` virou `plugin_host.rs`
+  `plugin_code`; a lista compilada da primeira implementação foi depois
+  removida para aceitar todo código concedido pelo servidor);
+  `enterprise_host.rs` virou `plugin_host.rs`
   (`PluginHost`, já suportava várias instâncias concorrentes - confirmado, não
   precisou mudar). A UI trocou a tela `Enterprise.tsx` por `Plugins.tsx`
-  (`/plugins`), que lista o catálogo inteiro e ativa/atualiza/desativa por
-  plugin. A detecção/aplicação de atualização do `pom_core` saiu de dentro do
+  (`/plugins`), que lê a vitrine pública e ativa/atualiza/desativa por
+  `plugin_code`. A detecção/aplicação de atualização do `pom_core` saiu de dentro do
   `EnterpriseState` e ganhou arquivo próprio, `pom_core_update.rs`
   (`PomCoreUpdater`), com sua própria tela inteira em `/config/sobre` - nunca
   mais compartilhando código ou UI com a tela de Plugins. **Suposição de

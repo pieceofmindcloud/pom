@@ -32,6 +32,9 @@
   --rose: 208 56 74;
   --sky: 25 122 210;
   --lime: 88 140 24;
+  --plugin-buy-bg: 0 103 94;
+  --plugin-buy-hover: 0 84 77;
+  --plugin-buy-fg: 255 255 255;
 
   color-scheme: light;
 }
@@ -52,6 +55,9 @@
   --rose: 255 116 128;
   --sky: 88 184 255;
   --lime: 168 224 95;
+  --plugin-buy-bg: 67 224 200;
+  --plugin-buy-hover: 91 239 216;
+  --plugin-buy-fg: 9 10 16;
 
   color-scheme: dark;
 }
@@ -68,9 +74,10 @@ body,
 
 body {
   @apply bg-ink text-fg font-sans antialiased;
-  /* Nothing in this app scrolls sideways. Panels that hold wide content
-     scroll inside themselves; the page never does. */
-  overflow-x: hidden;
+  /* This is a full-screen app: scroll belongs to internal panels, never the
+     document. Keep wheel input at a pane's boundary from moving the whole UI. */
+  overflow: hidden;
+  overscroll-behavior: none;
   text-rendering: optimizeLegibility;
 }
 
@@ -113,6 +120,18 @@ body {
   .hairline {
     @apply border-t border-line;
   }
+}
+
+.plugin-buy-button {
+  min-height: 2.75rem;
+  border: 1px solid rgb(var(--plugin-buy-bg) / 0.7);
+  background: rgb(var(--plugin-buy-bg));
+  color: rgb(var(--plugin-buy-fg));
+  font-weight: 650;
+  box-shadow: 0 2px 7px rgb(var(--plugin-buy-bg) / 0.2);
+}
+.plugin-buy-button:hover:not(:disabled) {
+  background: rgb(var(--plugin-buy-hover));
 }
 
 /* Work whose size is not known yet: a bar that sweeps rather than a zero that

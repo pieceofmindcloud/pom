@@ -369,6 +369,8 @@
             }),
             None,
             None,
+            None,
+            &[],
         )
         .expect("a fatia é válida, só não diz o total");
         assert_eq!(shard.total_layers, None);
@@ -383,6 +385,8 @@
             }),
             None,
             None,
+            None,
+            &[],
         )
         .unwrap();
         assert_eq!(declared.total_layers, Some(40));
@@ -397,6 +401,8 @@
             }),
             None,
             Some("/models/mmproj-vision.gguf"),
+            None,
+            &[],
         )
         .unwrap();
         assert_eq!(inherited.mmproj_path.as_deref(), Some("/models/mmproj-vision.gguf"));
@@ -448,6 +454,8 @@
                     name: "qwen3.5-9b".into(),
                     path: format!("/{id}/qwen3.5-9b.gguf"),
                     mmproj_path: None,
+                    mmproj_candidates: Vec::new(),
+                    mmproj_reason: None,
                     size_bytes: 5 * GIB,
                 }]
             } else {
@@ -466,6 +474,8 @@
             name: format!("qwen · {}of2", rank + 1),
             path: format!("/{id}/rank-{rank}.gguf"),
             mmproj_path: None,
+            mmproj_candidates: Vec::new(),
+            mmproj_reason: None,
             size_bytes: 2 * GIB,
             sha256: Some(format!("{:064x}", rank + 1)),
             pom_id: None,
@@ -1016,6 +1026,8 @@
                 name: "qwen3.5-9b.gguf".into(),
                 path: "/modelos/qwen3.5-9b.gguf".into(),
                 mmproj_path: None,
+                mmproj_candidates: Vec::new(),
+                mmproj_reason: None,
                 size_bytes: 1,
             }],
         }];

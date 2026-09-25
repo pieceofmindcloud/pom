@@ -229,6 +229,7 @@ mod tests {
             "fatias/andamento",
             "chat",
             "admin-ui/chat",
+            "base/plugin-de-base",
         ] {
             assert!(
                 !API_PREFIXES.iter().any(|pre| p.starts_with(pre)),

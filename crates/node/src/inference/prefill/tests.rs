@@ -482,6 +482,7 @@ mod tests {
                 network_ms: 20,
                 bytes_sent: 40,
                 bytes_received: 60,
+                request_body_send_us: None,
             },
             40,
             60,
@@ -1146,26 +1147,65 @@ mod tests {
                 "round_trip_ms": 76,
                 "processing_ms": 75,
                 "transport_rtt_us": 500,
+                "request_body_send_us": 1_417,
                 "node_timings": {},
             }),
         );
-        trace.record_transport(
-            0,
-            Phase::Prefill,
-            TransportTrace::from_json(&json!({
-                "transport": "quic",
-                "round_trip_ms": 76,
-                "processing_ms": 75,
-                "transport_rtt_us": 500,
-            })),
-        );
-
         let phase = &trace.hops[0].prefill;
         assert_eq!(phase.round_trip_ms, 76);
         assert_eq!(phase.processing_ms, 75);
         assert_eq!(phase.network_ms, 1);
         assert_eq!(phase.transport_summary.transports[0].rtt_median_ms, 76);
         assert_eq!(phase.transport_summary.transports[0].net_rtt_median_ms, 1);
+        assert_eq!(
+            phase.transport_summary.transports[0].quic_request_body_send_us,
+            1_417
+        );
+        assert_eq!(
+            phase.transport_summary.transports[0].quic_request_body_send_calls,
+            1
+        );
+    }
+
+    #[test]
+    fn residual_capture_stages_aggregate_without_double_counting() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        for _ in 0..2 {
+            trace.record_hop_from_json(
+                0,
+                Phase::Decode,
+                &json!({
+                    "round_trip_ms": 2,
+                    "processing_ms": 2,
+                    "node_timings": {
+                        "residual_capture_d2h_sync_ms": 1.5,
+                        "residual_capture_ready_wait_ms": 1.0,
+                        "residual_capture_tensor_get_ms": 0.5,
+                        "residual_capture_postprocess_ms": 0.1,
+                        "residual_capture_bytes": 4096,
+                        "residual_capture_copies": 1,
+                        "residual_wire_f8_conversion_ms": 0.2,
+                        "residual_wire_frame_serialize_ms": 0.1,
+                        "residual_wire_encode_calls": 1
+                    }
+                }),
+            );
+        }
+
+        let phase = &trace.hops[0].decode;
+        assert_eq!(phase.node_residual_capture_d2h_sync_ms, 3.0);
+        assert_eq!(phase.node_residual_capture_ready_wait_ms, 2.0);
+        assert_eq!(phase.node_residual_capture_tensor_get_ms, 1.0);
+        assert_eq!(
+            phase.node_residual_capture_d2h_sync_ms,
+            phase.node_residual_capture_ready_wait_ms + phase.node_residual_capture_tensor_get_ms
+        );
+        assert_eq!(phase.node_residual_capture_postprocess_ms, 0.2);
+        assert_eq!(phase.node_residual_capture_bytes, 8192);
+        assert_eq!(phase.node_residual_capture_copies, 2);
+        assert_eq!(phase.node_residual_wire_f8_conversion_ms, 0.4);
+        assert_eq!(phase.node_residual_wire_frame_serialize_ms, 0.2);
+        assert_eq!(phase.node_residual_wire_encode_calls, 2);
     }
 
     #[test]
@@ -1323,6 +1363,7 @@ mod tests {
                     network_ms: round_trip_ms,
                     bytes_sent: 100,
                     bytes_received: 200,
+                    request_body_send_us: None,
                 },
             );
         }
@@ -1338,6 +1379,7 @@ mod tests {
                     network_ms: 10,
                     bytes_sent: 1818,
                     bytes_received: 192,
+                    request_body_send_us: None,
                 },
             );
         }

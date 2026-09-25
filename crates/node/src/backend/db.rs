@@ -629,7 +629,7 @@ impl PomDb {
         self.save_setting("windows_firewall_setup", record)
     }
 
-    pub fn public_directory_settings(
+    pub(crate) fn public_directory_settings(
         &self,
     ) -> Result<Option<crate::public_directory::PublicDirectorySettings>> {
         self.with_read("ler ingressos do diretório público", |connection| {
@@ -649,14 +649,14 @@ impl PomDb {
         })
     }
 
-    pub fn save_public_directory_settings(
+    pub(crate) fn save_public_directory_settings(
         &self,
         settings: &crate::public_directory::PublicDirectorySettings,
     ) -> Result<()> {
         self.save_setting("public_directory_settings", settings)
     }
 
-    pub fn public_directory_records(
+    pub(crate) fn public_directory_records(
         &self,
     ) -> Result<Vec<crate::public_directory::SignedPublicDirectoryRecord>> {
         self.with_read("ler cache do diretório público", |connection| {
@@ -676,7 +676,7 @@ impl PomDb {
         })
     }
 
-    pub fn save_public_directory_records(
+    pub(crate) fn save_public_directory_records(
         &self,
         records: &[crate::public_directory::SignedPublicDirectoryRecord],
     ) -> Result<()> {
@@ -1274,6 +1274,19 @@ impl PomDb {
                 )
                 .optional()
                 .context("ler configuração local")
+        })
+    }
+
+    pub(crate) fn local_setting_keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.with_read("listar chaves de configuração local", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT setting_key FROM local_settings
+                 WHERE substr(setting_key, 1, length(?1)) = ?1
+                 ORDER BY setting_key",
+            )?;
+            let rows = statement.query_map(params![prefix], |row| row.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .context("listar chaves de configuração local")
         })
     }
 
@@ -2629,6 +2642,9 @@ mod tests {
             source_label: source.label(),
             path: path.display().to_string(),
             mmproj_path: None,
+            mmproj_candidates: Vec::new(),
+            mmproj_reason: None,
+            identity_names: Vec::new(),
             size_bytes,
             multipart: false,
             multipart_parts: Vec::new(),

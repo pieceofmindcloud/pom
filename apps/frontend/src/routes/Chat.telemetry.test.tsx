@@ -544,6 +544,8 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
             calls: 3,
             bytes_sent: 300,
             bytes_received: 600,
+            quic_request_body_send_us: 1_417,
+            quic_request_body_send_calls: 2,
             rtt_min_ms: 20,
             rtt_median_ms: 25,
             rtt_p95_ms: 30,
@@ -587,7 +589,27 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
     expect(screen.getByText(/RTT de rede mínimo\/mediana\/p95\/máximo 0\/0\/0\/0 ms/)).toBeTruthy();
     expect(screen.getByText(/fallback total 1/)).toBeTruthy();
     expect(screen.getByText(/quic: 3 chamadas/)).toBeTruthy();
+    expect(screen.getByText(/envio e finalização do corpo QUIC 1\.417 ms em 2 requisições/)).toBeTruthy();
     expect(screen.getByText(/troca de transporte local -> https \(1\)/)).toBeTruthy();
+  });
+
+  it("mostra limites de captura e serialização do residual separadamente", () => {
+    mount(<ExecutionTelemetry trace={traceCom({
+      calls: 1,
+      node_residual_capture_d2h_sync_ms: 2.268,
+      node_residual_capture_ready_wait_ms: 1.468,
+      node_residual_capture_tensor_get_ms: 0.46,
+      node_residual_capture_postprocess_ms: 0.34,
+      node_residual_capture_bytes: 1_048_576,
+      node_residual_capture_copies: 2,
+      node_residual_wire_f8_conversion_ms: 0.21,
+      node_residual_wire_frame_serialize_ms: 0.09,
+      node_residual_wire_encode_calls: 1,
+    })} />);
+
+    expect(screen.getByText(/scheduler até pronto 1\.468 ms · tensor_get 0\.46 ms/)).toBeTruthy();
+    expect(screen.getByText(/total compatível 2\.268 ms · 1048576 bytes em 2 leituras/)).toBeTruthy();
+    expect(screen.getByText(/conversão f8 0\.21 ms · serialização do frame\/cabeçalho 0\.09 ms · contagem de frames codificados 1/)).toBeTruthy();
   });
 });
 

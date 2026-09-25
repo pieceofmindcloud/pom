@@ -122,7 +122,8 @@ profile policy remains the effective authorization boundary.
   que a chave configurada e a recebida sejam ambas não vazias; chave vazia
   nunca transforma um processo de setup em membro do enxame.
 - `gateway/` - módulo dividido em estado/seleção, budgets e tipos de geração,
-  geração, snapshots/planejamento, HTTP e testes: `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
+  geração, snapshots/planejamento, HTTP e testes: `GatewayState`,
+  `start_gateway_with_ready`, `generate_stream_with_stops` /
   `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
   prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), the bounded remote-token
@@ -138,7 +139,7 @@ profile policy remains the effective authorization boundary.
   completed prefill traces for each model/route without waiting on the next
   request, capped by `prefill_chunk_tokens` and `n_batch`, and the `testkit`
   test scaffold (peer/state_with/body_of).
-- `db.rs` - único armazenamento SQLite local: schema criado no arranque,
+- `db.rs` - único armazenamento SQLite local, interno ao crate: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,
   segredo do Hugging Face, histórico durável do catálogo e histórico de
   conversas e linhas do log de processo por `deploy_id`. Cada admin efetivo
@@ -156,6 +157,8 @@ profile policy remains the effective authorization boundary.
   conexão também faz leituras curtas em ordem, eliminando abertura e DDL por
   operação. O caminho vem de `config::database_path()`; `POM_DB_DIR` aponta
   para um volume e, sem ele, o banco fica na raiz do projeto.
+  `local_setting_keys_with_prefix` permite que o runtime restaure dinamicamente
+  os códigos de plugins persistidos sem manter uma lista compilada no binário.
 - `webapp.rs` - serves the frontend bundle from disk at `/admin-ui/`; `/`
   redirects there and the static surface is covered by the same local-only
   boundary, while nothing is compiled into the binary.
@@ -183,11 +186,22 @@ profile policy remains the effective authorization boundary.
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
-  `GET /api/ui/plugins` lista o catálogo inteiro de plugins independentes
-  (`crate::plugins`), cada um com seu estado, features e atualização de
-  versão próprios; `POST /api/ui/plugins/activate` ativa quantos plugins
-  conhecidos a chave conceder, e `POST /api/ui/plugins/:code/refresh|
-  deactivate|update/check|update/apply` agem sobre um plugin só. A detecção
+  `GET /api/ui/plugins` (AdminOnly) lista os estados locais de plugins
+  independentes já restaurados ou vistos pelo runtime (`crate::plugins`), cada
+  um com features, validade, uso autenticado e atualização próprios;
+  `POST /api/ui/plugins/activate` ativa em lote todo `plugin_code` que a chave
+  receber do servidor, e `POST /api/ui/plugins/:code/refresh|
+  deactivate|update/check|update/apply` agem sobre um plugin só. O mesmo prefixo
+  AdminOnly registra/remove a origem local com `POST/DELETE
+  /api/ui/plugins/:code/github-source`, verifica e aplica releases com confirmação,
+  e instala gratuitamente somente o `github_repository` publicado como
+  `requires_license: false` em `/api/ui/plugins/:code/github-source/install`.
+  Essa instalação revalida o catálogo HTTPS e persiste em
+  `plugin_public_install:<code>` sem lease ou grant. Preferências tipadas ficam
+  locais em `/api/ui/plugins/:code/preferences`; essas rotas não ativam licença.
+  O catálogo público é consultado pelo browser sem credenciais e também pelo nó
+  para autorizar instalações grátis. Comprar envia o operador à loja pública com
+  o código do plugin. A detecção
   da release `pom_core` é outra fronteira, deliberadamente separada
   (`crate::pom_core_update`): `GET /api/ui/pom-update/status`,
   `POST /api/ui/pom-update/check` força a detecção sob demanda, e
@@ -519,36 +533,36 @@ profile policy remains the effective authorization boundary.
   segunda perna; retries automáticos da mesma mutação assinada são evitados para
   não transformar timeout em falso replay administrativo. O testkit de admin
   sobe dois listeners TCP locais e prova promoção e recusa ponta a ponta.
-- `reqlog.rs` - adaptador de auditoria e fallback de migração. No caminho
-  Enterprise ativo, o host grava em `enterprise.db`; `AuditLog` enqueues
-  best-effort writes on a dedicated bounded thread, replica eventos `begin` e
-  `complete` aos admins efetivos por libp2p e executa as escritas no `PomDb`
-  compartilhado;
-  `AuditDb` cria o schema e o índice FTS5 somente no adaptador de teste,
-  abre requests em `in_progress`, completa a mesma linha, marca registros
-  antigos como `incomplete` e serve consultas autenticadas paginadas mais
-  estatísticas no servidor. As consultas aceitam `node_id`, identidade de API
-  key, rótulo de usuário, modelo, prompt e intervalo de entrada; o usuário é o
-  rótulo humano da API key porque a auditoria não armazena uma conta separada.
-  Falha de enfileiramento ou gravação registra
+- `reqlog.rs` - adaptador de auditoria e fallback de migração. Com o plugin
+  ativo, o host grava em `enterprise.db`; independentemente desse destino, o
+  `AuditLog` do POM replica `begin` e `complete` aos admins efetivos por libp2p.
+  O receptor ordena os eventos numa fila limitada e os entrega ao próprio host
+  ativo; se ele não os aceitar, persiste no `pom.db` legado. Eventos recebidos
+  nunca são retransmitidos. `AuditDb` cria o schema e o índice FTS5 somente no
+  adaptador de teste, abre requests em `in_progress`, completa a mesma linha,
+  marca registros antigos como `incomplete` e serve consultas autenticadas
+  paginadas mais estatísticas no servidor. As consultas aceitam `node_id`,
+  identidade de API key, rótulo de usuário, modelo, prompt e intervalo de
+  entrada; o usuário é o rótulo humano da API key porque a auditoria não
+  armazena uma conta separada. Falha de enfileiramento ou gravação registra
   sempre a operação e o request id. Pedidos e conversas ficam no `pom.db`; a
   auditoria Enterprise fica no `enterprise.db` isolado, enquanto o adaptador
   legado permanece como fallback. Permissões dos bancos e dos sidecars WAL/SHM
   são aplicadas no arranque. Filtros de usuário e modelo vazios são ignorados
-  antes da consulta
-  SQL, preservando a busca ampla quando o campo não foi preenchido. As rotas
-  `/api/ui/requests` e `/api/ui/requests/stats` são Enterprise e falham fechado
-  com `enterprise_required` sem entitlement. Com entitlement ativo, os
-  handlers encaminham listagem e estatísticas ao processo
-  `pom-plugin-host`; o `AuditLog` legado só é fallback transitório quando o
-  plugin não está disponível.
+  antes da consulta SQL, preservando a busca ampla quando o campo não foi
+  preenchido. As rotas `/api/ui/requests` e `/api/ui/requests/stats` são
+  Enterprise e falham fechado com `enterprise_required` sem entitlement. Com
+  entitlement ativo, os handlers encaminham listagem e estatísticas ao processo
+  `pom-plugin-host`.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
   e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
   `peer_http.plain()`.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
-  request e serve TLS ou texto claro na mesma porta TCP. O endpoint HTTP/3
+  request e serve TLS ou texto claro na mesma porta TCP, com upgrades de
+  conexão habilitados (o WebSocket do proxy de plugins,
+  `crate::plugin_proxy`). O endpoint HTTP/3
   recebe configuração QUIC separada e sobe na porta UDP dedicada anunciada,
   mesmo quando o TCP está em HTTP puro; `TlsServer` cobre somente o certificado
   TCP, modo estrito e duração do último handshake. Ver
@@ -652,7 +666,10 @@ faz o download autenticado do blob persistido.
   optional outside-node total/accounted/unaccounted values only when an
   explicit residual is measured, cold/warm state, connection reuse counts and
   first-token boundaries. The historical
-  `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops` collapses it. The terminal event
+  `tokens_per_sec` remains the total-rate alias. `generate_blocking_with_stops`
+  collapses it. Failed prefill events carry the trace observed by the prefill
+  pipeline into the audit completion; timings stay null unless a successful
+  summary measured them. The terminal event
   (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
   (`rewind_sessions` or `release_sessions`) has finished, because a chat sends
   the next turn the instant the stream closes and used to arrive in the middle
@@ -673,8 +690,8 @@ faz o download autenticado do blob persistido.
   already accepted peer frames are cleaned up by the normal session release.
   Logs `prefix gateway` registram hit/miss e tamanho do prefixo; `prefix rewind`
   registra a confirmação ou recusa por peer e sessão, sem conteúdo do prompt.
-  `start_gateway` faz o bind do listener antes de sinalizar ao shell Windows
-  que o gateway está pronto, e então registra
+  `start_gateway_with_ready` faz o bind do listener antes de sinalizar ao shell
+  Windows que o gateway está pronto, e então registra
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
   `POST /handshake` (session::handle_handshake), `POST /v1/relay-result`,
   `POST /v1/remote-stream-result` and `POST /v1/link`
@@ -815,6 +832,14 @@ faz o download autenticado do blob persistido.
   refresh tenha trocado o `Arc` do inventário: a reconciliação usa caminho,
   tamanho e mtime do arquivo. O cache instala um placeholder antes da primeira
   varredura, ordena as raízes e mantém single-flight para scans e enriquecimentos;
+  as rotas de seleção de modelo distinguem esse placeholder de um arquivo
+  ausente: quando `metadata_complete` é falso, devolvem que a descoberta ainda
+  está em andamento e não a mensagem de que o arquivo não pertence ao peer;
+  a varredura rápida não calcula SHA-256 de modelos inteiros para montar
+  `shard_sets`, então um volume grande publica seus caminhos e raízes antes da
+  leitura dos headers GGUF usados para sugerir projetores. A escolha do
+  projetor não calcula SHA-256 do payload; a validação estrutural do caminho
+  escolhido fica no apply do peer que vai carregá-lo.
   F5 ou seleção repetida não empilha trabalho. Uma configuração nova fica em
   fila para o scan atual terminar. O enriquecimento registra início e conclusão
   (inclusive descarte), e uma falha terminal marca `metadata_error` no item e
@@ -1133,7 +1158,7 @@ faz o download autenticado do blob persistido.
   without the capability keep the established route. The stream degrades with
   `peer_without_sliced_mtp_wire` when a peer lacks the MTP wire capability.
   `routing_contract` capability types.
-- Who calls it: `crate::main` (`start_gateway` spawns the router, `warm_catalog`
+- Who calls it: `crate::main` (`start_gateway_with_ready` spawns the router, `warm_catalog`
   runs at startup, setup mode mounts only the dedicated `/api/setup/*` handlers);
   the frontend bundle in `apps/frontend/dist` hits `/api/ui/*`; harnesses hit
   `/v1/*` (OpenAI/Anthropic) and `POST /api/generate`; peers call each other's
@@ -1141,12 +1166,16 @@ faz o download autenticado do blob persistido.
 
 ### Visão na implantação e no chat
 
-`deploy::Plan.mmproj_path` vem do catálogo do modelo inteiro ou do
-`ShardSet.mmproj_path` da rodada fatiada. `DeployRequest.vision` só habilita o
-projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
+`deploy::Plan.mmproj_path`, `mmproj_candidates` e `mmproj_reason` vêm do modelo
+inteiro ou do `ShardSet` escolhido. A interface pré-seleciona o primeiro
+candidato compatível e pode enviar `DeployRequest.mmproj_path` para escolher
+outro formato na cabeça selecionada. A seleção da cabeça usa a faixa e o nome
+do candidato escolhido, não o primeiro arquivo de visão da máquina.
+`DeployRequest.vision` só habilita o projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
 `webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
-`openai` extrai imagens base64 dos pedidos multimodais. A recusa de imagem sem
-projetor e a mensagem para o usuário precisam permanecer alinhadas.
+`openai` extrai imagens base64 dos pedidos multimodais. A recusa de visão devolve
+`mmproj_reason`; o caminho também é validado contra o GGUF antes de o runtime
+iniciar, inclusive em configurações antigas.
 O Chat consulta `GET /api/ui/chat/capabilities`, uma rota comum que agrega o
 modelo ativo, a cobertura, o `mmproj_path` e o `no_thinking` da cabeça da
 implantação sem expor topologia ao perfil `infer`. A resposta usa `supported`,

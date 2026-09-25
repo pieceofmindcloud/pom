@@ -1,0 +1,40 @@
+# Salem hardware Compose entrypoint: NVIDIA 3060 plus one Radeon.
+# This file can be selected directly or use docker-compose.yml by default.
+services:
+  node-gpu:
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu
+    devices:
+      - /dev/dri:/dev/dri
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ['0']
+
+  node-gpu2:
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ['0']
+
+  node-gpu-3:
+    extends:
+      file: docker-compose.common.yml
+      service: node-gpu-3
+    devices:
+      - /dev/dri:/dev/dri
+
+  node-cpu:
+    extends:
+      file: docker-compose.common.yml
+      service: node-cpu

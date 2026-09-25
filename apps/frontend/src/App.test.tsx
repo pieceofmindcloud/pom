@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { BrowserRouter, MemoryRouter, useNavigate } from "react-router-dom";
+import { useState } from "react";
 import { LocaleProvider } from "./i18n/provider";
 import { ProfileProvider, type Profile } from "./lib/profile";
 
 const adminSurface = vi.hoisted(() => ({
   value: "available" as "setup" | "available" | "requires-password" | "local-only",
 }));
-const enterpriseStatus = vi.hoisted(() => ({ active: true }));
+const pluginUi = vi.hoisted(() => ({ plugins: [] as unknown[] }));
 
 /**
  * Esconder o item do menu não é bloquear: o endereço continua digitável, e um
@@ -20,20 +21,7 @@ const enterpriseStatus = vi.hoisted(() => ({ active: true }));
  */
 vi.mock("./lib/queries", () => ({
   useAdminSurface: () => ({ data: adminSurface.value, isLoading: false, isError: false }),
-  useEnterpriseStatus: () => ({
-    data: {
-      code: "enterprise",
-      active: enterpriseStatus.active,
-      state: enterpriseStatus.active ? "active" : "needs_activation",
-      features: enterpriseStatus.active ? ["request_logs", "statistics"] : [],
-      manage_url: "https://pieceofmind.cloud/enterprise",
-      plugin_version: enterpriseStatus.active ? "test" : null,
-      lease_expires_at: null,
-      available_update: null,
-    },
-    isLoading: false,
-    isError: false,
-  }),
+  usePluginUi: () => ({ data: { plugins: pluginUi.plugins }, isLoading: false, isError: false }),
   // Nó completo o bastante para a barra superior e o rodapé do menu
   // renderizarem: um `data: null` derruba o `NodeChip` no `node.data!` e o
   // teste passa a medir o `ErrorBoundary` em vez do guarda.
@@ -65,7 +53,23 @@ vi.mock("./components/Logo", () => ({
 // marcador é escrito à mão em vez de sair de um auxiliar compartilhado.
 vi.mock("./routes/DeployModel", () => ({ DeployModel: () => <div>tela-implantar</div> }));
 vi.mock("./routes/Deployments", () => ({ Deployments: () => <div>tela-implantacoes</div> }));
+vi.mock("./components/PluginScreen", () => ({
+  PluginScreen: ({ resolved }: { resolved: { code: string; route: { path: string; screen: string } } }) => {
+    // Simula a tela real mantendo o componente carregado enquanto o pai troca
+    // a rota. O App precisa remontá-la por identidade de rota para não deixar
+    // a tela anterior presa quando dois destinos compartilham o mesmo módulo.
+    const [initialPath] = useState(resolved.route.path);
+    const [initialScreen] = useState(resolved.route.screen);
+    return (
+      <>
+        <div>{`tela-plugin:${resolved.code}:${initialScreen}`}</div>
+        <div>{`tela-plugin:${resolved.code}:${initialPath}`}</div>
+      </>
+    );
+  },
+}));
 vi.mock("./routes/WholeModels", () => ({ WholeModels: () => <div>tela-modelos</div> }));
+vi.mock("./routes/Plugins", () => ({ Plugins: () => <div>tela-plugins</div> }));
 vi.mock("./routes/Dashboard", () => ({ Dashboard: () => <div>tela-painel</div> }));
 vi.mock("./routes/Chat", () => ({ Chat: () => <div>tela-chat</div> }));
 vi.mock("./routes/Preferences", () => ({ Preferences: () => <div>tela-preferencias</div> }));
@@ -90,11 +94,62 @@ function open(path: string, profile: Profile) {
   );
 }
 
+function openBrowserPath(path: string, profile: Profile) {
+  window.history.replaceState({}, "", path);
+  return render(
+    <BrowserRouter basename="/admin-ui" future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile={profile}>
+          <App />
+        </ProfileProvider>
+      </LocaleProvider>
+    </BrowserRouter>,
+  );
+}
+
+function RouteDriver() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => navigate("/base/example")}>
+        ir para exemplo
+      </button>
+      <button type="button" onClick={() => navigate("/estatisticas")}>
+        ir para estatísticas
+      </button>
+    </>
+  );
+}
+
+function openWithRouteDriver(path: string, profile: Profile) {
+  return render(
+    <MemoryRouter
+      initialEntries={[path]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <RouteDriver />
+      <LocaleProvider initialLocale="pt-BR">
+        <ProfileProvider initialProfile={profile}>
+          <App />
+        </ProfileProvider>
+      </LocaleProvider>
+    </MemoryRouter>,
+  );
+}
+
 describe("guarda de perfil por rota", () => {
   afterEach(() => {
     cleanup();
     adminSurface.value = "available";
-    enterpriseStatus.active = true;
+    pluginUi.plugins = [];
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("renderiza Plugins no contêiner full-bleed", async () => {
+    open("/plugins", "admin");
+
+    const content = await screen.findByText("tela-plugins");
+    expect(content.closest(".h-full.w-full")).toBeTruthy();
   });
 
   const fechadas = [
@@ -116,24 +171,183 @@ describe("guarda de perfil por rota", () => {
     });
   }
 
-  it("shows the Enterprise showcase from a direct bookmark without hiding the route, with or without a license", async () => {
-    enterpriseStatus.active = false;
+  const enterpriseManifest = (profiles: string[]) => ({
+    code: "enterprise",
+    version: "1.0.0",
+    manifest: {
+      schema: "pom-plugin-ui/v1",
+      plugin_code: "enterprise",
+      menu: [
+        { id: "logs", label: { en: "Request Logs" }, to: "/logs", profiles },
+        { id: "stats", label: { en: "Statistics" }, to: "/estatisticas", profiles },
+      ],
+      routes: [
+        { path: "/logs", screen: "logs", profiles, full_bleed: true },
+        { path: "/estatisticas", screen: "stats", profiles },
+      ],
+      screens: { logs: { module: "ui/logs.js" }, stats: { module: "ui/stats.js" } },
+      assets: ["ui/logs.js", "ui/stats.js"],
+    },
+  });
+
+  const baseManifest = {
+    code: "base",
+    version: "1.0.0",
+    manifest: {
+      schema: "pom-plugin-ui/v1",
+      plugin_code: "base",
+      menu: [
+        { id: "plugin", label: { en: "Plugin" }, to: "/plugin-de-base", profiles: ["admin"] },
+        { id: "example", label: { en: "Example" }, to: "/example", profiles: ["admin", "node"] },
+      ],
+      routes: [
+        { path: "/plugin-de-base", screen: "plugin", profiles: ["admin"] },
+        { path: "/example", screen: "example", profiles: ["admin", "node"] },
+      ],
+      screens: {
+        plugin: { module: "ui/plugin.js" },
+        example: { module: "ui/example.js" },
+      },
+      assets: ["ui/plugin.js", "ui/example.js"],
+    },
+  };
+
+  const analyticsManifest = {
+    code: "analytics",
+    version: "1.0.0",
+    manifest: {
+      schema: "pom-plugin-ui/v1",
+      plugin_code: "analytics",
+      menu: [{ id: "example", label: { en: "Analytics Example" }, to: "/example", profiles: ["infer"] }],
+      routes: [{ path: "/example", screen: "example", profiles: ["infer"] }],
+      screens: { example: { module: "ui/example.js" } },
+      assets: ["ui/example.js"],
+    },
+  };
+
+  it("shows the advertising fallback when no plugin provides /logs or /estatisticas", async () => {
     open("/logs", "admin");
-    expect(await screen.findByText("Logs de Requisições")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Comprar e instalar" }).getAttribute("href"))
-      .toBe("https://pieceofmind.cloud/enterprise/index.html");
-    expect(screen.queryByText("Este plugin já está ativo neste cluster.")).toBeNull();
+    expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
+    expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
+    cleanup();
+    open("/estatisticas", "admin");
+    expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
+  });
+
+  it("renders the plugin-provided screen instead of the fallback, per manifest profile", async () => {
+    pluginUi.plugins = [enterpriseManifest(["admin", "node"])];
+    open("/logs", "admin");
+    expect(await screen.findByText("tela-plugin:enterprise:logs")).toBeTruthy();
+    cleanup();
+    open("/estatisticas", "node");
+    expect(await screen.findByText("tela-plugin:enterprise:stats")).toBeTruthy();
+    cleanup();
+    // infer não está nos perfis do manifesto: recusa, e não cai na propaganda.
+    open("/logs", "infer");
+    expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
+    expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
+  });
+
+  it("opens the Base manifest route after applying the plugin namespace", async () => {
+    pluginUi.plugins = [baseManifest];
+    open("/base/plugin-de-base", "admin");
+
+    expect(await screen.findByText("tela-plugin:base:plugin")).toBeTruthy();
+  });
+
+  it("remounts a plugin screen when navigation changes route within the same plugin", async () => {
+    pluginUi.plugins = [baseManifest];
+    openWithRouteDriver("/base/plugin-de-base", "admin");
+
+    expect(await screen.findByText("tela-plugin:base:/base/plugin-de-base")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "ir para exemplo" }));
+    expect(await screen.findByText("tela-plugin:base:/base/example")).toBeTruthy();
+    expect(screen.queryByText("tela-plugin:base:/base/plugin-de-base")).toBeNull();
+
+    // The legacy POM branch changes identity and must not retain the plugin
+    // screen. This is the transition that previously masked the same-plugin bug.
+    fireEvent.click(screen.getByRole("button", { name: "ir para estatísticas" }));
+    expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
+  });
+
+  it("loads a namespaced route on a direct browser request under the router basename", async () => {
+    pluginUi.plugins = [baseManifest];
+    openBrowserPath("/admin-ui/base/plugin-de-base", "admin");
+
+    expect(await screen.findByText("tela-plugin:base:plugin")).toBeTruthy();
+    expect(window.location.pathname).toBe("/admin-ui/base/plugin-de-base");
+  });
+
+  it("renders the matching plugin when two manifests declare the same relative route", async () => {
+    pluginUi.plugins = [baseManifest, analyticsManifest];
+    open("/base/example", "admin");
+    expect(await screen.findByText("tela-plugin:base:example")).toBeTruthy();
     cleanup();
 
-    enterpriseStatus.active = true;
-    open("/estatisticas", "admin");
-    expect(await screen.findByText("Estatísticas")).toBeTruthy();
-    expect(screen.getByText("Este plugin já está ativo neste cluster.")).toBeTruthy();
+    open("/analytics/example", "infer");
+    expect(await screen.findByText("tela-plugin:analytics:example")).toBeTruthy();
+  });
+
+  it("namespaces competing claims to a native plugin route and keeps the native fallback", async () => {
+    const logsPlugin = (code: string) => ({
+      code,
+      version: "1.0.0",
+      manifest: {
+        schema: "pom-plugin-ui/v1",
+        plugin_code: code,
+        menu: [],
+        routes: [{ path: "/logs", screen: "logs", profiles: ["admin"] }],
+        screens: { logs: { module: "ui/logs.js" } },
+        assets: ["ui/logs.js"],
+      },
+    });
+    pluginUi.plugins = [
+      logsPlugin("enterprise"),
+      logsPlugin("audit"),
+    ];
+    open("/enterprise/logs", "admin");
+    expect(await screen.findByText("tela-plugin:enterprise:logs")).toBeTruthy();
+    cleanup();
+    open("/audit/logs", "admin");
+    expect(await screen.findByText("tela-plugin:audit:logs")).toBeTruthy();
+    cleanup();
+    open("/logs", "admin");
+    expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
+  });
+
+  it("keeps a plugin route closed for profiles excluded by its manifest", async () => {
+    pluginUi.plugins = [baseManifest];
+    open("/base/plugin-de-base", "node");
+
+    expect(await screen.findByText("Tela restrita a outro perfil")).toBeTruthy();
+    expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
+  });
+
+  it("does not let an invalid plugin path take over a native POM route", async () => {
+    pluginUi.plugins = [{
+      ...baseManifest,
+      manifest: {
+        ...baseManifest.manifest,
+        menu: [{ ...baseManifest.manifest.menu[0], to: "/../../chat" }],
+        routes: [{ ...baseManifest.manifest.routes[0], path: "/../../chat" }],
+      },
+    }];
+    open("/chat", "node");
+
+    expect(await screen.findByText("tela-chat")).toBeTruthy();
   });
 
   it("não mexe nas rotas que ninguém restringiu", async () => {
+    pluginUi.plugins = [baseManifest];
     open("/modelos", "node");
     expect(await screen.findByText("tela-modelos")).toBeTruthy();
+  });
+
+  it("a tela de modelos ocupa a tela cheia, como Implantações e Painel", async () => {
+    const { container } = open("/modelos", "admin");
+    expect(await screen.findByText("tela-modelos")).toBeTruthy();
+    expect(container.querySelector(".h-full.w-full")).toBeTruthy();
+    expect(container.querySelector(".max-w-\\[1400px\\]")).toBeNull();
   });
 
   it("abre Preferências para o perfil do nó", async () => {

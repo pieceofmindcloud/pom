@@ -7,6 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "build/cuda_arch.rs"]
+mod cuda_arch;
 #[path = "build/mtp_arch.rs"]
 mod mtp_arch;
 
@@ -40,6 +42,7 @@ fn build_moe_cuda(llama_cpp_root: &Path) {
         return;
     }
     println!("cargo:rerun-if-env-changed=CCACHE");
+    println!("cargo:rerun-if-env-changed=CUDAARCHS");
 
     let source = Path::new("src/moe/cuda_kernels.cu");
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
@@ -94,11 +97,11 @@ fn build_moe_cuda(llama_cpp_root: &Path) {
             ggml_root.join(dependency).display()
         );
     }
-    if let Some(arch) = std::env::var_os("CUDAARCHS") {
-        let arch = arch.to_string_lossy();
-        let arch = arch.split(';').next().unwrap_or_default();
-        if !arch.is_empty() {
-            compile.arg(format!("-arch=sm_{arch}"));
+    if let Some(architectures) = std::env::var_os("CUDAARCHS") {
+        let generations = cuda_arch::nvcc_code_generations(&architectures.to_string_lossy())
+            .unwrap_or_else(|error| panic!("invalid CUDAARCHS: {error}"));
+        for generation in generations {
+            compile.arg("--generate-code").arg(generation);
         }
     }
     let status = compile

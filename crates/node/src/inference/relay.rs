@@ -221,6 +221,9 @@ pub struct SentFrame {
     /// Wire precision selected for this crossing.
     pub hidden_state_dtype: WireDtype,
     pub client_encode_ms: u64,
+    /// For QUIC, wall time awaiting request body send and finish. Batch
+    /// responses attribute the shared upload once to avoid duplicate totals.
+    pub request_body_send_us: Option<u64>,
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
     pub client_decode_ms: u64,
@@ -522,6 +525,11 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
                         hidden_state_bytes_received,
                         hidden_state_dtype: call.dtype,
                         client_encode_ms: response.client_encode_ms,
+                        request_body_send_us: if output.is_empty() {
+                            response.request_body_send_us
+                        } else {
+                            None
+                        },
                         response_headers_ms: response.response_headers_ms,
                         response_body_ms: response.response_body_ms,
                         client_decode_ms: response.client_decode_ms,
@@ -584,6 +592,7 @@ impl SentFrame {
             "hidden_state_bytes_received": self.hidden_state_bytes_received,
             "hidden_state_dtype": self.hidden_state_dtype.as_str(),
             "client_encode_ms": self.client_encode_ms,
+            "request_body_send_us": self.request_body_send_us,
             "response_headers_ms": self.response_headers_ms,
             "response_body_ms": self.response_body_ms,
             "client_decode_ms": self.client_decode_ms,
@@ -692,8 +701,10 @@ pub fn is_frame_size_error(error: &anyhow::Error) -> bool {
 /// ou dentro de um `RelayFailure` serializado pelo anel/resposta direta, mas
 /// `anyhow::Error::to_string` preserva o texto nos dois casos.
 pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
-    let text = error.to_string().to_lowercase();
-    text.contains("sessão") && text.contains("desconhecida")
+    error.chain().any(|cause| {
+        let text = cause.to_string().to_lowercase();
+        text.contains("sessão") && text.contains("desconhecida")
+    })
 }
 
 /// Erros que provam divergência do KV remoto. Diferente de uma falha de
@@ -933,6 +944,7 @@ async fn send_frame_in_process(
         hidden_state_bytes_received,
         hidden_state_dtype: dtype,
         client_encode_ms,
+        request_body_send_us: None,
         response_headers_ms: 0,
         response_body_ms: 0,
         client_decode_ms,
@@ -1084,6 +1096,7 @@ async fn send_frame_with_protocol(
                             hidden_state_bytes_received,
                             hidden_state_dtype: dtype,
                             client_encode_ms,
+                            request_body_send_us: Some(response.request_body_send_us),
                             response_headers_ms: response.response_headers_ms,
                             response_body_ms: response.response_body_ms,
                             client_decode_ms,
@@ -1215,6 +1228,7 @@ async fn send_frame_with_protocol(
                         hidden_state_bytes_received,
                         hidden_state_dtype: dtype,
                         client_encode_ms,
+                        request_body_send_us: None,
                         response_headers_ms,
                         response_body_ms,
                         client_decode_ms,
@@ -1374,6 +1388,7 @@ struct BatchTransportResponse {
     round_trip_ms: u64,
     bytes_sent: u64,
     client_encode_ms: u64,
+    request_body_send_us: Option<u64>,
     response_headers_ms: u64,
     response_body_ms: u64,
     client_decode_ms: u64,
@@ -1473,6 +1488,7 @@ async fn send_batch_body(
             round_trip_ms: started.elapsed().as_millis() as u64,
             bytes_sent,
             client_encode_ms: 0,
+            request_body_send_us: None,
             response_headers_ms: 0,
             response_body_ms: 0,
             client_decode_ms: 0,
@@ -1530,6 +1546,7 @@ async fn send_batch_body(
                     round_trip_ms: response.round_trip_ms,
                     bytes_sent: response.bytes_sent,
                     client_encode_ms: 0,
+                    request_body_send_us: None,
                     response_headers_ms: 0,
                     response_body_ms: 0,
                     client_decode_ms: 0,
@@ -1609,6 +1626,7 @@ async fn send_batch_body(
                             round_trip_ms: started.elapsed().as_millis() as u64,
                             bytes_sent: body.len() as u64,
                             client_encode_ms,
+                            request_body_send_us: Some(response.request_body_send_us),
                             response_headers_ms: response.response_headers_ms,
                             response_body_ms: response.response_body_ms,
                             client_decode_ms: 0,
@@ -1681,6 +1699,7 @@ async fn send_batch_body(
                         round_trip_ms: started.elapsed().as_millis() as u64,
                         bytes_sent: body.len() as u64,
                         client_encode_ms,
+                        request_body_send_us: None,
                         response_headers_ms,
                         response_body_ms,
                         client_decode_ms,
@@ -1875,6 +1894,7 @@ async fn send_batch_via_tunnel(
         round_trip_ms: started.elapsed().as_millis() as u64,
         bytes_sent: body.len() as u64,
         client_encode_ms: 0,
+        request_body_send_us: None,
         response_headers_ms: started.elapsed().as_millis() as u64,
         response_body_ms: 0,
         client_decode_ms: 0,
@@ -2228,6 +2248,7 @@ pub async fn send_frame_or_tunnel(
                     hidden_state_bytes_received,
                     hidden_state_dtype: dtype,
                     client_encode_ms,
+                    request_body_send_us: None,
                     response_headers_ms: 0,
                     response_body_ms: 0,
                     client_decode_ms,
@@ -2543,6 +2564,7 @@ async fn send_frame_via_tunnel_with_auth(
         hidden_state_bytes_received,
         hidden_state_dtype: dtype,
         client_encode_ms,
+        request_body_send_us: None,
         response_headers_ms: round_trip_ms,
         response_body_ms,
         client_decode_ms,
@@ -2673,6 +2695,9 @@ mod tests {
         });
 
         assert!(is_unknown_session_error(&unknown));
+        assert!(is_unknown_session_error(
+            &unknown.context("telemetria parcial do prefill")
+        ));
         assert!(!is_unknown_session_error(&other));
     }
 
@@ -2950,6 +2975,7 @@ mod tests {
             hidden_state_bytes_received: 0,
             hidden_state_dtype: WireDtype::F16,
             client_encode_ms: 1,
+            request_body_send_us: None,
             response_headers_ms: 5,
             response_body_ms: 3,
             client_decode_ms: 1,

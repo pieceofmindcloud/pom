@@ -27,10 +27,12 @@ um checkout local sem copiá-lo:
 LLAMA_SOURCE=/caminho/para/llama.cpp cargo build -p node
 ```
 
-O diretório informado precisa conter `ggml`. `POM_LLAMA_CPP_REPOSITORY` e
-`POM_LLAMA_CPP_REF` permitem apontar o preparo automático para outro remoto ou
-branch durante testes e desenvolvimento; o padrão é o fork público e a branch
-`pom-tensor-parallel`.
+O diretório informado precisa conter `ggml` e, quando explícito, tem
+precedência sobre o symlink vendorizado `llama.cpp`. Isso também permite que o
+Docker use a fonte da release mesmo se o named context local estiver vazio.
+`POM_LLAMA_CPP_REPOSITORY` e `POM_LLAMA_CPP_REF` permitem apontar o preparo
+automático para outro remoto ou branch durante testes e desenvolvimento; o
+padrão é o fork público e a branch `pom-tensor-parallel`.
 
 Depois de escolher o checkout, o `build.rs` normaliza um `LLAMA_SOURCE` relativo
 para um caminho absoluto e publica o caminho em
@@ -68,9 +70,13 @@ checkout no caminho que o Cargo lê. Ver `docs/subsystems/build-execucao.md`,
 O `build.rs` repassa `CMAKE_C_COMPILER_LAUNCHER`,
 `CMAKE_CXX_COMPILER_LAUNCHER` e `CMAKE_CUDA_COMPILER_LAUNCHER` como entradas do
 cache CMake e declara os tres valores para o Cargo reexecutar o script quando
-o launcher muda. O helper `scripts/build-env.sh` usa `sccache` nesses pontos;
-nao ha caminho prebuilt para `libllama` porque um arquivo isolado nao prova
-source, target, feature ou configuracao CMake compativeis.
+o launcher muda. O helper `scripts/build-env.sh` usa `sccache` nesses pontos.
+No Docker de desenvolvimento, `POM_LLAMA_CPP_PREBUILT_LIB_DIR` e uma excecao
+explícita para Linux: valida e copia as quatro bibliotecas compartilhadas do
+core, e só então pula o CMake. Bindgen, wrappers, mtmd e kernels CUDA próprios
+do POM continuam compilados contra o source de `LLAMA_SOURCE`; sem essa
+variavel o build local permanece no caminho CMake normal. Esse contrato não é
+um `LLAMA_CPP_LIB_DIR` genérico e não é usado pelos releases do POM.
 
 NCCL fica opt-in nos builds CUDA. `GGML_CUDA_NCCL=ON` ativa o caminho coletivo
 no CMake e tambem faz o `build.rs` propagar `NCCL_LIBRARY` do cache CMake para o

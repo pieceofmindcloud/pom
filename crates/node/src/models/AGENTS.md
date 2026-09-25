@@ -23,6 +23,10 @@ transferência.
   `discover` combina as duas fases para callers síncronos que ainda precisam da
   resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
   manifestos ou do nome de uma fatia são apenas dados de identidade.
+  Enquanto `metadata_complete` é falso, a ausência de um caminho significa que
+  a enumeração ainda não terminou, não que o arquivo esteja fora do catálogo;
+  os handlers de seleção devem expor esse estado para o cliente tentar
+  novamente.
   Valores numéricos do cabeçalho GGUF são aceitos pela semântica de inteiro não
   negativo, independentemente de o produtor tê-los escrito como signed ou
   unsigned; valores negativos e overflow são recusados. Isso inclui
@@ -198,7 +202,9 @@ estado efetivo. Os tipos do cache continuam sendo repostos a partir do
 parâmetros da implantação. Os parâmetros do detector de ciclos
 (`cycle_detection_*`) também fazem parte do `NodeConfig` achatado, para que o
 gateway preserve a mesma política depois de um restart e a fatia anotada não
-volte a gerar com uma configuração diferente.
+volte a gerar com uma configuração diferente. `save_at` é crate-private para o
+watcher de `/health` gravar no caminho de configuração que capturou ao iniciar,
+sem seguir uma mudança posterior de `POM_CONFIG` no processo.
 
 O fatiador primeiro classifica arrays GGUF pelo namespace: somente arrays sob o
 namespace da arquitetura, exceto os arrays estruturais de rope, podem ser
@@ -219,20 +225,23 @@ fatias que contêm uma dessas camadas.
 
 ### Projetor multimodal
 
-`catalog.rs::find_mmproj_sibling` segue a convenção do llama.cpp: GGUF `.gguf`
-vizinho no mesmo diretório com `mmproj` no nome, escolhendo a quantização mais
-próxima. `DiscoveredModel.mmproj_path` é a resposta persistida no catálogo;
-`ShardSet.mmproj_path` herda o caminho de uma fatia ou do modelo inteiro de
-origem com o mesmo rótulo. A interface não deve varrer o disco. O projetor não
-é um modelo selecionável.
+`catalog.rs::resolve_mmproj_sibling` lê somente os headers GGUF dos candidatos e
+expõe todos os projetores compatíveis por identidade comum ou dimensão de
+projeção. Quantização nunca escolhe `mmproj`. A identidade vem de
+`general.name`, `general.basename` e `general.base_model.*`; quando há fatias,
+`ShardSet.mmproj_candidates` herda os candidatos do modelo inteiro pelo rótulo
+do manifesto, sem comparar o payload do modelo nem calcular SHA-256. O primeiro
+candidato ordenado é apenas a pré-seleção da interface. `mmproj_reason` informa
+como resolver ausência. A interface não deve varrer o disco: ela exibe os
+candidatos e envia a escolha explícita na implantação. O projetor não é um
+modelo selecionável no catálogo geral.
 
 ### Rascunho MTP separado
 
-`catalog.rs::find_mtp_draft_sibling` é o mesmo mecanismo que `find_mmproj_sibling`
-(irmão `.gguf` no mesmo diretório, quantização mais próxima), mas com um
-prefixo em vez de substring - `mtp-` - porque não existe convenção estabelecida
-para esse arquivo fora da própria Unsloth, e substring arriscaria falso
-positivo num modelo cujo nome contenha "mtp". Ao contrário do mmproj, esse
+`catalog.rs::find_mtp_draft_sibling` procura um irmão `.gguf` no mesmo diretório
+com prefixo `mtp-` e escolhe pela quantização mais próxima. Não existe
+convenção estabelecida para esse arquivo fora da própria Unsloth, e substring
+arriscaria falso positivo num modelo cujo nome contenha "mtp". Ao contrário do mmproj, esse
 caminho **não** vive no catálogo central (`DiscoveredModel`/`ShardSet`/`Plan`):
 a descoberta acontece direto na máquina que carrega o modelo
 (`webui::run_apply`, `webui::reconfigure_local`), porque só ela precisa do

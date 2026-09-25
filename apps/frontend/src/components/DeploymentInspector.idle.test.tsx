@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import type { RuntimeParams } from "../lib/types";
-import { DeploymentInspector } from "./DeploymentInspector";
+import { DeploymentInspector, type VisionControl } from "./DeploymentInspector";
 
 afterEach(cleanup);
 
@@ -39,7 +39,7 @@ const params: RuntimeParams = {
 function mount(
   value = params,
   onChange = vi.fn(),
-  vision?: { available: boolean; enabled: boolean; path?: string | null; onChange: (next: boolean) => void },
+  vision?: VisionControl,
   pomDesenv = true,
 ) {
     render(
@@ -120,7 +120,9 @@ describe("DeploymentInspector idle policy", () => {
       available: true,
       enabled: false,
       path: "/models/mmproj-vision.gguf",
+      candidates: ["/models/mmproj-vision.gguf"],
       onChange: onVisionChange,
+      onPathChange: vi.fn(),
     });
 
     const vision = screen.getByRole("checkbox", { name: "Enable vision" });
@@ -135,11 +137,14 @@ describe("DeploymentInspector idle policy", () => {
       available: false,
       enabled: false,
       path: null,
+      candidates: [],
+      reason: null,
       onChange: vi.fn(),
+      onPathChange: vi.fn(),
     });
 
     expect(screen.getByRole("alert").textContent).toContain(
-      "Vision unavailable: no mmproj was found for this sliced model.",
+      "Vision unavailable: projector ownership could not be verified. Check the GGUF model identity and projection dimensions.",
     );
     expect(screen.queryByRole("checkbox", { name: "Enable vision" })).toBeNull();
   });

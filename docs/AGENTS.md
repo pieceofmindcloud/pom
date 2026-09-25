@@ -55,6 +55,11 @@ O plano do hot path CUDA heterogêneo alinhado ao FreeToken está em
 `superpowers/plans/2026-09-15-moe-freetoken-performance.md`.
 O plano da correção do contrato rico de heartbeat Enterprise está em
 `superpowers/plans/2026-09-16-enterprise-heartbeat-schema.md`.
+O plano da imagem Docker com variantes CUDA, Vulkan e CPU está em
+`superpowers/plans/2026-09-21-docker-backend-variants.md`. O modo Docker com
+bibliotecas prebuilt do fork está especificado em
+`superpowers/specs/2026-09-23-docker-prebuilt-llama-design.md` e planejado em
+`superpowers/plans/2026-09-23-docker-prebuilt-llama.md`.
 
 ## subsystems/
 
@@ -70,7 +75,8 @@ cabeçalho do catálogo, inclusive para o modelo selecionado. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
 a leitura da telemetria correspondente. `build-execucao.md` documenta também a
 geração em tempo de compilação da lista MTP a partir do fork local do
-`llama.cpp`, o helper condicional de sccache e a medição do target compartilhado.
+`llama.cpp`, o helper condicional de sccache, a medição do target compartilhado
+e os modos release/source do Docker de desenvolvimento.
 `inferencia.md` e `web-ui.md` também
 documentam o RTT observado do Chat, o RTT direcional por aresta, a leitura
 efetiva de colocação e configuração por peer, a reserva do segundo contexto MTP
@@ -200,9 +206,11 @@ libp2p, validação e retransmissão pelo principal, catraca autenticada do
 interruptor e prioridade do túnel de inferência sobre o tráfego de conversa.
 
 `subsystems/licenciamento-enterprise.md` registra o contrato de licença por
-`plugin_code` independente (catálogo `PLUGIN_CATALOG`, hoje só `enterprise`),
+`plugin_code` independente (sem catálogo estático de plugins instaláveis),
 entitlement das telas de auditoria, a fronteira `pom`/`pom-plugin-host`, o
-plugin `enterprise.db` e os limites restantes da integração P2P/release.
+plugin `enterprise.db` e os limites restantes da integração P2P/release. A
+vitrine `/plugins` cruza o catálogo público com o estado AdminOnly do nó e
+leva a compra à loja pública usando `plugin_code`.
 
 ## Defeitos anotados
 

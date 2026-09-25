@@ -13,7 +13,9 @@ Cada instância deste binário serve um plugin só; nada aqui é global ou
 singleton (nem estado de processo, nem socket com nome fixo), então
 `crate::plugins::PluginManager` (em `crates/node`) já pode manter uma
 instância concorrente por `plugin_code` ativo, cada uma com seu próprio
-`POM_ENTERPRISE_DB` e seus próprios pipes stdin/stdout.
+`POM_PLUGIN_DB` e seus próprios pipes stdin/stdout. O segundo argumento do
+processo é o `plugin_code` validado no manifesto; ele resolve o símbolo
+`pom_<plugin_code>_plugin_v1`, sem acoplar o host a um produto específico.
 
 ## Maintaining this file
 

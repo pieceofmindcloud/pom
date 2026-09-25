@@ -31,17 +31,17 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 
 ## build.rs
 
-- Carimba `POM_BUILD_COMMIT` no binário (`cargo:rustc-env`). Precedência:
-  variável `POM_BUILD_COMMIT` (o Dockerfile não tem `git` nem `.git`) →
+- `build.rs` carimba o fallback `POM_BUILD_COMMIT` no binário:
   `git rev-parse --short HEAD` + sufixo `-sujo` se `git status --porcelain`
-  mostrar mudanças → `desconhecido`.
-- `rerun-if-changed` em `.git/HEAD` e `.git/index`, e `rerun-if-env-changed` na
-  variável - sem isto o carimbo congela no primeiro build.
+  mostrar mudanças → `desconhecido`. `build_commit()` prefere a variável de
+  runtime `POM_BUILD_COMMIT` quando não vazia. No Docker, o commit do host é
+  exportado só no estágio runtime para não invalidar Cargo.
+- `rerun-if-changed` em `.git/HEAD` e `.git/index` atualiza o fallback local.
 - O comentário no topo avisa: a UI **não** é embutida aqui, é lida do disco
   (`webapp.rs` + `config::ui_dist_dir`); `npm run build` em `apps/frontend` é
   um passo separado.
-- Lido em `main.rs:1` (`BUILD_COMMIT`) e exposto em `/api/ui/node` - é como se
-  descobre um peer com binário velho sem shell na máquina.
+- `build_commit()` em `main.rs` é exposto em `/api/ui/node` e usado na checagem
+  de atualizações - identifica peer ou executável sem shell local.
 - `main.rs` lê `POM_DESENV` uma vez no startup; somente o valor exato `1` habilita
   controles de desenvolvimento, e `NodeInfo.pom_desenv` publica essa decisão
   para a interface. A flag só controla a visibilidade local: os handlers de
@@ -145,8 +145,8 @@ operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
     memória; a consulta de VRAM e a aplicação ficam em `inference/llm.rs`.
     O gateway é spawnado antes desse `apply`, então lock, fit ou carga de
     modelo não podem fechar a porta de controle.
-12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI). A rota
-    de prévia de capacidade faz somente estimativa analítica, com quatro
+12. `GatewayState` + `start_gateway_with_ready` spawnado (todo nó serve
+    HTTP/UI). A rota de prévia de capacidade faz somente estimativa analítica, com quatro
     admissões por processo e `429` imediato quando todas estão ocupadas.
 13. `ClusterLogs` inicia a captura limitada e as tasks best-effort; o histórico
     usa `INFO` como nível mínimo por padrão, aceita `cluster_logs_min_level` no
@@ -211,7 +211,9 @@ automáticas de uma implantação problemática.
 - `utils/` - config, TUI, respawn, sysmon. Ver `crates/node/src/utils/AGENTS.md`.
 - `models/` - perfis de modelo e catálogo de GGUFs: `model.rs`
   (`ModelProfile`, `calculate_assignment`), `catalog.rs` (varredura de
-  `model_dirs`), `gguf.rs` (leitor de cabeçalho/tensor table), `plan.rs`
+  `model_dirs`; a varredura rápida publica raízes e arquivos sem calcular SHA-256
+  de modelos inteiros, deixando a validação de `pom_id` para o enriquecimento),
+  `gguf.rs` (leitor de cabeçalho/tensor table), `plan.rs`
   (fatiamento por orçamento/tamanho), `splitter.rs` (split e merge),
   `memory.rs` (carregar camadas), `lastslice.rs` (fatia anotada com estado
   Pending/Serving), `ollama.rs` (`OllamaClient`), `provider.rs` (contrato
@@ -226,8 +228,8 @@ automáticas de uma implantação problemática.
   `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
   `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
   outro mecanismo, e outra chave, que a especulação por lookup).
-- `backend/` - HTTP e estado: `gateway.rs` (`start_gateway`, a fronteira de
-  `AdminAuth` para `/api/ui/**` e `/admin/**`, e o preflight da porta),
+- `backend/` - HTTP e estado: `gateway/` (`start_gateway_with_ready`, a
+  fronteira de `AdminAuth` para `/api/ui/**` e `/admin/**`, e o preflight da porta),
   `generate_stream_with_stops` e o resumo agregado de TTFT, prefill, geração e
   total), `webapp.rs` (serve a UI do disco), `webui.rs`
   (rotas `/api/ui/*`), `auth.rs` (`ApiKeyAuth`, connection key), `admin.rs`,
@@ -258,17 +260,47 @@ libp2p separado do túnel de inferência. O `GatewayState` compartilha o serviç
 com as rotas `/api/ui/network-chat`; a política de cluster é aplicada pela
 catraca de `network_chat_policy`.
 
-`src/plugins.rs` é o gerenciador genérico de N plugins independentes (decisão
-do captain, 2026-09-18): `PluginManager` mantém um `PluginRuntime` por
-`plugin_code` do catálogo fixo (`PLUGIN_CATALOG`, hoje só `"enterprise"`), cada
-um com seu próprio cliente mockável do servidor de licenças, fingerprint
-compartilhado, estado persistido sem a chave (`plugin_license:<code>`),
-supervisor de heartbeat e checagem de atualização de versão PRÓPRIA - nenhum
-desses estados é compartilhado entre plugins nem com o `pom_core`. Uma
-ativação por chave de licença primeiro valida uma vez para descobrir quais
-`plugin_code` ela concede (`licensed_plugins`, códigos puros), depois
-ativa/instala cada um separadamente. As features de cada plugin vêm do
-`feature_set` do manifesto do release, NÃO da licença. Todo heartbeat com SUCESSO marca
+`src/plugins.rs` é o gerenciador de plugins independentes: não há lista
+estática de plugins instaláveis no binário. `PluginManager` cria um
+`PluginRuntime` para cada `plugin_code` concedido pelo servidor ou conhecido por
+origem GitHub/instalação pública, e restaura os estados locais
+(`plugin_license:<code>`, `plugin_github:<code>` e
+`plugin_public_install:<code>`) ao iniciar. Um runtime licenciado tem seu próprio
+ciclo de licença e supervisor de heartbeat; uma instalação pública não cria
+lease nem `licensed_plugins`. A ativação em lote valida uma vez, depois
+ativa/instala separadamente cada código concedido. As features de cada plugin
+vêm do `feature_set` do manifesto do release, NÃO da licença. A lista pública
+do servidor alimenta a vitrine do frontend; `GET /api/ui/plugins` publica os
+estados locais já conhecidos pelo nó.
+`PersistedPluginState.installed_release_id` (chave JSON `plugin_release_id`,
+preservada por compatibilidade) só avança quando um download é de fato
+instalado (`activate_and_install`/`apply_update`) - o heartbeat não escreve
+nela, só usa seus próprios `release_changed`/`available_release_id` para
+disparar `detect_update` e alimentar `status.available_update` (2026-09-21:
+o heartbeat escrevia ali direto e corrompia a base que `detect_update`
+compara contra o manifest, fazendo "Atualizar" nunca mostrar a atualização
+real). `PluginStatus.update_checked_at` só avança quando a consulta de manifest
+termina com sucesso; `installed_at` só avança quando o host fica pronto após
+instalação ou aplicação. Ambos persistem por plugin, têm `serde(default)` para
+estados existentes e não são derivados de `last_success_at`, que é atualizado
+por heartbeat. `public_install` identifica um host público sem lease e
+`PluginStatus.licensed_plugins` continua vazio nesse caso. `PluginStatus.license_expires_at` é a validade da LICENÇA
+(`GET /v1/licenses/status`, consultada em `restore()` e no clique manual em
+"Atualizar" via `refresh_license_status`), nunca o `lease_expires_at` técnico -
+confundir os dois já vazou para a UI uma vez, ver
+`docs/subsystems/licenciamento-enterprise.md`. A origem pública GitHub é
+independente da ativação: `plugin_github.rs` valida manifestos por SO/arquitetura,
+SHA-256 e tamanho, baixa para staging e preserva o último resultado em falha.
+O update de plugin pago exige que ele continue ativo pela licença. A instalação
+pública revalida `requires_license: false` e `github_repository` no catálogo
+HTTPS do servidor e persiste em `plugin_public_install:<code>`, sem lease.
+As preferências opcionais do manifesto são guardadas localmente por
+`plugin_preferences:<code>`, fora do snapshot/licença.
+O `PluginStatus` também publica a expiração, os plugins concedidos, candidatos
+com release elegível e uso autenticado por `plugin_code`, preservados da
+validação/ativação/heartbeat. `GET /api/ui/plugins` é AdminOnly; esse JSON não
+inclui tokens de licença. O catálogo comercial permanece público e separado.
+Todo heartbeat com SUCESSO marca
 o plugin ativo e chama `ensure_host_running` (mesma lógica usada na
 restauração de boot, extraída em um só lugar): se o host daquele plugin
 estiver `None` - porque uma revogação temporária o derrubou, ou porque o
@@ -287,7 +319,9 @@ fazia `heartbeat_success_restarts_the_stopped_plugin_host` falhar ora por
 
 `plugin_host.rs` (`PluginHost`) é o único adaptador do `pom` para o processo
 auxiliar `pom-plugin-host` - já suporta várias instâncias concorrentes, uma
-por plugin ativo. `PluginHost::start` usa `kill_on_drop` e mata explicitamente
+por plugin ativo. `PluginHost::start` passa o `plugin_code` para o binário
+auxiliar, que resolve `pom_<plugin_code>_plugin_v1` e usa `POM_PLUGIN_DB`; o
+host usa `kill_on_drop` e mata explicitamente
 o processo quando o handshake `ready` falha ou estoura o timeout de 30s - sem
 isso, um handshake lento (máquina ainda se recuperando de um OOM) deixava
 `pom-plugin-host` órfão no SO enquanto o `PluginRuntime` continuava sem host,
@@ -300,6 +334,38 @@ plugin). O `GatewayState` expõe o `PluginManager` ao backend, `webui` publica
 lista/ativação/atualização por plugin e `reqlog` encaminha eventos e consultas
 ao plugin `enterprise` especificamente. Os dois lados do IPC usam o limite
 compartilhado `enterprise_protocol::MAX_IPC_FRAME_BYTES` de 16 MiB.
+
+`src/plugin_ui.rs` é a interface fornecida por plugins: valida o manifesto
+`pom-plugin-ui/v1` que o plugin devolve na operação `ui.manifest` do `query`
+(`PluginUiManifest::parse`, `validate_catalog` para os catálogos i18n), e serve
+`GET /api/ui/plugins/ui` (só plugins ativos com manifesto válido) e
+`GET /api/ui/plugins/:code/assets/*path` (só assets listados, via `ui.asset`).
+Menus e rotas aceitam `roles` opcionais; `profiles` continua aceito como campo
+legado, com `roles` prevalecendo quando ambos aparecem. A ausência dos dois
+libera todos os perfis antes da regra de acesso.
+`PluginRuntime::ui_manifest` reaproveita `query_audit`. Contrato completo em
+`docs/subsystems/plugins-ui.md`.
+
+Todo host de plugin recebe o contexto do nó pela operação `host.configure` do
+`query`: `{"gateway": {"openai_base_url", "api_key"}}`. `plugins::spawn_host_context`
+(iniciado no `main.rs` ao montar o gateway) monta esse JSON com
+`http://127.0.0.1:<gateway_port>/v1` e a chave de chat do nó
+(`admin::node_chat_key`, a mesma do Chat da interface, porque é a única classe
+de chave que um nó sem autoridade registra no principal) e o reavalia a cada
+10 min, ou a cada 30 s enquanto a chave não sai. `PluginManager::set_host_context`
+reentrega aos hosts em execução quando o contexto muda, e `PluginRuntime::start_host`
+o entrega a todo host que sobe. Plugin que não conhece a operação responde
+erro, e isso é ignorado. Nada disso vai por variável de ambiente nem argv.
+
+`src/plugin_proxy.rs` é o proxy reverso `/api/ui/plugins/:code/proxy/*` das
+interfaces web que um plugin serve em loopback: pergunta `ui.upstream` ao host
+(`{"status":"ready","port","token"}`), encaminha HTTP em streaming e upgrades
+(WebSocket; por isso `serve.rs` usa `serve_connection_with_upgrades`) para
+`127.0.0.1:<port>` com `x-pom-plugin-token` e `x-forwarded-prefix`, e nunca
+repassa cookie, `Authorization` ou `x-pom-access-token` nem aceita `Set-Cookie`
+do plugin. A autorização é a da superfície administrativa (AdminOnly), a
+falsificação entre sites é barrada por `same_origin`, e chamadas entre nós são
+recusadas.
 
 `src/pom_core_update.rs` é deliberadamente SEPARADO de `src/plugins.rs`: a
 atualização do binário `pom` em si não é um plugin e vai virar GitHub Releases

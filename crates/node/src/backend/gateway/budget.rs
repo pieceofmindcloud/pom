@@ -617,6 +617,11 @@ pub enum GenEvent {
     Done(GenSummary),
     /// Generation produced nothing usable.
     Failed(String),
+    /// Generation failed after collecting partial prefill telemetry.
+    FailedWithTelemetry {
+        error: String,
+        trace: Option<crate::prefill::RequestTrace>,
+    },
 }
 
 /// Inputs shared by the blocking, streaming and logged generation adapters.

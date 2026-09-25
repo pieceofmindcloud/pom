@@ -95,22 +95,10 @@ fn embed_windows_icon(_root: &Path) {}
 /// Diagnosing one such peer cost an afternoon, so the answer now travels with
 /// the node, in `/api/ui/node`.
 fn emit_build_id(root: &Path) {
-    // A build that cannot run `git` has to be *told* the commit, and the image
-    // build is exactly that: `.dockerignore` keeps `.git/` out of the context
-    // and the builder image has no `git` binary, so both halves below fail and
-    // every container reported "desconhecido" — the one build whose version you
-    // most need, since a container is the hardest place to get a shell into.
-    // `scripts/build-docker.sh` reads the commit on the host and passes it in
-    // through this variable.
-    println!("cargo:rerun-if-env-changed=POM_BUILD_COMMIT");
-    if let Ok(stamped) = std::env::var("POM_BUILD_COMMIT") {
-        let stamped = stamped.trim();
-        if !stamped.is_empty() {
-            println!("cargo:rustc-env=POM_BUILD_COMMIT={stamped}");
-            return;
-        }
-    }
-
+    // Docker images do not include `.git/`, so their compiled fallback is
+    // `desconhecido`. The host commit is runtime metadata in the final image;
+    // keeping it out of this build script prevents a commit-only change from
+    // invalidating Cargo's expensive build layer.
     let commit = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .current_dir(root)

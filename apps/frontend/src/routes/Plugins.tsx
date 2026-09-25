@@ -1,37 +1,16 @@
-import { Download, ExternalLink, KeyRound, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
-import { useState } from "react";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, KeyRound, Package, RefreshCw, Save, ShieldCheck, X, XCircle } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Tone } from "../components/ui";
-import { Badge, Button, ErrorState, Input, PageHeader, Panel, PanelHeader, Skeleton } from "../components/ui";
+import { Badge, Button, Empty, ErrorState, FullBleedHeader, Input, Panel, PanelHeader, Skeleton } from "../components/ui";
+import { Confirm } from "../components/Confirm";
 import { api } from "../lib/api";
-import { usePlugins } from "../lib/queries";
-import type { PluginStatus } from "../lib/types";
+import { useNode, usePlugins, usePublicPluginCatalog } from "../lib/queries";
+import type { PluginPreferences, PluginPreferencesSchema, PluginStatus } from "../lib/types";
+import { releaseForTarget, type PublicPluginCatalogEntry, type PublicPluginPrice } from "../lib/pluginCatalog";
+import { navigateToPluginPurchase } from "../lib/pluginPurchase";
 import { useI18n } from "../i18n/provider";
 
-/**
- * Presentation-only lookup for plugins the catalog already knows about. Not
- * a second catalog: it just names/describes the codes `PluginStatus.code`
- * can carry, and falls back to the raw code for anything it does not
- * recognize yet, so a plugin added on the backend without a frontend update
- * still renders (as its bare code) instead of disappearing.
- */
-const CATALOG_COPY: Record<string, { nameKey: string; descriptionKey: string }> = {
-  enterprise: {
-    nameKey: "plugins.catalog.enterprise.name",
-    descriptionKey: "plugins.catalog.enterprise.description",
-  },
-};
-
-function pluginName(t: (key: string) => string, code: string): string {
-  const copy = CATALOG_COPY[code];
-  return copy ? t(copy.nameKey) : code;
-}
-
-function pluginDescription(t: (key: string) => string, code: string): string {
-  const copy = CATALOG_COPY[code];
-  return copy ? t(copy.descriptionKey) : "";
-}
-
-function stateTone(state: PluginStatus["state"]): Tone {
+function stateTone(state: PluginStatus["state"] | null): Tone {
   switch (state) {
     case "active":
       return "aqua";
@@ -45,15 +24,719 @@ function stateTone(state: PluginStatus["state"]): Tone {
   }
 }
 
-export function Plugins() {
+function formatPrice(price: PublicPluginPrice | null, locale: string): string | null {
+  if (price?.amount === null || price?.amount === undefined || !price.currency) return null;
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency: price.currency,
+    }).format(price.amount / 100);
+  } catch {
+    return null;
+  }
+}
+
+function formatDateTime(value: string | null | undefined, locale: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  try {
+    return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  } catch {
+    return null;
+  }
+}
+
+type PluginCardProps = {
+  entry: PublicPluginCatalogEntry | null;
+  status: PluginStatus | null;
+  licenseStatus: PluginStatus | null;
+  licenseStatusAvailable: boolean;
+  busyCode: string | null;
+  updateFailedCode: string | null;
+  preferencesFailedCode: string | null;
+  deactivateFailedCode: string | null;
+  locale: string;
+  targetOs: string | null;
+  targetArch: string | null;
+  onRefresh: (code: string) => void;
+  onDeactivate: (code: string) => void;
+  onApplyUpdate: (code: string, releaseId: string) => void;
+  onInstallPublicGithub: (code: string) => void;
+  onSavePreferences: (code: string, preferences: PluginPreferences) => void;
+  onBuy: (entry: PublicPluginCatalogEntry) => void;
+};
+
+function PluginCard({
+  entry,
+  status,
+  licenseStatus,
+  licenseStatusAvailable,
+  busyCode,
+  updateFailedCode,
+  preferencesFailedCode,
+  deactivateFailedCode,
+  locale,
+  targetOs,
+  targetArch,
+  onRefresh,
+  onDeactivate,
+  onApplyUpdate,
+  onInstallPublicGithub,
+  onSavePreferences,
+  onBuy,
+}: PluginCardProps) {
   const { t } = useI18n();
+  const dialogTitleId = useId();
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const returnFocusRef = useRef<HTMLButtonElement | null>(null);
+  const [activeScreenshotIndex, setActiveScreenshotIndex] = useState<number | null>(null);
+  const [preferenceDraft, setPreferenceDraft] = useState<PluginPreferences | null>(status?.preferences ?? null);
+  const code = entry?.code ?? status?.code ?? "";
+  const name = entry?.display_name ?? code;
+  const active = Boolean(status?.active);
+  const description = entry
+    ? locale === "pt-BR" ? entry.description_pt_br ?? entry.description : entry.description
+    : null;
+  const release = entry ? releaseForTarget(entry.releases, targetOs, targetArch) : null;
+  const hasRequiredLicense = entry?.requires_license === true;
+  const isPublicGithubPlugin = entry?.requires_license === false && Boolean(entry.github_repository);
+  const licenseLabel = entry?.requires_license === false || status?.public_install
+    ? t("plugins.noLicenseRequired")
+    : !licenseStatusAvailable
+      ? t("plugins.licenseUnknown")
+      : status
+        ? t(`plugins.state.${status.state}`)
+        : entry?.requires_license === true
+          ? t("plugins.state.needs_activation")
+          : t("plugins.licenseUnknown");
+  const badgeTone = entry?.requires_license === false || status?.public_install
+    ? "aqua"
+    : status?.state
+      ? stateTone(status.state)
+      : "neutral";
+  const installedAt = formatDateTime(status?.installed_at, locale);
+  const updateCheckedAt = formatDateTime(status?.update_checked_at, locale);
+  // The license's own validity, not `lease_expires_at` (a short technical
+  // renewal deadline the heartbeat rolls forward every few days) - showing
+  // the lease here would read as "your license expires tomorrow" while the
+  // purchased license is still valid for months.
+  const licenseExpiresAt = formatDateTime(
+    licenseStatus?.license_expires_at ?? status?.license_expires_at,
+    locale,
+  );
+  const monthlyPrice = formatPrice(entry?.pricing.monthly ?? null, locale);
+  const annualPrice = formatPrice(entry?.pricing.annual ?? null, locale);
+  const screenshots = entry?.screenshot_urls.slice(0, 4) ?? [];
+  const isLicenseEnded = status?.state === "expired" || status?.state === "revoked";
+  const hasLicense = entry?.requires_license !== false
+    && status?.public_install !== true
+    && (status?.active === true
+      || (!isLicenseEnded && licenseStatus?.licensed_plugins.includes(code) === true));
+  const directCount = status?.activation_count;
+  const directMaximum = status?.max_activations;
+  const directUsage = directCount !== null && directCount !== undefined
+    && directMaximum !== null && directMaximum !== undefined && directMaximum > 0
+    ? { active: directCount, max: directMaximum }
+    : null;
+  const sharedUsage = licenseStatus?.plugin_usage.find((usage) => usage.plugin_code === code);
+  const activationUsage = hasLicense
+    ? directUsage
+      ?? (sharedUsage && sharedUsage.max_activations > 0
+        ? { active: sharedUsage.activation_count, max: sharedUsage.max_activations }
+        : null)
+    : null;
+  const machineLimitReached = activationUsage !== null
+    && activationUsage.active >= activationUsage.max;
+  const machineUsageState = activationUsage === null
+    ? null
+    : machineLimitReached
+      ? "limitReached"
+      : activationUsage.active > 0
+        ? "partial"
+        : "unused";
+  const machineUsageTone: Tone = machineLimitReached ? "rose" : activationUsage?.active ? "amber" : "aqua";
+  const machineUsageCount = activationUsage
+    ? t("plugins.activationUsage.count", {
+      active: activationUsage.active,
+      max: activationUsage.max,
+    })
+    : null;
+  const hasMissingMetadata = entry !== null && (
+    !entry.display_name
+    || !description
+    || (!entry.icon_url && screenshots.length === 0)
+  );
+  const preferenceSchema = status?.preferences_schema ?? null;
+  const preferenceSchemaKey = JSON.stringify(preferenceSchema) ?? "null";
+  const savedPreferencesKey = JSON.stringify(status?.preferences ?? null) ?? "null";
+  const preferenceDraftDefaults = useMemo(() => {
+    const schema = JSON.parse(preferenceSchemaKey) as PluginPreferencesSchema | null;
+    const saved = JSON.parse(savedPreferencesKey) as PluginPreferences | null;
+    if (!schema) return null;
+    return saved ?? {
+      features: Object.fromEntries(schema.features.map((preference) => [preference.key, preference.default])),
+      storage_directory: schema.storage_directory?.default ?? null,
+    };
+  }, [preferenceSchemaKey, savedPreferencesKey]);
+
+  useEffect(() => setPreferenceDraft(preferenceDraftDefaults), [preferenceDraftDefaults]);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (activeScreenshotIndex !== null) {
+      if (!dialog.open) {
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        else dialog.setAttribute("open", "");
+        closeButtonRef.current?.focus();
+      }
+      return;
+    }
+    if (dialog.open) {
+      if (typeof dialog.close === "function") dialog.close();
+      else dialog.removeAttribute("open");
+      returnFocusRef.current?.focus();
+    }
+  }, [activeScreenshotIndex]);
+
+  useEffect(() => {
+    if (activeScreenshotIndex === null) return;
+    const navigateScreenshot = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setActiveScreenshotIndex(null);
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        moveScreenshot(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        moveScreenshot(1);
+      }
+    };
+    document.addEventListener("keydown", navigateScreenshot);
+    return () => document.removeEventListener("keydown", navigateScreenshot);
+  }, [activeScreenshotIndex, screenshots.length]);
+
+  function moveScreenshot(delta: number) {
+    if (activeScreenshotIndex === null || screenshots.length === 0) return;
+    setActiveScreenshotIndex((activeScreenshotIndex + delta + screenshots.length) % screenshots.length);
+  }
+
+  return (
+    <Panel className={active ? "border-aqua/35 bg-aqua/5" : "border-line"}>
+      <PanelHeader
+        eyebrow={code}
+        title={name}
+        subtitle={description ?? t("plugins.metadataUnavailable")}
+        actions={(
+          <div className="flex items-center gap-2">
+            {(entry?.github_repository || status?.github_repository) && <Badge tone="neutral">GitHub</Badge>}
+            {entry?.icon_url ? (
+              <img
+                src={entry.icon_url}
+                alt={name}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                className="h-10 w-10 rounded-xl border border-line object-cover"
+              />
+            ) : (
+              <span aria-hidden="true" className="flex h-10 w-10 items-center justify-center rounded-xl border border-line bg-raised text-muted">
+                <Package className="h-5 w-5" />
+              </span>
+            )}
+            <Badge tone={badgeTone}>{licenseLabel}</Badge>
+          </div>
+        )}
+      />
+
+      <div className="space-y-4 px-5 py-5">
+        {hasMissingMetadata && (
+          <p role="note" className="text-xs text-faint">{t("plugins.metadataIncomplete")}</p>
+        )}
+
+        {entry && screenshots.length > 0 && (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" role="group" aria-label={t("plugins.screenshots")}>
+            {screenshots.map((url, index) => (
+              <button
+                key={`${url}:${index}`}
+                type="button"
+                aria-label={t("plugins.screenshotOpen", { name, number: index + 1 })}
+                aria-haspopup="dialog"
+                onClick={(event) => {
+                  returnFocusRef.current = event.currentTarget;
+                  setActiveScreenshotIndex(index);
+                }}
+                className="group overflow-hidden rounded-lg border border-line bg-raised text-left transition-colors hover:border-iris focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+              >
+                <img
+                  src={url}
+                  alt={t("plugins.screenshotAlt", { name, number: index + 1 })}
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                  className="aspect-video w-full object-cover transition-transform duration-200 group-hover:scale-[1.025] motion-reduce:transition-none"
+                />
+              </button>
+            ))}
+          </div>
+        )}
+
+        {hasRequiredLicense && activationUsage && machineUsageState && machineUsageCount && (
+          <div className="space-y-2 rounded-lg border border-line bg-raised/45 px-3.5 py-3" role="group" aria-label={t("plugins.activationUsage.label")}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-medium text-fg">{machineUsageCount}</span>
+              <Badge tone={machineUsageTone}>{t(`plugins.activationUsage.${machineUsageState}`)}</Badge>
+            </div>
+            <div
+              role="progressbar"
+              aria-label={t("plugins.activationUsage.label")}
+              aria-valuemin={0}
+              aria-valuemax={activationUsage.max}
+              aria-valuenow={Math.min(activationUsage.active, activationUsage.max)}
+              aria-valuetext={machineUsageCount}
+              className="h-1.5 overflow-hidden rounded-full bg-line"
+            >
+              <div
+                className={machineLimitReached ? "h-full rounded-full bg-rose" : "h-full rounded-full bg-aqua"}
+                style={{ width: `${Math.min(100, activationUsage.active / activationUsage.max * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        <dl className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <dt className="eyebrow mb-1">{t("plugins.version")}</dt>
+            <dd className="font-mono text-sm text-fg">{status?.plugin_version ?? "-"}</dd>
+          </div>
+          <div>
+            <dt className="eyebrow mb-1">{t("plugins.availableRelease")}</dt>
+            <dd className="font-mono text-sm text-fg">
+              {release
+                ? `${release.version} · ${release.channel} · ${release.os} / ${release.arch}`
+                : entry?.github_repository
+                  ? t("plugins.githubReleaseSource")
+                  : t("plugins.releaseUnavailable")}
+            </dd>
+          </div>
+          {active && status && (
+            <div className="sm:col-span-2">
+              <dt className="eyebrow mb-1">{t("plugins.features")}</dt>
+              <dd className="text-sm text-fg">{status.features.length > 0 ? status.features.join(", ") : "-"}</dd>
+            </div>
+          )}
+          {active && installedAt && (
+            <div>
+              <dt className="eyebrow mb-1">{t("plugins.installedAt")}</dt>
+              <dd className="text-sm text-fg">{installedAt}</dd>
+            </div>
+          )}
+          {active && updateCheckedAt && (
+            <div>
+              <dt className="eyebrow mb-1">{t("plugins.lastUpdateCheck")}</dt>
+              <dd className="text-sm text-fg">{updateCheckedAt}</dd>
+            </div>
+          )}
+        {hasLicense && licenseExpiresAt && (
+            <div>
+              <dt className="eyebrow mb-1">{t("plugins.licenseExpires")}</dt>
+              <dd className="text-sm text-fg">{licenseExpiresAt}</dd>
+            </div>
+          )}
+        </dl>
+
+        {entry && (
+          <dialog
+            ref={dialogRef}
+            aria-labelledby={dialogTitleId}
+            aria-hidden={activeScreenshotIndex === null}
+            onCancel={(event) => {
+              event.preventDefault();
+              setActiveScreenshotIndex(null);
+            }}
+            className="fixed inset-0 m-0 h-screen max-h-none w-screen max-w-none border-0 bg-transparent p-0 text-fg backdrop:bg-ink/90"
+          >
+            <div className="relative flex h-full w-full items-center justify-center p-4 sm:p-8">
+              <h2 id={dialogTitleId} className="sr-only">{t("plugins.screenshotsTitle", { name })}</h2>
+              {activeScreenshotIndex !== null && screenshots[activeScreenshotIndex] && (
+                <img
+                  src={screenshots[activeScreenshotIndex]}
+                  alt={t("plugins.screenshotAlt", { name, number: activeScreenshotIndex + 1 })}
+                  className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
+                />
+              )}
+              <button
+                ref={closeButtonRef}
+                type="button"
+                aria-label={t("plugins.screenshotClose")}
+                onClick={() => setActiveScreenshotIndex(null)}
+                className="absolute right-4 top-4 inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/20 bg-black/70 text-white hover:bg-black/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+              >
+                <X className="h-5 w-5" aria-hidden="true" />
+              </button>
+              {screenshots.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    aria-label={t("plugins.screenshotPrevious")}
+                    onClick={() => moveScreenshot(-1)}
+                    className="absolute left-4 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-black/70 text-white hover:bg-black/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                  >
+                    <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t("plugins.screenshotNext")}
+                    onClick={() => moveScreenshot(1)}
+                    className="absolute right-4 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-black/70 text-white hover:bg-black/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                  >
+                    <ChevronRight className="h-5 w-5" aria-hidden="true" />
+                  </button>
+                </>
+              )}
+              {activeScreenshotIndex !== null && (
+                <p className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-xs text-white">
+                  {activeScreenshotIndex + 1} / {screenshots.length}
+                </p>
+              )}
+            </div>
+          </dialog>
+        )}
+
+        {(monthlyPrice || annualPrice) && (
+          <div className="flex flex-wrap gap-2" aria-label={t("plugins.pricing")}>
+            {monthlyPrice && <Badge tone="neutral">{t("plugins.monthlyPrice", { price: monthlyPrice })}</Badge>}
+            {annualPrice && <Badge tone="neutral">{t("plugins.annualPrice", { price: annualPrice })}</Badge>}
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          {active && status?.public_install !== true && (
+            <>
+              <Button
+                variant="outline"
+                loading={busyCode === code}
+                icon={<RefreshCw className="h-3.5 w-3.5" />}
+                onClick={() => onRefresh(code)}
+              >
+                {t("plugins.refresh")}
+              </Button>
+              <Button
+                variant="outline"
+                loading={busyCode === code}
+                icon={<XCircle className="h-3.5 w-3.5" />}
+                onClick={() => onDeactivate(code)}
+              >
+                {t("plugins.deactivate")}
+              </Button>
+            </>
+          )}
+          {active && status?.public_install === true && (
+            <Button
+              variant="outline"
+              loading={busyCode === code}
+              icon={<XCircle className="h-3.5 w-3.5" />}
+              onClick={() => onDeactivate(code)}
+            >
+              {t("plugins.githubUninstall")}
+            </Button>
+          )}
+          {!active && isPublicGithubPlugin && entry && !status?.github_update && (
+            <Button
+              variant="primary"
+              loading={busyCode === code}
+              icon={<Download className="h-3.5 w-3.5" />}
+              onClick={() => onInstallPublicGithub(code)}
+            >
+              {t("plugins.githubInstall")}
+            </Button>
+          )}
+          {!active && hasRequiredLicense && licenseStatusAvailable && entry && !hasLicense && (
+            <Button
+              variant="ghost"
+              type="button"
+              icon={<ExternalLink className="h-4 w-4" />}
+              className="plugin-buy-button focus-visible:ring-2 focus-visible:ring-iris focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+              onClick={() => onBuy(entry)}
+            >
+              {t("plugins.buy")}
+            </Button>
+          )}
+        </div>
+
+        {active && preferenceSchema && preferenceDraft && (
+          <section className="space-y-3 rounded-xl border border-line bg-raised/35 p-4" aria-labelledby={`plugin-preferences-${code}`}>
+            <div>
+              <h3 id={`plugin-preferences-${code}`} className="text-sm font-semibold text-fg">{t("plugins.preferencesTitle")}</h3>
+              <p className="mt-1 text-xs text-muted">{t("plugins.preferencesLocalOnly")}</p>
+            </div>
+            {preferenceSchema.features.length > 0 && (
+              <fieldset className="space-y-3">
+                <legend className="sr-only">{t("plugins.preferencesTitle")}</legend>
+                {preferenceSchema.features.map((preference) => (
+                  <label key={preference.key} className="flex items-start gap-3 text-sm text-fg">
+                    <input
+                      type="checkbox"
+                      checked={preferenceDraft.features[preference.key] ?? preference.default}
+                      onChange={(event) => setPreferenceDraft({
+                        ...preferenceDraft,
+                        features: { ...preferenceDraft.features, [preference.key]: event.target.checked },
+                      })}
+                      className="mt-0.5 h-4 w-4 accent-iris focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+                    />
+                    <span>
+                      <span className="block font-medium">{preference.label}</span>
+                      {preference.description && <span className="mt-0.5 block text-xs text-muted">{preference.description}</span>}
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+            )}
+            {preferenceSchema.storage_directory && (
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-medium text-muted">{preferenceSchema.storage_directory.label}</span>
+                <Input
+                  type="text"
+                  value={preferenceDraft.storage_directory ?? ""}
+                  onChange={(event) => setPreferenceDraft({ ...preferenceDraft, storage_directory: event.target.value || null })}
+                  aria-label={preferenceSchema.storage_directory.label}
+                  autoComplete="off"
+                />
+              </label>
+            )}
+            <Button
+              variant="outline"
+              loading={busyCode === code}
+              icon={<Save className="h-3.5 w-3.5" />}
+              onClick={() => onSavePreferences(code, preferenceDraft)}
+            >
+              {t("plugins.preferencesSave")}
+            </Button>
+            {preferencesFailedCode === code && <p role="alert" className="text-xs text-rose">{t("plugins.preferencesSaveFailed")}</p>}
+          </section>
+        )}
+
+        {deactivateFailedCode === code && (
+          <p role="alert" className="text-xs text-rose">{t("plugins.deactivateFailed")}</p>
+        )}
+
+        {active && status?.available_update && (
+          <div className="space-y-3 rounded-xl border border-iris/35 bg-iris/8 px-4 py-3" role="status">
+            <div>
+              <p className="text-sm font-medium text-fg">
+                {t("plugins.updateAvailable", { version: status.available_update.version })}
+              </p>
+              <p className="mt-1 font-mono text-xs text-muted">
+                {t("plugins.updateRelease", { release_id: status.available_update.release_id })}
+              </p>
+              {status.available_update.changelog && (
+                <p className="mt-2 text-xs leading-relaxed text-muted">{status.available_update.changelog}</p>
+              )}
+            </div>
+            <Button
+              variant="primary"
+              loading={busyCode === code}
+              icon={<Download className="h-3.5 w-3.5" />}
+              onClick={() => onApplyUpdate(code, status.available_update!.release_id)}
+            >
+              {t("plugins.updateApply")}
+            </Button>
+            {updateFailedCode === code && (
+              <p role="alert" className="text-xs text-rose">{t("plugins.updateApplyFailed")}</p>
+            )}
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+type GithubTarget = {
+  code: string;
+  name: string;
+  repository: string | null;
+  requiresLicense: boolean | null;
+  status: PluginStatus | null;
+};
+
+type GithubReleasesManagerProps = {
+  targets: GithubTarget[];
+  busyCode: string | null;
+  sourceFailedCode: string | null;
+  sourceFailureMessage: string | null;
+  onSetSource: (code: string, repositoryUrl: string) => void;
+  onRemoveSource: (code: string) => void;
+  onCheck: (code: string) => void;
+  onApply: (code: string, releaseId: string) => void;
+  onInstall: (code: string) => void;
+  onUninstall: (code: string) => void;
+};
+
+function GithubReleasesManager({
+  targets,
+  busyCode,
+  sourceFailedCode,
+  sourceFailureMessage,
+  onSetSource,
+  onRemoveSource,
+  onCheck,
+  onApply,
+  onInstall,
+  onUninstall,
+}: GithubReleasesManagerProps) {
+  const { t } = useI18n();
+  const [selectedCode, setSelectedCode] = useState("");
+  const selected = targets.find((target) => target.code === selectedCode) ?? targets[0] ?? null;
+  const selectedCodeForForm = selected?.code ?? "";
+  const [repositoryUrl, setRepositoryUrl] = useState("");
+
+  useEffect(() => {
+    if (!selectedCode && targets[0]) setSelectedCode(targets[0].code);
+    else if (selectedCode && !targets.some((target) => target.code === selectedCode)) {
+      setSelectedCode(targets[0]?.code ?? "");
+    }
+  }, [selectedCode, targets]);
+
+  useEffect(() => {
+    setRepositoryUrl(selected?.status?.github_repository ?? selected?.repository ?? "");
+  }, [selected?.code, selected?.status?.github_repository, selected?.repository]);
+
+  const registered = Boolean(selected?.status?.github_repository);
+  const hasPublicSource = Boolean(selected?.repository);
+  const canInstallFree = selected?.requiresLicense === false && hasPublicSource;
+  const update = selected?.status?.github_update;
+
+  return (
+    <Panel className="border-line">
+      <PanelHeader
+        eyebrow="GitHub"
+        title={t("plugins.githubSourceTitle")}
+        subtitle={t("plugins.githubSourceDescription")}
+      />
+      <div className="space-y-4 px-5 py-5">
+        {targets.length === 0 ? (
+          <p className="text-sm text-muted">{t("plugins.githubNoPlugins")}</p>
+        ) : (
+          <>
+            <label className="block">
+              <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">{t("plugins.githubPluginLabel")}</span>
+              <select
+                aria-label={t("plugins.githubPluginLabel")}
+                value={selectedCodeForForm}
+                onChange={(event) => setSelectedCode(event.target.value)}
+                className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
+              >
+                {targets.map((target) => (
+                  <option key={target.code} value={target.code}>{target.name} · {target.code}</option>
+                ))}
+              </select>
+            </label>
+            {selected && (
+              <>
+                {selected.repository && (
+                  <p className="text-xs text-muted">
+                    {t("plugins.githubCatalogSource")} <a className="break-all text-iris underline" href={selected.repository} target="_blank" rel="noreferrer">{selected.repository}</a>
+                  </p>
+                )}
+                <form
+                  className="flex flex-col gap-2 sm:flex-row"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    onSetSource(selected.code, repositoryUrl);
+                  }}
+                >
+                  <label className="min-w-0 flex-1">
+                    <span className="sr-only">{t("plugins.githubRepositoryLabel")}</span>
+                    <Input
+                      type="url"
+                      value={repositoryUrl}
+                      onChange={(event) => setRepositoryUrl(event.target.value)}
+                      placeholder="https://github.com/owner/repository"
+                      aria-label={t("plugins.githubRepositoryLabel")}
+                      autoComplete="url"
+                    />
+                  </label>
+                  <Button variant="outline" type="submit" loading={busyCode === selected.code}>
+                    {registered ? t("plugins.githubSourceSave") : t("plugins.githubSourceRegister")}
+                  </Button>
+                </form>
+                <div className="flex flex-wrap gap-2">
+                  {registered && (
+                    <>
+                      <Button variant="ghost" loading={busyCode === selected.code} icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => onCheck(selected.code)}>
+                        {t("plugins.githubCheck")}
+                      </Button>
+                      {selected.status?.public_install === true && !selected.status.active && (
+                        <Button variant="ghost" loading={busyCode === selected.code} icon={<XCircle className="h-3.5 w-3.5" />} onClick={() => onUninstall(selected.code)}>
+                          {t("plugins.githubUninstall")}
+                        </Button>
+                      )}
+                      {selected.status?.public_install !== true && (
+                        <Button variant="ghost" loading={busyCode === selected.code} icon={<XCircle className="h-3.5 w-3.5" />} onClick={() => onRemoveSource(selected.code)}>
+                          {t("plugins.githubRemove")}
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
+                {sourceFailedCode === selected.code && (
+                  <p role="alert" className="text-xs text-rose">
+                    {t("plugins.githubSourceFailed")}
+                    {sourceFailureMessage && <span className="mt-1 block break-words">{sourceFailureMessage}</span>}
+                  </p>
+                )}
+                {selected.status?.github_error && (
+                  <p role="alert" className="text-xs text-rose">
+                    {t("plugins.githubCheckFailed")}
+                    <span className="mt-1 block break-words">{selected.status.github_error}</span>
+                  </p>
+                )}
+                {update && (
+                  <div className="space-y-3 rounded-lg border border-iris/35 bg-iris/8 px-3.5 py-3" role="status">
+                    <div>
+                      <p className="text-sm font-medium text-fg">{t("plugins.githubUpdateAvailable", { version: update.version })}</p>
+                      <p className="mt-1 font-mono text-xs text-muted">{t("plugins.updateRelease", { release_id: update.release_id })}</p>
+                      {update.changelog && <p className="mt-2 text-xs leading-relaxed text-muted">{update.changelog}</p>}
+                    </div>
+                    {selected.status?.active ? (
+                      <Button variant="primary" loading={busyCode === selected.code} icon={<Download className="h-3.5 w-3.5" />} onClick={() => onApply(selected.code, update.release_id)}>
+                        {t("plugins.githubUpdateApply")}
+                      </Button>
+                    ) : canInstallFree ? (
+                      <Button variant="primary" loading={busyCode === selected.code} icon={<Download className="h-3.5 w-3.5" />} onClick={() => onInstall(selected.code)}>
+                        {t("plugins.githubInstall")}
+                      </Button>
+                    ) : (
+                      <p className="text-xs text-muted">{t("plugins.githubUpdateNeedsActivation")}</p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+export function Plugins() {
+  const { t, locale } = useI18n();
   const plugins = usePlugins();
+  const catalog = usePublicPluginCatalog();
+  const node = useNode();
   const [licenseKey, setLicenseKey] = useState("");
   const [activateBusy, setActivateBusy] = useState(false);
   const [activateError, setActivateError] = useState(false);
   const [activatedCodes, setActivatedCodes] = useState<string[] | null>(null);
   const [busyCode, setBusyCode] = useState<string | null>(null);
   const [updateFailedCode, setUpdateFailedCode] = useState<string | null>(null);
+  const [sourceFailedCode, setSourceFailedCode] = useState<string | null>(null);
+  const [sourceFailureMessage, setSourceFailureMessage] = useState<string | null>(null);
+  const [preferencesFailedCode, setPreferencesFailedCode] = useState<string | null>(null);
+  const [deactivateTarget, setDeactivateTarget] = useState<string | null>(null);
+  const [deactivateFailedCode, setDeactivateFailedCode] = useState<string | null>(null);
 
   async function activate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -82,7 +765,7 @@ export function Plugins() {
   async function refresh(code: string) {
     setBusyCode(code);
     try {
-      await api.post(`/api/ui/plugins/${code}/refresh`);
+      await api.post(`/api/ui/plugins/${encodeURIComponent(code)}/refresh`);
     } finally {
       await plugins.refetch();
       setBusyCode(null);
@@ -91,8 +774,12 @@ export function Plugins() {
 
   async function deactivate(code: string) {
     setBusyCode(code);
+    setDeactivateFailedCode(null);
     try {
-      await api.post(`/api/ui/plugins/${code}/deactivate`);
+      await api.post(`/api/ui/plugins/${encodeURIComponent(code)}/deactivate`);
+      setDeactivateTarget(null);
+    } catch {
+      setDeactivateFailedCode(code);
     } finally {
       await plugins.refetch();
       setBusyCode(null);
@@ -103,7 +790,7 @@ export function Plugins() {
     setBusyCode(code);
     setUpdateFailedCode(null);
     try {
-      await api.post(`/api/ui/plugins/${code}/update/apply`, { release_id: releaseId });
+      await api.post(`/api/ui/plugins/${encodeURIComponent(code)}/update/apply`, { release_id: releaseId });
     } catch {
       setUpdateFailedCode(code);
     } finally {
@@ -112,105 +799,182 @@ export function Plugins() {
     }
   }
 
-  if (plugins.isLoading) {
-    return <Skeleton className="h-64 w-full" />;
+  async function runPluginAction(code: string, action: () => Promise<unknown>) {
+    setBusyCode(code);
+    setSourceFailedCode(null);
+    setSourceFailureMessage(null);
+    try {
+      await action();
+    } catch (error) {
+      setSourceFailedCode(code);
+      setSourceFailureMessage(error instanceof Error ? error.message : null);
+    } finally {
+      await plugins.refetch();
+      setBusyCode(null);
+    }
   }
 
-  if (plugins.isError && !plugins.data) {
-    return <ErrorState error={plugins.error} onRetry={() => void plugins.refetch()} />;
+  function setGithubSource(code: string, repositoryUrl: string) {
+    void runPluginAction(code, () => api.post(`/api/ui/plugins/${encodeURIComponent(code)}/github-source`, {
+      repository_url: repositoryUrl,
+    }));
   }
 
-  const catalog = plugins.data ?? [];
+  function removeGithubSource(code: string) {
+    void runPluginAction(code, () => api.del(`/api/ui/plugins/${encodeURIComponent(code)}/github-source`));
+  }
+
+  function checkGithubUpdate(code: string) {
+    void runPluginAction(code, () => api.post(`/api/ui/plugins/${encodeURIComponent(code)}/github-source/check`));
+  }
+
+  function applyGithubUpdate(code: string, releaseId: string) {
+    void runPluginAction(code, () => api.post(`/api/ui/plugins/${encodeURIComponent(code)}/github-source/apply`, {
+      release_id: releaseId,
+    }));
+  }
+
+  function installPublicGithub(code: string) {
+    void runPluginAction(code, () => api.post(`/api/ui/plugins/${encodeURIComponent(code)}/github-source/install`));
+  }
+
+  async function savePreferences(code: string, preferences: PluginPreferences) {
+    setBusyCode(code);
+    setPreferencesFailedCode(null);
+    try {
+      await api.post(`/api/ui/plugins/${encodeURIComponent(code)}/preferences`, { preferences });
+    } catch {
+      setPreferencesFailedCode(code);
+    } finally {
+      await plugins.refetch();
+      setBusyCode(null);
+    }
+  }
+
+  function buy(entry: PublicPluginCatalogEntry) {
+    navigateToPluginPurchase(entry.code);
+  }
+
+  const publicEntries = catalog.data?.plugins ?? [];
+  const localStatuses = plugins.data ?? [];
+  const localByCode = new Map(localStatuses.map((plugin) => [plugin.code, plugin]));
+  const publicCodes = new Set(publicEntries.map((plugin) => plugin.code));
+  const githubTargets: GithubTarget[] = [
+    ...publicEntries.map((entry) => ({
+      code: entry.code,
+      name: entry.display_name ?? entry.code,
+      repository: entry.github_repository,
+      requiresLicense: entry.requires_license,
+      status: localByCode.get(entry.code) ?? null,
+    })),
+    ...localStatuses
+      .filter((status) => !publicCodes.has(status.code) && (status.github_repository || status.public_install))
+      .map((status) => ({
+        code: status.code,
+        name: status.code,
+        repository: null,
+        requiresLicense: status.public_install ? false : null,
+        status,
+      })),
+  ];
+  const licenseStatusByCode = new Map<string, PluginStatus>();
+  for (const source of localStatuses) {
+    if (source.licensed_plugins.includes(source.code)) {
+      licenseStatusByCode.set(source.code, source);
+    }
+  }
+  for (const source of [...localStatuses].sort((left, right) => Number(right.active) - Number(left.active) || left.code.localeCompare(right.code))) {
+    for (const code of new Set(source.licensed_plugins)) {
+      if (!licenseStatusByCode.has(code)) licenseStatusByCode.set(code, source);
+    }
+  }
+  const shouldShowActivation = publicEntries.some((entry) => {
+    if (entry.requires_license !== true) return false;
+    const status = localByCode.get(entry.code);
+    return status?.active !== true || status.state === "expired" || status.state === "revoked";
+  });
+  const cards = [
+    ...publicEntries.map((entry) => ({
+      entry,
+      status: localByCode.get(entry.code) ?? null,
+      licenseStatus: licenseStatusByCode.get(entry.code) ?? localByCode.get(entry.code) ?? null,
+    })),
+    ...localStatuses
+      .filter((status) => status.active && !publicCodes.has(status.code))
+      .map((status) => ({ entry: null, status, licenseStatus: licenseStatusByCode.get(status.code) ?? status })),
+  ];
+  const licenseStatusAvailable = !plugins.isLoading && !plugins.isError && plugins.data !== undefined;
+  const showGithubManager = githubTargets.length > 0;
+  const showSidebar = licenseStatusAvailable && (shouldShowActivation || showGithubManager);
+  const targetOs = node.data?.system.os ?? null;
+  const targetArch = node.data?.system.arch ?? null;
+  const deactivateCard = cards.find(({ status }) => status?.code === deactivateTarget);
+  const deactivateName = deactivateCard?.entry?.display_name ?? deactivateTarget ?? "";
+  const uninstallingPublicPlugin = deactivateCard?.status?.public_install === true;
 
   return (
-    <>
-      <PageHeader title={t("plugins.title")} subtitle={t("plugins.subtitle")} />
+    <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
+      <FullBleedHeader title={t("plugins.title")} subtitle={t("plugins.subtitle")} />
 
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
-        <div className="space-y-4">
-          {catalog.map((plugin) => (
-            <Panel key={plugin.code} className={plugin.active ? "border-aqua/35 bg-aqua/5" : "border-line"}>
-              <PanelHeader
-                eyebrow={pluginName(t, plugin.code)}
-                title={plugin.active ? t("plugins.activeTitle") : t("plugins.inactiveTitle")}
-                subtitle={pluginDescription(t, plugin.code)}
-                actions={<Badge tone={stateTone(plugin.state)}>{t(`plugins.state.${plugin.state}`)}</Badge>}
-              />
-              <div className="space-y-4 px-5 py-5">
-                {plugin.active && (
-                  <dl className="grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <dt className="eyebrow mb-1">{t("plugins.version")}</dt>
-                      <dd className="font-mono text-sm text-fg">{plugin.plugin_version ?? "-"}</dd>
-                    </div>
-                    <div>
-                      <dt className="eyebrow mb-1">{t("plugins.features")}</dt>
-                      <dd className="text-sm text-fg">{plugin.features.length > 0 ? plugin.features.join(", ") : "-"}</dd>
-                    </div>
-                  </dl>
-                )}
-                <div className="flex flex-wrap gap-2">
-                  {plugin.active && (
-                    <>
-                      <Button
-                        variant="outline"
-                        loading={busyCode === plugin.code}
-                        icon={<RefreshCw className="h-3.5 w-3.5" />}
-                        onClick={() => void refresh(plugin.code)}
-                      >
-                        {t("plugins.refresh")}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        loading={busyCode === plugin.code}
-                        icon={<XCircle className="h-3.5 w-3.5" />}
-                        onClick={() => void deactivate(plugin.code)}
-                      >
-                        {t("plugins.deactivate")}
-                      </Button>
-                    </>
-                  )}
-                  <a
-                    href={plugin.manage_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-sm font-medium text-muted hover:bg-line/40 hover:text-fg"
-                  >
-                    {plugin.active ? t("plugins.manage") : t("plugins.buy")} <ExternalLink className="h-3.5 w-3.5" />
-                  </a>
-                </div>
-                {plugin.available_update && (
-                  <div className="space-y-3 rounded-xl border border-iris/35 bg-iris/8 px-4 py-3" role="status">
-                    <div>
-                      <p className="text-sm font-medium text-fg">
-                        {t("plugins.updateAvailable", { version: plugin.available_update.version })}
-                      </p>
-                      <p className="mt-1 font-mono text-xs text-muted">
-                        {t("plugins.updateRelease", { release_id: plugin.available_update.release_id })}
-                      </p>
-                      {plugin.available_update.changelog && (
-                        <p className="mt-2 text-xs leading-relaxed text-muted">{plugin.available_update.changelog}</p>
-                      )}
-                    </div>
-                    <Button
-                      variant="primary"
-                      loading={busyCode === plugin.code}
-                      icon={<Download className="h-3.5 w-3.5" />}
-                      onClick={() => void applyUpdate(plugin.code, plugin.available_update!.release_id)}
-                    >
-                      {t("plugins.updateApply")}
-                    </Button>
-                    {updateFailedCode === plugin.code && (
-                      <p role="alert" className="text-xs text-rose">{t("plugins.updateApplyFailed")}</p>
-                    )}
-                  </div>
-                )}
-              </div>
-            </Panel>
+      <div data-testid="plugins-scroll-area" className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-y-contain px-5 py-5">
+        <div className={`grid gap-5 ${showSidebar ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]" : "grid-cols-1"}`}>
+          <div className="min-w-0 space-y-4">
+          {catalog.isLoading && (
+            <div role="status" aria-label={t("plugins.catalogLoading")} className="space-y-4">
+              <Skeleton className="h-52 w-full" />
+              <Skeleton className="h-52 w-full" />
+            </div>
+          )}
+          {catalog.isError && (
+            <ErrorState
+              title={t("plugins.catalogError")}
+              error={catalog.error}
+              onRetry={() => void catalog.refetch()}
+            />
+          )}
+          {plugins.isError && (
+            <ErrorState
+              title={t("plugins.licenseStatusError")}
+              error={plugins.error}
+              onRetry={() => void plugins.refetch()}
+            />
+          )}
+
+          {cards.map(({ entry, status, licenseStatus }) => (
+            <PluginCard
+              key={entry?.code ?? status?.code}
+              entry={entry}
+              status={status}
+              licenseStatus={licenseStatus}
+              licenseStatusAvailable={licenseStatusAvailable}
+              busyCode={busyCode}
+              updateFailedCode={updateFailedCode}
+              preferencesFailedCode={preferencesFailedCode}
+              deactivateFailedCode={deactivateFailedCode}
+              locale={locale}
+              targetOs={targetOs}
+              targetArch={targetArch}
+              onRefresh={(code) => void refresh(code)}
+              onDeactivate={(code) => {
+                setDeactivateFailedCode(null);
+                setDeactivateTarget(code);
+              }}
+              onApplyUpdate={(code, releaseId) => void applyUpdate(code, releaseId)}
+              onInstallPublicGithub={installPublicGithub}
+              onSavePreferences={savePreferences}
+              onBuy={(entry) => void buy(entry)}
+            />
           ))}
-        </div>
 
-        <Panel className="self-start">
+          {!catalog.isLoading && !catalog.isError && licenseStatusAvailable && cards.length === 0 && (
+            <Panel>
+              <Empty icon={<Package className="h-5 w-5" />} title={t("plugins.catalogEmpty")} />
+            </Panel>
+          )}
+          </div>
+
+        {showSidebar && <div className="min-w-0 space-y-4 self-start">
+        {shouldShowActivation && <Panel>
           <PanelHeader
             eyebrow={t("plugins.activationEyebrow")}
             title={t("plugins.formTitle")}
@@ -234,7 +998,10 @@ export function Plugins() {
             {activatedCodes && activatedCodes.length > 0 && (
               <p role="status" className="text-xs text-aqua">
                 {t("plugins.activationSucceeded", {
-                  plugins: activatedCodes.map((code) => pluginName(t, code)).join(", "),
+                  plugins: activatedCodes.map((code) => {
+                    const plugin = publicEntries.find((entry) => entry.code === code);
+                    return plugin?.display_name ?? code;
+                  }).join(", "),
                 })}
               </p>
             )}
@@ -243,8 +1010,41 @@ export function Plugins() {
             </Button>
             <p className="text-xs leading-relaxed text-faint">{t("plugins.keyPrivacy")}</p>
           </form>
-        </Panel>
+        </Panel>}
+        {showGithubManager && (
+          <GithubReleasesManager
+            targets={githubTargets}
+            busyCode={busyCode}
+            sourceFailedCode={sourceFailedCode}
+            sourceFailureMessage={sourceFailureMessage}
+            onSetSource={setGithubSource}
+            onRemoveSource={removeGithubSource}
+            onCheck={checkGithubUpdate}
+            onApply={applyGithubUpdate}
+            onInstall={installPublicGithub}
+            onUninstall={(code) => {
+              setDeactivateFailedCode(null);
+              setDeactivateTarget(code);
+            }}
+          />
+        )}
+        </div>}
+        </div>
       </div>
-    </>
+      <Confirm
+        open={deactivateTarget !== null}
+        title={uninstallingPublicPlugin
+          ? t("plugins.githubUninstallConfirmTitle", { name: deactivateName })
+          : t("plugins.deactivateConfirmTitle", { name: deactivateName })}
+        description={uninstallingPublicPlugin
+          ? t("plugins.githubUninstallConfirmDescription")
+          : t("plugins.deactivateConfirmDescription")}
+        confirmLabel={uninstallingPublicPlugin ? t("plugins.githubUninstall") : t("plugins.deactivate")}
+        tone="danger"
+        busy={deactivateTarget !== null && busyCode === deactivateTarget}
+        onConfirm={() => deactivateTarget && void deactivate(deactivateTarget)}
+        onCancel={() => setDeactivateTarget(null)}
+      />
+    </div>
   );
 }

@@ -9,8 +9,9 @@ for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
 `UndeployPipeline`), and `PeerDetailCard`, the one card for a machine shown in
 the Dashboard details tab and in the window the Flow canvas opens. Test files
-present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `GpuTemperature.test.tsx`, `LeaveNode.test.tsx`,
-`UndeployPipeline.test.tsx`, `ModelNetworkCanvas.test.tsx`,
+present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `DeploymentInspector.idle.test.tsx`,
+`GpuTemperature.test.tsx`, `LeaveNode.test.tsx`, `UndeployPipeline.test.tsx`,
+`ModelNetworkCanvas.test.tsx`,
 `PeerDetailCard.test.tsx`. Fake peers for these tests come from
 `../test/fixtures.ts` and must have the *full* shape the node serves. A partial
 `node` can slip past one component's `?.` and crash the next; the maintenance
@@ -50,6 +51,15 @@ Per-file list:
   `ErrorState` (renders `localizeServerText` on the error message),
   `Mono`/`ScrollX`/`Footnote`/`KeyValue`. Everything is token-based class names
   (e.g. `bg-iris`, `border-line`) with `clsx`, no runtime styling.
+  `FullBleedHeader`/`FullBleedToolbar` are the shared contract for a
+  full-viewport table screen (the one `Deployments`/`PublicNetworks`/
+  `DeploymentLogs` already used before these existed): a fixed edge-to-edge
+  header bar and, optionally, a filter strip under it, above a body that
+  scrolls on its own. `WholeModels`, `Shards`, `SliceModels`, `RemoteModels`,
+  `Transfers` and `SendFile` (`../routes/`) all build on these two instead of
+  repeating the bar's markup six times; `Deployments`/`PublicNetworks` keep
+  their own hand-written bar and were not touched, since refactoring a
+  screen nobody asked to change is its own risk.
 - `AlertTooltip` (ui.tsx) - `compact` deixa o ícone do tamanho do `[i]`, sem
   moldura, para caber na coluna de ícones do `DeploymentInspector`; `Meter` e
   `KeyValue` ganharam `compact` pelo mesmo motivo no card de máquina. É o aviso
@@ -63,14 +73,16 @@ Per-file list:
   **fora** do `<label>` (um `<button>` dentro de `<label>` quebra o nome
   acessível do controle), então o `<label>` continua embrulhando só texto e
   controle. `hint` (texto visível) segue existindo para as outras telas.
-- `EnterpriseFeatureShowcase.tsx` - vitrine estática usada por `/logs` e
-  `/estatisticas` (renderizada fora do `<Routes>` em `App.tsx`, como o chat).
-  Recebe `kind: "logs" | "statistics"`, mostra título, descrição, uma prévia
-  ilustrada em SVG inline (mockup, não captura real), três destaques e o link
-  de compra/instalação `https://pieceofmind.cloud/enterprise/index.html`; com
-  `useEnterpriseStatus()` ativo mostra também um selo "já ativo". Substituiu a
-  auditoria interativa (`RequestInspector.tsx` incluso), extraída para
-  `pom-plugin-logs`. Ver `docs/subsystems/licenciamento-enterprise.md`.
+- `EnterpriseFeatureShowcase.tsx` - fallback de propaganda de `/logs` e
+  `/estatisticas` **quando nenhum plugin ativo as fornece** (renderizado fora
+  do `<Routes>` em `App.tsx`, como o chat). Recebe `kind: "logs" | "statistics"`,
+  mostra título, descrição, prévia SVG inline (mockup), três destaques e o link
+  de compra/instalação `https://pieceofmind.cloud/enterprise/index.html`.
+- `PluginScreen.tsx` - carrega o módulo ES de uma tela de plugin (asset servido
+  pelo nó) e o monta na árvore do POM, com estilos do plugin e cartão de erro
+  se a carga ou a renderização falhar. A rota normalizada faz parte da
+  identidade da montagem para a troca entre telas do mesmo plugin não reter o
+  componente anterior. Ver `docs/subsystems/plugins-ui.md`.
 - `ExecutionTelemetry.tsx` - cartão compartilhado do trace de execução usado
   pelo Chat. Mantém a tabela de fases, tempos por hop,
   rede, ambiente, diagnóstico e demais detalhes em um único componente. Cruza
@@ -98,7 +110,10 @@ Per-file list:
   remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
   medição da conexão quando disponível. A linha do backend separa
   `node_backend_call_ms` (`llama_decode`/avaliação) de
-  `node_backend_sync_ms` (`llama_synchronize`).
+  `node_backend_sync_ms` (`llama_synchronize`). A linha da captura mostra o
+  ask-to-ready do scheduler, a chamada opaca `tensor_get`, o pós-processamento,
+  bytes e contagem de leituras; a conversão f8, a serialização do frame residual
+  e a espera de envio/finalização do corpo QUIC aparecem em linhas próprias.
   Cobertura de decode usa callbacks quando disponíveis, ou tokens de saída por
   hop no caminho normal; sem tokens ou callbacks esperados, mostra não medido.
   Uma coleta de transporte incompleta continua visível mesmo quando a resposta
@@ -156,10 +171,13 @@ Per-file list:
   `navForProfile(profile)`, não `NAV` cru. `Section`/`Leaf` render it with an animated
   active pill; a section holding the current path stays open. The desktop
   sidebar can be minimized and persists that choice in `localStorage`; the
-  minimized state renders icon-only links and hover/focus flyout menus for
-  sections with children. `SidebarBrand` is the header and, on desktop, the
-  lockup itself is the accessible expand/collapse button: only an explicit click
-  or touch toggles it.
+  minimized state renders icon-only links and child flyouts on hover, focus or
+  click. Keep the minimized navigation `overflow-visible` without
+  `overflow-y-auto`: CSS computes the visible x-axis to auto when the other
+  axis scrolls, clipping the flyout; increasing its z-index cannot escape that
+  clip. The scrollable expanded nav uses `overscroll-y-contain` so reaching its
+  end cannot move the document. `SidebarBrand` is a 64px header and, on desktop, the lockup itself is
+  the accessible expand/collapse button: only an explicit click or touch toggles it.
   In the mobile drawer it remains a passive lockup. The menu below it keeps a
   5px top gap so the first item does not touch that line - the hash sits **on the identity** because in
   a multi-machine cluster "which build is that?" is unanswerable without a
@@ -173,9 +191,7 @@ Per-file list:
   target here is whoever opened the panel in the wrong language - the language
   name stays in `aria-label`/`title`, because a flag is not a language to a
   screen reader. Plus the dark/light toggle (`../lib/theme`). `TlsIndicator.tsx`
-  keeps the TLS policy link beside those flags only for `admin`: icon-only, with different icon
-  and tone for encrypted versus cleartext and the meaning in
-  `aria-label`/`title`. Para `infer`, o rodapé também renderiza documentação e
+  currently renders no TLS icon in the Sidebar. Para `infer`, o rodapé também renderiza documentação e
   API keys, enquanto a coluna principal é substituída por `ChatSessionList` e
   o link da rede. O histórico mantém o botão de nova conversa e a rede fora da
   área rolável, para uma lista longa não empurrar nenhuma ação para fora.
@@ -196,8 +212,8 @@ Per-file list:
   the principal; refusal states remain explicit.
 - `Topbar.tsx` - Sticky header: `NodeChip` (hostname, short_id, peer count,
   coverage), o selo i18n do perfil persistido do nó, o botão macOS de janela
-  maior, the bell (`Notifications`) and `NodeActions` for unloading this
-  node's slice. Mobile drawer renders `SidebarContent` inside an animated
+  maior e o sino (`Notifications`). O botão `Este nó` não é renderizado.
+  Mobile drawer renders `SidebarContent` inside an animated
   panel whose fixed backdrop unmounts synchronously when navigation closes it,
   so an invisible exit layer never blocks the next hamburger click. A ação de
   sair da rede não fica exposta no menu.
@@ -496,9 +512,11 @@ Key logic carriers:
   estado oculto só aparecem quando quem monta os passa. Na edição da precisão,
   f8 e i4 ficam desabilitados até todos os peers selecionados anunciarem suporte,
   e o aviso usa a razão da capability do formato escolhido. `VisionControl` segue
-  a mesma fronteira: exibe e alterna o mmproj resolvido para modelos inteiros
-  e fatias, ou mostra a indisponibilidade localizada quando a rodada fatiada
-  não tem projetor. A seção `Configurações POM (DESENV)` só é montada quando
+  a mesma fronteira: exibe e alterna o mmproj pré-selecionado para modelos
+  inteiros e fatias, oferece os `mmproj_candidates` compatíveis para escolha de
+  formato e mostra `mmproj_reason` quando não há candidatos. O teste de idle
+  fornece `candidates`, `reason` e `onPathChange` do contrato completo. A seção
+  `Configurações POM (DESENV)` só é montada quando
   `NodeInfo.pom_desenv` vem verdadeiro de `/api/ui/node`; quando a flag está
   desligada, os controles somem, mas os valores recebidos continuam no estado
   e seguem no pedido quando um controle visível é editado. O modo ausente é
@@ -543,12 +561,16 @@ Key logic carriers:
   not just the ones opened from `backdrop-blur` ancestors. The `openModals`
   stack (Confirm.tsx:27) is the companion rule: only the top window answers
   Escape.
-- `RemoteModelCard.tsx` / `RemoteModelDetails.tsx` - card comparável e janela
-  sob demanda para modelos do provider, com prioridade para GGUF, quantização,
-  tamanho, licença, revisão e estados instalado/em download.
-- `RemoteModelProviderStatus.tsx` - estado estruturado do CLI do Hugging Face:
-  indisponível, login necessário ou autenticado, com mensagem localizada; its
-  internal route link uses React Router so the `/admin-ui` basename is kept.
+- `RemoteModelDetails.tsx` - janela sob demanda para um modelo do provider, com
+  prioridade para GGUF, quantização, tamanho, licença, revisão e estados
+  instalado/em download. `RemoteModels.tsx` (`../routes/`) lista os resultados
+  numa tabela de largura total e abre esta janela ao ativar uma linha;
+  `RemoteModelCard.tsx`, o cartão que a tabela substituiu, foi removido por
+  ficar sem uso.
+- `RemoteModelProviderStatus.tsx` - apresentação completa do estado estruturado
+  do CLI do Hugging Face. `RemoteModels` usa somente o link compacto de login
+  dentro da barra de busca; a descoberta de tendências é pública e não depende
+  do CLI.
 - `HuggingFaceSettingsPanel.tsx` - campo de senha para o token opcional. O
   valor salvo nunca é pré-preenchido nem renderizado: a API fornece só máscara
   e fonte efetiva, e o painel invalida status/configuração depois de salvar.

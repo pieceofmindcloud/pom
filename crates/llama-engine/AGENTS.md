@@ -14,7 +14,9 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
 `docs/subsystems/build-execucao.md`.
 
 `build.rs` aceita `CCACHE` como comando wrapper para o `nvcc`; portanto
-`CCACHE=sccache` e valido. As pontes C/C++ compiladas por `cc` tambem herdam o
+`CCACHE=sccache` e valido. `CUDAARCHS` seleciona todas as arquiteturas dos
+kernels próprios (por exemplo, `86;120` vira dois alvos, com 120 normalizado
+para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
 `RUSTC_WRAPPER` e o helper comum de `scripts/build-env.sh` cobre os dois casos.
 
 ## Módulos (`src/`)
@@ -36,7 +38,10 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   inferência. `DecodeTimings::backend_call_us` mede a chamada de avaliação do
   llama.cpp; `backend_sync_us` mede separadamente a sincronização explícita. A
   primeira não é tempo puro de kernel, e a segunda pode esperar trabalho de
-  dispositivo e transferências já enfileirados.
+  dispositivo e transferências já enfileirados. `llm/sampling.rs` representa a
+  penalidade como overrides esparsos, usa índices `u32` no seletor de `top_k`
+  para vocabulários usuais e não materializa um vetor de IDs quando `top_k` não
+  restringe a distribuição.
 - `mtp.rs` (+ `llama_mtp_shim.cpp`) - predição multi-token pelo bloco `nextn`;
   a lista de arquiteturas MTP aceitas é gerada em build por `build/mtp_arch.rs`.
   O `build.rs` lê o mesmo checkout preparado pelo `llama-cpp-sys-2`, recebido
@@ -188,9 +193,11 @@ O build nativo (o fork do `/llama.cpp`, `cmake`, as features
   copiar, e `peek_batch_header`/`validate_batch_bytes` leem só o cabeçalho para
   quem precisa da rota, do `batch_id` ou de uma validação. Detalhe e números em
   `docs/subsystems/inferencia.md` §2.2.
-- `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo modelos
-  multipart. `read_layout` valida arrays por camada usando a tabela unificada
-  de todas as partes físicas. Para `qwen4exp`, mede
+- `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo nomes de
+  identidade (`general.name`, `general.basename` e `general.base_model.*`),
+  `embedding_length` textual e `clip.vision.projection_dim` para associar
+  projetores, além de modelos multipart. `read_layout` valida arrays por camada
+  usando a tabela unificada de todas as partes físicas. Para `qwen4exp`, mede
   `per_layer_token_embd.weight` apenas nas faixas que contêm uma camada PLE;
   os três arrays de estrutura (`layer_multipliers`, `head_offsets` e
   `head_vocab_sizes`) permanecem completos, enquanto `ple.layers` é filtrado
@@ -249,12 +256,15 @@ parâmetros de vídeo.
 A captura de residual acumula microlotes pelo número de células físicas: o
 `mtmd` pode entregar o trecho textual e o trecho expandido da imagem em
 callbacks separados, enquanto `n_past` continua sendo apenas a posição lógica.
-Na captura, `ready_wait_us` mede o intervalo entre a consulta do scheduler e
-a prontidão do tensor, `copy_us` mede somente a leitura D2H bulk em f32 e
-`postprocess_us` mede a conversão/registro. O campo legado
-`residual_capture_d2h_sync_us` é a soma dos dois primeiros e não deve ser
-interpretado como largura de banda D2H; o primeiro intervalo pode conter a
-sincronização do backend exigida pelo scheduler.
+Na captura, `ready_wait_us` mede do callback de consulta do scheduler até o
+callback de prontidão e inclui avaliação do grafo e sincronização do scheduler.
+`copy_us` mede a chamada `ggml_backend_tensor_get` inteira; no backend CUDA,
+ela pode incluir a cópia D2H e a sincronização da stream, portanto não isola
+DMA nem espera de GPU. `postprocess_us` mede a conversão e o registro. O campo
+legado `residual_capture_d2h_sync_us` soma prontidão e `tensor_get` e não é uma
+medida de largura de banda D2H. A stream CUDA e a vida útil do tensor não são
+expostas por essa API, então a captura não pode mover a cópia para uma operação
+assíncrona com segurança sem mudar a fronteira nativa.
 
 ## Maintaining this file
 

@@ -1105,8 +1105,12 @@ async fn handle_event(
         }
 
         SwarmEvent::ConnectionEstablished {
-            peer_id, endpoint, ..
+            peer_id,
+            connection_id,
+            endpoint,
+            ..
         } => {
+            network.note_libp2p_link(&peer_id, connection_id, endpoint.get_remote_address());
             if relay_peer_ids.contains(&peer_id) {
                 connected_relays.insert(peer_id);
             }
@@ -1124,7 +1128,13 @@ async fn handle_event(
             debug!("libp2p: connected to {}", peer_id);
         }
 
-        SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
+        SwarmEvent::ConnectionClosed {
+            peer_id,
+            connection_id,
+            cause,
+            ..
+        } => {
+            network.drop_libp2p_link(&peer_id, connection_id);
             debug!("libp2p: disconnected from {} ({:?})", peer_id, cause);
         }
 
@@ -1145,11 +1155,12 @@ async fn handle_event(
             remote_peer_id,
             result,
         })) => match result {
-            Ok(_conn_id) => {
+            Ok(connection_id) => {
                 info!(
                     "Direct connection to {} (hole punch succeeded)",
                     remote_peer_id
                 );
+                network.mark_hole_punched(&remote_peer_id, connection_id);
                 network.remember_hole_punch(Ok(()));
             }
             Err(e) => {

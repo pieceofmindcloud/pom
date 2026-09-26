@@ -1280,6 +1280,13 @@ network.requestNodePending,Request pending,Pedido pendente
 network.requestNodeRejected,The node request was rejected,O pedido para virar node foi recusado
 network.requestNodeSent,Request sent to the administrators,Pedido enviado aos administradores
 network.role,Role,Papel
+network.routeAdvertised,advertised: {addr},anunciado: {addr}
+network.routeDirect,Direct,Direto
+network.routeHolePunched,Direct (hole punch),Direto (hole punch)
+network.routeNone,No route,Sem rota
+network.routeP2pDirect,Direct (P2P),Direto (P2P)
+network.routeRelayed,Via relay,Via relé
+network.routeViaRelay,relay {address},relé {address}
 network.rules,Network rules,Regras da rede
 network.shareEyebrow,Share network access,Compartilhar acesso à rede
 network.shareLoading,Loading the sharing materials,Carregando os materiais para compartilhar

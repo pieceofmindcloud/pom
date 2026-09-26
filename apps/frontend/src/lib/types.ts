@@ -1230,11 +1230,33 @@ export interface OfferManifest {
   };
 }
 
+/** Uma conexão libp2p viva com o peer. */
+export interface PeerRouteLink {
+  address: string;
+  relayed: boolean;
+  relay_peer_id?: string | null;
+  hole_punched: boolean;
+}
+
+/**
+ * Por onde este nó fala de fato com o peer, observado - não o endereço que o
+ * peer anuncia. `http`: um endereço direto respondeu; `p2p_direct`: conexão
+ * libp2p direta (discada ou por hole punch); `relayed`: só pelo relé.
+ */
+export interface PeerRoute {
+  kind: "http" | "p2p_direct" | "relayed" | "none";
+  address?: string | null;
+  hole_punched: boolean;
+  links: PeerRouteLink[];
+}
+
 export interface AdminNode {
   node_id: string;
   short_id: string;
   hostname: string;
+  /** O que o peer anuncia; a rota em uso está em `route`. */
   addr: string;
+  route?: PeerRoute | null;
   role?: string;
   model?: string;
   start_layer?: number;

@@ -713,6 +713,22 @@ O campo entra no fingerprint do cache do cluster; sem isso o retrato
 congelaria, porque nem o estado do AutoNAT nem uma reserva nova mexem em
 `peers`.
 
+**A rota em uso com cada peer** é outra pergunta, e sai em `GET /admin/nodes`
+no campo `route` (`Network::peer_route`), mostrado na tela de participantes no
+lugar do endereço anunciado - que fica no `title` da linha, para comparação. É
+observada, na ordem em que o plano de controle tenta os caminhos: `http` (um
+endereço direto respondeu há menos de 5 min e não falhou desde então -
+`RouteTable::last_success`, alimentado por `mark_success`), `p2p_direct`
+(conexão libp2p direta, discada ou nascida de hole punch), `relayed` (só um
+circuito pelo relé: o hole punch não fechou) e `none`. As conexões libp2p vêm
+do laço do swarm: `ConnectionEstablished`/`ConnectionClosed` alimentam
+`Network::libp2p_links` com o endereço da outra ponta (`describe_multiaddr`;
+num circuito, o do relé, que vem antes de `/p2p-circuit`), e o sucesso do
+DCuTR marca a conexão direta como hole punch. O evento do DCuTR pode chegar
+antes do `ConnectionEstablished` da mesma conexão, por isso a marca fica num
+conjunto próprio até a conexão fechar. Um circuito que entrou pelo relé sem o
+endereço dele herda o endereço da conexão deste nó com o próprio relé.
+
 ## 4. Identidade
 
 `Identity` (`identity.rs`) é um par Ed25519 de longa duração, vivendo em

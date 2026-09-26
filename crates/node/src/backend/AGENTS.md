@@ -1031,7 +1031,10 @@ faz o download autenticado do blob persistido.
   `POST /admin/slots/:name?action=save|restore|erase` (orchestrates
   a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
   `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
-  `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
+  `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty,
+  and gives each remote peer a `route` (`Network::peer_route`): the path this
+  node actually uses to reach it - direct HTTP, direct libp2p (maybe hole
+  punched) or relayed - as opposed to `addr`, which is only what it advertises.
   Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
   `/api/setup/geo-reference`,
   `/api/setup/admin-anchor/preview`, `/api/setup/trust-anchor`,

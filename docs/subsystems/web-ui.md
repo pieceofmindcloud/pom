@@ -751,7 +751,10 @@ alimentados por `GET /api/ui/network/geo-reference`, que lê as tabelas locais
 `geo_countries` e `geo_cities`; o código do país não é mostrado. A mesma tela
 calcula nós, latência média, VRAM conhecida e modelos do `ClusterView`.
 `/config/rede/participantes` reaproveita o card de nós conhecidos e fica
-disponível para admin e node.
+disponível para admin e node. Cada peer mostra a **rota em uso**, não o
+endereço que anuncia: um selo (Direto, Direto (P2P), Direto (hole punch), Via
+relé, Sem rota) e o endereço dessa rota - o do relé, quando o hole punch não
+fechou. O anunciado fica no `title` da linha. Ver `rede-p2p.md`, "Diagnóstico".
 
 `/config/confianca` reúne esta máquina, compartilhamento da rede e chaves de
 conexão. `/config/preferencias` monta a exposição administrativa, o

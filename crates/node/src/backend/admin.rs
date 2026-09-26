@@ -1147,6 +1147,9 @@ async fn list_nodes(
                 "short_id": &p.node_id[..p.node_id.len().min(12)],
                 "hostname": p.hostname,
                 "addr": p.addr,
+                // Por onde este nó fala com o peer de fato; `addr` é só o que
+                // ele anuncia, e pode ser um endereço que ninguém alcança.
+                "route": (p.node_id != self_id).then(|| state.network.peer_route(p)),
                 "profile": p.profile,
                 "model": p.model,
                 "start_layer": p.start_layer,

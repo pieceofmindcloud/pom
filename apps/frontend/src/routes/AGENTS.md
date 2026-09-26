@@ -520,7 +520,9 @@ Per-file list:
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
   `/config/rede/participantes`; the route is allowed only to `admin` and
-  `node`, and block/unblock mutations remain admin-only.
+  `node`, and block/unblock mutations remain admin-only. Each peer row shows
+  the route actually in use (`AdminNode.route`: `RouteBadge` + `routeAddress`),
+  never the advertised `addr`, which only goes into the row's `title`.
   (`POST /api/ui/leave` / `/api/ui/rejoin`, reachable by every profile: leaving
   is abdication, not a privilege) and the known-node list from
   `GET /admin/nodes` (`node+admin`: reading the roster is what this screen

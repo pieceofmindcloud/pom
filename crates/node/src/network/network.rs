@@ -66,6 +66,75 @@ const REJECTED_ADMISSION_CACHE_TTL: Duration = Duration::from_secs(5);
 /// Recusa explícita não usa a folga.
 const ADMISSION_UNREACHABLE_GRACE: Duration = Duration::from_secs(10 * 60);
 
+/// Uma conexão libp2p viva com um par.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Libp2pLink {
+    /// `host:porta (transporte)` da outra ponta; num circuito, o do relé.
+    /// Vazio quando o circuito entrou por um relé que este nó não conhece.
+    pub address: String,
+    pub relayed: bool,
+    /// PeerId do relé, quando a conexão é um circuito.
+    pub relay_peer_id: Option<String>,
+    /// Conexão direta nascida de um hole punch (DCuTR) bem-sucedido.
+    pub hole_punched: bool,
+}
+
+/// Por onde este nó fala de fato com um peer - observado, não anunciado.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PeerRoute {
+    /// `http`: um endereço direto respondeu há pouco (`RouteTable::last_success`).
+    /// `p2p_direct`: conexão libp2p direta, discada ou por hole punch.
+    /// `relayed`: só um circuito pelo relé - o hole punch não fechou.
+    /// `none`: nenhuma das três.
+    pub kind: &'static str,
+    /// O endereço da rota; em `relayed`, o do relé.
+    pub address: Option<String>,
+    /// Alguma conexão direta com o par saiu de um hole punch.
+    pub hole_punched: bool,
+    /// Todas as conexões libp2p vivas, para o detalhe da tela.
+    pub links: Vec<Libp2pLink>,
+}
+
+/// `host:porta (transporte)` de um multiaddress, e o relé quando é circuito.
+///
+/// Num circuito o host e a porta são os do relé, que vêm antes de
+/// `/p2p-circuit`; o que vem depois é o próprio par.
+pub(crate) fn describe_multiaddr(address: &libp2p::Multiaddr) -> (String, bool, Option<String>) {
+    use libp2p::multiaddr::Protocol;
+    let mut host: Option<String> = None;
+    let mut port: Option<(u16, &'static str)> = None;
+    let mut last_peer: Option<String> = None;
+    let mut relay: Option<String> = None;
+    let mut relayed = false;
+    for protocol in address.iter() {
+        if relayed {
+            continue;
+        }
+        match protocol {
+            Protocol::Ip4(ip) => host = Some(ip.to_string()),
+            Protocol::Ip6(ip) => host = Some(format!("[{ip}]")),
+            Protocol::Dns(name) | Protocol::Dns4(name) | Protocol::Dns6(name) => {
+                host = Some(name.to_string())
+            }
+            Protocol::Tcp(p) => port = Some((p, "TCP")),
+            Protocol::Udp(p) => port = Some((p, "UDP")),
+            Protocol::QuicV1 => port = port.map(|(p, _)| (p, "QUIC")),
+            Protocol::P2p(peer) => last_peer = Some(peer.to_string()),
+            Protocol::P2pCircuit => {
+                relayed = true;
+                relay = last_peer.take();
+            }
+            _ => {}
+        }
+    }
+    let text = match (host, port) {
+        (Some(host), Some((port, transport))) => format!("{host}:{port} ({transport})"),
+        (Some(host), None) => host,
+        _ => String::new(),
+    };
+    (text, relayed, relay)
+}
+
 /// Resultado de uma sonda `/handshake`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdmissionProbe {
@@ -955,6 +1024,15 @@ pub struct Network {
     /// Peers com sonda de admissão em andamento fora do laço do swarm (ver
     /// `admit_in_background`), para um anúncio a cada 5 s não empilhar sondas.
     pending_admissions: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Conexões libp2p vivas por PeerId, alimentadas pelo laço do swarm
+    /// (`discovery.rs`). É o que diz se um par é alcançado direto ou só pelo
+    /// relé - ver `peer_route`.
+    libp2p_links:
+        std::sync::RwLock<HashMap<String, Vec<(libp2p::swarm::ConnectionId, Libp2pLink)>>>,
+    /// Conexões que o DCuTR anunciou como fruto de hole punch. O evento pode
+    /// chegar antes ou depois do `ConnectionEstablished` da mesma conexão,
+    /// então a marca fica guardada até a conexão fechar.
+    hole_punched_links: std::sync::Mutex<std::collections::HashSet<libp2p::swarm::ConnectionId>>,
     /// Este nó tem `slot_save_path` configurado e serve `POST
     /// /v1/session/slot`. Vira verdadeiro no `apply` de uma implantação e volta
     /// a falso ao parar; o gateway exige a cap de todos os hops antes de
@@ -1406,6 +1484,8 @@ impl Network {
             admission: None,
             admission_cache: std::sync::RwLock::new(HashMap::new()),
             pending_admissions: std::sync::Mutex::new(std::collections::HashSet::new()),
+            libp2p_links: std::sync::RwLock::new(HashMap::new()),
+            hole_punched_links: std::sync::Mutex::new(std::collections::HashSet::new()),
             slot_persist_ready: Arc::new(AtomicBool::new(false)),
             tls: Arc::new(AtomicBool::new(false)),
             tls_probe: std::sync::RwLock::new(None),
@@ -3256,6 +3336,130 @@ impl Network {
         allowed
     }
 
+    /// Uma conexão libp2p com `peer` abriu (`ConnectionEstablished`).
+    pub(crate) fn note_libp2p_link(
+        &self,
+        peer: &libp2p::PeerId,
+        id: libp2p::swarm::ConnectionId,
+        address: &libp2p::Multiaddr,
+    ) {
+        let (text, relayed, relay_peer_id) = describe_multiaddr(address);
+        let hole_punched = self
+            .hole_punched_links
+            .lock()
+            .is_ok_and(|punched| punched.contains(&id));
+        let link = Libp2pLink {
+            address: text,
+            relayed,
+            relay_peer_id,
+            hole_punched,
+        };
+        if let Ok(mut links) = self.libp2p_links.write() {
+            let entry = links.entry(peer.to_string()).or_default();
+            entry.retain(|(existing, _)| *existing != id);
+            entry.push((id, link));
+        }
+    }
+
+    /// A conexão `id` com `peer` fechou (`ConnectionClosed`).
+    pub(crate) fn drop_libp2p_link(&self, peer: &libp2p::PeerId, id: libp2p::swarm::ConnectionId) {
+        if let Ok(mut punched) = self.hole_punched_links.lock() {
+            punched.remove(&id);
+        }
+        if let Ok(mut links) = self.libp2p_links.write() {
+            let key = peer.to_string();
+            if let Some(entry) = links.get_mut(&key) {
+                entry.retain(|(existing, _)| *existing != id);
+                if entry.is_empty() {
+                    links.remove(&key);
+                }
+            }
+        }
+    }
+
+    /// O DCuTR fechou o hole punch com `peer` e a conexão direta é `id`.
+    pub(crate) fn mark_hole_punched(&self, peer: &libp2p::PeerId, id: libp2p::swarm::ConnectionId) {
+        if let Ok(mut punched) = self.hole_punched_links.lock() {
+            punched.insert(id);
+        }
+        if let Ok(mut links) = self.libp2p_links.write() {
+            if let Some(entry) = links.get_mut(&peer.to_string()) {
+                for (existing, link) in entry.iter_mut() {
+                    if *existing == id {
+                        link.hole_punched = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Conexões libp2p vivas com o par de PeerId `peer_id`. Um circuito que
+    /// entrou sem o endereço do relé ganha o endereço da conexão deste nó com
+    /// o próprio relé, quando existe.
+    pub fn libp2p_links(&self, peer_id: &str) -> Vec<Libp2pLink> {
+        let Ok(links) = self.libp2p_links.read() else {
+            return Vec::new();
+        };
+        let mut out: Vec<Libp2pLink> = links
+            .get(peer_id)
+            .map(|entry| entry.iter().map(|(_, link)| link.clone()).collect())
+            .unwrap_or_default();
+        for link in out
+            .iter_mut()
+            .filter(|link| link.relayed && link.address.is_empty())
+        {
+            if let Some(relay) = link.relay_peer_id.as_deref() {
+                if let Some(direct) = links
+                    .get(relay)
+                    .and_then(|entry| entry.iter().find(|(_, l)| !l.relayed))
+                {
+                    link.address = direct.1.address.clone();
+                }
+            }
+        }
+        out
+    }
+
+    /// A rota em uso para `peer`, na ordem em que o plano de controle a tenta:
+    /// endereço HTTP direto que respondeu, conexão libp2p direta, circuito
+    /// pelo relé.
+    pub fn peer_route(&self, peer: &PeerInfo) -> PeerRoute {
+        let links = peer
+            .libp2p_peer_id
+            .as_deref()
+            .map(|id| self.libp2p_links(id))
+            .unwrap_or_default();
+        let hole_punched = links.iter().any(|link| link.hole_punched);
+        let direct = links.iter().find(|link| !link.relayed);
+        let relayed = links.iter().find(|link| link.relayed);
+        let (kind, address) = if let Some(url) = self.routes.last_success(&peer.node_id) {
+            let address = url
+                .trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .to_string();
+            ("http", Some(address))
+        } else if let Some(link) = direct {
+            ("p2p_direct", Some(link.address.clone()))
+        } else if let Some(link) = relayed {
+            (
+                "relayed",
+                Some(if link.address.is_empty() {
+                    link.relay_peer_id.clone().unwrap_or_default()
+                } else {
+                    link.address.clone()
+                }),
+            )
+        } else {
+            ("none", None)
+        };
+        PeerRoute {
+            kind,
+            address,
+            hole_punched,
+            links,
+        }
+    }
+
     /// O que `admit_peer` responde sem abrir conexão: a rede pública e a chave
     /// vazia se decidem localmente, e a rede privada pelo cache. `None` quando
     /// a resposta depende da sonda `/handshake`.
@@ -4841,6 +5045,104 @@ mod tests {
         assert_eq!(valid.peer_count().await, 1);
 
         server.abort();
+    }
+
+    #[test]
+    fn describe_multiaddr_names_the_far_end_and_the_relay() {
+        let relay = libp2p::PeerId::random();
+        let peer = libp2p::PeerId::random();
+        let quic: libp2p::Multiaddr = format!("/ip4/189.75.167.63/udp/28515/quic-v1/p2p/{peer}")
+            .parse()
+            .unwrap();
+        assert_eq!(
+            describe_multiaddr(&quic),
+            ("189.75.167.63:28515 (QUIC)".to_string(), false, None)
+        );
+        let tcp6: libp2p::Multiaddr = "/ip6/2001:db8::1/tcp/52777".parse().unwrap();
+        assert_eq!(describe_multiaddr(&tcp6).0, "[2001:db8::1]:52777 (TCP)");
+
+        let dialed: libp2p::Multiaddr =
+            format!("/ip4/82.25.69.187/tcp/52777/p2p/{relay}/p2p-circuit/p2p/{peer}")
+                .parse()
+                .unwrap();
+        assert_eq!(
+            describe_multiaddr(&dialed),
+            (
+                "82.25.69.187:52777 (TCP)".to_string(),
+                true,
+                Some(relay.to_string())
+            )
+        );
+        // Circuito que chegou: sem host, só o relé.
+        let inbound: libp2p::Multiaddr = format!("/p2p/{relay}/p2p-circuit/p2p/{peer}")
+            .parse()
+            .unwrap();
+        assert_eq!(
+            describe_multiaddr(&inbound),
+            (String::new(), true, Some(relay.to_string()))
+        );
+    }
+
+    /// A rota mostrada é a observada: HTTP que respondeu, depois conexão
+    /// libp2p direta, depois o relé - nunca o endereço anunciado.
+    #[tokio::test]
+    async fn peer_route_prefers_http_then_direct_then_relay() {
+        use libp2p::swarm::ConnectionId;
+        let network = Network::testkit("eu".into(), String::new(), vec![], None, None, None)
+            .await
+            .unwrap();
+        let relay = libp2p::PeerId::random();
+        let remote = libp2p::PeerId::random();
+        let mut peer = admission_peer(8080);
+        peer.addr = "[2804:d55::1]:42777".into();
+        peer.libp2p_peer_id = Some(remote.to_string());
+        assert_eq!(network.peer_route(&peer).kind, "none");
+
+        // Este nó falando com o relé direto; o par chega por um circuito que
+        // não traz o endereço do relé.
+        network.note_libp2p_link(
+            &relay,
+            ConnectionId::new_unchecked(1),
+            &"/ip4/82.25.69.187/tcp/52777".parse().unwrap(),
+        );
+        network.note_libp2p_link(
+            &remote,
+            ConnectionId::new_unchecked(2),
+            &format!("/p2p/{relay}/p2p-circuit/p2p/{remote}")
+                .parse()
+                .unwrap(),
+        );
+        let route = network.peer_route(&peer);
+        assert_eq!(route.kind, "relayed");
+        assert_eq!(route.address.as_deref(), Some("82.25.69.187:52777 (TCP)"));
+        assert!(!route.hole_punched);
+
+        // O DCuTR avisa antes de a conexão direta aparecer: a marca vale igual.
+        network.mark_hole_punched(&remote, ConnectionId::new_unchecked(3));
+        network.note_libp2p_link(
+            &remote,
+            ConnectionId::new_unchecked(3),
+            &"/ip4/189.75.167.63/udp/28515/quic-v1".parse().unwrap(),
+        );
+        let route = network.peer_route(&peer);
+        assert_eq!(route.kind, "p2p_direct");
+        assert_eq!(route.address.as_deref(), Some("189.75.167.63:28515 (QUIC)"));
+        assert!(route.hole_punched);
+        assert_eq!(route.links.len(), 2);
+
+        network
+            .routes
+            .mark_success(&peer.node_id, "http://192.168.0.37:8080");
+        let route = network.peer_route(&peer);
+        assert_eq!(route.kind, "http");
+        assert_eq!(route.address.as_deref(), Some("192.168.0.37:8080"));
+
+        // A rota HTTP que falha sai; a direta fecha; sobra o relé.
+        network
+            .routes
+            .mark_failure(&peer.node_id, "http://192.168.0.37:8080");
+        network.drop_libp2p_link(&remote, ConnectionId::new_unchecked(3));
+        assert_eq!(network.peer_route(&peer).kind, "relayed");
     }
 
     /// Sem veredito no cache a resposta é `None`, sem sonda: é o que o laço do

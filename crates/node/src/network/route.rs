@@ -112,6 +112,9 @@ pub struct RouteTable {
     /// Uma segunda tabela seria um mecanismo paralelo com a mesma decisão
     /// para tomar em dois lugares.
     falhas: RwLock<HashMap<(String, String), Instant>>,
+    /// Último endereço HTTP que respondeu de verdade, por peer: é o que a tela
+    /// de participantes mostra como rota direta em uso (ver `last_success`).
+    sucessos: RwLock<HashMap<String, (String, Instant)>>,
 }
 
 impl RouteTable {
@@ -156,6 +159,11 @@ impl RouteTable {
         }
         if let Ok(mut falhas) = self.falhas.write() {
             falhas.insert((node_id.to_string(), addr.to_string()), Instant::now());
+        }
+        if let Ok(mut sucessos) = self.sucessos.write() {
+            if sucessos.get(node_id).is_some_and(|(ok, _)| ok == addr) {
+                sucessos.remove(node_id);
+            }
         }
     }
 
@@ -202,6 +210,9 @@ impl RouteTable {
         if let Ok(mut falhas) = self.falhas.write() {
             falhas.retain(|(id, _), _| id != node_id);
         }
+        if let Ok(mut sucessos) = self.sucessos.write() {
+            sucessos.remove(node_id);
+        }
     }
 
     /// Uma requisição real que respondeu apaga a memória de falha do endereço.
@@ -212,6 +223,18 @@ impl RouteTable {
         if let Ok(mut falhas) = self.falhas.write() {
             falhas.remove(&(node_id.to_string(), addr.to_string()));
         }
+        if let Ok(mut sucessos) = self.sucessos.write() {
+            sucessos.insert(node_id.to_string(), (addr.to_string(), Instant::now()));
+        }
+    }
+
+    /// O endereço HTTP que respondeu por último para este peer, se isso foi
+    /// há menos de `FAILURE_COOLDOWN` e ele não falhou desde então. É fato
+    /// observado, não o que o peer anuncia: um IPv6 anunciado que ninguém
+    /// alcança nunca aparece aqui.
+    pub fn last_success(&self, node_id: &str) -> Option<String> {
+        let (addr, when) = self.sucessos.read().ok()?.get(node_id).cloned()?;
+        (when.elapsed() < FAILURE_COOLDOWN && !self.is_failed(node_id, &addr)).then_some(addr)
     }
 
     /// Candidatos que ainda não foram desacreditados, na ordem recebida.

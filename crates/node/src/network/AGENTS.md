@@ -211,6 +211,13 @@ fallback continua em `addr_candidates` + `RouteTable`.
   responder". `RttTable` guarda a medição direcional deste nó para cada
   destino, sem inferir o sentido inverso, e expõe snapshots com idade: só os
   RTTs com menos de cinco minutos entram em seleção.
+  `last_success` devolve o último endereço HTTP que respondeu (há menos de
+  5 min e sem falha depois), a metade HTTP de `Network::peer_route`.
+- `Network::peer_route` / `libp2p_links` - a rota em uso com cada peer para a
+  tela de participantes: HTTP direto que respondeu, conexão libp2p direta
+  (marcada quando nasceu de hole punch) ou só circuito pelo relé. As conexões
+  vêm de `note_libp2p_link`/`drop_libp2p_link`/`mark_hole_punched`, chamados
+  pelo laço do swarm em `discovery.rs`; ver `rede-p2p.md`, "Diagnóstico".
 
 ## Funções-chave
 

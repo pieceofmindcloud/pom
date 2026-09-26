@@ -30,7 +30,10 @@ Estatísticas mora em `pom-plugin-logs`, não aqui.
 3. O frontend (`usePluginUi`) guarda o resultado em `lib/pluginUi.ts`. O menu
    (`components/nav.ts`), o guarda de perfil (`lib/access.ts`), o carregamento
    de textos (`lib/pluginI18n.ts`) e o roteador (`App.tsx`) consultam o mesmo
-   registro validado.
+   registro validado. A tela Plugins invalida essa consulta após ações de
+   ativação, instalação, atualização ou desativação, para que a navegação
+   acompanhe a mudança assim que o nó a confirma; o polling de 30 s cobre
+   mudanças feitas fora desta aba.
 
 ## Manifesto (`pom-plugin-ui/v1`)
 
@@ -233,8 +236,9 @@ no `en` ou na chave. **O POM não é dono de nenhum texto de plugin.**
   proxy pelo router da interface).
 - Frontend: `lib/pluginUi.test.ts` (registro, namespaces, colisões, caminhos,
   perfis e menu), `lib/pluginI18n.test.ts` (instalação, idiomas selecionados,
-  ausência/invalidez), `App.test.tsx` (fallback, tela por perfil, duas rotas
-  relativas iguais e URL direta sob `/admin-ui`).
+  ausência/invalidez), `routes/Plugins.test.tsx` (invalidação imediata do
+  manifesto após ações de ciclo de vida), `App.test.tsx` (fallback, tela por
+  perfil, duas rotas relativas iguais e URL direta sob `/admin-ui`).
 - Ponta a ponta manual feita na entrega: o `cdylib` real carregado por
   `pom-plugin-host` respondendo `ui.manifest`/`ui.asset`, e o bundle real
   renderizado no `App` do POM com o catálogo pt-BR do plugin.

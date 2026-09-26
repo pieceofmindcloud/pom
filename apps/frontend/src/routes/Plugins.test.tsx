@@ -68,6 +68,7 @@ const mocks = vi.hoisted(() => ({
   post: vi.fn(),
   del: vi.fn(),
   navigateToPluginPurchase: vi.fn(),
+  queryClient: { invalidateQueries: vi.fn() },
   plugins: {
     data: [] as Array<{
       code: string;
@@ -104,8 +105,10 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => mocks.queryClient }));
 vi.mock("../lib/api", () => ({ api: { post: mocks.post, del: mocks.del } }));
 vi.mock("../lib/queries", () => ({
+  keys: { pluginUi: ["plugin-ui"] },
   usePlugins: () => mocks.plugins,
   usePublicPluginCatalog: () => mocks.catalog,
   useNode: () => mocks.node,
@@ -139,6 +142,7 @@ describe("Plugins", () => {
     mocks.catalog.refetch.mockReset();
     mocks.node.data = { system: { os: "linux", arch: "x86_64" } };
     mocks.navigateToPluginPurchase.mockReset();
+    mocks.queryClient.invalidateQueries.mockReset();
     localStorage.clear();
   });
 
@@ -147,10 +151,10 @@ describe("Plugins", () => {
     expect(screen.getByTestId("plugins-scroll-area").className).toContain("overscroll-y-contain");
   });
 
-  it("envia a license key uma vez, limpa o campo e nunca a grava no storage", async () => {
-    mocks.catalog.data = { plugins: [publicPlugin("alpha")] };
-    mocks.plugins.data = [pluginStatus("alpha")];
-    mocks.post.mockResolvedValue({ activated: ["alpha"] });
+  it("envia a license key uma vez, atualiza o menu do plugin e nunca a grava no storage", async () => {
+    mocks.catalog.data = { plugins: [publicPlugin("base")] };
+    mocks.plugins.data = [pluginStatus("base")];
+    mocks.post.mockResolvedValue({ activated: ["base"] });
     renderPage();
 
     const input = screen.getByLabelText("Chave de licença");
@@ -164,6 +168,9 @@ describe("Plugins", () => {
     expect((input as HTMLInputElement).value).toBe("");
     expect(localStorage.getItem("PM-secret")).toBeNull();
     expect(mocks.plugins.refetch).toHaveBeenCalled();
+    await waitFor(() => expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["plugin-ui"],
+    }));
   });
 
   it("explica uma recusa sem exibir a chave na mensagem", async () => {
@@ -656,6 +663,17 @@ describe("Plugins", () => {
     fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Instalar pelo GitHub" }));
 
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/base/github-source/install"));
+    await waitFor(() => expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["plugin-ui"],
+    }));
+    expect(screen.getByLabelText("Plugin").getAttribute("id")).toBe("plugins-github-plugin-code");
+    expect(screen.getByLabelText("Plugin").getAttribute("name")).toBe("plugin_code");
+    expect(screen.getByLabelText("URL do repositório público do GitHub").getAttribute("id")).toBe(
+      "plugins-github-repository-url",
+    );
+    expect(screen.getByLabelText("URL do repositório público do GitHub").getAttribute("name")).toBe(
+      "repository_url",
+    );
     expect(mocks.navigateToPluginPurchase).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Buy" })).toBeNull();
   });

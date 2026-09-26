@@ -1,10 +1,11 @@
 import { ChevronLeft, ChevronRight, Download, ExternalLink, KeyRound, Package, RefreshCw, Save, ShieldCheck, X, XCircle } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Tone } from "../components/ui";
 import { Badge, Button, Empty, ErrorState, FullBleedHeader, Input, Panel, PanelHeader, Skeleton } from "../components/ui";
 import { Confirm } from "../components/Confirm";
 import { api } from "../lib/api";
-import { useNode, usePlugins, usePublicPluginCatalog } from "../lib/queries";
+import { keys, useNode, usePlugins, usePublicPluginCatalog } from "../lib/queries";
 import type { PluginPreferences, PluginPreferencesSchema, PluginStatus } from "../lib/types";
 import { releaseForTarget, type PublicPluginCatalogEntry, type PublicPluginPrice } from "../lib/pluginCatalog";
 import { navigateToPluginPurchase } from "../lib/pluginPurchase";
@@ -622,6 +623,8 @@ function GithubReleasesManager({
             <label className="block">
               <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">{t("plugins.githubPluginLabel")}</span>
               <select
+                id="plugins-github-plugin-code"
+                name="plugin_code"
                 aria-label={t("plugins.githubPluginLabel")}
                 value={selectedCodeForForm}
                 onChange={(event) => setSelectedCode(event.target.value)}
@@ -649,6 +652,8 @@ function GithubReleasesManager({
                   <label className="min-w-0 flex-1">
                     <span className="sr-only">{t("plugins.githubRepositoryLabel")}</span>
                     <Input
+                      id="plugins-github-repository-url"
+                      name="repository_url"
                       type="url"
                       value={repositoryUrl}
                       onChange={(event) => setRepositoryUrl(event.target.value)}
@@ -723,6 +728,7 @@ function GithubReleasesManager({
 
 export function Plugins() {
   const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
   const plugins = usePlugins();
   const catalog = usePublicPluginCatalog();
   const node = useNode();
@@ -737,6 +743,13 @@ export function Plugins() {
   const [preferencesFailedCode, setPreferencesFailedCode] = useState<string | null>(null);
   const [deactivateTarget, setDeactivateTarget] = useState<string | null>(null);
   const [deactivateFailedCode, setDeactivateFailedCode] = useState<string | null>(null);
+
+  async function refreshPluginData() {
+    await Promise.all([
+      plugins.refetch(),
+      queryClient.invalidateQueries({ queryKey: keys.pluginUi }),
+    ]);
+  }
 
   async function activate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -754,7 +767,7 @@ export function Plugins() {
       });
       setLicenseKey("");
       setActivatedCodes(response.activated);
-      await plugins.refetch();
+      await refreshPluginData();
     } catch {
       setActivateError(true);
     } finally {
@@ -767,7 +780,7 @@ export function Plugins() {
     try {
       await api.post(`/api/ui/plugins/${encodeURIComponent(code)}/refresh`);
     } finally {
-      await plugins.refetch();
+      await refreshPluginData();
       setBusyCode(null);
     }
   }
@@ -781,7 +794,7 @@ export function Plugins() {
     } catch {
       setDeactivateFailedCode(code);
     } finally {
-      await plugins.refetch();
+      await refreshPluginData();
       setBusyCode(null);
     }
   }
@@ -794,7 +807,7 @@ export function Plugins() {
     } catch {
       setUpdateFailedCode(code);
     } finally {
-      await plugins.refetch();
+      await refreshPluginData();
       setBusyCode(null);
     }
   }
@@ -809,7 +822,7 @@ export function Plugins() {
       setSourceFailedCode(code);
       setSourceFailureMessage(error instanceof Error ? error.message : null);
     } finally {
-      await plugins.refetch();
+      await refreshPluginData();
       setBusyCode(null);
     }
   }
@@ -846,7 +859,7 @@ export function Plugins() {
     } catch {
       setPreferencesFailedCode(code);
     } finally {
-      await plugins.refetch();
+      await refreshPluginData();
       setBusyCode(null);
     }
   }

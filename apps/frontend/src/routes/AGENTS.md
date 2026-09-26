@@ -111,7 +111,10 @@ Per-file list:
   global sob a ativação administra origens GitHub e versões baixadas para os
   plugins. Instalar exige confirmação; um plugin pago exige licença ativa, e um
   plugin gratuito só instala da URL `github_repository` publicada pelo servidor.
-  Baixar uma atualização nunca substitui o host em execução.
+  Baixar uma atualização nunca substitui o host em execução. Depois de
+  ativar, instalar, atualizar ou desativar um plugin, a tela atualiza o status
+  local e invalida `keys.pluginUi` para refletir os menus sem aguardar o polling
+  de 30 s, que continua cobrindo mudanças feitas em outra aba ou nó.
   O editor de preferências usa o schema opcional do manifesto instalado, mostra
   defaults tipados boolean/diretório e envia valores só à rota local do nó.
   A atualização do binário `pom` em si fica separada em `About.tsx` (ver

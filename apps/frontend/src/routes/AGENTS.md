@@ -240,7 +240,8 @@ Per-file list:
   `AGENTS.md` in the list, section header opens the overview, collapse works
   while holding the selection, the two scroll containers, `?doc=`/`?guia=` deep
   links, search + clear, empty state, and the mobile nav/reader/Voltar
-  contract. Loading the embedded set requires
+  contract. Active plugin guides and reference pages are appended from signed
+  `docs/` assets and loaded lazily after installation. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `About.tsx` - Tela informativa em `/config/sobre`, última folha de
   Configurações. Mostra o `LICENSE` AGPL-3.0 do repositório e a página oficial
@@ -505,10 +506,11 @@ Per-file list:
   `enterprise`, entregues por `pom-plugin-logs` pelo mecanismo de UI de plugin
   (`docs/subsystems/plugins-ui.md`). `App.tsx` mostra o fallback
   `../components/EnterpriseFeatureShowcase.tsx` quando o plugin não está ativo.
-- `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
-  `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
-  or inside a whole-model folder, shows current usage and the slice limit, and
-  keeps `/config/pastas` as an alias.
+- `ModelPaths.tsx` - edits `model_dirs`, `shard_dir`, `workspace_root` and
+  `shard_max_gb` via `POST /api/ui/paths`. The Armazenamento screen rejects a
+  slice folder equal to or inside a whole-model folder, shows current usage and
+  the slice limit, and keeps `/config/pastas` as an alias. The workspace is the
+  single shared root for projects and dynamic plugin data.
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
   `/config/rede/participantes`; the route is allowed only to `admin` and

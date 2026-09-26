@@ -41,12 +41,27 @@ export interface PluginScreenSpec {
 export interface PluginUiManifest {
   schema: "pom-plugin-ui/v1";
   plugin_code: string;
+  /** Asset PNG opcional; o ícone declarado no menu continua sendo o fallback. */
+  icon_image?: string;
   menu: PluginMenuItem[];
   routes: PluginRoute[];
   screens: Record<string, PluginScreenSpec>;
   /** idioma -> asset do catálogo de textos do plugin */
   i18n?: Record<string, string>;
+  /** Documentação Markdown do plugin, separada em guias e referência. */
+  documentation?: PluginDocumentation;
   assets: string[];
+}
+
+export interface PluginDocumentation {
+  guides: PluginDocumentationEntry[];
+  reference: PluginDocumentationEntry[];
+}
+
+export interface PluginDocumentationEntry {
+  id: string;
+  title: Record<string, string>;
+  asset: string;
 }
 
 export interface ActivePluginUi {
@@ -65,6 +80,7 @@ export interface ResolvedPluginRoute {
 interface RegisteredMenuItem extends PluginMenuItem {
   code: string;
   roles: Profile[];
+  iconImage?: string;
 }
 
 interface RegisteredPlugin {
@@ -184,6 +200,39 @@ function normalizePlugin(
   ) {
     return null;
   }
+  const iconImage = manifest.icon_image;
+  const documentation = manifest.documentation;
+  if (
+    (iconImage !== undefined &&
+      (!isNonEmptyString(iconImage) ||
+        !iconImage.endsWith(".png") ||
+        !manifest.assets.includes(iconImage))) ||
+    (documentation !== undefined && !isRecord(documentation))
+  ) {
+    return null;
+  }
+  const documentationRecord = isRecord(documentation) ? documentation : undefined;
+  const documentationEntries = documentationRecord
+    ? [documentationRecord.guides, documentationRecord.reference]
+    : [];
+  if (documentationEntries.some((entries) => !Array.isArray(entries))) return null;
+  for (const entries of documentationEntries as unknown[][]) {
+    for (const entry of entries) {
+      if (
+        !isRecord(entry) ||
+        !isNonEmptyString(entry.id) ||
+        !isRecord(entry.title) ||
+        !isNonEmptyString(entry.title.en) ||
+        !Object.values(entry.title).every(isNonEmptyString) ||
+        !isNonEmptyString(entry.asset) ||
+        !entry.asset.startsWith("docs/") ||
+        !entry.asset.endsWith(".md") ||
+        !manifest.assets.includes(entry.asset)
+      ) {
+        return null;
+      }
+    }
+  }
   if (
     manifest.i18n !== undefined &&
     (!isRecord(manifest.i18n) || !Object.values(manifest.i18n).every(isNonEmptyString))
@@ -277,6 +326,7 @@ function normalizePlugin(
       label: { ...(candidate.label as Record<string, string>) },
       to,
       roles,
+      ...(isNonEmptyString(iconImage) ? { iconImage } : {}),
       ...(candidate.profiles !== undefined ? { profiles: [...(candidate.profiles as Profile[])] } : {}),
       ...(candidate.icon !== undefined ? { icon: candidate.icon as string | null } : {}),
       ...(candidate.group !== undefined ? { group: candidate.group as string | null } : {}),
@@ -298,12 +348,21 @@ function normalizePlugin(
     manifest: {
       schema: "pom-plugin-ui/v1",
       plugin_code: code,
+      ...(isNonEmptyString(iconImage) ? { icon_image: iconImage } : {}),
       menu: rawMenu,
       routes: rawRoutes,
       screens,
       assets: [...manifest.assets],
       ...(manifest.i18n !== undefined
         ? { i18n: { ...(manifest.i18n as Record<string, string>) } }
+        : {}),
+      ...(documentationRecord !== undefined
+        ? {
+            documentation: {
+              guides: [...(documentationRecord.guides as PluginDocumentationEntry[])],
+              reference: [...(documentationRecord.reference as PluginDocumentationEntry[])],
+            },
+          }
         : {}),
     },
   };

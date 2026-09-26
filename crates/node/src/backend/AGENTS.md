@@ -1140,7 +1140,8 @@ faz o download autenticado do blob persistido.
   `crate::ollama` (`OllamaClient` - model resolution and `/health` only, no
   generation fallback), `crate::runtime`
   (`NodeRuntime`, `NodeConfig` - model/slice lifecycle), `crate::config`
-  (`Config`, `ApiKey`, `ui_dist_dir()`, `shard_dir_path()`, `model_dir_paths()`),
+  (`Config`, `ApiKey`, `ui_dist_dir()`, `shard_dir_path()`,
+  `model_dir_paths()`, `workspace_root_path()`),
   `crate::models`/`crate::catalog`/`crate::gguf`/`crate::plan`
   (`Catalog`, `GgufLayout`, `PeerBudget`, `pom::PomManifest`), `crate::splitter`
   (`MergePart`, `merge`), `crate::sysmon`, `crate::route` (`RouteTable` for the

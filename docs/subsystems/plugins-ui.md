@@ -22,6 +22,7 @@ Estatísticas mora em `pom-plugin-logs`, não aqui.
      ou inválido = não aparece = só os fallbacks.
    - `GET /api/ui/plugins/:code/assets/*path` - só o que o manifesto lista em
      `assets`; tipo de conteúdo numa lista fechada, `nosniff`, `no-cache`.
+     Isso inclui o PNG do menu e Markdown da documentação.
      Catálogos i18n passam por `validate_catalog` antes de sair.
    Ambas são GET comuns de `/api/ui/plugins` (`RouteScope::CommonOrInternal`);
    a autorização dos dados que a tela lê continua nas rotas do plugin (por
@@ -36,11 +37,45 @@ Estatísticas mora em `pom-plugin-logs`, não aqui.
 | Campo | Regra |
 |---|---|
 | `schema`, `plugin_code` | `pom-plugin-ui/v1`; o código tem de ser o do plugin instalado |
+| `icon_image` | opcional; caminho de um asset `.png`. O frontend o usa no menu e volta ao `menu[].icon` quando a imagem falha ou não existe |
 | `menu[]` | `id`, `label` por idioma (`en` obrigatório), `icon` (nome conhecido, senão genérico), `to`, `roles` opcional (`admin`/`node`/`infer`); sem `roles` nem o campo legado `profiles`, todos os perfis são elegíveis. `group` é aceito, mas não organiza itens |
 | `routes[]` | `path`, `screen`, `roles` opcional (`admin`/`node`/`infer`) ou `profiles` legado (`admin`/`node`/`infer`, não vazio), `full_bleed`; sem os dois, todos os perfis são elegíveis |
 | `screens{}` | `module` (asset ES), `export` (padrão `default`), `styles[]` |
 | `i18n{}` | idioma -> asset JSON; se presente, `en` é obrigatório |
+| `documentation` | opcional; `guides[]` e `reference[]`, cada entrada com `id`, `title` localizado (com `en`) e asset Markdown relativo sob `docs/` |
 | `assets[]` | lista fechada; caminhos relativos, sem `..`; tudo o que telas e i18n citam tem de estar aqui |
+
+Um manifesto que também publica a documentação usa este formato. O plugin
+mantém os arquivos dentro da pasta `docs/` do pacote; o POM não grava nem
+move esses arquivos para a workspace.
+
+~~~json
+{
+  "icon_image": "ui/icon.png",
+  "documentation": {
+    "guides": [
+      {
+        "id": "getting-started",
+        "title": {"en": "Getting started", "pt-BR": "Primeiros passos"},
+        "asset": "docs/guides/getting-started.md"
+      }
+    ],
+    "reference": [
+      {
+        "id": "configuration",
+        "title": {"en": "Configuration"},
+        "asset": "docs/reference/configuration.md"
+      }
+    ]
+  },
+  "assets": ["ui/icon.png", "docs/guides/getting-started.md", "docs/reference/configuration.md"]
+}
+~~~
+
+A tela `/admin-ui/documentacao` acrescenta as guias e a referência dos
+plugins ativos à documentação do sistema. Ela baixa cada Markdown pela rota de
+assets somente quando a pessoa o abre; plugin inativo ou manifesto inválido
+não publica páginas.
 
 O host normaliza cada `menu[].to` e `routes[].path` sob `/<plugin_code>/...` e
 guarda os dois no mesmo registro. Assim, `plugin_code: "base"` com `to: "/example"`
@@ -114,6 +149,16 @@ continuam exigindo licença ativa; um item publicado com
 do license-server e pode ser instalado sem criar lease ou entitlement. Ver
 `licenciamento-enterprise.md` para integrity, persistência e ciclo de checagem.
 
+O campo `workspace_root` do mesmo contrato é a única raiz configurável para
+projetos do usuário e dados dinâmicos dos plugins. Projetos ficam diretamente
+sob essa raiz. Cada plugin deve manter seu estado dinâmico sob um diretório
+oculto namespaced pelo próprio `plugin_code`, por exemplo
+`.deepseek_harness`; dados específicos de um projeto, quando necessários,
+ficam dentro do diretório oculto correspondente naquele projeto. Runtime e
+arquivos fixos de instalação continuam fora da workspace. O POM não migra nem
+remove conteúdo já existente de plugins: a adoção do campo vale para novos
+dados e o plugin decide como preservar seus dados legados.
+
 ## Contexto do nó (`host.configure`)
 
 Um plugin que chama os modelos do nó não embute endereço nem credencial: o
@@ -122,6 +167,7 @@ nó os entrega pelo `query` genérico, na operação `host.configure`:
 ```json
 {"operation": "host.configure",
  "gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": "sk-..."},
+ "workspace_root": "/data/workspace",
  "preferences": {"features": {"capture_headers": false}, "storage_directory": null}}
 ```
 
@@ -131,6 +177,12 @@ loopback é sempre aceito, mesmo com TLS). `api_key` é a chave de chat do nó
 funcione num nó sem autoridade administrativa. O nó entrega o contexto a todo
 host que sobe e de novo quando ele muda (chave revogada e recriada); plugins
 que não conhecem a operação respondem erro, que é ignorado.
+`workspace_root` é um caminho absoluto visível e gravável pelo processo do
+plugin dentro do container. Em uma instalação nova o default persistido
+logicamente é `~/pom_workspace`, sem pergunta no wizard; em Compose o mount
+estável é `/data/workspace` e deve permanecer persistente entre reinícios.
+O POM verifica o caminho ao salvar a configuração e reenvia o contexto aos
+hosts em execução quando a raiz muda.
 
 ## Interface web servida pelo plugin (`/api/ui/plugins/:code/proxy/*`)
 

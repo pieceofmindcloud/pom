@@ -26,13 +26,14 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { canAccessRoute } from "../lib/access";
-import { pluginLabelKey, pluginMenuItems } from "../lib/pluginUi";
+import { pluginAssetUrl, pluginLabelKey, pluginMenuItems } from "../lib/pluginUi";
 import type { Profile } from "../lib/profile";
 
 export interface NavLeaf {
   labelKey: string;
   to: string;
   icon?: LucideIcon;
+  iconImage?: string;
   children?: NavLeaf[];
   /** Promotes this child to a standalone main-menu item for a profile. */
   promoteProfiles?: readonly Profile[];
@@ -43,6 +44,7 @@ export interface NavLeaf {
 export interface NavSection {
   labelKey: string;
   icon: LucideIcon;
+  iconImage?: string;
   /** A section either navigates somewhere itself, or holds children. */
   to?: string;
   children?: NavLeaf[];
@@ -174,9 +176,13 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     if (section.children) copy.children = section.children.map((child) => ({ ...child }));
     return copy;
   });
-  const replace = (target: { labelKey: string; icon?: LucideIcon }, item: ReturnType<typeof pluginMenuItems>[number]) => {
+  const replace = (
+    target: { labelKey: string; icon?: LucideIcon; iconImage?: string },
+    item: ReturnType<typeof pluginMenuItems>[number],
+  ) => {
     target.labelKey = pluginLabelKey(item.code, item.id);
     target.icon = pluginIcon(item.icon);
+    target.iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
   };
   for (const item of pluginMenuItems(profile)) {
     const key = pluginLabelKey(item.code, item.id);
@@ -185,6 +191,7 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
       if (section.to === item.to) {
         section.labelKey = key;
         section.icon = pluginIcon(item.icon);
+        section.iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
         placed = true;
       }
       for (const child of section.children ?? []) {
@@ -196,7 +203,12 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     }
     if (placed) continue;
     const docs = result.findIndex((s) => s.labelKey === "nav.documentation");
-    const entry: NavSection = { labelKey: key, icon: pluginIcon(item.icon), to: item.to };
+    const entry: NavSection = {
+      labelKey: key,
+      icon: pluginIcon(item.icon),
+      iconImage: item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined,
+      to: item.to,
+    };
     result.splice(docs < 0 ? result.length : docs, 0, entry);
   }
   return result;
@@ -229,7 +241,13 @@ export function navForProfile(profile: Profile, _enterpriseActive = true): NavSe
       for (const child of section.children ?? []) {
         if (!child.promoteProfiles?.includes(profile)) continue;
         if (!canAccessRoute(child.to, profile)) continue;
-        visible.push({ labelKey: child.labelKey, icon: child.icon ?? section.icon, to: child.to, children: (child.children ?? []).map(filterLeaf).filter((item): item is NavLeaf => item !== null) });
+        visible.push({
+          labelKey: child.labelKey,
+          icon: child.icon ?? section.icon,
+          iconImage: child.iconImage ?? section.iconImage,
+          to: child.to,
+          children: (child.children ?? []).map(filterLeaf).filter((item): item is NavLeaf => item !== null),
+        });
       }
       continue;
     }

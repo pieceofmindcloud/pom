@@ -3246,22 +3246,44 @@ fn machine_fingerprint(node_id: &str) -> Fingerprint {
 /// em loopback (texto claro de loopback é sempre aceito, mesmo com TLS) e a
 /// chave de chat do nó. Reavaliado periodicamente para acompanhar uma chave
 /// revogada e recriada; um nó que ainda não alcança o principal tenta de novo.
+fn host_context_payload(
+    gateway_port: u16,
+    api_key: &str,
+    workspace_root: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "gateway": {
+            "openai_base_url": format!("http://127.0.0.1:{gateway_port}/v1"),
+            "api_key": api_key,
+        },
+        "workspace_root": workspace_root,
+    })
+}
+
+pub(crate) async fn refresh_host_context(
+    state: &crate::gateway::GatewayState,
+) -> anyhow::Result<()> {
+    let (key, _) = crate::admin::node_chat_key(state).await?;
+    let workspace_root = state.auth.read().await.workspace_root_path();
+    let workspace_root = workspace_root.to_string_lossy();
+    state
+        .plugins
+        .set_host_context(host_context_payload(
+            state.gateway_port,
+            &key.key,
+            &workspace_root,
+        ))
+        .await;
+    Ok(())
+}
+
 pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
     const REFRESH: std::time::Duration = std::time::Duration::from_secs(600);
     const RETRY: std::time::Duration = std::time::Duration::from_secs(30);
     tokio::spawn(async move {
         loop {
-            let wait = match crate::admin::node_chat_key(&state).await {
-                Ok((key, _)) => {
-                    let context = serde_json::json!({
-                        "gateway": {
-                            "openai_base_url": format!("http://127.0.0.1:{}/v1", state.gateway_port),
-                            "api_key": key.key,
-                        }
-                    });
-                    state.plugins.set_host_context(context).await;
-                    REFRESH
-                }
+            let wait = match refresh_host_context(&state).await {
+                Ok(()) => REFRESH,
                 Err(error) => {
                     tracing::warn!(%error, "contexto dos plugins sem API key; nova tentativa em 30 s");
                     RETRY
@@ -4148,6 +4170,7 @@ mod tests {
     use super::tests_support::MockLicenseService;
     use super::*;
     use enterprise_protocol::{ActivationResponse, Grant, LicenseErrorCode, PluginManifest};
+    use serde_json::Value;
 
     fn activation(code: &str, release_id: &str) -> ActivationResponse {
         ActivationResponse {
@@ -5248,7 +5271,15 @@ mod tests {
         ));
         let manager =
             PluginManager::test_manager_with_database(&["enterprise"], service.clone(), db);
-        let context = |key: &str| serde_json::json!({"gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": key}});
+        let context = |key: &str| {
+            serde_json::json!({
+                "gateway": {
+                    "openai_base_url": "http://127.0.0.1:8080/v1",
+                    "api_key": key
+                },
+                "workspace_root": "/data/workspace"
+            })
+        };
         manager.set_host_context(context("sk-first")).await;
 
         let runtime = manager.runtime_for("enterprise").expect("runtime");
@@ -5272,6 +5303,9 @@ mod tests {
             1,
             "host recém-iniciado recebe o contexto"
         );
+        assert!(std::fs::read_to_string(&host_log)
+            .unwrap_or_default()
+            .contains("/data/workspace"));
 
         manager.set_host_context(context("sk-first")).await;
         assert_eq!(configures("sk-first"), 1, "contexto igual não é reenviado");
@@ -5334,6 +5368,15 @@ mod tests {
         );
         std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
         runtime.stop_host_for_test().await;
+    }
+
+    #[test]
+    fn host_context_payload_includes_the_shared_workspace_root() {
+        let context = host_context_payload(8080, "sk-test", "/data/workspace");
+        assert_eq!(
+            context.get("workspace_root").and_then(Value::as_str),
+            Some("/data/workspace")
+        );
     }
 
     #[tokio::test]

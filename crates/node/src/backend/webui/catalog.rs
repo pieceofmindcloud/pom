@@ -859,15 +859,18 @@ pub(super) fn path_entry(dir: &std::path::Path, max_bytes: Option<u64>) -> PathE
 pub(super) async fn get_paths(State(state): State<GatewayState>) -> impl IntoResponse {
     let cfg = state.auth.read().await;
     let shard = cfg.shard_dir_path();
+    let workspace = cfg.workspace_root_path();
     let shard_max_bytes = cfg.shard_max_bytes();
     Json(json!({
         "model_dirs": cfg.model_dir_paths().iter().map(|d| path_entry(d, None)).collect::<Vec<_>>(),
         "shard_dir": path_entry(&shard, Some(shard_max_bytes)),
+        "workspace_root": path_entry(&workspace, None),
         "shard_max_gb": cfg.shard_max_gb(),
         "using_defaults": cfg.model_dirs_are_default(),
         "detected": catalog::default_model_dirs()
             .iter().map(|d| path_entry(d, None)).collect::<Vec<_>>(),
         "default_shard_dir": crate::config::default_shard_dir().to_string_lossy(),
+        "default_workspace_root": crate::config::default_workspace_root().to_string_lossy(),
     }))
 }
 
@@ -948,6 +951,9 @@ pub struct SavePathsRequest {
     /// Empty means "back to `<project_root>/models`".
     #[serde(default)]
     pub shard_dir: String,
+    /// Empty restores the user-home workspace default (~/pom_workspace).
+    #[serde(default)]
+    pub workspace_root: String,
     #[serde(default)]
     pub shard_max_gb: Option<f64>,
 }
@@ -972,6 +978,100 @@ pub(super) fn check_dir(raw: &str, what: &str) -> Result<String, String> {
         ));
     }
     Ok(trimmed.to_string())
+}
+
+/// The workspace is shared with plugin processes, so it must be an absolute
+/// directory that this container can both see and write. The probe is
+/// create-new and uniquely named: validation never overwrites existing data.
+pub(super) fn check_workspace_dir(raw: &str, what: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{what}: caminho vazio."));
+    }
+    let path = std::path::Path::new(trimmed);
+    if !path.is_absolute() {
+        return Err(format!("{what}: o caminho precisa ser absoluto."));
+    }
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        format!("{what}: não foi possível acessar “{trimmed}” dentro do container: {error}")
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "{what}: “{trimmed}” é um arquivo, e aqui se informa a pasta que o contém."
+        ));
+    }
+    std::fs::read_dir(path).map_err(|error| {
+        format!("{what}: não foi possível listar “{trimmed}” dentro do container: {error}")
+    })?;
+
+    let probe = path.join(format!(
+        ".pom-workspace-write-test-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .map_err(|error| {
+            format!("{what}: a pasta “{trimmed}” não é gravável dentro do container: {error}")
+        })?;
+    if let Err(error) = std::fs::remove_file(&probe) {
+        return Err(format!(
+            "{what}: não foi possível limpar o teste de escrita em “{trimmed}”: {error}"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn paths_overlap(left: &std::path::Path, right: &std::path::Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
+}
+
+pub(super) fn reject_workspace_overlap(
+    model_dirs: &[String],
+    shard_dir: &str,
+    workspace_root: &str,
+) -> Result<(), String> {
+    let workspace = std::path::Path::new(workspace_root)
+        .canonicalize()
+        .map_err(|e| format!("Workspace: não deu para resolver o caminho: {e}"))?;
+    let shard = std::path::Path::new(shard_dir)
+        .canonicalize()
+        .map_err(|e| format!("Pasta de modelos fatiados: não deu para resolver o caminho: {e}"))?;
+    if paths_overlap(&workspace, &shard) {
+        return Err(
+            "a workspace não pode ser a mesma pasta de fatias nem ficar dentro ou conter essa pasta"
+                .to_string(),
+        );
+    }
+    for model in model_dirs {
+        let model = std::path::Path::new(model).canonicalize().map_err(|e| {
+            format!("Pasta de modelos inteiros: não deu para resolver {model}: {e}")
+        })?;
+        if paths_overlap(&workspace, &model) {
+            return Err(
+                "a workspace não pode ser a mesma pasta de modelos inteiros nem ficar dentro ou conter essa pasta"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_dir_validation_requires_an_absolute_existing_writable_directory() {
+    let root = tempfile::tempdir().unwrap();
+    assert!(check_workspace_dir("relative", "Workspace").is_err());
+    assert!(
+        check_workspace_dir(&root.path().join("missing").to_string_lossy(), "Workspace").is_err()
+    );
+    let file = root.path().join("file");
+    std::fs::write(&file, b"not a directory").unwrap();
+    assert!(check_workspace_dir(&file.to_string_lossy(), "Workspace").is_err());
+    assert_eq!(
+        check_workspace_dir(&root.path().to_string_lossy(), "Workspace").unwrap(),
+        root.path().to_string_lossy()
+    );
 }
 
 pub(super) fn reject_nested_shard_dir(
@@ -1028,6 +1128,27 @@ pub(super) async fn save_paths(
     if let Err(e) = reject_nested_shard_dir(&model_dirs, &effective_shard_dir) {
         return bad_request(e);
     }
+    let workspace_root = if req.workspace_root.trim().is_empty() {
+        None
+    } else {
+        match check_workspace_dir(&req.workspace_root, "Workspace") {
+            Ok(path) => Some(path),
+            Err(e) => return bad_request(e),
+        }
+    };
+    let effective_workspace_root = workspace_root.clone().unwrap_or_else(|| {
+        crate::config::default_workspace_root()
+            .to_string_lossy()
+            .into_owned()
+    });
+    if let Err(e) = check_workspace_dir(&effective_workspace_root, "Workspace") {
+        return bad_request(e);
+    }
+    if let Err(e) =
+        reject_workspace_overlap(&model_dirs, &effective_shard_dir, &effective_workspace_root)
+    {
+        return bad_request(e);
+    }
     let shard_max_gb = match req.shard_max_gb {
         None => crate::storage::DEFAULT_SHARD_MAX_GB,
         Some(value) if value.is_finite() && value > 0.0 => value,
@@ -1040,10 +1161,15 @@ pub(super) async fn save_paths(
         let mut cfg = state.auth.write().await;
         cfg.model_dirs = Some(model_dirs);
         cfg.shard_dir = shard_dir;
+        cfg.workspace_root = workspace_root;
         cfg.shard_max_gb = shard_max_gb;
         if let Err(e) = cfg.save() {
             return bad_request(format!("não deu para gravar pom.json: {e}"));
         }
+    }
+
+    if let Err(error) = crate::plugins::refresh_host_context(&state).await {
+        tracing::warn!(%error, "contexto dos plugins não foi atualizado após salvar a workspace");
     }
 
     invalidate_catalog(state.database.clone()).await;

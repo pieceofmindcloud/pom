@@ -158,6 +158,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source,
   incluindo `ClusterLogEntry` e o estado de autoridade do interruptor de logs.
+  `PathsResponse` também inclui `workspace_root` e `default_workspace_root`,
+  a raiz persistente compartilhada por projetos e dados dinâmicos de plugins.
   `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is
   the tensor-parallel array. TP `DiscoveredModel` entries carry `tp_rank` and
   `tp_size`, which the UI turns into one-based labels such as `1of4`.
@@ -587,7 +589,9 @@ When updating this file, preserve this bar for all agents and keep entries conci
   `roles` filtra o item e também limita o acesso direto à rota vinculada;
   menus e rotas aceitam `roles` atual ou `profiles` legado, sem exigir ambos.
   Se os dois aparecem, `roles` prevalece; sem nenhum, todos os perfis são
-  elegíveis. Não conhece plugin algum.
+  elegíveis. `icon_image` é validado como PNG declarado em `assets` e fica
+  disponível para o menu como fallback visual; `documentation` valida as
+  entradas Markdown dos guias e da referência. Não conhece plugin algum.
 - `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
   design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
   empacotar cópias próprias.

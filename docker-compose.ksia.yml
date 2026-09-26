@@ -27,6 +27,8 @@ services:
     container_name: pom-gpu
     volumes:
       - "./tests/fixtures/node-gpu:/data"
+      # Stable persistent root shared by user projects and plugin data.
+      - "${POM_WORKSPACE_DIR:-/storage/pom-workspace}:/data/workspace"
       - /storage/nvme1/models_full:/storage/nvme1/models_full
       - /storage/nvme2/models_sliced:/storage/nvme2/models_sliced
       - /storage/hd1/models_full:/storage/hd1/models_full

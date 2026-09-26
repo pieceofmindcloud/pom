@@ -166,6 +166,9 @@ Per-file list:
   é a última folha e abre `/config/sobre`. Compartilhamento é a tela única
   que reutiliza `TrustAnchor` para raiz de confiança, esta máquina e chave de
   conexão.
+  Um manifesto de plugin pode substituir o Lucide por `icon_image`, um PNG
+  servido pelo endpoint de assets; `Sidebar` mantém o ícone declarado no menu
+  como fallback se a imagem falhar.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
   mobile drawer in `Topbar`). `SidebarContent` lê `useProfile()` e renderiza
   `navForProfile(profile)`, não `NAV` cru. `Section`/`Leaf` render it with an animated

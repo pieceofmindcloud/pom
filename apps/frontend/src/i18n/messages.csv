@@ -859,6 +859,9 @@ docs.noDocDetail,Pick one from the tree on the left.,Escolha um na árvore à es
 docs.noResults,No documentation matches,Nenhuma documentação encontrada
 docs.noResultsDetail,"Try another term, or clear the search to browse the tree.","Tente outro termo, ou limpe a busca para navegar pela árvore."
 docs.resultCount,"{count}{count, plural, =1 { result} other { results}}","{count}{count, plural, =1 { resultado} other { resultados}}"
+docs.pluginGuides,Plugin guides,Guias dos plugins
+docs.pluginLoading,Loading plugin documentation…,Carregando documentação do plugin…
+docs.plugins,Plugins,Plugins
 docs.search,Search documentation…,Buscar na documentação…
 docs.searchAria,Search documentation,Buscar na documentação
 docs.section.crates,crates/,crates/
@@ -1413,6 +1416,10 @@ paths.title,Storage,Armazenamento
 paths.usageAria,Slice folder disk usage,Uso em disco da pasta de fatias
 paths.usedOf,used of,usados de
 paths.validation,Saving rejects a path that does not exist or is not a folder. A typo would otherwise show up much later as a peer unable to find the model it was asked to slice.,Salvar recusa caminho que não exista ou que não seja uma pasta. Um erro de digitação apareceria depois como um peer incapaz de achar o modelo que mandaram ele fatiar.
+paths.workspaceDetail,"One shared root for user projects and dynamic data from every plugin. It is separate from whole-model and slice folders.","Uma raiz compartilhada para projetos do usuário e dados dinâmicos de todos os plugins. Ela é separada das pastas de modelos inteiros e fatias."
+paths.workspaceFolder,Project workspace,Workspace de projetos
+paths.workspaceHint,"Blank restores the default: {path}. The folder must be absolute and writable inside the container.","Em branco volta para o padrão: {path}. A pasta precisa ser absoluta e gravável dentro do container."
+paths.workspaceLayout,"Projects live directly under this root. Plugins keep hidden namespaced data below it.","Os projetos ficam diretamente sob esta raiz. Plugins guardam dados ocultos namespaced abaixo dela."
 pipeline.empty,No machine on the network,Nenhuma máquina na rede
 pipeline.emptyDetail,This node has not found peers yet. Check the bootstrap address under Settings › Network.,Este nó ainda não encontrou peers. Confira o endereço de bootstrap em Configurações › Rede.
 pipeline.footnote,Each connection carries hidden state as f16. The on-screen order is the order the request travels through machines.,Cada conexão carrega o estado oculto em f16. A ordem na tela é a ordem em que a requisição percorre as máquinas.

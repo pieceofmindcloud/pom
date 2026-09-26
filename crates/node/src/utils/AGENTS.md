@@ -80,6 +80,10 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `~/.pom/models_sliced`; configurações existentes ainda conservam sua escolha.
   `model_dirs` vazio não procura em lugar nenhum. `shard_max_gb` limita somente
   a pasta de fatias e assume 100 GB quando falta em um `pom.json` antigo.
+- `workspace_root_path` - raiz absoluta efetiva da workspace compartilhada por
+  projetos do usuário e dados dinâmicos de plugins. O campo persistido é
+  opcional para configurações antigas e o default é `~/pom_workspace`, sem
+  pergunta no wizard e separado das pastas de modelos.
 - A configuração não possui teto absoluto de saída. A capacidade efetiva é
   observada no runtime depois do carregamento do modelo e chega ao gateway por
   `n_ctx`; o gateway agrega o menor valor entre os peers vivos. O único limite

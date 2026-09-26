@@ -896,9 +896,11 @@ export interface PathEntry {
 export interface PathsResponse {
   model_dirs: PathEntry[];
   shard_dir: PathEntry;
+  workspace_root: PathEntry;
   using_defaults: boolean;
   detected: PathEntry[];
   default_shard_dir: string;
+  default_workspace_root: string;
   shard_max_gb: number;
 }
 

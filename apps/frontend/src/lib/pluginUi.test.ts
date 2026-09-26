@@ -9,6 +9,7 @@ const plugin: ActivePluginUi = {
   manifest: {
     schema: "pom-plugin-ui/v1",
     plugin_code: "acme",
+    icon_image: "ui/icon.png",
     menu: [
       { id: "logs", label: { en: "Audit", "pt-BR": "Auditoria" }, icon: "list-tree", to: "/logs", group: "logs", profiles: ["admin"] },
       { id: "extra", label: { en: "Extra" }, icon: "unknown", to: "/acme/extra", profiles: ["admin", "infer"] },
@@ -19,7 +20,7 @@ const plugin: ActivePluginUi = {
       { path: "/acme", screen: "root", profiles: ["admin"] },
     ],
     screens: { logs: { module: "a.js" }, extra: { module: "b.js" }, root: { module: "c.js" } },
-    assets: ["a.js", "b.js", "c.js"],
+    assets: ["a.js", "b.js", "c.js", "ui/icon.png"],
   },
 };
 
@@ -136,6 +137,11 @@ describe("plugin UI registry", () => {
     ]);
     expect(adminLinks).toContainEqual({ labelKey: "plugin:base:plugin", to: "/base/plugin-de-base" });
     expect(adminLinks).toContainEqual({ labelKey: "plugin:base:example", to: "/base/example" });
+  });
+
+  it("keeps the plugin PNG available for the navigation fallback", () => {
+    setPluginUi([plugin]);
+    expect(pluginMenuItems("admin")[0]?.iconImage).toBe("ui/icon.png");
   });
 
   it("normalizes repeated slashes and trailing slashes without leaving the plugin namespace", () => {

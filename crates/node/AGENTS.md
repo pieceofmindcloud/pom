@@ -340,6 +340,9 @@ compartilhado `enterprise_protocol::MAX_IPC_FRAME_BYTES` de 16 MiB.
 (`PluginUiManifest::parse`, `validate_catalog` para os catálogos i18n), e serve
 `GET /api/ui/plugins/ui` (só plugins ativos com manifesto válido) e
 `GET /api/ui/plugins/:code/assets/*path` (só assets listados, via `ui.asset`).
+O manifesto pode declarar `icon_image` como PNG do menu e
+`documentation` com guias e referência Markdown sob `docs/`; tipos MIME e
+declarações são conferidos antes de servir.
 Menus e rotas aceitam `roles` opcionais; `profiles` continua aceito como campo
 legado, com `roles` prevalecendo quando ambos aparecem. A ausência dos dois
 libera todos os perfis antes da regra de acesso.
@@ -347,7 +350,9 @@ libera todos os perfis antes da regra de acesso.
 `docs/subsystems/plugins-ui.md`.
 
 Todo host de plugin recebe o contexto do nó pela operação `host.configure` do
-`query`: `{"gateway": {"openai_base_url", "api_key"}}`. `plugins::spawn_host_context`
+`query`: `{"gateway": {"openai_base_url", "api_key"}, "workspace_root": "..."}`.
+`workspace_root` é a raiz absoluta e gravável compartilhada por projetos e
+dados dinâmicos namespaced de plugins. `plugins::spawn_host_context`
 (iniciado no `main.rs` ao montar o gateway) monta esse JSON com
 `http://127.0.0.1:<gateway_port>/v1` e a chave de chat do nó
 (`admin::node_chat_key`, a mesma do Chat da interface, porque é a única classe

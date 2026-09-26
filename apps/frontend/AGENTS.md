@@ -152,7 +152,9 @@ desenhado**, porque uma vista só não é uma escolha.
   Substituiu a antiga `/enterprise` de produto único (`Enterprise.tsx`); ver
   `src/routes/AGENTS.md` e `crates/node/src/plugins.rs`.
 - `/config/preferencias` -> Preferences com exposição, Hugging Face e proteção
-  térmica; `/config/armazenamento` -> ModelPaths; `/config/preferencias/admin`
+térmica; `/config/armazenamento` -> ModelPaths, que também configura a raiz
+persistente compartilhada de projetos e dados dinâmicos dos plugins;
+`/config/preferencias/admin`
   -> preferências administrativas de TLS, QUIC, logs e chat da rede; e
   `/config/sobre` -> About, com a licença provisória explícita do POM, o
   catálogo agrupado por licença das dependências diretas do frontend e do

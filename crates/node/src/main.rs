@@ -1601,6 +1601,7 @@ async fn start_setup_mode(
         // Modelos é onde essa lista deixa de ser um palpite.
         model_dirs: None,
         shard_dir: None,
+        workspace_root: None,
         shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
         resources: Default::default(),
         setup_model: None,

@@ -1,5 +1,5 @@
 /**
- * Where this machine looks for models, and where it writes slices.
+ * Where this machine keeps models, slices, and the shared project workspace.
  *
  * The distinction matters: the whole-model list is many folders and is only
  * read; the slice folder is one folder, is written to, and is the **only**
@@ -42,6 +42,7 @@ export function ModelPaths() {
 
   const [dirs, setDirs] = useState<string[]>([]);
   const [shardDir, setShardDir] = useState("");
+  const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [shardMaxGb, setShardMaxGb] = useState("100");
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -51,6 +52,7 @@ export function ModelPaths() {
     if (loaded || !paths.data) return;
     setDirs(paths.data.model_dirs.map((d) => d.path));
     setShardDir(paths.data.shard_dir.path);
+    setWorkspaceRoot(paths.data.workspace_root.path);
     setShardMaxGb(String(paths.data.shard_max_gb || 100));
     setLoaded(true);
   }, [paths.data, loaded]);
@@ -61,10 +63,12 @@ export function ModelPaths() {
       const saved = await api.post<PathsResponse>("/api/ui/paths", {
         model_dirs: dirs.map((d) => d.trim()).filter(Boolean),
         shard_dir: shardDir.trim(),
+        workspace_root: workspaceRoot.trim(),
         shard_max_gb: Number.parseFloat(shardMaxGb.replace(",", ".")),
       });
       setDirs(saved.model_dirs.map((d) => d.path));
       setShardDir(saved.shard_dir.path);
+      setWorkspaceRoot(saved.workspace_root.path);
       toast.success(t("paths.saved"), t("paths.savedDetail"));
       invalidate();
     } catch (e) {
@@ -101,6 +105,29 @@ export function ModelPaths() {
       {paths.data && (
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
           <div className="space-y-5">
+            <Panel>
+              <PanelHeader
+                title={t("paths.workspaceFolder")}
+                subtitle={t("paths.workspaceDetail")}
+              />
+              <div className="space-y-3 px-5 py-4">
+                <Field
+                  label={t("paths.path")}
+                  hint={t("paths.workspaceHint", { path: paths.data.default_workspace_root })}
+                >
+                  <Input
+                    value={workspaceRoot}
+                    spellCheck={false}
+                    onChange={(e) => setWorkspaceRoot(e.target.value)}
+                    placeholder={paths.data.default_workspace_root}
+                  />
+                </Field>
+                <Footnote icon={<FolderTree className="h-3.5 w-3.5" />}>
+                  {t("paths.workspaceLayout")}
+                </Footnote>
+              </div>
+            </Panel>
+
             <Panel>
               <PanelHeader
                 title={t("paths.fullModels")}

@@ -239,6 +239,25 @@ export async function request<T>(
   throw new ApiError(502, "inference authentication failed");
 }
 
+/** Read a node-served text asset while preserving the same admin session. */
+export async function requestText(
+  path: string,
+  { auth = true, signal }: Pick<RequestOptions, "auth" | "signal"> = {},
+): Promise<string> {
+  const headers: Record<string, string> = {};
+  if (auth && connectionKey) headers.Authorization = "Bearer " + connectionKey;
+  if (adminAccessToken && isAdminSurfacePath(path)) {
+    headers[ADMIN_ACCESS_TOKEN_HEADER] = adminAccessToken;
+  }
+  const res = await fetch(path, { method: "GET", headers, credentials: "same-origin", signal });
+  if (!res.ok) {
+    noteAdminSessionLost(res, path);
+    const { message, body } = await explain(res);
+    throw new ApiError(res.status, message, body);
+  }
+  return res.text();
+}
+
 type ConditionalCacheEntry = {
   etag: string;
   data: unknown;
@@ -306,6 +325,7 @@ export async function requestConditional<T>(
 
 export const api = {
   get: <T>(path: string, opts?: RequestOptions) => request<T>(path, opts),
+  getText: (path: string, opts?: Pick<RequestOptions, "auth" | "signal">) => requestText(path, opts),
   getConditional: <T>(
     path: string,
     opts?: Pick<RequestOptions, "auth" | "signal">,

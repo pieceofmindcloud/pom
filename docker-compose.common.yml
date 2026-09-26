@@ -46,6 +46,9 @@ services:
     volumes:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      # Stable persistent root shared by user projects and plugin data. Keep it
+      # separate from model volumes so plugin state survives model changes.
+      - ${POM_WORKSPACE_DIR:-./workspace}:/data/workspace
       - ./tests/fixtures/node-gpu:/data
 
   node-gpu2:
@@ -54,6 +57,7 @@ services:
     volumes:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      - ${POM_WORKSPACE_DIR:-./workspace}:/data/workspace
       - ./tests/fixtures/node-gpu-2:/data
 
   node-gpu-3:
@@ -62,6 +66,7 @@ services:
     volumes:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      - ${POM_WORKSPACE_DIR:-./workspace}:/data/workspace
       - ./tests/fixtures/node-gpu-3:/data
 
   node-cpu:
@@ -73,4 +78,5 @@ services:
     volumes:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
+      - ${POM_WORKSPACE_DIR:-./workspace}:/data/workspace
       - ./tests/fixtures/node-cpu:/data

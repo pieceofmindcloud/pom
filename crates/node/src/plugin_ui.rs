@@ -69,6 +69,9 @@ pub(crate) struct ScreenSpec {
 pub(crate) struct PluginUiManifest {
     pub schema: String,
     pub plugin_code: String,
+    /// Optional PNG served by the plugin and used in the navigation menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_image: Option<String>,
     #[serde(default)]
     pub menu: Vec<MenuItem>,
     #[serde(default)]
@@ -79,8 +82,26 @@ pub(crate) struct PluginUiManifest {
     /// textos; o POM só carrega e resolve. Se declarado, `en` é obrigatório.
     #[serde(default)]
     pub i18n: std::collections::BTreeMap<String, String>,
+    /// Markdown pages shipped by the plugin and presented with the POM docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<PluginDocumentation>,
     /// Lista fechada do que `/assets/*` pode servir.
     pub assets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct PluginDocumentation {
+    #[serde(default)]
+    pub guides: Vec<PluginDocumentationEntry>,
+    #[serde(default)]
+    pub reference: Vec<PluginDocumentationEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct PluginDocumentationEntry {
+    pub id: String,
+    pub title: std::collections::BTreeMap<String, String>,
+    pub asset: String,
 }
 
 const MAX_CATALOG_KEYS: usize = 5000;
@@ -137,6 +158,10 @@ fn valid_asset(path: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c))
 }
 
+fn valid_documentation_asset(path: &str) -> bool {
+    valid_asset(path) && path.starts_with("docs/") && path.ends_with(".md")
+}
+
 fn valid_profiles(profiles: &[String]) -> bool {
     !profiles.is_empty() && profiles.iter().all(|p| PROFILES.contains(&p.as_str()))
 }
@@ -156,6 +181,11 @@ impl PluginUiManifest {
         }
         if manifest.plugin_code != expected_code {
             return Err("plugin_code do manifesto não é o do plugin instalado".into());
+        }
+        if let Some(icon) = &manifest.icon_image {
+            if !icon.ends_with(".png") || !manifest.assets.iter().any(|asset| asset == icon) {
+                return Err("icon_image precisa ser um asset PNG declarado".into());
+            }
         }
         for item in &manifest.menu {
             let valid_role_fields = item.roles.as_deref().is_none_or(valid_roles)
@@ -193,6 +223,23 @@ impl PluginUiManifest {
                 return Err(format!("catálogo i18n {locale:?} inválido"));
             }
         }
+        if let Some(documentation) = &manifest.documentation {
+            for (kind, entries) in [
+                ("guia", &documentation.guides),
+                ("referência", &documentation.reference),
+            ] {
+                for entry in entries {
+                    if entry.id.is_empty()
+                        || !entry.title.contains_key("en")
+                        || !entry.title.values().all(|title| !title.is_empty())
+                        || !valid_documentation_asset(&entry.asset)
+                        || !manifest.assets.iter().any(|asset| asset == &entry.asset)
+                    {
+                        return Err(format!("{kind} de documentação inválido"));
+                    }
+                }
+            }
+        }
         for (name, screen) in &manifest.screens {
             let files = std::iter::once(&screen.module).chain(screen.styles.iter());
             for file in files {
@@ -207,6 +254,20 @@ impl PluginUiManifest {
     pub(crate) fn serves(&self, asset: &str) -> bool {
         self.assets.iter().any(|a| a == asset)
     }
+
+    pub(crate) fn is_icon_image(&self, asset: &str) -> bool {
+        self.icon_image.as_deref() == Some(asset)
+    }
+
+    pub(crate) fn is_documentation(&self, asset: &str) -> bool {
+        self.documentation.as_ref().is_some_and(|documentation| {
+            documentation
+                .guides
+                .iter()
+                .chain(documentation.reference.iter())
+                .any(|entry| entry.asset == asset)
+        })
+    }
 }
 
 /// Decodifica a resposta `ui.asset` do plugin: `{content_type, base64}`.
@@ -220,7 +281,9 @@ pub(crate) fn decode_asset(value: &Value) -> Result<(String, Vec<u8>), String> {
                 "text/javascript"
                     | "text/css"
                     | "image/svg+xml"
+                    | "image/png"
                     | "application/json"
+                    | "text/markdown"
                     | "font/woff2"
             )
         })
@@ -286,6 +349,12 @@ pub(crate) async fn plugin_asset(
         return not_found();
     };
     let decoded = decode_asset(&reply).and_then(|(content_type, bytes)| {
+        if manifest.is_icon_image(&path) && content_type != "image/png" {
+            return Err("icon_image não foi servido como PNG".into());
+        }
+        if manifest.is_documentation(&path) && content_type != "text/markdown" {
+            return Err("documentação não foi servida como Markdown".into());
+        }
         // Catálogo de texto: só sai se o conteúdo obedece ao contrato.
         if manifest.i18n.values().any(|asset| *asset == path) {
             let parsed: Value =
@@ -331,7 +400,51 @@ mod tests {
     fn accepts_a_well_formed_manifest() {
         let parsed = PluginUiManifest::parse("enterprise", manifest()).expect("valid");
         assert!(parsed.serves("ui/logs.js"));
+        assert_eq!(parsed.menu[0].icon.as_deref(), Some("list-tree"));
         assert!(!parsed.serves("ui/other.js"));
+    }
+
+    #[test]
+    fn accepts_plugin_icon_and_documentation_assets() {
+        let mut value = manifest();
+        value["icon_image"] = json!("ui/icon.png");
+        value["documentation"] = json!({
+            "guides": [{
+                "id": "getting-started",
+                "title": {"en": "Getting started", "pt-BR": "Primeiros passos"},
+                "asset": "docs/guides/getting-started.md"
+            }],
+            "reference": [{
+                "id": "configuration",
+                "title": {"en": "Configuration"},
+                "asset": "docs/reference/configuration.md"
+            }]
+        });
+        value["assets"].as_array_mut().unwrap().extend([
+            json!("ui/icon.png"),
+            json!("docs/guides/getting-started.md"),
+            json!("docs/reference/configuration.md"),
+        ]);
+        let parsed = PluginUiManifest::parse("enterprise", value).expect("valid");
+        assert!(parsed.is_icon_image("ui/icon.png"));
+        assert!(parsed.is_documentation("docs/guides/getting-started.md"));
+    }
+
+    #[test]
+    fn rejects_icon_or_documentation_outside_declared_assets() {
+        let mut value = manifest();
+        value["icon_image"] = json!("ui/icon.png");
+        assert!(PluginUiManifest::parse("enterprise", value).is_err());
+
+        let mut value = manifest();
+        value["documentation"] = json!({
+            "guides": [{
+                "id": "bad",
+                "title": {"en": "Bad"},
+                "asset": "ui/bad.md"
+            }]
+        });
+        assert!(PluginUiManifest::parse("enterprise", value).is_err());
     }
 
     #[test]

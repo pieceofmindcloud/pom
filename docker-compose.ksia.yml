@@ -21,6 +21,9 @@ x-node: &node
   environment:
       RUST_DEBUG: libp2p_autonat=debug
       POM_HOME: /data
+      # main.rs lê POM_DESENV no startup e só o valor exato "1" habilita os
+      # controles de desenvolvimento; POM_DEV não é lido por nada no código.
+      POM_DESENV: "1"
       POM_DEV: 1
       POM_UI_DIST: /app/apps/frontend/dist
 services:

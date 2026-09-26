@@ -33,10 +33,11 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   tag. `POM_LLAMA_CPP_RELEASE_TAG` fixa uma release existente.
   `POM_LLAMA_CPP_MODE=source` compila o fork local;
   `POM_LLAMA_CPP_SOURCE_DIR` pode apontar para outro clone Git, cujo conteudo e
-  preparado num named context temporario sem `.git`, modelos, builds, chaves ou
-  arquivos dotenv; o cache e chaveado por commit e delta. O contexto principal
-  ignora a copia local de `llama.cpp`, pois o fork entra somente pelo named
-  context. O script deriva
+  preparado num named context temporario sem `.git`, os dados de `models/` da
+  raiz, diretorios de build, chaves ou arquivos dotenv; as fontes `src/models/`
+  e arquivos `build-*` em outras pastas sao preservados. O cache e chaveado por
+  commit e delta. O contexto principal ignora a copia local de `llama.cpp`,
+  pois o fork entra somente pelo named context. O script deriva
   `POM_CUDA_ARCH_CACHE_KEY` da lista real de arquiteturas e chama
   `docker compose build`. `build-docker-ksia.sh` escolhe o Compose Ksia e
   delega a este script. Salem e Ksia usam o mesmo target `runtime`, com um
@@ -48,15 +49,17 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 - `test-docker-build-cache.sh` - prova que a imagem reaproveita o que nao
   mudou. A parte estrutural verifica os estagios Rust/frontend independentes,
   a cópia final do frontend, o `.dockerignore`, a exclusao do carimbo de commit
-  dos estagios de build e que só há uma build POM combinando CPU, CUDA e Vulkan.
-  Depois, se houver daemon, deriva do Dockerfile um stub e usa BuildKit sobre um
+  dos estagios de build, o cache Cargo nativo serializado entre os serviços e
+  que só há uma build POM combinando CPU, CUDA e Vulkan. Depois, se houver
+  daemon, deriva do Dockerfile um stub e usa BuildKit sobre um
   contexto sintetico para verificar cache em cenarios de fonte, commit, fork,
   CUDA, toolchain e artefatos locais. `POM_CACHE_TEST_DEBUG=1` imprime cada
   passo, grupo e estado do cache.
 - `test-docker-build-mode.sh` - testa os modos release/source com um `docker`
-  falso: source prepara um named context sem `.git`, modelos, builds, GGUFs e
-  credenciais a partir de outro clone; release mantém apenas um marcador e
-  propaga a tag e o cache key fixados.
+  falso: source prepara um named context sem `.git`, dados de `models/` da
+  raiz, diretorios de build, GGUFs e credenciais, preservando `src/models/` e
+  fontes `build-*` em subpastas; release mantém apenas um marcador e propaga
+  a tag e o cache key fixados.
 - `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
   falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
   argumentos.

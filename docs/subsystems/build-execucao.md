@@ -207,9 +207,11 @@ POM_LLAMA_CPP_SOURCE_DIR=/storage/nvme1/projects/llama.cpp \
 # Na Ksia, use ./scripts/build-docker-ksia.sh no lugar.
 ```
 
-O script prepara um named context temporário sem `.git`, builds antigos ou
-modelos, mas preserva fontes locais não commitadas; o target cache é isolado
-pelo commit e delta desse checkout. Em `source`, o Dockerfile mantém o build
+O script prepara um named context temporário sem `.git`, dados de modelos em
+`models/` na raiz, credenciais ou diretórios de build, mas preserva as fontes
+locais não commitadas, inclusive `src/models/` e arquivos `build-*` dentro de
+`cmake/` e `common/`. O target cache é isolado pelo commit e delta desse
+checkout. Em `source`, o Dockerfile mantém o build
 CMake normal e escolhe a imagem CUDA `base`. Em `release`, usa o cache keyed
 pelo tag e a imagem `runtime`. Os builds Cargo/GitHub Actions do POM continuam
 compilando o fork por fonte; este modo prebuilt é apenas para Docker de
@@ -502,11 +504,14 @@ offload no primeiro clique.
   Cargo reexecuta o build script - com o cache mount persistente ele não
   reexecuta, e a `libllama.a` velha é relinkada a cada build.
   Por isso o `Dockerfile` chaveia o `id` do cache mount de `/build/target` em
-  `pom-target-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN}`:
-  o `LLAMA_CPP_CACHE_KEY` é a tag publicada em `release` ou o commit/delta da
+  `pom-target-v2-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN}`:
+  o prefixo `v2` dá um mount limpo após o uso concorrente anterior; o
+  `LLAMA_CPP_CACHE_KEY` é a tag publicada em `release` ou o commit/delta da
   pasta local em `source`; toolkit CUDA, seletor Rust e arquitetura também
-  recebem árvores nativas isoladas. Cargo
-  também confere fingerprints de fontes, manifests, dependências e rustc.
+  recebem árvores nativas isoladas. Compose pode iniciar builds simultâneos da
+  mesma imagem para vários serviços, então `sharing=locked` serializa o acesso a
+  esse target compartilhado e impede dois Cargo de escreverem o mesmo artefato.
+  Cargo também confere fingerprints de fontes, manifests, dependências e rustc.
   IDs antigos ficam ocupando espaço até um
   `docker builder prune` (`--filter type=exec.cachemount` limpa só os mounts).
   `docker compose build --no-cache` **não** resolve: cache mounts sobrevivem ao

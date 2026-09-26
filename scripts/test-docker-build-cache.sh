@@ -111,10 +111,10 @@ for arg in LLAMA_CPP_CACHE_KEY POM_CUDA_ARCH_CACHE_KEY POM_CUDA_ARCHITECTURES PO
         fail "$arg is missing from the Rust builder"
     fi
 done
-if printf '%s\n' "$builder_instructions" | grep -q 'id=pom-target-\${LLAMA_CPP_CACHE_KEY}-\${CUDA_VERSION}-\${POM_CUDA_ARCH_CACHE_KEY}-\${RUST_TOOLCHAIN}'; then
-    pass "native target cache is isolated by fork, CUDA, architecture and Rust toolchain"
+if printf '%s\n' "$builder_instructions" | grep -q 'id=pom-target-v2-\${LLAMA_CPP_CACHE_KEY}-\${CUDA_VERSION}-\${POM_CUDA_ARCH_CACHE_KEY}-\${RUST_TOOLCHAIN},sharing=locked'; then
+    pass "native target cache is versioned, isolated by build inputs and serialized across Compose builds"
 else
-    fail "native target cache key is missing a native build input"
+    fail "native target cache must be versioned, keyed by build inputs and locked across concurrent builds"
 fi
 if printf '%s\n' "$builder_instructions" | grep -Fq 'cargo build --release --features cuda,vulkan' \
    && ! printf '%s\n' "$builder_instructions" | grep -Fq 'cargo build --release --features vulkan' \
@@ -331,10 +331,14 @@ llama_cache_key=def5678-clean
 cuda_arch_key=86
 scenario "CUDA architecture cache key changed" "backend"
 cuda_arch_key=86-120
-rust_toolchain=1.90.0
+rust_toolchain="test-${run_id}"
+# Use a unique toolchain value because BuildKit may retain the synthetic RUN
+# layer from a previous test invocation.
 # The toolchain ARG and rustup layer precede source COPYs so source edits reuse
 # rustup; changing the toolchain therefore also refreshes those later COPYs.
-scenario "Rust toolchain changed" "backend llama toolchain"
+# RUST_TOOLCHAIN is declared before release package preparation, so its ARG
+# also invalidates that intervening RUN (grouped as base here).
+scenario "Rust toolchain changed" "backend base llama toolchain"
 docker rmi -f pom-cache-test:probe >/dev/null 2>&1 || true
 printf '\n'
 if [ "$failures" -eq 0 ]; then printf 'docker build cache test passed\n'; exit 0; fi

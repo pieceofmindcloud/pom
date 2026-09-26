@@ -133,7 +133,7 @@ ARG POM_CUDA_ARCH_CACHE_KEY="86-120"
 # load dynamically; POM's custom CUDA MoE kernels are linked into this executable.
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/build/target,id=pom-target-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN} \
+    --mount=type=cache,target=/build/target,id=pom-target-v2-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN},sharing=locked \
     if [ "$POM_LLAMA_CPP_MODE" = release ]; then \
       export LLAMA_SOURCE=/build/llama.cpp \
         POM_LLAMA_CPP_PREBUILT_LIB_DIR=/build/llama-prebuilt/lib \

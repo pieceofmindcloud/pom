@@ -49,6 +49,25 @@ pub enum TunnelTarget {
 /// qualquer peer do swarm um caminho para se tornar administrador. Por isso
 /// aqui não há prefixo nem curinga: só as rotas de que a admissão e as
 /// catracas de política precisam, cada uma já autenticada por conta própria.
+/// Cabeçalho com que o encaminhador do túnel marca o pedido que entrega ao
+/// gateway deste nó. O gateway (`serve::handle_conn`) só aceita a marca vinda
+/// do loopback e com o segredo deste processo (`tunnel_mark`), e então trata o
+/// pedido como remoto: tudo que sai do túnel chega por `127.0.0.1`, e sem a
+/// marca o modo localhost daria ao par do outro lado a administração do nó.
+pub(crate) const TUNNEL_ORIGIN_HEADER: &str = "x-pom-tunnel-origin";
+
+/// Segredo aleatório deste processo para `TUNNEL_ORIGIN_HEADER`. Nunca sai do
+/// processo: um cliente local não o conhece e um par remoto também não, e o
+/// encaminhador sobrescreve qualquer valor que o par mande com esse nome.
+pub(crate) fn tunnel_mark() -> &'static str {
+    static MARK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| hex::encode(rand::random::<[u8; 32]>()))
+}
+
+pub(crate) fn is_tunnel_mark(value: &[u8]) -> bool {
+    value == tunnel_mark().as_bytes()
+}
+
 pub fn gateway_path_is_allowed(path: &str) -> bool {
     // Query string não muda a rota, mas não pode servir para escapar da
     // comparação exata.
@@ -70,6 +89,32 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             // sem ticket válido devolve 410 e não alcança sessão nenhuma.
             | "/v1/relay-result"
             | "/v1/remote-stream-result"
+            // O plano de controle da implantação e das leituras do cluster, que
+            // `GatewayState::control_get`/`control_post_json` mandam pelo
+            // túnel quando nenhum endereço do peer responde - o caso de um
+            // peer atrás de NAT simétrico. Seguro só porque o pedido chega
+            // marcado (`TUNNEL_ORIGIN_HEADER`) e conta como remoto: cada rota
+            // autentica o nó chamador pela assinatura de controle ou pela
+            // chave de conexão, como faria numa chamada direta.
+            | "/api/ui/node"
+            | "/api/ui/models"
+            | "/api/ui/model-metadata"
+            | "/api/ui/model-identity"
+            | "/api/ui/model-layer-options"
+            | "/api/ui/slice-ranges"
+            | "/api/ui/plan"
+            | "/api/ui/apply"
+            | "/api/ui/reconfigure"
+            | "/api/ui/stop-inference"
+            | "/api/ui/unload"
+            | "/api/ui/leave"
+            | "/api/ui/cache-types"
+            | "/api/ui/deployments"
+            | "/api/ui/deploy/capacity-preview"
+            | "/api/ui/tp/check"
+            | "/api/ui/network/rtt"
+            | "/api/ui/network/chat"
+            | "/api/internal/reload_model"
     )
 }
 
@@ -296,7 +341,12 @@ pub fn infer_tunnel_behaviour() -> request_response::Behaviour<InferTunnelCodec>
             StreamProtocol::new(INFER_TUNNEL_PROTOCOL),
             request_response::ProtocolSupport::Full,
         )],
-        request_response::Config::default().with_request_timeout(Duration::from_secs(60)),
+        // Teto de segurança, não o prazo de ninguém: cada chamador impõe o seu
+        // (`tunnel_gateway_call`, `send_frame_via_tunnel`). Chamadas de
+        // controle como `/api/ui/slice-ranges` esperam até uma hora pelo
+        // fatiamento; com 60 s aqui, elas morriam no túnel com o trabalho
+        // ainda correndo do outro lado.
+        request_response::Config::default().with_request_timeout(Duration::from_secs(3600)),
     )
 }
 
@@ -474,10 +524,14 @@ pub async fn serve_loopback(
         .headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case(reqwest::header::CONTENT_TYPE.as_str()));
-    let mut request_builder = if request.method.eq_ignore_ascii_case("GET") {
+    // Método desconhecido cai em POST, o comportamento antigo para qualquer
+    // coisa que não fosse GET.
+    let method = reqwest::Method::from_bytes(request.method.to_ascii_uppercase().as_bytes())
+        .unwrap_or(reqwest::Method::POST);
+    let mut request_builder = if method == reqwest::Method::GET {
         http.get(&url)
     } else {
-        let builder = http.post(&url).body(request.body);
+        let builder = http.request(method, &url).body(request.body);
         if has_content_type {
             builder
         } else {
@@ -485,9 +539,15 @@ pub async fn serve_loopback(
         }
     };
     for (name, value) in request.headers {
+        if name.eq_ignore_ascii_case(TUNNEL_ORIGIN_HEADER) {
+            continue;
+        }
         request_builder = request_builder.header(name, value);
     }
-    let sent = request_builder.send().await;
+    let sent = request_builder
+        .header(TUNNEL_ORIGIN_HEADER, tunnel_mark())
+        .send()
+        .await;
 
     match sent {
         Ok(resp) => {
@@ -517,10 +577,31 @@ mod tests {
     #[test]
     fn o_tunel_nao_carrega_rota_administrativa() {
         assert!(!gateway_path_is_allowed("/api/ui/trust/anchor"));
-        assert!(!gateway_path_is_allowed("/api/ui/plan"));
+        assert!(!gateway_path_is_allowed("/api/ui/network/trust-anchor"));
         assert!(!gateway_path_is_allowed("/admin/config"));
+        assert!(!gateway_path_is_allowed("/admin/nodes"));
         assert!(!gateway_path_is_allowed("/api/generate"));
         assert!(!gateway_path_is_allowed("/"));
+    }
+
+    /// O plano de controle da implantação passa, e só porque o pedido chega
+    /// marcado como remoto (ver `serve::request_origin`).
+    #[test]
+    fn o_tunel_carrega_o_plano_de_controle_da_implantacao() {
+        assert!(gateway_path_is_allowed("/api/ui/node"));
+        assert!(gateway_path_is_allowed("/api/ui/apply"));
+        assert!(gateway_path_is_allowed("/api/ui/deployments?local=true"));
+    }
+
+    /// A marca é um segredo do processo: constante enquanto ele vive e nunca
+    /// um valor que um par do outro lado adivinharia.
+    #[test]
+    fn a_marca_do_tunel_e_um_segredo_estavel() {
+        assert_eq!(tunnel_mark(), tunnel_mark());
+        assert_eq!(tunnel_mark().len(), 64);
+        assert!(is_tunnel_mark(tunnel_mark().as_bytes()));
+        assert!(!is_tunnel_mark(b""));
+        assert!(!is_tunnel_mark(b"1"));
     }
 
     /// As rotas de que a admissão e as catracas de política dependem. Sem

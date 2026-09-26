@@ -1388,28 +1388,10 @@ async fn forward_network_chat_to_primary(
     }) else {
         return bad_request("o nó principal não está disponível para decidir o Chat da rede");
     };
-    let Some(base) = peer.gateway_url() else {
-        return bad_request("o nó principal não anuncia uma porta de gateway");
-    };
-    let Ok(client) = state.peer_http.for_peer(&peer.node_id) else {
-        return bad_request("sem cliente para o nó principal");
-    };
-    let request = match state
-        .control_json_request(
-            client.post(format!("{base}/api/ui/network/chat")),
-            "/api/ui/network/chat",
-            req,
-        )
+    match state
+        .control_post_json(&peer, "/api/ui/network/chat", req, PEER_TIMEOUT)
         .await
     {
-        Ok(request) => request.timeout(PEER_TIMEOUT),
-        Err(error) => {
-            return bad_request(format!(
-                "não foi possível assinar a decisão do Chat: {error}"
-            ));
-        }
-    };
-    match request.send().await {
         Ok(response) if response.status().is_success() => {
             Json(json!({ "network_chat_enabled": req.network_chat_enabled })).into_response()
         }
@@ -1421,7 +1403,7 @@ async fn forward_network_chat_to_primary(
                 .unwrap_or_else(|_| "o nó principal recusou a decisão".to_string());
             (status, body).into_response()
         }
-        Err(error) => bad_request(format!("o nó principal está inacessível: {error}")),
+        Err(error) => bad_request(format!("o nó principal está inacessível: {error:#}")),
     }
 }
 
@@ -1562,25 +1544,15 @@ async fn live_peer_load(state: &GatewayState, peer: &PeerInfo) -> Option<u32> {
         return Some(state.loads.load(&peer.node_id).await);
     }
 
-    let client = state.peer_http.for_peer(&peer.node_id).ok()?;
-    for base in peer.gateway_candidates() {
-        let request = state
-            .control_get_request(client.get(format!("{base}/api/ui/node")), "/api/ui/node")
-            .await
-            .ok()?;
-        let response = tokio::time::timeout(PEER_TIMEOUT, request.send()).await;
-        let Ok(Ok(response)) = response else {
-            continue;
-        };
-        if !response.status().is_success() {
-            continue;
-        }
-        let Ok(node) = response.json::<serde_json::Value>().await else {
-            continue;
-        };
-        return reported_peer_load(&node);
+    let response = state
+        .control_get(peer, "/api/ui/node", PEER_TIMEOUT)
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
     }
-    None
+    let node = response.json::<serde_json::Value>().await.ok()?;
+    reported_peer_load(&node)
 }
 
 #[cfg(test)]
@@ -2182,35 +2154,18 @@ async fn pairwise_rtt_for_pipeline(
         if peer.node_id == self_id {
             return None;
         }
-        let client = state.peer_http.for_peer(&peer.node_id).ok()?;
         let peer = peer.clone();
         let state = state.clone();
         Some(async move {
-            for base in peer.gateway_candidates() {
-                let Ok(request) = state
-                    .control_get_request(
-                        client.get(format!("{base}/api/ui/network/rtt")),
-                        "/api/ui/network/rtt",
-                    )
-                    .await
-                else {
-                    continue;
-                };
-                let Ok(Ok(response)) = tokio::time::timeout(PEER_TIMEOUT, request.send()).await
-                else {
-                    continue;
-                };
-                if !response.status().is_success() {
-                    continue;
-                }
-                let Ok(report) = response.json::<RttReport>().await else {
-                    continue;
-                };
-                if report.source_node_id == peer.node_id {
-                    return Some(report);
-                }
+            let response = state
+                .control_get(&peer, "/api/ui/network/rtt", PEER_TIMEOUT)
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
             }
-            None
+            let report = response.json::<RttReport>().await.ok()?;
+            (report.source_node_id == peer.node_id).then_some(report)
         })
     }))
     .await;

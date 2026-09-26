@@ -103,6 +103,108 @@ impl TunnelPeer {
     }
 }
 
+/// Prazo mínimo de uma chamada pelo túnel. O pedido pode ter de montar um
+/// circuito por um relé na internet antes de sair, e os prazos das chamadas
+/// diretas (`webui::PEER_TIMEOUT`, 4 s) não contam com isso.
+const TUNNEL_MIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Envia uma chamada de controle ao gateway de um peer por todos os caminhos
+/// que ele anuncia: cada endereço, na ordem, e por último o túnel libp2p.
+///
+/// `build` monta o pedido para uma base (`http(s)://host:porta`) e é chamada
+/// uma vez por tentativa. Vale a primeira resposta HTTP, qualquer que seja o
+/// status - só falha de conexão passa para o próximo caminho. Para um peer
+/// atrás de NAT simétrico, que nenhum endereço alcança, o túnel é o único que
+/// chega; do outro lado o pedido conta como remoto (`serve::request_origin`) e
+/// a rota tem de estar em `infer_tunnel::gateway_path_is_allowed`.
+pub(crate) async fn send_to_gateway<F>(
+    peer: &crate::network::PeerInfo,
+    build: F,
+) -> Result<reqwest::Response>
+where
+    F: Fn(&str) -> reqwest::RequestBuilder,
+{
+    send_to_gateway_over(peer, &peer.gateway_candidates(), build).await
+}
+
+/// `send_to_gateway` com a lista de endereços dada por quem chama - vazia,
+/// só o túnel. Para quem já percorreu os endereços com critério próprio (a
+/// memória de falha do `RouteTable`, por exemplo) e só precisa do último
+/// recurso.
+pub(crate) async fn send_to_gateway_over<F>(
+    peer: &crate::network::PeerInfo,
+    bases: &[String],
+    build: F,
+) -> Result<reqwest::Response>
+where
+    F: Fn(&str) -> reqwest::RequestBuilder,
+{
+    let mut failures = Vec::new();
+    for base in bases {
+        match build(base).send().await {
+            Ok(response) => return Ok(response),
+            Err(error) => failures.push(format!("{base}: {error}")),
+        }
+    }
+    if let Some(tunnel) = TunnelPeer::from_peer(peer) {
+        match send_request_via_tunnel(&tunnel, build("http://tunnel.invalid")).await {
+            Ok(response) => return Ok(response),
+            Err(error) => failures.push(format!("túnel libp2p: {error:#}")),
+        }
+    }
+    anyhow::bail!(
+        "o gateway de {} não respondeu: {}",
+        crate::network::short(&peer.node_id),
+        if failures.is_empty() {
+            "nenhum endereço anunciado".to_string()
+        } else {
+            failures.join(", ")
+        }
+    )
+}
+
+/// O mesmo pedido de `build`, levado pelo túnel. A resposta volta como um
+/// `reqwest::Response` comum, para quem chama não precisar saber o caminho.
+async fn send_request_via_tunnel(
+    tunnel: &TunnelPeer,
+    build: reqwest::RequestBuilder,
+) -> Result<reqwest::Response> {
+    let request = build.build()?;
+    let mut path = request.url().path().to_string();
+    if let Some(query) = request.url().query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    let headers: Vec<(String, String)> = request
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| Some((name.to_string(), value.to_str().ok()?.to_string())))
+        .collect();
+    let body = request
+        .body()
+        .and_then(reqwest::Body::as_bytes)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default();
+    let timeout = request
+        .timeout()
+        .copied()
+        .unwrap_or(TUNNEL_MIN_TIMEOUT)
+        .max(TUNNEL_MIN_TIMEOUT);
+    let response = tunnel_gateway_call(
+        tunnel,
+        request.method().as_str(),
+        &path,
+        body,
+        headers,
+        timeout,
+    )
+    .await?;
+    let response = http::Response::builder()
+        .status(response.status)
+        .body(response.body)?;
+    Ok(reqwest::Response::from(response))
+}
+
 /// Resposta já lida, porque o túnel não produz um `reqwest::Response`.
 #[derive(Debug, Clone)]
 pub(crate) struct InternalResponse {

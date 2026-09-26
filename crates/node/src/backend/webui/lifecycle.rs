@@ -366,35 +366,26 @@ async fn has_admin_authority(state: &GatewayState) -> bool {
         .is_some()
 }
 
+/// Prazo de um `/api/ui/apply` encaminhado: o do cliente de peer
+/// (`PeerClients::new(600 s)`), que era o que valia antes de a chamada ter
+/// prazo próprio. O peer responde ao aceitar o job, não ao terminar a carga.
+const APPLY_FORWARD_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Repassa o "sair da rede" ao peer escolhido, sem `node_id` — lá ele é local.
 pub(super) async fn forward_leave(state: &GatewayState, node_id: &str) -> Response {
-    let Some(base) = state
+    let Some(peer) = state
         .all_peers()
         .await
-        .iter()
+        .into_iter()
         .find(|p| p.node_id == node_id)
-        .and_then(|p| p.gateway_url())
     else {
-        return bad_request("peer desconhecido ou sem porta de gateway anunciada");
-    };
-    let Ok(cliente) = state.peer_http.for_peer(node_id) else {
-        return bad_request(format!("sem cliente para o peer {node_id}"));
+        return bad_request("peer desconhecido");
     };
     let body = json!({});
-    let request = match state
-        .control_json_request(
-            cliente
-                .post(format!("{base}/api/ui/leave"))
-                .timeout(PEER_TIMEOUT),
-            "/api/ui/leave",
-            &body,
-        )
+    match state
+        .control_post_json(&peer, "/api/ui/leave", &body, PEER_TIMEOUT)
         .await
     {
-        Ok(request) => request,
-        Err(error) => return bad_request(format!("não foi possível assinar a saída: {error}")),
-    };
-    match request.send().await {
         Ok(r) if r.status().is_success() => {
             info!("{node_id} saiu da rede a pedido deste nó");
             Json(json!({ "detached": true, "node_id": node_id })).into_response()
@@ -423,7 +414,7 @@ pub(super) fn default_true() -> bool {
 pub(super) struct Candidate {
     pub(super) node_id: String,
     pub(super) hostname: String,
-    pub(super) gateway: String,
+    pub(super) peer: crate::network::PeerInfo,
     /// Where that same slice lives on *that* peer's disk.
     pub(super) path: String,
 }
@@ -446,27 +437,8 @@ pub(super) async fn find_release_candidate(
         if peer.node_id == self_id {
             continue;
         }
-        let Some(base) = peer.gateway_url() else {
-            continue;
-        };
-
-        let Ok(cliente) = state.peer_http.for_peer(&peer.node_id) else {
-            continue;
-        };
-
         // Busy peers are out: a node serves one range at a time.
-        let Ok(request) = state
-            .control_get_request(
-                cliente
-                    .get(format!("{base}/api/ui/node"))
-                    .timeout(PEER_TIMEOUT),
-                "/api/ui/node",
-            )
-            .await
-        else {
-            continue;
-        };
-        match request.send().await {
+        match state.control_get(&peer, "/api/ui/node", PEER_TIMEOUT).await {
             Ok(r) if r.status().is_success() => {
                 let body: serde_json::Value = r.json().await.unwrap_or(json!({}));
                 if !body.get("config").map(|c| c.is_null()).unwrap_or(true) {
@@ -476,18 +448,10 @@ pub(super) async fn find_release_candidate(
             _ => continue,
         }
 
-        let Ok(request) = state
-            .control_get_request(
-                cliente
-                    .get(format!("{base}/api/ui/models"))
-                    .timeout(PEER_TIMEOUT * 3),
-                "/api/ui/models",
-            )
+        let Ok(r) = state
+            .control_get(&peer, "/api/ui/models", PEER_TIMEOUT * 3)
             .await
         else {
-            continue;
-        };
-        let Ok(r) = request.send().await else {
             continue;
         };
         if !r.status().is_success() {
@@ -527,7 +491,7 @@ pub(super) async fn find_release_candidate(
             return Some(Candidate {
                 node_id: peer.node_id.clone(),
                 hostname: peer.hostname.clone(),
-                gateway: base,
+                peer: peer.clone(),
                 path,
             });
         }
@@ -655,24 +619,15 @@ pub(super) async fn release_slice(
         params: RuntimeParams::from(&cfg),
     };
 
-    let cliente = match state.peer_http.for_peer(&candidate.node_id) {
-        Ok(c) => c,
-        Err(e) => return bad_request(format!("sem cliente para {}: {e}", candidate.node_id)),
-    };
-    let request = match state
-        .control_json_request(
-            cliente.post(format!("{}/api/ui/apply", candidate.gateway)),
+    match state
+        .control_post_json(
+            &candidate.peer,
             "/api/ui/apply",
             &apply_req,
+            APPLY_FORWARD_TIMEOUT,
         )
         .await
     {
-        Ok(request) => request,
-        Err(error) => {
-            return bad_request(format!("não foi possível assinar a reassociação: {error}"))
-        }
-    };
-    match request.send().await {
         Ok(r) if r.status().is_success() => {
             info!(
                 "fatia L{}-{} assumida por {}",
@@ -942,38 +897,14 @@ pub(crate) async fn launch(
             state.runtime.stop().await;
             continue;
         }
-        let Some(base) = peers
-            .iter()
-            .find(|p| p.node_id == target.node_id)
-            .and_then(|p| p.gateway_url())
-        else {
+        let Some(peer) = peers.iter().find(|p| p.node_id == target.node_id) else {
             warn!("peer {} nao encontrado para stop-inference", target.node_id);
             continue;
         };
-        let url = format!("{base}/api/ui/stop-inference");
-        let Ok(cliente) = state.peer_http.for_peer(&target.node_id) else {
-            warn!("sem cliente para {} em stop-inference", target.node_id);
-            continue;
-        };
-        let request = match state
-            .authorize_control_request(
-                cliente.post(&url).timeout(PEER_TIMEOUT),
-                "POST",
-                "/api/ui/stop-inference",
-                &[],
-            )
+        match state
+            .control_post_empty(peer, "/api/ui/stop-inference", PEER_TIMEOUT)
             .await
         {
-            Ok(request) => request,
-            Err(error) => {
-                warn!(
-                    "não foi possível assinar stop-inference para {}: {error}",
-                    target.node_id
-                );
-                continue;
-            }
-        };
-        match request.send().await {
             Ok(r) if r.status().is_success() => {
                 info!("peer {} parou inferencia", target.node_id);
             }
@@ -1032,49 +963,22 @@ pub(crate) async fn launch(
             continue;
         }
 
-        let Some(base) = peers
-            .iter()
-            .find(|p| p.node_id == target.node_id)
-            .and_then(|p| p.gateway_url())
-        else {
+        let Some(peer) = peers.iter().find(|p| p.node_id == target.node_id) else {
             results.push(json!({
                 "node_id": target.node_id,
                 "dispatched": false,
-                "error": "peer não encontrado ou sem porta de gateway anunciada",
+                "error": "peer não encontrado",
             }));
             continue;
         };
 
-        // The peer's /api/ui/apply is behind ConnectionAuth. Every node in a
-        // cluster shares the same connection key, so forward ours — without it
-        // the remote leg of a launch always came back 401.
-        let url = format!("{base}/api/ui/apply");
-        let cliente = match state.peer_http.for_peer(&target.node_id) {
-            Ok(c) => c,
-            Err(e) => {
-                results.push(json!({
-                    "node_id": target.node_id,
-                    "dispatched": false,
-                    "error": format!("sem cliente para o peer: {e}"),
-                }));
-                continue;
-            }
-        };
-        let request = match state
-            .control_json_request(cliente.post(&url), "/api/ui/apply", &apply_req)
+        // A /api/ui/apply do peer é autenticada: `control_post_json` leva a
+        // assinatura e a credencial do nó - sem elas a perna remota de um
+        // launch sempre voltava 401.
+        match state
+            .control_post_json(peer, "/api/ui/apply", &apply_req, APPLY_FORWARD_TIMEOUT)
             .await
         {
-            Ok(request) => request,
-            Err(error) => {
-                results.push(json!({
-                    "node_id": target.node_id,
-                    "dispatched": false,
-                    "error": format!("não foi possível assinar o apply: {error}"),
-                }));
-                continue;
-            }
-        };
-        match request.send().await {
             Ok(r) if r.status().is_success() => {
                 let body: serde_json::Value = r.json().await.unwrap_or(json!({}));
                 results.push(json!({
@@ -1095,7 +999,7 @@ pub(crate) async fn launch(
             Err(e) => results.push(json!({
                 "node_id": target.node_id,
                 "dispatched": false,
-                "error": e.to_string(),
+                "error": format!("{e:#}"),
             })),
         }
     }

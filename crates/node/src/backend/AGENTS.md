@@ -560,9 +560,18 @@ profile policy remains the effective authorization boundary.
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
   e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
-  `peer_http.plain()`.
+  `peer_http.plain()`. Chamada de controle a outro nó usa
+  `GatewayState::control_get`/`control_post_json`/`control_post_empty`: assina
+  uma vez, tenta cada endereço anunciado e cai no túnel libp2p
+  (`peer_client::send_to_gateway`), que é o único caminho para um peer atrás de
+  NAT simétrico. `control_get_via_tunnel` é o último recurso de quem já
+  percorreu os endereços com a memória de falha do `RouteTable` (a leitura do
+  `/api/ui/cluster`). Ficam fora do túnel a transferência de pesos e a
+  sincronização de `admin.rs`.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
-  request e serve TLS ou texto claro na mesma porta TCP, com upgrades de
+  request (`request_origin`: um pedido do loopback com a marca do túnel libp2p
+  vira `TUNNELED_ORIGIN`, não-loopback, e o cabeçalho da marca sai de todo
+  pedido - ver `rede-p2p.md`) e serve TLS ou texto claro na mesma porta TCP, com upgrades de
   conexão habilitados (o WebSocket do proxy de plugins,
   `crate::plugin_proxy`). O endpoint HTTP/3
   recebe configuração QUIC separada e sobe na porta UDP dedicada anunciada,

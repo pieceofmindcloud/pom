@@ -749,48 +749,36 @@ pub(super) async fn whole_layer_options_for_plan(
     let result: Result<ModelLayerOptions, String> = if machine.node_id == state.network.node_id {
         crate::webui::model_layer_options_local(state, &path).await
     } else {
-        let Some(base) = machine.gateway_url.clone() else {
+        let Some(peer) = state
+            .all_peers()
+            .await
+            .into_iter()
+            .find(|peer| peer.node_id == machine.node_id)
+        else {
             return Some(WholeLayerOptions {
                 source_node_id: machine.node_id.clone(),
                 total_layers,
                 cuts: Vec::new(),
                 granularity: None,
                 rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
-                reason: Some(format!("{} não anuncia gateway", machine.label())),
-            });
-        };
-        let Ok(client) = state.peer_http.for_peer(&machine.node_id) else {
-            return Some(WholeLayerOptions {
-                source_node_id: machine.node_id.clone(),
-                total_layers,
-                cuts: Vec::new(),
-                granularity: None,
-                rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
-                reason: Some(format!("não foi possível falar com {}", machine.label())),
+                reason: Some(format!("{} não está no cluster", machine.label())),
             });
         };
         let request_body = crate::webui::ModelLayerOptionsRequest { path };
-        let response = match state
-            .control_json_request(
-                client
-                    .post(format!("{base}/api/ui/model-layer-options"))
-                    .timeout(PEER_TIMEOUT * 4),
+        let response = state
+            .control_post_json(
+                &peer,
                 "/api/ui/model-layer-options",
                 &request_body,
+                PEER_TIMEOUT * 4,
             )
             .await
-        {
-            Ok(request) => request.send().await.map_err(|error| {
+            .map_err(|error| {
                 format!(
-                    "não foi possível ler as regras de fatiamento em {}: {error}",
+                    "não foi possível ler as regras de fatiamento em {}: {error:#}",
                     machine.label()
                 )
-            }),
-            Err(error) => Err(format!(
-                "não foi possível assinar as regras de fatiamento em {}: {error}",
-                machine.label()
-            )),
-        };
+            });
         let response = match response {
             Ok(response) => response,
             Err(error) => {
@@ -964,34 +952,20 @@ pub(super) async fn materialize_slices_on_peer(
         .into_iter()
         .find(|peer| peer.node_id == source_node_id)
         .ok_or_else(|| format!("a máquina de origem {source_node_id} não está no cluster"))?;
-    let base = peer
-        .gateway_url()
-        .ok_or_else(|| format!("{} não anuncia porta de gateway", peer.hostname))?;
-    let client = state
-        .peer_http
-        .for_peer(source_node_id)
-        .map_err(|error| format!("sem cliente para {}: {error}", peer.hostname))?;
-    let request = state
-        .control_json_request(
-            client
-                .post(format!("{base}/api/ui/slice-ranges"))
-                .timeout(Duration::from_secs(3600)),
+    let response = state
+        .control_post_json(
+            &peer,
             "/api/ui/slice-ranges",
             request,
+            Duration::from_secs(3600),
         )
         .await
         .map_err(|error| {
             format!(
-                "não foi possível assinar o fatiamento em {}: {error}",
+                "não foi possível fatiar o modelo em {}: {error:#}",
                 peer.hostname
             )
         })?;
-    let response = request.send().await.map_err(|error| {
-        format!(
-            "não foi possível fatiar o modelo em {}: {error}",
-            peer.hostname
-        )
-    })?;
     let status = response.status();
     let body: serde_json::Value = response.json().await.map_err(|error| {
         format!(
@@ -1029,31 +1003,14 @@ pub(super) async fn model_identity_on_peer(
         .into_iter()
         .find(|peer| peer.node_id == node_id)
         .ok_or_else(|| format!("peer {node_id} não está no cluster"))?;
-    let base = peer
-        .gateway_url()
-        .ok_or_else(|| format!("{} não anuncia porta de gateway", peer.hostname))?;
-    let client = state
-        .peer_http
-        .for_peer(node_id)
-        .map_err(|e| format!("sem cliente para {node_id}: {e}"))?;
     let request_body = crate::webui::ModelIdentityRequest {
         path: path.to_string(),
         hash,
     };
-    let request = state
-        .control_json_request(
-            client
-                .post(format!("{base}/api/ui/model-identity"))
-                .timeout(PEER_TIMEOUT),
-            "/api/ui/model-identity",
-            &request_body,
-        )
+    let response = state
+        .control_post_json(&peer, "/api/ui/model-identity", &request_body, PEER_TIMEOUT)
         .await
-        .map_err(|e| format!("não foi possível assinar a identidade em {node_id}: {e}"))?;
-    let response = request
-        .send()
-        .await
-        .map_err(|e| format!("não foi possível consultar a identidade em {node_id}: {e}"))?;
+        .map_err(|e| format!("não foi possível consultar a identidade em {node_id}: {e:#}"))?;
     let status = response.status();
     let body: serde_json::Value = response
         .json()
@@ -1184,31 +1141,10 @@ pub(super) async fn peer_node_snapshot(
             "active_deployment": active_deployment,
         }));
     }
-    let base = peer
-        .gateway_url()
-        .ok_or_else(|| format!("{} não anuncia porta de gateway", peer.hostname))?;
-    let client = state
-        .peer_http
-        .for_peer(&peer.node_id)
-        .map_err(|e| format!("sem cliente para {}: {e}", peer.hostname))?;
-    let request = state
-        .control_get_request(
-            client
-                .get(format!("{base}/api/ui/node"))
-                .timeout(PEER_TIMEOUT),
-            "/api/ui/node",
-        )
+    let response = state
+        .control_get(peer, "/api/ui/node", PEER_TIMEOUT)
         .await
-        .map_err(|e| {
-            format!(
-                "não foi possível assinar a leitura de {}: {e}",
-                peer.hostname
-            )
-        })?;
-    let response = request
-        .send()
-        .await
-        .map_err(|e| format!("{} não respondeu: {e}", peer.hostname))?;
+        .map_err(|e| format!("{} não respondeu: {e:#}", peer.hostname))?;
     let status = response.status();
     let body: serde_json::Value = response
         .json()

@@ -29,6 +29,33 @@ use tracing::{debug, warn};
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PeerAddr(pub SocketAddr);
 
+/// Origem que vale para a autenticação: o pedido que o túnel libp2p entrega
+/// pelo loopback, com a marca deste processo, passa a contar como remoto.
+///
+/// Sem isso, qualquer par do enxame que alcançasse uma rota pelo túnel seria
+/// "localhost" para `AdminAuth` no modo localhost - administração sem senha.
+/// O cabeçalho sai do pedido sempre, marcado ou não, para nenhuma rota vê-lo.
+pub(crate) fn request_origin<B>(peer: SocketAddr, req: &mut hyper::Request<B>) -> SocketAddr {
+    let Some(mark) = req
+        .headers_mut()
+        .remove(crate::infer_tunnel::TUNNEL_ORIGIN_HEADER)
+    else {
+        return peer;
+    };
+    if crate::auth::is_loopback_addr(peer) && crate::infer_tunnel::is_tunnel_mark(mark.as_bytes()) {
+        TUNNELED_ORIGIN
+    } else {
+        peer
+    }
+}
+
+/// Endereço com que um pedido vindo do túnel aparece em `PeerAddr`: não é
+/// loopback, e é tudo que a autenticação consulta.
+pub(crate) const TUNNELED_ORIGIN: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(
+    std::net::Ipv4Addr::UNSPECIFIED,
+    0,
+));
+
 /// Whether the current request came through the TLS branch of the listener.
 /// The admin session middleware uses the real transport state to decide if a
 /// Secure cookie is safe, never a client-controlled header.
@@ -377,7 +404,8 @@ async fn handle_conn(
         let mut app = app.clone();
         async move {
             let mut req = req;
-            req.extensions_mut().insert(PeerAddr(peer));
+            let origin = request_origin(peer, &mut req);
+            req.extensions_mut().insert(PeerAddr(origin));
             req.extensions_mut().insert(TransportSecurity(is_tls));
             Service::call(&mut app, req).await
         }
@@ -852,6 +880,47 @@ mod integracao {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn with_origin_header(value: &str) -> hyper::Request<()> {
+        let mut req = hyper::Request::new(());
+        req.headers_mut().insert(
+            crate::infer_tunnel::TUNNEL_ORIGIN_HEADER,
+            value.parse().unwrap(),
+        );
+        req
+    }
+
+    /// O que o túnel entrega pelo loopback, com a marca deste processo, não é
+    /// local: é isso que impede um par do enxame de virar administrador no
+    /// modo localhost.
+    #[test]
+    fn a_tunneled_request_is_never_loopback() {
+        let loopback: SocketAddr = "127.0.0.1:51234".parse().unwrap();
+        let mut req = with_origin_header(crate::infer_tunnel::tunnel_mark());
+        let origin = request_origin(loopback, &mut req);
+        assert!(!crate::auth::is_loopback_addr(origin));
+        assert!(req
+            .headers()
+            .get(crate::infer_tunnel::TUNNEL_ORIGIN_HEADER)
+            .is_none());
+    }
+
+    /// Marca errada, ou vinda de fora do loopback, não muda a origem - e o
+    /// cabeçalho sai do pedido de qualquer jeito.
+    #[test]
+    fn a_forged_tunnel_mark_changes_nothing() {
+        let loopback: SocketAddr = "127.0.0.1:51234".parse().unwrap();
+        let mut req = with_origin_header("forjada");
+        assert_eq!(request_origin(loopback, &mut req), loopback);
+        assert!(req
+            .headers()
+            .get(crate::infer_tunnel::TUNNEL_ORIGIN_HEADER)
+            .is_none());
+
+        let remote: SocketAddr = "203.0.113.9:40000".parse().unwrap();
+        let mut req = with_origin_header(crate::infer_tunnel::tunnel_mark());
+        assert_eq!(request_origin(remote, &mut req), remote);
+    }
     use std::net::SocketAddr;
 
     /// `0x16` é `ContentType::Handshake` do TLS. Todo método HTTP começa com

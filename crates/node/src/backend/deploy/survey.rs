@@ -289,25 +289,14 @@ pub(super) fn selected_model_metadata_path(
 /// intentionally left as a pending selection, never guessed from a filename.
 pub(super) async fn enrich_selected_model_on_peer(
     state: &GatewayState,
-    client: &reqwest::Client,
-    base: &str,
+    peer: &PeerInfo,
     body: &mut serde_json::Value,
     path: String,
 ) {
     let request_body = crate::webui::ModelMetadataRequest { path: path.clone() };
-    let Ok(request) = state
-        .control_json_request(
-            client
-                .post(format!("{base}/api/ui/model-metadata"))
-                .timeout(PEER_TIMEOUT),
-            "/api/ui/model-metadata",
-            &request_body,
-        )
-        .await
-    else {
-        return;
-    };
-    let response = request.send().await;
+    let response = state
+        .control_post_json(peer, "/api/ui/model-metadata", &request_body, PEER_TIMEOUT)
+        .await;
     let Ok(response) = response else { return };
     if !response.status().is_success() {
         return;
@@ -444,10 +433,6 @@ pub(super) async fn survey(
         }
     }
     let futures = peers.into_iter().map(|peer| {
-        // Pinado no node_id do destino: sem isto, com o cluster em TLS o
-        // levantamento inteiro falhava calado e a tela de implantar dizia
-        // "nenhuma máquina do cluster tem fatias de <modelo>".
-        let http = state.peer_http.for_peer(&peer.node_id);
         let is_self = peer.node_id == self_id;
         let rtt_ms = if is_self {
             Some(0.0)
@@ -457,39 +442,19 @@ pub(super) async fn survey(
         let group = group.to_string();
         let state = state;
         async move {
-            let base = peer.gateway_url()?;
-            let http = http.ok()?;
-
-            let models = state
-                .control_get_request(
-                    http.get(format!("{base}/api/ui/models"))
-                        .timeout(PEER_TIMEOUT * 4),
-                    "/api/ui/models",
-                )
-                .await
-                .ok()?;
-            let node = state
-                .control_get_request(
-                    http.get(format!("{base}/api/ui/node"))
-                        .timeout(PEER_TIMEOUT),
-                    "/api/ui/node",
-                )
-                .await
-                .ok()?;
-            let rtt = state
-                .control_get_request(
-                    http.get(format!("{base}/api/ui/network/rtt"))
-                        .timeout(PEER_TIMEOUT),
-                    "/api/ui/network/rtt",
-                )
-                .await
-                .ok()?;
-            let (models, node, rtt) =
-                futures::future::join3(models.send(), node.send(), rtt.send()).await;
+            // `control_get` prende o cliente no node_id do destino (com o
+            // cluster em TLS, sem isso o levantamento falhava calado) e cai no
+            // túnel quando nenhum endereço anunciado responde.
+            let (models, node, rtt) = futures::future::join3(
+                state.control_get(&peer, "/api/ui/models", PEER_TIMEOUT * 4),
+                state.control_get(&peer, "/api/ui/node", PEER_TIMEOUT),
+                state.control_get(&peer, "/api/ui/network/rtt", PEER_TIMEOUT),
+            )
+            .await;
 
             let mut body: serde_json::Value = models.ok()?.json().await.ok()?;
             if let Some(path) = selected_model_metadata_path(&body, &group, kind) {
-                enrich_selected_model_on_peer(state, &http, &base, &mut body, path).await;
+                enrich_selected_model_on_peer(state, &peer, &mut body, path).await;
             }
             let metadata_pending_candidate = body
                 .get("metadata_complete")

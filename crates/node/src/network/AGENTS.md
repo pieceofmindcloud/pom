@@ -33,13 +33,18 @@ fallback continua em `addr_candidates` + `RouteTable`.
   conhece) ou `Gateway`, o plano de controle. O emissor nomeia a variante; o
   receptor é que a mapeia para uma das duas portas que ele próprio escolheu -
   um peer remoto nunca nomeia porta. Para o gateway vale
-  `gateway_path_is_allowed`, lista **fechada** e de comparação exata
-  (`/handshake`, `/health`, `/api/cluster/{tls,quic,logs,network-chat,network-settings}`,
-  `/v1/relay-result`, `/v1/remote-stream-result`):
-  tudo que sai do túnel chega ao gateway por `127.0.0.1`, e o gateway decide o
-  que é local pelo endereço do socket - `install_trust_anchor` libera a
-  administração da rede olhando só isso. Túnel aberto para o gateway seria
-  escalada de privilégio para qualquer peer do swarm. POSTs sem `Content-Type` recebem o padrão binário, mas um
+  `gateway_path_is_allowed`, lista **fechada** e de comparação exata: admissão,
+  políticas e retorno direto (`/handshake`, `/health`, `/api/cluster/*`,
+  `/v1/relay-result`, `/v1/remote-stream-result`) e o plano de controle da
+  implantação e das leituras do cluster (`/api/ui/{node,apply,...}`). Tudo que
+  sai do túnel chega ao gateway por `127.0.0.1`, e o gateway decide o que é
+  local pelo endereço do socket; por isso `serve_loopback` marca o pedido com
+  `TUNNEL_ORIGIN_HEADER` e o segredo do processo (`tunnel_mark`), e
+  `serve::request_origin` o trata como remoto. Sem a marca, qualquer rota da
+  lista daria a administração do nó (modo localhost, `install_trust_anchor`) a
+  qualquer peer do swarm. O método do pedido é repassado como veio (GET, POST,
+  ...). `peer_client::send_to_gateway` é o emissor do plano de controle: cada
+  endereço anunciado e, por último, o túnel. POSTs sem `Content-Type` recebem o padrão binário, mas um
   `Content-Type` explícito, como `application/json` no ciclo de vida da sessão,
   nunca é duplicado nem sobrescrito. `measure_rtt` mede a ida e volta pelo
   mesmo túnel Noise.

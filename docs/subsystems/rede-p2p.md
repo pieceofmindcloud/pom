@@ -644,16 +644,33 @@ que nenhum endereço direto alcança - sem isso ele não entrava em `peers` nem
 com o hole punch perfeito, e roteamento, UI e pipeline continuavam cegos para
 ele.
 
-**A lista de rotas do gateway é fechada, e isso é uma invariante de segurança,
-não uma conveniência.** Tudo que sai do túnel chega ao gateway por
-`127.0.0.1`, e o gateway decide o que é local pelo endereço do socket
-(`serve::PeerAddr`): `install_trust_anchor` libera a administração da rede
-olhando **só** isso. Um túnel que encaminhasse caminho arbitrário daria a
-qualquer peer do swarm um caminho para se tornar administrador. Por isso
-`infer_tunnel::gateway_path_is_allowed` compara o caminho exato, sem prefixo
-nem curinga, e a conferência é do lado que recebe. O emissor escolhe a
-variante de `target`; quem resolve a porta é o receptor, com as duas portas
-que ele próprio escolheu.
+**Um pedido que sai do túnel nunca é local, e a lista de rotas do gateway é
+fechada - as duas coisas são invariantes de segurança.** O encaminhador
+(`infer_tunnel::serve_loopback`) entrega o pedido ao gateway por `127.0.0.1`, e
+o gateway decide o que é local pelo endereço do socket (`serve::PeerAddr`): no
+modo localhost, `AdminAuth` libera a administração a quem vem do loopback, e
+`install_trust_anchor` olha só isso. Sem mais nada, qualquer par do swarm que
+alcançasse uma rota pelo túnel seria administrador. Por isso o encaminhador
+marca todo pedido com `x-pom-tunnel-origin` e um segredo aleatório deste
+processo (`tunnel_mark`), sobrescrevendo o que o par mandar com esse nome, e
+`serve::request_origin` troca a origem de um pedido do loopback com essa marca
+por um endereço não-loopback (`TUNNELED_ORIGIN`); o cabeçalho sai de todo
+pedido, marcado ou não. E `infer_tunnel::gateway_path_is_allowed` ainda
+compara o caminho exato, sem prefixo nem curinga, do lado que recebe. O emissor
+escolhe a variante de `target`; quem resolve a porta é o receptor, com as duas
+portas que ele próprio escolheu.
+
+Com a marca, a lista carrega também o **plano de controle da implantação e das
+leituras do cluster** (`/api/ui/{node,models,apply,reconfigure,unload,...}`,
+lista completa no código): `GatewayState::control_get`/`control_post_json`
+(sobre `peer_client::send_to_gateway`) tentam cada endereço anunciado e, por
+último, o túnel, e devolvem a resposta como um `reqwest::Response` comum. Do
+outro lado o pedido autentica o nó chamador pela assinatura de controle ou pela
+chave de conexão, como numa chamada direta. É o que deixa implantar num peer
+atrás de NAT simétrico, que nenhum endereço alcança e com quem o hole punch
+não fecha. O teto do `request_response` do túnel é 1 h, só como rede de
+segurança: cada chamador impõe o próprio prazo, e o fatiamento
+(`/api/ui/slice-ranges`) espera até uma hora.
 
 A **volta** da resposta direta usa o mesmo túnel. O gateway manda no `reply_to`
 os endereços por onde ele mesmo é alcançável, e eles saem das interfaces locais
@@ -664,9 +681,11 @@ dele: com o gateway atrás de NAT, a cauda em outra rede disca
 Era o buraco que sobrava: a ida já atravessava o NAT e a volta morria calada
 até o `DIRECT_REPLY_DEADLINE`, dez minutos por token.
 
-O que continua fora do túnel: transferência de arquivos, sincronização de
-admin e o watcher do `/health` entre peers. Nenhum deles participa da
-admissão, então um par atrás de NAT já entra no cluster e roteia sem eles.
+O que continua fora do túnel: transferência de arquivos (os pesos não passam
+por um relé; cada peer precisa da própria cópia do modelo), sincronização de
+admin (`admin.rs`) e o `/health` do servidor de inferência entre peers. Nenhum
+deles participa da admissão, então um par atrás de NAT já entra no cluster e
+roteia sem eles.
 
 ### Preferência aprendida pelo túnel
 

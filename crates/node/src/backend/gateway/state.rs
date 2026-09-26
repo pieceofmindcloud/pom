@@ -396,6 +396,116 @@ impl GatewayState {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(bytes))
     }
+    /// GET de controle assinado ao gateway de `peer`, por todos os caminhos
+    /// que ele anuncia (endereços e, por último, o túnel libp2p - ver
+    /// `peer_client::send_to_gateway`). `path` pode trazer query string; a
+    /// assinatura cobre só o caminho, como em `control_get_request`.
+    pub(crate) async fn control_get(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call(peer, reqwest::Method::GET, path, None, timeout)
+            .await
+    }
+
+    /// POST JSON de controle assinado ao gateway de `peer`, pelos mesmos
+    /// caminhos de `control_get`.
+    pub(crate) async fn control_post_json<T: serde::Serialize>(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        body: &T,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        let bytes = serde_json::to_vec(body)?;
+        self.control_call(peer, reqwest::Method::POST, path, Some(bytes), timeout)
+            .await
+    }
+
+    /// `control_get` só pelo túnel, para quem já tentou os endereços do peer
+    /// com critério próprio (ver `send_to_gateway_over`).
+    pub(crate) async fn control_get_via_tunnel(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call_over(peer, &[], reqwest::Method::GET, path, None, timeout)
+            .await
+    }
+
+    /// POST sem corpo (assinado sobre corpo vazio), como `/api/ui/unload`.
+    pub(crate) async fn control_post_empty(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call(peer, reqwest::Method::POST, path, None, timeout)
+            .await
+    }
+
+    async fn control_call(
+        &self,
+        peer: &crate::network::PeerInfo,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call_over(
+            peer,
+            &peer.gateway_candidates(),
+            method,
+            path,
+            body,
+            timeout,
+        )
+        .await
+    }
+
+    async fn control_call_over(
+        &self,
+        peer: &crate::network::PeerInfo,
+        bases: &[String],
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        let client = self.peer_http.for_peer(&peer.node_id)?;
+        let signed_path = path.split('?').next().unwrap_or(path);
+        let bytes = body.as_deref().unwrap_or_default();
+        let mut headers = self.signed_control_headers(method.as_str(), signed_path, bytes)?;
+        if let Some(connection_key) = {
+            let config = self.auth.read().await;
+            crate::auth::internal_node_token(&config)
+        } {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {connection_key}"))?,
+            );
+        }
+        if body.is_some() {
+            headers.insert(
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::HeaderValue::from_static("application/json"),
+            );
+        }
+        crate::peer_client::send_to_gateway_over(peer, bases, |base| {
+            let request = client
+                .request(method.clone(), format!("{base}{path}"))
+                .timeout(timeout)
+                .headers(headers.clone());
+            match &body {
+                Some(bytes) => request.body(bytes.clone()),
+                None => request,
+            }
+        })
+        .await
+    }
 }
 
 #[derive(Serialize)]

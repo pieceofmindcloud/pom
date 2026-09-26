@@ -47,8 +47,36 @@ const ADMISSION_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const ADMISSION_TIMEOUT: Duration = Duration::from_millis(200);
 
+/// A sonda pelo túnel pode ter de montar um circuito por um relé na internet
+/// antes de mandar o pedido, e roda fora do laço do swarm
+/// (`admit_in_background`): não precisa do orçamento curto das diretas.
+#[cfg(not(test))]
+const ADMISSION_TUNNEL_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[cfg(test)]
+const ADMISSION_TUNNEL_TIMEOUT: Duration = Duration::from_millis(500);
+
 const ADMISSION_CACHE_TTL: Duration = Duration::from_secs(30);
 const REJECTED_ADMISSION_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Quanto tempo um peer que já provou pertencimento continua admitido enquanto
+/// as sondas seguintes não chegam a ele. Um par que só o relé alcança perde a
+/// rota a cada circuito que cai; sem esta folga, uma sonda nesse intervalo o
+/// tirava da tabela (`Removed timed-out peers`) e ele voltava minutos depois.
+/// Recusa explícita não usa a folga.
+const ADMISSION_UNREACHABLE_GRACE: Duration = Duration::from_secs(10 * 60);
+
+/// Resultado de uma sonda `/handshake`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdmissionProbe {
+    Approved,
+    /// O próprio peer disse não: pelo túnel (PeerId autenticado) ou por HTTPS
+    /// com o certificado fixado no `node_id`. Uma resposta HTTP em claro não
+    /// conta - qualquer máquina naquele endereço poderia tê-la dado.
+    Refused,
+    /// Nenhuma resposta autêntica chegou.
+    Unreachable,
+}
 
 /// De quanto em quanto tempo, no máximo, se repergunta o endereço de um peer
 /// ilegível.
@@ -191,6 +219,42 @@ struct PeerAdmission {
 struct AdmissionCacheEntry {
     allowed: bool,
     expires_at: Instant,
+    /// Última aprovação de verdade, para `ADMISSION_UNREACHABLE_GRACE`.
+    proven_at: Option<Instant>,
+}
+
+/// O que entra no cache depois de uma sonda. Aprovado vale por
+/// `ADMISSION_CACHE_TTL`; recusado sai. Sem resposta, um peer aprovado há menos
+/// de `ADMISSION_UNREACHABLE_GRACE` continua admitido, com validade curta para
+/// a sonda tentar de novo logo; sem prova recente, sai.
+fn admission_verdict(
+    probe: AdmissionProbe,
+    previous_proof: Option<Instant>,
+    now: Instant,
+) -> AdmissionCacheEntry {
+    let rejected = AdmissionCacheEntry {
+        allowed: false,
+        expires_at: now + REJECTED_ADMISSION_CACHE_TTL,
+        proven_at: None,
+    };
+    match probe {
+        AdmissionProbe::Approved => AdmissionCacheEntry {
+            allowed: true,
+            expires_at: now + ADMISSION_CACHE_TTL,
+            proven_at: Some(now),
+        },
+        AdmissionProbe::Refused => rejected,
+        AdmissionProbe::Unreachable => match previous_proof
+            .filter(|proven| now.saturating_duration_since(*proven) < ADMISSION_UNREACHABLE_GRACE)
+        {
+            Some(proven) => AdmissionCacheEntry {
+                allowed: true,
+                expires_at: now + REJECTED_ADMISSION_CACHE_TTL,
+                proven_at: Some(proven),
+            },
+            None => rejected,
+        },
+    }
 }
 
 /// Message types exchanged between nodes
@@ -3073,21 +3137,26 @@ impl Network {
         urls
     }
 
-    async fn private_peer_is_admitted(&self, peer: &PeerInfo, connection_key: &str) -> bool {
+    async fn private_peer_is_admitted(
+        &self,
+        peer: &PeerInfo,
+        connection_key: &str,
+    ) -> AdmissionProbe {
         if !Self::legacy_identity_matches(&peer.node_id, &peer.pubkey) {
-            return false;
+            return AdmissionProbe::Refused;
         }
+        let tls = self.tls_enabled();
         let mut builder = reqwest::Client::builder()
             .connect_timeout(ADMISSION_TIMEOUT)
             .timeout(ADMISSION_TIMEOUT);
-        if self.tls_enabled() {
+        if tls {
             let Ok(config) = crate::tls::client_config(&peer.node_id) else {
-                return false;
+                return AdmissionProbe::Refused;
             };
             builder = builder.use_preconfigured_tls(config);
         }
         let Ok(client) = builder.build() else {
-            return false;
+            return AdmissionProbe::Unreachable;
         };
         let body = serde_json::json!({
             "node_id": self.node_id,
@@ -3111,7 +3180,10 @@ impl Network {
                 continue;
             };
             if approves(status, &parsed) {
-                return true;
+                return AdmissionProbe::Approved;
+            }
+            if tls {
+                return AdmissionProbe::Refused;
             }
         }
         // Último recurso, e para um par atrás de NAT/CGNAT o **único** que
@@ -3119,10 +3191,10 @@ impl Network {
         // para esse par, ele não entra na tabela `peers`, e roteamento, UI e
         // pipeline continuam cegos para ele mesmo com o hole punch pronto.
         let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(peer) else {
-            return false;
+            return AdmissionProbe::Unreachable;
         };
         let Ok(encoded) = serde_json::to_vec(&body) else {
-            return false;
+            return AdmissionProbe::Unreachable;
         };
         let response = crate::peer_client::tunnel_gateway_call(
             &tunnel,
@@ -3133,20 +3205,21 @@ impl Network {
                 reqwest::header::CONTENT_TYPE.to_string(),
                 "application/json".to_string(),
             )],
-            ADMISSION_TIMEOUT,
+            ADMISSION_TUNNEL_TIMEOUT,
         )
         .await;
         match response {
             Ok(response) => match response.json::<serde_json::Value>() {
-                Ok(parsed) => approves(response.status, &parsed),
-                Err(_) => false,
+                Ok(parsed) if approves(response.status, &parsed) => AdmissionProbe::Approved,
+                Ok(_) => AdmissionProbe::Refused,
+                Err(_) => AdmissionProbe::Unreachable,
             },
             Err(error) => {
                 debug!(
                     "admissão de {} pelo túnel não concluiu: {error}",
                     short(&peer.node_id)
                 );
-                false
+                AdmissionProbe::Unreachable
             }
         }
     }
@@ -3165,21 +3238,21 @@ impl Network {
         };
         let connection_key = admission.auth.read().await.connection_key.clone();
         let cache_key = self.admission_cache_key(peer, &connection_key);
-        let allowed = self.private_peer_is_admitted(peer, &connection_key).await;
-        if let Ok(mut cache) = self.admission_cache.write() {
-            cache.insert(
-                cache_key,
-                AdmissionCacheEntry {
-                    allowed,
-                    expires_at: Instant::now()
-                        + if allowed {
-                            ADMISSION_CACHE_TTL
-                        } else {
-                            REJECTED_ADMISSION_CACHE_TTL
-                        },
-                },
+        let probe = self.private_peer_is_admitted(peer, &connection_key).await;
+        let Ok(mut cache) = self.admission_cache.write() else {
+            return probe == AdmissionProbe::Approved;
+        };
+        let now = Instant::now();
+        let previous_proof = cache.get(&cache_key).and_then(|entry| entry.proven_at);
+        let entry = admission_verdict(probe, previous_proof, now);
+        if probe == AdmissionProbe::Unreachable && entry.allowed {
+            debug!(
+                "admissão de {}: sem resposta, mantido pela prova anterior",
+                short(&peer.node_id)
             );
         }
+        let allowed = entry.allowed;
+        cache.insert(cache_key, entry);
         allowed
     }
 
@@ -4796,6 +4869,71 @@ mod tests {
         assert_eq!(network.admission_without_probe(&peer).await, None);
         assert!(!network.admit_peer(&peer).await);
         assert_eq!(network.admission_without_probe(&peer).await, Some(false));
+    }
+
+    /// Sem resposta, só a prova recente segura o peer; recusa nunca segura.
+    #[test]
+    fn an_unreachable_recheck_keeps_only_a_recently_proven_peer() {
+        let now = Instant::now();
+        let recent = now - StdDuration::from_secs(60);
+        let stale = now - ADMISSION_UNREACHABLE_GRACE - StdDuration::from_secs(1);
+
+        let kept = admission_verdict(AdmissionProbe::Unreachable, Some(recent), now);
+        assert!(kept.allowed);
+        assert_eq!(kept.proven_at, Some(recent), "a folga não renova a prova");
+        assert_eq!(kept.expires_at, now + REJECTED_ADMISSION_CACHE_TTL);
+
+        assert!(!admission_verdict(AdmissionProbe::Unreachable, Some(stale), now).allowed);
+        assert!(!admission_verdict(AdmissionProbe::Unreachable, None, now).allowed);
+        assert!(!admission_verdict(AdmissionProbe::Refused, Some(recent), now).allowed);
+
+        let approved = admission_verdict(AdmissionProbe::Approved, None, now);
+        assert!(approved.allowed);
+        assert_eq!(approved.proven_at, Some(now));
+    }
+
+    /// Ponta a ponta: aprovado pelo `/handshake`, o gateway some e o cache
+    /// vence; a nova sonda não chega a ninguém e o peer continua admitido.
+    #[tokio::test]
+    async fn a_proven_peer_survives_a_recheck_that_reaches_nobody() {
+        let remote = admission_config("correct", crate::config::NetworkVisibility::Private);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gateway_port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/handshake",
+                axum::routing::post(crate::session::handle_handshake),
+            )
+            .with_state(remote);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let identity = crate::identity::Identity::generate();
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config("correct", crate::config::NetworkVisibility::Private),
+            Arc::new(crate::admin_trust::AdminTrust::empty()),
+        );
+        let peer = admission_peer(gateway_port);
+        assert!(network.admit_peer(&peer).await);
+
+        server.abort();
+        let _ = server.await;
+        for entry in network.admission_cache.write().unwrap().values_mut() {
+            entry.expires_at = Instant::now() - StdDuration::from_secs(1);
+        }
+        assert!(
+            network.admit_peer(&peer).await,
+            "sem resposta, a prova recente mantém o peer"
+        );
     }
 
     /// A sonda em segundo plano só aquece o cache, uma vez por peer, e não

@@ -5,7 +5,6 @@ use crate::network_chat::{
     self, ChatOutbound, ChatRequest, ChatResponse, NetworkChat, NetworkChatCodec,
 };
 use crate::reqlog::{self, AuditCodec, AuditEvent, AuditLog, AuditOutbound};
-use crate::wire;
 use anyhow::Result;
 use futures::StreamExt;
 use libp2p::{
@@ -529,18 +528,19 @@ impl Discovery {
                         max_reservations: 128,
                         max_reservations_per_peer: 4,
                         reservation_duration: Duration::from_secs(3600),
-                        max_circuit_duration: Duration::from_secs(120),
-                        // A relayed (non-hole-punched) infer-tunnel hop's
-                        // request can be up to `wire::MAX_FRAME_PAYLOAD_BYTES`
-                        // — a real prefill chunk's hidden state easily runs
-                        // several MB. The libp2p default (1<<17 = 128KB) would
-                        // silently truncate it whenever this node is the relay
-                        // circuit a NAT'd peer ends up routed through. Only
-                        // fixable here, for a self-hosted relay — the public
-                        // `DEFAULT_RELAY_NODES` (third-party IPFS
-                        // infrastructure) enforce their own cap, outside this
-                        // project's control.
-                        max_circuit_bytes: wire::MAX_FRAME_PAYLOAD_BYTES as u64,
+                        // Os dois limites valem para o circuito inteiro, não
+                        // por pedido: o libp2p soma os bytes das duas direções
+                        // desde a abertura (`CopyFuture`) e fecha o circuito
+                        // ao passar do teto ou do prazo. O teto antigo, do
+                        // tamanho de um frame de prefill, derrubava o circuito
+                        // depois de mais ou menos um frame, e o prazo de 120 s
+                        // o derrubava de qualquer jeito: um par que só o relé
+                        // alcança perdia a rota em minutos e saía da tabela.
+                        // Este é um relé do próprio operador, então sem teto
+                        // de bytes (`0` = ilimitado) e com prazo longo; a
+                        // reserva continua renovando a cada hora.
+                        max_circuit_duration: Duration::from_secs(24 * 60 * 60),
+                        max_circuit_bytes: 0,
                         ..relay::Config::default()
                     }
                 } else {

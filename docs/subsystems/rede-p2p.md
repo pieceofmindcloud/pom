@@ -42,7 +42,13 @@ consomem a tabela depois desse ponto.
   sem gateway ou timeout são recusados. A chave não aparece no `Announce`.
   Esgotados os endereços diretos, a mesma sonda vai pelo túnel libp2p; para um
   par atrás de NAT/CGNAT esse é o único caminho que chega, e sem ele a
-  admissão nunca concluiria. O veredito fica em cache por 30 s (recusa: 5 s).
+  admissão nunca concluiria. As sondas diretas têm 2 s cada; a do túnel, 10 s,
+  porque pode ter de montar um circuito pelo relé. O veredito fica em cache por
+  30 s (recusa: 5 s). Recusa conta só quando é autêntica - pelo túnel (PeerId
+  autenticado) ou por HTTPS com o certificado fixado no `node_id`; uma resposta
+  HTTP em claro não prova quem respondeu. Sem resposta autêntica, um peer
+  aprovado há menos de 10 min (`ADMISSION_UNREACHABLE_GRACE`) continua
+  admitido e a sonda se repete a cada 5 s; sem prova recente, fica de fora.
 - **O `Announce` do gossipsub nunca sonda dentro do laço do swarm.** O pedido
   do túnel é atendido por esse mesmo laço, então uma sonda aguardada ali
   esperava por si mesma até o timeout de 2 s e falhava sempre. O sintoma: um
@@ -159,8 +165,7 @@ descoberta.
    injeta um destino loopback para o anúncio local; `testkit_with_broadcast_addr`
    aceita um endpoint loopback explícito e recusa o broadcast global.
 2. **Bootstrap:** `Network::start` chama `bootstrap_discovery` logo no início
-   (envia `PeerRequest` a cada bootstrap configurado). `main.rs` então espera
-   ~2 s juntando `Announce` antes de calcular a faixa de camadas.
+   (envia `PeerRequest` a cada bootstrap configurado).
 3. **Gossip (5 s):** a cada `GOSSIP_INTERVAL_SECS` o nó re-anuncia
    incondicionalmente (bootstrap + peers vivos + broadcast local), roda
    `discovery_sweep` e expira mortos. Quando há `advertise_addr`, o anúncio
@@ -461,11 +466,14 @@ quatro endereços: `/ip4/0.0.0.0/tcp/<porta>`, `/ip6/::/tcp/<porta>`,
   obsoletos. Relé útil aqui é um nó pom com IP público rodando `--serve-relay`,
   configurado em `--relay-peers` ou em `relay_peers` no `pom.json` (as duas
   listas se somam; chaves `pk:...` resolvidas uma vez no arranque por pkarr,
-  filtrando `is_relay`); só ele honra `max_circuit_bytes` do tamanho de um frame de
-  prefill. `--no-default-relays` continua aceito e hoje não tem efeito prático.
+  filtrando `is_relay`). `--no-default-relays` continua aceito e hoje não tem efeito prático.
   Com `--serve-relay` o servidor de relay aceita reservas (128 slots, 4 por
-  peer, 1 h de reserva, circuitos de 120 s e `wire::MAX_FRAME_PAYLOAD_BYTES`);
-  sem ele, `max_reservations: 0`. Um relé dedicado é um nó comum, que
+  peer, 1 h de reserva) e circuitos de até 24 h sem teto de bytes
+  (`max_circuit_bytes: 0`); sem ele, `max_reservations: 0`. Os dois limites do
+  libp2p valem para o circuito inteiro, não por pedido: os bytes das duas
+  direções se somam desde a abertura. O teto antigo, do tamanho de um frame de
+  prefill, e o prazo de 120 s derrubavam o circuito em minutos, e um par que só
+  o relé alcança saía da tabela. Um relé dedicado é um nó comum, que
   simplesmente não recebe implantação.
   `examples/relay-node/docker-compose.yml` é o exemplo de um relé dedicado,
   fora da rede que ele atende. Os nós atrás de NAT só precisam dele como

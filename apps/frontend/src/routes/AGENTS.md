@@ -102,7 +102,8 @@ Per-file list:
   licenciados à loja pública com `plugin=<code>` codificado em
   `lib/pluginPurchase.ts`. Repositórios GitHub ficam em um card global
   independente do catálogo comercial: qualquer URL pública com `manifest.json`
-  na raiz mostra metadados e releases do repositório, e o operador escolhe qual
+  na raiz ou, na ausência dele, `ui/manifest.json` mostra metadados e releases
+  do repositório, e o operador escolhe qual
   release instalar sem consulta ao servidor de licenças. Ações de ativação,
   instalação, atualização e desativação também invalidam `keys.pluginUi` para
   atualizar imediatamente o menu do plugin; o polling de 30 s cobre mudanças

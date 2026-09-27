@@ -211,7 +211,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   parâmetro codificado e não envia credenciais. `usePublicPluginCatalog` em `queries.ts`
   controla carregamento, erro e atualização periódica dessa leitura.
   `useGithubRepositories` consulta `/api/ui/plugins/github-repositories`, lista
-  local autenticada que não depende do catálogo comercial.
+  local autenticada que não depende do catálogo comercial. Cada fonte informa
+  `manifest_path` e pode devolver o manifesto de UI original quando a origem é
+  `ui/manifest.json`.
   `PluginStatus` também carrega `installed_at`, `update_checked_at` e
   `public_install` do estado real persistido pelo nó; não derive a data da última
   instalação do heartbeat. Uma instalação pública mantém `licensed_plugins`

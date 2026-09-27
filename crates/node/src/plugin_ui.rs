@@ -162,6 +162,36 @@ fn valid_documentation_asset(path: &str) -> bool {
     valid_asset(path) && path.starts_with("docs/") && path.ends_with(".md")
 }
 
+fn normalize_ui_manifest_documentation(value: Value) -> Result<Value, String> {
+    let Some(paths) = value.get("documentation").and_then(Value::as_array) else {
+        return Ok(value);
+    };
+    if paths.len() > 64 {
+        return Err("documentation path list has too many entries".into());
+    }
+    let mut guides = Vec::with_capacity(paths.len());
+    for (index, item) in paths.iter().enumerate() {
+        let asset = item
+            .as_str()
+            .filter(|path| valid_documentation_asset(path))
+            .ok_or_else(|| "documentation entries must be declared docs/*.md assets".to_owned())?;
+        let file_name = asset.rsplit('/').next().unwrap_or(asset);
+        let stem = file_name.strip_suffix(".md").unwrap_or(file_name);
+        let title = stem.replace(['-', '_'], " ");
+        guides.push(serde_json::json!({
+            "id": format!("legacy-guide-{}", index + 1),
+            "title": {
+                "en": format!("Guide {}: {title}", index + 1),
+                "pt-BR": format!("Guia {}: {title}", index + 1)
+            },
+            "asset": asset
+        }));
+    }
+    let mut value = value;
+    value["documentation"] = serde_json::json!({ "guides": guides, "reference": [] });
+    Ok(value)
+}
+
 fn valid_profiles(profiles: &[String]) -> bool {
     !profiles.is_empty() && profiles.iter().all(|p| PROFILES.contains(&p.as_str()))
 }
@@ -174,6 +204,7 @@ impl PluginUiManifest {
     /// Interpreta e valida o JSON devolvido pelo plugin. Recusa em vez de
     /// corrigir: um manifesto torto não pode desenhar menu nem carregar código.
     pub(crate) fn parse(expected_code: &str, value: Value) -> Result<Self, String> {
+        let value = normalize_ui_manifest_documentation(value)?;
         let manifest: Self =
             serde_json::from_value(value).map_err(|e| format!("manifesto ilegível: {e}"))?;
         if manifest.schema != MANIFEST_SCHEMA {
@@ -539,6 +570,43 @@ mod tests {
         assert!(validate_catalog("enterprise", &json!(["enterprise.a"])).is_err());
         let huge = "x".repeat(MAX_CATALOG_TEXT + 1);
         assert!(validate_catalog("enterprise", &json!({"enterprise.a": huge})).is_err());
+    }
+
+    /// The public pom-plugin-base release currently ships this UI manifest shape.
+    #[test]
+    fn accepts_the_ui_manifest_format_shipped_by_pom_plugin_base() {
+        let value = json!({
+            "schema": "pom-plugin-ui/v1",
+            "plugin_code": "base",
+            "icon_image": "ui/icon.png",
+            "documentation": [
+                "docs/README.md",
+                "docs/guia-desenvolvimento.md",
+                "docs/guia-workspace.md"
+            ],
+            "menu": [
+                { "id": "base", "label": { "en": "Base Plugin", "pt-BR": "Plugin de Base" }, "icon": "layout-template", "to": "/plugin-de-base" },
+                { "id": "example", "label": { "en": "Example", "pt-BR": "Exemplo" }, "icon": "file-code-2", "to": "/example" }
+            ],
+            "routes": [
+                { "path": "/plugin-de-base", "screen": "base", "full_bleed": true, "roles": ["admin"] },
+                { "path": "/example", "screen": "example", "full_bleed": true }
+            ],
+            "screens": {
+                "base": { "module": "ui/screens.js", "export": "base", "styles": ["ui/plugin.css"] },
+                "example": { "module": "ui/screens.js", "export": "example", "styles": ["ui/plugin.css"] }
+            },
+            "i18n": { "en": "i18n/en.json", "pt-BR": "i18n/pt-BR.json" },
+            "assets": [
+                "ui/screens.js", "ui/plugin.css", "ui/icon.png", "i18n/en.json",
+                "i18n/pt-BR.json", "docs/README.md", "docs/guia-desenvolvimento.md",
+                "docs/guia-workspace.md"
+            ]
+        });
+        let parsed = PluginUiManifest::parse("base", value).expect("valid published manifest");
+        assert_eq!(parsed.menu[0].label["en"], "Base Plugin");
+        assert_eq!(parsed.documentation.as_ref().unwrap().guides.len(), 3);
+        assert!(parsed.is_documentation("docs/guia-workspace.md"));
     }
 
     /// O manifesto que o plugin `enterprise` (pom-plugin-logs) entrega hoje.

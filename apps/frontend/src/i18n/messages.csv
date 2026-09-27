@@ -1486,6 +1486,7 @@ plugins.githubInstallRelease,Install this release,Instalar esta release
 plugins.githubInstalledVersion,Installed release,Release instalada
 plugins.githubListFailed,Could not load registered GitHub repositories.,Não foi possível carregar os repositórios GitHub cadastrados.
 plugins.githubManifestDetails,View manifest.json details,Ver detalhes do manifest.json
+plugins.githubManifestPath,Manifest found at {path},Manifesto encontrado em {path}
 plugins.githubNoReleases,This repository has no published releases.,Este repositório não tem releases publicadas.
 plugins.githubPluginCode,Plugin code,Código do plugin
 plugins.githubPrerelease,Pre-release,Pré-release
@@ -1494,8 +1495,8 @@ plugins.githubRepositoriesEmpty,Add a public GitHub repository to browse its man
 plugins.githubRepositoriesLoading,Loading registered repositories,Carregando repositórios cadastrados
 plugins.githubRepositoryLabel,Public GitHub repository URL,URL do repositório público do GitHub
 plugins.githubShowMore,"Show more releases ({shown} of {total})","Mostrar mais releases ({shown} de {total})"
-plugins.githubSourceDescription,"Add any public GitHub repository with a root manifest.json. Repository details and published releases are read directly by this POM node; no license catalog controls installation.","Adicione qualquer repositório público do GitHub com manifest.json na raiz. Este nó do POM lê os detalhes e as releases publicadas diretamente; o catálogo de licenças não controla a instalação."
-plugins.githubSourceFailed,"Could not add this GitHub repository. Check its URL, root manifest.json and published releases.","Não foi possível adicionar este repositório GitHub. Verifique a URL, o manifest.json na raiz e as releases publicadas."
+plugins.githubSourceDescription,"Add any public GitHub repository with a root manifest.json, or a POM UI plugin with ui/manifest.json and platform metadata in its releases. This POM node reads repository details and releases directly; the license catalog does not control installation.","Adicione um repositório público do GitHub com manifest.json na raiz ou um plugin de UI do POM com ui/manifest.json e metadados por plataforma nas releases. Este nó lê os detalhes e as releases diretamente; o catálogo de licenças não controla a instalação."
+plugins.githubSourceFailed,"Could not add this GitHub repository. Check its URL, supported manifest path and published releases.","Não foi possível adicionar este repositório GitHub. Verifique a URL, o caminho do manifesto e as releases publicadas."
 plugins.githubSourceRegister,Add repository,Adicionar repositório
 plugins.githubSourceTitle,Public GitHub Releases,Releases públicas do GitHub
 plugins.githubUninstall,Uninstall plugin,Desinstalar plugin

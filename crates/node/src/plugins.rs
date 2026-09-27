@@ -2414,12 +2414,31 @@ impl PluginManager {
         database: Arc<crate::db::PomDb>,
         api_base: &str,
     ) -> Arc<Self> {
+        Self::test_manager_with_github_database_for_target(
+            plugin_codes,
+            service,
+            database,
+            api_base,
+            "linux",
+            "x86_64",
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_manager_with_github_database_for_target(
+        plugin_codes: &[&str],
+        service: Arc<dyn LicenseService>,
+        database: Arc<crate::db::PomDb>,
+        api_base: &str,
+        os: &str,
+        arch: &str,
+    ) -> Arc<Self> {
         let github = crate::plugin_github::GithubReleaseClient::with_api_base(api_base)
             .expect("test GitHub API endpoint");
         Self::from_codes_with_github(
             plugin_codes.iter().map(|code| (*code).to_owned()),
             service,
-            test_fingerprint_for("linux", "x86_64"),
+            test_fingerprint_for(os, arch),
             Some(database),
             false,
             github,
@@ -4266,6 +4285,83 @@ mod tests {
         assert!(database
             .local_setting_json("plugin_public_install:acme_plugin")
             .expect("removed public install state")
+            .is_none());
+        assert!(service.manifest_calls().await.is_empty());
+        assert_eq!(service.deactivate_calls().await, 0);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn github_ui_manifest_repository_installs_its_platform_release_without_license_calls() {
+        let _serial = REAL_HOST.lock().await;
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database =
+            Arc::new(crate::db::PomDb::open(directory.path().join("pom.db")).expect("database"));
+        let (_client, api_base, server) =
+            crate::plugin_github::tests::github_ui_manifest_repository_stub().await;
+        let host_log = directory.path().join("fake-host.log");
+        let _restore_environment = RestoreEnvironment::capture(&[
+            "POM_HOME",
+            "POM_PLUGIN_HOST",
+            "POM_FAKE_HOST_LOG",
+            "POM_FAKE_HOST_UPSTREAM",
+        ]);
+        std::env::set_var("POM_HOME", directory.path());
+        std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
+        std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
+        std::env::set_var(
+            "POM_FAKE_HOST_UPSTREAM",
+            serde_json::json!({"status": "ready", "port": 43127, "token": "t".repeat(32)})
+                .to_string(),
+        );
+
+        let service = Arc::new(MockLicenseService::new());
+        let manager = PluginManager::test_manager_with_github_database_for_target(
+            &[],
+            service.clone(),
+            database.clone(),
+            &api_base,
+            "macos",
+            "aarch64",
+        );
+        let repository = manager
+            .add_github_repository("https://github.com/pereirajair/pom-plugin-base")
+            .await
+            .expect("find ui/manifest.json and read the platform release manifest");
+        assert_eq!(repository.manifest_path, "ui/manifest.json");
+        assert_eq!(repository.manifest.plugin_code, "base");
+        manager
+            .install_github_repository_release(&repository.id, "505")
+            .await
+            .expect("install the selected platform release");
+
+        let runtime = manager.runtime_for("base").expect("plugin runtime");
+        let status = manager.status("base").await.expect("plugin status");
+        assert!(status.active);
+        assert!(status.public_install);
+        assert!(status.licensed_plugins.is_empty());
+        assert_eq!(status.plugin_version.as_deref(), Some("0.0.5"));
+        let installed = runtime
+            .public_install
+            .lock()
+            .await
+            .clone()
+            .expect("local public install record");
+        assert_eq!(installed.features, ["core"]);
+        assert_eq!(
+            installed.preferences_schema.as_ref().unwrap().features[0].key,
+            "example_feature_enabled"
+        );
+        assert_eq!(
+            std::fs::read(&installed.plugin_path).expect("installed library"),
+            b"base plugin binary"
+        );
+        assert!(database
+            .local_setting_json("plugin_license:base")
+            .expect("license record")
             .is_none());
         assert!(service.manifest_calls().await.is_empty());
         assert_eq!(service.deactivate_calls().await, 0);

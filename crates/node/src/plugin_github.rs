@@ -51,7 +51,11 @@ pub(crate) struct GithubRepositoryRelease {
 pub(crate) struct GithubRepository {
     pub id: String,
     pub repository_url: String,
+    #[serde(default = "root_manifest_path")]
+    pub manifest_path: String,
     pub manifest: GithubRepositoryManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_manifest: Option<serde_json::Value>,
     pub releases: Vec<GithubRepositoryRelease>,
     pub checked_at: String,
     #[serde(default)]
@@ -89,6 +93,20 @@ pub(crate) struct DownloadedRelease {
 pub(crate) struct GithubReleaseClient {
     client: reqwest::Client,
     api_base: reqwest::Url,
+}
+
+#[derive(Debug)]
+enum RepositoryManifestSource {
+    Distribution(GithubRepositoryManifest),
+    PluginUi {
+        plugin_code: String,
+        display_name: String,
+        value: serde_json::Value,
+    },
+}
+
+fn root_manifest_path() -> String {
+    "manifest.json".into()
 }
 
 impl GithubReleaseClient {
@@ -243,50 +261,62 @@ impl GithubReleaseClient {
         let repo_api = format!("{api_root}/repos/{}/{}", repository.owner, repository.repo);
         self.ensure_public_repository(&repo_api).await?;
 
-        let manifest_response = self
-            .client
-            .get(format!("{repo_api}/contents/manifest.json"))
-            .header(header::ACCEPT, "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|error| format!("GitHub plugin manifest lookup failed: {error}"))?;
-        if manifest_response.status() != StatusCode::OK {
-            return Err(github_status_error(
-                manifest_response.status(),
-                "plugin manifest",
-            ));
-        }
-        let manifest_bytes =
-            read_limited(manifest_response, MAX_MANIFEST_BYTES * 2, "plugin manifest").await?;
-        let contents: GithubContentsFile = serde_json::from_slice(&manifest_bytes)
-            .map_err(|error| format!("invalid GitHub manifest response: {error}"))?;
-        if contents.file_type != "file"
-            || contents.path != "manifest.json"
-            || contents.encoding != "base64"
-            || contents.size == 0
-            || contents.size > MAX_MANIFEST_BYTES as u64
+        let (manifest_path, source) = if let Some(bytes) = self
+            .read_repository_manifest(&repo_api, "manifest.json")
+            .await?
         {
-            return Err("repository root must contain a bounded manifest.json file".into());
-        }
-        let encoded = contents
-            .content
-            .chars()
-            .filter(|ch| !ch.is_whitespace())
-            .collect::<String>();
-        let manifest_bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|error| format!("invalid base64 in repository manifest: {error}"))?;
-        if manifest_bytes.len() as u64 != contents.size || manifest_bytes.len() > MAX_MANIFEST_BYTES
-        {
-            return Err("repository manifest size does not match GitHub metadata".into());
-        }
-        let manifest: GithubRepositoryManifest = serde_json::from_slice(&manifest_bytes)
-            .map_err(|error| format!("invalid repository manifest.json: {error}"))?;
-        validate_repository_manifest(&manifest)?;
+            let manifest: GithubRepositoryManifest = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid repository manifest.json: {error}"))?;
+            validate_repository_manifest(&manifest)?;
+            (
+                "manifest.json".to_owned(),
+                RepositoryManifestSource::Distribution(manifest),
+            )
+        } else {
+            let bytes = self
+                .read_repository_manifest(&repo_api, "ui/manifest.json")
+                .await?
+                .ok_or_else(|| {
+                    "public repository must contain manifest.json or ui/manifest.json".to_owned()
+                })?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid ui/manifest.json: {error}"))?;
+            let plugin_code = value
+                .get("plugin_code")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "ui/manifest.json is missing plugin_code".to_owned())?
+                .to_owned();
+            let ui_manifest =
+                crate::plugin_ui::PluginUiManifest::parse(&plugin_code, value.clone())
+                    .map_err(|error| format!("invalid ui/manifest.json: {error}"))?;
+            let display_name = ui_manifest
+                .menu
+                .iter()
+                .find(|item| item.id == plugin_code)
+                .or_else(|| ui_manifest.menu.first())
+                .and_then(|item| item.label.get("en").or_else(|| item.label.values().next()))
+                .cloned()
+                .unwrap_or_else(|| plugin_code.clone());
+            (
+                "ui/manifest.json".to_owned(),
+                RepositoryManifestSource::PluginUi {
+                    plugin_code,
+                    display_name,
+                    value,
+                },
+            )
+        };
         let target = format!("{os}-{arch}");
-        let artifact_name = manifest.artifacts.get(&target).cloned();
+        let artifact_name = match &source {
+            RepositoryManifestSource::Distribution(manifest) => {
+                manifest.artifacts.get(&target).cloned()
+            }
+            RepositoryManifestSource::PluginUi { .. } => None,
+        };
+        let platform_manifest_asset = format!("pom-plugin-{os}-{arch}.json");
 
         let mut summaries = Vec::new();
+        let mut ui_distribution_manifest = None;
         let mut total_metadata_bytes = 0usize;
         let mut seen_release_ids = std::collections::HashSet::new();
         let mut page = 1usize;
@@ -324,23 +354,78 @@ impl GithubReleaseClient {
                 {
                     continue;
                 }
-                let matched_assets = artifact_name.as_deref().map(|name| {
-                    release
-                        .assets
-                        .iter()
-                        .filter(|asset| asset.name == name)
-                        .collect::<Vec<_>>()
-                });
-                let asset = matched_assets.as_deref().and_then(|assets| match assets {
-                    [asset]
-                        if asset.size > 0
-                            && asset.size <= MAX_PLUGIN_BYTES
-                            && asset.digest.as_deref().is_some_and(valid_github_sha256) =>
-                    {
-                        Some(*asset)
+                let (asset_name, asset_size, available_for_node) = match &source {
+                    RepositoryManifestSource::Distribution(_) => {
+                        let asset = artifact_name.as_deref().and_then(|name| {
+                            let matches = release
+                                .assets
+                                .iter()
+                                .filter(|asset| asset.name == name)
+                                .collect::<Vec<_>>();
+                            match matches.as_slice() {
+                                [asset]
+                                    if asset.size > 0
+                                        && asset.size <= MAX_PLUGIN_BYTES
+                                        && asset
+                                            .digest
+                                            .as_deref()
+                                            .is_some_and(valid_github_sha256) =>
+                                {
+                                    Some(*asset)
+                                }
+                                _ => None,
+                            }
+                        });
+                        (
+                            asset.map(|asset| asset.name.clone()),
+                            asset.map(|asset| asset.size),
+                            asset.is_some(),
+                        )
                     }
-                    _ => None,
-                });
+                    RepositoryManifestSource::PluginUi { plugin_code, .. } => {
+                        let metadata = release
+                            .assets
+                            .iter()
+                            .filter(|asset| asset.name == platform_manifest_asset)
+                            .collect::<Vec<_>>();
+                        let metadata = match metadata.as_slice() {
+                            [asset]
+                                if asset.size > 0
+                                    && asset.size <= MAX_MANIFEST_BYTES as u64
+                                    && asset.digest.as_deref().is_some_and(valid_github_sha256) =>
+                            {
+                                Some(*asset)
+                            }
+                            _ => None,
+                        };
+                        if ui_distribution_manifest.is_none() {
+                            if let Some(metadata_asset) = metadata {
+                                let bytes = self.download_asset(metadata_asset).await?;
+                                validate_api_digest(&bytes, metadata_asset.digest.as_deref())?;
+                                let distribution_manifest: GithubPluginManifest =
+                                    serde_json::from_slice(&bytes).map_err(|error| {
+                                        format!(
+                                            "invalid release asset {platform_manifest_asset}: {error}"
+                                        )
+                                    })?;
+                                validate_manifest(
+                                    &distribution_manifest,
+                                    plugin_code,
+                                    &release.tag_name,
+                                    os,
+                                    arch,
+                                )?;
+                                let binary = exactly_one_asset(
+                                    &release.assets,
+                                    &distribution_manifest.asset,
+                                )?;
+                                validate_release_binary_metadata(&distribution_manifest, binary)?;
+                                ui_distribution_manifest = Some(distribution_manifest);
+                            }
+                        }
+                        (None, None, metadata.is_some())
+                    }
+                };
                 summaries.push(GithubRepositoryRelease {
                     release_id: release.id.to_string(),
                     tag_name: release.tag_name,
@@ -348,9 +433,9 @@ impl GithubReleaseClient {
                     changelog: truncate_github_text(release.body, MAX_GITHUB_RELEASE_NOTES_BYTES),
                     published_at: release.published_at,
                     prerelease: release.prerelease,
-                    asset_name: asset.map(|asset| asset.name.clone()),
-                    asset_size: asset.map(|asset| asset.size),
-                    available_for_node: asset.is_some(),
+                    asset_name,
+                    asset_size,
+                    available_for_node,
                 });
             }
             if page_count < GITHUB_RELEASES_PER_PAGE {
@@ -360,15 +445,90 @@ impl GithubReleaseClient {
                 .checked_add(1)
                 .ok_or_else(|| "GitHub release page index overflowed".to_owned())?;
         }
+
+        let (manifest, ui_manifest) = match source {
+            RepositoryManifestSource::Distribution(manifest) => (manifest, None),
+            RepositoryManifestSource::PluginUi {
+                plugin_code,
+                display_name,
+                value,
+            } => {
+                let distribution = ui_distribution_manifest.ok_or_else(|| {
+                    format!(
+                        "no published release contains a valid {platform_manifest_asset} for this machine"
+                    )
+                })?;
+                let manifest = GithubRepositoryManifest {
+                    schema: 1,
+                    plugin_code,
+                    display_name,
+                    description: None,
+                    plugin_abi: distribution.plugin_abi,
+                    feature_set: distribution.feature_set,
+                    artifacts: std::collections::BTreeMap::from([(target, distribution.asset)]),
+                    preferences: distribution.preferences,
+                };
+                validate_repository_manifest(&manifest)?;
+                (manifest, Some(value))
+            }
+        };
         let id = hex::encode(sha2::Sha256::digest(canonical_url.as_bytes()));
         Ok(GithubRepository {
             id,
             repository_url: canonical_url,
+            manifest_path,
             manifest,
+            ui_manifest,
             releases: summaries,
             checked_at: chrono::Utc::now().to_rfc3339(),
             check_error: None,
         })
+    }
+
+    async fn read_repository_manifest(
+        &self,
+        repo_api: &str,
+        path: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let response = self
+            .client
+            .get(format!("{repo_api}/contents/{path}"))
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|error| format!("GitHub {path} lookup failed: {error}"))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if response.status() != StatusCode::OK {
+            return Err(github_status_error(response.status(), path));
+        }
+        let response_bytes =
+            read_limited(response, MAX_MANIFEST_BYTES * 2, "plugin manifest").await?;
+        let contents: GithubContentsFile = serde_json::from_slice(&response_bytes)
+            .map_err(|error| format!("invalid GitHub {path} response: {error}"))?;
+        if contents.file_type != "file"
+            || contents.path != path
+            || contents.encoding != "base64"
+            || contents.size == 0
+            || contents.size > MAX_MANIFEST_BYTES as u64
+        {
+            return Err(format!("repository {path} is not a bounded manifest file"));
+        }
+        let encoded = contents
+            .content
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| format!("invalid base64 in {path}: {error}"))?;
+        if bytes.len() as u64 != contents.size || bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(format!(
+                "repository {path} size does not match GitHub metadata"
+            ));
+        }
+        Ok(Some(bytes))
     }
 
     pub(crate) async fn download_release(
@@ -412,6 +572,43 @@ impl GithubReleaseClient {
             .map_err(|error| format!("invalid GitHub release response: {error}"))?;
         if release.id.to_string() != release_id || release.draft {
             return Err("selected GitHub release is no longer published".into());
+        }
+        if repository.manifest_path == "ui/manifest.json" {
+            let manifest_asset_name = format!("pom-plugin-{os}-{arch}.json");
+            let manifest_asset = exactly_one_asset(&release.assets, &manifest_asset_name)?;
+            if manifest_asset.size == 0
+                || manifest_asset.size > MAX_MANIFEST_BYTES as u64
+                || !manifest_asset
+                    .digest
+                    .as_deref()
+                    .is_some_and(valid_github_sha256)
+            {
+                return Err(format!(
+                    "release manifest asset {manifest_asset_name} has invalid integrity metadata"
+                ));
+            }
+            let manifest_bytes = self.download_asset(manifest_asset).await?;
+            validate_api_digest(&manifest_bytes, manifest_asset.digest.as_deref())?;
+            let mut manifest: GithubPluginManifest = serde_json::from_slice(&manifest_bytes)
+                .map_err(|error| format!("invalid release asset {manifest_asset_name}: {error}"))?;
+            validate_manifest(
+                &manifest,
+                &repository.manifest.plugin_code,
+                &release.tag_name,
+                os,
+                arch,
+            )?;
+            if manifest.changelog.is_none() {
+                manifest.changelog = release.body.clone().filter(|body| !body.trim().is_empty());
+            }
+            let asset = exactly_one_asset(&release.assets, &manifest.asset)?;
+            validate_release_binary_metadata(&manifest, asset)?;
+            let binary = self.download_asset(asset).await?;
+            validate_integrity(&manifest, &binary, asset.digest.as_deref())?;
+            return Ok(DownloadedRelease {
+                manifest,
+                bytes: binary,
+            });
         }
         let target = format!("{os}-{arch}");
         let asset_name = repository
@@ -680,6 +877,32 @@ fn exactly_one_asset<'a>(assets: &'a [GithubAsset], name: &str) -> Result<&'a Gi
         [] => Err(format!("GitHub release is missing asset {name}")),
         _ => Err(format!("GitHub release contains duplicate asset {name}")),
     }
+}
+
+fn validate_release_binary_metadata(
+    manifest: &GithubPluginManifest,
+    asset: &GithubAsset,
+) -> Result<(), String> {
+    let Some(api_digest) = asset
+        .digest
+        .as_deref()
+        .and_then(|value| value.strip_prefix("sha256:"))
+    else {
+        return Err("plugin release binary is missing its GitHub SHA-256 digest".into());
+    };
+    let manifest_digest = manifest
+        .sha256
+        .strip_prefix("sha256:")
+        .unwrap_or(&manifest.sha256);
+    if asset.size != manifest.size
+        || asset.size == 0
+        || asset.size > MAX_PLUGIN_BYTES
+        || !valid_sha256(api_digest)
+        || !api_digest.eq_ignore_ascii_case(manifest_digest)
+    {
+        return Err("plugin binary metadata does not match its release manifest".into());
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_repository_manifest(
@@ -1300,6 +1523,210 @@ pub(crate) mod tests {
         });
         let client = GithubReleaseClient::with_api_base(&api_base).unwrap();
         (client, api_base, server)
+    }
+
+    pub(crate) async fn github_ui_manifest_repository_stub(
+    ) -> (GithubReleaseClient, String, tokio::task::JoinHandle<()>) {
+        use axum::extract::{Path as AxumPath, State};
+        use axum::http::StatusCode as HttpStatus;
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::sync::Arc;
+
+        struct RepositoryState {
+            ui_manifest: Vec<u8>,
+            release_manifest: Vec<u8>,
+            binary: Vec<u8>,
+            api_base: String,
+        }
+
+        async fn repository() -> Json<serde_json::Value> {
+            Json(serde_json::json!({ "private": false, "archived": false }))
+        }
+
+        async fn root_manifest() -> HttpStatus {
+            HttpStatus::NOT_FOUND
+        }
+
+        async fn ui_manifest_contents(
+            State(state): State<Arc<RepositoryState>>,
+        ) -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "type": "file",
+                "path": "ui/manifest.json",
+                "encoding": "base64",
+                "size": state.ui_manifest.len(),
+                "content": base64::engine::general_purpose::STANDARD.encode(&state.ui_manifest)
+            }))
+        }
+
+        fn release_json(state: &RepositoryState) -> serde_json::Value {
+            let manifest_digest = hex::encode(sha2::Sha256::digest(&state.release_manifest));
+            let binary_digest = hex::encode(sha2::Sha256::digest(&state.binary));
+            serde_json::json!({
+                "id": 505,
+                "tag_name": "v0.0.5",
+                "name": "Base Plugin 0.0.5",
+                "body": "Published base plugin",
+                "published_at": "2026-09-27T00:00:00Z",
+                "draft": false,
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "pom-plugin-macos-aarch64.json",
+                        "size": state.release_manifest.len(),
+                        "digest": format!("sha256:{manifest_digest}"),
+                        "url": format!("{}/assets/manifest", state.api_base)
+                    },
+                    {
+                        "name": "pom-plugin-base-macos-aarch64.dylib",
+                        "size": state.binary.len(),
+                        "digest": format!("sha256:{binary_digest}"),
+                        "url": format!("{}/assets/plugin", state.api_base)
+                    }
+                ]
+            })
+        }
+
+        async fn releases(State(state): State<Arc<RepositoryState>>) -> Json<serde_json::Value> {
+            Json(serde_json::json!([release_json(&state)]))
+        }
+
+        async fn release(
+            AxumPath(_id): AxumPath<u64>,
+            State(state): State<Arc<RepositoryState>>,
+        ) -> Json<serde_json::Value> {
+            Json(release_json(&state))
+        }
+
+        async fn asset(
+            AxumPath(name): AxumPath<String>,
+            State(state): State<Arc<RepositoryState>>,
+        ) -> impl axum::response::IntoResponse {
+            let (content_type, body) = if name == "manifest" {
+                ("application/json", state.release_manifest.clone())
+            } else {
+                ("application/octet-stream", state.binary.clone())
+            };
+            ([("content-type", content_type)], body)
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let api_base = format!("http://{address}");
+        let binary = b"base plugin binary".to_vec();
+        let binary_digest = hex::encode(sha2::Sha256::digest(&binary));
+        let release_manifest = serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "plugin_code": "base",
+            "release_id": "v0.0.5",
+            "version": "0.0.5",
+            "os": "macos",
+            "arch": "aarch64",
+            "plugin_abi": enterprise_protocol::PLUGIN_ABI_VERSION,
+            "asset": "pom-plugin-base-macos-aarch64.dylib",
+            "sha256": format!("sha256:{binary_digest}"),
+            "size": binary.len(),
+            "feature_set": ["base.core"],
+            "preferences": {
+                "features": [{
+                    "key": "example_feature_enabled",
+                    "label": "Example feature",
+                    "default": false,
+                    "description": "An example boolean preference for plugin authors."
+                }],
+                "storage_directory": { "label": "Plugin data directory", "default": null }
+            }
+        }))
+        .unwrap();
+        let ui_manifest = serde_json::to_vec(&serde_json::json!({
+            "schema": "pom-plugin-ui/v1",
+            "plugin_code": "base",
+            "icon_image": "ui/icon.png",
+            "documentation": ["docs/README.md", "docs/guia-desenvolvimento.md", "docs/guia-workspace.md"],
+            "menu": [
+                { "id": "base", "label": { "en": "Base Plugin", "pt-BR": "Plugin de Base" }, "icon": "layout-template", "to": "/plugin-de-base" },
+                { "id": "example", "label": { "en": "Example", "pt-BR": "Exemplo" }, "icon": "file-code-2", "to": "/example" }
+            ],
+            "routes": [
+                { "path": "/plugin-de-base", "screen": "base", "full_bleed": true, "roles": ["admin"] },
+                { "path": "/example", "screen": "example", "full_bleed": true }
+            ],
+            "screens": {
+                "base": { "module": "ui/screens.js", "export": "base", "styles": ["ui/plugin.css"] },
+                "example": { "module": "ui/screens.js", "export": "example", "styles": ["ui/plugin.css"] }
+            },
+            "i18n": { "en": "i18n/en.json", "pt-BR": "i18n/pt-BR.json" },
+            "assets": ["ui/screens.js", "ui/plugin.css", "ui/icon.png", "i18n/en.json", "i18n/pt-BR.json", "docs/README.md", "docs/guia-desenvolvimento.md", "docs/guia-workspace.md"]
+        }))
+        .unwrap();
+        let state = Arc::new(RepositoryState {
+            ui_manifest,
+            release_manifest,
+            binary,
+            api_base: api_base.clone(),
+        });
+        let app = Router::new()
+            .route("/repos/pereirajair/pom-plugin-base", get(repository))
+            .route(
+                "/repos/pereirajair/pom-plugin-base/contents/manifest.json",
+                get(root_manifest),
+            )
+            .route(
+                "/repos/pereirajair/pom-plugin-base/contents/ui/manifest.json",
+                get(ui_manifest_contents),
+            )
+            .route("/repos/pereirajair/pom-plugin-base/releases", get(releases))
+            .route(
+                "/repos/pereirajair/pom-plugin-base/releases/:id",
+                get(release),
+            )
+            .route("/assets/:name", get(asset))
+            .with_state(state);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = GithubReleaseClient::with_api_base(&api_base).unwrap();
+        (client, api_base, server)
+    }
+
+    #[tokio::test]
+    async fn finds_ui_manifest_and_installs_the_selected_platform_release_manifest() {
+        let (client, _api_base, server) = github_ui_manifest_repository_stub().await;
+        let repository = client
+            .inspect_repository(
+                "https://github.com/pereirajair/pom-plugin-base",
+                "macos",
+                "aarch64",
+            )
+            .await
+            .expect("read the plugin UI manifest and releases");
+        assert_eq!(repository.manifest_path, "ui/manifest.json");
+        assert_eq!(repository.manifest.plugin_code, "base");
+        assert_eq!(repository.manifest.display_name, "Base Plugin");
+        assert_eq!(repository.manifest.feature_set, ["base.core"]);
+        assert_eq!(
+            repository.manifest.preferences.as_ref().unwrap().features[0].key,
+            "example_feature_enabled"
+        );
+        assert_eq!(
+            repository.manifest.artifacts["macos-aarch64"],
+            "pom-plugin-base-macos-aarch64.dylib"
+        );
+        assert_eq!(
+            repository.ui_manifest.as_ref().unwrap()["documentation"][0],
+            "docs/README.md"
+        );
+        assert_eq!(repository.releases.len(), 1);
+        assert!(repository.releases[0].available_for_node);
+
+        let selected = client
+            .download_release(&repository, "505", "macos", "aarch64")
+            .await
+            .expect("download the binary named by the selected release manifest");
+        assert_eq!(selected.manifest.version, "0.0.5");
+        assert_eq!(selected.bytes, b"base plugin binary");
+        server.abort();
     }
 
     #[tokio::test]

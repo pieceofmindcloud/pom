@@ -663,7 +663,10 @@ function GithubReleasesManager({
                 </dl>
                 <details className="rounded-lg border border-line bg-ink/30 px-3 py-2">
                   <summary className="cursor-pointer text-xs font-medium text-muted">{t("plugins.githubManifestDetails")}</summary>
-                  <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[0.68rem] leading-relaxed text-muted">{JSON.stringify(repository.manifest, null, 2)}</pre>
+                  <p className="mt-2 text-[0.68rem] text-faint">
+                    {t("plugins.githubManifestPath", { path: repository.manifest_path ?? "manifest.json" })}
+                  </p>
+                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[0.68rem] leading-relaxed text-muted">{JSON.stringify(repository.ui_manifest ?? repository.manifest, null, 2)}</pre>
                 </details>
                 {repository.check_error && <p role="alert" className="break-words text-xs text-rose">{t("plugins.githubCheckFailed")} {repository.check_error}</p>}
                 {failedId === repository.id && <p role="alert" className="break-words text-xs text-rose">{t("plugins.githubInstallFailed")} {failureMessage}</p>}

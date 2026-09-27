@@ -45,8 +45,8 @@ Estatísticas mora em `pom-plugin-logs`, não aqui.
 | `routes[]` | `path`, `screen`, `roles` opcional (`admin`/`node`/`infer`) ou `profiles` legado (`admin`/`node`/`infer`, não vazio), `full_bleed`; sem os dois, todos os perfis são elegíveis |
 | `screens{}` | `module` (asset ES), `export` (padrão `default`), `styles[]` |
 | `i18n{}` | idioma -> asset JSON; se presente, `en` é obrigatório |
-| `documentation` | opcional; `guides[]` e `reference[]`, cada entrada com `id`, `title` localizado (com `en`) e asset Markdown relativo sob `docs/` |
-| `assets[]` | lista fechada; caminhos relativos, sem `..`; tudo o que telas e i18n citam tem de estar aqui |
+| `documentation` | opcional; formato atual com `guides[]` e `reference[]`, cada entrada com `id`, `title` localizado (com `en`) e asset Markdown relativo sob `docs/`; uma lista publicada de caminhos `docs/*.md` também é normalizada para guias |
+| `assets[]` | lista fechada; caminhos relativos, sem `..`; tudo o que telas, documentação e i18n citam tem de estar aqui |
 
 Um manifesto que também publica a documentação usa este formato. O plugin
 mantém os arquivos dentro da pasta `docs/` do pacote; o POM não grava nem
@@ -145,9 +145,11 @@ edita os valores apenas enquanto o plugin está ativo.
 do gateway, para o próprio plugin ativo. Isso é IPC entre o nó e o host local,
 não tráfego para o license-server. O card global **Public GitHub Releases**
 fica abaixo da ativação de licença, mas não lê nem consulta o catálogo do
-servidor. O operador cadastra qualquer repositório GitHub público; o POM lê o
-`manifest.json` da raiz do branch padrão e lista as releases publicadas junto
-dos metadados do manifesto. O manifesto declara `plugin_code`, nome,
+servidor. O operador cadastra qualquer repositório GitHub público; o POM lê
+`manifest.json` da raiz ou, se ausente, `ui/manifest.json` (`pom-plugin-ui/v1`)
+e lista as releases publicadas junto dos metadados do manifesto. No segundo
+formato, cada release anexa o manifesto por plataforma
+`pom-plugin-<os>-<arch>.json`. O manifesto declara `plugin_code`, nome,
 `plugin_abi`, features, preferências opcionais e um mapa `artifacts` por
 `<os>-<arch>`. Cada release tem ação própria para o operador escolher a tag,
 inclusive uma versão antiga. O POM valida ABI e manifesto, exige o digest
@@ -233,7 +235,8 @@ no `en` ou na chave. **O POM não é dono de nenhum texto de plugin.**
 ## Testes
 
 - Rust: `cargo test -p node --bin pom plugin_ui` (manifesto, caminhos, perfis,
-  catálogos, o manifesto real do plugin `enterprise`); `plugin_proxy`
+  catálogos, o manifesto real do plugin `enterprise` e `ui/manifest.json` do
+  `pom-plugin-base`, incluindo documentação em lista); `plugin_proxy`
   (`ui.upstream`, barreira de origem, cabeçalhos filtrados, HTTP e WebSocket
   contra um servidor real); e
   `plugins::tests::host_context_and_ui_proxy_reach_a_real_plugin_host`

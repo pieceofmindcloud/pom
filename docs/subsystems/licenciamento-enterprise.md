@@ -238,8 +238,11 @@ local ao POM e não consulta o catálogo, a elegibilidade ou qualquer endpoint
 do servidor de licenças. Não existe campo `requires_license` no manifesto
 GitHub, e o valor que o catálogo comercial publica não controla a instalação
 por repositório. O operador informa um repositório público canônico
-`https://github.com/<owner>/<repository>`; o arquivo `manifest.json` fica na
-raiz do branch padrão.
+`https://github.com/<owner>/<repository>`. O formato genérico usa
+`manifest.json` na raiz do branch padrão. Para plugins com UI dinâmica do POM,
+o POM também aceita `ui/manifest.json` no contrato `pom-plugin-ui/v1`; nesse
+formato, cada release precisa anexar `pom-plugin-<os>-<arch>.json` com os dados
+de integridade do binário daquela plataforma.
 
 Contrato de `manifest.json` (`schema: 1`):
 
@@ -260,7 +263,10 @@ Contrato de `manifest.json` (`schema: 1`):
 ```
 
 `artifacts` associa `<os>-<arch>` ao nome exato do binário anexado a cada
-release. `feature_set` pertence ao `plugin_code` e pode ser omitido se o plugin
+release. Em `ui/manifest.json`, o `plugin_code`, nome e telas vêm do manifesto
+de UI, enquanto ABI, features, preferências e nome do binário vêm do manifesto
+por plataforma anexado à release selecionada. `feature_set` pertence ao
+`plugin_code` e pode ser omitido se o plugin
 não anunciar features; `preferences` também é opcional e usa o schema tipado
 documentado abaixo. O POM valida código, ABI, plataforma,
 extensão, features, preferências e limites de tamanho do manifesto antes de
@@ -275,8 +281,9 @@ separada. Instalar uma versão antiga ou fazer downgrade é permitido e sempre
 exige confirmação explícita.
 
 A adição, atualização e remoção dos repositórios usa somente as rotas locais
-AdminOnly `/api/ui/plugins/github-repositories*`. A lista e o `manifest.json`
-são persistidos em `plugin_github_repositories` no `pom.db`; remover um
+AdminOnly `/api/ui/plugins/github-repositories*`. A lista, o caminho do
+manifesto e os detalhes lidos são persistidos em `plugin_github_repositories`
+no `pom.db`; remover um
 repositório tira a fonte da lista, mas não desinstala o plugin já instalado.
 A instalação baixa a release escolhida, confere o digest e tamanho do asset,
 grava o binário atomicamente e inicia o host. Nenhuma checagem automática

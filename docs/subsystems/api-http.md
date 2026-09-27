@@ -684,12 +684,15 @@ com `plugin=<plugin_code>` codificado. O catálogo comercial não registra,
 autoriza ou fornece repositórios GitHub para instalação.
 
 As releases GitHub têm um registro local independente por nó. O card global
-`Public GitHub Releases` aceita uma URL pública, busca `manifest.json` na raiz
-do branch padrão e percorre todas as páginas de releases publicadas, sem chamar
-o servidor de licenças. A leitura tem um orçamento de metadados e falha sem
-truncar silenciosamente se ele for excedido. Ações AdminOnly usam ConnectionAuth:
+`Public GitHub Releases` aceita uma URL pública e procura `manifest.json` na
+raiz do branch padrão; se não existir, tenta `ui/manifest.json` (`pom-plugin-ui/v1`)
+e usa os manifestos por plataforma anexados às releases. Percorre todas as
+páginas publicadas sem chamar o servidor de licenças. A leitura tem orçamento
+de metadados e falha sem truncar silenciosamente se excedido. Ações AdminOnly
+usam ConnectionAuth:
 
-- `GET /api/ui/plugins/github-repositories` lista as fontes persistidas;
+- `GET /api/ui/plugins/github-repositories` lista as fontes persistidas e
+  publica `manifest_path` (`manifest.json` ou `ui/manifest.json`);
 - `POST /api/ui/plugins/github-repositories` recebe `{repository_url}` e
   valida o manifesto e as releases diretamente na API pública do GitHub;
 - `POST /api/ui/plugins/github-repositories/:id/refresh` atualiza os dados e
@@ -699,9 +702,11 @@ truncar silenciosamente se ele for excedido. Ações AdminOnly usam ConnectionAu
 - `POST /api/ui/plugins/github-repositories/:id/install` recebe
   `{release_id}` para baixar e instalar exatamente aquela release escolhida.
 
-O manifesto declara ABI, `plugin_code`, features, preferências opcionais e o
-nome do asset por plataforma. Cada asset precisa publicar digest SHA-256. A
-instalação é confirmada na interface, confere tamanho/hash e não consulta
+O manifesto da raiz declara ABI, `plugin_code`, features, preferências
+opcionais e o nome do asset por plataforma. Para `ui/manifest.json`, as releases
+anexam `pom-plugin-<os>-<arch>.json` com esses metadados. O manifesto de release
+e o binário precisam publicar digest SHA-256. A instalação é confirmada na
+interface, confere tamanho/hash e não consulta
 `requires_license` nem concede licença, grant ou lease. O estado instalado fica
 em `plugin_public_install:<code>`. `POST
 /api/ui/plugins/:code/preferences` recebe `{preferences}` e persiste somente no

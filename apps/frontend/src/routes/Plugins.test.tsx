@@ -741,6 +741,25 @@ describe("Plugins", () => {
     }));
   });
 
+  it("shows the manifest path and original UI manifest details", () => {
+    mocks.githubRepositories.data = [{
+      id: "repo-id",
+      repository_url: "https://github.com/acme/ui-plugin",
+      manifest_path: "ui/manifest.json",
+      manifest: { schema: 1, plugin_code: "base", display_name: "Base Plugin", description: null, plugin_abi: 1, feature_set: ["base.core"], artifacts: { "linux-x86_64": "base.so" }, preferences: null },
+      ui_manifest: { schema: "pom-plugin-ui/v1", plugin_code: "base", documentation: ["docs/README.md"] },
+      releases: [],
+      checked_at: "2026-09-24T00:00:00Z",
+      check_error: null,
+    }];
+    const view = renderPage();
+
+    fireEvent.click(screen.getByText("Ver detalhes do manifest.json"));
+    expect(screen.getByText("Manifesto encontrado em ui/manifest.json")).toBeTruthy();
+    expect(view.container.querySelector("details pre")?.textContent).toContain("pom-plugin-ui/v1");
+    expect(view.container.querySelector("details pre")?.textContent).toContain("docs/README.md");
+  });
+
   it("paginates through older releases instead of truncating the repository history", () => {
     mocks.githubRepositories.data = [{
       id: "repo-id",

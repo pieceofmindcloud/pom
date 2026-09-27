@@ -264,9 +264,11 @@ catraca de `network_chat_policy`.
 `PluginManager` cria `PluginRuntime` para códigos concedidos por licença ou
 quando um release GitHub local é instalado. Runtimes licenciados persistem em
 `plugin_license:<code>` e mantêm seu ciclo de licença/heartbeat. Repositórios
-GitHub cadastrados ficam em `plugin_github_repositories` no `pom.db`; o POM lê o
-`manifest.json` da raiz do repositório e as releases diretamente do GitHub, sem
-consultar o servidor de licenças ou checar `requires_license`. A instalação
+GitHub cadastrados ficam em `plugin_github_repositories` no `pom.db`; o POM lê
+`manifest.json` na raiz ou, na ausência dele, `ui/manifest.json` de contrato
+`pom-plugin-ui/v1`, sempre diretamente do GitHub e sem consultar o servidor de
+licenças ou checar `requires_license`. Essa segunda forma usa os manifestos de
+release `pom-plugin-<os>-<arch>.json` para descobrir e validar o binário. A instalação
 pública persiste separadamente em `plugin_public_install:<code>`, sem lease ou
 `licensed_plugins`. O manifesto do repositório declara `plugin_code`, ABI,
 features, preferências e nomes dos assets por plataforma; o operador escolhe
@@ -292,8 +294,9 @@ por heartbeat. `public_install` identifica um host GitHub sem lease e
 "Atualizar" via `refresh_license_status`), nunca o `lease_expires_at` técnico -
 confundir os dois já vazou para a UI uma vez, ver
 `docs/subsystems/licenciamento-enterprise.md`. Repositórios GitHub são uma fonte
-local independente: `plugin_github.rs` valida o `manifest.json` da raiz, a ABI,
-o alvo, o digest SHA-256 e o tamanho do asset selecionado. Instalar a release
+local independente: `plugin_github.rs` valida o manifesto da raiz ou o
+manifesto de UI `ui/manifest.json`, a ABI, o alvo, o digest SHA-256 e o tamanho
+do asset selecionado. Instalar a release
 escolhida não consulta o catálogo ou o servidor de licenças e não cria lease;
 um conflito local de `plugin_code` com uma instalação licenciada impede que um
 host seja substituído silenciosamente.

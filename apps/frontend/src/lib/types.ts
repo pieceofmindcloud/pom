@@ -252,7 +252,9 @@ export interface GithubRepositoryRelease {
 export interface GithubRepository {
   id: string;
   repository_url: string;
+  manifest_path?: string;
   manifest: GithubRepositoryManifest;
+  ui_manifest?: Record<string, unknown> | null;
   releases: GithubRepositoryRelease[];
   checked_at: string;
   check_error: string | null;

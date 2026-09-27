@@ -181,7 +181,7 @@ Os builds Docker da Ksia e da Salem usam por padrão `POM_LLAMA_CPP_MODE=release
 tag que `get-tag-name` no workflow e passa a tag exata ao Docker. Também aceita
 `POM_LLAMA_CPP_RELEASE_TAG` para fixar uma release já escolhida. O workflow do
 fork deve terminar e publicar os assets antes desse build: um tag sem os
-pacotes CPU x64, CUDA 13.2 x64, Vulkan x64 e o source archive falha sem fallback.
+pacotes CPU x64, CUDA 13.4 x64, Vulkan x64 e o source archive falha sem fallback.
 O dispatch manual deve usar a branch `pom-tensor-parallel`; o push dessa branch
 não dispara a regra automática, que é restrita a `master`.
 
@@ -426,12 +426,23 @@ offload no primeiro clique.
 ## Docker
 
 - **`Dockerfile`**: estágios independentes de dependências, Rust, frontend e
-  runtime. A base de build `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala as
+  runtime. A base de build `nvidia/cuda:13.4.1-devel-ubuntu24.04` instala as
   ferramentas nativas; o estágio Rust compila um único `pom` com
   `--features cuda,vulkan` e `pom-plugin-host`, enquanto o estágio frontend
   instala npm e roda `npm run build`. O CPU continua disponível pelo módulo
   GGML CPU; CUDA e Vulkan são módulos do mesmo executável, descobertos conforme
-  o hardware. Salem e Ksia usam o mesmo target `runtime`, portanto não repetem
+  o hardware. **O nvcc 13.2.0 e 13.2.1 geram código errado para os kernels
+  IQ1_S/IQ2_S/IQ3_S no sm_120**: todo GGUF com esses tensores (por exemplo os
+  GSQ-RCO e os UD-Q3) gera texto sem sentido na Blackwell, e modelos K-quant
+  não são afetados. Por isso a base saiu da 13.2.1; a 13.2.2, que já corrige,
+  não tem imagem `nvidia/cuda` publicada. O fork também contorna o defeito desde
+  o commit `8dd48c3dd` da `pom-tensor-parallel` (porte de
+  ggml-org/llama.cpp#28784, que o upstream fechou sem merge), o que protege
+  qualquer toolchain. No modo `release` o módulo `libggml-cuda` vem do pacote
+  `cuda-13.4` do fork, compilado pelo CI dele (`release.yml`, CUDA 13.4.1) e
+  não pela base desta imagem; tag do fork sem esse pacote falha no download. Para conferir, rode
+  `test-backend-ops test -o MUL_MAT -b CUDA0` e veja se nenhum `iq*_s` falha.
+  Salem e Ksia usam o mesmo target `runtime`, portanto não repetem
   builds de CPU-only e Vulkan-only nem selecionam binários distintos por nó. Em
   `release`, o core e os módulos vêm de uma tag publicada do fork; em `source`,
   o CMake compila o checkout escolhido por `POM_LLAMA_CPP_SOURCE_DIR`. O runtime

@@ -222,7 +222,7 @@ seed apps/frontend/package-lock.json deps-v1
 
 build_commit=abc1234
 llama_cache_key=def5678-clean
-cuda_version=13.2.1
+cuda_version=13.4.1
 cuda_architectures='86;120'
 cuda_arch_key=86-120
 llama_mode=release

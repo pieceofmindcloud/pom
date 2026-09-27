@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG CUDA_VERSION=13.2.1
+ARG CUDA_VERSION=13.4.1
 ARG CUDA_RUNTIME_FLAVOR=runtime
 
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS build-base
@@ -66,7 +66,7 @@ RUN set -eu; \
         curl -fL --retry 3 -o /tmp/llama-cpu.tar.gz \
           "${release_url}/llama-${POM_LLAMA_CPP_RELEASE_TAG}-bin-ubuntu-x64.tar.gz"; \
         curl -fL --retry 3 -o /tmp/llama-cuda.tar.gz \
-          "${release_url}/llama-${POM_LLAMA_CPP_RELEASE_TAG}-bin-ubuntu-cuda-13.2-x64.tar.gz"; \
+          "${release_url}/llama-${POM_LLAMA_CPP_RELEASE_TAG}-bin-ubuntu-cuda-13.4-x64.tar.gz"; \
         curl -fL --retry 3 -o /tmp/llama-vulkan.tar.gz \
           "${release_url}/llama-${POM_LLAMA_CPP_RELEASE_TAG}-bin-ubuntu-vulkan-x64.tar.gz"; \
         curl -fL --retry 3 -o /tmp/llama-source.tar.gz \

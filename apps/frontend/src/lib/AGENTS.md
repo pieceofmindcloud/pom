@@ -347,6 +347,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   (também em `adminAuthority.ts`) envia a cadeia colada e a impressão digital
   digitada; a tela nunca deriva a segunda da primeira, e `can_install` é
   apresentação - quem recusa é o servidor.
+- `trustFingerprint.ts` - `fingerprintFromTrustDocument` calcula a impressão
+  digital pública (SHA-256 do `anchor.principal.pubkey`), a mesma do módulo Rust,
+  e devolve `null` para o que não é documento de confiança. Usa
+  `crypto.subtle` quando existe e, fora de contexto seguro (o wizard aberto por
+  HTTP no IP da máquina), o `sha256` em TypeScript puro do mesmo arquivo -
+  sem ele a impressão digital nunca aparecia e o "Continuar" do wizard ficava
+  desligado sem aviso.
 
 ### queries.ts
 - `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):

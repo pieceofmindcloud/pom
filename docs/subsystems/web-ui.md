@@ -260,8 +260,15 @@ ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
   `admin_trust_filename` e mostra a chave de conexão apenas em redes local ou
   privadas. Durante o setup, uma etapa de descoberta local deixa o admin
   esperando e faz node/infer procurarem um admin; a chave só chega depois do
-  handshake explícito. `SetupWizard.tsx` continua sendo apenas o mock de
-  referência visual.
+  handshake explícito. Na etapa da raiz de confiança, a impressão digital é
+  calculada no navegador a partir do documento colado
+  (`lib/trustFingerprint.ts`). Como o modo setup escuta em todas as
+  interfaces, o wizard costuma ser aberto por HTTP no IP da máquina, onde o
+  navegador não oferece `crypto.subtle` (só existe em HTTPS ou localhost); o
+  cálculo cai então num SHA-256 em TypeScript puro. Texto que não é documento
+  de confiança ganha aviso (`setupWizard.trustDocumentInvalid`) em vez de só
+  deixar o "Continuar" desligado. `SetupWizard.tsx` continua sendo apenas o
+  mock de referência visual.
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
   participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
   `/config/preferencias/admin` -> preferências administrativas;

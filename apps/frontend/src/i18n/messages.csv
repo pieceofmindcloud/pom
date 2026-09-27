@@ -1980,6 +1980,7 @@ setupWizard.tlsPublicRequired,Extra encryption is optional on public networks.,A
 setupWizard.tlsRequired,Encrypt connections between nodes (optional),Criptografar conexões entre nós (opcional)
 setupWizard.trustDocument,Trust document,Documento de confiança
 setupWizard.trustDocumentHint,Paste the complete JSON document from the administrator or upload trust.json.,Cole o documento JSON completo enviado pelo administrador ou envie o trust.json.
+setupWizard.trustDocumentInvalid,This is not a valid trust document. Paste the whole JSON file exported by the network's administrator.,Isto não é um documento de confiança válido. Cole o arquivo JSON inteiro exportado pelo administrador da rede.
 setupWizard.trustFilename,Save the document as {filename},Salve o documento como {filename}
 setupWizard.trustJoinDetail,Import the trust file and enter the connection key supplied by the administrator.,Importe o arquivo de confiança e informe a chave de conexão fornecida pelo administrador.
 setupWizard.trustLabel,Trust root,Raiz de confiança

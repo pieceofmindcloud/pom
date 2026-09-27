@@ -5,8 +5,8 @@ import type { Tone } from "../components/ui";
 import { Badge, Button, Empty, ErrorState, FullBleedHeader, Input, Panel, PanelHeader, Skeleton } from "../components/ui";
 import { Confirm } from "../components/Confirm";
 import { api } from "../lib/api";
-import { keys, useNode, usePlugins, usePublicPluginCatalog } from "../lib/queries";
-import type { PluginPreferences, PluginPreferencesSchema, PluginStatus } from "../lib/types";
+import { keys, useGithubRepositories, useNode, usePlugins, usePublicPluginCatalog } from "../lib/queries";
+import type { GithubRepository, PluginPreferences, PluginPreferencesSchema, PluginStatus } from "../lib/types";
 import { releaseForTarget, type PublicPluginCatalogEntry, type PublicPluginPrice } from "../lib/pluginCatalog";
 import { navigateToPluginPurchase } from "../lib/pluginPurchase";
 import { useI18n } from "../i18n/provider";
@@ -63,7 +63,6 @@ type PluginCardProps = {
   onRefresh: (code: string) => void;
   onDeactivate: (code: string) => void;
   onApplyUpdate: (code: string, releaseId: string) => void;
-  onInstallPublicGithub: (code: string) => void;
   onSavePreferences: (code: string, preferences: PluginPreferences) => void;
   onBuy: (entry: PublicPluginCatalogEntry) => void;
 };
@@ -83,7 +82,6 @@ function PluginCard({
   onRefresh,
   onDeactivate,
   onApplyUpdate,
-  onInstallPublicGithub,
   onSavePreferences,
   onBuy,
 }: PluginCardProps) {
@@ -102,7 +100,6 @@ function PluginCard({
     : null;
   const release = entry ? releaseForTarget(entry.releases, targetOs, targetArch) : null;
   const hasRequiredLicense = entry?.requires_license === true;
-  const isPublicGithubPlugin = entry?.requires_license === false && Boolean(entry.github_repository);
   const licenseLabel = entry?.requires_license === false || status?.public_install
     ? t("plugins.noLicenseRequired")
     : !licenseStatusAvailable
@@ -233,7 +230,7 @@ function PluginCard({
         subtitle={description ?? t("plugins.metadataUnavailable")}
         actions={(
           <div className="flex items-center gap-2">
-            {(entry?.github_repository || status?.github_repository) && <Badge tone="neutral">GitHub</Badge>}
+            {status?.github_repository && <Badge tone="neutral">GitHub</Badge>}
             {entry?.icon_url ? (
               <img
                 src={entry.icon_url}
@@ -316,9 +313,7 @@ function PluginCard({
             <dd className="font-mono text-sm text-fg">
               {release
                 ? `${release.version} · ${release.channel} · ${release.os} / ${release.arch}`
-                : entry?.github_repository
-                  ? t("plugins.githubReleaseSource")
-                  : t("plugins.releaseUnavailable")}
+                : t("plugins.releaseUnavailable")}
             </dd>
           </div>
           {active && status && (
@@ -443,16 +438,6 @@ function PluginCard({
               {t("plugins.githubUninstall")}
             </Button>
           )}
-          {!active && isPublicGithubPlugin && entry && !status?.github_update && (
-            <Button
-              variant="primary"
-              loading={busyCode === code}
-              icon={<Download className="h-3.5 w-3.5" />}
-              onClick={() => onInstallPublicGithub(code)}
-            >
-              {t("plugins.githubInstall")}
-            </Button>
-          )}
           {!active && hasRequiredLicense && licenseStatusAvailable && entry && !hasLicense && (
             <Button
               variant="ghost"
@@ -553,60 +538,48 @@ function PluginCard({
   );
 }
 
-type GithubTarget = {
-  code: string;
-  name: string;
-  repository: string | null;
-  requiresLicense: boolean | null;
-  status: PluginStatus | null;
-};
-
 type GithubReleasesManagerProps = {
-  targets: GithubTarget[];
-  busyCode: string | null;
-  sourceFailedCode: string | null;
-  sourceFailureMessage: string | null;
-  onSetSource: (code: string, repositoryUrl: string) => void;
-  onRemoveSource: (code: string) => void;
-  onCheck: (code: string) => void;
-  onApply: (code: string, releaseId: string) => void;
-  onInstall: (code: string) => void;
-  onUninstall: (code: string) => void;
+  repositories: GithubRepository[];
+  installedPlugins: PluginStatus[];
+  isLoading: boolean;
+  listError: Error | null;
+  busyId: string | null;
+  failedId: string | null;
+  failureMessage: string | null;
+  onAdd: (repositoryUrl: string) => void;
+  onRefresh: (id: string) => void;
+  onRemove: (id: string) => void;
+  onInstall: (id: string, releaseId: string) => void;
 };
 
 function GithubReleasesManager({
-  targets,
-  busyCode,
-  sourceFailedCode,
-  sourceFailureMessage,
-  onSetSource,
-  onRemoveSource,
-  onCheck,
-  onApply,
+  repositories,
+  installedPlugins,
+  isLoading,
+  listError,
+  busyId,
+  failedId,
+  failureMessage,
+  onAdd,
+  onRefresh,
+  onRemove,
   onInstall,
-  onUninstall,
 }: GithubReleasesManagerProps) {
-  const { t } = useI18n();
-  const [selectedCode, setSelectedCode] = useState("");
-  const selected = targets.find((target) => target.code === selectedCode) ?? targets[0] ?? null;
-  const selectedCodeForForm = selected?.code ?? "";
+  const { t, locale } = useI18n();
   const [repositoryUrl, setRepositoryUrl] = useState("");
+  const [releaseWindow, setReleaseWindow] = useState<Record<string, number>>({});
+  const [installTarget, setInstallTarget] = useState<{ repository: GithubRepository; releaseId: string; version: string } | null>(null);
 
-  useEffect(() => {
-    if (!selectedCode && targets[0]) setSelectedCode(targets[0].code);
-    else if (selectedCode && !targets.some((target) => target.code === selectedCode)) {
-      setSelectedCode(targets[0]?.code ?? "");
-    }
-  }, [selectedCode, targets]);
+  function installedFrom(repository: GithubRepository) {
+    return installedPlugins.find((plugin) => plugin.code === repository.manifest.plugin_code) ?? null;
+  }
 
-  useEffect(() => {
-    setRepositoryUrl(selected?.status?.github_repository ?? selected?.repository ?? "");
-  }, [selected?.code, selected?.status?.github_repository, selected?.repository]);
-
-  const registered = Boolean(selected?.status?.github_repository);
-  const hasPublicSource = Boolean(selected?.repository);
-  const canInstallFree = selected?.requiresLicense === false && hasPublicSource;
-  const update = selected?.status?.github_update;
+  function formatDate(value: string | null) {
+    if (!value) return null;
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return null;
+    return new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(date);
+  }
 
   return (
     <Panel className="border-line">
@@ -615,113 +588,149 @@ function GithubReleasesManager({
         title={t("plugins.githubSourceTitle")}
         subtitle={t("plugins.githubSourceDescription")}
       />
-      <div className="space-y-4 px-5 py-5">
-        {targets.length === 0 ? (
-          <p className="text-sm text-muted">{t("plugins.githubNoPlugins")}</p>
-        ) : (
-          <>
-            <label className="block">
-              <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">{t("plugins.githubPluginLabel")}</span>
-              <select
-                id="plugins-github-plugin-code"
-                name="plugin_code"
-                aria-label={t("plugins.githubPluginLabel")}
-                value={selectedCodeForForm}
-                onChange={(event) => setSelectedCode(event.target.value)}
-                className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris"
-              >
-                {targets.map((target) => (
-                  <option key={target.code} value={target.code}>{target.name} · {target.code}</option>
-                ))}
-              </select>
-            </label>
-            {selected && (
-              <>
-                {selected.repository && (
-                  <p className="text-xs text-muted">
-                    {t("plugins.githubCatalogSource")} <a className="break-all text-iris underline" href={selected.repository} target="_blank" rel="noreferrer">{selected.repository}</a>
-                  </p>
-                )}
-                <form
-                  className="flex flex-col gap-2 sm:flex-row"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    onSetSource(selected.code, repositoryUrl);
-                  }}
-                >
-                  <label className="min-w-0 flex-1">
-                    <span className="sr-only">{t("plugins.githubRepositoryLabel")}</span>
-                    <Input
-                      id="plugins-github-repository-url"
-                      name="repository_url"
-                      type="url"
-                      value={repositoryUrl}
-                      onChange={(event) => setRepositoryUrl(event.target.value)}
-                      placeholder="https://github.com/owner/repository"
-                      aria-label={t("plugins.githubRepositoryLabel")}
-                      autoComplete="url"
-                    />
-                  </label>
-                  <Button variant="outline" type="submit" loading={busyCode === selected.code}>
-                    {registered ? t("plugins.githubSourceSave") : t("plugins.githubSourceRegister")}
-                  </Button>
-                </form>
-                <div className="flex flex-wrap gap-2">
-                  {registered && (
-                    <>
-                      <Button variant="ghost" loading={busyCode === selected.code} icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => onCheck(selected.code)}>
-                        {t("plugins.githubCheck")}
+      <div className="space-y-5 px-5 py-5">
+        <form
+          className="flex flex-col gap-2 sm:flex-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onAdd(repositoryUrl.trim());
+          }}
+        >
+          <label className="min-w-0 flex-1">
+            <span className="sr-only">{t("plugins.githubRepositoryLabel")}</span>
+            <Input
+              type="url"
+              value={repositoryUrl}
+              onChange={(event) => setRepositoryUrl(event.target.value)}
+              placeholder="https://github.com/owner/repository"
+              aria-label={t("plugins.githubRepositoryLabel")}
+              autoComplete="url"
+              required
+            />
+          </label>
+          <Button variant="outline" type="submit" loading={busyId === "add"}>
+            {t("plugins.githubSourceRegister")}
+          </Button>
+        </form>
+        {listError && (
+          <p role="alert" className="break-words text-xs text-rose">
+            {t("plugins.githubListFailed")} {listError.message}
+          </p>
+        )}
+        {failedId === "add" && (
+          <p role="alert" className="text-xs text-rose">
+            {t("plugins.githubSourceFailed")}
+            {failureMessage && <span className="mt-1 block break-words">{failureMessage}</span>}
+          </p>
+        )}
+        {isLoading && repositories.length === 0 && (
+          <p role="status" className="text-sm text-muted">{t("plugins.githubRepositoriesLoading")}</p>
+        )}
+        {!isLoading && repositories.length === 0 && (
+          <p className="text-sm text-muted">{t("plugins.githubRepositoriesEmpty")}</p>
+        )}
+        <div className="space-y-4">
+          {repositories.map((repository) => {
+            const installed = installedFrom(repository);
+            const visibleCount = releaseWindow[repository.id] ?? 20;
+            const visibleReleases = repository.releases.slice(0, visibleCount);
+            const sourceConflict = Boolean(installed?.public_install && installed.github_repository !== repository.repository_url);
+            const licensedConflict = Boolean(installed && installed.public_install !== true && (
+              installed.active || installed.licensed_plugins.includes(repository.manifest.plugin_code)
+            ));
+            return (
+              <section key={repository.id} className="space-y-4 rounded-xl border border-line bg-raised/30 p-4" aria-labelledby={`github-repository-${repository.id}`}>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 id={`github-repository-${repository.id}`} className="text-base font-semibold text-fg">{repository.manifest.display_name}</h3>
+                    <a className="mt-1 block break-all text-xs text-iris underline" href={repository.repository_url} target="_blank" rel="noreferrer">{repository.repository_url}</a>
+                    {repository.manifest.description && <p className="mt-2 text-sm leading-relaxed text-muted">{repository.manifest.description}</p>}
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <Button variant="ghost" loading={busyId === repository.id} icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => onRefresh(repository.id)}>
+                      {t("plugins.githubCheck")}
+                    </Button>
+                    <Button variant="ghost" loading={busyId === repository.id} icon={<XCircle className="h-3.5 w-3.5" />} onClick={() => onRemove(repository.id)}>
+                      {t("plugins.githubRemove")}
+                    </Button>
+                  </div>
+                </div>
+                <dl className="grid gap-3 text-xs sm:grid-cols-2">
+                  <div><dt className="eyebrow mb-1">{t("plugins.githubPluginCode")}</dt><dd className="font-mono text-fg">{repository.manifest.plugin_code}</dd></div>
+                  <div><dt className="eyebrow mb-1">{t("plugins.githubAbi")}</dt><dd className="font-mono text-fg">{repository.manifest.plugin_abi}</dd></div>
+                  <div className="sm:col-span-2"><dt className="eyebrow mb-1">{t("plugins.features")}</dt><dd className="break-words text-fg">{repository.manifest.feature_set.join(", ") || "-"}</dd></div>
+                  {installed?.public_install && <div><dt className="eyebrow mb-1">{t("plugins.githubInstalledVersion")}</dt><dd className="font-mono text-fg">{installed.plugin_version ?? "-"}</dd></div>}
+                </dl>
+                <details className="rounded-lg border border-line bg-ink/30 px-3 py-2">
+                  <summary className="cursor-pointer text-xs font-medium text-muted">{t("plugins.githubManifestDetails")}</summary>
+                  <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[0.68rem] leading-relaxed text-muted">{JSON.stringify(repository.manifest, null, 2)}</pre>
+                </details>
+                {repository.check_error && <p role="alert" className="break-words text-xs text-rose">{t("plugins.githubCheckFailed")} {repository.check_error}</p>}
+                {failedId === repository.id && <p role="alert" className="break-words text-xs text-rose">{t("plugins.githubInstallFailed")} {failureMessage}</p>}
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold text-fg">{t("plugins.githubAvailableReleases", { count: repository.releases.length })}</h4>
+                  {repository.releases.length === 0 ? (
+                    <p className="text-xs text-muted">{t("plugins.githubNoReleases")}</p>
+                  ) : visibleReleases.map((release) => (
+                    <article key={release.release_id} className="flex flex-col gap-3 rounded-lg border border-line px-3.5 py-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-sm font-medium text-fg">{release.name || release.tag_name}</span>
+                          {release.name && <span className="font-mono text-xs text-muted">{release.tag_name}</span>}
+                          {release.prerelease && <Badge tone="amber">{t("plugins.githubPrerelease")}</Badge>}
+                        </div>
+                        {formatDate(release.published_at) && <p className="mt-1 text-xs text-faint">{formatDate(release.published_at)}</p>}
+                        {release.changelog && <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">{release.changelog}</p>}
+                        {release.available_for_node && release.asset_name && release.asset_size !== null && (
+                          <p className="mt-2 break-all font-mono text-[0.7rem] text-faint">{release.asset_name} · {release.asset_size.toLocaleString(locale)} bytes</p>
+                        )}
+                        {!release.available_for_node && <p className="mt-2 text-xs text-amber-300">{t("plugins.githubArtifactUnavailable")}</p>}
+                      </div>
+                      <Button
+                        variant="primary"
+                        className="shrink-0 whitespace-nowrap"
+                        disabled={!release.available_for_node || sourceConflict || licensedConflict}
+                        loading={busyId === repository.id}
+                        icon={<Download className="h-3.5 w-3.5" />}
+                        onClick={() => setInstallTarget({ repository, releaseId: release.release_id, version: release.tag_name })}
+                      >
+                        {t("plugins.githubInstallRelease")}
                       </Button>
-                      {selected.status?.public_install === true && !selected.status.active && (
-                        <Button variant="ghost" loading={busyCode === selected.code} icon={<XCircle className="h-3.5 w-3.5" />} onClick={() => onUninstall(selected.code)}>
-                          {t("plugins.githubUninstall")}
-                        </Button>
-                      )}
-                      {selected.status?.public_install !== true && (
-                        <Button variant="ghost" loading={busyCode === selected.code} icon={<XCircle className="h-3.5 w-3.5" />} onClick={() => onRemoveSource(selected.code)}>
-                          {t("plugins.githubRemove")}
-                        </Button>
-                      )}
-                    </>
+                    </article>
+                  ))}
+                  {visibleReleases.length < repository.releases.length && (
+                    <Button
+                      variant="ghost"
+                      onClick={() => setReleaseWindow((current) => ({
+                        ...current,
+                        [repository.id]: visibleCount + 20,
+                      }))}
+                    >
+                      {t("plugins.githubShowMore", {
+                        shown: visibleReleases.length,
+                        total: repository.releases.length,
+                      })}
+                    </Button>
                   )}
                 </div>
-                {sourceFailedCode === selected.code && (
-                  <p role="alert" className="text-xs text-rose">
-                    {t("plugins.githubSourceFailed")}
-                    {sourceFailureMessage && <span className="mt-1 block break-words">{sourceFailureMessage}</span>}
-                  </p>
-                )}
-                {selected.status?.github_error && (
-                  <p role="alert" className="text-xs text-rose">
-                    {t("plugins.githubCheckFailed")}
-                    <span className="mt-1 block break-words">{selected.status.github_error}</span>
-                  </p>
-                )}
-                {update && (
-                  <div className="space-y-3 rounded-lg border border-iris/35 bg-iris/8 px-3.5 py-3" role="status">
-                    <div>
-                      <p className="text-sm font-medium text-fg">{t("plugins.githubUpdateAvailable", { version: update.version })}</p>
-                      <p className="mt-1 font-mono text-xs text-muted">{t("plugins.updateRelease", { release_id: update.release_id })}</p>
-                      {update.changelog && <p className="mt-2 text-xs leading-relaxed text-muted">{update.changelog}</p>}
-                    </div>
-                    {selected.status?.active ? (
-                      <Button variant="primary" loading={busyCode === selected.code} icon={<Download className="h-3.5 w-3.5" />} onClick={() => onApply(selected.code, update.release_id)}>
-                        {t("plugins.githubUpdateApply")}
-                      </Button>
-                    ) : canInstallFree ? (
-                      <Button variant="primary" loading={busyCode === selected.code} icon={<Download className="h-3.5 w-3.5" />} onClick={() => onInstall(selected.code)}>
-                        {t("plugins.githubInstall")}
-                      </Button>
-                    ) : (
-                      <p className="text-xs text-muted">{t("plugins.githubUpdateNeedsActivation")}</p>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </>
-        )}
+              </section>
+            );
+          })}
+        </div>
       </div>
+      <Confirm
+        open={installTarget !== null}
+        title={installTarget ? t("plugins.githubInstallConfirmTitle", { name: installTarget.repository.manifest.display_name }) : ""}
+        description={installTarget ? t("plugins.githubInstallConfirmDescription", { version: installTarget.version }) : ""}
+        confirmLabel={t("plugins.githubInstallRelease")}
+        busy={installTarget !== null && busyId === installTarget.repository.id}
+        onConfirm={() => {
+          if (!installTarget) return;
+          onInstall(installTarget.repository.id, installTarget.releaseId);
+          setInstallTarget(null);
+        }}
+        onCancel={() => setInstallTarget(null)}
+      />
     </Panel>
   );
 }
@@ -731,6 +740,7 @@ export function Plugins() {
   const queryClient = useQueryClient();
   const plugins = usePlugins();
   const catalog = usePublicPluginCatalog();
+  const githubRepositories = useGithubRepositories();
   const node = useNode();
   const [licenseKey, setLicenseKey] = useState("");
   const [activateBusy, setActivateBusy] = useState(false);
@@ -738,8 +748,9 @@ export function Plugins() {
   const [activatedCodes, setActivatedCodes] = useState<string[] | null>(null);
   const [busyCode, setBusyCode] = useState<string | null>(null);
   const [updateFailedCode, setUpdateFailedCode] = useState<string | null>(null);
-  const [sourceFailedCode, setSourceFailedCode] = useState<string | null>(null);
-  const [sourceFailureMessage, setSourceFailureMessage] = useState<string | null>(null);
+  const [githubBusyId, setGithubBusyId] = useState<string | null>(null);
+  const [githubFailedId, setGithubFailedId] = useState<string | null>(null);
+  const [githubFailureMessage, setGithubFailureMessage] = useState<string | null>(null);
   const [preferencesFailedCode, setPreferencesFailedCode] = useState<string | null>(null);
   const [deactivateTarget, setDeactivateTarget] = useState<string | null>(null);
   const [deactivateFailedCode, setDeactivateFailedCode] = useState<string | null>(null);
@@ -812,43 +823,39 @@ export function Plugins() {
     }
   }
 
-  async function runPluginAction(code: string, action: () => Promise<unknown>) {
-    setBusyCode(code);
-    setSourceFailedCode(null);
-    setSourceFailureMessage(null);
+  async function runGithubAction(id: string, action: () => Promise<unknown>) {
+    setGithubBusyId(id);
+    setGithubFailedId(null);
+    setGithubFailureMessage(null);
     try {
       await action();
     } catch (error) {
-      setSourceFailedCode(code);
-      setSourceFailureMessage(error instanceof Error ? error.message : null);
+      setGithubFailedId(id);
+      setGithubFailureMessage(error instanceof Error ? error.message : null);
     } finally {
-      await refreshPluginData();
-      setBusyCode(null);
+      await Promise.all([githubRepositories.refetch(), refreshPluginData()]);
+      setGithubBusyId(null);
     }
   }
 
-  function setGithubSource(code: string, repositoryUrl: string) {
-    void runPluginAction(code, () => api.post(`/api/ui/plugins/${encodeURIComponent(code)}/github-source`, {
+  function addGithubRepository(repositoryUrl: string) {
+    void runGithubAction("add", () => api.post("/api/ui/plugins/github-repositories", {
       repository_url: repositoryUrl,
     }));
   }
 
-  function removeGithubSource(code: string) {
-    void runPluginAction(code, () => api.del(`/api/ui/plugins/${encodeURIComponent(code)}/github-source`));
+  function refreshGithubRepository(id: string) {
+    void runGithubAction(id, () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}/refresh`));
   }
 
-  function checkGithubUpdate(code: string) {
-    void runPluginAction(code, () => api.post(`/api/ui/plugins/${encodeURIComponent(code)}/github-source/check`));
+  function removeGithubRepository(id: string) {
+    void runGithubAction(id, () => api.del(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}`));
   }
 
-  function applyGithubUpdate(code: string, releaseId: string) {
-    void runPluginAction(code, () => api.post(`/api/ui/plugins/${encodeURIComponent(code)}/github-source/apply`, {
+  function installGithubRelease(id: string, releaseId: string) {
+    void runGithubAction(id, () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(id)}/install`, {
       release_id: releaseId,
     }));
-  }
-
-  function installPublicGithub(code: string) {
-    void runPluginAction(code, () => api.post(`/api/ui/plugins/${encodeURIComponent(code)}/github-source/install`));
   }
 
   async function savePreferences(code: string, preferences: PluginPreferences) {
@@ -872,24 +879,6 @@ export function Plugins() {
   const localStatuses = plugins.data ?? [];
   const localByCode = new Map(localStatuses.map((plugin) => [plugin.code, plugin]));
   const publicCodes = new Set(publicEntries.map((plugin) => plugin.code));
-  const githubTargets: GithubTarget[] = [
-    ...publicEntries.map((entry) => ({
-      code: entry.code,
-      name: entry.display_name ?? entry.code,
-      repository: entry.github_repository,
-      requiresLicense: entry.requires_license,
-      status: localByCode.get(entry.code) ?? null,
-    })),
-    ...localStatuses
-      .filter((status) => !publicCodes.has(status.code) && (status.github_repository || status.public_install))
-      .map((status) => ({
-        code: status.code,
-        name: status.code,
-        repository: null,
-        requiresLicense: status.public_install ? false : null,
-        status,
-      })),
-  ];
   const licenseStatusByCode = new Map<string, PluginStatus>();
   for (const source of localStatuses) {
     if (source.licensed_plugins.includes(source.code)) {
@@ -917,8 +906,7 @@ export function Plugins() {
       .map((status) => ({ entry: null, status, licenseStatus: licenseStatusByCode.get(status.code) ?? status })),
   ];
   const licenseStatusAvailable = !plugins.isLoading && !plugins.isError && plugins.data !== undefined;
-  const showGithubManager = githubTargets.length > 0;
-  const showSidebar = licenseStatusAvailable && (shouldShowActivation || showGithubManager);
+  const showSidebar = shouldShowActivation;
   const targetOs = node.data?.system.os ?? null;
   const targetArch = node.data?.system.arch ?? null;
   const deactivateCard = cards.find(({ status }) => status?.code === deactivateTarget);
@@ -929,7 +917,7 @@ export function Plugins() {
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
       <FullBleedHeader title={t("plugins.title")} subtitle={t("plugins.subtitle")} />
 
-      <div data-testid="plugins-scroll-area" className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-y-contain px-5 py-5">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5">
         <div className={`grid gap-5 ${showSidebar ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]" : "grid-cols-1"}`}>
           <div className="min-w-0 space-y-4">
           {catalog.isLoading && (
@@ -949,7 +937,7 @@ export function Plugins() {
             <ErrorState
               title={t("plugins.licenseStatusError")}
               error={plugins.error}
-              onRetry={() => void plugins.refetch()}
+              onRetry={() => void refreshPluginData()}
             />
           )}
 
@@ -973,75 +961,73 @@ export function Plugins() {
                 setDeactivateTarget(code);
               }}
               onApplyUpdate={(code, releaseId) => void applyUpdate(code, releaseId)}
-              onInstallPublicGithub={installPublicGithub}
               onSavePreferences={savePreferences}
               onBuy={(entry) => void buy(entry)}
             />
           ))}
 
-          {!catalog.isLoading && !catalog.isError && licenseStatusAvailable && cards.length === 0 && (
+          {!catalog.isLoading && !catalog.isError && licenseStatusAvailable && !githubRepositories.isLoading
+            && (githubRepositories.data?.length ?? 0) === 0 && cards.length === 0 && (
             <Panel>
               <Empty icon={<Package className="h-5 w-5" />} title={t("plugins.catalogEmpty")} />
             </Panel>
           )}
           </div>
 
-        {showSidebar && <div className="min-w-0 space-y-4 self-start">
-        {shouldShowActivation && <Panel>
-          <PanelHeader
-            eyebrow={t("plugins.activationEyebrow")}
-            title={t("plugins.formTitle")}
-            subtitle={t("plugins.formSubtitle")}
-            actions={<KeyRound className="h-5 w-5 text-iris" />}
-          />
-          <form className="space-y-4 px-5 py-5" onSubmit={(event) => void activate(event)}>
-            <label className="block">
-              <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">{t("plugins.licenseKeyLabel")}</span>
-              <Input
-                type="password"
-                name="plugin-license-key"
-                autoComplete="off"
-                aria-label={t("plugins.licenseKeyLabel")}
-                placeholder={t("plugins.licenseKeyPlaceholder")}
-                value={licenseKey}
-                onChange={(event) => setLicenseKey(event.target.value)}
-              />
-            </label>
-            {activateError && <p role="alert" className="text-xs text-rose">{t("plugins.activationFailed")}</p>}
-            {activatedCodes && activatedCodes.length > 0 && (
-              <p role="status" className="text-xs text-aqua">
-                {t("plugins.activationSucceeded", {
-                  plugins: activatedCodes.map((code) => {
-                    const plugin = publicEntries.find((entry) => entry.code === code);
-                    return plugin?.display_name ?? code;
-                  }).join(", "),
-                })}
-              </p>
-            )}
-            <Button variant="primary" type="submit" loading={activateBusy} icon={<ShieldCheck className="h-3.5 w-3.5" />}>
-              {t("plugins.activate")}
-            </Button>
-            <p className="text-xs leading-relaxed text-faint">{t("plugins.keyPrivacy")}</p>
-          </form>
-        </Panel>}
-        {showGithubManager && (
-          <GithubReleasesManager
-            targets={githubTargets}
-            busyCode={busyCode}
-            sourceFailedCode={sourceFailedCode}
-            sourceFailureMessage={sourceFailureMessage}
-            onSetSource={setGithubSource}
-            onRemoveSource={removeGithubSource}
-            onCheck={checkGithubUpdate}
-            onApply={applyGithubUpdate}
-            onInstall={installPublicGithub}
-            onUninstall={(code) => {
-              setDeactivateFailedCode(null);
-              setDeactivateTarget(code);
-            }}
-          />
-        )}
+        {showSidebar && <div className="min-w-0 self-start">
+          <Panel>
+            <PanelHeader
+              eyebrow={t("plugins.activationEyebrow")}
+              title={t("plugins.formTitle")}
+              subtitle={t("plugins.formSubtitle")}
+              actions={<KeyRound className="h-5 w-5 text-iris" />}
+            />
+            <form className="space-y-4 px-5 py-5" onSubmit={(event) => void activate(event)}>
+              <label className="block">
+                <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">{t("plugins.licenseKeyLabel")}</span>
+                <Input
+                  type="password"
+                  name="plugin-license-key"
+                  autoComplete="off"
+                  aria-label={t("plugins.licenseKeyLabel")}
+                  placeholder={t("plugins.licenseKeyPlaceholder")}
+                  value={licenseKey}
+                  onChange={(event) => setLicenseKey(event.target.value)}
+                />
+              </label>
+              {activateError && <p role="alert" className="text-xs text-rose">{t("plugins.activationFailed")}</p>}
+              {activatedCodes && activatedCodes.length > 0 && (
+                <p role="status" className="text-xs text-aqua">
+                  {t("plugins.activationSucceeded", {
+                    plugins: activatedCodes.map((code) => {
+                      const plugin = publicEntries.find((entry) => entry.code === code);
+                      return plugin?.display_name ?? code;
+                    }).join(", "),
+                  })}
+                </p>
+              )}
+              <Button variant="primary" type="submit" loading={activateBusy} icon={<ShieldCheck className="h-3.5 w-3.5" />}>
+                {t("plugins.activate")}
+              </Button>
+              <p className="text-xs leading-relaxed text-faint">{t("plugins.keyPrivacy")}</p>
+            </form>
+          </Panel>
         </div>}
+        <div className={`min-w-0 ${showSidebar ? "lg:col-span-2" : ""}`}>
+          <GithubReleasesManager
+            repositories={githubRepositories.data ?? []}
+            installedPlugins={localStatuses}
+            isLoading={githubRepositories.isLoading}
+            listError={githubRepositories.error}
+            busyId={githubBusyId}
+            failedId={githubFailedId}
+            failureMessage={githubFailureMessage}
+            onAdd={addGithubRepository}
+            onRefresh={refreshGithubRepository}
+            onRemove={removeGithubRepository}
+            onInstall={installGithubRelease}
+          />
+        </div>
         </div>
       </div>
       <Confirm

@@ -52,6 +52,7 @@ import type {
   TrustAnchorView,
   WindowsFirewallStatus,
   PluginStatus,
+  GithubRepository,
   PomCoreUpdateStatus,
 } from "./types";
 
@@ -94,6 +95,7 @@ export const keys = {
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   plugins: ["plugins"] as const,
+  githubRepositories: ["github-repositories"] as const,
   publicPluginCatalog: ["public-plugin-catalog"] as const,
   pomCoreUpdate: ["pom-core-update"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
@@ -226,6 +228,16 @@ export function usePlugins() {
     queryFn: () => optional(api.get<PluginStatus[]>("/api/ui/plugins"), []),
     retry: false,
     refetchInterval: 30_000,
+  });
+}
+
+/** Repository registrations are local to this POM node, never read from the license catalog. */
+export function useGithubRepositories() {
+  return useQuery<GithubRepository[]>({
+    queryKey: keys.githubRepositories,
+    queryFn: () => optional(api.get<GithubRepository[]>("/api/ui/plugins/github-repositories"), []),
+    retry: false,
+    refetchInterval: 60_000,
   });
 }
 

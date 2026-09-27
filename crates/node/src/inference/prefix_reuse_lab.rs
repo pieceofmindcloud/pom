@@ -129,6 +129,8 @@ struct ObservedFrame {
 struct Hop {
     is_head: bool,
     engine: Arc<Mutex<Engine>>,
+    local_prefill_order: crate::infer_server::DirectForwardOrder,
+    direct_forward_order: crate::infer_server::DirectForwardOrder,
 }
 
 /// O "tokenizador" da bancada: uma palavra, um token.
@@ -428,6 +430,26 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     let chunk_index = inc.meta["chunk_index"].as_u64().unwrap_or(0) as u32;
     let chunk_size = inc.meta["chunk_size"].as_u64().unwrap_or(512) as u32;
     let reuse_pedido = inc.meta["reuse_prefix"].as_bool().unwrap_or(false);
+    let prefill_sequence_id = inc
+        .meta
+        .get("prefill_sequence_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let local_turn = if let Some(sequence_id) = &prefill_sequence_id {
+        if chunk_index == 0 {
+            hop.local_prefill_order
+                .ensure_sequence(sequence_id)
+                .expect("initialize fake node prefill order");
+        }
+        Some(
+            hop.local_prefill_order
+                .wait_turn(sequence_id, chunk_index)
+                .await
+                .expect("fake node receives chunks in session order"),
+        )
+    } else {
+        None
+    };
 
     {
         let mut engine = hop.engine.lock().unwrap();
@@ -448,7 +470,12 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         is_final_chunk,
         mut local,
     } = match ingerir(&hop, &inc, &sid) {
-        Ok(ok) => ok,
+        Ok(ok) => {
+            if let Some(turn) = local_turn {
+                turn.finish(true, ok.is_final_chunk);
+            }
+            ok
+        }
         Err(msg) if msg.contains("sessão") && msg.contains("desconhecida") => {
             return (StatusCode::BAD_REQUEST, msg).into_response()
         }
@@ -496,7 +523,14 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                 .await;
             });
         } else {
-            let forward = json!({
+            if let Some(sequence_id) = &prefill_sequence_id {
+                if chunk_index == 0 {
+                    hop.direct_forward_order
+                        .ensure_sequence(sequence_id)
+                        .expect("initialize fake direct forwarding order");
+                }
+            }
+            let mut forward = json!({
                 "session_id": sid,
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
@@ -511,7 +545,10 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                     crate::infer_server::prompt_progress_for_forward(&inc.meta, &local),
                 "hop_timings": hop_timings,
             });
-            tokio::spawn(crate::infer_server::forward_direct(
+            if let Some(sequence_id) = &prefill_sequence_id {
+                forward["prefill_sequence_id"] = json!(sequence_id);
+            }
+            tokio::spawn(crate::infer_server::forward_direct_ordered(
                 inc.next_hops,
                 "/v1/prefill",
                 forward,
@@ -520,6 +557,11 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                 crate::wire::WireDtype::F16,
                 1,
                 reply_to,
+                prefill_sequence_id
+                    .as_ref()
+                    .map(|_| hop.direct_forward_order.clone()),
+                prefill_sequence_id,
+                Some(chunk_index),
             ));
         }
         return crate::infer_server::direct_ack_with_progress(progress);
@@ -832,6 +874,8 @@ async fn conversa_com_hops_fault_kind(
             spawn_hop(Hop {
                 is_head: i == 0,
                 engine: engine.clone(),
+                local_prefill_order: crate::infer_server::DirectForwardOrder::default(),
+                direct_forward_order: crate::infer_server::DirectForwardOrder::default(),
             })
             .await,
         );

@@ -201,15 +201,17 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `pluginCatalog.ts` - consulta diretamente o catálogo público de plugins do
   servidor de licenças, com `credentials: "omit"`; não usa `api.ts` nem envia a
   chave de conexão ou a sessão administrativa. Valida os campos obrigatórios de
-  cada release e a URL canônica opcional `github_repository`; descarta plugins
-  sem release válida e sem origem GitHub, mantém campos opcionais
-  ausentes como dados desconhecidos e aceita imagens somente do host público
+  cada release comercial e descarta plugins sem release válida; metadados de
+  repositório GitHub do catálogo são ignorados, pois as fontes GitHub são locais.
+  Mantém campos opcionais ausentes como dados desconhecidos e aceita imagens somente do host público
   esperado, sem credenciais embutidas na URL. Também valida `description_pt_br`
   quando publicados. Estado de licença, candidatos e uso por `plugin_code` vêm
   da API autenticada do nó (`PluginStatus`), nunca do catálogo público.
   `pluginPurchase.ts` constrói a URL da loja pública com o `plugin_code` em
   parâmetro codificado e não envia credenciais. `usePublicPluginCatalog` em `queries.ts`
   controla carregamento, erro e atualização periódica dessa leitura.
+  `useGithubRepositories` consulta `/api/ui/plugins/github-repositories`, lista
+  local autenticada que não depende do catálogo comercial.
   `PluginStatus` também carrega `installed_at`, `update_checked_at` e
   `public_install` do estado real persistido pelo nó; não derive a data da última
   instalação do heartbeat. Uma instalação pública mantém `licensed_plugins`
@@ -217,8 +219,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `license_expires_at` é a validade da LICENÇA (de `GET /v1/licenses/status`) e
   é o campo certo para "Licença válida até" na tela de Plugins - nunca
   `lease_expires_at`, um prazo técnico de renovação de poucos dias que o
-  heartbeat empurra sozinho. O status também expõe a origem GitHub registrada
-  localmente, a release verificada em staging e seu erro de checagem; isso não
+  heartbeat empurra sozinho. O status também expõe a URL do repositório GitHub
+  da instalação pública local; as releases disponíveis e os erros de leitura
+  pertencem ao registro de repositórios, não ao catálogo de licenças. Isso não
   muda `licensed_plugins`. `preferences_schema` vem do manifesto instalado,
   enquanto `preferences` são valores locais, enviados somente à rota local de
   configuração do plugin e nunca à API de licenças.

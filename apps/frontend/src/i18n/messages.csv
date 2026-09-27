@@ -1474,26 +1474,33 @@ plugins.deactivateFailed,Could not deactivate this plugin.,Não foi possível de
 plugins.features,Features,Funcionalidades
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
-plugins.githubCatalogSource,Source from the public catalog:,Origem no catálogo público:
-plugins.githubCheck,Check for updates,Verificar atualizações
-plugins.githubCheckFailed,GitHub release check failed. The last verified update is retained.,A verificação de releases do GitHub falhou. A última atualização verificada foi mantida.
-plugins.githubInstall,Install from GitHub,Instalar pelo GitHub
-plugins.githubNoPlugins,There are no plugins in the catalog to manage.,Não há plugins no catálogo para gerenciar.
-plugins.githubPluginLabel,Plugin,Plugin
-plugins.githubReleaseSource,GitHub Releases,Releases do GitHub
-plugins.githubRemove,Remove source,Remover origem
+plugins.githubAbi,Plugin ABI,ABI do plugin
+plugins.githubArtifactUnavailable,No compatible artifact with a verified SHA-256 digest is available for this machine.,Não há um artefato compatível com SHA-256 verificado para esta máquina.
+plugins.githubAvailableReleases,"{count, plural, =0 {No releases} =1 {1 published release} other {# published releases}}","{count, plural, =0 {Nenhuma release} one {1 release publicada} other {# releases publicadas}}"
+plugins.githubCheck,Refresh releases,Atualizar releases
+plugins.githubCheckFailed,Could not refresh this GitHub repository.,Não foi possível atualizar este repositório GitHub.
+plugins.githubInstallConfirmDescription,The selected release ({version}) will replace the plugin version currently installed on this node.,A release selecionada ({version}) substituirá a versão do plugin instalada neste nó.
+plugins.githubInstallConfirmTitle,Install {name} from GitHub?,Instalar {name} pelo GitHub?
+plugins.githubInstallFailed,Could not install the selected release.,Não foi possível instalar a release selecionada.
+plugins.githubInstallRelease,Install this release,Instalar esta release
+plugins.githubInstalledVersion,Installed release,Release instalada
+plugins.githubListFailed,Could not load registered GitHub repositories.,Não foi possível carregar os repositórios GitHub cadastrados.
+plugins.githubManifestDetails,View manifest.json details,Ver detalhes do manifest.json
+plugins.githubNoReleases,This repository has no published releases.,Este repositório não tem releases publicadas.
+plugins.githubPluginCode,Plugin code,Código do plugin
+plugins.githubPrerelease,Pre-release,Pré-release
+plugins.githubRemove,Remove repository,Remover repositório
+plugins.githubRepositoriesEmpty,Add a public GitHub repository to browse its manifest and releases.,Adicione um repositório público do GitHub para ver seu manifesto e releases.
+plugins.githubRepositoriesLoading,Loading registered repositories,Carregando repositórios cadastrados
 plugins.githubRepositoryLabel,Public GitHub repository URL,URL do repositório público do GitHub
-plugins.githubSourceDescription,"Choose a public GitHub source. Compatible releases are checked and downloaded locally; every installation needs your confirmation, and paid plugins still need an active license.","Escolha uma origem pública do GitHub. Releases compatíveis são verificadas e baixadas localmente; toda instalação exige sua confirmação, e plugins pagos ainda precisam de uma licença ativa."
-plugins.githubSourceFailed,Could not register or update this GitHub source. Check that it is a public repository with a compatible release.,Não foi possível cadastrar ou atualizar esta origem do GitHub. Verifique se o repositório é público e tem uma release compatível.
-plugins.githubSourceRegister,Register repository,Cadastrar repositório
-plugins.githubSourceSave,Save repository,Salvar repositório
+plugins.githubShowMore,"Show more releases ({shown} of {total})","Mostrar mais releases ({shown} de {total})"
+plugins.githubSourceDescription,"Add any public GitHub repository with a root manifest.json. Repository details and published releases are read directly by this POM node; no license catalog controls installation.","Adicione qualquer repositório público do GitHub com manifest.json na raiz. Este nó do POM lê os detalhes e as releases publicadas diretamente; o catálogo de licenças não controla a instalação."
+plugins.githubSourceFailed,"Could not add this GitHub repository. Check its URL, root manifest.json and published releases.","Não foi possível adicionar este repositório GitHub. Verifique a URL, o manifest.json na raiz e as releases publicadas."
+plugins.githubSourceRegister,Add repository,Adicionar repositório
 plugins.githubSourceTitle,Public GitHub Releases,Releases públicas do GitHub
 plugins.githubUninstall,Uninstall plugin,Desinstalar plugin
 plugins.githubUninstallConfirmDescription,This removes the public GitHub plugin from this node. You can install it again later.,Isso remove o plugin público do GitHub deste nó. Você poderá instalá-lo novamente depois.
 plugins.githubUninstallConfirmTitle,Uninstall {name}?,Desinstalar {name}?
-plugins.githubUpdateApply,Install downloaded update,Instalar atualização baixada
-plugins.githubUpdateAvailable,Verified GitHub update downloaded: {version},Atualização verificada do GitHub baixada: {version}
-plugins.githubUpdateNeedsActivation,The update is downloaded. Activate this plugin with a valid license before installing it.,A atualização foi baixada. Ative este plugin com uma licença válida antes de instalá-la.
 plugins.inactiveTitle,Available,Disponível
 plugins.installedAt,Last installed,Última instalação
 plugins.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.

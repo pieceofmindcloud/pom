@@ -56,7 +56,7 @@ pub(crate) async fn forward_direct(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn forward_direct_ordered(
+pub(crate) async fn forward_direct_ordered(
     hops: Vec<PipelineStep>,
     path: &'static str,
     mut base_meta: Value,

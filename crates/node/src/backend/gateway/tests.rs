@@ -2433,10 +2433,7 @@ mod replicated_admin_logs_tests {
         let mut state = testkit::state_with("enterprise-free", vec![]).await;
         state
             .database
-            .save_local_setting(
-                "plugin_github:enterprise",
-                &crate::plugin_github::GithubPluginState::default(),
-            )
+            .save_local_setting("plugin_license:enterprise", &serde_json::json!({}))
             .expect("register an inactive runtime for the test");
         state.plugins = crate::plugins::PluginManager::runtime_with_database(
             "enterprise-free",

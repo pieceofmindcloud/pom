@@ -18,7 +18,6 @@ function publicPlugin(code: string, overrides: Record<string, unknown> = {}) {
     display_name: code,
     description: `${code} description`,
     requires_license: true,
-    github_repository: null,
     icon_url: null,
     screenshot_urls: [],
     pricing: { monthly: null, annual: null },
@@ -79,32 +78,25 @@ describe("fetchPublicPluginCatalog", () => {
     expect(catalog.plugins[0].screenshot_urls).toEqual([]);
   });
 
-  it("keeps a free GitHub plugin publishable without license-server releases", async () => {
+  it("does not let GitHub repository fields in the license catalog publish install sources", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      plugins: [publicPlugin("github_free", {
-        requires_license: false,
-        github_repository: "https://github.com/example/github-free/",
-        releases: [],
-      })],
+      plugins: [
+        publicPlugin("catalog-release", {
+          requires_license: false,
+          github_repository: "https://github.com/example/ignored-repository",
+        }),
+        publicPlugin("github-only", {
+          requires_license: false,
+          github_repository: "https://github.com/example/ignored-repository",
+          releases: [],
+        }),
+      ],
     }), { status: 200 })));
 
     const catalog = await fetchPublicPluginCatalog();
 
-    expect(catalog.plugins).toHaveLength(1);
-    expect(catalog.plugins[0].github_repository).toBe("https://github.com/example/github-free");
-    expect(catalog.plugins[0].releases).toEqual([]);
-  });
-
-  it("ignores non-canonical or untrusted GitHub repository URLs", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      plugins: [publicPlugin("bad-github", {
-        github_repository: "https://github.com.evil.example/example/plugin",
-      })],
-    }), { status: 200 })));
-
-    const catalog = await fetchPublicPluginCatalog();
-
-    expect(catalog.plugins[0].github_repository).toBeNull();
+    expect(catalog.plugins.map((plugin) => plugin.code)).toEqual(["catalog-release"]);
+    expect("github_repository" in catalog.plugins[0]).toBe(false);
   });
 
   it("does not load catalog images with embedded credentials", async () => {

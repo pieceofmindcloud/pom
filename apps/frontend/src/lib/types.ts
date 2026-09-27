@@ -226,11 +226,36 @@ export interface PluginPreferences {
   storage_directory?: string | null;
 }
 
-export interface GithubPluginUpdate {
+export interface GithubRepositoryManifest {
+  schema: number;
+  plugin_code: string;
+  display_name: string;
+  description: string | null;
+  plugin_abi: number;
+  feature_set: string[];
+  artifacts: Record<string, string>;
+  preferences: PluginPreferencesSchema | null;
+}
+
+export interface GithubRepositoryRelease {
   release_id: string;
-  version: string;
+  tag_name: string;
+  name: string | null;
   changelog: string | null;
-  downloaded: boolean;
+  published_at: string | null;
+  prerelease: boolean;
+  asset_name: string | null;
+  asset_size: number | null;
+  available_for_node: boolean;
+}
+
+export interface GithubRepository {
+  id: string;
+  repository_url: string;
+  manifest: GithubRepositoryManifest;
+  releases: GithubRepositoryRelease[];
+  checked_at: string;
+  check_error: string | null;
 }
 
 export interface PluginStatus {
@@ -260,8 +285,6 @@ export interface PluginStatus {
   /** Installed and running from a public GitHub source without a license lease. */
   public_install?: boolean;
   github_repository?: string | null;
-  github_update?: GithubPluginUpdate | null;
-  github_error?: string | null;
   preferences_schema?: PluginPreferencesSchema | null;
   preferences?: PluginPreferences | null;
 }

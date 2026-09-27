@@ -260,18 +260,21 @@ libp2p separado do túnel de inferência. O `GatewayState` compartilha o serviç
 com as rotas `/api/ui/network-chat`; a política de cluster é aplicada pela
 catraca de `network_chat_policy`.
 
-`src/plugins.rs` é o gerenciador de plugins independentes: não há lista
-estática de plugins instaláveis no binário. `PluginManager` cria um
-`PluginRuntime` para cada `plugin_code` concedido pelo servidor ou conhecido por
-origem GitHub/instalação pública, e restaura os estados locais
-(`plugin_license:<code>`, `plugin_github:<code>` e
-`plugin_public_install:<code>`) ao iniciar. Um runtime licenciado tem seu próprio
-ciclo de licença e supervisor de heartbeat; uma instalação pública não cria
-lease nem `licensed_plugins`. A ativação em lote valida uma vez, depois
-ativa/instala separadamente cada código concedido. As features de cada plugin
-vêm do `feature_set` do manifesto do release, NÃO da licença. A lista pública
-do servidor alimenta a vitrine do frontend; `GET /api/ui/plugins` publica os
-estados locais já conhecidos pelo nó.
+`src/plugins.rs` gerencia plugins licenciados e instalações locais independentes:
+`PluginManager` cria `PluginRuntime` para códigos concedidos por licença ou
+quando um release GitHub local é instalado. Runtimes licenciados persistem em
+`plugin_license:<code>` e mantêm seu ciclo de licença/heartbeat. Repositórios
+GitHub cadastrados ficam em `plugin_github_repositories` no `pom.db`; o POM lê o
+`manifest.json` da raiz do repositório e as releases diretamente do GitHub, sem
+consultar o servidor de licenças ou checar `requires_license`. A instalação
+pública persiste separadamente em `plugin_public_install:<code>`, sem lease ou
+`licensed_plugins`. O manifesto do repositório declara `plugin_code`, ABI,
+features, preferências e nomes dos assets por plataforma; o operador escolhe
+qual release instalar. A ativação em lote de licenças valida uma vez, depois
+ativa/instala separadamente cada código concedido. As features de plugin vêm
+do manifesto, NÃO da licença. O catálogo público do servidor continua sendo a
+vitrine comercial; `GET /api/ui/plugins` publica os estados locais conhecidos
+pelo nó.
 `PersistedPluginState.installed_release_id` (chave JSON `plugin_release_id`,
 preservada por compatibilidade) só avança quando um download é de fato
 instalado (`activate_and_install`/`apply_update`) - o heartbeat não escreve
@@ -283,17 +286,17 @@ real). `PluginStatus.update_checked_at` só avança quando a consulta de manifes
 termina com sucesso; `installed_at` só avança quando o host fica pronto após
 instalação ou aplicação. Ambos persistem por plugin, têm `serde(default)` para
 estados existentes e não são derivados de `last_success_at`, que é atualizado
-por heartbeat. `public_install` identifica um host público sem lease e
+por heartbeat. `public_install` identifica um host GitHub sem lease e
 `PluginStatus.licensed_plugins` continua vazio nesse caso. `PluginStatus.license_expires_at` é a validade da LICENÇA
 (`GET /v1/licenses/status`, consultada em `restore()` e no clique manual em
 "Atualizar" via `refresh_license_status`), nunca o `lease_expires_at` técnico -
 confundir os dois já vazou para a UI uma vez, ver
-`docs/subsystems/licenciamento-enterprise.md`. A origem pública GitHub é
-independente da ativação: `plugin_github.rs` valida manifestos por SO/arquitetura,
-SHA-256 e tamanho, baixa para staging e preserva o último resultado em falha.
-O update de plugin pago exige que ele continue ativo pela licença. A instalação
-pública revalida `requires_license: false` e `github_repository` no catálogo
-HTTPS do servidor e persiste em `plugin_public_install:<code>`, sem lease.
+`docs/subsystems/licenciamento-enterprise.md`. Repositórios GitHub são uma fonte
+local independente: `plugin_github.rs` valida o `manifest.json` da raiz, a ABI,
+o alvo, o digest SHA-256 e o tamanho do asset selecionado. Instalar a release
+escolhida não consulta o catálogo ou o servidor de licenças e não cria lease;
+um conflito local de `plugin_code` com uma instalação licenciada impede que um
+host seja substituído silenciosamente.
 As preferências opcionais do manifesto são guardadas localmente por
 `plugin_preferences:<code>`, fora do snapshot/licença.
 O `PluginStatus` também publica a expiração, os plugins concedidos, candidatos

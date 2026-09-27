@@ -143,14 +143,19 @@ edita os valores apenas enquanto o plugin está ativo.
 
 `host.configure` inclui os valores locais sob `preferences`, junto do contexto
 do gateway, para o próprio plugin ativo. Isso é IPC entre o nó e o host local,
-não tráfego para o license-server. A tela Plugins tem um único card global de
-GitHub abaixo do formulário de ativação, com seletor de `plugin_code`. Seus
-manifestos por plataforma são assets `pom-plugin-<os>-<arch>.json`, e um binário
-baixado fica em staging até o operador confirmar a instalação. Plugins pagos
-continuam exigindo licença ativa; um item publicado com
-`requires_license: false` e `github_repository` é revalidado no catálogo HTTPS
-do license-server e pode ser instalado sem criar lease ou entitlement. Ver
-`licenciamento-enterprise.md` para integrity, persistência e ciclo de checagem.
+não tráfego para o license-server. O card global **Public GitHub Releases**
+fica abaixo da ativação de licença, mas não lê nem consulta o catálogo do
+servidor. O operador cadastra qualquer repositório GitHub público; o POM lê o
+`manifest.json` da raiz do branch padrão e lista as releases publicadas junto
+dos metadados do manifesto. O manifesto declara `plugin_code`, nome,
+`plugin_abi`, features, preferências opcionais e um mapa `artifacts` por
+`<os>-<arch>`. Cada release tem ação própria para o operador escolher a tag,
+inclusive uma versão antiga. O POM valida ABI e manifesto, exige o digest
+SHA-256 da API do GitHub, baixa e verifica o asset e instala a versão escolhida
+sem consultar se exige licença. A lista de repositórios fica local no nó; a
+instalação não cria lease, grant ou entitlement. A ativação/licença de plugins
+continua separada. Ver `licenciamento-enterprise.md` para contrato, integridade
+e persistência.
 
 O campo `workspace_root` do mesmo contrato é a única raiz configurável para
 projetos do usuário e dados dinâmicos dos plugins. Projetos ficam diretamente

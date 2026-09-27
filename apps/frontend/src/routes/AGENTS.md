@@ -83,12 +83,9 @@ Per-file list:
   mesmo renderer Markdown compartilhado pelo Chat.
 - `Plugins.tsx` - rota `/plugins`. Cruza o catálogo público de
   `https://license.pieceofmind.cloud/v1/plugins` com o estado local de
-  `GET /api/ui/plugins`, usando `code` como identidade. A lista tem um
-  contêiner de rolagem próprio com `overscroll-y-contain`, para a rolagem no
-  limite dos plugins não deslocar o restante da interface. O cliente público
-  fica em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita plugins
-  com release compatível ou uma origem GitHub pública canônica; dados de imagem
-  incompletos viram
+  `GET /api/ui/plugins`, usando `code` como identidade. O cliente público fica
+  em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita plugins com
+  release comercial compatível; dados de imagem incompletos viram
   placeholders, e até quatro screenshots abrem em lightbox com Escape e foco
   restaurado. Descrições usam português brasileiro quando disponível e têm
   fallback para inglês. Validade, plugins concedidos, candidatos de ativação e
@@ -103,25 +100,27 @@ Per-file list:
   falta status local ou o status está expirado/revogado, e some quando todos os
   plugins licenciáveis conhecidos estão ativos. Comprar redireciona plugins
   licenciados à loja pública com `plugin=<code>` codificado em
-  `lib/pluginPurchase.ts`; um GitHub público marcado sem licença oferece Instalar
-  e consulta o catálogo autenticado por HTTPS antes de executar o host, sem criar
-  grant ou lease. Um único formulário ativa em lote todo `plugin_code` que o servidor conceder
+  `lib/pluginPurchase.ts`. Repositórios GitHub ficam em um card global
+  independente do catálogo comercial: qualquer URL pública com `manifest.json`
+  na raiz mostra metadados e releases do repositório, e o operador escolhe qual
+  release instalar sem consulta ao servidor de licenças. Ações de ativação,
+  instalação, atualização e desativação também invalidam `keys.pluginUi` para
+  atualizar imediatamente o menu do plugin; o polling de 30 s cobre mudanças
+  feitas fora desta aba. Um único formulário ativa em lote todo `plugin_code`
+  que o servidor conceder
   (`POST /api/ui/plugins/activate`, resposta
   `{activated}`); atualizar e desativar continuam por plugin. Um único card
-  global sob a ativação administra origens GitHub e versões baixadas para os
-  plugins. Instalar exige confirmação; um plugin pago exige licença ativa, e um
-  plugin gratuito só instala da URL `github_repository` publicada pelo servidor.
-  Baixar uma atualização nunca substitui o host em execução. Depois de
-  ativar, instalar, atualizar ou desativar um plugin, a tela atualiza o status
-  local e invalida `keys.pluginUi` para refletir os menus sem aguardar o polling
-  de 30 s, que continua cobrindo mudanças feitas em outra aba ou nó.
+  global sob a ativação administra repositórios GitHub persistidos localmente e
+  suas releases. Instalar exige confirmação e a tag é escolhida pelo operador;
+  essa origem não consulta `requires_license` nem depende da seleção do servidor.
   O editor de preferências usa o schema opcional do manifesto instalado, mostra
   defaults tipados boolean/diretório e envia valores só à rota local do nó.
   A atualização do binário `pom` em si fica separada em `About.tsx` (ver
   `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,
-  Configurações > Plugins. A release exibida é escolhida pela combinação
-  `system.os`/`system.arch` do nó local; se o catálogo não publicar esse alvo,
-  a tela mostra ausência em vez de sugerir a release de outra plataforma.
+  Configurações > Plugins. No card comercial, a release exibida é escolhida
+  pela combinação `system.os`/`system.arch` do nó local; se o catálogo não
+  publicar esse alvo, a tela mostra ausência em vez de sugerir a release de
+  outra plataforma.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,
@@ -243,8 +242,7 @@ Per-file list:
   `AGENTS.md` in the list, section header opens the overview, collapse works
   while holding the selection, the two scroll containers, `?doc=`/`?guia=` deep
   links, search + clear, empty state, and the mobile nav/reader/Voltar
-  contract. Active plugin guides and reference pages are appended from signed
-  `docs/` assets and loaded lazily after installation. Loading the embedded set requires
+  contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `About.tsx` - Tela informativa em `/config/sobre`, última folha de
   Configurações. Mostra o `LICENSE` AGPL-3.0 do repositório e a página oficial
@@ -509,11 +507,10 @@ Per-file list:
   `enterprise`, entregues por `pom-plugin-logs` pelo mecanismo de UI de plugin
   (`docs/subsystems/plugins-ui.md`). `App.tsx` mostra o fallback
   `../components/EnterpriseFeatureShowcase.tsx` quando o plugin não está ativo.
-- `ModelPaths.tsx` - edits `model_dirs`, `shard_dir`, `workspace_root` and
-  `shard_max_gb` via `POST /api/ui/paths`. The Armazenamento screen rejects a
-  slice folder equal to or inside a whole-model folder, shows current usage and
-  the slice limit, and keeps `/config/pastas` as an alias. The workspace is the
-  single shared root for projects and dynamic plugin data.
+- `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
+  `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
+  or inside a whole-model folder, shows current usage and the slice limit, and
+  keeps `/config/pastas` as an alias.
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
   `/config/rede/participantes`; the route is allowed only to `admin` and

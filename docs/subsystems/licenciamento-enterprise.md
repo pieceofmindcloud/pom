@@ -174,14 +174,30 @@ reusável por qualquer `plugin_code` futuro:
 - No frontend, o POM **não** contém mais as telas de Logs de Requisições e
   Estatísticas: elas vivem em `pom-plugin-logs` (`ui/`) e chegam pelo
   mecanismo genérico de UI de plugin (manifesto, telas e i18n instalados junto
-  do backend) - ver `plugins-ui.md`. O POM mantém só o fallback de propaganda
-  (`EnterpriseFeatureShowcase`, com link para
-  `https://pieceofmind.cloud/enterprise/index.html`) para `/logs` e
-  `/estatisticas` quando o plugin não está ativo. Uma versão anterior
+  do backend) - ver `plugins-ui.md`. O POM mantém só o fallback de venda
+  (`EnterpriseFeatureShowcase`) para `/logs` e `/estatisticas` quando o plugin
+  não está ativo: uma página comercial com os dados, screenshots e preço do
+  catálogo público e o botão de compra, que abre o checkout do Stripe (ver
+  "Checkout pelo nó" abaixo). Uma versão anterior
   (97bb0e91) exibia só a vitrine mesmo com o plugin ativo ("Este plugin já está
   ativo neste cluster") - defeito corrigido. As rotas `/api/ui/requests` e
   `/api/ui/requests/stats` continuam no nó, AdminOnly, e recusam os dados sem
   entitlement.
+
+## Checkout pelo nó
+
+`POST /api/ui/plugins/checkout` (AdminOnly, `plugins::start_plugin_checkout`)
+recebe `{plugin_code, interval: "month"|"year", locale: "pt-BR"|"en"}`. O nó
+lê `GET /v1/checkout/plans` do license-server, escolhe o plano que vende
+aquele `plugin_code` e cria a sessão em `POST /v1/checkout/sessions`; o
+servidor escolhe o `price_id` do Stripe pelo plugin e pelo intervalo e define
+as páginas de sucesso e cancelamento no site. A resposta `{url}` só é aceita
+quando aponta para `https://checkout.stripe.com` (ou `*.stripe.com`) ou para o
+próprio license-server no modo simulado (`checkout_url_allowed`). O nó faz a
+chamada porque o endpoint público só libera CORS para os domínios do site, e a
+interface roda na origem de cada nó. Erros voltam como `checkout_request_invalid`
+(400), `checkout_not_offered` (409) ou `checkout_unavailable`/`checkout_url_rejected`
+(502). Testes: `plugins::plugin_checkout_tests`.
 
 ## Entitlement e interface
 

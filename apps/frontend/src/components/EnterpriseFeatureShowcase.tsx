@@ -1,39 +1,46 @@
 /**
- * Informational stand-in for the interactive Logs/Statistics screens.
+ * Sales page for the Statistics and Logs plugin (`enterprise`), shown at
+ * `/logs` and `/estatisticas` while no active plugin provides those screens.
  *
- * The plugin `enterprise` (Request Logs/Statistics) was extracted to
- * https://github.com/pereirajair/pom-plugin-logs. Its interactive UI moved
- * with it (kept there as a reference, not buildable standalone - it depends
- * on this app's shared design system and hooks). This screen replaces it in
- * the POM bundle: shown only while the plugin is NOT active (App.tsx renders
- * the real Logs/Statistics screens once the entitlement is active), with a
- * preview illustration, a short feature list and a link to buy/install - see
- * `docs/subsystems/licenciamento-enterprise.md`, "Extração para
- * pom-plugin-logs".
+ * It follows the pieceofmind.cloud look (dark floating hero, navy -> teal
+ * gradient, numbered mono eyebrows, round cards, pill buttons) and reads what
+ * the license server publishes in its public catalog: name, description,
+ * icon, the official screenshots and the price. "Buy" asks this node for a
+ * Stripe Checkout session (`POST /api/ui/plugins/checkout`): the license
+ * server picks the Stripe `price_id` from the plugin and the interval, and the
+ * browser goes straight to the Stripe page. Without the catalog, the page keeps
+ * working from its own copy and drawn previews.
  */
-import { ExternalLink } from "lucide-react";
-import { Button, Panel, PanelHeader } from "./ui";
+import { ArrowRight, BarChart3, Check, ChevronLeft, ChevronRight, CreditCard, KeyRound, ListTree, Lock, ShieldCheck, X, Zap } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Link } from "react-router-dom";
+import { api, ApiError } from "../lib/api";
+import { usePublicPluginCatalog } from "../lib/queries";
+import type { PublicPluginPrice } from "../lib/pluginCatalog";
 import { useI18n } from "../i18n/provider";
 
-const ENTERPRISE_SITE_URL = "https://pieceofmind.cloud/enterprise/index.html";
+const PLUGIN_CODE = "enterprise";
+const STORE_URL = "https://pieceofmind.cloud/plugins/index.html?plugin=enterprise";
+
+type ShowcaseKind = "logs" | "statistics";
+type Interval = "month" | "year";
 
 function LogsPreview() {
-  const rows = [0, 1, 2, 3, 4];
+  const rows = [0, 1, 2, 3, 4, 5];
   return (
-    <svg viewBox="0 0 320 160" className="h-full w-full" role="presentation" aria-hidden="true">
-      <rect x="0" y="0" width="320" height="160" rx="6" fill="rgb(var(--surface))" />
-      <rect x="0" y="0" width="320" height="28" rx="6" fill="rgb(var(--raised))" />
-      {["Hora", "Chave", "Modelo", "Tokens", "Status"].map((_, index) => (
-        <rect key={index} x={10 + index * 62} y="11" width="46" height="6" rx="3" fill="rgb(var(--faint))" />
+    <svg viewBox="0 0 320 180" className="h-full w-full" role="presentation" aria-hidden="true">
+      <rect x="0" y="0" width="320" height="180" rx="10" fill="#0d1a2a" />
+      <rect x="0" y="0" width="320" height="28" rx="10" fill="#132436" />
+      {[0, 1, 2, 3, 4].map((index) => (
+        <rect key={index} x={12 + index * 62} y="11" width="44" height="6" rx="3" fill="rgba(255,255,255,.28)" />
       ))}
       {rows.map((row) => (
         <g key={row}>
-          <rect x="0" y={30 + row * 26} width="320" height="24" fill={row % 2 === 0 ? "rgb(var(--surface))" : "rgb(var(--raised) / 0.4)"} />
-          <rect x="10" y={40 + row * 26} width="34" height="6" rx="3" fill="rgb(var(--muted))" />
-          <rect x="72" y={40 + row * 26} width="50" height="6" rx="3" fill="rgb(var(--muted))" />
-          <rect x="134" y={40 + row * 26} width="42" height="6" rx="3" fill="rgb(var(--muted))" />
-          <rect x="196" y={40 + row * 26} width="38" height="6" rx="3" fill="rgb(var(--muted))" />
-          <rect x="258" y={40 + row * 26} width="44" height="10" rx="5" fill={row === 2 ? "#e783a4" : "#58d5c5"} opacity="0.55" />
+          <rect x="10" y={38 + row * 23} width="36" height="6" rx="3" fill="rgba(255,255,255,.45)" />
+          <rect x="72" y={38 + row * 23} width="52" height="6" rx="3" fill="rgba(255,255,255,.3)" />
+          <rect x="134" y={38 + row * 23} width="44" height="6" rx="3" fill="rgba(255,255,255,.3)" />
+          <rect x="196" y={38 + row * 23} width="36" height="6" rx="3" fill="rgba(255,255,255,.3)" />
+          <rect x="258" y={36 + row * 23} width="46" height="10" rx="5" fill={row === 2 ? "#ff7a8a" : "#2fdcc8"} opacity=".7" />
         </g>
       ))}
     </svg>
@@ -41,72 +48,279 @@ function LogsPreview() {
 }
 
 function StatisticsPreview() {
-  const bars = [38, 62, 44, 78, 54, 30];
+  const bars = [38, 70, 48, 92, 60, 34, 80];
   return (
-    <svg viewBox="0 0 320 160" className="h-full w-full" role="presentation" aria-hidden="true">
-      <rect x="0" y="0" width="320" height="160" rx="6" fill="rgb(var(--surface))" />
+    <svg viewBox="0 0 320 180" className="h-full w-full" role="presentation" aria-hidden="true">
+      <defs>
+        <linearGradient id="pom-store-bar" x1="0" y1="1" x2="0" y2="0">
+          <stop offset="0" stopColor="#4f9bff" />
+          <stop offset="1" stopColor="#2fdcc8" />
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="320" height="180" rx="10" fill="#0d1a2a" />
       {bars.map((height, index) => (
-        <rect
-          key={index}
-          x={16 + index * 34}
-          y={140 - height}
-          width="20"
-          height={height}
-          rx="3"
-          fill={["#8b7dff", "#58d5c5", "#f3b85f", "#e783a4", "#7eb4ff", "#8b7dff"][index]}
-          opacity="0.75"
-        />
+        <rect key={index} x={18 + index * 30} y={156 - height} width="18" height={height} rx="4" fill="url(#pom-store-bar)" opacity=".85" />
       ))}
-      <line x1="8" y1="140" x2="312" y2="140" stroke="rgb(var(--line))" strokeWidth="1" />
-      <circle cx="262" cy="40" r="26" fill="none" stroke="#7eb4ff" strokeWidth="10" opacity="0.75" />
-      <circle cx="262" cy="40" r="26" fill="none" stroke="#8b7dff" strokeWidth="10" strokeDasharray="55 110" opacity="0.85" />
+      <line x1="10" y1="156" x2="232" y2="156" stroke="rgba(255,255,255,.18)" />
+      <circle cx="278" cy="62" r="28" fill="none" stroke="rgba(255,255,255,.12)" strokeWidth="11" />
+      <circle cx="278" cy="62" r="28" fill="none" stroke="#35c9f0" strokeWidth="11" strokeDasharray="120 176" transform="rotate(-90 278 62)" />
+      <rect x="252" y="118" width="52" height="6" rx="3" fill="rgba(255,255,255,.4)" />
+      <rect x="252" y="132" width="36" height="6" rx="3" fill="rgba(255,255,255,.25)" />
     </svg>
   );
 }
 
-type ShowcaseKind = "logs" | "statistics";
+function formatPrice(price: PublicPluginPrice | null | undefined, locale: string): string | null {
+  if (!price || price.amount === null || price.amount === undefined || !price.currency) return null;
+  try {
+    return new Intl.NumberFormat(locale, { style: "currency", currency: price.currency.toUpperCase() }).format(price.amount / 100);
+  } catch {
+    return null;
+  }
+}
+
+const stagger = (index: number) => ({ "--i": index }) as CSSProperties;
 
 export function EnterpriseFeatureShowcase({ kind }: { kind: ShowcaseKind }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const catalog = usePublicPluginCatalog();
+  const entry = catalog.data?.plugins.find((plugin) => plugin.code === PLUGIN_CODE) ?? null;
+  const monthly = entry?.pricing.monthly ?? null;
+  const annual = entry?.pricing.annual ?? null;
+  const intervals = ([monthly ? "month" : null, annual ? "year" : null].filter(Boolean) as Interval[]);
+  const [interval, setInterval] = useState<Interval>("month");
+  useEffect(() => {
+    if (intervals.length > 0 && !intervals.includes(interval)) setInterval(intervals[0]);
+  }, [intervals.join(","), interval]);
+  const price = interval === "year" ? annual : monthly;
+  const priceLabel = formatPrice(price, locale);
+  const name = entry?.display_name || t("enterprise.store.name");
+  const description = locale === "pt-BR"
+    ? entry?.description_pt_br || t("enterprise.store.description")
+    : entry?.description || t("enterprise.store.description");
+  const screenshots = entry?.screenshot_urls ?? [];
+
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<"forbidden" | "failed" | null>(null);
+  async function buy() {
+    setBusy(true);
+    setFailed(null);
+    try {
+      const session = await api.post<{ url?: string }>("/api/ui/plugins/checkout", {
+        plugin_code: PLUGIN_CODE,
+        interval,
+        locale: locale === "en" ? "en" : "pt-BR",
+      });
+      if (!session.url) throw new Error("checkout_unavailable");
+      window.location.assign(session.url);
+    } catch (error) {
+      setBusy(false);
+      // A node profile without the administrative surface cannot buy for the cluster.
+      setFailed(error instanceof ApiError && (error.status === 401 || error.status === 403) ? "forbidden" : "failed");
+    }
+  }
+
+  const [shot, setShot] = useState<number | null>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (shot !== null && !dialog.open) {
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", "");
+    } else if (shot === null && dialog.open) {
+      if (typeof dialog.close === "function") dialog.close();
+      else dialog.removeAttribute("open");
+    }
+  }, [shot]);
+  const move = (delta: number) => setShot((current) => current === null ? current : (current + delta + screenshots.length) % screenshots.length);
+
+  const focus = kind === "logs" ? ["logs", "statistics"] as const : ["statistics", "logs"] as const;
+  const buyButton = (className = "") => (
+    <button type="button" className={`pom-store-buy ${className}`} onClick={() => void buy()} disabled={busy}>
+      {busy ? <span className="pom-store-spinner" aria-hidden="true" /> : <CreditCard className="h-4 w-4" aria-hidden="true" />}
+      {t("enterprise.store.buy")}
+    </button>
+  );
 
   return (
-    <main className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
-      <Panel className="w-full max-w-3xl">
-        <PanelHeader
-          eyebrow={t("enterprise.eyebrow")}
-          title={t(`enterprise.showcase.${kind}.title`)}
-          subtitle={t(`enterprise.showcase.${kind}.description`)}
-        />
-        <div className="grid gap-5 p-5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-          <div
-            className="overflow-hidden rounded-md border border-line"
-            aria-label={t(`enterprise.showcase.${kind}.screenshotAlt`)}
-          >
-            {kind === "logs" ? <LogsPreview /> : <StatisticsPreview />}
-          </div>
-          <div className="min-w-0">
-            <ul className="space-y-2 text-sm text-muted">
-              {[1, 2, 3].map((index) => (
-                <li key={index} className="flex gap-2">
-                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-iris" />
-                  <span>{t(`enterprise.showcase.${kind}.bullet${index}`)}</span>
-                </li>
-              ))}
-            </ul>
-            <p className="mt-4 text-[0.7rem] text-faint">{t("enterprise.showcase.pluginNote")}</p>
-            <a
-              href={ENTERPRISE_SITE_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-4 inline-flex"
-            >
-              <Button variant="primary" icon={<ExternalLink className="h-3.5 w-3.5" />}>
-                {t("enterprise.showcase.cta")}
-              </Button>
-            </a>
-          </div>
+    <main className="pom-store" data-kind={kind}>
+      <section className="pom-store-hero">
+        <div className="pom-store-hero-copy">
+          <p className="pom-store-eyebrow pom-store-eyebrow-hero"><span className="pom-store-tick" aria-hidden="true" />{t("enterprise.store.eyebrow")}</p>
+          <h1 className="pom-store-title">
+            <span>{t(`enterprise.store.${kind}.titleA`)}</span>
+            <span className="pom-store-gradient">{t(`enterprise.store.${kind}.titleB`)}</span>
+          </h1>
+          <p className="pom-store-lede">{t(`enterprise.store.${kind}.lede`)}</p>
+          <ul className="pom-store-badges">
+            <li><Lock className="h-3.5 w-3.5" aria-hidden="true" />{t("enterprise.store.badgeLocal")}</li>
+            <li><Zap className="h-3.5 w-3.5" aria-hidden="true" />{t("enterprise.store.badgeInstant")}</li>
+            <li><ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />{t("enterprise.store.badgeStripe")}</li>
+          </ul>
         </div>
-      </Panel>
+
+        <aside className="pom-store-price" aria-label={t("enterprise.store.priceLabel")}>
+          <div className="pom-store-product">
+            {entry?.icon_url ? (
+              <img src={entry.icon_url} alt="" referrerPolicy="no-referrer" className="pom-store-icon" />
+            ) : (
+              <span className="pom-store-icon pom-store-icon-fallback" aria-hidden="true"><BarChart3 className="h-5 w-5" /></span>
+            )}
+            <div>
+              <p className="pom-store-product-name">{name}</p>
+              <p className="pom-store-product-code">plugin · {PLUGIN_CODE}</p>
+            </div>
+          </div>
+          {intervals.length > 1 && (
+            <div className="pom-store-intervals" role="group" aria-label={t("enterprise.store.interval")}>
+              {intervals.map((value) => (
+                <button key={value} type="button" aria-pressed={interval === value} onClick={() => setInterval(value)}>
+                  {t(`enterprise.store.interval.${value}`)}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="pom-store-amount">
+            {priceLabel ?? t("enterprise.store.priceAtCheckout")}
+            {priceLabel && <span>{t(`enterprise.store.per.${interval}`)}</span>}
+          </p>
+          {buyButton("pom-store-buy-wide")}
+          {failed && (
+            <p role="alert" className="pom-store-error">
+              {t(failed === "forbidden" ? "enterprise.store.buyForbidden" : "enterprise.store.buyFailed")}{" "}
+              <a href={STORE_URL} target="_blank" rel="noreferrer">{t("enterprise.store.buyOnSite")}</a>
+            </p>
+          )}
+          <ul className="pom-store-included">
+            {["included1", "included2", "included3", "included4"].map((key) => (
+              <li key={key}><Check className="h-3.5 w-3.5" aria-hidden="true" />{t(`enterprise.store.${key}`)}</li>
+            ))}
+          </ul>
+          <Link className="pom-store-have" to="/plugins">
+            <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />{t("enterprise.store.haveKey")}
+          </Link>
+        </aside>
+      </section>
+
+      <section className="pom-store-section" aria-labelledby="pom-store-shots">
+        <p className="pom-store-eyebrow"><span className="pom-store-tick" aria-hidden="true" />01 / {t("enterprise.store.shotsLabel")}</p>
+        <h2 id="pom-store-shots" className="pom-store-h2">{t("enterprise.store.shotsTitle")}</h2>
+        {screenshots.length > 0 ? (
+          <div className="pom-store-gallery">
+            {screenshots.slice(0, 6).map((url, index) => (
+              <button
+                key={url}
+                type="button"
+                className={index === 0 ? "pom-store-shot pom-store-shot-main" : "pom-store-shot"}
+                style={stagger(index)}
+                onClick={() => setShot(index)}
+                aria-label={t("enterprise.store.shotOpen", { number: index + 1 })}
+              >
+                <img src={url} alt={t("enterprise.store.shotAlt", { name, number: index + 1 })} loading="lazy" referrerPolicy="no-referrer" />
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="pom-store-gallery pom-store-gallery-drawn">
+            <div className="pom-store-shot pom-store-shot-main" aria-label={t("enterprise.showcase.logs.screenshotAlt")} role="img"><LogsPreview /></div>
+            <div className="pom-store-shot" aria-label={t("enterprise.showcase.statistics.screenshotAlt")} role="img"><StatisticsPreview /></div>
+          </div>
+        )}
+      </section>
+
+      <section className="pom-store-section" aria-labelledby="pom-store-features">
+        <p className="pom-store-eyebrow"><span className="pom-store-tick" aria-hidden="true" />02 / {t("enterprise.store.featuresLabel")}</p>
+        <h2 id="pom-store-features" className="pom-store-h2">{t("enterprise.store.featuresTitle")}</h2>
+        <div className="pom-store-pair">
+          {focus.map((part, partIndex) => (
+            <article key={part} className={partIndex === 0 ? "pom-store-card pom-store-card-accent" : "pom-store-card"} style={stagger(partIndex)}>
+              <span className="pom-store-card-icon" aria-hidden="true">{part === "logs" ? <ListTree className="h-5 w-5" /> : <BarChart3 className="h-5 w-5" />}</span>
+              <h3 className="pom-store-h3">{t(`enterprise.showcase.${part}.title`)}</h3>
+              <p>{t(`enterprise.store.${part}.summary`)}</p>
+              <ul className="pom-store-list">
+                {[1, 2, 3, 4, 5].map((index) => (
+                  <li key={index}><Check className="h-4 w-4" aria-hidden="true" />{t(`enterprise.store.${part}.feature${index}`)}</li>
+                ))}
+              </ul>
+            </article>
+          ))}
+        </div>
+        <p className="pom-store-about">{description}</p>
+      </section>
+
+      <section className="pom-store-section" aria-labelledby="pom-store-steps">
+        <p className="pom-store-eyebrow"><span className="pom-store-tick" aria-hidden="true" />03 / {t("enterprise.store.stepsLabel")}</p>
+        <h2 id="pom-store-steps" className="pom-store-h2">{t("enterprise.store.stepsTitle")}</h2>
+        <ol className="pom-store-steps">
+          {[1, 2, 3].map((index) => (
+            <li key={index} className="pom-store-step" style={stagger(index)}>
+              <span className="pom-store-step-num" aria-hidden="true">{index}</span>
+              <div>
+                <h3 className="pom-store-h3">{t(`enterprise.store.step${index}.title`)}</h3>
+                <p>{t(`enterprise.store.step${index}.body`)}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <section className="pom-store-section" aria-labelledby="pom-store-faq">
+        <p className="pom-store-eyebrow"><span className="pom-store-tick" aria-hidden="true" />04 / {t("enterprise.store.faqLabel")}</p>
+        <h2 id="pom-store-faq" className="pom-store-h2">{t("enterprise.store.faqTitle")}</h2>
+        <div className="pom-store-faq">
+          {[1, 2, 3, 4].map((index) => (
+            <details key={index} className="pom-store-card">
+              <summary>{t(`enterprise.store.faq${index}.q`)}</summary>
+              <p>{t(`enterprise.store.faq${index}.a`)}</p>
+            </details>
+          ))}
+        </div>
+      </section>
+
+      <section className="pom-store-cta">
+        <div>
+          <h2 className="pom-store-h2">{t("enterprise.store.ctaTitle")}</h2>
+          <p>{priceLabel ? t("enterprise.store.ctaPrice", { price: `${priceLabel}${t(`enterprise.store.per.${interval}`)}` }) : t("enterprise.store.ctaBody")}</p>
+        </div>
+        {buyButton()}
+        <a className="pom-store-site" href={STORE_URL} target="_blank" rel="noreferrer">
+          {t("enterprise.store.moreOnSite")}<ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+        </a>
+      </section>
+
+      {screenshots.length > 0 && (
+        <dialog
+          ref={dialogRef}
+          className="pom-store-lightbox"
+          aria-label={name}
+          onCancel={(event) => {
+            event.preventDefault();
+            setShot(null);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowLeft") move(-1);
+            if (event.key === "ArrowRight") move(1);
+          }}
+        >
+          {shot !== null && (
+            <img src={screenshots[shot]} alt={t("enterprise.store.shotAlt", { name, number: shot + 1 })} referrerPolicy="no-referrer" />
+          )}
+          <button type="button" className="pom-store-lightbox-close" aria-label={t("plugins.screenshotClose")} onClick={() => setShot(null)}>
+            <X className="h-5 w-5" aria-hidden="true" />
+          </button>
+          {screenshots.length > 1 && (
+            <>
+              <button type="button" className="pom-store-lightbox-prev" aria-label={t("plugins.screenshotPrevious")} onClick={() => move(-1)}>
+                <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+              </button>
+              <button type="button" className="pom-store-lightbox-next" aria-label={t("plugins.screenshotNext")} onClick={() => move(1)}>
+                <ChevronRight className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </>
+          )}
+        </dialog>
+      )}
     </main>
   );
 }

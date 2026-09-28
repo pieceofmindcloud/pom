@@ -75,9 +75,14 @@ Per-file list:
   controle. `hint` (texto visível) segue existindo para as outras telas.
 - `EnterpriseFeatureShowcase.tsx` - fallback de propaganda de `/logs` e
   `/estatisticas` **quando nenhum plugin ativo as fornece** (renderizado fora
-  do `<Routes>` em `App.tsx`, como o chat). Recebe `kind: "logs" | "statistics"`,
-  mostra título, descrição, prévia SVG inline (mockup), três destaques e o link
-  de compra/instalação `https://pieceofmind.cloud/enterprise/index.html`.
+  do `<Routes>` em `App.tsx`, como o chat). Recebe `kind: "logs" | "statistics"`.
+  É a página de venda do plugin Estatísticas e Logs no visual do
+  pieceofmind.cloud (estilos `.pom-store*` em `index.css`): nome, descrição,
+  ícone, screenshots oficiais e preço vêm do catálogo público do license-server
+  (`usePublicPluginCatalog`), com texto e prévias SVG locais quando ele não
+  responde. "Comprar agora" chama `POST /api/ui/plugins/checkout` e leva o
+  navegador ao checkout do Stripe; o servidor escolhe o `price_id` pelo plugin e
+  intervalo. Testes em `EnterpriseFeatureShowcase.test.tsx`.
 - `PluginBridge.tsx` - montada uma vez no shell (`App.tsx`). Publica
   `locale.changed`/`theme.changed`, repassa os eventos do nó lidos a cada 3 s
   em `GET /api/ui/plugins/events`, executa os comandos dos plugins (toast

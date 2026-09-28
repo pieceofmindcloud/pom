@@ -73,6 +73,10 @@ pub(super) fn routes() -> Router<GatewayState> {
             axum::routing::delete(crate::plugins::remove_github_repository),
         )
         .route(
+            "/api/ui/plugins/checkout",
+            post(crate::plugins::start_plugin_checkout),
+        )
+        .route(
             "/api/ui/plugins/:code/preferences",
             post(crate::plugins::save_plugin_preferences),
         )

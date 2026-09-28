@@ -39,6 +39,7 @@ vi.mock("./lib/queries", () => ({
   }),
   useCluster: () => ({ data: null }),
   useInvalidate: () => vi.fn(),
+  usePublicPluginCatalog: () => ({ data: undefined, isLoading: false, isError: false }),
 }));
 
 vi.mock("./components/Notifications", () => ({ Notifications: () => null }));
@@ -227,11 +228,11 @@ describe("guarda de perfil por rota", () => {
 
   it("shows the advertising fallback when no plugin provides /logs or /estatisticas", async () => {
     open("/logs", "admin");
-    expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
+    expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
     expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
     cleanup();
     open("/estatisticas", "admin");
-    expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
+    expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
   });
 
   it("renders the plugin-provided screen instead of the fallback, per manifest profile", async () => {
@@ -267,7 +268,7 @@ describe("guarda de perfil por rota", () => {
     // The legacy POM branch changes identity and must not retain the plugin
     // screen. This is the transition that previously masked the same-plugin bug.
     fireEvent.click(screen.getByRole("button", { name: "ir para estatísticas" }));
-    expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
+    expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
   });
 
   it("loads a namespaced route on a direct browser request under the router basename", async () => {
@@ -312,7 +313,7 @@ describe("guarda de perfil por rota", () => {
     expect(await screen.findByText("tela-plugin:audit:logs")).toBeTruthy();
     cleanup();
     open("/logs", "admin");
-    expect(await screen.findByRole("link", { name: "Comprar e instalar" })).toBeTruthy();
+    expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
   });
 
   it("keeps a plugin route closed for profiles excluded by its manifest", async () => {

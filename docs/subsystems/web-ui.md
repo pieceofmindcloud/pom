@@ -205,8 +205,9 @@ ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
   ocorrer primeiro; `cluster_logs_min_level` em `pom.json` controla o nível
   mínimo capturado e assume `info`.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` e `/estatisticas` -> `EnterpriseFeatureShowcase` quando nenhum plugin
-  ativo declara o destino. Uma declaração única do manifesto substitui o
+- `/logs` e `/estatisticas` -> `EnterpriseFeatureShowcase`, a página de venda do
+  plugin Estatísticas e Logs (catálogo público e checkout do Stripe), quando
+  nenhum plugin ativo declara o destino. Uma declaração única do manifesto substitui o
   fallback nessa URL, inclusive para Enterprise. As demais telas de plugins
   vêm de `pom-plugin-ui/v1` e ficam sob `/<plugin_code>/<path do manifesto>`;
   por exemplo, `plugin_code: "base"` e `/example` abrem em

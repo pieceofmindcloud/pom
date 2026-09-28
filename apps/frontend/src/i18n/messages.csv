@@ -873,26 +873,83 @@ docs.selectAria,Open {title},Abrir {title}
 docs.tab.guides,Guides,Guias
 docs.tab.reference,Reference,Referência
 enterprise.activateHere,Activate a license,Ativar uma licença
-enterprise.eyebrow,Enterprise,Enterprise
 enterprise.learnMore,Learn about Enterprise,Conhecer o Enterprise
 enterprise.licenseState,License state,Estado da licença
 enterprise.purchaseLink,Buy or manage Enterprise,Comprar ou gerenciar Enterprise
 enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
 enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
-enterprise.showcase.cta,Buy & install,Comprar e instalar
-enterprise.showcase.logs.bullet1,"Full request trail: prompt, response, hops and timings","Trilha completa da requisição: prompt, resposta, hops e tempos"
-enterprise.showcase.logs.bullet2,"Filter by API key, model, node and date range","Filtre por chave de API, modelo, nó e intervalo de datas"
-enterprise.showcase.logs.bullet3,Per-request inspector with redacted secrets,Inspetor por requisição com segredos redigidos
-enterprise.showcase.logs.description,Request Logs keeps a searchable audit trail of every request this cluster served.,Logs de Requisições mantém uma trilha de auditoria pesquisável de toda requisição que este cluster atendeu.
 enterprise.showcase.logs.screenshotAlt,Preview of the Request Logs screen,Prévia da tela de Logs de Requisições
 enterprise.showcase.logs.title,Request Logs,Logs de Requisições
-enterprise.showcase.pluginNote,Part of the enterprise plugin. Buy and install it from the Enterprise site.,Parte do plugin enterprise. Compre e instale pelo site Enterprise.
-enterprise.showcase.statistics.bullet1,Token volume and throughput by model and day,Volume de tokens e vazão por modelo e dia
-enterprise.showcase.statistics.bullet2,Per-node and per-key consumption breakdown,Detalhamento de consumo por nó e por chave
-enterprise.showcase.statistics.bullet3,Prefix cache hit rate and terminal-state distribution,Taxa de acerto do cache de prefixo e distribuição de estados terminais
-enterprise.showcase.statistics.description,Statistics aggregates the same audit trail into charts for capacity and usage.,Estatísticas agrega a mesma trilha de auditoria em gráficos de capacidade e uso.
 enterprise.showcase.statistics.screenshotAlt,Preview of the Statistics screen,Prévia da tela de Estatísticas
 enterprise.showcase.statistics.title,Statistics,Estatísticas
+enterprise.store.badgeInstant,Installs in seconds,Instala em segundos
+enterprise.store.badgeLocal,Your data stays on your nodes,Seus dados ficam nos seus nós
+enterprise.store.badgeStripe,Secure payment with Stripe,Pagamento seguro com Stripe
+enterprise.store.buy,Buy now,Comprar agora
+enterprise.store.buyFailed,Could not open the checkout right now.,Não foi possível abrir o checkout agora.
+enterprise.store.buyForbidden,Only an administrator of this node can buy plugins.,Só um administrador deste nó pode comprar plugins.
+enterprise.store.buyOnSite,Buy on pieceofmind.cloud,Comprar em pieceofmind.cloud
+enterprise.store.ctaBody,The price is shown at checkout. Cancel anytime.,O preço aparece no checkout. Cancele quando quiser.
+enterprise.store.ctaPrice,Statistics and Logs for {price}. Cancel anytime.,Estatísticas e Logs por {price}. Cancele quando quiser.
+enterprise.store.ctaTitle,Ready to see inside your cluster?,Pronto para enxergar dentro do seu cluster?
+enterprise.store.description,"Advanced observability for POM inference workloads: searchable request logs with a complete, redacted request inspector, and an operational statistics dashboard for tokens, latency, cache, nodes and network.","Observabilidade avançada para a inferência no POM: logs de requisições pesquisáveis com um inspetor completo e com segredos redigidos, e um painel de estatísticas operacionais de tokens, latência, cache, nós e rede."
+enterprise.store.eyebrow,POM plugin · Statistics and Logs,Plugin do POM · Estatísticas e Logs
+enterprise.store.faq1.a,"On your own administrative nodes, in the plugin's local database. Prompts and answers are never sent to POM or to the license server.","Nos seus próprios nós administradores, no banco local do plugin. Prompts e respostas nunca são enviados ao POM nem ao servidor de licenças."
+enterprise.store.faq1.q,Where is my request data stored?,Onde ficam os dados das minhas requisições?
+enterprise.store.faq2.a,Only to activate and to renew the license from time to time. Logging and charts work locally.,Só para ativar e renovar a licença de tempos em tempos. Os logs e os gráficos funcionam localmente.
+enterprise.store.faq2.q,Does it need internet access?,Precisa de acesso à internet?
+enterprise.store.faq3.a,"The plugin features stop when the license ends. Distributed inference, chat and everything else in the POM keep working.","Os recursos do plugin param quando a licença termina. A inferência distribuída, o chat e todo o resto do POM continuam funcionando."
+enterprise.store.faq3.q,What happens if I cancel?,O que acontece se eu cancelar?
+enterprise.store.faq4.a,"The screenshots above are the real screens, published with each release. The plugin store at pieceofmind.cloud has more details.","As capturas acima são as telas reais, publicadas junto de cada release. A loja em pieceofmind.cloud tem mais detalhes."
+enterprise.store.faq4.q,Can I try it before buying?,Posso ver antes de comprar?
+enterprise.store.faqLabel,Questions,Perguntas
+enterprise.store.faqTitle,Before you buy,Antes de comprar
+enterprise.store.featuresLabel,Features,Recursos
+enterprise.store.featuresTitle,"Two screens, one audit trail","Duas telas, uma trilha de auditoria"
+enterprise.store.haveKey,I already have a license key,Já tenho uma chave de licença
+enterprise.store.included1,Request Logs and Statistics screens,Telas de Logs de Requisições e Estatísticas
+enterprise.store.included2,Updates while the license is active,Atualizações enquanto a licença estiver ativa
+enterprise.store.included3,Activation on your cluster machines,Ativação nas máquinas do seu cluster
+enterprise.store.included4,Cancel anytime; the POM keeps working,Cancele quando quiser; o POM continua funcionando
+enterprise.store.interval,Billing period,Período de cobrança
+enterprise.store.interval.month,Monthly,Mensal
+enterprise.store.interval.year,Yearly,Anual
+enterprise.store.logs.feature1,Search and paginate every request the cluster served,Busca e paginação de toda requisição atendida pelo cluster
+enterprise.store.logs.feature2,"Filter by node, user, API key, model, prompt and time","Filtros por nó, usuário, chave de API, modelo, prompt e período"
+enterprise.store.logs.feature3,"Complete request, response, pipeline hops and execution telemetry","Requisição, resposta, hops do pipeline e telemetria de execução completas"
+enterprise.store.logs.feature4,"Status, tokens, latency, errors and network activity","Status, tokens, latência, erros e atividade de rede"
+enterprise.store.logs.feature5,"Redacted viewer with formatted or raw JSON, Markdown, copy and fullscreen","Visualizador com segredos redigidos, JSON formatado ou bruto, Markdown, cópia e tela cheia"
+enterprise.store.logs.lede,"Request Logs keeps a searchable trail of everything your cluster served: prompt, answer, pipeline hops, tokens, latency and errors, one click away.","Logs de Requisições guarda uma trilha pesquisável de tudo o que o seu cluster atendeu: prompt, resposta, hops do pipeline, tokens, latência e erros, a um clique."
+enterprise.store.logs.summary,Find any request and inspect it whole.,Encontre qualquer requisição e inspecione por inteiro.
+enterprise.store.logs.titleA,See every request.,Veja cada requisição.
+enterprise.store.logs.titleB,Fix issues in minutes.,Resolva problemas em minutos.
+enterprise.store.moreOnSite,More on the plugin store,Mais na loja de plugins
+enterprise.store.name,Statistics and Logs,Estatísticas e Logs
+enterprise.store.per.month,/month,/mês
+enterprise.store.per.year,/year,/ano
+enterprise.store.priceAtCheckout,Price shown at checkout,Preço mostrado no checkout
+enterprise.store.priceLabel,Price,Preço
+enterprise.store.shotAlt,{name} screenshot {number},Captura {number} de {name}
+enterprise.store.shotOpen,Open screenshot {number},Abrir captura {number}
+enterprise.store.shotsLabel,Screens,Telas
+enterprise.store.shotsTitle,"What you get, straight from the plugin","O que você recebe, direto do plugin"
+enterprise.store.statistics.feature1,Total input and output tokens and model throughput,Total de tokens de entrada e saída e vazão por modelo
+enterprise.store.statistics.feature2,Average inference time and time to first token,Tempo médio de inferência e tempo até o primeiro token
+enterprise.store.statistics.feature3,Prefix cache performance and terminal request states,Desempenho do cache de prefixo e estados finais das requisições
+enterprise.store.statistics.feature4,Daily usage and requests by API key and node,Uso diário e requisições por chave de API e por nó
+enterprise.store.statistics.feature5,Peer bandwidth and network latency,Banda entre peers e latência da rede
+enterprise.store.statistics.lede,"Statistics turns the same trail into charts: tokens, time to first token, prefix cache, usage per day, key, node and model, and the health of your network.","Estatísticas transforma a mesma trilha em gráficos: tokens, tempo até o primeiro token, cache de prefixo, uso por dia, chave, nó e modelo, e a saúde da sua rede."
+enterprise.store.statistics.summary,An operational overview for capacity and performance.,Uma visão operacional para capacidade e desempenho.
+enterprise.store.statistics.titleA,Know your cluster.,Conheça o seu cluster.
+enterprise.store.statistics.titleB,Optimize with data.,Otimize com dados.
+enterprise.store.step1.body,The button opens Stripe Checkout with the official price published by POM. Card data never touches your node.,O botão abre o checkout do Stripe com o preço oficial publicado pelo POM. Os dados do cartão nunca passam pelo seu nó.
+enterprise.store.step1.title,Buy with Stripe,Compre com Stripe
+enterprise.store.step2.body,"After payment, the confirmation page shows your license key.","Depois do pagamento, a página de confirmação mostra a sua chave de licença."
+enterprise.store.step2.title,Get your license key,Receba a sua chave de licença
+enterprise.store.step3.body,"Paste the key in Settings, Plugins. The plugin installs itself and these screens replace this page.","Cole a chave em Configurações, Plugins. O plugin se instala sozinho e as telas substituem esta página."
+enterprise.store.step3.title,Activate in Plugins,Ative em Plugins
+enterprise.store.stepsLabel,How it works,Como funciona
+enterprise.store.stepsTitle,From checkout to your first log in three steps,Do checkout ao primeiro log em três passos
 errorBoundary.detail,"The rest of the interface is still available: use the menu to open another screen. If it happens again, the detail below is what the browser recorded.","O resto da interface continua de pé: use o menu para ir a outra tela. Se insistir, o detalhe abaixo é o que o navegador registrou."
 errorBoundary.retry,Try rendering again,Tentar montar de novo
 errorBoundary.title,This screen stopped working,Esta tela parou de funcionar

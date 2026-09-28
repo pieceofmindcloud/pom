@@ -700,6 +700,9 @@ páginas publicadas sem chamar o servidor de licenças. A leitura tem orçamento
 de metadados e falha sem truncar silenciosamente se excedido. Ações AdminOnly
 usam ConnectionAuth:
 
+- `POST /api/ui/plugins/checkout` cria no license-server a sessão de checkout
+  do Stripe para um plugin vendido e devolve `{url}` (ver
+  `licenciamento-enterprise.md`, "Checkout pelo nó");
 - `GET /api/ui/plugins/github-repositories` lista as fontes persistidas e
   publica `manifest_path` (`manifest.json` ou `ui/manifest.json`),
   `description` por idioma e `screenshot_urls` já resolvidas para

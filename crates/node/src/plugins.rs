@@ -3570,6 +3570,135 @@ fn installation_component() -> String {
     std::env::var("POM_INSTALLATION_ID").unwrap_or_else(|_| "unknown-installation".into())
 }
 
+/// Pedido da tela de vitrine para comprar um plugin (`POST /api/ui/plugins/checkout`).
+#[derive(Debug, Deserialize)]
+pub(crate) struct PluginCheckoutRequest {
+    pub plugin_code: String,
+    #[serde(default)]
+    pub interval: Option<String>,
+    #[serde(default)]
+    pub locale: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CheckoutPlans {
+    #[serde(default)]
+    plans: Vec<CheckoutPlan>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CheckoutPlan {
+    code: String,
+    #[serde(default)]
+    plugin_codes: Vec<String>,
+    #[serde(default)]
+    checkout_available: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CheckoutSession {
+    url: String,
+}
+
+/// Só uma página de pagamento conhecida pode receber o navegador: o checkout
+/// do Stripe ou, no modo simulado do servidor, o próprio license-server.
+pub(crate) fn checkout_url_allowed(url: &str, license_base: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let license_host = reqwest::Url::parse(license_base)
+        .ok()
+        .and_then(|base| base.host_str().map(str::to_owned));
+    let host = parsed.host_str().unwrap_or_default();
+    let https = parsed.scheme() == "https";
+    (https && (host == "checkout.stripe.com" || host.ends_with(".stripe.com")))
+        || (license_host.as_deref() == Some(host) && (https || cfg!(test)))
+}
+
+/// Cria a sessão de checkout no license-server em nome do navegador. O
+/// endpoint público só libera CORS para o site, e a interface do POM roda na
+/// origem de cada nó; o `price_id` continua sendo escolhido pelo servidor a
+/// partir do plugin e do intervalo, nunca informado pelo cliente.
+pub(crate) async fn create_plugin_checkout(
+    client: &reqwest::Client,
+    license_base: &str,
+    request: &PluginCheckoutRequest,
+) -> Result<String, (axum::http::StatusCode, &'static str)> {
+    use axum::http::StatusCode;
+    let valid_code = {
+        let bytes = request.plugin_code.as_bytes();
+        !bytes.is_empty()
+            && bytes.len() <= 64
+            && bytes[0].is_ascii_lowercase()
+            && bytes
+                .iter()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
+    };
+    let interval = request.interval.as_deref().unwrap_or("month");
+    let locale = request.locale.as_deref().unwrap_or("pt-BR");
+    if !valid_code || !matches!(interval, "month" | "year") || !matches!(locale, "pt-BR" | "en") {
+        return Err((StatusCode::BAD_REQUEST, "checkout_request_invalid"));
+    }
+    let base = license_base.trim_end_matches('/');
+    let plans: CheckoutPlans = client
+        .get(format!("{base}/v1/checkout/plans"))
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "checkout_unavailable"))?
+        .json()
+        .await
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "checkout_unavailable"))?;
+    let plan = plans
+        .plans
+        .iter()
+        .find(|plan| {
+            plan.checkout_available
+                && plan
+                    .plugin_codes
+                    .iter()
+                    .any(|code| code == &request.plugin_code)
+        })
+        .ok_or((StatusCode::CONFLICT, "checkout_not_offered"))?;
+    let session: CheckoutSession = client
+        .post(format!("{base}/v1/checkout/sessions"))
+        .json(&serde_json::json!({
+            "plan_code": plan.code,
+            "plugin_code": request.plugin_code,
+            "interval": interval,
+            "locale": locale,
+        }))
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "checkout_unavailable"))?
+        .json()
+        .await
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "checkout_unavailable"))?;
+    if !checkout_url_allowed(&session.url, license_base) {
+        return Err((StatusCode::BAD_GATEWAY, "checkout_url_rejected"));
+    }
+    Ok(session.url)
+}
+
+pub(crate) async fn start_plugin_checkout(
+    _auth: crate::auth::ConnectionAuth,
+    axum::Json(request): axum::Json<PluginCheckoutRequest>,
+) -> axum::response::Response {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    match create_plugin_checkout(&client, &license_base_url(), &request).await {
+        Ok(url) => axum::Json(serde_json::json!({ "url": url })).into_response(),
+        Err((status, code)) => (
+            status,
+            axum::Json(serde_json::json!({ "error": code, "code": code })),
+        )
+            .into_response(),
+    }
+}
+
 fn license_base_url() -> String {
     std::env::var("POM_LICENSE_BASE_URL")
         .ok()
@@ -5496,5 +5625,135 @@ mod plugin_event_tests {
         assert_eq!(envelope["target"], "*");
         assert_eq!(envelope["source"], "pom");
         assert_eq!(envelope["payload"]["deploy_id"], "d1");
+    }
+}
+
+#[cfg(test)]
+mod plugin_checkout_tests {
+    use super::*;
+    use axum::routing::{get, post};
+
+    #[test]
+    fn only_stripe_or_the_license_server_can_receive_the_browser() {
+        let base = "https://license.pieceofmind.cloud";
+        assert!(checkout_url_allowed(
+            "https://checkout.stripe.com/c/pay/cs_test_1",
+            base
+        ));
+        assert!(checkout_url_allowed(
+            "https://license.pieceofmind.cloud/mock/cs_1",
+            base
+        ));
+        assert!(!checkout_url_allowed(
+            "http://checkout.stripe.com/c/pay/cs_1",
+            base
+        ));
+        assert!(!checkout_url_allowed(
+            "https://evil.example/stripe.com",
+            base
+        ));
+        assert!(!checkout_url_allowed(
+            "https://stripe.com.evil.example/",
+            base
+        ));
+        assert!(!checkout_url_allowed("javascript:alert(1)", base));
+    }
+
+    async fn stub(
+        session_url: &'static str,
+    ) -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+    ) {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let recorder = seen.clone();
+        let app = axum::Router::new()
+            .route(
+                "/v1/checkout/plans",
+                get(|| async {
+                    axum::Json(serde_json::json!({
+                        "plans": [{"code": "enterprise", "plugin_codes": ["enterprise"], "checkout_available": true}]
+                    }))
+                }),
+            )
+            .route(
+                "/v1/checkout/sessions",
+                post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                    let recorder = recorder.clone();
+                    async move {
+                        *recorder.lock().unwrap() = Some(body);
+                        axum::Json(serde_json::json!({ "id": "cs_test_1", "url": session_url }))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, server, seen)
+    }
+
+    #[tokio::test]
+    async fn checkout_uses_the_plan_that_sells_the_plugin_and_returns_the_stripe_page() {
+        let (base, server, seen) = stub("https://checkout.stripe.com/c/pay/cs_test_1").await;
+        let request = PluginCheckoutRequest {
+            plugin_code: "enterprise".into(),
+            interval: Some("month".into()),
+            locale: Some("en".into()),
+        };
+        let url = create_plugin_checkout(&reqwest::Client::new(), &base, &request)
+            .await
+            .unwrap();
+        assert_eq!(url, "https://checkout.stripe.com/c/pay/cs_test_1");
+        assert_eq!(
+            seen.lock().unwrap().clone().unwrap(),
+            serde_json::json!({"plan_code": "enterprise", "plugin_code": "enterprise", "interval": "month", "locale": "en"})
+        );
+
+        let unsold = PluginCheckoutRequest {
+            plugin_code: "harness".into(),
+            interval: None,
+            locale: None,
+        };
+        assert_eq!(
+            create_plugin_checkout(&reqwest::Client::new(), &base, &unsold)
+                .await
+                .unwrap_err()
+                .1,
+            "checkout_not_offered"
+        );
+        let invalid = PluginCheckoutRequest {
+            plugin_code: "enterprise".into(),
+            interval: Some("week".into()),
+            locale: None,
+        };
+        assert_eq!(
+            create_plugin_checkout(&reqwest::Client::new(), &base, &invalid)
+                .await
+                .unwrap_err()
+                .1,
+            "checkout_request_invalid"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_session_pointing_elsewhere_is_refused() {
+        let (base, server, _) = stub("https://evil.example/pay").await;
+        let request = PluginCheckoutRequest {
+            plugin_code: "enterprise".into(),
+            interval: None,
+            locale: None,
+        };
+        assert_eq!(
+            create_plugin_checkout(&reqwest::Client::new(), &base, &request)
+                .await
+                .unwrap_err()
+                .1,
+            "checkout_url_rejected"
+        );
+        server.abort();
     }
 }

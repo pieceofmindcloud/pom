@@ -1,0 +1,124 @@
+name: Release · ksia (Linux + CUDA, Windows)
+
+# Só roda quando você mandar, e **todos os jobs rodam no runner self-hosted
+# `ksia`**: nenhum minuto nem armazenamento do GitHub. Não há `upload-artifact`
+# nem `actions/cache`: cada job compila, empacota e anexa o próprio pacote à
+# release direto da ksia, e o que precisa persistir entre execuções (checkout
+# do llama.cpp, `target/` por variante, cargo-xwin e o SDK do Windows) fica em
+# `~/.cache/pom-release` na máquina. O build de cada variante está em
+# `scripts/release-ksia.sh`; ver `docs/subsystems/build-execucao.md`,
+# "Release na ksia".
+#
+# Os workflows `release-linux.yml`, `release-macos.yml` e `release-windows.yml`
+# continuam existindo; este é a alternativa que não usa cota do GitHub.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão da release (ex.: v0.3.0)'
+        required: true
+        type: string
+      linux_cpu:
+        description: 'Linux x86_64 CPU'
+        required: false
+        default: true
+        type: boolean
+      linux_cuda:
+        description: 'Linux x86_64 CUDA (todas as arquiteturas do CUDA 12.9; demora horas)'
+        required: false
+        default: true
+        type: boolean
+      windows_cpu:
+        description: 'Windows x86_64 CPU (compilado de forma cruzada na ksia)'
+        required: false
+        default: true
+        type: boolean
+      prerelease:
+        description: 'Publicar como prerelease'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+# Um release por vez: os jobs dividem a mesma máquina e os mesmos diretórios.
+concurrency:
+  group: release-ksia
+  cancel-in-progress: false
+
+jobs:
+  linux-cpu:
+    name: Linux x86_64 (CPU)
+    if: inputs.linux_cpu
+    runs-on: [self-hosted, Linux, X64, ksia]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      # Sem `cache: npm`: esse cache mora no GitHub.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Espaço em disco
+        run: |
+          livre=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
+          echo "livre em \$HOME: ${livre}G"
+          [ "$livre" -ge 20 ] || echo "::warning::só ${livre}G livres; cada variante usa ~10G em ~/.cache/pom-release"
+      - name: Compilar e empacotar
+        run: scripts/release-ksia.sh --variant linux-cpu --version "${{ inputs.version }}"
+      - name: Publicar na release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease }}
+          files: dist-release-ksia/pom-${{ inputs.version }}-x86_64-unknown-linux-gnu-cpu.tar.gz
+
+  linux-cuda:
+    name: Linux x86_64 (CUDA, todas as arquiteturas)
+    if: inputs.linux_cuda
+    runs-on: [self-hosted, Linux, X64, ksia]
+    # Compilar os kernels do llama.cpp para a lista inteira de GPUs leva horas.
+    timeout-minutes: 1440
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Espaço em disco
+        run: |
+          livre=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
+          echo "livre em \$HOME: ${livre}G"
+          [ "$livre" -ge 25 ] || echo "::warning::só ${livre}G livres; o build CUDA completo usa bem mais que o de CPU"
+      - name: Compilar e empacotar
+        run: scripts/release-ksia.sh --variant linux-cuda --version "${{ inputs.version }}"
+      - name: Publicar na release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease }}
+          files: dist-release-ksia/pom-${{ inputs.version }}-x86_64-unknown-linux-gnu-cuda.tar.gz
+
+  windows-cpu:
+    name: Windows x86_64 (CPU, cruzado)
+    if: inputs.windows_cpu
+    runs-on: [self-hosted, Linux, X64, ksia]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compilar e empacotar
+        run: scripts/release-ksia.sh --variant windows-cpu --version "${{ inputs.version }}"
+      - name: Publicar na release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease }}
+          files: dist-release-ksia/pom-${{ inputs.version }}-x86_64-pc-windows-msvc.zip

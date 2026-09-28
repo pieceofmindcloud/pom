@@ -60,3 +60,4 @@ apps/frontend/src/docs/
 # Compose da sua maquina: nomes de container e caminhos de modelo que nao
 # valem para mais ninguem. O docker-compose.yml versionado nao e tocado.
 docker-compose-ksia.yml
+dist-release-ksia/

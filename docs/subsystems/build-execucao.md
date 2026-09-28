@@ -876,6 +876,62 @@ repositório): trocar o valor de `CUDAARCHS` invalida o build nativo anterior, e
 cargo sozinho não percebe a troca - o build nativo do llama.cpp precisa ser
 refeito à mão.
 
+### Release na ksia (`release-ksia.yml`)
+
+Workflow separado, manual (`workflow_dispatch`), que compila **tudo na ksia** e
+não consome minutos nem armazenamento do GitHub. Os workflows que compilam no
+GitHub continuam existindo; este é a alternativa sem cota. Entradas: `version`
+(tag, ex. `v0.4.0`), `linux_cpu`, `linux_cuda`, `windows_cpu` (cada uma liga um
+job, todas `true` por padrão) e `prerelease`.
+
+| Job | Pacote | Timeout |
+|---|---|---|
+| `linux-cpu` | `pom-<v>-x86_64-unknown-linux-gnu-cpu.tar.gz` | 4 h |
+| `linux-cuda` | `pom-<v>-x86_64-unknown-linux-gnu-cuda.tar.gz` | 24 h |
+| `windows-cpu` | `pom-<v>-x86_64-pc-windows-msvc.zip` | 4 h |
+
+Os três rodam em `[self-hosted, Linux, X64, ksia]` e em sequência
+(`concurrency: release-ksia`, um runner só). Cada job chama
+`scripts/release-ksia.sh --variant ... --version ...` e publica o próprio
+arquivo com `softprops/action-gh-release` na mesma tag; os jobs são
+independentes, então um que falha não impede os outros. **Não há
+`upload-artifact`, `actions/cache` nem cache npm do `setup-node`**: tudo isso
+mora no armazenamento do GitHub, que tem cota. O único tráfego para o GitHub é
+o checkout e o upload do pacote final no release. `scripts/test-release-ksia.sh`
+confere isso e o dry-run de cada variante.
+
+- **linux-cuda** compila com o CUDA 12.9 (`POM_RELEASE_CUDA_HOME`, padrão
+  `/usr/local/cuda-12.9`), que é o toolkit instalado com a lista mais larga de
+  arquiteturas, e com `CUDAARCHS=''` e `CMAKE_CUDA_ARCHITECTURES` removido - a
+  lista completa do llama.cpp (ver "Arquiteturas de GPU"). Por isso o timeout
+  de 24 h.
+- **windows-cpu** é **compilação cruzada** a partir do Linux: `cargo xwin`
+  baixa o SDK do Windows e o CRT do MSVC (`XWIN_ACCEPT_LICENSE=1`), e o CMake do
+  llama.cpp usa `clang-cl`/`lld-link`/`llvm-lib`/`llvm-rc`. O LLVM 18 da ksia
+  não traz `clang-cl` nem `lld-link` como binários, então o script cria shims
+  por argv0 (`clang` chamado como `clang-cl`, `rust-lld` do rustup como
+  `lld-link`). CUDA no Windows exige o toolkit do Windows e não se compila
+  daqui: este pacote é só CPU. **Ainda não foi executado de ponta a ponta**; a
+  primeira execução pode pedir ajuste no script.
+
+**Estado que sobrevive entre execuções** fica em `POM_RELEASE_CACHE` (padrão
+`~/.cache/pom-release` do usuário `github-runner`): clone raso do fork do
+llama.cpp (refeito quando o sha remoto de `pom-tensor-parallel` muda), um
+`target-<variante>` por variante, as ferramentas do Windows (`cargo-xwin`,
+`ninja`, shims) e o cache do `xwin`. Conte **~10 GB por variante** mais ~3 GB do
+SDK; os jobs Linux avisam quando o disco tem menos de 15 GB. Para liberar
+espaço, apague a pasta inteira - a próxima execução reconstrói do zero.
+
+**Provisionamento único (root).** O que já existe na ksia basta: `clang`,
+`mold`, `cmake`, `zip`, LLVM 18 em `/usr/lib/llvm-18/bin` e CUDA 12.9. O resto
+(`cargo-xwin`, `ninja`, SDK) o script baixa no espaço do usuário. Se faltar
+algo, o script para com a lista do que falta, antes de compilar.
+
+Localmente, sem Actions: `scripts/release-ksia.sh --variant linux-cpu --version
+v0.4.0 --dry-run` mostra os comandos; sem `--dry-run` compila e grava em
+`dist-release-ksia/` (ignorado pelo Git). `POM_RELEASE_SKIP_UI=1` pula o build
+da interface.
+
 ### O pacote
 
 Binário na raiz do pacote com `apps/` ao lado, para `project_root()` achar a UI

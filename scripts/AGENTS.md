@@ -120,6 +120,13 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 - `resolve-release-version.py` - lê a resposta de `GET /internal/releases` e
   escolhe o maior SemVer entre todas as plataformas, incrementando o metadado
   `build.N` para o `pom-release.sh`.
+- `release-ksia.sh` - build de release na ksia para `linux-cpu`,
+  `linux-cuda` (CUDA 12.9, lista larga de arquiteturas) ou `windows-cpu`
+  (cruzado com `cargo xwin` + shims `clang-cl`/`lld-link`), com estado em
+  `~/.cache/pom-release` e pacote em `dist-release-ksia/`; `--dry-run` só
+  imprime os comandos. Chamado por `.github/workflows/release-ksia.yml`.
+- `test-release-ksia.sh` - dry-run de cada variante e checagem de que o
+  workflow da ksia não usa armazenamento do GitHub.
 - `test_pom_release.sh` - smoke test local do incremento automático, override
   manual e `--dry-run`, usando `curl` e `cargo` falsos. Cobre só `pom_core`
   (binário `pom`/`pom.exe`) nas três plataformas.
@@ -224,6 +231,10 @@ invocados pelo binario (ver o `README.md` de la).
   `release` (`if: always()`) publica com o que compilou. Pacote = binario +
   `apps/frontend/dist` + README, para `config::project_root` achar a UI a partir
   do diretorio do executavel. Windows empacota com 7z.
+- `.github/workflows/release-ksia.yml` - release manual compilado só no runner
+  `ksia` (sem cota do GitHub): jobs `linux-cpu`, `linux-cuda`, `windows-cpu`
+  ligados por entrada, cada um chama `scripts/release-ksia.sh` e anexa o pacote
+  à tag. Ver `build-execucao.md`, "Release na ksia".
 - `.cargo/config.toml` - `BINDGEN_EXTRA_CLANG_ARGS` aponta o bindgen do
   llama-cpp-sys para os headers do GCC no Ubuntu (o clang do apt nao os traz);
   perfil release com `opt-level = 3`, `lto = "fat"`, `codegen-units = 1`,

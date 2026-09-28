@@ -190,7 +190,7 @@ export function RemoteModels() {
       <FullBleedHeader title={t("remoteModels.title")} subtitle={t("remoteModels.subtitle")} />
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
-        <div className="space-y-4 p-4 sm:p-5">
+        <div className="space-y-4 p-4 empty:hidden sm:p-5">
           <ModelDownloadsPanel />
         </div>
 

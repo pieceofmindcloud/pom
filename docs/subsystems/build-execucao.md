@@ -603,6 +603,13 @@ offload no primeiro clique.
   ficasse de fora entrava no contexto e invalidava a camada que copia o
   diretório dele. Com isso o contexto caiu de 605 MB para cerca de 194 MB na
   salem.
+- **Grupos de GPU sem nome no container.** O runtime NVIDIA acrescenta aos
+  processos os grupos donos dos dispositivos do host (na ksia, `video` 44 e
+  `render` 992); o 992 não existe no `/etc/group` da imagem. A dica de `sudo`
+  do `/etc/bash.bashrc` do Ubuntu roda `groups` em todo shell interativo e
+  imprimia `groups: cannot find name for group id 992` nos terminais dos
+  plugins (harness). A imagem troca essa chamada por `groups 2>/dev/null`;
+  nada mais depende do nome do grupo.
 
 ## Python legado e venv
 

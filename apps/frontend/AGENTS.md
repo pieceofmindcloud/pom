@@ -47,7 +47,9 @@ remain local until the deploy preflight.
   the public administrative exposure and gates the whole shell with the human
   access password only when needed. The real login is a browser-recognized form
   that asks only for the password, drawn like the pieceofmind.cloud home (dark
-  floating panel, `src/assets/pom-mark-dark.png`, `.pom-login*` in `index.css`);
+  floating panel, `src/assets/pom-mark-dark.png`, `.pom-login*` in `index.css`,
+  entrance/glow/pulse animations off under reduced motion, a shake on a refused
+  password, and the site's PT/EN flag pill switching the locale in place);
   the password stays in module memory and the server-side `HttpOnly` session is
   what survives a reload. This gate is only a UI flow: the server remains the
   authorization boundary.

@@ -225,7 +225,36 @@ body {
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 :root[data-theme="dark"] .pom-login { background: #0b0a0f; }
+.pom-login { position: relative; }
+.pom-login-langs {
+  position: absolute; top: clamp(14px, 3vw, 22px); right: clamp(14px, 3vw, 28px);
+  display: inline-flex; align-items: center; gap: 2px; padding: 3px;
+  border: 1px solid rgba(24, 21, 27, .12); border-radius: 999px;
+  background: #fff;
+  animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .5s both;
+}
+:root[data-theme="dark"] .pom-login-langs { border-color: rgba(255, 255, 255, .14); background: #16141d; }
+.pom-login-lang {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px 4px 5px; border: 0; border-radius: 999px;
+  background: none; color: #6d6775;
+  font: 700 9.5px/1 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  letter-spacing: .12em; cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+:root[data-theme="dark"] .pom-login-lang { color: #8f8a99; }
+.pom-login-lang img {
+  width: 17px; height: 12px; border-radius: 2px; object-fit: cover;
+  box-shadow: 0 0 0 1px rgba(24, 21, 27, .07); opacity: .55;
+  transition: opacity .15s ease;
+}
+.pom-login-lang:hover img { opacity: .85; }
+.pom-login-lang[aria-pressed="true"] { background: rgba(18, 63, 143, .10); color: #123f8f; }
+:root[data-theme="dark"] .pom-login-lang[aria-pressed="true"] { background: rgba(79, 155, 255, .14); color: #4f9bff; }
+.pom-login-lang[aria-pressed="true"] img { opacity: 1; }
+.pom-login-lang:focus-visible { outline: 2px solid #35c9f0; outline-offset: 2px; }
 .pom-login-panel {
+  animation: pom-login-rise .9s cubic-bezier(.22, 1, .36, 1) both;
   position: relative;
   isolation: isolate;
   width: min(560px, 100%);
@@ -242,19 +271,57 @@ body {
 .pom-login-panel::before {
   content: "";
   position: absolute; inset: -40% -20% auto -20%; height: 150%; z-index: -1; pointer-events: none;
+  animation: pom-login-glow 16s ease-in-out infinite alternate;
   background:
     radial-gradient(52% 60% at 50% 6%, rgba(79, 155, 255, .30), transparent 68%),
     radial-gradient(44% 52% at 84% 44%, rgba(40, 186, 232, .16), transparent 70%),
     radial-gradient(38% 48% at 10% 66%, rgba(47, 220, 200, .12), transparent 72%);
 }
-.pom-login-mark { display: block; width: min(260px, 70%); height: auto; margin: 0 auto 16px; }
+.pom-login-mark {
+  display: block; width: min(260px, 70%); height: auto; margin: 0 auto 16px;
+  animation:
+    pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .12s both,
+    pom-login-breathe 5s ease-in-out 1.2s infinite;
+}
 .pom-login-sub {
+  animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .26s both;
   margin: 0 0 clamp(28px, 5vw, 40px);
   color: rgba(255, 255, 255, .42);
   font: 700 9.5px/1 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   letter-spacing: .28em;
 }
-.pom-login-form { display: grid; gap: 12px; width: min(340px, 100%); margin: 0 auto; }
+.pom-login-form {
+  display: grid; gap: 12px; width: min(340px, 100%); margin: 0 auto;
+  animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .42s both;
+}
+
+/* Três nós ligados por uma linha com um pulso de luz que viaja entre eles. */
+.pom-login-link {
+  position: relative;
+  display: flex; justify-content: space-between; align-items: center;
+  width: 132px; height: 8px;
+  margin: calc(-1 * clamp(16px, 3vw, 24px)) auto clamp(26px, 4vw, 34px);
+  animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .34s both;
+}
+.pom-login-link::before {
+  content: ""; position: absolute; left: 4px; right: 4px; top: 50%; height: 1px;
+  background: linear-gradient(90deg, rgba(79, 155, 255, .45), rgba(47, 220, 200, .45));
+}
+.pom-login-link::after {
+  content: ""; position: absolute; top: 50%; left: 0; width: 18px; height: 3px; margin-top: -1.5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #6fd6f3, transparent);
+  box-shadow: 0 0 10px #35c9f0;
+  animation: pom-login-travel 2.8s cubic-bezier(.45, 0, .55, 1) 1.1s infinite;
+}
+.pom-login-link i {
+  position: relative; z-index: 1;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #0b1421; border: 1.5px solid #4f9bff;
+  animation: pom-login-node 2.8s ease-in-out 1.1s infinite;
+}
+.pom-login-link i:nth-child(2) { border-color: #35c9f0; animation-delay: 2.5s; }
+.pom-login-link i:nth-child(3) { border-color: #2fdcc8; animation-delay: 3.9s; }
 .pom-login-input {
   width: 100%;
   padding: 13px 20px;
@@ -291,4 +358,30 @@ body {
   animation: pom-login-spin .8s linear infinite;
 }
 @keyframes pom-login-spin { to { transform: rotate(360deg); } }
+@keyframes pom-login-rise {
+  from { opacity: 0; transform: translateY(22px) scale(.975); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pom-login-reveal {
+  from { opacity: 0; transform: translateY(10px); filter: blur(4px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+@keyframes pom-login-glow {
+  from { transform: translate3d(-4%, 0, 0) rotate(-3deg); opacity: .85; }
+  to { transform: translate3d(5%, 3%, 0) rotate(4deg); opacity: 1; }
+}
+@keyframes pom-login-breathe {
+  0%, 100% { filter: drop-shadow(0 0 0 rgba(53, 201, 240, 0)); }
+  50% { filter: drop-shadow(0 0 14px rgba(53, 201, 240, .35)); }
+}
+@keyframes pom-login-travel {
+  0% { left: 0; opacity: 0; }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { left: calc(100% - 18px); opacity: 0; }
+}
+@keyframes pom-login-node {
+  0%, 20%, 100% { box-shadow: 0 0 0 0 rgba(53, 201, 240, 0); }
+  8% { box-shadow: 0 0 0 5px rgba(53, 201, 240, .18); background: #35c9f0; }
+}
 .pom-login-error { margin: 2px 0 0; color: #ff9aa6; font-size: 13px; }

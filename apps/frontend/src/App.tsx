@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { canAccessRoute, homeRoute, isEnterprisePath } from "./lib/access";
@@ -21,18 +21,44 @@ import { Topbar } from "./components/Topbar";
 import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
 import pomMark from "./assets/pom-mark-dark.png";
+import { brand } from "./lib/brand";
 import { Panel, PanelHeader } from "./components/ui";
 
+const LOGIN_LANGUAGES = [
+  { id: "pt-BR", short: "PT", label: "Português (Brasil)" },
+  { id: "en", short: "EN", label: "English" },
+] as const;
+
 function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
-  const { t } = useI18n();
+  const { t, locale, setLocale } = useI18n();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  /** Balança o formulário numa senha recusada, salvo com movimento reduzido. */
+  function shake() {
+    const form = formRef.current;
+    if (!form || typeof form.animate !== "function") return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    form.animate(
+      [
+        { transform: "translateX(0)" },
+        { transform: "translateX(-9px)" },
+        { transform: "translateX(8px)" },
+        { transform: "translateX(-5px)" },
+        { transform: "translateX(3px)" },
+        { transform: "translateX(0)" },
+      ],
+      { duration: 420, easing: "cubic-bezier(.36,.07,.19,.97)" },
+    );
+  }
 
   async function authenticate(event: React.FormEvent) {
     event.preventDefault();
     if (!draft) {
       setFailed(true);
+      shake();
       return;
     }
     setBusy(true);
@@ -44,6 +70,7 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
     } catch {
       clearAdminAccessToken();
       setFailed(true);
+      shake();
     } finally {
       setBusy(false);
     }
@@ -53,10 +80,30 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
   // escuro flutuante com a marca, sobre o fundo do tema. Só a senha é pedida.
   return (
     <main className="pom-login">
+      {/* O idioma sai do navegador (inglês para quem não usa português); as
+          bandeiras trocam na hora, como na página inicial do site. */}
+      <div className="pom-login-langs" role="group" aria-label={locale === "pt-BR" ? "Idioma" : "Language"}>
+        {LOGIN_LANGUAGES.map((language) => (
+          <button
+            key={language.id}
+            type="button"
+            className="pom-login-lang"
+            aria-pressed={locale === language.id}
+            aria-label={language.label}
+            title={language.label}
+            onClick={() => setLocale(language.id)}
+          >
+            <img src={brand.flags[language.id]} alt="" width={17} height={12} />
+            <span>{language.short}</span>
+          </button>
+        ))}
+      </div>
       <section className="pom-login-panel">
         <img className="pom-login-mark" src={pomMark} alt="POM" width={815} height={320} />
         <p className="pom-login-sub">PIECE OF MIND</p>
-        <form className="pom-login-form" autoComplete="on" onSubmit={(event) => void authenticate(event)}>
+        {/* Um pedaço da mente viajando entre máquinas: decorativo. */}
+        <span className="pom-login-link" aria-hidden="true"><i /><i /><i /></span>
+        <form ref={formRef} className="pom-login-form" autoComplete="on" onSubmit={(event) => void authenticate(event)}>
           <label className="sr-only" htmlFor="admin-access-password">{t("accessGate.passwordLabel")}</label>
           <input
             autoFocus

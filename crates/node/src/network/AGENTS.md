@@ -46,6 +46,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   persiste no `pom.db` se ele não aceitar, sem retransmitir cópias recebidas.
 - `cluster_logs_policy.rs` - catraca autenticada do interruptor de logs; o
   campo anunciado só dispara a leitura da política no principal.
+- `network_chat.rs` - também transporta `ChatAction::PluginNotice`, o aviso
+  que um plugin manda a todos os nós (`notification.notify` com
+  `scope: "network"`): mesmo caminho autenticado e mesmo limite de taxa das
+  mensagens, mas guardado só em memória (50 avisos, 24 h, `notice_snapshot`),
+  nunca em `network_chat_messages`.
 - `network_chat.rs` - canal de conversa sobre o swarm libp2p, com request/
   response próprio, limites de texto/arquivo, fila limitada, rate limit e
   writer de persistência fora do loop do swarm. A ação original leva a API key;

@@ -479,7 +479,7 @@ fn model_object(
 /// memória, mas continua sendo uma implantação servível: a geração o acorda
 /// depois de planejar a rota. Só um peer que não está ocioso e ainda não
 /// confirmou `/health` deve esconder o modelo do catálogo.
-fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
+pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
     let alive_models: std::collections::BTreeSet<String> = peers
         .iter()
         .filter(|p| p.is_alive() && !p.model.is_empty())

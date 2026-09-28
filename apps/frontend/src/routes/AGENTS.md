@@ -92,30 +92,35 @@ Per-file list:
   uso por `plugin_code` vêm do estado autenticado do nó, nunca do catálogo
   público. A tela full-bleed segue o cabeçalho e o contêiner
   interno de `/modelos`. O estado de licença, validade, última instalação,
-  última consulta de update, funcionalidades, versão e ações continuam vindo do
-  nó; plugins locais ativos permanecem visíveis mesmo quando faltam no catálogo
+  versão e ações continuam vindo do nó; plugins locais ativos permanecem visíveis mesmo quando faltam no catálogo
   público. Desativação exige confirmação. O formulário de chave aparece se
   qualquer entrada pública que exige licença não estiver ativa no estado local,
   mesmo quando outro plugin já tem licença/contexto. Ele também aparece quando
   falta status local ou o status está expirado/revogado, e some quando todos os
   plugins licenciáveis conhecidos estão ativos. Comprar redireciona plugins
   licenciados à loja pública com `plugin=<code>` codificado em
-  `lib/pluginPurchase.ts`. Repositórios GitHub ficam em um card global
-  independente do catálogo comercial: qualquer URL pública com `manifest.json`
-  na raiz ou, na ausência dele, `ui/manifest.json` mostra metadados e releases
-  do repositório, e o operador escolhe qual
-  release instalar sem consulta ao servidor de licenças. Ações de ativação,
-  instalação, atualização e desativação também invalidam `keys.pluginUi` para
-  atualizar imediatamente o menu do plugin; o polling de 30 s cobre mudanças
-  feitas fora desta aba. Um único formulário ativa em lote todo `plugin_code`
-  que o servidor conceder
-  (`POST /api/ui/plugins/activate`, resposta
-  `{activated}`); atualizar e desativar continuam por plugin. Um único card
-  global sob a ativação administra repositórios GitHub persistidos localmente e
-  suas releases. Instalar exige confirmação e a tag é escolhida pelo operador;
-  essa origem não consulta `requires_license` nem depende da seleção do servidor.
-  O editor de preferências usa o schema opcional do manifesto instalado, mostra
-  defaults tipados boolean/diretório e envia valores só à rota local do nó.
+  `lib/pluginPurchase.ts`. Os cards são compactos, dois por linha a partir de
+  `xl`, um por `plugin_code`: catálogo comercial, repositório GitHub e estado
+  local ativo do mesmo código viram um único card. A coluna da direita traz,
+  no topo, o card "Adicionar do GitHub" (URL de repositório público) e, logo
+  abaixo, a ativação de licença. O card de um repositório mostra a descrição
+  e as capturas vindas do manifesto (`raw.githubusercontent.com`), atualizar
+  e remover como ícones, e um select só com as releases compatíveis com este
+  nó (`available_for_node`), já marcado na mais recente, com a ação
+  Instalar, Atualizar (quando a instalação pública veio deste repositório) ou
+  Instalada (desabilitada, quando a tag escolhida é a versão atual). Instalar
+  ou atualizar exige confirmação; essa origem não consulta `requires_license`
+  nem o servidor de licenças. O card não mostra funcionalidades nem a última
+  consulta de update, e a linha de release comercial só aparece quando existe
+  release para o alvo do nó. Ações de ativação, instalação, atualização e
+  desativação invalidam `keys.pluginUi` para atualizar o menu do plugin na
+  hora; o polling de 30 s cobre mudanças feitas fora desta aba. Um único
+  formulário ativa em lote todo `plugin_code` que o servidor conceder
+  (`POST /api/ui/plugins/activate`, resposta `{activated}`); atualizar e
+  desativar continuam por plugin. As preferências abrem num modal pelo ícone
+  de engrenagem no topo do card (só com plugin ativo e schema no release
+  instalado), mostram defaults tipados boolean/diretório, enviam os valores
+  só à rota local do nó e exibem o motivo devolvido pelo nó quando falham.
   A atualização do binário `pom` em si fica separada em `About.tsx` (ver
   `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,
   Configurações > Plugins. No card comercial, a release exibida é escolhida
@@ -559,7 +564,7 @@ Per-file list:
   cluster `connection_key`. A rota `/config/preferencias/admin` renderiza
   somente TLS, QUIC, logs de processo entre nós e chat da rede, além do
   interruptor de descoberta local, desligado por padrão; a rota normal mantém
-  exposição, Hugging Face, proteção térmica e o link de armazenamento.
+  exposição, Hugging Face e proteção térmica; Armazenamento só tem entrada no menu.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e

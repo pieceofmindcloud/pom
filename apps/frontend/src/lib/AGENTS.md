@@ -596,9 +596,26 @@ When updating this file, preserve this bar for all agents and keep entries conci
   Se os dois aparecem, `roles` prevalece; sem nenhum, todos os perfis são
   elegíveis. `icon_image` é validado como PNG declarado em `assets` e fica
   disponível para o menu como fallback visual; `documentation` valida as
-  entradas Markdown dos guias e da referência. Não conhece plugin algum.
+  entradas Markdown dos guias e da referência. `menu[].children` vira seção
+  com submenus (`pluginMenuItems` devolve só os filhos visíveis ao perfil;
+  o `roles` do filho é interseção com o do pai) e `pluginDisplayName` dá o
+  nome humano do plugin. Não conhece plugin algum.
 - `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
   design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
-  empacotar cópias próprias.
+  empacotar cópias próprias. Versão 2: `context()`, `events`, `protocol` e
+  `plugin(code)` (eventos e comandos com escopo do plugin).
+- `pluginEvents.ts` - o protocolo `pom-plugin-events/v1`: envelope, barramento
+  (`publishPluginEvent`, `subscribePluginEvents`, replay do último evento
+  global), entrega por `CustomEvent("pom:plugin-event")` e `postMessage` para
+  `iframe[data-pom-plugin]`, e os comandos `notification.notify`/`confirm`
+  (`runPluginCommand`, validados e sempre respondidos com
+  `notification.response`), também aceitos por `pom:plugin-request` e
+  `postMessage` da mesma origem. Quem executa é a `PluginBridge`.
+  `forwardNodeEvent` repassa os envelopes do nó (`deployment.started`,
+  `model.serving`, `model.stopped`, `preferences.changed`) preservando `id`.
+- `pluginInbox.ts` - caixa de entrada dos plugins no sino: perguntas
+  `notification.confirm` com Aceitar/Recusar (só nesta aba) e avisos
+  `notification.notify` sem botões, não lidos até o sino abrir
+  (`markPluginNoticesRead`; ids lidos no `localStorage`).
 - `pluginI18n.ts` - carrega/valida/instala os catálogos de texto do plugin
   (`syncPluginCatalogs`), nos idiomas selecionados. Ver `docs/subsystems/plugins-ui.md`.

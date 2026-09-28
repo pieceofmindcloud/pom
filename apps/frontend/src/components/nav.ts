@@ -159,6 +159,10 @@ const PLUGIN_ICONS: Readonly<Record<string, LucideIcon>> = {
   network: Network,
   boxes: Boxes,
   "shield-check": ShieldCheck,
+  "book-open": BookOpen,
+  "folder-tree": FolderTree,
+  send: Send,
+  "messages-square": MessagesSquare,
 };
 
 function pluginIcon(name?: string | null): LucideIcon {
@@ -168,7 +172,8 @@ function pluginIcon(name?: string | null): LucideIcon {
 /**
  * Aplica os itens de menu dos plugins ativos: um item cujo `to` já existe
  * substitui esse destino nativo; cada novo item entra na raiz, antes da
- * documentação, na ordem do manifesto. O formato atual ainda não cria filhos.
+ * documentação, na ordem do manifesto. Um item com `children` vira seção com
+ * submenus.
  */
 function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] {
   const result: NavSection[] = sections.map((section) => {
@@ -203,12 +208,27 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     }
     if (placed) continue;
     const docs = result.findIndex((s) => s.labelKey === "nav.documentation");
-    const entry: NavSection = {
-      labelKey: key,
-      icon: pluginIcon(item.icon),
-      iconImage: item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined,
-      to: item.to,
-    };
+    const iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
+    // Com submenus, o item vira uma seção expansível; os filhos usam o
+    // ícone nomeado de cada um, e a imagem do plugin fica só na seção.
+    const entry: NavSection = item.children
+      ? {
+          labelKey: key,
+          icon: pluginIcon(item.icon),
+          iconImage,
+          children: item.children.map((child) => ({
+            labelKey: pluginLabelKey(child.code, child.id),
+            to: child.to,
+            icon: pluginIcon(child.icon),
+            end: true,
+          })),
+        }
+      : {
+          labelKey: key,
+          icon: pluginIcon(item.icon),
+          iconImage,
+          to: item.to,
+        };
     result.splice(docs < 0 ? result.length : docs, 0, entry);
   }
   return result;

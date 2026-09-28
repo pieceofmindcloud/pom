@@ -7,7 +7,9 @@
  * trocados, na hora de empacotar, por leituras deste objeto. Assim hooks e
  * contextos (idioma, tema, QueryClient) são os mesmos da aplicação e a tela
  * herda o visual sem copiar o design system. A superfície é versionada
- * (`version`): só cresce de forma compatível dentro de uma versão.
+ * (`version`): só cresce de forma compatível. A versão 2 acrescentou o
+ * protocolo `pom-plugin-events/v1` (`events`, `notifications`, `plugin(code)`
+ * e `context()`); ver `lib/pluginEvents.ts`.
  */
 import * as React from "react";
 import * as ReactDOM from "react-dom";
@@ -23,8 +25,17 @@ import { storageKey } from "./brand";
 import { useCluster } from "./queries";
 import { useTheme } from "./theme";
 import { useI18n } from "../i18n/provider";
+import { getActiveLocale } from "../i18n/locales";
+import {
+  lastPluginEvent,
+  PLUGIN_EVENT_DOM,
+  PLUGIN_EVENTS_PROTOCOL,
+  PLUGIN_REQUEST_DOM,
+  scopedPluginApi,
+  subscribePluginEvents,
+} from "./pluginEvents";
 
-export const PLUGIN_HOST_VERSION = 1;
+export const PLUGIN_HOST_VERSION = 2;
 
 export function buildPluginHost() {
   return {
@@ -39,6 +50,20 @@ export function buildPluginHost() {
     hooks: { useI18n, useTheme, useCluster },
     api: { get: api.get },
     storageKey,
+    /** Contrato de eventos e comandos entre POM e plugins. */
+    protocol: {
+      name: PLUGIN_EVENTS_PROTOCOL,
+      domEvent: PLUGIN_EVENT_DOM,
+      domRequest: PLUGIN_REQUEST_DOM,
+    },
+    /** Idioma e tema atuais, para quem monta fora do React do host. */
+    context: () => ({
+      locale: getActiveLocale(),
+      theme: document.documentElement.dataset.theme === "light" ? "light" : "dark",
+    }),
+    events: { subscribe: subscribePluginEvents, last: lastPluginEvent },
+    /** API com escopo do plugin: eventos filtrados e comandos assinados pelo código. */
+    plugin: scopedPluginApi,
   };
 }
 

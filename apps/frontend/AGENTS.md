@@ -45,7 +45,9 @@ remain local until the deploy preflight.
 - `index.css` - design tokens and global styles (see below).
 - `App.tsx` - shell and route table (see below); after setup detection it probes
   the public administrative exposure and gates the whole shell with the human
-  access password only when needed. The real login is a browser-recognized form;
+  access password only when needed. The real login is a browser-recognized form
+  that asks only for the password, drawn like the pieceofmind.cloud home (dark
+  floating panel, `src/assets/pom-mark-dark.png`, `.pom-login*` in `index.css`);
   the password stays in module memory and the server-side `HttpOnly` session is
   what survives a reload. This gate is only a UI flow: the server remains the
   authorization boundary.
@@ -74,7 +76,9 @@ plugin ativo (`lib/pluginUi.ts`, `components/PluginScreen.tsx`,
 nativos `/logs` e `/estatisticas` ao declarar esses destinos; sem uma declaração
 única, o `EnterpriseFeatureShowcase` (`src/components/`) continua como fallback.
 Menus novos entram na raiz, na ordem do manifesto, imediatamente antes de
-Documentação. Cada menu pode declarar `roles`; esse campo controla sua
+Documentação; um item com `children` vira seção expansível com submenus.
+`components/PluginBridge.tsx` liga o shell aos plugins pelo protocolo
+`pom-plugin-events/v1` (`lib/pluginEvents.ts`). Cada menu pode declarar `roles`; esse campo controla sua
 visibilidade e o acesso direto à rota vinculada. Sem `roles`, `profiles` do
 formato legado continua valendo quando presente; sem nenhum dos dois, os três
 perfis são aceitos conforme as restrições da rota. O código de

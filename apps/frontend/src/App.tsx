@@ -13,13 +13,15 @@ import { ChatSessionProvider } from "./lib/chatStore";
 import { useAdminSurface, usePluginUi } from "./lib/queries";
 import { pluginUiSnapshot, resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
 import { PluginScreen } from "./components/PluginScreen";
+import { PluginBridge } from "./components/PluginBridge";
 import { syncPluginCatalogs } from "./lib/pluginI18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
-import { Button, Input, Panel, PanelHeader } from "./components/ui";
+import pomMark from "./assets/pom-mark-dark.png";
+import { Panel, PanelHeader } from "./components/ui";
 
 function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
   const { t } = useI18n();
@@ -47,41 +49,36 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
     }
   }
 
+  // Mesma assinatura visual da página inicial do pieceofmind.cloud: o painel
+  // escuro flutuante com a marca, sobre o fundo do tema. Só a senha é pedida.
   return (
-    <div className="flex min-h-full items-center justify-center bg-ink px-5 py-10">
-      <Panel className="w-full max-w-md">
-        <PanelHeader
-          eyebrow={t("accessGate.eyebrow")}
-          title={t("accessGate.passwordTitle")}
-          subtitle={t("accessGate.passwordSubtitle")}
-        />
-        <form
-          className="space-y-4 px-5 py-5"
-          autoComplete="on"
-          onSubmit={(event) => void authenticate(event)}
-        >
-          <label className="block">
-            <span className="mb-1.5 block text-[0.8rem] font-medium text-muted">
-              {t("accessGate.passwordLabel")}
-            </span>
-            <Input
-              autoFocus
-              type="password"
-              name="password"
-              id="admin-access-password"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              aria-label={t("accessGate.passwordLabel")}
-              autoComplete="current-password"
-            />
-          </label>
-          {failed && <p className="text-xs text-rose">{t("accessGate.passwordInvalid")}</p>}
-          <Button variant="primary" loading={busy} type="submit" className="w-full">
+    <main className="pom-login">
+      <section className="pom-login-panel">
+        <img className="pom-login-mark" src={pomMark} alt="POM" width={815} height={320} />
+        <p className="pom-login-sub">PIECE OF MIND</p>
+        <form className="pom-login-form" autoComplete="on" onSubmit={(event) => void authenticate(event)}>
+          <label className="sr-only" htmlFor="admin-access-password">{t("accessGate.passwordLabel")}</label>
+          <input
+            autoFocus
+            className="pom-login-input"
+            type="password"
+            name="password"
+            id="admin-access-password"
+            value={draft}
+            placeholder={t("accessGate.passwordPlaceholder")}
+            onChange={(event) => setDraft(event.target.value)}
+            aria-label={t("accessGate.passwordLabel")}
+            aria-invalid={failed || undefined}
+            autoComplete="current-password"
+          />
+          <button className="pom-login-button" type="submit" disabled={busy}>
+            {busy ? <span className="pom-login-spinner" aria-hidden="true" /> : null}
             {t("accessGate.submit")}
-          </Button>
+          </button>
+          {failed && <p role="alert" className="pom-login-error">{t("accessGate.passwordInvalid")}</p>}
         </form>
-      </Panel>
-    </div>
+      </section>
+    </main>
   );
 }
 
@@ -363,6 +360,9 @@ export default function App() {
           that is expected to fail, but a toolbar that throws used to blank the
           whole window - including the menu that gets the operator out of it.
         */}
+        <ErrorBoundary fallback={null}>
+          <PluginBridge />
+        </ErrorBoundary>
         <ErrorBoundary fallback={null}>
           <Sidebar />
         </ErrorBoundary>

@@ -233,7 +233,8 @@ duas famílias de rotas nunca se misturam, no código nem na UI.
 
 ## Repositórios públicos do GitHub e preferências locais
 
-O card **Public GitHub Releases** cadastra URLs diretamente no nó. O fluxo é
+O card **Adicionar do GitHub**, no topo da tela Plugins e acima da ativação
+de licença, cadastra URLs diretamente no nó. O fluxo é
 local ao POM e não consulta o catálogo, a elegibilidade ou qualquer endpoint
 do servidor de licenças. Não existe campo `requires_license` no manifesto
 GitHub, e o valor que o catálogo comercial publica não controla a instalação
@@ -274,11 +275,16 @@ mostrar releases. A API pública do GitHub fornece as releases publicadas e os
 assets. O nó percorre as páginas de 100 até listar todas as releases publicadas,
 incluindo prereleases e excluindo drafts. A leitura é limitada a 16 MiB de
 metadados e falha explicitamente se ultrapassar esse orçamento, em vez de
-esconder releases antigas. A interface pagina a lista localmente para não
-montar milhares de cards de uma vez. Cada asset instalável
-precisa publicar o digest SHA-256 da API. Na tela, cada tag é uma escolha
-separada. Instalar uma versão antiga ou fazer downgrade é permitido e sempre
-exige confirmação explícita.
+esconder releases antigas. Cada asset instalável
+precisa publicar o digest SHA-256 da API. Na tela, o card do plugin oferece um
+select só com as releases compatíveis com este nó (`available_for_node`), já
+marcado na mais recente, e a ação Instalar ou Atualizar. Escolher uma versão
+antiga ou fazer downgrade é permitido e sempre exige confirmação explícita.
+O manifesto pode declarar `description` por idioma e `screenshots`; o nó
+resolve caminhos relativos para
+`https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<caminho>` e o
+navegador carrega as imagens direto do GitHub, sem passar pelo nó nem pelo
+license-server.
 
 A adição, atualização e remoção dos repositórios usa somente as rotas locais
 AdminOnly `/api/ui/plugins/github-repositories*`. A lista, o caminho do
@@ -301,12 +307,15 @@ versionless atual enumera toggles `features[]` (`key`, `label`, `default`,
 `description?`) e um `storage_directory?` (`label`, `default?`). O POM valida
 identificadores únicos e limites de tamanho; os valores digitados são um DTO
 separado, com mapa bool e caminho opcional. Defaults são aplicados ao ler o
-estado. O diretório escolhido precisa ser absoluto, existir e ser diretório.
+estado. O diretório escolhido precisa ser absoluto; se ainda não existir, o nó
+o cria ao salvar, e o caminho final precisa ser um diretório.
 Os valores ficam em `plugin_preferences:<code>` no `pom.db`, nunca no snapshot
 `plugin_license:<code>`, em pedidos ao license-server ou em entitlement. O
-editor por plugin só aparece quando há schema no release instalado e o plugin
-está ativo. `host.configure` pode entregar esses valores ao host local do
-próprio plugin; nenhum endpoint de licenças recebe valores de preferências.
+editor abre pelo ícone de engrenagem no card, só quando há schema no release
+instalado e o plugin está ativo, e mostra o motivo devolvido pelo nó quando o
+salvamento falha. `host.configure` entrega esses valores ao host local do
+próprio plugin e, a cada salvamento, o nó também envia `host.event` com
+`preferences.changed`; nenhum endpoint de licenças recebe valores de preferências.
 
 ## Fases e limites desta entrega
 

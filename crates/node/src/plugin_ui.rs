@@ -37,6 +37,23 @@ pub(crate) struct MenuItem {
     /// Campo legado. Mantido para manifestos já publicados.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<String>>,
+    /// Submenus do item. Com filhos, o item vira uma seção expansível; o `to`
+    /// do pai continua obrigatório para que hosts sem suporte a submenus
+    /// mostrem ao menos o destino principal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<MenuChild>,
+}
+
+/// Um submenu. Mesmas regras de um item de primeiro nível, sem netos.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct MenuChild {
+    pub id: String,
+    pub label: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -72,6 +89,15 @@ pub(crate) struct PluginUiManifest {
     /// Optional PNG served by the plugin and used in the navigation menu.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_image: Option<String>,
+    /// Descrição curta por idioma (`en` obrigatório quando presente), mostrada
+    /// na tela Plugins.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub description: std::collections::BTreeMap<String, String>,
+    /// Capturas de tela: caminhos relativos à raiz do repositório GitHub do
+    /// plugin ou URLs `https://`. O POM não as serve: o navegador as carrega
+    /// direto do GitHub.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<String>,
     #[serde(default)]
     pub menu: Vec<MenuItem>,
     #[serde(default)]
@@ -192,6 +218,27 @@ fn normalize_ui_manifest_documentation(value: Value) -> Result<Value, String> {
     Ok(value)
 }
 
+const MAX_SCREENSHOTS: usize = 8;
+const MAX_DESCRIPTION_TEXT: usize = 2000;
+
+/// Caminho relativo seguro dentro do repositório ou URL `https://` sem
+/// credenciais. Nada aqui é servido pelo nó.
+pub(crate) fn valid_screenshot(value: &str) -> bool {
+    if value.len() > 1024 {
+        return false;
+    }
+    if let Some(rest) = value.strip_prefix("https://") {
+        return !rest.is_empty()
+            && !rest.contains('@')
+            && !rest.contains(char::is_whitespace)
+            && reqwest::Url::parse(value).is_ok();
+    }
+    valid_asset(value)
+        && [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+            .iter()
+            .any(|extension| value.to_ascii_lowercase().ends_with(extension))
+}
+
 fn valid_profiles(profiles: &[String]) -> bool {
     !profiles.is_empty() && profiles.iter().all(|p| PROFILES.contains(&p.as_str()))
 }
@@ -218,14 +265,47 @@ impl PluginUiManifest {
                 return Err("icon_image precisa ser um asset PNG declarado".into());
             }
         }
+        if !manifest.description.is_empty()
+            && (!manifest.description.contains_key("en")
+                || manifest.description.iter().any(|(locale, text)| {
+                    !valid_locale(locale)
+                        || text.trim().is_empty()
+                        || text.len() > MAX_DESCRIPTION_TEXT
+                }))
+        {
+            return Err("description precisa de en e textos curtos por idioma".into());
+        }
+        if manifest.screenshots.len() > MAX_SCREENSHOTS
+            || !manifest
+                .screenshots
+                .iter()
+                .all(|shot| valid_screenshot(shot))
+        {
+            return Err("screenshots inválidos".into());
+        }
+        let mut menu_ids = std::collections::HashSet::new();
         for item in &manifest.menu {
             let valid_role_fields = item.roles.as_deref().is_none_or(valid_roles)
                 && item.profiles.as_deref().is_none_or(valid_profiles);
-            if item.id.is_empty() || !valid_path(&item.to) || !valid_role_fields {
+            if item.id.is_empty()
+                || !valid_path(&item.to)
+                || !valid_role_fields
+                || !menu_ids.insert(item.id.as_str())
+            {
                 return Err(format!("item de menu {:?} inválido", item.id));
             }
             if !item.label.contains_key("en") {
                 return Err(format!("item de menu {:?} sem rótulo en", item.id));
+            }
+            for child in &item.children {
+                if child.id.is_empty()
+                    || !valid_path(&child.to)
+                    || !child.roles.as_deref().is_none_or(valid_roles)
+                    || !child.label.contains_key("en")
+                    || !menu_ids.insert(child.id.as_str())
+                {
+                    return Err(format!("submenu {:?} inválido", child.id));
+                }
             }
         }
         for route in &manifest.routes {
@@ -607,6 +687,64 @@ mod tests {
         assert_eq!(parsed.menu[0].label["en"], "Base Plugin");
         assert_eq!(parsed.documentation.as_ref().unwrap().guides.len(), 3);
         assert!(parsed.is_documentation("docs/guia-workspace.md"));
+    }
+
+    #[test]
+    fn menu_children_description_and_screenshots_are_validated() {
+        let manifest = |menu: Value, extra: Value| {
+            let mut value = json!({
+                "schema": "pom-plugin-ui/v1",
+                "plugin_code": "base",
+                "menu": menu,
+                "routes": [
+                    { "path": "/tutorial", "screen": "tutorial" },
+                    { "path": "/projects", "screen": "tutorial" }
+                ],
+                "screens": { "tutorial": { "module": "ui/screens.js" } },
+                "assets": ["ui/screens.js"]
+            });
+            for (key, item) in extra.as_object().unwrap() {
+                value[key] = item.clone();
+            }
+            value
+        };
+        let menu = json!([{
+            "id": "base", "label": { "en": "POM - Plugins" }, "to": "/tutorial",
+            "children": [
+                { "id": "tutorial", "label": { "en": "Plugin" }, "to": "/tutorial" },
+                { "id": "projects", "label": { "en": "Projects" }, "to": "/projects", "roles": ["admin"] }
+            ]
+        }]);
+        let parsed = PluginUiManifest::parse(
+            "base",
+            manifest(
+                menu.clone(),
+                json!({
+                    "description": { "en": "Tutorial", "pt-BR": "Tutorial" },
+                    "screenshots": ["docs/shot.png", "https://example.com/a.webp"]
+                }),
+            ),
+        )
+        .expect("valid manifest with children");
+        assert_eq!(parsed.menu[0].children.len(), 2);
+        assert_eq!(parsed.screenshots.len(), 2);
+        // A serialização preserva os filhos para o navegador.
+        let served = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(served["menu"][0]["children"][1]["id"], "projects");
+
+        let duplicated = json!([{
+            "id": "base", "label": { "en": "x" }, "to": "/tutorial",
+            "children": [{ "id": "base", "label": { "en": "y" }, "to": "/projects" }]
+        }]);
+        assert!(PluginUiManifest::parse("base", manifest(duplicated, json!({}))).is_err());
+        for extra in [
+            json!({ "description": { "pt-BR": "sem en" } }),
+            json!({ "screenshots": ["../fora.png"] }),
+            json!({ "screenshots": ["docs/script.js"] }),
+            json!({ "screenshots": ["http://example.com/a.png"] }),
+        ] {
+            assert!(PluginUiManifest::parse("base", manifest(menu.clone(), extra)).is_err());
+        }
     }
 
     /// O manifesto que o plugin `enterprise` (pom-plugin-logs) entrega hoje.

@@ -683,8 +683,8 @@ ativando-os separadamente. Comprar redireciona plugins licenciados à loja públ
 com `plugin=<plugin_code>` codificado. O catálogo comercial não registra,
 autoriza ou fornece repositórios GitHub para instalação.
 
-As releases GitHub têm um registro local independente por nó. O card global
-`Public GitHub Releases` aceita uma URL pública e procura `manifest.json` na
+As releases GitHub têm um registro local independente por nó. O card
+`Adicionar do GitHub` aceita uma URL pública e procura `manifest.json` na
 raiz do branch padrão; se não existir, tenta `ui/manifest.json` (`pom-plugin-ui/v1`)
 e usa os manifestos por plataforma anexados às releases. Percorre todas as
 páginas publicadas sem chamar o servidor de licenças. A leitura tem orçamento
@@ -692,7 +692,9 @@ de metadados e falha sem truncar silenciosamente se excedido. Ações AdminOnly
 usam ConnectionAuth:
 
 - `GET /api/ui/plugins/github-repositories` lista as fontes persistidas e
-  publica `manifest_path` (`manifest.json` ou `ui/manifest.json`);
+  publica `manifest_path` (`manifest.json` ou `ui/manifest.json`),
+  `description` por idioma e `screenshot_urls` já resolvidas para
+  `raw.githubusercontent.com`;
 - `POST /api/ui/plugins/github-repositories` recebe `{repository_url}` e
   valida o manifesto e as releases diretamente na API pública do GitHub;
 - `POST /api/ui/plugins/github-repositories/:id/refresh` atualiza os dados e

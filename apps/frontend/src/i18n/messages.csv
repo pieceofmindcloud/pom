@@ -45,9 +45,8 @@ accessGate.invalid,That token was not accepted.,Esse token não foi aceito.
 accessGate.label,Administrative access token,Token de acesso administrativo
 accessGate.passwordInvalid,That password was not accepted.,Essa senha não foi aceita.
 accessGate.passwordLabel,Administrative access password,Senha de acesso administrativo
-accessGate.passwordSubtitle,This interface is exposed to the network. Enter the administrative access password to continue.,Esta interface está exposta à rede. Informe a senha de acesso administrativo para continuar.
-accessGate.passwordTitle,Administrative password required,Senha administrativa necessária
-accessGate.submit,Open interface,Abrir interface
+accessGate.passwordPlaceholder,Password,Senha
+accessGate.submit,Sign in,Entrar
 accessGate.subtitle,This interface is exposed to the network. Enter the administrative access token to continue.,Esta interface está exposta à rede. Informe o token de acesso administrativo para continuar.
 accessGate.title,Access token required,Token de acesso necessário
 accessGate.unavailable,The node did not publish its administrative access policy. The interface stays locked until it can verify that policy.,O nó não publicou a política de acesso administrativo. A interface permanece fechada até conseguir verificá-la.
@@ -858,10 +857,10 @@ docs.noDoc,This document is not in the embedded set,Este documento não está no
 docs.noDocDetail,Pick one from the tree on the left.,Escolha um na árvore à esquerda.
 docs.noResults,No documentation matches,Nenhuma documentação encontrada
 docs.noResultsDetail,"Try another term, or clear the search to browse the tree.","Tente outro termo, ou limpe a busca para navegar pela árvore."
-docs.resultCount,"{count}{count, plural, =1 { result} other { results}}","{count}{count, plural, =1 { resultado} other { resultados}}"
 docs.pluginGuides,Plugin guides,Guias dos plugins
 docs.pluginLoading,Loading plugin documentation…,Carregando documentação do plugin…
 docs.plugins,Plugins,Plugins
+docs.resultCount,"{count}{count, plural, =1 { result} other { results}}","{count}{count, plural, =1 { resultado} other { resultados}}"
 docs.search,Search documentation…,Buscar na documentação…
 docs.searchAria,Search documentation,Buscar na documentação
 docs.section.crates,crates/,crates/
@@ -1370,6 +1369,11 @@ notifications.nodeRelinquishTitle,Node leaving the network role,Nó deixando o p
 notifications.offerFailed,The offer could not be answered,A oferta não pôde ser respondida
 notifications.offerRejected,Offer rejected,Oferta recusada
 notifications.offerTitle,{host} wants to send this · {size},{host} quer enviar isto · {size}
+notifications.pluginConfirmDetail,Asked by {plugin}. Your answer goes back to the plugin.,Pedido de {plugin}. Sua resposta volta para o plugin.
+notifications.pluginNoticeDismiss,Remove notice,Remover aviso
+notifications.pluginNoticeLocal,This interface,Nesta interface
+notifications.pluginNoticeNetwork,From the network,Da rede
+notifications.pluginNoticeNew,New,Nova
 notifications.principalTransferAccepted,Principal role accepted,Papel de principal aceito
 notifications.principalTransferAcceptedDetail,{host} accepted the principal role offer.,{host} aceitou a oferta do papel de principal.
 notifications.principalTransferDetail,"{host} offered you the principal role. Until you accept, {host} remains the principal.","{host} ofereceu a você o papel de principal. Até você aceitar, {host} continua sendo o principal."
@@ -1449,6 +1453,9 @@ placement.title,How the model was loaded,Como o modelo foi carregado
 placement.unavailable,This node did not report where the layers landed. It may be running a build without the diagnostic bridge.,Este nó não informou onde as camadas ficaram. Pode estar rodando uma versão sem a ponte de diagnóstico.
 placement.weights,Weights,Pesos
 placement.weightsDetail,{gpu} on the GPU · {cpu} on the CPU,{gpu} na GPU · {cpu} na CPU
+pluginEvents.accept,Accept,Aceitar
+pluginEvents.confirmWaiting,{plugin} is waiting for your answer in the notifications,{plugin} aguarda sua resposta nas notificações
+pluginEvents.networkSent,Notice from {plugin} sent to the network,Aviso de {plugin} enviado para a rede
 plugins.activate,Activate license,Ativar licença
 plugins.activationEyebrow,License activation,Ativação da licença
 plugins.activationFailed,Could not activate the license.,Não foi possível ativar a licença.
@@ -1471,58 +1478,53 @@ plugins.deactivate,Deactivate,Desativar
 plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
 plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
 plugins.deactivateFailed,Could not deactivate this plugin.,Não foi possível desativar este plugin.
-plugins.features,Features,Funcionalidades
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
-plugins.githubAbi,Plugin ABI,ABI do plugin
-plugins.githubArtifactUnavailable,No compatible artifact with a verified SHA-256 digest is available for this machine.,Não há um artefato compatível com SHA-256 verificado para esta máquina.
-plugins.githubAvailableReleases,"{count, plural, =0 {No releases} =1 {1 published release} other {# published releases}}","{count, plural, =0 {Nenhuma release} one {1 release publicada} other {# releases publicadas}}"
 plugins.githubCheck,Refresh releases,Atualizar releases
 plugins.githubCheckFailed,Could not refresh this GitHub repository.,Não foi possível atualizar este repositório GitHub.
+plugins.githubInstall,Install,Instalar
 plugins.githubInstallConfirmDescription,The selected release ({version}) will replace the plugin version currently installed on this node.,A release selecionada ({version}) substituirá a versão do plugin instalada neste nó.
 plugins.githubInstallConfirmTitle,Install {name} from GitHub?,Instalar {name} pelo GitHub?
 plugins.githubInstallFailed,Could not install the selected release.,Não foi possível instalar a release selecionada.
-plugins.githubInstallRelease,Install this release,Instalar esta release
-plugins.githubInstalledVersion,Installed release,Release instalada
+plugins.githubInstalled,Installed,Instalada
+plugins.githubLatest,latest,mais recente
 plugins.githubListFailed,Could not load registered GitHub repositories.,Não foi possível carregar os repositórios GitHub cadastrados.
-plugins.githubManifestDetails,View manifest.json details,Ver detalhes do manifest.json
-plugins.githubManifestPath,Manifest found at {path},Manifesto encontrado em {path}
-plugins.githubNoReleases,This repository has no published releases.,Este repositório não tem releases publicadas.
-plugins.githubPluginCode,Plugin code,Código do plugin
+plugins.githubNoCompatibleReleases,No release published for this machine yet.,Nenhuma release publicada para esta máquina ainda.
 plugins.githubPrerelease,Pre-release,Pré-release
+plugins.githubReleaseSelect,Release to install,Release para instalar
 plugins.githubRemove,Remove repository,Remover repositório
-plugins.githubRepositoriesEmpty,Add a public GitHub repository to browse its manifest and releases.,Adicione um repositório público do GitHub para ver seu manifesto e releases.
 plugins.githubRepositoriesLoading,Loading registered repositories,Carregando repositórios cadastrados
 plugins.githubRepositoryLabel,Public GitHub repository URL,URL do repositório público do GitHub
-plugins.githubShowMore,"Show more releases ({shown} of {total})","Mostrar mais releases ({shown} de {total})"
-plugins.githubSourceDescription,"Add any public GitHub repository with a root manifest.json, or a POM UI plugin with ui/manifest.json and platform metadata in its releases. This POM node reads repository details and releases directly; the license catalog does not control installation.","Adicione um repositório público do GitHub com manifest.json na raiz ou um plugin de UI do POM com ui/manifest.json e metadados por plataforma nas releases. Este nó lê os detalhes e as releases diretamente; o catálogo de licenças não controla a instalação."
+plugins.githubSourceDescription,Paste a public GitHub repository URL. This node reads its manifest and the releases compatible with this machine directly from GitHub.,Cole a URL de um repositório público do GitHub. Este nó lê o manifesto e as releases compatíveis com esta máquina direto do GitHub.
 plugins.githubSourceFailed,"Could not add this GitHub repository. Check its URL, supported manifest path and published releases.","Não foi possível adicionar este repositório GitHub. Verifique a URL, o caminho do manifesto e as releases publicadas."
 plugins.githubSourceRegister,Add repository,Adicionar repositório
-plugins.githubSourceTitle,Public GitHub Releases,Releases públicas do GitHub
+plugins.githubSourceTitle,Add from GitHub,Adicionar do GitHub
 plugins.githubUninstall,Uninstall plugin,Desinstalar plugin
 plugins.githubUninstallConfirmDescription,This removes the public GitHub plugin from this node. You can install it again later.,Isso remove o plugin público do GitHub deste nó. Você poderá instalá-lo novamente depois.
 plugins.githubUninstallConfirmTitle,Uninstall {name}?,Desinstalar {name}?
+plugins.githubUpdate,Update,Atualizar
+plugins.githubUpdateConfirmTitle,Update {name} from GitHub?,Atualizar {name} pelo GitHub?
 plugins.inactiveTitle,Available,Disponível
 plugins.installedAt,Last installed,Última instalação
 plugins.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
-plugins.lastUpdateCheck,Last update check,Última verificação de atualização
 plugins.licenseExpires,License expires,Licença válida até
 plugins.licenseKeyLabel,License key,Chave de licença
 plugins.licenseKeyPlaceholder,PM-...,PM-...
 plugins.licenseStatusError,Could not read this node's plugin license status.,Não foi possível ler o estado das licenças deste nó.
 plugins.licenseUnknown,License status unavailable,Estado da licença indisponível
 plugins.manage,Manage,Gerenciar
-plugins.metadataIncomplete,Some catalog details or images are unavailable.,Alguns detalhes ou imagens do catálogo estão indisponíveis.
 plugins.metadataUnavailable,Description unavailable,Descrição indisponível
 plugins.monthlyPrice,{price}/month,{price}/mês
 plugins.noLicenseRequired,No license required,Não exige licença
+plugins.preferencesDialogTitle,{name} preferences,Preferências de {name}
+plugins.preferencesDirectoryHint,Absolute path on this node. It is created when missing.,Caminho absoluto neste nó. Ele é criado se não existir.
 plugins.preferencesLocalOnly,These values are stored on this node and are never sent to the license server.,Estes valores ficam armazenados neste nó e nunca são enviados ao servidor de licenças.
+plugins.preferencesOpen,Open {name} preferences,Abrir preferências de {name}
 plugins.preferencesSave,Save preferences,Salvar preferências
 plugins.preferencesSaveFailed,Could not save these preferences locally.,Não foi possível salvar estas preferências localmente.
 plugins.preferencesTitle,Plugin preferences,Preferências do plugin
 plugins.pricing,Pricing,Preços
 plugins.refresh,Refresh,Atualizar
-plugins.releaseUnavailable,No valid release available,Nenhuma release válida disponível
 plugins.screenError.title,This plugin screen could not be loaded.,Não foi possível carregar a tela deste plugin.
 plugins.screenshotAlt,{name} screenshot {number},Captura de tela {number} de {name}
 plugins.screenshotClose,Close screenshot,Fechar captura de tela
@@ -1577,9 +1579,6 @@ preferences.accessTokenUnavailable,Token unavailable,Token indisponível
 preferences.adminSubtitle,Cluster-wide controls reserved for the network authority.,Controles da rede reservados à autoridade administrativa.
 preferences.adminTitle,Administrative preferences,Preferências administrativas.
 preferences.portInvalid,Enter a port between 1 and 65535.,Informe uma porta entre 1 e 65535.
-preferences.storageOpen,Open storage,Abrir armazenamento
-preferences.storageSubtitle,Model storage is managed on its dedicated screen.,O armazenamento de modelos é gerenciado na tela própria.
-preferences.storageTitle,Storage,Armazenamento
 preferences.subtitle,Local protection and model-provider credentials for this node.,Proteção local e credenciais de provedor deste nó.
 preferences.title,Preferences,Preferências
 profile.admin,Administrator,Administrador

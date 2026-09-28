@@ -9,6 +9,10 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/plugins", get(crate::plugins::list_plugins))
         .route("/api/ui/plugins/ui", get(crate::plugin_ui::list_plugin_ui))
         .route(
+            "/api/ui/plugins/events",
+            get(crate::plugins::list_plugin_events),
+        )
+        .route(
             "/api/ui/plugins/:code/assets/*path",
             get(crate::plugin_ui::plugin_asset),
         )

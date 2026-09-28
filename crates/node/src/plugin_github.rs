@@ -32,6 +32,10 @@ pub(crate) struct GithubRepositoryManifest {
     pub artifacts: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub preferences: Option<PluginPreferencesSchema>,
+    /// Capturas de tela: caminhos relativos à raiz do repositório ou URLs
+    /// `https://`, com as mesmas regras de `pom-plugin-ui/v1`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +61,14 @@ pub(crate) struct GithubRepository {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_manifest: Option<serde_json::Value>,
     pub releases: Vec<GithubRepositoryRelease>,
+    /// Descrição por idioma, vinda do manifesto do repositório.
+    #[serde(default)]
+    pub description: std::collections::BTreeMap<String, String>,
+    /// URLs públicas das capturas de tela. Caminhos relativos viram
+    /// `raw.githubusercontent.com/<owner>/<repo>/HEAD/<caminho>`: o navegador
+    /// as carrega direto do GitHub, sem passar pelo nó nem pelo license-server.
+    #[serde(default)]
+    pub screenshot_urls: Vec<String>,
     pub checked_at: String,
     #[serde(default)]
     pub check_error: Option<String>,
@@ -467,13 +479,36 @@ impl GithubReleaseClient {
                     feature_set: distribution.feature_set,
                     artifacts: std::collections::BTreeMap::from([(target, distribution.asset)]),
                     preferences: distribution.preferences,
+                    screenshots: Vec::new(),
                 };
                 validate_repository_manifest(&manifest)?;
                 (manifest, Some(value))
             }
         };
+        let (description, screenshots) = match &ui_manifest {
+            Some(value) => {
+                let parsed =
+                    crate::plugin_ui::PluginUiManifest::parse(&manifest.plugin_code, value.clone())
+                        .map_err(|error| format!("invalid ui/manifest.json: {error}"))?;
+                (parsed.description, parsed.screenshots)
+            }
+            None => (
+                manifest
+                    .description
+                    .iter()
+                    .map(|text| ("en".to_owned(), text.clone()))
+                    .collect(),
+                manifest.screenshots.clone(),
+            ),
+        };
+        let screenshot_urls = screenshots
+            .iter()
+            .map(|shot| screenshot_url(&repository, shot))
+            .collect();
         let id = hex::encode(sha2::Sha256::digest(canonical_url.as_bytes()));
         Ok(GithubRepository {
+            description,
+            screenshot_urls,
             id,
             repository_url: canonical_url,
             manifest_path,
@@ -805,6 +840,19 @@ fn canonical_repository_parts(value: &str) -> Result<CanonicalRepository, String
     Ok(CanonicalRepository { owner, repo })
 }
 
+/// Resolve uma captura de tela declarada pelo repositório. Os caminhos já
+/// foram validados por `plugin_ui::valid_screenshot`.
+fn screenshot_url(repository: &CanonicalRepository, shot: &str) -> String {
+    if shot.starts_with("https://") {
+        shot.to_owned()
+    } else {
+        format!(
+            "https://raw.githubusercontent.com/{}/{}/HEAD/{}",
+            repository.owner, repository.repo, shot
+        )
+    }
+}
+
 fn is_github_segment(segment: &str) -> bool {
     !segment.is_empty()
         && segment != "."
@@ -973,6 +1021,14 @@ pub(crate) fn validate_repository_manifest(
     }
     if let Some(preferences) = &manifest.preferences {
         validate_preferences_schema(preferences)?;
+    }
+    if manifest.screenshots.len() > 8
+        || !manifest
+            .screenshots
+            .iter()
+            .all(|shot| crate::plugin_ui::valid_screenshot(shot))
+    {
+        return Err("repository manifest has invalid screenshots".into());
     }
     Ok(())
 }
@@ -1643,6 +1699,8 @@ pub(crate) mod tests {
             "schema": "pom-plugin-ui/v1",
             "plugin_code": "base",
             "icon_image": "ui/icon.png",
+            "description": { "en": "Tutorial plugin.", "pt-BR": "Plugin tutorial." },
+            "screenshots": ["docs/screenshots/tutorial.png", "https://example.com/shot.png"],
             "documentation": ["docs/README.md", "docs/guia-desenvolvimento.md", "docs/guia-workspace.md"],
             "menu": [
                 { "id": "base", "label": { "en": "Base Plugin", "pt-BR": "Plugin de Base" }, "icon": "layout-template", "to": "/plugin-de-base" },
@@ -1719,6 +1777,14 @@ pub(crate) mod tests {
         );
         assert_eq!(repository.releases.len(), 1);
         assert!(repository.releases[0].available_for_node);
+        assert_eq!(repository.description["pt-BR"], "Plugin tutorial.");
+        assert_eq!(
+            repository.screenshot_urls,
+            [
+                "https://raw.githubusercontent.com/pereirajair/pom-plugin-base/HEAD/docs/screenshots/tutorial.png",
+                "https://example.com/shot.png"
+            ]
+        );
 
         let selected = client
             .download_release(&repository, "505", "macos", "aarch64")
@@ -1768,8 +1834,14 @@ pub(crate) mod tests {
                 "acme-plugin.so".into(),
             )]),
             preferences: None,
+            screenshots: vec!["docs/screenshots/overview.png".into()],
         };
         validate_repository_manifest(&manifest).unwrap();
+        manifest.screenshots = vec!["../secret.png".into()];
+        assert!(validate_repository_manifest(&manifest).is_err());
+        manifest.screenshots = vec!["https://user@example.com/shot.png".into()];
+        assert!(validate_repository_manifest(&manifest).is_err());
+        manifest.screenshots.clear();
         manifest.feature_set.clear();
         validate_repository_manifest(&manifest).expect("plugins may expose no optional features");
         manifest.plugin_code = "../bad".into();

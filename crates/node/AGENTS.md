@@ -271,8 +271,17 @@ licenças ou checar `requires_license`. Essa segunda forma usa os manifestos de
 release `pom-plugin-<os>-<arch>.json` para descobrir e validar o binário. A instalação
 pública persiste separadamente em `plugin_public_install:<code>`, sem lease ou
 `licensed_plugins`. O manifesto do repositório declara `plugin_code`, ABI,
-features, preferências e nomes dos assets por plataforma; o operador escolhe
-qual release instalar. A ativação em lote de licenças valida uma vez, depois
+features, preferências, capturas de tela opcionais e nomes dos assets por
+plataforma; o operador escolhe qual release instalar. `GithubRepository`
+também carrega `description` por idioma e `screenshot_urls` já resolvidas para
+`raw.githubusercontent.com/<owner>/<repo>/HEAD/<caminho>`, que o navegador
+carrega direto do GitHub. Salvar preferências cria o diretório de
+armazenamento absoluto ausente e envia ao host o evento nativo `host.event`
+(`preferences.changed`, envelope `pom-plugin-events/v1` montado por
+`plugin_event_envelope`). `PluginManager::publish_event` guarda eventos do nó
+numa fila curta (`GET /api/ui/plugins/events`) e os entrega por `host.event` a
+todo host em execução: `deployment.started` sai dos handlers de deploy e
+redeploy, `model.serving`/`model.stopped` de `spawn_serving_watcher`. A ativação em lote de licenças valida uma vez, depois
 ativa/instala separadamente cada código concedido. As features de plugin vêm
 do manifesto, NÃO da licença. O catálogo público do servidor continua sendo a
 vitrine comercial; `GET /api/ui/plugins` publica os estados locais conhecidos
@@ -346,9 +355,11 @@ compartilhado `enterprise_protocol::MAX_IPC_FRAME_BYTES` de 16 MiB.
 (`PluginUiManifest::parse`, `validate_catalog` para os catálogos i18n), e serve
 `GET /api/ui/plugins/ui` (só plugins ativos com manifesto válido) e
 `GET /api/ui/plugins/:code/assets/*path` (só assets listados, via `ui.asset`).
-O manifesto pode declarar `icon_image` como PNG do menu e
-`documentation` com guias e referência Markdown sob `docs/`; tipos MIME e
-declarações são conferidos antes de servir.
+O manifesto pode declarar `icon_image` como PNG do menu,
+`documentation` com guias e referência Markdown sob `docs/`, `description` por
+idioma, `screenshots` (caminhos do repositório ou `https://`, nunca servidos
+pelo nó) e `menu[].children` para submenus; tipos MIME e declarações são
+conferidos antes de servir.
 Menus e rotas aceitam `roles` opcionais; `profiles` continua aceito como campo
 legado, com `roles` prevalecendo quando ambos aparecem. A ausência dos dois
 libera todos os perfis antes da regra de acesso.

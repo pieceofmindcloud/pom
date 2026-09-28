@@ -6,6 +6,7 @@ import { LocaleProvider } from "../i18n/provider";
 import { api } from "../lib/api";
 import type { NetworkOffer } from "../lib/types";
 import { Notifications } from "./Notifications";
+import { addPendingPluginConfirm, addPluginNotice, pendingPluginConfirms, pluginNotices, resetPluginInboxForTest } from "../lib/pluginInbox";
 
 const queryMocks = vi.hoisted(() => ({
   jobs: { data: { jobs: [] } },
@@ -49,6 +50,51 @@ describe("Notifications network offers", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    resetPluginInboxForTest();
+  });
+
+  it("shows a plugin notice without actions and marks it read when the bell opens", () => {
+    addPluginNotice({
+      id: "n1",
+      code: "base",
+      title: "Deploy concluído",
+      body: "O modelo está no ar.",
+      level: "success",
+      createdAt: new Date().toISOString(),
+      source: "network",
+    });
+    renderNotifications([]);
+
+    const bell = screen.getByRole("button", { name: /atividade/i });
+    expect(bell.textContent).toContain("1");
+    fireEvent.click(bell);
+    expect(screen.getByText("Deploy concluído")).toBeTruthy();
+    expect(screen.getByText("O modelo está no ar.")).toBeTruthy();
+    expect(screen.getByText("Nova")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Aceitar" })).toBeNull();
+    expect(pluginNotices()[0].read).toBe(true);
+    expect(bell.textContent).not.toContain("1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remover aviso" }));
+    expect(pluginNotices()).toEqual([]);
+  });
+
+  it("lists a plugin confirmation with accept and reject, like a transfer offer", () => {
+    const resolve = vi.fn();
+    addPendingPluginConfirm(
+      { id: "c1", code: "base", request: { title: "Continuar o tutorial?", body: "Pergunta do plugin." }, createdAt: "now" },
+      resolve,
+    );
+    renderNotifications([]);
+
+    fireEvent.click(screen.getByRole("button", { name: /atividade/i }));
+    expect(screen.getByText("Continuar o tutorial?")).toBeTruthy();
+    expect(screen.getByText("Pergunta do plugin.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Recusar" }));
+
+    expect(resolve).toHaveBeenCalledWith("cancelled");
+    expect(pendingPluginConfirms()).toEqual([]);
+    expect(api.post).not.toHaveBeenCalled();
   });
 
   it("shows principal transfer actions and preserves the no-change warning", async () => {

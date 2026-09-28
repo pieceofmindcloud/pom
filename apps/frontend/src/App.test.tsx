@@ -374,7 +374,7 @@ describe("guarda de perfil por rota", () => {
     adminSurface.value = "requires-password";
     open("/", "admin");
 
-    const form = screen.getByRole("button", { name: "Abrir interface" }).closest("form");
+    const form = screen.getByRole("button", { name: "Entrar" }).closest("form");
     expect(form).not.toBeNull();
     expect(form?.getAttribute("autocomplete")).toBe("on");
     expect(form?.querySelector('input[name="username"]')).toBeNull();

@@ -2406,6 +2406,7 @@ pub(super) async fn network_chat_snapshot(
         "messages": messages,
         "participants": participants,
         "typing": state.network_chat.typing_snapshot(),
+        "notices": state.network_chat.notice_snapshot(),
         "dropped": state.network_chat.dropped(),
     }))
     .into_response()

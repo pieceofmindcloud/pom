@@ -510,7 +510,7 @@ describe("Plugins", () => {
     expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
   });
 
-  it("shows license expiration separately from the lease, install and update-check times", () => {
+  it("shows license expiration separately from the lease and install time in a compact card", () => {
     mocks.catalog.data = { plugins: [publicPlugin("alpha")] };
     mocks.plugins.data = [pluginStatus("alpha", {
       active: true,
@@ -536,8 +536,9 @@ describe("Plugins", () => {
     const leaseDate = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" })
       .format(new Date("2026-09-28T12:00:00.000Z"));
 
-    expect(within(card as HTMLElement).getByText("Última verificação de atualização")).toBeTruthy();
-    expect(within(card as HTMLElement).getByText(updateDate)).toBeTruthy();
+    // O card compacto não repete a última consulta de update nem as features.
+    expect(within(card as HTMLElement).queryByText(updateDate)).toBeNull();
+    expect(within(card as HTMLElement).queryByText("Funcionalidades")).toBeNull();
     expect(within(card as HTMLElement).getByText("Última instalação")).toBeTruthy();
     expect(within(card as HTMLElement).getByText(installDate)).toBeTruthy();
     expect(within(card as HTMLElement).getByText("Licença válida até")).toBeTruthy();
@@ -649,14 +650,14 @@ describe("Plugins", () => {
     }));
   });
 
-  it("adds any GitHub repository locally without a plugin selector or catalog dependency", async () => {
-    mocks.catalog.isError = true;
-    mocks.catalog.error = new Error("license catalog unavailable");
+  it("adds any GitHub repository from the card above license activation", async () => {
+    mocks.catalog.data = { plugins: [publicPlugin("licensed")] };
     mocks.post.mockResolvedValue({});
     renderPage();
 
-    expect(screen.getAllByRole("heading", { name: "Releases públicas do GitHub" })).toHaveLength(1);
-    expect(screen.queryByRole("combobox", { name: "Plugin" })).toBeNull();
+    const githubHeading = screen.getByRole("heading", { name: "Adicionar do GitHub" });
+    const activationHeading = screen.getByRole("heading", { name: "Digite sua chave de licença" });
+    expect(githubHeading.compareDocumentPosition(activationHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.change(screen.getByLabelText("URL do repositório público do GitHub"), {
       target: { value: "https://github.com/acme/new-plugin" },
     });
@@ -669,8 +670,19 @@ describe("Plugins", () => {
     expect(mocks.post).not.toHaveBeenCalledWith(expect.stringContaining("license"), expect.anything());
   });
 
-  it("shows root manifest details and lets the operator select any published release", async () => {
+  it("lists only compatible releases, preselects the latest and updates an installed plugin", async () => {
     const repositoryUrl = "https://github.com/acme/new-plugin";
+    const githubRelease = (release_id: string, tag_name: string, published_at: string, available_for_node = true) => ({
+      release_id,
+      tag_name,
+      name: null,
+      changelog: null,
+      published_at,
+      prerelease: false,
+      asset_name: available_for_node ? "acme_plugin.so" : null,
+      asset_size: available_for_node ? 1000 : null,
+      available_for_node,
+    });
     mocks.githubRepositories.data = [{
       id: "repo-id",
       repository_url: repositoryUrl,
@@ -678,35 +690,18 @@ describe("Plugins", () => {
         schema: 1,
         plugin_code: "acme_plugin",
         display_name: "Acme Plugin",
-        description: "A local plugin release source.",
+        description: null,
         plugin_abi: 1,
         feature_set: ["acme_plugin.core"],
         artifacts: { "linux-x86_64": "acme_plugin.so" },
         preferences: null,
       },
+      description: { en: "A local plugin release source.", "pt-BR": "Uma fonte local de releases." },
+      screenshot_urls: ["https://raw.githubusercontent.com/acme/new-plugin/HEAD/docs/shot.png"],
       releases: [
-        {
-          release_id: "103",
-          tag_name: "v2.0.0",
-          name: "Latest",
-          changelog: null,
-          published_at: "2026-09-24T00:00:00Z",
-          prerelease: false,
-          asset_name: "acme_plugin.so",
-          asset_size: 1234,
-          available_for_node: true,
-        },
-        {
-          release_id: "101",
-          tag_name: "v0.9.0",
-          name: "Earlier release",
-          changelog: "Older version, still selectable.",
-          published_at: "2025-01-01T00:00:00Z",
-          prerelease: false,
-          asset_name: "acme_plugin.so",
-          asset_size: 1000,
-          available_for_node: true,
-        },
+        githubRelease("101", "v0.9.0", "2025-01-01T00:00:00Z"),
+        githubRelease("103", "v2.0.0", "2026-09-24T00:00:00Z"),
+        githubRelease("104", "v3.0.0-macos", "2026-09-25T00:00:00Z", false),
       ],
       checked_at: "2026-09-24T00:00:00Z",
       check_error: null,
@@ -716,76 +711,60 @@ describe("Plugins", () => {
       state: "active",
       public_install: true,
       github_repository: repositoryUrl,
-      plugin_version: "v2.0.0",
+      plugin_version: "0.9.0",
     })];
     mocks.post.mockResolvedValue({});
-    const view = renderPage();
+    renderPage();
 
-    expect(screen.queryByText("Nenhum plugin disponível no momento.")).toBeNull();
-    expect(screen.getByText("acme_plugin.core")).toBeTruthy();
-    expect(screen.getByText("ABI do plugin")).toBeTruthy();
-    expect(screen.getByText("Ver detalhes do manifest.json")).toBeTruthy();
-    expect(view.container.querySelector("details pre")?.textContent).toContain("acme_plugin.so");
-    expect(screen.getAllByText("v2.0.0").length).toBeGreaterThan(0);
-    const olderRelease = screen.getByText("v0.9.0").closest("article");
-    fireEvent.click(within(olderRelease as HTMLElement).getByRole("button", { name: "Instalar esta release" }));
-    const dialog = screen.getByRole("dialog", { name: "Instalar Acme Plugin pelo GitHub?" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Instalar esta release" }));
+    expect(screen.getByText("Uma fonte local de releases.")).toBeTruthy();
+    expect(screen.queryByText("Ver detalhes do manifest.json")).toBeNull();
+    expect(screen.getByAltText("Captura de tela 1 de Acme Plugin").getAttribute("src"))
+      .toBe("https://raw.githubusercontent.com/acme/new-plugin/HEAD/docs/shot.png");
+    const select = screen.getByRole("combobox", { name: "Release para instalar" }) as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(["103", "101"]);
+    expect(select.value).toBe("103");
 
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar" }));
+    const dialog = screen.getByRole("dialog", { name: "Atualizar Acme Plugin pelo GitHub?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Atualizar" }));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
       "/api/ui/plugins/github-repositories/repo-id/install",
-      { release_id: "101" },
+      { release_id: "103" },
     ));
     await waitFor(() => expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["plugin-ui"],
     }));
+
+    fireEvent.change(select, { target: { value: "101" } });
+    expect((screen.getByRole("button", { name: "Instalada" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("shows the manifest path and original UI manifest details", () => {
-    mocks.githubRepositories.data = [{
-      id: "repo-id",
-      repository_url: "https://github.com/acme/ui-plugin",
-      manifest_path: "ui/manifest.json",
-      manifest: { schema: 1, plugin_code: "base", display_name: "Base Plugin", description: null, plugin_abi: 1, feature_set: ["base.core"], artifacts: { "linux-x86_64": "base.so" }, preferences: null },
-      ui_manifest: { schema: "pom-plugin-ui/v1", plugin_code: "base", documentation: ["docs/README.md"] },
-      releases: [],
-      checked_at: "2026-09-24T00:00:00Z",
-      check_error: null,
-    }];
-    const view = renderPage();
-
-    fireEvent.click(screen.getByText("Ver detalhes do manifest.json"));
-    expect(screen.getByText("Manifesto encontrado em ui/manifest.json")).toBeTruthy();
-    expect(view.container.querySelector("details pre")?.textContent).toContain("pom-plugin-ui/v1");
-    expect(view.container.querySelector("details pre")?.textContent).toContain("docs/README.md");
-  });
-
-  it("paginates through older releases instead of truncating the repository history", () => {
-    mocks.githubRepositories.data = [{
-      id: "repo-id",
-      repository_url: "https://github.com/acme/new-plugin",
-      manifest: { schema: 1, plugin_code: "acme_plugin", display_name: "Acme", description: null, plugin_abi: 1, feature_set: [], artifacts: {}, preferences: null },
-      releases: Array.from({ length: 24 }, (_, index) => ({
-        release_id: String(index + 1),
-        tag_name: `v${index + 1}.0.0`,
-        name: null,
-        changelog: null,
-        published_at: null,
-        prerelease: false,
-        asset_name: "acme_plugin.so",
-        asset_size: 1000,
-        available_for_node: true,
-      })),
-      checked_at: "2026-09-24T00:00:00Z",
-      check_error: null,
-    }];
+  it("offers Install for a repository that is not installed and explains when no release fits", () => {
+    mocks.githubRepositories.data = [
+      {
+        id: "repo-a",
+        repository_url: "https://github.com/acme/a",
+        manifest: { schema: 1, plugin_code: "alpha", display_name: "Alpha", description: null, plugin_abi: 1, feature_set: [], artifacts: {}, preferences: null },
+        releases: [{ release_id: "1", tag_name: "v1.0.0", name: null, changelog: null, published_at: null, prerelease: false, asset_name: "a.so", asset_size: 1, available_for_node: true }],
+        checked_at: "2026-09-24T00:00:00Z",
+        check_error: null,
+      },
+      {
+        id: "repo-b",
+        repository_url: "https://github.com/acme/b",
+        manifest: { schema: 1, plugin_code: "beta", display_name: "Beta", description: null, plugin_abi: 1, feature_set: [], artifacts: {}, preferences: null },
+        releases: [{ release_id: "2", tag_name: "v1.0.0", name: null, changelog: null, published_at: null, prerelease: false, asset_name: null, asset_size: null, available_for_node: false }],
+        checked_at: "2026-09-24T00:00:00Z",
+        check_error: null,
+      },
+    ];
     renderPage();
 
-    expect(screen.getByText("v1.0.0")).toBeTruthy();
-    expect(screen.queryByText("v21.0.0")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Mostrar mais releases (20 de 24)" }));
-    expect(screen.getByText("v21.0.0")).toBeTruthy();
-    expect(screen.getByText("v24.0.0")).toBeTruthy();
+    const alpha = screen.getByRole("heading", { name: "Alpha" }).closest(".panel") as HTMLElement;
+    expect(within(alpha).getByRole("button", { name: "Instalar" })).toBeTruthy();
+    const beta = screen.getByRole("heading", { name: "Beta" }).closest(".panel") as HTMLElement;
+    expect(within(beta).getByText("Nenhuma release publicada para esta máquina ainda.")).toBeTruthy();
+    expect(within(beta).queryByRole("combobox")).toBeNull();
   });
 
   it("refreshes and removes a local GitHub repository by repository id", async () => {
@@ -816,7 +795,7 @@ describe("Plugins", () => {
     }));
   });
 
-  it("edits typed preference defaults and submits only to the local preferences route", async () => {
+  it("opens preferences from the settings icon and submits only to the local preferences route", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("base")] };
     mocks.plugins.data = [pluginStatus("base", {
       active: true,
@@ -830,11 +809,13 @@ describe("Plugins", () => {
         }],
         storage_directory: { label: "Pasta de dados", default: null },
       },
-      preferences: { features: { include_headers: false }, storage_directory: null },
+      preferences: { features: { include_headers: false } },
     })];
     mocks.post.mockResolvedValue({});
     renderPage();
 
+    expect(screen.queryByRole("checkbox", { name: /Incluir cabeçalhos/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Abrir preferências de base" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: /Incluir cabeçalhos/ }));
     fireEvent.change(await screen.findByLabelText("Pasta de dados"), {
       target: { value: "/tmp/plugin-data" },
@@ -846,6 +827,25 @@ describe("Plugins", () => {
       { preferences: { features: { include_headers: true }, storage_directory: "/tmp/plugin-data" } },
     ));
     expect(mocks.post).not.toHaveBeenCalledWith("/api/ui/plugins/activate", expect.anything());
+  });
+
+  it("shows the node's reason when saving preferences fails", async () => {
+    mocks.catalog.data = { plugins: [publicPlugin("base")] };
+    mocks.plugins.data = [pluginStatus("base", {
+      active: true,
+      state: "active",
+      preferences_schema: { features: [{ key: "flag", label: "Flag", default: false }] },
+      preferences: { features: { flag: false } },
+    })];
+    mocks.post.mockRejectedValue(new Error("preferência booleana desconhecida para este plugin"));
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Abrir preferências de base" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Salvar preferências" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Não foi possível salvar estas preferências localmente.");
+    expect(alert.textContent).toContain("preferência booleana desconhecida para este plugin");
   });
 
   it("desativa um plugin sem chamar rota de atualização do pom_core", async () => {

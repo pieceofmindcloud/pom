@@ -1121,6 +1121,9 @@ impl PluginRuntime {
                 .and_then(|installed| installed.preferences_schema.clone())
                 .ok_or_else(|| update_unavailable("este release não declara preferências"))?,
         };
+        prepare_storage_directory(&schema, &values).map_err(|message| {
+            LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, message)
+        })?;
         validate_preferences(&schema, &values).map_err(|message| {
             LicenseClientError::new(LicenseErrorCode::UpdateUnavailable, message)
         })?;
@@ -1133,7 +1136,27 @@ impl PluginRuntime {
                 })?;
         }
         self.reconfigure_running_host().await;
+        self.send_host_event(plugin_event_envelope(
+            "preferences.changed",
+            &self.code,
+            serde_json::json!({ "preferences": values }),
+        ))
+        .await;
         Ok(())
+    }
+
+    /// Entrega um evento `pom-plugin-events/v1` ao backend nativo do plugin
+    /// (operação `host.event`). Plugin que não conhece a operação responde
+    /// erro, que é ignorado como no `host.configure`.
+    pub(crate) async fn send_host_event(&self, envelope: serde_json::Value) {
+        let host = self.host.lock().await.clone();
+        let Some(host) = host else {
+            return;
+        };
+        let request = serde_json::json!({ "operation": "host.event", "event": envelope });
+        if let Err(error) = host.query(request).await {
+            tracing::debug!(plugin_code = %self.code, %error, "plugin não aceitou host.event");
+        }
     }
 
     /// Restaura o estado persistido (se houver) e, se o plugin já tinha um
@@ -2245,9 +2268,74 @@ pub(crate) struct PluginManager {
     github_client: crate::plugin_github::GithubReleaseClient,
     github_repositories: StdRwLock<HashMap<String, crate::plugin_github::GithubRepository>>,
     github_repositories_lock: Mutex<()>,
+    events: PluginEventHub,
+}
+
+/// Quantos eventos `pom-plugin-events/v1` o nó guarda para a interface ler
+/// por `GET /api/ui/plugins/events`.
+const PLUGIN_EVENT_BACKLOG: usize = 100;
+
+/// Fila curta de eventos do nó para os plugins. Cada evento publicado vai ao
+/// backend nativo de todo host em execução (`host.event`) e fica aqui, com um
+/// número de sequência, para a interface repassar às telas.
+#[derive(Default)]
+struct PluginEventHub {
+    next: std::sync::atomic::AtomicU64,
+    recent: StdRwLock<std::collections::VecDeque<(u64, serde_json::Value)>>,
+}
+
+impl PluginEventHub {
+    fn push(&self, envelope: serde_json::Value) -> u64 {
+        let seq = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let mut recent = self
+            .recent
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recent.push_back((seq, envelope));
+        while recent.len() > PLUGIN_EVENT_BACKLOG {
+            recent.pop_front();
+        }
+        seq
+    }
+
+    fn after(&self, after: Option<u64>) -> (u64, Vec<(u64, serde_json::Value)>) {
+        let latest = self.next.load(std::sync::atomic::Ordering::SeqCst);
+        let Some(after) = after else {
+            return (latest, Vec::new());
+        };
+        let recent = self
+            .recent
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let events = recent
+            .iter()
+            .filter(|(seq, _)| *seq > after)
+            .cloned()
+            .collect();
+        (latest, events)
+    }
 }
 
 impl PluginManager {
+    /// Publica um evento do nó para todos os plugins: guarda na fila lida pela
+    /// interface e entrega `host.event` a cada host em execução, sem esperar
+    /// por eles.
+    pub(crate) fn publish_event(&self, event_type: &str, payload: serde_json::Value) -> u64 {
+        let envelope = plugin_event_envelope(event_type, "*", payload);
+        let seq = self.events.push(envelope.clone());
+        for runtime in self.runtime_values() {
+            let envelope = envelope.clone();
+            tokio::spawn(async move { runtime.send_host_event(envelope).await });
+        }
+        seq
+    }
+
+    /// Eventos com sequência maior que `after`. Sem `after`, só a sequência
+    /// atual: quem abre a interface não recebe o passado de novo.
+    pub(crate) fn events_after(&self, after: Option<u64>) -> (u64, Vec<(u64, serde_json::Value)>) {
+        self.events.after(after)
+    }
+
     /// `restore_on_boot` liga a releitura do estado persistido de cada plugin
     /// (ver [`PluginRuntime::restore`]). Em produção é sempre `true`: é o que
     /// religa um plugin já ativado depois de um restart do `pom`. Os testes
@@ -2314,6 +2402,7 @@ impl PluginManager {
             github_client,
             github_repositories: StdRwLock::new(github_repositories),
             github_repositories_lock: Mutex::new(()),
+            events: PluginEventHub::default(),
         });
         for runtime in manager.runtime_values() {
             if restore_on_boot {
@@ -2963,6 +3052,101 @@ pub(crate) async fn refresh_host_context(
     Ok(())
 }
 
+/// Modelos que a rede está servindo agora: os mesmos que `/v1/models` lista,
+/// com as implantações e os nós de cada um.
+pub(crate) fn serving_models(
+    peers: &[crate::network::PeerInfo],
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    crate::openai::model_ids_from_peers(peers)
+        .into_iter()
+        .filter(|id| !id.contains('@'))
+        .map(|model| {
+            let serving = peers
+                .iter()
+                .filter(|peer| peer.is_alive() && peer.model == model);
+            let mut deploy_ids = std::collections::BTreeSet::new();
+            let mut node_ids = std::collections::BTreeSet::new();
+            for peer in serving {
+                if !peer.deploy_id.is_empty() {
+                    deploy_ids.insert(peer.deploy_id.clone());
+                }
+                node_ids.insert(peer.node_id.clone());
+            }
+            let payload = serde_json::json!({
+                "model": model,
+                "deploy_ids": deploy_ids,
+                "node_ids": node_ids,
+            });
+            (model, payload)
+        })
+        .collect()
+}
+
+/// Compara dois retratos de `serving_models` e devolve os eventos
+/// `model.serving`/`model.stopped` na ordem em que devem sair.
+pub(crate) fn serving_transitions(
+    before: &std::collections::BTreeMap<String, serde_json::Value>,
+    after: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Vec<(&'static str, serde_json::Value)> {
+    let mut events = Vec::new();
+    for (model, payload) in after {
+        if !before.contains_key(model) {
+            events.push(("model.serving", payload.clone()));
+        }
+    }
+    for model in before.keys() {
+        if !after.contains_key(model) {
+            events.push(("model.stopped", serde_json::json!({ "model": model })));
+        }
+    }
+    events
+}
+
+/// Observa a rede e avisa os plugins quando um modelo passa a ser servido ou
+/// deixa de ser. O primeiro retrato é só a base: um nó que acaba de subir não
+/// anuncia como novidade o que já estava no ar.
+pub(crate) fn spawn_serving_watcher(state: crate::gateway::GatewayState) {
+    const INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+    tokio::spawn(async move {
+        let mut known: Option<std::collections::BTreeMap<String, serde_json::Value>> = None;
+        loop {
+            let current = serving_models(&state.all_peers().await);
+            if let Some(before) = &known {
+                for (event_type, payload) in serving_transitions(before, &current) {
+                    state.plugins.publish_event(event_type, payload);
+                }
+            }
+            known = Some(current);
+            tokio::time::sleep(INTERVAL).await;
+        }
+    });
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PluginEventsQuery {
+    #[serde(default)]
+    pub after: Option<u64>,
+}
+
+/// `GET /api/ui/plugins/events?after=<seq>`: eventos do nó que a interface
+/// repassa às telas dos plugins pelo protocolo `pom-plugin-events/v1`.
+pub(crate) async fn list_plugin_events(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::extract::Query(query): axum::extract::Query<PluginEventsQuery>,
+) -> axum::response::Response {
+    let (latest, events) = state.plugins.events_after(query.after);
+    axum::Json(serde_json::json!({
+        "protocol": PLUGIN_EVENTS_PROTOCOL,
+        "latest": latest,
+        "events": events
+            .into_iter()
+            .map(|(seq, event)| serde_json::json!({ "seq": seq, "event": event }))
+            .collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
 pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
     const REFRESH: std::time::Duration = std::time::Duration::from_secs(600);
     const RETRY: std::time::Duration = std::time::Duration::from_secs(30);
@@ -3029,6 +3213,48 @@ fn merge_preferences(
         merged.storage_directory = values.storage_directory;
     }
     merged
+}
+
+/// Protocolo único de eventos que o POM envia aos plugins, pelo SDK do
+/// navegador e pela operação nativa `host.event`. Ver
+/// `docs/subsystems/plugins-ui.md`, seção "Eventos e notificações".
+pub(crate) const PLUGIN_EVENTS_PROTOCOL: &str = "pom-plugin-events/v1";
+
+pub(crate) fn plugin_event_envelope(
+    event_type: &str,
+    plugin_code: &str,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "protocol": PLUGIN_EVENTS_PROTOCOL,
+        "id": uuid::Uuid::new_v4().simple().to_string(),
+        "type": event_type,
+        "target": plugin_code,
+        "source": "pom",
+        "at": chrono::Utc::now().to_rfc3339(),
+        "payload": payload,
+    })
+}
+
+/// O editor aceita um diretório absoluto que ainda não existe: o nó o cria
+/// antes de validar, em vez de recusar com uma mensagem genérica.
+fn prepare_storage_directory(
+    schema: &enterprise_protocol::PluginPreferencesSchema,
+    values: &enterprise_protocol::PluginPreferences,
+) -> Result<(), String> {
+    let (Some(_), Some(directory)) = (&schema.storage_directory, &values.storage_directory) else {
+        return Ok(());
+    };
+    let path = std::path::Path::new(directory);
+    if directory.trim().is_empty() || !path.is_absolute() || directory.contains('\0') {
+        return Err("o diretório de armazenamento precisa ser um caminho absoluto".into());
+    }
+    if !path.exists() {
+        std::fs::create_dir_all(path).map_err(|error| {
+            format!("não foi possível criar o diretório de armazenamento {directory}: {error}")
+        })?;
+    }
+    Ok(())
 }
 
 fn validate_preferences(
@@ -4096,6 +4322,18 @@ mod tests {
             .save_preferences("enterprise", invalid_directory)
             .await
             .is_err());
+        let missing = directory.path().join("created-on-save");
+        manager
+            .save_preferences(
+                "enterprise",
+                enterprise_protocol::PluginPreferences {
+                    features: [("include_headers".into(), true)].into(),
+                    storage_directory: Some(missing.to_string_lossy().into_owned()),
+                },
+            )
+            .await
+            .expect("an absent absolute directory is created on save");
+        assert!(missing.is_dir());
         manager
             .save_preferences("enterprise", preferences.clone())
             .await
@@ -5200,5 +5438,63 @@ mod tests {
             events.contains("req-1"),
             "evento de auditoria deveria ter chegado ao host reiniciado"
         );
+    }
+}
+
+#[cfg(test)]
+mod plugin_event_tests {
+    use super::*;
+
+    #[test]
+    fn the_hub_keeps_a_bounded_sequence_and_never_replays_the_past_to_a_new_reader() {
+        let hub = PluginEventHub::default();
+        assert_eq!(hub.after(None), (0, Vec::new()));
+        for index in 0..(PLUGIN_EVENT_BACKLOG + 5) {
+            hub.push(serde_json::json!({ "index": index }));
+        }
+        let (latest, fresh) = hub.after(None);
+        assert_eq!(latest, (PLUGIN_EVENT_BACKLOG + 5) as u64);
+        assert!(fresh.is_empty());
+        let (_, events) = hub.after(Some(latest - 2));
+        assert_eq!(
+            events.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+            [latest - 1, latest]
+        );
+        let (_, all) = hub.after(Some(0));
+        assert_eq!(all.len(), PLUGIN_EVENT_BACKLOG);
+        assert_eq!(all[0].0, 6);
+    }
+
+    #[test]
+    fn serving_transitions_report_new_and_gone_models() {
+        let snapshot = |models: &[&str]| {
+            models
+                .iter()
+                .map(|model| (model.to_string(), serde_json::json!({ "model": model })))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let events = serving_transitions(&snapshot(&["a", "b"]), &snapshot(&["b", "c"]));
+        assert_eq!(
+            events,
+            vec![
+                ("model.serving", serde_json::json!({ "model": "c" })),
+                ("model.stopped", serde_json::json!({ "model": "a" })),
+            ]
+        );
+        assert!(serving_transitions(&snapshot(&["b"]), &snapshot(&["b"])).is_empty());
+    }
+
+    #[test]
+    fn envelopes_follow_the_plugin_events_protocol() {
+        let envelope = plugin_event_envelope(
+            "deployment.started",
+            "*",
+            serde_json::json!({ "deploy_id": "d1" }),
+        );
+        assert_eq!(envelope["protocol"], PLUGIN_EVENTS_PROTOCOL);
+        assert_eq!(envelope["type"], "deployment.started");
+        assert_eq!(envelope["target"], "*");
+        assert_eq!(envelope["source"], "pom");
+        assert_eq!(envelope["payload"]["deploy_id"], "d1");
     }
 }

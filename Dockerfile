@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG CUDA_VERSION=13.2.1
+ARG CUDA_VERSION=13.4.1
 ARG CUDA_RUNTIME_FLAVOR=runtime
 
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS build-base
@@ -66,7 +66,7 @@ RUN set -eu; \
         curl -fL --retry 3 -o /tmp/llama-cpu.tar.gz \
           "${release_url}/llama-${POM_LLAMA_CPP_RELEASE_TAG}-bin-ubuntu-x64.tar.gz"; \
         curl -fL --retry 3 -o /tmp/llama-cuda.tar.gz \
-          "${release_url}/llama-${POM_LLAMA_CPP_RELEASE_TAG}-bin-ubuntu-cuda-13.2-x64.tar.gz"; \
+          "${release_url}/llama-${POM_LLAMA_CPP_RELEASE_TAG}-bin-ubuntu-cuda-13.4-x64.tar.gz"; \
         curl -fL --retry 3 -o /tmp/llama-vulkan.tar.gz \
           "${release_url}/llama-${POM_LLAMA_CPP_RELEASE_TAG}-bin-ubuntu-vulkan-x64.tar.gz"; \
         curl -fL --retry 3 -o /tmp/llama-source.tar.gz \
@@ -133,7 +133,7 @@ ARG POM_CUDA_ARCH_CACHE_KEY="86-120"
 # load dynamically; POM's custom CUDA MoE kernels are linked into this executable.
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/build/target,id=pom-target-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN} \
+    --mount=type=cache,target=/build/target,id=pom-target-v2-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN},sharing=locked \
     if [ "$POM_LLAMA_CPP_MODE" = release ]; then \
       export LLAMA_SOURCE=/build/llama.cpp \
         POM_LLAMA_CPP_PREBUILT_LIB_DIR=/build/llama-prebuilt/lib \
@@ -199,6 +199,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # would happily "offload" a model onto a CPU device. This also makes the AMD
 # index the Vulkan index by construction (sysmon::icd_amd / the ksia note).
 RUN find /usr/share/vulkan/icd.d -type f ! -name 'radeon_icd*.json' -delete
+# O runtime NVIDIA acrescenta aos processos os grupos donos dos dispositivos
+# do host (por exemplo render, gid 992 na ksia), que não têm nome dentro da
+# imagem. A dica de sudo do /etc/bash.bashrc do Ubuntu roda `groups` em todo
+# shell interativo e imprimia "groups: cannot find name for group id 992" nos
+# terminais dos plugins. A dica continua; só o aviso some.
+RUN sed -i 's/\$(groups)/$(groups 2>\/dev\/null)/' /etc/bash.bashrc \
+    && grep -q 'groups 2>/dev/null' /etc/bash.bashrc
 
 # Host build metadata changes only the runtime-derived stages, never Cargo/npm.
 ARG POM_BUILD_COMMIT=""

@@ -158,6 +158,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source,
   incluindo `ClusterLogEntry` e o estado de autoridade do interruptor de logs.
+  `PathsResponse` também inclui `workspace_root` e `default_workspace_root`,
+  a raiz persistente compartilhada por projetos e dados dinâmicos de plugins.
   `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is
   the tensor-parallel array. TP `DiscoveredModel` entries carry `tp_rank` and
   `tp_size`, which the UI turns into one-based labels such as `1of4`.
@@ -199,15 +201,19 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `pluginCatalog.ts` - consulta diretamente o catálogo público de plugins do
   servidor de licenças, com `credentials: "omit"`; não usa `api.ts` nem envia a
   chave de conexão ou a sessão administrativa. Valida os campos obrigatórios de
-  cada release e a URL canônica opcional `github_repository`; descarta plugins
-  sem release válida e sem origem GitHub, mantém campos opcionais
-  ausentes como dados desconhecidos e aceita imagens somente do host público
+  cada release comercial e descarta plugins sem release válida; metadados de
+  repositório GitHub do catálogo são ignorados, pois as fontes GitHub são locais.
+  Mantém campos opcionais ausentes como dados desconhecidos e aceita imagens somente do host público
   esperado, sem credenciais embutidas na URL. Também valida `description_pt_br`
   quando publicados. Estado de licença, candidatos e uso por `plugin_code` vêm
   da API autenticada do nó (`PluginStatus`), nunca do catálogo público.
   `pluginPurchase.ts` constrói a URL da loja pública com o `plugin_code` em
   parâmetro codificado e não envia credenciais. `usePublicPluginCatalog` em `queries.ts`
   controla carregamento, erro e atualização periódica dessa leitura.
+  `useGithubRepositories` consulta `/api/ui/plugins/github-repositories`, lista
+  local autenticada que não depende do catálogo comercial. Cada fonte informa
+  `manifest_path` e pode devolver o manifesto de UI original quando a origem é
+  `ui/manifest.json`.
   `PluginStatus` também carrega `installed_at`, `update_checked_at` e
   `public_install` do estado real persistido pelo nó; não derive a data da última
   instalação do heartbeat. Uma instalação pública mantém `licensed_plugins`
@@ -215,8 +221,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `license_expires_at` é a validade da LICENÇA (de `GET /v1/licenses/status`) e
   é o campo certo para "Licença válida até" na tela de Plugins - nunca
   `lease_expires_at`, um prazo técnico de renovação de poucos dias que o
-  heartbeat empurra sozinho. O status também expõe a origem GitHub registrada
-  localmente, a release verificada em staging e seu erro de checagem; isso não
+  heartbeat empurra sozinho. O status também expõe a URL do repositório GitHub
+  da instalação pública local; as releases disponíveis e os erros de leitura
+  pertencem ao registro de repositórios, não ao catálogo de licenças. Isso não
   muda `licensed_plugins`. `preferences_schema` vem do manifesto instalado,
   enquanto `preferences` são valores locais, enviados somente à rota local de
   configuração do plugin e nunca à API de licenças.
@@ -587,9 +594,28 @@ When updating this file, preserve this bar for all agents and keep entries conci
   `roles` filtra o item e também limita o acesso direto à rota vinculada;
   menus e rotas aceitam `roles` atual ou `profiles` legado, sem exigir ambos.
   Se os dois aparecem, `roles` prevalece; sem nenhum, todos os perfis são
-  elegíveis. Não conhece plugin algum.
+  elegíveis. `icon_image` é validado como PNG declarado em `assets` e fica
+  disponível para o menu como fallback visual; `documentation` valida as
+  entradas Markdown dos guias e da referência. `menu[].children` vira seção
+  com submenus (`pluginMenuItems` devolve só os filhos visíveis ao perfil;
+  o `roles` do filho é interseção com o do pai) e `pluginDisplayName` dá o
+  nome humano do plugin. Não conhece plugin algum.
 - `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
   design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
-  empacotar cópias próprias.
+  empacotar cópias próprias. Versão 2: `context()`, `events`, `protocol` e
+  `plugin(code)` (eventos e comandos com escopo do plugin).
+- `pluginEvents.ts` - o protocolo `pom-plugin-events/v1`: envelope, barramento
+  (`publishPluginEvent`, `subscribePluginEvents`, replay do último evento
+  global), entrega por `CustomEvent("pom:plugin-event")` e `postMessage` para
+  `iframe[data-pom-plugin]`, e os comandos `notification.notify`/`confirm`
+  (`runPluginCommand`, validados e sempre respondidos com
+  `notification.response`), também aceitos por `pom:plugin-request` e
+  `postMessage` da mesma origem. Quem executa é a `PluginBridge`.
+  `forwardNodeEvent` repassa os envelopes do nó (`deployment.started`,
+  `model.serving`, `model.stopped`, `preferences.changed`) preservando `id`.
+- `pluginInbox.ts` - caixa de entrada dos plugins no sino: perguntas
+  `notification.confirm` com Aceitar/Recusar (só nesta aba) e avisos
+  `notification.notify` sem botões, não lidos até o sino abrir
+  (`markPluginNoticesRead`; ids lidos no `localStorage`).
 - `pluginI18n.ts` - carrega/valida/instala os catálogos de texto do plugin
   (`syncPluginCatalogs`), nos idiomas selecionados. Ver `docs/subsystems/plugins-ui.md`.

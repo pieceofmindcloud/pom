@@ -726,7 +726,7 @@ pub(crate) struct InferenceAppState {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct DirectForwardOrder {
+pub(crate) struct DirectForwardOrder {
     pub(super) sequences: Arc<Mutex<HashMap<String, Arc<DirectForwardSequence>>>>,
 }
 
@@ -736,7 +736,7 @@ pub(super) struct DirectForwardSequence {
     pub(super) notify: tokio::sync::Notify,
 }
 
-pub(super) struct DirectForwardTurn {
+pub(crate) struct DirectForwardTurn {
     pub(super) owner: DirectForwardOrder,
     pub(super) key: String,
     pub(super) sequence: Arc<DirectForwardSequence>,
@@ -744,7 +744,7 @@ pub(super) struct DirectForwardTurn {
 }
 
 impl DirectForwardOrder {
-    pub(super) fn ensure_sequence(&self, key: &str) -> Result<()> {
+    pub(crate) fn ensure_sequence(&self, key: &str) -> Result<()> {
         let mut sequences = self
             .sequences
             .lock()
@@ -759,7 +759,7 @@ impl DirectForwardOrder {
         Ok(())
     }
 
-    pub(super) async fn wait_turn(
+    pub(crate) async fn wait_turn(
         &self,
         key: impl Into<String>,
         chunk_index: u32,
@@ -821,7 +821,7 @@ impl DirectForwardOrder {
 }
 
 impl DirectForwardTurn {
-    pub(super) fn finish(self, success: bool, terminal: bool) {
+    pub(crate) fn finish(self, success: bool, terminal: bool) {
         if success {
             if let Ok(mut next_chunk) = self.sequence.next_chunk.lock() {
                 if *next_chunk == self.chunk_index {

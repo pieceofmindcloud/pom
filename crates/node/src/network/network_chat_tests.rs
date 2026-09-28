@@ -159,3 +159,46 @@ fn chat_pressure_is_try_send_only_and_does_not_wait() {
     );
     assert!(queue.dropped() > 49_000);
 }
+
+#[tokio::test]
+async fn plugin_notices_are_validated_kept_in_memory_and_never_persisted() {
+    let path = std::env::temp_dir().join(format!(
+        "pom-network-chat-notice-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let database = std::sync::Arc::new(crate::db::PomDb::open(&path).unwrap());
+    let config: crate::config::Config = serde_json::from_value(serde_json::json!({
+        "profile": "admin",
+        "connection_key": "cluster-key",
+    }))
+    .unwrap();
+    let auth = std::sync::Arc::new(tokio::sync::RwLock::new(config));
+    let (chat, _receiver) = super::network_chat::NetworkChat::new(database.clone(), auth, true);
+    let notice = |message_id: &str, plugin_code: &str, level: &str| ChatAction::PluginNotice {
+        message_id: message_id.into(),
+        room_id: "network".into(),
+        sender_node_id: "node-a".into(),
+        recipient_node_id: None,
+        plugin_code: plugin_code.into(),
+        title: "Deploy pronto".into(),
+        body: "O modelo foi implantado.".into(),
+        level: level.into(),
+        sent_at: chrono::Utc::now(),
+    };
+
+    assert!(notice("n0", "Base", "info").validate().is_err());
+    assert!(notice("n0", "base", "loud").validate().is_err());
+    assert!(chat.accept(notice("n1", "base", "success")).unwrap());
+    // Uma retransmissão do mesmo aviso não duplica.
+    assert!(chat.accept(notice("n1", "base", "success")).unwrap());
+    let notices = chat.notice_snapshot();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].kind, "plugin_notice");
+    assert_eq!(notices[0].plugin_code.as_deref(), Some("base"));
+    assert_eq!(notices[0].title.as_deref(), Some("Deploy pronto"));
+    assert!(database
+        .network_chat_messages("network", 10)
+        .unwrap()
+        .is_empty());
+    let _ = std::fs::remove_file(path);
+}

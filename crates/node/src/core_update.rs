@@ -167,8 +167,8 @@ pub(crate) fn launch_staged_update(
         serde_json::to_string(args).map_err(|error| std::io::Error::other(error.to_string()))?;
     let script = format!(
         "$stage='{stage}';$target='{target}';$arguments=ConvertFrom-Json -InputObject '{arguments}';$attempt=0;while($attempt -lt 120){{try{{Move-Item -LiteralPath $stage -Destination $target -Force -ErrorAction Stop;break}}catch{{Start-Sleep -Milliseconds 250;$attempt++}}}};if(Test-Path -LiteralPath $stage){{exit 1}};Remove-Item Env:POM_WINDOWS_SUPERVISED_CHILD -ErrorAction SilentlyContinue;Start-Process -FilePath $target -ArgumentList $arguments",
-        stage = powershell_literal(staged),
-        target = powershell_literal(destination),
+        stage = powershell_path_literal(staged)?,
+        target = powershell_path_literal(destination)?,
         arguments = powershell_literal(&arguments),
     );
     std::process::Command::new("powershell.exe")
@@ -187,7 +187,18 @@ pub(crate) fn launch_staged_update(
         .map(|_| ())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
+fn powershell_path_literal(path: &Path) -> std::io::Result<String> {
+    let value = path.to_str().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "caminho não pode ser representado como texto Unicode para PowerShell",
+        )
+    })?;
+    Ok(powershell_literal(value))
+}
+
+#[cfg(any(windows, test))]
 fn powershell_literal(value: &str) -> String {
     value.replace('\'', "''")
 }
@@ -195,6 +206,36 @@ fn powershell_literal(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escapes_single_quotes_in_powershell_literals() {
+        assert_eq!(powershell_literal("O'Brien"), "O''Brien");
+    }
+
+    #[test]
+    fn converts_windows_paths_to_escaped_powershell_literals() {
+        let path = Path::new(r"C:\Users\O'Brien\POM\pom.exe");
+
+        assert_eq!(
+            powershell_path_literal(path).expect("Unicode Windows path"),
+            r"C:\Users\O''Brien\POM\pom.exe"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_unicode_paths_instead_of_lossy_conversion() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = Path::new(std::ffi::OsStr::from_bytes(b"pom-\xff.exe"));
+
+        assert_eq!(
+            powershell_path_literal(path)
+                .expect_err("non-Unicode path must be rejected")
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
 
     #[test]
     fn uses_the_license_server_core_plugin_code() {

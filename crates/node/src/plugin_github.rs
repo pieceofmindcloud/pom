@@ -1,7 +1,8 @@
-//! Public GitHub Releases source for plugin artifacts. The GitHub client is
-//! unauthenticated; free installation eligibility is separately confirmed from
-//! the public license-server catalog. Paid activation remains in `plugins`.
+//! Local GitHub Releases sources for plugins. The unauthenticated GitHub client
+//! reads a repository-root manifest and published release assets directly; this
+//! path never consults the license-server catalog.
 
+use base64::Engine as _;
 use enterprise_protocol::PluginPreferencesSchema;
 use reqwest::{header, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -10,8 +11,68 @@ use std::path::Path;
 
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_GITHUB_METADATA_BYTES: usize = 2 * 1024 * 1024;
-const MAX_PUBLIC_CATALOG_BYTES: usize = 2 * 1024 * 1024;
+const GITHUB_RELEASES_PER_PAGE: usize = 100;
+const MAX_GITHUB_RELEASE_METADATA_BYTES: usize = 16 * 1024 * 1024;
+const MAX_GITHUB_RELEASE_NOTES_BYTES: usize = 8 * 1024;
 const MAX_PLUGIN_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GithubRepositoryManifest {
+    pub schema: u32,
+    pub plugin_code: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub plugin_abi: u32,
+    #[serde(default)]
+    pub feature_set: Vec<String>,
+    /// Release asset name keyed by `<os>-<arch>`, for example
+    /// `macos-aarch64: "plugin-macos-aarch64.dylib"`.
+    pub artifacts: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub preferences: Option<PluginPreferencesSchema>,
+    /// Capturas de tela: caminhos relativos à raiz do repositório ou URLs
+    /// `https://`, com as mesmas regras de `pom-plugin-ui/v1`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct GithubRepositoryRelease {
+    pub release_id: String,
+    pub tag_name: String,
+    pub name: Option<String>,
+    pub changelog: Option<String>,
+    pub published_at: Option<String>,
+    pub prerelease: bool,
+    pub asset_name: Option<String>,
+    pub asset_size: Option<u64>,
+    pub available_for_node: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct GithubRepository {
+    pub id: String,
+    pub repository_url: String,
+    #[serde(default = "root_manifest_path")]
+    pub manifest_path: String,
+    pub manifest: GithubRepositoryManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_manifest: Option<serde_json::Value>,
+    pub releases: Vec<GithubRepositoryRelease>,
+    /// Descrição por idioma, vinda do manifesto do repositório.
+    #[serde(default)]
+    pub description: std::collections::BTreeMap<String, String>,
+    /// URLs públicas das capturas de tela. Caminhos relativos viram
+    /// `raw.githubusercontent.com/<owner>/<repo>/HEAD/<caminho>`: o navegador
+    /// as carrega direto do GitHub, sem passar pelo nó nem pelo license-server.
+    #[serde(default)]
+    pub screenshot_urls: Vec<String>,
+    pub checked_at: String,
+    #[serde(default)]
+    pub check_error: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,25 +95,6 @@ pub(crate) struct GithubPluginManifest {
     pub preferences: Option<PluginPreferencesSchema>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct GithubUpdateInfo {
-    pub release_id: String,
-    pub version: String,
-    pub changelog: Option<String>,
-    pub downloaded: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct GithubPluginState {
-    pub repository_url: Option<String>,
-    pub checked_at: Option<String>,
-    /// Network or validation error from the most recent check. The last known
-    /// update and downloaded artifact are deliberately retained on failure.
-    pub check_error: Option<String>,
-    pub update: Option<GithubUpdateInfo>,
-    pub manifest: Option<GithubPluginManifest>,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct DownloadedRelease {
     pub manifest: GithubPluginManifest,
@@ -63,6 +105,20 @@ pub(crate) struct DownloadedRelease {
 pub(crate) struct GithubReleaseClient {
     client: reqwest::Client,
     api_base: reqwest::Url,
+}
+
+#[derive(Debug)]
+enum RepositoryManifestSource {
+    Distribution(GithubRepositoryManifest),
+    PluginUi {
+        plugin_code: String,
+        display_name: String,
+        value: serde_json::Value,
+    },
+}
+
+fn root_manifest_path() -> String {
+    "manifest.json".into()
 }
 
 impl GithubReleaseClient {
@@ -102,6 +158,7 @@ impl GithubReleaseClient {
         Ok(Self { client, api_base })
     }
 
+    #[cfg(test)]
     pub(crate) async fn check_and_download(
         &self,
         repository: &str,
@@ -204,6 +261,453 @@ impl GithubReleaseClient {
         Ok(Some(DownloadedRelease { manifest, bytes }))
     }
 
+    pub(crate) async fn inspect_repository(
+        &self,
+        repository_url: &str,
+        os: &str,
+        arch: &str,
+    ) -> Result<GithubRepository, String> {
+        let canonical_url = canonical_repository(repository_url)?;
+        let repository = canonical_repository_parts(&canonical_url)?;
+        let api_root = self.api_base.as_str().trim_end_matches('/');
+        let repo_api = format!("{api_root}/repos/{}/{}", repository.owner, repository.repo);
+        self.ensure_public_repository(&repo_api).await?;
+
+        let (manifest_path, source) = if let Some(bytes) = self
+            .read_repository_manifest(&repo_api, "manifest.json")
+            .await?
+        {
+            let manifest: GithubRepositoryManifest = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid repository manifest.json: {error}"))?;
+            validate_repository_manifest(&manifest)?;
+            (
+                "manifest.json".to_owned(),
+                RepositoryManifestSource::Distribution(manifest),
+            )
+        } else {
+            let bytes = self
+                .read_repository_manifest(&repo_api, "ui/manifest.json")
+                .await?
+                .ok_or_else(|| {
+                    "public repository must contain manifest.json or ui/manifest.json".to_owned()
+                })?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid ui/manifest.json: {error}"))?;
+            let plugin_code = value
+                .get("plugin_code")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "ui/manifest.json is missing plugin_code".to_owned())?
+                .to_owned();
+            let ui_manifest =
+                crate::plugin_ui::PluginUiManifest::parse(&plugin_code, value.clone())
+                    .map_err(|error| format!("invalid ui/manifest.json: {error}"))?;
+            let display_name = ui_manifest
+                .menu
+                .iter()
+                .find(|item| item.id == plugin_code)
+                .or_else(|| ui_manifest.menu.first())
+                .and_then(|item| item.label.get("en").or_else(|| item.label.values().next()))
+                .cloned()
+                .unwrap_or_else(|| plugin_code.clone());
+            (
+                "ui/manifest.json".to_owned(),
+                RepositoryManifestSource::PluginUi {
+                    plugin_code,
+                    display_name,
+                    value,
+                },
+            )
+        };
+        let target = format!("{os}-{arch}");
+        let artifact_name = match &source {
+            RepositoryManifestSource::Distribution(manifest) => {
+                manifest.artifacts.get(&target).cloned()
+            }
+            RepositoryManifestSource::PluginUi { .. } => None,
+        };
+        let platform_manifest_asset = format!("pom-plugin-{os}-{arch}.json");
+
+        let mut summaries = Vec::new();
+        let mut ui_distribution_manifest = None;
+        let mut total_metadata_bytes = 0usize;
+        let mut seen_release_ids = std::collections::HashSet::new();
+        let mut page = 1usize;
+        loop {
+            let releases_response = self
+                .client
+                .get(format!(
+                    "{repo_api}/releases?per_page={GITHUB_RELEASES_PER_PAGE}&page={page}"
+                ))
+                .header(header::ACCEPT, "application/vnd.github+json")
+                .send()
+                .await
+                .map_err(|error| format!("GitHub releases lookup failed: {error}"))?;
+            if releases_response.status() != StatusCode::OK {
+                return Err(github_status_error(releases_response.status(), "releases"));
+            }
+            let release_bytes = read_limited(
+                releases_response,
+                MAX_GITHUB_METADATA_BYTES,
+                "release metadata",
+            )
+            .await?;
+            total_metadata_bytes = total_metadata_bytes.saturating_add(release_bytes.len());
+            if total_metadata_bytes > MAX_GITHUB_RELEASE_METADATA_BYTES {
+                return Err("GitHub release history exceeds the metadata limit".into());
+            }
+            let releases: Vec<GithubRelease> = serde_json::from_slice(&release_bytes)
+                .map_err(|error| format!("invalid GitHub releases response: {error}"))?;
+            let page_count = releases.len();
+            for release in releases.into_iter().filter(|release| !release.draft) {
+                if release.id == 0
+                    || release.tag_name.trim().is_empty()
+                    || release.tag_name.len() > 128
+                    || !seen_release_ids.insert(release.id)
+                {
+                    continue;
+                }
+                let (asset_name, asset_size, available_for_node) = match &source {
+                    RepositoryManifestSource::Distribution(_) => {
+                        let asset = artifact_name.as_deref().and_then(|name| {
+                            let matches = release
+                                .assets
+                                .iter()
+                                .filter(|asset| asset.name == name)
+                                .collect::<Vec<_>>();
+                            match matches.as_slice() {
+                                [asset]
+                                    if asset.size > 0
+                                        && asset.size <= MAX_PLUGIN_BYTES
+                                        && asset
+                                            .digest
+                                            .as_deref()
+                                            .is_some_and(valid_github_sha256) =>
+                                {
+                                    Some(*asset)
+                                }
+                                _ => None,
+                            }
+                        });
+                        (
+                            asset.map(|asset| asset.name.clone()),
+                            asset.map(|asset| asset.size),
+                            asset.is_some(),
+                        )
+                    }
+                    RepositoryManifestSource::PluginUi { plugin_code, .. } => {
+                        let metadata = release
+                            .assets
+                            .iter()
+                            .filter(|asset| asset.name == platform_manifest_asset)
+                            .collect::<Vec<_>>();
+                        let metadata = match metadata.as_slice() {
+                            [asset]
+                                if asset.size > 0
+                                    && asset.size <= MAX_MANIFEST_BYTES as u64
+                                    && asset.digest.as_deref().is_some_and(valid_github_sha256) =>
+                            {
+                                Some(*asset)
+                            }
+                            _ => None,
+                        };
+                        if ui_distribution_manifest.is_none() {
+                            if let Some(metadata_asset) = metadata {
+                                let bytes = self.download_asset(metadata_asset).await?;
+                                validate_api_digest(&bytes, metadata_asset.digest.as_deref())?;
+                                let distribution_manifest: GithubPluginManifest =
+                                    serde_json::from_slice(&bytes).map_err(|error| {
+                                        format!(
+                                            "invalid release asset {platform_manifest_asset}: {error}"
+                                        )
+                                    })?;
+                                validate_manifest(
+                                    &distribution_manifest,
+                                    plugin_code,
+                                    &release.tag_name,
+                                    os,
+                                    arch,
+                                )?;
+                                let binary = exactly_one_asset(
+                                    &release.assets,
+                                    &distribution_manifest.asset,
+                                )?;
+                                validate_release_binary_metadata(&distribution_manifest, binary)?;
+                                ui_distribution_manifest = Some(distribution_manifest);
+                            }
+                        }
+                        (None, None, metadata.is_some())
+                    }
+                };
+                summaries.push(GithubRepositoryRelease {
+                    release_id: release.id.to_string(),
+                    tag_name: release.tag_name,
+                    name: truncate_github_text(release.name, 512),
+                    changelog: truncate_github_text(release.body, MAX_GITHUB_RELEASE_NOTES_BYTES),
+                    published_at: release.published_at,
+                    prerelease: release.prerelease,
+                    asset_name,
+                    asset_size,
+                    available_for_node,
+                });
+            }
+            if page_count < GITHUB_RELEASES_PER_PAGE {
+                break;
+            }
+            page = page
+                .checked_add(1)
+                .ok_or_else(|| "GitHub release page index overflowed".to_owned())?;
+        }
+
+        let (manifest, ui_manifest) = match source {
+            RepositoryManifestSource::Distribution(manifest) => (manifest, None),
+            RepositoryManifestSource::PluginUi {
+                plugin_code,
+                display_name,
+                value,
+            } => {
+                let distribution = ui_distribution_manifest.ok_or_else(|| {
+                    format!(
+                        "no published release contains a valid {platform_manifest_asset} for this machine"
+                    )
+                })?;
+                let manifest = GithubRepositoryManifest {
+                    schema: 1,
+                    plugin_code,
+                    display_name,
+                    description: None,
+                    plugin_abi: distribution.plugin_abi,
+                    feature_set: distribution.feature_set,
+                    artifacts: std::collections::BTreeMap::from([(target, distribution.asset)]),
+                    preferences: distribution.preferences,
+                    screenshots: Vec::new(),
+                };
+                validate_repository_manifest(&manifest)?;
+                (manifest, Some(value))
+            }
+        };
+        let (description, screenshots) = match &ui_manifest {
+            Some(value) => {
+                let parsed =
+                    crate::plugin_ui::PluginUiManifest::parse(&manifest.plugin_code, value.clone())
+                        .map_err(|error| format!("invalid ui/manifest.json: {error}"))?;
+                (parsed.description, parsed.screenshots)
+            }
+            None => (
+                manifest
+                    .description
+                    .iter()
+                    .map(|text| ("en".to_owned(), text.clone()))
+                    .collect(),
+                manifest.screenshots.clone(),
+            ),
+        };
+        let screenshot_urls = screenshots
+            .iter()
+            .map(|shot| screenshot_url(&repository, shot))
+            .collect();
+        let id = hex::encode(sha2::Sha256::digest(canonical_url.as_bytes()));
+        Ok(GithubRepository {
+            description,
+            screenshot_urls,
+            id,
+            repository_url: canonical_url,
+            manifest_path,
+            manifest,
+            ui_manifest,
+            releases: summaries,
+            checked_at: chrono::Utc::now().to_rfc3339(),
+            check_error: None,
+        })
+    }
+
+    async fn read_repository_manifest(
+        &self,
+        repo_api: &str,
+        path: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let response = self
+            .client
+            .get(format!("{repo_api}/contents/{path}"))
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|error| format!("GitHub {path} lookup failed: {error}"))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if response.status() != StatusCode::OK {
+            return Err(github_status_error(response.status(), path));
+        }
+        let response_bytes =
+            read_limited(response, MAX_MANIFEST_BYTES * 2, "plugin manifest").await?;
+        let contents: GithubContentsFile = serde_json::from_slice(&response_bytes)
+            .map_err(|error| format!("invalid GitHub {path} response: {error}"))?;
+        if contents.file_type != "file"
+            || contents.path != path
+            || contents.encoding != "base64"
+            || contents.size == 0
+            || contents.size > MAX_MANIFEST_BYTES as u64
+        {
+            return Err(format!("repository {path} is not a bounded manifest file"));
+        }
+        let encoded = contents
+            .content
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| format!("invalid base64 in {path}: {error}"))?;
+        if bytes.len() as u64 != contents.size || bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(format!(
+                "repository {path} size does not match GitHub metadata"
+            ));
+        }
+        Ok(Some(bytes))
+    }
+
+    pub(crate) async fn download_release(
+        &self,
+        repository: &GithubRepository,
+        release_id: &str,
+        os: &str,
+        arch: &str,
+    ) -> Result<DownloadedRelease, String> {
+        if !release_id.bytes().all(|byte| byte.is_ascii_digit()) || release_id.is_empty() {
+            return Err("GitHub release ID is invalid".into());
+        }
+        let selected = repository
+            .releases
+            .iter()
+            .find(|release| release.release_id == release_id)
+            .ok_or_else(|| "selected release is not published in this repository".to_owned())?;
+        if !selected.available_for_node {
+            return Err("selected release has no compatible artifact for this machine".into());
+        }
+        let canonical_url = canonical_repository(&repository.repository_url)?;
+        let parts = canonical_repository_parts(&canonical_url)?;
+        let release_api = format!(
+            "{}/repos/{}/{}/releases/{release_id}",
+            self.api_base.as_str().trim_end_matches('/'),
+            parts.owner,
+            parts.repo
+        );
+        let response = self
+            .client
+            .get(release_api)
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|error| format!("GitHub release lookup failed: {error}"))?;
+        if response.status() != StatusCode::OK {
+            return Err(github_status_error(response.status(), "release"));
+        }
+        let bytes = read_limited(response, MAX_GITHUB_METADATA_BYTES, "release metadata").await?;
+        let release: GithubRelease = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("invalid GitHub release response: {error}"))?;
+        if release.id.to_string() != release_id || release.draft {
+            return Err("selected GitHub release is no longer published".into());
+        }
+        if repository.manifest_path == "ui/manifest.json" {
+            let manifest_asset_name = format!("pom-plugin-{os}-{arch}.json");
+            let manifest_asset = exactly_one_asset(&release.assets, &manifest_asset_name)?;
+            if manifest_asset.size == 0
+                || manifest_asset.size > MAX_MANIFEST_BYTES as u64
+                || !manifest_asset
+                    .digest
+                    .as_deref()
+                    .is_some_and(valid_github_sha256)
+            {
+                return Err(format!(
+                    "release manifest asset {manifest_asset_name} has invalid integrity metadata"
+                ));
+            }
+            let manifest_bytes = self.download_asset(manifest_asset).await?;
+            validate_api_digest(&manifest_bytes, manifest_asset.digest.as_deref())?;
+            let mut manifest: GithubPluginManifest = serde_json::from_slice(&manifest_bytes)
+                .map_err(|error| format!("invalid release asset {manifest_asset_name}: {error}"))?;
+            validate_manifest(
+                &manifest,
+                &repository.manifest.plugin_code,
+                &release.tag_name,
+                os,
+                arch,
+            )?;
+            if manifest.changelog.is_none() {
+                manifest.changelog = release.body.clone().filter(|body| !body.trim().is_empty());
+            }
+            let asset = exactly_one_asset(&release.assets, &manifest.asset)?;
+            validate_release_binary_metadata(&manifest, asset)?;
+            let binary = self.download_asset(asset).await?;
+            validate_integrity(&manifest, &binary, asset.digest.as_deref())?;
+            return Ok(DownloadedRelease {
+                manifest,
+                bytes: binary,
+            });
+        }
+        let target = format!("{os}-{arch}");
+        let asset_name = repository
+            .manifest
+            .artifacts
+            .get(&target)
+            .ok_or_else(|| "repository manifest does not support this machine".to_owned())?;
+        let asset = exactly_one_asset(&release.assets, asset_name)?;
+        if asset.size == 0
+            || asset.size > MAX_PLUGIN_BYTES
+            || !asset.digest.as_deref().is_some_and(valid_github_sha256)
+        {
+            return Err("release artifact must include a valid GitHub SHA-256 digest".into());
+        }
+        let binary = self.download_asset(asset).await?;
+        validate_api_digest(&binary, asset.digest.as_deref())?;
+        let digest = asset
+            .digest
+            .clone()
+            .expect("validated GitHub SHA-256 digest");
+        let manifest = GithubPluginManifest {
+            schema: 1,
+            plugin_code: repository.manifest.plugin_code.clone(),
+            release_id: release_id.to_owned(),
+            version: release.tag_name.clone(),
+            os: os.to_owned(),
+            arch: arch.to_owned(),
+            plugin_abi: repository.manifest.plugin_abi,
+            asset: asset.name.clone(),
+            sha256: digest,
+            size: asset.size,
+            feature_set: repository.manifest.feature_set.clone(),
+            changelog: release.body,
+            preferences: repository.manifest.preferences.clone(),
+        };
+        validate_manifest(&manifest, &manifest.plugin_code, release_id, os, arch)?;
+        validate_integrity(&manifest, &binary, asset.digest.as_deref())?;
+        Ok(DownloadedRelease {
+            manifest,
+            bytes: binary,
+        })
+    }
+
+    async fn ensure_public_repository(&self, repo_api: &str) -> Result<(), String> {
+        let response = self
+            .client
+            .get(repo_api)
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|error| format!("GitHub repository lookup failed: {error}"))?;
+        if response.status() != StatusCode::OK {
+            return Err(github_status_error(response.status(), "repository"));
+        }
+        let bytes =
+            read_limited(response, MAX_GITHUB_METADATA_BYTES, "repository metadata").await?;
+        let metadata: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("invalid GitHub repository response: {error}"))?;
+        if metadata.get("private").and_then(serde_json::Value::as_bool) != Some(false) {
+            return Err("repository must be public and accessible".into());
+        }
+        Ok(())
+    }
+
     async fn download_asset(&self, asset: &GithubAsset) -> Result<Vec<u8>, String> {
         let url = reqwest::Url::parse(&asset.url)
             .map_err(|_| "GitHub release asset URL is invalid".to_owned())?;
@@ -292,70 +796,6 @@ struct CanonicalRepository {
     repo: String,
 }
 
-pub(crate) async fn public_free_plugin_repository(
-    license_base_url: &str,
-    plugin_code: &str,
-) -> Result<String, String> {
-    let base = reqwest::Url::parse(license_base_url.trim_end_matches('/'))
-        .map_err(|_| "license-server URL is invalid".to_owned())?;
-    let allow_custom_http = std::env::var("POM_LICENSE_ALLOW_CUSTOM_BASE_URL")
-        .ok()
-        .as_deref()
-        == Some("1");
-    if base.scheme() != "https" && !cfg!(test) && !allow_custom_http {
-        return Err("public plugin catalog requires HTTPS".into());
-    }
-    let catalog_url = format!("{}/v1/plugins", base.as_str().trim_end_matches('/'));
-    let response = reqwest::Client::builder()
-        .user_agent(concat!("pom/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| error.to_string())?
-        .get(catalog_url)
-        .send()
-        .await
-        .map_err(|error| format!("public plugin catalog request failed: {error}"))?;
-    if response.status() != StatusCode::OK {
-        return Err(format!(
-            "public plugin catalog request failed with HTTP {}",
-            response.status()
-        ));
-    }
-    let bytes = read_limited(response, MAX_PUBLIC_CATALOG_BYTES, "public plugin catalog").await?;
-    let catalog: PublicPluginCatalogResponse = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("invalid public plugin catalog: {error}"))?;
-    let plugin = catalog
-        .plugins
-        .into_iter()
-        .find(|plugin| plugin.code == plugin_code)
-        .ok_or_else(|| "plugin is not listed in the public catalog".to_owned())?;
-    if plugin.requires_license {
-        return Err("this plugin requires an active license".into());
-    }
-    let repository = plugin
-        .github_repository
-        .ok_or_else(|| "this plugin has no public GitHub source".to_owned())?;
-    let canonical = canonical_repository(&repository)?;
-    if canonical != repository {
-        return Err("public GitHub repository URL is not canonical".into());
-    }
-    Ok(canonical)
-}
-
-#[derive(Deserialize)]
-struct PublicPluginCatalogResponse {
-    plugins: Vec<PublicPluginCatalogEntry>,
-}
-
-#[derive(Deserialize)]
-struct PublicPluginCatalogEntry {
-    code: String,
-    requires_license: bool,
-    github_repository: Option<String>,
-}
-
 pub(crate) fn canonical_repository(value: &str) -> Result<String, String> {
     let parsed = reqwest::Url::parse(value.trim())
         .map_err(|_| "enter a canonical public GitHub repository URL".to_owned())?;
@@ -374,16 +814,18 @@ pub(crate) fn canonical_repository(value: &str) -> Result<String, String> {
         .ok_or_else(|| "enter a canonical public GitHub repository URL".to_owned())?
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
-    if segments.len() != 2
-        || segments.iter().any(|segment| !is_github_segment(segment))
-        || segments[1].ends_with(".git")
-    {
+    if segments.len() != 2 || segments.iter().any(|segment| !is_github_segment(segment)) {
         return Err("URL must be https://github.com/owner/repository".into());
     }
-    Ok(format!(
-        "https://github.com/{}/{}",
-        segments[0], segments[1]
-    ))
+    let repository = if segments[1].to_ascii_lowercase().ends_with(".git") {
+        &segments[1][..segments[1].len() - 4]
+    } else {
+        segments[1]
+    };
+    if !is_github_segment(repository) {
+        return Err("URL must be https://github.com/owner/repository".into());
+    }
+    Ok(format!("https://github.com/{}/{}", segments[0], repository))
 }
 
 fn canonical_repository_parts(value: &str) -> Result<CanonicalRepository, String> {
@@ -398,6 +840,19 @@ fn canonical_repository_parts(value: &str) -> Result<CanonicalRepository, String
     Ok(CanonicalRepository { owner, repo })
 }
 
+/// Resolve uma captura de tela declarada pelo repositório. Os caminhos já
+/// foram validados por `plugin_ui::valid_screenshot`.
+fn screenshot_url(repository: &CanonicalRepository, shot: &str) -> String {
+    if shot.starts_with("https://") {
+        shot.to_owned()
+    } else {
+        format!(
+            "https://raw.githubusercontent.com/{}/{}/HEAD/{}",
+            repository.owner, repository.repo, shot
+        )
+    }
+}
+
 fn is_github_segment(segment: &str) -> bool {
     !segment.is_empty()
         && segment != "."
@@ -408,9 +863,38 @@ fn is_github_segment(segment: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
+fn truncate_github_text(value: Option<String>, limit: usize) -> Option<String> {
+    value.map(|mut text| {
+        if text.len() > limit {
+            let mut end = limit;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            text.push('…');
+        }
+        text
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubContentsFile {
+    #[serde(rename = "type")]
+    file_type: String,
+    path: String,
+    encoding: String,
+    size: u64,
+    content: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
+    id: u64,
     tag_name: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
     #[serde(default)]
     body: Option<String>,
     #[serde(default)]
@@ -443,6 +927,112 @@ fn exactly_one_asset<'a>(assets: &'a [GithubAsset], name: &str) -> Result<&'a Gi
     }
 }
 
+fn validate_release_binary_metadata(
+    manifest: &GithubPluginManifest,
+    asset: &GithubAsset,
+) -> Result<(), String> {
+    let Some(api_digest) = asset
+        .digest
+        .as_deref()
+        .and_then(|value| value.strip_prefix("sha256:"))
+    else {
+        return Err("plugin release binary is missing its GitHub SHA-256 digest".into());
+    };
+    let manifest_digest = manifest
+        .sha256
+        .strip_prefix("sha256:")
+        .unwrap_or(&manifest.sha256);
+    if asset.size != manifest.size
+        || asset.size == 0
+        || asset.size > MAX_PLUGIN_BYTES
+        || !valid_sha256(api_digest)
+        || !api_digest.eq_ignore_ascii_case(manifest_digest)
+    {
+        return Err("plugin binary metadata does not match its release manifest".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_repository_manifest(
+    manifest: &GithubRepositoryManifest,
+) -> Result<(), String> {
+    let valid_code = {
+        let bytes = manifest.plugin_code.as_bytes();
+        !bytes.is_empty()
+            && bytes.len() <= 128
+            && bytes[0].is_ascii_alphanumeric()
+            && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+            && bytes
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    };
+    if manifest.schema != 1
+        || !valid_code
+        || manifest.display_name.trim().is_empty()
+        || manifest.display_name.len() > 200
+        || manifest
+            .description
+            .as_ref()
+            .is_some_and(|value| value.len() > 4000)
+        || manifest.plugin_abi != enterprise_protocol::PLUGIN_ABI_VERSION
+        || manifest.feature_set.len() > 128
+        || manifest.artifacts.is_empty()
+        || manifest.artifacts.len() > 32
+        || manifest.feature_set.iter().any(|feature| {
+            !feature.starts_with(&format!("{}.", manifest.plugin_code))
+                || feature.trim() != feature
+                || feature.len() > 200
+        })
+    {
+        return Err("repository manifest has invalid plugin metadata".into());
+    }
+    let mut features = std::collections::HashSet::new();
+    for feature in &manifest.feature_set {
+        let prefix = format!("{}.", manifest.plugin_code);
+        let Some(name) = feature.strip_prefix(&prefix) else {
+            return Err("repository manifest has a feature outside its plugin code".into());
+        };
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            || !features.insert(feature)
+        {
+            return Err("repository manifest has an invalid or duplicate feature".into());
+        }
+    }
+    for (target, asset) in &manifest.artifacts {
+        let Some((os, arch)) = target.split_once('-') else {
+            return Err("repository manifest has an invalid artifact target".into());
+        };
+        let expected_extension = match os {
+            "windows" => ".dll",
+            "macos" => ".dylib",
+            "linux" => ".so",
+            _ => return Err("repository manifest has an unsupported artifact platform".into()),
+        };
+        if !matches!(arch, "aarch64" | "x86_64")
+            || !is_github_segment(asset)
+            || asset.len() > 255
+            || !asset.ends_with(expected_extension)
+        {
+            return Err("repository manifest has an invalid plugin artifact name".into());
+        }
+    }
+    if let Some(preferences) = &manifest.preferences {
+        validate_preferences_schema(preferences)?;
+    }
+    if manifest.screenshots.len() > 8
+        || !manifest
+            .screenshots
+            .iter()
+            .all(|shot| crate::plugin_ui::valid_screenshot(shot))
+    {
+        return Err("repository manifest has invalid screenshots".into());
+    }
+    Ok(())
+}
+
 fn validate_manifest(
     manifest: &GithubPluginManifest,
     code: &str,
@@ -472,12 +1062,9 @@ fn validate_manifest(
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
         || !valid_sha256(&manifest.sha256)
-        || semver::Version::parse(&manifest.version).is_err()
+        || manifest.version.trim().is_empty()
+        || manifest.version.len() > 128
         || !safe_release_id(&manifest.release_id)
-        || !manifest
-            .feature_set
-            .iter()
-            .any(|feature| feature.starts_with(&format!("{code}.")))
         || manifest
             .feature_set
             .iter()
@@ -532,6 +1119,12 @@ fn valid_preference_key(key: &str) -> bool {
         && key
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn valid_github_sha256(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(|digest| valid_sha256(digest))
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -590,64 +1183,6 @@ fn github_status_error(status: StatusCode, action: &str) -> String {
     }
 }
 
-pub(crate) fn downloaded_asset_path(
-    root: &Path,
-    code: &str,
-    release_id: &str,
-    sha256: &str,
-    os: &str,
-    arch: &str,
-) -> Result<std::path::PathBuf, String> {
-    let digest = sha256.strip_prefix("sha256:").unwrap_or(sha256);
-    if !safe_release_id(release_id)
-        || !is_github_segment(code)
-        || !is_github_segment(arch)
-        || !valid_sha256(digest)
-    {
-        return Err("invalid GitHub plugin asset path".into());
-    }
-    let extension = match os {
-        "windows" => "dll",
-        "macos" => "dylib",
-        "linux" => "so",
-        _ => return Err("unsupported operating system for plugin binary".into()),
-    };
-    let file_release_id = &release_id[..release_id.len().min(64)];
-    Ok(root
-        .join("plugins")
-        .join(code)
-        .join("github-downloads")
-        .join(format!("{file_release_id}-{digest}-{arch}.{extension}")))
-}
-
-pub(crate) fn write_downloaded_asset(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "GitHub plugin download directory is missing".to_owned())?;
-    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("plugin");
-    let temporary = parent.join(format!(".{name}.part-{}", uuid::Uuid::new_v4()));
-    let result = (|| {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|error| error.to_string())?;
-        file.write_all(bytes).map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-        std::fs::rename(&temporary, path).map_err(|error| error.to_string())?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -674,10 +1209,13 @@ pub(crate) mod tests {
             canonical_repository("https://github.com/pom-org/request-logs/").unwrap(),
             "https://github.com/pom-org/request-logs"
         );
+        assert_eq!(
+            canonical_repository("https://github.com/pom-org/request-logs.git").unwrap(),
+            "https://github.com/pom-org/request-logs"
+        );
         for invalid in [
             "http://github.com/owner/repo",
             "https://github.com/owner/repo/tree/main",
-            "https://github.com/owner/repo.git",
             "https://user@github.com/owner/repo",
             "https://github.com/owner/repo?tab=readme",
             "https://github.com.evil.example/owner/repo",
@@ -828,23 +1366,6 @@ pub(crate) mod tests {
             asset_base: String,
         }
 
-        async fn public_catalog() -> Json<serde_json::Value> {
-            Json(serde_json::json!({
-                "plugins": [
-                    {
-                        "code": "analytics",
-                        "requires_license": false,
-                        "github_repository": "https://github.com/pom/test-plugin"
-                    },
-                    {
-                        "code": "paid_plugin",
-                        "requires_license": true,
-                        "github_repository": "https://github.com/pom/paid-plugin"
-                    }
-                ]
-            }))
-        }
-
         async fn repository(State(state): State<Arc<StubState>>) -> axum::response::Response {
             let status = if state.fail_repository.load(Ordering::SeqCst) {
                 503
@@ -866,6 +1387,7 @@ pub(crate) mod tests {
             let binary_digest = hex::encode(sha2::Sha256::digest(&state.binary));
             let manifest_digest = hex::encode(sha2::Sha256::digest(&state.manifest));
             Json(serde_json::json!({
+                "id": 12,
                 "tag_name": "v1.2.0",
                 "body": "Test release",
                 "draft": false,
@@ -929,7 +1451,6 @@ pub(crate) mod tests {
             asset_base: format!("http://{address}"),
         });
         let app = Router::new()
-            .route("/v1/plugins", get(public_catalog))
             .route("/test/fail", axum::routing::post(fail_repository))
             .route("/repos/pom/test-plugin", get(repository))
             .route("/repos/pom/test-plugin/releases/latest", get(release))
@@ -943,22 +1464,388 @@ pub(crate) mod tests {
         (client, format!("http://{address}"), server)
     }
 
+    pub(crate) async fn github_repository_stub(
+    ) -> (GithubReleaseClient, String, tokio::task::JoinHandle<()>) {
+        use axum::extract::{Path as AxumPath, State};
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::sync::Arc;
+
+        struct RepositoryState {
+            manifest: Vec<u8>,
+            older: Vec<u8>,
+            newer: Vec<u8>,
+            api_base: String,
+        }
+
+        async fn repository() -> Json<serde_json::Value> {
+            Json(serde_json::json!({ "private": false, "archived": false }))
+        }
+
+        async fn manifest_contents(
+            State(state): State<Arc<RepositoryState>>,
+        ) -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "type": "file",
+                "path": "manifest.json",
+                "encoding": "base64",
+                "size": state.manifest.len(),
+                "content": base64::engine::general_purpose::STANDARD.encode(&state.manifest)
+            }))
+        }
+
+        fn release_json(state: &RepositoryState, id: u64) -> serde_json::Value {
+            let (tag, name, binary, path, prerelease) = if id == 11 {
+                ("v0.9.0", "Earlier release", &state.older, "older", true)
+            } else {
+                ("v2.0.0", "Latest release", &state.newer, "newer", false)
+            };
+            let digest = hex::encode(sha2::Sha256::digest(binary));
+            serde_json::json!({
+                "id": id,
+                "tag_name": tag,
+                "name": name,
+                "body": format!("Release notes for {tag}"),
+                "published_at": "2026-09-24T00:00:00Z",
+                "draft": false,
+                "prerelease": prerelease,
+                "assets": [{
+                    "name": "acme-plugin.so",
+                    "size": binary.len(),
+                    "digest": format!("sha256:{digest}"),
+                    "url": format!("{}/assets/{path}", state.api_base)
+                }]
+            })
+        }
+
+        async fn releases(State(state): State<Arc<RepositoryState>>) -> Json<serde_json::Value> {
+            Json(serde_json::json!([
+                release_json(&state, 22),
+                release_json(&state, 11)
+            ]))
+        }
+
+        async fn release(
+            AxumPath(id): AxumPath<u64>,
+            State(state): State<Arc<RepositoryState>>,
+        ) -> Json<serde_json::Value> {
+            Json(release_json(&state, id))
+        }
+
+        async fn artifact(
+            AxumPath(name): AxumPath<String>,
+            State(state): State<Arc<RepositoryState>>,
+        ) -> impl axum::response::IntoResponse {
+            let body = if name == "older" {
+                state.older.clone()
+            } else {
+                state.newer.clone()
+            };
+            ([("content-type", "application/octet-stream")], body)
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let api_base = format!("http://{address}");
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "plugin_code": "acme_plugin",
+            "display_name": "Acme Plugin",
+            "description": "A repository-owned POM plugin.",
+            "plugin_abi": enterprise_protocol::PLUGIN_ABI_VERSION,
+            "feature_set": ["acme_plugin.core"],
+            "artifacts": {"linux-x86_64": "acme-plugin.so"},
+            "preferences": null
+        }))
+        .unwrap();
+        let state = Arc::new(RepositoryState {
+            manifest,
+            older: b"older plugin binary".to_vec(),
+            newer: b"newer plugin binary".to_vec(),
+            api_base: api_base.clone(),
+        });
+        let app = Router::new()
+            .route("/repos/acme/new-plugin", get(repository))
+            .route(
+                "/repos/acme/new-plugin/contents/manifest.json",
+                get(manifest_contents),
+            )
+            .route("/repos/acme/new-plugin/releases", get(releases))
+            .route("/repos/acme/new-plugin/releases/:id", get(release))
+            .route("/assets/:name", get(artifact))
+            .with_state(state);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = GithubReleaseClient::with_api_base(&api_base).unwrap();
+        (client, api_base, server)
+    }
+
+    pub(crate) async fn github_ui_manifest_repository_stub(
+    ) -> (GithubReleaseClient, String, tokio::task::JoinHandle<()>) {
+        use axum::extract::{Path as AxumPath, State};
+        use axum::http::StatusCode as HttpStatus;
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::sync::Arc;
+
+        struct RepositoryState {
+            ui_manifest: Vec<u8>,
+            release_manifest: Vec<u8>,
+            binary: Vec<u8>,
+            api_base: String,
+        }
+
+        async fn repository() -> Json<serde_json::Value> {
+            Json(serde_json::json!({ "private": false, "archived": false }))
+        }
+
+        async fn root_manifest() -> HttpStatus {
+            HttpStatus::NOT_FOUND
+        }
+
+        async fn ui_manifest_contents(
+            State(state): State<Arc<RepositoryState>>,
+        ) -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "type": "file",
+                "path": "ui/manifest.json",
+                "encoding": "base64",
+                "size": state.ui_manifest.len(),
+                "content": base64::engine::general_purpose::STANDARD.encode(&state.ui_manifest)
+            }))
+        }
+
+        fn release_json(state: &RepositoryState) -> serde_json::Value {
+            let manifest_digest = hex::encode(sha2::Sha256::digest(&state.release_manifest));
+            let binary_digest = hex::encode(sha2::Sha256::digest(&state.binary));
+            serde_json::json!({
+                "id": 505,
+                "tag_name": "v0.0.5",
+                "name": "Base Plugin 0.0.5",
+                "body": "Published base plugin",
+                "published_at": "2026-09-27T00:00:00Z",
+                "draft": false,
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "pom-plugin-macos-aarch64.json",
+                        "size": state.release_manifest.len(),
+                        "digest": format!("sha256:{manifest_digest}"),
+                        "url": format!("{}/assets/manifest", state.api_base)
+                    },
+                    {
+                        "name": "pom-plugin-base-macos-aarch64.dylib",
+                        "size": state.binary.len(),
+                        "digest": format!("sha256:{binary_digest}"),
+                        "url": format!("{}/assets/plugin", state.api_base)
+                    }
+                ]
+            })
+        }
+
+        async fn releases(State(state): State<Arc<RepositoryState>>) -> Json<serde_json::Value> {
+            Json(serde_json::json!([release_json(&state)]))
+        }
+
+        async fn release(
+            AxumPath(_id): AxumPath<u64>,
+            State(state): State<Arc<RepositoryState>>,
+        ) -> Json<serde_json::Value> {
+            Json(release_json(&state))
+        }
+
+        async fn asset(
+            AxumPath(name): AxumPath<String>,
+            State(state): State<Arc<RepositoryState>>,
+        ) -> impl axum::response::IntoResponse {
+            let (content_type, body) = if name == "manifest" {
+                ("application/json", state.release_manifest.clone())
+            } else {
+                ("application/octet-stream", state.binary.clone())
+            };
+            ([("content-type", content_type)], body)
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let api_base = format!("http://{address}");
+        let binary = b"base plugin binary".to_vec();
+        let binary_digest = hex::encode(sha2::Sha256::digest(&binary));
+        let release_manifest = serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "plugin_code": "base",
+            "release_id": "v0.0.5",
+            "version": "0.0.5",
+            "os": "macos",
+            "arch": "aarch64",
+            "plugin_abi": enterprise_protocol::PLUGIN_ABI_VERSION,
+            "asset": "pom-plugin-base-macos-aarch64.dylib",
+            "sha256": format!("sha256:{binary_digest}"),
+            "size": binary.len(),
+            "feature_set": ["base.core"],
+            "preferences": {
+                "features": [{
+                    "key": "example_feature_enabled",
+                    "label": "Example feature",
+                    "default": false,
+                    "description": "An example boolean preference for plugin authors."
+                }],
+                "storage_directory": { "label": "Plugin data directory", "default": null }
+            }
+        }))
+        .unwrap();
+        let ui_manifest = serde_json::to_vec(&serde_json::json!({
+            "schema": "pom-plugin-ui/v1",
+            "plugin_code": "base",
+            "icon_image": "ui/icon.png",
+            "description": { "en": "Tutorial plugin.", "pt-BR": "Plugin tutorial." },
+            "screenshots": ["docs/screenshots/tutorial.png", "https://example.com/shot.png"],
+            "documentation": ["docs/README.md", "docs/guia-desenvolvimento.md", "docs/guia-workspace.md"],
+            "menu": [
+                { "id": "base", "label": { "en": "Base Plugin", "pt-BR": "Plugin de Base" }, "icon": "layout-template", "to": "/plugin-de-base" },
+                { "id": "example", "label": { "en": "Example", "pt-BR": "Exemplo" }, "icon": "file-code-2", "to": "/example" }
+            ],
+            "routes": [
+                { "path": "/plugin-de-base", "screen": "base", "full_bleed": true, "roles": ["admin"] },
+                { "path": "/example", "screen": "example", "full_bleed": true }
+            ],
+            "screens": {
+                "base": { "module": "ui/screens.js", "export": "base", "styles": ["ui/plugin.css"] },
+                "example": { "module": "ui/screens.js", "export": "example", "styles": ["ui/plugin.css"] }
+            },
+            "i18n": { "en": "i18n/en.json", "pt-BR": "i18n/pt-BR.json" },
+            "assets": ["ui/screens.js", "ui/plugin.css", "ui/icon.png", "i18n/en.json", "i18n/pt-BR.json", "docs/README.md", "docs/guia-desenvolvimento.md", "docs/guia-workspace.md"]
+        }))
+        .unwrap();
+        let state = Arc::new(RepositoryState {
+            ui_manifest,
+            release_manifest,
+            binary,
+            api_base: api_base.clone(),
+        });
+        let app = Router::new()
+            .route("/repos/pereirajair/pom-plugin-base", get(repository))
+            .route(
+                "/repos/pereirajair/pom-plugin-base/contents/manifest.json",
+                get(root_manifest),
+            )
+            .route(
+                "/repos/pereirajair/pom-plugin-base/contents/ui/manifest.json",
+                get(ui_manifest_contents),
+            )
+            .route("/repos/pereirajair/pom-plugin-base/releases", get(releases))
+            .route(
+                "/repos/pereirajair/pom-plugin-base/releases/:id",
+                get(release),
+            )
+            .route("/assets/:name", get(asset))
+            .with_state(state);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = GithubReleaseClient::with_api_base(&api_base).unwrap();
+        (client, api_base, server)
+    }
+
     #[tokio::test]
-    async fn free_install_source_comes_only_from_the_public_license_catalog() {
-        let (_client, api_base, server) = github_stub(200, false, None, false).await;
+    async fn finds_ui_manifest_and_installs_the_selected_platform_release_manifest() {
+        let (client, _api_base, server) = github_ui_manifest_repository_stub().await;
+        let repository = client
+            .inspect_repository(
+                "https://github.com/pereirajair/pom-plugin-base",
+                "macos",
+                "aarch64",
+            )
+            .await
+            .expect("read the plugin UI manifest and releases");
+        assert_eq!(repository.manifest_path, "ui/manifest.json");
+        assert_eq!(repository.manifest.plugin_code, "base");
+        assert_eq!(repository.manifest.display_name, "Base Plugin");
+        assert_eq!(repository.manifest.feature_set, ["base.core"]);
         assert_eq!(
-            public_free_plugin_repository(&api_base, "analytics")
-                .await
-                .expect("free GitHub plugin"),
-            "https://github.com/pom/test-plugin"
+            repository.manifest.preferences.as_ref().unwrap().features[0].key,
+            "example_feature_enabled"
         );
-        assert!(public_free_plugin_repository(&api_base, "enterprise")
+        assert_eq!(
+            repository.manifest.artifacts["macos-aarch64"],
+            "pom-plugin-base-macos-aarch64.dylib"
+        );
+        assert_eq!(
+            repository.ui_manifest.as_ref().unwrap()["documentation"][0],
+            "docs/README.md"
+        );
+        assert_eq!(repository.releases.len(), 1);
+        assert!(repository.releases[0].available_for_node);
+        assert_eq!(repository.description["pt-BR"], "Plugin tutorial.");
+        assert_eq!(
+            repository.screenshot_urls,
+            [
+                "https://raw.githubusercontent.com/pereirajair/pom-plugin-base/HEAD/docs/screenshots/tutorial.png",
+                "https://example.com/shot.png"
+            ]
+        );
+
+        let selected = client
+            .download_release(&repository, "505", "macos", "aarch64")
             .await
-            .is_err());
-        assert!(public_free_plugin_repository(&api_base, "paid_plugin")
-            .await
-            .is_err());
+            .expect("download the binary named by the selected release manifest");
+        assert_eq!(selected.manifest.version, "0.0.5");
+        assert_eq!(selected.bytes, b"base plugin binary");
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn repository_manifest_and_all_published_release_choices_come_from_github() {
+        let (client, _api_base, server) = github_repository_stub().await;
+        let repository = client
+            .inspect_repository("https://github.com/acme/new-plugin", "linux", "x86_64")
+            .await
+            .expect("read repository manifest and releases");
+        assert_eq!(repository.manifest.plugin_code, "acme_plugin");
+        assert_eq!(repository.manifest.display_name, "Acme Plugin");
+        assert_eq!(repository.releases.len(), 2);
+        assert!(repository
+            .releases
+            .iter()
+            .all(|release| release.available_for_node));
+        assert!(repository.releases.iter().any(|release| release.prerelease));
+
+        let selected = client
+            .download_release(&repository, "11", "linux", "x86_64")
+            .await
+            .expect("installable historical release");
+        assert_eq!(selected.manifest.version, "v0.9.0");
+        assert_eq!(selected.bytes, b"older plugin binary");
+        server.abort();
+    }
+
+    #[test]
+    fn repository_manifest_rejects_invalid_codes_targets_and_plugin_abi() {
+        let mut manifest = GithubRepositoryManifest {
+            schema: 1,
+            plugin_code: "acme_plugin".into(),
+            display_name: "Acme Plugin".into(),
+            description: None,
+            plugin_abi: enterprise_protocol::PLUGIN_ABI_VERSION,
+            feature_set: vec!["acme_plugin.core".into()],
+            artifacts: std::collections::BTreeMap::from([(
+                "linux-x86_64".into(),
+                "acme-plugin.so".into(),
+            )]),
+            preferences: None,
+            screenshots: vec!["docs/screenshots/overview.png".into()],
+        };
+        validate_repository_manifest(&manifest).unwrap();
+        manifest.screenshots = vec!["../secret.png".into()];
+        assert!(validate_repository_manifest(&manifest).is_err());
+        manifest.screenshots = vec!["https://user@example.com/shot.png".into()];
+        assert!(validate_repository_manifest(&manifest).is_err());
+        manifest.screenshots.clear();
+        manifest.feature_set.clear();
+        validate_repository_manifest(&manifest).expect("plugins may expose no optional features");
+        manifest.plugin_code = "../bad".into();
+        assert!(validate_repository_manifest(&manifest).is_err());
     }
 
     #[test]

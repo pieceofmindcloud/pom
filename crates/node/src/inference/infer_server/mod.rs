@@ -58,7 +58,9 @@ mod step;
 #[path = "step_blocking.rs"]
 mod step_blocking;
 
+pub(crate) use core::DirectForwardOrder;
 pub(super) use core::*;
+pub(crate) use direct::forward_direct_ordered;
 pub(super) use direct::*;
 pub(super) use prefill::*;
 pub(super) use prefix::*;

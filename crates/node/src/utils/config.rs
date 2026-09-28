@@ -273,6 +273,11 @@ pub struct Config {
     /// `None` keeps the historical `<project_root>/models`.
     #[serde(default)]
     pub shard_dir: Option<String>,
+    /// One shared, persistent root for user projects and dynamic plugin data.
+    /// The effective default is `~/pom_workspace`; model directories
+    /// remain separate from this workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
     /// Maximum disk space reserved for generated model slices, in GB.
     #[serde(default = "default_shard_max_gb")]
     pub shard_max_gb: f64,
@@ -377,6 +382,7 @@ impl fmt::Debug for Config {
             .field("cluster_logs_min_level", &self.cluster_logs_min_level)
             .field("model_dirs", &self.model_dirs)
             .field("shard_dir", &self.shard_dir)
+            .field("workspace_root", &self.workspace_root)
             .field("shard_max_gb", &self.shard_max_gb)
             .field("resources", &self.resources)
             .field("setup_model", &self.setup_model)
@@ -675,6 +681,21 @@ impl Config {
         }
     }
 
+    /// Shared root for user projects and dynamic plugin state. Relative values
+    /// from a hand-edited legacy config are resolved under the project root so
+    /// the host contract always receives an absolute path.
+    pub fn workspace_root_path(&self) -> PathBuf {
+        let path = match self.workspace_root.as_deref().map(str::trim) {
+            Some(path) if !path.is_empty() => PathBuf::from(path),
+            _ => default_workspace_root(),
+        };
+        if path.is_absolute() {
+            path
+        } else {
+            project_root().join(path)
+        }
+    }
+
     pub fn shard_max_gb(&self) -> f64 {
         if self.shard_max_gb.is_finite() && self.shard_max_gb > 0.0 {
             self.shard_max_gb
@@ -785,6 +806,16 @@ pub fn default_shard_dir() -> PathBuf {
         .unwrap_or_else(project_root)
         .join(".pom")
         .join("models_sliced")
+}
+
+/// Persistent root for user projects and dynamic plugin state. Model weights
+/// and runtime/install files deliberately live elsewhere. The first-access
+/// default follows the user's home rather than the project root so the setup
+/// wizard can remain focused on node identity and model storage.
+pub fn default_workspace_root() -> PathBuf {
+    crate::catalog::home_dir()
+        .unwrap_or_else(project_root)
+        .join("pom_workspace")
 }
 
 /// `~/.pom/models` is the first-access destination for whole models.
@@ -1010,6 +1041,7 @@ mod tests {
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
+            workspace_root: None,
             shard_max_gb: default_shard_max_gb(),
             resources: Default::default(),
             setup_model: None,
@@ -1113,6 +1145,7 @@ mod tests {
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
+            workspace_root: None,
             shard_max_gb: default_shard_max_gb(),
             resources: Default::default(),
             setup_model: None,
@@ -1242,6 +1275,7 @@ mod tests {
             cluster_logs_min_level: Default::default(),
             model_dirs: None,
             shard_dir: None,
+            workspace_root: None,
             shard_max_gb: default_shard_max_gb(),
             resources: Default::default(),
             setup_model: None,
@@ -1328,6 +1362,36 @@ mod tests {
     }
 
     #[test]
+    fn workspace_root_defaults_to_the_user_home() {
+        let cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        assert_eq!(cfg.workspace_root_path(), default_workspace_root());
+        assert!(cfg.workspace_root_path().ends_with("pom_workspace"));
+        assert_ne!(cfg.workspace_root_path(), cfg.shard_dir_path());
+        assert!(!cfg
+            .model_dir_paths()
+            .iter()
+            .any(|path| path == &cfg.workspace_root_path()));
+    }
+
+    #[test]
+    fn workspace_root_roundtrips_as_a_persisted_absolute_path() {
+        let path = "/data/workspace";
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "profile": "node",
+            "workspace_root": path,
+        }))
+        .unwrap();
+        assert_eq!(cfg.workspace_root_path(), PathBuf::from(path));
+        assert_eq!(
+            serde_json::to_value(cfg)
+                .unwrap()
+                .get("workspace_root")
+                .and_then(serde_json::Value::as_str),
+            Some(path)
+        );
+    }
+
+    #[test]
     fn setup_defaults_keep_models_and_slices_in_the_pom_home() {
         let model_dir = default_model_dir();
         let shard_dir = default_shard_dir();
@@ -1382,6 +1446,7 @@ mod tests {
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
+            workspace_root: None,
             shard_max_gb: default_shard_max_gb(),
             resources: Default::default(),
             setup_model: None,

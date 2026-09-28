@@ -45,6 +45,8 @@ jobs:
           name: ui-dist-windows
           path: apps/frontend/dist
           if-no-files-found: error
+          # Só passam entre os jobs desta execução; a release guarda os pacotes.
+          retention-days: 2
 
   build:
     name: Windows x86_64 (CPU)
@@ -140,6 +142,8 @@ jobs:
           name: pacote-windows
           path: pom-*.zip
           if-no-files-found: error
+          # Só passam entre os jobs desta execução; a release guarda os pacotes.
+          retention-days: 2
 
   # Cada sistema publica o próprio pacote na mesma tag: o primeiro workflow a
   # rodar cria a release, os outros anexam o arquivo deles.

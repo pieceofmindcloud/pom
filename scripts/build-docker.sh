@@ -15,7 +15,7 @@ export POM_BUILD_COMMIT="$commit"
 echo "build commit: $POM_BUILD_COMMIT"
 
 # Select an exact published fork release or compile the local checkout.
-mode=${POM_LLAMA_CPP_MODE:-release}
+mode=${POM_LLAMA_CPP_MODE:-source}
 case "$mode" in
   release|source) ;;
   *) echo "POM_LLAMA_CPP_MODE deve ser 'release' ou 'source' (recebido: $mode)." >&2; exit 1 ;;
@@ -38,7 +38,7 @@ if [ "$mode" = source ]; then
   fi
   (
     cd "$llama_source_dir"
-    tar --exclude=.git --exclude=build --exclude='build-*' --exclude=models \
+    tar --exclude=.git --exclude=build --exclude='./build-*' --exclude='./models' \
       --exclude='*.gguf' --exclude=node_modules --exclude='*.key' \
       --exclude='*.pem' --exclude='*.p12' --exclude='*.pfx' \
       --exclude='.env' --exclude='.env.*' -cf - .

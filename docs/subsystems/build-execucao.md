@@ -181,7 +181,7 @@ Os builds Docker da Ksia e da Salem usam por padrão `POM_LLAMA_CPP_MODE=release
 tag que `get-tag-name` no workflow e passa a tag exata ao Docker. Também aceita
 `POM_LLAMA_CPP_RELEASE_TAG` para fixar uma release já escolhida. O workflow do
 fork deve terminar e publicar os assets antes desse build: um tag sem os
-pacotes CPU x64, CUDA 13.2 x64, Vulkan x64 e o source archive falha sem fallback.
+pacotes CPU x64, CUDA 13.4 x64, Vulkan x64 e o source archive falha sem fallback.
 O dispatch manual deve usar a branch `pom-tensor-parallel`; o push dessa branch
 não dispara a regra automática, que é restrita a `master`.
 
@@ -207,9 +207,11 @@ POM_LLAMA_CPP_SOURCE_DIR=/storage/nvme1/projects/llama.cpp \
 # Na Ksia, use ./scripts/build-docker-ksia.sh no lugar.
 ```
 
-O script prepara um named context temporário sem `.git`, builds antigos ou
-modelos, mas preserva fontes locais não commitadas; o target cache é isolado
-pelo commit e delta desse checkout. Em `source`, o Dockerfile mantém o build
+O script prepara um named context temporário sem `.git`, dados de modelos em
+`models/` na raiz, credenciais ou diretórios de build, mas preserva as fontes
+locais não commitadas, inclusive `src/models/` e arquivos `build-*` dentro de
+`cmake/` e `common/`. O target cache é isolado pelo commit e delta desse
+checkout. Em `source`, o Dockerfile mantém o build
 CMake normal e escolhe a imagem CUDA `base`. Em `release`, usa o cache keyed
 pelo tag e a imagem `runtime`. Os builds Cargo/GitHub Actions do POM continuam
 compilando o fork por fonte; este modo prebuilt é apenas para Docker de
@@ -424,12 +426,23 @@ offload no primeiro clique.
 ## Docker
 
 - **`Dockerfile`**: estágios independentes de dependências, Rust, frontend e
-  runtime. A base de build `nvidia/cuda:13.2.1-devel-ubuntu24.04` instala as
+  runtime. A base de build `nvidia/cuda:13.4.1-devel-ubuntu24.04` instala as
   ferramentas nativas; o estágio Rust compila um único `pom` com
   `--features cuda,vulkan` e `pom-plugin-host`, enquanto o estágio frontend
   instala npm e roda `npm run build`. O CPU continua disponível pelo módulo
   GGML CPU; CUDA e Vulkan são módulos do mesmo executável, descobertos conforme
-  o hardware. Salem e Ksia usam o mesmo target `runtime`, portanto não repetem
+  o hardware. **O nvcc 13.2.0 e 13.2.1 geram código errado para os kernels
+  IQ1_S/IQ2_S/IQ3_S no sm_120**: todo GGUF com esses tensores (por exemplo os
+  GSQ-RCO e os UD-Q3) gera texto sem sentido na Blackwell, e modelos K-quant
+  não são afetados. Por isso a base saiu da 13.2.1; a 13.2.2, que já corrige,
+  não tem imagem `nvidia/cuda` publicada. O fork também contorna o defeito desde
+  o commit `8dd48c3dd` da `pom-tensor-parallel` (porte de
+  ggml-org/llama.cpp#28784, que o upstream fechou sem merge), o que protege
+  qualquer toolchain. No modo `release` o módulo `libggml-cuda` vem do pacote
+  `cuda-13.4` do fork, compilado pelo CI dele (`release.yml`, CUDA 13.4.1) e
+  não pela base desta imagem; tag do fork sem esse pacote falha no download. Para conferir, rode
+  `test-backend-ops test -o MUL_MAT -b CUDA0` e veja se nenhum `iq*_s` falha.
+  Salem e Ksia usam o mesmo target `runtime`, portanto não repetem
   builds de CPU-only e Vulkan-only nem selecionam binários distintos por nó. Em
   `release`, o core e os módulos vêm de uma tag publicada do fork; em `source`,
   o CMake compila o checkout escolhido por `POM_LLAMA_CPP_SOURCE_DIR`. O runtime
@@ -502,11 +515,14 @@ offload no primeiro clique.
   Cargo reexecuta o build script - com o cache mount persistente ele não
   reexecuta, e a `libllama.a` velha é relinkada a cada build.
   Por isso o `Dockerfile` chaveia o `id` do cache mount de `/build/target` em
-  `pom-target-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN}`:
-  o `LLAMA_CPP_CACHE_KEY` é a tag publicada em `release` ou o commit/delta da
+  `pom-target-v2-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN}`:
+  o prefixo `v2` dá um mount limpo após o uso concorrente anterior; o
+  `LLAMA_CPP_CACHE_KEY` é a tag publicada em `release` ou o commit/delta da
   pasta local em `source`; toolkit CUDA, seletor Rust e arquitetura também
-  recebem árvores nativas isoladas. Cargo
-  também confere fingerprints de fontes, manifests, dependências e rustc.
+  recebem árvores nativas isoladas. Compose pode iniciar builds simultâneos da
+  mesma imagem para vários serviços, então `sharing=locked` serializa o acesso a
+  esse target compartilhado e impede dois Cargo de escreverem o mesmo artefato.
+  Cargo também confere fingerprints de fontes, manifests, dependências e rustc.
   IDs antigos ficam ocupando espaço até um
   `docker builder prune` (`--filter type=exec.cachemount` limpa só os mounts).
   `docker compose build --no-cache` **não** resolve: cache mounts sobrevivem ao
@@ -587,6 +603,13 @@ offload no primeiro clique.
   ficasse de fora entrava no contexto e invalidava a camada que copia o
   diretório dele. Com isso o contexto caiu de 605 MB para cerca de 194 MB na
   salem.
+- **Grupos de GPU sem nome no container.** O runtime NVIDIA acrescenta aos
+  processos os grupos donos dos dispositivos do host (na ksia, `video` 44 e
+  `render` 992); o 992 não existe no `/etc/group` da imagem. A dica de `sudo`
+  do `/etc/bash.bashrc` do Ubuntu roda `groups` em todo shell interativo e
+  imprimia `groups: cannot find name for group id 992` nos terminais dos
+  plugins (harness). A imagem troca essa chamada por `groups 2>/dev/null`;
+  nada mais depende do nome do grupo.
 
 ## Python legado e venv
 
@@ -664,6 +687,11 @@ Três workflows, um por sistema, todos só manuais (`workflow_dispatch`):
 | `.github/workflows/release-linux.yml` | Linux x86_64 (CPU, e CUDA opcional) | runner `ksia` | `version`, `cuda`, `prerelease` |
 | `.github/workflows/release-macos.yml` | macOS arm64, Metal | runner `macbook` | `version`, `prerelease` |
 | `.github/workflows/release-windows.yml` | Windows x86_64, CPU | hospedado (`windows-2022`) | `version`, `prerelease` |
+
+Os pacotes sobem como artefatos só para passar entre os jobs da mesma
+execução, com `retention-days: 2`; os definitivos ficam anexados à release. O
+padrão de 90 dias chegou a esgotar a cota de armazenamento de artefatos da
+conta e bloquear releases novas.
 
 **São separados para poder rodar sozinhos.** Publicar só o macOS não deve
 custar um build de Windows, e um alvo que quebra não leva os outros junto. Cada

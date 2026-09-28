@@ -6,7 +6,10 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/pom-docker-mode.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 mkdir -p "$work/bin" "$work/local-fork/ggml" "$work/local-fork/build" \
-  "$work/local-fork/docs/development" "$work/local-fork/tools/ui"
+  "$work/local-fork/build-native" "$work/local-fork/cmake" \
+  "$work/local-fork/common" "$work/local-fork/models" \
+  "$work/local-fork/src/models" "$work/local-fork/docs/development" \
+  "$work/local-fork/tools/ui"
 cat > "$work/bin/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -16,6 +19,11 @@ case "$POM_LLAMA_CPP_MODE" in
   source)
     test -f "$POM_LLAMA_CPP_SOURCE_CONTEXT/ggml/CMakeLists.txt"
     test -f "$POM_LLAMA_CPP_SOURCE_CONTEXT/build_support.c"
+    test -f "$POM_LLAMA_CPP_SOURCE_CONTEXT/cmake/build-info.cmake"
+    test -f "$POM_LLAMA_CPP_SOURCE_CONTEXT/common/build-info.cpp.in"
+    test -f "$POM_LLAMA_CPP_SOURCE_CONTEXT/src/models/models.h"
+    test ! -e "$POM_LLAMA_CPP_SOURCE_CONTEXT/build-native"
+    test ! -e "$POM_LLAMA_CPP_SOURCE_CONTEXT/models"
     test ! -e "$POM_LLAMA_CPP_SOURCE_CONTEXT/.git"
     test ! -e "$POM_LLAMA_CPP_SOURCE_CONTEXT/build"
     test ! -e "$POM_LLAMA_CPP_SOURCE_CONTEXT/ggml/model.gguf"
@@ -44,11 +52,18 @@ chmod +x "$work/bin/docker"
   git config user.email build-mode-test@example.invalid
   printf 'cmake_minimum_required(VERSION 3.18)\n' > ggml/CMakeLists.txt
   printf 'source file\n' > build_support.c
+  printf 'cmake source\n' > cmake/build-info.cmake
+  printf 'common source\n' > common/build-info.cpp.in
+  printf 'model source\n' > src/models/models.h
+  printf 'model fixture\n' > models/vocab.gguf
   printf 'generated\n' > build/output
+  printf 'generated\n' > build-native/output
   printf 'model fixture\n' > ggml/model.gguf
   printf 'private key fixture\n' > docs/development/idea-arch.key
   printf 'dotenv fixture\n' > tools/ui/.env.example
-  git add ggml/CMakeLists.txt build_support.c build/output ggml/model.gguf \
+  git add ggml/CMakeLists.txt build_support.c cmake/build-info.cmake \
+    common/build-info.cpp.in src/models/models.h models/vocab.gguf \
+    build/output build-native/output ggml/model.gguf \
     docs/development/idea-arch.key tools/ui/.env.example
   git commit -q -m fixture
 )

@@ -68,6 +68,14 @@ const mocks = vi.hoisted(() => ({
   post: vi.fn(),
   del: vi.fn(),
   navigateToPluginPurchase: vi.fn(),
+  queryClient: { invalidateQueries: vi.fn() },
+  githubRepositories: {
+    data: [] as Array<Record<string, unknown>>,
+    isLoading: false,
+    isError: false,
+    error: null as Error | null,
+    refetch: vi.fn(),
+  },
   plugins: {
     data: [] as Array<{
       code: string;
@@ -104,9 +112,12 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => mocks.queryClient }));
 vi.mock("../lib/api", () => ({ api: { post: mocks.post, del: mocks.del } }));
 vi.mock("../lib/queries", () => ({
+  keys: { pluginUi: ["plugin-ui"] },
   usePlugins: () => mocks.plugins,
+  useGithubRepositories: () => mocks.githubRepositories,
   usePublicPluginCatalog: () => mocks.catalog,
   useNode: () => mocks.node,
 }));
@@ -132,6 +143,11 @@ describe("Plugins", () => {
     mocks.plugins.isError = false;
     mocks.plugins.error = null;
     mocks.plugins.refetch.mockReset();
+    mocks.githubRepositories.data = [];
+    mocks.githubRepositories.isLoading = false;
+    mocks.githubRepositories.isError = false;
+    mocks.githubRepositories.error = null;
+    mocks.githubRepositories.refetch.mockReset();
     mocks.catalog.data = { plugins: [] };
     mocks.catalog.isLoading = false;
     mocks.catalog.isError = false;
@@ -139,12 +155,8 @@ describe("Plugins", () => {
     mocks.catalog.refetch.mockReset();
     mocks.node.data = { system: { os: "linux", arch: "x86_64" } };
     mocks.navigateToPluginPurchase.mockReset();
+    mocks.queryClient.invalidateQueries.mockReset();
     localStorage.clear();
-  });
-
-  it("contains wheel scrolling at the end of the plugins content pane", () => {
-    renderPage();
-    expect(screen.getByTestId("plugins-scroll-area").className).toContain("overscroll-y-contain");
   });
 
   it("envia a license key uma vez, limpa o campo e nunca a grava no storage", async () => {
@@ -164,6 +176,9 @@ describe("Plugins", () => {
     expect((input as HTMLInputElement).value).toBe("");
     expect(localStorage.getItem("PM-secret")).toBeNull();
     expect(mocks.plugins.refetch).toHaveBeenCalled();
+    await waitFor(() => expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["plugin-ui"],
+    }));
   });
 
   it("explica uma recusa sem exibir a chave na mensagem", async () => {
@@ -495,7 +510,7 @@ describe("Plugins", () => {
     expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
   });
 
-  it("shows license expiration separately from the lease, install and update-check times", () => {
+  it("shows license expiration separately from the lease and install time in a compact card", () => {
     mocks.catalog.data = { plugins: [publicPlugin("alpha")] };
     mocks.plugins.data = [pluginStatus("alpha", {
       active: true,
@@ -521,8 +536,9 @@ describe("Plugins", () => {
     const leaseDate = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" })
       .format(new Date("2026-09-28T12:00:00.000Z"));
 
-    expect(within(card as HTMLElement).getByText("Última verificação de atualização")).toBeTruthy();
-    expect(within(card as HTMLElement).getByText(updateDate)).toBeTruthy();
+    // O card compacto não repete a última consulta de update nem as features.
+    expect(within(card as HTMLElement).queryByText(updateDate)).toBeNull();
+    expect(within(card as HTMLElement).queryByText("Funcionalidades")).toBeNull();
     expect(within(card as HTMLElement).getByText("Última instalação")).toBeTruthy();
     expect(within(card as HTMLElement).getByText(installDate)).toBeTruthy();
     expect(within(card as HTMLElement).getByText("Licença válida até")).toBeTruthy();
@@ -629,93 +645,157 @@ describe("Plugins", () => {
       "/api/ui/plugins/sigma/update/apply",
       { release_id: "sigma-2" },
     ));
+    await waitFor(() => expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["plugin-ui"],
+    }));
   });
 
-  it("shows one GitHub manager and installs a free catalog plugin instead of opening checkout", async () => {
-    mocks.catalog.data = {
-      plugins: [
-        publicPlugin("base", {
-          display_name: "Base Plugin",
-          requires_license: false,
-          github_repository: "https://github.com/example/base-plugin",
-          releases: [],
-        }),
-        publicPlugin("free_tools", {
-          requires_license: false,
-          github_repository: "https://github.com/example/free-tools",
-          releases: [],
-        }),
-      ],
-    };
-    mocks.plugins.data = [pluginStatus("base"), pluginStatus("free_tools")];
+  it("adds any GitHub repository from the card above license activation", async () => {
+    mocks.catalog.data = { plugins: [publicPlugin("licensed")] };
     mocks.post.mockResolvedValue({});
     renderPage();
 
-    expect(screen.getAllByRole("heading", { name: "Releases públicas do GitHub" })).toHaveLength(1);
-    const card = screen.getByRole("heading", { name: "Base Plugin" }).closest(".panel");
-    fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Instalar pelo GitHub" }));
+    const githubHeading = screen.getByRole("heading", { name: "Adicionar do GitHub" });
+    const activationHeading = screen.getByRole("heading", { name: "Digite sua chave de licença" });
+    expect(githubHeading.compareDocumentPosition(activationHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("URL do repositório público do GitHub"), {
+      target: { value: "https://github.com/acme/new-plugin" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Adicionar repositório" }));
 
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/ui/plugins/base/github-source/install"));
-    expect(mocks.navigateToPluginPurchase).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Buy" })).toBeNull();
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/github-repositories",
+      { repository_url: "https://github.com/acme/new-plugin" },
+    ));
+    expect(mocks.post).not.toHaveBeenCalledWith(expect.stringContaining("license"), expect.anything());
   });
 
-  it("registers and removes a public GitHub source by plugin code", async () => {
-    mocks.catalog.data = { plugins: [publicPlugin("base")] };
-    mocks.plugins.data = [pluginStatus("base", {
-      github_repository: "https://github.com/example/base-plugin",
+  it("lists only compatible releases, preselects the latest and updates an installed plugin", async () => {
+    const repositoryUrl = "https://github.com/acme/new-plugin";
+    const githubRelease = (release_id: string, tag_name: string, published_at: string, available_for_node = true) => ({
+      release_id,
+      tag_name,
+      name: null,
+      changelog: null,
+      published_at,
+      prerelease: false,
+      asset_name: available_for_node ? "acme_plugin.so" : null,
+      asset_size: available_for_node ? 1000 : null,
+      available_for_node,
+    });
+    mocks.githubRepositories.data = [{
+      id: "repo-id",
+      repository_url: repositoryUrl,
+      manifest: {
+        schema: 1,
+        plugin_code: "acme_plugin",
+        display_name: "Acme Plugin",
+        description: null,
+        plugin_abi: 1,
+        feature_set: ["acme_plugin.core"],
+        artifacts: { "linux-x86_64": "acme_plugin.so" },
+        preferences: null,
+      },
+      description: { en: "A local plugin release source.", "pt-BR": "Uma fonte local de releases." },
+      screenshot_urls: ["https://raw.githubusercontent.com/acme/new-plugin/HEAD/docs/shot.png"],
+      releases: [
+        githubRelease("101", "v0.9.0", "2025-01-01T00:00:00Z"),
+        githubRelease("103", "v2.0.0", "2026-09-24T00:00:00Z"),
+        githubRelease("104", "v3.0.0-macos", "2026-09-25T00:00:00Z", false),
+      ],
+      checked_at: "2026-09-24T00:00:00Z",
+      check_error: null,
+    }];
+    mocks.plugins.data = [pluginStatus("acme_plugin", {
+      active: true,
+      state: "active",
+      public_install: true,
+      github_repository: repositoryUrl,
+      plugin_version: "0.9.0",
     })];
+    mocks.post.mockResolvedValue({});
+    renderPage();
+
+    expect(screen.getByText("Uma fonte local de releases.")).toBeTruthy();
+    expect(screen.queryByText("Ver detalhes do manifest.json")).toBeNull();
+    expect(screen.getByAltText("Captura de tela 1 de Acme Plugin").getAttribute("src"))
+      .toBe("https://raw.githubusercontent.com/acme/new-plugin/HEAD/docs/shot.png");
+    const select = screen.getByRole("combobox", { name: "Release para instalar" }) as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(["103", "101"]);
+    expect(select.value).toBe("103");
+
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar" }));
+    const dialog = screen.getByRole("dialog", { name: "Atualizar Acme Plugin pelo GitHub?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Atualizar" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/github-repositories/repo-id/install",
+      { release_id: "103" },
+    ));
+    await waitFor(() => expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["plugin-ui"],
+    }));
+
+    fireEvent.change(select, { target: { value: "101" } });
+    expect((screen.getByRole("button", { name: "Instalada" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("offers Install for a repository that is not installed and explains when no release fits", () => {
+    mocks.githubRepositories.data = [
+      {
+        id: "repo-a",
+        repository_url: "https://github.com/acme/a",
+        manifest: { schema: 1, plugin_code: "alpha", display_name: "Alpha", description: null, plugin_abi: 1, feature_set: [], artifacts: {}, preferences: null },
+        releases: [{ release_id: "1", tag_name: "v1.0.0", name: null, changelog: null, published_at: null, prerelease: false, asset_name: "a.so", asset_size: 1, available_for_node: true }],
+        checked_at: "2026-09-24T00:00:00Z",
+        check_error: null,
+      },
+      {
+        id: "repo-b",
+        repository_url: "https://github.com/acme/b",
+        manifest: { schema: 1, plugin_code: "beta", display_name: "Beta", description: null, plugin_abi: 1, feature_set: [], artifacts: {}, preferences: null },
+        releases: [{ release_id: "2", tag_name: "v1.0.0", name: null, changelog: null, published_at: null, prerelease: false, asset_name: null, asset_size: null, available_for_node: false }],
+        checked_at: "2026-09-24T00:00:00Z",
+        check_error: null,
+      },
+    ];
+    renderPage();
+
+    const alpha = screen.getByRole("heading", { name: "Alpha" }).closest(".panel") as HTMLElement;
+    expect(within(alpha).getByRole("button", { name: "Instalar" })).toBeTruthy();
+    const beta = screen.getByRole("heading", { name: "Beta" }).closest(".panel") as HTMLElement;
+    expect(within(beta).getByText("Nenhuma release publicada para esta máquina ainda.")).toBeTruthy();
+    expect(within(beta).queryByRole("combobox")).toBeNull();
+  });
+
+  it("refreshes and removes a local GitHub repository by repository id", async () => {
+    mocks.githubRepositories.data = [{
+      id: "repo-id",
+      repository_url: "https://github.com/acme/new-plugin",
+      manifest: { schema: 1, plugin_code: "acme_plugin", display_name: "Acme", description: null, plugin_abi: 1, feature_set: [], artifacts: {}, preferences: null },
+      releases: [],
+      checked_at: "2026-09-24T00:00:00Z",
+      check_error: null,
+    }];
     mocks.post.mockResolvedValue({});
     mocks.del.mockResolvedValue({});
     renderPage();
 
-    const repository = screen.getByLabelText("URL do repositório público do GitHub");
-    fireEvent.change(repository, { target: { value: "https://github.com/example/another-plugin" } });
-    fireEvent.click(screen.getByRole("button", { name: "Salvar repositório" }));
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar releases" }));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
-      "/api/ui/plugins/base/github-source",
-      { repository_url: "https://github.com/example/another-plugin" },
+      "/api/ui/plugins/github-repositories/repo-id/refresh",
     ));
-
-    fireEvent.click(screen.getByRole("button", { name: "Remover origem" }));
-    await waitFor(() => expect(mocks.del).toHaveBeenCalledWith("/api/ui/plugins/base/github-source"));
-  });
-
-  it("shows source registration failures without hiding the existing release status", async () => {
-    mocks.catalog.data = { plugins: [publicPlugin("base")] };
-    mocks.plugins.data = [pluginStatus("base", {
-      github_repository: "https://github.com/example/base-plugin",
-      github_update: { release_id: "v1.2.0", version: "1.2.0", changelog: null, downloaded: true },
-    })];
-    mocks.post.mockRejectedValue(new Error("private repository"));
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: "Verificar atualizações" }));
-
-    expect(await screen.findByText(/Não foi possível cadastrar ou atualizar/)).toBeTruthy();
-    expect(screen.getByText("Atualização verificada do GitHub baixada: 1.2.0")).toBeTruthy();
-  });
-
-  it("applies a downloaded GitHub update only through the explicit action", async () => {
-    mocks.catalog.data = { plugins: [publicPlugin("base")] };
-    mocks.plugins.data = [pluginStatus("base", {
-      active: true,
-      state: "active",
-      github_repository: "https://github.com/example/base-plugin",
-      github_update: { release_id: "v1.2.0", version: "1.2.0", changelog: "Update", downloaded: true },
-    })];
-    mocks.post.mockResolvedValue({});
-    renderPage();
-
-    expect(screen.getByText("Atualização verificada do GitHub baixada: 1.2.0")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Instalar atualização baixada" }));
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
-      "/api/ui/plugins/base/github-source/apply",
-      { release_id: "v1.2.0" },
+    fireEvent.click(screen.getByRole("button", { name: "Remover repositório" }));
+    await waitFor(() => expect(mocks.del).toHaveBeenCalledWith(
+      "/api/ui/plugins/github-repositories/repo-id",
     ));
+    await waitFor(() => expect(mocks.githubRepositories.refetch).toHaveBeenCalled());
+    expect(mocks.plugins.refetch).toHaveBeenCalled();
+    await waitFor(() => expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["plugin-ui"],
+    }));
   });
 
-  it("edits typed preference defaults and submits only to the local preferences route", async () => {
+  it("opens preferences from the settings icon and submits only to the local preferences route", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("base")] };
     mocks.plugins.data = [pluginStatus("base", {
       active: true,
@@ -729,11 +809,13 @@ describe("Plugins", () => {
         }],
         storage_directory: { label: "Pasta de dados", default: null },
       },
-      preferences: { features: { include_headers: false }, storage_directory: null },
+      preferences: { features: { include_headers: false } },
     })];
     mocks.post.mockResolvedValue({});
     renderPage();
 
+    expect(screen.queryByRole("checkbox", { name: /Incluir cabeçalhos/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Abrir preferências de base" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: /Incluir cabeçalhos/ }));
     fireEvent.change(await screen.findByLabelText("Pasta de dados"), {
       target: { value: "/tmp/plugin-data" },
@@ -745,6 +827,25 @@ describe("Plugins", () => {
       { preferences: { features: { include_headers: true }, storage_directory: "/tmp/plugin-data" } },
     ));
     expect(mocks.post).not.toHaveBeenCalledWith("/api/ui/plugins/activate", expect.anything());
+  });
+
+  it("shows the node's reason when saving preferences fails", async () => {
+    mocks.catalog.data = { plugins: [publicPlugin("base")] };
+    mocks.plugins.data = [pluginStatus("base", {
+      active: true,
+      state: "active",
+      preferences_schema: { features: [{ key: "flag", label: "Flag", default: false }] },
+      preferences: { features: { flag: false } },
+    })];
+    mocks.post.mockRejectedValue(new Error("preferência booleana desconhecida para este plugin"));
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Abrir preferências de base" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Salvar preferências" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Não foi possível salvar estas preferências localmente.");
+    expect(alert.textContent).toContain("preferência booleana desconhecida para este plugin");
   });
 
   it("desativa um plugin sem chamar rota de atualização do pom_core", async () => {

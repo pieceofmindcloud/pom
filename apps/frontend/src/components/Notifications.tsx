@@ -17,6 +17,7 @@ import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Bell,
+  Blocks,
   Check,
   CheckCircle2,
   Download,
@@ -43,6 +44,15 @@ import type {
   TransferOffer,
 } from "../lib/types";
 import { Badge, Button, Empty, Progress } from "./ui";
+import {
+  answerPendingPluginConfirm,
+  dismissPluginNotice,
+  markPluginNoticesRead,
+  usePendingPluginConfirms,
+  usePluginNotices,
+  type PluginNotice,
+} from "../lib/pluginInbox";
+import { pluginDisplayName } from "../lib/pluginUi";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
 
@@ -126,6 +136,19 @@ function isSliceOffer(offer: NetworkOffer): offer is TransferOffer {
   return !offer.kind || offer.kind === "slice";
 }
 
+function noticeIcon(notice: PluginNotice) {
+  switch (notice.level) {
+    case "success":
+      return <CheckCircle2 className="h-3.5 w-3.5 text-aqua" />;
+    case "warning":
+      return <Info className="h-3.5 w-3.5 text-amber" />;
+    case "error":
+      return <X className="h-3.5 w-3.5 text-rose" />;
+    default:
+      return <Info className="h-3.5 w-3.5" />;
+  }
+}
+
 function isPendingOffer(offer: NetworkOffer): boolean {
   return !offer.status || offer.status === "pending";
 }
@@ -148,7 +171,30 @@ export function Notifications() {
   const waiting = offers.data?.offers ?? [];
   const sliceOffers = waiting.filter(isSliceOffer);
   const authorityOffers = waiting.filter(isAuthorityOffer);
-  const count = running.length + moving.length + waiting.length;
+  // Perguntas de plugins (`notification.confirm`): esperam aqui como uma
+  // oferta, e a resposta volta à janela do plugin que perguntou.
+  const pluginConfirms = usePendingPluginConfirms();
+  // Avisos de plugins (`notification.notify`): só mensagem. Contam enquanto
+  // não lidos e ficam lidos quando o sino é aberto; o destaque de "novo" vale
+  // para esta abertura.
+  const pluginNotices = usePluginNotices();
+  const unreadNotices = pluginNotices.filter((notice) => !notice.read).length;
+  const [freshNotices, setFreshNotices] = useState<ReadonlySet<string>>(new Set());
+  const count = running.length + moving.length + waiting.length + pluginConfirms.length + unreadNotices;
+  const hasItems = running.length + moving.length + waiting.length + pluginConfirms.length + pluginNotices.length > 0;
+
+  useEffect(() => {
+    if (!open || unreadNotices === 0) return;
+    setFreshNotices((current) => new Set([
+      ...current,
+      ...pluginNotices.filter((notice) => !notice.read).map((notice) => notice.id),
+    ]));
+    markPluginNoticesRead();
+  }, [open, unreadNotices, pluginNotices]);
+
+  useEffect(() => {
+    if (!open) setFreshNotices(new Set());
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -228,11 +274,68 @@ export function Notifications() {
             </div>
 
             <div className="max-h-[26rem] divide-y divide-line overflow-y-auto">
-              {count === 0 && (
+              {!hasItems && (
                 <Empty icon={<Inbox className="h-5 w-5" />} title={t("notifications.empty")}>
                   {t("notifications.emptyDetail")}
                 </Empty>
               )}
+
+              {pluginNotices.map((notice) => (
+                <Row
+                  key={notice.id}
+                  icon={noticeIcon(notice)}
+                  title={notice.title}
+                  aside={pluginDisplayName(notice.code, locale)}
+                  detail={notice.body || undefined}
+                  footer={
+                    <>
+                      {freshNotices.has(notice.id) && <Badge tone="iris">{t("notifications.pluginNoticeNew")}</Badge>}
+                      <span className="font-mono text-[0.7rem] text-faint">
+                        {t(notice.source === "network" ? "notifications.pluginNoticeNetwork" : "notifications.pluginNoticeLocal")} · {since(notice.createdAt)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => dismissPluginNotice(notice.id)}
+                        aria-label={t("notifications.pluginNoticeDismiss")}
+                        title={t("notifications.pluginNoticeDismiss")}
+                        className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-faint hover:bg-line/40 hover:text-fg"
+                      >
+                        <X className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </>
+                  }
+                />
+              ))}
+
+              {pluginConfirms.map((confirm) => (
+                <Row
+                  key={confirm.id}
+                  icon={<Blocks className="h-3.5 w-3.5" />}
+                  title={confirm.request.title}
+                  aside={pluginDisplayName(confirm.code, locale)}
+                  detail={confirm.request.body || t("notifications.pluginConfirmDetail", { plugin: pluginDisplayName(confirm.code, locale) })}
+                  footer={
+                    <>
+                      <Button
+                        size="sm"
+                        variant={confirm.request.tone === "danger" ? "danger" : "primary"}
+                        icon={<Check className="h-3.5 w-3.5" />}
+                        onClick={() => answerPendingPluginConfirm(confirm.id, "accepted")}
+                      >
+                        {confirm.request.acceptLabel || t("notifications.accept")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={<X className="h-3.5 w-3.5" />}
+                        onClick={() => answerPendingPluginConfirm(confirm.id, "cancelled")}
+                      >
+                        {confirm.request.cancelLabel || t("notifications.reject")}
+                      </Button>
+                    </>
+                  }
+                />
+              ))}
 
               {running.map((j) => (
                 <Row

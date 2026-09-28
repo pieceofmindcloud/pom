@@ -83,42 +83,50 @@ Per-file list:
   mesmo renderer Markdown compartilhado pelo Chat.
 - `Plugins.tsx` - rota `/plugins`. Cruza o catálogo público de
   `https://license.pieceofmind.cloud/v1/plugins` com o estado local de
-  `GET /api/ui/plugins`, usando `code` como identidade. A lista tem um
-  contêiner de rolagem próprio com `overscroll-y-contain`, para a rolagem no
-  limite dos plugins não deslocar o restante da interface. O cliente público
-  fica em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita plugins
-  com release compatível ou uma origem GitHub pública canônica; dados de imagem
-  incompletos viram
+  `GET /api/ui/plugins`, usando `code` como identidade. O cliente público fica
+  em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita plugins com
+  release comercial compatível; dados de imagem incompletos viram
   placeholders, e até quatro screenshots abrem em lightbox com Escape e foco
   restaurado. Descrições usam português brasileiro quando disponível e têm
   fallback para inglês. Validade, plugins concedidos, candidatos de ativação e
   uso por `plugin_code` vêm do estado autenticado do nó, nunca do catálogo
   público. A tela full-bleed segue o cabeçalho e o contêiner
   interno de `/modelos`. O estado de licença, validade, última instalação,
-  última consulta de update, funcionalidades, versão e ações continuam vindo do
-  nó; plugins locais ativos permanecem visíveis mesmo quando faltam no catálogo
+  versão e ações continuam vindo do nó; plugins locais ativos permanecem visíveis mesmo quando faltam no catálogo
   público. Desativação exige confirmação. O formulário de chave aparece se
   qualquer entrada pública que exige licença não estiver ativa no estado local,
   mesmo quando outro plugin já tem licença/contexto. Ele também aparece quando
   falta status local ou o status está expirado/revogado, e some quando todos os
   plugins licenciáveis conhecidos estão ativos. Comprar redireciona plugins
   licenciados à loja pública com `plugin=<code>` codificado em
-  `lib/pluginPurchase.ts`; um GitHub público marcado sem licença oferece Instalar
-  e consulta o catálogo autenticado por HTTPS antes de executar o host, sem criar
-  grant ou lease. Um único formulário ativa em lote todo `plugin_code` que o servidor conceder
-  (`POST /api/ui/plugins/activate`, resposta
-  `{activated}`); atualizar e desativar continuam por plugin. Um único card
-  global sob a ativação administra origens GitHub e versões baixadas para os
-  plugins. Instalar exige confirmação; um plugin pago exige licença ativa, e um
-  plugin gratuito só instala da URL `github_repository` publicada pelo servidor.
-  Baixar uma atualização nunca substitui o host em execução.
-  O editor de preferências usa o schema opcional do manifesto instalado, mostra
-  defaults tipados boolean/diretório e envia valores só à rota local do nó.
+  `lib/pluginPurchase.ts`. Os cards são compactos, dois por linha a partir de
+  `xl`, um por `plugin_code`: catálogo comercial, repositório GitHub e estado
+  local ativo do mesmo código viram um único card. A coluna da direita traz,
+  no topo, o card "Adicionar do GitHub" (URL de repositório público) e, logo
+  abaixo, a ativação de licença. O card de um repositório mostra a descrição
+  e as capturas vindas do manifesto (`raw.githubusercontent.com`), atualizar
+  e remover como ícones, e um select só com as releases compatíveis com este
+  nó (`available_for_node`), já marcado na mais recente, com a ação
+  Instalar, Atualizar (quando a instalação pública veio deste repositório) ou
+  Instalada (desabilitada, quando a tag escolhida é a versão atual). Instalar
+  ou atualizar exige confirmação; essa origem não consulta `requires_license`
+  nem o servidor de licenças. O card não mostra funcionalidades nem a última
+  consulta de update, e a linha de release comercial só aparece quando existe
+  release para o alvo do nó. Ações de ativação, instalação, atualização e
+  desativação invalidam `keys.pluginUi` para atualizar o menu do plugin na
+  hora; o polling de 30 s cobre mudanças feitas fora desta aba. Um único
+  formulário ativa em lote todo `plugin_code` que o servidor conceder
+  (`POST /api/ui/plugins/activate`, resposta `{activated}`); atualizar e
+  desativar continuam por plugin. As preferências abrem num modal pelo ícone
+  de engrenagem no topo do card (só com plugin ativo e schema no release
+  instalado), mostram defaults tipados boolean/diretório, enviam os valores
+  só à rota local do nó e exibem o motivo devolvido pelo nó quando falham.
   A atualização do binário `pom` em si fica separada em `About.tsx` (ver
   `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,
-  Configurações > Plugins. A release exibida é escolhida pela combinação
-  `system.os`/`system.arch` do nó local; se o catálogo não publicar esse alvo,
-  a tela mostra ausência em vez de sugerir a release de outra plataforma.
+  Configurações > Plugins. No card comercial, a release exibida é escolhida
+  pela combinação `system.os`/`system.arch` do nó local; se o catálogo não
+  publicar esse alvo, a tela mostra ausência em vez de sugerir a release de
+  outra plataforma.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,
@@ -556,7 +564,7 @@ Per-file list:
   cluster `connection_key`. A rota `/config/preferencias/admin` renderiza
   somente TLS, QUIC, logs de processo entre nós e chat da rede, além do
   interruptor de descoberta local, desligado por padrão; a rota normal mantém
-  exposição, Hugging Face, proteção térmica e o link de armazenamento.
+  exposição, Hugging Face e proteção térmica; Armazenamento só tem entrada no menu.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e

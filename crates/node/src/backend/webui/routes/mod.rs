@@ -551,6 +551,10 @@ mod policy_tests {
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
         assert_eq!(scope_of("/api/ui/plugins"), RouteScope::AdminOnly);
         assert_eq!(
+            scope_of("/api/ui/plugins/github-repositories"),
+            RouteScope::AdminOnly
+        );
+        assert_eq!(
             scope_of("/api/ui/pom-update/status"),
             RouteScope::CommonOrInternal
         );
@@ -560,10 +564,9 @@ mod policy_tests {
             "/api/ui/plugins/enterprise/deactivate",
             "/api/ui/plugins/enterprise/update/check",
             "/api/ui/plugins/enterprise/update/apply",
-            "/api/ui/plugins/enterprise/github-source",
-            "/api/ui/plugins/enterprise/github-source/install",
-            "/api/ui/plugins/enterprise/github-source/check",
-            "/api/ui/plugins/enterprise/github-source/apply",
+            "/api/ui/plugins/github-repositories",
+            "/api/ui/plugins/github-repositories/repository-id/refresh",
+            "/api/ui/plugins/github-repositories/repository-id/install",
             "/api/ui/plugins/enterprise/preferences",
             "/api/ui/pom-update/check",
             "/api/ui/pom-update/apply",
@@ -575,7 +578,10 @@ mod policy_tests {
             );
         }
         assert_eq!(
-            route_scope(&Method::DELETE, "/api/ui/plugins/enterprise/github-source"),
+            route_scope(
+                &Method::DELETE,
+                "/api/ui/plugins/github-repositories/repository-id"
+            ),
             RouteScope::AdminOnly
         );
         // O proxy de interfaces de plugin atende qualquer método e herda o

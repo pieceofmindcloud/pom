@@ -37,6 +37,23 @@ pub(crate) struct MenuItem {
     /// Campo legado. Mantido para manifestos já publicados.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<String>>,
+    /// Submenus do item. Com filhos, o item vira uma seção expansível; o `to`
+    /// do pai continua obrigatório para que hosts sem suporte a submenus
+    /// mostrem ao menos o destino principal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<MenuChild>,
+}
+
+/// Um submenu. Mesmas regras de um item de primeiro nível, sem netos.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct MenuChild {
+    pub id: String,
+    pub label: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -69,6 +86,18 @@ pub(crate) struct ScreenSpec {
 pub(crate) struct PluginUiManifest {
     pub schema: String,
     pub plugin_code: String,
+    /// Optional PNG served by the plugin and used in the navigation menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_image: Option<String>,
+    /// Descrição curta por idioma (`en` obrigatório quando presente), mostrada
+    /// na tela Plugins.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub description: std::collections::BTreeMap<String, String>,
+    /// Capturas de tela: caminhos relativos à raiz do repositório GitHub do
+    /// plugin ou URLs `https://`. O POM não as serve: o navegador as carrega
+    /// direto do GitHub.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<String>,
     #[serde(default)]
     pub menu: Vec<MenuItem>,
     #[serde(default)]
@@ -79,8 +108,26 @@ pub(crate) struct PluginUiManifest {
     /// textos; o POM só carrega e resolve. Se declarado, `en` é obrigatório.
     #[serde(default)]
     pub i18n: std::collections::BTreeMap<String, String>,
+    /// Markdown pages shipped by the plugin and presented with the POM docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<PluginDocumentation>,
     /// Lista fechada do que `/assets/*` pode servir.
     pub assets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct PluginDocumentation {
+    #[serde(default)]
+    pub guides: Vec<PluginDocumentationEntry>,
+    #[serde(default)]
+    pub reference: Vec<PluginDocumentationEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct PluginDocumentationEntry {
+    pub id: String,
+    pub title: std::collections::BTreeMap<String, String>,
+    pub asset: String,
 }
 
 const MAX_CATALOG_KEYS: usize = 5000;
@@ -137,6 +184,61 @@ fn valid_asset(path: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c))
 }
 
+fn valid_documentation_asset(path: &str) -> bool {
+    valid_asset(path) && path.starts_with("docs/") && path.ends_with(".md")
+}
+
+fn normalize_ui_manifest_documentation(value: Value) -> Result<Value, String> {
+    let Some(paths) = value.get("documentation").and_then(Value::as_array) else {
+        return Ok(value);
+    };
+    if paths.len() > 64 {
+        return Err("documentation path list has too many entries".into());
+    }
+    let mut guides = Vec::with_capacity(paths.len());
+    for (index, item) in paths.iter().enumerate() {
+        let asset = item
+            .as_str()
+            .filter(|path| valid_documentation_asset(path))
+            .ok_or_else(|| "documentation entries must be declared docs/*.md assets".to_owned())?;
+        let file_name = asset.rsplit('/').next().unwrap_or(asset);
+        let stem = file_name.strip_suffix(".md").unwrap_or(file_name);
+        let title = stem.replace(['-', '_'], " ");
+        guides.push(serde_json::json!({
+            "id": format!("legacy-guide-{}", index + 1),
+            "title": {
+                "en": format!("Guide {}: {title}", index + 1),
+                "pt-BR": format!("Guia {}: {title}", index + 1)
+            },
+            "asset": asset
+        }));
+    }
+    let mut value = value;
+    value["documentation"] = serde_json::json!({ "guides": guides, "reference": [] });
+    Ok(value)
+}
+
+const MAX_SCREENSHOTS: usize = 8;
+const MAX_DESCRIPTION_TEXT: usize = 2000;
+
+/// Caminho relativo seguro dentro do repositório ou URL `https://` sem
+/// credenciais. Nada aqui é servido pelo nó.
+pub(crate) fn valid_screenshot(value: &str) -> bool {
+    if value.len() > 1024 {
+        return false;
+    }
+    if let Some(rest) = value.strip_prefix("https://") {
+        return !rest.is_empty()
+            && !rest.contains('@')
+            && !rest.contains(char::is_whitespace)
+            && reqwest::Url::parse(value).is_ok();
+    }
+    valid_asset(value)
+        && [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+            .iter()
+            .any(|extension| value.to_ascii_lowercase().ends_with(extension))
+}
+
 fn valid_profiles(profiles: &[String]) -> bool {
     !profiles.is_empty() && profiles.iter().all(|p| PROFILES.contains(&p.as_str()))
 }
@@ -149,6 +251,7 @@ impl PluginUiManifest {
     /// Interpreta e valida o JSON devolvido pelo plugin. Recusa em vez de
     /// corrigir: um manifesto torto não pode desenhar menu nem carregar código.
     pub(crate) fn parse(expected_code: &str, value: Value) -> Result<Self, String> {
+        let value = normalize_ui_manifest_documentation(value)?;
         let manifest: Self =
             serde_json::from_value(value).map_err(|e| format!("manifesto ilegível: {e}"))?;
         if manifest.schema != MANIFEST_SCHEMA {
@@ -157,14 +260,52 @@ impl PluginUiManifest {
         if manifest.plugin_code != expected_code {
             return Err("plugin_code do manifesto não é o do plugin instalado".into());
         }
+        if let Some(icon) = &manifest.icon_image {
+            if !icon.ends_with(".png") || !manifest.assets.iter().any(|asset| asset == icon) {
+                return Err("icon_image precisa ser um asset PNG declarado".into());
+            }
+        }
+        if !manifest.description.is_empty()
+            && (!manifest.description.contains_key("en")
+                || manifest.description.iter().any(|(locale, text)| {
+                    !valid_locale(locale)
+                        || text.trim().is_empty()
+                        || text.len() > MAX_DESCRIPTION_TEXT
+                }))
+        {
+            return Err("description precisa de en e textos curtos por idioma".into());
+        }
+        if manifest.screenshots.len() > MAX_SCREENSHOTS
+            || !manifest
+                .screenshots
+                .iter()
+                .all(|shot| valid_screenshot(shot))
+        {
+            return Err("screenshots inválidos".into());
+        }
+        let mut menu_ids = std::collections::HashSet::new();
         for item in &manifest.menu {
             let valid_role_fields = item.roles.as_deref().is_none_or(valid_roles)
                 && item.profiles.as_deref().is_none_or(valid_profiles);
-            if item.id.is_empty() || !valid_path(&item.to) || !valid_role_fields {
+            if item.id.is_empty()
+                || !valid_path(&item.to)
+                || !valid_role_fields
+                || !menu_ids.insert(item.id.as_str())
+            {
                 return Err(format!("item de menu {:?} inválido", item.id));
             }
             if !item.label.contains_key("en") {
                 return Err(format!("item de menu {:?} sem rótulo en", item.id));
+            }
+            for child in &item.children {
+                if child.id.is_empty()
+                    || !valid_path(&child.to)
+                    || !child.roles.as_deref().is_none_or(valid_roles)
+                    || !child.label.contains_key("en")
+                    || !menu_ids.insert(child.id.as_str())
+                {
+                    return Err(format!("submenu {:?} inválido", child.id));
+                }
             }
         }
         for route in &manifest.routes {
@@ -193,6 +334,23 @@ impl PluginUiManifest {
                 return Err(format!("catálogo i18n {locale:?} inválido"));
             }
         }
+        if let Some(documentation) = &manifest.documentation {
+            for (kind, entries) in [
+                ("guia", &documentation.guides),
+                ("referência", &documentation.reference),
+            ] {
+                for entry in entries {
+                    if entry.id.is_empty()
+                        || !entry.title.contains_key("en")
+                        || !entry.title.values().all(|title| !title.is_empty())
+                        || !valid_documentation_asset(&entry.asset)
+                        || !manifest.assets.iter().any(|asset| asset == &entry.asset)
+                    {
+                        return Err(format!("{kind} de documentação inválido"));
+                    }
+                }
+            }
+        }
         for (name, screen) in &manifest.screens {
             let files = std::iter::once(&screen.module).chain(screen.styles.iter());
             for file in files {
@@ -207,6 +365,20 @@ impl PluginUiManifest {
     pub(crate) fn serves(&self, asset: &str) -> bool {
         self.assets.iter().any(|a| a == asset)
     }
+
+    pub(crate) fn is_icon_image(&self, asset: &str) -> bool {
+        self.icon_image.as_deref() == Some(asset)
+    }
+
+    pub(crate) fn is_documentation(&self, asset: &str) -> bool {
+        self.documentation.as_ref().is_some_and(|documentation| {
+            documentation
+                .guides
+                .iter()
+                .chain(documentation.reference.iter())
+                .any(|entry| entry.asset == asset)
+        })
+    }
 }
 
 /// Decodifica a resposta `ui.asset` do plugin: `{content_type, base64}`.
@@ -220,7 +392,9 @@ pub(crate) fn decode_asset(value: &Value) -> Result<(String, Vec<u8>), String> {
                 "text/javascript"
                     | "text/css"
                     | "image/svg+xml"
+                    | "image/png"
                     | "application/json"
+                    | "text/markdown"
                     | "font/woff2"
             )
         })
@@ -286,6 +460,12 @@ pub(crate) async fn plugin_asset(
         return not_found();
     };
     let decoded = decode_asset(&reply).and_then(|(content_type, bytes)| {
+        if manifest.is_icon_image(&path) && content_type != "image/png" {
+            return Err("icon_image não foi servido como PNG".into());
+        }
+        if manifest.is_documentation(&path) && content_type != "text/markdown" {
+            return Err("documentação não foi servida como Markdown".into());
+        }
         // Catálogo de texto: só sai se o conteúdo obedece ao contrato.
         if manifest.i18n.values().any(|asset| *asset == path) {
             let parsed: Value =
@@ -331,7 +511,51 @@ mod tests {
     fn accepts_a_well_formed_manifest() {
         let parsed = PluginUiManifest::parse("enterprise", manifest()).expect("valid");
         assert!(parsed.serves("ui/logs.js"));
+        assert_eq!(parsed.menu[0].icon.as_deref(), Some("list-tree"));
         assert!(!parsed.serves("ui/other.js"));
+    }
+
+    #[test]
+    fn accepts_plugin_icon_and_documentation_assets() {
+        let mut value = manifest();
+        value["icon_image"] = json!("ui/icon.png");
+        value["documentation"] = json!({
+            "guides": [{
+                "id": "getting-started",
+                "title": {"en": "Getting started", "pt-BR": "Primeiros passos"},
+                "asset": "docs/guides/getting-started.md"
+            }],
+            "reference": [{
+                "id": "configuration",
+                "title": {"en": "Configuration"},
+                "asset": "docs/reference/configuration.md"
+            }]
+        });
+        value["assets"].as_array_mut().unwrap().extend([
+            json!("ui/icon.png"),
+            json!("docs/guides/getting-started.md"),
+            json!("docs/reference/configuration.md"),
+        ]);
+        let parsed = PluginUiManifest::parse("enterprise", value).expect("valid");
+        assert!(parsed.is_icon_image("ui/icon.png"));
+        assert!(parsed.is_documentation("docs/guides/getting-started.md"));
+    }
+
+    #[test]
+    fn rejects_icon_or_documentation_outside_declared_assets() {
+        let mut value = manifest();
+        value["icon_image"] = json!("ui/icon.png");
+        assert!(PluginUiManifest::parse("enterprise", value).is_err());
+
+        let mut value = manifest();
+        value["documentation"] = json!({
+            "guides": [{
+                "id": "bad",
+                "title": {"en": "Bad"},
+                "asset": "ui/bad.md"
+            }]
+        });
+        assert!(PluginUiManifest::parse("enterprise", value).is_err());
     }
 
     #[test]
@@ -426,6 +650,101 @@ mod tests {
         assert!(validate_catalog("enterprise", &json!(["enterprise.a"])).is_err());
         let huge = "x".repeat(MAX_CATALOG_TEXT + 1);
         assert!(validate_catalog("enterprise", &json!({"enterprise.a": huge})).is_err());
+    }
+
+    /// The public pom-plugin-base release currently ships this UI manifest shape.
+    #[test]
+    fn accepts_the_ui_manifest_format_shipped_by_pom_plugin_base() {
+        let value = json!({
+            "schema": "pom-plugin-ui/v1",
+            "plugin_code": "base",
+            "icon_image": "ui/icon.png",
+            "documentation": [
+                "docs/README.md",
+                "docs/guia-desenvolvimento.md",
+                "docs/guia-workspace.md"
+            ],
+            "menu": [
+                { "id": "base", "label": { "en": "Base Plugin", "pt-BR": "Plugin de Base" }, "icon": "layout-template", "to": "/plugin-de-base" },
+                { "id": "example", "label": { "en": "Example", "pt-BR": "Exemplo" }, "icon": "file-code-2", "to": "/example" }
+            ],
+            "routes": [
+                { "path": "/plugin-de-base", "screen": "base", "full_bleed": true, "roles": ["admin"] },
+                { "path": "/example", "screen": "example", "full_bleed": true }
+            ],
+            "screens": {
+                "base": { "module": "ui/screens.js", "export": "base", "styles": ["ui/plugin.css"] },
+                "example": { "module": "ui/screens.js", "export": "example", "styles": ["ui/plugin.css"] }
+            },
+            "i18n": { "en": "i18n/en.json", "pt-BR": "i18n/pt-BR.json" },
+            "assets": [
+                "ui/screens.js", "ui/plugin.css", "ui/icon.png", "i18n/en.json",
+                "i18n/pt-BR.json", "docs/README.md", "docs/guia-desenvolvimento.md",
+                "docs/guia-workspace.md"
+            ]
+        });
+        let parsed = PluginUiManifest::parse("base", value).expect("valid published manifest");
+        assert_eq!(parsed.menu[0].label["en"], "Base Plugin");
+        assert_eq!(parsed.documentation.as_ref().unwrap().guides.len(), 3);
+        assert!(parsed.is_documentation("docs/guia-workspace.md"));
+    }
+
+    #[test]
+    fn menu_children_description_and_screenshots_are_validated() {
+        let manifest = |menu: Value, extra: Value| {
+            let mut value = json!({
+                "schema": "pom-plugin-ui/v1",
+                "plugin_code": "base",
+                "menu": menu,
+                "routes": [
+                    { "path": "/tutorial", "screen": "tutorial" },
+                    { "path": "/projects", "screen": "tutorial" }
+                ],
+                "screens": { "tutorial": { "module": "ui/screens.js" } },
+                "assets": ["ui/screens.js"]
+            });
+            for (key, item) in extra.as_object().unwrap() {
+                value[key] = item.clone();
+            }
+            value
+        };
+        let menu = json!([{
+            "id": "base", "label": { "en": "POM - Plugins" }, "to": "/tutorial",
+            "children": [
+                { "id": "tutorial", "label": { "en": "Plugin" }, "to": "/tutorial" },
+                { "id": "projects", "label": { "en": "Projects" }, "to": "/projects", "roles": ["admin"] }
+            ]
+        }]);
+        let parsed = PluginUiManifest::parse(
+            "base",
+            manifest(
+                menu.clone(),
+                json!({
+                    "description": { "en": "Tutorial", "pt-BR": "Tutorial" },
+                    "screenshots": ["docs/shot.png", "https://example.com/a.webp"]
+                }),
+            ),
+        )
+        .expect("valid manifest with children");
+        assert_eq!(parsed.menu[0].children.len(), 2);
+        assert_eq!(parsed.screenshots.len(), 2);
+        // A serialização preserva os filhos para o navegador.
+        let served = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(served["menu"][0]["children"][1]["id"], "projects");
+
+        let duplicated = json!([{
+            "id": "base", "label": { "en": "x" }, "to": "/tutorial",
+            "children": [{ "id": "base", "label": { "en": "y" }, "to": "/projects" }]
+        }]);
+        assert!(PluginUiManifest::parse("base", manifest(duplicated, json!({}))).is_err());
+        for extra in [
+            json!({ "description": { "pt-BR": "sem en" } }),
+            json!({ "screenshots": ["../fora.png"] }),
+            json!({ "screenshots": ["docs/script.js"] }),
+            json!({ "screenshots": ["http://example.com/a.png"] }),
+        ] {
+            assert!(PluginUiManifest::parse("base", manifest(menu.clone(), extra)).is_err());
+        }
     }
 
     /// O manifesto que o plugin `enterprise` (pom-plugin-logs) entrega hoje.

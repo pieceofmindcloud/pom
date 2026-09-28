@@ -947,6 +947,9 @@ impl PomDb {
             crate::network_chat::ChatAction::Typing { .. } => {
                 anyhow::bail!("digitação não é persistente")
             }
+            crate::network_chat::ChatAction::PluginNotice { .. } => {
+                anyhow::bail!("aviso de plugin não é persistente")
+            }
         };
         self.with_write("salvar mensagem do Chat da rede", |connection| {
             let changed = connection.execute(

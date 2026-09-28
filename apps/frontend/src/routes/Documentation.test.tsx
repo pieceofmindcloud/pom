@@ -14,7 +14,34 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
+import { api } from "../lib/api";
+import { setPluginUi, type ActivePluginUi } from "../lib/pluginUi";
 import { Documentation } from "./Documentation";
+
+const documentedPlugin: ActivePluginUi = {
+  code: "docs-plugin",
+  version: "1.0.0",
+  manifest: {
+    schema: "pom-plugin-ui/v1",
+    plugin_code: "docs-plugin",
+    menu: [],
+    routes: [{ path: "/", screen: "home", profiles: ["admin"] }],
+    screens: { home: { module: "ui/home.js" } },
+    documentation: {
+      guides: [{
+        id: "start",
+        title: { en: "Plugin guide" },
+        asset: "docs/guides/start.md",
+      }],
+      reference: [{
+        id: "reference",
+        title: { en: "Plugin reference" },
+        asset: "docs/reference/reference.md",
+      }],
+    },
+    assets: ["ui/home.js", "docs/guides/start.md", "docs/reference/reference.md"],
+  },
+};
 
 function renderDoc(initialEntry = "/documentacao") {
   return render(
@@ -41,6 +68,7 @@ describe("Documentation", () => {
 
   afterEach(cleanup);
   afterEach(() => vi.restoreAllMocks());
+  afterEach(() => setPluginUi([]));
 
   it("abre nos guias, não no markdown de agente", () => {
     renderDoc();
@@ -138,6 +166,23 @@ describe("Documentation", () => {
       target: { value: "zzz-não-existe" },
     });
     expect(screen.getByText("No documentation matches")).toBeTruthy();
+  });
+
+  it("exibe guias de um plugin instalado e carrega o Markdown sob demanda", async () => {
+    setPluginUi([documentedPlugin]);
+    vi.spyOn(api, "getText").mockResolvedValue("# Plugin guide\n\nPlugin content");
+    renderDoc();
+
+    fireEvent.click(screen.getByRole("button", { name: /Plugin guide docs-plugin/ }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Plugin guide", level: 2 })).toBeTruthy();
+      expect(screen.getByText("Plugin content")).toBeTruthy();
+    });
+    expect(api.getText).toHaveBeenCalledWith(
+      "/api/ui/plugins/docs-plugin/assets/docs/guides/start.md",
+      { auth: false },
+    );
   });
 
   describe("navegação mobile", () => {

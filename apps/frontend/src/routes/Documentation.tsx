@@ -30,7 +30,7 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowLeft, BookOpen, ChevronRight, FileText, Layers, Search, X } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Markdown } from "../components/Markdown";
 import { Empty, Input, Panel } from "../components/ui";
@@ -38,6 +38,8 @@ import { GuideView } from "../guides/Guide";
 import { guidesFor } from "../guides/content";
 import { useI18n } from "../i18n/provider";
 import manifest from "../docs/manifest.json";
+import { api } from "../lib/api";
+import { pluginAssetUrl, pluginUiSnapshot, type PluginDocumentationEntry } from "../lib/pluginUi";
 
 const CONTENT = import.meta.glob<string>("../docs/**/*.md", {
   query: "?raw",
@@ -46,6 +48,77 @@ const CONTENT = import.meta.glob<string>("../docs/**/*.md", {
 });
 
 type DocEntry = (typeof manifest)["entries"][number];
+
+type PluginDocEntry = {
+  key: string;
+  code: string;
+  kind: "guide" | "reference";
+  title: string;
+  asset: string;
+};
+
+function localizedPluginTitle(entry: PluginDocumentationEntry, locale: string): string {
+  return entry.title[locale] ?? entry.title[locale.split("-")[0]] ?? entry.title.en;
+}
+
+function pluginDocsFor(locale: string): PluginDocEntry[] {
+  return pluginUiSnapshot().flatMap((plugin) => {
+    const documentation = plugin.manifest.documentation;
+    if (!documentation) return [];
+    const entries = [
+      ...documentation.guides.map((entry) => ({ entry, kind: "guide" as const })),
+      ...documentation.reference.map((entry) => ({ entry, kind: "reference" as const })),
+    ];
+    return entries.map(({ entry, kind }) => ({
+      key: "plugin:" + plugin.code + ":" + kind + ":" + entry.id,
+      code: plugin.code,
+      kind,
+      title: localizedPluginTitle(entry, locale),
+      asset: entry.asset,
+    }));
+  });
+}
+
+function PluginDocument({
+  document,
+  content,
+  loading,
+  error,
+  loadingText,
+  noDocTitle,
+  noDocDetail,
+}: {
+  document: PluginDocEntry;
+  content?: string;
+  loading: boolean;
+  error: boolean;
+  loadingText: string;
+  noDocTitle: string;
+  noDocDetail: string;
+}) {
+  return (
+    <article className="min-w-0">
+      <header className="mb-5 border-b border-line pb-4">
+        <h2 className="font-display text-[1.5rem] font-bold tracking-tight text-fg">
+          {document.title}
+        </h2>
+        <p className="mt-1.5 flex items-center gap-1.5 font-mono text-[0.7rem] text-faint">
+          <FileText className="h-3 w-3 shrink-0" />
+          <span className="truncate">{document.code}/{document.asset}</span>
+        </p>
+      </header>
+      {loading ? (
+        <p className="text-sm text-muted">{loadingText}</p>
+      ) : error || content === undefined ? (
+        <Empty icon={<FileText className="h-5 w-5" />} title={noDocTitle}>
+          {noDocDetail}
+        </Empty>
+      ) : (
+        <Markdown>{withoutLeadingH1(content)}</Markdown>
+      )}
+    </article>
+  );
+}
 
 const SECTIONS: { id: string; labelKey: string }[] = [
   { id: "root", labelKey: "docs.section.root" },
@@ -319,17 +392,48 @@ export function Documentation() {
   const entries = manifest.entries;
   const byId = useMemo(() => new Map(entries.map((e) => [e.id, e])), [entries]);
   const guides = useMemo(() => guidesFor(locale), [locale]);
+  const pluginDocs = useMemo(() => pluginDocsFor(locale), [locale]);
+  const pluginGuides = pluginDocs.filter((document) => document.kind === "guide");
+  const pluginReference = pluginDocs.filter((document) => document.kind === "reference");
 
   const tab: Tab = params.get("tab") === "referencia" ? "referencia" : "guias";
+  const selectedPluginReference = pluginReference.find((document) => document.key === params.get("doc"));
   const selectedId = byId.has(params.get("doc") ?? "")
     ? (params.get("doc") as string)
     : entries[0]?.id ?? "";
   const selected = selectedId ? byId.get(selectedId) : undefined;
   const selectedContent = selected ? CONTENT[`../docs/${selected.id}`] : undefined;
+  const selectedPluginGuide = pluginGuides.find((document) => document.key === params.get("guia"));
   const guideId = guides.some((g) => g.id === params.get("guia"))
     ? (params.get("guia") as string)
     : guides[0]?.id ?? "";
   const guide = guides.find((g) => g.id === guideId);
+  const activePluginDocument = tab === "guias" ? selectedPluginGuide : selectedPluginReference;
+  const [pluginContent, setPluginContent] = useState<Record<string, string>>({});
+  const [pluginContentError, setPluginContentError] = useState<Record<string, boolean>>({});
+  const [pluginContentLoading, setPluginContentLoading] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activePluginDocument || pluginContent[activePluginDocument.key] !== undefined) return;
+    let cancelled = false;
+    setPluginContentLoading(activePluginDocument.key);
+    void api
+      .getText(pluginAssetUrl(activePluginDocument.code, activePluginDocument.asset), { auth: false })
+      .then((content) => {
+        if (cancelled) return;
+        setPluginContent((current) => ({ ...current, [activePluginDocument.key]: content }));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPluginContentError((current) => ({ ...current, [activePluginDocument.key]: true }));
+      })
+      .finally(() => {
+        if (!cancelled) setPluginContentLoading(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePluginDocument]);
 
   // A new page must not open halfway down the previous one. jsdom has no
   // layout, hence the guard.
@@ -385,6 +489,10 @@ export function Documentation() {
         (CONTENT[`../docs/${e.id}`] ?? "").toLowerCase().includes(q),
     );
   }, [q, entries]);
+  const pluginResults = useMemo(
+    () => (q ? pluginDocs.filter((document) => document.title.toLowerCase().includes(q) || document.asset.toLowerCase().includes(q)) : []),
+    [q, pluginDocs],
+  );
 
   if (entries.length === 0) {
     return (
@@ -484,9 +592,44 @@ export function Documentation() {
                   </button>
                 );
               })}
+              {pluginGuides.length > 0 && (
+                <div className="mt-3 border-t border-line pt-3">
+                  <p className="px-2.5 pb-1 text-[0.68rem] font-medium uppercase tracking-wide text-faint">
+                    {t("docs.pluginGuides")}
+                  </p>
+                  {pluginGuides.map((document) => {
+                    const active = document.key === params.get("guia");
+                    return (
+                      <button
+                        key={document.key}
+                        type="button"
+                        onClick={() => {
+                          setParams({ tab: "guias", guia: document.key }, { replace: true });
+                          setMobileReaderOpen(true);
+                          toTop();
+                        }}
+                        aria-pressed={active}
+                        className={clsx(
+                          "flex min-w-0 flex-col items-start rounded-md px-2.5 py-2 text-left transition-colors duration-150",
+                          active
+                            ? "bg-iris/12 text-fg ring-1 ring-inset ring-iris/25"
+                            : "text-muted hover:bg-line/40 hover:text-fg",
+                        )}
+                      >
+                        <span className="w-full truncate text-[0.82rem] font-medium leading-snug">
+                          {document.title}
+                        </span>
+                        <span className="w-full truncate text-[0.68rem] leading-snug text-faint">
+                          {document.code}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ) : results ? (
-            results.length === 0 ? (
+            results.length === 0 && pluginResults.length === 0 ? (
               <div className="px-2 py-4">
                 <p className="text-sm font-medium text-fg">{t("docs.noResults")}</p>
                 <p className="mt-1 text-xs leading-relaxed text-muted">{t("docs.noResultsDetail")}</p>
@@ -494,7 +637,7 @@ export function Documentation() {
             ) : (
               <div>
                 <p className="px-2 pb-1 text-[0.68rem] font-medium text-faint">
-                  {t("docs.resultCount", { count: results.length })}
+                  {t("docs.resultCount", { count: results.length + pluginResults.length })}
                 </p>
                 <div className="flex flex-col gap-0.5">
                   {results.map((e) => (
@@ -506,11 +649,60 @@ export function Documentation() {
                       onSelect={() => openDoc(e.id)}
                     />
                   ))}
+                  {pluginResults.map((document) => (
+                    <button
+                      key={document.key}
+                      type="button"
+                      onClick={() => {
+                        const parameter: Record<string, string> = document.kind === "guide"
+                          ? { tab: "guias", guia: document.key }
+                          : { tab: "referencia", doc: document.key };
+                        setParams(parameter, { replace: true });
+                        setMobileReaderOpen(true);
+                        toTop();
+                      }}
+                      aria-pressed={document.key === params.get(document.kind === "guide" ? "guia" : "doc")}
+                      className="flex min-w-0 flex-col items-start rounded-md px-2 py-1.5 text-left text-muted transition-colors hover:bg-line/40 hover:text-fg"
+                    >
+                      <span className="w-full truncate text-[0.8rem] leading-snug">{document.title}</span>
+                      <span className="w-full truncate text-[0.62rem] leading-tight text-faint">
+                        {document.code}
+                      </span>
+                    </button>
+                  ))}
                 </div>
               </div>
             )
           ) : (
             <div className="flex flex-col gap-0.5">
+              {pluginReference.length > 0 && (
+                <div className="mb-2 border-b border-line pb-2">
+                  <p className="px-2 pb-1 text-[0.68rem] font-medium uppercase tracking-wide text-faint">
+                    {t("docs.plugins")}
+                  </p>
+                  {pluginReference.map((document) => (
+                    <button
+                      key={document.key}
+                      type="button"
+                      onClick={() => {
+                        setParams({ tab: "referencia", doc: document.key }, { replace: true });
+                        setMobileReaderOpen(true);
+                        toTop();
+                      }}
+                      aria-pressed={document.key === params.get("doc")}
+                      className={clsx(
+                        "flex min-w-0 flex-col items-start rounded-md px-2 py-1.5 text-left transition-colors",
+                        document.key === params.get("doc")
+                          ? "bg-iris/12 text-fg ring-1 ring-inset ring-iris/25"
+                          : "text-muted hover:bg-line/40 hover:text-fg",
+                      )}
+                    >
+                      <span className="w-full truncate text-[0.8rem] leading-snug">{document.title}</span>
+                      <span className="w-full truncate text-[0.62rem] leading-tight text-faint">{document.code}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               {SECTIONS.map((section) => {
                 const overview = overviewOf(entries, section.id);
                 const inSection = entries.filter(
@@ -561,13 +753,33 @@ export function Documentation() {
         )}
         <div className="mx-auto w-full max-w-[62rem] px-6 py-7 sm:px-10">
           {tab === "guias" ? (
-            guide ? (
+            selectedPluginGuide ? (
+              <PluginDocument
+                document={selectedPluginGuide}
+                content={pluginContent[selectedPluginGuide.key]}
+                loading={pluginContentLoading === selectedPluginGuide.key}
+                error={pluginContentError[selectedPluginGuide.key] === true}
+                loadingText={t("docs.pluginLoading")}
+                noDocTitle={t("docs.noDoc")}
+                noDocDetail={t("docs.noDocDetail")}
+              />
+            ) : guide ? (
               <GuideView guide={guide} onOpenDoc={openDoc} />
             ) : (
               <Empty icon={<BookOpen className="h-5 w-5" />} title={t("docs.noDoc")}>
                 {t("docs.noDocDetail")}
               </Empty>
             )
+          ) : selectedPluginReference ? (
+            <PluginDocument
+              document={selectedPluginReference}
+              content={pluginContent[selectedPluginReference.key]}
+              loading={pluginContentLoading === selectedPluginReference.key}
+              error={pluginContentError[selectedPluginReference.key] === true}
+              loadingText={t("docs.pluginLoading")}
+              noDocTitle={t("docs.noDoc")}
+              noDocDetail={t("docs.noDocDetail")}
+            />
           ) : selected && selectedContent !== undefined ? (
             <article className="min-w-0">
               <header className="mb-5 border-b border-line pb-4">

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { pluginAssetUrl, pluginLabel, pluginMenuItems, pluginRouteProfiles, pluginUiSnapshot, resolvePluginRoute, setPluginUi, type ActivePluginUi } from "./pluginUi";
+import { pluginAssetUrl, pluginDisplayName, pluginLabel, pluginMenuItems, pluginRouteProfiles, pluginUiSnapshot, resolvePluginRoute, setPluginUi, type ActivePluginUi } from "./pluginUi";
 import { canAccessRoute } from "./access";
 import { navForProfile } from "../components/nav";
 
@@ -9,6 +9,7 @@ const plugin: ActivePluginUi = {
   manifest: {
     schema: "pom-plugin-ui/v1",
     plugin_code: "acme",
+    icon_image: "ui/icon.png",
     menu: [
       { id: "logs", label: { en: "Audit", "pt-BR": "Auditoria" }, icon: "list-tree", to: "/logs", group: "logs", profiles: ["admin"] },
       { id: "extra", label: { en: "Extra" }, icon: "unknown", to: "/acme/extra", profiles: ["admin", "infer"] },
@@ -19,7 +20,7 @@ const plugin: ActivePluginUi = {
       { path: "/acme", screen: "root", profiles: ["admin"] },
     ],
     screens: { logs: { module: "a.js" }, extra: { module: "b.js" }, root: { module: "c.js" } },
-    assets: ["a.js", "b.js", "c.js"],
+    assets: ["a.js", "b.js", "c.js", "ui/icon.png"],
   },
 };
 
@@ -136,6 +137,11 @@ describe("plugin UI registry", () => {
     ]);
     expect(adminLinks).toContainEqual({ labelKey: "plugin:base:plugin", to: "/base/plugin-de-base" });
     expect(adminLinks).toContainEqual({ labelKey: "plugin:base:example", to: "/base/example" });
+  });
+
+  it("keeps the plugin PNG available for the navigation fallback", () => {
+    setPluginUi([plugin]);
+    expect(pluginMenuItems("admin")[0]?.iconImage).toBe("ui/icon.png");
   });
 
   it("normalizes repeated slashes and trailing slashes without leaving the plugin namespace", () => {
@@ -351,5 +357,65 @@ describe("plugin UI registry", () => {
     setPluginUi([plugin]);
     const node = navForProfile("node");
     expect(JSON.stringify(node)).not.toContain("plugin:acme:extra");
+  });
+
+  it("registers menu children as a sidebar section with per-child roles", () => {
+    setPluginUi([{
+      code: "base",
+      version: "0.2.0",
+      manifest: {
+        schema: "pom-plugin-ui/v1",
+        plugin_code: "base",
+        icon_image: "ui/icon.png",
+        description: { en: "Tutorial", "pt-BR": "Tutorial" },
+        menu: [{
+          id: "base",
+          label: { en: "POM - Plugins" },
+          icon: "blocks",
+          to: "/plugin",
+          children: [
+            { id: "plugin", label: { en: "Plugin", "pt-BR": "Plugin" }, icon: "book-open", to: "/plugin", roles: ["admin"] },
+            { id: "projects", label: { en: "Projects", "pt-BR": "Projetos" }, icon: "folder-tree", to: "/projects" },
+          ],
+        }],
+        routes: [
+          { path: "/plugin", screen: "plugin", roles: ["admin"] },
+          { path: "/projects", screen: "projects" },
+        ],
+        screens: { plugin: { module: "ui/screens.js" }, projects: { module: "ui/screens.js" } },
+        assets: ["ui/screens.js", "ui/icon.png"],
+      },
+    }]);
+
+    const [admin] = pluginMenuItems("admin");
+    expect(admin.children?.map((child) => child.to)).toEqual(["/base/plugin", "/base/projects"]);
+    const [node] = pluginMenuItems("node");
+    expect(node.children?.map((child) => child.id)).toEqual(["projects"]);
+    expect(pluginLabel("plugin:base:projects", "pt-BR")).toBe("Projetos");
+    expect(pluginDisplayName("base", "en")).toBe("POM - Plugins");
+
+    const section = navForProfile("admin").find((entry) => entry.labelKey === "plugin:base:base");
+    expect(section?.to).toBeUndefined();
+    expect(section?.children?.map((child) => child.to)).toEqual(["/base/plugin", "/base/projects"]);
+    expect(canAccessRoute("/base/projects", "node")).toBe(true);
+    expect(canAccessRoute("/base/plugin", "node")).toBe(false);
+  });
+
+  it("rejects a manifest whose child id repeats or points outside the declared routes", () => {
+    const manifest = (children: unknown[]) => ({
+      code: "base",
+      manifest: {
+        schema: "pom-plugin-ui/v1",
+        plugin_code: "base",
+        menu: [{ id: "base", label: { en: "Base" }, to: "/plugin", children }],
+        routes: [{ path: "/plugin", screen: "plugin" }],
+        screens: { plugin: { module: "ui/screens.js" } },
+        assets: ["ui/screens.js"],
+      },
+    }) as unknown as ActivePluginUi;
+    setPluginUi([manifest([{ id: "base", label: { en: "Again" }, to: "/plugin" }])]);
+    expect(pluginUiSnapshot()).toHaveLength(0);
+    setPluginUi([manifest([{ id: "other", label: { en: "Other" }, to: "/missing" }])]);
+    expect(pluginUiSnapshot()).toHaveLength(0);
   });
 });

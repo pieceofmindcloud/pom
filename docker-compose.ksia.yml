@@ -7,18 +7,23 @@ x-node: &node
     args:
       POM_BUILD_COMMIT: "${POM_BUILD_COMMIT:-}"
       LLAMA_CPP_CACHE_KEY: "${LLAMA_CPP_CACHE_KEY:-unknown}"
-      POM_LLAMA_CPP_MODE: "${POM_LLAMA_CPP_MODE:-release}"
+      POM_LLAMA_CPP_MODE: "${POM_LLAMA_CPP_MODE:-source}"
       POM_LLAMA_CPP_RELEASE_TAG: "${POM_LLAMA_CPP_RELEASE_TAG:-}"
       POM_LLAMA_CPP_RELEASE_REPOSITORY: "${POM_LLAMA_CPP_RELEASE_REPOSITORY:-pereirajair/llama.cpp}"
       CUDA_RUNTIME_FLAVOR: "${CUDA_RUNTIME_FLAVOR:-runtime}"
       POM_CUDA_ARCHITECTURES: "${POM_CUDA_ARCHITECTURES:-86;120}"
       POM_CUDA_ARCH_CACHE_KEY: "${POM_CUDA_ARCH_CACHE_KEY:-86-120}"
       RUST_TOOLCHAIN: "${RUST_TOOLCHAIN:-stable}"
+      POM_DEV: 1
   image: "pom:ksia"
   network_mode: host
   restart: unless-stopped
   environment:
+      RUST_DEBUG: libp2p_autonat=debug
       POM_HOME: /data
+      # main.rs lê POM_DESENV no startup e só o valor exato "1" habilita os
+      # controles de desenvolvimento; POM_DEV não é lido por nada no código.
+      POM_DESENV: "1"
       POM_DEV: 1
       POM_UI_DIST: /app/apps/frontend/dist
 services:
@@ -27,6 +32,8 @@ services:
     container_name: pom-gpu
     volumes:
       - "./tests/fixtures/node-gpu:/data"
+      # Stable persistent root shared by user projects and plugin data.
+      - "${POM_WORKSPACE_DIR:-/storage/pom-workspace}:/data/workspace"
       - /storage/nvme1/models_full:/storage/nvme1/models_full
       - /storage/nvme2/models_sliced:/storage/nvme2/models_sliced
       - /storage/hd1/models_full:/storage/hd1/models_full

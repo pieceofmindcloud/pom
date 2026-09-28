@@ -43,8 +43,8 @@ O binário estará em `./target/release/pom`.
 Salem e Ksia compilam o mesmo executável `pom` com CPU, CUDA e Vulkan e o
 `pom-plugin-host`; os módulos GGML escolhem o backend disponível em runtime. O
 frontend é um estágio independente. Os builds de desenvolvimento usam por
-padrão as bibliotecas da release exata do fork `pereirajair/llama.cpp`, CUDA
-13.2.1, para evitar recompilar o núcleo nativo. A release correspondente deve
+padrão as bibliotecas da release exata do fork `pereirajair/llama.cpp` (pacote
+CUDA 13.4), para evitar recompilar o núcleo nativo. A release correspondente deve
 estar publicada antes do build; `POM_LLAMA_CPP_RELEASE_TAG` pode fixar uma tag
 específica. Para compilar o fork local, inclusive uma cópia
 fora do POM ou com alterações não commitadas:

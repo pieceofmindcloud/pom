@@ -887,6 +887,18 @@ SQLite ou segura uma chamada de `/v1/tp/reduce`, prefill ou decode. O teste de
 contrapressão e a medição de latência ficam em
 `network_chat_tests.rs` e em `discovery.rs`.
 
+**Avisos de plugin.** A ação `plugin_notice` (`ChatAction::PluginNotice`)
+leva o aviso que um plugin manda a todos os nós: `plugin_code`, `title` (até
+200 bytes), `body` (até 2 KiB) e `level` (`info`, `success`, `warning` ou
+`error`). Ela percorre a mesma estrela autenticada e o mesmo limite de taxa das
+mensagens, mas não entra em `network_chat_messages`: cada nó guarda os últimos
+50 avisos por 24 h em memória, sem repetir o mesmo `message_id`, e os publica no
+campo `notices` de `GET /api/ui/network-chat`. A interface os mostra como toast
+e os entrega aos plugins como o evento `notification.received` (ver
+`plugins-ui.md`, "Eventos e notificações"). Com o Chat da rede desligado, o
+aviso é recusado como qualquer outra ação. Um peer de versão anterior não
+conhece a variante e recusa o frame (política de primeira versão).
+
 ## 7. Defeitos anotados
 
 - **DEFEITO ANOTADO: bitswap é protocolo órfão** - `bitswap_behaviour` está no

@@ -1601,6 +1601,7 @@ async fn start_setup_mode(
         // Modelos é onde essa lista deixa de ser um palpite.
         model_dirs: None,
         shard_dir: None,
+        workspace_root: None,
         shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
         resources: Default::default(),
         setup_model: None,
@@ -2028,6 +2029,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
     crate::plugins::spawn_host_context(gw_state.clone());
+    crate::plugins::spawn_serving_watcher(gw_state.clone());
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
 }
 

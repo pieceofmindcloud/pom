@@ -226,11 +226,42 @@ export interface PluginPreferences {
   storage_directory?: string | null;
 }
 
-export interface GithubPluginUpdate {
+export interface GithubRepositoryManifest {
+  schema: number;
+  plugin_code: string;
+  display_name: string;
+  description: string | null;
+  plugin_abi: number;
+  feature_set: string[];
+  artifacts: Record<string, string>;
+  preferences: PluginPreferencesSchema | null;
+}
+
+export interface GithubRepositoryRelease {
   release_id: string;
-  version: string;
+  tag_name: string;
+  name: string | null;
   changelog: string | null;
-  downloaded: boolean;
+  published_at: string | null;
+  prerelease: boolean;
+  asset_name: string | null;
+  asset_size: number | null;
+  available_for_node: boolean;
+}
+
+export interface GithubRepository {
+  id: string;
+  repository_url: string;
+  manifest_path?: string;
+  manifest: GithubRepositoryManifest;
+  ui_manifest?: Record<string, unknown> | null;
+  releases: GithubRepositoryRelease[];
+  /** Descrição por idioma declarada no manifesto do repositório. */
+  description?: Record<string, string>;
+  /** Capturas de tela servidas direto pelo GitHub (`raw.githubusercontent.com`). */
+  screenshot_urls?: string[];
+  checked_at: string;
+  check_error: string | null;
 }
 
 export interface PluginStatus {
@@ -260,8 +291,6 @@ export interface PluginStatus {
   /** Installed and running from a public GitHub source without a license lease. */
   public_install?: boolean;
   github_repository?: string | null;
-  github_update?: GithubPluginUpdate | null;
-  github_error?: string | null;
   preferences_schema?: PluginPreferencesSchema | null;
   preferences?: PluginPreferences | null;
 }
@@ -412,11 +441,11 @@ export interface TrustShareView {
   visibility: NetworkVisibility;
 }
 
-export type NetworkChatKind = "text" | "file" | "typing" | "typing_stopped";
+export type NetworkChatKind = "text" | "file" | "typing" | "typing_stopped" | "plugin_notice";
 
 export interface NetworkChatRequest {
   action: {
-    kind: "text" | "file" | "typing";
+    kind: "text" | "file" | "typing" | "plugin_notice";
     message_id: string;
     room_id: string;
     sender_node_id: string;
@@ -426,6 +455,11 @@ export interface NetworkChatRequest {
     mime_type?: string;
     data?: number[];
     is_typing?: boolean;
+    /** Só em `plugin_notice` (aviso de plugin para a rede). */
+    plugin_code?: string;
+    title?: string;
+    body?: string;
+    level?: "info" | "success" | "warning" | "error";
     sent_at: string;
   };
   api_key?: string;
@@ -443,6 +477,10 @@ export interface NetworkChatEvent {
   mimeType: string | null;
   fileData: number[];
   sentAt: string;
+  /** Só em `plugin_notice`. */
+  pluginCode?: string;
+  title?: string;
+  level?: "info" | "success" | "warning" | "error";
 }
 
 export interface NetworkChatParticipant {
@@ -457,6 +495,8 @@ export interface NetworkChatSnapshot {
   messages: NetworkChatEvent[];
   participants: NetworkChatParticipant[];
   typing: NetworkChatEvent[];
+  /** Avisos de plugins recebidos nas últimas 24 h; só em memória no nó. */
+  notices?: NetworkChatEvent[];
   dropped: number;
 }
 
@@ -896,9 +936,11 @@ export interface PathEntry {
 export interface PathsResponse {
   model_dirs: PathEntry[];
   shard_dir: PathEntry;
+  workspace_root: PathEntry;
   using_defaults: boolean;
   detected: PathEntry[];
   default_shard_dir: string;
+  default_workspace_root: string;
   shard_max_gb: number;
 }
 

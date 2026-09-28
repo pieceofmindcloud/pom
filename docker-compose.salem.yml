@@ -1,4 +1,6 @@
-# Salem hardware Compose entrypoint: NVIDIA 3060 plus one Radeon.
+# Salem hardware Compose entrypoint: NVIDIA 3060 plus one Radeon. Every
+# service inherits the persistent /data/workspace mount from
+# docker-compose.common.yml; set POM_WORKSPACE_DIR to relocate it.
 # This file can be selected directly or use docker-compose.yml by default.
 services:
   node-gpu:

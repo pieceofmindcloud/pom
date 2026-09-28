@@ -26,13 +26,14 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { canAccessRoute } from "../lib/access";
-import { pluginLabelKey, pluginMenuItems } from "../lib/pluginUi";
+import { pluginAssetUrl, pluginLabelKey, pluginMenuItems } from "../lib/pluginUi";
 import type { Profile } from "../lib/profile";
 
 export interface NavLeaf {
   labelKey: string;
   to: string;
   icon?: LucideIcon;
+  iconImage?: string;
   children?: NavLeaf[];
   /** Promotes this child to a standalone main-menu item for a profile. */
   promoteProfiles?: readonly Profile[];
@@ -43,6 +44,7 @@ export interface NavLeaf {
 export interface NavSection {
   labelKey: string;
   icon: LucideIcon;
+  iconImage?: string;
   /** A section either navigates somewhere itself, or holds children. */
   to?: string;
   children?: NavLeaf[];
@@ -157,6 +159,10 @@ const PLUGIN_ICONS: Readonly<Record<string, LucideIcon>> = {
   network: Network,
   boxes: Boxes,
   "shield-check": ShieldCheck,
+  "book-open": BookOpen,
+  "folder-tree": FolderTree,
+  send: Send,
+  "messages-square": MessagesSquare,
 };
 
 function pluginIcon(name?: string | null): LucideIcon {
@@ -166,7 +172,8 @@ function pluginIcon(name?: string | null): LucideIcon {
 /**
  * Aplica os itens de menu dos plugins ativos: um item cujo `to` já existe
  * substitui esse destino nativo; cada novo item entra na raiz, antes da
- * documentação, na ordem do manifesto. O formato atual ainda não cria filhos.
+ * documentação, na ordem do manifesto. Um item com `children` vira seção com
+ * submenus.
  */
 function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] {
   const result: NavSection[] = sections.map((section) => {
@@ -174,9 +181,13 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     if (section.children) copy.children = section.children.map((child) => ({ ...child }));
     return copy;
   });
-  const replace = (target: { labelKey: string; icon?: LucideIcon }, item: ReturnType<typeof pluginMenuItems>[number]) => {
+  const replace = (
+    target: { labelKey: string; icon?: LucideIcon; iconImage?: string },
+    item: ReturnType<typeof pluginMenuItems>[number],
+  ) => {
     target.labelKey = pluginLabelKey(item.code, item.id);
     target.icon = pluginIcon(item.icon);
+    target.iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
   };
   for (const item of pluginMenuItems(profile)) {
     const key = pluginLabelKey(item.code, item.id);
@@ -185,6 +196,7 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
       if (section.to === item.to) {
         section.labelKey = key;
         section.icon = pluginIcon(item.icon);
+        section.iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
         placed = true;
       }
       for (const child of section.children ?? []) {
@@ -196,7 +208,27 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     }
     if (placed) continue;
     const docs = result.findIndex((s) => s.labelKey === "nav.documentation");
-    const entry: NavSection = { labelKey: key, icon: pluginIcon(item.icon), to: item.to };
+    const iconImage = item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined;
+    // Com submenus, o item vira uma seção expansível; os filhos usam o
+    // ícone nomeado de cada um, e a imagem do plugin fica só na seção.
+    const entry: NavSection = item.children
+      ? {
+          labelKey: key,
+          icon: pluginIcon(item.icon),
+          iconImage,
+          children: item.children.map((child) => ({
+            labelKey: pluginLabelKey(child.code, child.id),
+            to: child.to,
+            icon: pluginIcon(child.icon),
+            end: true,
+          })),
+        }
+      : {
+          labelKey: key,
+          icon: pluginIcon(item.icon),
+          iconImage,
+          to: item.to,
+        };
     result.splice(docs < 0 ? result.length : docs, 0, entry);
   }
   return result;
@@ -229,7 +261,13 @@ export function navForProfile(profile: Profile, _enterpriseActive = true): NavSe
       for (const child of section.children ?? []) {
         if (!child.promoteProfiles?.includes(profile)) continue;
         if (!canAccessRoute(child.to, profile)) continue;
-        visible.push({ labelKey: child.labelKey, icon: child.icon ?? section.icon, to: child.to, children: (child.children ?? []).map(filterLeaf).filter((item): item is NavLeaf => item !== null) });
+        visible.push({
+          labelKey: child.labelKey,
+          icon: child.icon ?? section.icon,
+          iconImage: child.iconImage ?? section.iconImage,
+          to: child.to,
+          children: (child.children ?? []).map(filterLeaf).filter((item): item is NavLeaf => item !== null),
+        });
       }
       continue;
     }

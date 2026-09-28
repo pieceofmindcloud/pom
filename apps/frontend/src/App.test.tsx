@@ -374,7 +374,7 @@ describe("guarda de perfil por rota", () => {
     adminSurface.value = "requires-password";
     open("/", "admin");
 
-    const form = screen.getByRole("button", { name: "Abrir interface" }).closest("form");
+    const form = screen.getByRole("button", { name: "Entrar" }).closest("form");
     expect(form).not.toBeNull();
     expect(form?.getAttribute("autocomplete")).toBe("on");
     expect(form?.querySelector('input[name="username"]')).toBeNull();
@@ -382,6 +382,12 @@ describe("guarda de perfil por rota", () => {
     expect(password.getAttribute("type")).toBe("password");
     expect(password.getAttribute("autocomplete")).toBe("current-password");
     expect(screen.queryByRole("navigation")).toBeNull();
+
+    // As bandeiras trocam o idioma da própria tela de login.
+    expect(screen.getByRole("button", { name: "Português (Brasil)" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "English" }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("mantém a tela local autônoma e nas duas línguas", () => {

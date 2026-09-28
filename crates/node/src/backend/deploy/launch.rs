@@ -163,6 +163,18 @@ pub(super) async fn deploy_endpoint(
     };
     let deploy_id = record_plan.deploy_id().to_string();
     let reused = matches!(record_plan, RecordPlan::ReuseVersion(_));
+    state.plugins.publish_event(
+        "deployment.started",
+        json!({
+            "kind": "deploy",
+            "deploy_id": deploy_id,
+            "job_id": job_id,
+            "deployment_name": deployment_name,
+            "model": req.group,
+            "nodes": plan.steps.len(),
+            "reused": reused,
+        }),
+    );
     let id = job_id.clone();
     tokio::spawn(async move {
         match run(state, plan, params, identity, record_plan, req.vision, &id).await {

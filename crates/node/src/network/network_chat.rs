@@ -30,7 +30,16 @@ impl NetworkChatLimits {
     pub const NAME_BYTES: usize = 255;
     pub const ROOM_BYTES: usize = 128;
     pub const NODE_ID_BYTES: usize = 128;
+    pub const NOTICE_TITLE_BYTES: usize = 200;
+    pub const NOTICE_BODY_BYTES: usize = 2 * 1024;
+    pub const PLUGIN_CODE_BYTES: usize = 64;
 }
+
+/// Quantos avisos de plugin ficam na memória de cada nó e por quanto tempo.
+/// Avisos não são histórico de conversa: não vão para o `pom.db`.
+const NOTICE_CAPACITY: usize = 50;
+const NOTICE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const NOTICE_LEVELS: [&str; 4] = ["info", "success", "warning", "error"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -61,6 +70,20 @@ pub enum ChatAction {
         is_typing: bool,
         sent_at: DateTime<Utc>,
     },
+    /// Aviso enviado por um plugin aos usuários da rede (`pom-plugin-events/v1`,
+    /// comando `notification.notify` com `scope: "network"`). Viaja pelo mesmo
+    /// caminho autenticado do Chat, mas fica só na memória de cada nó.
+    PluginNotice {
+        message_id: String,
+        room_id: String,
+        sender_node_id: String,
+        recipient_node_id: Option<String>,
+        plugin_code: String,
+        title: String,
+        body: String,
+        level: String,
+        sent_at: DateTime<Utc>,
+    },
 }
 
 impl ChatAction {
@@ -83,7 +106,8 @@ impl ChatAction {
         match self {
             Self::Text { sender_node_id, .. }
             | Self::File { sender_node_id, .. }
-            | Self::Typing { sender_node_id, .. } => sender_node_id,
+            | Self::Typing { sender_node_id, .. }
+            | Self::PluginNotice { sender_node_id, .. } => sender_node_id,
         }
     }
 
@@ -91,7 +115,8 @@ impl ChatAction {
         match self {
             Self::Text { room_id, .. }
             | Self::File { room_id, .. }
-            | Self::Typing { room_id, .. } => room_id,
+            | Self::Typing { room_id, .. }
+            | Self::PluginNotice { room_id, .. } => room_id,
         }
     }
 
@@ -99,7 +124,8 @@ impl ChatAction {
         match self {
             Self::Text { message_id, .. }
             | Self::File { message_id, .. }
-            | Self::Typing { message_id, .. } => message_id,
+            | Self::Typing { message_id, .. }
+            | Self::PluginNotice { message_id, .. } => message_id,
         }
     }
 
@@ -113,6 +139,9 @@ impl ChatAction {
             }
             | Self::Typing {
                 recipient_node_id, ..
+            }
+            | Self::PluginNotice {
+                recipient_node_id, ..
             } => recipient_node_id.as_deref(),
         }
     }
@@ -122,12 +151,14 @@ impl ChatAction {
             Self::Text { .. } => "text",
             Self::File { .. } => "file",
             Self::Typing { .. } => "typing",
+            Self::PluginNotice { .. } => "plugin_notice",
         }
     }
 
     pub fn text(&self) -> Option<&str> {
         match self {
             Self::Text { text, .. } => Some(text),
+            Self::PluginNotice { body, .. } => Some(body),
             Self::File { .. } | Self::Typing { .. } => None,
         }
     }
@@ -166,6 +197,33 @@ impl ChatAction {
             } if file_name.len() > NetworkChatLimits::NAME_BYTES => Err("file_name_too_large"),
             Self::File { data, .. } if data.len() > NetworkChatLimits::FILE_BYTES => {
                 Err("file_too_large")
+            }
+            Self::PluginNotice {
+                plugin_code,
+                title,
+                body,
+                level,
+                ..
+            } => {
+                let code_ok = !plugin_code.is_empty()
+                    && plugin_code.len() <= NetworkChatLimits::PLUGIN_CODE_BYTES
+                    && plugin_code.as_bytes()[0].is_ascii_lowercase()
+                    && plugin_code
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+                if !code_ok {
+                    Err("plugin_code_invalid")
+                } else if title.trim().is_empty()
+                    || title.len() > NetworkChatLimits::NOTICE_TITLE_BYTES
+                {
+                    Err("notice_title_invalid")
+                } else if body.len() > NetworkChatLimits::NOTICE_BODY_BYTES {
+                    Err("notice_body_too_large")
+                } else if !NOTICE_LEVELS.contains(&level.as_str()) {
+                    Err("notice_level_invalid")
+                } else {
+                    Ok(())
+                }
             }
             Self::Text { .. } | Self::File { .. } | Self::Typing { .. } => Ok(()),
         }
@@ -223,6 +281,15 @@ pub struct ChatEvent {
     pub mime_type: Option<String>,
     pub file_data: Vec<u8>,
     pub sent_at: String,
+    /// Só em `plugin_notice`: o plugin que emitiu o aviso.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_code: Option<String>,
+    /// Só em `plugin_notice`: título do aviso.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Só em `plugin_notice`: `info`, `success`, `warning` ou `error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
 }
 
 impl ChatEvent {
@@ -246,6 +313,9 @@ impl ChatEvent {
                 mime_type: None,
                 file_data: Vec::new(),
                 sent_at: sent_at.to_rfc3339(),
+                plugin_code: None,
+                title: None,
+                level: None,
             },
             ChatAction::File {
                 message_id,
@@ -267,6 +337,9 @@ impl ChatEvent {
                 mime_type: Some(mime_type.clone()),
                 file_data: data.clone(),
                 sent_at: sent_at.to_rfc3339(),
+                plugin_code: None,
+                title: None,
+                level: None,
             },
             ChatAction::Typing {
                 message_id,
@@ -291,6 +364,34 @@ impl ChatEvent {
                 mime_type: None,
                 file_data: Vec::new(),
                 sent_at: sent_at.to_rfc3339(),
+                plugin_code: None,
+                title: None,
+                level: None,
+            },
+            ChatAction::PluginNotice {
+                message_id,
+                room_id,
+                sender_node_id,
+                recipient_node_id,
+                plugin_code,
+                title,
+                body,
+                level,
+                sent_at,
+            } => Self {
+                message_id: message_id.clone(),
+                room_id: room_id.clone(),
+                sender_node_id: sender_node_id.clone(),
+                recipient_node_id: recipient_node_id.clone(),
+                kind: "plugin_notice".into(),
+                text: Some(body.clone()),
+                file_name: None,
+                mime_type: None,
+                file_data: Vec::new(),
+                sent_at: sent_at.to_rfc3339(),
+                plugin_code: Some(plugin_code.clone()),
+                title: Some(title.clone()),
+                level: Some(level.clone()),
             },
         }
     }
@@ -309,6 +410,9 @@ impl From<crate::db::NetworkChatMessageRecord> for ChatEvent {
             mime_type: message.mime_type,
             file_data: message.file_data,
             sent_at: message.sent_at,
+            plugin_code: None,
+            title: None,
+            level: None,
         }
     }
 }
@@ -338,6 +442,7 @@ pub struct NetworkChat {
     writer: std::sync::mpsc::SyncSender<PersistCommand>,
     rate: Mutex<HashMap<String, RateWindow>>,
     typing: Mutex<HashMap<String, (ChatEvent, Instant)>>,
+    notices: Mutex<std::collections::VecDeque<(ChatEvent, Instant)>>,
 }
 
 impl NetworkChat {
@@ -371,6 +476,7 @@ impl NetworkChat {
                 writer,
                 rate: Mutex::new(HashMap::new()),
                 typing: Mutex::new(HashMap::new()),
+                notices: Mutex::new(std::collections::VecDeque::new()),
             }),
             receiver,
         )
@@ -406,6 +512,14 @@ impl NetworkChat {
         let mut typing = self.typing.lock().expect("network chat typing lock");
         typing.retain(|_, (_, seen)| now.duration_since(*seen) < Duration::from_secs(3));
         typing.values().map(|(event, _)| event.clone()).collect()
+    }
+
+    /// Avisos de plugin recebidos nas últimas 24 h, do mais antigo ao mais novo.
+    pub fn notice_snapshot(&self) -> Vec<ChatEvent> {
+        let now = Instant::now();
+        let mut notices = self.notices.lock().expect("network chat notices lock");
+        notices.retain(|(_, seen)| now.duration_since(*seen) < NOTICE_TTL);
+        notices.iter().map(|(event, _)| event.clone()).collect()
     }
 
     pub async fn submit(&self, request: ChatRequest) -> Result<ChatResponse> {
@@ -493,6 +607,22 @@ impl NetworkChat {
                 );
             } else {
                 typing.remove(action.sender_node_id());
+            }
+            let _ = self.live.send(event);
+            return Ok(true);
+        }
+        if matches!(action, ChatAction::PluginNotice { .. }) {
+            let event = ChatEvent::from_action(&action);
+            let mut notices = self.notices.lock().expect("network chat notices lock");
+            if notices
+                .iter()
+                .any(|(known, _)| known.message_id == event.message_id)
+            {
+                return Ok(true);
+            }
+            notices.push_back((event.clone(), Instant::now()));
+            while notices.len() > NOTICE_CAPACITY {
+                notices.pop_front();
             }
             let _ = self.live.send(event);
             return Ok(true);

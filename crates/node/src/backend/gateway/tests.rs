@@ -2433,10 +2433,7 @@ mod replicated_admin_logs_tests {
         let mut state = testkit::state_with("enterprise-free", vec![]).await;
         state
             .database
-            .save_local_setting(
-                "plugin_github:enterprise",
-                &crate::plugin_github::GithubPluginState::default(),
-            )
+            .save_local_setting("plugin_license:enterprise", &serde_json::json!({}))
             .expect("register an inactive runtime for the test");
         state.plugins = crate::plugins::PluginManager::runtime_with_database(
             "enterprise-free",
@@ -2806,6 +2803,7 @@ pub(crate) mod testkit {
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
+            workspace_root: None,
             shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
             network: Default::default(),
             resources: Default::default(),

@@ -56,6 +56,30 @@ function SidebarBrand({
   );
 }
 
+function NavigationIcon({
+  icon: Icon,
+  image,
+  className,
+}: {
+  icon: NavSection["icon"];
+  image?: string;
+  className: string;
+}) {
+  const [imageFailed, setImageFailed] = useState(false);
+  if (!image || imageFailed) {
+    return <Icon className={className} aria-hidden="true" />;
+  }
+  return (
+    <img
+      src={image}
+      alt=""
+      aria-hidden="true"
+      onError={() => setImageFailed(true)}
+      className={clsx(className, "object-contain")}
+    />
+  );
+}
+
 /**
  * Idioma e tema, no pé da barra.
  *
@@ -265,7 +289,11 @@ function CollapsedSection({
                 transition={{ type: "spring", stiffness: 520, damping: 42 }}
               />
             )}
-            <Icon className={clsx("relative h-[1.05rem] w-[1.05rem]", isActive && "text-iris")} />
+            <NavigationIcon
+              icon={Icon}
+              image={section.iconImage}
+              className={clsx("relative h-[1.05rem] w-[1.05rem]", isActive && "text-iris")}
+            />
             <UnreadBadge count={badge ?? 0} compact />
           </span>
         )}
@@ -287,7 +315,11 @@ function CollapsedSection({
           holdsPath ? "bg-iris/12 text-iris ring-1 ring-inset ring-iris/25" : "text-muted hover:bg-line/40 hover:text-fg",
         )}
       >
-        <Icon className="h-[1.05rem] w-[1.05rem]" />
+        <NavigationIcon
+          icon={Icon}
+          image={section.iconImage}
+          className="h-[1.05rem] w-[1.05rem]"
+        />
       </button>
       <div className={clsx(
         "pointer-events-none absolute left-full top-0 z-50 pl-2 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
@@ -349,7 +381,9 @@ function Section({
                 transition={{ type: "spring", stiffness: 520, damping: 42 }}
               />
             )}
-            <Icon
+            <NavigationIcon
+              icon={Icon}
+              image={section.iconImage}
               className={clsx("relative h-[1.05rem] w-[1.05rem] shrink-0", isActive && "text-iris")}
             />
             <span className="relative truncate">{t(section.labelKey)}</span>
@@ -371,7 +405,9 @@ function Section({
           holdsPath ? "text-fg" : "text-muted hover:bg-line/40 hover:text-fg",
         )}
       >
-        <Icon
+        <NavigationIcon
+          icon={Icon}
+          image={section.iconImage}
           className={clsx("h-[1.05rem] w-[1.05rem] shrink-0", holdsPath && "text-iris")}
         />
         <span className="flex-1 truncate text-left">{t(section.labelKey)}</span>

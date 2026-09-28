@@ -4,7 +4,6 @@
  */
 import { Ban, Lock, MessagesSquare, RadioTower, ScrollText, ShieldCheck, ShieldOff, Thermometer, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import {
   Badge,
@@ -682,9 +681,6 @@ export function Preferences({ administrative = false }: { administrative?: boole
           <AdminAccessPanel />
           <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />
           <HuggingFaceSettingsPanel />
-          <Panel>
-            <PanelHeader title={t("preferences.storageTitle")} subtitle={t("preferences.storageSubtitle")} actions={<Link to="/config/armazenamento" className="text-sm text-iris hover:text-fg">{t("preferences.storageOpen")}</Link>} />
-          </Panel>
         </>}
       </div>
     </>

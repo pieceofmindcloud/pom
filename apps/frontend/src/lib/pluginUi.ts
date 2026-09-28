@@ -19,6 +19,16 @@ export interface PluginMenuItem {
   /** Campo legado de menus. Continua aceito quando `roles` não foi declarado. */
   group?: string | null;
   profiles?: Profile[];
+  /** Submenus: o item vira uma seção expansível do menu lateral. */
+  children?: PluginMenuChild[];
+}
+
+export interface PluginMenuChild {
+  id: string;
+  label: Record<string, string>;
+  icon?: string | null;
+  to: string;
+  roles?: Profile[];
 }
 
 export interface PluginRoute {
@@ -41,12 +51,29 @@ export interface PluginScreenSpec {
 export interface PluginUiManifest {
   schema: "pom-plugin-ui/v1";
   plugin_code: string;
+  /** Asset PNG opcional; o ícone declarado no menu continua sendo o fallback. */
+  icon_image?: string;
+  /** Descrição por idioma, mostrada na tela Plugins. */
+  description?: Record<string, string>;
   menu: PluginMenuItem[];
   routes: PluginRoute[];
   screens: Record<string, PluginScreenSpec>;
   /** idioma -> asset do catálogo de textos do plugin */
   i18n?: Record<string, string>;
+  /** Documentação Markdown do plugin, separada em guias e referência. */
+  documentation?: PluginDocumentation;
   assets: string[];
+}
+
+export interface PluginDocumentation {
+  guides: PluginDocumentationEntry[];
+  reference: PluginDocumentationEntry[];
+}
+
+export interface PluginDocumentationEntry {
+  id: string;
+  title: Record<string, string>;
+  asset: string;
 }
 
 export interface ActivePluginUi {
@@ -62,9 +89,11 @@ export interface ResolvedPluginRoute {
   version: string | null;
 }
 
-interface RegisteredMenuItem extends PluginMenuItem {
+interface RegisteredMenuItem extends Omit<PluginMenuItem, "children"> {
   code: string;
   roles: Profile[];
+  iconImage?: string;
+  children?: RegisteredMenuItem[];
 }
 
 interface RegisteredPlugin {
@@ -184,6 +213,39 @@ function normalizePlugin(
   ) {
     return null;
   }
+  const iconImage = manifest.icon_image;
+  const documentation = manifest.documentation;
+  if (
+    (iconImage !== undefined &&
+      (!isNonEmptyString(iconImage) ||
+        !iconImage.endsWith(".png") ||
+        !manifest.assets.includes(iconImage))) ||
+    (documentation !== undefined && !isRecord(documentation))
+  ) {
+    return null;
+  }
+  const documentationRecord = isRecord(documentation) ? documentation : undefined;
+  const documentationEntries = documentationRecord
+    ? [documentationRecord.guides, documentationRecord.reference]
+    : [];
+  if (documentationEntries.some((entries) => !Array.isArray(entries))) return null;
+  for (const entries of documentationEntries as unknown[][]) {
+    for (const entry of entries) {
+      if (
+        !isRecord(entry) ||
+        !isNonEmptyString(entry.id) ||
+        !isRecord(entry.title) ||
+        !isNonEmptyString(entry.title.en) ||
+        !Object.values(entry.title).every(isNonEmptyString) ||
+        !isNonEmptyString(entry.asset) ||
+        !entry.asset.startsWith("docs/") ||
+        !entry.asset.endsWith(".md") ||
+        !manifest.assets.includes(entry.asset)
+      ) {
+        return null;
+      }
+    }
+  }
   if (
     manifest.i18n !== undefined &&
     (!isRecord(manifest.i18n) || !Object.values(manifest.i18n).every(isNonEmptyString))
@@ -248,6 +310,35 @@ function normalizePlugin(
   const menu: RegisteredMenuItem[] = [];
   const menuIds = new Set<string>();
   const rawMenu: PluginMenuItem[] = [];
+  const registerChild = (candidate: unknown, parentRoles: Profile[]): RegisteredMenuItem | null => {
+    if (
+      !isRecord(candidate) ||
+      !isNonEmptyString(candidate.id) ||
+      menuIds.has(candidate.id) ||
+      !isRecord(candidate.label) ||
+      !isNonEmptyString(candidate.label.en) ||
+      !Object.values(candidate.label).every((label) => typeof label === "string") ||
+      (candidate.roles !== undefined && !isMenuRoleArray(candidate.roles)) ||
+      (candidate.icon !== undefined && candidate.icon !== null && typeof candidate.icon !== "string")
+    ) {
+      return null;
+    }
+    const to = pluginPath(code, candidate.to, extensionRoutes);
+    if (!to || !routes.some(({ route }) => isUnder(to, route.path))) return null;
+    menuIds.add(candidate.id);
+    const roles = candidate.roles !== undefined
+      ? (candidate.roles as Profile[]).filter((role) => parentRoles.includes(role))
+      : [...parentRoles];
+    return {
+      code,
+      id: candidate.id,
+      label: { ...(candidate.label as Record<string, string>) },
+      to,
+      roles,
+      ...(isNonEmptyString(iconImage) ? { iconImage } : {}),
+      ...(candidate.icon !== undefined ? { icon: candidate.icon as string | null } : {}),
+    };
+  };
   for (const candidate of manifest.menu) {
     if (
       !isRecord(candidate) ||
@@ -271,12 +362,21 @@ function normalizePlugin(
         ? [...(candidate.profiles as Profile[])]
         : [...ALL_PROFILES];
     menuIds.add(candidate.id);
+    if (candidate.children !== undefined && !Array.isArray(candidate.children)) return null;
+    const children: RegisteredMenuItem[] = [];
+    for (const child of (candidate.children as unknown[] | undefined) ?? []) {
+      const registered = registerChild(child, roles);
+      if (!registered) return null;
+      children.push(registered);
+    }
     menu.push({
       code,
       id: candidate.id,
       label: { ...(candidate.label as Record<string, string>) },
       to,
       roles,
+      ...(children.length > 0 ? { children } : {}),
+      ...(isNonEmptyString(iconImage) ? { iconImage } : {}),
       ...(candidate.profiles !== undefined ? { profiles: [...(candidate.profiles as Profile[])] } : {}),
       ...(candidate.icon !== undefined ? { icon: candidate.icon as string | null } : {}),
       ...(candidate.group !== undefined ? { group: candidate.group as string | null } : {}),
@@ -289,8 +389,24 @@ function normalizePlugin(
       ...(candidate.profiles !== undefined ? { profiles: [...(candidate.profiles as Profile[])] } : {}),
       ...(candidate.icon !== undefined ? { icon: candidate.icon as string | null } : {}),
       ...(candidate.group !== undefined ? { group: candidate.group as string | null } : {}),
+      ...(children.length > 0
+        ? {
+            children: (candidate.children as Record<string, unknown>[]).map((child) => ({
+              id: child.id as string,
+              label: { ...(child.label as Record<string, string>) },
+              to: child.to as string,
+              ...(child.icon !== undefined ? { icon: child.icon as string | null } : {}),
+              ...(child.roles !== undefined ? { roles: [...(child.roles as Profile[])] } : {}),
+            })),
+          }
+        : {}),
     });
   }
+
+  const description = isRecord(manifest.description) &&
+    Object.values(manifest.description).every((text) => typeof text === "string")
+    ? { ...(manifest.description as Record<string, string>) }
+    : undefined;
 
   const plugin: ActivePluginUi = {
     code,
@@ -298,12 +414,22 @@ function normalizePlugin(
     manifest: {
       schema: "pom-plugin-ui/v1",
       plugin_code: code,
+      ...(isNonEmptyString(iconImage) ? { icon_image: iconImage } : {}),
+      ...(description ? { description } : {}),
       menu: rawMenu,
       routes: rawRoutes,
       screens,
       assets: [...manifest.assets],
       ...(manifest.i18n !== undefined
         ? { i18n: { ...(manifest.i18n as Record<string, string>) } }
+        : {}),
+      ...(documentationRecord !== undefined
+        ? {
+            documentation: {
+              guides: [...(documentationRecord.guides as PluginDocumentationEntry[])],
+              reference: [...(documentationRecord.reference as PluginDocumentationEntry[])],
+            },
+          }
         : {}),
     },
   };
@@ -373,12 +499,16 @@ export function resolvePluginRoute(path: string): ResolvedPluginRoute | null {
   return best;
 }
 
+function flatMenu(items: readonly RegisteredMenuItem[]): RegisteredMenuItem[] {
+  return items.flatMap((item) => [item, ...(item.children ?? [])]);
+}
+
 function profilesForPluginPath(
   plugin: RegisteredPlugin,
   path: string,
   route: ResolvedPluginRoute,
 ): readonly Profile[] {
-  const applicableMenus = plugin.menu.filter((item) => isUnder(path, item.to));
+  const applicableMenus = flatMenu(plugin.menu).filter((item) => isUnder(path, item.to));
   if (applicableMenus.length === 0) return effectiveRouteProfiles(route.route);
   const menuRoles = new Set(applicableMenus.flatMap((item) => item.roles));
   return effectiveRouteProfiles(route.route).filter((profile) => menuRoles.has(profile));
@@ -394,17 +524,28 @@ export function pluginRouteProfiles(path: string): readonly Profile[] | null {
   return pathname ? profilesForPluginPath(plugin, pathname, route) : null;
 }
 
+/**
+ * Itens de menu visíveis para o perfil. Um item com submenus sobrevive quando
+ * ao menos um filho é visível, e leva só os filhos visíveis.
+ */
 export function pluginMenuItems(profile: Profile): RegisteredMenuItem[] {
-  return registry.flatMap((plugin) => plugin.menu.filter((item) => {
-    if (!item.roles.includes(profile)) return false;
-    const route = plugin.routes
-      .filter(({ route }) => isUnder(item.to, route.path))
-      .reduce<ResolvedPluginRoute | null>(
-        (best, candidate) => !best || candidate.route.path.length > best.route.path.length ? candidate : best,
-        null,
-      );
-    return route !== null && profilesForPluginPath(plugin, item.to, route).includes(profile);
-  }));
+  return registry.flatMap((plugin) => {
+    const visible = (item: RegisteredMenuItem) => {
+      if (!item.roles.includes(profile)) return false;
+      const route = plugin.routes
+        .filter(({ route }) => isUnder(item.to, route.path))
+        .reduce<ResolvedPluginRoute | null>(
+          (best, candidate) => !best || candidate.route.path.length > best.route.path.length ? candidate : best,
+          null,
+        );
+      return route !== null && profilesForPluginPath(plugin, item.to, route).includes(profile);
+    };
+    return plugin.menu.flatMap((item) => {
+      if (!item.children) return visible(item) ? [item] : [];
+      const children = item.children.filter(visible);
+      return children.length > 0 ? [{ ...item, children }] : [];
+    });
+  });
 }
 
 export const pluginLabelKey = (code: string, id: string) => `plugin:${code}:${id}`;
@@ -412,11 +553,24 @@ export const pluginLabelKey = (code: string, id: string) => `plugin:${code}:${id
 /** Rótulo de um item de menu de plugin no idioma ativo; `en` é o piso. */
 export function pluginLabel(key: string, locale: string): string | null {
   const [, code, id] = key.split(":");
-  const item = registry
-    .find((plugin) => plugin.plugin.code === code)
-    ?.plugin.manifest.menu.find((entry) => entry.id === id);
+  const item = flatMenu(registry.find((plugin) => plugin.plugin.code === code)?.menu ?? [])
+    .find((entry) => entry.id === id);
   if (!item) return null;
-  return item.label[locale] ?? item.label[locale.split("-")[0]] ?? item.label.en ?? null;
+  return localized(item.label, locale);
+}
+
+function localized(texts: Record<string, string>, locale: string): string | null {
+  return texts[locale] ?? texts[locale.split("-")[0]] ?? texts.en ?? null;
+}
+
+/**
+ * Nome humano de um plugin ativo: o rótulo do item de menu com id igual ao
+ * código, senão o primeiro item, senão o próprio código.
+ */
+export function pluginDisplayName(code: string, locale: string): string {
+  const plugin = registry.find((entry) => entry.plugin.code === code);
+  const item = plugin?.menu.find((entry) => entry.id === code) ?? plugin?.menu[0];
+  return (item && localized(item.label, locale)) || code;
 }
 
 export const pluginAssetUrl = (code: string, asset: string) =>

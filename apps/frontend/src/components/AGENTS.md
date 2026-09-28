@@ -78,6 +78,12 @@ Per-file list:
   do `<Routes>` em `App.tsx`, como o chat). Recebe `kind: "logs" | "statistics"`,
   mostra título, descrição, prévia SVG inline (mockup), três destaques e o link
   de compra/instalação `https://pieceofmind.cloud/enterprise/index.html`.
+- `PluginBridge.tsx` - montada uma vez no shell (`App.tsx`). Publica
+  `locale.changed`/`theme.changed`, repassa os eventos do nó lidos a cada 3 s
+  em `GET /api/ui/plugins/events`, executa os comandos dos plugins (toast
+  local, aviso `plugin_notice` para a rede pelo Chat da rede, confirmação no
+  sino ou em diálogo com `display: "dialog"`) e transforma avisos de plugin recebidos no snapshot do
+  Chat da rede em toast e `notification.received`. Ver `lib/pluginEvents.ts`.
 - `PluginScreen.tsx` - carrega o módulo ES de uma tela de plugin (asset servido
   pelo nó) e o monta na árvore do POM, com estilos do plugin e cartão de erro
   se a carga ou a renderização falhar. A rota normalizada faz parte da
@@ -166,6 +172,9 @@ Per-file list:
   é a última folha e abre `/config/sobre`. Compartilhamento é a tela única
   que reutiliza `TrustAnchor` para raiz de confiança, esta máquina e chave de
   conexão.
+  Um manifesto de plugin pode substituir o Lucide por `icon_image`, um PNG
+  servido pelo endpoint de assets; `Sidebar` mantém o ícone declarado no menu
+  como fallback se a imagem falhar.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
   mobile drawer in `Topbar`). `SidebarContent` lê `useProfile()` e renderiza
   `navForProfile(profile)`, não `NAV` cru. `Section`/`Leaf` render it with an animated
@@ -224,7 +233,11 @@ Per-file list:
   (`POST /api/transfer/offers/:id/accept|reject`). All state is read back from
   the node, so a reload in the middle of a transfer shows the same bar.
   It also renders principal-transfer and infer-to-node offers from the same
-  `useOffers()` response. Node-to-infer changes are amber notices without
+  `useOffers()` response, and the pending plugin confirmations
+  (`usePendingPluginConfirms`, `lib/pluginInbox.ts`) with Aceitar e
+  Recusar; answering resolves the plugin's `notification.confirm`. Plugin
+  notices (`usePluginNotices`) are message-only rows that count as unread
+  until the bell opens, then get marked read and can be removed. Node-to-infer changes are amber notices without
   action buttons. Authority offers keep their pending state in the bell and
   link to `/config/administracao` for the roster.
   Lista os **dois sentidos** — ícone de subida para `sending`, de descida para

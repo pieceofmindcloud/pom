@@ -394,8 +394,11 @@ visibilidade dos controles de implantação na UI local.
   fronteira estável do prompt separada da sequência de geração. A bancada usa
   as funções de produção nos pontos de decisão
   (`plan_prefix_reuse`, `reuse_prefix_for_forward`,
-  `overlay_head_authoritative_fields`, `prompt_progress_for_forward`).
-  Também simula um hop que perde a sessão no meio do prefill: o gateway repete
+  `overlay_head_authoritative_fields`, `prompt_progress_for_forward`). No modo
+  direto, cada hop falso também usa `DirectForwardOrder` para serializar a
+  ingestão local e o repasse dos chunks como o servidor real; sem isso, a
+  bancada podia entregar o chunk seguinte antes do predecessor sob carga de
+  testes. Também simula um hop que perde a sessão no meio do prefill: o gateway repete
   o prefill completo a frio uma única vez, para reconstruir o KV desde o prompt,
   e a bateria verifica que uma segunda perda termina com erro limitado e útil,
   contando no máximo duas tentativas frias no chunk 0, sem usar o total de

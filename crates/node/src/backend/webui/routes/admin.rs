@@ -56,21 +56,21 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugins::apply_plugin_update),
         )
         .route(
-            "/api/ui/plugins/:code/github-source",
-            post(crate::plugins::set_plugin_github_source)
-                .delete(crate::plugins::remove_plugin_github_source),
+            "/api/ui/plugins/github-repositories",
+            get(crate::plugins::list_github_repositories)
+                .post(crate::plugins::add_github_repository),
         )
         .route(
-            "/api/ui/plugins/:code/github-source/install",
-            post(crate::plugins::install_public_github_plugin),
+            "/api/ui/plugins/github-repositories/:id/refresh",
+            post(crate::plugins::refresh_github_repository),
         )
         .route(
-            "/api/ui/plugins/:code/github-source/check",
-            post(crate::plugins::check_plugin_github_update),
+            "/api/ui/plugins/github-repositories/:id/install",
+            post(crate::plugins::install_github_repository_release),
         )
         .route(
-            "/api/ui/plugins/:code/github-source/apply",
-            post(crate::plugins::apply_plugin_github_update),
+            "/api/ui/plugins/github-repositories/:id",
+            axum::routing::delete(crate::plugins::remove_github_repository),
         )
         .route(
             "/api/ui/plugins/:code/preferences",

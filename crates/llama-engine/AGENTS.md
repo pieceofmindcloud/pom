@@ -266,6 +266,13 @@ medida de largura de banda D2H. A stream CUDA e a vida útil do tensor não são
 expostas por essa API, então a captura não pode mover a cópia para uma operação
 assíncrona com segurança sem mudar a fronteira nativa.
 
+## Defeitos anotados
+
+- DEFEITO ANOTADO: com `--features cuda`, `cargo test -p llama-engine` não
+  compila. Quatro testes em `src/moe/cuda.rs` (por volta das linhas 2985, 3593,
+  3921 e 4020) chamam `run_route_batch_resident` com 8 argumentos, e a função
+  hoje recebe 9 (`device_indices` foi acrescentado). Sem CUDA a suíte compila.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

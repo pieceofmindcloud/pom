@@ -769,6 +769,17 @@ pub(super) async fn redeploy_endpoint(
         job_id.clone(),
         new_job(&job_id, "redeploy", titulo, "recarregando"),
     );
+    state.plugins.publish_event(
+        "deployment.started",
+        json!({
+            "kind": "redeploy",
+            "deploy_id": id,
+            "job_id": job_id,
+            "model": registro.model.label,
+            "nodes": registro.nodes.len(),
+            "version": req.version,
+        }),
+    );
 
     let id_job = job_id.clone();
     tokio::spawn(async move {

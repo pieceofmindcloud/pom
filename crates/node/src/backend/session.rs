@@ -300,6 +300,7 @@ mod tests {
             blocked_nodes: blocked,
             model_dirs: None,
             shard_dir: None,
+            workspace_root: None,
             shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
             resources: Default::default(),
             setup_model: None,

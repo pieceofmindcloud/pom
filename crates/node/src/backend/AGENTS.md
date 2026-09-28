@@ -191,16 +191,18 @@ profile policy remains the effective authorization boundary.
   um com features, validade, uso autenticado e atualização próprios;
   `POST /api/ui/plugins/activate` ativa em lote todo `plugin_code` que a chave
   receber do servidor, e `POST /api/ui/plugins/:code/refresh|
-  deactivate|update/check|update/apply` agem sobre um plugin só. O mesmo prefixo
-  AdminOnly registra/remove a origem local com `POST/DELETE
-  /api/ui/plugins/:code/github-source`, verifica e aplica releases com confirmação,
-  e instala gratuitamente somente o `github_repository` publicado como
-  `requires_license: false` em `/api/ui/plugins/:code/github-source/install`.
-  Essa instalação revalida o catálogo HTTPS e persiste em
-  `plugin_public_install:<code>` sem lease ou grant. Preferências tipadas ficam
-  locais em `/api/ui/plugins/:code/preferences`; essas rotas não ativam licença.
-  O catálogo público é consultado pelo browser sem credenciais e também pelo nó
-  para autorizar instalações grátis. Comprar envia o operador à loja pública com
+  deactivate|update/check|update/apply` agem sobre um plugin só. Repositórios
+  GitHub são locais ao nó e usam as rotas AdminOnly `GET/POST
+  /api/ui/plugins/github-repositories`, `POST
+  /api/ui/plugins/github-repositories/:id/refresh`, `DELETE
+  /api/ui/plugins/github-repositories/:id` e `POST
+  /api/ui/plugins/github-repositories/:id/install` com `{release_id}`. O POM
+  consulta somente o GitHub, sem perguntar ao servidor de licenças se o plugin
+  exige licença. As fontes ficam em `plugin_github_repositories`; instalações
+  em `plugin_public_install:<code>`, sem lease ou grant. Preferências tipadas
+  ficam locais em `/api/ui/plugins/:code/preferences`; essas rotas não ativam
+  licença. O catálogo comercial é consultado pelo browser sem credenciais.
+  Comprar envia o operador à loja pública com
   o código do plugin. A detecção
   da release `pom_core` é outra fronteira, deliberadamente separada
   (`crate::pom_core_update`): `GET /api/ui/pom-update/status`,
@@ -1140,7 +1142,8 @@ faz o download autenticado do blob persistido.
   `crate::ollama` (`OllamaClient` - model resolution and `/health` only, no
   generation fallback), `crate::runtime`
   (`NodeRuntime`, `NodeConfig` - model/slice lifecycle), `crate::config`
-  (`Config`, `ApiKey`, `ui_dist_dir()`, `shard_dir_path()`, `model_dir_paths()`),
+  (`Config`, `ApiKey`, `ui_dist_dir()`, `shard_dir_path()`,
+  `model_dir_paths()`, `workspace_root_path()`),
   `crate::models`/`crate::catalog`/`crate::gguf`/`crate::plan`
   (`Catalog`, `GgufLayout`, `PeerBudget`, `pom::PomManifest`), `crate::splitter`
   (`MergePart`, `merge`), `crate::sysmon`, `crate::route` (`RouteTable` for the

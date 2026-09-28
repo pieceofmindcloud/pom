@@ -50,8 +50,10 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   metadados ausentes, release disponível, preços, licença ativa ou não exigida,
   uso e limite de ativações por plugin, link de compra à loja pública, lightbox
   de screenshots, ativação e ações por plugin, um único card global para
-  cadastro/checagem de releases GitHub, instalação de plugins gratuitos e edição
-  local das preferências tipadas. Os erros de release incluem o detalhe validado
+  cadastrar repositórios GitHub locais, identificar o caminho do manifesto,
+  listar releases e confirmar a instalação da tag escolhida, além da edição
+  local das preferências tipadas. Os erros de
+  release incluem o detalhe validado
   pelo nó. Todos os rótulos precisam existir nas colunas
   `en` e `pt-BR`; nomes, descrições, códigos, releases e URLs de imagem são
   dados do catálogo público, não traduções fixas. A descrição do catálogo tem

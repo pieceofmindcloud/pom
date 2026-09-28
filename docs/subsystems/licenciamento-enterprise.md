@@ -231,49 +231,74 @@ A tela **Plugins** (`/plugins`, `apps/frontend/src/routes/Plugins.tsx`) é a
 `## Detecção e atualização autorizada do binário` abaixo. As duas telas e as
 duas famílias de rotas nunca se misturam, no código nem na UI.
 
-## Origem pública GitHub e preferências locais
+## Repositórios públicos do GitHub e preferências locais
 
-Cada `plugin_code` pode cadastrar, separadamente da licença, uma URL canônica
-`https://github.com/<owner>/<repository>`. O nó confirma que a API pública
-consegue ler o repositório e sua última release estável; URL malformada, repo
-privado/inacessível, release incompatível e metadados inválidos são recusados.
-Não há token GitHub nem credencial do license-server nesse caminho.
+O card **Adicionar do GitHub**, no topo da tela Plugins e acima da ativação
+de licença, cadastra URLs diretamente no nó. O fluxo é
+local ao POM e não consulta o catálogo, a elegibilidade ou qualquer endpoint
+do servidor de licenças. Não existe campo `requires_license` no manifesto
+GitHub, e o valor que o catálogo comercial publica não controla a instalação
+por repositório. O operador informa um repositório público canônico
+`https://github.com/<owner>/<repository>`. O formato genérico usa
+`manifest.json` na raiz do branch padrão. Para plugins com UI dinâmica do POM,
+o POM também aceita `ui/manifest.json` no contrato `pom-plugin-ui/v1`; nesse
+formato, cada release precisa anexar `pom-plugin-<os>-<arch>.json` com os dados
+de integridade do binário daquela plataforma.
 
-Cada release multi-plataforma publica um asset de metadados por alvo,
-`pom-plugin-<os>-<arch>.json`, e o binário nomeado pelo campo `asset`. O JSON
-usa `schema: 1` e contém `plugin_code`, `release_id` igual ao tag público,
-versão SemVer, `os`, `arch`, `plugin_abi`, `asset`, `sha256`, `size`,
-`feature_set` namespaced e `preferences` opcional. O cliente só escolhe o
-manifesto do SO/arquitetura local, exige ABI atual, confere plugin/tag e limita
-o tamanho; então verifica tamanho e SHA-256 do binário, além de conferir o
-`digest` do asset informado pela API quando houver. O manifest incompatível ou
-qualquer integridade inválida não produz download instalável.
-`pom-plugin-base/release/manifest.json` é o exemplo de release: um toggle
-booleano e uma preferência de diretório; `scripts/package.sh` cria o manifesto
-por plataforma e a workflow o publica junto do binário.
+Contrato de `manifest.json` (`schema: 1`):
 
-Cadastrar a origem faz uma verificação imediata. Repositórios salvos são
-checados em background a cada seis horas e podem ser verificados manualmente.
-Um artefato compatível e mais novo é baixado e gravado atomicamente em staging
-sob `plugins/<code>/github-downloads/`; isso não muda o caminho instalado, não
-para nem reinicia o host e não ativa licença. O estado `github_update` e o
-manifesto ficam em `pom.db` sob `plugin_github:<code>`. Erro de rede, API 403/
-rate limit ou resposta incompatível só preenche `github_error`: release,
-manifesto e arquivo da última detecção boa continuam disponíveis. Remover a
-origem remove apenas o download em staging.
+```json
+{
+  "schema": 1,
+  "plugin_code": "acme_plugin",
+  "display_name": "Acme Plugin",
+  "description": "Plugin de exemplo",
+  "plugin_abi": 1,
+  "feature_set": ["acme_plugin.core"],
+  "artifacts": {
+    "linux-x86_64": "acme-plugin.so",
+    "macos-aarch64": "acme-plugin.dylib"
+  },
+  "preferences": null
+}
+```
 
-A tela Plugins tem um único card global de GitHub, logo abaixo da ativação da
-licença; ele seleciona o `plugin_code`, administra a origem e mostra os
-candidatos. A instalação continua explícita. Para um plugin pago, o handler
-confere a release, refaz hash/tamanho no staging e exige runtime ativo com o
-`plugin_code` concedido pela licença antes de trocar o host. Para um plugin
-público gratuito, `POST /api/ui/plugins/:code/github-source/install` consulta o
-catálogo público do license-server por HTTPS e exige `requires_license: false`
-e a mesma URL `github_repository`; só então baixa e executa a release sem
-criar ativação, grant ou lease. O snapshot desse runtime fica em
-`plugin_public_install:<code>`, separado de `plugin_license:<code>`, e
-`PluginStatus.public_install` deixa essa distinção visível. Uma release paga
-continua exigindo licença válida; os bytes do GitHub não concedem entitlement.
+`artifacts` associa `<os>-<arch>` ao nome exato do binário anexado a cada
+release. Em `ui/manifest.json`, o `plugin_code`, nome e telas vêm do manifesto
+de UI, enquanto ABI, features, preferências e nome do binário vêm do manifesto
+por plataforma anexado à release selecionada. `feature_set` pertence ao
+`plugin_code` e pode ser omitido se o plugin
+não anunciar features; `preferences` também é opcional e usa o schema tipado
+documentado abaixo. O POM valida código, ABI, plataforma,
+extensão, features, preferências e limites de tamanho do manifesto antes de
+mostrar releases. A API pública do GitHub fornece as releases publicadas e os
+assets. O nó percorre as páginas de 100 até listar todas as releases publicadas,
+incluindo prereleases e excluindo drafts. A leitura é limitada a 16 MiB de
+metadados e falha explicitamente se ultrapassar esse orçamento, em vez de
+esconder releases antigas. Cada asset instalável
+precisa publicar o digest SHA-256 da API. Na tela, o card do plugin oferece um
+select só com as releases compatíveis com este nó (`available_for_node`), já
+marcado na mais recente, e a ação Instalar ou Atualizar. Escolher uma versão
+antiga ou fazer downgrade é permitido e sempre exige confirmação explícita.
+O manifesto pode declarar `description` por idioma e `screenshots`; o nó
+resolve caminhos relativos para
+`https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<caminho>` e o
+navegador carrega as imagens direto do GitHub, sem passar pelo nó nem pelo
+license-server.
+
+A adição, atualização e remoção dos repositórios usa somente as rotas locais
+AdminOnly `/api/ui/plugins/github-repositories*`. A lista, o caminho do
+manifesto e os detalhes lidos são persistidos em `plugin_github_repositories`
+no `pom.db`; remover um
+repositório tira a fonte da lista, mas não desinstala o plugin já instalado.
+A instalação baixa a release escolhida, confere o digest e tamanho do asset,
+grava o binário atomicamente e inicia o host. Nenhuma checagem automática
+substitui a escolha ou a versão instalada. O runtime público persiste em
+`plugin_public_install:<code>`, separado de `plugin_license:<code>`, sem lease,
+grant ou entitlement. Um conflito local com o mesmo `plugin_code` já instalado
+pelo mecanismo de licença é recusado para não substituir silenciosamente esse
+host; nenhuma consulta ao servidor de licenças é feita para decidir se o
+repositório exige licença.
 
 
 `PluginManifest.preferences` é opcional e omitido na serialização quando não
@@ -282,12 +307,15 @@ versionless atual enumera toggles `features[]` (`key`, `label`, `default`,
 `description?`) e um `storage_directory?` (`label`, `default?`). O POM valida
 identificadores únicos e limites de tamanho; os valores digitados são um DTO
 separado, com mapa bool e caminho opcional. Defaults são aplicados ao ler o
-estado. O diretório escolhido precisa ser absoluto, existir e ser diretório.
+estado. O diretório escolhido precisa ser absoluto; se ainda não existir, o nó
+o cria ao salvar, e o caminho final precisa ser um diretório.
 Os valores ficam em `plugin_preferences:<code>` no `pom.db`, nunca no snapshot
 `plugin_license:<code>`, em pedidos ao license-server ou em entitlement. O
-editor por plugin só aparece quando há schema no release instalado e o plugin
-está ativo. `host.configure` pode entregar esses valores ao host local do
-próprio plugin; nenhum endpoint de licenças recebe valores de preferências.
+editor abre pelo ícone de engrenagem no card, só quando há schema no release
+instalado e o plugin está ativo, e mostra o motivo devolvido pelo nó quando o
+salvamento falha. `host.configure` entrega esses valores ao host local do
+próprio plugin e, a cada salvamento, o nó também envia `host.event` com
+`preferences.changed`; nenhum endpoint de licenças recebe valores de preferências.
 
 ## Fases e limites desta entrega
 

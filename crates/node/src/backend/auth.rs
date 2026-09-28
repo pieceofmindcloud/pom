@@ -1066,6 +1066,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![
@@ -1131,6 +1132,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![crate::config::ApiKey {

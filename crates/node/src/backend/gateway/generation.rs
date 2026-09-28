@@ -114,46 +114,27 @@ async fn reload_idle_pipeline_with_timeout(
                 }
                 .boxed()));
             }
-            let client = match state.peer_http.for_peer(&node_id) {
-                Ok(client) => client,
-                Err(error) => return Some(Err(error)),
-            };
-            let urls = peer.gateway_candidates();
-            if urls.is_empty() {
-                return Some(Ok(async move {
-                    Err(anyhow::anyhow!("peer {node_id} sem endpoint de gateway"))
-                }
-                .boxed()));
-            }
+            let peer = peer.clone();
             Some(Ok(async move {
-                let mut last_error = None;
-                for base in urls {
-                    let request = state
-                        .control_json_request(
-                            client.post(format!("{base}/api/internal/reload_model")),
-                            "/api/internal/reload_model",
-                            &serde_json::json!({ "event": "reload_model" }),
-                        )
-                        .await;
-                    let response = match request {
-                        Ok(request) => request.send().await,
-                        Err(error) => {
-                            last_error = Some(error.to_string());
-                            continue;
-                        }
-                    };
-                    match response {
-                        Ok(response) if response.status().is_success() => return Ok(()),
-                        Ok(response) => {
-                            last_error = Some(format!("HTTP {}", response.status()));
-                        }
-                        Err(error) => last_error = Some(error.to_string()),
-                    }
+                let response = state
+                    .control_post_json(
+                        &peer,
+                        "/api/internal/reload_model",
+                        &serde_json::json!({ "event": "reload_model" }),
+                        timeout,
+                    )
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("reload_model falhou para {node_id}: {error:#}")
+                    })?;
+                if response.status().is_success() {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "reload_model falhou para {node_id}: HTTP {}",
+                        response.status()
+                    ))
                 }
-                Err(anyhow::anyhow!(
-                    "reload_model falhou para {node_id}: {}",
-                    last_error.unwrap_or_else(|| "nenhum endereço respondeu".into())
-                ))
             }
             .boxed()))
         })
@@ -439,6 +420,7 @@ pub(super) async fn generate_stream_inner(
     let peers = ready_for_pipeline(
         &state.peer_http,
         &state.admission_health,
+        &state.network,
         state.all_peers().await,
         ADMISSION_PROBE_TIMEOUT,
     )
@@ -654,7 +636,14 @@ pub(super) async fn generate_stream_inner(
         ),
         state.network.node_id.clone(),
     )
-    .map(|reply| reply.with_quic_addresses(state.network.gateway_quic_addr_candidates()));
+    .map(|reply| {
+        reply
+            .with_quic_addresses(state.network.gateway_quic_addr_candidates())
+            .with_libp2p(
+                state.network.libp2p_peer_id.clone(),
+                state.network.libp2p_addrs(),
+            )
+    });
 
     info!(
         "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} (perna {}) resposta={}",

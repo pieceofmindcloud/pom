@@ -904,7 +904,7 @@ pub(super) async fn run_apply(
     let inference_port = state
         .network
         .inference_port
-        .ok_or_else(|| anyhow::anyhow!("este nó subiu sem --inference-port"))?;
+        .ok_or_else(|| anyhow::anyhow!("este nó não anuncia porta de inferência"))?;
 
     let mmproj_path = if req.use_mmproj {
         Some(resolve_mmproj_path(

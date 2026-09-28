@@ -2512,12 +2512,12 @@ Com um GGUF local e uma instância iniciada a partir deste worktree, repetir o
 ensaio sem cluster remoto:
 
 ```bash
-POM_HOME=/tmp/pom-ftk-local ./target/release/pom \
-  --model /caminho/modelo.gguf --single-peer --gateway-port 8080 \
-  --inference-port 8181 --n-ctx 8192 --max-new-tokens 128
+POM_HOME=/tmp/pom-ftk-local ./target/release/pom --gateway-port 8080 --no-discovery
 ```
 
-Depois, enviar a conversa e as células de concorrência para o gateway local e
+Configurar o nó em `http://127.0.0.1:8080/` e implantar pela interface o GGUF
+local num único nó, com `n_ctx` 8192 e `max_new_tokens` 128: o binário não
+aceita modelo nem parâmetros de inferência pela linha de comando. Depois, enviar a conversa e as células de concorrência para o gateway local e
 anexar as tabelas de números abaixo deste baseline. O executor deve registrar
 commit, sistema, CPU/GPU, memória, feature de build, tipo de KV, `n_ctx`,
 `max_sessions`, `n_batch`, `max_new_tokens`, modelo e temperatura.

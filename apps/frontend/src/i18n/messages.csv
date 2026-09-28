@@ -1279,6 +1279,13 @@ network.requestNodePending,Request pending,Pedido pendente
 network.requestNodeRejected,The node request was rejected,O pedido para virar node foi recusado
 network.requestNodeSent,Request sent to the administrators,Pedido enviado aos administradores
 network.role,Role,Papel
+network.routeAdvertised,advertised: {addr},anunciado: {addr}
+network.routeDirect,Direct,Direto
+network.routeHolePunched,Direct (hole punch),Direto (hole punch)
+network.routeNone,No route,Sem rota
+network.routeP2pDirect,Direct (P2P),Direto (P2P)
+network.routeRelayed,Via relay,Via relé
+network.routeViaRelay,relay {address},relé {address}
 network.rules,Network rules,Regras da rede
 network.shareEyebrow,Share network access,Compartilhar acesso à rede
 network.shareLoading,Loading the sharing materials,Carregando os materiais para compartilhar
@@ -1315,6 +1322,19 @@ network.tlsPropagates,No restart needed. The other nodes confirm the change with
 network.tlsState,Cluster,Cluster
 network.tlsSubtitle,"When on, every HTTP call between peers goes over TLS, and each node''s certificate is verified against the node_id the cluster already knows.","Ligado, todo HTTP entre peers vai por TLS, e o certificado de cada nó é conferido contra o node_id que o cluster já conhece."
 network.tlsTitle,Encryption between nodes,Criptografia entre nós
+network.traversalCircuits,Relay circuits,Circuitos de relé
+network.traversalDirect,Direct addresses,Endereços diretos
+network.traversalEyebrow,Diagnostics,Diagnóstico
+network.traversalHolePunch,Hole punches,Hole punches
+network.traversalHolePunchCounts,"{ok} succeeded, {failed} failed","{ok} concluídos, {failed} falharam"
+network.traversalLastError,"Last hole punch failure: {error}","Última falha de hole punch: {error}"
+network.traversalNat,NAT status,Estado do NAT
+network.traversalNat.private,Behind NAT,Atrás de NAT
+network.traversalNat.public,Publicly reachable,Alcançável publicamente
+network.traversalNat.unknown,Not determined yet,Ainda não determinado
+network.traversalReservations,Relay reservations,Reservas de relé
+network.traversalSubtitle,"Where NAT traversal stands for this node: what it can publish, which relays accepted it, and whether hole punching works.","Em que pé está a travessia de NAT deste nó: o que ele consegue publicar, que relés o aceitaram e se o hole punch funciona."
+network.traversalTitle,NAT traversal,Travessia de NAT
 network.trustDocument,Trust document,Documento de confiança
 network.unblock,Unblock,Liberar
 network.unblockFailed,The node was not unblocked,O nó não foi liberado
@@ -1400,6 +1420,8 @@ paths.detectedSubtitle,What automatic detection would find.,O que a detecção a
 paths.emptyList,"An empty list means do not search anywhere, not detect again. Saving it leaves the full-model catalog empty.","Lista vazia significa não procurar em lugar nenhum, e não detectar de novo. Salvar assim deixa o catálogo de modelos inteiros vazio."
 paths.folder,Folder,Pasta
 paths.folderAria,Folder {count},Pasta {count}
+paths.fromEnvBadge,Set by {name},Definido por {name}
+paths.fromEnvNote,"The {name} environment variable sets this value and takes precedence over pom.json. To change it, change the variable and restart the node.","A variável de ambiente {name} define este valor e vence o pom.json. Para mudar, altere a variável e reinicie o nó."
 paths.fullDetail,"Read only. Each folder is read for what it is: an Ollama store, an LM Studio library, or a regular GGUF folder.","Só leitura. Cada pasta é lida pelo que ela é: store do Ollama, biblioteca do LM Studio, ou pasta comum de GGUF."
 paths.fullModels,Full models,Modelos inteiros
 paths.maxShardGb,Maximum slice storage (GB),Máximo da pasta de fatias (GB)
@@ -1959,6 +1981,7 @@ setupWizard.tlsPublicRequired,Extra encryption is optional on public networks.,A
 setupWizard.tlsRequired,Encrypt connections between nodes (optional),Criptografar conexões entre nós (opcional)
 setupWizard.trustDocument,Trust document,Documento de confiança
 setupWizard.trustDocumentHint,Paste the complete JSON document from the administrator or upload trust.json.,Cole o documento JSON completo enviado pelo administrador ou envie o trust.json.
+setupWizard.trustDocumentInvalid,This is not a valid trust document. Paste the whole JSON file exported by the network's administrator.,Isto não é um documento de confiança válido. Cole o arquivo JSON inteiro exportado pelo administrador da rede.
 setupWizard.trustFilename,Save the document as {filename},Salve o documento como {filename}
 setupWizard.trustJoinDetail,Import the trust file and enter the connection key supplied by the administrator.,Importe o arquivo de confiança e informe a chave de conexão fornecida pelo administrador.
 setupWizard.trustLabel,Trust root,Raiz de confiança

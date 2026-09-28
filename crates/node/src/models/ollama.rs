@@ -21,17 +21,6 @@ struct AvailabilityCache {
     refreshing: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct OllamaModel {
-    pub name: String,
-    pub size: u64,
-}
-
-#[derive(Deserialize)]
-struct TagsResponse {
-    models: Vec<OllamaModel>,
-}
-
 #[derive(Serialize)]
 struct GenerateRequest<'a> {
     model: &'a str,
@@ -89,17 +78,6 @@ impl OllamaClient {
             });
         }
         cached
-    }
-
-    pub async fn list_models(&self) -> Result<Vec<OllamaModel>> {
-        let resp = self
-            .client
-            .get(format!("{}/api/tags", self.base_url))
-            .send()
-            .await?
-            .json::<TagsResponse>()
-            .await?;
-        Ok(resp.models)
     }
 
     pub async fn generate(&self, model: &str, prompt: &str) -> Result<GenerateResponse> {

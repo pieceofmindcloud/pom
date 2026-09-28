@@ -35,37 +35,28 @@ pub(super) async fn plan_split_endpoint(
     // Delegate to the peer that holds the file when it is not this one.
     if let Some(ref target) = req.layout_node_id {
         if *target != state.network.node_id {
-            let base = state
+            // Resolvido antes de mover `req`: `target` empresta dele.
+            let peer = state
                 .all_peers()
                 .await
-                .iter()
-                .find(|p| p.node_id == *target)
-                .and_then(|p| p.gateway_url());
-            let Some(base) = base else {
+                .into_iter()
+                .find(|p| p.node_id == *target);
+            let Some(peer) = peer else {
                 return bad_request(format!("peer {target} não está acessível para ler o GGUF"));
-            };
-            // Resolvido antes de mover `req`: `target` empresta dele.
-            let cliente = match state.peer_http.for_peer(target) {
-                Ok(c) => c,
-                Err(e) => return bad_request(format!("sem cliente para o peer {target}: {e}")),
             };
             let mut forwarded = req;
             // Clear the hop marker so the receiving peer measures locally.
             forwarded.layout_node_id = None;
-            let request = match state
-                .control_json_request(
-                    cliente.post(format!("{base}/api/ui/plan")),
+            // Sem prazo próprio antes: vale o do cliente de peer (600 s).
+            return match state
+                .control_post_json(
+                    &peer,
                     "/api/ui/plan",
                     &forwarded,
+                    std::time::Duration::from_secs(600),
                 )
                 .await
             {
-                Ok(request) => request,
-                Err(error) => {
-                    return bad_request(format!("não foi possível assinar o plano: {error}"))
-                }
-            };
-            return match request.send().await {
                 Ok(r) => {
                     let status = r.status();
                     match r.json::<serde_json::Value>().await {
@@ -73,7 +64,7 @@ pub(super) async fn plan_split_endpoint(
                         Err(e) => bad_request(format!("resposta inválida do peer: {e}")),
                     }
                 }
-                Err(e) => bad_request(format!("peer não respondeu: {e}")),
+                Err(e) => bad_request(format!("peer não respondeu: {e:#}")),
             };
         }
     }

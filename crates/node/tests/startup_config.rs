@@ -23,8 +23,9 @@ fn invalid_role_exits_with_config_error() {
     )
     .expect("escrever configuração inválida");
 
+    // A config é lida antes de qualquer outra coisa, então a falha sai logo,
+    // sem precisar de uma flag que encerre o processo.
     let output = Command::new(env!("CARGO_BIN_EXE_pom"))
-        .args(["--list-models"])
         .env("POM_HOME", &home)
         .env_remove("POM_CONFIG")
         .output()

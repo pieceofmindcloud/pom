@@ -560,9 +560,19 @@ profile policy remains the effective authorization boundary.
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
   e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
-  `peer_http.plain()`.
+  `peer_http.plain()`. Chamada de controle a outro nó usa
+  `GatewayState::control_get`/`control_post_json`/`control_post_empty`: assina
+  uma vez, tenta cada endereço anunciado - na ordem de `gateway_bases`, o host
+  que já respondeu primeiro - e cai no túnel libp2p
+  (`peer_client::send_to_gateway`), que é o único caminho para um peer atrás de
+  NAT simétrico. `control_get_via_tunnel` é o último recurso de quem já
+  percorreu os endereços com a memória de falha do `RouteTable` (a leitura do
+  `/api/ui/cluster`). Ficam fora do túnel a transferência de pesos e a
+  sincronização de `admin.rs`.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
-  request e serve TLS ou texto claro na mesma porta TCP, com upgrades de
+  request (`request_origin`: um pedido do loopback com a marca do túnel libp2p
+  vira `TUNNELED_ORIGIN`, não-loopback, e o cabeçalho da marca sai de todo
+  pedido - ver `rede-p2p.md`) e serve TLS ou texto claro na mesma porta TCP, com upgrades de
   conexão habilitados (o WebSocket do proxy de plugins,
   `crate::plugin_proxy`). O endpoint HTTP/3
   recebe configuração QUIC separada e sobe na porta UDP dedicada anunciada,
@@ -605,8 +615,14 @@ faz o download autenticado do blob persistido.
   local_assignment, loads, http, runtime, gateway_port, auth, transfers,
   reply_inbox); `FromRef<GatewayState> for AuthState`; `peers_visible_to_cluster`
   filters blocked nodes; `ready_for_pipeline` health-checks each peer's
-  `inference_url()/health` before planning, with the `ADMISSION_PROBE_TIMEOUT`
-  of 300ms and an `AdmissionHealth` quarantine for whoever fails - a single
+  inference `/health` before planning, trying every inference address in
+  `Network::inference_bases` order (the host that already answered first) with
+  the `ADMISSION_PROBE_TIMEOUT` of 300ms each, then `/health` over the libp2p
+  tunnel (`infer_tunnel::health_via_tunnel`, 3 s); probing only the first
+  announced address left a peer behind an unreachable IPv6 out of every plan
+  ("Gap at layer 0"). A direct success is remembered with
+  `RouteTable::mark_success`. Whoever fails gets an `AdmissionHealth`
+  quarantine - a single
   unreachable announcer used to cost every inference 2,005ms, the
   `peer_client::CONNECT_TIMEOUT`, because `join_all` waits for the slowest. A
   successful health response also refreshes the model label, deployment id and
@@ -636,8 +652,7 @@ faz o download autenticado do blob persistido.
   (log says `resposta=direta|anel|hub`: direta when `direct` is Some and the
   plan supports direct reply, anel for `relay/v1-chain`, hub as the fallback);
   prefill in hub and direct paths runs as an ordered pipeline of configurable
-  depth (`prefill_max_inflight_chunks`, effective 1..8, default 8, also
-  `--prefill-max-inflight-chunks`), bounded also by a 512 MiB hidden-state byte
+  depth (`prefill_max_inflight_chunks`, effective 1..8, default 8), bounded also by a 512 MiB hidden-state byte
   budget; a chunk that fails after earlier chunks were accepted is rebuilt from
   chunk 0 because the lost response makes partial KV removal unsafe, while the
   ring stays serialized by its nested response contract; the request trace
@@ -1023,7 +1038,10 @@ faz o download autenticado do blob persistido.
   `POST /admin/slots/:name?action=save|restore|erase` (orchestrates
   a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
   `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
-  `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
+  `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty,
+  and gives each remote peer a `route` (`Network::peer_route`): the path this
+  node actually uses to reach it - direct HTTP, direct libp2p (maybe hole
+  punched) or relayed - as opposed to `addr`, which is only what it advertises.
   Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
   `/api/setup/geo-reference`,
   `/api/setup/admin-anchor/preview`, `/api/setup/trust-anchor`,

@@ -70,9 +70,9 @@ fn icon_path() -> PathBuf {
 ///
 /// A troca é obrigatória, não uma preferência: `NSApplication` só funciona a
 /// partir da thread principal do processo. O serviço recebe uma thread própria
-/// e, quando termina, derruba o laço de eventos - é isso que faz um comando de
-/// uma tacada só, como `--list-models`, continuar a sair sozinho em vez de
-/// ficar pendurado num item de barra que ninguém pediu.
+/// e, quando termina, derruba o laço de eventos - é isso que faz um arranque
+/// que falha cedo, como um `pom.json` inválido, sair sozinho em vez de ficar
+/// pendurado num item de barra que ninguém pediu.
 pub fn run<F>(port: u16, service: F) -> Result<()>
 where
     F: FnOnce() -> Result<()> + Send + 'static,

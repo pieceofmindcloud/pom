@@ -111,6 +111,26 @@ describe("TrustScreen", () => {
     expect(screen.queryByRole("checkbox")).toBeNull();
   });
 
+  /**
+   * Sem `crypto.subtle` (HTTP no IP da máquina) a impressão digital ainda sai,
+   * e um texto que não é documento de confiança é dito, em vez de só deixar o
+   * "Continuar" desligado.
+   */
+  it("calcula a impressão digital sem crypto.subtle e avisa quando o documento é inválido", async () => {
+    vi.stubGlobal("crypto", {});
+    try {
+      const document = JSON.stringify({ anchor: { principal: { pubkey: "admin-key" } } });
+      mount({ ...initialSetup, profile: "node", trustDocument: document });
+      await waitFor(() => expect(screen.getByText(/^[0-9a-f]{8}( [0-9a-f]{8}){7}$/)).toBeTruthy());
+      cleanup();
+
+      mount({ ...initialSetup, profile: "node", trustDocument: "não é json" });
+      expect(await screen.findByTestId("trust-document-invalid")).toBeTruthy();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("pede somente a raiz e a chave ao node", () => {
     mount({ ...initialSetup, profile: "node" });
 

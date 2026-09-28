@@ -132,22 +132,14 @@ pub(super) async fn list_deployments(
 
     let peer_state = state.clone();
     let buscas = peers.iter().filter(|p| p.node_id != self_id).map(|peer| {
-        let http = state.peer_http.for_peer(&peer.node_id);
         let state = peer_state.clone();
         let node_id = peer.node_id.clone();
-        let base = peer.gateway_url();
+        let peer = peer.clone();
         async move {
-            let base = base?;
-            let request = state
-                .control_get_request(
-                    http.ok()?
-                        .get(format!("{base}/api/ui/deployments?local=true"))
-                        .timeout(PEER_TIMEOUT),
-                    "/api/ui/deployments",
-                )
+            let resp = state
+                .control_get(&peer, "/api/ui/deployments?local=true", PEER_TIMEOUT)
                 .await
                 .ok()?;
-            let resp = request.send().await.ok()?;
             let body: serde_json::Value = resp.json().await.ok()?;
             let registros: Vec<crate::deployment::Deployment> =
                 serde_json::from_value(body.get("deployments")?.clone()).ok()?;

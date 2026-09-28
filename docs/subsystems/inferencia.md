@@ -54,7 +54,7 @@ os ids reais das células.
 
 ## Porta de inferência e exposição administrativa
 
-O servidor de inferência (`--inference-port`) mantém a escuta em IPv4 e IPv6,
+O servidor de inferência (`inference_port` do `pom.json`) mantém a escuta em IPv4 e IPv6,
 com fallback para IPv4 puro quando a máquina não oferece IPv6. Essa porta não é
 fechada pela preferência da interface administrativa: o HTTP direto é a
 reserva necessária quando o túnel libp2p falha. No gateway, `/api/generate` e
@@ -640,7 +640,11 @@ tradicionais:
    `PipelinePlan::supports_direct_reply()`: todos os passos anunciam
    `relay/v2-direct` **e** a cadeia tem pelo menos 2 hops. O gateway despacha
    cada quadro uma vez para a cabeça, carregando um `reply_to`; a cauda entrega
-   o resultado direto ao gateway por `/v1/relay-result`.
+   o resultado direto ao gateway por `/v1/relay-result`. As URLs do `reply_to`
+   são as interfaces locais do gateway; quando nenhuma responde - o caso normal
+   com o gateway atrás de NAT/CGNAT - a entrega cai no túnel libp2p, usando o
+   `libp2p_peer_id` e os `libp2p_addrs` que o `reply_to` também carrega. Ver
+   `docs/subsystems/rede-p2p.md`, "Travessia de NAT".
 3. **Anel borbulhado** (`relay/v1-chain`, `run_ring`/`step_ring`) - quando
    `supports_relay_chain()`: o gateway faz **uma** chamada (para a cabeça) e
    cada hop repassa ao seu próximo via `next_hops`; o resultado volta borbulhando
@@ -1112,8 +1116,7 @@ isso que mantém todos os enlaces e todas as GPUs ocupados em paralelo, em vez
 de um estágio só.
 
 `PrefillOverlapWindow` impõe dois limites: a **contagem** de pedaços em voo
-(`prefill_max_inflight_chunks` em `pom.json` ou `--prefill-max-inflight-chunks`,
-efetivo entre 1 e 8, padrão 8; 1 desliga a sobreposição) e um **orçamento de
+(`prefill_max_inflight_chunks` da implantação, efetivo entre 1 e 8, padrão 8; 1 desliga a sobreposição) e um **orçamento de
 bytes** de estado oculto em RAM no gateway (`INFLIGHT_BYTE_BUDGET`, 512 MiB
 fixo, que só morde com `n_embd` grande ou janela alta). O permit de cada limite
 viaja com o pedaço e só é solto quando o downstream dele termina. Uma falha ou
@@ -1364,18 +1367,17 @@ recorrente que recusa remoção parcial; o atraso determinístico da bancada tor
 o custo executado observável, sem confundir a escolha do cache com a economia
 real.
 
-### 3.1.1 Snapshots de KV cache em disco (`--slot-save-path`)
+### 3.1.1 Snapshots de KV cache em disco (`slot_save_path`)
 
 O cache de prefixo acima vive **só em memória**: reinício do processo, coleta de
 ociosidade (`reap_idle`) ou pressão de capacidade (`evict_retained`) apagam o KV
 retido e o próximo turno paga um prefill frio (ver "Por que a sessão
 desaparece"). O diretório de snapshots liga um mecanismo para gravar e reler
 esse KV, equivalente ao `--slot-save-path` do llama-server. Ele vem, nesta
-precedência, da flag `--slot-save-path`, da variável `POM_SLOT_SAVE_PATH` ou do
-campo `slot_save_path` do `pom.json` (`Config::slot_save_path_effective`); a env
-var é por processo e não é persistida. Numa implantação pela UI o valor é
-injetado no `NodeConfig` em `apply_locked` a partir da instalação, como
-`cache_type_*`, mas a flag da linha de comando, quando presente, vence.
+precedência, da variável `POM_SLOT_SAVE_PATH` ou do campo `slot_save_path` do
+`pom.json` (`Config::slot_save_path_effective`); a env var é por processo e não
+é persistida. O valor é injetado no `NodeConfig` em `apply_locked` a partir da
+instalação, como `cache_type_*`.
 
 - **Motor** (`llama-engine`): `LlmEngine::state_seq_save_file` /
   `state_seq_load_file` embrulham `llama_state_seq_save_file` /
@@ -2130,6 +2132,10 @@ RAII que decrementa no drop: o balanço de carga nunca fica preso num erro.
 - `ready_for_pipeline` (gateway) sonda `/health` de cada peer com timeout de
   300 ms **antes** de planejar - um anúncio UDP velho não pode envenenar o
   plano nem deixar requisição esperando por um hop que não serve mais HTTP. A
+  sonda tenta cada endereço de inferência, o host que já respondeu primeiro
+  (`Network::inference_bases`), e por último o túnel libp2p (3 s): só o
+  primeiro endereço anunciado deixava fora do plano um peer atrás de um IPv6
+  inalcançável, e a requisição falhava com "Gap at layer 0". A
   mesma resposta atualiza a identidade e a faixa executável quando o gossip
   ainda não propagou o `Announce` mais recente.
 - `resolve_step_url` escolhe o endereço de cada hop por ordem: rota medida na
@@ -2146,7 +2152,7 @@ RAII que decrementa no drop: o balanço de carga nunca fica preso num erro.
 O gateway **só tem o caminho do pipeline**. `generate_stream_with_stops` falha com
 "Nenhum pipeline válido para o modelo X (verifique a cobertura de camadas
 0..N)" quando `plan_pipeline` devolve `None`; o handler de `/api/generate`
-responde 503 com "Start peers with --inference-port." e `source: "none"`.
+responde 503 com "Inference failed. Error: ..." e `source: "none"`.
 
 Não existe fallback para Ollama: `OllamaClient` só resolve modelos
 (`/api/tags`) e alimenta o campo `ollama_available` do `/health`. Esse campo
@@ -2239,14 +2245,15 @@ decode.
 - `n_batch` **não** entra na conta: o prompt vai em pedaços, então `n_batch`
   limita um pedaço (`min(prefill_chunk_tokens, n_batch)`), não o prompt. Antes
   de o prefill ser fatiado, `n_batch` na fórmula capava todo prompt em 512
-  tokens por maior que fosse `--n-ctx`.
+  tokens por maior que fosse `n_ctx`.
 - Por que o limite existe: passá-lo faz o llama.cpp abortar o **processo
   inteiro** com `GGML_ASSERT(n_tokens_all <= cparams.n_batch)` - um prompt
   grande derruba o peer e todas as requisições em voo. Recusar cedo mantém o nó
   de pé. Números medidos: o OpenCode 1.18.21 manda ~2200 caracteres na chamada
   de título e ~54k no agente padrão, com `max_tokens: 32000`, ferramentas e
   `stream_options.include_usage`. Config que fez funcionar para o agente padrão:
-  `--n-ctx 32768 --n-batch 3072 --max-new-tokens 256` → orçamento de 32512
+  `n_ctx` 32768, `n_batch` 3072 e `max_new_tokens` 256 na implantação →
+  orçamento de 32512
   tokens; sem uma janela compatível o nó responde HTTP 413 antes do SSE.
 
 ### 9.1 Os dois orçamentos de saída e o laço de continuação
@@ -2472,7 +2479,9 @@ lifetime, frames e bytes, primeira entrega, latências de frame min/p50/p95/p99/
   `libsystem_platform.dylib` / `_platform_strlen + 4`; a pilha acima do
   frame libc não foi recuperável pelo unwinder desta execução.
 
-  Comandos exatos da árvore desta tarefa:
+  Comandos exatos da árvore desta tarefa (o caminho `--model` que eles usam
+  foi removido depois; hoje a reprodução é uma implantação de nó único pela
+  interface com os mesmos parâmetros):
 
   ```bash
   rtk lldb --batch -o 'settings set target.env-vars POM_HOME=/Users/jairpereira/.treehouse/rdma-p2p-242c70/4/rdma-p2p/target/bench-home POM_UI_DIST=/Users/jairpereira/.treehouse/rdma-p2p-242c70/4/rdma-p2p/apps/frontend/dist' -o run -o 'bt all' -o quit -- ./target/release/pom --model /Users/jairpereira/.treehouse/rdma-p2p-242c70/4/rdma-p2p/target/qwen2.5-0.5b-instruct-q4_k_m.gguf --memory 16000MB --port 52777 --inference-port 18181 --no-discovery --single-peer --start-layer 0 --end-layer 23 --n-ctx 1024 --n-batch 512 --max-new-tokens 64 --n-gpu-layers 0 --no-thinking
@@ -2491,10 +2500,9 @@ lifetime, frames e bytes, primeira entrega, latências de frame min/p50/p95/p99/
   no Unix, `netstat -ano`+`taskkill` no Windows) e mata (SIGKILL) antes de subir
   o servidor. Não conseguindo (ocupante não identificável, ou porta ainda presa
   depois de 5 s), o motivo vai para o `status.detail` como `Failed` já na
-  primeira tentativa, e a linha "Mem loaded" da TUI passa a mostrar esse estado
-  em vez do rótulo fixo `inference_server`. O histórico fica em
+  primeira tentativa. O histórico fica em
   `<project_root>/infer_server_<porta>.log` (`runtime::log_file_path`, apontado
-  por `status.log_path`), porque a TUI limpa a tela a cada `--refresh`.
+  por `status.log_path`), porque o stdout não o guarda.
 - **Sem cobertura E2E**: os quatro modos de falha do modo direto legado ainda
   não têm uma bancada ponta a ponta; o transporte remoto novo tem testes de
   unidade para lote, ordem, erro, terminação e contrapressão.

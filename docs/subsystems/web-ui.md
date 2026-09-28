@@ -260,8 +260,15 @@ ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
   `admin_trust_filename` e mostra a chave de conexão apenas em redes local ou
   privadas. Durante o setup, uma etapa de descoberta local deixa o admin
   esperando e faz node/infer procurarem um admin; a chave só chega depois do
-  handshake explícito. `SetupWizard.tsx` continua sendo apenas o mock de
-  referência visual.
+  handshake explícito. Na etapa da raiz de confiança, a impressão digital é
+  calculada no navegador a partir do documento colado
+  (`lib/trustFingerprint.ts`). Como o modo setup escuta em todas as
+  interfaces, o wizard costuma ser aberto por HTTP no IP da máquina, onde o
+  navegador não oferece `crypto.subtle` (só existe em HTTPS ou localhost); o
+  cálculo cai então num SHA-256 em TypeScript puro. Texto que não é documento
+  de confiança ganha aviso (`setupWizard.trustDocumentInvalid`) em vez de só
+  deixar o "Continuar" desligado. `SetupWizard.tsx` continua sendo apenas o
+  mock de referência visual.
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
   participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
   `/config/preferencias/admin` -> preferências administrativas;
@@ -275,7 +282,10 @@ ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
   diretas agrupado por licença;
   `/config/confianca` reúne esta máquina, compartilhamento e chaves de conexão;
   `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
-  (`/config/pastas` continua como alias). O wizard de configuração não aparece
+  (`/config/pastas` continua como alias). Quando `POM_MODEL_DIRS` ou
+  `POM_SHARD_DIR` define uma pasta (`model_dirs_env`/`shard_dir_env` em
+  `/api/ui/paths`), o campo correspondente fica travado, com o nome da
+  variável num selo e numa nota: editar ali não teria efeito. O wizard de configuração não aparece
   no menu, embora sua rota de teste continue disponível.
 
 Em uma rede pública, `NetworkSettings` local é uma réplica read-only para
@@ -751,7 +761,10 @@ alimentados por `GET /api/ui/network/geo-reference`, que lê as tabelas locais
 `geo_countries` e `geo_cities`; o código do país não é mostrado. A mesma tela
 calcula nós, latência média, VRAM conhecida e modelos do `ClusterView`.
 `/config/rede/participantes` reaproveita o card de nós conhecidos e fica
-disponível para admin e node.
+disponível para admin e node. Cada peer mostra a **rota em uso**, não o
+endereço que anuncia: um selo (Direto, Direto (P2P), Direto (hole punch), Via
+relé, Sem rota) e o endereço dessa rota - o do relé, quando o hole punch não
+fechou. O anunciado fica no `title` da linha. Ver `rede-p2p.md`, "Diagnóstico".
 
 `/config/confianca` reúne esta máquina, compartilhamento da rede e chaves de
 conexão. `/config/preferencias` monta a exposição administrativa, o
@@ -1308,6 +1321,14 @@ canais, visibilidade, país, cidade e localização em modo somente leitura. O
 administrador autorizado edita esses campos e salva em
 `POST /api/ui/network/settings`; o backend grava a configuração local,
 propaga a mutação assinada aos peers e republica o rótulo geo público.
+
+Abaixo das métricas, o painel "Travessia de NAT" (`TraversalPanel`) mostra o
+campo `traversal` de `GET /api/ui/cluster`: estado do AutoNAT, endereços
+diretos e circuitos publicados, reservas de relé aceitas e a contagem de hole
+punches com a última falha. Ele existe porque dois nós atrás de NAT que não se
+enxergam falham num de três degraus, e antes dele descobrir qual exigia
+`RUST_LOG=debug` na máquina certa. Nó de binário antigo não manda `traversal` e
+o painel simplesmente não aparece.
 
 O mesmo administrador tem, nessa tela, os controles de copiar e baixar o
 documento `.pom-admin-trust.json`. Em rede local ou privada também aparece a

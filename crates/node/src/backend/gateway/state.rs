@@ -97,6 +97,9 @@ pub(crate) struct PkarrPublishHandle {
     model_name: String,
     assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
     serve_relay: bool,
+    /// Fonte do endereço publicado, quando o AutoNAT já confirmou um. O `addr`
+    /// derivado no arranque continua sendo o fallback.
+    network: Option<Arc<crate::network::Network>>,
 }
 
 impl PkarrPublishHandle {
@@ -108,6 +111,7 @@ impl PkarrPublishHandle {
         model_name: String,
         assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
         serve_relay: bool,
+        network: Option<Arc<crate::network::Network>>,
     ) -> Self {
         Self {
             node,
@@ -117,6 +121,7 @@ impl PkarrPublishHandle {
             model_name,
             assignment,
             serve_relay,
+            network,
         }
     }
 
@@ -134,9 +139,16 @@ impl PkarrPublishHandle {
                 )
             })
             .unwrap_or((0, 0, 0));
+        // O endereço confirmado pelo AutoNAT vence o derivado no arranque: é o
+        // que um nó que nunca viu este aqui precisa para discar a frio.
+        let addr = self
+            .network
+            .as_ref()
+            .and_then(|network| network.public_libp2p_addr())
+            .unwrap_or_else(|| self.addr.clone());
         self.node
             .publish(
-                &self.addr,
+                &addr,
                 self.gateway_port,
                 self.inference_port,
                 &self.model_name,
@@ -383,6 +395,121 @@ impl GatewayState {
             .await?
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(bytes))
+    }
+    /// Endereços do gateway de `peer`, o que já respondeu primeiro. Ver
+    /// `Network::gateway_bases`.
+    pub(crate) fn gateway_bases(&self, peer: &crate::network::PeerInfo) -> Vec<String> {
+        self.network.gateway_bases(peer)
+    }
+
+    /// O primeiro de `gateway_bases`: o endereço do gateway de `peer` para
+    /// quem só pode usar um (um download, o endereço de volta de uma oferta).
+    pub(crate) fn gateway_base(&self, peer: &crate::network::PeerInfo) -> Option<String> {
+        self.gateway_bases(peer).into_iter().next()
+    }
+
+    /// GET de controle assinado ao gateway de `peer`, por todos os caminhos
+    /// que ele anuncia (endereços e, por último, o túnel libp2p - ver
+    /// `peer_client::send_to_gateway`). `path` pode trazer query string; a
+    /// assinatura cobre só o caminho, como em `control_get_request`.
+    pub(crate) async fn control_get(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call(peer, reqwest::Method::GET, path, None, timeout)
+            .await
+    }
+
+    /// POST JSON de controle assinado ao gateway de `peer`, pelos mesmos
+    /// caminhos de `control_get`.
+    pub(crate) async fn control_post_json<T: serde::Serialize>(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        body: &T,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        let bytes = serde_json::to_vec(body)?;
+        self.control_call(peer, reqwest::Method::POST, path, Some(bytes), timeout)
+            .await
+    }
+
+    /// `control_get` só pelo túnel, para quem já tentou os endereços do peer
+    /// com critério próprio (ver `send_to_gateway_over`).
+    pub(crate) async fn control_get_via_tunnel(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call_over(peer, &[], reqwest::Method::GET, path, None, timeout)
+            .await
+    }
+
+    /// POST sem corpo (assinado sobre corpo vazio), como `/api/ui/unload`.
+    pub(crate) async fn control_post_empty(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call(peer, reqwest::Method::POST, path, None, timeout)
+            .await
+    }
+
+    async fn control_call(
+        &self,
+        peer: &crate::network::PeerInfo,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call_over(peer, &self.gateway_bases(peer), method, path, body, timeout)
+            .await
+    }
+
+    async fn control_call_over(
+        &self,
+        peer: &crate::network::PeerInfo,
+        bases: &[String],
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        let client = self.peer_http.for_peer(&peer.node_id)?;
+        let signed_path = path.split('?').next().unwrap_or(path);
+        let bytes = body.as_deref().unwrap_or_default();
+        let mut headers = self.signed_control_headers(method.as_str(), signed_path, bytes)?;
+        if let Some(connection_key) = {
+            let config = self.auth.read().await;
+            crate::auth::internal_node_token(&config)
+        } {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {connection_key}"))?,
+            );
+        }
+        if body.is_some() {
+            headers.insert(
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::HeaderValue::from_static("application/json"),
+            );
+        }
+        crate::peer_client::send_to_gateway_over(peer, bases, |base| {
+            let request = client
+                .request(method.clone(), format!("{base}{path}"))
+                .timeout(timeout)
+                .headers(headers.clone());
+            match &body {
+                Some(bytes) => request.body(bytes.clone()),
+                None => request,
+            }
+        })
+        .await
     }
 }
 
@@ -722,9 +849,14 @@ fn refresh_peer_from_health(peer: PeerInfo, body: &serde_json::Value) -> Option<
     Some(current)
 }
 
+/// Prazo da sonda `/health` pelo túnel: um circuito pelo relé na internet não
+/// cabe nos 300 ms da sonda direta (`ADMISSION_PROBE_TIMEOUT`).
+const TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub(super) async fn ready_for_pipeline(
     http: &crate::peer_client::PeerClients,
     health: &AdmissionHealth,
+    network: &crate::network::Network,
     peers: Vec<PeerInfo>,
     timeout: Duration,
 ) -> Vec<PeerInfo> {
@@ -733,10 +865,15 @@ pub(super) async fn ready_for_pipeline(
         // inferência vai falar com aquele nó, senão ela mede - ou recusa - um
         // caminho que a requisição de verdade não percorre.
         let cliente = http.for_peer(&peer.node_id);
+        // Todos os endereços de inferência, o que já respondeu primeiro. Só o
+        // primeiro anunciado - um IPv6 inalcançável, por exemplo - deixava o
+        // peer em quarentena e fora do plano ("Gap at layer 0") mesmo
+        // alcançável por outro endereço ou pelo túnel.
+        let bases = network.inference_bases(&peer);
         async move {
-            let Some(base) = peer.inference_url() else {
+            if bases.is_empty() {
                 return None;
-            };
+            }
             // Idle peers keep their assignment announced while `/health` has
             // no loaded model. They are valid plan members and are woken by
             // the reload event before inference starts.
@@ -751,28 +888,43 @@ pub(super) async fn ready_for_pipeline(
             if health.quarantined(&peer.node_id).await {
                 return None;
             }
-            let url = format!("{base}/health");
-            match tokio::time::timeout(timeout, cliente.get(url).send()).await {
-                Ok(Ok(response)) if response.status().is_success() => {
-                    let Ok(Ok(body)) =
-                        tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
-                    else {
-                        health.note_failure(&peer.node_id).await;
-                        return None;
-                    };
-                    let node_id = peer.node_id.clone();
-                    let Some(peer) = refresh_peer_from_health(peer, &body) else {
-                        health.note_failure(&node_id).await;
-                        return None;
-                    };
-                    health.note_success(&peer.node_id).await;
-                    Some(peer)
+            let mut body = None;
+            for base in &bases {
+                let url = format!("{base}/health");
+                let Ok(Ok(response)) = tokio::time::timeout(timeout, cliente.get(url).send()).await
+                else {
+                    continue;
+                };
+                if !response.status().is_success() {
+                    continue;
                 }
-                _ => {
-                    health.note_failure(&peer.node_id).await;
-                    None
+                if let Ok(Ok(value)) =
+                    tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
+                {
+                    network.routes.mark_success(&peer.node_id, base);
+                    body = Some(value);
+                    break;
                 }
             }
+            // Nenhum endereço respondeu: o túnel libp2p, que a inferência
+            // também usa quando o HTTP direto não chega.
+            if body.is_none() {
+                if let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(&peer) {
+                    body = crate::infer_tunnel::health_via_tunnel(&tunnel, TUNNEL_HEALTH_TIMEOUT)
+                        .await;
+                }
+            }
+            let Some(body) = body else {
+                health.note_failure(&peer.node_id).await;
+                return None;
+            };
+            let node_id = peer.node_id.clone();
+            let Some(peer) = refresh_peer_from_health(peer, &body) else {
+                health.note_failure(&node_id).await;
+                return None;
+            };
+            health.note_success(&peer.node_id).await;
+            Some(peer)
         }
     }))
     .await
@@ -929,6 +1081,7 @@ impl GatewayState {
                 disk_free_mb: 0,
                 api_keys_active: 0,
                 libp2p_peer_id: self.network.libp2p_peer_id.clone(),
+                libp2p_addrs: self.network.libp2p_addrs(),
                 tp: self.network.tp_identity(),
                 runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
                 idle: self.network.is_idle(),

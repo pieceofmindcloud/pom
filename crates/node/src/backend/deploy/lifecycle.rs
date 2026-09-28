@@ -510,36 +510,12 @@ pub(super) async fn publish_record(state: &GatewayState, registro: &crate::deplo
     // só aceita a cópia se já conhecia o deployment, então fan-out não cria
     // registros em máquinas que nunca participaram.
     for peer in peers.iter().filter(|peer| peer.node_id != self_id) {
-        let Some(base) = peer.gateway_url() else {
-            warn!(
-                "{} não anuncia gateway; sem cópia do registro",
-                peer.node_id
-            );
-            continue;
-        };
-        let Ok(cliente) = state.peer_http.for_peer(&peer.node_id) else {
-            continue;
-        };
-        let envio = match state
-            .control_json_request(
-                cliente.post(format!("{base}/api/ui/deployments")),
-                "/api/ui/deployments",
-                registro,
-            )
-            .await
-        {
-            Ok(request) => request.timeout(PEER_TIMEOUT).send().await,
-            Err(error) => {
-                warn!(
-                    "{} não aceitou assinar o registro da implantação: {error}",
-                    peer.node_id
-                );
-                continue;
-            }
-        };
+        let envio = state
+            .control_post_json(peer, "/api/ui/deployments", registro, PEER_TIMEOUT)
+            .await;
         if let Err(e) = envio {
             warn!(
-                "{} não aceitou o registro da implantação: {e}",
+                "{} não aceitou o registro da implantação: {e:#}",
                 peer.node_id
             );
         }
@@ -563,21 +539,11 @@ pub(super) async fn find_record(
         if peer.node_id == self_id {
             return None;
         }
-        let http = state.peer_http.for_peer(&peer.node_id).ok()?;
-        let base = peer.gateway_url()?;
         let peer_state = state.clone();
         let alvo = deploy_id.to_string();
         Some(async move {
-            let request = peer_state
-                .control_get_request(
-                    http.get(format!("{base}/api/ui/deployments?local=true")),
-                    "/api/ui/deployments",
-                )
-                .await
-                .ok()?;
-            let body: serde_json::Value = request
-                .timeout(PEER_TIMEOUT)
-                .send()
+            let body: serde_json::Value = peer_state
+                .control_get(&peer, "/api/ui/deployments?local=true", PEER_TIMEOUT)
                 .await
                 .ok()?
                 .json()
@@ -1091,32 +1057,13 @@ pub(super) async fn relaunch_one(
             return Some(e);
         }
     } else {
-        let Some(base) = peers
-            .iter()
-            .find(|p| p.node_id == no.node_id)
-            .and_then(|p| p.gateway_url())
-        else {
-            return Some("peer não encontrado ou sem porta de gateway anunciada".to_string());
-        };
-        let Ok(cliente) = state.peer_http.for_peer(&no.node_id) else {
-            return Some("sem cliente para o peer".to_string());
+        let Some(peer) = peers.iter().find(|p| p.node_id == no.node_id) else {
+            return Some("peer não encontrado".to_string());
         };
         let corpo = json!({ "params": params, "slice": slice });
-        let request = match state
-            .control_json_request(
-                cliente.post(format!("{base}/api/ui/reconfigure")),
-                "/api/ui/reconfigure",
-                &corpo,
-            )
-            .await
-        {
-            Ok(request) => request,
-            Err(error) => return Some(format!("não foi possível assinar a chamada: {error}")),
-        };
-        match request
-            // Recarregar pesos é minutos, não segundos.
-            .timeout(REDEPLOY_READY_TIMEOUT)
-            .send()
+        // Recarregar pesos é minutos, não segundos.
+        match state
+            .control_post_json(peer, "/api/ui/reconfigure", &corpo, REDEPLOY_READY_TIMEOUT)
             .await
         {
             Ok(r) if r.status().is_success() => {}
@@ -1222,28 +1169,7 @@ pub(super) async fn validate_redeploy_wire_dtype(
             blocked.push(format!("{}: peer não encontrado", node.hostname));
             continue;
         };
-        let Some(base) = peer.gateway_url() else {
-            blocked.push(format!("{}: peer sem gateway anunciado", node.hostname));
-            continue;
-        };
-        let Ok(client) = state.peer_http.for_peer(&node.node_id) else {
-            blocked.push(format!("{}: cliente do peer indisponível", node.hostname));
-            continue;
-        };
-        let request = match state
-            .control_get_request(client.get(format!("{base}/api/ui/node")), "/api/ui/node")
-            .await
-        {
-            Ok(request) => request,
-            Err(error) => {
-                blocked.push(format!(
-                    "{}: não foi possível assinar /api/ui/node: {error}",
-                    node.hostname
-                ));
-                continue;
-            }
-        };
-        let response = match request.timeout(PEER_TIMEOUT).send().await {
+        let response = match state.control_get(peer, "/api/ui/node", PEER_TIMEOUT).await {
             Ok(response) if response.status().is_success() => response,
             Ok(response) => {
                 blocked.push(format!(
@@ -1314,25 +1240,17 @@ pub(super) async fn reconfigure_one(
         return resposta.err();
     }
 
-    let base = peers
-        .iter()
-        .find(|p| p.node_id == node_id)
-        .and_then(|p| p.gateway_url())?;
-    let cliente = state.peer_http.for_peer(node_id).ok()?;
-    let request = state
-        .control_json_request(
-            cliente.post(format!("{base}/api/ui/reconfigure")),
+    let peer = peers.iter().find(|p| p.node_id == node_id)?;
+    // Recarregar pesos é minutos, não segundos: o `PEER_TIMEOUT` de uma
+    // chamada de controle mataria a conexão no meio de um carregamento que
+    // vai terminar bem.
+    match state
+        .control_post_json(
+            peer,
             "/api/ui/reconfigure",
             &corpo,
+            Duration::from_secs(1800),
         )
-        .await
-        .ok()?;
-    match request
-        // Recarregar pesos é minutos, não segundos: o `PEER_TIMEOUT` de uma
-        // chamada de controle mataria a conexão no meio de um carregamento que
-        // vai terminar bem.
-        .timeout(Duration::from_secs(1800))
-        .send()
         .await
     {
         Ok(r) if r.status().is_success() => None,

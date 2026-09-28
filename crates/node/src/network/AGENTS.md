@@ -26,8 +26,25 @@ fallback continua em `addr_candidates` + `RouteTable`.
   cliente direto pinado como fallback. `TunnelRequest` leva método, caminho,
   corpo e cabeçalhos, inclusive a `connection_key` e o marcador interno da
   porta de inferência;
-  `serve_loopback` repassa POSTs para o servidor de inferência e GETs para a
-  sonda `/health`. POSTs sem `Content-Type` recebem o padrão binário, mas um
+  `serve_loopback` repassa a chamada para o loopback, sempre em texto claro
+  (`serve::plain_allowed` libera loopback mesmo em TLS estrito e o certificado
+  do nó não cobre `127.0.0.1`). `TunnelTarget` escolhe **qual** servidor local
+  atende: `Inference` (padrão, e o único que um peer de binário anterior
+  conhece) ou `Gateway`, o plano de controle. O emissor nomeia a variante; o
+  receptor é que a mapeia para uma das duas portas que ele próprio escolheu -
+  um peer remoto nunca nomeia porta. Para o gateway vale
+  `gateway_path_is_allowed`, lista **fechada** e de comparação exata: admissão,
+  políticas e retorno direto (`/handshake`, `/health`, `/api/cluster/*`,
+  `/v1/relay-result`, `/v1/remote-stream-result`) e o plano de controle da
+  implantação e das leituras do cluster (`/api/ui/{node,apply,...}`). Tudo que
+  sai do túnel chega ao gateway por `127.0.0.1`, e o gateway decide o que é
+  local pelo endereço do socket; por isso `serve_loopback` marca o pedido com
+  `TUNNEL_ORIGIN_HEADER` e o segredo do processo (`tunnel_mark`), e
+  `serve::request_origin` o trata como remoto. Sem a marca, qualquer rota da
+  lista daria a administração do nó (modo localhost, `install_trust_anchor`) a
+  qualquer peer do swarm. O método do pedido é repassado como veio (GET, POST,
+  ...). `peer_client::send_to_gateway` é o emissor do plano de controle: cada
+  endereço anunciado e, por último, o túnel. POSTs sem `Content-Type` recebem o padrão binário, mas um
   `Content-Type` explícito, como `application/json` no ciclo de vida da sessão,
   nunca é duplicado nem sobrescrito. `measure_rtt` mede a ida e volta pelo
   mesmo túnel Noise.
@@ -63,7 +80,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
   logs do cluster, auditoria de requisições e Chat da rede. A auditoria recebida
   entra numa fila limitada fora do loop do swarm e segue para o plugin ativo ou
   o fallback local. Põe peers no `Network` somente
-  depois da catraca de admissão, e reidrata no swarm os endereços dos peers
+  depois da catraca de admissão, que no gossipsub nunca sonda dentro do laço
+  do swarm (`admission_without_probe`, e sem veredito `admit_in_background`):
+  a sonda cai no túnel, que esse laço atende. Reidrata no swarm os endereços dos peers
   admitidos antes de enviar pelo túnel quando o anúncio chegou antes do
   registro de rota. A assinatura nativa do gossipsub prova a origem do
   transporte, mas não substitui a prova de pertencimento do enxame.
@@ -93,7 +112,17 @@ fallback continua em `addr_candidates` + `RouteTable`.
   cabem no orçamento de 1200 bytes do UDP e remontado antes da validação do
   fingerprint. A preferência fica desligada fora do wizard; o material sensível
   vive apenas em memória e a transferência é limitada a 512 KiB.
-- `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
+- `peer_client.rs` - `prefer_tunnel`/`remember_tunnel_win`/`remember_direct_win`
+  são a marca **por peer** de que o caminho direto não responde: ligada, o
+  frame pula QUIC e HTTP na primeira tentativa. Aprendida, não configurada -
+  um sucesso direto a apaga. `relay.rs` a consulta nas duas escadas de envio.
+  `TunnelPeer`/`tunnel_gateway_call` levam uma chamada do
+  plano de controle pelo túnel quando nenhum endereço direto responde; é o que
+  faz a admissão de um par atrás de NAT concluir.
+  `get_internal_from_candidates` tenta os endereços diretos e só então o
+  túnel, e devolve `InternalResponse` (status + corpo já lido), porque o túnel
+  não produz um `reqwest::Response`.
+  `PeerClients`, um `reqwest::Client` por peer, porque o
   verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
   esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
   quem colcheta IPv6, além da preferência e da quarentena temporária de rotas
@@ -187,6 +216,21 @@ fallback continua em `addr_candidates` + `RouteTable`.
   responder". `RttTable` guarda a medição direcional deste nó para cada
   destino, sem inferir o sentido inverso, e expõe snapshots com idade: só os
   RTTs com menos de cinco minutos entram em seleção.
+  `last_success` devolve o último endereço HTTP que respondeu (há menos de
+  5 min e sem falha depois), a metade HTTP de `Network::peer_route`.
+- `Network::gateway_bases` - os endereços do gateway de um peer na ordem em
+  que vale tentar: o host que já respondeu (`RouteTable::last_success`,
+  comparado pelo host porque pode ter sido a porta de inferência), depois os
+  que não falharam, depois os desacreditados. Quem só pode usar um endereço (um
+  download, o `from_gateway` de uma oferta) usa o primeiro.
+  `inference_bases` faz o mesmo com os endereços de inferência (a sonda de
+  admissão ao plano), e `order_gateway_bases` ordena uma lista montada por
+  quem chama (as catracas de política, com o esquema anunciado).
+- `Network::peer_route` / `libp2p_links` - a rota em uso com cada peer para a
+  tela de participantes: HTTP direto que respondeu, conexão libp2p direta
+  (marcada quando nasceu de hole punch) ou só circuito pelo relé. As conexões
+  vêm de `note_libp2p_link`/`drop_libp2p_link`/`mark_hole_punched`, chamados
+  pelo laço do swarm em `discovery.rs`; ver `rede-p2p.md`, "Diagnóstico".
 
 ## Funções-chave
 
@@ -290,28 +334,57 @@ fallback continua em `addr_candidates` + `RouteTable`.
   workers da cadeia.
 
 `discovery.rs`:
-- `Discovery::new` - constrói o swarm (porta TCP = UDP+10000), diala bootstrap
-  convertido por `udp_to_libp2p_multiaddr` e os relays (padrão IPFS + `--relay-peers`).
+- `Discovery::new` - constrói o swarm com TCP **e** QUIC na porta UDP+10000
+  (quatro listen addresses: v4/v6 x tcp/quic-v1), diala bootstrap convertido
+  por `udp_to_libp2p_multiaddr` e os relés de `--relay-peers`. QUIC está ali
+  para o DCuTR: hole punch em TCP depende de simultaneous open, que CGNAT
+  recusa. `DEFAULT_RELAY_NODES` está vazio - os bootstrappers do IPFS que
+  estavam lá não concedem reserva de Circuit Relay v2 e os endereços já eram
+  obsoletos, então nenhuma reserva era aceita e o DCuTR nunca rodava.
 - `handle_event` - Gossipsub Announce vira `PeerInfo` usando
   `addr_candidates.first()` (o literal `0.0.0.0` só sobrevive se nada foi
   anunciado) e registra somente o endpoint canônico como multiaddress
   `/p2p/<peer-id>` antes de aquecer a conexão do túnel; mDNS descobre na LAN e
   só é construído quando não há `advertise_addr` pinado; com pin, nem o
   comportamento mDNS roda. Identify não grava `listen_addrs` no livro de
-  endereços e, para relays conectados, escuta no
-  circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
+  endereços; qualquer par que anuncie `relay::HOP_PROTOCOL_NAME` passa por
+  `reserve_circuit`, que escuta no circuito (`P2pCircuit`) uma vez por par
+  (`circuit_listens`); AutoNAT `Public` vira `Swarm::add_external_address`; requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
   que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT
-  só logam. Os request/responses de logs, auditoria e Chat da rede usam
+  só logam o resto. Os request/responses de logs, auditoria e Chat da rede usam
   behaviours próprios, separados do túnel de inferência. Logs de processo são
   aceitos por todo admin efetivo; eventos de auditoria também são persistidos
   por todo admin efetivo e nenhum evento recebido é retransmitido. O Chat valida no principal,
   retransmite sem segredo e recusa relays que não vieram de um administrador.
   O `select!` é biased para o swarm e o túnel de inferência; filas de Chat usam
   `try_send`, descartam sob pressão e nunca esperam SQLite.
+- `tunnel_peer_multiaddrs` - endereços discáveis de um peer. Aceita
+  multiaddress completo (o que `Announce.libp2p_addrs` leva, inclusive
+  circuito) e o `host:port` legado, derivado por `udp_to_libp2p_multiaddr`. O
+  `/p2p/<peer-id>` final entra só quando falta: num circuito o relé já aparece
+  antes do `/p2p-circuit`, e duplicar o sufixo faria discar o relé no lugar do
+  destino.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.
+- `TraversalStatus`/`traversal_status` (em `network.rs`) - estado do AutoNAT,
+  endereços publicados, reservas aceitas e contagem de hole punches com a
+  última falha. `discovery.rs` alimenta (`set_nat_status`,
+  `remember_reservation`, `remember_hole_punch`) e `/api/ui/cluster` publica no
+  campo `traversal`, que também entra no fingerprint do cache.
+- `publish_swarm_addrs` - recolhe do swarm endereços externos confirmados,
+  listeners com IP público e listeners de circuito, acrescenta `/p2p/<self>` e
+  grava em `Network::set_libp2p_addrs`. Privado/loopback/não especificado fica
+  de fora; circuito entra sempre, porque o IP ali é o do relé. Chamado em
+  `NewListenAddr`, `ExpiredListenAddr`, `ExternalAddrConfirmed`,
+  `ExternalAddrExpired`, AutoNAT `Public` e reserva aceita.
+- `reserve_circuit` - pede `listen_on(<relé>/p2p-circuit)`. Endereço do relé
+  vem de `relay_reservation_addrs`: lista configurada, anúncio vivo e, por
+  último, o endereço que este nó discou (`dialed_addrs`, anotado no
+  `ConnectionEstablished`) - é o caso do relé dedicado fora da rede. Nunca dos
+  `listen_addrs` do identify. Sem circuito publicado não há conexão relayed, e sem ela o DCuTR
+  não tem por onde coordenar o punch.
 - `observed_host_port` - inverso do anterior: tira o `host:port` deste nó do
   `observed_addr` do `identify`. É o "qual é o meu IP público" sem dependência
   de STUN. Recusa endereço privado/CGNAT (`addrs::is_private_or_local`) e
@@ -332,6 +405,12 @@ fallback continua em `addr_candidates` + `RouteTable`.
   é feita sem colchetes dos dois lados - `fixado` vem colchetado de
   `effective_host` e o local vem cru, e comparar as duas formas duplicava o
   IPv6 no anúncio.
+- `Network::effective_host` (via `choose_effective_host`) - host pelo qual o
+  nó se descreve: fixado, depois o público atual da interface, depois o
+  observado. Sempre devolve IPv6 **entre colchetes**, porque quem o usa
+  concatena `:porta` (a entrada do próprio nó em `all_peers`, que a tela de
+  participantes mostra) ou o passa por `ip_host` (`self_reply_hosts`). O
+  endereço da interface vem cru de `filter_candidates` e é colchetado ali.
 - `is_private_or_local` - decide se um endereço observado por um peer é notícia
   sobre o IP público deste nó. Além de RFC 1918 e `fc00::/7`, recusa
   **`100.64/10` (RFC 6598)**: é a faixa do CGNAT e é a que a Tailscale usa.
@@ -340,7 +419,10 @@ fallback continua em `addr_candidates` + `RouteTable`.
   como endereço *público* e anunciou ao cluster inteiro.
 - `local_addrs` - `/sbin/ifconfig` (macOS) / `ip -o addr` (Linux); macOS usa
   caminho absoluto porque processos iniciados pela GUI podem não ter `/sbin` no
-  `PATH`. Windows vazio (cai no endereço observado pelo peer).
+  `PATH`. Windows vazio (cai no endereço observado pelo peer). Se o programa
+  não puder ser executado, `run` avisa uma vez no log e devolve vazio: o nó
+  então não anuncia endereço próprio. Por isso a imagem Docker instala
+  `iproute2`.
 
 `identity.rs`:
 - `Identity::load_or_create` - carrega a chave ou gera; regenerar a cada boot

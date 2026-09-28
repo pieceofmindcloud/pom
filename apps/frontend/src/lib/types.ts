@@ -741,6 +741,23 @@ export interface ClusterView {
   routing_edges: RoutingEdge[];
   candidate_edges: RoutingEdge[];
   node: NodeInfo | null;
+  /** Diagnóstico da travessia de NAT deste nó. Ausente em nó antigo. */
+  traversal?: TraversalView;
+}
+
+/**
+ * Em que degrau a travessia de NAT parou. Sem isto, "os dois nós não se
+ * falam" só se investiga com log de depuração na máquina certa.
+ */
+export interface TraversalView {
+  nat: "unknown" | "public" | "private";
+  /** Multiaddresses publicados, inclusive o circuito de relé. */
+  addrs: string[];
+  /** PeerId dos relés que aceitaram reserva. */
+  reservations: string[];
+  hole_punch_ok: number;
+  hole_punch_failed: number;
+  last_hole_punch_error: string | null;
 }
 
 /** Aggregate facts the Chat may read from every profile without topology access. */
@@ -942,6 +959,10 @@ export interface PathsResponse {
   default_shard_dir: string;
   default_workspace_root: string;
   shard_max_gb: number;
+  /** Variável de ambiente que define as pastas de modelos inteiros, quando vale. */
+  model_dirs_env?: string | null;
+  /** Variável de ambiente que define a pasta das fatias, quando vale. */
+  shard_dir_env?: string | null;
 }
 
 export type KvCacheType =
@@ -1228,11 +1249,33 @@ export interface OfferManifest {
   };
 }
 
+/** Uma conexão libp2p viva com o peer. */
+export interface PeerRouteLink {
+  address: string;
+  relayed: boolean;
+  relay_peer_id?: string | null;
+  hole_punched: boolean;
+}
+
+/**
+ * Por onde este nó fala de fato com o peer, observado - não o endereço que o
+ * peer anuncia. `http`: um endereço direto respondeu; `p2p_direct`: conexão
+ * libp2p direta (discada ou por hole punch); `relayed`: só pelo relé.
+ */
+export interface PeerRoute {
+  kind: "http" | "p2p_direct" | "relayed" | "none";
+  address?: string | null;
+  hole_punched: boolean;
+  links: PeerRouteLink[];
+}
+
 export interface AdminNode {
   node_id: string;
   short_id: string;
   hostname: string;
+  /** O que o peer anuncia; a rota em uso está em `route`. */
   addr: string;
+  route?: PeerRoute | null;
   role?: string;
   model?: string;
   start_layer?: number;

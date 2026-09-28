@@ -40,6 +40,26 @@ consomem a tabela depois desse ponto.
   considera a resposta `approved` ou `challenge_required` como prova de que o
   destino conhece a chave compartilhada. Chave errada, chave ausente, peer
   sem gateway ou timeout são recusados. A chave não aparece no `Announce`.
+  Esgotados os endereços diretos, a mesma sonda vai pelo túnel libp2p; para um
+  par atrás de NAT/CGNAT esse é o único caminho que chega, e sem ele a
+  admissão nunca concluiria. As sondas diretas têm 2 s cada; a do túnel, 10 s,
+  porque pode ter de montar um circuito pelo relé. O veredito fica em cache por
+  30 s (recusa: 5 s). Recusa conta só quando é autêntica - pelo túnel (PeerId
+  autenticado) ou por HTTPS com o certificado fixado no `node_id`; uma resposta
+  HTTP em claro não prova quem respondeu. Sem resposta autêntica, um peer
+  aprovado há menos de 10 min (`ADMISSION_UNREACHABLE_GRACE`) continua
+  admitido e a sonda se repete a cada 5 s; sem prova recente, fica de fora.
+- **O `Announce` do gossipsub nunca sonda dentro do laço do swarm.** O pedido
+  do túnel é atendido por esse mesmo laço, então uma sonda aguardada ali
+  esperava por si mesma até o timeout de 2 s e falhava sempre. O sintoma: um
+  par que só o relé alcança entrava enquanto alguma rota direta respondia e
+  saía com `Removed timed-out peers` quando o cache vencia, porque os anúncios
+  seguintes eram descartados. `discovery.rs` consulta
+  `Network::admission_without_probe` (rede pública, chave vazia ou cache);
+  sem veredito, `Network::admit_in_background` roda a sonda em outra tarefa,
+  uma por peer, e o anúncio atual é descartado - o próximo, em até 5 s,
+  encontra o cache. Os anúncios UDP continuam sondando em linha, no laço de
+  recepção UDP, que não é o do túnel.
 - Em rede pública, a âncora local precisa ser válida, e o rigor depende do
   `network.access_policy`. Em ambos os casos a chave pública legada precisa
   derivar o `node_id`, a chave de autoridade precisa derivar o `libp2p peer_id`,
@@ -89,7 +109,7 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 
 - **`Announce`** - auto-apresentação: `node_id`, `pubkey`, `authority_pubkey`,
   `cluster_id` (se houver uma cadeia pública ancorada),
-  `libp2p_peer_id`, `addr`, `addr_candidates`,
+  `libp2p_peer_id`, `libp2p_addrs`, `addr`, `addr_candidates`,
   `model`, `start_layer`, `end_layer`, `total_layers`, `memory_mb`, `timestamp`,
   `ollama_port`, `inference_port`, `inference_quic_port`,
   `inference_frame_capabilities`, `gateway_port`, `gateway_quic_port`,
@@ -115,6 +135,14 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
   `connection_key`. Não há resposta nem material sensível para uma escuta
   passiva.
 
+`libp2p_addrs` é a lista de multiaddresses libp2p que o nó publica, já com
+`/p2p/<peer-id>`. É a única forma capaz de expressar um circuito de relay
+(`.../p2p/<relé>/p2p-circuit/p2p/<self>`), que a convenção `host:port` com
+porta `UDP+10000` não carrega. Vem de `Network::set_libp2p_addrs`, que o
+`Discovery` atualiza a cada listener, endereço externo confirmado ou reserva de
+circuito; o anúncio novo sai no gossip seguinte, em no máximo 5 s. Vazio num
+peer de binário anterior, e aí quem disca volta a derivar do `addr`.
+
 `PeerInfo` espelha os campos do `Announce` mais `last_seen`,
 `connection_verified` e `api_keys_active`. `PeerInfo::is_alive()` compara
 `last_seen` com `PEER_TIMEOUT_SECS` (30 s).
@@ -137,8 +165,7 @@ descoberta.
    injeta um destino loopback para o anúncio local; `testkit_with_broadcast_addr`
    aceita um endpoint loopback explícito e recusa o broadcast global.
 2. **Bootstrap:** `Network::start` chama `bootstrap_discovery` logo no início
-   (envia `PeerRequest` a cada bootstrap configurado). `main.rs` então espera
-   ~2 s juntando `Announce` antes de calcular a faixa de camadas.
+   (envia `PeerRequest` a cada bootstrap configurado).
 3. **Gossip (5 s):** a cada `GOSSIP_INTERVAL_SECS` o nó re-anuncia
    incondicionalmente (bootstrap + peers vivos + broadcast local), roda
    `discovery_sweep` e expira mortos. Quando há `advertise_addr`, o anúncio
@@ -298,7 +325,11 @@ a quebra parecia unilateral). Há teste que fala IPv4 de verdade
 ### Endereços anunciados (`addrs.rs` + `network.rs`)
 
 - `self_addr_candidates` enumera as interfaces (`ifconfig` no macOS, `ip -o addr`
-  no Linux; Windows fica vazio e cai no endereço observado) e filtra com
+  no Linux; Windows fica vazio e cai no endereço observado). Sem o `ip` (imagem
+  Docker sem `iproute2`) a lista também fica vazia, com um aviso único no log:
+  o nó não anuncia nem o IPv6 público, os peers da LAN guardam a origem privada
+  do pacote e a repassam no `PeerList`, e um peer remoto passa a discar o IP da
+  LAN e filtra com
   `filter_candidates`: descarta loopback/link-local/deprecated e interfaces
   virtuais de container (`docker0`, `br-*`, `veth*`, `cni*`, `podman*` e
   equivalentes), mantém endereço estável antes de temporário e limita a 2 por
@@ -415,20 +446,58 @@ não começa.
 (tópico `pom/announce/1.0.0`, heartbeat 1 s, autenticação assinada e validação
 estrita),
 Kademlia em modo `Server`, mDNS, identify, relay (cliente **e** servidor),
-DCuTR, AutoNAT e o behaviour de bitswap. Escuta em `/ip4/0.0.0.0/tcp/<udp+10000>`
-e em `/ip6/::`.
+DCuTR, AutoNAT e o behaviour de bitswap. Escuta na mesma porta `udp+10000` em
+quatro endereços: `/ip4/0.0.0.0/tcp/<porta>`, `/ip6/::/tcp/<porta>`,
+`/ip4/0.0.0.0/udp/<porta>/quic-v1` e `/ip6/::/udp/<porta>/quic-v1`.
 
 - **Bootstrap libp2p:** os mesmos nós bootstrap do UDP, convertidos por
   `udp_to_libp2p_multiaddr` (IPv4/IPv6/hostname na porta TCP). A porta TCP é
   `udp+10000` usando a porta UDP efetivamente ligada; porta UDP zero é recusada.
   Um bootstrap IPv6 colado em `/ip4/` falhava o parse e era dialado sem palavra
   no log.
-- **Relays:** por padrão diala os relays públicos do IPFS
-  (`DEFAULT_RELAY_NODES`) e os de `--relay-peers` (resolvidos antes por pkarr,
-  filtrando `is_relay`); `--no-default-relays` tira os públicos, inclusive no
-  caminho gateway-only sem modelo. Com `--serve-relay` o servidor de relay
-  aceita reservas (128 slots, 4 por peer,
-  1 h de reserva, circuitos de 120 s / 128 kB); sem ele, `max_reservations: 0`.
+- **Transportes:** TCP e QUIC (`quic-v1`), os dois construídos no
+  `SwarmBuilder`. QUIC não está ali por latência: o hole punch do DCuTR em TCP
+  depende de simultaneous open, que a maioria dos NAT domésticos e
+  praticamente todo CGNAT recusa. O caminho de UDP é o que o DCuTR foi
+  desenhado para usar, e é o que torna a travessia viável sem IPv6.
+- **Relays:** `DEFAULT_RELAY_NODES` está **vazio**. A lista trazia três
+  bootstrappers públicos do IPFS, que não são relés: não concedem reserva de
+  Circuit Relay v2 a um par qualquer, e os endereços fixados já estavam
+  obsoletos. Relé útil aqui é um nó pom com IP público rodando `--serve-relay`,
+  configurado em `--relay-peers` ou em `relay_peers` no `pom.json` (as duas
+  listas se somam; chaves `pk:...` resolvidas uma vez no arranque por pkarr,
+  filtrando `is_relay`). `--no-default-relays` continua aceito e hoje não tem efeito prático.
+  Com `--serve-relay` o servidor de relay aceita reservas (128 slots, 4 por
+  peer, 1 h de reserva) e circuitos de até 24 h sem teto de bytes
+  (`max_circuit_bytes: 0`); sem ele, `max_reservations: 0`. Os dois limites do
+  libp2p valem para o circuito inteiro, não por pedido: os bytes das duas
+  direções se somam desde a abertura. O teto antigo, do tamanho de um frame de
+  prefill, e o prazo de 120 s derrubavam o circuito em minutos, e um par que só
+  o relé alcança saía da tabela. Um relé dedicado é um nó comum, que
+  simplesmente não recebe implantação.
+  `examples/relay-node/docker-compose.yml` é o exemplo de um relé dedicado,
+  fora da rede que ele atende. Os nós atrás de NAT só precisam dele como
+  bootstrap: a reserva é pedida a todo par conectado que oferece relé.
+- **Reserva de circuito:** `reserve_circuit` pede `listen_on(<relé>/p2p-circuit)`
+  para qualquer par cujo identify anuncie `relay::HOP_PROTOCOL_NAME`, não
+  apenas para os relés configurados - o caso que mais importa é um nó pom com
+  IP público dentro do próprio cluster. O endereço discável do relé sai de
+  `relay_reservation_addrs`, nesta ordem: a lista configurada
+  (`--relay-peers`), o anúncio vivo (relé membro admitido) e, por último, o
+  endereço que este nó discou para chegar ao relé, guardado no
+  `ConnectionEstablished` (`dialed_addrs`, só conexão direta). O terceiro é o
+  que atende um relé dedicado fora da rede: ele não está em `--relay-peers`
+  nem na tabela `peers`, e sem esse recurso a reserva nunca acontecia - o
+  bootstrap no relé não bastava. `listen_addrs` do identify continua fora,
+  pela política "só Announce disca"; um endereço que o próprio nó discou não é
+  informação do par.
+  `circuit_listens` guarda quem já foi pedido, porque `listen_on` repetido
+  abre um listener novo a cada chamada e o identify do mesmo relé chega muitas
+  vezes.
+- **AutoNAT:** `NatStatus::Public(addr)` chama `Swarm::add_external_address`.
+  Descobrir que se é público sem contar ao swarm não servia para nada: o
+  endereço não ia no identify, os pares não o aprendiam, e o DCuTR ficava sem o
+  endereço público que o par precisa discar no instante do punch.
 - **Gossipsub:** `main.rs` publica o `Announce` a cada 5 s, com ou sem
   assignment, e o quadro é o mesmo do UDP (`Network::gossip_announce_bytes` ->
   `self_announce`); `handle_event` converte a mensagem em `PeerInfo` preferindo
@@ -525,6 +594,144 @@ rede privada antes de reiniciar. Assim um peer público não recebe bootstrap ou
 endereços privados e não há interface pública paralela para encaminhar até a
 rede privada. A alcançabilidade do endpoint listado continua sendo uma
 propriedade separada, verificada pelo navegador e dependente da rota real.
+
+### Travessia de NAT: o que já funciona e o que ainda falta
+
+Dois nós atrás de NAT ou CGNAT ainda não se alcançam. A causa não é ajuste de
+parâmetro: é que **nenhum caminho do código produz um endereço discável de um
+par atrás de NAT**.
+
+`PeerInfo::libp2p_dialable_addrs` (`network.rs`) devolve o *primeiro*
+`host:port` válido de `addr`/`addr_candidates`, e `tunnel_peer_multiaddrs`
+(`discovery.rs`) o converte por `udp_to_libp2p_multiaddr`, que só sabe emitir
+`/ip4|ip6/<host>/tcp|udp/<porta>`. Daí saem três consequências encadeadas:
+
+1. Atrás de NAT os candidatos anunciados são endereços RFC 1918 ou 100.64. A
+   discagem vai para um endereço privado e falha, sempre.
+2. A convenção `host:port` **não consegue expressar um circuito**. O endereço
+   `/ip4/<relé>/tcp/<porta>/p2p/<relé>/p2p-circuit/p2p/<par>` não tem forma
+   `host:port`, então um par com reserva aceita não tem como contá-la a
+   ninguém.
+3. O DCuTR coordena o hole punch **por cima de uma conexão relayed**. Sem
+   endereço de circuito publicado não há conexão relayed, e sem ela o DCuTR
+   nunca roda.
+
+As fases 1 e 2 fecharam esse caminho. A 1 deu ao swarm a capacidade de
+atravessar (QUIC, relé de verdade, reserva em qualquer par com hop, endereço
+externo confirmado). A 2 publica e disca multiaddresses reais:
+`publish_swarm_addrs` recolhe do swarm os endereços externos confirmados, os
+listeners com IP público e os listeners de circuito, e os grava em
+`Network::set_libp2p_addrs`; o `Announce` os leva em `libp2p_addrs`;
+`PeerInfo::libp2p_dialable_addrs` os devolve **todos**, em vez do primeiro
+`host:port`; e `tunnel_peer_multiaddrs` aceita as duas formas, acrescentando
+`/p2p/<peer-id>` só quando falta - num circuito o relé já aparece antes do
+`/p2p-circuit`, e duplicar o sufixo faria o swarm discar o relé como se fosse o
+destino.
+
+O registro pkarr publica o endereço público confirmado pelo AutoNAT quando ele
+existe (`Network::public_libp2p_addr`), e cai no multiaddress derivado no
+arranque quando não. Circuito **não** vai para o registro: ele é republicado a
+cada 30 min e uma reserva não dura previsivelmente tanto, então o registro
+passaria a maior parte do tempo apontando para um relé que não vale mais. O que
+vale no DHT é a descoberta a frio de um nó público.
+
+A fase 3 levou o plano de controle para o mesmo túnel. `TunnelRequest` ganhou
+`target`: `Inference` continua sendo o padrão e o único que um peer de binário
+anterior conhece; `Gateway` é atendido pelo gateway do destino. Com isso a
+sonda `/handshake` da admissão e as catracas de política
+(`/api/cluster/{tls,quic,logs,network-chat,network-settings}`) alcançam um par
+que nenhum endereço direto alcança - sem isso ele não entrava em `peers` nem
+com o hole punch perfeito, e roteamento, UI e pipeline continuavam cegos para
+ele. Todas as catracas tentam os endereços do principal na ordem de
+`Network::order_gateway_bases` (o host que já respondeu primeiro) antes do
+túnel; a do QUIC tentava só o primeiro endereço anunciado, sem túnel, e
+repetia "não deu para falar com o principal" a cada 5 s num principal atrás
+de um IPv6 inalcançável.
+
+**Um pedido que sai do túnel nunca é local, e a lista de rotas do gateway é
+fechada - as duas coisas são invariantes de segurança.** O encaminhador
+(`infer_tunnel::serve_loopback`) entrega o pedido ao gateway por `127.0.0.1`, e
+o gateway decide o que é local pelo endereço do socket (`serve::PeerAddr`): no
+modo localhost, `AdminAuth` libera a administração a quem vem do loopback, e
+`install_trust_anchor` olha só isso. Sem mais nada, qualquer par do swarm que
+alcançasse uma rota pelo túnel seria administrador. Por isso o encaminhador
+marca todo pedido com `x-pom-tunnel-origin` e um segredo aleatório deste
+processo (`tunnel_mark`), sobrescrevendo o que o par mandar com esse nome, e
+`serve::request_origin` troca a origem de um pedido do loopback com essa marca
+por um endereço não-loopback (`TUNNELED_ORIGIN`); o cabeçalho sai de todo
+pedido, marcado ou não. E `infer_tunnel::gateway_path_is_allowed` ainda
+compara o caminho exato, sem prefixo nem curinga, do lado que recebe. O emissor
+escolhe a variante de `target`; quem resolve a porta é o receptor, com as duas
+portas que ele próprio escolheu.
+
+Com a marca, a lista carrega também o **plano de controle da implantação e das
+leituras do cluster** (`/api/ui/{node,models,apply,reconfigure,unload,...}`,
+lista completa no código): `GatewayState::control_get`/`control_post_json`
+(sobre `peer_client::send_to_gateway`) tentam cada endereço anunciado e, por
+último, o túnel, e devolvem a resposta como um `reqwest::Response` comum. Do
+outro lado o pedido autentica o nó chamador pela assinatura de controle ou pela
+chave de conexão, como numa chamada direta. É o que deixa implantar num peer
+atrás de NAT simétrico, que nenhum endereço alcança e com quem o hole punch
+não fecha. O teto do `request_response` do túnel é 1 h, só como rede de
+segurança: cada chamador impõe o próprio prazo, e o fatiamento
+(`/api/ui/slice-ranges`) espera até uma hora.
+
+A **volta** da resposta direta usa o mesmo túnel. O gateway manda no `reply_to`
+os endereços por onde ele mesmo é alcançável, e eles saem das interfaces locais
+dele: com o gateway atrás de NAT, a cauda em outra rede disca
+`http://192.168.x.x:8080/v1/relay-result` e nunca chega. Desde então o
+`reply_to` carrega também o `libp2p_peer_id` e os `libp2p_addrs` do gateway, e
+`direct::deliver_via_tunnel` é a última via depois de todas as URLs falharem.
+Era o buraco que sobrava: a ida já atravessava o NAT e a volta morria calada
+até o `DIRECT_REPLY_DEADLINE`, dez minutos por token.
+
+O que continua fora do túnel: transferência de arquivos (os pesos não passam
+por um relé; cada peer precisa da própria cópia do modelo), sincronização de
+admin (`admin.rs`) e o `/health` do servidor de inferência entre peers. Nenhum
+deles participa da admissão, então um par atrás de NAT já entra no cluster e
+roteia sem eles.
+
+### Preferência aprendida pelo túnel
+
+Furar o NAT não basta se cada frame continua pagando a escada direta inteira.
+`PeerClients::prefer_tunnel` é uma marca **por peer**, aprendida: liga quando o
+túnel entrega depois de a escada direta falhar inteira, e desliga no primeiro
+sucesso direto. Ligada, a primeira tentativa de cada frame pula QUIC e HTTP e
+vai direto ao túnel; uma falha do túnel devolve a escada completa na tentativa
+seguinte, porque a rota direta pode voltar (hole punch novo, peer que mudou de
+rede). Sem ela, atrás de NAT todo prefill e todo decode queimavam timeout de
+QUIC mais timeout de HTTP antes do único transporte que entrega. A marca não é
+configuração e não se propaga entre peers: um par atrás de NAT não empurra o
+vizinho alcançável para o túnel.
+
+### Diagnóstico
+
+`Network::traversal_status` (`TraversalStatus`) guarda o estado do AutoNAT, os
+multiaddresses publicados, os relés que aceitaram reserva e a contagem de hole
+punches com a última falha. Sai em `/api/ui/cluster` no campo `traversal` e na
+tela de Rede, painel "Travessia de NAT". Dois nós atrás de NAT que não se
+enxergam falham num de três degraus - o AutoNAT nunca confirmou endereço,
+nenhum relé aceitou reserva, ou o hole punch falhou - e antes disso a única
+forma de saber qual era ler `RUST_LOG=debug` na máquina certa no momento certo.
+O campo entra no fingerprint do cache do cluster; sem isso o retrato
+congelaria, porque nem o estado do AutoNAT nem uma reserva nova mexem em
+`peers`.
+
+**A rota em uso com cada peer** é outra pergunta, e sai em `GET /admin/nodes`
+no campo `route` (`Network::peer_route`), mostrado na tela de participantes no
+lugar do endereço anunciado - que fica no `title` da linha, para comparação. É
+observada, na ordem em que o plano de controle tenta os caminhos: `http` (um
+endereço direto respondeu há menos de 5 min e não falhou desde então -
+`RouteTable::last_success`, alimentado por `mark_success`), `p2p_direct`
+(conexão libp2p direta, discada ou nascida de hole punch), `relayed` (só um
+circuito pelo relé: o hole punch não fechou) e `none`. As conexões libp2p vêm
+do laço do swarm: `ConnectionEstablished`/`ConnectionClosed` alimentam
+`Network::libp2p_links` com o endereço da outra ponta (`describe_multiaddr`;
+num circuito, o do relé, que vem antes de `/p2p-circuit`), e o sucesso do
+DCuTR marca a conexão direta como hole punch. O evento do DCuTR pode chegar
+antes do `ConnectionEstablished` da mesma conexão, por isso a marca fica num
+conjunto próprio até a conexão fechar. Um circuito que entrou pelo relé sem o
+endereço dele herda o endereço da conexão deste nó com o próprio relé.
 
 ## 4. Identidade
 

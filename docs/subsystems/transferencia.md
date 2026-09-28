@@ -138,6 +138,21 @@ leitura completa do arquivo na máquina de origem; fazer isso no aceite faria o
 clique esperar minutos. Em troca, o operador ganha o job já na lista, em `done`
 ou `failed` com o motivo no lugar onde ele procuraria.
 
+## 5.0 Qual endereço do peer se usa
+
+A oferta, o pedido de puxar e o aviso de cancelamento não usam o primeiro
+endereço anunciado do peer, que pode ser um IPv6 que ninguém alcança: usam
+`Network::gateway_bases`, que põe primeiro o host que já respondeu a este nó
+(`RouteTable::last_success`, o mesmo que a tela de participantes mostra como
+rota direta), depois os que não falharam há pouco, e por último os
+desacreditados. A oferta é chamada de controle assinada
+(`GatewayState::control_post_json`): tenta cada endereço nessa ordem e, por
+último, o túnel libp2p (`/api/transfer/offer` está na lista do túnel). O
+endereço de volta (`from_gateway`, via `local_ip_for`) sai do primeiro dessa
+lista, então aponta para a interface pela qual o peer de fato é alcançado. O
+download continua sendo HTTP direto nos dois sentidos: pesos não passam pelo
+relé.
+
 ## 5.1 O esquema de quem disca é o local, não o da oferta
 
 A oferta traz `from_gateway`, montado pelo **remetente**. Ele gravava

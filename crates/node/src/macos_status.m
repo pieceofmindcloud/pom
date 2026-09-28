@@ -327,7 +327,7 @@ int pom_macos_status_run(const char *url,
                          double window_height) {
     @autoreleasepool {
         // A thread do serviço pode terminar antes de o AppKit chegar ao laço
-        // de eventos - um `--list-models` termina em milissegundos. Guardar o
+        // de eventos - um `pom.json` inválido falha em milissegundos. Guardar o
         // pedido de paragem evita abrir um item de barra que ninguém veria e
         // que já devia estar fechado.
         if (atomic_load(&POMStopRequested)) {

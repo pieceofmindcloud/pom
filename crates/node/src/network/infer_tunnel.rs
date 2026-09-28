@@ -24,8 +24,105 @@ use tokio::sync::{mpsc, oneshot};
 
 pub const INFER_TUNNEL_PROTOCOL: &str = "/pom/infer-tunnel/1.0.0";
 
+/// Qual servidor local atende a chamada que chegou pelo túnel.
+///
+/// O destino é escolhido pelo emissor mas **resolvido** pelo receptor: ele
+/// mapeia a variante para uma das duas portas que ele próprio escolheu
+/// (`inference_port`, `gateway_port`). Um par remoto nunca nomeia porta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TunnelTarget {
+    /// Servidor de inferência embutido (`/v1/prefill`, `/v1/step`, ...).
+    #[default]
+    Inference,
+    /// Gateway: o plano de controle. Ver `gateway_path_is_allowed`.
+    Gateway,
+}
+
+/// Rotas do gateway que o túnel entrega. **Lista fechada, conferida no
+/// receptor.**
+///
+/// Encaminhar uma chamada do túnel para o gateway a faz chegar lá por
+/// `127.0.0.1`, e o gateway usa o endereço do socket (`serve::PeerAddr`) para
+/// decidir o que é local: `install_trust_anchor` libera a administração da
+/// rede com base **só** nisso. Um túnel que aceitasse qualquer caminho daria a
+/// qualquer peer do swarm um caminho para se tornar administrador. Por isso
+/// aqui não há prefixo nem curinga: só as rotas de que a admissão e as
+/// catracas de política precisam, cada uma já autenticada por conta própria.
+/// Cabeçalho com que o encaminhador do túnel marca o pedido que entrega ao
+/// gateway deste nó. O gateway (`serve::handle_conn`) só aceita a marca vinda
+/// do loopback e com o segredo deste processo (`tunnel_mark`), e então trata o
+/// pedido como remoto: tudo que sai do túnel chega por `127.0.0.1`, e sem a
+/// marca o modo localhost daria ao par do outro lado a administração do nó.
+pub(crate) const TUNNEL_ORIGIN_HEADER: &str = "x-pom-tunnel-origin";
+
+/// Segredo aleatório deste processo para `TUNNEL_ORIGIN_HEADER`. Nunca sai do
+/// processo: um cliente local não o conhece e um par remoto também não, e o
+/// encaminhador sobrescreve qualquer valor que o par mande com esse nome.
+pub(crate) fn tunnel_mark() -> &'static str {
+    static MARK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| hex::encode(rand::random::<[u8; 32]>()))
+}
+
+pub(crate) fn is_tunnel_mark(value: &[u8]) -> bool {
+    value == tunnel_mark().as_bytes()
+}
+
+pub fn gateway_path_is_allowed(path: &str) -> bool {
+    // Query string não muda a rota, mas não pode servir para escapar da
+    // comparação exata.
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    matches!(
+        path,
+        "/handshake"
+            | "/health"
+            | "/api/cluster/tls"
+            | "/api/cluster/quic"
+            | "/api/cluster/logs"
+            | "/api/cluster/network-chat"
+            | "/api/cluster/network-settings"
+            // A volta da resposta direta. O gateway manda seus endereços no
+            // `reply_to` e a cauda entrega ali; atrás de NAT nenhum deles é
+            // alcançável a partir da outra ponta, e sem este caminho o quadro
+            // morre calado no prazo de `DIRECT_REPLY_DEADLINE`. Ambas as rotas
+            // são autenticadas pelo ticket, que é único por quadro: entregar
+            // sem ticket válido devolve 410 e não alcança sessão nenhuma.
+            | "/v1/relay-result"
+            | "/v1/remote-stream-result"
+            // O plano de controle da implantação e das leituras do cluster, que
+            // `GatewayState::control_get`/`control_post_json` mandam pelo
+            // túnel quando nenhum endereço do peer responde - o caso de um
+            // peer atrás de NAT simétrico. Seguro só porque o pedido chega
+            // marcado (`TUNNEL_ORIGIN_HEADER`) e conta como remoto: cada rota
+            // autentica o nó chamador pela assinatura de controle ou pela
+            // chave de conexão, como faria numa chamada direta.
+            | "/api/ui/node"
+            | "/api/ui/models"
+            | "/api/ui/model-metadata"
+            | "/api/ui/model-identity"
+            | "/api/ui/model-layer-options"
+            | "/api/ui/slice-ranges"
+            | "/api/ui/plan"
+            | "/api/ui/apply"
+            | "/api/ui/reconfigure"
+            | "/api/ui/stop-inference"
+            | "/api/ui/unload"
+            | "/api/ui/leave"
+            | "/api/ui/cache-types"
+            | "/api/ui/deployments"
+            | "/api/ui/deploy/capacity-preview"
+            | "/api/ui/tp/check"
+            | "/api/ui/network/rtt"
+            | "/api/ui/network/chat"
+            | "/api/internal/reload_model"
+            // A oferta de um arquivo: pequena e assinada como as outras. O
+            // download que ela provoca continua sendo HTTP direto.
+            | "/api/transfer/offer"
+    )
+}
+
 /// A single generic inference call, forwarded to the receiving peer's own
-/// loopback inference server (`http://127.0.0.1:<inference_port><path>`)
+/// loopback server chosen by `target` (`http://127.0.0.1:<porta><path>`)
 /// once it arrives — see `discovery.rs`'s handling of
 /// `DiscBehaviourEvent::InferTunnel`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +131,10 @@ pub struct TunnelRequest {
     /// esse campo e continuam sendo tratados como chamadas POST.
     #[serde(default = "default_method")]
     pub method: String,
+    /// Servidor local que atende. Ausente num peer de binário anterior, que só
+    /// sabia falar com o servidor de inferência.
+    #[serde(default)]
+    pub target: TunnelTarget,
     pub path: String,
     pub body: Vec<u8>,
     /// Cabeçalhos necessários por rotas que não carregam seu metadado no corpo
@@ -50,6 +151,7 @@ impl TunnelRequest {
     pub fn post(path: impl Into<String>, body: Vec<u8>, headers: Vec<(String, String)>) -> Self {
         Self {
             method: "POST".to_string(),
+            target: TunnelTarget::Inference,
             path: path.into(),
             body,
             headers,
@@ -59,9 +161,26 @@ impl TunnelRequest {
     pub fn get(path: impl Into<String>) -> Self {
         Self {
             method: "GET".to_string(),
+            target: TunnelTarget::Inference,
             path: path.into(),
             body: Vec::new(),
             headers: Vec::new(),
+        }
+    }
+
+    /// Chamada do plano de controle, atendida pelo gateway do destino.
+    pub fn gateway(
+        method: &str,
+        path: impl Into<String>,
+        body: Vec<u8>,
+        headers: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            method: method.to_string(),
+            target: TunnelTarget::Gateway,
+            path: path.into(),
+            body,
+            headers,
         }
     }
 }
@@ -225,7 +344,12 @@ pub fn infer_tunnel_behaviour() -> request_response::Behaviour<InferTunnelCodec>
             StreamProtocol::new(INFER_TUNNEL_PROTOCOL),
             request_response::ProtocolSupport::Full,
         )],
-        request_response::Config::default().with_request_timeout(Duration::from_secs(60)),
+        // Teto de segurança, não o prazo de ninguém: cada chamador impõe o seu
+        // (`tunnel_gateway_call`, `send_frame_via_tunnel`). Chamadas de
+        // controle como `/api/ui/slice-ranges` esperam até uma hora pelo
+        // fatiamento; com 60 s aqui, elas morriam no túnel com o trabalho
+        // ainda correndo do outro lado.
+        request_response::Config::default().with_request_timeout(Duration::from_secs(3600)),
     )
 }
 
@@ -297,6 +421,33 @@ pub async fn measure_rtt(
         return None;
     }
     Some(started.elapsed().as_secs_f64() * 1000.0)
+}
+
+/// `GET /health` do servidor de inferência de um peer pelo túnel, e o corpo
+/// quando ele responde 2xx. É a sonda de admissão ao plano
+/// (`gateway::ready_for_pipeline`) de um peer que nenhum endereço alcança.
+pub(crate) async fn health_via_tunnel(
+    peer: &crate::peer_client::TunnelPeer,
+    timeout: Duration,
+) -> Option<serde_json::Value> {
+    let sender = tunnel_sender()?;
+    let (reply, response) = oneshot::channel();
+    sender
+        .send(TunnelOutbound {
+            peer_id: peer.peer_id,
+            addr_candidates: peer.addrs.clone(),
+            request: TunnelRequest::get("/health"),
+            reply,
+        })
+        .await
+        .ok()?;
+    let Ok(Ok(Ok(response))) = tokio::time::timeout(timeout, response).await else {
+        return None;
+    };
+    if !(200..300).contains(&response.status) {
+        return None;
+    }
+    serde_json::from_slice(&response.body).ok()
 }
 
 /// A real swarm speaking this protocol, wired to a real `TunnelOutboundSender`:
@@ -392,18 +543,25 @@ pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutbound
 /// de `/health` usado pela medição direcional de RTT.
 pub async fn serve_loopback(
     http: &reqwest::Client,
-    inference_port: u16,
+    port: u16,
     request: TunnelRequest,
 ) -> TunnelResponse {
-    let url = format!("http://127.0.0.1:{inference_port}{}", request.path);
+    // Sempre texto claro no loopback: `serve::plain_allowed` libera loopback
+    // mesmo com o cluster em TLS estrito, e o certificado do nó não cobre
+    // `127.0.0.1`.
+    let url = format!("http://127.0.0.1:{port}{}", request.path);
     let has_content_type = request
         .headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case(reqwest::header::CONTENT_TYPE.as_str()));
-    let mut request_builder = if request.method.eq_ignore_ascii_case("GET") {
+    // Método desconhecido cai em POST, o comportamento antigo para qualquer
+    // coisa que não fosse GET.
+    let method = reqwest::Method::from_bytes(request.method.to_ascii_uppercase().as_bytes())
+        .unwrap_or(reqwest::Method::POST);
+    let mut request_builder = if method == reqwest::Method::GET {
         http.get(&url)
     } else {
-        let builder = http.post(&url).body(request.body);
+        let builder = http.request(method, &url).body(request.body);
         if has_content_type {
             builder
         } else {
@@ -411,9 +569,15 @@ pub async fn serve_loopback(
         }
     };
     for (name, value) in request.headers {
+        if name.eq_ignore_ascii_case(TUNNEL_ORIGIN_HEADER) {
+            continue;
+        }
         request_builder = request_builder.header(name, value);
     }
-    let sent = request_builder.send().await;
+    let sent = request_builder
+        .header(TUNNEL_ORIGIN_HEADER, tunnel_mark())
+        .send()
+        .await;
 
     match sent {
         Ok(resp) => {
@@ -436,6 +600,78 @@ pub async fn serve_loopback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A escalada que a lista fechada existe para impedir: `install_trust_anchor`
+    /// libera a administração da rede olhando só se o socket é loopback, e
+    /// tudo que sai do túnel chega ao gateway por `127.0.0.1`.
+    #[test]
+    fn o_tunel_nao_carrega_rota_administrativa() {
+        assert!(!gateway_path_is_allowed("/api/ui/trust/anchor"));
+        assert!(!gateway_path_is_allowed("/api/ui/network/trust-anchor"));
+        assert!(!gateway_path_is_allowed("/admin/config"));
+        assert!(!gateway_path_is_allowed("/admin/nodes"));
+        assert!(!gateway_path_is_allowed("/api/generate"));
+        assert!(!gateway_path_is_allowed("/"));
+    }
+
+    /// O plano de controle da implantação passa, e só porque o pedido chega
+    /// marcado como remoto (ver `serve::request_origin`).
+    #[test]
+    fn o_tunel_carrega_o_plano_de_controle_da_implantacao() {
+        assert!(gateway_path_is_allowed("/api/ui/node"));
+        assert!(gateway_path_is_allowed("/api/ui/apply"));
+        assert!(gateway_path_is_allowed("/api/ui/deployments?local=true"));
+    }
+
+    /// A marca é um segredo do processo: constante enquanto ele vive e nunca
+    /// um valor que um par do outro lado adivinharia.
+    #[test]
+    fn a_marca_do_tunel_e_um_segredo_estavel() {
+        assert_eq!(tunnel_mark(), tunnel_mark());
+        assert_eq!(tunnel_mark().len(), 64);
+        assert!(is_tunnel_mark(tunnel_mark().as_bytes()));
+        assert!(!is_tunnel_mark(b""));
+        assert!(!is_tunnel_mark(b"1"));
+    }
+
+    /// As rotas de que a admissão e as catracas de política dependem. Sem
+    /// `/handshake` aqui, um par atrás de NAT nunca entra na tabela `peers`.
+    #[test]
+    fn o_tunel_carrega_o_plano_de_controle() {
+        for path in [
+            "/handshake",
+            "/health",
+            "/api/cluster/tls",
+            "/api/cluster/quic",
+            "/api/cluster/logs",
+            "/api/cluster/network-chat",
+            "/api/cluster/network-settings",
+            "/v1/relay-result",
+            "/v1/remote-stream-result",
+        ] {
+            assert!(gateway_path_is_allowed(path), "{path} devia passar");
+        }
+    }
+
+    /// Comparação exata, não prefixo: um sufixo não pode pendurar outra rota
+    /// numa permitida, e query string não pode servir de escape.
+    #[test]
+    fn a_comparacao_da_lista_e_exata() {
+        assert!(!gateway_path_is_allowed("/handshake/../api/ui/trust/anchor"));
+        assert!(!gateway_path_is_allowed("/health/../admin"));
+        assert!(!gateway_path_is_allowed("/api/cluster/tlsx"));
+        assert!(gateway_path_is_allowed("/api/cluster/tls?verbose=1"));
+    }
+
+    /// Um peer de binário anterior não manda `target`, e só sabia falar com o
+    /// servidor de inferência.
+    #[test]
+    fn um_pedido_sem_target_vai_para_a_inferencia() {
+        let json = br#"{"path":"/v1/step","body":[]}"#;
+        let request: TunnelRequest = serde_json::from_slice(json).expect("parse");
+        assert_eq!(request.target, TunnelTarget::Inference);
+        assert_eq!(request.method, "POST");
+    }
     use futures::io::Cursor;
 
     /// A request/response has to survive the exact framing a real

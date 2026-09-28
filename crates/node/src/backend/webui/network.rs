@@ -185,13 +185,7 @@ async fn fanout_network_settings(
             continue;
         };
         let mut updated = false;
-        let mut gateway_urls = peer.gateway_candidates();
-        if gateway_urls.is_empty() {
-            if let Some(url) = peer.gateway_url() {
-                gateway_urls.push(url);
-            }
-        }
-        for base in gateway_urls {
+        for base in state.gateway_bases(&peer) {
             let request = match state
                 .control_json_request(
                     client
@@ -295,7 +289,10 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
                 continue;
             };
             let mut fetched = None;
-            for base in peer.gateway_candidates_with_tls(announced_tls) {
+            for base in state.network.order_gateway_bases(
+                &peer.node_id,
+                peer.gateway_candidates_with_tls(announced_tls),
+            ) {
                 let Ok(request) = state
                     .control_get_request(
                         client.get(format!("{base}{NETWORK_SETTINGS_POLICY_PATH}")),

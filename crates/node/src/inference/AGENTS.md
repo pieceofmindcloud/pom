@@ -88,6 +88,14 @@ visibilidade dos controles de implantação na UI local.
   resultado direto pode ser liberado antes de recibos de transporte tardios; o
   `ReplyInbox` retém um snapshot limitado, deduplica por ticket e índice de hop
   e o reconcilia até a expiração.
+  As URLs de `reply_to` saem das interfaces locais do gateway, então atrás de
+  NAT/CGNAT nenhuma delas vale na outra ponta: `deliver_via_tunnel` é a última
+  via, pelo túnel libp2p até o `libp2p_peer_id`/`libp2p_addrs` que o `reply_to`
+  passou a carregar. Sem ela o quadro morria calado até o
+  `DIRECT_REPLY_DEADLINE`, dez minutos por token. O transporte anotado na
+  metadata é `libp2p-tunnel`, para o trace do gateway não publicar como HTTP um
+  caminho que não foi. Gateway em binário anterior não manda os campos e a
+  entrega segue sem a última via.
 - `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
   token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
@@ -875,7 +883,7 @@ visibilidade dos controles de implantação na UI local.
   o gateway fan-out para todos os hops.
 - `handle_slot` + `InferState::{save_slot,restore_slot,check_slot_compatible}` /
   `erase_slot`/`count_slot_entries` - snapshot de KV em disco
-  (`--slot-save-path`). O health conta sidecars pela estrutura do diretório,
+  (`slot_save_path`). O health conta sidecars pela estrutura do diretório,
   fora do lock do motor, e só abre o JSON quando precisa salvar ou restaurar.
   `save_slot` grava **`prompt_seq` truncado em `prompt_len`**, nunca `gen_seq`,
   mais o sidecar `<name>.json` (identidade do modelo e da fatia).
@@ -1272,13 +1280,13 @@ falha de transporte.
   (SIGKILL). Devolve `Err(motivo)` quando o ocupante não é identificável ou a
   porta segue presa depois de 5 s, e o supervisor põe esse motivo no
   `status.detail` como `Failed` **desde a primeira tentativa** - antes o
-  operador via só "carregando" até `MAX_RESTARTS` esgotar, e a TUI anunciava
-  saúde enquanto o servidor morria em laço.
+  operador via só "carregando" até `MAX_RESTARTS` esgotar enquanto o servidor
+  morria em laço.
 - `log_file_path` / `append_log` - `<project_root>/infer_server_<porta>.log`,
   um por porta, apontado por `RuntimeStatus.log_path` (`set_log`, chamado no
   arranque do supervisor). Carrega o ciclo de vida do servidor (arranque,
-  tentativa, motivo da queda, modelo carregado); o stdout não serve porque a
-  TUI limpa a tela a cada `--refresh`.
+  tentativa, motivo da queda, modelo carregado); o stdout não guarda esse
+  histórico.
 - `needs_residual_export` - **única** condição para instalar o callback de
   captura: custa 7,8-8,2 ms/token contra 0,14-0,67 ms sem ele (medido
   2026-08-12); sem o callback, `hidden_state` recusa com "residual capture

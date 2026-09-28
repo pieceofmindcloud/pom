@@ -282,6 +282,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "idle" | "failed" | "thermal"`; `idle` means a live peer unloaded its model, while thermal is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
+  `ClusterView.traversal` (`TraversalView`) é o diagnóstico da travessia de NAT
+  do nó que respondeu, não do cluster; é opcional porque nó antigo não o manda.
   `PeerView.rediscovering` distingue "endereço morreu, a rede já foi perguntada"
   de `unreachable` ("atendeu e a leitura quebrou"); `ModelCoverage.unreadable_nodes`
   nomeia as máquinas de que a cobertura depende sem conseguir ler, e é o que
@@ -345,6 +347,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   (também em `adminAuthority.ts`) envia a cadeia colada e a impressão digital
   digitada; a tela nunca deriva a segunda da primeira, e `can_install` é
   apresentação - quem recusa é o servidor.
+- `trustFingerprint.ts` - `fingerprintFromTrustDocument` calcula a impressão
+  digital pública (SHA-256 do `anchor.principal.pubkey`), a mesma do módulo Rust,
+  e devolve `null` para o que não é documento de confiança. Usa
+  `crypto.subtle` quando existe e, fora de contexto seguro (o wizard aberto por
+  HTTP no IP da máquina), o `sha256` em TypeScript puro do mesmo arquivo -
+  sem ele a impressão digital nunca aparecia e o "Continuar" do wizard ficava
+  desligado sem aviso.
 
 ### queries.ts
 - `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):

@@ -12,8 +12,8 @@ também leva a reserva HTTP da pipeline; a proteção da administração é uma
 fronteira de rota aplicada no servidor.
 
 Portas, para situar: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000 (52777),
-gateway HTTP `--gateway-port` (8080), e o servidor de inferência
-`--inference-port` (8181, `inference/infer_server.rs`, um router separado que
+gateway HTTP `--gateway-port` (8080), e o servidor de inferência em
+`inference_port` do `pom.json` (8181, `inference/infer_server.rs`, um router separado que
 serve `/v1/prefill`, `/v1/step`, `/v1/step-stream`, `/v1/link`, `/health` - não
 passa por este gateway). O gateway também registra `/v1/link` para o retorno
 full-duplex do `remote-stream`; os dois listeners usam o mesmo enquadramento,
@@ -258,7 +258,7 @@ sem caminho de volta que não fosse recarregar na mão.
 
 As rotas da pipeline não entram nessa fronteira: `/api/generate`, `/generate`,
 `/v1/**`, `/health`, `/peers` e `/handshake`, além das rotas do servidor de
-inferência em `--inference-port`, continuam acessíveis por IPv4 e IPv6 para
+inferência em `inference_port`, continuam acessíveis por IPv4 e IPv6 para
 que o HTTP de reserva do túnel libp2p não seja interrompido. `GET /api/access`
 é a única exceção pública da administração, pois informa apenas o modo, a
 necessidade de senha e a porta para a tela decidir se deve mostrar a catraca.
@@ -339,6 +339,15 @@ não estão no router principal e só existem antes da configuração inicial.
   `nonce_reused` e `nonce_expired` continuam sendo recusas 403. Um nó antigo,
   que envia o corpo anterior e não sabe repetir com a assinatura, vê 403 e
   nunca é admitido.
+  Esta rota também chega pelo túnel libp2p, junto de `/health`, das rotas
+  `/api/cluster/{tls,quic,logs,network-chat,network-settings}` e da volta da
+  resposta direta (`/v1/relay-result`, `/v1/remote-stream-result`, cada uma
+  autenticada pelo ticket único do quadro): é a lista
+  fechada de `infer_tunnel::gateway_path_is_allowed`, o que um par atrás de
+  NAT/CGNAT usa quando nenhum endereço direto responde. A lista é conferida no
+  receptor e a comparação é exata, porque o que sai do túnel chega ao gateway
+  por `127.0.0.1` e a fronteira de loopback é o que libera a instalação da
+  âncora administrativa. Ver `docs/subsystems/rede-p2p.md`, "Travessia de NAT".
 - **`POST /v1/relay-result`** - onde a **cauda** de um pipeline entrega o
   resultado direto (`relay/v2-direct`). Não usa API key de cliente: exige um
   ticket vivo no corpo; ticket morto = `410 Gone`.
@@ -630,7 +639,7 @@ acrescenta uma revogação com o `node_id` do operador autenticado e o horário.
 Uma segunda tentativa é idempotente e não cria outro evento; a chave nunca
 volta a autenticar.
 
-#### Snapshots de KV cache (`--slot-save-path`)
+#### Snapshots de KV cache (`slot_save_path`)
 
 `GET /admin/slots` devolve `{slot_persist_enabled, slot_count}` lidos do
 `/health` da porta de inferência **local** (vista rápida deste nó), mais
@@ -959,6 +968,14 @@ troca o fingerprint e força nova coleta antes do fim do TTL. O `ETag` ignora
 somente `system.sampled_at`, que é ruído de amostragem; métricas e topologia
 continuam invalidando a versão. `x-state-version` é monotônico para snapshots
 alterados.
+
+O payload de `/api/ui/cluster` traz `traversal`, o diagnóstico da travessia de
+NAT **deste** nó: estado do AutoNAT (`unknown`/`public`/`private`), os
+multiaddresses publicados (`addrs`, circuito incluído), os relés que aceitaram
+reserva (`reservations`), e a contagem de hole punches com a última falha. Ele
+entra no fingerprint do cache, senão o retrato congelaria - nem o estado do
+AutoNAT nem uma reserva nova mexem em `peers`. Ver
+`docs/subsystems/rede-p2p.md`, "Travessia de NAT".
 
 No payload de `/api/ui/cluster`, `PeerView.load` é a leitura de requisições em
 voo publicada pelo próprio peer. Para o peer local o gateway consulta seu

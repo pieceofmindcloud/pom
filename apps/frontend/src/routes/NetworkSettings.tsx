@@ -45,7 +45,7 @@ import { useAdminNodes, useCluster, useInvalidate, useNetworkInfo, useNode, useW
 import { useGeoReference } from "../lib/queries";
 import { networkStats } from "../lib/networkStats";
 import { useToast } from "../lib/toast";
-import type { AdminNode, ClusterView, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, WindowsFirewallStatus } from "../lib/types";
+import type { AdminNode, ClusterView, GeoReferenceResponse, NetworkInfoView, NetworkSettings as NetworkSettingsData, PeerRoute, TraversalView, WindowsFirewallStatus } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 export function NetworkSettings({ participantsOnly = false }: { participantsOnly?: boolean }) {
@@ -232,6 +232,8 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
 
         <NetworkMetricsPanel metrics={metrics} t={t} />
 
+        {cluster.data?.traversal && <TraversalPanel traversal={cluster.data.traversal} t={t} />}
+
         {isInfer && (
           <Panel>
             <PanelHeader
@@ -395,6 +397,71 @@ function NetworkMetricsPanel({ metrics, t }: { metrics: ReturnType<typeof networ
   );
 }
 
+/**
+ * Em que degrau a travessia de NAT parou. Dois nós atrás de NAT que não se
+ * enxergam falham em um de três lugares - o AutoNAT nunca confirmou um
+ * endereço, nenhum relé aceitou reserva, ou o hole punch falhou - e antes
+ * deste painel a única forma de saber qual era ler o log de depuração na
+ * máquina certa no momento certo.
+ */
+function TraversalPanel({ traversal, t }: { traversal: TraversalView; t: (key: string, values?: Record<string, string | number>) => string }) {
+  const natTone = traversal.nat === "public" ? "aqua" : traversal.nat === "private" ? "amber" : "neutral";
+  const circuits = traversal.addrs.filter((addr) => addr.includes("/p2p-circuit"));
+  const direct = traversal.addrs.filter((addr) => !addr.includes("/p2p-circuit"));
+  return (
+    <Panel>
+      <PanelHeader eyebrow={t("network.traversalEyebrow")} title={t("network.traversalTitle")} subtitle={t("network.traversalSubtitle")} />
+      <dl className="grid gap-x-6 gap-y-4 px-5 py-4 sm:grid-cols-3">
+        <KeyValue label={t("network.traversalNat")}>
+          <Badge tone={natTone}>{t(`network.traversalNat.${traversal.nat}`)}</Badge>
+        </KeyValue>
+        <KeyValue label={t("network.traversalReservations")}>
+          <Mono>{traversal.reservations.length}</Mono>
+        </KeyValue>
+        <KeyValue label={t("network.traversalHolePunch")}>
+          <Mono>{t("network.traversalHolePunchCounts", { ok: traversal.hole_punch_ok, failed: traversal.hole_punch_failed })}</Mono>
+        </KeyValue>
+      </dl>
+      <dl className="grid gap-x-6 gap-y-4 border-t border-line px-5 py-4">
+        <KeyValue label={t("network.traversalDirect")}>
+          {direct.length ? <div className="space-y-0.5">{direct.map((addr) => <p key={addr} className="break-all font-mono text-[0.7rem] text-muted">{addr}</p>)}</div> : <span className="text-faint">{t("network.notAvailable")}</span>}
+        </KeyValue>
+        <KeyValue label={t("network.traversalCircuits")}>
+          {circuits.length ? <div className="space-y-0.5">{circuits.map((addr) => <p key={addr} className="break-all font-mono text-[0.7rem] text-muted">{addr}</p>)}</div> : <span className="text-faint">{t("network.notAvailable")}</span>}
+        </KeyValue>
+      </dl>
+      {traversal.last_hole_punch_error && (
+        <Footnote className="border-t border-line px-5 py-3" icon={<ShieldAlert className="h-3.5 w-3.5" />}>
+          {t("network.traversalLastError", { error: traversal.last_hole_punch_error })}
+        </Footnote>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * Rota em uso com um peer: direta (HTTP ou P2P, esta às vezes por hole punch)
+ * ou pelo relé, quando o hole punch não fechou. É o que o operador precisa ver;
+ * o endereço anunciado fica no `title` da linha.
+ */
+function RouteBadge({ route, t }: { route: PeerRoute | null | undefined; t: (key: string, values?: Record<string, string | number>) => string }) {
+  switch (route?.kind) {
+    case "http":
+      return <Badge tone="aqua">{t("network.routeDirect")}</Badge>;
+    case "p2p_direct":
+      return <Badge tone="aqua">{t(route.hole_punched ? "network.routeHolePunched" : "network.routeP2pDirect")}</Badge>;
+    case "relayed":
+      return <Badge tone="amber">{t("network.routeRelayed")}</Badge>;
+    default:
+      return <Badge tone="neutral">{t("network.routeNone")}</Badge>;
+  }
+}
+
+function routeAddress(route: PeerRoute | null | undefined, t: (key: string, values?: Record<string, string | number>) => string): string {
+  if (!route?.address) return t("network.noAddress");
+  return route.kind === "relayed" ? t("network.routeViaRelay", { address: route.address }) : route.address;
+}
+
 function ParticipantsPanel({ nodes, cluster, isAdmin, setPending, setBlocked, t }: { nodes: ReturnType<typeof useAdminNodes>; cluster: ClusterView | undefined; isAdmin: boolean; setPending: (value: { id: string; hostname: string } | null) => void; setBlocked: (id: string, blocked: boolean) => Promise<void>; t: (key: string, values?: Record<string, string | number>) => string }) {
   const systemOf = (id: string) => cluster?.peers.find((peer) => peer.node_id === id)?.node?.system ?? null;
   return (
@@ -403,7 +470,7 @@ function ParticipantsPanel({ nodes, cluster, isAdmin, setPending, setBlocked, t 
       {nodes.isLoading && <Skeleton className="h-48 w-full" />}
       {nodes.data && <Panel>
         <PanelHeader title={t("network.knownCount", { count: nodes.data.length })} subtitle={t("network.knownDetail")} />
-        {nodes.data.length === 0 ? <Empty icon={<Network className="h-5 w-5" />} title={t("network.noNodes")}>{t("network.noNodesDetail")}</Empty> : <div className="divide-y divide-line">{nodes.data.map((n: AdminNode) => <div key={n.node_id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5"><MachineIcon system={systemOf(n.node_id)} size="sm" /><div className="min-w-[12rem] flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-fg">{n.hostname || n.short_id}</span>{n.is_self && <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">{t("network.here")}</Badge>}{n.blocked && <Badge tone="rose">{t("network.blockedLabel")}</Badge>}{n.verified && <Badge tone="aqua">{t("network.verified")}</Badge>}</div><p className="mt-0.5 font-mono text-[0.7rem] text-faint">{n.short_id} · {n.addr || t("network.noAddress")}</p></div>{n.total_layers ? <Mono className="shrink-0 text-iris">{layerRange(n.start_layer ?? 0, n.end_layer ?? 0)}</Mono> : null}<span className="flex shrink-0 items-center gap-1.5 text-[0.78rem] text-muted"><Dot tone={n.connected ? "aqua" : "neutral"} />{n.connected ? t("network.connected") : t("network.away")}</span>{isAdmin && !n.is_self && <Button size="sm" variant={n.blocked ? "outline" : "danger"} icon={n.blocked ? <Undo2 className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />} onClick={() => n.blocked ? void setBlocked(n.node_id, false) : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })}>{n.blocked ? t("network.unblock") : t("network.block")}</Button>}</div>)}</div>}
+        {nodes.data.length === 0 ? <Empty icon={<Network className="h-5 w-5" />} title={t("network.noNodes")}>{t("network.noNodesDetail")}</Empty> : <div className="divide-y divide-line">{nodes.data.map((n: AdminNode) => <div key={n.node_id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5"><MachineIcon system={systemOf(n.node_id)} size="sm" /><div className="min-w-[12rem] flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-fg">{n.hostname || n.short_id}</span>{n.is_self && <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">{t("network.here")}</Badge>}{n.blocked && <Badge tone="rose">{t("network.blockedLabel")}</Badge>}{n.verified && <Badge tone="aqua">{t("network.verified")}</Badge>}{!n.is_self && <RouteBadge route={n.route} t={t} />}</div><p className="mt-0.5 font-mono text-[0.7rem] text-faint" title={n.addr ? t("network.routeAdvertised", { addr: n.addr }) : undefined}>{n.short_id} · {n.is_self ? n.addr || t("network.noAddress") : routeAddress(n.route, t)}</p></div>{n.total_layers ? <Mono className="shrink-0 text-iris">{layerRange(n.start_layer ?? 0, n.end_layer ?? 0)}</Mono> : null}<span className="flex shrink-0 items-center gap-1.5 text-[0.78rem] text-muted"><Dot tone={n.connected ? "aqua" : "neutral"} />{n.connected ? t("network.connected") : t("network.away")}</span>{isAdmin && !n.is_self && <Button size="sm" variant={n.blocked ? "outline" : "danger"} icon={n.blocked ? <Undo2 className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />} onClick={() => n.blocked ? void setBlocked(n.node_id, false) : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })}>{n.blocked ? t("network.unblock") : t("network.block")}</Button>}</div>)}</div>}
         <Footnote className="border-t border-line px-5 py-3" icon={<ShieldOff className="h-3.5 w-3.5" />}>{t("network.identityNote")}</Footnote>
       </Panel>}
     </>

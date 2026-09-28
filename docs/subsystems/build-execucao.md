@@ -688,6 +688,11 @@ Três workflows, um por sistema, todos só manuais (`workflow_dispatch`):
 | `.github/workflows/release-macos.yml` | macOS arm64, Metal | runner `macbook` | `version`, `prerelease` |
 | `.github/workflows/release-windows.yml` | Windows x86_64, CPU | hospedado (`windows-2022`) | `version`, `prerelease` |
 
+Os pacotes sobem como artefatos só para passar entre os jobs da mesma
+execução, com `retention-days: 2`; os definitivos ficam anexados à release. O
+padrão de 90 dias chegou a esgotar a cota de armazenamento de artefatos da
+conta e bloquear releases novas.
+
 **São separados para poder rodar sozinhos.** Publicar só o macOS não deve
 custar um build de Windows, e um alvo que quebra não leva os outros junto. Cada
 workflow publica o próprio pacote **na mesma tag**: o primeiro a rodar cria a

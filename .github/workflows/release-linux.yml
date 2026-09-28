@@ -160,6 +160,8 @@ jobs:
           name: pacote-linux-${{ matrix.variante.suffix }}
           path: pom-*.tar.gz
           if-no-files-found: error
+          # Só passam entre os jobs desta execução; a release guarda os pacotes.
+          retention-days: 2
 
   # Cada sistema publica o próprio pacote na mesma tag. O primeiro workflow a
   # rodar cria a release, os outros anexam o arquivo deles - é isso que deixa os

@@ -938,7 +938,9 @@ confere isso e o dry-run de cada variante.
 `~/.cache/pom-release` do usuário `github-runner`): clone raso do fork do
 llama.cpp (refeito quando o sha remoto de `pom-tensor-parallel` muda), um
 `target-<variante>` por variante, as ferramentas do Windows (`cargo-xwin`,
-`ninja`, shims) e o cache do `xwin`. Conte **~10 GB por variante** mais ~3 GB do
+`ninja`, shims), o cache do `xwin` e o do `ccache` (`CCACHE_DIR` é forçado
+para `ccache/` ali dentro: um `cache_dir` do `ccache.conf` que o usuário não
+consegue gravar fazia todo objeto nativo falhar com `Permission denied`). Conte **~10 GB por variante** mais ~3 GB do
 SDK; os jobs Linux avisam quando o disco tem menos de 15 GB. Para liberar
 espaço, apague a pasta inteira - a próxima execução reconstrói do zero.
 

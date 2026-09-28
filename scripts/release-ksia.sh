@@ -121,6 +121,10 @@ else
 fi
 export LLAMA_SOURCE="$llama_source"
 export CARGO_TARGET_DIR="$target_dir"
+# llama.cpp's CMake picks up ccache on its own. Keep it inside the release
+# cache so a machine-wide cache_dir (ccache.conf) that this user cannot write
+# does not fail every native object with "Permission denied".
+export CCACHE_DIR="${cache}/ccache"
 
 # --- web interface ------------------------------------------------------------
 

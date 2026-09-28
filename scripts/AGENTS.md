@@ -125,7 +125,7 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   (cruzado com `cargo xwin` + `clang-cl`/`lld-link` do LLVM 20; o STL do
   MSVC exige Clang >= 19), com estado em
   `~/.cache/pom-release` e pacote em `dist-release-ksia/`; `--dry-run` só
-  imprime os comandos. Chamado por `.github/workflows/release-ksia.yml`.
+  imprime os comandos; `--debug-symbols` (windows-cpu) inclui `pom.pdb`. Chamado por `.github/workflows/release-ksia.yml`.
 - `test-release-ksia.sh` - dry-run de cada variante e checagem de que o
   workflow da ksia não usa armazenamento do GitHub.
 - `test_pom_release.sh` - smoke test local do incremento automático, override

@@ -396,6 +396,18 @@ impl GatewayState {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(bytes))
     }
+    /// Endereços do gateway de `peer`, o que já respondeu primeiro. Ver
+    /// `Network::gateway_bases`.
+    pub(crate) fn gateway_bases(&self, peer: &crate::network::PeerInfo) -> Vec<String> {
+        self.network.gateway_bases(peer)
+    }
+
+    /// O primeiro de `gateway_bases`: o endereço do gateway de `peer` para
+    /// quem só pode usar um (um download, o endereço de volta de uma oferta).
+    pub(crate) fn gateway_base(&self, peer: &crate::network::PeerInfo) -> Option<String> {
+        self.gateway_bases(peer).into_iter().next()
+    }
+
     /// GET de controle assinado ao gateway de `peer`, por todos os caminhos
     /// que ele anuncia (endereços e, por último, o túnel libp2p - ver
     /// `peer_client::send_to_gateway`). `path` pode trazer query string; a
@@ -455,15 +467,8 @@ impl GatewayState {
         body: Option<Vec<u8>>,
         timeout: std::time::Duration,
     ) -> anyhow::Result<reqwest::Response> {
-        self.control_call_over(
-            peer,
-            &peer.gateway_candidates(),
-            method,
-            path,
-            body,
-            timeout,
-        )
-        .await
+        self.control_call_over(peer, &self.gateway_bases(peer), method, path, body, timeout)
+            .await
     }
 
     async fn control_call_over(

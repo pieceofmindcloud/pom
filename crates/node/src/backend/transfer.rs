@@ -1435,7 +1435,9 @@ async fn start_pull(
         )
             .into_response();
     };
-    let Some(base) = peer.gateway_url() else {
+    // O endereço que já respondeu primeiro, não o primeiro anunciado: o
+    // download é HTTP direto e não tem outro caminho.
+    let Some(base) = state.gateway_base(peer) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "peer não anuncia porta de gateway" })),
@@ -1557,32 +1559,15 @@ async fn notify_peer_cancel(state: &GatewayState, id: &str, by: &str, peer_host:
         warn!("não deu para avisar {peer_host} do cancelamento de {id}: peer desconhecido");
         return;
     };
-    let Some(base) = peer.gateway_url() else {
-        warn!("não deu para avisar {peer_host}: peer não anuncia porta de gateway");
-        return;
-    };
-    let Ok(cliente) = state.peer_http.for_peer(&peer.node_id) else {
-        warn!("não deu para avisar {peer_host}: sem cliente para o peer");
-        return;
-    };
     let body = json!({ "by": by, "from_peer": true });
-    let sent: Result<(), String> = match state
-        .control_json_request(
-            cliente
-                .post(format!("{base}/api/transfer/jobs/{id}/cancel"))
-                .timeout(Duration::from_secs(10)),
+    let sent = state
+        .control_post_json(
+            peer,
             &format!("/api/transfer/jobs/{id}/cancel"),
             &body,
+            Duration::from_secs(10),
         )
-        .await
-    {
-        Ok(request) => request
-            .send()
-            .await
-            .map(|_| ())
-            .map_err(|error| error.to_string()),
-        Err(error) => Err(error.to_string()),
-    };
+        .await;
     if let Err(e) = sent {
         warn!("aviso de cancelamento não chegou em {peer_host}: {e}");
     }
@@ -1719,7 +1704,12 @@ async fn send_to_peer(
         )
             .into_response();
     };
-    let Some(peer_base) = peer.gateway_url() else {
+    // O endereço que já respondeu a este nó vem primeiro (`gateway_bases`), e
+    // é dele que sai o endereço de volta da oferta (`from_gateway`, via
+    // `local_ip_for`). O primeiro anunciado pode ser um IPv6 inalcançável: a
+    // oferta morria nele e o endereço de volta apontava para a interface
+    // errada.
+    let Some(peer_base) = state.gateway_base(peer) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "peer não anuncia porta de gateway" })),
@@ -1830,45 +1820,24 @@ async fn send_to_peer(
         "end_layer": shard.map(|(_, b)| b),
     });
 
-    let cliente = match state.peer_http.for_peer(&req.to_node_id) {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("sem cliente para o peer: {e}") })),
-            )
-                .into_response()
+    // Todos os endereços do peer, o que respondeu primeiro, e o túnel por
+    // último - a oferta é uma chamada de controle pequena.
+    match state
+        .control_post_json(peer, "/api/transfer/offer", &body, Duration::from_secs(30))
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            info!("📤 fatia {name} oferecida a {}", peer.node_id);
+            Json(json!({ "offered": true })).into_response()
         }
-    };
-    let request = state
-        .control_json_request(
-            cliente
-                .post(format!("{peer_base}/api/transfer/offer"))
-                .timeout(Duration::from_secs(30)),
-            "/api/transfer/offer",
-            &body,
+        Ok(r) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("peer respondeu {}", r.status()) })),
         )
-        .await;
-    match request {
-        Ok(request) => match request.send().await {
-            Ok(r) if r.status().is_success() => {
-                info!("📤 fatia {name} oferecida a {}", peer.node_id);
-                Json(json!({ "offered": true })).into_response()
-            }
-            Ok(r) => (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("peer respondeu {}", r.status()) })),
-            )
-                .into_response(),
-            Err(e) => (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("não deu para oferecer: {e}") })),
-            )
-                .into_response(),
-        },
+            .into_response(),
         Err(e) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("não foi possível assinar a oferta: {e}") })),
+            Json(json!({ "error": format!("não deu para oferecer: {e:#}") })),
         )
             .into_response(),
     }

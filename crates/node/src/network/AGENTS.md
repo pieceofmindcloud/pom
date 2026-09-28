@@ -213,6 +213,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   RTTs com menos de cinco minutos entram em seleção.
   `last_success` devolve o último endereço HTTP que respondeu (há menos de
   5 min e sem falha depois), a metade HTTP de `Network::peer_route`.
+- `Network::gateway_bases` - os endereços do gateway de um peer na ordem em
+  que vale tentar: o host que já respondeu (`RouteTable::last_success`,
+  comparado pelo host porque pode ter sido a porta de inferência), depois os
+  que não falharam, depois os desacreditados. Quem só pode usar um endereço (um
+  download, o `from_gateway` de uma oferta) usa o primeiro.
 - `Network::peer_route` / `libp2p_links` - a rota em uso com cada peer para a
   tela de participantes: HTTP direto que respondeu, conexão libp2p direta
   (marcada quando nasceu de hole punch) ou só circuito pelo relé. As conexões

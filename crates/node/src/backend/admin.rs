@@ -98,14 +98,10 @@ async fn principal_peer_for(
     })
 }
 
-fn gateway_urls(peer: &crate::network::PeerInfo) -> Vec<String> {
-    let mut urls = peer.gateway_candidates();
-    if urls.is_empty() {
-        if let Some(url) = peer.gateway_url() {
-            urls.push(url);
-        }
-    }
-    urls
+/// Endereços do gateway do peer, o que já respondeu primeiro
+/// (`Network::gateway_bases`).
+fn gateway_urls(network: &crate::network::Network, peer: &crate::network::PeerInfo) -> Vec<String> {
+    network.gateway_bases(peer)
 }
 
 /// Envia uma chamada de controle para cada endereço anunciado pelo peer até
@@ -118,7 +114,7 @@ async fn post_internal_json<T: Serialize>(
     body: &T,
     timeout: Duration,
 ) -> anyhow::Result<reqwest::Response> {
-    let urls = gateway_urls(peer);
+    let urls = gateway_urls(&state.network, peer);
     if urls.is_empty() {
         anyhow::bail!("o peer não anuncia porta de gateway");
     }
@@ -163,7 +159,7 @@ async fn sync_json<T: Serialize>(
     let peer = principal_peer_for(&state.network, &primary)
         .await
         .ok_or_else(|| anyhow::anyhow!("central admin node is unavailable"))?;
-    let urls = gateway_urls(&peer);
+    let urls = gateway_urls(&state.network, &peer);
     let client = state.peer_http.for_peer(&peer.node_id)?;
     let body_bytes = serde_json::to_vec(body)?;
     let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
@@ -315,7 +311,7 @@ pub(crate) async fn validate_api_key_remote_parts(
         crate::auth::internal_node_token(&config)
     };
     for attempt in 0..SYNC_ATTEMPTS {
-        for base in gateway_urls(&peer) {
+        for base in gateway_urls(network, &peer) {
             let mut request = client
                 .post(format!("{base}/api/internal/api-keys/validate"))
                 .timeout(SYNC_TIMEOUT)

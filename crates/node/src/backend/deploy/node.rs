@@ -977,7 +977,7 @@ pub(super) async fn gateway_of(state: &GatewayState, node_id: &str) -> Option<St
         .await
         .iter()
         .find(|p| p.node_id == node_id)
-        .and_then(|p| p.gateway_url())
+        .and_then(|p| state.gateway_base(p))
 }
 
 /// Poll the machines doing the copying until they are all finished.

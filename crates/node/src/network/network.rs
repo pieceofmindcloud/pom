@@ -95,6 +95,19 @@ pub struct PeerRoute {
     pub links: Vec<Libp2pLink>,
 }
 
+/// Host de `http(s)://host:porta[/...]`, com os colchetes do IPv6, para
+/// comparar endereços do mesmo peer em portas diferentes.
+fn url_host(url: &str) -> &str {
+    let rest = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let rest = rest.split('/').next().unwrap_or(rest);
+    if rest.starts_with('[') {
+        return rest.split_inclusive(']').next().unwrap_or(rest);
+    }
+    rest.rsplit_once(':').map_or(rest, |(host, _)| host)
+}
+
 /// `host:porta (transporte)` de um multiaddress, e o relé quando é circuito.
 ///
 /// Num circuito o host e a porta são os do relé, que vêm antes de
@@ -3420,6 +3433,33 @@ impl Network {
         out
     }
 
+    /// Endereços do gateway de `peer`, na ordem em que vale tentar: primeiro o
+    /// do host que respondeu por último a este nó (`RouteTable::last_success`),
+    /// depois os que não falharam há pouco, na ordem anunciada, e por último
+    /// os desacreditados.
+    ///
+    /// O primeiro endereço anunciado pode ser um IPv6 que ninguém alcança; um
+    /// endereço que já respondeu é fato, não palpite. `last_success` pode ter
+    /// vindo da porta de inferência (o caminho de inferência também o
+    /// alimenta), por isso a comparação é pelo host.
+    pub fn gateway_bases(&self, peer: &PeerInfo) -> Vec<String> {
+        let proven_host = self
+            .routes
+            .last_success(&peer.node_id)
+            .map(|url| url_host(&url).to_string());
+        let mut bases = peer.gateway_candidates();
+        bases.sort_by_key(|base| {
+            if proven_host.as_deref() == Some(url_host(base)) {
+                0
+            } else if self.routes.is_failed(&peer.node_id, base) {
+                2
+            } else {
+                1
+            }
+        });
+        bases
+    }
+
     /// A rota em uso para `peer`, na ordem em que o plano de controle a tenta:
     /// endereço HTTP direto que respondeu, conexão libp2p direta, circuito
     /// pelo relé.
@@ -5045,6 +5085,54 @@ mod tests {
         assert_eq!(valid.peer_count().await, 1);
 
         server.abort();
+    }
+
+    /// O endereço que já respondeu vem antes do primeiro anunciado, mesmo que
+    /// tenha respondido na porta de inferência; os que falharam vão para o fim.
+    #[tokio::test]
+    async fn gateway_bases_put_the_proven_host_first() {
+        let _politica = crate::peer_client::POLITICA_GLOBAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let network = Network::testkit("eu".into(), String::new(), vec![], None, None, None)
+            .await
+            .unwrap();
+        let mut peer = admission_peer(8081);
+        peer.addr = "[2804:d55::1]:42777".into();
+        peer.addr_candidates = vec![
+            "[2804:d55::1]:42777".into(),
+            "10.0.0.9:42777".into(),
+            "192.168.0.37:42777".into(),
+        ];
+        let host_of = |bases: Vec<String>| {
+            bases
+                .iter()
+                .map(|base| url_host(base).to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            host_of(network.gateway_bases(&peer)),
+            vec!["[2804:d55::1]", "10.0.0.9", "192.168.0.37"]
+        );
+
+        network
+            .routes
+            .mark_success(&peer.node_id, "http://192.168.0.37:8181");
+        let scheme = crate::peer_client::peer_scheme();
+        network
+            .routes
+            .mark_failure(&peer.node_id, &format!("{scheme}://[2804:d55::1]:8081"));
+        assert_eq!(
+            host_of(network.gateway_bases(&peer)),
+            vec!["192.168.0.37", "10.0.0.9", "[2804:d55::1]"]
+        );
+    }
+
+    #[test]
+    fn url_host_keeps_ipv6_brackets_and_drops_port_and_path() {
+        assert_eq!(url_host("http://[2804:d55::1]:8080"), "[2804:d55::1]");
+        assert_eq!(url_host("https://192.168.0.37:8181/health"), "192.168.0.37");
+        assert_eq!(url_host("http://node.example:8080"), "node.example");
     }
 
     #[test]

@@ -185,13 +185,7 @@ async fn fanout_network_settings(
             continue;
         };
         let mut updated = false;
-        let mut gateway_urls = peer.gateway_candidates();
-        if gateway_urls.is_empty() {
-            if let Some(url) = peer.gateway_url() {
-                gateway_urls.push(url);
-            }
-        }
-        for base in gateway_urls {
+        for base in state.gateway_bases(&peer) {
             let request = match state
                 .control_json_request(
                     client

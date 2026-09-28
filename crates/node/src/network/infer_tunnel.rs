@@ -115,6 +115,9 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/ui/network/rtt"
             | "/api/ui/network/chat"
             | "/api/internal/reload_model"
+            // A oferta de um arquivo: pequena e assinada como as outras. O
+            // download que ela provoca continua sendo HTTP direto.
+            | "/api/transfer/offer"
     )
 }
 

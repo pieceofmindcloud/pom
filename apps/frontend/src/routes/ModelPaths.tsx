@@ -7,7 +7,7 @@
  * the second field from looking like one more entry in the first list.
  */
 import { AnimatePresence, motion } from "framer-motion";
-import { FolderTree, HardDriveDownload, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
+import { FolderTree, HardDriveDownload, Lock, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   Badge,
@@ -133,7 +133,9 @@ export function ModelPaths() {
                 title={t("paths.fullModels")}
                 subtitle={t("paths.fullDetail")}
                 actions={
-                  paths.data.using_defaults ? (
+                  paths.data.model_dirs_env ? (
+                    <Badge tone="neutral">{t("paths.fromEnvBadge", { name: paths.data.model_dirs_env })}</Badge>
+                  ) : paths.data.using_defaults ? (
                     <Badge tone="amber">{t("paths.autoDetect")}</Badge>
                   ) : (
                     <Badge tone="neutral">{t("paths.customList")}</Badge>
@@ -155,12 +157,14 @@ export function ModelPaths() {
                       <Input
                         value={d}
                         spellCheck={false}
+                        disabled={Boolean(paths.data?.model_dirs_env)}
                         aria-label={t("paths.folderAria", { count: i + 1 })}
                         onChange={(e) =>
                           setDirs((l) => l.map((x, j) => (j === i ? e.target.value : x)))
                         }
                       />
                       <button
+                        disabled={Boolean(paths.data?.model_dirs_env)}
                         onClick={() => setDirs((l) => l.filter((_, j) => j !== i))}
                         aria-label={t("paths.removeFolderAria", { path: d })}
                         className="shrink-0 rounded p-1.5 text-faint transition-colors hover:text-rose"
@@ -174,10 +178,16 @@ export function ModelPaths() {
                   size="sm"
                   variant="ghost"
                   icon={<Plus className="h-3.5 w-3.5" />}
+                  disabled={Boolean(paths.data.model_dirs_env)}
                   onClick={() => setDirs((l) => [...l, ""])}
                 >
                   {t("paths.addFolder")}
                 </Button>
+                {paths.data.model_dirs_env && (
+                  <Footnote icon={<Lock className="h-3.5 w-3.5" />}>
+                    {t("paths.fromEnvNote", { name: paths.data.model_dirs_env })}
+                  </Footnote>
+                )}
                 {dirs.length === 0 && (
                   <p className="pt-1 text-xs leading-relaxed text-amber">
                     {t("paths.emptyList")}
@@ -199,10 +209,16 @@ export function ModelPaths() {
                   <Input
                     value={shardDir}
                     spellCheck={false}
+                    disabled={Boolean(paths.data.shard_dir_env)}
                     onChange={(e) => setShardDir(e.target.value)}
                     placeholder={paths.data.default_shard_dir}
                   />
                 </Field>
+                {paths.data.shard_dir_env && (
+                  <Footnote icon={<Lock className="h-3.5 w-3.5" />}>
+                    {t("paths.fromEnvNote", { name: paths.data.shard_dir_env })}
+                  </Footnote>
+                )}
                 <Field label={t("paths.maxShardGb")} hint={t("paths.maxShardGbHint")}>
                   <Input
                     type="number"

@@ -944,6 +944,10 @@ export interface PathsResponse {
   default_shard_dir: string;
   default_workspace_root: string;
   shard_max_gb: number;
+  /** Variável de ambiente que define as pastas de modelos inteiros, quando vale. */
+  model_dirs_env?: string | null;
+  /** Variável de ambiente que define a pasta das fatias, quando vale. */
+  shard_dir_env?: string | null;
 }
 
 export type KvCacheType =

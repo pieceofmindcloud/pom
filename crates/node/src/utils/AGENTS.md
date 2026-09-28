@@ -77,6 +77,11 @@ Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada a
   `~/.pom/models_sliced`; configurações existentes ainda conservam sua escolha.
   `model_dirs` vazio não procura em lugar nenhum. `shard_max_gb` limita somente
   a pasta de fatias e assume 100 GB quando falta em um `pom.json` antigo.
+  `POM_MODEL_DIRS` (várias pastas, separadas como o `PATH`) e `POM_SHARD_DIR`
+  vencem os campos do `pom.json` nesses dois acessores (`model_dirs_from_env`,
+  `shard_dir_from_env`); não são persistidas, e vazias contam como ausentes.
+  `POST /api/ui/paths` não grava o campo que uma variável define, e
+  `GET /api/ui/paths` devolve o nome dela em `model_dirs_env`/`shard_dir_env`.
 - `workspace_root_path` - raiz absoluta efetiva da workspace compartilhada por
   projetos do usuário e dados dinâmicos de plugins. O campo persistido é
   opcional para configurações antigas e o default é `~/pom_workspace`, sem

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 
-const { post } = vi.hoisted(() => ({ post: vi.fn() }));
+const { post, extra } = vi.hoisted(() => ({ post: vi.fn(), extra: { value: {} as Record<string, unknown> } }));
 
 vi.mock("../lib/api", () => ({ api: { post } }));
 vi.mock("../lib/queries", () => ({
@@ -32,6 +32,7 @@ vi.mock("../lib/queries", () => ({
       detected: [],
       default_shard_dir: "/models",
       default_workspace_root: "/data/workspace",
+      ...extra.value,
     },
     isLoading: false,
     isError: false,
@@ -47,7 +48,10 @@ vi.mock("../lib/toast", () => ({
 import { ModelPaths } from "./ModelPaths";
 
 describe("ModelPaths", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    extra.value = {};
+  });
 
   it("shows the slice storage limit and current usage", () => {
     render(
@@ -108,5 +112,35 @@ describe("ModelPaths", () => {
         workspace_root: "/persisted/workspace",
       })),
     );
+  });
+
+  /**
+   * Com POM_MODEL_DIRS/POM_SHARD_DIR definidas, a tela mostra o valor da
+   * variável, trava os campos e diz de onde ele vem - editar ali não teria
+   * efeito, e o backend não grava o campo.
+   */
+  it("locks the folders set by environment variables and names the variable", () => {
+    extra.value = {
+      model_dirs: [
+        { path: "/data/models", exists: true, kind: "folder", used_bytes: 0, max_bytes: null, usage_percent: null },
+      ],
+      using_defaults: false,
+      model_dirs_env: "POM_MODEL_DIRS",
+      shard_dir_env: "POM_SHARD_DIR",
+    };
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="pt-BR">
+          <ModelPaths />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Definido por POM_MODEL_DIRS")).toBeTruthy();
+    expect(screen.getByText(/A variável de ambiente POM_MODEL_DIRS define este valor/)).toBeTruthy();
+    expect(screen.getByText(/A variável de ambiente POM_SHARD_DIR define este valor/)).toBeTruthy();
+    expect((screen.getByDisplayValue("/data/models") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByDisplayValue("/models/slices") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByDisplayValue("/data/workspace") as HTMLInputElement).disabled).toBe(false);
   });
 });

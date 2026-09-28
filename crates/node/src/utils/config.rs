@@ -479,6 +479,33 @@ pub fn normalize_peer_addr(raw: &str) -> String {
     s.to_string()
 }
 
+/// Pastas de modelos inteiros vindas de `POM_MODEL_DIRS`, separadas como o
+/// `PATH` do sistema (`:` no Unix, `;` no Windows). Vence `model_dirs` do
+/// `pom.json` e, como toda variável de ambiente, não é persistida: `save()`
+/// continua gravando só o campo do arquivo, e tirar a variável devolve o que
+/// estava salvo. Vazia conta como ausente.
+pub fn model_dirs_from_env() -> Option<Vec<PathBuf>> {
+    parse_model_dirs(&std::env::var_os(crate::brand::env_var("MODEL_DIRS"))?)
+}
+
+/// Pasta das fatias vinda de `POM_SHARD_DIR`, com as mesmas regras de
+/// `model_dirs_from_env`.
+pub fn shard_dir_from_env() -> Option<PathBuf> {
+    parse_shard_dir(&std::env::var_os(crate::brand::env_var("SHARD_DIR"))?)
+}
+
+fn parse_model_dirs(raw: &std::ffi::OsStr) -> Option<Vec<PathBuf>> {
+    let dirs: Vec<PathBuf> = std::env::split_paths(raw)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .collect();
+    (!dirs.is_empty()).then_some(dirs)
+}
+
+fn parse_shard_dir(raw: &std::ffi::OsStr) -> Option<PathBuf> {
+    let trimmed = raw.to_string_lossy().trim().to_string();
+    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+}
+
 /// Port the local inference server listens on when the config does not name one.
 ///
 /// Every node advertises it from startup, before any slice is assigned:
@@ -662,7 +689,13 @@ impl Config {
 
     /// Directories to scan for whole models, falling back to what LM Studio and
     /// Ollama put on this machine while the operator has not chosen.
+    ///
+    /// `POM_MODEL_DIRS` (derivada da marca) vence o `pom.json`; ver
+    /// `model_dirs_from_env`.
     pub fn model_dir_paths(&self) -> Vec<PathBuf> {
+        if let Some(dirs) = model_dirs_from_env() {
+            return dirs;
+        }
         match &self.model_dirs {
             Some(dirs) => dirs.iter().map(PathBuf::from).collect(),
             None => crate::catalog::default_model_dirs(),
@@ -672,12 +705,18 @@ impl Config {
     /// True while the whole-model list is still the auto-detected one — the UI
     /// says so instead of pretending the operator picked these paths.
     pub fn model_dirs_are_default(&self) -> bool {
-        self.model_dirs.is_none()
+        self.model_dirs.is_none() && model_dirs_from_env().is_none()
     }
 
     /// Destination of local slicing, and the only directory a peer may pull
     /// from (see `transfer::safe_model_path`).
+    ///
+    /// `POM_SHARD_DIR` (derivada da marca) vence o `pom.json`; ver
+    /// `shard_dir_from_env`.
     pub fn shard_dir_path(&self) -> PathBuf {
+        if let Some(dir) = shard_dir_from_env() {
+            return dir;
+        }
         match self.shard_dir.as_deref().map(str::trim) {
             Some(d) if !d.is_empty() => PathBuf::from(d),
             _ => default_shard_dir(),
@@ -1185,6 +1224,24 @@ mod tests {
         .to_string();
         assert!(error.contains("campo `role` foi removido"));
         assert!(error.contains("use `profile`"));
+    }
+
+    #[test]
+    fn model_dirs_from_env_split_like_path_and_ignore_empty_entries() {
+        let joined = std::env::join_paths(["/data/models", "/mnt/gguf"]).unwrap();
+        assert_eq!(
+            parse_model_dirs(&joined),
+            Some(vec![
+                PathBuf::from("/data/models"),
+                PathBuf::from("/mnt/gguf")
+            ])
+        );
+        assert_eq!(parse_model_dirs(std::ffi::OsStr::new("")), None);
+        assert_eq!(
+            parse_shard_dir(std::ffi::OsStr::new("  /data/shards ")),
+            Some(PathBuf::from("/data/shards"))
+        );
+        assert_eq!(parse_shard_dir(std::ffi::OsStr::new("  ")), None);
     }
 
     #[test]

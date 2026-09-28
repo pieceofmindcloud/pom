@@ -871,6 +871,12 @@ pub(super) async fn get_paths(State(state): State<GatewayState>) -> impl IntoRes
             .iter().map(|d| path_entry(d, None)).collect::<Vec<_>>(),
         "default_shard_dir": crate::config::default_shard_dir().to_string_lossy(),
         "default_workspace_root": crate::config::default_workspace_root().to_string_lossy(),
+        // O nome da variável de ambiente que define o campo, quando ela está
+        // valendo: a tela trava o campo e diz de onde vem o valor.
+        "model_dirs_env": crate::config::model_dirs_from_env()
+            .map(|_| crate::brand::env_var("MODEL_DIRS")),
+        "shard_dir_env": crate::config::shard_dir_from_env()
+            .map(|_| crate::brand::env_var("SHARD_DIR")),
     }))
 }
 
@@ -1120,12 +1126,28 @@ pub(super) async fn save_paths(
         }
     };
 
-    let effective_shard_dir = shard_dir.clone().unwrap_or_else(|| {
-        crate::config::default_shard_dir()
-            .to_string_lossy()
-            .into_owned()
-    });
-    if let Err(e) = reject_nested_shard_dir(&model_dirs, &effective_shard_dir) {
+    // `POM_MODEL_DIRS`/`POM_SHARD_DIR` vencem o `pom.json`: com a variável
+    // definida, o campo dela não é gravado (a tela mostra o valor da variável,
+    // e salvá-lo o copiaria para o arquivo) e as conferências usam o valor que
+    // vale de fato.
+    let model_dirs_env = crate::config::model_dirs_from_env();
+    let shard_dir_env = crate::config::shard_dir_from_env();
+    let effective_model_dirs: Vec<String> = match &model_dirs_env {
+        Some(dirs) => dirs
+            .iter()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .collect(),
+        None => model_dirs.clone(),
+    };
+    let effective_shard_dir = match &shard_dir_env {
+        Some(dir) => dir.to_string_lossy().into_owned(),
+        None => shard_dir.clone().unwrap_or_else(|| {
+            crate::config::default_shard_dir()
+                .to_string_lossy()
+                .into_owned()
+        }),
+    };
+    if let Err(e) = reject_nested_shard_dir(&effective_model_dirs, &effective_shard_dir) {
         return bad_request(e);
     }
     let workspace_root = if req.workspace_root.trim().is_empty() {
@@ -1144,9 +1166,11 @@ pub(super) async fn save_paths(
     if let Err(e) = check_workspace_dir(&effective_workspace_root, "Workspace") {
         return bad_request(e);
     }
-    if let Err(e) =
-        reject_workspace_overlap(&model_dirs, &effective_shard_dir, &effective_workspace_root)
-    {
+    if let Err(e) = reject_workspace_overlap(
+        &effective_model_dirs,
+        &effective_shard_dir,
+        &effective_workspace_root,
+    ) {
         return bad_request(e);
     }
     let shard_max_gb = match req.shard_max_gb {
@@ -1159,8 +1183,12 @@ pub(super) async fn save_paths(
 
     {
         let mut cfg = state.auth.write().await;
-        cfg.model_dirs = Some(model_dirs);
-        cfg.shard_dir = shard_dir;
+        if model_dirs_env.is_none() {
+            cfg.model_dirs = Some(model_dirs);
+        }
+        if shard_dir_env.is_none() {
+            cfg.shard_dir = shard_dir;
+        }
         cfg.workspace_root = workspace_root;
         cfg.shard_max_gb = shard_max_gb;
         if let Err(e) = cfg.save() {

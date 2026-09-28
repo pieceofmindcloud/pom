@@ -282,7 +282,10 @@ ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
   diretas agrupado por licença;
   `/config/confianca` reúne esta máquina, compartilhamento e chaves de conexão;
   `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
-  (`/config/pastas` continua como alias). O wizard de configuração não aparece
+  (`/config/pastas` continua como alias). Quando `POM_MODEL_DIRS` ou
+  `POM_SHARD_DIR` define uma pasta (`model_dirs_env`/`shard_dir_env` em
+  `/api/ui/paths`), o campo correspondente fica travado, com o nome da
+  variável num selo e numa nota: editar ali não teria efeito. O wizard de configuração não aparece
   no menu, embora sua rota de teste continue disponível.
 
 Em uma rede pública, `NetworkSettings` local é uma réplica read-only para

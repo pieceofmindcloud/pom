@@ -158,8 +158,9 @@ como `D:\...` ou UNC convencionais, inclusive quando a origem veio de
 Os workflows também ativam `mozilla-actions/sccache-action` com o backend do
 cache do GitHub. `RUSTC_WRAPPER`, os três launchers do CMake e `CCACHE` apontam
 para `sccache`, então o mesmo cache content-addressed cobre as unidades Rust,
-C/C++ do llama.cpp e a ponte CUDA quando houver CUDA. No Windows, onde o runner
-é efêmero, `Swatinem/rust-cache` continua cobrindo `~/.cargo` e `target/`; sua
+C/C++ do llama.cpp e a ponte CUDA quando houver CUDA. O de Windows **não** usa
+`sccache` (o `nvcc` sob wrapper no Windows não compensa o risco); ali, onde o
+runner é efêmero, só `Swatinem/rust-cache` cobre `~/.cargo` e `target/`; sua
 chave adicional inclui o SHA do fork e `hashFiles('**/Cargo.lock')`. Linux e
 macOS usam runners self-hosted persistentes e mantêm o target local, enquanto o
 `sccache` cobre recompilações entre revisões e worktrees.
@@ -702,10 +703,10 @@ Três workflows, um por sistema, todos só manuais (`workflow_dispatch`):
 |---|---|---|---|
 | `.github/workflows/release-linux.yml` | Linux x86_64 (CPU, e CUDA opcional) | runner `ksia` | `version`, `cuda`, `prerelease` |
 | `.github/workflows/release-macos.yml` | macOS arm64, Metal | runner `macbook` | `version`, `prerelease` |
-| `.github/workflows/release-windows.yml` | Windows x86_64, CPU | hospedado (`windows-2022`) | `version`, `prerelease` |
+| `.github/workflows/release-windows.yml` | Windows x86_64, CUDA + Vulkan e/ou CPU | hospedado (`windows-2022`) | `version`, `variantes` (`gpu`/`cpu`/`ambos`), `prerelease` |
 
 Os pacotes sobem como artefatos só para passar entre os jobs da mesma
-execução, com `retention-days: 2`; os definitivos ficam anexados à release. O
+execução, com `retention-days` de 1 ou 2 dias; os definitivos ficam anexados à release. O
 padrão de 90 dias chegou a esgotar a cota de armazenamento de artefatos da
 conta e bloquear releases novas.
 
@@ -955,6 +956,13 @@ v0.4.0 --dry-run` mostra os comandos; sem `--dry-run` compila e grava em
 `dist-release-ksia/` (ignorado pelo Git). `POM_RELEASE_SKIP_UI=1` pula o build
 da interface.
 
+`--debug-symbols` (só `windows-cpu`) gera um build de diagnóstico com
+`pom.pdb` no zip: debuginfo completo, `/Z7` no C/C++ para o PDB cobrir o
+llama.cpp, LTO desligado e 16 codegen-units (LTO `fat` com símbolos completos
+estoura a memória do linker). Usa `target-windows-cpu-debug`, separado do
+target otimizado. Cruzado do Linux, o `.exe` sai **sem ícone**
+(`embed_windows_icon` depende de `cfg(windows)` do host).
+
 ### O pacote
 
 Binário na raiz do pacote com `apps/` ao lado, para `project_root()` achar a UI
@@ -965,8 +973,33 @@ arrastado para `/Applications`), Linux leva `share/hicolor` e o `.desktop`, e o
 Windows não leva nada porque o ícone já está dentro do `.exe`. Unix empacota com
 `tar czf`, Windows com `7z`.
 
-**Windows é o alvo menos exercitado**: nunca foi compilado neste repositório e a
-inferência é só em CPU. Ele falha sozinho, sem afetar os outros dois.
+**Windows é o alvo menos exercitado.** Ele falha sozinho, sem afetar os outros
+dois. `release-windows.yml` tem duas variantes (entrada `variantes`), cada uma
+um job da matriz e um pacote:
+
+- **`gpu`** (padrão): `--features cuda,vulkan` no mesmo `pom.exe`, pacote
+  `pom-<v>-x86_64-pc-windows-msvc-cuda-vulkan.zip`. CUDA para NVIDIA; Vulkan
+  cobre NVIDIA, AMD (ex. RX 7800 XT) e Intel. O job instala só os componentes
+  CUDA usados (`nvcc`, `cudart`, `cccl`, `cublas`...), baixados dos arquivos
+  "redist" da NVIDIA pelo manifesto da versão (`CUDA_VERSION`), e o Vulkan SDK
+  da LunarG (`VULKAN_VERSION`). Compila com Ninja dentro do ambiente do MSVC
+  (`ilammy/msvc-dev-cmd`), porque o CUDA com o gerador do Visual Studio exige a
+  integração MSBuild. Arquiteturas: **lista reduzida** `75;80;86;89;120`
+  (`POM_WINDOWS_CUDAARCHS`) enquanto o repositório é privado - o minuto de
+  Windows conta 2x e um job hospedado morre em 6 h. Inclui 86 (RTX 3060 do
+  salem) e 120 (RTX 5060 Ti da ksia); quando o projeto for público, troque por
+  `''` para a lista completa. No Windows o CUDA é linkado **dinamicamente**
+  (`llama-cpp-sys-2/build.rs`), então o pacote leva `cudart64_*.dll`,
+  `cublas64_*.dll` e `cublasLt64_*.dll` ao lado do `pom.exe` (redistribuíveis
+  pela licença da NVIDIA); `vulkan-1.dll` vem com o driver de vídeo. Os
+  kernels MoE próprios (`crates/llama-engine/build.rs`) saem como
+  `pom_moe_cuda.lib` via `lib.exe` com `/MD` no MSVC, e como `.a` via `ar` no
+  resto.
+- **`cpu`**: sem features, pacote `pom-<v>-x86_64-pc-windows-msvc.zip`.
+
+O build do GitHub não gera mais `pom.pdb`; para diagnosticar crash no Windows,
+use `scripts/release-ksia.sh --variant windows-cpu --debug-symbols` (ver
+"Release na ksia"). **Ainda não houve execução da variante `gpu`**.
 
 ## Defeitos anotados
 

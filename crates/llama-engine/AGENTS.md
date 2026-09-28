@@ -107,7 +107,9 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   camada 1 no espelhamento exato de `load_mtp_cpu` (mesmo padrão, já usado
   em produção para o `nextn` embutido).
 - `moe/` - executor MoE próprio (denso + esparso), com kernels CUDA em
-  `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`. O
+  `moe/cuda_kernels.cu` compilados por `build.rs` sob `--features cuda`
+  (no alvo MSVC: `-Xcompiler /MD` e `pom_moe_cuda.lib` via `lib.exe`; nos
+  demais, `libpom_moe_cuda.a` via `ar`). O
   fallback CPU do router executa os experts selecionados em workers escopados
   e agrega os vetores na ordem original para manter o resultado determinístico;
   Q4_0 e Q5_K também usam a ponte CUDA heterogênea quando `cuda` está

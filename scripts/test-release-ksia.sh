@@ -33,6 +33,11 @@ has "$out" "lld-link"
 has "$out" "package=$root/dist-release-ksia/pom-v1.2.3-x86_64-pc-windows-msvc.zip"
 lacks "$out" "+ npm run build"
 
+out="$(POM_RELEASE_SKIP_UI=1 "$script" --variant windows-cpu --version v1.2.3 --debug-symbols --dry-run 2>&1)"
+has "$out" "target-windows-cpu-debug"
+has "$out" "pom.pdb"
+"$script" --variant linux-cpu --version v1.2.3 --debug-symbols --dry-run >/dev/null 2>&1 && fail "--debug-symbols is windows-cpu only"
+
 "$script" --variant linux-cpu --version 1.2.3 --dry-run >/dev/null 2>&1 && fail "a version without v must fail"
 "$script" --variant macos --version v1.2.3 --dry-run >/dev/null 2>&1 && fail "an unknown variant must fail"
 

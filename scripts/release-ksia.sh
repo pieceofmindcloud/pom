@@ -20,6 +20,7 @@ variant=""
 version=""
 output="${root}/dist-release-ksia"
 dry_run=0
+debug_symbols=0
 cache="${POM_RELEASE_CACHE:-${HOME}/.cache/pom-release}"
 cuda_home="${POM_RELEASE_CUDA_HOME:-/usr/local/cuda-12.9}"
 llvm_bin="${POM_RELEASE_LLVM_BIN:-/usr/lib/llvm-20/bin}"
@@ -32,7 +33,8 @@ usage() {
   printf '%s\n' \
     'Usage: scripts/release-ksia.sh --variant <linux-cpu|linux-cuda|windows-cpu> --version <vX.Y.Z> [options]' \
     '  --output <dir>   package directory (default: dist-release-ksia)' \
-    '  --dry-run        print the commands instead of running them'
+    '  --dry-run        print the commands instead of running them' \
+    '  --debug-symbols  windows-cpu only: ship pom.pdb (full debug info, no LTO)'
 }
 
 die() {
@@ -54,6 +56,7 @@ while (($# > 0)); do
     --version) (($# >= 2)) || die '--version requires a value'; version="$2"; shift 2 ;;
     --output) (($# >= 2)) || die '--output requires a value'; output="$2"; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
+    --debug-symbols) debug_symbols=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -65,7 +68,14 @@ case "$variant" in
 esac
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || die "--version must look like v0.3.0 (got '${version}')"
 
+if ((debug_symbols)) && [[ "$variant" != windows-cpu ]]; then
+  die "--debug-symbols only applies to windows-cpu"
+fi
+
+# A debug-symbols build changes the profile of every crate; its own target
+# directory keeps it from throwing away the optimized build's cache.
 target_dir="${cache}/target-${variant}"
+if ((debug_symbols)); then target_dir="${target_dir}-debug"; fi
 tools="${cache}/tools"
 
 # --- tools ------------------------------------------------------------------
@@ -177,6 +187,17 @@ case "$variant" in
     export PATH="${shims}:${tools}/bin:${PATH}"
     export XWIN_ACCEPT_LICENSE=1
     export XWIN_CACHE_DIR="${cache}/xwin"
+    if ((debug_symbols)); then
+      # For diagnosing crashes on Windows. With debuginfo rustc makes lld-link
+      # write pom.pdb; /Z7 keeps the C/C++ CodeView in the objects so the PDB
+      # also covers llama.cpp. Fat LTO with full symbols needs far more linker
+      # memory and is pointless for a diagnostic build.
+      export CARGO_PROFILE_RELEASE_DEBUG=2
+      export CARGO_PROFILE_RELEASE_LTO=false
+      export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+      export CFLAGS="${CFLAGS:+${CFLAGS} }/Z7"
+      export CXXFLAGS="${CXXFLAGS:+${CXXFLAGS} }/Z7"
+    fi
     run cargo xwin build --release --locked -p node --target "$windows_target"
     binary="${target_dir}/${windows_target}/release/pom.exe"
     ;;
@@ -196,6 +217,7 @@ run rm -rf "$stage"
 run mkdir -p "${stage}/apps/frontend"
 run cp -R "$root/apps/frontend/dist" "${stage}/apps/frontend/dist"
 run cp "$binary" "$stage/"
+if ((debug_symbols)); then run cp "${binary%.exe}.pdb" "$stage/"; fi
 if [[ -f "$root/README.md" ]]; then run cp "$root/README.md" "$stage/"; fi
 case "$variant" in
   linux-*)

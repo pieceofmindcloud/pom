@@ -46,8 +46,20 @@ fn build_moe_cuda(llama_cpp_root: &Path) {
 
     let source = Path::new("src/moe/cuda_kernels.cu");
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
-    let object = out_dir.join("pom_moe_cuda.o");
-    let library = out_dir.join("libpom_moe_cuda.a");
+    // MSVC links `<name>.lib` archives built by lib.exe; everything else takes
+    // the Unix `lib<name>.a` from `ar`.
+    let msvc = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    let (object, library) = if msvc {
+        (
+            out_dir.join("pom_moe_cuda.obj"),
+            out_dir.join("pom_moe_cuda.lib"),
+        )
+    } else {
+        (
+            out_dir.join("pom_moe_cuda.o"),
+            out_dir.join("libpom_moe_cuda.a"),
+        )
+    };
     println!("cargo:rerun-if-changed={}", source.display());
 
     let nvcc = std::env::var_os("CUDACXX")
@@ -78,6 +90,10 @@ fn build_moe_cuda(llama_cpp_root: &Path) {
         "-O3",
         "--std=c++17",
     ]);
+    if msvc {
+        // Rust links the dynamic CRT; a static-CRT object would clash at link.
+        compile.args(["-Xcompiler", "/MD"]);
+    }
     // The IQ3_XXS route reuses llama.cpp's canonical q8_1 vector-dot
     // implementation (MMVQ/dp4a). Keep the include roots tied to the exact
     // fork selected by DEP_LLAMA_LLAMA_SOURCE/LLAMA_SOURCE rather than to the
@@ -109,15 +125,26 @@ fn build_moe_cuda(llama_cpp_root: &Path) {
         .unwrap_or_else(|error| panic!("não foi possível executar {}: {error}", nvcc.display()));
     assert!(status.success(), "nvcc falhou ao compilar cuda_kernels.cu");
 
-    let status = Command::new("ar")
-        .args([
-            "crus",
-            library.to_str().expect("biblioteca CUDA UTF-8"),
-            object.to_str().expect("objeto CUDA UTF-8"),
-        ])
-        .status()
-        .expect("não foi possível executar ar para a biblioteca CUDA");
-    assert!(status.success(), "ar falhou ao empacotar os kernels CUDA");
+    let status = if msvc {
+        let target = std::env::var("TARGET").expect("TARGET");
+        cc::windows_registry::find(&target, "lib.exe")
+            .unwrap_or_else(|| Command::new("lib.exe"))
+            .arg("/nologo")
+            .arg(format!("/OUT:{}", library.display()))
+            .arg(&object)
+            .status()
+            .expect("não foi possível executar lib.exe para a biblioteca CUDA")
+    } else {
+        Command::new("ar")
+            .args([
+                "crus",
+                library.to_str().expect("biblioteca CUDA UTF-8"),
+                object.to_str().expect("objeto CUDA UTF-8"),
+            ])
+            .status()
+            .expect("não foi possível executar ar para a biblioteca CUDA")
+    };
+    assert!(status.success(), "falha ao empacotar os kernels CUDA");
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=pom_moe_cuda");
 }

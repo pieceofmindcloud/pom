@@ -4,9 +4,11 @@ name: Release · Windows
 # conta 2x. Ver `docs/subsystems/build-execucao.md`, seção "Release pelo GitHub
 # Actions".
 #
-# **Alvo novo.** Windows é o menos exercitado dos três: nunca foi compilado
-# neste repositório, e a inferência é só em CPU. Se falhar, falha sozinho - os
-# workflows de Linux e macOS não dependem deste.
+# Duas variantes, escolhidas na entrada `variantes`:
+#   gpu  CUDA + Vulkan no mesmo pom.exe (o ggml carrega os dois backends).
+#        CUDA para NVIDIA; Vulkan cobre NVIDIA, AMD (ex. RX 7800 XT) e Intel.
+#   cpu  só CPU, pacote leve.
+# Se falhar, falha sozinho - os workflows de Linux e macOS não dependem deste.
 on:
   workflow_dispatch:
     inputs:
@@ -14,6 +16,12 @@ on:
         description: 'Versão da release (ex.: v0.3.0)'
         required: true
         type: string
+      variantes:
+        description: 'Quais pacotes gerar'
+        required: true
+        default: gpu
+        type: choice
+        options: [gpu, cpu, ambos]
       prerelease:
         description: 'Publicar como prerelease'
         required: false
@@ -22,6 +30,16 @@ on:
 
 permissions:
   contents: write
+
+env:
+  # Lista reduzida enquanto o repositório é privado (minuto Windows 2x, job de
+  # no máximo 6 h). 75 Turing, 80 A100, 86 Ampere (RTX 3060 do salem),
+  # 89 Ada, 120 Blackwell (RTX 5060 Ti da ksia). A RX 7800 XT é AMD e roda
+  # pelo Vulkan. Quando o projeto for público, troque por '' (lista completa
+  # do llama.cpp, ver "Arquiteturas de GPU").
+  POM_WINDOWS_CUDAARCHS: '75;80;86;89;120'
+  CUDA_VERSION: '12.9.1'
+  VULKAN_VERSION: '1.4.313.2'
 
 jobs:
   # Em `ubuntu-latest` de propósito: a interface é a mesma para os três sistemas
@@ -46,35 +64,23 @@ jobs:
           path: apps/frontend/dist
           if-no-files-found: error
           # Só passam entre os jobs desta execução; a release guarda os pacotes.
-          retention-days: 2
+          retention-days: 1
 
   build:
-    name: Windows x86_64 (CPU)
+    name: Windows x86_64 (${{ matrix.variante }})
     needs: ui
     runs-on: windows-2022
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        variante: ${{ fromJSON(inputs.variantes == 'ambos' && '["gpu","cpu"]' || format('["{0}"]', inputs.variantes)) }}
     env:
       LLAMA_SOURCE: ${{ github.workspace }}/.ci-cache/llama.cpp
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
-      CMAKE_C_COMPILER_LAUNCHER: sccache
-      CMAKE_CXX_COMPILER_LAUNCHER: sccache
-      CMAKE_CUDA_COMPILER_LAUNCHER: sccache
-      CCACHE: sccache
-      # Temporário para a reprodução do crash no Windows. Cargo grava símbolos
-      # Rust e C++ gravam CodeView nos objetos; /DEBUG:FULL faz o linker
-      # preservar os símbolos no pom.pdb que vai para o ZIP. /Z7 evita que os
-      # compiladores paralelos disputem um único vc140.pdb no runner.
-      CARGO_PROFILE_RELEASE_DEBUG: "2"
-      # O profile release normal usa lto=fat e codegen-units=1. Com símbolos
-      # completos isso estoura a memória do linker no runner Windows padrão;
-      # este build é diagnóstico e pode sacrificar otimização por estabilidade.
-      CARGO_PROFILE_RELEASE_LTO: "false"
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-      RUSTFLAGS: "-C link-arg=/DEBUG:FULL"
-      CFLAGS: /Z7
-      CXXFLAGS: /Z7
-      CMAKE_C_FLAGS: /Z7
-      CMAKE_CXX_FLAGS: /Z7
+      # Ninja em vez do gerador do Visual Studio: o CUDA com o gerador VS exige
+      # a integração MSBuild instalada no Visual Studio; com Ninja basta o
+      # nvcc e o cl.exe do ambiente de desenvolvimento.
+      CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@v4
 
@@ -84,12 +90,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Ativar cache de compilação
-        uses: mozilla-actions/sccache-action@v0.0.11
-
       - uses: Swatinem/rust-cache@v2
         with:
-          key: llama-${{ steps.llama-cache.outputs.sha }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.variante }}-llama-${{ steps.llama-cache.outputs.sha }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Validar destino do autoclone no Windows
         shell: pwsh
@@ -106,17 +109,73 @@ jobs:
         shell: bash
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
 
-      - name: Compilar com símbolos de debug temporários
-        run: cargo build --release --locked
+      # cl.exe, lib.exe e o linker do MSVC no PATH: o nvcc precisa do cl.exe
+      # como compilador host e os kernels MoE do POM são empacotados com lib.exe.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
-      - name: Verificar PDB correspondente ao binário
+      - name: Garantir ninja
         shell: pwsh
         run: |
-          $pdb = "target/release/pom.pdb"
-          if (-not (Test-Path $pdb)) {
-            throw "O build Windows não gerou $pdb"
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
+          ninja --version
+
+      # Só os componentes que o build usa, direto dos arquivos "redist" da
+      # NVIDIA (o instalador completo leva ~3 GB e muitos minutos). O manifesto
+      # da versão diz o caminho de cada componente.
+      - name: Instalar CUDA ${{ env.CUDA_VERSION }}
+        if: matrix.variante == 'gpu'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = 'https://developer.download.nvidia.com/compute/cuda/redist'
+          $manifest = Invoke-RestMethod "$base/redistrib_$env:CUDA_VERSION.json"
+          $cuda = 'C:\cuda'
+          New-Item -ItemType Directory -Force $cuda | Out-Null
+          $componentes = 'cuda_nvcc','cuda_cudart','cuda_cccl','cuda_nvrtc','cuda_nvtx',
+                         'cuda_profiler_api','libcublas','visual_studio_integration','cuda_crt'
+          foreach ($c in $componentes) {
+            $item = $manifest.$c.'windows-x86_64'
+            if (-not $item) { Write-Host "sem $c nesta versão"; continue }
+            $zip = Join-Path $env:RUNNER_TEMP "$c.zip"
+            Write-Host "baixando $c $($manifest.$c.version)"
+            curl.exe -fsSL -o $zip "$base/$($item.relative_path)"
+            $tmp = Join-Path $env:RUNNER_TEMP $c
+            Expand-Archive -Force $zip $tmp
+            Get-ChildItem $tmp | ForEach-Object { Copy-Item -Recurse -Force "$($_.FullName)\*" $cuda }
           }
-          Get-Item target/release/pom.exe, $pdb | Select-Object FullName, Length, LastWriteTime
+          Add-Content $env:GITHUB_ENV "CUDA_PATH=$cuda"
+          Add-Content $env:GITHUB_ENV "CUDACXX=$cuda\bin\nvcc.exe"
+          Add-Content $env:GITHUB_PATH "$cuda\bin"
+          & "$cuda\bin\nvcc.exe" --version
+
+      - name: Instalar Vulkan SDK ${{ env.VULKAN_VERSION }}
+        if: matrix.variante == 'gpu'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:RUNNER_TEMP 'VulkanSDK-Installer.exe'
+          curl.exe -fsSL -o $exe "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_VERSION.exe"
+          & $exe --accept-licenses --default-answer --confirm-command install
+          $sdk = "C:\VulkanSDK\$env:VULKAN_VERSION"
+          if (-not (Test-Path "$sdk\Lib\vulkan-1.lib")) { throw "Vulkan SDK não instalou em $sdk" }
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=$sdk"
+          Add-Content $env:GITHUB_PATH "$sdk\Bin"
+
+      # pwsh, não bash: no Git Bash o /usr/bin/link.exe do MSYS aparece antes
+      # do linker do MSVC no PATH.
+      - name: Compilar (${{ matrix.variante }})
+        shell: pwsh
+        run: |
+          if ('${{ matrix.variante }}' -eq 'gpu') {
+            $env:CUDAARCHS = $env:POM_WINDOWS_CUDAARCHS
+            Remove-Item Env:CMAKE_CUDA_ARCHITECTURES -ErrorAction SilentlyContinue
+            cargo build --release --locked --features cuda,vulkan
+          } else {
+            cargo build --release --locked
+          }
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - uses: actions/download-artifact@v4
         with:
@@ -127,35 +186,51 @@ jobs:
       # sobe a partir do diretório do executável, então a pasta descompactada
       # funciona em qualquer lugar, sem `POM_HOME`. O ícone já viaja dentro do
       # .exe (`crates/node/build.rs`), então aqui não há nada a copiar.
+      #
+      # No Windows o CUDA é linkado dinamicamente (`llama-cpp-sys-2/build.rs`):
+      # o pom.exe precisa de cudart/cublas/cublasLt ao lado, redistribuíveis
+      # pela licença da NVIDIA. vulkan-1.dll vem com o driver de vídeo.
       - name: Montar o pacote
         shell: bash
         run: |
+          set -euo pipefail
           nome="pom-${{ inputs.version }}-x86_64-pc-windows-msvc"
+          if [ "${{ matrix.variante }}" = gpu ]; then
+            nome="${nome}-cuda-vulkan"
+            cuda_bin="$(cygpath -u "$CUDA_PATH")/bin"
+            for dll in cudart64_ cublas64_ cublasLt64_; do
+              ls "$cuda_bin"/${dll}*.dll >/dev/null
+              cp "$cuda_bin"/${dll}*.dll pacote/
+            done
+          fi
           cp target/release/pom.exe pacote/
-          cp target/release/pom.pdb pacote/
           cp README.md pacote/ 2>/dev/null || true
           mv pacote "$nome"
           7z a -tzip "$nome.zip" "$nome"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pacote-windows
+          name: pacote-windows-${{ matrix.variante }}
           path: pom-*.zip
           if-no-files-found: error
           # Só passam entre os jobs desta execução; a release guarda os pacotes.
-          retention-days: 2
+          retention-days: 1
 
   # Cada sistema publica o próprio pacote na mesma tag: o primeiro workflow a
   # rodar cria a release, os outros anexam o arquivo deles.
   release:
     name: Publicar
     needs: build
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: pacote-windows
+          pattern: pacote-windows-*
+          merge-multiple: true
           path: pacotes
+      - name: Conferir pacotes
+        run: ls -la pacotes && test -n "$(ls pacotes)"
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version }}

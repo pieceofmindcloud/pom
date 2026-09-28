@@ -2218,9 +2218,11 @@ mod peer_visibility_tests {
 
         let health = super::AdmissionHealth::default();
         let clientes = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
         let reachable = ready_for_pipeline(
             &clientes,
             &health,
+            &state.network,
             vec![healthy.clone(), stalled.clone()],
             Duration::from_millis(25),
         )
@@ -2235,6 +2237,7 @@ mod peer_visibility_tests {
         let reachable = ready_for_pipeline(
             &clientes,
             &health,
+            &state.network,
             vec![healthy, stalled],
             Duration::from_millis(25),
         )
@@ -2247,6 +2250,48 @@ mod peer_visibility_tests {
             em_quarentena < Duration::from_millis(25),
             "peer em quarentena voltou a ser sondado: {em_quarentena:?}"
         );
+    }
+
+    /// Um peer cujo primeiro endereço anunciado não responde - o IPv6 que
+    /// ninguém alcança, no caso real - entra no plano pelo endereço seguinte,
+    /// e esse endereço fica lembrado como o que respondeu.
+    #[tokio::test]
+    async fn the_admission_probe_tries_every_inference_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({ "status": "ok", "model_loaded": true }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut head = peer("head");
+        head.addr = "127.0.0.2:42777".into();
+        head.addr_candidates = vec!["127.0.0.2:42777".into(), "127.0.0.1:42777".into()];
+        head.inference_port = Some(port);
+
+        let health = super::AdmissionHealth::default();
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let reachable = ready_for_pipeline(
+            &clients,
+            &health,
+            &state.network,
+            vec![head],
+            Duration::from_millis(500),
+        )
+        .await;
+
+        assert_eq!(reachable.len(), 1);
+        assert!(state
+            .network
+            .routes
+            .last_success("head")
+            .is_some_and(|url| url.contains("127.0.0.1")));
     }
 
     #[tokio::test]
@@ -2284,8 +2329,15 @@ mod peer_visibility_tests {
 
         let health = super::AdmissionHealth::default();
         let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
-        let reachable =
-            ready_for_pipeline(&clients, &health, vec![stale], Duration::from_millis(100)).await;
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let reachable = ready_for_pipeline(
+            &clients,
+            &health,
+            &state.network,
+            vec![stale],
+            Duration::from_millis(100),
+        )
+        .await;
 
         let peers = reachable;
         assert_eq!(peers[0].end_layer, 31);

@@ -642,7 +642,11 @@ sonda `/handshake` da admissão e as catracas de política
 (`/api/cluster/{tls,quic,logs,network-chat,network-settings}`) alcançam um par
 que nenhum endereço direto alcança - sem isso ele não entrava em `peers` nem
 com o hole punch perfeito, e roteamento, UI e pipeline continuavam cegos para
-ele.
+ele. Todas as catracas tentam os endereços do principal na ordem de
+`Network::order_gateway_bases` (o host que já respondeu primeiro) antes do
+túnel; a do QUIC tentava só o primeiro endereço anunciado, sem túnel, e
+repetia "não deu para falar com o principal" a cada 5 s num principal atrás
+de um IPv6 inalcançável.
 
 **Um pedido que sai do túnel nunca é local, e a lista de rotas do gateway é
 fechada - as duas coisas são invariantes de segurança.** O encaminhador

@@ -2132,6 +2132,10 @@ RAII que decrementa no drop: o balanço de carga nunca fica preso num erro.
 - `ready_for_pipeline` (gateway) sonda `/health` de cada peer com timeout de
   300 ms **antes** de planejar - um anúncio UDP velho não pode envenenar o
   plano nem deixar requisição esperando por um hop que não serve mais HTTP. A
+  sonda tenta cada endereço de inferência, o host que já respondeu primeiro
+  (`Network::inference_bases`), e por último o túnel libp2p (3 s): só o
+  primeiro endereço anunciado deixava fora do plano um peer atrás de um IPv6
+  inalcançável, e a requisição falhava com "Gap at layer 0". A
   mesma resposta atualiza a identidade e a faixa executável quando o gossip
   ainda não propagou o `Announce` mais recente.
 - `resolve_step_url` escolhe o endereço de cada hop por ordem: rota medida na

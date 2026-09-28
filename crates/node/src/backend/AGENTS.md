@@ -615,8 +615,14 @@ faz o download autenticado do blob persistido.
   local_assignment, loads, http, runtime, gateway_port, auth, transfers,
   reply_inbox); `FromRef<GatewayState> for AuthState`; `peers_visible_to_cluster`
   filters blocked nodes; `ready_for_pipeline` health-checks each peer's
-  `inference_url()/health` before planning, with the `ADMISSION_PROBE_TIMEOUT`
-  of 300ms and an `AdmissionHealth` quarantine for whoever fails - a single
+  inference `/health` before planning, trying every inference address in
+  `Network::inference_bases` order (the host that already answered first) with
+  the `ADMISSION_PROBE_TIMEOUT` of 300ms each, then `/health` over the libp2p
+  tunnel (`infer_tunnel::health_via_tunnel`, 3 s); probing only the first
+  announced address left a peer behind an unreachable IPv6 out of every plan
+  ("Gap at layer 0"). A direct success is remembered with
+  `RouteTable::mark_success`. Whoever fails gets an `AdmissionHealth`
+  quarantine - a single
   unreachable announcer used to cost every inference 2,005ms, the
   `peer_client::CONNECT_TIMEOUT`, because `join_all` waits for the slowest. A
   successful health response also refreshes the model label, deployment id and

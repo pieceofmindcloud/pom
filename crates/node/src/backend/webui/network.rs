@@ -289,7 +289,10 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
                 continue;
             };
             let mut fetched = None;
-            for base in peer.gateway_candidates_with_tls(announced_tls) {
+            for base in state.network.order_gateway_bases(
+                &peer.node_id,
+                peer.gateway_candidates_with_tls(announced_tls),
+            ) {
                 let Ok(request) = state
                     .control_get_request(
                         client.get(format!("{base}{NETWORK_SETTINGS_POLICY_PATH}")),

@@ -849,9 +849,14 @@ fn refresh_peer_from_health(peer: PeerInfo, body: &serde_json::Value) -> Option<
     Some(current)
 }
 
+/// Prazo da sonda `/health` pelo túnel: um circuito pelo relé na internet não
+/// cabe nos 300 ms da sonda direta (`ADMISSION_PROBE_TIMEOUT`).
+const TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub(super) async fn ready_for_pipeline(
     http: &crate::peer_client::PeerClients,
     health: &AdmissionHealth,
+    network: &crate::network::Network,
     peers: Vec<PeerInfo>,
     timeout: Duration,
 ) -> Vec<PeerInfo> {
@@ -860,10 +865,15 @@ pub(super) async fn ready_for_pipeline(
         // inferência vai falar com aquele nó, senão ela mede - ou recusa - um
         // caminho que a requisição de verdade não percorre.
         let cliente = http.for_peer(&peer.node_id);
+        // Todos os endereços de inferência, o que já respondeu primeiro. Só o
+        // primeiro anunciado - um IPv6 inalcançável, por exemplo - deixava o
+        // peer em quarentena e fora do plano ("Gap at layer 0") mesmo
+        // alcançável por outro endereço ou pelo túnel.
+        let bases = network.inference_bases(&peer);
         async move {
-            let Some(base) = peer.inference_url() else {
+            if bases.is_empty() {
                 return None;
-            };
+            }
             // Idle peers keep their assignment announced while `/health` has
             // no loaded model. They are valid plan members and are woken by
             // the reload event before inference starts.
@@ -878,28 +888,43 @@ pub(super) async fn ready_for_pipeline(
             if health.quarantined(&peer.node_id).await {
                 return None;
             }
-            let url = format!("{base}/health");
-            match tokio::time::timeout(timeout, cliente.get(url).send()).await {
-                Ok(Ok(response)) if response.status().is_success() => {
-                    let Ok(Ok(body)) =
-                        tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
-                    else {
-                        health.note_failure(&peer.node_id).await;
-                        return None;
-                    };
-                    let node_id = peer.node_id.clone();
-                    let Some(peer) = refresh_peer_from_health(peer, &body) else {
-                        health.note_failure(&node_id).await;
-                        return None;
-                    };
-                    health.note_success(&peer.node_id).await;
-                    Some(peer)
+            let mut body = None;
+            for base in &bases {
+                let url = format!("{base}/health");
+                let Ok(Ok(response)) = tokio::time::timeout(timeout, cliente.get(url).send()).await
+                else {
+                    continue;
+                };
+                if !response.status().is_success() {
+                    continue;
                 }
-                _ => {
-                    health.note_failure(&peer.node_id).await;
-                    None
+                if let Ok(Ok(value)) =
+                    tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
+                {
+                    network.routes.mark_success(&peer.node_id, base);
+                    body = Some(value);
+                    break;
                 }
             }
+            // Nenhum endereço respondeu: o túnel libp2p, que a inferência
+            // também usa quando o HTTP direto não chega.
+            if body.is_none() {
+                if let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(&peer) {
+                    body = crate::infer_tunnel::health_via_tunnel(&tunnel, TUNNEL_HEALTH_TIMEOUT)
+                        .await;
+                }
+            }
+            let Some(body) = body else {
+                health.note_failure(&peer.node_id).await;
+                return None;
+            };
+            let node_id = peer.node_id.clone();
+            let Some(peer) = refresh_peer_from_health(peer, &body) else {
+                health.note_failure(&node_id).await;
+                return None;
+            };
+            health.note_success(&peer.node_id).await;
+            Some(peer)
         }
     }))
     .await

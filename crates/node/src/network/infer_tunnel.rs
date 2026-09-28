@@ -423,6 +423,33 @@ pub async fn measure_rtt(
     Some(started.elapsed().as_secs_f64() * 1000.0)
 }
 
+/// `GET /health` do servidor de inferência de um peer pelo túnel, e o corpo
+/// quando ele responde 2xx. É a sonda de admissão ao plano
+/// (`gateway::ready_for_pipeline`) de um peer que nenhum endereço alcança.
+pub(crate) async fn health_via_tunnel(
+    peer: &crate::peer_client::TunnelPeer,
+    timeout: Duration,
+) -> Option<serde_json::Value> {
+    let sender = tunnel_sender()?;
+    let (reply, response) = oneshot::channel();
+    sender
+        .send(TunnelOutbound {
+            peer_id: peer.peer_id,
+            addr_candidates: peer.addrs.clone(),
+            request: TunnelRequest::get("/health"),
+            reply,
+        })
+        .await
+        .ok()?;
+    let Ok(Ok(Ok(response))) = tokio::time::timeout(timeout, response).await else {
+        return None;
+    };
+    if !(200..300).contains(&response.status) {
+        return None;
+    }
+    serde_json::from_slice(&response.body).ok()
+}
+
 /// A real swarm speaking this protocol, wired to a real `TunnelOutboundSender`:
 /// the same pairing `Discovery::run` provides in production, reduced to the one
 /// behaviour under test.

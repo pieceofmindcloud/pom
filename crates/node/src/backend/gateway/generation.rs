@@ -420,6 +420,7 @@ pub(super) async fn generate_stream_inner(
     let peers = ready_for_pipeline(
         &state.peer_http,
         &state.admission_health,
+        &state.network,
         state.all_peers().await,
         ADMISSION_PROBE_TIMEOUT,
     )

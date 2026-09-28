@@ -108,7 +108,8 @@ pub(crate) fn spawn_ratchet(
             else {
                 continue;
             };
-            let candidates = peer.gateway_candidates_with_tls(announced);
+            let candidates =
+                net.order_gateway_bases(&peer.node_id, peer.gateway_candidates_with_tls(announced));
             if candidates.is_empty() {
                 warn!("principal {principal} não anuncia porta de gateway; política de logs não pôde ser confirmada");
                 continue;

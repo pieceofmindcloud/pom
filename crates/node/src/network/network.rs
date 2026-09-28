@@ -3443,15 +3443,30 @@ impl Network {
     /// vindo da porta de inferência (o caminho de inferência também o
     /// alimenta), por isso a comparação é pelo host.
     pub fn gateway_bases(&self, peer: &PeerInfo) -> Vec<String> {
+        self.order_by_proven_host(&peer.node_id, peer.gateway_candidates())
+    }
+
+    /// `gateway_bases` para o servidor de inferência do peer.
+    pub fn inference_bases(&self, peer: &PeerInfo) -> Vec<String> {
+        self.order_by_proven_host(&peer.node_id, peer.inference_candidates())
+    }
+
+    /// A mesma ordem para uma lista de endereços do gateway montada por quem
+    /// chama - com o esquema anunciado pelo peer, por exemplo, como fazem as
+    /// catracas de política.
+    pub fn order_gateway_bases(&self, node_id: &str, bases: Vec<String>) -> Vec<String> {
+        self.order_by_proven_host(node_id, bases)
+    }
+
+    fn order_by_proven_host(&self, node_id: &str, mut bases: Vec<String>) -> Vec<String> {
         let proven_host = self
             .routes
-            .last_success(&peer.node_id)
+            .last_success(node_id)
             .map(|url| url_host(&url).to_string());
-        let mut bases = peer.gateway_candidates();
         bases.sort_by_key(|base| {
             if proven_host.as_deref() == Some(url_host(base)) {
                 0
-            } else if self.routes.is_failed(&peer.node_id, base) {
+            } else if self.routes.is_failed(node_id, base) {
                 2
             } else {
                 1

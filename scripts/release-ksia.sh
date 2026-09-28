@@ -22,7 +22,7 @@ output="${root}/dist-release-ksia"
 dry_run=0
 cache="${POM_RELEASE_CACHE:-${HOME}/.cache/pom-release}"
 cuda_home="${POM_RELEASE_CUDA_HOME:-/usr/local/cuda-12.9}"
-llvm_bin="${POM_RELEASE_LLVM_BIN:-/usr/lib/llvm-18/bin}"
+llvm_bin="${POM_RELEASE_LLVM_BIN:-/usr/lib/llvm-20/bin}"
 llama_repo="${POM_LLAMA_CPP_REPOSITORY:-https://github.com/pereirajair/llama.cpp.git}"
 llama_ref="${POM_LLAMA_CPP_REF:-pom-tensor-parallel}"
 ninja_version="1.12.1"
@@ -85,8 +85,14 @@ case "$variant" in
   windows-cpu)
     need cmake
     need zip
-    [[ -x "${llvm_bin}/clang" && -x "${llvm_bin}/llvm-lib" && -x "${llvm_bin}/llvm-rc" ]] \
-      || missing="${missing} llvm-18(clang,llvm-lib,llvm-rc in ${llvm_bin})"
+    # The MSVC STL that xwin downloads (14.44+) refuses Clang < 19 (STL1000).
+    for tool in clang-cl lld-link llvm-lib llvm-rc; do
+      [[ -x "${llvm_bin}/${tool}" ]] || missing="${missing} ${tool}(${llvm_bin}; apt install clang-20 lld-20 llvm-20)"
+    done
+    if [[ -x "${llvm_bin}/clang" ]]; then
+      clang_major="$("${llvm_bin}/clang" -dumpversion | cut -d. -f1)"
+      ((clang_major >= 19)) || missing="${missing} clang>=19(${llvm_bin} is ${clang_major})"
+    fi
     ;;
 esac
 if [[ "$variant" == linux-cuda && ! -x "${cuda_home}/bin/nvcc" ]]; then
@@ -148,15 +154,14 @@ case "$variant" in
     ;;
   windows-cpu)
     # cargo-xwin downloads the MSVC CRT and the Windows SDK (license accepted
-    # below) and drives clang-cl/lld-link. The runner has no root, so the MSVC
-    # front ends are argv[0] shims over the machine's LLVM 18 and rustup's lld.
+    # below) and drives clang-cl/lld-link. Ubuntu installs the MSVC front ends
+    # only under /usr/lib/llvm-N/bin, so the shims dir puts the chosen LLVM
+    # first on PATH.
     shims="${tools}/msvc-shims"
-    rust_lld="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/rust-lld"
     run mkdir -p "$shims" "${tools}/bin"
-    run ln -sfn "${llvm_bin}/clang" "${shims}/clang-cl"
-    run ln -sfn "${llvm_bin}/llvm-lib" "${shims}/llvm-lib"
-    run ln -sfn "${llvm_bin}/llvm-rc" "${shims}/llvm-rc"
-    run ln -sfn "$rust_lld" "${shims}/lld-link"
+    for tool in clang-cl lld-link llvm-lib llvm-rc; do
+      run ln -sfn "${llvm_bin}/${tool}" "${shims}/${tool}"
+    done
     if [[ ! -x "${tools}/bin/ninja" ]]; then
       run curl -fsSL -o "${tools}/ninja.zip" "https://github.com/ninja-build/ninja/releases/download/v${ninja_version}/ninja-linux.zip"
       run unzip -o -q "${tools}/ninja.zip" -d "${tools}/bin"

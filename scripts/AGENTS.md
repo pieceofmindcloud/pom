@@ -122,7 +122,8 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   `build.N` para o `pom-release.sh`.
 - `release-ksia.sh` - build de release na ksia para `linux-cpu`,
   `linux-cuda` (CUDA 12.9, lista larga de arquiteturas) ou `windows-cpu`
-  (cruzado com `cargo xwin` + shims `clang-cl`/`lld-link`), com estado em
+  (cruzado com `cargo xwin` + `clang-cl`/`lld-link` do LLVM 20; o STL do
+  MSVC exige Clang >= 19), com estado em
   `~/.cache/pom-release` e pacote em `dist-release-ksia/`; `--dry-run` só
   imprime os comandos. Chamado por `.github/workflows/release-ksia.yml`.
 - `test-release-ksia.sh` - dry-run de cada variante e checagem de que o

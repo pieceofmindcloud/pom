@@ -907,10 +907,14 @@ confere isso e o dry-run de cada variante.
   de 24 h.
 - **windows-cpu** é **compilação cruzada** a partir do Linux: `cargo xwin`
   baixa o SDK do Windows e o CRT do MSVC (`XWIN_ACCEPT_LICENSE=1`), e o CMake do
-  llama.cpp usa `clang-cl`/`lld-link`/`llvm-lib`/`llvm-rc`. O LLVM 18 da ksia
-  não traz `clang-cl` nem `lld-link` como binários, então o script cria shims
-  por argv0 (`clang` chamado como `clang-cl`, `rust-lld` do rustup como
-  `lld-link`). CUDA no Windows exige o toolkit do Windows e não se compila
+  llama.cpp usa `clang-cl`/`lld-link`/`llvm-lib`/`llvm-rc` do LLVM 20
+  (`POM_RELEASE_LLVM_BIN`, padrão `/usr/lib/llvm-20/bin`). **Precisa ser Clang 19
+  ou mais novo**: o STL do MSVC que o xwin baixa (14.44) recusa versões antigas
+  com `error STL1000: Unexpected compiler version, expected Clang 19.0.0 or
+  newer`, e o LLVM 18 padrão do Ubuntu 24.04 caía nisso. O script confere a versão
+  antes de compilar e põe esse LLVM na frente do `PATH` por symlinks em
+  `tools/msvc-shims`, porque o Ubuntu só instala `clang-cl` e `lld-link` dentro
+  de `/usr/lib/llvm-N/bin`. CUDA no Windows exige o toolkit do Windows e não se compila
   daqui: este pacote é só CPU. **Ainda não foi executado de ponta a ponta**; a
   primeira execução pode pedir ajuste no script.
 
@@ -922,8 +926,9 @@ llama.cpp (refeito quando o sha remoto de `pom-tensor-parallel` muda), um
 SDK; os jobs Linux avisam quando o disco tem menos de 15 GB. Para liberar
 espaço, apague a pasta inteira - a próxima execução reconstrói do zero.
 
-**Provisionamento único (root).** O que já existe na ksia basta: `clang`,
-`mold`, `cmake`, `zip`, LLVM 18 em `/usr/lib/llvm-18/bin` e CUDA 12.9. O resto
+**Provisionamento único (root).** Já instalado na ksia: `clang`,
+`mold`, `cmake`, `zip`, CUDA 12.9 e LLVM 20 (`apt install clang-20 lld-20
+llvm-20`, do repositório padrão do Ubuntu 24.04, instalado em 28/09/2026). O resto
 (`cargo-xwin`, `ninja`, SDK) o script baixa no espaço do usuário. Se faltar
 algo, o script para com a lista do que falta, antes de compilar.
 

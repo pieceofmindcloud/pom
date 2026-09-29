@@ -43,8 +43,6 @@ pub(crate) const SPECULATION_REASON_MTP_INPUT_MISSING: &str = "mtp_input_missing
 pub(crate) const SPECULATION_REASON_MTP_RUNTIME_DISABLED: &str = "mtp_runtime_disabled";
 pub(crate) const SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE: &str =
     "peer_without_sliced_mtp_wire";
-pub(crate) const SPECULATION_REASON_REMOTE_STREAM_MTP_DISABLED: &str =
-    "remote_stream_sliced_mtp_disabled";
 pub(super) const SPECULATION_REASON_TAIL_DRAFT_EMPTY: &str = "tail_mtp_draft_empty";
 const PROFILE_SPAN_LIMIT: usize = 64;
 

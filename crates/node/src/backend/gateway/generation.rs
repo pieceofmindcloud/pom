@@ -1053,14 +1053,11 @@ pub(super) async fn generate_stream_inner(
             direct.is_some(),
         );
         let sliced_mtp_requested = mtp_enabled && plan_supports_mtp && plan.steps.len() >= 2;
-        let remote_stream_sliced_mtp_disabled =
-            disable_sliced_mtp_for_remote_stream(remote_stream_capable, sliced_mtp_requested);
-        let sliced_mtp = sliced_mtp_requested && !remote_stream_sliced_mtp_disabled;
+        let sliced_mtp = sliced_mtp_requested;
         info!(
             remote_stream_capable,
             sliced_mtp_requested,
             sliced_mtp,
-            remote_stream_sliced_mtp_disabled,
             plan_supports_mtp,
             "caminho de decode do pipeline"
         );
@@ -1070,22 +1067,17 @@ pub(super) async fn generate_stream_inner(
                 "pipeline fatiado sem MTP: seguindo com a capacidade disponível"
             );
         }
-        if remote_stream_sliced_mtp_disabled {
-            info!(
-                reason = crate::infer_server::SPECULATION_REASON_REMOTE_STREAM_MTP_DISABLED,
-                "MTP fatiado desativado no remote-stream: o draft síncrono bloquearia cada callback"
-            );
-        }
         let mut remote_stream = if remote_stream_capable {
-            // The remote head owns the autoregressive cycle. A sliced MTP
-            // request is deliberately omitted here: its synchronous nextn
-            // draft runs before the callback can be released and was measured
-            // as the dominant producer wait on this path. The established
-            // non-stream path keeps the opt-in MTP behavior.
+            // The remote head owns the autoregressive cycle, MTP included: the
+            // tail drafts `nextn` after sampling and returns `next_draft` in
+            // the same reply, and the head installs it in its next step. The
+            // draft costs one callback more time, but a round then yields up
+            // to `mtp_k` tokens instead of one, which is what pays the
+            // head-to-tail round trip.
             let speculate = remote_stream_speculation(
                 &plan,
                 speculative_enabled,
-                mtp_enabled && !remote_stream_sliced_mtp_disabled,
+                mtp_enabled,
                 speculative_k,
                 speculative_m,
                 mtp_k,
@@ -1133,10 +1125,7 @@ pub(super) async fn generate_stream_inner(
             None
         };
 
-        if plan.supports_speculation()
-            && speculative_enabled
-            && !remote_stream_sliced_mtp_disabled
-        {
+        if plan.supports_speculation() && speculative_enabled {
             // Vira `false` na primeira rodada em que a cabeça recusar o
             // rascunho. Pedir de novo só repetiria a recusa, e o pedido custa
             // caro por um motivo que não se vê: no caminho legado,

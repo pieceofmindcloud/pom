@@ -346,9 +346,8 @@ visibilidade dos controles de implantação na UI local.
   identifica o custo síncrono do nextn e `node_timings.mtp_observe_ms` o do
   `observe`. `RemoteStreamTelemetry::merge` junta também as distribuições de
   `downstream_wait` e `delivery`; sem isso os p50/p95 desses dois campos
-  saíam zerados na resposta embora os totais estivessem certos. Em plano remoto fatiado, MTP é omitido
-  quando imporia esse draft a cada callback, enquanto o caminho legado continua
-  elegível. `handle_step_stream` copia o
+  saíam zerados na resposta embora os totais estivessem certos. Em plano remoto fatiado o MTP é pedido
+  à cabeça remota, como no caminho legado. `handle_step_stream` copia o
   `session_id` do frame de controle para o `reply_to`, e cada lote de retorno
   o recoloca no envelope antes de chegar ao ticket. O retorno normal usa o
   canal persistente e só o fallback usa HTTPS por callback, com contagem e

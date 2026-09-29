@@ -1988,12 +1988,8 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn stream_remoto_desliga_mtp_fatiado_mas_preserva_o_caminho_legado() {
-        assert!(disable_sliced_mtp_for_remote_stream(true, true));
-        assert!(!disable_sliced_mtp_for_remote_stream(false, true));
-        assert!(!disable_sliced_mtp_for_remote_stream(true, false));
-
-        let legacy = remote_stream_speculation(
+    fn stream_remoto_fatiado_pede_mtp_quando_o_plano_suporta() {
+        let sliced = remote_stream_speculation(
             &multi_plan_with_mtp(),
             true,
             true,
@@ -2002,9 +1998,9 @@ mod remote_stream_selection_tests {
             4,
             crate::prefill::DraftSource::Mtp,
         )
-        .expect("o caminho legado deve continuar elegível a MTP");
-        assert_eq!(legacy.source, crate::infer_server::DraftSource::Mtp);
-        assert_eq!(legacy.k, 4);
+        .expect("um plano fatiado com MTP deve pedir MTP no stream remoto");
+        assert_eq!(sliced.source, crate::infer_server::DraftSource::Mtp);
+        assert_eq!(sliced.k, 4);
     }
 
     fn multi_plan_with_mtp() -> PipelinePlan {
@@ -2033,23 +2029,6 @@ mod remote_stream_selection_tests {
             libp2p_addr_candidates: Vec::new(),
         });
         multi
-    }
-
-    #[test]
-    fn remote_stream_mtp_fatiado_e_omitido_por_cadencia_explicita() {
-        let multi = multi_plan_with_mtp();
-        let disabled = disable_sliced_mtp_for_remote_stream(true, true);
-        assert!(disabled);
-        assert!(remote_stream_speculation(
-            &multi,
-            true,
-            !disabled,
-            4,
-            3,
-            4,
-            crate::prefill::DraftSource::Mtp,
-        )
-        .is_none());
     }
 
     #[test]

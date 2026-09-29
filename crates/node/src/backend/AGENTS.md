@@ -665,12 +665,12 @@ faz o download autenticado do blob persistido.
   `response_complete` until the retained trace is complete, not as an
   invented `unaccounted` duration;
   MTP on a sliced plan (`mtp_enabled` + `plan.supports_mtp()` + >= 2 hops):
-  the remote-stream selector deliberately omits the synchronous `nextn` draft
-  because it would block every producer callback, recording
-  `remote_stream_sliced_mtp_disabled`; the legacy direct path keeps the
-  gateway-side store and injection. The callback still carries explicit
-  `speculated`, `speculation_active` and `speculation_disabled_reason` fields
-  when that path is selected. Both paths continue with `prefill::step` and a
+  the remote-stream selector asks the remote head for MTP: the tail drafts
+  `nextn` after sampling and returns `next_draft` in the same reply, and the
+  head installs it in its next step, so a round yields up to `mtp_k` tokens
+  for one head-to-tail round trip; the legacy direct path keeps the
+  gateway-side store and injection. The callback carries explicit
+  `speculated`, `speculation_active` and `speculation_disabled_reason` fields. Both paths continue with `prefill::step` and a
   named reason when speculation is unavailable;
   the gateway still chooses the pipeline replica per session. Continuous
   batching is owned by the inference process at that replica, not by a global

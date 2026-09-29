@@ -625,11 +625,13 @@ tradicionais:
    ao emitter como `GatewayGone`; ele encerra junto o producer do head remoto,
    liberando a sessão de KV e a admissão do scheduler em vez de deixar uma
    geração órfã rodando até um timeout. Em plano MTP fatiado de dois ou mais
-   hops, o `remote-stream` não envia `speculate.source="mtp"`: o `nextn` da
-   cauda é síncrono dentro do ciclo do produtor e bloquearia cada liberação.
-   A seleção registra `remote_stream_sliced_mtp_disabled`; isso é um fallback
-   de cadência, não uma mudança no motor, e o caminho legado continua elegível
-   a MTP. O callback também informa `speculated`, `speculation_active` e
+   hops, o `remote-stream` envia `speculate.source="mtp"` à cabeça remota: a
+   cauda rascunha o `nextn` depois de amostrar e devolve `next_draft` na mesma
+   resposta, e a cabeça o instala no passo seguinte. O rascunho alonga a volta
+   da cauda, mas a volta passa a render até `mtp_k` tokens; com um token por
+   volta, o RTT cabeça-cauda inteiro recaía sobre cada token (medido em
+   2026-09-28: ~12 tok/s sem MTP, com 96% de aceitação disponível no mesmo
+   prompt pelo caminho legado). O callback também informa `speculated`, `speculation_active` e
    `speculation_disabled_reason`, sem travessia ou chamada adicional por token.
    Cada lote também preserva `hop_timings` e `span_count` dos peers downstream,
    além de `stream_id`, índice do frame, lifetime, latência, bytes e espera;
@@ -1910,8 +1912,8 @@ requisição (`especulando`, em `generate_stream_with_stops`): passa a chamar
 - A rota legada `step_speculative` continua no anel/hub, sem usar
   `relay/v2-direct`. O MTP fatiado continua permitido no caminho legado quando
   todos anunciam `speculate/v1-mtp-sliced` e a cauda anuncia
-  `speculate/v1-mtp`; no `remote-stream` de dois ou mais hops ele é omitido para
-  não impor o draft síncrono a cada callback. Cada hop faz rollback local no
+  `speculate/v1-mtp`, e vale também no `remote-stream` de dois ou mais hops.
+  Cada hop faz rollback local no
   reply já em voo. Peer sem a capacidade nova degrada para o sampler plain com a razão
   `peer_without_sliced_mtp_wire`.
 

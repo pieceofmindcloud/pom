@@ -1,4 +1,5 @@
-import { Info, ServerCog } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Info, ServerCog, X } from "lucide-react";
 import { useI18n } from "../i18n/provider";
 import {
   GATEWAY_HEIGHT,
@@ -34,7 +35,16 @@ export type PipelineRouteCost = {
   returnMode?: "direct" | "ring" | null;
   /** Alguma perna da rota passa por um circuito num relé libp2p. */
   relayed?: boolean;
+  /** Quais pernas, como `[de, para]`. */
+  relayedLegs?: Array<[string, string]>;
+  /** A volta direta passaria por relé e o anel a contorna. */
+  relayBypassedByRing?: boolean;
 };
+
+/** Os primeiros caracteres do `node_id`, como no resto do mapa. */
+function shortId(nodeId: string) {
+  return nodeId.slice(0, 8);
+}
 
 /** Soma somente uma decomposição completa, sem transformar ausência em zero. */
 export function pipelineCycleTotalMs(cost: PipelineCycleCost | undefined): number | null {
@@ -62,6 +72,87 @@ export function pipelineRouteTotalMs(route: PipelineRouteCost): number | null {
   if (validMs(route.totalMs)) return route.totalMs;
   if (validMs(route.networkMs)) return route.networkMs;
   return null;
+}
+
+/**
+ * Uma linha compacta dizendo que a rota passa por relé (ou que o anel o
+ * contorna); o ícone abre o card com quais pernas, se o POM contorna e como
+ * melhorar.
+ */
+function RelayNotice({ route }: { route: PipelineRouteCost }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const container = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      if (!container.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+  const legs = (route.relayedLegs ?? []).map(([from, to]) => `${shortId(from)} → ${shortId(to)}`).join(", ");
+  const tail = route.nodeIds.at(-2);
+  const gateway = route.nodeIds.at(-1);
+  const blocking = route.relayed === true;
+  return (
+    <div ref={container} className="relative mt-2" onPointerDown={(event) => event.stopPropagation()}>
+      <div
+        data-testid="pipeline-relay-warning"
+        className={`flex items-center gap-1.5 rounded-md border-2 border-relay px-2 py-1 text-[10px] font-semibold ${blocking ? "bg-relay text-white" : "bg-relay/10 text-relay"}`}
+      >
+        <span className="uppercase tracking-[0.08em]">{t("canvas.relayBadge")}</span>
+        <span className="min-w-0 flex-1 truncate font-normal">{blocking ? t("canvas.relayRouteTitle") : t("canvas.relayBypassedChip")}</span>
+        <button
+          type="button"
+          data-testid="pipeline-relay-info"
+          aria-label={t("canvas.relayDetails")}
+          aria-expanded={open}
+          title={t("canvas.relayDetails")}
+          onClick={() => setOpen((value) => !value)}
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full hover:bg-black/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+        >
+          <Info className="h-4 w-4" aria-hidden="true" />
+        </button>
+      </div>
+      {open && (
+        <div
+          role="dialog"
+          aria-label={t("canvas.relayDetails")}
+          data-testid="pipeline-relay-popup"
+          className="absolute right-0 top-full z-30 mt-1.5 w-72 rounded-lg border-2 border-relay bg-ink p-3 text-[11px] leading-snug text-fg shadow-panel"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="font-semibold uppercase tracking-[0.1em] text-relay">
+              {blocking ? t("canvas.relayRouteTitle") : t("canvas.relayBypassedChip")}
+            </div>
+            <button type="button" aria-label={t("canvas.relayClose")} onClick={() => setOpen(false)} className="text-muted hover:text-fg">
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>
+          {legs && (
+            <p data-testid="pipeline-relay-legs" className="mt-1.5 font-mono">
+              {t("canvas.relayLegs", { legs })}
+            </p>
+          )}
+          {route.relayBypassedByRing && tail && gateway && (
+            <p data-testid="pipeline-relay-bypass" className="mt-1.5">
+              {t("canvas.relayBypassed", { from: shortId(tail), to: shortId(gateway) })}
+            </p>
+          )}
+          {blocking && <p className="mt-1.5">{t("canvas.relayNotBypassed")}</p>}
+          <p className="mt-1.5 text-muted">{t("canvas.relayRouteHint")}</p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function PipelineGatewayNode({
@@ -139,19 +230,7 @@ export function PipelineGatewayNode({
           {t("canvas.pipelineCostBreakdown", { network: networkMs.toFixed(1), compute: computeMs.toFixed(1) })}
         </p>
       )}
-      {bestRoute?.relayed && (
-        <div
-          data-testid="pipeline-relay-warning"
-          role="note"
-          className="mt-2 flex gap-2 rounded-lg border-2 border-relay bg-relay/15 px-2.5 py-2 text-[10px] leading-snug text-fg"
-        >
-          <Info className="mt-px h-4 w-4 shrink-0 text-relay" aria-hidden="true" />
-          <div>
-            <div className="font-semibold uppercase tracking-[0.1em] text-relay">{t("canvas.relayRouteTitle")}</div>
-            <p className="mt-0.5 text-muted">{t("canvas.relayRouteHint")}</p>
-          </div>
-        </div>
-      )}
+      {bestRoute && (bestRoute.relayed || bestRoute.relayBypassedByRing) && <RelayNotice route={bestRoute} />}
       {orderedRoutes.length > 0 && (
         <div data-testid="pipeline-routes" className="mt-2 border-t border-aqua/15 pt-2">
           <div className="text-[9px] uppercase tracking-[0.12em] text-faint">

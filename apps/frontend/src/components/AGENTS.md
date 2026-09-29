@@ -277,8 +277,12 @@ Per-file list:
   qualquer nó. Uma aresta com `relayed` (túnel por circuito num relé) fica em
   laranja forte (token `--relay`, `stroke-relay` tracejado), e o
   `RouteRttLabel` troca o transporte por "RELAY" com ícone de informação e a
-  explicação no `title`; se a melhor rota tem `relayed`, o gateway mostra o
-  aviso `pipeline-relay-warning` dizendo por que está lenta e como melhorar.
+  explicação no `title`; se a melhor rota tem `relayed` ou
+  `relayBypassedByRing`, o gateway mostra uma linha compacta
+  (`pipeline-relay-warning`, laranja cheio quando a ida passa por relé,
+  contorno quando o anel evita o relé da volta) e o ícone abre o card
+  `pipeline-relay-popup` (fecha com Esc, clique fora ou X) com as pernas por
+  relé, se o POM contorna pelo anel e como melhorar.
 - `ModelNetworkCanvas.tsx` - A visão operacional principal: um grafo SVG com
   pan/zoom de nós (cards de faixa com medidores agrupados de RAM/carga/VRAM,
   seguidos pelas temperaturas compactas quando há GPU) e arestas curvas, guiado por

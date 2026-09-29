@@ -39,7 +39,7 @@ pub struct AdmissionHealth {
     /// Velocidade, fila e RTTs que o `/health` de cada peer publicou na última
     /// sonda de admissão. É a entrada do planejador por tempo de entrega
     /// (`fastest::plan_fastest`) e do Painel.
-    perf: std::sync::RwLock<std::collections::HashMap<String, crate::fastest::PeerPerf>>,
+    perf: std::sync::RwLock<std::collections::HashMap<String, (Instant, crate::fastest::PeerPerf)>>,
 }
 
 impl AdmissionHealth {
@@ -64,14 +64,34 @@ impl AdmissionHealth {
 
     pub(crate) fn note_perf(&self, node_id: &str, perf: crate::fastest::PeerPerf) {
         if let Ok(mut map) = self.perf.write() {
-            map.insert(node_id.to_string(), perf);
+            map.insert(node_id.to_string(), (Instant::now(), perf));
         }
     }
 
     pub(crate) fn perf_snapshot(
         &self,
     ) -> std::collections::HashMap<String, crate::fastest::PeerPerf> {
-        self.perf.read().map(|map| map.clone()).unwrap_or_default()
+        self.perf
+            .read()
+            .map(|map| {
+                map.iter()
+                    .map(|(id, (_, perf))| (id.clone(), perf.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `true` quando `node_id` nunca foi sondado ou a última sonda tem mais de
+    /// `max_age`. O planejador sonda a cada requisição; quem só lê (o Painel)
+    /// usa isto para não mostrar o que um peer publicava minutos atrás.
+    pub(crate) fn perf_older_than(&self, node_id: &str, max_age: Duration) -> bool {
+        self.perf
+            .read()
+            .map(|map| {
+                map.get(node_id)
+                    .is_none_or(|(at, _)| at.elapsed() > max_age)
+            })
+            .unwrap_or(true)
     }
 }
 

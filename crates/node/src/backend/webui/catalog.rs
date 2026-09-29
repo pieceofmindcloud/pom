@@ -1863,6 +1863,14 @@ pub(super) struct ChatTelemetryPipelineRoute {
     /// Alguma perna da rota passa por relé; a rota precisa ser revista.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) relayed: bool,
+    /// Quais pernas, como `[de, para]`. A primeira pode ser a do próprio
+    /// gateway: vale só para requisições que entram por este nó.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) relayed_legs: Vec<[String; 2]>,
+    /// A volta direta da cauda passaria por relé, e o modo escolhido é o
+    /// anel: o POM contorna o relé devolvendo a resposta pelas conexões da ida.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) relay_bypassed_by_ring: bool,
 }
 
 /// A perna `from -> to` está fixada no túnel libp2p e `from` só alcança `to`
@@ -1967,15 +1975,28 @@ pub(super) fn pipeline_routes_for(
                 .collect::<Option<Vec<_>>>()
                 .map(|legs| legs.into_iter().sum());
             let total_ms = view.decode_ms_per_token;
-            let relayed = std::iter::once(inputs.requester)
+            let mut relayed_legs = std::iter::once(inputs.requester)
                 .chain(chain.iter().map(|peer| peer.node_id.as_str()))
                 .collect::<Vec<_>>()
                 .windows(2)
-                .any(|pair| leg_is_relayed(pair[0], pair[1], false, inputs))
-                || (returns_to_gateway
-                    && chain.last().is_some_and(|tail| {
-                        leg_is_relayed(&tail.node_id, inputs.requester, true, inputs)
-                    }));
+                .filter(|pair| leg_is_relayed(pair[0], pair[1], false, inputs))
+                .map(|pair| [pair[0].to_owned(), pair[1].to_owned()])
+                .collect::<Vec<_>>();
+            // A volta da cauda só conta quando o modo escolhido a usa: no
+            // anel a resposta volta pelas conexões da ida, e o relé da volta
+            // direta fica contornado.
+            let return_relayed = returns_to_gateway
+                && chain.last().is_some_and(|tail| {
+                    leg_is_relayed(&tail.node_id, inputs.requester, true, inputs)
+                });
+            let ring = view.return_mode == Some(crate::fastest::ReturnMode::Ring);
+            if return_relayed && !ring {
+                if let Some(tail) = chain.last() {
+                    relayed_legs.push([tail.node_id.clone(), inputs.requester.to_owned()]);
+                }
+            }
+            let relay_bypassed_by_ring = return_relayed && ring;
+            let relayed = !relayed_legs.is_empty();
             Some(ChatTelemetryPipelineRoute {
                 node_ids,
                 legs_ms: view.legs_ms,
@@ -1989,6 +2010,8 @@ pub(super) fn pipeline_routes_for(
                     .map(|total| (1000.0 / total * 10.0).round() / 10.0),
                 returns_to_gateway,
                 relayed,
+                relayed_legs,
+                relay_bypassed_by_ring,
             })
         })
         .collect::<Vec<_>>();
@@ -2413,6 +2436,9 @@ pub(super) async fn chat_telemetry(
     })
 }
 
+/// Idade máxima da sonda de um peer que o Painel aceita sem sondar de novo.
+const PANEL_PERF_MAX_AGE: Duration = Duration::from_secs(15);
+
 /// Velocidade dos peers do modelo ativo. Vem da última sonda de admissão; se
 /// algum peer ainda não passou por uma (nenhuma requisição desde que subiu),
 /// a sonda roda aqui, com o mesmo teto curto da admissão.
@@ -2427,11 +2453,14 @@ async fn model_peer_perf(
             .into_iter()
             .cloned()
             .collect();
-    let mut perf = state.admission_health.perf_snapshot();
-    if candidates
-        .iter()
-        .any(|peer| !perf.contains_key(&peer.node_id))
-    {
+    // A sonda de admissão só roda quando este nó atende uma requisição; num
+    // nó que ninguém usa como gateway o snapshot envelhecia sem limite e o
+    // Painel mostrava a rota que um peer tinha logo depois de subir.
+    if candidates.iter().any(|peer| {
+        state
+            .admission_health
+            .perf_older_than(&peer.node_id, PANEL_PERF_MAX_AGE)
+    }) {
         let _ = crate::gateway::ready_for_pipeline(
             &state.peer_http,
             &state.admission_health,
@@ -2440,8 +2469,8 @@ async fn model_peer_perf(
             crate::gateway::ADMISSION_PROBE_TIMEOUT,
         )
         .await;
-        perf = state.admission_health.perf_snapshot();
     }
+    let mut perf = state.admission_health.perf_snapshot();
     perf.retain(|node_id, _| candidates.iter().any(|peer| peer.node_id == *node_id));
     perf
 }

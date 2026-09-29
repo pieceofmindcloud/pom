@@ -1031,7 +1031,16 @@ publica no `/health` as suas (`route_rtt_ms`, `gateway_rtt_ms`, com o
 transporte em `route_kinds`/`gateway_route_kinds` e os peers alcançados só por
 relé em `relayed_peers`). Uma perna fixada no túnel até um peer de
 `relayed_peers` sai com `relayed: true` na medição e marca a rota inteira com
-`relayed: true`; o Painel a mostra em laranja forte com a explicação. As mesmas medições entram em
+`relayed: true`, com as pernas em `relayed_legs` (`[de, para]`; a primeira
+pode sair do próprio gateway e aí só pesa para requisições que entram por ele).
+A volta direta da cauda só conta quando o modo escolhido a usa: se ela passaria
+por relé e o planejador escolheu o anel, a rota sai com
+`relay_bypassed_by_ring: true` em vez de `relayed`. O Painel mostra uma linha
+compacta em laranja e o detalhe num card ao clicar no ícone. A velocidade e as
+rotas de cada peer vêm da sonda de admissão; como ela só roda quando o nó
+atende uma requisição, o Painel sonda de novo o peer cuja última sonda tem mais
+de 15 s (`PANEL_PERF_MAX_AGE`) - sem isso um nó que ninguém usa como gateway
+mostrava a rota que o peer tinha logo depois de subir. As mesmas medições entram em
 `measurements` para as etiquetas das arestas (`tunnel` sai como
 `libp2p-tunnel`, a volta da cauda com destino `gateway`); o trace da última
 execução só preenche uma aresta que a rota planejada ainda não mediu. Antes o

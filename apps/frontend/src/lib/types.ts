@@ -678,6 +678,10 @@ export interface ChatTelemetryNetwork {
     tokens_per_sec?: number | null;
     /** Alguma perna da rota passa por relé. */
     relayed?: boolean;
+    /** Quais pernas passam por relé, como `[de, para]`. */
+    relayed_legs?: Array<[string, string]>;
+    /** A volta direta passaria por relé e o anel a contorna. */
+    relay_bypassed_by_ring?: boolean;
   }>;
   /** Velocidade medida de cada peer do modelo ativo. */
   peer_perf?: Record<string, ChatTelemetryPeerPerf>;

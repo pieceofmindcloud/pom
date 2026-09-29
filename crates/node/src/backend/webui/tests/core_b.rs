@@ -526,6 +526,7 @@ mod chat_telemetry_tests {
 
         let routes = pipeline_routes_for(&peers, "qwen35", None, 32, &inputs);
         assert!(routes[0].relayed);
+        assert_eq!(routes[0].relayed_legs, vec![["head".to_string(), "tail".to_string()]]);
         let measurements = planned_route_measurements(&routes, &inputs);
         let edge = measurements
             .iter()
@@ -544,6 +545,30 @@ mod chat_telemetry_tests {
         direct.get_mut("head").unwrap().relayed_peers.clear();
         let inputs = route_inputs("gateway", &requester_rtt, &direct, &load);
         assert!(!pipeline_routes_for(&peers, "qwen35", None, 32, &inputs)[0].relayed);
+    }
+
+    #[test]
+    fn a_relayed_return_leg_does_not_count_when_the_answer_comes_back_by_the_ring() {
+        // Gateway é a cabeça; a ida até a cauda é QUIC e só a volta direta
+        // passa por relé. O planejador escolhe o anel, que não usa essa volta.
+        let peers = vec![served_peer("gateway", 0, 15), served_peer("tail", 16, 31)];
+        let requester_rtt = HashMap::from([("tail".to_string(), 30.0)]);
+        let mut tail = route_perf(66.0, &[], &[("gateway", 52.0)]);
+        tail.gateway_route_kinds.insert("gateway".into(), "tunnel".into());
+        tail.relayed_peers.insert("gateway".into());
+        let perf = HashMap::from([
+            ("gateway".to_string(), route_perf(25.0, &[("tail", 30.0)], &[])),
+            ("tail".to_string(), tail),
+        ]);
+        let load = HashMap::new();
+        let inputs = route_inputs("gateway", &requester_rtt, &perf, &load);
+
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, &inputs);
+
+        assert_eq!(routes[0].return_mode, Some(crate::fastest::ReturnMode::Ring));
+        assert!(!routes[0].relayed);
+        assert!(routes[0].relayed_legs.is_empty());
+        assert!(routes[0].relay_bypassed_by_ring);
     }
 
     #[test]

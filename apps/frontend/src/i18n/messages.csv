@@ -135,6 +135,12 @@ canvas.returnRing,ring,anel
 canvas.relayBadge,RELAY,RELAY
 "canvas.relayEdgeHint","This link goes through a relay peer: every frame crosses an intermediate server, which adds latency. Review the route.","Esta ligação passa por um peer de relé: cada frame atravessa um servidor intermediário, o que aumenta a latência. Reveja a rota."
 canvas.relayRouteTitle,Route through relay,Rota por relé
+canvas.relayLegs,Relayed legs: {legs},Pernas por relé: {legs}
+canvas.relayBypassedChip,Relay bypassed by the ring,Relé contornado pelo anel
+canvas.relayDetails,Relay route details,Detalhes da rota por relé
+canvas.relayClose,Close,Fechar
+"canvas.relayBypassed","The direct return {from} → {to} would go through the relay. POM is working around it: the answer comes back by the ring, over the same connections as the forward path.","A volta direta {from} → {to} passaria pelo relé. O POM está contornando: a resposta volta pelo anel, pelas mesmas conexões da ida."
+"canvas.relayNotBypassed","POM cannot work around these legs: they are part of the forward path. When the first leg leaves this node, only requests that enter through here pay for it.","O POM não consegue contornar essas pernas: elas fazem parte da ida da pipeline. Quando a primeira perna sai deste nó, só as requisições que entram por aqui pagam por ela."
 "canvas.relayRouteHint","The fastest route crosses a relay peer because the machines could not connect directly (NAT, firewall or a failed hole punch). Every token pays the detour to the relay. To improve it, give the machines a direct path: publish the node ports, advertise a reachable address (a VPN such as Tailscale with POM_ADVERTISE_ADDR) or open the firewall so the hole punch succeeds.","A rota mais rápida atravessa um peer de relé porque as máquinas não conseguiram se conectar diretamente (NAT, firewall ou hole punch que falhou). Cada token paga o desvio até o relé. Para melhorar, dê às máquinas um caminho direto: publique as portas do nó, anuncie um endereço alcançável (uma VPN como Tailscale com POM_ADVERTISE_ADDR) ou libere o firewall para o hole punch fechar."
 canvas.pipelineRouteCount,"{count} route{count, plural, =1 {} other {s}}","{count} rota{count, plural, =1 {} other {s}}"
 canvas.pipelineThroughput,≈ {tps} tok/s per token cycle,≈ {tps} tok/s por ciclo de token

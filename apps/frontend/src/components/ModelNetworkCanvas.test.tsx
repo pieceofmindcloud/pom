@@ -186,7 +186,7 @@ describe("ModelNetworkCanvas: rota por relé", () => {
       { from_node_id: "head", to_node_id: "tail", rtt_ms: 67, transport: "libp2p-tunnel", relayed: true },
       { from_node_id: "tail", to_node_id: "gateway", rtt_ms: 3, transport: "quic" },
     ], undefined, undefined, [
-      { nodeIds: ["head", "tail", "gateway"], legsMs: [4, 67, 3], computeMs: 30, networkMs: 37, totalMs: 67, returnMode: "direct", relayed: true },
+      { nodeIds: ["head", "tail", "gateway"], legsMs: [4, 67, 3], computeMs: 30, networkMs: 37, totalMs: 67, returnMode: "direct", relayed: true, relayedLegs: [["head", "tail"]] },
     ]);
 
     const label = screen.getByTestId("route-relay-label");
@@ -196,6 +196,24 @@ describe("ModelNetworkCanvas: rota por relé", () => {
     expect(container.querySelectorAll('path[data-relayed="true"]').length).toBe(1);
     expect(screen.getByTestId("pipeline-route-relay").textContent).toBe("RELAY");
     expect(screen.getByTestId("pipeline-relay-warning").textContent).toContain("Rota por relé");
+    // O texto longo só aparece no card, ao clicar no ícone.
+    expect(screen.queryByTestId("pipeline-relay-popup")).toBeNull();
+    fireEvent.click(screen.getByTestId("pipeline-relay-info"));
+    expect(screen.getByTestId("pipeline-relay-legs").textContent).toBe("Pernas por relé: head → tail");
+    expect(screen.getByTestId("pipeline-relay-popup").textContent).toContain("não consegue contornar");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByTestId("pipeline-relay-popup")).toBeNull();
+  });
+
+  it("diz quando o anel contorna o relé da volta direta", () => {
+    const view = fakeCluster([fakeSlicePeer("gw", 0, 15), fakeSlicePeer("tail", 16, 31)]);
+    mount(view, [], undefined, undefined, [
+      { nodeIds: ["gw", "tail", "gw"], legsMs: [0, 30, 52], computeMs: 90, networkMs: 30, totalMs: 120, returnMode: "ring", relayBypassedByRing: true },
+    ]);
+    expect(screen.getByTestId("pipeline-relay-warning").textContent).toContain("Relé contornado pelo anel");
+    fireEvent.click(screen.getByTestId("pipeline-relay-info"));
+    expect(screen.getByTestId("pipeline-relay-bypass").textContent).toContain("tail → gw");
+    expect(screen.getByTestId("pipeline-relay-popup").textContent).toContain("volta pelo anel");
   });
 
   it("não alerta quando nenhuma perna passa por relé", () => {

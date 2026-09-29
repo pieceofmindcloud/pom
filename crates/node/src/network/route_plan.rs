@@ -411,6 +411,25 @@ impl RouteBook {
             .collect()
     }
 
+    /// Transporte da rota fixada até cada peer num plano (`quic`, `http`,
+    /// `tunnel`). Publicado no `/health` para o gateway decidir por onde a
+    /// resposta volta (`fastest::return_path_prefers_ring`).
+    pub fn kind_map(&self, plane: Plane) -> HashMap<String, String> {
+        let Ok(edges) = self.edges.read() else {
+            return HashMap::new();
+        };
+        edges
+            .iter()
+            .filter(|((_, edge_plane), _)| *edge_plane == plane)
+            .filter(|(_, edge)| edge.measured_at.elapsed() < PLAN_TTL)
+            .filter_map(|((node_id, _), edge)| {
+                edge.routes
+                    .get(edge.active)
+                    .map(|route| (node_id.clone(), route.kind.as_str().to_string()))
+            })
+            .collect()
+    }
+
     /// Menor RTT medido até o peer, em qualquer plano.
     pub fn rtt(&self, node_id: &str) -> Option<Duration> {
         let edges = self.edges.read().ok()?;

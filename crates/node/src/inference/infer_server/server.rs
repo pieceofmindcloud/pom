@@ -1302,11 +1302,6 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
         "active_generations": s.sessions.values().filter(|x| !x.retained).count(),
         // Velocidade medida desta fatia (teste ao servir + tráfego real).
         "perf": s.perf.json(),
-        // RTT das rotas fixadas deste nó (`route_plan`): até o servidor de
-        // inferência de cada peer e até o gateway de cada peer. O gateway que
-        // planeja não mede as arestas entre dois outros peers; lê daqui.
-        "route_rtt_ms": crate::route_plan::book().rtt_map(crate::route_plan::Plane::Inference),
-        "gateway_rtt_ms": crate::route_plan::book().rtt_map(crate::route_plan::Plane::Gateway),
         "prefix_tokens_retained": s
             .sessions
             .values()
@@ -1359,6 +1354,17 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
         "slot_persist_enabled": s.slot_dir.is_some(),
         "slot_count": slot_count,
     });
+    // Rotas fixadas deste nó (`route_plan`): RTT e transporte até o servidor
+    // de inferência e até o gateway de cada peer. O gateway que planeja não
+    // mede as arestas entre dois outros peers nem a volta até ele; lê daqui.
+    // Fora do `json!` acima, que já está no limite de recursão da macro.
+    {
+        let book = crate::route_plan::book();
+        body["route_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Inference));
+        body["gateway_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Gateway));
+        body["route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Inference));
+        body["gateway_route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Gateway));
+    }
     // Keep the identity fields separate from the large diagnostic object. A
     // direct addition to the json! tree would exceed the macro recursion limit
     // and would make this readiness contract depend on compiler settings.

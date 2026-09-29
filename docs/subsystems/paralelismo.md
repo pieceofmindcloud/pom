@@ -57,10 +57,24 @@ pesar mais.
   do gateway entra como candidato, estimado só com os tokens novos. A
   reutilização vence quando compensa e perde quando o peer do cache está
   saturado.
+- **Modo de volta:** escolhido junto com o caminho, não depois. Na resposta
+  direta a ida paga meio RTT por aresta e a volta, meio RTT da rota fixada
+  da cauda até o gateway (`gateway_rtt_ms` do `/health` dela); no anel a
+  resposta volta pelas conexões da ida, o RTT inteiro de cada aresta. A
+  programação dinâmica roda uma vez por modo e vence o menor total. Cauda que
+  já mediu rotas até outros gateways e não tem nenhuma até este não tem volta:
+  só o anel serve. Assim uma ida em QUIC com volta só pelo túnel escolhe o
+  anel pela própria medição. O gateway usa o modo do plano (`ReturnMode`); com
+  o planejador guloso de reserva, a regra `return_path_prefers_ring` (volta
+  ausente, ou só pelo túnel com a ida direta) decide. `POM_RETURN_MODE=
+  direct|ring` impõe um modo, para teste: o anel sempre funciona atrás de NAT
+  (a resposta volta por conexões que o próprio nó abriu), e por isso esconde
+  uma travessia quebrada; `direct` a expõe.
 - A cabeça escolhida na interface (`inference_head`) continua sendo a única
   aceita. Sem caminho viável, o planejador guloso antigo decide.
 
-O log do gateway diz a escolha: `pipeline por tempo de entrega: A→B ~N ms`.
+O log do gateway diz a escolha: `pipeline por tempo de entrega: A→B ~N ms,
+resposta anel|direta`.
 
 ### Réplicas e scheduler
 

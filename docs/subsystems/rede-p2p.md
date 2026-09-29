@@ -769,6 +769,12 @@ O campo entra no fingerprint do cache do cluster; sem isso o retrato
 congelaria, porque nem o estado do AutoNAT nem uma reserva nova mexem em
 `peers`.
 
+Uma discagem libp2p que falha é registrada com o motivo por endereço
+(`libp2p: discagem para <peer> falhou: ...`, evento `OutgoingConnectionError`).
+Antes disso o túnel só dizia "Failed to dial the requested peer", sem dizer
+se o relé recusou o circuito, se o endereço estava velho ou se o transporte
+não chegou.
+
 **A rota em uso com cada peer** é outra pergunta, e sai em `GET /admin/nodes`
 no campo `route` (`Network::peer_route`), mostrado na tela de participantes no
 lugar do endereço anunciado - que fica no `title` da linha, para comparação. É

@@ -351,6 +351,14 @@ struct Args {
     #[arg(long)]
     serve_relay: bool,
 
+    /// Força o wizard de primeiro acesso mesmo com a máquina configurada: a
+    /// configuração atual (pom.json, raiz de confiança e banco local) é movida
+    /// para `setup-backups/<data>` e o nó sobe em modo setup. Para testar o
+    /// wizard; a identidade (`.pom-node.key`) é mantida. Por variável, use
+    /// `POM_FORCE_SETUP=<token>` (ver `force_setup_if_requested`).
+    #[arg(long, alias = "wizard")]
+    setup: bool,
+
     /// Disable the built-in public IPFS relay nodes.
     #[arg(long)]
     no_default_relays: bool,
@@ -395,6 +403,11 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("no_default_relays", "NO_DEFAULT_RELAYS"),
     ("no_discovery", "NO_DISCOVERY"),
 ];
+
+/// Opções cuja variável não é o mesmo valor da flag e por isso não passa pelo
+/// clap: `--setup` é booleana, e `POM_FORCE_SETUP` é um token lido em
+/// `force_setup_if_requested`, que força o wizard uma vez por valor.
+const MANUAL_ARG_ENV: &[(&str, &str)] = &[("setup", "FORCE_SETUP")];
 
 /// A linha de comando com as variáveis de `ARG_ENV`. As flags booleanas leem a
 /// variável como `1/0`, `true/false`, `yes/no` ou `on/off`, como as outras
@@ -495,6 +508,8 @@ fn main() -> Result<()> {
     if let Some(command) = args.command.as_ref() {
         return run_command(command);
     }
+
+    force_setup_if_requested(args.setup)?;
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let gateway_port = configured_gateway_port(&args);
@@ -808,6 +823,87 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
         .nth(1)
         .and_then(|s| s.split('/').next())
         .and_then(|s| s.parse::<u16>().ok())
+}
+
+/// Onde o último `POM_FORCE_SETUP` consumido fica gravado.
+fn forced_setup_marker() -> std::path::PathBuf {
+    config::project_root().join(format!(".{}-setup-forced", crate::brand::slug()))
+}
+
+/// Decide se o wizard é forçado nesta subida, uma vez por pedido.
+///
+/// O save do wizard reinicia o nó, e o que força não pode valer de novo nesse
+/// reinício - senão a configuração recém-criada iria para o backup e o wizard
+/// voltaria para sempre. Dois caminhos, porque os reinícios são diferentes:
+///
+/// - `--setup`: o reinício reexecuta o binário com os mesmos argumentos e o
+///   mesmo ambiente, então a marca `POM_SETUP_FORCED` no ambiente basta.
+/// - `POM_FORCE_SETUP=<token>`: em Docker o processo 1 encerra no reinício e o
+///   container sobe com o ambiente do compose, sem marca nenhuma. O token
+///   consumido fica num arquivo do project root; o mesmo token não força de
+///   novo. `run-docker-ksia.sh --wizard` gera um token novo por chamada.
+fn force_setup_if_requested(cli_flag: bool) -> anyhow::Result<()> {
+    if cli_flag {
+        let consumed = crate::brand::env_var("SETUP_FORCED");
+        if std::env::var(&consumed).is_ok_and(|value| value == "1") {
+            return Ok(());
+        }
+        std::env::set_var(&consumed, "1");
+        return force_setup_mode();
+    }
+    let token = crate::brand::env("FORCE_SETUP").unwrap_or_default();
+    let token = token.trim();
+    if token.is_empty() || matches!(token.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off") {
+        return Ok(());
+    }
+    let marker = forced_setup_marker();
+    if std::fs::read_to_string(&marker).is_ok_and(|last| last.trim() == token) {
+        return Ok(());
+    }
+    force_setup_mode()?;
+    std::fs::write(&marker, token)?;
+    Ok(())
+}
+
+/// Guarda a configuração atual e deixa o nó sem ela, para subir no wizard.
+/// Roda antes de abrir o banco.
+fn force_setup_mode() -> anyhow::Result<()> {
+    let database = config::database_path();
+    let with_suffix = |suffix: &str| {
+        let mut name = database.clone().into_os_string();
+        name.push(suffix);
+        std::path::PathBuf::from(name)
+    };
+    let candidates = [
+        config::Config::config_path(),
+        config::admin_trust_path(),
+        database.clone(),
+        with_suffix("-wal"),
+        with_suffix("-shm"),
+    ];
+    let present: Vec<_> = candidates.into_iter().filter(|path| path.exists()).collect();
+    if present.is_empty() {
+        info!("--setup: nenhuma configuração a guardar; subindo no wizard");
+        return Ok(());
+    }
+    let backup = config::project_root()
+        .join("setup-backups")
+        .join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
+    std::fs::create_dir_all(&backup)?;
+    for path in &present {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        std::fs::rename(path, backup.join(name)).map_err(|error| {
+            anyhow::anyhow!("--setup: não deu para guardar {}: {error}", path.display())
+        })?;
+    }
+    warn!(
+        "--setup: configuração guardada em {} ({} arquivo(s)); para voltar, pare o nó e mova-os de volta",
+        backup.display(),
+        present.len()
+    );
+    Ok(())
 }
 
 async fn start_setup_mode(
@@ -1835,6 +1931,9 @@ mod main_tests {
                 continue;
             }
             let id = arg.get_id().as_str();
+            if MANUAL_ARG_ENV.iter().any(|(arg_id, _)| *arg_id == id) {
+                continue;
+            }
             let (_, suffix) = ARG_ENV
                 .iter()
                 .find(|(arg_id, _)| *arg_id == id)
@@ -1896,6 +1995,13 @@ mod main_tests {
     /// Todo nó anuncia a porta do Ollama da URL configurada, sem flag nenhuma:
     /// quando o anúncio dependia de uma flag, um nó sem ela servia o Ollama
     /// local sem que nenhum peer soubesse.
+    #[test]
+    fn wizard_is_an_alias_of_setup_and_defaults_off() {
+        assert!(!Args::parse_from(["pom"]).setup);
+        assert!(Args::parse_from(["pom", "--setup"]).setup);
+        assert!(Args::parse_from(["pom", "--wizard"]).setup);
+    }
+
     #[test]
     fn every_node_advertises_the_ollama_port() {
         let args = Args::parse_from(["pom"]);

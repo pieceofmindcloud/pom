@@ -146,8 +146,13 @@ visibilidade dos controles de implantação na UI local.
   local ao carregar o modelo, e `observe_prefill`/`observe_decode`, média móvel
   do tráfego real, chamados no fim do decode de `prefill.rs` e
   `step_blocking.rs`); o `/health` publica `perf`, `active_generations` (sessões
-  não retidas) e o RTT das rotas fixadas deste nó (`route_rtt_ms`,
-  `gateway_rtt_ms`) para o planejador do gateway; estado das sessões, seleção do caminho `dense/llama.cpp` ou
+  não retidas), o RTT e o transporte das rotas fixadas deste nó
+  (`route_rtt_ms`, `gateway_rtt_ms`, `route_kinds`, `gateway_route_kinds`,
+  inseridos fora do `json!`, que está no limite de recursão) para o
+  planejador do gateway; o teste de velocidade envia o estado oculto na forma
+  que a captura produz (`perf::hidden_input_layout`: `[tokens, n_embd,
+  fluxos]` em modelo com vários fluxos de residual) e `POM_SLICE_BENCH=0` o
+  desliga; estado das sessões, seleção do caminho `dense/llama.cpp` ou
   `moe/q4_0` e o branch de relay. O runtime MoE recebe hidden states antes do
   decode local ou transforma o residual que vai para o próximo hop somente
   quando o caminho selecionado é MoE; no hop terminal a captura do residual

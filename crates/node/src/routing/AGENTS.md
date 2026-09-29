@@ -22,8 +22,11 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   `route_rtt_ms` e `gateway_rtt_ms` do `/health`; `estimate_chain` estima um
   caminho dado (o de um prefixo em cache, com os tokens já retidos
   descontados); `resolve_chain` valida uma cadeia de `node_id`s contra os
-  candidatos vivos. Ver `docs/subsystems/paralelismo.md`, "Escolha da pipeline
-  por tempo de entrega".
+  candidatos vivos. O modo de volta (`ReturnMode`: resposta direta ou anel) é
+  escolhido junto com o caminho - a programação dinâmica roda por modo -, e
+  `return_path_prefers_ring` é a regra de reserva para o planejador guloso.
+  Ver `docs/subsystems/paralelismo.md`, "Escolha da pipeline por tempo de
+  entrega".
 
 ## Funções-chave
 

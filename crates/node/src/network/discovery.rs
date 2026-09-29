@@ -1138,6 +1138,19 @@ async fn handle_event(
             debug!("libp2p: disconnected from {} ({:?})", peer_id, cause);
         }
 
+        // Uma discagem que falhou, com o motivo por endereço. Sem isto o túnel
+        // só dizia "Failed to dial the requested peer" (`request_response`), e
+        // descobrir se o relé recusou o circuito, se o endereço estava velho
+        // ou se o transporte não chegou exigia log de depuração na máquina
+        // certa no momento certo.
+        SwarmEvent::OutgoingConnectionError {
+            peer_id: Some(peer_id),
+            error,
+            ..
+        } => {
+            info!("libp2p: discagem para {peer_id} falhou: {error}");
+        }
+
         // ── Relay reservation accepted ───────────────────────────────────────
         SwarmEvent::Behaviour(DiscBehaviourEvent::Relay(
             relay::client::Event::ReservationReqAccepted { relay_peer_id, .. },

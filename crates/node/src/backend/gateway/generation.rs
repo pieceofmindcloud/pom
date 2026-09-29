@@ -367,7 +367,7 @@ async fn plan_by_delivery_time(
     cache_prompt: &str,
     requested_tokens: u32,
     prefix_eligible: bool,
-) -> Option<crate::pipeline::PipelinePlan> {
+) -> Option<(crate::pipeline::PipelinePlan, crate::fastest::ReturnMode)> {
     // A rota fixada é a medida do transporte que o frame vai usar; o RTT de
     // topologia fica para quem ainda não foi analisado.
     let mut requester_rtt = route_rtt.clone();
@@ -384,6 +384,7 @@ async fn plan_by_delivery_time(
         local_load: &local_load,
         prompt_tokens: (cache_prompt.len() as f64 / 4.0).max(1.0),
         decode_tokens: (requested_tokens as f64).clamp(16.0, 512.0),
+        forced_return: crate::fastest::forced_return_mode(),
     };
     let (mut plan, mut estimate) = crate::fastest::plan_fastest(
         peers,
@@ -430,15 +431,16 @@ async fn plan_by_delivery_time(
     }
 
     info!(
-        "pipeline por tempo de entrega: {} ~{:.0} ms (prefill {:.0} ms, {:.1} ms/token, filas {:?}, prefixo {} tokens)",
+        "pipeline por tempo de entrega: {} ~{:.0} ms, resposta {} (prefill {:.0} ms, {:.1} ms/token, filas {:?}, prefixo {} tokens)",
         plan.hop_chain(),
         estimate.total_ms,
+        estimate.return_mode.as_str(),
         estimate.prefill_ms,
         estimate.decode_ms_per_token,
         estimate.stages.iter().map(|stage| stage.queue).collect::<Vec<_>>(),
         estimate.cached_tokens,
     );
-    Some(plan)
+    Some((plan, estimate.return_mode))
 }
 
 pub(super) async fn generate_stream_inner(
@@ -572,9 +574,9 @@ pub(super) async fn generate_stream_inner(
         images.is_empty(),
     )
     .await;
-    let planned = match fastest {
-        Some(plan) => Some(plan),
-        None => {
+    let (planned, planned_return) = match fastest {
+        Some((plan, mode)) => (Some(plan), Some(mode)),
+        None => (
             crate::pipeline::plan_pipeline_with_rtt_from_head(
                 &peers,
                 model,
@@ -584,8 +586,9 @@ pub(super) async fn generate_stream_inner(
                 &route_rtt,
                 preferred_head.as_deref(),
             )
-            .await
-        }
+            .await,
+            None,
+        ),
     };
     let Some(mut plan) = planned else {
         let error = format!(
@@ -760,6 +763,43 @@ pub(super) async fn generate_stream_inner(
                 state.network.libp2p_addrs(),
             )
     });
+    // O modo de volta é escolhido junto com o caminho pelo planejador por
+    // tempo de entrega (`fastest::plan_fastest`): anel quando a resposta
+    // chega antes voltando pelas conexões da ida - ou quando a cauda não tem
+    // volta até aqui. O anel dispensa o `reply_to`. Com o planejador guloso de
+    // reserva, a regra `return_path_prefers_ring` decide.
+    // `POM_RETURN_MODE` vale também para o planejador guloso de reserva.
+    let planned_return = crate::fastest::forced_return_mode().or(planned_return);
+    let direct = match (direct, planned_return) {
+        (Some(_), Some(crate::fastest::ReturnMode::Ring)) => {
+            info!(
+                "resposta pelo anel ({})",
+                if crate::fastest::forced_return_mode().is_some() {
+                    "imposta por POM_RETURN_MODE"
+                } else {
+                    "escolhida no planejamento"
+                }
+            );
+            None
+        }
+        (Some(reply), Some(crate::fastest::ReturnMode::Direct)) => Some(reply),
+        (Some(reply), None) => {
+            let chain: Vec<String> = plan.steps.iter().map(|step| step.node_id.clone()).collect();
+            match crate::fastest::return_path_prefers_ring(
+                &chain,
+                &state.network.node_id,
+                &state.admission_health.perf_snapshot(),
+                &crate::route_plan::book().kind_map(crate::route_plan::Plane::Inference),
+            ) {
+                Some(reason) => {
+                    info!("resposta pelo anel: {reason}");
+                    None
+                }
+                None => Some(reply),
+            }
+        }
+        (None, _) => None,
+    };
 
     info!(
         "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} (perna {}) resposta={}",

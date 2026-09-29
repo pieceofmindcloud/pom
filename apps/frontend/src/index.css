@@ -419,6 +419,8 @@ body {
 .pom-setup-mark { width: min(170px, 46%); margin-bottom: 10px; }
 .pom-setup-sub { margin-bottom: 22px; }
 .pom-setup-body { min-height: 280px; }
+/* O seletor de idioma fica no canto; em tela estreita o painel desce para não cobri-lo. */
+@media (max-width: 720px) { .pom-setup { padding-top: 64px; place-items: start center; } }
 .pom-setup-loading { margin: 0 auto; transform: scale(1.35); }
 
 /* Trilha de passos: os nós ligados do site, com o pulso viajando. */

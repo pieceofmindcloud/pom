@@ -108,12 +108,32 @@ impl SlicePerf {
     }
 }
 
+/// Largura por token e forma (sem o eixo de tokens) do estado oculto que uma
+/// fatia do meio recebe. Com vários fluxos de residual, `n_embd_out` é um
+/// múltiplo de `n_embd` e o estado viaja em três eixos.
+pub(crate) fn hidden_input_layout(n_embd: usize, n_embd_inp: usize, n_embd_out: usize) -> (usize, Vec<usize>) {
+    if n_embd > 0 && n_embd_out > n_embd && n_embd_out % n_embd == 0 {
+        (n_embd_out, vec![n_embd, n_embd_out / n_embd])
+    } else {
+        (n_embd_inp.max(1), vec![n_embd_inp.max(1)])
+    }
+}
+
+/// Se o teste de velocidade da fatia roda ao carregar o modelo. `POM_SLICE_BENCH=0`
+/// desliga: um defeito aqui não pode derrubar um nó em produção sem saída.
+pub(crate) fn bench_enabled() -> bool {
+    !matches!(
+        crate::brand::env("SLICE_BENCH").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
 /// Mede a fatia com uma sequência descartável. Segura o estado inteiro
 /// enquanto roda (menos de um segundo numa GPU), então é chamado uma vez, logo
 /// depois de o modelo carregar. `None` quando não dá para medir com segurança:
 /// grupo TP (o decode esperaria os workers) ou nenhum slot livre.
 pub(super) fn run_bench(s: &mut InferState) -> Result<Option<BenchResult>> {
-    if s.tp.is_some() {
+    if s.tp.is_some() || !bench_enabled() {
         return Ok(None);
     }
     let Some(seq_id) = s.seq_pool.pop() else {
@@ -131,7 +151,13 @@ fn bench_on_sequence(s: &mut InferState, seq_id: u32) -> Result<BenchResult> {
     let started = Instant::now();
     let is_head = s.start_layer == 0;
     let is_last = s.end_layer + 1 >= s.total_layers;
-    let n_embd = s.engine.n_embd;
+    // A forma que a fatia anterior manda de verdade, a mesma da captura do
+    // residual (`capture.rs`): `[tokens, n_embd]` num modelo comum e
+    // `[tokens, n_embd, fluxos]` num com vários fluxos de residual
+    // (hyper-connections, Qwen3.8 "qwen4exp"), com `n_embd_out` floats por
+    // token. Um estado oculto na forma errada aborta o processo dentro do
+    // llama.cpp (`GGML_ASSERT` no reshape), sem erro que dê para tratar.
+    let hidden_layout = hidden_input_layout(s.engine.n_embd, s.engine.n_embd_inp, s.engine.n_embd_out);
     let n_vocab = s.engine.n_vocab.max(2) as i32;
     let _ = s.engine.set_capture_layer(None);
 
@@ -147,8 +173,10 @@ fn bench_on_sequence(s: &mut InferState, seq_id: u32) -> Result<BenchResult> {
                 .collect();
             s.engine.decode_tokens(&tokens, pos, seq_id, !is_last)?;
         } else {
-            let hidden = vec![0.0f32; n * n_embd];
-            let shape: TensorShape = vec![n, n_embd];
+            let (width, feature_shape) = &hidden_layout;
+            let hidden = vec![0.0f32; n * width];
+            let mut shape: TensorShape = vec![n];
+            shape.extend_from_slice(feature_shape);
             s.engine
                 .decode_hidden_without_mtp(&hidden, &shape, n, pos, seq_id, !is_last)?;
         }
@@ -183,6 +211,14 @@ fn bench_on_sequence(s: &mut InferState, seq_id: u32) -> Result<BenchResult> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn estado_oculto_com_varios_fluxos_viaja_em_tres_eixos() {
+        // Qwen3.8 "qwen4exp": 4 fluxos de 2560.
+        assert_eq!(hidden_input_layout(2560, 2560, 10240), (10240, vec![2560, 4]));
+        // Modelo comum.
+        assert_eq!(hidden_input_layout(4096, 4096, 4096), (4096, vec![4096]));
+    }
 
     #[test]
     fn media_movel_segue_o_trafego_e_ignora_amostras_atipicas() {

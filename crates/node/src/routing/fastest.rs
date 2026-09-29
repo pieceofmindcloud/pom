@@ -52,6 +52,9 @@ pub struct PeerPerf {
     pub route_rtt_ms: HashMap<String, f64>,
     /// RTT da rota fixada deste peer até o gateway de outro.
     pub gateway_rtt_ms: HashMap<String, f64>,
+    /// Transporte (`quic`, `http`, `tunnel`) das rotas fixadas deste peer.
+    pub route_kinds: HashMap<String, String>,
+    pub gateway_route_kinds: HashMap<String, String>,
 }
 
 impl PeerPerf {
@@ -65,6 +68,19 @@ impl PeerPerf {
                     object
                         .iter()
                         .filter_map(|(id, rtt)| number(rtt).map(|rtt| (id.clone(), rtt)))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let kinds = |value: Option<&serde_json::Value>| -> HashMap<String, String> {
+            value
+                .and_then(serde_json::Value::as_object)
+                .map(|object| {
+                    object
+                        .iter()
+                        .filter_map(|(id, kind)| {
+                            kind.as_str().map(|kind| (id.clone(), kind.to_string()))
+                        })
                         .collect()
                 })
                 .unwrap_or_default()
@@ -83,6 +99,8 @@ impl PeerPerf {
                 .unwrap_or(0) as u32,
             route_rtt_ms: map(body.get("route_rtt_ms")),
             gateway_rtt_ms: map(body.get("gateway_rtt_ms")),
+            route_kinds: kinds(body.get("route_kinds")),
+            gateway_route_kinds: kinds(body.get("gateway_route_kinds")),
         }
     }
 }
@@ -98,6 +116,9 @@ pub struct CostInputs<'a> {
     pub local_load: &'a HashMap<String, u32>,
     pub prompt_tokens: f64,
     pub decode_tokens: f64,
+    /// Modo de volta imposto (`POM_RETURN_MODE`, para teste); `None` deixa o
+    /// planejador escolher.
+    pub forced_return: Option<ReturnMode>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,8 +138,10 @@ pub struct StageEstimate {
 #[derive(Debug, Clone, Serialize)]
 pub struct PlanEstimate {
     pub stages: Vec<StageEstimate>,
-    /// RTT da cauda de volta a quem pediu.
+    /// RTT da cauda de volta a quem pediu; infinito quando não há volta.
     pub return_rtt_ms: f64,
+    /// Por onde a resposta volta, escolhido junto com o caminho.
+    pub return_mode: ReturnMode,
     pub cached_tokens: u32,
     pub prefill_ms: f64,
     /// Tempo de um token de decode com as filas atuais: estágios mais rede.
@@ -208,17 +231,80 @@ fn edge_rtt(from: &str, to: &str, inputs: &CostInputs) -> f64 {
         .unwrap_or(UNKNOWN_RTT_MS)
 }
 
-/// RTT da cauda de volta a quem pediu.
-fn return_rtt(tail: &str, inputs: &CostInputs) -> f64 {
-    if tail == inputs.requester {
-        return 0.0;
+/// Por onde a resposta de cada token volta a quem pediu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReturnMode {
+    /// A cauda entrega direto ao gateway (`reply_to`).
+    Direct,
+    /// A resposta volta pelas mesmas conexões da ida.
+    Ring,
+}
+
+impl ReturnMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReturnMode::Direct => "direta",
+            ReturnMode::Ring => "anel",
+        }
     }
-    inputs
-        .perf
-        .get(tail)
-        .and_then(|p| p.gateway_rtt_ms.get(inputs.requester).copied())
-        .or_else(|| inputs.requester_rtt_ms.get(tail).copied())
-        .unwrap_or(UNKNOWN_RTT_MS)
+
+    /// Fração do RTT de cada aresta da ida que o modo paga por token: a ida
+    /// é só o caminho de chegada na resposta direta, e ida e volta no anel.
+    fn forward_weight(self) -> f64 {
+        match self {
+            ReturnMode::Direct => 0.5,
+            ReturnMode::Ring => 1.0,
+        }
+    }
+}
+
+/// `POM_RETURN_MODE=direct|ring` impõe o modo de volta, para testar um caminho
+/// que o planejador não escolheria - por exemplo, a entrega direta a um
+/// gateway atrás de NAT, que o anel esconderia. Ausente ou `auto`, o
+/// planejador decide. Com `direct`, uma volta que não existe vira falha de
+/// inferência em vez de ser contornada.
+pub fn forced_return_mode() -> Option<ReturnMode> {
+    match crate::brand::env("RETURN_MODE")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "direct" | "direta" => Some(ReturnMode::Direct),
+        "ring" | "anel" => Some(ReturnMode::Ring),
+        _ => None,
+    }
+}
+
+/// RTT medido da cauda de volta a quem pediu. `None` quando a cauda já mediu
+/// rotas até outros gateways e não tem nenhuma até este: sem volta, a resposta
+/// direta é inviável. Sem medição nenhuma da cauda, o palpite é o RTT deste
+/// gateway até ela.
+fn return_rtt(tail: &str, inputs: &CostInputs) -> Option<f64> {
+    if tail == inputs.requester {
+        return Some(0.0);
+    }
+    match inputs.perf.get(tail) {
+        Some(perf) => match perf.gateway_rtt_ms.get(inputs.requester) {
+            Some(rtt) => Some(*rtt),
+            None if !perf.gateway_rtt_ms.is_empty() => None,
+            None => Some(
+                inputs
+                    .requester_rtt_ms
+                    .get(tail)
+                    .copied()
+                    .unwrap_or(UNKNOWN_RTT_MS),
+            ),
+        },
+        None => Some(
+            inputs
+                .requester_rtt_ms
+                .get(tail)
+                .copied()
+                .unwrap_or(UNKNOWN_RTT_MS),
+        ),
+    }
 }
 
 /// Custo de um estágio nesta requisição, com a fila aplicada.
@@ -231,8 +317,23 @@ fn edge_cost(rtt_ms: f64, decode_tokens: f64) -> f64 {
     (1.0 + decode_tokens) * rtt_ms
 }
 
-/// Estima um caminho já escolhido. `cached_tokens` do prompt não passam pelo
-/// prefill (prefixo já retido nesse caminho).
+/// Rede de um token no caminho, pelo modo de volta: meio RTT por aresta da ida
+/// mais meio RTT da cauda até o gateway na resposta direta; o RTT inteiro de
+/// cada aresta no anel. `None` quando o modo não tem volta.
+fn network_ms(
+    stages: &[StageEstimate],
+    return_rtt_ms: Option<f64>,
+    mode: ReturnMode,
+) -> Option<f64> {
+    let forward: f64 = stages.iter().map(|s| s.rtt_in_ms).sum::<f64>() * mode.forward_weight();
+    match mode {
+        ReturnMode::Direct => return_rtt_ms.map(|back| forward + back / 2.0),
+        ReturnMode::Ring => Some(forward),
+    }
+}
+
+/// Estima um caminho já escolhido, pelo melhor modo de volta. `cached_tokens`
+/// do prompt não passam pelo prefill (prefixo já retido nesse caminho).
 pub fn estimate_chain(
     chain: &[&PeerInfo],
     inputs: &CostInputs,
@@ -250,27 +351,35 @@ pub fn estimate_chain(
     }
     let return_rtt_ms = chain
         .last()
-        .map(|tail| return_rtt(&tail.node_id, inputs))
-        .unwrap_or(0.0);
-    let network_ms: f64 = stages.iter().map(|s| s.rtt_in_ms).sum::<f64>() + return_rtt_ms;
+        .and_then(|tail| return_rtt(&tail.node_id, inputs));
+    let modes = match inputs.forced_return {
+        Some(mode) => vec![mode],
+        None => vec![ReturnMode::Direct, ReturnMode::Ring],
+    };
+    let (return_mode, network) = modes
+        .into_iter()
+        .filter_map(|mode| network_ms(&stages, return_rtt_ms, mode).map(|ms| (mode, ms)))
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or((ReturnMode::Ring, 0.0));
     let prefill_ms = stages
         .iter()
         .map(|s| prompt * s.prefill_ms_per_token * (1.0 + s.queue as f64))
         .sum::<f64>()
-        + network_ms;
+        + network;
     let decode_ms_per_token = stages
         .iter()
         .map(|s| s.decode_ms_per_step * (1.0 + s.queue as f64))
         .sum::<f64>()
-        + network_ms;
+        + network;
     let total_ms = stages
         .iter()
         .map(|s| stage_cost(s, prompt, inputs.decode_tokens))
         .sum::<f64>()
-        + edge_cost(network_ms, inputs.decode_tokens);
+        + edge_cost(network, inputs.decode_tokens);
     PlanEstimate {
         stages,
-        return_rtt_ms,
+        return_rtt_ms: return_rtt_ms.unwrap_or(f64::INFINITY),
+        return_mode,
         cached_tokens,
         prefill_ms,
         decode_ms_per_token,
@@ -278,7 +387,12 @@ pub fn estimate_chain(
     }
 }
 
-/// O caminho de menor tempo de entrega, e a estimativa dele.
+/// O caminho e o modo de volta de menor tempo de entrega, e a estimativa.
+///
+/// O modo de volta entra no planejamento, não depois dele: o mesmo caminho
+/// custa diferente com resposta direta e com anel, e o melhor caminho de um
+/// modo pode não ser o do outro. Por isso a programação dinâmica roda uma vez
+/// por modo e vence o menor total.
 ///
 /// Só entra peer cuja faixa começa exatamente onde a anterior termina (a mesma
 /// regra do planejador guloso). `preferred_head`, quando escolhido na
@@ -299,70 +413,157 @@ pub fn plan_fastest(
     });
     let speeds = fallback_speeds(&candidates, inputs.perf);
 
-    // Melhor custo acumulado até o fim de cada candidato, e de onde veio.
-    let mut best: HashMap<&str, (f64, Option<usize>)> = HashMap::new();
-    for (index, peer) in candidates.iter().enumerate() {
-        let own = |rtt: f64| {
-            stage_cost(
-                &stage(peer, inputs, &speeds, rtt),
-                inputs.prompt_tokens,
-                inputs.decode_tokens,
-            ) + edge_cost(rtt, inputs.decode_tokens)
-        };
-        let entry = if peer.start_layer == 0 {
-            if preferred_head.is_some_and(|head| head != peer.node_id) {
-                continue;
-            }
-            Some((own(edge_rtt(inputs.requester, &peer.node_id, inputs)), None))
-        } else {
-            candidates[..index]
-                .iter()
-                .enumerate()
-                .filter(|(_, prev)| prev.end_layer + 1 == peer.start_layer)
-                .filter_map(|(prev_index, prev)| {
-                    best.get(prev.node_id.as_str()).map(|(cost, _)| {
-                        (
-                            cost + own(edge_rtt(&prev.node_id, &peer.node_id, inputs)),
-                            Some(prev_index),
-                        )
+    let modes = match inputs.forced_return {
+        Some(mode) => vec![mode],
+        None => vec![ReturnMode::Direct, ReturnMode::Ring],
+    };
+    let mut winner: Option<(f64, Vec<&PeerInfo>)> = None;
+    for mode in modes {
+        let weight = mode.forward_weight();
+        // Melhor custo acumulado até o fim de cada candidato, e de onde veio.
+        let mut best: HashMap<&str, (f64, Option<usize>)> = HashMap::new();
+        for (index, peer) in candidates.iter().enumerate() {
+            let own = |rtt: f64| {
+                stage_cost(
+                    &stage(peer, inputs, &speeds, rtt),
+                    inputs.prompt_tokens,
+                    inputs.decode_tokens,
+                ) + edge_cost(rtt * weight, inputs.decode_tokens)
+            };
+            let entry = if peer.start_layer == 0 {
+                if preferred_head.is_some_and(|head| head != peer.node_id) {
+                    continue;
+                }
+                Some((own(edge_rtt(inputs.requester, &peer.node_id, inputs)), None))
+            } else {
+                candidates[..index]
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, prev)| prev.end_layer + 1 == peer.start_layer)
+                    .filter_map(|(prev_index, prev)| {
+                        best.get(prev.node_id.as_str()).map(|(cost, _)| {
+                            (
+                                cost + own(edge_rtt(&prev.node_id, &peer.node_id, inputs)),
+                                Some(prev_index),
+                            )
+                        })
                     })
-                })
-                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                    .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+            };
+            if let Some(entry) = entry {
+                best.insert(peer.node_id.as_str(), entry);
+            }
+        }
+
+        let tail = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, peer)| peer.end_layer + 1 == total_layers)
+            .filter_map(|(index, peer)| {
+                let (cost, _) = best.get(peer.node_id.as_str())?;
+                let back = match mode {
+                    ReturnMode::Direct => edge_cost(
+                        return_rtt(&peer.node_id, inputs)? / 2.0,
+                        inputs.decode_tokens,
+                    ),
+                    ReturnMode::Ring => 0.0,
+                };
+                Some((index, cost + back))
+            })
+            .min_by(|a, b| {
+                a.1.partial_cmp(&b.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| candidates[a.0].node_id.cmp(&candidates[b.0].node_id))
+            });
+        let Some((tail_index, total)) = tail else {
+            continue;
         };
-        if let Some(entry) = entry {
-            best.insert(peer.node_id.as_str(), entry);
+        let mut chain = Vec::new();
+        let mut cursor = Some(tail_index);
+        while let Some(index) = cursor {
+            let peer = candidates[index];
+            chain.push(peer);
+            cursor = best.get(peer.node_id.as_str()).and_then(|(_, prev)| *prev);
+        }
+        chain.reverse();
+        if winner.as_ref().is_none_or(|(cost, _)| total < *cost) {
+            winner = Some((total, chain));
         }
     }
 
-    let (tail_index, _) = candidates
-        .iter()
-        .enumerate()
-        .filter(|(_, peer)| peer.end_layer + 1 == total_layers)
-        .filter_map(|(index, peer)| {
-            best.get(peer.node_id.as_str()).map(|(cost, _)| {
-                (
-                    index,
-                    cost + edge_cost(return_rtt(&peer.node_id, inputs), inputs.decode_tokens),
-                )
-            })
-        })
-        .min_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| candidates[a.0].node_id.cmp(&candidates[b.0].node_id))
-        })?;
-
-    let mut chain = Vec::new();
-    let mut cursor = Some(tail_index);
-    while let Some(index) = cursor {
-        let peer = candidates[index];
-        chain.push(peer);
-        cursor = best.get(peer.node_id.as_str()).and_then(|(_, prev)| *prev);
-    }
-    chain.reverse();
+    let (_, chain) = winner?;
     let plan = plan_for_chain(&chain)?;
+    // A estimativa refaz a escolha do modo para o caminho vencedor, com a
+    // mesma conta; é dela que o gateway lê o modo.
     let estimate = estimate_chain(&chain, inputs, &candidates, 0);
     Some((plan, estimate))
+}
+
+/// Por que a resposta deve voltar pelo anel em vez de ser entregue direto ao
+/// gateway, ou `None` quando a entrega direta serve.
+///
+/// Quem entrega direto é a cauda (resposta direta) ou a cabeça (remote-stream).
+/// Cada um publica no `/health` a rota fixada que tem até cada gateway
+/// (`gateway_route_kinds`). O anel devolve a resposta pela mesma conexão da ida,
+/// então é preferível quando esse nó:
+///
+/// - não tem rota medida até este gateway, embora já tenha medido rotas até
+///   outros (sem volta: um gateway atrás de NAT que só a ida alcança); ou
+/// - só volta pelo túnel libp2p enquanto a ida até ele é toda direta (QUIC ou
+///   HTTP) - o túnel costuma ser o caminho mais lento e frágil.
+///
+/// Sem dados do nó (ainda não sondado, plano ainda não medido) nada muda.
+pub fn return_path_prefers_ring(
+    chain: &[String],
+    requester: &str,
+    perf: &HashMap<String, PeerPerf>,
+    requester_route_kinds: &HashMap<String, String>,
+) -> Option<String> {
+    let forward_kind = |index: usize| -> Option<&str> {
+        if index == 0 {
+            if chain[0] == requester {
+                return Some("local");
+            }
+            return requester_route_kinds.get(&chain[0]).map(String::as_str);
+        }
+        perf.get(&chain[index - 1])
+            .and_then(|p| p.route_kinds.get(&chain[index]))
+            .map(String::as_str)
+    };
+    let deliverers = [chain.first(), chain.last()];
+    for (position, deliverer) in deliverers.into_iter().enumerate() {
+        let Some(deliverer) = deliverer else {
+            continue;
+        };
+        if deliverer == requester {
+            continue;
+        }
+        let Some(deliverer_perf) = perf.get(deliverer) else {
+            continue;
+        };
+        let back = deliverer_perf
+            .gateway_route_kinds
+            .get(requester)
+            .map(String::as_str);
+        let short = deliverer.get(..12).unwrap_or(deliverer);
+        match back {
+            None if !deliverer_perf.gateway_route_kinds.is_empty() => {
+                return Some(format!("{short} não tem rota de volta até este gateway"));
+            }
+            Some("tunnel") => {
+                let upto = if position == 0 { 0 } else { chain.len() - 1 };
+                let forward_direct = (0..=upto)
+                    .all(|index| matches!(forward_kind(index), Some("quic" | "http" | "local")));
+                if forward_direct {
+                    return Some(format!(
+                        "{short} só volta pelo túnel libp2p e a ida é direta"
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Os candidatos do modelo, na ordem em que o planejador os considera.
@@ -492,6 +693,7 @@ mod tests {
             local_load: &load,
             prompt_tokens: 200.0,
             decode_tokens: 200.0,
+            forced_return: None,
         };
         let (plan, estimate) = plan_fastest(&peers, "m", None, 48, &inputs, None).unwrap();
         assert_eq!(chain_of(&plan), vec!["far", "tail"]);
@@ -524,6 +726,7 @@ mod tests {
             local_load: &load,
             prompt_tokens: 100.0,
             decode_tokens: 100.0,
+            forced_return: None,
         };
         let (plan, _) = plan_fastest(&peers, "m", None, 48, &inputs, None).unwrap();
         assert_eq!(chain_of(&plan), vec!["fast"]);
@@ -570,6 +773,7 @@ mod tests {
             local_load: &load,
             prompt_tokens: 50.0,
             decode_tokens: 50.0,
+            forced_return: None,
         };
         let (plan, estimate) = plan_fastest(&peers, "m", None, 48, &inputs, None).unwrap();
         assert_eq!(chain_of(&plan), vec!["head", "mid-b"]);
@@ -592,6 +796,7 @@ mod tests {
             local_load: &load,
             prompt_tokens: 1000.0,
             decode_tokens: 10.0,
+            forced_return: None,
         };
         let (plan, _) = plan_fastest(&peers, "m", None, 48, &inputs, Some("b")).unwrap();
         assert_eq!(chain_of(&plan), vec!["b"]);
@@ -606,6 +811,135 @@ mod tests {
         let cold = estimate_chain(&a_chain, &inputs, &all, 0);
         assert!(cached.total_ms < cold.total_ms);
         assert!(resolve_chain(&all, &["x".to_string()], 48, None).is_none());
+    }
+
+    fn perf_with_back(kind: Option<&str>, others: bool) -> PeerPerf {
+        let mut perf = PeerPerf::default();
+        if let Some(kind) = kind {
+            perf.gateway_route_kinds
+                .insert("gateway".into(), kind.into());
+        }
+        if others {
+            perf.gateway_route_kinds
+                .insert("other".into(), "http".into());
+        }
+        perf
+    }
+
+    #[test]
+    fn the_answer_returns_by_the_ring_when_the_tail_cannot_reach_the_gateway() {
+        let chain = vec!["head".to_string(), "tail".to_string()];
+        let own = HashMap::from([("head".to_string(), "quic".to_string())]);
+        let mut head = perf_with_back(Some("quic"), false);
+        head.route_kinds.insert("tail".into(), "quic".into());
+
+        // Sem rota de volta, tendo medido outras: anel.
+        let perf = HashMap::from([
+            ("head".to_string(), head.clone()),
+            ("tail".to_string(), perf_with_back(None, true)),
+        ]);
+        assert!(return_path_prefers_ring(&chain, "gateway", &perf, &own).is_some());
+
+        // Volta só pelo túnel com a ida toda em QUIC: anel.
+        let perf = HashMap::from([
+            ("head".to_string(), head.clone()),
+            ("tail".to_string(), perf_with_back(Some("tunnel"), false)),
+        ]);
+        assert!(return_path_prefers_ring(&chain, "gateway", &perf, &own).is_some());
+
+        // Volta direta: entrega direta.
+        let perf = HashMap::from([
+            ("head".to_string(), head.clone()),
+            ("tail".to_string(), perf_with_back(Some("http"), false)),
+        ]);
+        assert!(return_path_prefers_ring(&chain, "gateway", &perf, &own).is_none());
+
+        // A ida também é pelo túnel: o anel não ganha nada.
+        let mut tunneled = head.clone();
+        tunneled.route_kinds.insert("tail".into(), "tunnel".into());
+        let perf = HashMap::from([
+            ("head".to_string(), tunneled),
+            ("tail".to_string(), perf_with_back(Some("tunnel"), false)),
+        ]);
+        assert!(return_path_prefers_ring(&chain, "gateway", &perf, &own).is_none());
+
+        // Nó ainda sem medição nenhuma: nada muda.
+        let perf = HashMap::from([
+            ("head".to_string(), head),
+            ("tail".to_string(), PeerPerf::default()),
+        ]);
+        assert!(return_path_prefers_ring(&chain, "gateway", &perf, &own).is_none());
+    }
+
+    /// O modo de volta sai do planejamento: o gateway é a cabeça (L0-15) e a
+    /// cauda está noutra máquina. Ida em QUIC com 26 ms.
+    #[test]
+    fn the_return_mode_is_chosen_with_the_path() {
+        let peers = vec![peer("gw", 0, 15), peer("tail", 16, 47)];
+        let rtt = HashMap::from([("tail".to_string(), 26.0)]);
+        let load = HashMap::new();
+        let plan_with = |tail_back: HashMap<String, f64>| {
+            let mut tail = perf(1.0, 10.0, 0);
+            tail.gateway_rtt_ms = tail_back;
+            let perfs = HashMap::from([
+                ("gw".to_string(), perf(1.0, 10.0, 0)),
+                ("tail".to_string(), tail),
+            ]);
+            let inputs = CostInputs {
+                requester: "gw",
+                requester_rtt_ms: &rtt,
+                perf: &perfs,
+                local_load: &load,
+                prompt_tokens: 50.0,
+                decode_tokens: 50.0,
+                forced_return: None,
+            };
+            plan_fastest(&peers, "m", None, 48, &inputs, None)
+                .unwrap()
+                .1
+                .return_mode
+        };
+        // Volta só pelo túnel, 48 ms: direta custaria 13 + 24 = 37 ms por
+        // token, o anel 26 ms.
+        assert_eq!(
+            plan_with(HashMap::from([("gw".to_string(), 48.0)])),
+            ReturnMode::Ring
+        );
+        // Cauda sem volta até este gateway (mediu só outro): anel.
+        assert_eq!(
+            plan_with(HashMap::from([("other".to_string(), 5.0)])),
+            ReturnMode::Ring
+        );
+        // Volta rápida, 20 ms: direta custa 13 + 10 = 23 ms, abaixo do anel.
+        assert_eq!(
+            plan_with(HashMap::from([("gw".to_string(), 20.0)])),
+            ReturnMode::Direct
+        );
+    }
+
+    #[test]
+    fn a_forced_return_mode_is_the_only_one_planned() {
+        let peers = vec![peer("gw", 0, 15), peer("tail", 16, 47)];
+        let rtt = HashMap::from([("tail".to_string(), 26.0)]);
+        let load = HashMap::new();
+        let mut tail = perf(1.0, 10.0, 0);
+        tail.gateway_rtt_ms = HashMap::from([("gw".to_string(), 48.0)]);
+        let perfs = HashMap::from([
+            ("gw".to_string(), perf(1.0, 10.0, 0)),
+            ("tail".to_string(), tail),
+        ]);
+        let inputs = CostInputs {
+            requester: "gw",
+            requester_rtt_ms: &rtt,
+            perf: &perfs,
+            local_load: &load,
+            prompt_tokens: 50.0,
+            decode_tokens: 50.0,
+            forced_return: Some(ReturnMode::Direct),
+        };
+        // Sozinho o planejador escolheria o anel; forçado, é a direta.
+        let (_, estimate) = plan_fastest(&peers, "m", None, 48, &inputs, None).unwrap();
+        assert_eq!(estimate.return_mode, ReturnMode::Direct);
     }
 
     #[test]

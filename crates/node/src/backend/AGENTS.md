@@ -621,7 +621,12 @@ faz o download autenticado do blob persistido.
   tunnel (`infer_tunnel::health_via_tunnel`, 3 s); probing only the first
   announced address left a peer behind an unreachable IPv6 out of every plan
   ("Gap at layer 0"). A direct success is remembered with
-  `RouteTable::mark_success`. Whoever fails gets an `AdmissionHealth`
+  `RouteTable::mark_success`. The probe follows the pinned route
+  (`bases_by_route_plan`): a tunnel route goes straight to the tunnel, an
+  HTTP/QUIC route puts the measured address first. Each successful body also
+  feeds `AdmissionHealth::note_perf` (`fastest::PeerPerf`), which the
+  delivery-time planner (`generation::plan_by_delivery_time`) and the
+  dashboard telemetry (`catalog::model_peer_perf`) read. Whoever fails gets an `AdmissionHealth`
   quarantine - a single
   unreachable announcer used to cost every inference 2,005ms, the
   `peer_client::CONNECT_TIMEOUT`, because `join_all` waits for the slowest. A

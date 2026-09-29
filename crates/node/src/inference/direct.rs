@@ -862,11 +862,28 @@ impl RemoteStreamDelivery {
             .map(str::to_owned)
             .collect();
 
+        // Com rota fixada até o gateway (`route_plan`), ela decide: HTTP usa o
+        // canal persistente naquele endereço; QUIC e túnel vão direto para a
+        // entrega por requisição, que segue a rota fixada. Sem rota fixada,
         // QUIC is the authoritative preference for a new delivery. Do not
         // silently keep using the persistent TCP link when the cluster opted
         // into QUIC: otherwise the MTP/remote-stream trace would describe a
         // different transport than the one the gateway requested.
-        if self.persistent_failure.is_none() && !self.http.effective_quic_enabled() {
+        let pinned = node_id
+            .and_then(|id| crate::route_plan::book().active(id, crate::route_plan::Plane::Gateway));
+        let use_link = match pinned.as_ref().map(|route| route.kind) {
+            None => !self.http.effective_quic_enabled(),
+            Some(crate::route_plan::RouteKind::Http) => true,
+            Some(_) => false,
+        };
+        if pinned.is_some() && !use_link {
+            return deliver_stream_batch(&self.http, &self.reply_to, meta).await;
+        }
+        let urls = match &pinned {
+            Some(route) => vec![route.base_url.clone()],
+            None => urls,
+        };
+        if self.persistent_failure.is_none() && use_link {
             let reason = match (node_id, urls.is_empty()) {
                 (None, _) => Some(format!("{link_transport}: reply_to sem node_id")),
                 (Some(_), true) => Some(format!("{link_transport}: reply_to sem endereço")),
@@ -989,6 +1006,13 @@ async fn deliver_meta_at(
         },
         None => http.plain(),
     };
+    if let Some(node_id) = reply_to.get("node_id").and_then(Value::as_str) {
+        if let Some(delivery) =
+            deliver_pinned(http, reply_to, node_id, path, &base_meta, &cliente).await
+        {
+            return delivery;
+        }
+    }
     let ordered = http.route_order(&route_key, &urls);
     let quic_addresses: Vec<String> = reply_to
         .get("quic_addresses")
@@ -1123,6 +1147,105 @@ async fn deliver_meta_at(
     Delivery::Failed
 }
 
+/// Quantas rotas fixadas uma entrega percorre antes da escada completa.
+const MAX_PINNED_DELIVERIES: usize = 8;
+
+/// Entrega pela rota fixada até o gateway (`route_plan`, plano `Gateway`).
+/// A falha repete a mesma rota uma vez e depois passa para a próxima medida;
+/// `None` devolve a entrega à escada completa de `reply_to`, que ainda tenta
+/// todos os endereços e o túnel. O plano é de quem entrega: a volta é uma
+/// aresta própria, e quem mediu a ida não sabe nada dela.
+async fn deliver_pinned(
+    http: &crate::peer_client::PeerClients,
+    reply_to: &Value,
+    node_id: &str,
+    path: &str,
+    base_meta: &Value,
+    cliente: &reqwest::Client,
+) -> Option<Delivery> {
+    use crate::route_plan::{book, FailureOutcome, Plane, RouteKind};
+
+    for _ in 0..MAX_PINNED_DELIVERIES {
+        let route = book().active(node_id, Plane::Gateway)?;
+        let delivered = match route.kind {
+            RouteKind::Tunnel => deliver_via_tunnel(reply_to, path, base_meta, "").await,
+            RouteKind::Http => {
+                let attempt_meta = delivery_meta(
+                    base_meta,
+                    path,
+                    tcp_transport_for_url(&route.base_url),
+                    false,
+                    None,
+                    None,
+                );
+                let body = encode_delivery_body(&attempt_meta).ok()?;
+                let target = format!("{}{path}", route.base_url.trim_end_matches('/'));
+                match cliente
+                    .post(&target)
+                    .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                    .body(body)
+                    .timeout(LAST_DELIVERY_TIMEOUT)
+                    .send()
+                    .await
+                {
+                    Ok(r) if r.status().is_success() => Some(Delivery::Accepted),
+                    Ok(r) if r.status() == StatusCode::GONE => Some(Delivery::GatewayGone),
+                    Ok(r) => {
+                        debug!("rota fixada {target} respondeu {}", r.status());
+                        None
+                    }
+                    Err(error) => {
+                        debug!("rota fixada {target} falhou: {error}");
+                        None
+                    }
+                }
+            }
+            RouteKind::Quic => {
+                let attempt_meta = delivery_meta(base_meta, path, "quic", false, None, None);
+                let body = encode_delivery_body(&attempt_meta).ok()?;
+                let addresses: Vec<String> = route.quic_addr.iter().cloned().collect();
+                match http
+                    .quic_post(
+                        node_id,
+                        &route.base_url,
+                        &addresses,
+                        path,
+                        body,
+                        None,
+                        LAST_DELIVERY_TIMEOUT,
+                    )
+                    .await
+                {
+                    Ok(response) if response.status.is_success() => Some(Delivery::Accepted),
+                    Ok(response) if response.status == StatusCode::GONE => {
+                        Some(Delivery::GatewayGone)
+                    }
+                    Ok(response) => {
+                        debug!("rota QUIC fixada respondeu {}", response.status);
+                        None
+                    }
+                    Err(error) => {
+                        debug!("rota QUIC fixada falhou: {error}");
+                        None
+                    }
+                }
+            }
+        };
+        match delivered {
+            Some(delivery) => {
+                book().record_success(node_id, Plane::Gateway);
+                return Some(delivery);
+            }
+            None => {
+                if book().record_failure(node_id, Plane::Gateway) == FailureOutcome::Exhausted {
+                    return None;
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Última via da entrega: o túnel libp2p até o gateway.
 ///
 /// `None` quando o `reply_to` não traz identidade libp2p (gateway em binário
@@ -1152,7 +1275,7 @@ async fn deliver_via_tunnel(
         base_meta,
         path,
         "libp2p-tunnel",
-        true,
+        !direct_error.is_empty(),
         (!direct_error.is_empty()).then_some(direct_error),
         None,
     );

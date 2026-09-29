@@ -47,6 +47,8 @@ pub(crate) use tracing::{debug, info, warn};
 mod core;
 #[path = "direct.rs"]
 mod direct;
+#[path = "perf.rs"]
+mod perf;
 #[path = "prefill.rs"]
 mod prefill;
 #[path = "prefix.rs"]

@@ -24,6 +24,44 @@ travessia por fronteira de camada para cada token e não precisa de uma barreira
 global a cada operação interna. A ordem dos nós importa, e a máquina da camada
 0 deve ter memória suficiente para o prompt e o KV cache.
 
+### Escolha da pipeline por tempo de entrega
+
+Com réplicas, a pipeline escolhida é a que **entrega a requisição mais cedo**
+(`routing/fastest.rs`, `plan_fastest`), e não a de menor latência de rede. Por
+requisição o gateway estima, para cada caminho que cobre `0..total_layers`:
+
+- **prefill:** tokens novos × ms/token de cada estágio × (1 + fila);
+- **decode:** tokens esperados (o `max_tokens` pedido, entre 16 e 512) ×
+  ms/passo de cada estágio × (1 + fila);
+- **rede:** (1 + tokens esperados) × RTT de cada aresta, inclusive quem pede →
+  cabeça e cauda → quem pede.
+
+Os termos são somas por estágio e por aresta, então o melhor caminho sai de uma
+programação dinâmica sobre as faixas. Uma cabeça distante mas rápida vence a
+próxima e lenta quando termina antes; com pouca saída pedida, a rede volta a
+pesar mais.
+
+- **Velocidade** de cada peer vem do `/health` (`perf`): um teste local da
+  fatia logo depois de o modelo carregar (prefill de 64 tokens e 8 passos de
+  decode, entrada sintética, sem rede - `infer_server/perf.rs`) e a média
+  móvel do tráfego real. Peer sem medição usa o custo médio por camada dos
+  medidos.
+- **Rede** vem das rotas fixadas (`route_plan`): quem pede usa as próprias; as
+  arestas entre dois outros peers vêm do `/health` do peer de origem
+  (`route_rtt_ms`, `gateway_rtt_ms`). Aresta sem medição conta 100 ms.
+- **Balanceamento:** a fila do estágio é o maior entre `active_generations` do
+  peer (gerações em curso vindas de qualquer gateway) e a carga em voo deste
+  gateway. Ela multiplica o custo do estágio: o peer mais rápido com fila fica
+  mais lento que um médio ocioso, e a carga se espalha pela rede sem rodízio.
+- **Prefixo:** cada caminho que já tem o prefixo deste prompt retido no cache
+  do gateway entra como candidato, estimado só com os tokens novos. A
+  reutilização vence quando compensa e perde quando o peer do cache está
+  saturado.
+- A cabeça escolhida na interface (`inference_head`) continua sendo a única
+  aceita. Sem caminho viável, o planejador guloso antigo decide.
+
+O log do gateway diz a escolha: `pipeline por tempo de entrega: A→B ~N ms`.
+
 ### Réplicas e scheduler
 
 Duas máquinas que anunciam a mesma faixa são réplicas de um estágio, não dois

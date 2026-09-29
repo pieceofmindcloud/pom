@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { edgeStyle, isControlTarget, ModelNetworkCanvas } from "./ModelNetworkCanvas";
 import type { PipelineCycleCost, PipelineRouteCost } from "./PipelineGatewayNode";
 import { LocaleProvider } from "../i18n/provider";
-import type { ChatTelemetryRtt, ClusterView } from "../lib/types";
+import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView } from "../lib/types";
 import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../test/fixtures";
 import { deploymentLayoutKey, writePositions } from "../lib/networkLayout";
 
@@ -39,6 +39,7 @@ function mount(
   pipelineCost?: PipelineCycleCost,
   properties?: { open: boolean; onToggle: () => void },
   pipelineRoutes?: PipelineRouteCost[],
+  peerPerf?: Record<string, ChatTelemetryPeerPerf>,
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -49,6 +50,7 @@ function mount(
         rttMeasurements={rttMeasurements}
         pipelineCost={pipelineCost}
         pipelineRoutes={pipelineRoutes}
+        peerPerf={peerPerf}
         propertiesOpen={properties?.open}
         onToggleProperties={properties?.onToggle}
       />
@@ -148,6 +150,25 @@ describe("ModelNetworkCanvas: RTT das arestas", () => {
     expect(gateway.textContent).toMatch(/head-fast.*19\.0 ms/);
     expect(gateway.textContent).toMatch(/head-slow.*33\.0 ms/);
     expect(gateway.textContent?.indexOf("head-fast")).toBeLessThan(gateway.textContent?.indexOf("head-slow") ?? -1);
+  });
+});
+
+describe("ModelNetworkCanvas: velocidade das máquinas", () => {
+  afterEach(cleanup);
+
+  it("mostra o TPS de decode e prefill de cada máquina e o tok/s da melhor rota", () => {
+    const view = fakeCluster([fakeSlicePeer("head", 0, 15), fakeSlicePeer("tail", 16, 31)]);
+    mount(view, [], undefined, undefined, [
+      { nodeIds: ["head", "tail", "gateway"], legsMs: [4, 12, 4], computeMs: 30 },
+    ], {
+      head: { decode_tokens_per_sec: 66.7, prefill_tokens_per_sec: 1250, active_generations: 0 },
+    });
+
+    const cards = screen.getAllByTestId("machine-tps").map((element) => element.textContent);
+    expect(cards).toContain("decode 66.7 · prefill 1250 tok/s");
+    expect(cards).toContain("velocidade não medida");
+    expect(screen.getByText("Total do pipeline: 50.0 ms")).toBeTruthy();
+    expect(screen.getByTestId("pipeline-throughput").textContent).toBe("≈ 20.0 tok/s por ciclo de token");
   });
 });
 

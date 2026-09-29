@@ -375,7 +375,49 @@ struct BatchCall {
     item_id: String,
     /// Prazo do frame de quem entrou no lote; o grupo roda sob o maior deles.
     deadline: Instant,
-    reply: oneshot::Sender<std::result::Result<SentFrame, String>>,
+    reply: oneshot::Sender<std::result::Result<SentFrame, BatchFailure>>,
+}
+
+/// Falha de um lote repassada a cada chamada. O erro original não é `Clone`,
+/// então viaja o que as chamadas precisam distinguir: se o frame não chegou a
+/// ser entregue (e pode ir por outra rota) e se o peer recusou por HTTP.
+#[derive(Debug, Clone)]
+struct BatchFailure {
+    message: String,
+    pre_delivery: bool,
+    refusal: Option<(u16, String, String)>,
+}
+
+impl BatchFailure {
+    fn from_error(error: &anyhow::Error) -> Self {
+        Self {
+            message: error.to_string(),
+            pre_delivery: is_pre_delivery_error(error),
+            refusal: error.downcast_ref::<HttpRefusal>().map(|refusal| {
+                (
+                    refusal.status,
+                    refusal.body.clone(),
+                    refusal.peer_label.clone(),
+                )
+            }),
+        }
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        if let Some((status, body, peer_label)) = self.refusal {
+            return anyhow::Error::new(HttpRefusal {
+                status,
+                body,
+                peer_label,
+            });
+        }
+        if self.pre_delivery {
+            return anyhow::Error::new(FrameNotDelivered {
+                message: self.message,
+            });
+        }
+        anyhow!(self.message)
+    }
 }
 
 /// Coalesces independent requests that are about to cross the same pipeline
@@ -488,7 +530,7 @@ impl BatchCoordinator {
         receiver
             .await
             .map_err(|_| anyhow!("coordenador de lotes encerrou a chamada"))?
-            .map_err(|error| anyhow!(error))
+            .map_err(BatchFailure::into_error)
     }
 
     async fn flush(self: Arc<Self>, key: BatchKey) {
@@ -664,9 +706,9 @@ async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
             }
         }
         Err(error) => {
-            let message = error.to_string();
+            let failure = BatchFailure::from_error(&error);
             for call in calls {
-                let _ = call.reply.send(Err(message.clone()));
+                let _ = call.reply.send(Err(failure.clone()));
             }
         }
     }
@@ -1100,6 +1142,7 @@ pub async fn send_frame(
         None,
         on_issue,
         None,
+        HopTransport::unplanned(clients),
     )
     .await
 }
@@ -1123,6 +1166,7 @@ async fn send_frame_with_protocol(
     mut transport_fallback_reason: Option<String>,
     mut on_issue: impl FnMut(SendIssue),
     session_id: Option<&str>,
+    transport: HopTransport,
 ) -> Result<SentFrame> {
     // O cliente sai do cache por peer: com o cluster em TLS ele carrega o
     // certificado esperado deste destino, e o pinning é o que distingue o peer
@@ -1155,7 +1199,7 @@ async fn send_frame_with_protocol(
         for base in ordered {
             let url = format!("{}{path}", base.trim_end_matches('/'));
             let started = Instant::now();
-            if clients.effective_quic_enabled() {
+            if transport.quic {
                 match clients
                     .quic_post(
                         peer_id,
@@ -1268,6 +1312,14 @@ async fn send_frame_with_protocol(
                         );
                     }
                 }
+            }
+            if !transport.tcp {
+                // Rota QUIC fixada: o TCP não é a rota medida, e cair nele
+                // esconderia do plano que a rota fixada falhou.
+                last_error = transport_fallback_reason
+                    .clone()
+                    .unwrap_or_else(|| "a rota QUIC fixada não entregou".to_string());
+                continue;
             }
             let request = http
                 .post(&url)
@@ -1654,12 +1706,14 @@ async fn send_batch_body(
     // persistent HTTP link when selected, then QUIC/TCP direct, and only then
     // the libp2p tunnel. Keeping this order here is essential because
     // `/v1/step` commonly enters the coordinator with a hidden-state tensor.
-    let can_use_tunnel = tunnel_is_allowed_for_peer(
-        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
-        peer_id.is_some(),
-        tunnel.is_some(),
-        crate::infer_tunnel::is_local_node(&step.node_id),
-    );
+    let transport = hop_transport(clients, step);
+    let can_use_tunnel = transport.tunnel
+        && tunnel_is_allowed_for_peer(
+            step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+            peer_id.is_some(),
+            tunnel.is_some(),
+            crate::infer_tunnel::is_local_node(&step.node_id),
+        );
     let mut transport_fallback_reason = None;
     let mut transport_fallback = false;
 
@@ -1668,7 +1722,7 @@ async fn send_batch_body(
     // capability, endereço direto inalcançável, canal caído - a chamada segue
     // pela escada de sempre e o `transport_fallback` diz que isso aconteceu.
     if step.supports(crate::pipeline::CAP_LINK_STREAM)
-        && !clients.effective_quic_enabled()
+        && transport.link
         && !crate::infer_tunnel::is_local_node(&step.node_id)
     {
         match crate::link::send_batch_with_session_profile(
@@ -1736,7 +1790,8 @@ async fn send_batch_body(
         // Peer já provado inalcançável pelo caminho direto: a escada direta é
         // pulada na primeira tentativa e o túnel vai primeiro. Uma falha do
         // túnel devolve a escada completa na tentativa seguinte.
-        let skip_direct = attempt == 1 && can_use_tunnel && clients.prefer_tunnel(&step.node_id);
+        let skip_direct = can_use_tunnel
+            && (transport.tunnel_first || (attempt == 1 && clients.prefer_tunnel(&step.node_id)));
         let ordered = if skip_direct {
             Vec::new()
         } else {
@@ -1748,7 +1803,7 @@ async fn send_batch_body(
         for base in ordered {
             let url = format!("{}{path}", base.trim_end_matches('/'));
             let started = Instant::now();
-            if clients.effective_quic_enabled() {
+            if transport.quic {
                 match clients
                     .quic_post(
                         &step.node_id,
@@ -1824,6 +1879,12 @@ async fn send_batch_body(
                         warn!("{peer_label}: QUIC batch falhou ({error}), tentando TCP direto");
                     }
                 }
+            }
+            if !transport.tcp {
+                last_error = transport_fallback_reason
+                    .clone()
+                    .unwrap_or_else(|| "a rota QUIC fixada não entregou".to_string());
+                continue;
             }
             let request = client
                 .post(&url)
@@ -2254,6 +2315,174 @@ async fn send_bytes_via_tunnel(
     })
 }
 
+/// Quais transportes um hop pode usar, decidido pelo plano de rotas
+/// (`route_plan`). Com rota fixada, só o transporte medido é tentado: cair
+/// noutro dentro da mesma chamada esconderia do plano que a rota falhou, e o
+/// frame pagaria a falha de novo a cada chamada. Sem rota fixada vale a escada
+/// completa de sempre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HopTransport {
+    /// Canal persistente `/v1/link`.
+    link: bool,
+    quic: bool,
+    tcp: bool,
+    tunnel: bool,
+    /// O túnel vai antes do caminho direto.
+    tunnel_first: bool,
+}
+
+impl HopTransport {
+    /// A escada completa: QUIC quando o cluster o liga, senão o canal
+    /// persistente; depois HTTP(S) e por último o túnel.
+    pub(crate) fn unplanned(clients: &crate::peer_client::PeerClients) -> Self {
+        let quic = clients.effective_quic_enabled();
+        Self {
+            link: !quic,
+            quic,
+            tcp: true,
+            tunnel: true,
+            tunnel_first: false,
+        }
+    }
+
+    fn pinned(kind: crate::route_plan::RouteKind) -> Self {
+        use crate::route_plan::RouteKind;
+        match kind {
+            RouteKind::Http => Self {
+                link: true,
+                quic: false,
+                tcp: true,
+                tunnel: false,
+                tunnel_first: false,
+            },
+            RouteKind::Quic => Self {
+                link: false,
+                quic: true,
+                tcp: false,
+                tunnel: false,
+                tunnel_first: false,
+            },
+            RouteKind::Tunnel => Self {
+                link: false,
+                quic: false,
+                tcp: false,
+                tunnel: true,
+                tunnel_first: true,
+            },
+        }
+    }
+}
+
+fn hop_transport(
+    clients: &crate::peer_client::PeerClients,
+    step: &crate::pipeline::PipelineStep,
+) -> HopTransport {
+    crate::route_plan::book()
+        .active(&step.node_id, crate::route_plan::Plane::Inference)
+        .map(|route| HopTransport::pinned(route.kind))
+        .unwrap_or_else(|| HopTransport::unplanned(clients))
+}
+
+/// O passo reduzido à rota fixada: um endereço HTTP, ou um endpoint QUIC com a
+/// URL do mesmo host. Numa rota de túnel os endereços ficam como estão - o
+/// túnel não os usa, e a escada de reserva ainda precisa deles.
+fn pin_step(
+    step: &crate::pipeline::PipelineStep,
+    route: &crate::route_plan::PlannedRoute,
+) -> crate::pipeline::PipelineStep {
+    use crate::route_plan::RouteKind;
+    let mut pinned = step.clone();
+    match route.kind {
+        RouteKind::Http => {
+            pinned.inference_url = route.base_url.clone();
+            pinned.inference_candidates = vec![route.base_url.clone()];
+            pinned.quic_addr_candidates = Vec::new();
+        }
+        RouteKind::Quic => {
+            pinned.inference_url = route.base_url.clone();
+            pinned.inference_candidates = vec![route.base_url.clone()];
+            pinned.quic_addr_candidates = route.quic_addr.iter().cloned().collect();
+        }
+        RouteKind::Tunnel => {}
+    }
+    pinned
+}
+
+/// Quantas rotas fixadas um frame percorre antes da escada completa. É o teto
+/// de segurança do laço; na prática a lista medida acaba antes.
+const MAX_PINNED_ATTEMPTS: usize = 8;
+
+/// Envia um frame pela rota fixada do hop. Falha antes da entrega repete a
+/// mesma rota uma vez, depois passa para a próxima rota medida; com a lista
+/// esgotada o plano pede nova análise e este frame ainda tenta a escada
+/// completa. Falha depois da entrega nunca é repetida em outra rota: o peer
+/// pode ter executado o frame.
+#[allow(clippy::too_many_arguments)]
+async fn send_frame_planned(
+    clients: &crate::peer_client::PeerClients,
+    step: &crate::pipeline::PipelineStep,
+    tunnel: Option<&TunnelOutboundSender>,
+    path: &str,
+    meta: &Value,
+    tensor: Option<(&[f32], TensorShape)>,
+    dtype: WireDtype,
+    encoding: FrameEncoding,
+    attempts: u32,
+    peer_label: &str,
+    mut on_issue: impl FnMut(SendIssue),
+) -> Result<SentFrame> {
+    use crate::route_plan::{book, FailureOutcome, Plane};
+
+    if !crate::infer_tunnel::is_local_node(&step.node_id) {
+        for _ in 0..MAX_PINNED_ATTEMPTS {
+            let Some(route) = book().active(&step.node_id, Plane::Inference) else {
+                break;
+            };
+            let pinned = pin_step(step, &route);
+            match send_frame_or_tunnel_inner(
+                clients,
+                &pinned,
+                tunnel,
+                path,
+                meta,
+                tensor.clone(),
+                dtype,
+                encoding,
+                attempts,
+                peer_label,
+                &mut on_issue,
+            )
+            .await
+            {
+                Ok(sent) => {
+                    book().record_success(&step.node_id, Plane::Inference);
+                    return Ok(sent);
+                }
+                Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+                Err(error) if is_pre_delivery_error(&error) => {
+                    warn!(
+                        "{peer_label}: rota fixada {} falhou antes da entrega: {error}",
+                        route.describe()
+                    );
+                    if book().record_failure(&step.node_id, Plane::Inference)
+                        == FailureOutcome::Exhausted
+                    {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = book().record_failure(&step.node_id, Plane::Inference);
+                    return Err(error);
+                }
+            }
+        }
+    }
+    send_frame_or_tunnel_inner(
+        clients, step, tunnel, path, meta, tensor, dtype, encoding, attempts, peer_label, on_issue,
+    )
+    .await
+}
+
 /// Seleciona o transporte de um frame na ordem QUIC, HTTP/HTTPS direto e,
 /// somente como último recurso, túnel libp2p. O túnel exige a capability, um
 /// `libp2p_peer_id` conhecido e um swarm local disponível. Ele usa Noise e a
@@ -2288,7 +2517,7 @@ pub async fn send_frame_or_tunnel(
         .unwrap_or(own);
     with_frame_deadline(
         deadline,
-        send_frame_or_tunnel_inner(
+        send_frame_planned(
             clients, step, tunnel, path, meta, tensor, dtype, encoding, attempts, peer_label,
             on_issue,
         ),
@@ -2376,12 +2605,14 @@ async fn send_frame_or_tunnel_inner(
     // the libp2p tunnel is the last resort. A tunnel must never hide a direct
     // endpoint that is reachable, because that would turn a healthy
     // `/v1/step` or `/v1/prefill` hop into the slower NAT path.
-    let can_use_tunnel = tunnel_is_allowed_for_peer(
-        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
-        peer_id.is_some(),
-        tunnel.is_some(),
-        crate::infer_tunnel::is_local_node(&step.node_id),
-    );
+    let transport = hop_transport(clients, step);
+    let can_use_tunnel = transport.tunnel
+        && tunnel_is_allowed_for_peer(
+            step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+            peer_id.is_some(),
+            tunnel.is_some(),
+            crate::infer_tunnel::is_local_node(&step.node_id),
+        );
     let use_batch_frame = step.supports(crate::pipeline::CAP_FRAME_BATCH);
     let session_id = meta.get("session_id").and_then(Value::as_str);
     let mut transport_fallback = false;
@@ -2393,7 +2624,7 @@ async fn send_frame_or_tunnel_inner(
     // back to the libp2p tunnel while decode uses HTTP/HTTPS/QUIC.
     if step.supports(crate::pipeline::CAP_LINK_STREAM)
         && can_use_single_link(path)
-        && !clients.effective_quic_enabled()
+        && transport.link
     {
         let batch_id = uuid::Uuid::new_v4().to_string();
         let encode_started = Instant::now();
@@ -2472,12 +2703,11 @@ async fn send_frame_or_tunnel_inner(
         // queimava timeout de QUIC mais timeout de HTTP antes do único
         // transporte que entrega. Uma falha do túnel devolve a escada completa
         // na tentativa seguinte, porque a rota direta pode voltar.
-        let skip_direct = attempt == 1
-            && can_use_tunnel
+        let skip_direct = can_use_tunnel
             && tunnel.is_some()
             && peer_id.is_some()
-            && clients.prefer_tunnel(&step.node_id);
-        if skip_direct && clients.claim_direct_reprobe(&step.node_id) {
+            && (transport.tunnel_first || (attempt == 1 && clients.prefer_tunnel(&step.node_id)));
+        if skip_direct && !transport.tunnel_first && clients.claim_direct_reprobe(&step.node_id) {
             spawn_direct_reprobe(clients, step);
         }
 
@@ -2502,6 +2732,7 @@ async fn send_frame_or_tunnel_inner(
                 transport_fallback_reason.clone(),
                 |issue| on_issue(issue),
                 session_id,
+                transport,
             )
             .await;
 
@@ -3698,6 +3929,126 @@ mod tests {
 
         assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 0);
         assert_eq!(sent.meta["done"], true);
+    }
+
+    fn planned(
+        kind: crate::route_plan::RouteKind,
+        base: &str,
+        rtt_ms: u64,
+    ) -> crate::route_plan::PlannedRoute {
+        crate::route_plan::PlannedRoute {
+            kind,
+            base_url: base.to_string(),
+            quic_addr: None,
+            rtt: std::time::Duration::from_millis(rtt_ms),
+        }
+    }
+
+    /// Com a rota fixada no túnel, o frame nem toca o endereço direto: é o que
+    /// tira do prazo do frame a escada que já se sabe inútil.
+    #[tokio::test]
+    async fn a_pinned_tunnel_route_skips_the_direct_ladder() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let http_hits = Arc::new(AtomicUsize::new(0));
+        let hits = http_hits.clone();
+        let port = spawn_fake_inference_server(move |_body| {
+            hits.fetch_add(1, Ordering::Relaxed);
+            (
+                200,
+                wire::encode(&json!({"done": false}), None, WireDtype::F16).unwrap(),
+            )
+        })
+        .await;
+        let node = "peer-route-plan-tunnel";
+        let step = step_with_node(
+            node,
+            &format!("http://127.0.0.1:{port}"),
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        crate::route_plan::book().install(
+            node,
+            crate::route_plan::Plane::Inference,
+            vec![planned(crate::route_plan::RouteKind::Tunnel, "", 20)],
+            1,
+        );
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
+        }));
+
+        let sent = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+            &step,
+            Some(&tunnel_tx),
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            node,
+            |_| {},
+        )
+        .await
+        .expect("a rota fixada no túnel deve entregar");
+
+        assert_eq!(sent.meta["done"], true);
+        assert_eq!(
+            http_hits.load(Ordering::Relaxed),
+            0,
+            "o direto não é a rota fixada"
+        );
+    }
+
+    /// Rota fixada morta: repete uma vez, passa para a próxima rota medida e
+    /// entrega no mesmo frame. A próxima vira a fixada.
+    #[tokio::test]
+    async fn a_dead_pinned_route_fails_over_to_the_next_measured_route() {
+        let port = spawn_fake_inference_server(|_body| {
+            (
+                200,
+                wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
+            )
+        })
+        .await;
+        let live = format!("http://127.0.0.1:{port}");
+        let dead = "http://127.0.0.1:1".to_string();
+        let node = "peer-route-plan-failover";
+        let mut step = step_with_node(node, &dead, false, None);
+        step.inference_candidates = vec![dead.clone(), live.clone()];
+        crate::route_plan::book().install(
+            node,
+            crate::route_plan::Plane::Inference,
+            vec![
+                planned(crate::route_plan::RouteKind::Http, &dead, 1),
+                planned(crate::route_plan::RouteKind::Http, &live, 9),
+            ],
+            1,
+        );
+
+        let sent = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+            &step,
+            None,
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            node,
+            |_| {},
+        )
+        .await
+        .expect("a segunda rota medida deve entregar");
+
+        assert_eq!(sent.meta["done"], true);
+        let active = crate::route_plan::book()
+            .active(node, crate::route_plan::Plane::Inference)
+            .expect("ainda há rota fixada");
+        assert_eq!(active.base_url, live);
     }
 
     #[tokio::test]

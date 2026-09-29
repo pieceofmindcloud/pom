@@ -27,7 +27,7 @@ import {
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
 import { sumVram } from "../lib/gpu";
 import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
-import type { ChatTelemetryRtt, ClusterView, RoutingEdge } from "../lib/types";
+import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView, RoutingEdge } from "../lib/types";
 import { RouteRttLabel } from "./RouteRttLabel";
 import { PipelineGatewayNode, type PipelineCycleCost, type PipelineRouteCost } from "./PipelineGatewayNode";
 
@@ -121,7 +121,7 @@ export function isControlTarget(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest("button, a, input, select, textarea, [role='button']") != null;
 }
 
-function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, onPointerUp, onOpen }: { range: GraphRange; position: CanvasPosition; dragging: boolean; onPointerDown: (event: React.PointerEvent<HTMLElement>) => void; onPointerMove: (event: React.PointerEvent<HTMLElement>) => void; onPointerUp: (event: React.PointerEvent<HTMLElement>) => void; onOpen?: () => void }) {
+function NetworkNode({ range, position, dragging, perf, onPointerDown, onPointerMove, onPointerUp, onOpen }: { range: GraphRange; position: CanvasPosition; dragging: boolean; perf?: ChatTelemetryPeerPerf; onPointerDown: (event: React.PointerEvent<HTMLElement>) => void; onPointerMove: (event: React.PointerEvent<HTMLElement>) => void; onPointerUp: (event: React.PointerEvent<HTMLElement>) => void; onOpen?: () => void }) {
   const system = range.node?.system;
   /*
    * Uma máquina pode ter mais de uma placa, e o card em miniatura mostrava só
@@ -179,6 +179,15 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
       <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
       <Meter label={t("canvas.load")} used={range.load} total={8} detail={range.load == null ? t("canvas.meterUnknown") : t("canvas.inFlight", { count: range.load })} />
     </div>
+    {/* Velocidade medida da fatia: o que decide a rota, junto com o RTT. */}
+    <p data-testid="machine-tps" className="mt-1.5 font-mono text-[10px] tabular-nums text-muted">
+      {perf?.decode_tokens_per_sec != null || perf?.prefill_tokens_per_sec != null
+        ? t("canvas.machineTps", {
+          decode: perf?.decode_tokens_per_sec != null ? perf.decode_tokens_per_sec.toFixed(1) : "-",
+          prefill: perf?.prefill_tokens_per_sec != null ? perf.prefill_tokens_per_sec.toFixed(0) : "-",
+        })
+        : t("canvas.machineTpsUnknown")}
+    </p>
     {gpus.length > 0 ? (
       gpus.map((g) => (
         <GpuTemperature
@@ -206,6 +215,7 @@ export function ModelNetworkCanvas({
   rttMeasurements = [],
   pipelineCost,
   pipelineRoutes = [],
+  peerPerf,
   propertiesOpen = false,
   onToggleProperties,
 }: {
@@ -213,6 +223,7 @@ export function ModelNetworkCanvas({
   rttMeasurements?: ChatTelemetryRtt[];
   pipelineCost?: PipelineCycleCost;
   pipelineRoutes?: PipelineRouteCost[];
+  peerPerf?: Record<string, ChatTelemetryPeerPerf>;
   propertiesOpen?: boolean;
   onToggleProperties?: () => void;
 }) {
@@ -398,7 +409,7 @@ export function ModelNetworkCanvas({
         const measurement = rttByPair.get(`${range.node_id}:gateway`);
         return <RouteRttLabel key={`rtt-gateway-${range.node_id}`} rttMs={measurement?.rtt_ms} transport={measurement?.transport} left={geometry.labelX} top={geometry.labelY} />;
       })}
-      {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />)}
+      {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} perf={peerPerf?.[range.node_id]} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />)}
       {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} routes={pipelineRoutes} />}
     </div>}
     {/* A mesma visão que a aba Detalhes mostra, no mesmo componente. */}

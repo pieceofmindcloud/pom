@@ -17,7 +17,7 @@ pub const DEFAULT_MAX_TOKENS: u32 = 512;
 /// o mais lento, **um** anunciante inalcançável custava 2,005 s a toda
 /// inferência do cluster - medido em produção, constante entre motores, tamanhos
 /// de prompt e frio/quente.
-pub(super) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+pub(crate) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// Quanto tempo um peer que falhou a sonda fica fora sem ser sondado de novo.
 ///
@@ -36,6 +36,10 @@ pub(super) const ADMISSION_FAILURE_COOLDOWN: Duration = crate::peer_client::FAIL
 #[derive(Default)]
 pub struct AdmissionHealth {
     quarantine: tokio::sync::RwLock<std::collections::HashMap<String, Instant>>,
+    /// Velocidade, fila e RTTs que o `/health` de cada peer publicou na última
+    /// sonda de admissão. É a entrada do planejador por tempo de entrega
+    /// (`fastest::plan_fastest`) e do Painel.
+    perf: std::sync::RwLock<std::collections::HashMap<String, crate::fastest::PeerPerf>>,
 }
 
 impl AdmissionHealth {
@@ -56,6 +60,18 @@ impl AdmissionHealth {
 
     async fn note_success(&self, node_id: &str) {
         self.quarantine.write().await.remove(node_id);
+    }
+
+    pub(crate) fn note_perf(&self, node_id: &str, perf: crate::fastest::PeerPerf) {
+        if let Ok(mut map) = self.perf.write() {
+            map.insert(node_id.to_string(), perf);
+        }
+    }
+
+    pub(crate) fn perf_snapshot(
+        &self,
+    ) -> std::collections::HashMap<String, crate::fastest::PeerPerf> {
+        self.perf.read().map(|map| map.clone()).unwrap_or_default()
     }
 }
 
@@ -854,7 +870,23 @@ fn refresh_peer_from_health(peer: PeerInfo, body: &serde_json::Value) -> Option<
 /// cabe nos 300 ms da sonda direta (`ADMISSION_PROBE_TIMEOUT`).
 const TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 
-pub(super) async fn ready_for_pipeline(
+/// A sonda de admissão segue a rota fixada (`route_plan`): rota de túnel vai
+/// direto ao túnel, rota HTTP/QUIC põe o endereço medido na frente. Sem isto a
+/// sonda, que roda a cada requisição, pagaria o endereço morto antes do túnel.
+fn bases_by_route_plan(node_id: &str, bases: Vec<String>) -> Vec<String> {
+    use crate::route_plan::{book, Plane, RouteKind};
+    match book().active(node_id, Plane::Inference) {
+        Some(route) if route.kind == RouteKind::Tunnel => Vec::new(),
+        Some(route) if !route.base_url.is_empty() => {
+            let mut ordered = vec![route.base_url.clone()];
+            ordered.extend(bases.into_iter().filter(|base| *base != route.base_url));
+            ordered
+        }
+        _ => bases,
+    }
+}
+
+pub(crate) async fn ready_for_pipeline(
     http: &crate::peer_client::PeerClients,
     health: &AdmissionHealth,
     network: &crate::network::Network,
@@ -870,9 +902,9 @@ pub(super) async fn ready_for_pipeline(
         // primeiro anunciado - um IPv6 inalcançável, por exemplo - deixava o
         // peer em quarentena e fora do plano ("Gap at layer 0") mesmo
         // alcançável por outro endereço ou pelo túnel.
-        let bases = network.inference_bases(&peer);
+        let bases = bases_by_route_plan(&peer.node_id, network.inference_bases(&peer));
         async move {
-            if bases.is_empty() {
+            if bases.is_empty() && crate::peer_client::TunnelPeer::from_peer(&peer).is_none() {
                 return None;
             }
             // Idle peers keep their assignment announced while `/health` has
@@ -920,6 +952,7 @@ pub(super) async fn ready_for_pipeline(
                 return None;
             };
             let node_id = peer.node_id.clone();
+            health.note_perf(&node_id, crate::fastest::PeerPerf::from_health(&body));
             let Some(peer) = refresh_peer_from_health(peer, &body) else {
                 health.note_failure(&node_id).await;
                 return None;

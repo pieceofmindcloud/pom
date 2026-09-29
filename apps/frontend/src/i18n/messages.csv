@@ -121,6 +121,8 @@ canvas.legendInactive,Possible traffic,Tráfego possível
 canvas.legendParallel,Parallel route,Rota paralela
 canvas.legendPrimary,Live route,Rota em uso
 canvas.load,Load,Carga
+canvas.machineTps,decode {decode} · prefill {prefill} tok/s,decode {decode} · prefill {prefill} tok/s
+canvas.machineTpsUnknown,speed not measured,velocidade não medida
 canvas.memory,Memory,Memória
 canvas.meterUnknown,unknown,desconhecido
 canvas.noCapacity,No inference capacity announced yet.,Nenhuma capacidade de inferência anunciada ainda.
@@ -128,6 +130,7 @@ canvas.noModel,No model deployed,Nenhum modelo implantado
 canvas.openDetails,Double-click to open this machine''s details,Duplo clique abre os detalhes desta máquina
 canvas.pipelineCostBreakdown,network {network} ms · compute {compute} ms,rede {network} ms · compute {compute} ms
 canvas.pipelineRouteCount,"{count} route{count, plural, =1 {} other {s}}","{count} rota{count, plural, =1 {} other {s}}"
+canvas.pipelineThroughput,≈ {tps} tok/s per token cycle,≈ {tps} tok/s por ciclo de token
 canvas.pipelineTotal,Pipeline total: {ms} ms,Total do pipeline: {ms} ms
 canvas.pipelineTotalLabel,cycle cost,custo do ciclo
 canvas.pipelineTotalUnknown,not measured,não medido

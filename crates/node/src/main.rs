@@ -134,6 +134,8 @@ mod ollama;
 mod openai;
 #[path = "network/peer_client.rs"]
 pub mod peer_client;
+#[path = "routing/fastest.rs"]
+pub mod fastest;
 #[path = "routing/pipeline.rs"]
 mod pipeline;
 #[path = "network/pkarr_node.rs"]
@@ -180,6 +182,8 @@ mod reqlog;
 mod respawn;
 #[path = "network/route.rs"]
 pub mod route;
+#[path = "network/route_plan.rs"]
+pub mod route_plan;
 #[path = "inference/runtime.rs"]
 mod runtime;
 #[path = "inference/scheduler.rs"]

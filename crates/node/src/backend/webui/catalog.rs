@@ -1801,6 +1801,17 @@ pub(super) struct ChatTelemetryResponse {
     pub(super) pipeline_cost: Option<ChatTelemetryPipelineCost>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) pipeline_routes: Vec<ChatTelemetryPipelineRoute>,
+    /// Velocidade medida de cada peer do modelo ativo (teste ao servir e
+    /// tráfego real), vinda do `/health` dele.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(super) peer_perf: HashMap<String, ChatTelemetryPeerPerf>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub(super) struct ChatTelemetryPeerPerf {
+    pub(super) prefill_tokens_per_sec: Option<f64>,
+    pub(super) decode_tokens_per_sec: Option<f64>,
+    pub(super) active_generations: u32,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -1817,6 +1828,15 @@ pub(super) struct ChatTelemetryPipelineRoute {
     pub(super) legs_ms: Vec<Option<f64>>,
     /// Soma das pernas quando todas foram medidas; não inclui compute.
     pub(super) rtt_ms: Option<f64>,
+    /// Compute de um passo de decode somado sobre os peers da rota, quando
+    /// todos têm velocidade medida.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) compute_ms: Option<f64>,
+    /// Um token de decode pela rota: rede mais compute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) total_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) tokens_per_sec: Option<f64>,
 }
 
 fn collect_pipeline_route_paths(
@@ -1864,6 +1884,7 @@ pub(super) fn pipeline_routes_for(
     total_layers: u32,
     gateway_node_id: &str,
     pairwise_rtt: &HashMap<(String, String), f64>,
+    perf: &HashMap<String, crate::fastest::PeerPerf>,
 ) -> Vec<ChatTelemetryPipelineRoute> {
     if model.is_empty() || total_layers == 0 {
         return Vec::new();
@@ -1879,6 +1900,11 @@ pub(super) fn pipeline_routes_for(
             // serves the terminal slice. In that case the pipeline path
             // already ends at the gateway and appending it would create a
             // fake self-hop and show the same node twice in the card.
+            let compute_ms = path
+                .iter()
+                .map(|node_id| perf.get(node_id).and_then(|p| p.decode_ms_per_step))
+                .collect::<Option<Vec<_>>>()
+                .map(|steps| steps.into_iter().sum::<f64>());
             let mut node_ids = path;
             if node_ids.last().map(String::as_str) != Some(gateway_node_id) {
                 node_ids.push(gateway_node_id.to_owned());
@@ -1903,15 +1929,24 @@ pub(super) fn pipeline_routes_for(
                 .copied()
                 .collect::<Option<Vec<_>>>()
                 .map(|legs| legs.into_iter().sum());
+            let total_ms = rtt_ms.zip(compute_ms).map(|(rtt, compute)| rtt + compute);
             ChatTelemetryPipelineRoute {
                 node_ids,
                 legs_ms,
                 rtt_ms,
+                compute_ms,
+                total_ms,
+                tokens_per_sec: total_ms
+                    .filter(|total| *total > 0.0)
+                    .map(|total| (1000.0 / total * 10.0).round() / 10.0),
             }
         })
         .collect::<Vec<_>>();
     routes.sort_by(|left, right| {
-        match (left.rtt_ms, right.rtt_ms) {
+        match (
+            left.total_ms.or(left.rtt_ms),
+            right.total_ms.or(right.rtt_ms),
+        ) {
             (Some(left), Some(right)) => left.total_cmp(&right),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -2230,6 +2265,7 @@ pub(super) async fn chat_telemetry(
             measurements: Vec::new(),
             pipeline_cost: None,
             pipeline_routes: Vec::new(),
+            peer_perf: HashMap::new(),
         });
     }
     let requested: std::collections::HashSet<String> = request
@@ -2242,6 +2278,7 @@ pub(super) async fn chat_telemetry(
             measurements: Vec::new(),
             pipeline_cost: None,
             pipeline_routes: Vec::new(),
+            peer_perf: HashMap::new(),
         });
     }
 
@@ -2282,6 +2319,7 @@ pub(super) async fn chat_telemetry(
         .unwrap_or_default();
     let pipeline_cost = trace.as_ref().and_then(execution_pipeline_cost);
 
+    let mut peer_perf = HashMap::new();
     let pipeline_routes = if request.execution_id.is_none() {
         let peers = state.all_peers().await;
         let active_selector = state.active_model().await;
@@ -2298,6 +2336,24 @@ pub(super) async fn chat_telemetry(
             // health probes, which may have a different path and queueing.
             pairwise_rtt.extend(execution_network_rtts(trace, &state.network.node_id));
         }
+        let perf = model_peer_perf(&state, &peers, model, deploy_id).await;
+        peer_perf = perf
+            .iter()
+            .map(|(node_id, perf)| {
+                let tps = |ms: Option<f64>| {
+                    ms.filter(|ms| *ms > 0.0)
+                        .map(|ms| (1000.0 / ms * 10.0).round() / 10.0)
+                };
+                (
+                    node_id.clone(),
+                    ChatTelemetryPeerPerf {
+                        prefill_tokens_per_sec: tps(perf.prefill_ms_per_token),
+                        decode_tokens_per_sec: tps(perf.decode_ms_per_step),
+                        active_generations: perf.active_generations,
+                    },
+                )
+            })
+            .collect();
         pipeline_routes_for(
             &peers,
             model,
@@ -2305,6 +2361,7 @@ pub(super) async fn chat_telemetry(
             total_layers,
             &state.network.node_id,
             &pairwise_rtt,
+            &perf,
         )
     } else {
         Vec::new()
@@ -2319,7 +2376,41 @@ pub(super) async fn chat_telemetry(
         measurements,
         pipeline_cost,
         pipeline_routes,
+        peer_perf,
     })
+}
+
+/// Velocidade dos peers do modelo ativo. Vem da última sonda de admissão; se
+/// algum peer ainda não passou por uma (nenhuma requisição desde que subiu),
+/// a sonda roda aqui, com o mesmo teto curto da admissão.
+async fn model_peer_perf(
+    state: &GatewayState,
+    peers: &[crate::network::PeerInfo],
+    model: &str,
+    deploy_id: Option<&str>,
+) -> HashMap<String, crate::fastest::PeerPerf> {
+    let candidates: Vec<crate::network::PeerInfo> =
+        crate::pipeline::model_pipeline_candidates(peers, model, deploy_id)
+            .into_iter()
+            .cloned()
+            .collect();
+    let mut perf = state.admission_health.perf_snapshot();
+    if candidates
+        .iter()
+        .any(|peer| !perf.contains_key(&peer.node_id))
+    {
+        let _ = crate::gateway::ready_for_pipeline(
+            &state.peer_http,
+            &state.admission_health,
+            &state.network,
+            candidates.clone(),
+            crate::gateway::ADMISSION_PROBE_TIMEOUT,
+        )
+        .await;
+        perf = state.admission_health.perf_snapshot();
+    }
+    perf.retain(|node_id, _| candidates.iter().any(|peer| peer.node_id == *node_id));
+    perf
 }
 
 pub(super) async fn chat_history(

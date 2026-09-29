@@ -348,6 +348,99 @@ mod generation_pump_tests {
     }
 }
 
+/// Escolhe a pipeline pelo menor tempo de entrega estimado. `None` quando não
+/// há caminho viável: aí o planejador guloso (cobertura, RTT e carga local)
+/// decide como antes.
+///
+/// Candidatos: o melhor caminho da programação dinâmica e cada caminho que já
+/// tem o prefixo deste prompt retido, estimado com o prefill economizado.
+#[allow(clippy::too_many_arguments)]
+async fn plan_by_delivery_time(
+    state: &GatewayState,
+    peers: &[crate::network::PeerInfo],
+    model: &str,
+    deploy_id: Option<&str>,
+    total_layers: u32,
+    route_rtt: &std::collections::HashMap<String, f64>,
+    preferred_head: Option<&str>,
+    prefix_model: &str,
+    cache_prompt: &str,
+    requested_tokens: u32,
+    prefix_eligible: bool,
+) -> Option<crate::pipeline::PipelinePlan> {
+    // A rota fixada é a medida do transporte que o frame vai usar; o RTT de
+    // topologia fica para quem ainda não foi analisado.
+    let mut requester_rtt = route_rtt.clone();
+    requester_rtt.extend(crate::route_plan::book().rtt_map(crate::route_plan::Plane::Inference));
+    let perf = state.admission_health.perf_snapshot();
+    let mut local_load = std::collections::HashMap::new();
+    for peer in peers {
+        local_load.insert(peer.node_id.clone(), state.loads.load(&peer.node_id).await);
+    }
+    let inputs = crate::fastest::CostInputs {
+        requester: &state.network.node_id,
+        requester_rtt_ms: &requester_rtt,
+        perf: &perf,
+        local_load: &local_load,
+        prompt_tokens: (cache_prompt.len() as f64 / 4.0).max(1.0),
+        decode_tokens: (requested_tokens as f64).clamp(16.0, 512.0),
+    };
+    let (mut plan, mut estimate) = crate::fastest::plan_fastest(
+        peers,
+        model,
+        deploy_id,
+        total_layers,
+        &inputs,
+        preferred_head,
+    )?;
+
+    if prefix_eligible {
+        let candidates = crate::fastest::candidates(peers, model, deploy_id);
+        for snapshot in state.prefix_cache.snapshots() {
+            if snapshot.busy
+                || snapshot.key.model != prefix_model
+                || !cache_prompt.starts_with(&snapshot.prompt)
+            {
+                continue;
+            }
+            let node_ids: Vec<String> = snapshot
+                .key
+                .hops
+                .iter()
+                .filter_map(|hop| hop.split('@').next().map(str::to_owned))
+                .collect();
+            let Some(chain) =
+                crate::fastest::resolve_chain(&candidates, &node_ids, total_layers, preferred_head)
+            else {
+                continue;
+            };
+            let cached = crate::fastest::estimate_chain(
+                &chain,
+                &inputs,
+                &candidates,
+                snapshot.cached_tokens,
+            );
+            if cached.total_ms < estimate.total_ms {
+                if let Some(cached_plan) = crate::fastest::plan_for_chain(&chain) {
+                    plan = cached_plan;
+                    estimate = cached;
+                }
+            }
+        }
+    }
+
+    info!(
+        "pipeline por tempo de entrega: {} ~{:.0} ms (prefill {:.0} ms, {:.1} ms/token, filas {:?}, prefixo {} tokens)",
+        plan.hop_chain(),
+        estimate.total_ms,
+        estimate.prefill_ms,
+        estimate.decode_ms_per_token,
+        estimate.stages.iter().map(|stage| stage.queue).collect::<Vec<_>>(),
+        estimate.cached_tokens,
+    );
+    Some(plan)
+}
+
 pub(super) async fn generate_stream_inner(
     input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
@@ -456,17 +549,45 @@ pub(super) async fn generate_stream_inner(
         .collect::<std::collections::HashMap<_, _>>();
     let selection_started = Instant::now();
     let selection_wall = wall_clock_ms();
-    let Some(mut plan) = crate::pipeline::plan_pipeline_with_rtt_from_head(
+    let prefix_model = format!(
+        "{}|deployment={}|chat_template={chat_template}|thinking_enabled={thinking_enabled}",
+        model,
+        deploy_id.unwrap_or("<default>")
+    );
+    let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
+    // Planejamento por tempo de entrega (`fastest`): velocidade medida de cada
+    // peer, fila de toda a rede, RTT de cada aresta e o prefixo já retido.
+    // Sem nenhum caminho viável por ele, o planejador guloso de antes decide.
+    let fastest = plan_by_delivery_time(
+        &state,
         &peers,
         model,
         deploy_id,
         total_layers,
-        &state.loads,
         &route_rtt,
         preferred_head.as_deref(),
+        &prefix_model,
+        &cache_prompt,
+        budget.total,
+        images.is_empty(),
     )
-    .await
-    else {
+    .await;
+    let planned = match fastest {
+        Some(plan) => Some(plan),
+        None => {
+            crate::pipeline::plan_pipeline_with_rtt_from_head(
+                &peers,
+                model,
+                deploy_id,
+                total_layers,
+                &state.loads,
+                &route_rtt,
+                preferred_head.as_deref(),
+            )
+            .await
+        }
+    };
+    let Some(mut plan) = planned else {
         let error = format!(
             "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
         );
@@ -526,11 +647,7 @@ pub(super) async fn generate_stream_inner(
         "route_resolution",
     );
     let prefix_key = crate::prefix_cache::PrefixRouteKey::new(
-        format!(
-            "{}|deployment={}|chat_template={chat_template}|thinking_enabled={thinking_enabled}",
-            model,
-            deploy_id.unwrap_or("<default>")
-        ),
+        prefix_model.clone(),
         plan.steps.iter().map(|step| {
             format!(
                 "{}@{}:{}-{}",
@@ -544,7 +661,6 @@ pub(super) async fn generate_stream_inner(
     // completed its prefill, so an incomplete session cannot enter the cache.
     let session_started = Instant::now();
     let session_wall = wall_clock_ms();
-    let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
     let mut prefix_lease = state.prefix_cache.acquire(
         prefix_key.clone(),
         &cache_prompt,

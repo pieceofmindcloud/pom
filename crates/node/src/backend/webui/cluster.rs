@@ -251,6 +251,8 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
         // Sem isto o retrato da travessia congelaria no cache: nem o estado do
         // AutoNAT nem uma reserva nova mexem em `peers`.
         "traversal": state.network.traversal_status(),
+        // A rota fixada de cada aresta muda sem mexer em `peers`.
+        "route_plan": crate::route_plan::book().signature(),
     }))
 }
 
@@ -662,6 +664,10 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         // sem isto, "os dois nós não se falam" só se investiga com
         // `RUST_LOG=debug` na máquina certa.
         "traversal": state.network.traversal_status(),
+        // Rota fixada por aresta de saída deste nó (`route_plan`): por qual
+        // transporte a inferência e a volta ao gateway vão agora, e as
+        // alternativas já medidas.
+        "route_plan": crate::route_plan::book().snapshot(),
     });
 
     let etag = cluster_etag(&body);

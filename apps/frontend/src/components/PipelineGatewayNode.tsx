@@ -106,6 +106,12 @@ export function PipelineGatewayNode({
         <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-aqua">
           {displayedTotalMs == null ? t("canvas.pipelineTotalUnknown") : t("canvas.pipelineTotal", { ms: displayedTotalMs.toFixed(1) })}
         </div>
+        {/* Com o compute medido, o total é o tempo de um token pela rota. */}
+        {displayedTotalMs != null && displayedTotalMs > 0 && orderedRoutes[0]?.route.computeMs != null && (
+          <div data-testid="pipeline-throughput" className="mt-0.5 font-mono text-[10px] tabular-nums text-muted">
+            {t("canvas.pipelineThroughput", { tps: (1000 / displayedTotalMs).toFixed(1) })}
+          </div>
+        )}
       </div>
       {networkMs != null && computeMs != null && (
         <p className="mt-2 font-mono text-[10px] tabular-nums text-muted">

@@ -2734,6 +2734,11 @@ impl Network {
             }
         });
 
+        // Plano de rotas por aresta: mede em segundo plano o transporte até
+        // cada peer vivo, para o frame usar uma rota fixada em vez de
+        // redescobrir a escada a cada chamada. Ver `route_plan`.
+        crate::route_plan::spawn_planner(self.clone());
+
         // Reach out to the configured bootstrap nodes right away. This belongs
         // here, not in the caller: every start path needs it, and the
         // gateway-only path used to skip it.

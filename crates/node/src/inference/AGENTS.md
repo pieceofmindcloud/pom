@@ -142,7 +142,12 @@ visibilidade dos controles de implantação na UI local.
   `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
   `/v1/session/slot` (save/restore/erase de um snapshot de KV em disco, como o
   `--slot-save-path` do llama-server - ver `inferencia.md` §3.1.1),
-  `/health`; estado das sessões, seleção do caminho `dense/llama.cpp` ou
+  `/health`; `perf.rs` mede a velocidade da fatia (`run_bench`, um teste
+  local ao carregar o modelo, e `observe_prefill`/`observe_decode`, média móvel
+  do tráfego real, chamados no fim do decode de `prefill.rs` e
+  `step_blocking.rs`); o `/health` publica `perf`, `active_generations` (sessões
+  não retidas) e o RTT das rotas fixadas deste nó (`route_rtt_ms`,
+  `gateway_rtt_ms`) para o planejador do gateway; estado das sessões, seleção do caminho `dense/llama.cpp` ou
   `moe/q4_0` e o branch de relay. O runtime MoE recebe hidden states antes do
   decode local ou transforma o residual que vai para o próximo hop somente
   quando o caminho selecionado é MoE; no hop terminal a captura do residual
@@ -1116,6 +1121,17 @@ visibilidade dos controles de implantação na UI local.
   hop/step para auditoria.
 
 `relay.rs`:
+- `send_frame_planned` - entrada de todo frame remoto (`send_frame_or_tunnel`):
+  com rota fixada no plano (`route_plan`, plano `Inference`) o passo é reduzido
+  a ela por `pin_step` e `hop_transport` libera **só** o transporte medido
+  (`HopTransport`: canal persistente e TCP para HTTP, só QUIC para QUIC, só o
+  túnel para túnel). Falha antes da entrega repete a rota uma vez, depois passa
+  para a próxima medida no mesmo frame; lista esgotada pede reanálise e o frame
+  ainda desce a escada completa. Falha depois da entrega nunca troca de rota.
+  Sem rota fixada, `HopTransport::unplanned` é a escada de sempre.
+- `BatchFailure` - a falha de um lote chega a cada chamada preservando se foi
+  antes da entrega (`FrameNotDelivered`) e a recusa HTTP (`HttpRefusal`); antes
+  virava texto e a troca de rota não reconhecia a falha.
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;
   `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`
   também identifica `transport` (`local`, `libp2p-tunnel`, `https`,
@@ -1157,6 +1173,12 @@ falha de transporte.
   reconstrução fria com motivo explícito.
 
 `direct.rs`:
+- `deliver_pinned` - a volta ao gateway usa a rota fixada do plano `Gateway`
+  (`route_plan`) antes da escada de `reply_to`: HTTP no endereço medido, QUIC
+  no endpoint medido ou direto o túnel. Mesma regra de falha do `relay.rs`;
+  `None` devolve a entrega à escada completa. `RemoteStreamDelivery` só usa o
+  canal persistente quando a rota fixada é HTTP (naquele endereço); QUIC ou
+  túnel fixados vão pela entrega por requisição sem marcar fallback.
 - `ReplyInbox`/`Ticket` - mapa ticket→canal oneshot que vive no `GatewayState`
   (é o gateway que abre a requisição); `register` sorteia UUID v4 por quadro;
   `Drop` remove o ticket ainda não entregue do inbox em qualquer caminho de

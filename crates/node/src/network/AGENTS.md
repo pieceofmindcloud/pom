@@ -146,6 +146,13 @@ fallback continua em `addr_candidates` + `RouteTable`.
   Nagle com delayed ACK do sistema operacional. O `reqwest::Client` compartilhado
   e o cache por `node_id` também preservam o pool de conexões; `for_peer` não
   cria um cliente novo a cada frame.
+- `quic.rs` - o orçamento de estabelecimento de cada chamada sai de
+  `route_plan::book().establish_budget(peer)` (teto `QUIC_FALLBACK_BUDGET`);
+  `ClientPool::for_probes` fixa o orçamento da sonda, que é quem mede o RTT.
+  `ensure_local_route` faz um `connect` de UDP antes do handshake e falha na
+  hora quando a máquina não tem rota para a família do destino (container sem
+  IPv6 discando um IPv6 anunciado) - o quinn só registrava o `sendmsg` recusado
+  e esperava o orçamento inteiro.
 - `quic.rs` - cliente e servidor HTTP/3 sobre Quinn. O pool mantém uma conexão
   QUIC por peer e endereço anunciado, usa o mesmo pinning Ed25519 da conexão
   TCP e deixa o endpoint UDP pronto na porta dedicada anunciada
@@ -225,6 +232,23 @@ fallback continua em `addr_candidates` + `RouteTable`.
   RTTs com menos de cinco minutos entram em seleção.
   `last_success` devolve o último endereço HTTP que respondeu (há menos de
   5 min e sem falha depois), a metade HTTP de `Network::peer_route`.
+- `route_plan.rs` - o **plano de rotas por aresta**: por qual transporte (QUIC,
+  HTTP/HTTPS ou túnel libp2p) este nó fala com cada peer, medido em segundo
+  plano e fixado. `RouteBook` (global do processo, `route_plan::book()`) guarda
+  por `(node_id, Plane)` a lista de rotas medidas em ordem de RTT (empate de
+  2 ms decide QUIC, depois HTTP, depois túnel). Dois planos por peer:
+  `Inference` (prefill/decode) e `Gateway` (volta da resposta direta e do
+  remote-stream). `spawn_planner`, iniciado por `Network::start`, mede toda
+  aresta sem análise, vencida (5 min) ou cujo peer mudou endereços, portas,
+  `deploy_id` ou faixa de camadas - por isso a implantação que fica `serving` já
+  dispara a análise antes da primeira requisição. `measure_edge` sonda em
+  paralelo com o transporte real: `GET /health` por HTTP com o cliente pinado,
+  POST HTTP/3 por endpoint QUIC (qualquer status prova o caminho) e `/health`
+  pelo túnel; duas amostras, vale a menor. `record_failure` repete a rota uma
+  vez, depois passa para a próxima medida e, com a lista esgotada, apaga a
+  aresta e acorda o planejador (reanálise). `establish_budget` dá o orçamento de
+  conexão: 3x o RTT medido entre 100 ms e o teto, 150 ms sem medição.
+  `snapshot`/`signature` alimentam o campo `route_plan` de `/api/ui/cluster`.
 - `Network::gateway_bases` - os endereços do gateway de um peer na ordem em
   que vale tentar: o host que já respondeu (`RouteTable::last_success`,
   comparado pelo host porque pode ter sido a porta de inferência), depois os

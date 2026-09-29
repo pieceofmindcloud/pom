@@ -143,6 +143,10 @@ pub struct ClientPool {
     /// só a primeira tentativa mostrava a causa real, as 113 seguintes só
     /// diziam "em quarentena").
     failed_until: Arc<tokio::sync::Mutex<HashMap<String, (Instant, String)>>>,
+    /// Orçamento fixo de estabelecimento, usado pelas sondas do plano de
+    /// rotas. Sem ele o orçamento sai do RTT medido do peer
+    /// (`route_plan::RouteBook::establish_budget`).
+    establish_budget: Option<Duration>,
 }
 
 impl ClientPool {
@@ -151,6 +155,17 @@ impl ClientPool {
             endpoint: Arc::new(tokio::sync::OnceCell::const_new()),
             sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             failed_until: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            establish_budget: None,
+        }
+    }
+
+    /// Pool das sondas do plano de rotas. A sonda é quem mede o RTT, então não
+    /// pode depender de um orçamento derivado dele: um peer ainda não medido
+    /// com RTT alto nunca teria o QUIC medido.
+    pub fn for_probes(budget: Duration) -> Self {
+        Self {
+            establish_budget: Some(budget),
+            ..Self::new()
         }
     }
 
@@ -176,7 +191,10 @@ impl ClientPool {
         timeout: Duration,
     ) -> Result<QuicResponse> {
         let mut last_error = "nenhum endereço QUIC anunciado".to_string();
-        let fallback_deadline = Instant::now() + QUIC_FALLBACK_BUDGET;
+        let budget = self.establish_budget.unwrap_or_else(|| {
+            crate::route_plan::book().establish_budget(peer_id, QUIC_FALLBACK_BUDGET)
+        });
+        let fallback_deadline = Instant::now() + budget;
         for advertised in quic_addresses {
             let key = format!("{peer_id}@{}", advertised.trim());
             if let Some(reason) = self.quic_quarantine_reason(&key).await {
@@ -431,6 +449,7 @@ impl ClientPool {
         let addr = tokio::time::timeout(resolve_timeout, resolve_addr(advertised))
             .await
             .context("resolução do endereço QUIC excedeu o orçamento")??;
+        ensure_local_route(addr)?;
         let tls = crate::tls::quic_client_config(peer_id)?;
         let mut config = quinn::ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(tls)?,
@@ -665,6 +684,23 @@ fn authority(base_url: &str) -> Result<String> {
         url::Host::Ipv4(addr) => format!("{addr}:{port}"),
         url::Host::Domain(domain) => format!("{domain}:{port}"),
     })
+}
+
+/// Falha na hora quando esta máquina não tem rota para a família do destino
+/// (um container sem IPv6 discando um IPv6 anunciado). O quinn só registra o
+/// `sendmsg` recusado e espera o orçamento de handshake inteiro; um `connect`
+/// de UDP consulta a tabela de rotas sem mandar pacote nenhum.
+fn ensure_local_route(addr: SocketAddr) -> Result<()> {
+    let bind: SocketAddr = if addr.is_ipv4() {
+        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+    let socket = std::net::UdpSocket::bind(bind)
+        .map_err(|error| anyhow!("sem socket local para {addr}: {error}"))?;
+    socket
+        .connect(addr)
+        .map_err(|error| anyhow!("sem rota local para {addr}: {error}"))
 }
 
 async fn resolve_addr(advertised: &str) -> Result<SocketAddr> {

@@ -15,7 +15,20 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   falha expirável em vez de tratar `addr` como verdade permanente. O destino
   QUIC nunca é derivado da `inference_url`.
 
+- `fastest.rs` - planejador por tempo de entrega (`plan_fastest`), usado pelo
+  gateway antes do guloso: programação dinâmica sobre as faixas somando o custo
+  de cada estágio (velocidade medida × fila) e de cada aresta (RTT das rotas
+  fixadas). `PeerPerf::from_health` lê `perf`, `active_generations`,
+  `route_rtt_ms` e `gateway_rtt_ms` do `/health`; `estimate_chain` estima um
+  caminho dado (o de um prefixo em cache, com os tokens já retidos
+  descontados); `resolve_chain` valida uma cadeia de `node_id`s contra os
+  candidatos vivos. Ver `docs/subsystems/paralelismo.md`, "Escolha da pipeline
+  por tempo de entrega".
+
 ## Funções-chave
+
+- `step_for`/`plan_from_steps` - montagem de um passo e do plano com arestas,
+  compartilhada pelo guloso e por `fastest.rs`.
 
 - `plan_pipeline_with_rtt` - varre de 0 até `total_layers`; em cada posição
   escolhe somente um peer cuja faixa carregada comece exatamente na posição.

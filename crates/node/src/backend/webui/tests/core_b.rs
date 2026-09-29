@@ -440,7 +440,7 @@ mod chat_telemetry_tests {
             (("tail".into(), "gateway".into()), 3.0),
         ]);
 
-        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, "gateway", &rtts);
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, "gateway", &rtts, &HashMap::new());
 
         assert_eq!(
             routes
@@ -468,7 +468,7 @@ mod chat_telemetry_tests {
             (("head".into(), "gateway".into()), 24.0),
         ]);
 
-        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, "gateway", &rtts);
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, "gateway", &rtts, &HashMap::new());
 
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].node_ids, vec!["head", "gateway"]);

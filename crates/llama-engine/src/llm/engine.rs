@@ -1823,6 +1823,15 @@ impl LlmEngine {
         }
     }
 
+    /// Apaga a sequência inteira, no KV do alvo e no contexto MTP. Para quem
+    /// roda um decode descartável - o teste de velocidade da fatia - e não pode
+    /// deixar células ocupadas nem um `nextn` adiantado para a próxima sessão
+    /// que usar o mesmo `seq_id`.
+    pub fn discard_sequence(&mut self, seq_id: u32) -> bool {
+        self.mtp_skip_observe(seq_id);
+        self.kv_remove(seq_id, -1, -1)
+    }
+
     /// Decode a batch of embedding vectors (hidden states from the previous peer).
     ///
     /// `tokens` são os ids do lote que a cauda decodificou — o caller que os

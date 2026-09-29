@@ -111,6 +111,12 @@ Essa chamada não abre socket nem passa por HTTP. O servidor HTTP de inferência
 continua ativo para health checks e para peers remotos; com QUIC ligado, a
 ordem remota é QUIC, HTTP/HTTPS direto e, só por último, túnel libp2p. Com
 QUIC desligado, HTTP/HTTPS direto também precede o túnel.
+Essa escada só vale para uma aresta ainda sem análise. Com rota fixada pelo
+plano de rotas (`route_plan`, ver `rede-p2p.md`, "Plano de rotas por aresta"),
+o frame usa só o transporte medido; falha antes da entrega repete a rota uma
+vez, passa para a próxima rota medida e, com a lista esgotada, pede reanálise e
+desce a escada completa. A volta ao gateway (`reply_to` e remote-stream) segue
+a rota fixada do plano `Gateway` do nó que entrega.
 Uma falha em uma chamada percorre primeiro a escada disponível de transportes
 sem esperar o backoff: QUIC, HTTP/HTTPS e, por último, túnel libp2p. Só se todos
 os caminhos confirmarem que o corpo não chegou ao peer é que o mesmo chunk pode
@@ -123,7 +129,8 @@ o KV remoto, o cache de prefixo e o trace acumulado. A sessão inteira só é
 reconstruída quando o peer já não tem a sessão, a entrega ficou ambígua, um hop
 downstream pode ter avançado o KV ou falta posição absoluta confiável; cada
 reconstrução registra o motivo. A abertura fria de QUIC tem orçamento de
-estabelecimento separado, em milissegundos. O envio do frame e a resposta
+estabelecimento separado, em milissegundos: 3x o RTT medido do peer, entre
+100 e 300 ms, ou 150 ms antes da primeira medição. O envio do frame e a resposta
 usam o prazo de serviço próprio, então um corpo grande não consome o orçamento
 curto de handshake.
 

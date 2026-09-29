@@ -421,6 +421,15 @@ impl PeerClients {
         }
     }
 
+    /// Clientes das sondas do plano de rotas (`route_plan`): o QUIC usa o
+    /// orçamento fixo da sonda em vez do derivado do RTT medido.
+    pub fn for_route_probes() -> Self {
+        Self {
+            quic_pool: crate::quic::ClientPool::for_probes(crate::route_plan::PROBE_TIMEOUT),
+            ..Self::new(Duration::from_secs(10))
+        }
+    }
+
     /// Liga este cache de clientes à configuração viva do nó. A leitura é
     /// feita por chamada, porque a chave pode ser regenerada pela API sem
     /// reiniciar o processo.

@@ -1007,9 +1007,15 @@ requisição e deriva cada aresta de `pipeline_cycle.decode`, que registra a
 travessia lógica observada e o transporte efetivo (`http`, `https` ou `quic`).
 Sem o id, o Painel consulta a última execução concluída para as arestas
 solicitadas e também enumera todas as rotas completas do modelo ativo. Cada
-rota responde em `pipeline_routes` com `{ node_ids, legs_ms, rtt_ms }`, na
-ordem `Gateway -> cabeça -> ... -> cauda -> Gateway`; todas as pernas são
-somadas, e as rotas são ordenadas pelo RTT agregado crescente, com `node_ids`
+rota responde em `pipeline_routes` com `{ node_ids, legs_ms, rtt_ms }` e, quando
+todos os peers da rota têm velocidade medida, `compute_ms` (um passo de decode
+somado), `total_ms` (rede mais compute, um token pela rota) e `tokens_per_sec`;
+`peer_perf` traz, por peer do modelo ativo, `prefill_tokens_per_sec`,
+`decode_tokens_per_sec` e `active_generations`, lidos da sonda de admissão (que
+roda ali mesmo para o peer ainda não sondado). A ordem é
+das pernas é `Gateway -> cabeça -> ... -> cauda -> Gateway`; todas as pernas são
+somadas, e as rotas são ordenadas pelo `total_ms` (ou, sem ele, pelo RTT
+agregado) crescente, com `node_ids`
 como desempate estável. Os RTTs das rotas vêm do trace recente quando a perna
 foi observada, usando a medida de fio, e das sondas direcionais frescas do
 gateway e dos peers para o restante, incluindo o caso de um único head sem

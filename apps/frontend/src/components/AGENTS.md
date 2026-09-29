@@ -265,6 +265,12 @@ Per-file list:
   imports it); only `trackOf` (the repeating color palette, `TRACKS`) is still
   exported, reused by `PeerDetailCard`, `Dashboard` and `DeployModel`.
   Currently rendered hidden on Dashboard.
+- `ModelNetworkCanvas.tsx` - Cada card de máquina mostra também o TPS medido de
+  decode e de prefill (`machine-tps`, de `peer_perf` do
+  `/api/ui/chat/telemetry`); sem medição diz "velocidade não medida". No
+  `PipelineGatewayNode`, as rotas recebem o `compute_ms` do backend, então o
+  total no fim da pipeline passa a ser rede mais compute de um token, com o
+  tok/s equivalente (`pipeline-throughput`).
 - `ModelNetworkCanvas.tsx` - A visão operacional principal: um grafo SVG com
   pan/zoom de nós (cards de faixa com medidores agrupados de RAM/carga/VRAM,
   seguidos pelas temperaturas compactas quando há GPU) e arestas curvas, guiado por

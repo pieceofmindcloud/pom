@@ -264,6 +264,7 @@ pub(crate) fn step_blocking(
         timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
+    s.perf.observe_decode(decode_started.elapsed(), n_tokens);
     if let Some(context) = profiling.as_ref() {
         timings.record_profile_span(
             context,

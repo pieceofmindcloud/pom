@@ -1055,6 +1055,7 @@ pub(super) fn prefill_blocking(
         timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
+    s.perf.observe_prefill(decode_started.elapsed(), n_tokens);
     timings.tp = crate::tp::take_decode_telemetry();
     timings.backend_call_us += engine_timing.backend_call_us;
     timings.backend_sync_us += engine_timing.backend_sync_us;

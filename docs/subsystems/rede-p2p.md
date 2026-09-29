@@ -691,6 +691,54 @@ admin (`admin.rs`) e o `/health` do servidor de inferência entre peers. Nenhum
 deles participa da admissão, então um par atrás de NAT já entra no cluster e
 roteia sem eles.
 
+### Plano de rotas por aresta (`route_plan.rs`)
+
+A escada de transporte (QUIC, HTTP/HTTPS, túnel) era percorrida em todo frame.
+Com um endereço anunciado morto - um IPv6 que o container sem IPv6 não
+alcança, o IPv4 público de um roteador sem porta encaminhada - cada frame
+pagava o estabelecimento que falha antes de chegar ao caminho que funciona, e
+isso consumia o prazo do frame. Agora a rota é **medida uma vez e fixada**.
+
+- **Aresta com direção, medida por quem envia.** Ir de A a B não diz nada
+  sobre ir de B a A: um nó atrás de NAT sai pela tailnet e só é alcançado pelo
+  túnel. Cada processo mede as próprias arestas de saída, e nada disso vai para
+  o gossip. Há dois planos por peer, porque são servidores diferentes:
+  `Inference` (prefill e decode) e `Gateway` (volta da resposta direta e do
+  remote-stream).
+- **Quando mede.** O planejador (`spawn_planner`, iniciado por
+  `Network::start`) mede toda aresta sem análise, com análise de mais de 5 min
+  ou cujo peer mudou endereços, portas, `deploy_id` ou faixa de camadas. A
+  implantação que fica `serving` muda a faixa anunciada, então a análise roda
+  antes da primeira requisição. Uma análise que não achou rota se repete a
+  cada 5 s em segundo plano.
+- **Como mede.** Com o transporte real, em paralelo, duas amostras por rota
+  (vale a menor, porque a primeira paga o handshake): `GET /health` por HTTP
+  com o cliente pinado, POST HTTP/3 por endpoint QUIC (qualquer status prova o
+  caminho) e `/health` pelo túnel. Teto de 500 ms por sonda direta e 2 s pelo
+  túnel. A lista sai ordenada por RTT; dentro de 2 ms vence QUIC, depois HTTP,
+  depois túnel. QUIC só entra com a política QUIC do cluster ligada.
+- **Como usa.** O frame vai só pelo transporte fixado (`relay::HopTransport`):
+  cair noutro dentro da mesma chamada esconderia do plano que a rota falhou.
+  Falha antes da entrega repete a mesma rota uma vez; a segunda falha passa
+  para a próxima rota medida, no mesmo frame; lista esgotada apaga a aresta,
+  acorda o planejador e o frame ainda desce a escada completa. Falha depois da
+  entrega nunca troca de rota, porque o peer pode ter executado o frame.
+- **Espera de conexão.** O orçamento de estabelecimento do QUIC é 3x o RTT
+  medido do peer, entre 100 ms e 300 ms; sem medição, 150 ms. Um destino sem
+  rota local (família de endereço ausente) falha na hora por
+  `quic::ensure_local_route`. O prazo do frame continua proporcional ao
+  trabalho: é ele que protege um prefill longo, e com a rota fixada ele não é
+  mais disputado por tentativas de conexão. O `CONNECT_TIMEOUT` do TCP (400 ms)
+  segue como teto absoluto, porque vale também para a rota fixada e precisa
+  caber num enlace de RTT alto.
+- **Diagnóstico.** `/api/ui/cluster` traz `route_plan`: por aresta, a rota
+  ativa, as alternativas e a idade da análise. Os logs dizem a rota escolhida
+  (`rota inference para <peer>: http ... (26.0 ms)`), a troca
+  (`falhou duas vezes; passando para ...`) e a reanálise.
+
+A preferência aprendida pelo túnel (abaixo) continua valendo para arestas ainda
+sem análise.
+
 ### Preferência aprendida pelo túnel
 
 Furar o NAT não basta se cada frame continua pagando a escada direta inteira.
@@ -988,8 +1036,9 @@ do `node_id`; portanto QUIC permanece cifrado mesmo quando `tls_required` está
 desligado. A política TLS continua escolhendo apenas `http://` ou `https://`
 para o fallback TCP. Se o peer não tiver endpoint QUIC, a porta não estiver
 escutando, a rota falhar ou responder 404/405, o relay cai para HTTP/HTTPS e
-marca `transport_fallback`; a descoberta compartilha um orçamento de 300 ms
-entre os endereços QUIC anunciados, em vez de serializar um timeout por
+marca `transport_fallback`; a descoberta compartilha um orçamento (3x o RTT
+medido pelo plano de rotas, entre 100 e 300 ms; 150 ms sem medição) entre os
+endereços QUIC anunciados, em vez de serializar um timeout por
 endereço, e coloca um endpoint que falhou em quarentena por 5 s. Uma sessão
 saudável é reutilizada nos próximos frames. Se uma chamada falhar numa sessão
 cacheada, o cliente fecha e remove essa sessão e repete uma vez o pedido com um

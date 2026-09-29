@@ -751,6 +751,8 @@ pub(crate) struct InferState {
     /// Identidade TP deste nó. O rank 0 precisa da lista de membros para pôr
     /// os workers no mesmo decode; sem isso a barreira nunca fecha.
     pub(super) tp: Option<crate::network::TpIdentity>,
+    /// Velocidade medida desta fatia, publicada no `/health`. Ver `perf.rs`.
+    pub(super) perf: perf::SlicePerf,
 }
 
 pub(crate) type SharedState = Arc<Mutex<InferState>>;

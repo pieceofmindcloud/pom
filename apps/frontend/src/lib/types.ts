@@ -664,7 +664,21 @@ export interface ChatTelemetryNetwork {
     node_ids: string[];
     legs_ms: Array<number | null>;
     rtt_ms: number | null;
+    /** Compute de um passo de decode somado nos peers da rota. */
+    compute_ms?: number | null;
+    /** Um token pela rota: rede mais compute. */
+    total_ms?: number | null;
+    tokens_per_sec?: number | null;
   }>;
+  /** Velocidade medida de cada peer do modelo ativo. */
+  peer_perf?: Record<string, ChatTelemetryPeerPerf>;
+}
+
+/** Velocidade medida de um peer: teste ao servir e tráfego real. */
+export interface ChatTelemetryPeerPerf {
+  prefill_tokens_per_sec: number | null;
+  decode_tokens_per_sec: number | null;
+  active_generations: number;
 }
 
 /** Resposta do recorte de topologia que um nó infer pode consultar. */

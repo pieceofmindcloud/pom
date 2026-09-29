@@ -656,6 +656,17 @@ cima responde ao Esc, porque uma janela pode abrir outra (a confirmação de
 sair da rede nasce de dentro do card). Há teste (`Confirm.test.tsx`) que
 afirma a causa (a janela é filha do `body`) porque o jsdom não calcula layout.
 
+## O Painel: velocidade e custo da pipeline
+
+No Fluxo, cada card de máquina mostra, além do RTT das arestas, o TPS medido
+da fatia - decode e prefill -, lido de `peer_perf` do
+`/api/ui/chat/telemetry` (a mesma consulta de 15 s que traz os RTTs). A caixa
+do gateway, no fim da pipeline, soma rede e compute de um token por rota e
+mostra o tok/s equivalente da melhor rota; enquanto algum peer da rota não
+tem velocidade medida, o total é só o RTT, como antes. Os números vêm do
+teste de velocidade que cada peer roda ao servir e da média do tráfego real
+(ver `paralelismo.md`, "Escolha da pipeline por tempo de entrega").
+
 ## O Painel: Fluxo e Detalhes mostram a mesma máquina
 
 `PeerDetailCard` (`src/components/PeerDetailCard.tsx`) é o card de uma

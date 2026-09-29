@@ -2028,6 +2028,16 @@ async fn post_session_lifecycle_direct(
             .send()
             .await
         {
+            Ok(response)
+                if crate::peer_client::answered_by_other_node(
+                    response.headers(),
+                    &step.node_id,
+                )
+                .is_some() =>
+            {
+                http.remember_route_failure(&route_key, &base);
+                last_error = Some(format!("{base}: respondeu outro nó"));
+            }
             Ok(response) if response.status().is_success() => {
                 http.remember_route_success(&route_key, &base);
                 return Ok(response

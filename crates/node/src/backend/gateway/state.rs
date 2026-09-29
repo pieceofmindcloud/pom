@@ -674,10 +674,11 @@ pub(crate) async fn require_admin_for_surface(
         .extensions
         .get::<crate::serve::TransportSecurity>()
         .is_some_and(|transport| transport.0);
+    let cookie_name = crate::auth::admin_session_cookie_name(&parts.headers);
     let mut response = next.run(Request::from_parts(parts, body)).await;
     if let Some(session_id) = auth.session_id_to_set {
         for path in crate::auth::ADMIN_SESSION_COOKIE_PATHS {
-            let value = crate::auth::session_cookie_header(&session_id, secure, path);
+            let value = crate::auth::session_cookie_header(&cookie_name, &session_id, secure, path);
             if let Ok(value) = HeaderValue::from_str(&value) {
                 response.headers_mut().append(header::SET_COOKIE, value);
             }
@@ -952,7 +953,10 @@ pub(crate) async fn ready_for_pipeline(
                 else {
                     continue;
                 };
-                if !response.status().is_success() {
+                if !response.status().is_success()
+                    || crate::peer_client::answered_by_other_node(response.headers(), &peer.node_id)
+                        .is_some()
+                {
                     continue;
                 }
                 if let Ok(Ok(value)) =

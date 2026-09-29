@@ -582,6 +582,68 @@ fn bare_host(host: &str) -> &str {
 /// Destinations may be private or loopback when the cluster is local, but an
 /// unspecified, multicast, broadcast, or `0.0.0.0/8` address is never a peer.
 /// Hostnames remain valid here and are checked by `lookup_host` at send time.
+/// Porta UDP/p2p deste processo, anotada quando o socket abre. Com ela e os
+/// IPs das interfaces, `is_self_endpoint` reconhece um candidato de outro peer
+/// que na verdade aponta para este nó.
+static SELF_P2P_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// IPs das interfaces locais, sem loopback. `addrs::local_addrs` executa um
+/// processo (`ip -o addr`), então o resultado vale por alguns segundos.
+fn local_interface_ips() -> std::collections::HashSet<String> {
+    static CACHE: std::sync::Mutex<Option<(Instant, std::collections::HashSet<String>)>> =
+        std::sync::Mutex::new(None);
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((at, ips)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_secs(10) {
+            return ips.clone();
+        }
+    }
+    let ips: std::collections::HashSet<String> = crate::addrs::local_addrs()
+        .into_iter()
+        .map(|local| bare_host(&local.ip).to_string())
+        .filter(|ip| {
+            ip.parse::<IpAddr>()
+                .is_ok_and(|parsed| !parsed.is_loopback())
+        })
+        .collect();
+    *cache = Some((Instant::now(), ips.clone()));
+    ips
+}
+
+/// `host:porta` que é este próprio processo: IP de uma interface local com a
+/// porta p2p deste nó.
+///
+/// Dois nós em Docker com rede bridge costumam receber o mesmo IP interno
+/// (`172.18.0.2`) e a mesma porta. O candidato `172.18.0.2:42778` que a ksia
+/// anuncia, visto do salem, é o próprio salem: o Painel mostrava a mesma
+/// máquina duas vezes (o `/health` "da ksia" era respondido pelo salem) e o
+/// deploy planejado para a ksia caía no salem.
+pub(crate) fn is_self_endpoint(addr: &str) -> bool {
+    let port = SELF_P2P_PORT.load(std::sync::atomic::Ordering::Relaxed);
+    if port == 0 {
+        return false;
+    }
+    let Some((host, candidate_port)) = split_host_port(addr) else {
+        return false;
+    };
+    candidate_port == port && local_interface_ips().contains(bare_host(&host))
+}
+
+fn split_host_port(addr: &str) -> Option<(String, u16)> {
+    let (host, port) = addr.rsplit_once(':')?;
+    Some((host.to_string(), port.parse().ok()?))
+}
+
+/// `is_valid_destination` para um candidato de **outro** peer: recusa também
+/// o endereço que é este próprio processo. A entrada deste nó na tabela
+/// continua com todos os seus endereços.
+fn is_peer_destination(node_id: &str, addr: &str) -> bool {
+    is_valid_destination(addr)
+        && (crate::infer_tunnel::is_local_node(node_id) || !is_self_endpoint(addr))
+}
+
 pub(crate) fn is_valid_destination(addr: &str) -> bool {
     if !has_nonzero_port(addr) {
         return false;
@@ -763,9 +825,11 @@ impl PeerInfo {
     pub fn dialable_addr(&self) -> Option<&str> {
         self.addr_candidates
             .iter()
-            .find(|addr| is_valid_destination(addr))
+            .find(|addr| is_peer_destination(&self.node_id, addr))
             .map(String::as_str)
-            .or_else(|| is_valid_destination(&self.addr).then_some(self.addr.as_str()))
+            .or_else(|| {
+                is_peer_destination(&self.node_id, &self.addr).then_some(self.addr.as_str())
+            })
     }
 
     /// Todos os destinos UDP conhecidos, sem transformar o primeiro endereço
@@ -780,7 +844,9 @@ impl PeerInfo {
             .map(String::as_str)
             .chain(std::iter::once(self.addr.as_str()))
         {
-            if is_valid_destination(address) && !addresses.iter().any(|known| known == address) {
+            if is_peer_destination(&self.node_id, address)
+                && !addresses.iter().any(|known| known == address)
+            {
                 addresses.push(address.to_string());
             }
         }
@@ -802,12 +868,12 @@ impl PeerInfo {
         if !self.libp2p_addrs.is_empty() {
             return self.libp2p_addrs.clone();
         }
-        is_valid_destination(&self.addr)
+        is_peer_destination(&self.node_id, &self.addr)
             .then_some(self.addr.as_str())
             .or_else(|| {
                 self.addr_candidates
                     .iter()
-                    .find(|address| is_valid_destination(address))
+                    .find(|address| is_peer_destination(&self.node_id, address))
                     .map(String::as_str)
             })
             .map(str::to_owned)
@@ -830,7 +896,7 @@ impl PeerInfo {
             .chain(std::iter::once(self.addr.as_str()));
         let mut urls = Vec::with_capacity(self.addr_candidates.len() + 1);
         for address in base {
-            if !is_valid_destination(address) {
+            if !is_peer_destination(&self.node_id, address) {
                 continue;
             }
             let url = format!(
@@ -914,7 +980,7 @@ impl PeerInfo {
         base.extend(self.addr_candidates.iter().map(String::as_str));
         let mut urls: Vec<String> = Vec::with_capacity(base.len());
         for a in base {
-            if !is_valid_destination(a) {
+            if !is_peer_destination(&self.node_id, a) {
                 continue;
             }
             let url = crate::peer_client::peer_base_url(&ip_host(a), porta, tls);
@@ -1367,6 +1433,7 @@ impl Network {
                 Ok(s) => {
                     let socket = UdpSocket::from_std(s)?;
                     let bind_addr = socket.local_addr()?;
+                    SELF_P2P_PORT.store(bind_addr.port(), std::sync::atomic::Ordering::Relaxed);
                     info!("UDP socket bound to [::]:{} (dual-stack)", bind_addr.port());
                     (socket, bind_addr)
                 }
@@ -1376,6 +1443,7 @@ impl Network {
                     let s = UdpSocket::bind(v4).await?;
                     s.set_broadcast(true)?;
                     let bind_addr = s.local_addr()?;
+                    SELF_P2P_PORT.store(bind_addr.port(), std::sync::atomic::Ordering::Relaxed);
                     info!("UDP socket bound to 0.0.0.0:{} (IPv4)", bind_addr.port());
                     (s, bind_addr)
                 }
@@ -5194,6 +5262,50 @@ mod tests {
             describe_multiaddr(&inbound),
             (String::new(), true, Some(relay.to_string()))
         );
+    }
+
+    /// Dois nós em Docker bridge recebem o mesmo IP interno e a mesma porta:
+    /// o candidato que o outro anuncia com esse IP é este próprio processo e
+    /// não pode virar destino de controle, de inferência nem de QUIC.
+    #[test]
+    fn a_peer_candidate_that_is_this_node_is_never_a_destination() {
+        let Some(local_ip) = local_interface_ips()
+            .into_iter()
+            .find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+        else {
+            return; // máquina sem IPv4 de interface: nada a provar aqui
+        };
+        let previous = SELF_P2P_PORT.swap(59_931, std::sync::atomic::Ordering::Relaxed);
+        let mut peer = admission_peer(8081);
+        peer.node_id = "outro-no".into();
+        peer.addr = "203.0.113.9:59931".into();
+        peer.addr_candidates = vec!["203.0.113.9:59931".into(), format!("{local_ip}:59931")];
+        peer.inference_port = Some(8181);
+        peer.inference_quic_port = Some(43778);
+
+        let gateway = peer.gateway_candidates();
+        let inference = peer.inference_candidates();
+        let quic = peer.quic_addr_candidates();
+        // Mesmo IP local em outra porta é outro processo nesta máquina.
+        let mut neighbour = peer.clone();
+        neighbour.addr_candidates = vec![format!("{local_ip}:59932")];
+        let neighbour_ok = neighbour.dialable_addrs();
+        SELF_P2P_PORT.store(previous, std::sync::atomic::Ordering::Relaxed);
+
+        assert!(
+            gateway.iter().all(|url| !url.contains(&local_ip)),
+            "{gateway:?}"
+        );
+        assert!(gateway.iter().any(|url| url.contains("203.0.113.9")));
+        assert!(
+            inference.iter().all(|url| !url.contains(&local_ip)),
+            "{inference:?}"
+        );
+        assert!(
+            quic.iter().all(|addr| !addr.contains(&local_ip)),
+            "{quic:?}"
+        );
+        assert!(neighbour_ok.contains(&format!("{local_ip}:59932")));
     }
 
     /// A rota mostrada é a observada: HTTP que respondeu, depois conexão

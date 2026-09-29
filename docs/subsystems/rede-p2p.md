@@ -385,6 +385,28 @@ limpar o campo volta para o endereço público atual da interface quando existe,
 ou para o observado pelo `identify` quando o nó está atrás de NAT; e o endereço
 da Tailscale (`100.122.132.97`), antes adotado como público, deixou de ser aceito.
 
+**Candidato que é o próprio nó.** Os montadores de destino de um peer
+(`gateway_candidates`, `inference_candidates`, `dialable_addrs`,
+`quic_addr_candidates`, `libp2p_dialable_addrs`) recusam o `host:porta` que é
+este processo (`is_self_endpoint`: IP de uma interface local, sem loopback, com
+a porta p2p deste nó). Dois nós em Docker bridge recebem o mesmo IP interno e a
+mesma porta: visto do salem, o `172.18.0.2:42778` que a ksia anuncia era o
+próprio salem. O Painel mostrava a mesma máquina duas vezes, porque o `/health`
+"da ksia" era respondido pelo salem, e o deploy planejado para a ksia caía no
+salem. Mesmo IP em outra porta continua valendo (dois nós na mesma máquina), e
+a entrada do próprio nó na tabela mantém todos os endereços.
+
+**Quem respondeu é conferido, não só o IP.** O gateway e o servidor de
+inferência carimbam `x-pom-node-id` em toda resposta
+(`peer_client::stamp_node_id`). Em texto claro, o plano de controle
+(`send_to_gateway_over`, por onde passam Painel, levantamento e implantação), o
+quadro de inferência HTTP, a medição do plano de rotas, a sonda de admissão e o
+ciclo de vida da sessão recusam a resposta carimbada por outro nó
+(`answered_by_other_node`) e seguem para o próximo endereço. QUIC e HTTPS já
+fixam o `node_id` no certificado. Resposta sem carimbo passa: quem responde
+pode não ser um nó. O túnel libp2p não leva cabeçalhos, mas o PeerId do swarm
+já identifica o destino.
+
 ### Rotas dinâmicas (`route.rs`)
 
 Um nó pode ter vários endereços válidos e qual serve depende de quem pergunta.

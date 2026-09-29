@@ -176,6 +176,12 @@ export function useAdminSurface() {
   useEffect(
     () =>
       onAdminSessionLost(() => {
+        // Só uma aba que achava ter sessão sonda de novo. A própria sonda
+        // responde 401 enquanto não há sessão, e esse 401 também avisa
+        // "sessão perdida": sem este filtro cada resposta pedia outra sonda,
+        // milhares por minuto, e o portão remontava sem parar.
+        if (client.getQueryData(keys.adminSurface) !== "available") return;
+        if (client.isFetching({ queryKey: keys.adminSurface }) > 0) return;
         void client.invalidateQueries({ queryKey: keys.adminSurface });
       }),
     [client],

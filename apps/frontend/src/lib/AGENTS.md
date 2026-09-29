@@ -362,7 +362,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   It subscribes to `onAdminSessionLost` and re-probes: the administrative
   session lives in the node's memory, so a restart or the 8h expiry kills it
   with the tab open, and a once-per-load probe would leave every screen
-  printing the server's raw 401 with no way back to the gate.
+  printing the server's raw 401 with no way back to the gate. It re-probes
+  only when the last answer was `available` and no probe is in flight: the
+  probe's own 401 also signals "session lost", and invalidating an in-flight
+  probe cancels and restarts it - thousands of probes a minute, the tab stuck
+  on the dashboard.
 - `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
 - `useAdminAccess()` - public one-shot metadata for the administrative password
   gate; it never receives the password.

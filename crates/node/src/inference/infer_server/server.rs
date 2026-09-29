@@ -876,7 +876,11 @@ pub async fn run(
                 .route("/health", get(handle_health))
                 .with_state(app_state.clone()),
         )
-        .merge(tp_routes);
+        .merge(tp_routes)
+        // Toda resposta diz de qual nó veio; ver `peer_client::answered_by_other_node`.
+        .layer(axum::middleware::map_response(
+            crate::peer_client::stamp_node_id,
+        ));
 
     info!("inference server pronto em [::]:{port}");
 

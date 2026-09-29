@@ -238,6 +238,10 @@ em inglês e português. Em `network`, a tela estática de login é pública, ma
 os dados administrativos exigem `X-POM-Access-Token` na primeira chamada; o
 servidor então emite uma sessão em memória identificada por cookie `HttpOnly`,
 `SameSite=Strict`, com validade de 8 horas e caminhos somente administrativos.
+O nome do cookie leva a porta do `Host` (`<slug>_admin_session_<porta>`,
+`auth::admin_session_cookie_name`): cookies não separam por porta, e dois nós no
+mesmo host (`ksia:8080` e `ksia:8081`) derrubavam a sessão um do outro a cada
+login.
 O digest da sessão é invalidado ao trocar a senha ou voltar a localhost.
 A senha é comparada no servidor com o hash Argon2id persistido, que nunca é
 retornado à interface, e nunca é substituída pela

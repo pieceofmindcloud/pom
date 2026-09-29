@@ -126,6 +126,37 @@ where
     send_to_gateway_over(peer, &peer.gateway_candidates(), build).await
 }
 
+/// Cabeçalho com o `node_id` de quem respondeu, carimbado pelo gateway e pelo
+/// servidor de inferência em toda resposta (`stamp_node_id`).
+pub const NODE_ID_HEADER: &str = "x-pom-node-id";
+
+/// Carimba o `node_id` deste processo na resposta.
+pub(crate) async fn stamp_node_id(
+    mut response: axum::response::Response,
+) -> axum::response::Response {
+    if let Some(value) = crate::infer_tunnel::local_node_id()
+        .and_then(|id| axum::http::HeaderValue::from_str(id).ok())
+    {
+        response.headers_mut().insert(NODE_ID_HEADER, value);
+    }
+    response
+}
+
+/// `Some(quem respondeu)` quando a resposta traz o carimbo de **outro** nó.
+///
+/// O IP de um endereço não prova quem está atrás dele: dois nós em Docker
+/// bridge com o mesmo IP interno faziam o salem, discando o endereço interno
+/// da ksia, receber a própria resposta. QUIC e HTTPS já fixam o `node_id` no
+/// certificado; em texto claro é este carimbo que confere. Resposta sem
+/// carimbo passa, porque quem responde pode não ser um nó (um teste, um proxy).
+pub(crate) fn answered_by_other_node(
+    headers: &reqwest::header::HeaderMap,
+    expected: &str,
+) -> Option<String> {
+    let actual = headers.get(NODE_ID_HEADER)?.to_str().ok()?;
+    (actual != expected).then(|| actual.to_string())
+}
+
 /// `send_to_gateway` com a lista de endereços dada por quem chama - vazia,
 /// só o túnel. Para quem já percorreu os endereços com critério próprio (a
 /// memória de falha do `RouteTable`, por exemplo) e só precisa do último
@@ -141,7 +172,14 @@ where
     let mut failures = Vec::new();
     for base in bases {
         match build(base).send().await {
-            Ok(response) => return Ok(response),
+            Ok(response) => match answered_by_other_node(response.headers(), &peer.node_id) {
+                None => return Ok(response),
+                Some(actual) => failures.push(format!(
+                    "{base}: respondeu o nó {}, não {}",
+                    crate::network::short(&actual),
+                    crate::network::short(&peer.node_id)
+                )),
+            },
             Err(error) => failures.push(format!("{base}: {error}")),
         }
     }
@@ -927,6 +965,43 @@ fn internal_node_headers() -> reqwest::header::HeaderMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Um endereço que responde como outro nó não é o peer: o plano de
+    /// controle segue para o próximo candidato.
+    #[tokio::test]
+    async fn a_base_answered_by_another_node_is_skipped() {
+        async fn serve_as(node_id: &'static str) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let app = axum::Router::new().route(
+                "/api/ui/node",
+                axum::routing::get(move || async move { ([(NODE_ID_HEADER, node_id)], node_id) }),
+            );
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            format!("http://127.0.0.1:{port}")
+        }
+        let impostor = serve_as("eu-mesmo").await;
+        let real = serve_as("alvo").await;
+        let peer = crate::gateway::testkit::peer("alvo", "alvo", 8081);
+        let client = reqwest::Client::new();
+
+        let response = send_to_gateway_over(&peer, &[impostor.clone(), real.clone()], |base| {
+            client.get(format!("{base}/api/ui/node"))
+        })
+        .await
+        .expect("o segundo endereço é o peer");
+        assert_eq!(response.text().await.unwrap(), "alvo");
+
+        let only_impostor = send_to_gateway_over(&peer, &[impostor], |base| {
+            client.get(format!("{base}/api/ui/node"))
+        })
+        .await
+        .expect_err("só o impostor respondeu");
+        assert!(
+            only_impostor.to_string().contains("respondeu o nó"),
+            "{only_impostor}"
+        );
+    }
 
     #[test]
     fn sondagem_direta_do_tunel_e_limitada_por_intervalo() {

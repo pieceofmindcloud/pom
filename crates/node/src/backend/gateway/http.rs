@@ -84,7 +84,9 @@ pub(crate) async fn start_gateway_with_ready(
             state,
             verify_control_request,
         ))
-        .layer(tower_http::compression::CompressionLayer::new());
+        .layer(tower_http::compression::CompressionLayer::new())
+        // Toda resposta diz de qual nó veio; ver `peer_client::answered_by_other_node`.
+        .layer(middleware::map_response(crate::peer_client::stamp_node_id));
 
     // Both startup paths (with a model and gateway-only) come through here, so
     // this is the one place that warms every node's catalog exactly once.

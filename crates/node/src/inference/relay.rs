@@ -1326,9 +1326,14 @@ async fn send_frame_with_protocol(
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
                 .body(body.clone())
                 .timeout(frame_time_left());
-            let sent =
-                send_http_request_with_deadline(clients, request, session_id, frame_time_left())
-                    .await;
+            let sent = send_http_request_with_deadline(
+                clients,
+                request,
+                session_id,
+                Some(peer_id),
+                frame_time_left(),
+            )
+            .await;
 
             match sent {
                 Ok(r) if r.status.is_success() => {
@@ -1545,6 +1550,7 @@ async fn send_http_request_with_deadline(
     clients: &crate::peer_client::PeerClients,
     request: reqwest::RequestBuilder,
     session_id: Option<&str>,
+    expected_node_id: Option<&str>,
     timeout: Duration,
 ) -> Result<HttpTransportResponse> {
     let transport_timeout = timeout;
@@ -1554,16 +1560,35 @@ async fn send_http_request_with_deadline(
             .await
             .send()
             .await?;
+        if let Some(actual) = expected_node_id.and_then(|expected| {
+            crate::peer_client::answered_by_other_node(response.headers(), expected)
+        }) {
+            return Ok(Err(actual));
+        }
         let status = response.status();
         let response_headers_at = Instant::now();
         let body_started = Instant::now();
         let body = response.bytes().await?.to_vec();
-        Ok::<_, reqwest::Error>((status, body, response_headers_at, body_started.elapsed()))
+        Ok::<_, reqwest::Error>(Ok((
+            status,
+            body,
+            response_headers_at,
+            body_started.elapsed(),
+        )))
     })
     .await;
 
     match response {
-        Ok(Ok((status, body, response_headers_at, response_body_time))) => {
+        // O endereço levou a outro nó: para o peer esperado o quadro não foi
+        // entregue, e a escada segue para o próximo caminho.
+        Ok(Ok(Err(actual))) => Err(anyhow::Error::new(FrameNotDelivered {
+            message: format!(
+                "o endereço respondeu como o nó {}, não {}",
+                crate::network::short(&actual),
+                crate::network::short(expected_node_id.unwrap_or_default())
+            ),
+        })),
+        Ok(Ok(Ok((status, body, response_headers_at, response_body_time)))) => {
             Ok(HttpTransportResponse {
                 status,
                 body,
@@ -1891,9 +1916,14 @@ async fn send_batch_body(
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
                 .body(body.clone())
                 .timeout(frame_time_left());
-            let response =
-                send_http_request_with_deadline(clients, request, session_id, frame_time_left())
-                    .await;
+            let response = send_http_request_with_deadline(
+                clients,
+                request,
+                session_id,
+                Some(&step.node_id),
+                frame_time_left(),
+            )
+            .await;
             match response {
                 Ok(response) if response.status.is_success() => {
                     let response_headers_at = response.response_headers_at;
@@ -4525,7 +4555,13 @@ mod tests {
             .timeout(Duration::from_secs(600));
         let result = tokio::time::timeout(
             Duration::from_secs(2),
-            send_http_request_with_deadline(&clients, request, None, Duration::from_millis(300)),
+            send_http_request_with_deadline(
+                &clients,
+                request,
+                None,
+                None,
+                Duration::from_millis(300),
+            ),
         )
         .await
         .expect("fallback HTTP sem resposta não pode exceder o prazo do frame");

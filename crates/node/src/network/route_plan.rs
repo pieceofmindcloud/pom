@@ -681,6 +681,13 @@ async fn probe_http(
         // Qualquer resposta HTTP prova o caminho: um servidor ainda
         // carregando o modelo responde, e a rota até ele é a mesma.
         match tokio::time::timeout(PROBE_TIMEOUT, client.get(&url).send()).await {
+            // Resposta de outro nó não é caminho até este.
+            Ok(Ok(response))
+                if crate::peer_client::answered_by_other_node(response.headers(), node_id)
+                    .is_some() =>
+            {
+                break
+            }
             Ok(Ok(_)) => {
                 let rtt = started.elapsed();
                 best = Some(best.map_or(rtt, |b| b.min(rtt)));

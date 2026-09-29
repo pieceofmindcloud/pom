@@ -362,6 +362,11 @@ pub fn set_local_node_id(node_id: String) {
     let _ = LOCAL_NODE_ID.set(node_id);
 }
 
+/// O `node_id` deste processo, quando já anotado.
+pub fn local_node_id() -> Option<&'static str> {
+    LOCAL_NODE_ID.get().map(String::as_str)
+}
+
 /// True quando o destino é este processo, não um peer remoto.
 pub fn is_local_node(node_id: &str) -> bool {
     LOCAL_NODE_ID.get().is_some_and(|local| local == node_id)

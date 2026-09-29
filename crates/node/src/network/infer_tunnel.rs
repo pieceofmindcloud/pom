@@ -84,7 +84,7 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             // A volta da resposta direta. O gateway manda seus endereços no
             // `reply_to` e a cauda entrega ali; atrás de NAT nenhum deles é
             // alcançável a partir da outra ponta, e sem este caminho o quadro
-            // morre calado no prazo de `DIRECT_REPLY_DEADLINE`. Ambas as rotas
+            // morre calado no prazo do frame. Ambas as rotas
             // são autenticadas pelo ticket, que é único por quadro: entregar
             // sem ticket válido devolve 410 e não alcança sessão nenhuma.
             | "/v1/relay-result"

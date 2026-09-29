@@ -76,8 +76,8 @@ const MAX_LINK_FRAME_BYTES: usize = wire::MAX_FRAME_PAYLOAD_BYTES + 4096;
 /// deixar a memória crescer.
 const OUTBOUND_QUEUE: usize = 64;
 
-/// Prazo de uma chamada no canal, igual ao timeout do caminho por requisição.
-const CALL_TIMEOUT: Duration = Duration::from_secs(600);
+// O prazo de uma chamada no canal é o do frame em curso
+// (`relay::frame_time_left`), o mesmo de todos os transportes da tentativa.
 
 /// Quanto tempo um destino fica sem nova tentativa de abrir canal depois de
 /// uma falha de abertura. Deve acompanhar a memória de rotas: são a mesma
@@ -985,7 +985,7 @@ async fn send_frame_on_channel(
         .map_err(|_| anyhow!("canal com {node_id} fechou antes do envio"))?;
     let send_finished = Instant::now();
 
-    let envelope = match tokio::time::timeout(CALL_TIMEOUT, reply_rx).await {
+    let envelope = match tokio::time::timeout(crate::relay::frame_time_left(), reply_rx).await {
         Ok(Ok(Ok(envelope))) => envelope,
         Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: {error}")),
         Ok(Err(_)) => return Err(anyhow!("{peer_label}: canal encerrou sem responder")),
@@ -1079,8 +1079,10 @@ async fn send_frame_without_response(
     let batch_id = batch_id.to_string();
     let status = CallbackStatus::new();
     let ack_status = status.clone();
+    // Lido antes do `spawn`: a tarefa destacada não herda o prazo do frame.
+    let ack_timeout = crate::relay::frame_time_left();
     tokio::spawn(async move {
-        let failed = match tokio::time::timeout(CALL_TIMEOUT, reply_rx).await {
+        let failed = match tokio::time::timeout(ack_timeout, reply_rx).await {
             Ok(Ok(Ok(envelope))) if (200..300).contains(&envelope.status) => None,
             Ok(Ok(Ok(envelope))) => {
                 if envelope.status == 410 {
@@ -1375,18 +1377,22 @@ mod tests {
         let fast_body = batch("/v1/step", "rapida", "item-0");
         let slow_clients = clients.clone();
         let slow_url = url.clone();
-        let slow = tokio::spawn(async move {
-            send_batch(
-                &slow_clients,
-                "hop",
-                &slow_url,
-                "lenta",
-                Bytes::from(slow_body),
-                "hop",
-            )
-            .await
-            .map(|response| response.round_trip_ms)
-        });
+        // A sessão lenta leva 300 ms; o frame dela declara um prazo que cabe.
+        let slow = tokio::spawn(crate::relay::with_frame_deadline(
+            Instant::now() + Duration::from_secs(2),
+            async move {
+                send_batch(
+                    &slow_clients,
+                    "hop",
+                    &slow_url,
+                    "lenta",
+                    Bytes::from(slow_body),
+                    "hop",
+                )
+                .await
+                .map(|response| response.round_trip_ms)
+            },
+        ));
         tokio::time::sleep(Duration::from_millis(30)).await;
         let started = Instant::now();
         let fast = send_batch(

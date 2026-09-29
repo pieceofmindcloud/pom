@@ -169,6 +169,10 @@ pub(super) struct NodeTimings {
     /// separado de `decode_us` para não classificar produção do próximo
     /// token como rede, fila ou espera do scheduler.
     pub(super) mtp_draft_us: u64,
+    /// `observe` da cabeça `nextn` depois do decode do alvo (um segundo
+    /// `llama_decode`, na CPU quando o MTP foi para a RAM). Zero nas rodadas
+    /// que não especulam, onde o `observe` é pulado.
+    pub(super) mtp_observe_us: u64,
     /// Wall time spent in the llama.cpp evaluation entry point. Queue and
     /// mutex waits are measured separately; this may include host-side graph
     /// dispatch, not only device kernels.
@@ -414,6 +418,7 @@ impl NodeTimings {
         // Keep these identity/admission fields outside the large json! literal
         // so adding diagnostic fields does not hit serde_json's macro
         // recursion limit.
+        value["mtp_observe_ms"] = json!(ms(self.mtp_observe_us));
         value["session_id"] = serde_json::to_value(&self.session_id).unwrap_or(Value::Null);
         value["scheduler_wait_ms"] = Value::from(ms(self.scheduler_wait_us));
         value["scheduler_wait_reason"] =

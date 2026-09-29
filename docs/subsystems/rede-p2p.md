@@ -683,7 +683,7 @@ dele: com o gateway atrás de NAT, a cauda em outra rede disca
 `reply_to` carrega também o `libp2p_peer_id` e os `libp2p_addrs` do gateway, e
 `direct::deliver_via_tunnel` é a última via depois de todas as URLs falharem.
 Era o buraco que sobrava: a ida já atravessava o NAT e a volta morria calada
-até o `DIRECT_REPLY_DEADLINE`, dez minutos por token.
+até o prazo do frame vencer.
 
 O que continua fora do túnel: transferência de arquivos (os pesos não passam
 por um relé; cada peer precisa da própria cópia do modelo), sincronização de
@@ -696,7 +696,11 @@ roteia sem eles.
 Furar o NAT não basta se cada frame continua pagando a escada direta inteira.
 `PeerClients::prefer_tunnel` é uma marca **por peer**, aprendida: liga quando o
 túnel entrega depois de a escada direta falhar inteira, e desliga no primeiro
-sucesso direto. Ligada, a primeira tentativa de cada frame pula QUIC e HTTP e
+sucesso direto. Como, ligada, o direto não é mais tentado pelos frames, um
+peer nessa marca tem o caminho direto sondado em segundo plano (`/health` pelo
+cliente fixado) no máximo a cada `DIRECT_REPROBE_INTERVAL` (5 s); o sucesso
+apaga a marca e o frame atual nunca espera a sonda. Sem isso um único tropeço
+deixava o peer no túnel até o processo reiniciar. Ligada, a primeira tentativa de cada frame pula QUIC e HTTP e
 vai direto ao túnel; uma falha do túnel devolve a escada completa na tentativa
 seguinte, porque a rota direta pode voltar (hole punch novo, peer que mudou de
 rede). Sem ela, atrás de NAT todo prefill e todo decode queimavam timeout de
@@ -995,9 +999,12 @@ permanente. A quarentena continua valendo para a falha final do endpoint e dura
 5 s, evitando handshakes repetidos por token. O túnel só é a última reserva
 depois de uma falha de transporte também no caminho TCP.
 Cada tentativa completa de transporte, incluindo handshake, envio, headers e
-corpo, tem teto de 30 s; isso impede que um endpoint alcançável mas sem resposta
-prenda a inferência no timeout de processamento de 600 s. Esse deadline vale
-também para o HTTP/HTTPS usado no fallback.
+corpo, tem um só prazo: o do frame, (1 s + 50 ms por token + 2 s por imagem)
+x hops restantes (`relay::frame_deadline`), igual em QUIC, HTTP/HTTPS, canal
+persistente e túnel. Decode de um token em 2 hops = 2,1 s; um pedaço de
+prefill de 512 tokens em 2 hops = 53 s. O prazo nasce em `send_frame_or_tunnel`
+e nunca passa do prazo de quem o chamou. Peer que caiu é pego antes pela vida
+da conexão: `QUIC_MAX_IDLE` (1,2 s) e keep-alive TCP (~4 s).
 A telemetria por hop publica o transporte efetivo como `http`, `https` ou
 `quic`. Para QUIC, `transport_rtt_us` é o RTT medido pela conexão UDP e os
 quantis de rede ficam separados do tempo de processamento remoto.

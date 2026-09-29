@@ -893,10 +893,11 @@ para `http` ou `https`. O campo `transport_rtt_us` carrega o RTT medido pela
 conexão QUIC, sem o processamento do handler remoto. O campo `tls` fica
 verdadeiro para QUIC porque o TLS 1.3 pertence ao próprio protocolo,
 independentemente do interruptor TCP.
-Cada tentativa completa, do handshake ao corpo da resposta, respeita um
-deadline de transporte de 30 s, inclusive no fallback HTTP/HTTPS e antes da
-autorização, para que um endpoint alcançável mas sem resposta não consuma o
-timeout de processamento do frame.
+Cada tentativa completa, do handshake ao corpo da resposta, tem um só prazo,
+o do frame: (1 s + 50 ms por token + 2 s por imagem) x hops restantes
+(`relay::frame_deadline`), o mesmo em QUIC, HTTP/HTTPS, canal persistente e
+túnel. Peer que caiu é detectado antes pela vida da conexão (`QUIC_MAX_IDLE`,
+keep-alive TCP).
 
 **Limpeza.** Toda entrega pendente vive num registro por canal e sai dele no
 `Drop` de um guarda, em qualquer caminho de saída: resposta, erro, prazo,
@@ -1773,7 +1774,8 @@ wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket
 - `await_result_with_ack`: `select!` biased entre o resultado do inbox (caso normal), o
   ack da cabeça (só interessa quando falha, ou quando um peer antigo borbulhou
   a resposta inteira - `token_id` presente vale como resultado), e o prazo
-  `DIRECT_REPLY_DEADLINE = 600 s` (hop morreu depois de aceitar). Se o
+  prazo do frame que o chamador calcula com `relay::frame_deadline` (hop
+  morreu depois de aceitar). Se o
   resultado vence, o ack continua em tarefa destacada para não perder a
   evidência de transporte do primeiro hop.
 - `deliver_result`: a cauda tenta cada URL de `reply_to` em ordem; candidatos
@@ -1980,6 +1982,19 @@ valores são iguais.
   composição (`decode_hidden(..., tokens)`). Sem ela - peer velho que não
   ecoa - o `observe` desliga o MTP com aviso: a resposta continua correta, só
   não especulativa.
+- **Rodada sem especulação não roda o `observe`.** Na cauda, um decode sem
+  `mtp_k` nem rascunho MTP (todo token do `remote-stream` de dois ou mais
+  hops, e as rodadas depois de o gateway parar de especular) usa
+  `decode_hidden_without_mtp`: a cabeça `nextn` não decodifica e a sequência
+  é esquecida no contexto MTP (`MtpDrafter::forget`, remoção total), para que
+  um `observe` posterior comece de uma sequência vazia em vez de um buraco de
+  posições. Antes, o `observe` rodava por token sem uso, e era o primeiro
+  ponto de sincronia depois do `llama_decode` da cauda: numa medição de
+  2026-09-28 o `decode` da cauda tinha 34 ms por token contra 8 ms de
+  `backend_call_ms`, sem campo que dissesse onde estava o resto.
+  `node_timings.mtp_observe_ms` passa a medir o `observe`, e a barreira de
+  `POM_PROFILE_SYNC` roda antes dele, então `backend_sync_ms` isola o tronco
+  terminando na GPU.
 - **A aceitação é telemetria por requisição.** Cada `step` publica em
   `node_timings` os contadores `mtp_draft_tokens_proposed`,
   `mtp_draft_tokens_accepted` e `mtp_draft_tokens_rejected`. `proposed` é o

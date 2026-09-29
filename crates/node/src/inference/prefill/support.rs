@@ -664,7 +664,9 @@ impl RemoteStreamTelemetry {
         self.wait.merge(&other.wait);
         self.producer_wait.merge(&other.producer_wait);
         self.channel_send_wait.merge(&other.channel_send_wait);
+        self.downstream_wait.merge(&other.downstream_wait);
         self.queue_wait.merge(&other.queue_wait);
+        self.delivery.merge(&other.delivery);
         self.token_delivery_interval
             .merge(&other.token_delivery_interval);
         self.refresh_percentiles();
@@ -1210,6 +1212,8 @@ pub struct PhaseTrace {
     /// serialização da resposta. Quando presente, explica a produção MTP que
     /// um ciclo de remote-stream aguarda legitimamente.
     pub node_mtp_draft_ms: f64,
+    /// Soma do `observe` da cabeça `nextn` na cauda (ver `mtp_observe_ms`).
+    pub node_mtp_observe_ms: f64,
     /// Time spent in the backend evaluation API call. This is neither queue
     /// wait nor a guarantee of pure device-kernel time.
     pub node_backend_call_ms: f64,
@@ -1400,6 +1404,7 @@ impl PhaseTrace {
         self.node_setup_ms += node_ms("setup_ms");
         self.node_decode_ms += node_decode_ms;
         self.node_mtp_draft_ms += node_ms("mtp_draft_ms");
+        self.node_mtp_observe_ms += node_ms("mtp_observe_ms");
         self.node_backend_call_ms += node_ms("backend_call_ms");
         self.node_backend_sync_ms += node_ms("backend_sync_ms");
         self.node_moe_forward_ms += node_ms("moe_forward_ms");
@@ -1584,6 +1589,7 @@ impl PhaseTrace {
         self.node_setup_ms += next.node_setup_ms;
         self.node_decode_ms += next.node_decode_ms;
         self.node_mtp_draft_ms += next.node_mtp_draft_ms;
+        self.node_mtp_observe_ms += next.node_mtp_observe_ms;
         self.node_backend_call_ms += next.node_backend_call_ms;
         self.node_backend_sync_ms += next.node_backend_sync_ms;
         self.node_residual_capture_d2h_sync_ms += next.node_residual_capture_d2h_sync_ms;

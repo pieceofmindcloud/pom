@@ -62,7 +62,6 @@ pub fn peer_scheme() -> &'static str {
 #[cfg(test)]
 pub static POLITICA_GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-
 /// Um peer alcançável pelo swarm, para o plano de controle cair no túnel
 /// quando a discagem HTTP direta não chega.
 ///
@@ -317,6 +316,9 @@ pub struct PeerClients {
     /// Peers cujo caminho direto já se provou inalcançável e que passam a ser
     /// tentados **primeiro** pelo túnel. Ver `prefer_tunnel`.
     tunnel_first: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// Quando o caminho direto de um peer de `tunnel_first` foi sondado pela
+    /// última vez. Ver `claim_direct_reprobe`.
+    direct_reprobe_at: Arc<RwLock<HashMap<String, Instant>>>,
     auth: Arc<RwLock<Option<crate::auth::AuthState>>>,
 }
 
@@ -332,11 +334,19 @@ struct ReplyRouteState {
 /// Quanto tempo um endereço fica no **fim** da ordem depois de acumular
 /// falhas seguidas. Não é exclusão - ver [`PeerClients::route_order`].
 ///
-/// É o mesmo prazo da quarentena do canal persistente
-/// (`link::OPEN_FAILURE_COOLDOWN`, que aponta para cá): os dois governam a
-/// mesma decisão - se vale a pena voltar a pagar este endereço - e dois prazos
-/// diferentes para a mesma decisão só produzem a aparência de recuperação.
-pub(crate) const ROUTE_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
+/// É a janela única de memória de falha, `FAILURE_MEMORY`.
+pub(crate) const ROUTE_FAILURE_COOLDOWN: Duration = FAILURE_MEMORY;
+
+/// Janela única de memória de falha do transporte de inferência: quanto tempo
+/// um endereço, um endpoint QUIC, a abertura do canal persistente ou um peer
+/// que falhou a sonda de admissão fica sem ser pago de novo.
+///
+/// Todas governam a mesma decisão - se vale voltar a pagar um caminho que
+/// falhou -, e prazos diferentes para ela deixavam um caminho já recuperado
+/// fora de uso por tempos incoerentes: o QUIC voltava em 5 s, mas a rota e o
+/// canal persistente ficavam 300 s marcados. Nenhuma delas é uma espera; elas
+/// só evitam repetir uma tentativa que acabou de falhar.
+pub(crate) const FAILURE_MEMORY: Duration = Duration::from_secs(5);
 
 /// Quantas falhas **seguidas** um endereço precisa acumular antes de ir para o
 /// fim da ordem.
@@ -353,6 +363,30 @@ const ROUTE_FAILURE_STREAK: u32 = 3;
 /// continua sendo escolhido pelo chamador, mas a conexão tem teto próprio -
 /// sub-segundo, para um endereço direto morto virar fallback (para o túnel
 /// Noise) quase de imediato, no mesmo espírito do orçamento de RTT do QUIC.
+/// Intervalo mínimo entre duas sondagens do caminho direto de um peer que
+/// está sendo servido pelo túnel (`claim_direct_reprobe`).
+pub(crate) const DIRECT_REPROBE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Teto de uma sondagem direta: conexão mais `/health`. Roda em segundo
+/// plano, fora do caminho do frame.
+pub(crate) const DIRECT_REPROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Detecção de vida da conexão TCP: peer que caiu com a conexão aberta vira
+/// erro em ~4 s (1 s ocioso + 3 sondas de 1 s) em vez de esperar o prazo do
+/// frame. É o par TCP do `QUIC_MAX_IDLE`, e o que substitui o antigo teto fixo
+/// de 30 s por tentativa - aquele teto também matava prefill/decode legítimos
+/// mais longos. O kernel só aceita esses valores em segundos inteiros.
+const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(1);
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
+
+fn with_liveness(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    builder
+        .tcp_keepalive(TCP_KEEPALIVE_IDLE)
+        .tcp_keepalive_interval(TCP_KEEPALIVE_INTERVAL)
+        .tcp_keepalive_retries(TCP_KEEPALIVE_RETRIES)
+}
+
 #[cfg(not(test))]
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 
@@ -366,13 +400,13 @@ impl PeerClients {
             tls: Arc::new(AtomicBool::new(false)),
             quic: Arc::new(AtomicBool::new(false)),
             quic_pool: crate::quic::ClientPool::new(),
-            plain: reqwest::Client::builder()
+            plain: with_liveness(reqwest::Client::builder())
                 .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(timeout)
                 .tcp_nodelay(true)
                 .build()
                 .expect("cliente HTTP sem TLS não pode falhar na construção"),
-            internal_plain: reqwest::Client::builder()
+            internal_plain: with_liveness(reqwest::Client::builder())
                 .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(timeout)
                 .tcp_nodelay(true)
@@ -382,6 +416,7 @@ impl PeerClients {
             per_peer: Arc::new(RwLock::new(HashMap::new())),
             reply_routes: Arc::new(RwLock::new(HashMap::new())),
             tunnel_first: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            direct_reprobe_at: Arc::new(RwLock::new(HashMap::new())),
             auth: Arc::new(RwLock::new(None)),
         }
     }
@@ -558,7 +593,7 @@ impl PeerClients {
         if !self.tls_enabled() {
             return Ok(self.internal_plain.clone());
         }
-        reqwest::Client::builder()
+        with_liveness(reqwest::Client::builder())
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(self.timeout)
             .tcp_nodelay(true)
@@ -606,7 +641,11 @@ impl PeerClients {
             match request.timeout(crate::webui::PEER_TIMEOUT).send().await {
                 Ok(response) if response.status().is_success() => {
                     let status = response.status().as_u16();
-                    let body = response.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
+                    let body = response
+                        .bytes()
+                        .await
+                        .map(|b| b.to_vec())
+                        .unwrap_or_default();
                     return Ok(InternalResponse { status, body });
                 }
                 Ok(response) => failures.push(format!("{url}: {}", response.status())),
@@ -664,7 +703,7 @@ impl PeerClients {
             }
         }
         let cfg = crate::tls::client_config(node_id)?;
-        let client = reqwest::Client::builder()
+        let client = with_liveness(reqwest::Client::builder())
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(self.timeout)
             .tcp_nodelay(true)
@@ -734,6 +773,28 @@ impl PeerClients {
         if let Ok(mut set) = self.tunnel_first.write() {
             if set.insert(node_id.to_string()) {
                 debug!("{node_id}: o caminho direto não responde; o túnel passa a ser o primeiro");
+            }
+        }
+    }
+
+    /// Reserva uma sondagem do caminho direto de um peer que está em
+    /// `tunnel_first`, no máximo uma a cada `DIRECT_REPROBE_INTERVAL`.
+    ///
+    /// Sem isto a marca era permanente na prática: só um sucesso direto a
+    /// apagava, mas com a marca o direto nunca era tentado enquanto o túnel
+    /// entregasse. Um único tropeço deixava o peer no túnel (RTT maior) até o
+    /// processo reiniciar. A sondagem roda fora do frame - ver
+    /// `relay::spawn_direct_reprobe` -, então não soma espera a ninguém.
+    pub(crate) fn claim_direct_reprobe(&self, node_id: &str) -> bool {
+        let Ok(mut at) = self.direct_reprobe_at.write() else {
+            return false;
+        };
+        let now = Instant::now();
+        match at.get(node_id) {
+            Some(last) if now.duration_since(*last) < DIRECT_REPROBE_INTERVAL => false,
+            _ => {
+                at.insert(node_id.to_string(), now);
+                true
             }
         }
     }
@@ -857,6 +918,19 @@ fn internal_node_headers() -> reqwest::header::HeaderMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sondagem_direta_do_tunel_e_limitada_por_intervalo() {
+        let clients = PeerClients::new(Duration::from_secs(1));
+        assert!(clients.claim_direct_reprobe("peer-a"));
+        assert!(!clients.claim_direct_reprobe("peer-a"));
+        assert!(clients.claim_direct_reprobe("peer-b"));
+
+        clients.remember_tunnel_win("peer-a");
+        assert!(clients.prefer_tunnel("peer-a"));
+        clients.remember_direct_win("peer-a");
+        assert!(!clients.prefer_tunnel("peer-a"));
+    }
 
     #[test]
     fn esquema_da_url_segue_a_flag() {

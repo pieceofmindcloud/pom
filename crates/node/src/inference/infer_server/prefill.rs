@@ -1058,6 +1058,7 @@ pub(super) fn prefill_blocking(
     timings.tp = crate::tp::take_decode_telemetry();
     timings.backend_call_us += engine_timing.backend_call_us;
     timings.backend_sync_us += engine_timing.backend_sync_us;
+    timings.mtp_observe_us += engine_timing.mtp_observe_us;
     timings.merge_engine_capture(&engine_timing);
 
     // ── Session update ───────────────────────────────────────────────────────

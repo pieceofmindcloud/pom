@@ -36,6 +36,15 @@ fn write_mrope_position(
     Ok(())
 }
 
+/// O que um decode de estado oculto faz com a cabeça `nextn` depois do alvo.
+#[derive(Clone, Copy)]
+enum MtpObserve<'a> {
+    /// Acompanhar o lote. `None` é o peer velho que não manda os ids.
+    Tokens(Option<&'a [i32]>),
+    /// Rodada sem especulação: não roda o `observe` e esquece a sequência.
+    Skip,
+}
+
 impl LlmEngine {
     /// Escolhe o modelo que pode respaldar o contexto MTP.
     ///
@@ -1746,21 +1755,11 @@ impl LlmEngine {
         // em cada chamador, é o que impede um caminho novo de decodificação de
         // esquecer o passo. Um erro aqui derruba o rascunho, não a resposta: a
         // cabeça sai de cena e a geração segue um token por rodada.
-        if self.mtp.is_some() {
-            let ctx = self.ctx;
-            let mut drafter = self.mtp.take();
-            if let Some(d) = drafter.as_mut() {
-                if let Err(e) = d.observe(ctx, tokens, pos_offset, seq_id) {
-                    let reason = format!("MTP desligado nesta sessão: {e}");
-                    warn!("{reason}");
-                    self.mtp_unavailable_reason = Some(reason);
-                    self.mtp_allocation = None;
-                    drafter = None;
-                }
-            }
-            self.mtp = drafter;
-        }
-
+        //
+        // A barreira de medição vem antes do `observe`: ele lê o `h` do alvo e
+        // por isso espera a GPU terminar. Sincronizando depois, o tempo do
+        // tronco aparecia como `observe` (ou em nenhum campo) e a cauda
+        // mostrava `backend_call` muito menor que o `decode`.
         let mut timings = DecodeTimings {
             backend_call_us,
             ..Default::default()
@@ -1771,8 +1770,57 @@ impl LlmEngine {
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_sync_us = sync_started.elapsed().as_micros() as u64;
         }
+        timings.mtp_observe_us = self.mtp_observe(Some(tokens), pos_offset, seq_id);
         self.finish_moe_callback(&mut timings)?;
         Ok(timings)
+    }
+
+    /// Mantém a cabeça `nextn` em dia com o lote que o alvo acabou de
+    /// decodificar e devolve quanto isso custou.
+    ///
+    /// `None` em `tokens` significa que o chamador não tem os ids do lote
+    /// (peer velho no pipeline): a cabeça não consegue acompanhar o tronco e o
+    /// MTP é desligado com aviso. Para pular o `observe` de propósito, numa
+    /// rodada que não especula, o caminho é `mtp_skip_observe`.
+    fn mtp_observe(&mut self, tokens: Option<&[i32]>, pos_offset: u32, seq_id: u32) -> u64 {
+        if self.mtp.is_none() {
+            return 0;
+        }
+        let Some(tokens) = tokens else {
+            let reason = "MTP desligado: estado oculto recebido sem ids dos tokens".to_string();
+            warn!(
+                "{reason} (peer velho no pipeline?), e a cabeça nextn precisa deles para acompanhar o tronco"
+            );
+            self.mtp_unavailable_reason = Some(reason);
+            self.mtp_allocation = None;
+            self.mtp = None;
+            return 0;
+        };
+        let started = Instant::now();
+        let ctx = self.ctx;
+        let mut drafter = self.mtp.take();
+        if let Some(d) = drafter.as_mut() {
+            if let Err(e) = d.observe(ctx, tokens, pos_offset, seq_id) {
+                let reason = format!("MTP desligado nesta sessão: {e}");
+                warn!("{reason}");
+                self.mtp_unavailable_reason = Some(reason);
+                self.mtp_allocation = None;
+                drafter = None;
+            }
+        }
+        self.mtp = drafter;
+        started.elapsed().as_micros() as u64
+    }
+
+    /// Rodada sem especulação: a cabeça `nextn` não precisa ver o lote, e o
+    /// `observe` seria um segundo decode por token sem uso - na CPU, quando o
+    /// fit mandou o MTP para a RAM, ele dominava o decode da cauda. A
+    /// sequência é esquecida no contexto MTP para que um `observe` futuro não
+    /// caia num buraco de posições (ver `MtpDrafter::forget`).
+    fn mtp_skip_observe(&mut self, seq_id: u32) {
+        if let Some(d) = self.mtp.as_mut() {
+            d.forget(seq_id);
+        }
     }
 
     /// Decode a batch of embedding vectors (hidden states from the previous peer).
@@ -1795,6 +1843,31 @@ impl LlmEngine {
         )
     }
 
+    /// Igual a `decode_hidden`, mas numa rodada que não especula: a cabeça
+    /// `nextn` não roda (ver `mtp_skip_observe`). É o caminho de toda rodada
+    /// de decode da cauda sem `mtp_k`, que no stream remoto de dois ou mais
+    /// hops é todo token.
+    pub fn decode_hidden_without_mtp(
+        &mut self,
+        hidden: &[f32],
+        shape: &TensorShape,
+        n_tokens: usize,
+        pos_offset: u32,
+        seq_id: u32,
+        logits_all: bool,
+    ) -> Result<DecodeTimings> {
+        self.decode_hidden_inner(
+            hidden,
+            shape,
+            n_tokens,
+            pos_offset,
+            seq_id,
+            logits_all,
+            MtpObserve::Skip,
+            None,
+        )
+    }
+
     /// Decode hidden states while preserving the physical-to-logical position
     /// map of an M-RoPE multimodal batch. `llama_batch.pos` normally has one
     /// scalar per embedding cell; for M-RoPE it instead points at four
@@ -1809,6 +1882,30 @@ impl LlmEngine {
         seq_id: u32,
         logits_all: bool,
         tokens: Option<&[i32]>,
+        mrope_positions: Option<&[[u32; 4]]>,
+    ) -> Result<DecodeTimings> {
+        self.decode_hidden_inner(
+            hidden,
+            shape,
+            n_tokens,
+            pos_offset,
+            seq_id,
+            logits_all,
+            MtpObserve::Tokens(tokens),
+            mrope_positions,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decode_hidden_inner(
+        &mut self,
+        hidden: &[f32],
+        shape: &TensorShape,
+        n_tokens: usize,
+        pos_offset: u32,
+        seq_id: u32,
+        logits_all: bool,
+        observe: MtpObserve<'_>,
         mrope_positions: Option<&[[u32; 4]]>,
     ) -> Result<DecodeTimings> {
         self.ensure_moe_executor_ready()?;
@@ -1903,30 +2000,14 @@ impl LlmEngine {
         // quando ninguém os oferece (peer velho que não encaminha o campo), a
         // cabeça não tem como se manter em dia e desligar com aviso é preferível
         // a rascunhar a partir de um cache que ficou para trás.
-        if let Some(tokens) = tokens {
-            if self.mtp.is_some() {
-                let ctx = self.ctx;
-                let mut drafter = self.mtp.take();
-                if let Some(d) = drafter.as_mut() {
-                    if let Err(e) = d.observe(ctx, tokens, pos_offset, seq_id) {
-                        let reason = format!("MTP desligado nesta sessão: {e}");
-                        warn!("{reason}");
-                        self.mtp_unavailable_reason = Some(reason);
-                        self.mtp_allocation = None;
-                        drafter = None;
-                    }
-                }
-                self.mtp = drafter;
-            }
-        } else if self.mtp.is_some() {
-            let reason = "MTP desligado: estado oculto recebido sem ids dos tokens".to_string();
-            warn!(
-                "{reason} (peer velho no pipeline?), e a cabeça nextn precisa deles para acompanhar o tronco"
-            );
-            self.mtp_unavailable_reason = Some(reason);
-            self.mtp_allocation = None;
-            self.mtp = None;
-        }
+        //
+        // A exceção é a rodada que não especula (`MtpObserve::Skip`): ninguém
+        // vai rascunhar a partir dela, e o `observe` seria trabalho sem uso no
+        // caminho crítico de todo token.
+        //
+        // A barreira de medição vem antes do `observe`, como em
+        // `decode_tokens`: assim `backend_sync` mede o tronco terminando na
+        // GPU e `mtp_observe` mede só a cabeça `nextn`.
         let mut timings = DecodeTimings {
             backend_call_us,
             ..Default::default()
@@ -1936,6 +2017,12 @@ impl LlmEngine {
             let sync_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_sync_us = sync_started.elapsed().as_micros() as u64;
+        }
+        match observe {
+            MtpObserve::Tokens(tokens) => {
+                timings.mtp_observe_us = self.mtp_observe(tokens, pos_offset, seq_id);
+            }
+            MtpObserve::Skip => self.mtp_skip_observe(seq_id),
         }
         self.finish_moe_callback(&mut timings)?;
         Ok(timings)

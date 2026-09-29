@@ -2980,7 +2980,7 @@ pub(crate) mod testkit {
     /// A resposta direta só existe quando a cauda tem para onde entregar
     /// (`DirectReply::new`), e o endereço sai de `self_reply_hosts` + o
     /// `gateway_port`. Sem um servidor ali o modo direto de um teste esperaria
-    /// `DIRECT_REPLY_DEADLINE` inteiro.
+    /// prazo do frame inteiro.
     pub(crate) async fn with_self_reachable_gateway(mut state: GatewayState) -> GatewayState {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();

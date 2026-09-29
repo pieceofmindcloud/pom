@@ -1683,4 +1683,25 @@ mod tests {
         assert_eq!(trace.cached_tokens, 0);
         assert_eq!(trace.prompt_tokens_transmitted, 5);
     }
+
+    #[test]
+    fn juntar_telemetria_do_stream_preserva_percentis_de_espera_e_entrega() {
+        let batch = |downstream: u64, delivery: u64| {
+            json!({
+                "remote_stream_downstream_wait_ms": downstream,
+                "remote_stream_delivery_ms": delivery,
+            })
+        };
+        let mut first = RemoteStreamTelemetry::default();
+        first.record_batch(&batch(60, 25));
+        let mut second = RemoteStreamTelemetry::default();
+        second.record_batch(&batch(62, 26));
+
+        first.merge(&second);
+
+        assert_eq!(first.remote_stream_downstream_wait_total_ms, 122);
+        assert_eq!(first.remote_stream_delivery_total_ms, 51);
+        assert!(first.remote_stream_downstream_wait_p50_ms >= 60);
+        assert!(first.remote_stream_delivery_p50_ms >= 25);
+    }
 }

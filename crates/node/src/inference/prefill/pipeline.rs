@@ -934,6 +934,11 @@ pub(super) async fn run_direct(
                                 std::future::ready(Ok(head_sent)),
                                 &mut ticket,
                                 &head.node_id,
+                                crate::relay::frame_deadline(
+                                    chunk_size as usize,
+                                    if ci == 0 { images.len() } else { 0 },
+                                    plan.steps.len(),
+                                ),
                                 |_| {},
                             ),
                         )

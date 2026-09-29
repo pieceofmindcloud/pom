@@ -524,6 +524,27 @@ impl MtpDrafter {
         Ok(())
     }
 
+    /// Descarta a sequência inteira do cache do contexto MTP e as linhas de
+    /// verificação pendentes.
+    ///
+    /// É o par de um lote que o alvo decodificou **sem** `observe`: a partir
+    /// dali o cache `nextn` desta sequência teria um buraco de posições, e um
+    /// `observe` posterior por cima de um buraco é recusado pelo llama.cpp
+    /// ("inconsistent sequence positions"), o que desligaria o MTP do motor
+    /// inteiro. Remoção total é aceita por todo motor e deixa a sequência
+    /// vazia, de onde qualquer posição inicial é válida. O custo é só de
+    /// metadado; o rascunho de uma sequência esquecida só perde aceitação,
+    /// nunca correção, porque todo rascunho é verificado pelo alvo.
+    pub fn forget(&mut self, seq_id: u32) {
+        unsafe {
+            let mem = sys::llama_get_memory(self.ctx);
+            if !mem.is_null() {
+                sys::llama_memory_seq_rm(mem, seq_id as i32, -1, -1);
+            }
+        }
+        self.verify_rows = 0;
+    }
+
     /// Anota quantos tokens **do rascunho** a verificação aceitou, e move o
     /// `pending_h` para a linha certa.
     ///

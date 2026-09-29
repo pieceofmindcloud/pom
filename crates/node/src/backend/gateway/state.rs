@@ -26,7 +26,8 @@ pub(super) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 /// redescobrir a cada requisição que o morto continua morto. A volta é
 /// automática - passado o prazo, a próxima requisição paga uma sonda e o peer
 /// reentra se responder -, então nenhum estado precisa ser limpo à mão.
-pub(super) const ADMISSION_FAILURE_COOLDOWN: Duration = Duration::from_secs(5);
+/// É a janela única de memória de falha (`peer_client::FAILURE_MEMORY`).
+pub(super) const ADMISSION_FAILURE_COOLDOWN: Duration = crate::peer_client::FAILURE_MEMORY;
 
 /// Quem falhou a sonda de admissão, e até quando fica fora.
 ///

@@ -1119,7 +1119,7 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
             // O gateway já desistiu deste stream: não há a quem reportar.
             crate::direct::Delivery::GatewayGone => return,
             // Sem isto o emissor sumia em silêncio e o gateway só percebia
-            // quando o `DIRECT_REPLY_DEADLINE` vencia - dez minutos de espera
+            // quando o prazo do frame vencia - espera
             // por uma falha que este lado já conhecia. O aviso é um lote
             // terminal pequeno, e vai pela mesma escada de endereços, que
             // agora sempre tem pelo menos uma tentativa a pagar.

@@ -140,11 +140,103 @@ fn retry_backoff(attempt: u32) -> Duration {
     Duration::from_millis(100u64.saturating_mul(1u64 << attempt.saturating_sub(1).min(3)))
 }
 
+// ── Prazo de um frame ─────────────────────────────────────────────────────────
+//
+// Um frame tem **um** prazo, proporcional ao trabalho que ele pede: uma base
+// fixa mais um custo por token (e por imagem), multiplicados pelos hops que
+// ainda vão processá-lo (este e os de `next_hops`, que respondem por dentro
+// da mesma chamada). Decode de um token em 2 hops = (1 s + 50 ms) x 2 = 2,1 s;
+// um pedaço de prefill de 512 tokens em 2 hops = 53 s. O prazo é fixado em
+// `send_frame_or_tunnel` e vale para todos os transportes da tentativa - QUIC,
+// HTTP, canal persistente e túnel - sem outro timer aninhado. Peer que caiu é
+// pego antes pela vida da conexão (`quic::QUIC_MAX_IDLE`, keep-alive TCP);
+// este prazo é para o processo vivo que travou.
 #[cfg(not(test))]
-const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_secs(600);
+pub(crate) const FRAME_DEADLINE_BASE: Duration = Duration::from_millis(1000);
+#[cfg(not(test))]
+pub(crate) const FRAME_DEADLINE_PER_TOKEN: Duration = Duration::from_millis(50);
+#[cfg(not(test))]
+pub(crate) const FRAME_DEADLINE_PER_IMAGE: Duration = Duration::from_millis(2000);
+
+// Em teste a base é folgada: os labs simulam enlaces com atraso e rodam em
+// paralelo. O fallback sem escopo (`DIRECT_FRAME_TIMEOUT`) segue curto, que é
+// o que os testes de falha rápida usam.
+#[cfg(test)]
+pub(crate) const FRAME_DEADLINE_BASE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+pub(crate) const FRAME_DEADLINE_PER_TOKEN: Duration = Duration::from_millis(1);
+#[cfg(test)]
+pub(crate) const FRAME_DEADLINE_PER_IMAGE: Duration = Duration::from_millis(1);
+
+/// Prazo de quem envia sem ter declarado o frame (fora de
+/// `send_frame_or_tunnel`): o de um pedaço de prefill do tamanho padrão em um
+/// hop, o maior trabalho que um frame de um hop costuma pedir.
+#[cfg(not(test))]
+const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_millis(
+    FRAME_DEADLINE_BASE.as_millis() as u64
+        + FRAME_DEADLINE_PER_TOKEN.as_millis() as u64 * crate::prefill::DEFAULT_CHUNK_TOKENS as u64,
+);
 
 #[cfg(test)]
 const DIRECT_FRAME_TIMEOUT: Duration = Duration::from_millis(250);
+
+tokio::task_local! {
+    static FRAME_DEADLINE: Instant;
+}
+
+/// `(base + tokens x por_token + imagens x por_imagem) x hops`.
+pub(crate) fn frame_deadline(tokens: usize, images: usize, hops: usize) -> Duration {
+    let per_hop = FRAME_DEADLINE_BASE
+        .saturating_add(FRAME_DEADLINE_PER_TOKEN.saturating_mul(tokens.max(1) as u32))
+        .saturating_add(FRAME_DEADLINE_PER_IMAGE.saturating_mul(images as u32));
+    per_hop.saturating_mul(hops.max(1) as u32)
+}
+
+/// Lê do próprio frame quanto trabalho ele pede. Hidden state: as linhas do
+/// tensor. Pedaço de prefill na cabeça: `chunk_size`. Decode: o token mais o
+/// rascunho que vai junto (`draft`) ou que a cabeça vai montar
+/// (`speculate.k`).
+pub(crate) fn frame_deadline_for(meta: &Value, tensor_rows: Option<usize>) -> Duration {
+    let as_len = |key: &str| meta.get(key).and_then(Value::as_array).map(Vec::len);
+    let tokens = tensor_rows
+        .or_else(|| {
+            meta.get("chunk_size")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize)
+        })
+        .or_else(|| as_len("tokens"))
+        .unwrap_or_else(|| {
+            let draft = as_len("draft").unwrap_or(0);
+            let speculated = meta
+                .get("speculate")
+                .and_then(|s| s.get("k"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            1 + draft.max(speculated)
+        });
+    let images = as_len("images").unwrap_or(0);
+    let hops = 1 + as_len("next_hops").unwrap_or(0);
+    frame_deadline(tokens, images, hops)
+}
+
+/// Quanto resta do prazo do frame em curso; fora de um frame declarado, o
+/// prazo padrão de um hop.
+pub(crate) fn frame_time_left() -> Duration {
+    FRAME_DEADLINE
+        .try_with(|deadline| deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or(DIRECT_FRAME_TIMEOUT)
+}
+
+/// Roda `work` sob o prazo `deadline` (um instante absoluto) para todos os
+/// transportes chamados por dentro. O futuro vai para o heap: o de
+/// `send_frame_or_tunnel` é grande, e guardado inline no `scope` ele estourava
+/// a pilha de quem o aninha (visto num teste em debug).
+pub(crate) async fn with_frame_deadline<F: std::future::Future>(
+    deadline: Instant,
+    work: F,
+) -> F::Output {
+    FRAME_DEADLINE.scope(deadline, Box::pin(work)).await
+}
 
 /// Transporte que realmente carregou um frame de inferência.
 ///
@@ -281,6 +373,8 @@ struct BatchCall {
     attempts: u32,
     peer_label: String,
     item_id: String,
+    /// Prazo do frame de quem entrou no lote; o grupo roda sob o maior deles.
+    deadline: Instant,
     reply: oneshot::Sender<std::result::Result<SentFrame, String>>,
 }
 
@@ -369,6 +463,9 @@ impl BatchCoordinator {
             attempts,
             peer_label: peer_label.to_string(),
             item_id,
+            deadline: FRAME_DEADLINE
+                .try_with(|deadline| *deadline)
+                .unwrap_or_else(|_| Instant::now() + DIRECT_FRAME_TIMEOUT),
             reply,
         };
         let should_flush = {
@@ -436,6 +533,17 @@ impl BatchCoordinator {
 }
 
 async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
+    // A tarefa do flush não herda o prazo de quem chamou; o grupo leva o maior
+    // prazo entre os frames que carrega, para não cortar o mais longo deles.
+    let deadline = calls
+        .iter()
+        .map(|call| call.deadline)
+        .max()
+        .unwrap_or_else(|| Instant::now() + DIRECT_FRAME_TIMEOUT);
+    with_frame_deadline(deadline, flush_batch_group_inner(path, calls)).await
+}
+
+async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
     let batch_id = uuid::Uuid::new_v4().to_string();
     let items = calls
         .iter()
@@ -1056,7 +1164,7 @@ async fn send_frame_with_protocol(
                         path,
                         body.clone(),
                         session_id,
-                        DIRECT_FRAME_TIMEOUT,
+                        frame_time_left(),
                     )
                     .await
                 {
@@ -1165,9 +1273,9 @@ async fn send_frame_with_protocol(
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
                 .body(body.clone())
-                .timeout(DIRECT_FRAME_TIMEOUT);
+                .timeout(frame_time_left());
             let sent =
-                send_http_request_with_deadline(clients, request, session_id, DIRECT_FRAME_TIMEOUT)
+                send_http_request_with_deadline(clients, request, session_id, frame_time_left())
                     .await;
 
             match sent {
@@ -1297,7 +1405,7 @@ async fn send_frame_with_protocol(
             }
         }
         if attempt < attempts {
-            tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
+            tokio::time::sleep(retry_backoff(attempt)).await;
         }
     }
 
@@ -1341,17 +1449,53 @@ fn is_transport_timeout(error: &anyhow::Error) -> bool {
             .is_some_and(reqwest::Error::is_timeout)
 }
 
-/// Limita a tentativa HTTP inteira, incluindo os headers e o corpo. O
-/// timeout longo do frame continua sendo o limite interno do reqwest, mas o
-/// transporte direto nunca deve deixar uma inferência presa quando o peer
-/// aceitou a conexão e parou de responder.
+/// Sonda o caminho direto de um peer que está sendo servido pelo túnel, em
+/// segundo plano. Sucesso apaga a marca `tunnel_first` e o próximo frame volta
+/// a tentar o direto; falha não muda nada. O frame atual segue pelo túnel sem
+/// esperar a sonda, então ela nunca soma espera ao caminho do token.
+fn spawn_direct_reprobe(
+    clients: &crate::peer_client::PeerClients,
+    step: &crate::pipeline::PipelineStep,
+) {
+    let clients = clients.clone();
+    let node_id = step.node_id.clone();
+    let mut urls = vec![step.inference_url.clone()];
+    urls.extend(
+        step.inference_candidates
+            .iter()
+            .filter(|url| **url != step.inference_url)
+            .cloned(),
+    );
+    tokio::spawn(async move {
+        let Ok(client) = clients.for_peer(&node_id) else {
+            return;
+        };
+        for url in urls {
+            let probe = client
+                .get(format!("{}/health", url.trim_end_matches('/')))
+                .timeout(crate::peer_client::DIRECT_REPROBE_TIMEOUT)
+                .send()
+                .await;
+            if probe.is_ok_and(|response| response.status().is_success()) {
+                clients.remember_direct_win(&node_id);
+                return;
+            }
+        }
+    });
+}
+
+/// Limita a tentativa HTTP inteira, incluindo os headers e o corpo, ao prazo
+/// do frame - o mesmo que o reqwest recebe, sem um teto menor aninhado. Peer
+/// que sumiu com a conexão aberta é detectado pelo keep-alive TCP dos clientes
+/// (`peer_client::with_liveness`), não por um timer que também mataria
+/// prefill/decode legítimos.
 async fn send_http_request_with_deadline(
     clients: &crate::peer_client::PeerClients,
     request: reqwest::RequestBuilder,
     session_id: Option<&str>,
     timeout: Duration,
 ) -> Result<HttpTransportResponse> {
-    let transport_timeout = crate::quic::transport_deadline(timeout);
+    let transport_timeout = timeout;
     let response = tokio::time::timeout(transport_timeout, async {
         let response = clients
             .authorize_inference_request_for_session(request, session_id)
@@ -1613,7 +1757,7 @@ async fn send_batch_body(
                         path,
                         body.to_vec(),
                         session_id,
-                        DIRECT_FRAME_TIMEOUT,
+                        frame_time_left(),
                     )
                     .await
                 {
@@ -1685,9 +1829,9 @@ async fn send_batch_body(
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
                 .body(body.clone())
-                .timeout(DIRECT_FRAME_TIMEOUT);
+                .timeout(frame_time_left());
             let response =
-                send_http_request_with_deadline(clients, request, session_id, DIRECT_FRAME_TIMEOUT)
+                send_http_request_with_deadline(clients, request, session_id, frame_time_left())
                     .await;
             match response {
                 Ok(response) if response.status.is_success() => {
@@ -1862,7 +2006,7 @@ async fn send_batch_via_tunnel(
     // Starting after `send` would report only the reply wait and undercount the
     // same request-response operation used by `infer_tunnel::measure_rtt`.
     let started = send_started;
-    let response = match tokio::time::timeout(TUNNEL_REPLY_TIMEOUT, reply_rx).await {
+    let response = match tokio::time::timeout(frame_time_left(), reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => {
             let message = format!("{peer_label}: falha no túnel libp2p: {error}");
@@ -2089,7 +2233,7 @@ async fn send_bytes_via_tunnel(
             anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)")
         })?;
 
-    let response = match tokio::time::timeout(TUNNEL_REPLY_TIMEOUT, reply_rx).await {
+    let response = match tokio::time::timeout(TUNNEL_BYTES_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: falha no túnel libp2p: {error}")),
         Ok(Err(_)) => return Err(anyhow!("{peer_label}: túnel libp2p encerrou sem responder")),
@@ -2117,6 +2261,43 @@ async fn send_bytes_via_tunnel(
 /// repetida em outro transporte.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_frame_or_tunnel(
+    clients: &crate::peer_client::PeerClients,
+    step: &crate::pipeline::PipelineStep,
+    tunnel: Option<&TunnelOutboundSender>,
+    path: &str,
+    meta: &Value,
+    tensor: Option<(&[f32], TensorShape)>,
+    dtype: WireDtype,
+    encoding: FrameEncoding,
+    attempts: u32,
+    peer_label: &str,
+    on_issue: impl FnMut(SendIssue),
+) -> Result<SentFrame> {
+    // O prazo do frame nasce aqui, do trabalho que ele pede, e vale para a
+    // tentativa inteira - transporte, retentativas e fallback. Os transportes
+    // internos leem o que resta dele (`frame_time_left`) em vez de cada um
+    // impor o seu.
+    // Aninhado no prazo de quem chamou (inferência em processo, lote), o frame
+    // nunca passa dele.
+    let rows = tensor
+        .as_ref()
+        .and_then(|(_, shape)| shape.first().copied());
+    let own = Instant::now() + frame_deadline_for(meta, rows);
+    let deadline = FRAME_DEADLINE
+        .try_with(|outer| (*outer).min(own))
+        .unwrap_or(own);
+    with_frame_deadline(
+        deadline,
+        send_frame_or_tunnel_inner(
+            clients, step, tunnel, path, meta, tensor, dtype, encoding, attempts, peer_label,
+            on_issue,
+        ),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_frame_or_tunnel_inner(
     clients: &crate::peer_client::PeerClients,
     step: &crate::pipeline::PipelineStep,
     tunnel: Option<&TunnelOutboundSender>,
@@ -2296,6 +2477,9 @@ pub async fn send_frame_or_tunnel(
             && tunnel.is_some()
             && peer_id.is_some()
             && clients.prefer_tunnel(&step.node_id);
+        if skip_direct && clients.claim_direct_reprobe(&step.node_id) {
+            spawn_direct_reprobe(clients, step);
+        }
 
         let direct_error = if skip_direct {
             None
@@ -2432,12 +2616,8 @@ pub fn should_attempt_tunnel_fallback(
 
 const DIRECT_BYTES_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Belt-and-suspenders ceiling on top of the tunnel protocol's own 60s
-/// `request_response::Config` timeout (`infer_tunnel::infer_tunnel_behaviour`)
-/// — that one should always fire first; this only guards against the swarm's
-/// own task having died or wedged, which would otherwise hang the caller's
-/// `oneshot::Receiver` forever instead of erroring.
-const TUNNEL_REPLY_TIMEOUT: Duration = Duration::from_secs(75);
+/// Bytes crus pelo túnel usam o mesmo prazo da rota direta de bytes.
+const TUNNEL_BYTES_TIMEOUT: Duration = DIRECT_BYTES_TIMEOUT;
 
 /// Uma chamada hop a hop enviada pelo swarm libp2p. O contrato de
 /// encode/decode é o mesmo de `send_frame`, com uma única tentativa. Se o
@@ -2531,7 +2711,7 @@ async fn send_frame_via_tunnel_with_auth(
     // enqueueing the tunnel request and waiting for its response are one
     // application round-trip.
     let started = call_started;
-    let response = match tokio::time::timeout(TUNNEL_REPLY_TIMEOUT, reply_rx).await {
+    let response = match tokio::time::timeout(frame_time_left(), reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => {
             let message = format!("{peer_label}: falha no túnel libp2p: {error}");
@@ -2615,6 +2795,54 @@ async fn send_frame_via_tunnel_with_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prazo_do_frame_cresce_com_tokens_imagens_e_hops() {
+        let one = frame_deadline(1, 0, 1);
+        assert_eq!(one, FRAME_DEADLINE_BASE + FRAME_DEADLINE_PER_TOKEN);
+        assert_eq!(frame_deadline(1, 0, 2), one * 2);
+        assert_eq!(
+            frame_deadline(32, 1, 1),
+            FRAME_DEADLINE_BASE + FRAME_DEADLINE_PER_TOKEN * 32 + FRAME_DEADLINE_PER_IMAGE
+        );
+        // Zero token nunca vira prazo só de base: todo frame decodifica algo.
+        assert_eq!(frame_deadline(0, 0, 0), one);
+    }
+
+    #[test]
+    fn prazo_do_frame_le_o_trabalho_do_proprio_meta() {
+        let decode = json!({"token_id": 7, "next_hops": [{}]});
+        assert_eq!(frame_deadline_for(&decode, None), frame_deadline(1, 0, 2));
+
+        let draft = json!({"token_id": 7, "draft": [1, 2, 3]});
+        assert_eq!(frame_deadline_for(&draft, None), frame_deadline(4, 0, 1));
+
+        let speculate = json!({"token_id": 7, "speculate": {"k": 4}});
+        assert_eq!(
+            frame_deadline_for(&speculate, None),
+            frame_deadline(5, 0, 1)
+        );
+
+        let head_chunk = json!({"chunk_size": 512, "images": ["a"], "next_hops": [{}]});
+        assert_eq!(
+            frame_deadline_for(&head_chunk, None),
+            frame_deadline(512, 1, 2)
+        );
+
+        // Hidden state: as linhas do tensor mandam, não o `chunk_size`.
+        assert_eq!(
+            frame_deadline_for(&json!({"chunk_size": 512}), Some(32)),
+            frame_deadline(32, 0, 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn transporte_le_o_prazo_restante_do_frame_em_curso() {
+        let deadline = Instant::now() + Duration::from_millis(80);
+        let left = with_frame_deadline(deadline, async { frame_time_left() }).await;
+        assert!(left <= Duration::from_millis(80) && left > Duration::from_millis(40));
+        assert_eq!(frame_time_left(), DIRECT_FRAME_TIMEOUT);
+    }
     use crate::infer_tunnel::TunnelResponse;
 
     #[test]
@@ -2878,18 +3106,23 @@ mod tests {
         });
 
         let step = step_with(&format!("http://{address}"), false, None);
-        let result = send_frame_or_tunnel(
-            &crate::peer_client::PeerClients::new(Duration::from_secs(600)),
-            &step,
-            None,
-            "/v1/prefill",
-            &json!({"session_id": "ambiguous-delivery"}),
-            None,
-            WireDtype::F16,
-            FrameEncoding::F16,
-            CHUNK_ATTEMPTS,
-            "peer-x",
-            |_| {},
+        // O prazo de quem chama (250 ms) é menor que a resposta do peer
+        // (350 ms): o frame vence depois de o corpo chegar ao peer.
+        let result = with_frame_deadline(
+            Instant::now() + Duration::from_millis(250),
+            send_frame_or_tunnel(
+                &crate::peer_client::PeerClients::new(Duration::from_secs(600)),
+                &step,
+                None,
+                "/v1/prefill",
+                &json!({"session_id": "ambiguous-delivery"}),
+                None,
+                WireDtype::F16,
+                FrameEncoding::F16,
+                CHUNK_ATTEMPTS,
+                "peer-x",
+                |_| {},
+            ),
         )
         .await;
         let error = match result {
@@ -3812,9 +4045,9 @@ mod tests {
     }
 
     /// O fallback TCP também pode aceitar a conexão e nunca devolver headers.
-    /// O orçamento do frame é deliberadamente longo para representar a
-    /// configuração de produção; a tentativa de transporte deve aplicar o
-    /// deadline curto antes dele.
+    /// A tentativa tem um só prazo, o do frame: não há teto menor escondido
+    /// dentro dele, e o erro sai tipado como deadline de transporte quando
+    /// esse prazo vence.
     #[tokio::test]
     async fn fallback_http_sem_resposta_respeita_deadline_de_transporte() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3833,10 +4066,10 @@ mod tests {
             .timeout(Duration::from_secs(600));
         let result = tokio::time::timeout(
             Duration::from_secs(2),
-            send_http_request_with_deadline(&clients, request, None, Duration::from_secs(600)),
+            send_http_request_with_deadline(&clients, request, None, Duration::from_millis(300)),
         )
         .await
-        .expect("fallback HTTP sem resposta não pode exceder o deadline");
+        .expect("fallback HTTP sem resposta não pode exceder o prazo do frame");
         let error = result.expect_err("endpoint HTTP sem headers deve falhar");
         assert!(
             error

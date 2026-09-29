@@ -91,8 +91,7 @@ visibilidade dos controles de implantação na UI local.
   As URLs de `reply_to` saem das interfaces locais do gateway, então atrás de
   NAT/CGNAT nenhuma delas vale na outra ponta: `deliver_via_tunnel` é a última
   via, pelo túnel libp2p até o `libp2p_peer_id`/`libp2p_addrs` que o `reply_to`
-  passou a carregar. Sem ela o quadro morria calado até o
-  `DIRECT_REPLY_DEADLINE`, dez minutos por token. O transporte anotado na
+  passou a carregar. Sem ela o quadro morria calado até o prazo do frame. O transporte anotado na
   metadata é `libp2p-tunnel`, para o trace do gateway não publicar como HTTP um
   caminho que não foi. Gateway em binário anterior não manda os campos e a
   entrega segue sem a última via.
@@ -344,7 +343,10 @@ visibilidade dos controles de implantação na UI local.
   e o emitter separa `remote_stream_wait` em produção, reserva do canal, fila
   e callback anterior, sem timer artificial. `remote_stream_downstream_wait_ms`
   identifica o relay aninhado dentro da produção; `node_timings.mtp_draft_ms`
-  identifica o custo síncrono do nextn. Em plano remoto fatiado, MTP é omitido
+  identifica o custo síncrono do nextn e `node_timings.mtp_observe_ms` o do
+  `observe`. `RemoteStreamTelemetry::merge` junta também as distribuições de
+  `downstream_wait` e `delivery`; sem isso os p50/p95 desses dois campos
+  saíam zerados na resposta embora os totais estivessem certos. Em plano remoto fatiado, MTP é omitido
   quando imporia esse draft a cada callback, enquanto o caminho legado continua
   elegível. `handle_step_stream` copia o
   `session_id` do frame de controle para o `reply_to`, e cada lote de retorno
@@ -732,7 +734,7 @@ visibilidade dos controles de implantação na UI local.
   com o marcador, mas o fallback HTTP também leva o bearer compartilhado; sem a
   prova correspondente, a chamada é recusada em vez de cair para uma API key de
   cliente. A tentativa HTTP direta inteira, incluindo autorização, headers e
-  corpo, também respeita o deadline de transporte compartilhado de 30 s.
+  corpo, também respeita o prazo único do frame (`relay::frame_time_left`).
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de
@@ -1192,8 +1194,10 @@ falha de transporte.
 - `await_result_with_ack` - `select!` biased entre três coisas: o resultado do inbox
   (caso normal), o ack da cabeça (só interessa quando falha, ou quando um peer
   antigo borbulhou a resposta inteira - `token_id` presente vale como
-  resultado), e o prazo `DIRECT_REPLY_DEADLINE=600 s` (hop morreu depois de
-  aceitar). Se o resultado chega antes do ack, ele não espera telemetria
+  resultado), e o prazo do frame que o chamador passa (`relay::frame_deadline`
+  com os tokens da rodada e todos os hops do plano; hop morreu depois de
+  aceitar). `RemoteDecodeStream::next` usa o mesmo cálculo entre dois
+  callbacks. Se o resultado chega antes do ack, ele não espera telemetria
   atrasada: o futuro do ack continua em tarefa destacada para registrar a
   evidência do primeiro hop.
 - `deliver_result` - a cauda (ou o hop que falhou) tenta cada URL de `reply_to`
@@ -1364,7 +1368,16 @@ caminho qwen35/qwen35moe do upstream):
    com o estado oculto deslocado uma posição (linha `k` recebe `h` de `k-1`,
    linha 0 recebe o `pending_h` da chamada anterior) e guarda as linhas de `h`
    do alvo. Ficar dentro do `decode_tokens`, e não em cada chamador, é o que
-   impede um caminho novo de esquecer o passo.
+   impede um caminho novo de esquecer o passo. A exceção é a cauda numa
+   rodada de decode que não especula (sem `mtp_k` nem rascunho MTP, ou seja,
+   todo token do `remote-stream` de dois ou mais hops): `step_blocking` chama
+   `decode_hidden_without_mtp`, que pula o `observe` e chama
+   `MtpDrafter::forget` para a sequência (remoção total no contexto MTP), de
+   modo que um `observe` futuro não caia num buraco de posições. O `observe`
+   rodava por token sem uso e, com o MTP na RAM, dominava o decode da cauda.
+   O tempo do `observe` sai em `node_timings.mtp_observe_ms`, e a barreira de
+   `POM_PROFILE_SYNC` roda antes dele, então `backend_sync_ms` é o tronco
+   terminando na GPU e não se mistura com a cabeça `nextn`.
 2. `MtpDrafter::accept(accept_len)` move o `pending_h` para a linha que a
    verificação confirmou.
 3. `MtpDrafter::draft` decodifica a cabeça uma vez por token rascunhado e

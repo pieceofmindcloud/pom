@@ -156,9 +156,16 @@ fallback continua em `addr_candidates` + `RouteTable`.
   conexão Quinn em microssegundos, separado do processamento do handler remoto.
   `request_body_send_us` mede a espera por `send_data` e `finish` do corpo
   HTTP/3; não é o tempo de resposta nem uma confirmação de entrega pelo peer.
-  Cada tentativa completa, do handshake ao corpo da resposta, compartilha um
-  deadline de transporte de 30 s em produção, sem confundir esse teto com o
-  timeout de processamento do frame.
+  Cada tentativa completa, do handshake ao corpo da resposta, tem um só
+  prazo: o prazo do frame (`relay::frame_deadline`: (1 s + 50 ms por token + 2 s por
+  imagem) x hops restantes, fixado em `send_frame_or_tunnel` e lido pelos
+  transportes com `relay::frame_time_left`). Não há teto menor aninhado; peer que caiu é detectado pela
+  vida da conexão (`QUIC_MAX_IDLE` 1,2 s, keep-alive TCP de ~4 s em
+  `peer_client::with_liveness`). As memórias de falha (rota, quarentena QUIC,
+  abertura do canal persistente, admissão) usam a janela única
+  `peer_client::FAILURE_MEMORY` (5 s). Um peer em `tunnel_first` tem o caminho
+  direto sondado em segundo plano a cada `DIRECT_REPROBE_INTERVAL` (5 s,
+  `relay::spawn_direct_reprobe`); sucesso apaga a marca.
   A descoberta de um endpoint QUIC morto compartilha um orçamento agregado de
   300 ms entre endereços, e a falha põe aquele endereço em quarentena por 5 s
   para não repetir handshake a cada token; a sessão saudável é reutilizada.

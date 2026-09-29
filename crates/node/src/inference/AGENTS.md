@@ -148,7 +148,7 @@ visibilidade dos controles de implantação na UI local.
   `step_blocking.rs`); o `/health` publica `perf`, `active_generations` (sessões
   não retidas), o RTT e o transporte das rotas fixadas deste nó
   (`route_rtt_ms`, `gateway_rtt_ms`, `route_kinds`, `gateway_route_kinds`,
-  inseridos fora do `json!`, que está no limite de recursão) para o
+  e `relayed_peers`, os peers que ele só alcança por relé, inseridos fora do `json!`, que está no limite de recursão) para o
   planejador do gateway; o teste de velocidade envia o estado oculto na forma
   que a captura produz (`perf::hidden_input_layout`: `[tokens, n_embd,
   fluxos]` em modelo com vários fluxos de residual) e `POM_SLICE_BENCH=0` o
@@ -325,7 +325,11 @@ visibilidade dos controles de implantação na UI local.
   os leva pelos hops restantes, até `W` em voo. `PrefillOverlapWindow` limita
   por contagem (`prefill_max_inflight_chunks`, efetivo 1..8, padrão 8) e por
   bytes de estado oculto em RAM no gateway (`INFLIGHT_BYTE_BUDGET`, 512 MiB);
-  o permit de cada limite viaja com o pedaço. A janela cancela as futures em
+  o permit de cada limite viaja com o pedaço. No anel (`run_ring`), a janela
+  maior que 1 vira `ring_overlap`: o gateway manda um pedaço por vez e cada
+  hop que repassa responde ao intermediário depois do próprio compute,
+  repassando em segundo plano em ordem por sessão (`ring_relay_slot` em
+  `infer_server/prefill.rs`); o último pedaço é síncrono. A janela cancela as futures em
   voo no erro ou no cancelamento e preserva a ordem do resultado. Um pedaço
   `k>0` que falha depois de a cadeia aceitar os anteriores anexa um
   `PrefillResumable` ao erro para diagnóstico, mas o gateway não repete esse

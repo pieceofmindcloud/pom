@@ -35,6 +35,9 @@ export type EdgeState = "principal" | "paralela" | "inativa";
 
 /** Três estados, porque com réplicas "escolhida ou não" deixou de bastar:
  *  uma aresta pode não estar em uso e ainda assim ser um caminho pronto. */
+/** Aresta que passa por um circuito num relé libp2p. */
+const RELAY_EDGE_STYLE = { className: "fill-none stroke-relay", strokeWidth: "4", strokeDasharray: "10 4", markerEnd: "url(#route-arrow-relay)" };
+
 export function edgeStyle(state: EdgeState) {
   if (state === "principal") {
     return { className: "fill-none stroke-aqua", strokeWidth: "3", strokeDasharray: undefined, markerEnd: "url(#route-arrow)" };
@@ -377,7 +380,7 @@ export function ModelNetworkCanvas({
     </div>}
     {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">{t("canvas.noCapacity")}</div> : <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
-        <defs><marker id="route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker></defs>
+        <defs><marker id="route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker><marker id="route-arrow-relay" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-relay" /></marker></defs>
         {forwardEdges.map((edge) => {
           const from = rangeForEdge(ranges, edge, "from"); const to = rangeForEdge(ranges, edge, "to");
           if (!from || !to) return null;
@@ -389,12 +392,15 @@ export function ModelNetworkCanvas({
           // tráfego hipotético: com réplicas, é por onde a rede serviria se a
           // principal saísse.
           const state: EdgeState = selectedEdgeIds.has(id) ? "principal" : candidateIds.has(id) ? "paralela" : "inativa";
-          const style = edgeStyle(state);
-          return <path key={id} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd} />;
+          // Aresta por relé: laranja forte, qualquer que seja o estado - é
+          // o motivo da lentidão e pede revisão da rota.
+          const style = rttByPair.get(`${edge.from_node_id}:${edge.to_node_id}`)?.relayed ? RELAY_EDGE_STYLE : edgeStyle(state);
+          return <path key={id} data-relayed={style === RELAY_EDGE_STYLE ? "true" : undefined} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd} />;
         })}
         {gatewayPosition && terminalRanges.map((range) => {
           const geometry = gatewayRouteGeometry(positionOf(range, ranges.indexOf(range)), gatewayPosition);
-          return <path key={`gateway-${range.node_id}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className="fill-none stroke-aqua" strokeWidth="3" markerEnd="url(#route-arrow)" />;
+          const relayed = rttByPair.get(`${range.node_id}:gateway`)?.relayed === true;
+          return <path key={`gateway-${range.node_id}`} data-relayed={relayed ? "true" : undefined} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={relayed ? RELAY_EDGE_STYLE.className : "fill-none stroke-aqua"} strokeWidth={relayed ? RELAY_EDGE_STYLE.strokeWidth : "3"} markerEnd={relayed ? RELAY_EDGE_STYLE.markerEnd : "url(#route-arrow)"} />;
         })}
       </svg>
       {forwardEdges.map((edge, index) => {
@@ -402,12 +408,12 @@ export function ModelNetworkCanvas({
         if (!from || !to) return null;
         const geometry = routeGeometry(positionOf(from, ranges.indexOf(from)), positionOf(to, ranges.indexOf(to)));
         const measurement = rttByPair.get(`${edge.from_node_id}:${edge.to_node_id}`);
-        return <RouteRttLabel key={`rtt-${edgeKey(edge)}-${index}`} rttMs={measurement?.rtt_ms} transport={measurement?.transport} left={geometry.labelX} top={geometry.labelY} />;
+        return <RouteRttLabel key={`rtt-${edgeKey(edge)}-${index}`} rttMs={measurement?.rtt_ms} transport={measurement?.transport} relayed={measurement?.relayed === true} left={geometry.labelX} top={geometry.labelY} />;
       })}
       {gatewayPosition && terminalRanges.map((range) => {
         const geometry = gatewayRouteGeometry(positionOf(range, ranges.indexOf(range)), gatewayPosition);
         const measurement = rttByPair.get(`${range.node_id}:gateway`);
-        return <RouteRttLabel key={`rtt-gateway-${range.node_id}`} rttMs={measurement?.rtt_ms} transport={measurement?.transport} left={geometry.labelX} top={geometry.labelY} />;
+        return <RouteRttLabel key={`rtt-gateway-${range.node_id}`} rttMs={measurement?.rtt_ms} transport={measurement?.transport} relayed={measurement?.relayed === true} left={geometry.labelX} top={geometry.labelY} />;
       })}
       {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} perf={peerPerf?.[range.node_id]} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />)}
       {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} routes={pipelineRoutes} />}

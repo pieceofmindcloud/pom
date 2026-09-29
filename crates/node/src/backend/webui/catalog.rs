@@ -1799,6 +1799,10 @@ pub(super) struct ChatTelemetryMeasurement {
     pub(super) to_node_id: String,
     pub(super) rtt_ms: f64,
     pub(super) transport: String,
+    /// A aresta passa por um circuito num relé (túnel libp2p sem conexão
+    /// direta): cada frame atravessa um servidor intermediário.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) relayed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1839,11 +1843,45 @@ pub(super) struct ChatTelemetryPipelineRoute {
     /// todos têm velocidade medida.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) compute_ms: Option<f64>,
-    /// Um token de decode pela rota: rede mais compute.
+    /// Rede paga por token no modo de volta escolhido. Não é a soma das
+    /// pernas: na resposta direta cada perna custa meio RTT, e no anel a volta
+    /// da cauda não é paga.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) network_ms: Option<f64>,
+    /// `direct` ou `ring`, como o planejador decidiria para esta rota.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) return_mode: Option<crate::fastest::ReturnMode>,
+    /// Um token de decode pela rota: rede no modo escolhido mais compute.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tokens_per_sec: Option<f64>,
+    /// O gateway foi acrescentado no fim como volta da cauda; falso quando ele
+    /// mesmo serve a cauda e a última aresta é passagem de ida.
+    #[serde(skip)]
+    pub(super) returns_to_gateway: bool,
+    /// Alguma perna da rota passa por relé; a rota precisa ser revista.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) relayed: bool,
+}
+
+/// A perna `from -> to` está fixada no túnel libp2p e `from` só alcança `to`
+/// por circuito num relé. `returns` escolhe o plano do gateway (volta da
+/// cauda) em vez do de inferência.
+fn leg_is_relayed(
+    from: &str,
+    to: &str,
+    returns: bool,
+    inputs: &crate::fastest::CostInputs,
+) -> bool {
+    inputs.perf.get(from).is_some_and(|perf| {
+        let kinds = if returns {
+            &perf.gateway_route_kinds
+        } else {
+            &perf.route_kinds
+        };
+        kinds.get(to).map(String::as_str) == Some("tunnel") && perf.relayed_peers.contains(to)
+    })
 }
 
 fn collect_pipeline_route_paths(
@@ -1881,17 +1919,17 @@ fn collect_pipeline_route_paths(
 }
 
 /// Produz todas as rotas completas do modelo, não apenas a escolhida pelo
-/// planner. A ordem do resultado é menor soma de RTT primeiro, depois o vetor
-/// de IDs dos nós como desempate estável. Assim o card mostra o head rápido
-/// primeiro sem esconder uma alternativa implantada.
+/// planner, estimadas com as mesmas fontes e a mesma conta do planejador
+/// (`fastest::describe_chain`): RTT das rotas fixadas de cada peer, velocidade
+/// medida e modo de volta. Por isso o card mostra o mesmo valor em qualquer nó
+/// da rede. A ordem é o menor tempo por token primeiro, depois o vetor de IDs
+/// como desempate estável.
 pub(super) fn pipeline_routes_for(
     peers: &[crate::network::PeerInfo],
     model: &str,
     deploy_id: Option<&str>,
     total_layers: u32,
-    gateway_node_id: &str,
-    pairwise_rtt: &HashMap<(String, String), f64>,
-    perf: &HashMap<String, crate::fastest::PeerPerf>,
+    inputs: &crate::fastest::CostInputs,
 ) -> Vec<ChatTelemetryPipelineRoute> {
     if model.is_empty() || total_layers == 0 {
         return Vec::new();
@@ -1902,51 +1940,56 @@ pub(super) fn pipeline_routes_for(
 
     let mut routes = paths
         .into_iter()
-        .map(|path| {
+        .filter_map(|path| {
+            let chain = path
+                .iter()
+                .map(|node_id| {
+                    candidates
+                        .iter()
+                        .copied()
+                        .find(|peer| &peer.node_id == node_id)
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let view = crate::fastest::describe_chain(&chain, inputs);
             // The gateway is a virtual return endpoint, except when it also
             // serves the terminal slice. In that case the pipeline path
             // already ends at the gateway and appending it would create a
             // fake self-hop and show the same node twice in the card.
-            let compute_ms = path
-                .iter()
-                .map(|node_id| perf.get(node_id).and_then(|p| p.decode_ms_per_step))
-                .collect::<Option<Vec<_>>>()
-                .map(|steps| steps.into_iter().sum::<f64>());
             let mut node_ids = path;
-            if node_ids.last().map(String::as_str) != Some(gateway_node_id) {
-                node_ids.push(gateway_node_id.to_owned());
+            let returns_to_gateway = node_ids.last().map(String::as_str) != Some(inputs.requester);
+            if returns_to_gateway {
+                node_ids.push(inputs.requester.to_owned());
             }
-            let leg_nodes = std::iter::once(gateway_node_id.to_owned())
-                .chain(node_ids.iter().cloned())
-                .collect::<Vec<_>>();
-            let legs_ms = leg_nodes
-                .windows(2)
-                .map(|pair| {
-                    if pair[0] == pair[1] {
-                        return Some(0.0);
-                    }
-                    pairwise_rtt
-                        .get(&(pair[0].clone(), pair[1].clone()))
-                        .copied()
-                        .filter(|rtt| rtt.is_finite() && *rtt >= 0.0)
-                })
-                .collect::<Vec<_>>();
-            let rtt_ms = legs_ms
+            let rtt_ms = view
+                .legs_ms
                 .iter()
                 .copied()
                 .collect::<Option<Vec<_>>>()
                 .map(|legs| legs.into_iter().sum());
-            let total_ms = rtt_ms.zip(compute_ms).map(|(rtt, compute)| rtt + compute);
-            ChatTelemetryPipelineRoute {
+            let total_ms = view.decode_ms_per_token;
+            let relayed = std::iter::once(inputs.requester)
+                .chain(chain.iter().map(|peer| peer.node_id.as_str()))
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|pair| leg_is_relayed(pair[0], pair[1], false, inputs))
+                || (returns_to_gateway
+                    && chain.last().is_some_and(|tail| {
+                        leg_is_relayed(&tail.node_id, inputs.requester, true, inputs)
+                    }));
+            Some(ChatTelemetryPipelineRoute {
                 node_ids,
-                legs_ms,
+                legs_ms: view.legs_ms,
                 rtt_ms,
-                compute_ms,
+                compute_ms: view.compute_ms,
+                network_ms: view.network_ms,
+                return_mode: view.return_mode,
                 total_ms,
                 tokens_per_sec: total_ms
                     .filter(|total| *total > 0.0)
                     .map(|total| (1000.0 / total * 10.0).round() / 10.0),
-            }
+                returns_to_gateway,
+                relayed,
+            })
         })
         .collect::<Vec<_>>();
     routes.sort_by(|left, right| {
@@ -1964,57 +2007,60 @@ pub(super) fn pipeline_routes_for(
     routes
 }
 
-/// Retorna o RTT de fio observado no último trace, por perna direcionada.
-///
-/// A sonda de seleção (`RttTable`) é libp2p e mede o endpoint `/health`; ela é
-/// um fallback útil quando não há execução recente, mas não representa
-/// necessariamente o transporte escolhido pelo pipeline. Quando o trace tem
-/// `net_rtt_median_ms`, ele é a fonte do card. O decode tem precedência sobre
-/// o prefill se a mesma perna aparecer nas duas fases.
-pub(super) fn execution_network_rtts(
-    trace: &serde_json::Value,
-    gateway_node_id: &str,
-) -> HashMap<(String, String), f64> {
-    let mut values = HashMap::new();
-    let Some(cycle) = trace.get("pipeline_cycle") else {
-        return values;
+/// RTT e transporte das rotas fixadas em cada aresta das rotas do modelo, no
+/// formato das medições de execução. É informação da rede: o peer de origem
+/// mede a aresta e a publica no `/health`, então qualquer nó vê o mesmo valor,
+/// tenha ou não sido gateway de uma execução. A volta da cauda usa o destino
+/// `gateway`, como no trace.
+pub(super) fn planned_route_measurements(
+    routes: &[ChatTelemetryPipelineRoute],
+    inputs: &crate::fastest::CostInputs,
+) -> Vec<ChatTelemetryMeasurement> {
+    let transport = |kind: Option<&String>| match kind.map(String::as_str) {
+        Some("tunnel") => "libp2p-tunnel".to_owned(),
+        Some(kind) => kind.to_owned(),
+        None => String::new(),
     };
-
-    for phase in ["prefill", "decode"] {
-        let Some(legs) = cycle.get(phase).and_then(serde_json::Value::as_array) else {
-            continue;
-        };
-        for leg in legs {
-            let Some(mut from_node_id) = leg
-                .get("from_node_id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                continue;
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for route in routes {
+        let appended = route.returns_to_gateway;
+        let last = route.node_ids.len().saturating_sub(1);
+        for (index, pair) in route.node_ids.windows(2).enumerate() {
+            let (from, to) = (&pair[0], &pair[1]);
+            let returns = appended && index + 1 == last;
+            let to_key = if returns {
+                "gateway".to_owned()
+            } else {
+                to.clone()
             };
-            let Some(mut to_node_id) = leg
-                .get("to_node_id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
+            if from == to || !seen.insert((from.clone(), to_key.clone())) {
                 continue;
-            };
-            let Some((_, rtt_ms)) = leg
-                .get("transport_summary")
-                .and_then(dominant_transport_measurement)
-            else {
-                continue;
-            };
-            if from_node_id == "gateway" {
-                from_node_id = gateway_node_id.to_owned();
             }
-            if to_node_id == "gateway" {
-                to_node_id = gateway_node_id.to_owned();
+            let perf = inputs.perf.get(from);
+            let (rtt, kind) = if returns {
+                (
+                    perf.and_then(|p| p.gateway_rtt_ms.get(to)).copied(),
+                    perf.and_then(|p| p.gateway_route_kinds.get(to)),
+                )
+            } else {
+                (
+                    perf.and_then(|p| p.route_rtt_ms.get(to)).copied(),
+                    perf.and_then(|p| p.route_kinds.get(to)),
+                )
+            };
+            if let Some(rtt_ms) = rtt {
+                out.push(ChatTelemetryMeasurement {
+                    from_node_id: from.clone(),
+                    to_node_id: to_key,
+                    rtt_ms,
+                    transport: transport(kind),
+                    relayed: leg_is_relayed(from, to, returns, inputs),
+                });
             }
-            values.insert((from_node_id, to_node_id), rtt_ms);
         }
     }
-    values
+    out
 }
 
 fn dominant_transport_measurement(summary: &serde_json::Value) -> Option<(String, f64)> {
@@ -2089,6 +2135,7 @@ pub(super) fn execution_transport_measurements(
                     to_node_id: to_node_id.to_owned(),
                     rtt_ms,
                     transport,
+                    relayed: false,
                 })
             })
             .collect();
@@ -2136,6 +2183,7 @@ pub(super) fn execution_transport_measurements(
                 to_node_id: to_node_id.to_owned(),
                 rtt_ms,
                 transport,
+                relayed: false,
             })
         })
         .collect()
@@ -2196,59 +2244,6 @@ pub(super) fn execution_pipeline_cost(
         legs_ms,
         compute_ms,
     })
-}
-
-/// Reúne as sondas direcionais frescas que cada peer já mantém localmente.
-/// Uma sonda do gateway só conhece seus destinos; sem os relatórios dos
-/// próprios peers, o card nunca conseguiria somar um pipeline com mais de um
-/// salto nem medir a perna final de volta ao gateway.
-async fn pairwise_rtt_for_pipeline(
-    state: &GatewayState,
-    peers: &[crate::network::PeerInfo],
-) -> HashMap<(String, String), f64> {
-    let self_id = state.network.node_id.clone();
-    let mut values = state
-        .network
-        .rtts
-        .fresh_snapshot()
-        .into_iter()
-        .map(|measurement| {
-            (
-                (self_id.clone(), measurement.target_node_id),
-                measurement.rtt_ms,
-            )
-        })
-        .collect::<HashMap<_, _>>();
-
-    let reports = futures::future::join_all(peers.iter().filter_map(|peer| {
-        if peer.node_id == self_id {
-            return None;
-        }
-        let peer = peer.clone();
-        let state = state.clone();
-        Some(async move {
-            let response = state
-                .control_get(&peer, "/api/ui/network/rtt", PEER_TIMEOUT)
-                .await
-                .ok()?;
-            if !response.status().is_success() {
-                return None;
-            }
-            let report = response.json::<RttReport>().await.ok()?;
-            (report.source_node_id == peer.node_id).then_some(report)
-        })
-    }))
-    .await;
-
-    for report in reports.into_iter().flatten() {
-        for measurement in report.measurements {
-            values.insert(
-                (report.source_node_id.clone(), measurement.target_node_id),
-                measurement.rtt_ms,
-            );
-        }
-    }
-    values
 }
 
 /// Retorna apenas o transporte observado na execução distribuída.
@@ -2336,13 +2331,6 @@ pub(super) async fn chat_telemetry(
             .map(|peer| peer.total_layers)
             .max()
             .unwrap_or(0);
-        let mut pairwise_rtt = pairwise_rtt_for_pipeline(&state, &peers).await;
-        if let Some(trace) = trace.as_ref() {
-            // A completed execution tells us which transport actually carried
-            // each leg. Prefer that wire RTT over the independent libp2p
-            // health probes, which may have a different path and queueing.
-            pairwise_rtt.extend(execution_network_rtts(trace, &state.network.node_id));
-        }
         let perf = model_peer_perf(&state, &peers, model, deploy_id).await;
         peer_perf = perf
             .iter()
@@ -2361,15 +2349,53 @@ pub(super) async fn chat_telemetry(
                 )
             })
             .collect();
-        pipeline_routes_for(
-            &peers,
-            model,
-            deploy_id,
-            total_layers,
-            &state.network.node_id,
-            &pairwise_rtt,
-            &perf,
-        )
+        // A perna que sai deste nó: o transporte e o relé vêm do próprio livro
+        // de rotas, porque um gateway que não serve fatia não tem `/health`
+        // de inferência na sonda de admissão.
+        let mut perf = perf;
+        {
+            let book = crate::route_plan::book();
+            let own = perf.entry(state.network.node_id.clone()).or_default();
+            if own.route_kinds.is_empty() {
+                own.route_kinds = book.kind_map(crate::route_plan::Plane::Inference);
+            }
+            own.relayed_peers.extend(book.relayed_nodes());
+        }
+        // As mesmas entradas do planejador (`plan_by_delivery_time`).
+        let mut requester_rtt = state
+            .network
+            .rtts
+            .fresh_snapshot()
+            .into_iter()
+            .map(|measurement| (measurement.target_node_id, measurement.rtt_ms))
+            .collect::<HashMap<_, _>>();
+        requester_rtt
+            .extend(crate::route_plan::book().rtt_map(crate::route_plan::Plane::Inference));
+        let mut local_load = HashMap::new();
+        for peer in &peers {
+            local_load.insert(peer.node_id.clone(), state.loads.load(&peer.node_id).await);
+        }
+        let inputs = crate::fastest::CostInputs {
+            requester: &state.network.node_id,
+            requester_rtt_ms: &requester_rtt,
+            perf: &perf,
+            local_load: &local_load,
+            prompt_tokens: 1.0,
+            decode_tokens: 1.0,
+            forced_return: crate::fastest::forced_return_mode(),
+        };
+        let routes = pipeline_routes_for(&peers, model, deploy_id, total_layers, &inputs);
+        // O painel mostra a rede, não a última execução deste nó: a rota
+        // planejada vale igual em qualquer nó; o trace só cobre o que ela
+        // ainda não mediu.
+        let planned = planned_route_measurements(&routes, &inputs);
+        measurements.retain(|m| {
+            !planned
+                .iter()
+                .any(|p| p.from_node_id == m.from_node_id && p.to_node_id == m.to_node_id)
+        });
+        measurements.extend(planned);
+        routes
     } else {
         Vec::new()
     };

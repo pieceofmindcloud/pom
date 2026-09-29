@@ -1364,6 +1364,7 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
         body["gateway_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Gateway));
         body["route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Inference));
         body["gateway_route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Gateway));
+        body["relayed_peers"] = json!(book.relayed_nodes());
     }
     // Keep the identity fields separate from the large diagnostic object. A
     // direct addition to the json! tree would exceed the macro recursion limit

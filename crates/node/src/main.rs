@@ -87,6 +87,8 @@ mod discovery;
 mod enterprise_p2p;
 #[path = "inference/executor.rs"]
 mod executor;
+#[path = "routing/fastest.rs"]
+pub mod fastest;
 #[path = "backend/gateway/mod.rs"]
 mod gateway;
 #[path = "models/huggingface.rs"]
@@ -134,8 +136,6 @@ mod ollama;
 mod openai;
 #[path = "network/peer_client.rs"]
 pub mod peer_client;
-#[path = "routing/fastest.rs"]
-pub mod fastest;
 #[path = "routing/pipeline.rs"]
 mod pipeline;
 #[path = "network/pkarr_node.rs"]
@@ -853,7 +853,12 @@ fn force_setup_if_requested(cli_flag: bool) -> anyhow::Result<()> {
     }
     let token = crate::brand::env("FORCE_SETUP").unwrap_or_default();
     let token = token.trim();
-    if token.is_empty() || matches!(token.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off") {
+    if token.is_empty()
+        || matches!(
+            token.to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    {
         return Ok(());
     }
     let marker = forced_setup_marker();
@@ -881,7 +886,10 @@ fn force_setup_mode() -> anyhow::Result<()> {
         with_suffix("-wal"),
         with_suffix("-shm"),
     ];
-    let present: Vec<_> = candidates.into_iter().filter(|path| path.exists()).collect();
+    let present: Vec<_> = candidates
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect();
     if present.is_empty() {
         info!("--setup: nenhuma configuração a guardar; subindo no wizard");
         return Ok(());

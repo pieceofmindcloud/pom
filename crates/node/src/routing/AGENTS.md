@@ -21,7 +21,9 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   fixadas). `PeerPerf::from_health` lê `perf`, `active_generations`,
   `route_rtt_ms` e `gateway_rtt_ms` do `/health`; `estimate_chain` estima um
   caminho dado (o de um prefixo em cache, com os tokens já retidos
-  descontados); `resolve_chain` valida uma cadeia de `node_id`s contra os
+  descontados); `describe_chain` descreve um caminho para o Painel com as
+  mesmas fontes, sem palpite (perna não medida fica `None`), devolvendo pernas,
+  modo de volta, rede por token e compute; `resolve_chain` valida uma cadeia de `node_id`s contra os
   candidatos vivos. O modo de volta (`ReturnMode`: resposta direta ou anel) é
   escolhido junto com o caminho - a programação dinâmica roda por modo -, e
   `return_path_prefers_ring` é a regra de reserva para o planejador guloso.

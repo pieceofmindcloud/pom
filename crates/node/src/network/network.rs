@@ -1574,10 +1574,12 @@ impl Network {
 
     pub async fn begin_local_auto_discovery_search(&self) -> anyhow::Result<String> {
         self.local_discovery
-            .begin_search(Some(crate::local_discovery::DiscoveredMachine::from_system(
-                &crate::sysmon::sample().await,
-                Some(self.hostname.clone()),
-            )))
+            .begin_search(Some(
+                crate::local_discovery::DiscoveredMachine::from_system(
+                    &crate::sysmon::sample().await,
+                    Some(self.hostname.clone()),
+                ),
+            ))
             .await
     }
 
@@ -1736,10 +1738,7 @@ impl Network {
     }
 
     pub fn libp2p_addrs(&self) -> Vec<String> {
-        self.libp2p_addrs
-            .read()
-            .expect("libp2p_addrs lock")
-            .clone()
+        self.libp2p_addrs.read().expect("libp2p_addrs lock").clone()
     }
 
     pub fn set_observed_addr(&self, host_port: &str) {

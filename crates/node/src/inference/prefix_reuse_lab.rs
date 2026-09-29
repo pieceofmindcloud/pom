@@ -1216,14 +1216,19 @@ async fn prefill_multi_pedaco_enche_o_pipeline() {
         );
     }
 
-    // O anel não sobrepõe: profundidade sempre 1, sobreposição desligada.
+    // No anel a sobreposição é dos hops (`ring_overlap`): o gateway continua
+    // com um pedaço por vez, e cada hop responde ao intermediário depois do
+    // próprio compute e repassa em segundo plano, em ordem.
     let anel = conversa_com_hops(Transporte::Anel, 1, true, 4).await;
     let t = &anel.turnos[0];
     assert!(t.falhou.is_none(), "[Anel] turno falhou: {:?}", t.falhou);
-    assert!(!t.overlap_enabled, "[Anel] a sobreposição não vale no anel");
+    assert!(
+        t.overlap_enabled,
+        "[Anel] a sobreposição dos hops devia estar pedida"
+    );
     assert!(
         t.pipeline_depth <= 1,
-        "[Anel] o anel não devia sobrepor pedaços: profundidade {}",
+        "[Anel] o gateway não manda mais de um pedaço por vez: profundidade {}",
         t.pipeline_depth
     );
 }

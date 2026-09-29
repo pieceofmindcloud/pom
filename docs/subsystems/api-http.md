@@ -1010,21 +1010,33 @@ deixou de responder".
 execução do Chat. Com `execution_id`, o gateway lê o trace persistido daquela
 requisição e deriva cada aresta de `pipeline_cycle.decode`, que registra a
 travessia lógica observada e o transporte efetivo (`http`, `https` ou `quic`).
-Sem o id, o Painel consulta a última execução concluída para as arestas
-solicitadas e também enumera todas as rotas completas do modelo ativo. Cada
-rota responde em `pipeline_routes` com `{ node_ids, legs_ms, rtt_ms }` e, quando
-todos os peers da rota têm velocidade medida, `compute_ms` (um passo de decode
-somado), `total_ms` (rede mais compute, um token pela rota) e `tokens_per_sec`;
-`peer_perf` traz, por peer do modelo ativo, `prefill_tokens_per_sec`,
-`decode_tokens_per_sec` e `active_generations`, lidos da sonda de admissão (que
-roda ali mesmo para o peer ainda não sondado). A ordem é
-das pernas é `Gateway -> cabeça -> ... -> cauda -> Gateway`; todas as pernas são
-somadas, e as rotas são ordenadas pelo `total_ms` (ou, sem ele, pelo RTT
-agregado) crescente, com `node_ids`
-como desempate estável. Os RTTs das rotas vêm do trace recente quando a perna
-foi observada, usando a medida de fio, e das sondas direcionais frescas do
-gateway e dos peers para o restante, incluindo o caso de um único head sem
-aresta no grafo. Se a cauda já é o gateway, ele aparece uma única vez e não
+Sem o id, o Painel mostra a rede, não a última execução deste nó: enumera todas
+as rotas completas do modelo ativo e as estima com as mesmas fontes e a mesma
+conta do planejador (`fastest::describe_chain`), então o card mostra o mesmo
+valor em qualquer nó. Cada rota responde em `pipeline_routes` com
+`{ node_ids, legs_ms, rtt_ms }` e, quando medidos, `network_ms` (rede paga por
+token no modo de volta escolhido), `return_mode` (`direct` ou `ring`),
+`compute_ms` (um passo de decode somado, com a fila), `total_ms` (rede no modo
+escolhido mais compute, um token pela rota) e `tokens_per_sec`. `total_ms` não é
+a soma das pernas: na resposta direta cada perna custa meio RTT, e no anel a
+volta da cauda não é paga - somar ida e volta inteiras de cada aresta dobrava o
+custo de rede. `peer_perf` traz, por peer do modelo ativo,
+`prefill_tokens_per_sec`, `decode_tokens_per_sec` e `active_generations`, lidos
+da sonda de admissão (que roda ali mesmo para o peer ainda não sondado). A ordem
+das pernas é `Gateway -> cabeça -> ... -> cauda -> Gateway`, e as rotas são
+ordenadas pelo `total_ms` (ou, sem ele, pelo RTT agregado) crescente, com
+`node_ids` como desempate estável. Os RTTs são os das rotas fixadas
+(`route_plan`): quem vê mede as próprias arestas até a cabeça, e cada peer
+publica no `/health` as suas (`route_rtt_ms`, `gateway_rtt_ms`, com o
+transporte em `route_kinds`/`gateway_route_kinds` e os peers alcançados só por
+relé em `relayed_peers`). Uma perna fixada no túnel até um peer de
+`relayed_peers` sai com `relayed: true` na medição e marca a rota inteira com
+`relayed: true`; o Painel a mostra em laranja forte com a explicação. As mesmas medições entram em
+`measurements` para as etiquetas das arestas (`tunnel` sai como
+`libp2p-tunnel`, a volta da cauda com destino `gateway`); o trace da última
+execução só preenche uma aresta que a rota planejada ainda não mediu. Antes o
+painel dependia do trace, e um nó que nunca foi gateway de uma execução não
+mostrava RTT nenhum. Se a cauda já é o gateway, ele aparece uma única vez e não
 cria uma perna artificial para si mesmo.
 Uma perna sem medição fica `null`, portanto o custo daquela rota permanece
 desconhecido. A resposta também pode conter

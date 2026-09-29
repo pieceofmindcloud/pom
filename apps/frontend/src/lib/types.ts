@@ -652,6 +652,8 @@ export interface ChatTelemetryRtt {
   to_node_id: string;
   rtt_ms: number;
   transport: string;
+  /** A aresta passa por um circuito num relé libp2p: rota a rever. */
+  relayed?: boolean;
 }
 
 export interface ChatTelemetryNetwork {
@@ -668,9 +670,14 @@ export interface ChatTelemetryNetwork {
     rtt_ms: number | null;
     /** Compute de um passo de decode somado nos peers da rota. */
     compute_ms?: number | null;
-    /** Um token pela rota: rede mais compute. */
+    /** Rede paga por token no modo de volta escolhido (não a soma das pernas). */
+    network_ms?: number | null;
+    return_mode?: "direct" | "ring" | null;
+    /** Um token pela rota: rede no modo escolhido mais compute. */
     total_ms?: number | null;
     tokens_per_sec?: number | null;
+    /** Alguma perna da rota passa por relé. */
+    relayed?: boolean;
   }>;
   /** Velocidade medida de cada peer do modelo ativo. */
   peer_perf?: Record<string, ChatTelemetryPeerPerf>;

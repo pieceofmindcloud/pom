@@ -186,6 +186,11 @@ pub struct RouteBook {
     edges: RwLock<HashMap<EdgeKey, EdgePlan>>,
     attempts: RwLock<HashMap<EdgeKey, Attempt>>,
     wake: tokio::sync::Notify,
+    /// Peers que este nó só alcança por circuito num relé: toda conexão libp2p
+    /// viva com eles é `/p2p-circuit`. Uma rota `tunnel` até um deles passa
+    /// por um servidor intermediário a cada frame. Refeito a cada volta do
+    /// planejador, porque o hole punch pode fechar depois da medição.
+    relayed: RwLock<std::collections::BTreeSet<String>>,
 }
 
 /// O livro de rotas do processo. Global como o `tunnel_sender`: todo cliente
@@ -381,6 +386,20 @@ impl RouteBook {
             },
         );
         true
+    }
+
+    /// Peers alcançados só por relé (ver o campo `relayed`), em ordem.
+    pub fn relayed_nodes(&self) -> Vec<String> {
+        self.relayed
+            .read()
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn set_relayed(&self, nodes: std::collections::BTreeSet<String>) {
+        if let Ok(mut relayed) = self.relayed.write() {
+            *relayed = nodes;
+        }
     }
 
     /// Esquece as arestas de peers que saíram da tabela.
@@ -788,6 +807,20 @@ pub fn spawn_planner(network: std::sync::Arc<crate::network::Network>) {
             futures::future::join_all(jobs).await;
             let alive: Vec<String> = peers.iter().map(|peer| peer.node_id.clone()).collect();
             book().retain_nodes(&alive);
+            book().set_relayed(
+                peers
+                    .iter()
+                    .filter(|peer| {
+                        let links = peer
+                            .libp2p_peer_id
+                            .as_deref()
+                            .map(|id| network.libp2p_links(id))
+                            .unwrap_or_default();
+                        !links.is_empty() && links.iter().all(|link| link.relayed)
+                    })
+                    .map(|peer| peer.node_id.clone())
+                    .collect(),
+            );
         }
     });
 }

@@ -414,10 +414,7 @@ impl ClientPool {
                 !body_may_have_been_sent,
             ))),
             Err(_) => Err(anyhow!(QuicDeliveryError::new(
-                format!(
-                    "deadline de transporte HTTP/3 expirou após {:?}",
-                    timeout
-                ),
+                format!("deadline de transporte HTTP/3 expirou após {:?}", timeout),
                 !body_may_have_been_sent,
             ))),
         }

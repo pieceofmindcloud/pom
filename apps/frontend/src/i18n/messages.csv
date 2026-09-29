@@ -129,6 +129,13 @@ canvas.noCapacity,No inference capacity announced yet.,Nenhuma capacidade de inf
 canvas.noModel,No model deployed,Nenhum modelo implantado
 canvas.openDetails,Double-click to open this machine''s details,Duplo clique abre os detalhes desta máquina
 canvas.pipelineCostBreakdown,network {network} ms · compute {compute} ms,rede {network} ms · compute {compute} ms
+canvas.pipelineRouteBreakdown,network {network} ms ({mode}) · compute {compute} ms,rede {network} ms ({mode}) · compute {compute} ms
+canvas.returnDirect,direct return,resposta direta
+canvas.returnRing,ring,anel
+canvas.relayBadge,RELAY,RELAY
+"canvas.relayEdgeHint","This link goes through a relay peer: every frame crosses an intermediate server, which adds latency. Review the route.","Esta ligação passa por um peer de relé: cada frame atravessa um servidor intermediário, o que aumenta a latência. Reveja a rota."
+canvas.relayRouteTitle,Route through relay,Rota por relé
+"canvas.relayRouteHint","The fastest route crosses a relay peer because the machines could not connect directly (NAT, firewall or a failed hole punch). Every token pays the detour to the relay. To improve it, give the machines a direct path: publish the node ports, advertise a reachable address (a VPN such as Tailscale with POM_ADVERTISE_ADDR) or open the firewall so the hole punch succeeds.","A rota mais rápida atravessa um peer de relé porque as máquinas não conseguiram se conectar diretamente (NAT, firewall ou hole punch que falhou). Cada token paga o desvio até o relé. Para melhorar, dê às máquinas um caminho direto: publique as portas do nó, anuncie um endereço alcançável (uma VPN como Tailscale com POM_ADVERTISE_ADDR) ou libere o firewall para o hole punch fechar."
 canvas.pipelineRouteCount,"{count} route{count, plural, =1 {} other {s}}","{count} rota{count, plural, =1 {} other {s}}"
 canvas.pipelineThroughput,≈ {tps} tok/s per token cycle,≈ {tps} tok/s por ciclo de token
 canvas.pipelineTotal,Pipeline total: {ms} ms,Total do pipeline: {ms} ms

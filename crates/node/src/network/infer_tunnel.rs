@@ -657,7 +657,9 @@ mod tests {
     /// numa permitida, e query string não pode servir de escape.
     #[test]
     fn a_comparacao_da_lista_e_exata() {
-        assert!(!gateway_path_is_allowed("/handshake/../api/ui/trust/anchor"));
+        assert!(!gateway_path_is_allowed(
+            "/handshake/../api/ui/trust/anchor"
+        ));
         assert!(!gateway_path_is_allowed("/health/../admin"));
         assert!(!gateway_path_is_allowed("/api/cluster/tlsx"));
         assert!(gateway_path_is_allowed("/api/cluster/tls?verbose=1"));

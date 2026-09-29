@@ -242,7 +242,9 @@ fallback continua em `addr_candidates` + `RouteTable`.
   por `(node_id, Plane)` a lista de rotas medidas em ordem de RTT (empate de
   2 ms decide QUIC, depois HTTP, depois túnel). Dois planos por peer:
   `Inference` (prefill/decode) e `Gateway` (volta da resposta direta e do
-  remote-stream). `spawn_planner`, iniciado por `Network::start`, mede toda
+  remote-stream). `relayed_nodes` lista os peers alcançados só por circuito
+  num relé, refeita a cada volta do planejador a partir de
+  `Network::libp2p_links`. `spawn_planner`, iniciado por `Network::start`, mede toda
   aresta sem análise, vencida (5 min) ou cujo peer mudou endereços, portas,
   `deploy_id` ou faixa de camadas - por isso a implantação que fica `serving` já
   dispara a análise antes da primeira requisição. `measure_edge` sonda em

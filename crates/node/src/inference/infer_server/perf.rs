@@ -111,7 +111,11 @@ impl SlicePerf {
 /// Largura por token e forma (sem o eixo de tokens) do estado oculto que uma
 /// fatia do meio recebe. Com vários fluxos de residual, `n_embd_out` é um
 /// múltiplo de `n_embd` e o estado viaja em três eixos.
-pub(crate) fn hidden_input_layout(n_embd: usize, n_embd_inp: usize, n_embd_out: usize) -> (usize, Vec<usize>) {
+pub(crate) fn hidden_input_layout(
+    n_embd: usize,
+    n_embd_inp: usize,
+    n_embd_out: usize,
+) -> (usize, Vec<usize>) {
     if n_embd > 0 && n_embd_out > n_embd && n_embd_out % n_embd == 0 {
         (n_embd_out, vec![n_embd, n_embd_out / n_embd])
     } else {
@@ -123,7 +127,11 @@ pub(crate) fn hidden_input_layout(n_embd: usize, n_embd_inp: usize, n_embd_out: 
 /// desliga: um defeito aqui não pode derrubar um nó em produção sem saída.
 pub(crate) fn bench_enabled() -> bool {
     !matches!(
-        crate::brand::env("SLICE_BENCH").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+        crate::brand::env("SLICE_BENCH")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
         "0" | "false" | "no" | "off"
     )
 }
@@ -157,7 +165,8 @@ fn bench_on_sequence(s: &mut InferState, seq_id: u32) -> Result<BenchResult> {
     // (hyper-connections, Qwen3.8 "qwen4exp"), com `n_embd_out` floats por
     // token. Um estado oculto na forma errada aborta o processo dentro do
     // llama.cpp (`GGML_ASSERT` no reshape), sem erro que dê para tratar.
-    let hidden_layout = hidden_input_layout(s.engine.n_embd, s.engine.n_embd_inp, s.engine.n_embd_out);
+    let hidden_layout =
+        hidden_input_layout(s.engine.n_embd, s.engine.n_embd_inp, s.engine.n_embd_out);
     let n_vocab = s.engine.n_vocab.max(2) as i32;
     let _ = s.engine.set_capture_layer(None);
 
@@ -215,7 +224,10 @@ mod tests {
     #[test]
     fn estado_oculto_com_varios_fluxos_viaja_em_tres_eixos() {
         // Qwen3.8 "qwen4exp": 4 fluxos de 2560.
-        assert_eq!(hidden_input_layout(2560, 2560, 10240), (10240, vec![2560, 4]));
+        assert_eq!(
+            hidden_input_layout(2560, 2560, 10240),
+            (10240, vec![2560, 4])
+        );
         // Modelo comum.
         assert_eq!(hidden_input_layout(4096, 4096, 4096), (4096, vec![4096]));
     }

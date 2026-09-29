@@ -735,6 +735,13 @@ isso consumia o prazo do frame. Agora a rota é **medida uma vez e fixada**.
   ativa, as alternativas e a idade da análise. Os logs dizem a rota escolhida
   (`rota inference para <peer>: http ... (26.0 ms)`), a troca
   (`falhou duas vezes; passando para ...`) e a reanálise.
+- **Relé.** A cada volta (2 s) o planejador anota em `RouteBook::relayed_nodes`
+  os peers com quem toda conexão libp2p viva é `/p2p-circuit` - o hole punch
+  não fechou. Uma rota `tunnel` até um deles atravessa o relé a cada frame. O
+  `/health` publica a lista em `relayed_peers`, e o Painel pinta de laranja a
+  aresta e a rota (`relayed` em `/api/ui/chat/telemetry`) com a explicação do
+  motivo da lentidão. A lista é refeita a cada volta, então um hole punch que
+  fecha depois da medição tira a marca.
 
 A preferência aprendida pelo túnel (abaixo) continua valendo para arestas ainda
 sem análise.

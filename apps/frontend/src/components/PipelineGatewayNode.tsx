@@ -1,4 +1,4 @@
-import { ServerCog } from "lucide-react";
+import { Info, ServerCog } from "lucide-react";
 import { useI18n } from "../i18n/provider";
 import {
   GATEWAY_HEIGHT,
@@ -23,6 +23,17 @@ export type PipelineRouteCost = {
   computeMs: number | null;
   /** Soma do RTT calculada pelo backend, quando todas as pernas existem. */
   rttMs?: number | null;
+  /**
+   * Rede paga por token no modo de volta escolhido pelo planejador. Não é a
+   * soma das pernas: na resposta direta cada perna custa meio RTT, e no anel a
+   * volta da cauda não é paga.
+   */
+  networkMs?: number | null;
+  /** Um token pela rota, calculado pelo backend: rede no modo escolhido mais compute. */
+  totalMs?: number | null;
+  returnMode?: "direct" | "ring" | null;
+  /** Alguma perna da rota passa por um circuito num relé libp2p. */
+  relayed?: boolean;
 };
 
 /** Soma somente uma decomposição completa, sem transformar ausência em zero. */
@@ -42,14 +53,15 @@ function validMs(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+/**
+ * Tempo de um token pela rota. Vem do backend, que usa a conta do planejador;
+ * somar as pernas aqui contaria ida e volta inteiras de cada aresta. Sem
+ * compute medido, a rede sozinha ainda ordena as rotas.
+ */
 export function pipelineRouteTotalMs(route: PipelineRouteCost): number | null {
-  const networkMs = route.legsMs.every(validMs)
-    ? route.legsMs.reduce((sum, leg) => sum + leg, 0)
-    : null;
-  const computeMs = validMs(route.computeMs) ? route.computeMs : null;
-  if (computeMs != null && networkMs != null) return networkMs + computeMs;
-  if (validMs(route.rttMs)) return route.rttMs;
-  return networkMs;
+  if (validMs(route.totalMs)) return route.totalMs;
+  if (validMs(route.networkMs)) return route.networkMs;
+  return null;
 }
 
 export function PipelineGatewayNode({
@@ -77,6 +89,7 @@ export function PipelineGatewayNode({
       return left.route.nodeIds.join("\u0000").localeCompare(right.route.nodeIds.join("\u0000"));
     });
   const routeTotalMs = orderedRoutes[0]?.totalMs ?? null;
+  const bestRoute = orderedRoutes[0]?.route;
   const displayedTotalMs = orderedRoutes.length > 0 ? routeTotalMs : totalMs;
   const networkMs = cost?.legsMs.every((leg): leg is number => leg != null && Number.isFinite(leg) && leg >= 0)
     ? cost.legsMs.reduce((sum, leg) => sum + leg, 0)
@@ -107,16 +120,37 @@ export function PipelineGatewayNode({
           {displayedTotalMs == null ? t("canvas.pipelineTotalUnknown") : t("canvas.pipelineTotal", { ms: displayedTotalMs.toFixed(1) })}
         </div>
         {/* Com o compute medido, o total é o tempo de um token pela rota. */}
-        {displayedTotalMs != null && displayedTotalMs > 0 && orderedRoutes[0]?.route.computeMs != null && (
+        {displayedTotalMs != null && displayedTotalMs > 0 && (orderedRoutes.length === 0 ? computeMs != null : validMs(bestRoute?.totalMs)) && (
           <div data-testid="pipeline-throughput" className="mt-0.5 font-mono text-[10px] tabular-nums text-muted">
             {t("canvas.pipelineThroughput", { tps: (1000 / displayedTotalMs).toFixed(1) })}
           </div>
         )}
       </div>
-      {networkMs != null && computeMs != null && (
+      {bestRoute && validMs(bestRoute.networkMs) && validMs(bestRoute.computeMs) ? (
+        <p data-testid="pipeline-route-breakdown" className="mt-2 font-mono text-[10px] tabular-nums text-muted">
+          {t("canvas.pipelineRouteBreakdown", {
+            network: bestRoute.networkMs.toFixed(1),
+            mode: bestRoute.returnMode === "direct" ? t("canvas.returnDirect") : t("canvas.returnRing"),
+            compute: bestRoute.computeMs.toFixed(1),
+          })}
+        </p>
+      ) : orderedRoutes.length === 0 && networkMs != null && computeMs != null && (
         <p className="mt-2 font-mono text-[10px] tabular-nums text-muted">
           {t("canvas.pipelineCostBreakdown", { network: networkMs.toFixed(1), compute: computeMs.toFixed(1) })}
         </p>
+      )}
+      {bestRoute?.relayed && (
+        <div
+          data-testid="pipeline-relay-warning"
+          role="note"
+          className="mt-2 flex gap-2 rounded-lg border-2 border-relay bg-relay/15 px-2.5 py-2 text-[10px] leading-snug text-fg"
+        >
+          <Info className="mt-px h-4 w-4 shrink-0 text-relay" aria-hidden="true" />
+          <div>
+            <div className="font-semibold uppercase tracking-[0.1em] text-relay">{t("canvas.relayRouteTitle")}</div>
+            <p className="mt-0.5 text-muted">{t("canvas.relayRouteHint")}</p>
+          </div>
+        </div>
       )}
       {orderedRoutes.length > 0 && (
         <div data-testid="pipeline-routes" className="mt-2 border-t border-aqua/15 pt-2">
@@ -127,9 +161,10 @@ export function PipelineGatewayNode({
             {orderedRoutes.map(({ route, totalMs: routeMs }) => {
               const path = route.nodeIds.join(" → ");
               return (
-                <li key={path} className="flex min-w-0 items-center justify-between gap-2 font-mono text-[10px] tabular-nums text-muted" title={path}>
+                <li key={path} className={`flex min-w-0 items-center justify-between gap-2 font-mono text-[10px] tabular-nums text-muted${route.relayed ? " rounded border-l-2 border-relay pl-1" : ""}`} title={route.relayed ? `${path}\n${t("canvas.relayEdgeHint")}` : path}>
                   <span className="min-w-0 truncate">{path}</span>
-                  <span className="shrink-0 text-aqua">{routeMs == null ? t("canvas.pipelineTotalUnknown") : `${routeMs.toFixed(1)} ms`}</span>
+                  {route.relayed && <span data-testid="pipeline-route-relay" className="shrink-0 rounded bg-relay px-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-white">{t("canvas.relayBadge")}</span>}
+                  <span className={`shrink-0 ${route.relayed ? "text-relay" : "text-aqua"}`}>{routeMs == null ? t("canvas.pipelineTotalUnknown") : `${routeMs.toFixed(1)} ms`}</span>
                 </li>
               );
             })}

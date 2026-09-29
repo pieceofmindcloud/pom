@@ -2969,11 +2969,15 @@ impl RequestTrace {
             .map(|hop| hop.decode.reported_spans)
             .sum::<u64>();
         // Remote-stream callbacks count accepted tokens directly. The regular
-        // path has no callback frames, so its completed output token count is
-        // the authoritative expected span count for each pipeline hop.
+        // path has no callback frames: each hop reports one span per decode
+        // round, and a round yields one token plus the MTP drafts it
+        // accepted. Counting output tokens alone expected ~3.8x the spans of a
+        // speculative run and reported 26% coverage on a complete trace.
+        let decode_rounds =
+            (self.output_tokens as u64).saturating_sub(self.mtp_draft_tokens_accepted);
         let expected_decode_spans = self
             .expected_decode_spans
-            .max((self.output_tokens as u64).saturating_mul(self.hops.len() as u64));
+            .max(decode_rounds.saturating_mul(self.hops.len() as u64));
         let completeness_percent = if expected_decode_spans > 0 {
             (reported_decode_spans as f64 / expected_decode_spans as f64 * 100.0).min(100.0)
         } else if expected_peers > 0 {

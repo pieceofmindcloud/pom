@@ -268,9 +268,17 @@ Per-file list:
 - `ModelNetworkCanvas.tsx` - Cada card de máquina mostra também o TPS medido de
   decode e de prefill (`machine-tps`, de `peer_perf` do
   `/api/ui/chat/telemetry`); sem medição diz "velocidade não medida". No
-  `PipelineGatewayNode`, as rotas recebem o `compute_ms` do backend, então o
-  total no fim da pipeline passa a ser rede mais compute de um token, com o
-  tok/s equivalente (`pipeline-throughput`).
+  `PipelineGatewayNode`, o total de cada rota é o `total_ms` do backend
+  (`pipelineRouteTotalMs`): rede no modo de volta que o planejador escolheria
+  mais compute de um token, com o tok/s equivalente (`pipeline-throughput`) e a
+  divisão rede/modo/compute da melhor rota (`pipeline-route-breakdown`). A
+  interface nunca soma as pernas: isso contaria ida e volta inteiras de cada
+  aresta. As etiquetas de RTT das arestas vêm das rotas planejadas, iguais em
+  qualquer nó. Uma aresta com `relayed` (túnel por circuito num relé) fica em
+  laranja forte (token `--relay`, `stroke-relay` tracejado), e o
+  `RouteRttLabel` troca o transporte por "RELAY" com ícone de informação e a
+  explicação no `title`; se a melhor rota tem `relayed`, o gateway mostra o
+  aviso `pipeline-relay-warning` dizendo por que está lenta e como melhorar.
 - `ModelNetworkCanvas.tsx` - A visão operacional principal: um grafo SVG com
   pan/zoom de nós (cards de faixa com medidores agrupados de RAM/carga/VRAM,
   seguidos pelas temperaturas compactas quando há GPU) e arestas curvas, guiado por

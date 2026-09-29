@@ -115,6 +115,9 @@ function mount(
         node_ids: route.nodeIds,
         legs_ms: route.legsMs,
         rtt_ms: route.rttMs ?? null,
+        network_ms: route.networkMs ?? null,
+        total_ms: route.totalMs ?? null,
+        return_mode: route.returnMode ?? null,
       })),
     });
   }
@@ -210,13 +213,14 @@ describe("Dashboard", () => {
     const cluster = fakeCluster([fakeSlicePeer("head", 0, 31)], "qwen35");
 
     mount(cluster, "admin", undefined, undefined, undefined, [
-      { nodeIds: ["head", "gateway"], legsMs: [5, 3], computeMs: null },
+      // Resposta direta: meio RTT da ida (5) e meio da volta (3).
+      { nodeIds: ["head", "gateway"], legsMs: [5, 3], computeMs: null, networkMs: 4, returnMode: "direct" },
     ]);
 
     await waitFor(() => {
       const gateway = screen.getByRole("heading", { name: "Gateway" }).closest("article") as HTMLElement;
       expect(gateway.textContent).not.toContain("não medido");
-      expect(gateway.textContent).toMatch(/head.*8\.0 ms/);
+      expect(gateway.textContent).toMatch(/head.*4\.0 ms/);
     });
   });
 

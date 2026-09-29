@@ -276,7 +276,8 @@ Per-file list:
   The model graph receives directional transport measurements and
   `pipeline_routes` for every complete deployed route. It renders the
   distributed cycle as Gateway -> peers -> Gateway, orders route cards by
-  aggregate RTT with node ID as a stable tie-breaker, and uses the least-cost
+  the backend's per-token `total_ms` (network in the chosen return mode plus
+  compute; never the raw sum of legs) with node ID as a stable tie-breaker, and uses the least-cost
   route for the headline while keeping alternatives visible. An observed
   `pipeline_cost` from a completed chat execution remains available when every
   execution leg and compute measurement is known.

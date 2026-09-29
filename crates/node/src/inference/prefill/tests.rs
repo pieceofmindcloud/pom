@@ -1305,6 +1305,26 @@ mod tests {
     }
 
     #[test]
+    fn speculative_decode_coverage_counts_rounds_not_tokens() {
+        // 84 tokens, 61 drafts aceitos: 23 rodadas por salto, não 84.
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 27), ("no2", 28, 47)]);
+        trace.output_tokens = 84;
+        trace.mtp_draft_tokens_accepted = 61;
+        for hop in 0..2 {
+            trace.record_hop_from_json(
+                hop,
+                Phase::Decode,
+                &json!({"span_count": 23, "round_trip_ms": 76, "processing_ms": 75}),
+            );
+        }
+        trace.complete = true;
+        trace.refresh_telemetry(76);
+
+        assert_eq!(trace.telemetry.expected_decode_spans, 46);
+        assert_eq!(trace.telemetry.completeness_percent, 100.0);
+    }
+
+    #[test]
     fn regular_decode_coverage_uses_output_tokens_per_pipeline_hop() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15), ("no2", 16, 31)]);
         trace.output_tokens = 3;

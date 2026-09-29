@@ -55,6 +55,9 @@ pub struct PeerPerf {
     /// Transporte (`quic`, `http`, `tunnel`) das rotas fixadas deste peer.
     pub route_kinds: HashMap<String, String>,
     pub gateway_route_kinds: HashMap<String, String>,
+    /// Peers que este só alcança por circuito num relé (`relayed_peers`): uma
+    /// rota `tunnel` até eles passa por um servidor intermediário.
+    pub relayed_peers: std::collections::HashSet<String>,
 }
 
 impl PeerPerf {
@@ -101,6 +104,15 @@ impl PeerPerf {
             gateway_rtt_ms: map(body.get("gateway_rtt_ms")),
             route_kinds: kinds(body.get("route_kinds")),
             gateway_route_kinds: kinds(body.get("gateway_route_kinds")),
+            relayed_peers: body
+                .get("relayed_peers")
+                .and_then(serde_json::Value::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| id.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }
@@ -211,15 +223,16 @@ fn stage(peer: &PeerInfo, inputs: &CostInputs, speeds: &Speeds, rtt_in_ms: f64) 
 
 /// RTT de `from` até o servidor de inferência de `to`.
 fn edge_rtt(from: &str, to: &str, inputs: &CostInputs) -> f64 {
+    measured_edge_rtt(from, to, inputs).unwrap_or(UNKNOWN_RTT_MS)
+}
+
+/// `edge_rtt` sem palpite: `None` quando ninguém mediu a aresta.
+fn measured_edge_rtt(from: &str, to: &str, inputs: &CostInputs) -> Option<f64> {
     if from == to {
-        return 0.0;
+        return Some(0.0);
     }
     if from == inputs.requester {
-        return inputs
-            .requester_rtt_ms
-            .get(to)
-            .copied()
-            .unwrap_or(UNKNOWN_RTT_MS);
+        return inputs.requester_rtt_ms.get(to).copied();
     }
     inputs
         .perf
@@ -228,7 +241,6 @@ fn edge_rtt(from: &str, to: &str, inputs: &CostInputs) -> f64 {
         // Sem medição do peer de origem, a do gateway até o destino é o
         // melhor palpite disponível.
         .or_else(|| inputs.requester_rtt_ms.get(to).copied())
-        .unwrap_or(UNKNOWN_RTT_MS)
 }
 
 /// Por onde a resposta de cada token volta a quem pediu.
@@ -282,28 +294,36 @@ pub fn forced_return_mode() -> Option<ReturnMode> {
 /// direta é inviável. Sem medição nenhuma da cauda, o palpite é o RTT deste
 /// gateway até ela.
 fn return_rtt(tail: &str, inputs: &CostInputs) -> Option<f64> {
-    if tail == inputs.requester {
-        return Some(0.0);
+    match measured_return_rtt(tail, inputs) {
+        ReturnLeg::Measured(rtt) => Some(rtt),
+        ReturnLeg::Missing => None,
+        ReturnLeg::Unmeasured => Some(UNKNOWN_RTT_MS),
     }
+}
+
+enum ReturnLeg {
+    Measured(f64),
+    /// A cauda mediu rotas, mas nenhuma até este gateway.
+    Missing,
+    /// Ninguém mediu nada ainda.
+    Unmeasured,
+}
+
+fn measured_return_rtt(tail: &str, inputs: &CostInputs) -> ReturnLeg {
+    if tail == inputs.requester {
+        return ReturnLeg::Measured(0.0);
+    }
+    let from_gateway = || match inputs.requester_rtt_ms.get(tail) {
+        Some(rtt) => ReturnLeg::Measured(*rtt),
+        None => ReturnLeg::Unmeasured,
+    };
     match inputs.perf.get(tail) {
         Some(perf) => match perf.gateway_rtt_ms.get(inputs.requester) {
-            Some(rtt) => Some(*rtt),
-            None if !perf.gateway_rtt_ms.is_empty() => None,
-            None => Some(
-                inputs
-                    .requester_rtt_ms
-                    .get(tail)
-                    .copied()
-                    .unwrap_or(UNKNOWN_RTT_MS),
-            ),
+            Some(rtt) => ReturnLeg::Measured(*rtt),
+            None if !perf.gateway_rtt_ms.is_empty() => ReturnLeg::Missing,
+            None => from_gateway(),
         },
-        None => Some(
-            inputs
-                .requester_rtt_ms
-                .get(tail)
-                .copied()
-                .unwrap_or(UNKNOWN_RTT_MS),
-        ),
+        None => from_gateway(),
     }
 }
 
@@ -384,6 +404,93 @@ pub fn estimate_chain(
         prefill_ms,
         decode_ms_per_token,
         total_ms,
+    }
+}
+
+/// Um caminho como o painel o mostra: as mesmas fontes e a mesma conta do
+/// planejador, mas sem palpite - perna não medida fica `None` e não fecha
+/// total.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ChainView {
+    /// RTT de ida e volta de cada perna: quem pede -> cabeça, cada passagem
+    /// entre estágios e, se a cauda não for quem pede, cauda -> quem pede.
+    pub legs_ms: Vec<Option<f64>>,
+    /// Modo de volta que o planejador escolheria para este caminho.
+    pub return_mode: Option<ReturnMode>,
+    /// Rede paga por token no modo escolhido (não a soma das pernas: na
+    /// resposta direta cada perna custa meio RTT; no anel a volta da cauda
+    /// não existe).
+    pub network_ms: Option<f64>,
+    /// Compute de um passo de decode somado sobre os estágios, com a fila.
+    pub compute_ms: Option<f64>,
+    /// Um token pela rota: rede no modo escolhido mais compute.
+    pub decode_ms_per_token: Option<f64>,
+}
+
+pub fn describe_chain(chain: &[&PeerInfo], inputs: &CostInputs) -> ChainView {
+    let mut legs_ms = Vec::with_capacity(chain.len() + 1);
+    let mut from = inputs.requester;
+    for peer in chain {
+        legs_ms.push(measured_edge_rtt(from, &peer.node_id, inputs));
+        from = &peer.node_id;
+    }
+    let back = match chain.last() {
+        Some(tail) if tail.node_id != inputs.requester => {
+            let leg = measured_return_rtt(&tail.node_id, inputs);
+            legs_ms.push(match leg {
+                ReturnLeg::Measured(rtt) => Some(rtt),
+                _ => None,
+            });
+            leg
+        }
+        _ => ReturnLeg::Measured(0.0),
+    };
+    let forward = legs_ms[..chain.len()]
+        .iter()
+        .copied()
+        .collect::<Option<Vec<_>>>()
+        .map(|legs| legs.into_iter().sum::<f64>());
+    let modes = match inputs.forced_return {
+        Some(mode) => vec![mode],
+        None => vec![ReturnMode::Direct, ReturnMode::Ring],
+    };
+    // Sem a volta medida, o planejador compararia com um palpite; o painel
+    // não escolhe o modo por ele.
+    let undecided = matches!(back, ReturnLeg::Unmeasured) && modes.contains(&ReturnMode::Direct);
+    let chosen = forward.filter(|_| !undecided).and_then(|forward| {
+        modes
+            .into_iter()
+            .filter_map(|mode| {
+                let network = match (mode, &back) {
+                    (ReturnMode::Ring, _) => forward * mode.forward_weight(),
+                    (ReturnMode::Direct, ReturnLeg::Measured(back)) => {
+                        forward * mode.forward_weight() + back / 2.0
+                    }
+                    (ReturnMode::Direct, _) => return None,
+                };
+                Some((mode, network))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    });
+    let compute_ms = chain
+        .iter()
+        .map(|peer| {
+            let perf = inputs.perf.get(&peer.node_id)?;
+            let queue = perf
+                .active_generations
+                .max(inputs.local_load.get(&peer.node_id).copied().unwrap_or(0));
+            perf.decode_ms_per_step.map(|ms| ms * (1.0 + queue as f64))
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|steps| steps.into_iter().sum::<f64>());
+    ChainView {
+        legs_ms,
+        return_mode: chosen.map(|(mode, _)| mode),
+        network_ms: chosen.map(|(_, ms)| ms),
+        compute_ms,
+        decode_ms_per_token: chosen
+            .zip(compute_ms)
+            .map(|((_, network), compute)| network + compute),
     }
 }
 
@@ -949,11 +1056,13 @@ mod tests {
             "perf": {"prefill_ms_per_token": 0.8, "decode_ms_per_step": 24.5},
             "route_rtt_ms": {"peer-b": 26.0},
             "gateway_rtt_ms": {"peer-g": 3.5, "bad": -1},
+            "relayed_peers": ["peer-g"],
         });
         let perf = PeerPerf::from_health(&body);
         assert_eq!(perf.active_generations, 2);
         assert_eq!(perf.decode_ms_per_step, Some(24.5));
         assert_eq!(perf.route_rtt_ms["peer-b"], 26.0);
         assert_eq!(perf.gateway_rtt_ms.len(), 1);
+        assert!(perf.relayed_peers.contains("peer-g"));
     }
 }

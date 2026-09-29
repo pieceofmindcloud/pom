@@ -183,8 +183,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   counts and stream measurements when the backend publishes them.
   `ChatTelemetryNetwork.pipeline_cost` carries the observed execution cycle
   legs and measured per-hop compute, while `pipeline_routes` carries every
-  complete deployed route and its aggregate network RTT for the Dashboard's
-  Gateway card. The observed cost is optional because an asynchronous return
+  complete deployed route for the Dashboard's Gateway card, costed by the
+  backend like the planner (`network_ms`, `return_mode`, `total_ms`). The observed cost is optional because an asynchronous return
   callback may not expose a sender-side RTT.
   `GpuStat.power_watts` é telemetria opcional: o card de detalhes mostra o
   valor quando NVIDIA ou AMD expõe a potência da placa e mantém desconhecido

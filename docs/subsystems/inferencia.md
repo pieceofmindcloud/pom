@@ -181,10 +181,12 @@ usa `/api/ui/chat/telemetry` para buscar separadamente o RTT direcional das
 arestas entre os peers do trace. O `/health` publica `profile_sync_enabled`
 por máquina, derivado diretamente de `POM_PROFILE_SYNC`; um zero em
 `node_backend_sync_ms` nunca é usado para deduzir essa flag.
-`expected_decode_spans` usa os tokens de saída e os hops do plano quando não
-há expectativa explícita dos callbacks remote-stream. Isso torna a cobertura
-mensurável também no caminho direto normal; os spans reportados continuam a
-ser contagens observadas por hop.
+`expected_decode_spans` usa as rodadas de decode (tokens de saída menos os
+rascunhos MTP aceitos) vezes os hops do plano quando não há expectativa
+explícita dos callbacks remote-stream: cada hop reporta um span por rodada, e
+uma rodada especulativa produz vários tokens. Contar só os tokens esperava
+~3,8x os spans de uma execução com MTP e marcava 26% de cobertura num trace
+completo. Os spans reportados continuam a ser contagens observadas por hop.
 
 `hidden_state_dtype` é evidência do fio, não a configuração local do gateway:
 ele só aparece quando bytes de estado oculto cruzaram o hop. Por isso fica
@@ -1148,9 +1150,23 @@ sessão termina limpa e o gateway libera os hops alcançados. A classificação 
 sessão desconhecida percorre toda a cadeia de erro, porque a telemetria parcial
 pode envolver a recusa direta e esconder sua mensagem no nível externo.
 
-O modo anel permanece serializado pelo contrato de resposta aninhada, para não
-abrir uma segunda requisição na mesma sessão sem a confirmação da anterior; ele
-ignora a janela.
+No modo anel a sobreposição é feita pelos hops, não pelo gateway. Com
+`prefill_max_inflight_chunks > 1`, o `run_ring` marca `ring_overlap` no pedido;
+cada hop que repassa responde a um pedaço **intermediário** logo depois do
+próprio compute e o leva ao hop seguinte em segundo plano
+(`infer_server/prefill.rs`, uma vaga de repasse por sessão). O pedaço seguinte
+só segue adiante depois que o repasse anterior terminou, então o próximo hop
+recebe os pedaços em ordem; o compute deste hop no pedaço `k+1` corre enquanto
+o seguinte processa o `k`. A resposta antecipada leva os campos que só a
+cabeça sabe (`next_pos`, tokens, prefixo) e a telemetria dos hops seguintes no
+pedaço anterior. O último pedaço continua borbulhado e síncrono, e só sai
+depois de todos os anteriores entregues. Uma falha num repasse em segundo plano
+volta no pedaço seguinte como 502, que o gateway trata como reconstrução fria,
+nunca como retomada. O gateway continua mandando um pedaço por vez: o trace
+publica `prefill_overlap_enabled` e profundidade 2 (um pedaço em compute, um em
+repasse). Antes o anel ignorava a janela, e uma rota que o planejador mandava
+pelo anel perdia a sobreposição inteira: medido em 2026-09-29 (Qwen3.8, ksia ->
+salem), cada pedaço pagava `cabeça + rede + cauda` em série, ~330 ms.
 
 H1 aproxima o prefill do regime limitado por transmissão: com `K` pedaços e o
 pipeline cheio, o tempo tende a `K · max(perna, cálculo)` mais o enchimento, em
@@ -2566,7 +2582,15 @@ lifetime, frames e bytes, primeira entrega, latências de frame min/p50/p95/p99/
 
 ## Defeitos anotados
 
-Nenhum em aberto. O rascunho MTP externo de `qwen4exp` (Qwen3.8-Flash-Next)
+- **`network_ms` do hop que encaminha inclui o hop seguinte.** Quando a cabeça
+  é o próprio gateway (transporte `local`) e encaminha ao próximo peer dentro
+  da mesma chamada, o `round_trip_ms` dela cobre a ida e volta inteira do hop
+  seguinte, e `network_ms`/`net_rtt_*` da cabeça saem como rede o que é espera
+  pelo downstream. Visto em 2026-09-29 (Qwen3.8, ksia -> salem): cabeça com
+  `round_trip_ms` 3041 = 573 de compute + 2419 do hop seguinte, e "rede local"
+  de 208 ms por chamada no prefill. Os totais por hop não somam com o relógio.
+
+O rascunho MTP externo de `qwen4exp` (Qwen3.8-Flash-Next)
 não anexava - `check_tensor_dims: tensor 'output_hc_norm.weight' not found`
 em `load_mtp_draft`, confirmado ao vivo na ksia/salem em 2026-09-18. A causa
 tinha três partes em `llama.cpp/src/models/qwen4exp.cpp` (fork

@@ -1929,6 +1929,43 @@ async fn post_session_lifecycle(
     session_id: &str,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
+    // A rota fixada pelo plano de rotas vale também para o ciclo de vida da
+    // sessão: um peer que só o túnel alcança não responde nos endereços
+    // anunciados, e tentar QUIC e TCP neles antes gastava o prazo inteiro - o
+    // rewind falhava (prefixo perdido) e o release também (KV preso no peer,
+    // que passava a aparecer com fila para o planejador).
+    let tunnel = crate::infer_tunnel::tunnel_sender().filter(|_| step.libp2p_peer_id.is_some());
+    let pinned_tunnel = crate::route_plan::book()
+        .kind_map(crate::route_plan::Plane::Inference)
+        .get(&step.node_id)
+        .is_some_and(|kind| kind == "tunnel");
+    if let (true, Some(tunnel)) = (pinned_tunnel, tunnel) {
+        return crate::relay::post_json_via_tunnel(
+            http, tunnel, step, path, body, session_id, timeout,
+        )
+        .await
+        .map_err(|error| error.to_string());
+    }
+    let result = post_session_lifecycle_direct(http, step, path, body, session_id, timeout).await;
+    match (result, tunnel) {
+        (Err(direct), Some(tunnel)) if !direct.contains(" respondeu HTTP ") => {
+            crate::relay::post_json_via_tunnel(http, tunnel, step, path, body, session_id, timeout)
+                .await
+                .map_err(|error| format!("{direct}; libp2p-tunnel: {error}"))
+        }
+        (result, _) => result,
+    }
+}
+
+/// QUIC e depois HTTP nos endereços anunciados do peer.
+async fn post_session_lifecycle_direct(
+    http: &crate::peer_client::PeerClients,
+    step: &crate::pipeline::PipelineStep,
+    path: &str,
+    body: &serde_json::Value,
+    session_id: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
     let route_key = format!("inference:{}", step.node_id);
     let candidates = inference_route_candidates(step);
     let payload = match serde_json::to_vec(body) {

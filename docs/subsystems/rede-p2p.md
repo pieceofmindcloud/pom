@@ -735,6 +735,15 @@ isso consumia o prazo do frame. Agora a rota é **medida uma vez e fixada**.
   ativa, as alternativas e a idade da análise. Os logs dizem a rota escolhida
   (`rota inference para <peer>: http ... (26.0 ms)`), a troca
   (`falhou duas vezes; passando para ...`) e a reanálise.
+- **Ciclo de vida da sessão.** `rewind`, `release` e `rollback`
+  (`gateway/generation.rs::post_session_lifecycle`) seguem a rota fixada: com
+  o plano de inferência no túnel, vão direto por ele
+  (`relay::post_json_via_tunnel`, JSON com `Content-Type` preservado); sem
+  plano, tentam QUIC e HTTP nos endereços anunciados e caem no túnel se o
+  transporte falhar. Antes eles ignoravam o plano e só tentavam os endereços
+  anunciados: num peer atrás de NAT o rewind falhava (prefixo perdido) e o
+  release também, deixando a sessão presa no KV e o peer com fila para o
+  planejador.
 - **Relé.** A cada volta (2 s) o planejador anota em `RouteBook::relayed_nodes`
   os peers com quem toda conexão libp2p viva é `/p2p-circuit` - o hole punch
   não fechou. Uma rota `tunnel` até um deles atravessa o relé a cada frame. O

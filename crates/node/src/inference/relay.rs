@@ -2883,6 +2883,70 @@ pub async fn send_frame_via_tunnel(
     .await
 }
 
+/// Uma chamada JSON do ciclo de vida da sessão (`/v1/session/rewind`,
+/// `/v1/session/release`) pelo túnel libp2p, para o peer que só esse caminho
+/// alcança. O servidor de inferência lê JSON nessas rotas, não um quadro, e o
+/// `Content-Type` atravessa o túnel (`infer_tunnel::serve_loopback`).
+pub async fn post_json_via_tunnel(
+    clients: &crate::peer_client::PeerClients,
+    tunnel: &TunnelOutboundSender,
+    step: &crate::pipeline::PipelineStep,
+    path: &str,
+    body: &Value,
+    session_id: &str,
+    timeout: std::time::Duration,
+) -> Result<Value> {
+    let peer_id = step
+        .libp2p_peer_id
+        .as_deref()
+        .and_then(|value| value.parse::<PeerId>().ok())
+        .ok_or_else(|| anyhow!("{} não anuncia PeerId libp2p", step.node_id))?;
+    let mut headers = vec![(
+        reqwest::header::CONTENT_TYPE.as_str().to_string(),
+        "application/json".to_string(),
+    )];
+    if let Some(token) = clients.internal_node_token().await {
+        headers.push((
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER.to_string(),
+            "1".to_string(),
+        ));
+        headers.push((
+            reqwest::header::AUTHORIZATION.as_str().to_string(),
+            format!("Bearer {token}"),
+        ));
+    }
+    if !session_id.is_empty() {
+        headers.push((
+            crate::auth::INFERENCE_SESSION_HEADER.to_string(),
+            session_id.to_string(),
+        ));
+    }
+    let (reply_tx, reply_rx) = oneshot::channel();
+    tunnel
+        .send(TunnelOutbound {
+            peer_id,
+            addr_candidates: step.libp2p_addr_candidates.clone(),
+            request: TunnelRequest::post(path, serde_json::to_vec(body)?, headers),
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| anyhow!("swarm de libp2p não está disponível (canal fechado)"))?;
+    let response = match tokio::time::timeout(timeout, reply_rx).await {
+        Ok(Ok(Ok(response))) => response,
+        Ok(Ok(Err(error))) => return Err(anyhow!("túnel libp2p: {error}")),
+        Ok(Err(_)) => return Err(anyhow!("túnel libp2p encerrou sem responder")),
+        Err(_) => return Err(anyhow!("túnel libp2p não respondeu em {timeout:?}")),
+    };
+    if !(200..300).contains(&response.status) {
+        return Err(anyhow!(
+            "{path} em {} respondeu HTTP {} pelo túnel",
+            step.node_id,
+            response.status
+        ));
+    }
+    Ok(serde_json::from_slice(&response.body).unwrap_or(Value::Null))
+}
+
 async fn send_frame_via_tunnel_with_auth(
     tunnel: &TunnelOutboundSender,
     peer_id: PeerId,
@@ -3814,6 +3878,50 @@ mod tests {
     }
 
     // ── send_frame_or_tunnel ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_session_lifecycle_call_crosses_the_tunnel_as_json() {
+        let peer_id = PeerId::random();
+        let (tunnel, mut received) = mpsc::channel::<TunnelOutbound>(1);
+        let receiver = tokio::spawn(async move {
+            let outbound = received.recv().await.expect("pedido pelo túnel");
+            let content_type = outbound
+                .request
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                .map(|(_, value)| value.clone());
+            let body: Value = serde_json::from_slice(&outbound.request.body).expect("JSON");
+            outbound
+                .reply
+                .send(Ok(TunnelResponse {
+                    status: 200,
+                    body: br#"{"rewound":true,"n_past":17}"#.to_vec(),
+                }))
+                .expect("reply");
+            (outbound.peer_id, outbound.request.path, content_type, body)
+        });
+        let step = step_with("http://192.0.2.1:8181", true, Some(peer_id.to_string()));
+
+        let answer = post_json_via_tunnel(
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(5)),
+            &tunnel,
+            &step,
+            "/v1/session/rewind",
+            &json!({"session_id": "s", "n_tokens": 17}),
+            "s",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect("resposta pelo túnel");
+
+        let (sent_to, path, content_type, body) = receiver.await.unwrap();
+        assert_eq!(sent_to, peer_id);
+        assert_eq!(path, "/v1/session/rewind");
+        assert_eq!(content_type.as_deref(), Some("application/json"));
+        assert_eq!(body["n_tokens"], 17);
+        assert_eq!(answer["n_past"], 17);
+    }
 
     fn step_with(
         inference_url: &str,

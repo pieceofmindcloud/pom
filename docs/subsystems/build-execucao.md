@@ -970,7 +970,13 @@ target otimizado. Cruzado do Linux, o `.exe` sai **sem ícone**
 
 Binário na raiz do pacote com `apps/` ao lado, para `project_root()` achar a UI
 a partir do diretório do executável - a pasta descompactada funciona em qualquer
-lugar, sem `POM_HOME`. Além disso, por sistema: macOS leva o bundle `POM.app`
+lugar, sem `POM_HOME`. O `pom-plugin-host` (`pom-plugin-host.exe` no Windows)
+vai **ao lado do binário** em todos os pacotes: o `default-members` do
+workspace é só `crates/node`, então todo build de release pede
+`-p node -p pom-plugin-host` explicitamente, e o pom só inicia plugins por esse
+irmão (`plugin_host::host_executable`, ou `$POM_PLUGIN_HOST`). Pacote sem ele
+recusa instalar qualquer plugin com "pom-plugin-host não encontrado ao lado de
+...". Além disso, por sistema: macOS leva o bundle `POM.app`
 (com uma segunda cópia do `dist` dentro, para o `.app` sobreviver a ser
 arrastado para `/Applications`), Linux leva `share/hicolor` e o `.desktop`, e o
 Windows não leva nada porque o ícone já está dentro do `.exe`. Unix empacota com
@@ -1011,3 +1017,8 @@ use `scripts/release-ksia.sh --variant windows-cpu --debug-symbols` (ver
   (`crates/node/src/routing/pipeline.rs::plan_pipeline`) faz o próprio plano
   greedy. `routing-base` é código morto mantido vivo só pelos próprios testes.
   Adiado até a decisão de open-core (ver `TODO.md`).
+- DEFEITO ANOTADO: a atualização de `pom_core` (`pom-release.sh` +
+  `pom_core_update.rs`) publica e troca **só** o binário `pom`. Uma instalação
+  que nasceu sem `pom-plugin-host` ao lado continua sem ele depois de
+  atualizar, e uma mudança no protocolo IPC do host não chega por esse caminho.
+  Hoje o host só chega pelo pacote completo (zip/tar.gz) ou pela imagem Docker.

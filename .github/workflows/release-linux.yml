@@ -129,9 +129,9 @@ jobs:
           CUDAARCHS: ''
         run: |
           if [ -n "${{ matrix.variante.features }}" ]; then
-            cargo build --release --locked --features ${{ matrix.variante.features }}
+            cargo build --release --locked -p node -p pom-plugin-host --features ${{ matrix.variante.features }}
           else
-            cargo build --release --locked
+            cargo build --release --locked -p node -p pom-plugin-host
           fi
 
       # O binário fica na raiz do pacote com `apps/` ao lado: `project_root()`
@@ -146,6 +146,8 @@ jobs:
           mkdir -p pacote/apps/frontend
           cp -R apps/frontend/dist pacote/apps/frontend/dist
           cp target/release/pom pacote/
+          # Sem o host ao lado do pom nenhum plugin instala.
+          cp target/release/pom-plugin-host pacote/
           cp README.md pacote/ 2>/dev/null || true
           # Um executável Unix não carrega ícone: no Linux quem o mostra é o
           # .desktop apontando para a árvore hicolor.

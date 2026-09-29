@@ -171,9 +171,9 @@ jobs:
           if ('${{ matrix.variante }}' -eq 'gpu') {
             $env:CUDAARCHS = $env:POM_WINDOWS_CUDAARCHS
             Remove-Item Env:CMAKE_CUDA_ARCHITECTURES -ErrorAction SilentlyContinue
-            cargo build --release --locked --features cuda,vulkan
+            cargo build --release --locked -p node -p pom-plugin-host --features cuda,vulkan
           } else {
-            cargo build --release --locked
+            cargo build --release --locked -p node -p pom-plugin-host
           }
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
@@ -186,6 +186,9 @@ jobs:
       # sobe a partir do diretório do executável, então a pasta descompactada
       # funciona em qualquer lugar, sem `POM_HOME`. O ícone já viaja dentro do
       # .exe (`crates/node/build.rs`), então aqui não há nada a copiar.
+      #
+      # O `pom-plugin-host.exe` vai ao lado do `pom.exe`: é por ali que o pom
+      # inicia cada plugin.
       #
       # No Windows o CUDA é linkado dinamicamente (`llama-cpp-sys-2/build.rs`):
       # o pom.exe precisa de cudart/cublas/cublasLt ao lado, redistribuíveis
@@ -204,6 +207,9 @@ jobs:
             done
           fi
           cp target/release/pom.exe pacote/
+          # Sem o host ao lado do pom.exe nenhum plugin instala
+          # (`plugin_host::host_executable`).
+          cp target/release/pom-plugin-host.exe pacote/
           cp README.md pacote/ 2>/dev/null || true
           mv pacote "$nome"
           7z a -tzip "$nome.zip" "$nome"

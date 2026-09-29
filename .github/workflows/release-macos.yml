@@ -82,7 +82,7 @@ jobs:
         working-directory: apps/frontend
 
       - name: Compilar
-        run: cargo build --release --locked --features metal
+        run: cargo build --release --locked -p node -p pom-plugin-host --features metal
 
       - name: Montar o pacote
         run: |
@@ -93,6 +93,8 @@ jobs:
           mkdir -p pacote/apps/frontend
           cp -R apps/frontend/dist pacote/apps/frontend/dist
           cp target/release/pom pacote/
+          # Sem o host ao lado do pom nenhum plugin instala.
+          cp target/release/pom-plugin-host pacote/
           cp README.md pacote/ 2>/dev/null || true
 
           # Um executável Unix não carrega ícone: no macOS quem o mostra é o

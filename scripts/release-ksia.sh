@@ -151,7 +151,7 @@ fi
 binary=""
 case "$variant" in
   linux-cpu)
-    run cargo build --release --locked -p node
+    run cargo build --release --locked -p node -p pom-plugin-host
     binary="${target_dir}/release/pom"
     ;;
   linux-cuda)
@@ -163,7 +163,7 @@ case "$variant" in
     export CUDA_PATH="$cuda_home"
     export CUDACXX="${cuda_home}/bin/nvcc"
     export PATH="${cuda_home}/bin:${PATH}"
-    run cargo build --release --locked -p node --features cuda
+    run cargo build --release --locked -p node -p pom-plugin-host --features cuda
     binary="${target_dir}/release/pom"
     ;;
   windows-cpu)
@@ -198,7 +198,7 @@ case "$variant" in
       export CFLAGS="${CFLAGS:+${CFLAGS} }/Z7"
       export CXXFLAGS="${CXXFLAGS:+${CXXFLAGS} }/Z7"
     fi
-    run cargo xwin build --release --locked -p node --target "$windows_target"
+    run cargo xwin build --release --locked -p node -p pom-plugin-host --target "$windows_target"
     binary="${target_dir}/${windows_target}/release/pom.exe"
     ;;
 esac
@@ -217,6 +217,10 @@ run rm -rf "$stage"
 run mkdir -p "${stage}/apps/frontend"
 run cp -R "$root/apps/frontend/dist" "${stage}/apps/frontend/dist"
 run cp "$binary" "$stage/"
+# pom starts plugins only through the pom-plugin-host sibling of its own
+# executable (plugin_host::host_executable); a package without it cannot
+# install any plugin.
+run cp "$(dirname "$binary")/pom-plugin-host${binary##*/pom}" "$stage/"
 if ((debug_symbols)); then run cp "${binary%.exe}.pdb" "$stage/"; fi
 if [[ -f "$root/README.md" ]]; then run cp "$root/README.md" "$stage/"; fi
 case "$variant" in

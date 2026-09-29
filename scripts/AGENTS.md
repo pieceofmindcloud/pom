@@ -128,9 +128,12 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   (cruzado com `cargo xwin` + `clang-cl`/`lld-link` do LLVM 20; o STL do
   MSVC exige Clang >= 19), com estado em
   `~/.cache/pom-release` e pacote em `dist-release-ksia/`; `--dry-run` só
-  imprime os comandos; `--debug-symbols` (windows-cpu) inclui `pom.pdb`. Chamado por `.github/workflows/release-ksia.yml`.
-- `test-release-ksia.sh` - dry-run de cada variante e checagem de que o
-  workflow da ksia não usa armazenamento do GitHub.
+  imprime os comandos; `--debug-symbols` (windows-cpu) inclui `pom.pdb`. Toda
+  variante compila `-p node -p pom-plugin-host` e põe o host ao lado do `pom`
+  no pacote. Chamado por `.github/workflows/release-ksia.yml`.
+- `test-release-ksia.sh` - dry-run de cada variante (inclusive a cópia do
+  `pom-plugin-host`) e checagem de que o workflow da ksia não usa armazenamento
+  do GitHub.
 - `test_pom_release.sh` - smoke test local do incremento automático, override
   manual e `--dry-run`, usando `curl` e `cargo` falsos. Cobre só `pom_core`
   (binário `pom`/`pom.exe`) nas três plataformas.
@@ -291,7 +294,8 @@ disco - migrar so os nomes exatos deixava chave orfa.
 ## make-macos-app.sh
 
 Monta `POM.app` em volta do binario ja compilado (padrao:
-`target/release/pom` -> `dist-release/POM.app`). E o unico jeito de um
+`target/release/pom` -> `dist-release/POM.app`) e copia o `pom-plugin-host`
+irmao dele para `Contents/MacOS/`, recusando montar o bundle sem ele. E o unico jeito de um
 executavel ter icone no macOS: o icone pertence ao bundle, nao ao arquivo.
 Nome, slug e caminho do `.icns` saem do `brand.json`; o Info.plist marca
 `LSUIElement` (o no nao abre janela - a interface e web, na porta do gateway) e

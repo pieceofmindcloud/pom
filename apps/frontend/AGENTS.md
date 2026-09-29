@@ -55,12 +55,12 @@ remain local until the deploy preflight.
   authorization boundary.
 
   The real first-access route is `/setup` and uses `routes/Setup.tsx` with the
-  loopback `/api/setup/*` backend. `routes/SetupWizard.tsx` and
-  `components/setup-wizard/*` are visual mock references only. The live wizard
-  also owns the country/city location step, hardware-first order, profile
-  branches, and the restart after save. A public `node` or `infer` enters the
-  public network name in the trust step because the backend requires that
-  field for every public-network save, not only for `admin`.
+  loopback `/api/setup/*` backend, in the same visual identity as the login
+  (see `src/routes/AGENTS.md`). `routes/SetupWizard.tsx` and
+  `components/setup-wizard/*` are visual mock references only. After setup the
+  panel password is `admin`: while `/api/access` reports `default_password`,
+  `useAdminSurface` enters with it instead of showing the gate, and
+  `components/DefaultPasswordNotice.tsx` keeps a banner asking to change it.
 
 ### App.tsx route table
 

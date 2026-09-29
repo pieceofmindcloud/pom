@@ -111,7 +111,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   `connection_key` cifrada. O payload autenticado é fragmentado em blocos que
   cabem no orçamento de 1200 bytes do UDP e remontado antes da validação do
   fingerprint. A preferência fica desligada fora do wizard; o material sensível
-  vive apenas em memória e a transferência é limitada a 512 KiB.
+  vive apenas em memória e a transferência é limitada a 512 KiB. O `Probe`
+  leva `DiscoveredMachine` (nome, sistema, CPUs, RAM, GPUs/VRAM; limpo e
+  limitado por `sanitized`) para o wizard do admin mostrar quem procura a
+  rede: o peer entra em `peers` no `Probe` com `joined: false` e vira
+  `joined: true` ao receber a raiz.
 - `peer_client.rs` - `prefer_tunnel`/`remember_tunnel_win`/`remember_direct_win`
   são a marca **por peer** de que o caminho direto não responde: ligada, o
   frame pula QUIC e HTTP na primeira tentativa. Aprendida, não configurada -

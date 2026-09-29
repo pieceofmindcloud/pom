@@ -17,6 +17,7 @@ export type WizardStage =
   | "setup-invite"
   | "setup-discovery"
   | "setup-review"
+  | "setup-join"
   | "setup-saved"
   | "welcome"
   | "intent"

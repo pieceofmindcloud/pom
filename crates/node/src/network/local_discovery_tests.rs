@@ -1,5 +1,6 @@
 use super::local_discovery::{
-    LocalAutoDiscoveryMessage, LocalDiscoveryResult, LocalDiscoveryRuntime,
+    DiscoveredGpu, DiscoveredMachine, LocalAutoDiscoveryMessage, LocalDiscoveryResult,
+    LocalDiscoveryRuntime,
 };
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -19,7 +20,7 @@ async fn complete_handshake_delivers_trust_and_connection_key() {
         .await
         .unwrap();
 
-    let request_id = node.begin_search().await.unwrap();
+    let request_id = node.begin_search(None).await.unwrap();
     let probe = node.take_outbound_for_test().await.unwrap();
     let admin_address = admin.local_addr().await;
     admin
@@ -60,7 +61,7 @@ async fn large_private_trust_documents_are_fragmented_and_reassembled() {
         .await
         .expect("documentos privados maiores que um datagrama devem ser aceitos");
 
-    let request_id = node.begin_search().await.unwrap();
+    let request_id = node.begin_search(None).await.unwrap();
     let probe = node.take_outbound_for_test().await.unwrap();
     let admin_address = admin.local_addr().await;
     admin
@@ -97,7 +98,7 @@ async fn public_messages_never_contain_connection_key() {
         .set_admin_material(true, "trust-document", "do-not-leak")
         .await
         .unwrap();
-    let _ = admin.begin_search().await.unwrap();
+    let _ = admin.begin_search(None).await.unwrap();
     let probe = admin.take_outbound_for_test().await.unwrap();
     let encoded = serde_json::to_string(&probe).unwrap();
     assert!(!encoded.contains("do-not-leak"));
@@ -115,7 +116,7 @@ async fn admin_requires_proof_before_emitting_secret() {
         .await
         .unwrap();
     let node = LocalDiscoveryRuntime::test_memory();
-    node.begin_search().await.unwrap();
+    node.begin_search(None).await.unwrap();
     let probe = node.take_outbound_for_test().await.unwrap();
     admin.handle_for_test(probe, endpoint(42777)).await;
     let offer = admin.take_outbound_for_test().await.unwrap();
@@ -139,7 +140,43 @@ async fn admin_requires_proof_before_emitting_secret() {
     };
     admin.handle_for_test(forged, endpoint(42777)).await;
     assert!(admin.take_outbound_for_test().await.is_none());
-    assert!(admin.status().await.peers.is_empty());
+    // O computador aparece ao procurar a rede, mas uma prova forjada nunca o
+    // marca como tendo recebido a raiz.
+    let peers = admin.status().await.peers;
+    assert_eq!(peers.len(), 1);
+    assert!(!peers[0].joined);
+}
+
+#[tokio::test]
+async fn the_searching_computer_name_reaches_the_admin_and_turns_joined() {
+    let admin = LocalDiscoveryRuntime::test_memory();
+    admin
+        .set_admin_material(true, "trust-document", "secret-key")
+        .await
+        .unwrap();
+    let node = LocalDiscoveryRuntime::test_memory();
+    node.begin_search(Some(DiscoveredMachine {
+        hostname: "  salem\u{7}  ".to_string(),
+        os: "linux".to_string(),
+        arch: "x86_64".to_string(),
+        cpu_count: 16,
+        ram_mb: 65_536,
+        gpus: vec![DiscoveredGpu {
+            name: "RTX 3060".to_string(),
+            vram_mb: Some(12_288),
+        }],
+    }))
+    .await
+    .unwrap();
+    let probe = node.take_outbound_for_test().await.unwrap();
+    admin.handle_for_test(probe, endpoint(42777)).await;
+    let peers = admin.status().await.peers;
+    assert_eq!(peers.len(), 1);
+    let machine = peers[0].machine.as_ref().unwrap();
+    assert_eq!(machine.hostname, "salem");
+    assert_eq!(machine.gpus[0].name, "RTX 3060");
+    assert_eq!(machine.ram_mb, 65_536);
+    assert!(!peers[0].joined);
 }
 
 #[tokio::test]
@@ -151,7 +188,7 @@ async fn expired_handshake_does_not_deliver_secret() {
         .await
         .unwrap();
     let node = LocalDiscoveryRuntime::test_memory();
-    node.begin_search().await.unwrap();
+    node.begin_search(None).await.unwrap();
     let probe = node.take_outbound_for_test().await.unwrap();
     runtime.handle_for_test(probe, endpoint(42777)).await;
     let _offer = runtime.take_outbound_for_test().await;

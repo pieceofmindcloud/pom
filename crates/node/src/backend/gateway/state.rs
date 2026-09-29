@@ -534,6 +534,9 @@ impl GatewayState {
 pub(super) struct AdminAccessStatus {
     pub(super) admin_exposure: crate::config::AdminExposure,
     pub(super) requires_password: bool,
+    /// A senha em vigor é a padrão do primeiro acesso: a interface entra sem
+    /// perguntar e pede para trocá-la.
+    pub(super) default_password: bool,
     pub(super) gateway_port: u16,
 }
 
@@ -542,6 +545,7 @@ pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> im
     Json(AdminAccessStatus {
         admin_exposure: cfg.admin_exposure,
         requires_password: cfg.admin_exposure.requires_password(),
+        default_password: cfg.admin_exposure.requires_password() && cfg.admin_password_default,
         gateway_port: cfg.gateway_port,
     })
 }

@@ -21,16 +21,13 @@ import { Topbar } from "./components/Topbar";
 import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
 import pomMark from "./assets/pom-mark-dark.png";
-import { brand } from "./lib/brand";
+import { BrandLanguageSwitch } from "./components/BrandLanguageSwitch";
+import { DefaultPasswordNotice } from "./components/DefaultPasswordNotice";
 import { Panel, PanelHeader } from "./components/ui";
 
-const LOGIN_LANGUAGES = [
-  { id: "pt-BR", short: "PT", label: "Português (Brasil)" },
-  { id: "en", short: "EN", label: "English" },
-] as const;
 
 function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
-  const { t, locale, setLocale } = useI18n();
+  const { t } = useI18n();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -82,22 +79,7 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
     <main className="pom-login">
       {/* O idioma sai do navegador (inglês para quem não usa português); as
           bandeiras trocam na hora, como na página inicial do site. */}
-      <div className="pom-login-langs" role="group" aria-label={locale === "pt-BR" ? "Idioma" : "Language"}>
-        {LOGIN_LANGUAGES.map((language) => (
-          <button
-            key={language.id}
-            type="button"
-            className="pom-login-lang"
-            aria-pressed={locale === language.id}
-            aria-label={language.label}
-            title={language.label}
-            onClick={() => setLocale(language.id)}
-          >
-            <img src={brand.flags[language.id]} alt="" width={17} height={12} />
-            <span>{language.short}</span>
-          </button>
-        ))}
-      </div>
+      <BrandLanguageSwitch />
       <section className="pom-login-panel">
         <img className="pom-login-mark" src={pomMark} alt="POM" width={815} height={320} />
         <p className="pom-login-sub">PIECE OF MIND</p>
@@ -422,6 +404,9 @@ export default function App() {
             }
           >
             <Topbar />
+          </ErrorBoundary>
+          <ErrorBoundary fallback={null}>
+            <DefaultPasswordNotice />
           </ErrorBoundary>
           <main
             className={

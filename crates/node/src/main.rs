@@ -846,6 +846,7 @@ async fn start_setup_mode(
         gateway_port,
         admin_exposure: config::AdminExposure::Localhost,
         admin_access_token: None,
+        admin_password_default: false,
         p2p_port: setup_p2p_port,
         inference_port: None,
         bootstrap_nodes: vec![],

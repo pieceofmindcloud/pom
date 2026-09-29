@@ -445,6 +445,11 @@ pub(crate) fn constant_time_token_eq(expected: &str, supplied: &str) -> bool {
     expected_digest.ct_eq(&supplied_digest).into()
 }
 
+/// Senha administrativa gravada no primeiro acesso. O wizard não a pergunta:
+/// enquanto ela for a senha em vigor (`AppConfig::admin_password_default`), a
+/// interface entra sozinha e mostra o aviso para trocá-la.
+pub(crate) const DEFAULT_ADMIN_PASSWORD: &str = "admin";
+
 /// Hash a human administrative password with Argon2id's default password
 /// policy. The PHC string contains its random salt and parameters, so the
 /// password itself never needs to be persisted or returned to the browser.
@@ -1063,6 +1068,7 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: Default::default(),
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
@@ -1129,6 +1135,7 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: Default::default(),
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],

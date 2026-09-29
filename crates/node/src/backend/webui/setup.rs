@@ -503,8 +503,24 @@ pub async fn start_setup_auto_discovery(
     }
 }
 
-pub async fn search_setup_auto_discovery(State(state): State<SetupState>) -> Response {
-    match state.local_discovery.begin_search().await {
+#[derive(Deserialize, Default)]
+pub struct SetupAutoDiscoverySearchRequest {
+    /// Nome que o wizard mostra desta máquina; vai no pedido para o
+    /// administrador ver quem está entrando.
+    #[serde(default)]
+    pub node_name: String,
+}
+
+pub async fn search_setup_auto_discovery(
+    State(state): State<SetupState>,
+    request: Option<Json<SetupAutoDiscoverySearchRequest>>,
+) -> Response {
+    let node_name = request
+        .map(|Json(request)| request.node_name.trim().to_string())
+        .filter(|name| !name.is_empty());
+    let machine =
+        crate::local_discovery::DiscoveredMachine::from_system(&sysmon::sample().await, node_name);
+    match state.local_discovery.begin_search(Some(machine)).await {
         Ok(request_id) => (
             StatusCode::ACCEPTED,
             Json(json!({ "request_id": request_id })),
@@ -539,8 +555,6 @@ pub struct SaveSetupRequest {
     pub resources: crate::config::ResourcePolicy,
     #[serde(default)]
     pub thermal_limit_c: Option<f64>,
-    #[serde(default)]
-    pub admin_exposure: crate::config::AdminExposure,
     #[serde(default)]
     pub admin_password: String,
     #[serde(default)]
@@ -710,20 +724,23 @@ pub async fn save_setup(
             .into_response();
     }
 
-    let admin_password_hash = if profile == crate::profile::NodeProfile::Admin
-        && req.admin_exposure.requires_password()
-    {
-        let password = req.admin_password.clone();
-        match tokio::task::spawn_blocking(move || crate::auth::hash_admin_password(&password)).await
-        {
-            Ok(Ok(hash)) => Some(hash),
-            Ok(Err(error)) => return bad_request(error.to_string()),
-            Err(error) => {
-                return bad_request(format!("não foi possível proteger a senha: {error}"))
-            }
-        }
+    // A interface sai do primeiro acesso aberta à rede com a senha padrão:
+    // o wizard não pergunta senha, e o painel pede a troca no primeiro uso.
+    // Uma senha enviada explicitamente continua valendo.
+    let admin_password = if req.admin_password.is_empty() {
+        crate::auth::DEFAULT_ADMIN_PASSWORD.to_string()
     } else {
-        None
+        req.admin_password.clone()
+    };
+    let admin_password_default = admin_password == crate::auth::DEFAULT_ADMIN_PASSWORD;
+    let admin_password_hash = match tokio::task::spawn_blocking(move || {
+        crate::auth::hash_admin_password(&admin_password)
+    })
+    .await
+    {
+        Ok(Ok(hash)) => hash,
+        Ok(Err(error)) => return bad_request(error.to_string()),
+        Err(error) => return bad_request(format!("não foi possível proteger a senha: {error}")),
     };
 
     let expected = crate::admin_trust::anchor_fingerprint(&trust_document);
@@ -755,10 +772,9 @@ pub async fn save_setup(
     cfg.setup_pending = false;
     cfg.node_name = (!req.node_name.trim().is_empty()).then(|| req.node_name.trim().to_string());
 
-    if profile == crate::profile::NodeProfile::Admin {
-        cfg.admin_exposure = req.admin_exposure;
-        cfg.admin_access_token = admin_password_hash;
-    }
+    cfg.admin_exposure = crate::config::AdminExposure::Network;
+    cfg.admin_access_token = Some(admin_password_hash);
+    cfg.admin_password_default = admin_password_default;
 
     let supplied_connection_key = req.connection_key.trim();
     // Public networks do not have a shared admission secret, but the local

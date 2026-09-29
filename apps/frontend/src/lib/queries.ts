@@ -20,8 +20,16 @@ import {
   getHuggingFaceTokenConfig,
   listDeployments,
   searchRemoteModels,
+  setAdminAccessToken,
   setConnectionKey,
 } from "./api";
+
+/**
+ * Senha administrativa gravada no primeiro acesso (`auth::DEFAULT_ADMIN_PASSWORD`
+ * no nó). Não é segredo: enquanto estiver em vigor, `/api/access` diz
+ * `default_password` e a interface entra sem perguntá-la e pede a troca.
+ */
+export const DEFAULT_ADMIN_PASSWORD = "admin";
 import { modelDownloadJobs } from "./modelProvider";
 import { getTrendingModels } from "./publicModelDiscovery";
 import { fetchPublicPluginCatalog } from "./pluginCatalog";
@@ -180,12 +188,24 @@ export function useAdminSurface() {
         return "available";
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return "setup";
-        if (error instanceof ApiError && error.status === 403) {
+        let access: AdminAccessStatus | null = null;
+        try {
+          access = await api.get<AdminAccessStatus>("/api/access", { auth: false });
+        } catch {
+          // A transient policy read must not expose a guessed UI state.
+        }
+        if (error instanceof ApiError && error.status === 403 && access?.admin_exposure === "localhost") {
+          return "local-only";
+        }
+        // Enquanto a senha for a padrão do primeiro acesso, o portão não a
+        // pergunta: a aba entra com ela e o aviso pede a troca.
+        if (access?.default_password) {
+          setAdminAccessToken(DEFAULT_ADMIN_PASSWORD);
           try {
-            const access = await api.get<AdminAccessStatus>("/api/access", { auth: false });
-            if (access.admin_exposure === "localhost") return "local-only";
+            await api.get<unknown>("/api/ui/node", { auth: false });
+            return "available";
           } catch {
-            // A transient policy read must not expose a guessed UI state.
+            setAdminAccessToken("");
           }
         }
         return "requires-password";

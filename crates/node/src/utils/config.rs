@@ -213,6 +213,12 @@ pub struct Config {
     /// Não é a `connection_key`, que continua autenticando nós e pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_access_token: Option<String>,
+    /// A senha administrativa ainda é a padrão do primeiro acesso
+    /// (`auth::DEFAULT_ADMIN_PASSWORD`). Enquanto for, a interface entra sem
+    /// perguntá-la e pede para trocar. É uma marca gravada junto do hash para a
+    /// rota pública `/api/access` não precisar rodar Argon2 a cada visita.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin_password_default: bool,
     #[serde(default = "default_p2p_port")]
     pub p2p_port: u16,
     #[serde(default)]
@@ -1074,6 +1080,7 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
@@ -1179,6 +1186,7 @@ mod tests {
             gateway_port: 8090,
             admin_exposure: AdminExposure::Localhost,
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec!["192.168.1.1:42777".into()],
@@ -1335,6 +1343,7 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
@@ -1493,6 +1502,7 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],

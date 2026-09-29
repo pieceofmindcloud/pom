@@ -2,55 +2,31 @@ import type { WizardStage, WizardStep } from "./setupWizardTypes";
 
 export type SetupProfile = "admin" | "node" | "infer";
 
-const PROFILE_STEPS: WizardStep[] = [{ id: "setup-profile", labelKey: "setupWizard.stepHardware" }];
-
 /**
- * The first-access path is deliberately role-shaped:
+ * O primeiro acesso pergunta só o que não dá para decidir depois:
  *
- * - infer and node import their network identity from the trust document;
- * - admin configures the network and creates the invitation.
+ * - **admin** cria a rede: início (papel e nome da máquina), a rede (nome e se
+ *   é privada ou pública; a cidade só quando é pública, para o pkarr) e o
+ *   convite, com a descoberta local opcional na mesma tela;
+ * - **node** e **infer** entram numa rede: início e entrada (descoberta
+ *   automática, ou o `trust.json` e a chave colados à mão).
  *
- * Keeping this decision in one pure function makes it harder for a screen to
- * accidentally leak a model, folder, or resource question into another role.
+ * Recursos, pastas, disco, senha e exposição têm padrões e são ajustados
+ * depois, dentro do POM.
  */
 export function setupStepsFor(profile: SetupProfile | null): WizardStep[] {
-  if (!profile) return PROFILE_STEPS;
-  const steps: WizardStep[] = [
-    { id: "setup-profile", labelKey: "setupWizard.stepHardware" },
-  ];
+  const start: WizardStep = { id: "setup-profile", labelKey: "firstRun.stepStart" };
   if (profile === "admin") {
-    steps.push({ id: "setup-location", labelKey: "setupWizard.stepLocation" });
+    return [
+      start,
+      { id: "setup-network", labelKey: "firstRun.stepNetwork" },
+      { id: "setup-invite", labelKey: "firstRun.stepInvite" },
+    ];
   }
-  if (profile === "infer") {
-    steps.push({ id: "setup-discovery", labelKey: "setupWizard.stepDiscovery" });
-    steps.push({ id: "setup-trust", labelKey: "setupWizard.stepTrust" });
+  if (profile === "node" || profile === "infer") {
+    return [start, { id: "setup-join", labelKey: "firstRun.stepJoin" }];
   }
-  if (profile === "admin") {
-    steps.push(
-      { id: "setup-network", labelKey: "setupWizard.stepNetwork" },
-      { id: "setup-invite", labelKey: "setupWizard.stepInvite" },
-      { id: "setup-discovery", labelKey: "setupWizard.stepDiscovery" },
-    );
-  } else if (profile === "node") {
-    steps.push(
-      { id: "setup-discovery", labelKey: "setupWizard.stepDiscovery" },
-      { id: "setup-trust", labelKey: "setupWizard.stepTrust" },
-    );
-  }
-  steps.push({ id: "setup-review", labelKey: "setupWizard.stepReview" });
-  return steps;
-}
-
-export function setupProfileHasResources(profile: SetupProfile | null): boolean {
-  return profile === "admin" || profile === "node";
-}
-
-export function setupProfileHasModelAndFolders(_profile: SetupProfile | null): boolean {
-  return false;
-}
-
-export function setupProfileHasShardSlider(profile: SetupProfile | null): boolean {
-  return profile === "admin" || profile === "node";
+  return [start];
 }
 
 export function setupProfileUsesOnlyTrust(profile: SetupProfile | null): boolean {

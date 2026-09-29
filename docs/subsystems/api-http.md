@@ -261,7 +261,12 @@ As rotas da pipeline não entram nessa fronteira: `/api/generate`, `/generate`,
 inferência em `inference_port`, continuam acessíveis por IPv4 e IPv6 para
 que o HTTP de reserva do túnel libp2p não seja interrompido. `GET /api/access`
 é a única exceção pública da administração, pois informa apenas o modo, a
-necessidade de senha e a porta para a tela decidir se deve mostrar a catraca.
+necessidade de senha, a porta e `default_password` - a senha em vigor ainda é
+a padrão do primeiro acesso (`admin`, `auth::DEFAULT_ADMIN_PASSWORD`). É uma
+marca gravada no `pom.json` (`admin_password_default`) junto do hash, para esta
+rota pública nunca rodar Argon2; `POST /api/setup/save` a liga (a interface sai
+do setup em modo `network` com essa senha) e `POST /api/ui/access` a atualiza a
+cada troca de senha.
 
 Em **modo setup** (sem `pom.json`), `main.rs` monta um router menor: as rotas
 `/api/setup/hardware`, `/api/setup/models`, `/api/setup/admin-anchor/preview`,
@@ -1186,7 +1191,12 @@ incompleta.
 O setup expõe a descoberta local no mesmo listener loopback, sem exigir sessão:
 `GET /api/setup/auto-discovery/status` lê o estado da etapa, enquanto o admin
 usa `POST /api/setup/auto-discovery/start` para manter a escuta inicial e node
-ou infer usa `POST /api/setup/auto-discovery/search` para procurar um admin.
+ou infer usa `POST /api/setup/auto-discovery/search` (corpo opcional
+`{ node_name }`) para procurar um admin. O `Probe` leva um resumo da máquina
+(`DiscoveredMachine`: nome, sistema, arquitetura, CPUs, RAM, GPUs e VRAM),
+informativo e fora do transcript; o admin a lista em `peers` já no `Probe`,
+com o IP de origem e `joined: false`, e marca `joined: true` quando entrega a
+raiz.
 O datagrama público carrega apenas o trust document. O admin só responde ao
 `Proof` que liga o desafio às chaves efêmeras do mesmo pedido; então envia um
 `Secret` cifrado com X25519 e ChaCha20-Poly1305 contendo o documento e a

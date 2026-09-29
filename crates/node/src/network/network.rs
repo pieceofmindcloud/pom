@@ -1573,7 +1573,12 @@ impl Network {
     }
 
     pub async fn begin_local_auto_discovery_search(&self) -> anyhow::Result<String> {
-        self.local_discovery.begin_search().await
+        self.local_discovery
+            .begin_search(Some(crate::local_discovery::DiscoveredMachine::from_system(
+                &crate::sysmon::sample().await,
+                Some(self.hostname.clone()),
+            )))
+            .await
     }
 
     pub(crate) fn local_discovery(&self) -> Arc<crate::local_discovery::LocalDiscoveryRuntime> {
@@ -4981,6 +4986,7 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: Default::default(),
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],

@@ -291,6 +291,7 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: Default::default(),
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],

@@ -1,14 +1,24 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import React from "react";
 import { useState } from "react";
 import { LocaleProvider } from "../i18n/provider";
 import { ToastProvider } from "../lib/toast";
 import { api } from "../lib/api";
-import { AutoDiscoveryScreen, canContinue, createRandomNetworkName, diskSharePercent, formatAdvertiseAddress, InviteScreen, isReadyToSave, NetworkScreen, ProfileScreen, ReviewScreen, TrustScreen, type SetupState } from "./Setup";
+import {
+  addressHost,
+  canContinue,
+  createRandomNetworkName,
+  formatAdvertiseAddress,
+  isReadyToSave,
+  JoinScreen,
+  LocalDiscoveryPanel,
+  NetworkScreen,
+  TrustFields,
+  type SetupState,
+} from "./Setup";
 
-const initialSetup: SetupState = {
+const base: SetupState = {
   profile: "infer",
   bootstrap: "",
   publicDirectory: "",
@@ -16,9 +26,6 @@ const initialSetup: SetupState = {
   advertiseAddr: "",
   trustDocument: "",
   trustFingerprint: "",
-  adminAccessToken: "",
-  adminExposure: "localhost",
-  tlsRequired: false,
   nodeName: "node",
   network: {
     public_name: "",
@@ -27,7 +34,7 @@ const initialSetup: SetupState = {
     rules: "",
     channels: "",
     visibility: "private",
-    access_policy: "authorized",
+    access_policy: "anyone_with_anchor",
     country_code: "",
     country_name: "",
     city: "",
@@ -42,22 +49,13 @@ const initialSetup: SetupState = {
   thermalLimitC: 85,
 };
 
-function mount(value: SetupState = initialSetup) {
-  function Harness() {
-    const [setup, setSetup] = useState(value);
-    return (
-      <TrustScreen
-        setup={setup}
-        update={(patch) => setSetup((current) => ({ ...current, ...patch }))}
-        updateNetwork={(patch) => setSetup((current) => ({ ...current, network: { ...current.network, ...patch } }))}
-        t={(key) => key}
-      />
-    );
-  }
+const t = (key: string, values?: Record<string, string | number>) =>
+  values ? `${key}:${Object.values(values).join(",")}` : key;
 
+function wrap(node: React.ReactNode) {
   return render(
     <LocaleProvider initialLocale="pt-BR">
-      <Harness />
+      <ToastProvider>{node}</ToastProvider>
     </LocaleProvider>,
   );
 }
@@ -67,240 +65,151 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("admin local discovery feedback", () => {
-  it("shows each peer after its handshake completes", async () => {
+describe("helpers", () => {
+  it("creates a short editable network name", () => {
+    expect(createRandomNetworkName(0)).toBe("POM-00000");
+    expect(createRandomNetworkName(0.5)).toMatch(/^POM-[0-9A-Z]{5}$/);
+  });
+
+  it("formats the advertised address with the P2P port", () => {
+    expect(formatAdvertiseAddress("2804::1", 42777)).toBe("[2804::1]:42777");
+    expect(formatAdvertiseAddress("10.0.0.5", 42777)).toBe("10.0.0.5:42777");
+  });
+
+  it("shows the IP of a discovered machine without port or brackets", () => {
+    expect(addressHost("192.168.1.42:42778")).toBe("192.168.1.42");
+    expect(addressHost("[fe80::1]:42778")).toBe("fe80::1");
+  });
+});
+
+describe("what the wizard requires", () => {
+  const trusted = { trustDocument: "{}", trustFingerprint: "abc" };
+
+  it("does not ask a private admin network for its city", () => {
+    const admin: SetupState = { ...base, ...trusted, profile: "admin", advertiseAddr: "[2804::1]:42777", network: { ...base.network, public_name: "POM-1" } };
+    expect(canContinue("setup-network", admin)).toBe(true);
+    expect(isReadyToSave(admin)).toBe(true);
+  });
+
+  it("asks a public admin network for country and city, for the pkarr record", () => {
+    const admin: SetupState = { ...base, ...trusted, profile: "admin", advertiseAddr: "[2804::1]:42777", network: { ...base.network, public_name: "POM-1", visibility: "public" } };
+    expect(canContinue("setup-network", admin)).toBe(false);
+    const located = { ...admin, network: { ...admin.network, country_code: "BR", city: "Curitiba" } };
+    expect(canContinue("setup-network", located)).toBe(true);
+  });
+
+  it("lets a node finish with the trust and the key only", () => {
+    expect(isReadyToSave({ ...base, ...trusted, profile: "node" })).toBe(false);
+    expect(isReadyToSave({ ...base, ...trusted, profile: "node", connectionKey: "secret" })).toBe(true);
+    expect(isReadyToSave({ ...base, ...trusted, profile: "node", network: { ...base.network, visibility: "public" } })).toBe(true);
+  });
+
+  it("needs a role and a machine name to leave the first step", () => {
+    expect(canContinue("setup-profile", { ...base, profile: null })).toBe(false);
+    expect(canContinue("setup-profile", { ...base, profile: "admin", nodeName: " " })).toBe(false);
+    expect(canContinue("setup-profile", { ...base, profile: "admin" })).toBe(true);
+  });
+});
+
+describe("NetworkScreen", () => {
+  function Harness() {
+    const [setup, setSetup] = useState<SetupState>({ ...base, profile: "admin", advertiseAddr: "[2804::1]:42777", network: { ...base.network, public_name: "POM-1" } });
+    return (
+      <NetworkScreen
+        setup={setup}
+        hardware={null}
+        countries={[{ code: "BR", name: "Brasil", cities: [{ id: "cwb", name: "Curitiba" }] }]}
+        update={(patch) => setSetup((current) => ({ ...current, ...patch }))}
+        updateNetwork={(patch) => setSetup((current) => ({ ...current, network: { ...current.network, ...patch } }))}
+        t={t}
+      />
+    );
+  }
+
+  it("offers only private or public, and asks the location only for public", async () => {
+    wrap(<Harness />);
+    expect(screen.getAllByRole("radio")).toHaveLength(2);
+    expect(screen.queryByText("setupWizard.accessPolicy")).toBeNull();
+    expect(screen.queryByText("setupWizard.country")).toBeNull();
+    fireEvent.click(screen.getByText("firstRun.public"));
+    await waitFor(() => expect(screen.getByText("setupWizard.country")).toBeTruthy());
+  });
+});
+
+describe("local discovery", () => {
+  it("shows each computer that searches the network with its name, system, IP, RAM and GPU", async () => {
     vi.spyOn(api, "post").mockResolvedValue({} as never);
     vi.spyOn(api, "get").mockResolvedValue({
       enabled: true,
-      active: true,
+      active: false,
+      searching: false,
+      found: false,
+      port: 42778,
+      peers: [
+        {
+          request_id: "r1",
+          address: "192.168.1.42:42778",
+          joined: false,
+          machine: { hostname: "salem", os: "linux", arch: "x86_64", cpu_count: 16, ram_mb: 65536, gpus: [{ name: "RTX 3060", vram_mb: 12288 }] },
+        },
+        { request_id: "r2", address: "192.168.1.50:42778", joined: true, machine: { hostname: "macbook", os: "macos", arch: "aarch64", ram_mb: 16384, gpus: [] } },
+      ],
+    } as never);
+
+    wrap(<LocalDiscoveryPanel mode="admin" setup={{ ...base, profile: "admin", trustDocument: "trust", connectionKey: "secret" }} t={t} />);
+
+    await waitFor(() => expect(screen.getAllByTestId("discovered-machine")).toHaveLength(2));
+    const [salem, mac] = screen.getAllByTestId("discovered-machine");
+    expect(salem.textContent).toContain("salem");
+    expect(salem.textContent).toContain("linux · x86_64");
+    expect(salem.textContent).toContain("192.168.1.42");
+    expect(salem.textContent).toContain("64 GB");
+    expect(salem.textContent).toContain("RTX 3060 (12 GB)");
+    expect(salem.textContent).toContain("firstRun.machineJoining");
+    expect(mac.textContent).toContain("firstRun.machineJoined");
+    expect(mac.textContent).toContain("setupWizard.noGpu");
+  });
+
+  it("fills the trust and the key when the administrator answers", async () => {
+    const document = JSON.stringify({ anchor: { cluster_id: "POM-ABCDE" }, setup: { public_name: "Casa", visibility: "private" } });
+    const post = vi.spyOn(api, "post").mockResolvedValue({} as never);
+    vi.spyOn(api, "get").mockResolvedValue({
+      enabled: true,
+      active: false,
       searching: false,
       found: true,
       port: 42778,
-      peers: [{ request_id: "request-1", address: "192.168.1.42:42778" }],
+      peers: [],
+      result: { request_id: "r1", trust_document: document, trust_fingerprint: "ab".repeat(32), connection_key: "secret" },
     } as never);
 
-    render(
-      <LocaleProvider initialLocale="pt-BR">
-        <ToastProvider>
-          <AutoDiscoveryScreen
-            setup={{ ...initialSetup, profile: "admin", trustDocument: "trust", connectionKey: "secret" }}
-            update={() => {}}
-            updateNetwork={() => {}}
-            t={(key) => key}
-          />
-        </ToastProvider>
-      </LocaleProvider>,
-    );
-
-    await waitFor(() => expect(screen.getByText("192.168.1.42:42778")).toBeTruthy());
-    expect(screen.getByText("setupWizard.discoveryPeerCount")).toBeTruthy();
-  });
-});
-
-describe("TrustScreen", () => {
-  it("aceita trust.json por upload sem pedir confirmação manual", async () => {
-    mount();
-    const input = screen.getByTestId("trust-document-file") as HTMLInputElement;
-    const document = JSON.stringify({ anchor: { principal: { pubkey: "admin-key" } } });
-
-    fireEvent.change(input, {
-      target: { files: [new File([document], "trust.json", { type: "application/json" })] },
-    });
-
-    expect(await screen.findByDisplayValue(document)).toBeTruthy();
-    expect(screen.queryByRole("checkbox")).toBeNull();
-  });
-
-  /**
-   * Sem `crypto.subtle` (HTTP no IP da máquina) a impressão digital ainda sai,
-   * e um texto que não é documento de confiança é dito, em vez de só deixar o
-   * "Continuar" desligado.
-   */
-  it("calcula a impressão digital sem crypto.subtle e avisa quando o documento é inválido", async () => {
-    vi.stubGlobal("crypto", {});
-    try {
-      const document = JSON.stringify({ anchor: { principal: { pubkey: "admin-key" } } });
-      mount({ ...initialSetup, profile: "node", trustDocument: document });
-      await waitFor(() => expect(screen.getByText(/^[0-9a-f]{8}( [0-9a-f]{8}){7}$/)).toBeTruthy());
-      cleanup();
-
-      mount({ ...initialSetup, profile: "node", trustDocument: "não é json" });
-      expect(await screen.findByTestId("trust-document-invalid")).toBeTruthy();
-    } finally {
-      vi.unstubAllGlobals();
+    function Harness() {
+      const [setup, setSetup] = useState<SetupState>({ ...base, profile: "node", nodeName: "salem" });
+      return (
+        <>
+          <JoinScreen setup={setup} update={(patch) => setSetup((current) => ({ ...current, ...patch }))} updateNetwork={(patch) => setSetup((current) => ({ ...current, network: { ...current.network, ...patch } }))} t={t} />
+          <span data-testid="ready">{String(isReadyToSave(setup))}</span>
+        </>
+      );
     }
+    wrap(<Harness />);
+
+    await waitFor(() => expect(screen.getByTestId("join-network").textContent).toContain("Casa"));
+    expect(post).toHaveBeenCalledWith("/api/setup/auto-discovery/search", { node_name: "salem" }, { auth: false });
+    expect(screen.getByTestId("ready").textContent).toBe("true");
   });
+});
 
-  it("pede somente a raiz e a chave ao node", () => {
-    mount({ ...initialSetup, profile: "node" });
-
-    expect(screen.getByTestId("trust-document-file")).toBeTruthy();
+describe("TrustFields", () => {
+  it("warns when the pasted trust document is not valid", async () => {
+    function Harness() {
+      const [setup, setSetup] = useState<SetupState>(base);
+      const update = (patch: Partial<SetupState>) => setSetup((current) => ({ ...current, ...patch }));
+      return <TrustFields setup={setup} update={update} applyTrust={(document) => update({ trustDocument: document })} t={t} />;
+    }
+    wrap(<Harness />);
+    fireEvent.change(screen.getByTestId("trust-document-textarea"), { target: { value: "not json" } });
+    await waitFor(() => expect(screen.getByTestId("trust-document-invalid")).toBeTruthy());
     expect(screen.getByTestId("connection-key-input")).toBeTruthy();
-    expect(screen.queryByTestId("public-network-name")).toBeNull();
-    expect(screen.queryByTestId("public-directory-trust")).toBeNull();
-    expect(screen.queryByLabelText("setupWizard.bootstrapAddress")).toBeNull();
-  });
-
-  it("não pede identidade da rede para liberar o último passo do node", () => {
-    const setup: SetupState = {
-      ...initialSetup,
-      profile: "node",
-      trustDocument: "{}",
-      trustFingerprint: "fingerprint",
-      connectionKey: "secret",
-    };
-
-    expect(canContinue("setup-trust", setup)).toBe(true);
-    expect(isReadyToSave(setup)).toBe(true);
-  });
-});
-
-describe("first-page defaults", () => {
-  it("shows the shared-disk slider on the first machine screen", () => {
-    render(
-      <ProfileScreen
-        profile="admin"
-        setup={initialSetup}
-        hardware={{
-          system: {
-            hostname: "machine",
-            os: "macos",
-            arch: "arm64",
-            cpu_count: 10,
-            ram: { total_mb: 16384, available_mb: 8192 },
-            gpu_kind: "integrated",
-            gpus: [],
-            disk: { total_mb: 512000, free_mb: 256000 },
-          },
-          gpu_detected: false,
-          cuda_available: false,
-          vulkan_available: false,
-          backend: "Metal",
-          p2p_discovery_available: true,
-          public_ipv6_available: true,
-          p2p_port: 45123,
-          default_model_dir: "/models",
-          default_shard_dir: "/models_sliced",
-          shard_max_gb: 20,
-          ram_reserve_pct: 20,
-          cpu_reserve_pct: 20,
-          model_dirs: [],
-          shard_dir: "/models_sliced",
-          node_name: "machine",
-          network: initialSetup.network,
-          public_directory: [],
-        }}
-        onSelect={() => {}}
-        update={() => {}}
-        t={(key) => key}
-      />,
-    );
-
-    expect(screen.getByTestId("disk-share-slider")).toBeTruthy();
-    expect(screen.getByText("setupWizard.shardSpace")).toBeTruthy();
-    expect(screen.getByText("20 GB")).toBeTruthy();
-  });
-
-  it("requires the admin IPv6 before leaving the machine screen", () => {
-    expect(canContinue("setup-profile", { ...initialSetup, profile: "admin" })).toBe(false);
-    expect(canContinue("setup-profile", { ...initialSetup, profile: "admin", advertiseAddr: "[2001:db8::10]:42777" })).toBe(true);
-    expect(canContinue("setup-profile", { ...initialSetup, profile: "node" })).toBe(true);
-  });
-
-  it("creates a short editable public network name", () => {
-    expect(createRandomNetworkName(0.42)).toMatch(/^POM-[A-Z0-9]{5}$/);
-  });
-
-  it("represents shared disk space as a bounded fraction of free space", () => {
-    expect(diskSharePercent(20, 100)).toBe(20);
-    expect(diskSharePercent(200, 100)).toBe(100);
-    expect(diskSharePercent(-1, 100)).toBe(0);
-    expect(diskSharePercent(20, 0)).toBe(0);
-  });
-
-  it("formats an IPv6 address with the configured P2P port", () => {
-    expect(formatAdvertiseAddress("2001:db8::10", 45123)).toBe("[2001:db8::10]:45123");
-    expect(formatAdvertiseAddress("[2001:db8::10]:45123", 42777)).toBe("[2001:db8::10]:45123");
-    expect(formatAdvertiseAddress("", 45123)).toBe("");
-  });
-
-  it("does not require or render manual directory replicas for a public admin network", () => {
-    const setup: SetupState = {
-      ...initialSetup,
-      profile: "admin",
-      advertiseAddr: "[2001:db8::10]:42777",
-      trustDocument: "trust",
-      trustFingerprint: "fingerprint",
-      network: {
-        ...initialSetup.network,
-        public_name: "POM-PUBLIC",
-        visibility: "public",
-        country_code: "BR",
-        city: "Curitiba",
-      },
-    };
-
-    expect(canContinue("setup-network", setup)).toBe(true);
-    expect(isReadyToSave(setup)).toBe(true);
-
-    render(<NetworkScreen setup={setup} updateNetwork={() => {}} t={(key) => key} />);
-    expect(screen.queryByTestId("public-directory")).toBeNull();
-  });
-});
-
-describe("merged review", () => {
-  it("keeps the health checks and final summary in one screen", () => {
-    render(
-      <ReviewScreen
-        setup={{ ...initialSetup, profile: "node", trustFingerprint: "fingerprint" }}
-        health={{
-          gpu_detected: false,
-          cuda_working: false,
-          vulkan_working: false,
-          configuration_ready: true,
-          p2p_discovery_working: true,
-          public_ipv6_enabled: true,
-          firewall_allowed: true,
-          firewall_supported: false,
-        }}
-        hardware={null}
-        setStage={() => {}}
-        t={(key) => key}
-      />,
-    );
-
-    expect(screen.getByText("setupWizard.healthTitle")).toBeTruthy();
-    expect(screen.getByText("setupWizard.checkIpv6")).toBeTruthy();
-    expect(screen.getAllByText("setupWizard.reviewTitle")).toHaveLength(2);
-    expect(screen.getByText("setupWizard.trustLabel")).toBeTruthy();
-  });
-});
-
-describe("network invitation", () => {
-  it("prioritizes the connection secret and collapses long materials", () => {
-    const view = render(
-      <InviteScreen
-        anchor={{
-          cluster_id: "cluster",
-          document: '{"setup":{"public_name":"POM"}}',
-          fingerprint: "fingerprint",
-          trust_filename: "trust.json",
-        }}
-        visibility="private"
-        connectionKey="connection-secret"
-        t={(key) => key}
-      />,
-    );
-
-    const details = view.container.querySelectorAll("details");
-    expect(details).toHaveLength(1);
-    expect(Array.from(details).every((detail) => !detail.open)).toBe(true);
-    expect(screen.queryByText("setupWizard.publicKey")).toBeNull();
-    expect(screen.getByText("connection-secret")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "setupWizard.download" })).toBeTruthy();
-
-    fireEvent.click(screen.getAllByText("setupWizard.showContents")[0]);
-    expect(details[0].open).toBe(true);
-    expect(screen.getByText("setupWizard.hideContents")).toBeTruthy();
   });
 });

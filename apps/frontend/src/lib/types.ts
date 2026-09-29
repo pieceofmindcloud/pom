@@ -163,6 +163,8 @@ export type AdminExposure = "localhost" | "network";
 export interface AdminAccessStatus {
   admin_exposure: AdminExposure;
   requires_password: boolean;
+  /** A senha em vigor é a padrão do primeiro acesso (`admin`). */
+  default_password?: boolean;
   gateway_port: number;
 }
 

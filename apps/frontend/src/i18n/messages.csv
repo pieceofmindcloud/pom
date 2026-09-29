@@ -956,6 +956,50 @@ enterprise.store.stepsTitle,From checkout to your first log in three steps,Do ch
 errorBoundary.detail,"The rest of the interface is still available: use the menu to open another screen. If it happens again, the detail below is what the browser recorded.","O resto da interface continua de pé: use o menu para ir a outra tela. Se insistir, o detalhe abaixo é o que o navegador registrou."
 errorBoundary.retry,Try rendering again,Tentar montar de novo
 errorBoundary.title,This screen stopped working,Esta tela parou de funcionar
+firstRun.adminDetail,Creates a new network and invites other machines.,Cria uma rede nova e convida outras máquinas.
+firstRun.advanced,Advanced,Avançado
+firstRun.copyTrust,Copy trust.json,Copiar trust.json
+firstRun.defaultPasswordChange,Change password,Trocar senha
+firstRun.defaultPasswordNotice,The administrative password is still the default (admin). Anyone who reaches this panel on the network can use it.,A senha administrativa ainda é a padrão (admin). Qualquer um que alcance este painel pela rede pode usá-la.
+firstRun.discoveryAdminOptional,Optional: open POM on another machine and choose Node or Inference. You can also add machines later.,Opcional: abra o POM em outra máquina e escolha Nó ou Inferência. Dá para adicionar máquinas depois.
+firstRun.discoveryAdminWaiting,Waiting for computers on the local network...,Esperando computadores na rede local...
+firstRun.discoveryPeers,"{count, plural, one {# computer found} other {# computers found}}","{count, plural, one {# computador encontrado} other {# computadores encontrados}}"
+firstRun.downloadTrust,Download {filename},Baixar {filename}
+firstRun.finish,Finish,Concluir
+firstRun.inferDetail,Only uses the network to chat and call the API.,Só usa a rede para conversar e chamar a API.
+firstRun.inviteDetailPrivate,"Other machines join with this key and the trust.json - or by themselves, over the local network.","Outras máquinas entram com esta chave e o trust.json - ou sozinhas, pela rede local."
+firstRun.inviteDetailPublic,"Other machines join with the trust.json - or by themselves, over the local network.","Outras máquinas entram com o trust.json - ou sozinhas, pela rede local."
+firstRun.inviteTitle,Your network is ready,Sua rede está pronta
+firstRun.joinDetail,"We look for the administrator on the local network. If it is not here, use the trust.json and the key.","Procuramos o administrador na rede local. Se ele não estiver aqui, use o trust.json e a chave."
+firstRun.joinFound,Network found,Rede encontrada
+firstRun.joinFoundDetail,The trust.json and the key came from the administrator - nothing to type.,O trust.json e a chave vieram do administrador - nada para digitar.
+firstRun.joinNetwork,Network,Rede
+firstRun.joinNotFound,No administrator answered,Nenhum administrador respondeu
+firstRun.joinSearching,Looking for the administrator on the local network...,Procurando o administrador na rede local...
+firstRun.joinSearchingDetail,Leave the administrator's wizard open on the invite step.,Deixe o wizard do administrador aberto no passo de convite.
+firstRun.joinTitle,Join your network,Entre na sua rede
+firstRun.machineJoined,joined,conectado
+firstRun.machineJoining,joining,entrando
+firstRun.machineUnknownSystem,system not informed,sistema não informado
+firstRun.manualJoin,Use the trust.json and the key,Usar o trust.json e a chave
+firstRun.networkDetail,Give it a name and choose who can find it.,Dê um nome e escolha quem pode encontrá-la.
+firstRun.networkNameHint,You can change it later.,Dá para mudar depois.
+firstRun.networkTitle,Create your network,Crie sua rede
+firstRun.nodeDetail,"Lends GPU, memory and disk to a network that already exists.","Empresta GPU, memória e disco para uma rede que já existe."
+firstRun.nodeNameHint,How the other machines will see this one.,Como as outras máquinas vão ver esta.
+firstRun.private,Private,Privada
+firstRun.privateDetail,Only machines with the connection key and the trust.json join. Nothing is published.,Só entra quem tiver a chave de conexão e o trust.json. Nada é publicado.
+firstRun.public,Public,Pública
+firstRun.publicDetail,Listed in the public directory; anyone with the trust.json can join.,Aparece no diretório público; qualquer um com o trust.json pode entrar.
+firstRun.publicLocationDetail,"Public networks publish their location in the directory, so people can find the closest one.","Redes públicas publicam a localização no diretório, para quem procura achar a mais próxima."
+firstRun.savedDetail,POM is restarting. The panel password is admin - POM will ask you to change it.,O POM está reiniciando. A senha do painel é admin - o POM vai pedir para você trocá-la.
+firstRun.searchAgain,Search again,Procurar de novo
+firstRun.startDetail,"How will this machine take part? Everything else can be adjusted later, inside POM.","Como esta máquina vai participar? O resto você ajusta depois, dentro do POM."
+firstRun.startTitle,Welcome to POM,Bem-vindo ao POM
+firstRun.stepInvite,Invite,Convite
+firstRun.stepJoin,Join,Entrar
+firstRun.stepNetwork,Network,Rede
+firstRun.stepStart,Start,Início
 forbidden.back,Back to dashboard,Voltar ao painel
 forbidden.detail,"The active profile is {profile}, and this screen is not part of it. The profile belongs to the node, so it cannot be changed from here.","O perfil ativo é {profile}, e esta tela não faz parte dele. O perfil é do nó, e não se troca por aqui."
 forbidden.title,Screen restricted to another profile,Tela restrita a outro perfil

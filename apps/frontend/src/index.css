@@ -387,6 +387,145 @@ body {
 .pom-login-error { margin: 2px 0 0; color: #ff9aa6; font-size: 13px; }
 
 /* ==========================================================================
+   Wizard de primeiro acesso (`routes/Setup.tsx`), na identidade do portão e do
+   site: o mesmo painel escuro flutuante com a marca, só mais largo e com o
+   conteúdo alinhado à esquerda. Dentro dele os tokens do tema escuro valem
+   sempre (`.pom-setup-scope`), para os campos compartilhados combinarem com o
+   painel também no tema claro.
+   ========================================================================== */
+.pom-setup-scope {
+  --ink: 8 14 24;
+  --surface: 14 22 36;
+  --raised: 20 30 46;
+  --line: 40 52 72;
+  --line-strong: 60 76 102;
+  --fg: 236 240 247;
+  --muted: 150 162 186;
+  --faint: 104 116 140;
+  --iris: 99 160 255;
+  --aqua: 67 224 200;
+  --amber: 255 180 84;
+  --rose: 255 116 128;
+  --sky: 88 184 255;
+  --lime: 168 224 95;
+  color-scheme: dark;
+}
+.pom-setup-panel {
+  width: min(820px, 100%);
+  padding: clamp(28px, 5vw, 48px) clamp(20px, 5vw, 52px) clamp(22px, 4vw, 36px);
+  text-align: left;
+}
+.pom-setup-brand { text-align: center; }
+.pom-setup-mark { width: min(170px, 46%); margin-bottom: 10px; }
+.pom-setup-sub { margin-bottom: 22px; }
+.pom-setup-body { min-height: 280px; }
+.pom-setup-loading { margin: 0 auto; transform: scale(1.35); }
+
+/* Trilha de passos: os nós ligados do site, com o pulso viajando. */
+.pom-setup-trail { margin: 0 auto 30px; animation: pom-login-reveal .8s cubic-bezier(.22, 1, .36, 1) .34s both; }
+.pom-setup-trail ol {
+  position: relative; display: flex; justify-content: space-between; gap: 8px;
+  max-width: 440px; margin: 0 auto; padding: 0; list-style: none;
+}
+.pom-setup-trail ol::before {
+  content: ""; position: absolute; left: 9%; right: 9%; top: 4px; height: 1px;
+  background: linear-gradient(90deg, rgba(79, 155, 255, .45), rgba(47, 220, 200, .45));
+}
+.pom-setup-trail ol::after {
+  content: ""; position: absolute; top: 3px; left: 9%; width: 18px; height: 3px; border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #6fd6f3, transparent); box-shadow: 0 0 10px #35c9f0;
+  animation: pom-setup-travel 3.2s cubic-bezier(.45, 0, .55, 1) 1s infinite;
+}
+.pom-setup-trail li { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.pom-setup-trail i {
+  width: 9px; height: 9px; border-radius: 50%; background: #0b1421; border: 1.5px solid rgba(255, 255, 255, .28);
+  transition: background .3s ease, border-color .3s ease, box-shadow .3s ease;
+}
+.pom-setup-trail li.is-done i { border-color: #2fdcc8; background: #2fdcc8; }
+.pom-setup-trail li.is-active i { border-color: #35c9f0; background: #35c9f0; box-shadow: 0 0 0 5px rgba(53, 201, 240, .18); animation: pom-setup-pulse 2.4s ease-in-out infinite; }
+.pom-setup-trail span {
+  color: rgba(255, 255, 255, .38); font: 700 9px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: .16em; text-transform: uppercase; text-align: center;
+}
+.pom-setup-trail li.is-active span, .pom-setup-trail li.is-done span { color: rgba(255, 255, 255, .78); }
+@keyframes pom-setup-travel {
+  0% { left: 9%; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { left: calc(91% - 18px); opacity: 0; }
+}
+@keyframes pom-setup-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(53, 201, 240, .16); } 50% { box-shadow: 0 0 0 8px rgba(53, 201, 240, .06); }
+}
+
+.pom-setup-choice {
+  display: block; width: 100%; min-width: 0; padding: 16px; border-radius: 18px; text-align: left;
+  border: 1px solid rgba(255, 255, 255, .12); background: rgba(255, 255, 255, .035);
+  transition: border-color .2s ease, background .2s ease, transform .2s ease, box-shadow .2s ease;
+}
+.pom-setup-choice:hover { border-color: rgba(255, 255, 255, .24); transform: translateY(-1px); }
+.pom-setup-choice.is-selected {
+  border-color: rgba(53, 201, 240, .7); background: rgba(53, 201, 240, .08);
+  box-shadow: 0 0 0 3px rgba(53, 201, 240, .14), 0 18px 40px rgba(0, 0, 0, .25);
+}
+.pom-setup-choice:focus-visible { outline: 2px solid #35c9f0; outline-offset: 2px; }
+.pom-setup-choice-icon {
+  display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .05); color: #6fd6f3;
+}
+.pom-setup-choice.is-selected .pom-setup-choice-icon { border-color: rgba(53, 201, 240, .5); background: rgba(53, 201, 240, .14); }
+.pom-setup-chip {
+  display: inline-flex; max-width: 100%; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .12); background: rgba(255, 255, 255, .04); color: rgba(255, 255, 255, .72); font-size: 11.5px;
+}
+.pom-setup-chip svg { color: #6fd6f3; flex-shrink: 0; }
+.pom-setup-details { border-top: 1px solid rgba(255, 255, 255, .1); padding-top: 12px; }
+.pom-setup-details summary {
+  display: flex; cursor: pointer; list-style: none; align-items: center; justify-content: space-between;
+  color: rgba(255, 255, 255, .7); font-size: 13px; font-weight: 600;
+}
+.pom-setup-details summary::-webkit-details-marker { display: none; }
+.pom-setup-details summary svg { transition: transform .2s ease; }
+.pom-setup-details[open] summary svg { transform: rotate(180deg); }
+.pom-setup-secret {
+  padding: 16px 18px; border-radius: 18px; border: 1px solid rgba(47, 220, 200, .45);
+  background: linear-gradient(135deg, rgba(79, 155, 255, .10), rgba(47, 220, 200, .08));
+}
+.pom-setup-ghost {
+  display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .16); background: rgba(255, 255, 255, .04);
+  color: rgba(255, 255, 255, .82); font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: border-color .15s ease, background .15s ease;
+}
+.pom-setup-ghost:hover { border-color: rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); }
+.pom-setup-ghost:focus-visible { outline: 2px solid #35c9f0; outline-offset: 2px; }
+.pom-setup-ghost-sm { padding: 6px 12px; font-size: 12px; }
+.pom-setup-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 28px; padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, .1);
+}
+.pom-setup-discovery { padding: 16px; border-radius: 18px; border: 1px solid rgba(255, 255, 255, .1); background: rgba(255, 255, 255, .025); }
+.pom-setup-radar {
+  position: relative; display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 50%; color: #6fd6f3; border: 1px solid rgba(53, 201, 240, .35);
+}
+.pom-setup-radar.is-live::before, .pom-setup-radar.is-live::after {
+  content: ""; position: absolute; inset: -1px; border-radius: 50%; border: 1px solid rgba(53, 201, 240, .5);
+  animation: pom-setup-ripple 2.2s ease-out infinite;
+}
+.pom-setup-radar.is-live::after { animation-delay: 1.1s; }
+.pom-setup-radar.is-found { color: #2fdcc8; border-color: rgba(47, 220, 200, .6); background: rgba(47, 220, 200, .12); }
+@keyframes pom-setup-ripple { from { transform: scale(1); opacity: .9; } to { transform: scale(2.1); opacity: 0; } }
+.pom-setup-machine {
+  list-style: none; padding: 14px; border-radius: 16px; border: 1px solid rgba(255, 176, 84, .35);
+  background: rgba(255, 255, 255, .035); transition: border-color .4s ease, box-shadow .4s ease;
+}
+.pom-setup-machine.is-joined { border-color: rgba(47, 220, 200, .55); box-shadow: 0 0 0 3px rgba(47, 220, 200, .08); }
+.pom-setup-status {
+  flex-shrink: 0; padding: 3px 9px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+}
+.pom-setup-status.is-joining { color: #ffb454; background: rgba(255, 180, 84, .12); animation: pom-setup-blink 1.6s ease-in-out infinite; }
+.pom-setup-status.is-joined { color: #2fdcc8; background: rgba(47, 220, 200, .14); }
+@keyframes pom-setup-blink { 50% { opacity: .55; } }
+
+/* ==========================================================================
    Página de venda do plugin Estatísticas e Logs (`EnterpriseFeatureShowcase`),
    na linguagem do pieceofmind.cloud: hero escuro flutuante, gradiente navy ->
    teal, eyebrows mono numerados, cards arredondados e botões pílula. O hero é

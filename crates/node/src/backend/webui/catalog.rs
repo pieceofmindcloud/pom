@@ -374,6 +374,13 @@ pub(super) async fn save_admin_access(
         // Localhost mode deliberately has no password. Network mode receives
         // the existing hash or the newly derived one, never plaintext.
         next.admin_access_token = next_password_hash;
+        // Trocar a senha pela padrão de novo é permitido, e aí o aviso volta.
+        next.admin_password_default = req.admin_exposure.requires_password()
+            && if req.new_password.is_empty() {
+                cfg.admin_password_default
+            } else {
+                req.new_password == crate::auth::DEFAULT_ADMIN_PASSWORD
+            };
 
         if let Err(error) = next.save() {
             return bad_request(format!(

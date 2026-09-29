@@ -252,24 +252,8 @@ ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
   quando o cluster local corresponde à rede e marca como indisponível o que o
   catálogo público não fornece. O botão de entrada reaproveita a tela de
   confiança sem segredo de rede pública.
-- `/setup` -> `Setup`, o wizard real do primeiro acesso, **em tela inteira**:
-  sem Sidebar e sem Topbar, como o bootstrap. Ele mostra hardware antes das
-  decisões de capacidade e modelo e conduz `admin`, `node` ou `infer` até o
-  save. No admin, a exposição da interface na rede é a única opção que pede
-  uma senha administrativa; a criptografia TLS entre peers é opcional e começa
-  desligada. A tela de convite baixa o arquivo da raiz com o nome retornado por
-  `admin_trust_filename` e mostra a chave de conexão apenas em redes local ou
-  privadas. Durante o setup, uma etapa de descoberta local deixa o admin
-  esperando e faz node/infer procurarem um admin; a chave só chega depois do
-  handshake explícito. Na etapa da raiz de confiança, a impressão digital é
-  calculada no navegador a partir do documento colado
-  (`lib/trustFingerprint.ts`). Como o modo setup escuta em todas as
-  interfaces, o wizard costuma ser aberto por HTTP no IP da máquina, onde o
-  navegador não oferece `crypto.subtle` (só existe em HTTPS ou localhost); o
-  cálculo cai então num SHA-256 em TypeScript puro. Texto que não é documento
-  de confiança ganha aviso (`setupWizard.trustDocumentInvalid`) em vez de só
-  deixar o "Continuar" desligado. `SetupWizard.tsx` continua sendo apenas o
-  mock de referência visual.
+- `/setup` -> `Setup`, o wizard real do primeiro acesso, **em tela inteira** e
+  na identidade do portão de acesso (ver "Wizard de primeiro acesso" abaixo).
 - `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
   participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
   `/config/preferencias/admin` -> preferências administrativas;
@@ -311,29 +295,42 @@ projeção normal de `NAV`.
 ### Wizard de primeiro acesso
 
 `routes/Setup.tsx` é o wizard real, servido pelo router loopback
-`/api/setup/*`. Ele detecta hardware antes das decisões, pede localização
-país/cidade para todos os perfis, persiste a localização aproximada autorizada
-e usa etapas diferentes para `admin`, `node` e `infer`: admin cria a raiz,
-configura a rede e convida; node escolhe RAM, CPU, disco de fatias e proteção
-térmica; infer só confirma a confiança e entra. País e cidade são obrigatórios
-para rede pública e opcionais, mas persistidos, para local/private. O nome
-público também é obrigatório para rede pública em todos os perfis e aparece no
-passo de confiança de node/infer antes do salvamento. A cidade manual é válida
-quando a referência SQLite não a contém.
+`/api/setup/*`. Pergunta só o que não dá para decidir depois
+(`routes/setupWizardFlow.ts`):
 
-O wizard não exige ingresso HTTP(S) do diretório federado para uma rede pública.
-Quando configurados por `POM_PUBLIC_DIRECTORY` ou posteriormente na
-administração, eles são persistidos no documento de confiança e usados para
-publicar ou consultar o catálogo. Um nó privado pode conservar esses ingressos
-para listar o catálogo por saída.
+- **Administrador, 3 passos:** Início (papel e nome da máquina, com um resumo
+  do hardware), Rede (nome e **Privada** ou **Pública**; país e cidade só na
+  pública, porque vão para o pkarr e o diretório) e Convite (chave de conexão,
+  quando privada, e o `trust.json` para baixar ou copiar). O endereço anunciado
+  vem sugerido e fica em "Avançado". Não há pergunta de "rede somente local"
+  nem de "quem pode acessar": privada exige a chave e o `trust.json`, pública
+  exige o `trust.json`.
+- **Nó e inferência, 2 passos:** Início e Entrar. Entrar procura o
+  administrador pela descoberta local e recebe a raiz e a chave sem digitar
+  nada; colar o `trust.json` e a chave fica recolhido como alternativa. A
+  cidade de uma rede pública vem no bloco `setup` do `trust.json`.
+- **Descoberta local no convite (opcional):** enquanto o administrador está no
+  convite, cada computador que procura a rede aparece com animação e o que
+  informou de si - nome, sistema, IP, CPU, RAM, GPUs e VRAM - e passa de
+  "entrando" a "conectado" quando recebe a raiz. Concluir sem ninguém é normal.
+- **Padrões em vez de perguntas:** pastas de modelos e fatias, espaço de disco,
+  reservas de RAM/CPU e limite térmico saem da máquina; a interface fica aberta
+  à rede com a senha `admin`; a workspace é `~/pom_workspace`. Tudo é ajustável
+  depois, dentro do POM. Enquanto a senha for a padrão, o portão não a pergunta
+  (`useAdminSurface` entra com ela quando `/api/access` diz
+  `default_password`) e `DefaultPasswordNotice` mostra uma faixa fixa pedindo a
+  troca em Preferências.
 
-O passo de modelos combina o catálogo local com referências do Hugging Face,
-sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como
-padrões. O convite do admin mostra e baixa a raiz `.pom.trust.json`, a
-fingerprint calculada e a chave de conexão apenas quando a rede é
-local/private. A chave pública não é exibida separadamente, pois já está na
-raiz. A verificação final cobre GPU, backend disponível, configuração,
-descoberta P2P e IPv6 público; a inferência do modelo fica para depois.
+A casca usa `.pom-login*` e `.pom-setup*` (`index.css`): o painel escuro
+flutuante com a marca `assets/pom-mark-dark.png`, o seletor de idioma
+`BrandLanguageSwitch` e a trilha de passos no desenho dos nós ligados com o
+pulso de luz viajando - a mesma animação do portão, que também é o
+carregamento. Dentro do painel os tokens do tema escuro valem sempre
+(`.pom-setup-scope`).
+
+O wizard não exige ingresso HTTP(S) do diretório federado para uma rede
+pública. Quando configurados por `POM_PUBLIC_DIRECTORY` ou depois na
+administração, eles são persistidos no documento de confiança.
 
 `routes/SetupWizard.tsx` e `components/setup-wizard/*` continuam sendo apenas o
 mock de referência visual. Não são usados pelo primeiro acesso real.

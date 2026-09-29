@@ -126,6 +126,50 @@ fn tunnel_peer_multiaddrs(peer_id: PeerId, advertised: &[String]) -> Vec<Multiad
         .collect()
 }
 
+/// Espera entre rediscagens por peer, depois de uma discagem que falhou.
+///
+/// Sem ela, com o túnel fora do ar, cada lote de logs do cluster (a cada
+/// 100 ms) e cada chamada pelo túnel virava uma discagem nova: cada uma abria
+/// ou tentava abrir um circuito no relé até ele recusar tudo ("resource limit
+/// exceeded"), e o registro de cada falha entrava no lote seguinte de logs -
+/// um laço que se sustentava sozinho. A espera dobra a cada falha, de
+/// `DIAL_BACKOFF_FLOOR` até `DIAL_BACKOFF_CEILING`, e uma conexão estabelecida
+/// a zera.
+#[derive(Default)]
+struct DialBackoff {
+    peers: HashMap<PeerId, (u32, std::time::Instant)>,
+}
+
+const DIAL_BACKOFF_FLOOR: Duration = Duration::from_millis(250);
+const DIAL_BACKOFF_CEILING: Duration = Duration::from_secs(10);
+
+impl DialBackoff {
+    /// O peer está em espera: não vale discar de novo agora.
+    fn blocked(&self, peer: &PeerId) -> bool {
+        self.peers
+            .get(peer)
+            .is_some_and(|(_, until)| *until > std::time::Instant::now())
+    }
+
+    /// Anota uma falha e devolve quantas seguidas já são.
+    fn failed(&mut self, peer: PeerId) -> u32 {
+        let entry = self
+            .peers
+            .entry(peer)
+            .or_insert((0, std::time::Instant::now()));
+        entry.0 = entry.0.saturating_add(1);
+        let wait = DIAL_BACKOFF_FLOOR
+            .saturating_mul(1u32 << entry.0.saturating_sub(1).min(8))
+            .min(DIAL_BACKOFF_CEILING);
+        entry.1 = std::time::Instant::now() + wait;
+        entry.0
+    }
+
+    fn connected(&mut self, peer: &PeerId) {
+        self.peers.remove(peer);
+    }
+}
+
 /// Reidrata o livro de endereços do swarm antes de uma chamada pelo túnel.
 ///
 /// O anúncio pode ter chegado pelo UDP e o `PeerId` pode ter sido repassado ao
@@ -226,7 +270,11 @@ fn publish_swarm_addrs(swarm: &Swarm<DiscBehaviour>, network: &Network) {
     }
 
     if network.set_libp2p_addrs(addrs.clone()) {
-        info!("libp2p: anunciando {} multiaddress(es): {:?}", addrs.len(), addrs);
+        info!(
+            "libp2p: anunciando {} multiaddress(es): {:?}",
+            addrs.len(),
+            addrs
+        );
     }
 }
 
@@ -516,10 +564,15 @@ impl Discovery {
                     .expect("mdns init")
                     .into();
 
-                let identify = identify::Behaviour::new(identify::Config::new(
-                    "/pom/1.0.0".to_string(),
-                    key.public(),
-                ));
+                // Sem cache de endereços: por padrão o identify guarda os
+                // `listen_addrs` que cada par informa e os oferece para discar.
+                // Um par na rede do host informa 127.0.0.1, e um nó numa bridge
+                // do Docker discava o próprio loopback - "Unexpected peer ID",
+                // a si mesmo. Só o `Announce` diz para onde discar.
+                let identify = identify::Behaviour::new(
+                    identify::Config::new("/pom/1.0.0".to_string(), key.public())
+                        .with_cache_size(0),
+                );
 
                 // Build relay server config. When `serve_relay` is false we set
                 // max_reservations to 0 so no clients can reserve slots.
@@ -582,7 +635,8 @@ impl Discovery {
         }
         // Mesma porta do TCP, do outro lado da pilha: o par descobre os dois
         // pelo identify e o DCuTR escolhe o que conseguir furar.
-        if let Ok(v4_quic) = format!("/ip4/0.0.0.0/udp/{}/quic-v1", libp2p_port).parse::<Multiaddr>()
+        if let Ok(v4_quic) =
+            format!("/ip4/0.0.0.0/udp/{}/quic-v1", libp2p_port).parse::<Multiaddr>()
         {
             swarm.listen_on(v4_quic).ok();
         }
@@ -700,6 +754,7 @@ impl Discovery {
         // Último endereço discado por peer, para `reserve_circuit`. Só este
         // laço o toca, como `pending_tunnel`.
         let mut dialed_addrs: HashMap<PeerId, Multiaddr> = HashMap::new();
+        let mut dial_backoff = DialBackoff::default();
         let (inbound_response_tx, mut inbound_response_rx) =
             mpsc::channel::<InboundTunnelResponse>(64);
         loop {
@@ -707,7 +762,7 @@ impl Discovery {
                 biased;
                 event = swarm.next() => {
                     let Some(ev) = event else { break };
-                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &mut circuit_listens, &mut dialed_addrs, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat, &audit_log, &remote_audit_tx).await;
+                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &mut circuit_listens, &mut dialed_addrs, &http, &mut pending_tunnel, &mut pending_chat, &inbound_response_tx, &logs, &chat, &audit_log, &remote_audit_tx, &mut dial_backoff).await;
                 }
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
@@ -729,6 +784,14 @@ impl Discovery {
                 out = tunnel_rx.recv() => {
                     let Some(TunnelOutbound { peer_id, addr_candidates, request, reply }) = out else { break };
                     if !swarm.is_connected(&peer_id) {
+                        // Em espera: falha na hora, e quem chamou (o plano de
+                        // rotas, a entrega) segue para a próxima via.
+                        if dial_backoff.blocked(&peer_id) {
+                            let _ = reply.send(Err(infer_tunnel::TunnelDeliveryError::before_request(
+                                "peer em espera depois de discagens que falharam",
+                            )));
+                            continue;
+                        }
                         if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id, &addr_candidates).await {
                             let _ = reply.send(Err(
                                 infer_tunnel::TunnelDeliveryError::before_request(error),
@@ -742,6 +805,12 @@ impl Discovery {
                 out = log_rx.recv() => {
                     let Some(LogOutbound { peer_id, addr_candidates, request }) = out else { break };
                     if !swarm.is_connected(&peer_id) {
+                        // Um lote de logs nunca disca um peer em espera: é o
+                        // que fechava o laço de discagens a cada 100 ms.
+                        if dial_backoff.blocked(&peer_id) {
+                            logs.try_send_dropped(request.entries.len() as u64 + request.dropped);
+                            continue;
+                        }
                         if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id, &addr_candidates).await {
                             debug!("cluster-logs: peer {peer_id} indisponível: {error}");
                             continue;
@@ -814,6 +883,7 @@ async fn handle_event(
     chat: &Arc<NetworkChat>,
     audit_log: &AuditLog,
     remote_audit_tx: &mpsc::Sender<Vec<AuditEvent>>,
+    dial_backoff: &mut DialBackoff,
 ) {
     match event {
         // ── Gossipsub: peer announced itself ────────────────────────────────
@@ -986,7 +1056,7 @@ async fn handle_event(
                         swarm.add_peer_address(peer_id, address.clone());
                     }
 
-                    if !swarm.is_connected(&peer_id) {
+                    if !swarm.is_connected(&peer_id) && !dial_backoff.blocked(&peer_id) {
                         if addresses.is_empty() {
                             debug!("libp2p: tunnel peer {peer_id} announced no dialable address");
                         } else {
@@ -1070,7 +1140,10 @@ async fn handle_event(
             // o caso que mais importa: um nó pom com IP público no próprio
             // cluster, que é exatamente onde a reserva deve ser feita.
             let is_relay = connected_relays.contains(&peer_id)
-                || info.protocols.iter().any(|p| *p == relay::HOP_PROTOCOL_NAME);
+                || info
+                    .protocols
+                    .iter()
+                    .any(|p| *p == relay::HOP_PROTOCOL_NAME);
             if is_relay {
                 reserve_circuit(
                     swarm,
@@ -1111,6 +1184,7 @@ async fn handle_event(
             ..
         } => {
             network.note_libp2p_link(&peer_id, connection_id, endpoint.get_remote_address());
+            dial_backoff.connected(&peer_id);
             if relay_peer_ids.contains(&peer_id) {
                 connected_relays.insert(peer_id);
             }
@@ -1148,7 +1222,13 @@ async fn handle_event(
             error,
             ..
         } => {
-            info!("libp2p: discagem para {peer_id} falhou: {error}");
+            let failures = dial_backoff.failed(peer_id);
+            // Só a 1ª, 2ª, 4ª, 8ª... falha seguida vira log: o registro também
+            // vai nos lotes de logs do cluster, e uma linha por discagem
+            // alimentaria o próprio laço que a espera existe para cortar.
+            if failures.is_power_of_two() {
+                info!("libp2p: discagem para {peer_id} falhou ({failures}ª seguida): {error}");
+            }
         }
 
         // ── Relay reservation accepted ───────────────────────────────────────
@@ -1225,12 +1305,9 @@ async fn handle_event(
                     // `gateway_path_is_allowed`, que explica por que um túnel
                     // aberto para o gateway seria escalada de privilégio.
                     let target = match request.target {
-                        infer_tunnel::TunnelTarget::Inference => {
-                            network.inference_port.ok_or((
-                                503u16,
-                                "no inference server on this node".to_string(),
-                            ))
-                        }
+                        infer_tunnel::TunnelTarget::Inference => network
+                            .inference_port
+                            .ok_or((503u16, "no inference server on this node".to_string())),
                         infer_tunnel::TunnelTarget::Gateway => {
                             if infer_tunnel::gateway_path_is_allowed(&request.path) {
                                 network
@@ -1252,9 +1329,14 @@ async fn handle_event(
                                 peer, port, request.path
                             );
                             let response_tx = inbound_response_tx.clone();
-                            spawn_loopback_request(http, port, request, move |response| async move {
-                                let _ = response_tx.send((channel, response)).await;
-                            });
+                            spawn_loopback_request(
+                                http,
+                                port,
+                                request,
+                                move |response| async move {
+                                    let _ = response_tx.send((channel, response)).await;
+                                },
+                            );
                         }
                         Err((status, message)) => {
                             // Nothing to forward to — this node has no such
@@ -1873,6 +1955,22 @@ mod tests {
             Some(("10.0.0.1", "42777"))
         );
         assert_eq!(split_host_port("[2804:d55::1]"), None);
+    }
+
+    #[test]
+    fn dial_backoff_doubles_up_to_the_ceiling_and_a_connection_clears_it() {
+        let peer = PeerId::random();
+        let mut backoff = DialBackoff::default();
+        assert!(!backoff.blocked(&peer));
+        assert_eq!(backoff.failed(peer), 1);
+        assert!(backoff.blocked(&peer));
+        for _ in 0..20 {
+            backoff.failed(peer);
+        }
+        let (_, until) = backoff.peers[&peer];
+        assert!(until <= std::time::Instant::now() + DIAL_BACKOFF_CEILING);
+        backoff.connected(&peer);
+        assert!(!backoff.blocked(&peer));
     }
 
     #[tokio::test]

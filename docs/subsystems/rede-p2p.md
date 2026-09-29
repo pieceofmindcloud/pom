@@ -770,10 +770,25 @@ congelaria, porque nem o estado do AutoNAT nem uma reserva nova mexem em
 `peers`.
 
 Uma discagem libp2p que falha é registrada com o motivo por endereço
-(`libp2p: discagem para <peer> falhou: ...`, evento `OutgoingConnectionError`).
-Antes disso o túnel só dizia "Failed to dial the requested peer", sem dizer
-se o relé recusou o circuito, se o endereço estava velho ou se o transporte
-não chegou.
+(`libp2p: discagem para <peer> falhou (Nª seguida): ...`, evento
+`OutgoingConnectionError`), só na 1ª, 2ª, 4ª, 8ª... falha seguida. Antes disso
+o túnel só dizia "Failed to dial the requested peer".
+
+**Espera entre rediscagens (`DialBackoff`, `discovery.rs`).** Depois de uma
+discagem que falha, o peer fica em espera, que dobra de 250 ms até 10 s; uma
+conexão estabelecida a zera. Em espera, um lote de logs do cluster não disca
+(é descartado e contado como perdido), uma chamada pelo túnel falha na hora
+(o plano de rotas segue para a próxima via) e o aquecimento pelo gossip não
+disca. Sem isso, com o túnel fora do ar, cada lote de logs - a cada 100 ms -
+virava uma discagem, cada discagem pedia um circuito ao relé até ele recusar
+tudo ("Remote reported resource limit exceeded"), e o log de cada falha
+entrava no lote seguinte: um laço que se sustentava sozinho.
+
+**O `identify` não guarda endereços** (`with_cache_size(0)`). Por padrão ele
+oferece para discagem os `listen_addrs` que cada par informa; um par na rede do
+host informa `127.0.0.1`, e um nó numa bridge do Docker discava o próprio
+loopback ("Unexpected peer ID", ele mesmo). Só o `Announce` diz para onde
+discar, a mesma política que já tirava esses endereços do Kademlia.
 
 **A rota em uso com cada peer** é outra pergunta, e sai em `GET /admin/nodes`
 no campo `route` (`Network::peer_route`), mostrado na tela de participantes no

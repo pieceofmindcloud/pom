@@ -205,7 +205,6 @@ Para compilar contra um checkout local, inclusive fora da raiz do POM:
 POM_LLAMA_CPP_MODE=source \
 POM_LLAMA_CPP_SOURCE_DIR=/storage/nvme1/projects/llama.cpp \
   ./scripts/build-docker.sh
-# Na Ksia, use ./scripts/build-docker-ksia.sh no lugar.
 ```
 
 O script prepara um named context temporário sem `.git`, dados de modelos em
@@ -545,8 +544,8 @@ offload no primeiro clique.
   temporário e exporta `POM_BUILD_COMMIT`, `LLAMA_CPP_CACHE_KEY`, tag/repo da
   release e `POM_CUDA_ARCH_CACHE_KEY` antes de chamar `docker compose build`.
   `POM_LLAMA_CPP_SOURCE_DIR` pode apontar a outro clone Git local; a pasta de
-  contexto exclui `.git` e dados/builds grandes. `build-docker-ksia.sh` escolhe
-  o Compose Ksia e delega ao mesmo script. Não roda `npm run build`: a
+  contexto exclui `.git` e dados/builds grandes. Os composes por cluster (repositório
+  `pom-cluster-config`) chamam o mesmo script com `COMPOSE_FILE`. Não roda `npm run build`: a
   interface é construída
   em estágio próprio. Não conseguir ler o commit do fork **aborta** em vez de
   cair em `unknown` - esse valor é um id de cache mount como outro qualquer, e
@@ -563,11 +562,10 @@ offload no primeiro clique.
   O padrão é a topologia Salem, com NVIDIA 0 e
   Radeon em `node-gpu`, NVIDIA 0 em `node-gpu2`, Radeon em `node-gpu-3` e
   nenhuma reserva em `node-cpu`. Salem usa `docker-compose.yml` por padrão;
-  `docker-compose.salem.yml` também pode ser selecionado diretamente. Na
-  Ksia, `docker-compose.ksia.yml` define atualmente só `node-1` (`pom-gpu`),
-  sem `/dev/dri`, com as NVIDIA 0 e 1. Esse serviço usa o executável padrão
-  CUDA+Vulkan da imagem `pom:ksia`; IDs de device, volumes e dados são
-  configuração de runtime, não requisitos distintos de build. O
+  `docker-compose.salem.yml` também pode ser selecionado diretamente. O
+  compose da Ksia saiu deste repositório e vive em `pom-cluster-config`; IDs
+  de device, volumes e dados são configuração de runtime, não requisitos
+  distintos de build. O
   `pom-docker.sh` também gera Compose remoto com reservas de GPU para Ksia.
   Os serviços mantêm os volumes de
   modelos e de estado em `tests/fixtures/<nome>`. Cada serviço
@@ -677,7 +675,7 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 |---|---|
 | `POM_HOME` | Resolução de `project_root()` em primeiro lugar: config, `models/`, `venv/`, UI. Sem ela: cwd que parece o projeto, depois subir do diretório do executável. Dois nós na mesma máquina precisam de casas distintas (identidade `node_id` também mora no project root). |
 | `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_SETUP_BIND`, `POM_CYCLE_DETECTION`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY` | Uma por opção da linha de comando (`--port`, `--bootstrap`, ...; tabela `ARG_ENV` em `main.rs`). A flag vence a variável, que vence o padrão; as booleanas aceitam `1/0`, `true/false`, `yes/no`, `on/off`. A variável vence o `pom.json`: `POM_PORT` e `POM_GATEWAY_PORT` substituem a porta gravada, ao contrário de `--port`/`--gateway-port`, que só valem no modo setup; `POM_BOOTSTRAP` e `POM_RELAY_PEERS` se somam às listas da config, como as flags. |
-| `POM_FORCE_SETUP=<token>` / `--setup` (alias `--wizard`) | Força o wizard de primeiro acesso numa máquina já configurada, para testá-lo: antes de abrir o banco, `pom.json`, a raiz de confiança e `pom.db` (com WAL/SHM) vão para `<project_root>/setup-backups/<data-hora>/` e o nó sobe em modo setup. A identidade (`.pom-node.key`, `.pom.key`) fica. Para voltar, pare o nó e mova os arquivos de volta. **Uma vez por pedido**, para o reinício depois do save não voltar ao wizard: a flag usa a marca `POM_SETUP_FORCED` no ambiente herdado pelo reinício; a variável guarda o último token consumido em `<project_root>/.pom-setup-forced`, porque em Docker o reinício recria o container com o ambiente do compose. O mesmo token não força de novo. `scripts/run-docker-ksia.sh --wizard` gera um token novo por chamada. |
+| `POM_FORCE_SETUP=<token>` / `--setup` (alias `--wizard`) | Força o wizard de primeiro acesso numa máquina já configurada, para testá-lo: antes de abrir o banco, `pom.json`, a raiz de confiança e `pom.db` (com WAL/SHM) vão para `<project_root>/setup-backups/<data-hora>/` e o nó sobe em modo setup. A identidade (`.pom-node.key`, `.pom.key`) fica. Para voltar, pare o nó e mova os arquivos de volta. **Uma vez por pedido**, para o reinício depois do save não voltar ao wizard: a flag usa a marca `POM_SETUP_FORCED` no ambiente herdado pelo reinício; a variável guarda o último token consumido em `<project_root>/.pom-setup-forced`, porque em Docker o reinício recria o container com o ambiente do compose. O mesmo token não força de novo. `scripts/up.sh <cluster> --wizard`, no repositório `pom-cluster-config`, gera um token novo por chamada. |
 | `POM_RETURN_MODE` | `direct` ou `ring` impõe o modo de volta da resposta no gateway (planejador e decisão), para testar um caminho que o planejador não escolheria - por exemplo a entrega direta a um gateway atrás de NAT, que o anel esconderia. Ausente ou `auto`, o planejador escolhe. Com `direct`, uma volta inexistente vira falha de inferência. Ver `paralelismo.md`. |
 | `POM_SLICE_BENCH` | `0` desliga o teste de velocidade da fatia ao carregar o modelo (`infer_server/perf.rs`). |
 | `POM_CONFIG` | Caminho do `pom.json` (padrão `<project_root>/pom.json`). |

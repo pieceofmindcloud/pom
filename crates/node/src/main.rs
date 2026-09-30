@@ -841,7 +841,7 @@ fn forced_setup_marker() -> std::path::PathBuf {
 /// - `POM_FORCE_SETUP=<token>`: em Docker o processo 1 encerra no reinício e o
 ///   container sobe com o ambiente do compose, sem marca nenhuma. O token
 ///   consumido fica num arquivo do project root; o mesmo token não força de
-///   novo. `run-docker-ksia.sh --wizard` gera um token novo por chamada.
+///   novo. `up.sh <cluster> --wizard` (repositório `pom-cluster-config`) gera um token novo por chamada.
 fn force_setup_if_requested(cli_flag: bool) -> anyhow::Result<()> {
     if cli_flag {
         let consumed = crate::brand::env_var("SETUP_FORCED");

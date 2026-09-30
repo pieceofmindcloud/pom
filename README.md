@@ -36,8 +36,6 @@ O binário estará em `./target/release/pom`.
 
 ```bash
 ./scripts/build-docker.sh
-# Ksia:
-./scripts/build-docker-ksia.sh
 ```
 
 Salem e Ksia compilam o mesmo executável `pom` com CPU, CUDA e Vulkan e o
@@ -55,7 +53,9 @@ POM_LLAMA_CPP_SOURCE_DIR=/caminho/para/llama.cpp \
   ./scripts/build-docker.sh
 ```
 
-`build-docker-ksia.sh` aceita os mesmos overrides. O script lê o commit do POM
+Os composes por máquina/cluster ficam no repositório `pom-cluster-config`, que
+chama este script com `COMPOSE_FILE` apontando para o compose do cluster. O
+script lê o commit do POM
 no host e o passa apenas ao runtime como `POM_BUILD_COMMIT`; o `.dockerignore`
 corta `.git/` do contexto, então sem isso o binário carimba `desconhecido` em
 `/api/ui/node`. A publicação de binários do POM não depende desse modo Docker.

@@ -39,8 +39,8 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   commit e delta. O contexto principal ignora a copia local de `llama.cpp`,
   pois o fork entra somente pelo named context. O script deriva
   `POM_CUDA_ARCH_CACHE_KEY` da lista real de arquiteturas e chama
-  `docker compose build`. `build-docker-ksia.sh` escolhe o Compose Ksia e
-  delega a este script. Salem e Ksia usam o mesmo target `runtime`, com um
+  `docker compose build`. Os composes por cluster vivem no repositório
+  `pom-cluster-config`, que chama este script com `COMPOSE_FILE`. Salem e Ksia usam o mesmo target `runtime`, com um
   `pom` universal CUDA+Vulkan e os módulos CPU/Vulkan/CUDA no mesmo runtime.
   O frontend é um estágio independente e sua cópia de `dist` é a última camada
   da imagem; Fork/tag, toolkit, arquitetura e toolchain não invalidam a UI, e
@@ -222,8 +222,8 @@ invocados pelo binario (ver o `README.md` de la).
 - `docker-compose.yml` - cluster local de 4 servicos (`node-gpu`, `node-gpu2`,
   `node-gpu-3`, `node-cpu`) com `network_mode: host`, uma ancora comum de
   build/imagem e estado persistido em `tests/fixtures/<nome>`. O padrao
-  mapeia a topologia da Salem; na Ksia, `COMPOSE_FILE=docker-compose.ksia.yml`
-  seleciona o ponto de entrada de GPUs NVIDIA. `docker-compose.salem.yml`
+  mapeia a topologia da Salem; a Ksia sobe pelo repositório
+  `pom-cluster-config`. `docker-compose.salem.yml`
   tambem e selecionavel diretamente. Os dois estendem a definicao comum em
   `docker-compose.common.yml`, mantendo os mesmos servicos, contexto, imagem,
   volumes e variaveis. Todos os nós Salem/Ksia usam o mesmo executável; o
@@ -258,8 +258,7 @@ invocados pelo binario (ver o `README.md` de la).
 
 ## Sobre os nomes e o estado das fixtures do docker-compose
 
-`docker-compose.yml`, `docker-compose.salem.yml` e
-`docker-compose.ksia.yml` estendem `docker-compose.common.yml` para usar os
+`docker-compose.yml` e `docker-compose.salem.yml` estendem `docker-compose.common.yml` para usar os
 mesmos quatro servicos nas duas maquinas,
 mas preservam os diretorios de estado ja usados
 por cada no. `gen-node-configs.py` continua gravando em

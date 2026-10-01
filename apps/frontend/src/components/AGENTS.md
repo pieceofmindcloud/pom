@@ -549,7 +549,9 @@ Key logic carriers:
   `0.699999988079071`. Os controles de cache KV, fusão de fatias e precisão do
   estado oculto só aparecem quando quem monta os passa. Na edição da precisão,
   f8 e i4 ficam desabilitados até todos os peers selecionados anunciarem suporte,
-  e o aviso usa a razão da capability do formato escolhido. `VisionControl` segue
+  e o aviso usa a razão da capability do formato escolhido. O combo compacto do
+  Deploy Studio oferece f32, f16, f8 e i4; f16 continua padrão, e `f32` não
+  depende de capability. `VisionControl` segue
   a mesma fronteira: exibe e alterna o mmproj pré-selecionado para modelos
   inteiros e fatias, oferece os `mmproj_candidates` compatíveis para escolha de
   formato e mostra `mmproj_reason` quando não há candidatos. O teste de idle

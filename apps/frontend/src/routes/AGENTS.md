@@ -381,7 +381,9 @@ Per-file list:
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
   repetition, cycle detection, fit-memory, hidden-state dtype, execution toggles and the installation-wide KV cache
-  types. The two K/V cache combos apply changes immediately through
+  types. The hidden-state selector appears only for a sliced pipeline crossing
+  peer boundaries and offers f32/f16/f8/i4, with f16 as the default; the route
+  test checks that f32 reaches the deploy request. The two K/V cache combos apply changes immediately through
   `POST /api/ui/cache-types`; the save button, subtitle and `global` badge are
   intentionally absent. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can
   then edit that probability before deploying. The machine section includes

@@ -1435,7 +1435,11 @@ from the installation, like `cache_type_*`.
   row size per layer) - a mismatch is `0` bytes, which becomes an error, never
   an abort.
 - **Peer** (`infer_server`): `POST /v1/session/slot`
-  `{action: save|restore|erase, session_id, slot_name, dest_session_id?}`.
+  `{action: save|restore|erase, session_id, slot_name, dest_session_id?}`. The
+  gateway reaches each hop (`generation::slot_call_step`) along the same path
+  as the session lifecycle: a route pinned to the tunnel goes straight through
+  it, otherwise the inference addresses and, on a transport failure, the
+  tunnel - a hop only the relay reaches also saves and restores.
   `save` writes **`prompt_seq` truncated at `prompt_len`** - never `gen_seq`,
   the volatile tail does not enter a snapshot - plus a `<name>.json` sidecar
   with the model's identity (`model_label`, layer range, `n_embd`) that

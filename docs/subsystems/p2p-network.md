@@ -910,7 +910,11 @@ frame's deadline. Now the route is **measured once and pinned**.
   if the transport fails. Before, they ignored the plan and only tried the
   announced addresses: on a peer behind NAT the rewind failed (lost prefix) and
   so did the release, leaving the session stuck in the KV and the peer with a
-  queue for the planner.
+  queue for the planner. KV snapshots (`POST /v1/session/slot`,
+  `slot_call_step`: save, restore and erase, including the automatic ones of
+  the persistent prefix cache) follow the same rule; an HTTP refusal from the
+  peer is still final, and `post_json_via_tunnel` returns the refusal reason
+  together with the status.
 - **Relay.** On every round (2 s) the planner records in
   `RouteBook::relayed_nodes` the peers with which every live libp2p connection
   is `/p2p-circuit` - the hole punch did not close. A `tunnel` route to one of

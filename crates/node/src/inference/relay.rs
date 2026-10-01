@@ -3033,8 +3033,25 @@ pub async fn post_json_via_tunnel(
         Err(_) => return Err(anyhow!("túnel libp2p não respondeu em {timeout:?}")),
     };
     if !(200..300).contains(&response.status) {
+        // The refusal body goes along: a "snapshot does not exist" or "unknown
+        // session" is what tells the caller why to stop.
+        let detail = serde_json::from_slice::<Value>(&response.body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .or_else(|| value.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| {
+                String::from_utf8_lossy(&response.body)
+                    .chars()
+                    .take(200)
+                    .collect()
+            });
         return Err(anyhow!(
-            "{path} em {} respondeu HTTP {} pelo túnel",
+            "{path} em {} respondeu HTTP {} pelo túnel: {detail}",
             step.node_id,
             response.status
         ));

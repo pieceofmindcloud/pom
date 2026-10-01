@@ -824,11 +824,19 @@ Since then `reply_to` also carries the gateway's `libp2p_peer_id` and
 URL failed. It was the hole that was left: the forward leg already crossed the
 NAT and the return died silently until the frame deadline expired.
 
+Administrative sync with the principal (`admin.rs`: registering and revoking
+API keys, validating an unknown key, reconciling the trust chain, completing
+succession and infer admission) also tries the announced addresses and falls
+back to the tunnel (`peer_client::send_to_gateway_over`); the matching
+`/api/internal/{api-keys,admin-trust,profile}/*` routes are on the closed list,
+and all of them require `InternalNodeAuth`. Without it, a node that only
+reaches the principal through the relay could not even prepare the Chat key
+("could not prepare the chat key").
+
 What stays outside the tunnel: file transfer (weights do not go through a
-relay; each peer needs its own copy of the model), admin sync (`admin.rs`) and
-the inference server's `/health` between peers. None of them takes part in
-admission, so a peer behind NAT already joins the cluster and routes without
-them.
+relay; each peer needs its own copy of the model) and the inference server's
+`/health` between peers. None of them takes part in admission, so a peer behind
+NAT already joins the cluster and routes without them.
 
 ### Per-edge route plan (`route_plan.rs`)
 

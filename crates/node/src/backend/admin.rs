@@ -104,9 +104,12 @@ fn gateway_urls(network: &crate::network::Network, peer: &crate::network::PeerIn
     network.gateway_bases(peer)
 }
 
-/// Envia uma chamada de controle para cada endereço anunciado pelo peer até
-/// que um deles responda. Um endereço que deixou de existir não pode impedir
-/// a promoção quando o mesmo anúncio ainda traz um candidato vivo.
+/// Sends a control call to each address the peer announced until one of them
+/// answers and, last, through the libp2p tunnel
+/// (`peer_client::send_to_gateway_over`). An address that ceased to exist must
+/// not block the promotion while the same announcement still carries a live
+/// candidate, and a peer only the relay reaches (Docker bridge, NAT) has no
+/// direct address at all.
 async fn post_internal_json<T: Serialize>(
     state: &crate::gateway::GatewayState,
     peer: &crate::network::PeerInfo,
@@ -115,7 +118,7 @@ async fn post_internal_json<T: Serialize>(
     timeout: Duration,
 ) -> anyhow::Result<reqwest::Response> {
     let urls = gateway_urls(&state.network, peer);
-    if urls.is_empty() {
+    if urls.is_empty() && crate::peer_client::TunnelPeer::from_peer(peer).is_none() {
         anyhow::bail!("o peer não anuncia porta de gateway");
     }
     let client = state.peer_http.for_peer(&peer.node_id)?;
@@ -125,9 +128,7 @@ async fn post_internal_json<T: Serialize>(
         let config = state.auth.read().await;
         crate::auth::internal_node_token(&config)
     };
-
-    let mut last_error = "nenhum endereço de gateway respondeu".to_string();
-    for base in &urls {
+    crate::peer_client::send_to_gateway_over(peer, &urls, |base| {
         let mut request = client
             .post(format!("{base}{path}"))
             .timeout(timeout)
@@ -135,19 +136,11 @@ async fn post_internal_json<T: Serialize>(
         if let Some(connection_key) = &connection_key {
             request = request.bearer_auth(connection_key);
         }
-        match request
+        request
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body_bytes.clone())
-            .send()
-            .await
-        {
-            Ok(response) => return Ok(response),
-            Err(error) => {
-                last_error = format!("{base}: {error}");
-            }
-        }
-    }
-    anyhow::bail!(last_error)
+    })
+    .await
 }
 
 async fn sync_json<T: Serialize>(
@@ -162,14 +155,18 @@ async fn sync_json<T: Serialize>(
     let urls = gateway_urls(&state.network, &peer);
     let client = state.peer_http.for_peer(&peer.node_id)?;
     let body_bytes = serde_json::to_vec(body)?;
-    let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
     let connection_key = {
         let config = state.auth.read().await;
         crate::auth::internal_node_token(&config)
     };
     let mut last_error = "central admin synchronization failed".to_string();
     for attempt in 0..SYNC_ATTEMPTS {
-        for base in &urls {
+        // Direct addresses and, last, the tunnel: a node that only reaches the
+        // principal through the relay also registers and revokes keys. Each
+        // attempt signs a new envelope, because the principal refuses a nonce
+        // it has already seen and these mutations are idempotent.
+        let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
+        let result = crate::peer_client::send_to_gateway_over(&peer, &urls, |base| {
             let mut request = client
                 .post(format!("{base}{path}"))
                 .timeout(SYNC_TIMEOUT)
@@ -177,16 +174,20 @@ async fn sync_json<T: Serialize>(
             if let Some(connection_key) = &connection_key {
                 request = request.bearer_auth(connection_key);
             }
-            let result = request
+            request
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body_bytes.clone())
-                .send()
-                .await;
-            match result {
-                Ok(response) if response.status().is_success() => return Ok(()),
-                Ok(_) => last_error = "central admin rejected synchronization".into(),
-                Err(_) => last_error = "central admin synchronization timed out".into(),
+        })
+        .await;
+        match result {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                last_error = format!(
+                    "central admin rejected synchronization: {}",
+                    response.status()
+                )
             }
+            Err(error) => last_error = format!("central admin unreachable: {error:#}"),
         }
         if attempt + 1 < SYNC_ATTEMPTS {
             tokio::time::sleep(Duration::from_millis(50 * (attempt as u64 + 1))).await;
@@ -310,8 +311,10 @@ pub(crate) async fn validate_api_key_remote_parts(
         let config = auth.read().await;
         crate::auth::internal_node_token(&config)
     };
+    let bases = gateway_urls(network, &peer);
     for attempt in 0..SYNC_ATTEMPTS {
-        for base in gateway_urls(network, &peer) {
+        // Direct addresses and, last, the libp2p tunnel.
+        let result = crate::peer_client::send_to_gateway_over(&peer, &bases, |base| {
             let mut request = client
                 .post(format!("{base}/api/internal/api-keys/validate"))
                 .timeout(SYNC_TIMEOUT)
@@ -319,15 +322,14 @@ pub(crate) async fn validate_api_key_remote_parts(
             if let Some(connection_key) = &connection_key {
                 request = request.bearer_auth(connection_key);
             }
-            let result = request
+            request
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body_bytes.clone())
-                .send()
-                .await;
-            if let Ok(response) = result {
-                if let Ok(payload) = response.json::<ValidateResponse>().await {
-                    return Ok(payload.valid.then_some(payload.key).flatten());
-                }
+        })
+        .await;
+        if let Ok(response) = result {
+            if let Ok(payload) = response.json::<ValidateResponse>().await {
+                return Ok(payload.valid.then_some(payload.key).flatten());
             }
         }
         if attempt + 1 < SYNC_ATTEMPTS {
@@ -1787,11 +1789,14 @@ pub(crate) async fn chat_key(
             };
             (status, Json(key)).into_response()
         }
-        Err(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "não foi possível preparar a chave do chat" })),
-        )
-            .into_response(),
+        Err(error) => {
+            tracing::warn!("could not prepare the chat key: {error:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "não foi possível preparar a chave do chat" })),
+            )
+                .into_response()
+        }
     }
 }
 

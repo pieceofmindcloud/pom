@@ -581,8 +581,11 @@ profile policy remains the effective authorization boundary.
   (`peer_client::send_to_gateway_over`), que é o caminho para um peer atrás de
   NAT simétrico. `control_get_via_tunnel` é o último recurso de quem já
   percorreu os endereços com a memória de falha do `RouteTable` (a leitura do
-  `/api/ui/cluster`). Ficam fora do túnel a transferência de pesos e a
-  sincronização de `admin.rs`.
+  `/api/ui/cluster`). `admin.rs` sync with the principal (`sync_json`,
+  `post_internal_json`, `validate_api_key_remote_parts`) uses the same
+  `send_to_gateway_over`: direct addresses and, last, the tunnel; `sync_json`
+  signs a new envelope on every attempt. Only weight transfer stays outside
+  the tunnel.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
   request (`request_origin`: um pedido do loopback com a marca do túnel libp2p
   vira `TUNNELED_ORIGIN`, não-loopback, e o cabeçalho da marca sai de todo

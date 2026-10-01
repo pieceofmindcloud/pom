@@ -43,7 +43,9 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   `gateway_path_is_allowed`, lista **fechada** e de comparação exata: admissão,
   políticas e retorno direto (`/handshake`, `/health`, `/api/cluster/*`,
   `/v1/relay-result`, `/v1/remote-stream-result`) e o plano de controle da
-  implantação e das leituras do cluster (`/api/ui/{node,apply,...}`). Tudo que
+  implantação e das leituras do cluster (`/api/ui/{node,apply,...}`), plus
+  administrative sync with the principal
+  (`/api/internal/{api-keys,admin-trust,profile}/*`, all `InternalNodeAuth`). Tudo que
   sai do túnel chega ao gateway por `127.0.0.1`, e o gateway decide o que é
   local pelo endereço do socket; por isso `serve_loopback` marca o pedido com
   `TUNNEL_ORIGIN_HEADER` e o segredo do processo (`tunnel_mark`), e

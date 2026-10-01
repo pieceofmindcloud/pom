@@ -327,7 +327,7 @@ As preferências opcionais do manifesto são guardadas localmente por
 `plugin_preferences:<code>`, fora do snapshot/licença.
 O `PluginStatus` também publica a expiração, os plugins concedidos, candidatos
 com release elegível e uso autenticado por `plugin_code`, preservados da
-validação/ativação/heartbeat. `GET /api/ui/plugins` é AdminOnly; esse JSON não
+validação/ativação/heartbeat. `GET /api/ui/plugins` é aberta a todo perfil; esse JSON não
 inclui tokens de licença. O catálogo comercial permanece público e separado.
 Todo heartbeat com SUCESSO atualiza a validade da licença e chama
 `ensure_host_running` (a mesma lógica da restauração de boot): se o host daquele
@@ -401,7 +401,7 @@ interfaces web que um plugin serve em loopback: pergunta `ui.upstream` ao host
 (WebSocket; por isso `serve.rs` usa `serve_connection_with_upgrades`) para
 `127.0.0.1:<port>` com `x-pom-plugin-token` e `x-forwarded-prefix`, e nunca
 repassa cookie, `Authorization` ou `x-pom-access-token` nem aceita `Set-Cookie`
-do plugin. A autorização é a da superfície administrativa (AdminOnly), a
+do plugin. A autorização é a da superfície administrativa (aberta a todo perfil), a
 falsificação entre sites é barrada por `same_origin`, e chamadas entre nós são
 recusadas.
 

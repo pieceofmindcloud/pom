@@ -275,8 +275,8 @@ por `deploy_endpoint` e `redeploy_endpoint`) e `model.serving`/`model.stopped`
 (`spawn_serving_watcher`, que a cada 5 s compara os modelos servidos, os mesmos
 de `/v1/models`; o primeiro retrato é só a base). Os eventos do nó também ficam
 numa fila de 100 com sequência, lida pela interface em
-`GET /api/ui/plugins/events?after=<seq>` (AdminOnly, como o resto de
-`/api/ui/plugins`); sem `after`, a resposta traz só a sequência atual. A
+`GET /api/ui/plugins/events?after=<seq>` (aberta a todo perfil, como o resto
+de `/api/ui/plugins`); sem `after`, a resposta traz só a sequência atual. A
 `PluginBridge` consulta a rota a cada 3 s e repassa os envelopes às telas pelos
 canais do navegador, preservando `id` e `at` (`forwardNodeEvent`). Plugin que não conhece a operação responde erro,
 ignorado como no `host.configure`.
@@ -331,7 +331,7 @@ está pela operação `ui.upstream`:
 
 Nunca seguem para o plugin o cookie de sessão, `Authorization` nem
 `x-pom-access-token`, e o nó descarta `Set-Cookie` das respostas. A rota é
-AdminOnly e usa a autorização da superfície administrativa, porque scripts,
+aberta a todo perfil (plugins são locais do nó) e usa a autorização da superfície administrativa, porque scripts,
 WebSockets e `EventSource` do navegador não carregam o `Authorization` da
 interface; em troca, recusa (403) `Origin` diferente do próprio nó,
 `Sec-Fetch-Site` fora de `same-origin`/`none` e chamadas entre nós.

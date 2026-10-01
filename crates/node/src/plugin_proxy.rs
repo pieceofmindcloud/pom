@@ -12,9 +12,10 @@
 //!
 //! Quem entra: a rota está sob `/api/ui`, então passa pela superfície
 //! administrativa (loopback em `localhost`, sessão por senha em `network`) e é
-//! AdminOnly na tabela de perfis. Como scripts, WebSockets e `EventSource` não
-//! carregam o `Authorization` da interface, a credencial aqui é a da
-//! superfície, e a falsificação entre sites é barrada por [`same_origin`].
+//! aberta a todo perfil na tabela de perfis, porque plugins são locais do nó.
+//! Como scripts, WebSockets e `EventSource` não carregam o `Authorization` da
+//! interface, a credencial aqui é a da superfície, e a falsificação entre
+//! sites é barrada por [`same_origin`].
 //! Chamadas entre nós nunca passam: o proxy é só para o navegador.
 //!
 //! O que sai: o cookie de sessão administrativa, o `Authorization` e o token de

@@ -186,7 +186,7 @@ profile policy remains the effective authorization boundary.
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
-  `GET /api/ui/plugins` (AdminOnly) lista os estados locais de plugins
+  `GET /api/ui/plugins` (todo perfil) lista os estados locais de plugins
   independentes já restaurados ou vistos pelo runtime (`crate::plugins`), cada
   um com features, validade, uso autenticado e atualização próprios;
   `POST /api/ui/plugins/activate` ativa em lote todo `plugin_code` que a chave

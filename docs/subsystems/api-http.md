@@ -689,7 +689,7 @@ durável de conversas), `dev/update` +
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
-`GET /api/ui/plugins` é AdminOnly e entrega os estados locais dos plugins já
+`GET /api/ui/plugins` é aberta a todo perfil e entrega os estados locais dos plugins já
 restaurados ou vistos pelo runtime, incluindo `licensed_plugins`,
 `activation_candidates`, `plugin_usage` por
 `plugin_code`, `license_expires_at` e contadores de ativação daquele plugin.
@@ -748,8 +748,8 @@ em `plugin_public_install:<code>`. `POST
 
 `ANY /api/ui/plugins/:code/proxy` e `/api/ui/plugins/:code/proxy/*path` são o
 proxy das interfaces web servidas pelos próprios plugins
-(`crates/node/src/plugin_proxy.rs`, contrato em `plugins-ui.md`). AdminOnly em
-todos os métodos. Não usam `ConnectionAuth`: scripts, WebSockets e
+(`crates/node/src/plugin_proxy.rs`, contrato em `plugins-ui.md`). Aberta a todo
+perfil em todos os métodos. Não usam `ConnectionAuth`: scripts, WebSockets e
 `EventSource` do navegador não carregam o `Authorization` da interface, então a
 credencial é a da superfície administrativa (loopback em `localhost`, cookie de
 sessão em `network`), e a rota recusa com 403 toda requisição cuja `Origin`

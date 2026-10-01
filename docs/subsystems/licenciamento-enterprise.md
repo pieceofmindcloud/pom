@@ -199,7 +199,7 @@ reusável por qualquer `plugin_code` futuro:
 
 ## Checkout pelo nó
 
-`POST /api/ui/plugins/checkout` (AdminOnly, `plugins::start_plugin_checkout`)
+`POST /api/ui/plugins/checkout` (todo perfil, `plugins::start_plugin_checkout`)
 recebe `{plugin_code, interval: "month"|"year", locale: "pt-BR"|"en"}`. O nó
 lê `GET /v1/checkout/plans` do license-server, escolhe o plano que vende
 aquele `plugin_code` e cria a sessão em `POST /v1/checkout/sessions`; o
@@ -229,7 +229,13 @@ features - de UM plugin, nunca dos outros.
 chave concedeu e instalou). `POST /api/ui/plugins/:code/refresh|deactivate`
 e `POST /api/ui/plugins/:code/update/check|apply` agem sobre um plugin só.
 
-`GET /api/ui/plugins` é AdminOnly. Seu `PluginStatus` carrega `licensed_plugins`,
+Plugins são locais de cada nó, então ativar licença, cadastrar repositório
+GitHub, instalar, atualizar e usar a interface de um plugin é permitido aos
+perfis `admin`, `node` e `infer` sobre a própria máquina; só o rebuild de
+desenvolvimento (`/api/ui/plugins/dev-sources*`) continua AdminOnly. A regra
+fica em `ROUTE_RULES` (`backend/webui/routes/mod.rs`).
+
+`GET /api/ui/plugins` é aberta a todo perfil. Seu `PluginStatus` carrega `licensed_plugins`,
 `activation_candidates` com release elegível, `license_expires_at` e
 `plugin_usage` por `plugin_code`; os contadores no status escalar correspondem
 ao plugin daquela entrada, não aos totais da licença. A tela usa esses dados
@@ -318,7 +324,7 @@ navegador carrega as imagens direto do GitHub, sem passar pelo nó nem pelo
 license-server.
 
 A adição, atualização e remoção dos repositórios usa somente as rotas locais
-AdminOnly `/api/ui/plugins/github-repositories*`. A lista, o caminho do
+`/api/ui/plugins/github-repositories*`, abertas a todo perfil. A lista, o caminho do
 manifesto e os detalhes lidos são persistidos em `plugin_github_repositories`
 no `pom.db`; remover um
 repositório tira a fonte da lista, mas não desinstala o plugin já instalado.

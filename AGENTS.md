@@ -177,8 +177,9 @@ quebra o produto inteiro.
   (`crates/node/src/plugins.rs`) mantém um estado de ativação, lease,
   heartbeat, host de processo e atualização de versão POR `plugin_code`
   retornado pelo servidor de licenças ou restaurado do estado local, sem
-  catálogo estático no binário nem estado compartilhado entre plugins. Cada
-  plugin só pode ser carregado por
+  catálogo estático no binário nem estado compartilhado entre plugins.
+  Qualquer perfil (`admin`, `node`, `infer`) ativa e instala plugins no próprio
+  nó; só o rebuild de desenvolvimento é AdminOnly. Cada plugin só pode ser carregado por
   `pom-plugin-host` através da ABI C e do IPC versionados em
   `crates/enterprise-protocol` - o host já suporta várias instâncias
   concorrentes, uma por plugin ativo. As telas de Logs de Requisições e

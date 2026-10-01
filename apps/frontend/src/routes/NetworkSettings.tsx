@@ -459,7 +459,8 @@ function RouteBadge({ route, t }: { route: PeerRoute | null | undefined; t: (key
 
 function routeAddress(route: PeerRoute | null | undefined, t: (key: string, values?: Record<string, string | number>) => string): string {
   if (!route?.address) return t("network.noAddress");
-  return route.kind === "relayed" ? t("network.routeViaRelay", { address: route.address }) : route.address;
+  if (route.kind !== "relayed") return route.address;
+  return t(route.relay_kind === "member" ? "network.routeViaMemberRelay" : "network.routeViaRelay", { address: route.address });
 }
 
 function ParticipantsPanel({ nodes, cluster, isAdmin, setPending, setBlocked, t }: { nodes: ReturnType<typeof useAdminNodes>; cluster: ClusterView | undefined; isAdmin: boolean; setPending: (value: { id: string; hostname: string } | null) => void; setBlocked: (id: string, blocked: boolean) => Promise<void>; t: (key: string, values?: Record<string, string | number>) => string }) {

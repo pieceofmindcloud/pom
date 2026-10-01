@@ -21,6 +21,7 @@ pub(crate) async fn start_gateway_with_ready(
         .route("/api/access", get(admin_access_status))
         .route("/api/public/network", get(public_network))
         .route("/api/public/networks", get(public_networks))
+        .route("/api/public/networks/locate", get(locate_public_network))
         .route(
             "/api/public/directory/records",
             get(public_directory_records)
@@ -143,8 +144,13 @@ pub(crate) struct PublicNetworkView {
     pub cluster_id: String,
     pub name: String,
     pub fingerprint: String,
-    pub address: String,
-    pub bootstrap_address: String,
+    /// `pk:` key of the principal publishing the network. The network is found
+    /// by it, not by an IP: see `locate_public_network`.
+    #[serde(default)]
+    pub publisher_key: String,
+    /// `pk:` keys of the network's dedicated relays.
+    #[serde(default)]
+    pub relay_hints: Vec<String>,
     /// The signed chain is public network metadata, not a shared secret. It
     /// lets the public directory hand the join flow everything it needs.
     pub trust_document: String,
@@ -193,39 +199,6 @@ fn allow_public_p2p_discovery(visibility: crate::config::NetworkVisibility) -> b
     visibility == crate::config::NetworkVisibility::Public
 }
 
-fn endpoint_for_public_network(state: &GatewayState) -> String {
-    let host = state
-        .network
-        .advertised_host()
-        .or_else(|| crate::pkarr_node::detect_local_ip())
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]:{}", state.gateway_port)
-    } else {
-        format!("{host}:{}", state.gateway_port)
-    }
-}
-
-fn bootstrap_for_public_network(state: &GatewayState) -> String {
-    state
-        .network
-        .self_addr_candidates()
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| {
-            let host = state
-                .network
-                .advertised_host()
-                .or_else(|| crate::pkarr_node::detect_local_ip())
-                .unwrap_or_else(|| "127.0.0.1".to_string());
-            if host.contains(':') && !host.starts_with('[') {
-                format!("[{host}]:{}", state.network.bind_addr.port())
-            } else {
-                format!("{host}:{}", state.network.bind_addr.port())
-            }
-        })
-}
-
 fn directory_settings(state: &GatewayState) -> crate::public_directory::PublicDirectorySettings {
     state
         .database
@@ -244,8 +217,6 @@ fn directory_network_from_view(
         cluster_id: view.cluster_id.clone(),
         name: view.name.clone(),
         fingerprint: view.fingerprint.clone(),
-        address: view.address.clone(),
-        bootstrap_address: view.bootstrap_address.clone(),
         trust_document: view.trust_document.clone(),
         organization: view.organization.clone(),
         description: view.description.clone(),
@@ -257,19 +228,24 @@ fn directory_network_from_view(
         geo_label: view.geo_label.clone(),
         access_policy: view.access_policy,
         location: view.location.clone(),
+        relay_hints: view.relay_hints.clone(),
         directory_replicas: view.directory_replicas.clone(),
     }
 }
 
-fn view_from_directory_network(
-    network: crate::public_directory::PublicDirectoryNetwork,
+fn view_from_directory_record(
+    record: crate::public_directory::SignedPublicDirectoryRecord,
 ) -> PublicNetworkView {
+    let publisher_key =
+        crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&record.publisher_pubkey)
+            .unwrap_or_default();
+    let network = record.network;
     PublicNetworkView {
         cluster_id: network.cluster_id,
         name: network.name,
         fingerprint: network.fingerprint,
-        address: network.address,
-        bootstrap_address: network.bootstrap_address,
+        publisher_key,
+        relay_hints: network.relay_hints,
         trust_document: network.trust_document,
         organization: network.organization,
         description: network.description,
@@ -580,12 +556,16 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
     let fingerprint = crate::admin_trust::anchor_fingerprint(&document);
     let trust_document = serde_json::to_string_pretty(&document).ok()?;
     let directory_replicas = directory_settings(state).replicas;
+    let relay_hints = crate::webui::relay_hint_keys(&state.auth.read().await.relay_peers);
     Some(PublicNetworkView {
         cluster_id: document.anchor.cluster_id.clone(),
         name: network.public_name.clone(),
         fingerprint,
-        address: endpoint_for_public_network(state),
-        bootstrap_address: bootstrap_for_public_network(state),
+        publisher_key: crate::pkarr_node::PkarrNode::public_key_uri_from_hex(
+            &document.primary.pubkey,
+        )
+        .unwrap_or_default(),
+        relay_hints,
         trust_document,
         organization: network.organization.clone(),
         description: network.description.clone(),
@@ -607,6 +587,138 @@ async fn local_public_network(state: &GatewayState) -> Option<PublicNetworkView>
         discovered_via: "pkarr".to_string(),
         directory_replicas,
     })
+}
+
+/// Host of an IP multiaddress (brackets for IPv6), to build the gateway URL at
+/// dial time.
+fn multiaddr_host(addr: &str) -> Option<String> {
+    use libp2p::multiaddr::Protocol;
+    addr.parse::<libp2p::Multiaddr>()
+        .ok()?
+        .iter()
+        .find_map(|protocol| match protocol {
+            Protocol::Ip4(ip) => Some(ip.to_string()),
+            Protocol::Ip6(ip) => Some(format!("[{ip}]")),
+            Protocol::Dns(host) | Protocol::Dns4(host) | Protocol::Dns6(host) => {
+                Some(host.to_string())
+            }
+            _ => None,
+        })
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LocateQuery {
+    pub key: String,
+}
+
+/// How a key's network can be reached right now, according to its pkarr
+/// record: no address at all in the answer, only the kind of path.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct NetworkLocator {
+    /// `direct` (a public address is published), `relayed` (only a circuit
+    /// through a relay) or `unresolved` (the key did not answer in the DHT).
+    pub reachability: &'static str,
+    pub relays: usize,
+}
+
+const LOCATE_CACHE_TTL: Duration = Duration::from_secs(30);
+
+fn locate_cache(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, (Instant, NetworkLocator)>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (Instant, NetworkLocator)>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+pub(crate) fn locator_from(record: Option<&crate::pkarr_node::PkarrRecord>) -> NetworkLocator {
+    match record {
+        None => NetworkLocator {
+            reachability: "unresolved",
+            relays: 0,
+        },
+        Some(record) => NetworkLocator {
+            reachability: if !record.multiaddrs.is_empty() {
+                "direct"
+            } else if !record.relays.is_empty() {
+                "relayed"
+            } else {
+                "unresolved"
+            },
+            relays: record.relays.len(),
+        },
+    }
+}
+
+/// Keys the locate route accepts: only publishers this node already lists. The
+/// route is public; without that limit it would become a DHT resolver for any
+/// key from anyone.
+async fn locatable_keys(state: &GatewayState) -> std::collections::HashSet<String> {
+    let mut keys: std::collections::HashSet<String> = state
+        .database
+        .public_directory_records()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|record| {
+            crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&record.publisher_pubkey)
+        })
+        .collect();
+    if state.admin_trust.is_anchored() {
+        keys.extend(crate::pkarr_node::PkarrNode::public_key_uri_from_hex(
+            &state.admin_trust.current_primary().pubkey,
+        ));
+    }
+    let peers = state
+        .network
+        .alive_peers()
+        .await
+        .into_iter()
+        .chain(state.network.public_discovered_peers().await);
+    keys.extend(
+        peers
+            .filter_map(|peer| crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&peer.pubkey)),
+    );
+    keys
+}
+
+/// `GET /api/public/networks/locate?key=pk:...` - resolves the publisher's key
+/// through pkarr and says whether the network has a direct path, only a relay
+/// path, or no record. The node does the resolving: the browser does not speak
+/// libp2p and must not receive anyone's IP.
+pub(super) async fn locate_public_network(
+    State(state): State<GatewayState>,
+    Query(query): Query<LocateQuery>,
+) -> Response {
+    let Ok(key) = pkarr::PublicKey::try_from(query.key.trim()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let key = key.to_uri_string();
+    if let Some((at, locator)) = locate_cache()
+        .lock()
+        .expect("locate cache lock")
+        .get(&key)
+        .cloned()
+    {
+        if at.elapsed() < LOCATE_CACHE_TTL {
+            return Json(locator).into_response();
+        }
+    }
+    if !locatable_keys(&state).await.contains(&key) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(publisher) = state.pkarr_publisher.as_ref() else {
+        return Json(locator_from(None)).into_response();
+    };
+    let resolved = tokio::time::timeout(Duration::from_secs(8), publisher.node().resolve(&key))
+        .await
+        .ok()
+        .flatten();
+    let locator = locator_from(resolved.as_ref().map(|peer| &peer.record));
+    locate_cache()
+        .lock()
+        .expect("locate cache lock")
+        .insert(key, (Instant::now(), locator.clone()));
+    Json(locator).into_response()
 }
 
 /// Public metadata for a network. The trust document is signed public data,
@@ -645,7 +757,7 @@ pub(super) async fn public_networks(
     }
     let directory_records = read_directory_records(&state).await;
     for record in directory_records {
-        let network = view_from_directory_network(record.network);
+        let network = view_from_directory_record(record);
         if has_geo_filter && !matches_geo_label(&network.geo_label, &query) {
             continue;
         }
@@ -693,9 +805,10 @@ pub(super) async fn public_networks(
         let Some(pkarr) = pkarr else {
             continue;
         };
-        let Some(pkarr_record) = pkarr.resolve_public_peer(&peer.authority_pubkey).await else {
+        let Some(pkarr_record) = pkarr.resolve_public_peer(&peer.pubkey).await else {
             continue;
         };
+        let pkarr_record = pkarr_record.record;
         if has_geo_filter
             && !pkarr_record
                 .geo_label
@@ -707,16 +820,21 @@ pub(super) async fn public_networks(
         let Some(client) = public_client.clone() else {
             continue;
         };
+        // The address comes from the record resolved now, at dial time; it is
+        // neither stored nor returned in the listing.
         let mut bases = Vec::new();
-        if let (Some(host), Some(port)) = (
-            crate::pkarr_node::PkarrNode::host_from_multiaddr(&pkarr_record.multiaddr),
-            pkarr_record.gateway_port.or(peer.gateway_port),
-        ) {
-            bases.push(crate::peer_client::peer_base_url(
-                &host,
-                port,
-                state.peer_http.tls_enabled(),
-            ));
+        if let Some(port) = pkarr_record.gateway_port.or(peer.gateway_port) {
+            for host in pkarr_record
+                .multiaddrs
+                .iter()
+                .filter_map(|a| multiaddr_host(a))
+            {
+                bases.push(crate::peer_client::peer_base_url(
+                    &host,
+                    port,
+                    state.peer_http.tls_enabled(),
+                ));
+            }
         }
         bases.extend(peer.gateway_candidates_with_tls(state.peer_http.tls_enabled()));
         for base in bases {

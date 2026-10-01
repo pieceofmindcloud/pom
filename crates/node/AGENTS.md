@@ -81,7 +81,9 @@ interface, e num reinício volta pelo journal da fatia (`lastslice`).
 `--advertise-addr`, `--ollama-url`, `--gateway-port` (8080),
 `--setup-bind`, `--cycle-detection` (desligado por padrão), `--pkarr-peers`,
 `--public-addr`, `--relay-peers`, `--serve-relay`, `--no-default-relays`,
-`--no-discovery`. `--relay-peers` soma-se a `relay_peers` do `pom.json`
+`--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
+access).
+`--relay-peers` soma-se a `relay_peers` do `pom.json`
 (`merged_relay_peers`, config primeiro), como `--bootstrap` a
 `bootstrap_nodes`. Não há flag de modelo, memória, faixa de camadas, amostragem
 nem porta de inferência: isso vem da implantação (`runtime::NodeConfig`) e do
@@ -122,8 +124,9 @@ operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
 3. Com config: valida a porta da interface e faz o preflight de
    disponibilidade; portas P2P, HTTP e de inferência vêm da config.
 4. `start_node`, o único caminho de um nó configurado:
-   - Identidade `Identity::load_or_create`; chave pkarr em `.pom.key`, ambas
-     resolvidas contra `config::project_root()`.
+   - Identity `Identity::load_or_create` (`.pom-node.key`, resolved against
+     `config::project_root()`): the node's only key, from which come
+     `node_id`, `PeerId`, the pkarr key and the authority key.
    - Bootstrap = config + `--bootstrap`, ambos passando por
      `config::normalize_peer_addr` em `merged_bootstrap_nodes`; relés =
      `relay_peers` + `--relay-peers`. `--advertise-addr` vence
@@ -140,9 +143,14 @@ operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
      `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
      a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
      UDP, com ou sem assignment).
-   - pkarr: publicação inicial com `r` igual a `--serve-relay` (é o caminho de
-     um relé dedicado, `examples/relay-node/`) e as chaves de `--pkarr-peers`
-     resolvidas e discadas em segundo plano. O Mainline DHT usado pelo pkarr
+   - pkarr: `PkarrPublishHandle::spawn_republisher` always publishes (with
+     `r` equal to `--serve-relay`, the path of a dedicated relay,
+     `examples/relay-node/`) and republishes when the swarm addresses change;
+     every 30 s `spawn_pkarr_bootstrap` resolves and dials by key
+     `--pkarr-peers`, the `relay_peers` relays and the trust chain principals
+     that are not alive yet. `--no-pkarr` skips all of it; without it, a failed
+     publication backs off from 15 s to 30 min and only warns at the 1st, 2nd,
+     4th... consecutive failure. O Mainline DHT usado pelo pkarr
      mantém um ator em thread própria; no Windows o timeout ocioso de leitura
      do socket aparece como WSAETIMEDOUT (10060) a cada 50 ms na dependência,
      e `application_log_filter` oculta somente esse aviso esperado.

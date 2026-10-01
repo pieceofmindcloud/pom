@@ -5,9 +5,13 @@ o UDP nativo (`network.rs`, `addrs.rs`, `identity.rs`, `route.rs`) e o
 libp2p/pkarr para a internet (`discovery.rs`, `pkarr_node.rs`).
 `main.rs` monta `Network` e `Discovery`; `gateway.rs` e `routing/pipeline.rs`
 consomem `PeerInfo` e `RouteTable`. A regra da casa: a decisão de endereço
-pertence a quem vai discar, não a quem anunciou. Com `advertise_addr` fixado,
-ele é o único endpoint anunciado e discado pelo libp2p; sem pin, a política de
-fallback continua em `addr_candidates` + `RouteTable`.
+pertence a quem vai discar, não a quem anunciou. Identity is a key, never an
+IP: the operator's `advertise_addr` is only a hint that goes in front of the
+candidates (`addr_candidates` + `RouteTable` keep the fallback), and signed
+documents (trust, public directory) carry `pk:` keys, never addresses. The
+rules for when to use UDP, pkarr, libp2p and a direct route, and the ladder
+direct -> dedicated relay (with DCuTR) -> member relay, are in
+`docs/subsystems/p2p-network.md`, section 0.
 
 ## Arquivos
 
@@ -16,8 +20,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   Captura também a interface dona do endereço para excluir bridges e pares
   virtuais de Docker, Podman, CNI e equivalentes sem perder IPs privados de
   interfaces reais da LAN. `preferred_local_advertise_ip` reaproveita essa
-  filtragem para a sugestão do wizard, preferindo IPv6 global estável e depois
-  IPv4, sem confundir endereço de privacidade com endereço persistente. Único
+  filtragem para o wizard dizer se há IPv6 público (`public_ipv6_available`),
+  preferindo IPv6 global estável e depois IPv4, sem confundir endereço de
+  privacidade com endereço persistente. The wizard no longer pins that IP.
+  `outbound_local_ip` is the outgoing IP (a UDP socket "connected" to
+  `8.8.8.8:80`), a last resort for the node to dial itself. Único
   arquivo com código por plataforma; a filtragem fica fora do `cfg` e tem teste
   que roda em qualquer sistema.
 - `infer_tunnel.rs` - protocolo request/response que carrega a chamada de
@@ -86,8 +93,10 @@ fallback continua em `addr_candidates` + `RouteTable`.
   admitidos antes de enviar pelo túnel quando o anúncio chegou antes do
   registro de rota. A assinatura nativa do gossipsub prova a origem do
   transporte, mas não substitui a prova de pertencimento do enxame.
-- `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
-  pubkey). Vive em `<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`).
+- `identity.rs` - the node's **only** Ed25519 key and the `node_id` (SHA256 of
+  the pubkey). It lives in `<project_root>/.pom-node.key` (or `$POM_NODE_KEY`).
+  The `PeerId` (`libp2p_keypair`/`peer_id`), the pkarr key and the authority
+  key also come from it; `Announce`/`PeerInfo` have a single `pubkey`.
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
   dual-stack, gossip, lifecycle de peers, varredura de descoberta e admissão.
   A `connection_key` não vai no `Announce`: em rede privada, o handler faz
@@ -185,15 +194,19 @@ fallback continua em `addr_candidates` + `RouteTable`.
   uma vez um handshake novo dentro do mesmo orçamento. A quarentena só registra
   a falha final do endpoint. A remoção compara a instância cacheada para não
   apagar uma conexão nova criada concorrentemente.
-- `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
-  `publish`/`resolve_peers`.
+- `pkarr_node.rs` - key -> address resolver on the pkarr DHT: a signed `_pom`
+  TXT with public multiaddresses and the keys of the relays holding a
+  reservation; `publish`/`resolve`/`resolve_dial_addrs`. The live publisher is
+  `gateway::PkarrPublishHandle`.
 - `public_directory.rs` - protocolo federado do catálogo público. Registros
   completos são assinados pelo principal da rede, têm prova de trabalho de 16
   bits, sequência monotônica, TTL de sete dias e merge determinístico. O cache
   local aceita no máximo 1024 registros; réplicas são somente ingressos HTTP(S)
   configuráveis e não autoridade. O registro assinado inclui descrição,
-  regras e canais em Markdown junto do convite. Um nó privado consulta esses
-  ingressos por saída, mas não usa seu swarm privado como descoberta pública.
+  regras e canais em Markdown junto do convite, e `relay_hints` (`pk:` keys
+  only). The record carries no address: the network is found by the
+  publisher's key. Um nó privado consulta esses ingressos por saída, mas não usa seu
+  swarm privado como descoberta pública.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
   `ServerCertVerifier` que confere `SHA256(pubkey) == node_id`. Nada vai para o
   disco; não há CA. Ver `docs/subsystems/p2p-network.md`, seção 5.
@@ -202,7 +215,7 @@ fallback continua em `addr_candidates` + `RouteTable`.
   Busca que falha preserva o valor local.
 - `quic_policy.rs` - catraca autenticada da preferência QUIC: o campo `quic`
   do Announce só dispara `GET /api/cluster/quic`; o gatilho só é aceito quando
-  `authority_pubkey` identifica o principal ancorado, nunca por `profile: admin`;
+  `pubkey` identifica o principal ancorado, nunca por `profile: admin`;
   apenas a resposta do principal é adotada e falha preserva o valor local.
 - `cluster_logs_policy.rs` aplica a mesma disciplina ao campo
   `cluster_logs_enabled`: anúncio é gatilho, leitura autenticada no principal
@@ -213,7 +226,7 @@ fallback continua em `addr_candidates` + `RouteTable`.
   principal; esse é o único caminho para manter o fallback de endereço e a
   política TLS da sonda alinhados.
 - `network_chat_enabled` segue o mesmo contrato. O gatilho só é aceito como
-  decisão do principal cuja `authority_pubkey` foi confirmada pelo
+  decisão do principal cuja `pubkey` foi confirmada pelo
   `AdminTrust`; o perfil anunciado não identifica autoridade. O interruptor
   aberto num admin secundário encaminha a mutação ao principal e só a gravação
   dele muda a política autoritativa. A retransmissão do Chat da rede é estrela:
@@ -341,11 +354,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   assignment, para que nó configurado pela UI ainda seja visível. Relê as
   interfaces uma vez a cada anúncio, a cada 5 s no gossip e também em anúncios
   imediatos; é uma leitura local de `ifconfig`/`ip`, sem sonda de rede. O mesmo
-  snapshot alimenta `addr` e `addr_candidates`. Com fixação explícita, ambos
-  contêm somente o `advertise_addr`; sem ela, o endereço segue a ordem em UDP e
-  gossip: endereço público atual das interfaces com estável antes de temporário,
-  endereço observado por `identify`, demais interfaces locais e o sentinela
-  `0.0.0.0`. Bridges e pares virtuais de container não entram nos candidatos
+  snapshot alimenta `addr` e `addr_candidates`. The `advertise_addr` hint, when
+  present, goes first and **does not replace** the rest; then come, in UDP and
+  gossip: the interfaces' current public address with stable before temporary,
+  the address observed by `identify`, the other local interfaces and the
+  `0.0.0.0` sentinel. Bridges e pares virtuais de container não entram nos candidatos
   automáticos. Quando o
   servidor de inferência está carregado, o anúncio também inclui
   `inference/remote-token-stream-v1`, que permite ao gateway remoto pedir o
@@ -381,12 +394,13 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `handle_event` - Gossipsub Announce vira `PeerInfo` usando
   `addr_candidates.first()` (o literal `0.0.0.0` só sobrevive se nada foi
   anunciado) e registra somente o endpoint canônico como multiaddress
-  `/p2p/<peer-id>` antes de aquecer a conexão do túnel; mDNS descobre na LAN e
-  só é construído quando não há `advertise_addr` pinado; com pin, nem o
-  comportamento mDNS roda. Identify não grava `listen_addrs` no livro de
-  endereços; qualquer par que anuncie `relay::HOP_PROTOCOL_NAME` passa por
-  `reserve_circuit`, que escuta no circuito (`P2pCircuit`) uma vez por par
-  (`circuit_listens`); AutoNAT `Public` vira `Swarm::add_external_address`; requisições recebidas pelo túnel são encaminhadas
+  `/p2p/<peer-id>` antes de aquecer a conexão do túnel; mDNS discovers on the
+  LAN and is always on. Identify does not write `listen_addrs` into the address
+  book; a peer announcing `relay::HOP_PROTOCOL_NAME` goes through
+  `reserve_circuit` if it is a dedicated relay or if
+  `RelayPolicy::members_allowed`, otherwise it waits in `pending_members`;
+  AutoNAT `Public` becomes `Swarm::add_external_address`; `ListenerClosed` ends
+  the reservation of the relay owning the listener; requisições recebidas pelo túnel são encaminhadas
   em tasks separadas para que um prefill, decode ou TP longo não pare o loop
   que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT
   só logam o resto. Os request/responses de logs, auditoria e Chat da rede usam
@@ -416,7 +430,15 @@ fallback continua em `addr_candidates` + `RouteTable`.
   de fora; circuito entra sempre, porque o IP ali é o do relé. Chamado em
   `NewListenAddr`, `ExpiredListenAddr`, `ExternalAddrConfirmed`,
   `ExternalAddrExpired`, AutoNAT `Public` e reserva aceita.
-- `reserve_circuit` - pede `listen_on(<relé>/p2p-circuit)`. Endereço do relé
+- `RelayPolicy`/`apply_relay_policy` - the relay ladder: dedicated (key in
+  `relay_peers`) first; member (another node with `--serve-relay`) only when no
+  dedicated relay holds a live reservation, and after `DEDICATED_RELAY_GRACE`
+  (15 s) when a dedicated one is configured. Every 5 s the loop reserves on
+  pending members, undoes member reservations when a dedicated relay comes back
+  and asks connected dedicated relays without a reservation again.
+  `Network::set_dedicated_relays` feeds `PeerRoute.relay_kind`.
+- `reserve_circuit` - asks `listen_on(<relay>/p2p-circuit)` and keeps the
+  `ListenerId`s in `RelayPolicy::listeners`. Endereço do relé
   vem de `relay_reservation_addrs`: lista configurada, anúncio vivo e, por
   último, o endereço que este nó discou (`dialed_addrs`, anotado no
   `ConnectionEstablished`) - é o caso do relé dedicado fora da rede. Nunca dos
@@ -466,11 +488,11 @@ fallback continua em `addr_candidates` + `RouteTable`.
   duplicava o peer na lista até o timeout e voidava `blocked_nodes` (chaveado
   por node_id). Corrompida, gera nova em vez de parar.
 - `NodeId::from_pubkey` - SHA256 da pubkey; `Display` imprime os primeiros 12.
-- `key_path` / `pkarr_key_path` - `.pom-node.key` (identidade no cluster) e
-  `.pom.key` (identidade na DHT pkarr), ambas resolvidas contra
-  `config::project_root()`, com override por `$POM_NODE_KEY` e
-  `$POM_PKARR_KEY`. Nenhuma das duas sai do cwd: lançar o binário de outro
-  diretório criaria uma segunda identidade.
+- `key_path` - `.pom-node.key`, resolved against `config::project_root()`,
+  overridable with `$POM_NODE_KEY`. It does not come from the cwd: launching the
+  binary from another directory would create a second identity. There is no
+  separate pkarr key.
+- `Identity::libp2p_keypair` / `peer_id` - the same seed as a libp2p identity.
 
 `route.rs`:
 - `choose_route` - melhor candidato vivo; só troca de rota atual se o ganho
@@ -509,28 +531,32 @@ fallback continua em `addr_candidates` + `RouteTable`.
   `/api/ui/network/rtt` publica só medições frescas com `source_node_id`.
 
 `pkarr_node.rs`:
-- `PkarrNode::publish` - assina TXT `_pom` (JSON compacto, campos de uma
-  letra para caber no limite DNS de ~1000 B) e publica no DHT. O campo `g`
-  carrega o rótulo geo canônico da rede como metadado, sem alterar a chave
-  pkarr nem o contrato de `Announce`.
-- `resolve_peers`/`resolve_one` - resolve chaves `pk:` em `ResolvedPeer`
-  (multiaddr + faixa de camadas + `is_relay` + rótulo geo); falha vira `None`,
-  nunca erro. O gateway mantém um índice local dos rótulos observados para
-  filtrar consultas públicas por prefixo/sufixo antes de sondar peers. Isso não
-  enumera o DHT: `/api/public/networks` só pode resolver candidatos que já
-  chegaram por UDP/libp2p ou estão no cache local. O Mainline usado por pkarr
-  mantém um ator em thread própria e usa UDP IPv4; no Windows seu timeout de
-  leitura de 50 ms vira WSAETIMEDOUT (10060), um resultado ocioso esperado que
-  o filtro de logs do binário rebaixa sem esconder erros reais.
-- `detect_local_ip` - IP de saída por socket UDP conectado a 8.8.8.8:80 (nada é
-  enviado).
+- `PkarrNode::from_signing_key` - client over the node key; there is no
+  separate key file.
+- `PkarrNode::publish(&PkarrRecord)` - signs the `_pom` TXT (`a`
+  multiaddresses without `/p2p/<self>`, `x` relays in z-base-32, `h`, `i`, `r`,
+  `g`), trimmed from the end until it fits in 900 B. The `g` field carries the
+  geo label as metadata, without changing the key.
+- `resolve`/`resolve_peers`/`resolve_public_peer` - a `pk:` or hex key into
+  `ResolvedPeer { peer_id, record }`; failure becomes `None`, never an error.
+  This does not enumerate the DHT: `/api/public/networks` only resolves
+  candidates that already arrived through UDP/libp2p or sit in the local cache.
+  The Mainline DHT used by pkarr keeps an actor on its own thread and uses UDP
+  IPv4; on Windows its 50 ms read timeout becomes WSAETIMEDOUT (10060), an
+  expected idle result the binary's log filter downgrades without hiding real
+  errors.
+- `dial_addrs`/`resolve_dial_addrs` - direct ones first, then
+  `<relay>/p2p/<relay>/p2p-circuit/p2p/<peer>` per published relay.
+- `peer_id_from_uri`/`uri_from_peer_id` - `pk:` key <-> `PeerId` (the same
+  Ed25519 key).
 
 ## Ligações
 
 - **Chamado por**: `main.rs` (constrói `Network` + `Discovery`, resolve
   relays/pkarr, publica no gossipsub a cada 5 s o mesmo anúncio do UDP, via
   `Network::gossip_announce_bytes` -> `self_announce`, com ou sem assignment;
-  diala `--pkarr-peers`),
+  `spawn_pkarr_bootstrap` dials `--pkarr-peers`, relays and trust chain
+  principals by key),
   `routing/pipeline.rs` (`resolve_step_url` usa `RouteTable`), `gateway.rs`
   (consome `PeerInfo`/`alive_peers`).
 - **Chama**: `network.rs` ← `identity.rs` (via main), `addrs.rs`

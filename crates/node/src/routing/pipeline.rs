@@ -710,7 +710,6 @@ mod ipv6_tests {
             tls: false,
             node_id: "n".repeat(64),
             pubkey: "p".into(),
-            authority_pubkey: String::new(),
             cluster_id: None,
             addr: addr.into(),
             addr_candidates: Vec::new(),

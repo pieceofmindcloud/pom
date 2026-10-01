@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import { resetPublicAddressReachabilityCache } from "../lib/publicReachability";
+import { resetPublicLocatorCache } from "../lib/publicLocator";
 import { PublicNetworks } from "./PublicNetworks";
 
 const mocks = vi.hoisted(() => ({
@@ -24,8 +24,7 @@ const networks = [
     cluster_id: "curitiba",
     name: "Rede Curitiba",
     fingerprint: "fingerprint-curitiba",
-    address: "https://curitiba.example",
-    bootstrap_address: "https://curitiba.example/bootstrap",
+    publisher_key: "pk:curitiba",
     trust_document: "{}",
     organization: "Equipe Sul",
     description: "# Rede para colaborar\n\n**Bem-vindos**",
@@ -43,8 +42,7 @@ const networks = [
     cluster_id: "sao-paulo",
     name: "Rede São Paulo",
     fingerprint: "fingerprint-sao-paulo",
-    address: "https://sao-paulo.example",
-    bootstrap_address: "https://sao-paulo.example/bootstrap",
+    publisher_key: "pk:sao-paulo",
     trust_document: "{}",
     organization: "Equipe Sudeste",
     description: "",
@@ -62,8 +60,7 @@ const networks = [
     cluster_id: "lisboa",
     name: "Rede Lisboa",
     fingerprint: "fingerprint-lisboa",
-    address: "https://lisboa.example",
-    bootstrap_address: "https://lisboa.example/bootstrap",
+    publisher_key: "pk:lisboa",
     trust_document: "{}",
     organization: "Equipe Europa",
     description: "",
@@ -82,21 +79,21 @@ const networks = [
 const publicHealth = vi.fn();
 
 beforeEach(() => {
-  publicHealth.mockImplementation((input: RequestInfo | URL) => {
-    const url = String(input);
-    return url.includes("sao-paulo")
-      ? Promise.reject(new TypeError("network timeout"))
-      : Promise.resolve(new Response("ok", { status: 200 }));
-  });
   vi.stubGlobal("fetch", publicHealth);
-  mocks.get.mockImplementation((path: string) =>
-    path === "/api/public/networks" ? Promise.resolve(networks) : Promise.reject(new Error("no local network")),
-  );
+  mocks.get.mockImplementation((path: string) => {
+    if (path === "/api/public/networks") return Promise.resolve(networks);
+    if (path.startsWith("/api/public/networks/locate?")) {
+      const key = new URLSearchParams(path.split("?")[1]).get("key");
+      const reachability = key === "pk:curitiba" ? "direct" : key === "pk:sao-paulo" ? "relayed" : "unresolved";
+      return Promise.resolve({ reachability, relays: reachability === "relayed" ? 1 : 0 });
+    }
+    return Promise.reject(new Error("no local network"));
+  });
 });
 
 afterEach(() => {
   cleanup();
-  resetPublicAddressReachabilityCache();
+  resetPublicLocatorCache();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
@@ -127,22 +124,23 @@ describe("PublicNetworks", () => {
     });
   });
 
-  it("mostra a alcançabilidade atual do endereço publicado", async () => {
-    render(
+  it("shows reachability by the publisher key, resolved by the node, without an IP", async () => {
+    const { container } = render(
       <LocaleProvider initialLocale="pt-BR">
         <PublicNetworks />
       </LocaleProvider>,
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("public-network-reachability-fingerprint-curitiba").getAttribute("data-reachability")).toBe("reachable");
-      expect(screen.getByTestId("public-network-reachability-fingerprint-sao-paulo").getAttribute("data-reachability")).toBe("unreachable");
+      expect(screen.getByTestId("public-network-reachability-fingerprint-curitiba").getAttribute("data-reachability")).toBe("direct");
+      expect(screen.getByTestId("public-network-reachability-fingerprint-sao-paulo").getAttribute("data-reachability")).toBe("relayed");
+      expect(screen.getByTestId("public-network-reachability-fingerprint-lisboa").getAttribute("data-reachability")).toBe("unresolved");
     });
 
-    expect(publicHealth).toHaveBeenCalledWith(
-      "https://curitiba.example/health",
-      expect.objectContaining({ mode: "no-cors" }),
-    );
+    expect(mocks.get).toHaveBeenCalledWith("/api/public/networks/locate?key=pk%3Acuritiba", { auth: false });
+    // The browser probes no address: the node does the resolving.
+    expect(publicHealth).not.toHaveBeenCalled();
+    expect(container.textContent).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
   });
 
   it("abre os detalhes completos da rede pública ao clicar na linha", async () => {

@@ -172,9 +172,13 @@ quebra o produto inteiro.
   diretório do executável). Lançar o binário de outro cwd lê outra config.
   Dois nós na mesma máquina precisam de `POM_HOME` distintos, porque a
   identidade (`.pom-node.key`) mora ali. → `operations.md`
-- **`node_id` é o nome da máquina no cluster** e a chave de `blocked_nodes`;
-  apagar `.pom-node.key` cria uma máquina nova. Não confundir com
-  `.pom.key`, do pkarr. → `p2p-network.md`
+- **`node_id` is the machine's name in the cluster** and the key of
+  `blocked_nodes`; deleting `.pom-node.key` creates a new machine. It is the
+  node's **only** key:
+  the `PeerId`, the pkarr `pk:` key and the authority key all derive from it.
+  **An IP is never an identity**: signed documents and screens carry keys, and
+  an address is only resolved at dial time (direct -> dedicated relay with
+  DCuTR -> member relay). → `p2p-network.md`, section 0
 - **A chave de conexão é a mesma no cluster inteiro** e é a credencial de
   operador: autentica `/admin/*`, `/api/ui/{plan,apply,launch}` e a
   sincronização nó-a-nó. `POST /api/generate` e todas as rotas `/v1/` aceitam

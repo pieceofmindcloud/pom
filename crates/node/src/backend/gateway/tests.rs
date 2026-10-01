@@ -2126,7 +2126,6 @@ mod peer_visibility_tests {
             tls: false,
             node_id: id.into(),
             pubkey: String::new(),
-            authority_pubkey: String::new(),
             cluster_id: None,
             addr: "127.0.0.1:42777".into(),
             addr_candidates: Vec::new(),
@@ -2567,8 +2566,6 @@ mod replicated_admin_logs_tests {
             cluster_id: "test-cluster".into(),
             name: "Rede federada".into(),
             fingerprint: crate::admin_trust::anchor_fingerprint(&state.admin_trust.document()),
-            address: "203.0.113.10:8080".into(),
-            bootstrap_address: "203.0.113.10:42777".into(),
             trust_document,
             organization: "Teste".into(),
             description: "Registro remoto".into(),
@@ -2580,6 +2577,7 @@ mod replicated_admin_logs_tests {
             geo_label: "br.curitiba".into(),
             access_policy: crate::config::NetworkAccessPolicy::AnyoneWithAnchor,
             location: None,
+            relay_hints: Vec::new(),
             directory_replicas: Vec::new(),
         };
         let record = crate::public_directory::SignedPublicDirectoryRecord::sign(
@@ -2675,8 +2673,7 @@ pub(crate) mod testkit {
             deploy_id: String::new(),
             tls: false,
             node_id: node_id.into(),
-            pubkey: "pk".into(),
-            authority_pubkey,
+            pubkey: authority_pubkey,
             cluster_id: None,
             addr: format!("127.0.0.1:{gateway_port}"),
             addr_candidates: Vec::new(),
@@ -2744,11 +2741,6 @@ pub(crate) mod testkit {
             .apply_secondary_grant(grant, &secondary, crate::profile::NodeProfile::Node)
             .expect("aplicação da concessão secundária de teste");
 
-        *state
-            .network
-            .authority_pubkey
-            .write()
-            .expect("chave de autoridade do testkit") = secondary.pubkey.clone();
         state
             .network
             .set_profile(crate::profile::NodeProfile::Admin);
@@ -2774,10 +2766,23 @@ pub(crate) mod testkit {
         peers: Vec<PeerInfo>,
     ) -> GatewayState {
         let net = Arc::new(
-            Network::testkit(node_id.into(), "pk".into(), vec![], None, None, None)
-                .await
-                .expect("socket UDP em porta efêmera")
-                .with_identity(crate::profile::NodeProfile::Node, hostname.into()),
+            Network::testkit(
+                node_id.into(),
+                // The same key as `authority_signing_key` below: a node has a
+                // single key.
+                hex::encode(
+                    ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                        .verifying_key()
+                        .as_bytes(),
+                ),
+                vec![],
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("socket UDP em porta efêmera")
+            .with_identity(crate::profile::NodeProfile::Node, hostname.into()),
         );
         {
             let mut table = net.peers.write().await;

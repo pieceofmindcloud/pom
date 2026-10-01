@@ -158,6 +158,12 @@ check the offload, watch VRAM during loading.
   `target/release`). An `ssh host '/path/pom'` runs in `$HOME`, reads another
   config and finds no slice. The `Project root: ...` line at startup says which
   one was chosen; check it before suspecting the catalog.
+- **Clocks out of sync break control between nodes.** The signed control
+  envelope carries its issue time and is refused outside 5 min of the
+  receiver's clock (`admin_trust::CONTROL_WINDOW_SECS`), with the message
+  "control envelope outside the time window". Deployment, slice surveys, idle
+  model reloads and the policy ratchets depend on it. Keep NTP on the nodes; on
+  a network without internet access, point them at an internal NTP server.
 
 ## Two peers on the same machine - the trap is identity
 

@@ -93,7 +93,7 @@ async fn principal_peer_for(
         peer.node_id != network.node_id
             && peer.node_id == primary.node_id
             && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
-            && peer.authority_pubkey == primary.pubkey
+            && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     })
 }
@@ -510,7 +510,7 @@ fn peer_for_principal<'a>(
     peers.iter().find(|peer| {
         peer.node_id == principal.node_id
             && peer.libp2p_peer_id.as_deref() == Some(principal.peer_id.as_str())
-            && peer.authority_pubkey == principal.pubkey
+            && peer.pubkey == principal.pubkey
     })
 }
 
@@ -694,13 +694,13 @@ async fn request_node_promotion(
         let Some(peer_id) = peer.libp2p_peer_id.as_deref() else {
             return false;
         };
-        if peer.authority_pubkey.is_empty() {
+        if peer.pubkey.is_empty() {
             return false;
         }
         let admin = AuthorityPrincipal {
             node_id: peer.node_id.clone(),
             peer_id: peer_id.to_string(),
-            pubkey: peer.authority_pubkey.clone(),
+            pubkey: peer.pubkey.clone(),
         };
         state
             .admin_trust
@@ -761,7 +761,7 @@ async fn internal_authorize_node(
     }
     let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id == request.subject.node_id
-            && peer.authority_pubkey == request.subject.pubkey
+            && peer.pubkey == request.subject.pubkey
             && peer.libp2p_peer_id.as_deref() == Some(request.subject.peer_id.as_str())
     }) else {
         return (
@@ -1229,7 +1229,7 @@ async fn promote_node_to_admin(
         )
             .into_response();
     };
-    if peer.authority_pubkey.is_empty() {
+    if peer.pubkey.is_empty() {
         return (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": "o peer não anuncia a chave de autoridade libp2p" })),
@@ -1239,7 +1239,7 @@ async fn promote_node_to_admin(
     let subject = AuthorityPrincipal {
         node_id: peer.node_id.clone(),
         peer_id,
-        pubkey: peer.authority_pubkey.clone(),
+        pubkey: peer.pubkey.clone(),
     };
     let grant = match state.admin_trust.signed_secondary_grant(
         &state.authority_signing_key,
@@ -1427,7 +1427,7 @@ async fn resign_authority(
     let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id == successor.node_id
             && peer.libp2p_peer_id.as_deref() == Some(successor.peer_id.as_str())
-            && peer.authority_pubkey == successor.pubkey
+            && peer.pubkey == successor.pubkey
             && peer.profile == NodeProfile::Admin
     }) else {
         return (
@@ -1525,7 +1525,7 @@ pub(crate) async fn accept_authority_transfer(
     let Some(peer) = peers.into_iter().find(|peer| {
         peer.node_id == offer.issuer.node_id
             && peer.libp2p_peer_id.as_deref() == Some(offer.issuer.peer_id.as_str())
-            && peer.authority_pubkey == offer.issuer.pubkey
+            && peer.pubkey == offer.issuer.pubkey
     }) else {
         return Json(json!({
             "accepted": true,
@@ -2352,14 +2352,14 @@ mod tests {
         let admin_peer = {
             let mut peer = crate::gateway::testkit::peer("admin", "admin", admin_port);
             peer.profile = NodeProfile::Admin;
-            peer.authority_pubkey = admin_principal.pubkey.clone();
+            peer.pubkey = admin_principal.pubkey.clone();
             peer.libp2p_peer_id = Some(admin_principal.peer_id.clone());
             peer
         };
         let infer_peer = {
             let mut peer = crate::gateway::testkit::peer("infer", "infer", infer_port);
             peer.profile = NodeProfile::Infer;
-            peer.authority_pubkey = infer_principal.pubkey.clone();
+            peer.pubkey = infer_principal.pubkey.clone();
             peer.libp2p_peer_id = Some(infer_principal.peer_id.clone());
             peer.addr = format!("{stale_infer_host}:42777");
             peer.addr_candidates = vec!["127.0.0.1:42777".into()];
@@ -2442,8 +2442,8 @@ mod tests {
             admin_peer.addr = "[2001:db8::dead]:42777".into();
             admin_peer.addr_candidates = vec!["127.0.0.1:42777".into()];
         }
-        assert_eq!(admin.admin_trust.document().replay.len(), 0);
-        assert_eq!(infer.admin_trust.document().replay.len(), 0);
+        assert_eq!(admin.admin_trust.replay_len(), 0);
+        assert_eq!(infer.admin_trust.replay_len(), 0);
         let admin_address = spawn_admin_router(admin_listener, admin.clone()).await;
         let infer_address = spawn_admin_router(infer_listener, infer.clone()).await;
 
@@ -2458,10 +2458,10 @@ mod tests {
         let status = response.status();
         let body = response.text().await.unwrap();
         assert_eq!(
-            admin.admin_trust.document().replay.len(),
+            admin.admin_trust.replay_len(),
             2,
             "a ida chegou ao admin: status={status}, body={body}, infer_replay={}, infer_profile={:?}",
-            infer.admin_trust.document().replay.len(),
+            infer.admin_trust.replay_len(),
             infer.auth.read().await.profile,
         );
         assert_eq!(

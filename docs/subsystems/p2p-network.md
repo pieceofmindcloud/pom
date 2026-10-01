@@ -7,13 +7,52 @@ directory (`crates/node/src/network/`): the native UDP transport
 LAN, and the libp2p/pkarr path (`discovery.rs`, `pkarr_node.rs`, `bitswap.rs`),
 designed for the internet (Circuit Relay v2, DCuTR, AutoNAT, Kademlia,
 gossipsub, pkarr DHT). The house rule is that the address decision belongs to
-whoever is going to dial, not to whoever announced. With `advertise_addr`
-pinned, it is the only endpoint announced and dialed by libp2p; without a pin,
-`addr_candidates` and `RouteTable` keep the fallback (see
-`crates/node/src/network/AGENTS.md`).
+whoever is going to dial, not to whoever announced. The operator's
+`advertise_addr` is a priority hint (it goes in front of the candidates and
+accepts a DNS name), never an exclusive endpoint; `addr_candidates` and
+`RouteTable` keep the fallback (see `crates/node/src/network/AGENTS.md`).
 
 `main.rs` builds `Network` and `Discovery`; `backend/gateway.rs` and
 `routing/pipeline.rs` consume `PeerInfo` and `RouteTable`.
+
+## 0. Identity is a key, the address is resolved
+
+**A node is an Ed25519 key** (`.pom-node.key`, see section 4). From it come the
+`node_id` (`SHA256(pubkey)`), the libp2p `PeerId`, the `pk:` key of the pkarr
+record, the authority key of the trust chain and the TLS certificate. **An IP
+never identifies a node**: nodes behind NAT or with a dynamic IP change
+address, and an IP written into a document goes stale. Therefore:
+
+- the trust document (`TrustNetworkMetadata`) and the public directory record
+  (`PublicDirectoryNetwork`) carry **keys**, never addresses: the principal is
+  found by its own key, and the dedicated relays by `relay_hints` (`pk:` keys);
+- the Public networks screen lists nobody's IP; reachability is resolved by the
+  node (`GET /api/public/networks/locate`);
+- addresses only exist at dial time: in the `Announce` (read only by admitted
+  members), in the pkarr record and in the route tables.
+
+**Who does what:**
+
+| Mechanism | Used for | Not used for |
+|---|---|---|
+| UDP broadcast + mDNS | finding peers on the LAN, and the wizard handshake | anything outside the LAN |
+| pkarr (Mainline DHT) | resolving a key into "where to dial now", cold: the trust document's principal, `--pkarr-peers`, `relay_peers` relays, the directory publisher | steady-state routing; identity; private addresses (never go to the DHT) |
+| libp2p (gossipsub, Kademlia, identify, AutoNAT, relay, DCuTR, tunnel) | announcements across sites, NAT traversal, control and inference tunnel when there is no direct route | - |
+| Direct HTTP/QUIC | data plane when `route_plan` measures a direct route that answers | - |
+
+**Connection ladder to a peer** (measured per edge in `route_plan`):
+
+1. **Direct** - candidates announced or resolved through pkarr, over QUIC and
+   then HTTP; or a direct libp2p connection.
+2. **Circuit through a dedicated relay** (`relay_peers`, which includes the
+   document's `relay_hints`), with **DCuTR** trying to punch the NAT over the
+   circuit right away; when it succeeds, the connection becomes direct and the
+   edge is measured again. In libp2p the "relay" and "hole punch" steps cannot
+   be separated: the punch is coordinated over the relayed connection.
+3. **Circuit through a member relay** - another cluster node running
+   `--serve-relay`. It only gets a reservation when no dedicated relay holds a
+   live one (see "Circuit reservation"), because it spends the bandwidth of a
+   node that serves inference.
 
 ## 1. Overview and topology
 
@@ -65,13 +104,14 @@ the table after that point.
   within 5 s, finds the cache. UDP announcements still probe inline, in the UDP
   receive loop, which is not the tunnel's.
 - On a public network, the local anchor must be valid, and the strictness
-  depends on `network.access_policy`. In both cases the legacy public key must
-  derive the `node_id`, the authority key must derive the libp2p `peer_id`,
+  depends on `network.access_policy`. In both cases the announced `pubkey` must
+  derive both the `node_id` and the libp2p `peer_id` (it is a single key, see
+  section 4),
   and the gossip `Announce` already comes signed by that `peer_id`. The admin's
   local `connection_key` takes no part in that admission and is not sent to
   peers.
   - `authorized` (default): besides the identity binding, admission requires
-    the exact tuple `{node_id, libp2p peer_id, authority_pubkey}` present as
+    the exact tuple `{node_id, libp2p peer_id, pubkey}` present as
     the current principal or a non-demoted secondary grant. The `Announce`'s
     `cluster_id` is only a chain selector and can be forged; alone it does not
     pass the gate. Without local trust, no public peer is a member.
@@ -111,7 +151,8 @@ admission control uses the chain of trust before any routing.
 
 A JSON tagged enum (`serde(tag = "type")`) over UDP:
 
-- **`Announce`** - self-introduction: `node_id`, `pubkey`, `authority_pubkey`,
+- **`Announce`** - self-introduction: `node_id`, `pubkey` (the node's only
+  key, which derives `node_id`, `libp2p_peer_id` and the pkarr key),
   `cluster_id` (if there is an anchored public chain), `libp2p_peer_id`,
   `libp2p_addrs`, `addr`, `addr_candidates`, `model`, `start_layer`,
   `end_layer`, `total_layers`, `memory_mb`, `timestamp`, `ollama_port`,
@@ -372,8 +413,8 @@ that speaks real IPv4 (`ipv4_destinations_are_mapped_on_a_dual_stack_socket`).
 **Advertised address precedence** (`announce_addr()`/`self_addr_candidates()`,
 the same for UDP and gossipsub - both read from the same `Network`):
 
-1. the address pinned by the operator - `--advertise-addr` or `--public-addr`
-   feed the same field, `--advertise-addr` wins if both come;
+1. the operator's hint - `--advertise-addr` or `--public-addr` feed the same
+   field, `--advertise-addr` wins if both come; it accepts an IP or a DNS name;
 2. the current public address of the local interfaces, with stable before
    temporary IPv6;
 3. the public address observed by a peer through libp2p `identify`
@@ -383,10 +424,13 @@ the same for UDP and gossipsub - both read from the same `Network`):
 4. the other local interfaces of this machine;
 5. the sentinel `0.0.0.0:<port>`, only when nothing above exists.
 
-When there is a pinned address, the precedence does not mean "pin plus the
-others": `self_announce`, `self_addr_candidates` and the tunnel multiaddress
-only publish item 1. The list of alternatives only exists in automatic mode, or
-on the UDP control path that needs to find a node without a pin again.
+The operator's hint **is not exclusive**: `self_announce` and
+`self_addr_candidates` put it in front and keep items 2 to 4 behind it, and
+mDNS stays on. A dynamic IP that changed, or a DNS name that has not propagated
+yet, does not isolate the node. The hint also goes in front of
+`Network::libp2p_addrs` (converted with the `UDP+10000` convention, `/dns/...`
+for a name), read on the spot: changing the pin in the UI reaches the next
+`Announce` and the pkarr record without waiting for a swarm event.
 
 `addrs::is_private_or_local` decides whether an observed address is news: RFC
 1918, **`100.64/10` (RFC 6598, CGNAT - and what Tailscale uses)** and IPv6
@@ -467,7 +511,7 @@ another peer is transitive or reused as if it were the real edge.
 The P2P announcement is still data capacity: `capabilities` reports
 model/range and `runtime_capacity` reports `n_ctx` and `max_new_tokens` only
 after the `/health` confirmation. `profile` identifies the node's profile and
-`authority_pubkey` identifies the chain's signing key; neither grants a vote or
+`pubkey` identifies the chain's signing key; neither grants a vote or
 control power to an infer. An infer can be discovered and chosen as a head, but
 gets no voice in control plane decisions. For the Chat, the
 `/api/ui/infer/heads` endpoint only exposes the L0 candidates of the requested
@@ -501,9 +545,11 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   v2 reservation to an arbitrary peer, and the pinned addresses were already
   stale. A useful relay here is a pom node with a public IP running
   `--serve-relay`, configured in `--relay-peers` or in `relay_peers` in
-  `pom.json` (the two lists add up; `pk:...` keys are resolved once at startup
-  through pkarr, filtering `is_relay`). `--no-default-relays` is still accepted
-  and has no practical effect today. With `--serve-relay` the relay server
+  `pom.json` (the two lists add up; `pk:...` keys are resolved at startup
+  through pkarr, filtering `is_relay`, and dialed again by the cold key dial
+  while they do not connect). The setup of a joining node copies the trust
+  document's `relay_hints` into `relay_peers`. `--no-default-relays` is still
+  accepted and has no practical effect today. With `--serve-relay` the relay server
   accepts reservations (128 slots, 4 per peer, 1 h reservation) and circuits of
   up to 24 h with no byte ceiling (`max_circuit_bytes: 0`); without it,
   `max_reservations: 0`. Both libp2p limits apply to the whole circuit, not per
@@ -515,10 +561,21 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   outside the network it serves. Nodes behind NAT only need it as a bootstrap:
   the reservation is requested from every connected peer that offers relay.
 - **Circuit reservation:** `reserve_circuit` asks
-  `listen_on(<relay>/p2p-circuit)` for any peer whose identify announces
-  `relay::HOP_PROTOCOL_NAME`, not only the configured relays - the case that
-  matters most is a pom node with a public IP inside the cluster itself. The
-  relay's dialable address comes from `relay_reservation_addrs`, in this order:
+  `listen_on(<relay>/p2p-circuit)` from a peer whose identify announces
+  `relay::HOP_PROTOCOL_NAME`, in ladder order (`discovery::RelayPolicy`):
+  **dedicated relay first** - the one in `relay_peers`, identified by its key
+  (`Discovery::new` receives the keys, and a relay whose pkarr has not resolved
+  yet is still dedicated) - and a **member relay** (another cluster node with
+  `--serve-relay`) only when no dedicated relay holds a live reservation and,
+  when a dedicated one is configured, after a 15 s grace period
+  (`DEDICATED_RELAY_GRACE`). A member seen before that waits in
+  `pending_members`. `apply_relay_policy`, every 5 s in the swarm loop,
+  reserves on pending members once the gap is confirmed, undoes
+  (`remove_listener`) member reservations when a dedicated relay holds one
+  again, and asks connected dedicated relays that lost theirs to reserve again.
+  `ListenerClosed` ends the reservation of the relay owning the listener.
+  `Network::set_dedicated_relays` keeps the dedicated set so `peer_route` can
+  mark `relay_kind` (`dedicated`/`member`). The relay's dialable address comes from `relay_reservation_addrs`, in this order:
   the configured list (`--relay-peers`), the live announcement (an admitted
   member relay) and, last, the address this node dialed to reach the relay,
   stored on `ConnectionEstablished` (`dialed_addrs`, direct connections only).
@@ -526,8 +583,8 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   `--relay-peers` nor in the `peers` table, and without it the reservation never
   happened - bootstrapping on the relay was not enough. Identify's
   `listen_addrs` stays out, under the "only Announce dials" policy; an address
-  the node itself dialed is not information from the peer. `circuit_listens`
-  keeps who was already asked, because a repeated `listen_on` opens a new
+  the node itself dialed is not information from the peer.
+  `RelayPolicy::listeners` keeps who was already asked (and the `ListenerId`s), because a repeated `listen_on` opens a new
   listener on every call and identify from the same relay arrives many times.
 - **AutoNAT:** `NatStatus::Public(addr)` calls `Swarm::add_external_address`.
   Discovering one is public without telling the swarm was useless: the address
@@ -551,10 +608,9 @@ server), DCuTR, AutoNAT and the bitswap behaviour. It listens on the same
   through the tunnel are forwarded to the local inference server in a separate
   task. The swarm loop keeps draining GossipSub, TP answers and connection
   events while a prefill, decode or TP reduction is in progress.
-- **mDNS:** LAN discovery that feeds Kademlia's address book and dials the peer
-  only when there is no pinned `advertise_addr`. With a pin, the behaviour is
-  not even built, avoiding churn and discovery events outside the configured
-  endpoint.
+- **mDNS:** LAN discovery that feeds Kademlia's address book and dials the
+  peer. It is always on: `advertise_addr` is a priority hint, not isolation,
+  and the LAN is the shortest path between two nodes on the same network.
 - **Identify:** does not turn the remote's `listen_addrs` into Kademlia
   candidates. That list is the process's listening interface, not the cluster's
   endpoint contract, and can contain LAN, Docker bridge and old Tailscale
@@ -583,15 +639,50 @@ stuck on a lost notification or on `endpoint.wait_idle()`.
 
 ### pkarr (`pkarr_node.rs`)
 
-Each node publishes a signed `_pom` TXT in the pkarr DHT: compact JSON with
-one-letter fields (`a` address, `i` inference port, `m` model, `s`/`e` layer
-range, `t` total, `r` is relay) to fit the DNS limit of ~1000 B. Initial
-publication and republish every 30 min (TTL 300 s), only when there is an
-assignment. `resolve_peers` resolves `pk:` keys into `ResolvedPeer`; any
-failure becomes `None`, never an error. `--public-addr` only feeds the pkarr
-multiaddr; `--pkarr-peers` are keys to resolve and dial at startup;
-`detect_local_ip` discovers the outgoing IP with a UDP socket connected to
-`8.8.8.8:80` without sending anything.
+pkarr is the **key-to-address resolver**, and only that. Each node publishes,
+under its own key (the same as the `node_id` and the `PeerId`), a signed `_pom`
+TXT in the Mainline DHT: compact JSON (`a` direct multiaddresses without
+`/p2p/<self>`, `x` relays holding a reservation in z-base-32, `h` gateway port,
+`i` inference port, `r` is relay, `g` geo label), trimmed from the end until it
+fits in 900 B (`MAX_RECORD_ADDRS` 4, `MAX_RECORD_RELAYS` 3).
+
+- **Publication** (`gateway::PkarrPublishHandle`): always, with or without a
+  deployment - an idle admin is exactly who a new node needs to find.
+  `desired_record` comes from `Network::libp2p_addrs` on the spot;
+  `record_addrs` turns each circuit (`<relay>/p2p/<relay>/p2p-circuit`) into
+  the relay's `pk:` key, because the relay's key does not change and its
+  address does, and **leaves out every private address** (LAN, CGNAT,
+  Tailscale, loopback): the DHT is public. `spawn_republisher` checks every
+  15 s and republishes when the record changed (address confirmed by AutoNAT,
+  reservation gained or lost, pin changed) or every 30 min (`PKARR_REFRESH`)
+  so it does not vanish from the DHT. `set_geo_label` republishes immediately
+  when the admin edits the network.
+- **Resolution**: `resolve` returns `ResolvedPeer { peer_id, record }`; any
+  failure becomes `None`, never an error. `resolve_dial_addrs` resolves the
+  peer and the relays it published and builds `dial_addrs`: direct ones first
+  (with `/p2p/<peer>`), then `<relay>/p2p/<relay>/p2p-circuit/p2p/<peer>` per
+  relay. `peer_id_from_uri` and `uri_from_peer_id` convert between a `pk:` key
+  and a `PeerId` (the same key).
+- **Cold dial by key** (`main::spawn_pkarr_bootstrap`, every 30 s): resolves
+  and dials `--pkarr-peers`, the `relay_peers` relays and the principals
+  (current and last secondary) of the local trust chain that are not yet in
+  `alive_peers`. It replaces the IP the trust document used to carry: a node
+  that only has the document finds the principal by its key. The swarm loop
+  does not redial a target that is already connected or backing off
+  (`DialBackoff`).
+- **No internet** (`--no-pkarr` / `POM_NO_PKARR=1`): no pkarr client is
+  created - no publication, no key resolution and no cold dial by key;
+  `/api/public/networks/locate` answers `unresolved`. Paths stay on UDP/mDNS on
+  the LAN and on `bootstrap_nodes` (IP or internal DNS name) between segments.
+  An internal relay with `--serve-relay` goes in with its key in `relay_peers`
+  (which marks it as dedicated) **and** its address in `bootstrap_nodes` (which
+  makes the dial happen). Without the flag, a failed publication waits twice as
+  long after each consecutive failure, from 15 s up to 30 min
+  (`gateway::PublishBackoff`), and only the 1st, 2nd, 4th, 8th... becomes a
+  `warn`.
+- The local outgoing IP (`addrs::outbound_local_ip`, a UDP socket "connected"
+  to `8.8.8.8:80`) is only a last resort for the node to dial itself; it is
+  never published.
 
 The pkarr client's Mainline DHT is UDP IPv4 and runs in an actor on its own
 thread. On Windows, when there is no answer, the 50 ms read timeout is reported
@@ -606,9 +697,13 @@ discover the network.
 ### Federated directory of public networks
 
 The global catalog, separate from the swarm, lives in `public_directory.rs`.
-The principal of a public network signs a record with endpoint, trust
-document, description, rules and channels in Markdown, location and known
-ingresses. The record carries `version`, `sequence`, `issued_at`, `expires_at`
+The principal of a public network signs a record with the trust document,
+description, rules and channels in Markdown, location, known ingresses and
+`relay_hints` (`pk:` keys of the dedicated relays, at most 8; an address there
+is refused by `validate_network`). **The record carries no address**: the
+network is found by the publisher's key (`publisher_pubkey`, the same as the
+principal's and the pkarr record's). `PUBLIC_DIRECTORY_VERSION` is 3. The
+record carries `version`, `sequence`, `issued_at`, `expires_at`
 and a 16-bit proof of work nonce. The logical identity is
 `(publisher_pubkey, sequence)`; the merge keeps the highest sequence and
 resolves an identical conflict deterministically by the smallest hash.
@@ -627,9 +722,16 @@ libp2p/pkarr candidates of its own private swarm and publishes no public
 record. The v1 runtime keeps a single P2P network per process: joining a public
 one replaces the private network before restarting. So a public peer gets no
 private bootstrap or addresses and there is no parallel public interface to
-forward into the private network. The reachability of the listed endpoint is
-still a separate property, checked by the browser and depending on the real
-route.
+forward into the private network.
+
+The Public networks screen shows reachability without showing an address:
+`GET /api/public/networks/locate?key=pk:...` resolves the publisher's key
+through pkarr **on the node** (the browser does not speak libp2p) and answers
+only `{reachability: direct|relayed|unresolved, relays}`. The route is public,
+so it only accepts keys this node already lists (publishers in the directory
+cache, the local principal and live peers or public candidates) and caches
+each answer for 30 s; without that limit it would become a DHT resolver for
+anyone.
 
 ### NAT traversal: what works and what is still missing
 
@@ -665,12 +767,11 @@ the listeners with a public IP and the circuit listeners, and writes them to
 up before `/p2p-circuit`, and duplicating the suffix would make the swarm dial
 the relay as if it were the target.
 
-The pkarr record publishes the public address confirmed by AutoNAT when there is
-one (`Network::public_libp2p_addr`), and falls back to the multiaddress derived
-at startup when there is not. A circuit does **not** go into the record: it is
-republished every 30 min and a reservation does not predictably last that long,
-so the record would spend most of the time pointing at a relay that no longer
-holds. What counts in the DHT is cold discovery of a public node.
+The pkarr record publishes the public direct multiaddresses and, in place of
+each circuit, the relay's **key** (see "pkarr"). The circuit address does not go
+to the DHT because the relay's address changes; its key does not, and the
+resolver rebuilds the circuit at dial time. The record is republished when it
+changes, so a reservation gained or lost reaches the DHT within 15 s.
 
 Phase 3 moved the control plane onto the same tunnel. `TunnelRequest` got a
 `target`: `Inference` is still the default and the only one an older binary's
@@ -859,7 +960,9 @@ tries the paths: `http` (a direct address answered less than 5 min ago and has
 not failed since - `RouteTable::last_success`, fed by `mark_success`),
 `p2p_direct` (a direct libp2p connection, dialed or born from a hole punch),
 `relayed` (only a circuit through the relay: the hole punch did not close) and
-`none`. The libp2p connections come from the swarm loop:
+`none`. In `relayed`, `relay_kind` says whether the relay is `dedicated` (it is
+in `relay_peers`) or `member` (another node acting as a relay, the last rung),
+and the screen shows "member relay". The libp2p connections come from the swarm loop:
 `ConnectionEstablished`/`ConnectionClosed` feed `Network::libp2p_links` with the
 other end's address (`describe_multiaddr`; in a circuit, the relay's, which
 comes before `/p2p-circuit`), and DCuTR's success marks the direct connection
@@ -876,8 +979,18 @@ the address of this node's connection to the relay itself.
 characters. The key must survive restarts: regenerating on every boot
 duplicated the peer in the list until the timeout and voided `blocked_nodes`,
 which is keyed by node_id. A corrupt file generates a new identity instead of
-stopping. The pkarr key is separate: `.pom.key`, also resolved against the project
-root (`identity::pkarr_key_path()`).
+stopping.
+
+It is **the node's only key**: `Identity::libp2p_keypair`/`peer_id` derive the
+`PeerId`, `PkarrNode::from_signing_key` uses the same seed for the `pk:`
+record, and `admin_trust::local_authority_identity` uses it as the authority
+key. That is why `Announce` and `PeerInfo` have a single `pubkey` field, and
+public admission checks `node_id == SHA256(pubkey)` and
+`libp2p_peer_id == PeerId(pubkey)`. There is no `.pom.key` or `$POM_PKARR_KEY`
+any more; a `.pom.key` left over from an earlier version is ignored. Changing
+the key changes `node_id`, `PeerId`, `pk:` and the trust chain identity at
+once: a relay that changes its key needs the new `pk:` in `relay_peers`, and a
+principal that changes its key needs a new chain.
 
 ## Known limitations for the internet
 
@@ -903,9 +1016,7 @@ Current code behavior:
    effective transport. Before each send, the swarm rehydrates the TCP
    multiaddresses from the UDP candidates carried by the plan when available, or
    from the live announcement as a fallback, when there is no connection yet.
-   With `advertise_addr`, that endpoint is the only one published; there is no
-   `Swarm::add_external_address` call that replaces or complements Identify's
-   listen addresses. This covers the window in which the gateway already knows
+   This covers the window in which the gateway already knows
    the `PeerId` but the gossipsub event has not yet registered an address in
    libp2p's address book. An explicit HTTP answer from the peer is not retried
    on another transport. In TP, `broadcast_to` and `POST /v1/tp/reduce` follow
@@ -1084,7 +1195,7 @@ editable by the principal at `POST /api/ui/network/quic`. The announcement
 carries `quic` only as a trigger: the peer confirms the value at
 `GET /api/cluster/quic`, authenticated by the `connection_key`, exactly like
 the TLS ratchet. The trigger is only accepted when the announced
-`authority_pubkey` matches the locally anchored principal; a secondary admin
+`pubkey` matches the locally anchored principal; a secondary admin
 can neither force the query nor revert the preference. A failed query keeps
 the local value. The switch is atomic and only applies to new calls;
 connections and inferences in progress are not interrupted.
@@ -1211,7 +1322,7 @@ frame limit and is not stored outside each node's local database.
 
 `network_chat_enabled` in the `Announce` is a trigger, never a value. The
 `POST /api/ui/network/chat` switch writes the authoritative configuration on the
-real principal, whose `authority_pubkey` comes from `AdminTrust`, and updates
+real principal, whose `pubkey` comes from `AdminTrust`, and updates
 the announced atomic copy. When the UI is on a secondary admin, the same route
 forwards the mutation to the principal with the connection key. A node that
 observes a divergence queries `GET /api/cluster/network-chat` with the

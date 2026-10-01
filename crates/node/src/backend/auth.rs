@@ -217,7 +217,7 @@ async fn known_control_principal(
     }
     state.network.alive_peers().await.into_iter().any(|peer| {
         peer.node_id == issuer.node_id
-            && peer.authority_pubkey == issuer.pubkey
+            && peer.pubkey == issuer.pubkey
             && peer.libp2p_peer_id.as_deref() == Some(issuer.peer_id.as_str())
     })
 }

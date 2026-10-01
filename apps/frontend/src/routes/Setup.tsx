@@ -48,7 +48,6 @@ interface HardwareResponse {
   cuda_available: boolean;
   vulkan_available: boolean;
   backend: string;
-  suggested_advertise_addr?: string | null;
   p2p_port: number;
   thermal_limit_c: number;
   default_model_dir: string;
@@ -79,7 +78,6 @@ interface GeoReferenceResponse {
 interface PublicJoinPayload {
   name?: string;
   cluster_id?: string;
-  bootstrap_address?: string;
   trust_document?: string;
   access_policy?: AccessPolicy;
   directory_replicas?: string[];
@@ -102,8 +100,8 @@ interface TrustNetworkMetadata {
   country_name?: string;
   city?: string;
   geo_label?: string;
-  advertised_address?: string;
-  bootstrap_address?: string;
+  /** Chaves `pk:` dos relés dedicados. O documento não carrega IP de ninguém. */
+  relay_hints?: string[];
   directory_replicas?: string[];
 }
 
@@ -143,7 +141,6 @@ interface AutoDiscoveryStatus {
 
 export interface SetupState {
   profile: SetupProfile | null;
-  bootstrap: string;
   publicDirectory: string;
   connectionKey: string;
   advertiseAddr: string;
@@ -219,7 +216,6 @@ function gigabytes(mb: number | null | undefined): string | null {
 
 const INITIAL: SetupState = {
   profile: null,
-  bootstrap: "",
   publicDirectory: "",
   connectionKey: "",
   advertiseAddr: "",
@@ -288,7 +284,6 @@ export function Setup() {
             visibility: detected.network.visibility === "public" ? "public" : "private",
             access_policy: "anyone_with_anchor",
           },
-          advertiseAddr: current.advertiseAddr || detected.suggested_advertise_addr || "",
           publicDirectory: detected.public_directory.join(", "),
         }));
       })
@@ -309,7 +304,6 @@ export function Setup() {
       const network = JSON.parse(raw) as PublicJoinPayload;
       setSetup((current) => ({
         ...current,
-        bootstrap: network.bootstrap_address ?? "",
         publicDirectory: network.directory_replicas?.join(", ") ?? current.publicDirectory,
         trustDocument: network.trust_document ?? "",
         trustFingerprint: "",
@@ -344,8 +338,6 @@ export function Setup() {
           cluster_id: clusterId,
           visibility: setup.network.visibility,
           network: setup.network,
-          advertise_addr: setup.advertiseAddr,
-          bootstrap: setup.bootstrap,
           public_directory: splitList(setup.publicDirectory),
         },
         { auth: false },
@@ -369,7 +361,6 @@ export function Setup() {
     try {
       await api.post("/api/setup/save", {
         profile: setup.profile,
-        bootstrap: setup.bootstrap.trim(),
         public_directory: splitList(setup.publicDirectory),
         connection_key: setup.connectionKey.trim(),
         advertise_addr: setup.advertiseAddr.trim(),
@@ -626,7 +617,7 @@ export function NetworkScreen({ setup, hardware, countries, update, updateNetwor
           </motion.div>
         )}
       </AnimatePresence>
-      <details className="pom-setup-details mt-5" open={!setup.advertiseAddr.trim()}>
+      <details className="pom-setup-details mt-5">
         <summary>
           <span>{t("firstRun.advanced")}</span>
           <ChevronDown className="h-4 w-4" />
@@ -855,7 +846,6 @@ export function JoinScreen({ setup, update, updateNetwork, t }: { setup: SetupSt
       geo_label: metadata.geo_label ?? "",
     });
     update({
-      bootstrap: metadata.bootstrap_address ?? metadata.advertised_address ?? "",
       publicDirectory: metadata.directory_replicas?.join(", ") ?? "",
     });
   }
@@ -996,7 +986,7 @@ export function isReadyToSave(setup: SetupState): boolean {
   if (!setup.profile || !setup.nodeName.trim() || !setup.trustDocument.trim() || !setup.trustFingerprint.trim()) return false;
   const publicNetwork = setup.network.visibility === "public";
   if (setup.profile !== "admin") return publicNetwork || Boolean(setup.connectionKey.trim());
-  if (!setup.network.public_name.trim() || !setup.advertiseAddr.trim()) return false;
+  if (!setup.network.public_name.trim()) return false;
   if (publicNetwork && (!setup.network.country_code.trim() || !setup.network.city.trim())) return false;
   return true;
 }
@@ -1007,7 +997,6 @@ export function canContinue(stage: WizardStage, setup: SetupState): boolean {
     const publicNetwork = setup.network.visibility === "public";
     return Boolean(
       setup.network.public_name.trim()
-      && setup.advertiseAddr.trim()
       && (!publicNetwork || (setup.network.country_code.trim() && setup.network.city.trim())),
     );
   }

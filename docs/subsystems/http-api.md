@@ -47,8 +47,17 @@ last):
   /api/public/directory/records` are public metadata ingresses. GET delivers
   signed records and POST only accepts records with a compatible signature,
   proof of work, chain of trust and principal. The local cache is bounded and
-  expiring; none of these routes carries bootstrap data or private network
-  credentials.
+  expiring; none of these routes carries bootstrap data, addresses or private
+  network credentials: the record names the network by the publisher's key and
+  the relays by `relay_hints` (`pk:` keys).
+- **Public networks** (`gateway/http.rs`, no authentication): `GET
+  /api/public/network` (the local network, when public) and `GET
+  /api/public/networks` (local, directory and pkarr candidates) return
+  `PublicNetworkView` with `publisher_key` and `relay_hints`, never an IP. `GET
+  /api/public/networks/locate?key=pk:...` resolves the key through pkarr on the
+  node and answers `{reachability: "direct"|"relayed"|"unresolved", relays}`; it
+  only accepts keys the node already lists (404 otherwise) and caches the answer
+  for 30 s.
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,
@@ -129,8 +138,13 @@ the administrative signature when the operation changes authority. On the
 `common/identity internal` routes, calls between private nodes require the
 right `connection_key` and the internal marker validated by the handler, never
 the marker alone. On public networks, control uses `x-pom-control-signature`:
-an Ed25519 envelope covers method, path, nonce, epoch and body hash, and the
-sender must be a current authority in the chain. Inference frames stay outside
+an Ed25519 envelope covers method, path, nonce, epoch, body hash and the issue
+time (`issued_at`), and the sender must be a current authority in the chain.
+The receiver refuses an envelope outside `CONTROL_WINDOW_SECS` (5 min, on
+either side of its own clock) and records the nonce and command id of every
+signed POST/PUT/DELETE in the local replay ledger, which forgets the entry when
+the envelope's window closes. Nodes whose clocks differ by more than 5 min make
+signed control fail. Inference frames stay outside
 that signature and depend on TLS transport. `/api/setup/hardware`,
 `/api/setup/models`, `/api/setup/admin-anchor/preview`,
 `/api/setup/trust-anchor`, `/api/setup/health`,
@@ -162,8 +176,11 @@ do not define the key, signature or storage of grants.
 credential of the administrative surface. On a public network, it is neither an
 admission secret nor shared. Admin capability comes from the separate file
 `config::admin_trust_path()`, protected with mode 0600 and containing the manual
-anchor, the root grant, the chain of secondary grants, demotions, succession
-and persisted replay records. `profile: admin` alone creates no capability:
+anchor, the root grant, the chain of secondary grants, demotions and
+succession. Consumed nonces are **not** kept in that document, which is shared
+and replaced wholesale by `reconcile`: they live in the local replay ledger next
+to it (`<chain>.replay.json`, also 0600), state of a single node.
+`profile: admin` alone creates no capability:
 without a valid chain the node stays without access to the `admin-only` routes
 and emits a diagnostic at startup.
 

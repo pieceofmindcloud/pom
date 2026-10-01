@@ -1230,7 +1230,7 @@ network.addrSave,Save,Salvar
 network.addrSaveFailed,Could not save the address,Não foi possível salvar o endereço
 network.addrSaved,Address updated,Endereço atualizado
 network.addrSavedDetail,Takes effect immediately — no restart needed.,Vale imediatamente — sem reinício.
-network.advertiseSubtitle,The address peers use to reach this node''s HTTP/inference ports.,O endereço que os peers usam para alcançar as portas HTTP/inferência deste nó.
+network.advertiseSubtitle,"An optional address or DNS name peers try first. Leave it empty and the node finds its own addresses; it is a hint, never the node''s identity.","Endereço ou nome DNS opcional que os peers tentam primeiro. Vazio, o nó descobre os próprios endereços; é uma dica, nunca a identidade do nó."
 network.advertiseTitle,Advertised address,Endereço anunciado
 network.authority,Authority,Autoridade
 network.authority.primary,Primary administrator,Administrador principal
@@ -1403,6 +1403,7 @@ network.routeHolePunched,Direct (hole punch),Direto (hole punch)
 network.routeNone,No route,Sem rota
 network.routeP2pDirect,Direct (P2P),Direto (P2P)
 network.routeRelayed,Via relay,Via relé
+network.routeViaMemberRelay,member relay {address},relé membro {address}
 network.routeViaRelay,relay {address},relé {address}
 network.rules,Network rules,Regras da rede
 network.shareEyebrow,Share network access,Compartilhar acesso à rede
@@ -1749,7 +1750,6 @@ profile.admin,Administrator,Administrador
 profile.infer,infer,infer
 profile.node,node,node
 publicNetworks.action,Action,Ação
-publicNetworks.address,Address,Endereço
 publicNetworks.allCities,All cities,Todas as cidades
 publicNetworks.allCountries,All countries,Todos os países
 publicNetworks.checking,Checking reachability,Verificando alcance
@@ -1766,7 +1766,6 @@ publicNetworks.emptyTitle,No public networks found,Não encontramos redes públi
 publicNetworks.failed,Could not load public networks,Não foi possível carregar as redes públicas
 publicNetworks.fingerprint,Fingerprint,Impressão digital
 publicNetworks.geoLabel,Geo discovery label,Rótulo geo de descoberta
-publicNetworks.ipv6Unavailable,IPv6 unavailable on this machine,IPv6 indisponível nesta máquina
 publicNetworks.join,Open joining,Entrar na rede
 publicNetworks.joinConfirm,Leave this network and continue,Sair desta rede e continuar
 publicNetworks.joinDetail,"POM will leave the current network, keep your local hardware preferences, and open the setup with this public network ready. No shared secret is needed.","O POM vai sair da rede atual, manter suas preferências locais de hardware e abrir o setup com esta rede pública pronta. Nenhum segredo compartilhado é necessário."
@@ -1783,15 +1782,19 @@ publicNetworks.nodes,Nodes,Nós
 publicNetworks.openDetails,Open details for {name},Abrir detalhes de {name}
 publicNetworks.organization,Organization,Organização
 publicNetworks.pkarr,pkarr,pkarr
-publicNetworks.reachable,Reachable,Alcançável
+publicNetworks.publisherKey,Publisher key,Chave do publicador
+publicNetworks.reach,Reachability,Alcance
+publicNetworks.reachDirect,Direct route published,Rota direta publicada
+publicNetworks.reachRelayed,Reachable through a relay,Alcançável por relé
+publicNetworks.reachUnresolved,Not found on the DHT,Não encontrada na DHT
 publicNetworks.refresh,Refresh,Atualizar
+publicNetworks.relayHints,Dedicated relays,Relés dedicados
 publicNetworks.securityNote,The signed trust document is public metadata; the setup calculates its fingerprint before saving.,O documento de confiança assinado é um dado público; o setup calcula sua impressão digital antes de salvar.
 publicNetworks.subtitle,Find public POM networks discovered through pkarr and choose one to join.,Encontre redes públicas do POM descobertas via pkarr e escolha uma para entrar.
 publicNetworks.title,Public networks,Redes públicas
 publicNetworks.unavailable,Not available,Indisponível
 publicNetworks.unknownCity,Unknown city,Cidade desconhecida
 publicNetworks.unknownCountry,Unknown country,País desconhecido
-publicNetworks.unreachable,Not reachable,Inacessível
 publicNetworks.vram,Total VRAM,VRAM total
 release.alone,Release anyway,Liberar mesmo assim
 release.button,Release memory,Liberar memória
@@ -1944,8 +1947,8 @@ setupWizard.adminToken,Administrative access token,Token de acesso administrativ
 setupWizard.adminTokenDetail,This generated token lets an administrator open the interface. Save it in a password manager.,Este token gerado permite que um administrador abra a interface. Salve-o em um gerenciador de senhas.
 setupWizard.adminTokenFailed,The administrative token could not be generated,O token administrativo não pôde ser gerado
 setupWizard.adminTokenMissing,The token will be generated here,O token será gerado aqui
-setupWizard.advertiseAddress,IPv6 address this machine will announce,Endereço IPv6 que esta máquina anunciará
-setupWizard.advertiseAddressHint,Use this machine's stable public IPv6. The POM port is added automatically.,Use o IPv6 público estável desta máquina. A porta do POM é adicionada automaticamente.
+setupWizard.advertiseAddress,Preferred address (optional),Endereço preferido (opcional)
+setupWizard.advertiseAddressHint,An IP or DNS name peers try first. Leave it empty to detect automatically. The POM port is added automatically.,IP ou nome DNS que os peers tentam primeiro. Deixe vazio para detectar automaticamente. A porta do POM é adicionada automaticamente.
 setupWizard.advertiseAddressPlaceholder,2001:db8::1,2001:db8::1
 setupWizard.anchorFailed,The trust root could not be created,Não foi possível criar a raiz de confiança
 setupWizard.anyoneWithAnchor,Anyone with the trust root,Qualquer pessoa com a raiz de confiança

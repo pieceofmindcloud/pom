@@ -417,8 +417,13 @@ profile policy remains the effective authorization boundary.
   A secondary admin keeps management access but cannot promote another admin.
 - `admin_trust.rs` - the protected, durable Ed25519 authority chain. It stores
   the manually anchored root, one-level secondary grants, signed demotions,
-  transfer offer and acceptance state, monotonic replay records, and full-chain
-  reconciliation. A profile set to `admin` without a valid local chain remains
+  transfer offer and acceptance state, and full-chain reconciliation. Consumed
+  nonces live in a local replay ledger beside the chain
+  (`replay_path_for`: `<chain>.replay.json`), never in the shared document:
+  control-envelope entries expire with the envelope's `CONTROL_WINDOW_SECS`
+  (5 min) window, admin-mutation entries (grants, demotions, transfers, infer
+  promotion) have no clock and are kept. `ControlEnvelope.issued_at` is signed
+  and checked against that window on both verify paths. A profile set to `admin` without a valid local chain remains
   without administrative capability. `is_anchored`/`anchor_file_exists` are the
   anchored-versus-not judgement the UI shows; `parse_transported`,
   `anchor_fingerprint` and `fingerprint_matches` are the single manual check
@@ -428,9 +433,11 @@ profile policy remains the effective authorization boundary.
   already has one, because replacing a root is manual re-anchoring on the
   machine (`--replace`), not an interface gesture. A chain created by first
   access also carries a signed `setup` block with the network name, visibility,
-  access policy, geographic label, admin advertised address, bootstrap address
-  and federated-directory replicas, so a joining node does not retype network
-  identity data. `ensure_setup_metadata` repairs only a missing setup block
+  access policy, geographic label, `relay_hints` (dedicated relay `pk:` keys,
+  never addresses) and federated-directory replicas, so a joining node does not
+  retype network identity data. The block carries no IP: a joining node finds
+  the principal by its key through pkarr (`main::spawn_pkarr_bootstrap`), and
+  setup copies `relay_hints` into its `relay_peers`. `ensure_setup_metadata` repairs only a missing setup block
   from the local administrator configuration, and only when the local
   principal is the current primary.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
@@ -1061,8 +1068,9 @@ faz o download autenticado do blob persistido.
   installs the trust document, persists network details in both `pom.json` and
   `pom.db`, and respawns. `setup_pending` keeps the router active after leaving
   a network while preserving local hardware preferences. The setup hardware
-  response returns the effective P2P port used to render the advertised IPv6;
-  the anchor preview signs the network setup metadata into the trust document.
+  response returns the effective P2P port used to render the optional preferred
+  address (never pre-filled nor required); the anchor preview signs the network
+  setup metadata into the trust document.
   Public-network setup accepts an empty federated-directory list; configured
   environment or administration entries are still copied into that metadata.
   The setup health response also reports the existing Windows firewall-rule
@@ -1073,8 +1081,11 @@ faz o download autenticado do blob persistido.
   and `pom.json` persists only its Argon2id hash. Localhost-only exposure has
   no administrative password.
   `GET /api/public/network(s)` exposes public network metadata, including the
-  signed trust document, Markdown description/rules/channels and a P2P
-  bootstrap address for the no-secret join flow. `GET/POST
+  signed trust document, Markdown description/rules/channels, the publisher
+  `pk:` key and `relay_hints` for the no-secret join flow - never an address.
+  `GET /api/public/networks/locate?key=pk:...` resolves a listed publisher key
+  through pkarr on the node and answers only `direct|relayed|unresolved` plus a
+  relay count (30 s cache; keys the node does not list get 404). `GET/POST
   /api/public/directory/records` is the federated directory
   ingress: records are checked locally for Ed25519 signature, proof of work,
   trust-root consistency and expiry before entering the bounded SQLite cache.
@@ -1084,6 +1095,13 @@ faz o download autenticado do blob persistido.
   peers through the listing feature. Direct pkarr discovery remains available
   only while the active network is public; it still cannot enumerate arbitrary
   pkarr keys or make an unroutable IPv6 address reachable.
+  `gateway::PkarrPublishHandle` is the live pkarr publisher: it rebuilds the
+  record from `Network::libp2p_addrs` every 15 s (`record_addrs` turns circuits
+  into relay keys and drops private addresses) and republishes on change or
+  every 30 min, with or without a deployment. Failed publishes back off from
+  15 s to 30 min (`PublishBackoff`) and only the 1st, 2nd, 4th, 8th...
+  consecutive failure logs at `warn`. With `--no-pkarr` there is no publisher
+  (`pkarr_publisher` is `None`).
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,
@@ -1177,7 +1195,7 @@ faz o download autenticado do blob persistido.
   `crate::models`/`crate::catalog`/`crate::gguf`/`crate::plan`
   (`Catalog`, `GgufLayout`, `PeerBudget`, `pom::PomManifest`), `crate::splitter`
   (`MergePart`, `merge`), `crate::sysmon`, `crate::route` (`RouteTable` for the
-  cluster view), `crate::pkarr_node` (`detect_local_ip`), `crate::prefill`
+  cluster view), `crate::addrs` (`outbound_local_ip`), `crate::prefill`
   (`RequestTrace` in the summaries), `crate::direct` (`ReplyInbox`,
   `DirectReply`, `Ticket`, `self_reply_urls`, `handle_relay_result`,
   `RELAY_RESULT_PATH` - the direct-reply relay that lets the tail answer the

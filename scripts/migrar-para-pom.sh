@@ -2,10 +2,10 @@
 #
 # Migra uma máquina do nome antigo do projeto para POM.
 #
-# O binário não conhece mais o nome antigo: ele procura `pom.json`,
-# `.pom-node.key` e `.pom.key`, e lê as variáveis `POM_*`. Quem carrega a
-# compatibilidade é este script, que renomeia o que já está no disco. Depois de
-# rodar em todas as máquinas, pode ser apagado.
+# The binary no longer knows the old name: it looks for `pom.json` and
+# `.pom-node.key` (the node's only key), and reads the `POM_*` variables. This
+# script carries the compatibility by renaming what is already on disk. Once it
+# has run on every machine, it can be deleted.
 #
 # Rode a partir do diretório do projeto (ou passe o caminho como argumento):
 #
@@ -14,7 +14,6 @@
 # O que ele faz, e só isso:
 #   - <dir>/rdma-p2p*.json      -> <dir>/pom*.json
 #   - <dir>/.rdma-p2p-node.key  -> <dir>/.pom-node.key
-#   - <dir>/.rdma-p2p.key       -> <dir>/.pom.key
 #   - <dir>/*.last-slice.json   -> renomeado junto com a config a que pertence
 #
 # Não toca em modelo, fatia, nem em nada dentro dos GGUF. Uma fatia cortada
@@ -71,7 +70,6 @@ for antigo in .rdma-p2p-node*.key; do
     [ -e "$antigo" ] || continue
     mover "$antigo" ".pom-node${antigo#.rdma-p2p-node}"
 done
-mover ".rdma-p2p.key" ".pom.key"
 
 if [ "$renomeou" -eq 0 ]; then
     [ "$QUIET" = 1 ] || echo "Nada a migrar aqui."

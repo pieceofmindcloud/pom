@@ -33,6 +33,8 @@ pom*.json
 /pom.db-shm
 .pom-node*.key
 /.pom-dev-plugin-builds/
+# local trust chain and the replay ledger next to it (single-node state)
+.pom-admin-trust*.json
 
 # lixo do Finder do macOS; entrava no repo por si so
 .DS_Store

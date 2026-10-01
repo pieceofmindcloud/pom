@@ -20,7 +20,6 @@ import {
 
 const base: SetupState = {
   profile: "infer",
-  bootstrap: "",
   publicDirectory: "",
   connectionKey: "",
   advertiseAddr: "",
@@ -86,13 +85,19 @@ describe("what the wizard requires", () => {
   const trusted = { trustDocument: "{}", trustFingerprint: "abc" };
 
   it("does not ask a private admin network for its city", () => {
-    const admin: SetupState = { ...base, ...trusted, profile: "admin", advertiseAddr: "[2804::1]:42777", network: { ...base.network, public_name: "POM-1" } };
+    const admin: SetupState = { ...base, ...trusted, profile: "admin", network: { ...base.network, public_name: "POM-1" } };
+    expect(canContinue("setup-network", admin)).toBe(true);
+    expect(isReadyToSave(admin)).toBe(true);
+  });
+
+  it("never requires an admin to pin an address: the network is found by key", () => {
+    const admin: SetupState = { ...base, ...trusted, profile: "admin", advertiseAddr: "", network: { ...base.network, public_name: "POM-1" } };
     expect(canContinue("setup-network", admin)).toBe(true);
     expect(isReadyToSave(admin)).toBe(true);
   });
 
   it("asks a public admin network for country and city, for the pkarr record", () => {
-    const admin: SetupState = { ...base, ...trusted, profile: "admin", advertiseAddr: "[2804::1]:42777", network: { ...base.network, public_name: "POM-1", visibility: "public" } };
+    const admin: SetupState = { ...base, ...trusted, profile: "admin", network: { ...base.network, public_name: "POM-1", visibility: "public" } };
     expect(canContinue("setup-network", admin)).toBe(false);
     const located = { ...admin, network: { ...admin.network, country_code: "BR", city: "Curitiba" } };
     expect(canContinue("setup-network", located)).toBe(true);

@@ -159,7 +159,7 @@ async fn apply_network_settings_with_key(
         .map_err(|error| format!("salvar detalhes da rede: {error:#}"))?;
 
     if let Some(publisher) = &state.pkarr_publisher {
-        if let Err(error) = publisher.publish_geo_label(&settings.geo_label).await {
+        if let Err(error) = publisher.set_geo_label(&settings.geo_label).await {
             warn!("não foi possível republicar o rótulo geo no pkarr: {error:#}");
         }
     }

@@ -72,7 +72,8 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   plano inteiro; uma ausência identificada bloqueia o deploy ou a requisição
   com a razão do peer, sem deixar bytes serem interpretados como outro dtype.
   `CAP_FRAME_DTYPE_I4G64` e `CAP_FRAME_DTYPE_I4G128` aplicam a mesma regra para
-  os formatos groupwise int4; f16 permanece o padrão e não requer capability.
+  os formatos groupwise int4. f16 permanece o padrão, e f32 é a opção integral
+  de quatro bytes por valor; ambos são formatos-base que não exigem capability.
 - `CAP_REMOTE_TOKEN_STREAM` - capability anunciada pelo servidor de inferência
   para que um head remoto mantenha o laço de decode no peer e entregue tokens
   ao gateway em callbacks limitados por lotes oportunistas. O gateway exige

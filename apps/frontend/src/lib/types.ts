@@ -1785,7 +1785,7 @@ export interface RuntimeParams {
 }
 
 /** Precisões que o protocolo de inferência consegue converter ponta a ponta. */
-export type WireDtype = "f16" | "f8" | "i4g64" | "i4g128";
+export type WireDtype = "f32" | "f16" | "f8" | "i4g64" | "i4g128";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown";
 

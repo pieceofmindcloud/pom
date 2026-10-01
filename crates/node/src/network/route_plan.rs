@@ -522,16 +522,6 @@ impl RouteBook {
         });
         out
     }
-
-    #[cfg(test)]
-    fn clear(&self) {
-        if let Ok(mut edges) = self.edges.write() {
-            edges.clear();
-        }
-        if let Ok(mut attempts) = self.attempts.write() {
-            attempts.clear();
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -830,11 +820,6 @@ pub fn spawn_planner(network: std::sync::Arc<crate::network::Network>) {
             );
         }
     });
-}
-
-#[cfg(test)]
-pub(crate) fn clear_for_test() {
-    book().clear();
 }
 
 #[cfg(test)]

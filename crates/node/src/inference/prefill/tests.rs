@@ -1184,10 +1184,14 @@ mod tests {
                         "residual_capture_postprocess_ms": 0.1,
                         "residual_capture_bytes": 4096,
                         "residual_capture_copies": 1,
+                        "residual_wire_f16_encode_ms": 0.03,
+                        "residual_wire_f16_decode_ms": 0.04,
                         "residual_wire_f8_conversion_ms": 0.2,
                         "residual_wire_frame_serialize_ms": 0.1,
                         "residual_wire_encode_calls": 1
-                    }
+                    },
+                    "client_f16_encode_ms": 0.05,
+                    "client_f16_decode_ms": 0.06
                 }),
             );
         }
@@ -1203,6 +1207,10 @@ mod tests {
         assert_eq!(phase.node_residual_capture_postprocess_ms, 0.2);
         assert_eq!(phase.node_residual_capture_bytes, 8192);
         assert_eq!(phase.node_residual_capture_copies, 2);
+        assert_eq!(phase.node_residual_wire_f16_encode_ms, Some(0.06));
+        assert_eq!(phase.node_residual_wire_f16_decode_ms, Some(0.08));
+        assert_eq!(phase.client_f16_encode_ms, Some(0.1));
+        assert_eq!(phase.client_f16_decode_ms, Some(0.12));
         assert_eq!(phase.node_residual_wire_f8_conversion_ms, 0.4);
         assert_eq!(phase.node_residual_wire_frame_serialize_ms, 0.2);
         assert_eq!(phase.node_residual_wire_encode_calls, 2);

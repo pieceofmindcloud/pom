@@ -689,7 +689,7 @@ portas que ele próprio escolheu.
 Com a marca, a lista carrega também o **plano de controle da implantação e das
 leituras do cluster** (`/api/ui/{node,models,apply,reconfigure,unload,...}`,
 lista completa no código): `GatewayState::control_get`/`control_post_json`
-(sobre `peer_client::send_to_gateway`) tentam cada endereço anunciado e, por
+(sobre `peer_client::send_to_gateway_over`) tentam cada endereço anunciado e, por
 último, o túnel, e devolvem a resposta como um `reqwest::Response` comum. Do
 outro lado o pedido autentica o nó chamador pela assinatura de controle ou pela
 chave de conexão, como numa chamada direta. É o que deixa implantar num peer

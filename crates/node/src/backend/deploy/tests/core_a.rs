@@ -240,6 +240,26 @@
     }
 
     #[test]
+    fn f32_does_not_require_lossy_dtype_capabilities() {
+        let supported = crate::capabilities::supported("teste", "presente");
+        let capabilities = crate::capabilities::DeploymentCapabilities {
+            fit_memory: supported.clone(),
+            no_thinking: supported.clone(),
+            no_embeddings: supported.clone(),
+            speculative_decoding: supported.clone(),
+            mtp: supported,
+            hidden_state_f8: crate::capabilities::unsupported("teste", "f8 ausente"),
+            hidden_state_i4g64: crate::capabilities::unsupported("teste", "i4g64 ausente"),
+            hidden_state_i4g128: crate::capabilities::unsupported("teste", "i4g128 ausente"),
+        };
+        let no_embeddings = crate::capabilities::evaluate_no_embeddings(&[]);
+        let mut params = RuntimeParams::default();
+        params.hidden_state_dtype = crate::wire::WireDtype::F32;
+
+        assert!(super::requested_capability_block(&params, &capabilities, &no_embeddings).is_none());
+    }
+
+    #[test]
     fn i4_request_is_blocked_when_peer_capability_is_unsupported() {
         let supported = crate::capabilities::supported("teste", "presente");
         let capabilities = crate::capabilities::DeploymentCapabilities {
@@ -307,7 +327,6 @@
             .map(|s| Machine {
                 node_id: s.id.to_string(),
                 hostname: s.id.to_string(),
-                gateway_url: None,
                 inference_url: None,
                 inference_candidates: Vec::new(),
                 addr_candidates: Vec::new(),

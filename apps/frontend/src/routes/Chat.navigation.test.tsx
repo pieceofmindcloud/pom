@@ -90,6 +90,7 @@ const chatScenario = vi.hoisted(() => ({
  */
 vi.mock("../lib/queries", () => ({
   useAdminSurface: () => ({ data: "available", isLoading: false, isError: false }),
+  useAdminAccess: () => ({ data: { default_password: false } }),
   usePluginUi: () => ({ data: { plugins: [] }, isLoading: false, isError: false }),
   useNode: () => ({ data: nodeData, isLoading: false, isError: false }),
   useCluster: () => ({ data: chatScenario.cluster }),

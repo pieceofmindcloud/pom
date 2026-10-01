@@ -173,7 +173,7 @@ fn bench_on_sequence(s: &mut InferState, seq_id: u32) -> Result<BenchResult> {
     // Uma chamada do motor com o mesmo desfecho que o caminho real: a cauda
     // lê os logits, os demais leem o estado oculto capturado. As duas leituras
     // sincronizam a GPU, então o tempo medido é o do trabalho, não o do envio.
-    let mut run = |s: &mut InferState, n: usize, pos: u32| -> Result<std::time::Duration> {
+    let run = |s: &mut InferState, n: usize, pos: u32| -> Result<std::time::Duration> {
         let call_started = Instant::now();
         if is_head {
             let tokens: Vec<i32> = (0..n)

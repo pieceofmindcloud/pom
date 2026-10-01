@@ -11,7 +11,8 @@ por chave e as mensagens em ICU MessageFormat. `locales.ts` importa o CSV como
 texto bruto em build time e interpreta as mensagens sincronicamente com
 `intl-messageformat` 11.2.14. O provider continua separado. Testes:
 `locales.test.ts` (resolução + formatação), `locales.equivalence.test.ts`
-(dump de referência byte a byte) e `provider.test.tsx` (jsdom).
+(dump de referência congelado com revisões explícitas de copy) e
+`provider.test.tsx` (jsdom).
 
 ## Per-file
 
@@ -30,10 +31,11 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   `chat.telemetry.backendRow` distingue chamada de avaliação e sincronização,
   sem rotular o tempo de avaliação como enqueue. As linhas de captura e wire
   residual distinguem ask-to-ready, wall do tensor-get, pós-processamento,
-  conversão f8 e serialização do frame; o resumo de transporte também nomeia a
-  espera de envio e finalização do corpo QUIC.
-  As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16 permanece
-  padrão e que f8/i4g64/i4g128 são opções com perda sujeitas a capability.
+  conversão f32/f16 no peer e no cliente, conversão f8 e serialização do frame;
+  o resumo de transporte também nomeia a espera de envio e finalização do corpo
+  QUIC. As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16
+  permanece padrão, f32 usa quatro bytes por valor sem perda e f8/i4g64/i4g128
+  são opções com perda sujeitas a capability.
   `deploy.visionUnavailable` orienta que a tela só oferece visão quando a
   identidade e as dimensões GGUF comprovam a associação do projetor.
 - As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem
@@ -111,7 +113,7 @@ instalação e reinício.
 - Cada chave deve existir nas duas colunas. Ao adicionar ou editar uma mensagem, altere diretamente a mesma linha no CSV e mantenha a chave ordenada.
 - Use a sintaxe ICU de `intl-messageformat`: `{count, plural, one {# node} other {# nodes}}` para plural, `{value}` para interpolação e `select` para escolhas textuais. Para mensagens condicionais, preserve os nomes dos valores que os componentes já passam.
 - O CSV entra no bundle por importação `?raw`; não use fetch, estado assíncrono ou carregamento por rota.
-- Rode `npm exec -- vitest run src/i18n/locales.test.ts src/i18n/locales.equivalence.test.ts` após qualquer alteração. O teste de equivalência compara todas as chaves, os dois idiomas e os casos do dump gerado antes da migração.
+- Rode `npm exec -- vitest run src/i18n/locales.test.ts src/i18n/locales.equivalence.test.ts` após qualquer alteração. O teste de equivalência compara todas as chaves, os dois idiomas e os casos do dump congelado; revisões deliberadas de copy ficam no mapa `copyUpdates` do teste para não regravar o dump minificado de 1,8 MB.
 
 - O grupo deploy.addNode* cobre o diálogo incremental: catálogo da máquina
   alvo, modelo inteiro, localização do cache KV e tipos K/V. Toda chave nova

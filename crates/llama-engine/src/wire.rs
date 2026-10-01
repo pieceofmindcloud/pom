@@ -15,8 +15,9 @@
 //!
 //! * the body is **binary**, where it used to be base64 (which inflated every
 //!   transfer by a third for nothing);
-//! * the tensor travels as **f16** by default, half the size of f32. The maths
-//!   stays f32 on both ends; f8 and groupwise i4 are explicit experiments.
+//! * the tensor travels as **f16** by default, half the size of f32. f32 is an
+//!   explicit lossless deployment option; f8 and groupwise i4 are lossy options.
+//!   The inference math stays f32 on both ends.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -206,8 +207,29 @@ pub fn encode_batch_items(
     batch_id: impl Into<String>,
     items: &[BatchPayloadItem],
 ) -> Result<Vec<u8>> {
-    let kind = kind.into();
-    let batch_id = batch_id.into();
+    encode_batch_items_inner(kind.into(), batch_id.into(), items, None)
+}
+
+/// Encode a batch and measure the activation conversion separately from the
+/// frame construction. The conversion time is a subset of total encode time.
+pub fn encode_batch_items_profiled(
+    kind: impl Into<String>,
+    batch_id: impl Into<String>,
+    items: &[BatchPayloadItem],
+) -> Result<(Vec<u8>, WireEncodeTiming)> {
+    let started = std::time::Instant::now();
+    let mut timing = WireEncodeTiming::default();
+    let bytes = encode_batch_items_inner(kind.into(), batch_id.into(), items, Some(&mut timing))?;
+    timing.total_us = started.elapsed().as_micros() as u64;
+    Ok((bytes, timing))
+}
+
+fn encode_batch_items_inner(
+    kind: String,
+    batch_id: String,
+    items: &[BatchPayloadItem],
+    mut timing: Option<&mut WireEncodeTiming>,
+) -> Result<Vec<u8>> {
     let mut headers = Vec::with_capacity(items.len());
     let mut payload_len = 0usize;
     for item in items {
@@ -263,7 +285,7 @@ pub fn encode_batch_items(
     let mut out = frame_prefix(&header, payload_len)?;
     for item in items {
         if let Some((values, shape)) = item.tensor.as_ref() {
-            encode_values_into(values, shape, item.dtype, &mut out, None)?;
+            encode_values_into(values, shape, item.dtype, &mut out, timing.as_deref_mut())?;
         }
     }
     Ok(out)
@@ -351,6 +373,22 @@ pub fn decode_batch(buf: &[u8]) -> Result<BatchFrame> {
 /// state. O payload é lido **emprestado** do buffer recebido: a única cópia do
 /// tensor é a expansão para f32 que a inferência consome.
 pub fn decode_batch_items(buf: &[u8]) -> Result<(BatchHeaderInfo, Vec<DecodedBatchItem>)> {
+    decode_batch_items_inner(buf, None).map(|(header, items, _)| (header, items))
+}
+
+/// Decode a batch and measure the f16-to-f32 activation expansion.
+pub fn decode_batch_items_profiled(
+    buf: &[u8],
+) -> Result<(BatchHeaderInfo, Vec<DecodedBatchItem>, WireDecodeTiming)> {
+    let mut timing = WireDecodeTiming::default();
+    let (header, items, _) = decode_batch_items_inner(buf, Some(&mut timing))?;
+    Ok((header, items, timing))
+}
+
+fn decode_batch_items_inner(
+    buf: &[u8],
+    mut timing: Option<&mut WireDecodeTiming>,
+) -> Result<(BatchHeaderInfo, Vec<DecodedBatchItem>, WireDecodeTiming)> {
     let (header, payload) = split_frame(buf)?;
     validate_items(
         header.version,
@@ -361,7 +399,8 @@ pub fn decode_batch_items(buf: &[u8]) -> Result<(BatchHeaderInfo, Vec<DecodedBat
     )?;
     let mut decoded = Vec::with_capacity(header.items.len());
     for item in &header.items {
-        let (meta, tensor) = decode_item_from(payload, &header.batch_id, item)?;
+        let (meta, tensor) =
+            decode_item_from(payload, &header.batch_id, item, timing.as_deref_mut())?;
         decoded.push(DecodedBatchItem {
             item_id: item.item_id.clone(),
             meta,
@@ -377,6 +416,7 @@ pub fn decode_batch_items(buf: &[u8]) -> Result<(BatchHeaderInfo, Vec<DecodedBat
             item_count: header.items.len(),
         },
         decoded,
+        timing.map(|timing| *timing).unwrap_or_default(),
     ))
 }
 
@@ -414,13 +454,34 @@ pub fn encode_batch_single(
     encode_batch_single_inner(meta, tensor, dtype, None)
 }
 
+/// Profiled one-item frame encoder used by transport telemetry.
+pub fn encode_batch_single_profiled(
+    meta: &Value,
+    tensor: Option<(&[f32], TensorShape)>,
+    dtype: WireDtype,
+) -> Result<(Vec<u8>, WireEncodeTiming)> {
+    let started = std::time::Instant::now();
+    let mut timing = WireEncodeTiming::default();
+    let bytes = encode_batch_single_inner(meta, tensor, dtype, Some(&mut timing))?;
+    timing.total_us = started.elapsed().as_micros() as u64;
+    Ok((bytes, timing))
+}
+
 /// Timings for the disjoint payload-encoding and frame-serialization stages.
 /// `total_us` also includes validation and metadata preparation around them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WireEncodeTiming {
+    /// Nanoseconds spent converting f32 activations to f16 on the wire.
+    pub f16_conversion_ns: u64,
     pub f8_conversion_us: u64,
     pub frame_serialize_us: u64,
     pub total_us: u64,
+}
+
+/// Time spent expanding the selected wire dtype back into f32 activations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WireDecodeTiming {
+    pub f16_conversion_ns: u64,
 }
 
 /// Encode one request while recording non-overlapping payload and frame work.
@@ -455,7 +516,7 @@ fn encode_batch_single_inner(
                 ));
             }
             let payload = if let Some(timing) = timing.as_deref_mut() {
-                encode_values_profiled(values, &shape, dtype, &mut timing.f8_conversion_us)?
+                encode_values_profiled(values, &shape, dtype, timing)?
             } else {
                 encode_values(values, &shape, dtype)?
             };
@@ -503,6 +564,22 @@ fn encode_batch_single_inner(
 /// Decode a one-item frame for call sites that need the convenient historical
 /// `(meta, tensor)` shape. Multi-item receivers use `decode_batch_items`.
 pub fn decode_batch_single(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
+    decode_batch_single_inner(buf, None).map(|(meta, tensor, _)| (meta, tensor))
+}
+
+/// Decode a one-item frame and measure the f16-to-f32 activation expansion.
+pub fn decode_batch_single_profiled(
+    buf: &[u8],
+) -> Result<(Value, Option<(Vec<f32>, TensorShape)>, WireDecodeTiming)> {
+    let mut timing = WireDecodeTiming::default();
+    let (meta, tensor, _) = decode_batch_single_inner(buf, Some(&mut timing))?;
+    Ok((meta, tensor, timing))
+}
+
+fn decode_batch_single_inner(
+    buf: &[u8],
+    mut timing: Option<&mut WireDecodeTiming>,
+) -> Result<(Value, Option<(Vec<f32>, TensorShape)>, WireDecodeTiming)> {
     let (header, payload) = split_frame(buf)?;
     validate_items(
         header.version,
@@ -516,13 +593,31 @@ pub fn decode_batch_single(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, Tenso
             "o endpoint de inferência ainda aceita um item por quadro batch"
         ));
     }
-    decode_item_from(payload, &header.batch_id, &header.items[0])
+    let (meta, tensor) = decode_item_from(
+        payload,
+        &header.batch_id,
+        &header.items[0],
+        timing.as_deref_mut(),
+    )?;
+    Ok((
+        meta,
+        tensor,
+        timing.map(|timing| *timing).unwrap_or_default(),
+    ))
 }
 
 /// Decode the canonical inference request. All inference traffic is a batch
 /// frame, including a request carrying only one item.
 pub fn decode_inference_request(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     decode_batch_single(buf)
+}
+
+/// Profiled counterpart used by inference handlers to separate activation
+/// conversion from general frame decoding.
+pub fn decode_inference_request_profiled(
+    buf: &[u8],
+) -> Result<(Value, Option<(Vec<f32>, TensorShape)>, WireDecodeTiming)> {
+    decode_batch_single_profiled(buf)
 }
 
 fn validate_batch(batch: &BatchFrame) -> Result<()> {
@@ -615,6 +710,7 @@ fn decode_item_from(
     payload: &[u8],
     batch_id: &str,
     item: &BatchItem,
+    timing: Option<&mut WireDecodeTiming>,
 ) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     let end = item
         .offset
@@ -637,7 +733,7 @@ fn decode_item_from(
     // scheduler must never fall back to a synthetic session when the wire
     // already carries the real one.
     meta["session_id"] = Value::from(item.session_id.clone());
-    decode_tensor_payload(&meta, &payload[item.offset..end])
+    decode_tensor_payload(&meta, &payload[item.offset..end], timing)
 }
 
 /// Canonical one-item encoder used by control responses and by the few
@@ -707,9 +803,17 @@ pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     decode_batch_single(buf)
 }
 
+/// Decode one frame and report the f16-to-f32 expansion time separately.
+pub fn decode_profiled(
+    buf: &[u8],
+) -> Result<(Value, Option<(Vec<f32>, TensorShape)>, WireDecodeTiming)> {
+    decode_batch_single_profiled(buf)
+}
+
 fn decode_tensor_payload(
     meta: &Value,
     payload: &[u8],
+    mut timing: Option<&mut WireDecodeTiming>,
 ) -> Result<(Value, Option<(Vec<f32>, TensorShape)>)> {
     if payload.is_empty() {
         return Ok((meta.clone(), None));
@@ -754,10 +858,19 @@ fn decode_tensor_payload(
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
-        WireDtype::F16 => payload
-            .chunks_exact(2)
-            .map(|c| f16_bits_to_f32(u16::from_le_bytes([c[0], c[1]])))
-            .collect(),
+        WireDtype::F16 => {
+            let conversion_started = timing.as_ref().map(|_| std::time::Instant::now());
+            let values = payload
+                .chunks_exact(2)
+                .map(|c| f16_bits_to_f32(u16::from_le_bytes([c[0], c[1]])))
+                .collect();
+            if let (Some(timing), Some(started)) = (timing.as_deref_mut(), conversion_started) {
+                timing.f16_conversion_ns = timing
+                    .f16_conversion_ns
+                    .saturating_add(started.elapsed().as_nanos() as u64);
+            }
+            values
+        }
         WireDtype::F8 => payload
             .iter()
             .map(|byte| f8_bits_to_f32(*byte))
@@ -840,19 +953,19 @@ fn encode_values_profiled(
     values: &[f32],
     shape: &[usize],
     dtype: WireDtype,
-    f8_conversion_us: &mut u64,
+    timing: &mut WireEncodeTiming,
 ) -> Result<Vec<u8>> {
-    encode_values_inner(values, shape, dtype, Some(f8_conversion_us))
+    encode_values_inner(values, shape, dtype, Some(timing))
 }
 
 fn encode_values_inner(
     values: &[f32],
     shape: &[usize],
     dtype: WireDtype,
-    f8_conversion_us: Option<&mut u64>,
+    timing: Option<&mut WireEncodeTiming>,
 ) -> Result<Vec<u8>> {
     let mut payload = Vec::with_capacity(checked_tensor_bytes(shape, dtype)?);
-    encode_values_into(values, shape, dtype, &mut payload, f8_conversion_us)?;
+    encode_values_into(values, shape, dtype, &mut payload, timing)?;
     Ok(payload)
 }
 
@@ -864,7 +977,7 @@ fn encode_values_into(
     shape: &[usize],
     dtype: WireDtype,
     out: &mut Vec<u8>,
-    mut f8_conversion_us: Option<&mut u64>,
+    mut timing: Option<&mut WireEncodeTiming>,
 ) -> Result<()> {
     let expected_values = checked_tensor_values(shape)?;
     if values.len() != expected_values {
@@ -893,8 +1006,14 @@ fn encode_values_into(
         WireDtype::F16 => {
             let mut staging = [0u8; BLOCO * 2];
             for block in values.chunks(BLOCO) {
+                let conversion_started = timing.as_ref().map(|_| std::time::Instant::now());
                 for (slot, value) in staging.chunks_exact_mut(2).zip(block) {
                     slot.copy_from_slice(&f32_to_f16_bits(*value).to_le_bytes());
+                }
+                if let (Some(timing), Some(started)) = (timing.as_deref_mut(), conversion_started) {
+                    timing.f16_conversion_ns = timing
+                        .f16_conversion_ns
+                        .saturating_add(started.elapsed().as_nanos() as u64);
                 }
                 out.extend_from_slice(&staging[..block.len() * 2]);
             }
@@ -902,15 +1021,14 @@ fn encode_values_into(
         WireDtype::F8 => {
             let mut staging = [0u8; BLOCO];
             for block in values.chunks(BLOCO) {
-                let conversion_started =
-                    f8_conversion_us.as_ref().map(|_| std::time::Instant::now());
+                let conversion_started = timing.as_ref().map(|_| std::time::Instant::now());
                 for (slot, value) in staging.iter_mut().zip(block) {
                     *slot = f32_to_f8_bits(*value)?;
                 }
-                if let (Some(total), Some(started)) =
-                    (f8_conversion_us.as_deref_mut(), conversion_started)
-                {
-                    *total = total.saturating_add(started.elapsed().as_micros() as u64);
+                if let (Some(timing), Some(started)) = (timing.as_deref_mut(), conversion_started) {
+                    timing.f8_conversion_us = timing
+                        .f8_conversion_us
+                        .saturating_add(started.elapsed().as_micros() as u64);
                 }
                 out.extend_from_slice(&staging[..block.len()]);
             }
@@ -1523,13 +1641,81 @@ mod tests {
 
             assert_eq!(actual, expected);
             assert!(timing.total_us >= timing.frame_serialize_us);
-            assert!(timing.total_us >= timing.f8_conversion_us + timing.frame_serialize_us);
+            assert!(
+                timing.total_us
+                    >= timing.f8_conversion_us
+                        + timing.f16_conversion_ns / 1_000
+                        + timing.frame_serialize_us
+            );
             if dtype == WireDtype::F8 {
                 assert!(timing.f8_conversion_us > 0);
+                assert_eq!(timing.f16_conversion_ns, 0);
             } else {
                 assert_eq!(timing.f8_conversion_us, 0);
+                assert!(timing.f16_conversion_ns > 0);
             }
         }
+    }
+
+    #[test]
+    fn f32_wire_preserves_values_without_f16_conversion() {
+        let meta = serde_json::json!({"session_id": "f32-session"});
+        let values = vec![0.1_f32, -3.25, 1.0e-20, 1.0e20];
+        let (frame, encode_timing) = encode_profiled(
+            &meta,
+            Some((&values, vec![1, values.len()])),
+            WireDtype::F32,
+        )
+        .unwrap();
+        let (decoded_meta, decoded_tensor, decode_timing) = decode_profiled(&frame).unwrap();
+        let (decoded, shape) = decoded_tensor.unwrap();
+
+        assert_eq!(decoded_meta["dtype"], "f32");
+        assert_eq!(shape, vec![1, values.len()]);
+        assert_eq!(decoded, values);
+        assert_eq!(encode_timing.f16_conversion_ns, 0);
+        assert_eq!(decode_timing.f16_conversion_ns, 0);
+        assert_eq!(
+            tensor_payload_len(Some((&values, vec![1, values.len()])), WireDtype::F32).unwrap(),
+            values.len() * 4
+        );
+    }
+
+    #[test]
+    fn profiled_f16_decode_reports_only_the_activation_expansion() {
+        let values = vec![0.5_f32; 16_384];
+        let frame = encode(
+            &serde_json::json!({}),
+            Some((&values, vec![1, values.len()])),
+            WireDtype::F16,
+        )
+        .unwrap();
+        let (_, tensor, timing) = decode_profiled(&frame).unwrap();
+        let (decoded, _) = tensor.unwrap();
+        assert_eq!(decoded.len(), values.len());
+        assert!(timing.f16_conversion_ns > 0);
+    }
+
+    #[test]
+    fn profiled_batch_encode_and_decode_measure_f16_activation_conversion() {
+        let values = vec![0.25_f32; 8_192];
+        let items = [BatchPayloadItem {
+            item_id: "f16-item".into(),
+            session_id: "f16-session".into(),
+            meta: serde_json::json!({}),
+            tensor: Some((values.clone(), vec![1, values.len()])),
+            dtype: WireDtype::F16,
+        }];
+        let expected = encode_batch_items("/v1/step", "f16-batch", &items).unwrap();
+        let (encoded, encode_timing) =
+            encode_batch_items_profiled("/v1/step", "f16-batch", &items).unwrap();
+        assert_eq!(encoded, expected);
+        assert!(encode_timing.f16_conversion_ns > 0);
+
+        let (_, decoded, decode_timing) = decode_batch_items_profiled(&encoded).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].tensor.as_ref().unwrap().0.len(), values.len());
+        assert!(decode_timing.f16_conversion_ns > 0);
     }
 
     #[test]

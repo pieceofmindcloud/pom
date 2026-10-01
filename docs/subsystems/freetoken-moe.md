@@ -310,7 +310,7 @@ entregue ao runtime MoE quando o caminho selecionado é MoE; no hop terminal a
 captura do residual também chama o runtime antes da amostragem. O executor é
 registrado somente depois de o forward retornar com sucesso, portanto uma
 seleção MoE sem chamada real continua aparecendo como divergência. O wire
-permanece o estado oculto f16 já existente, sem peso na rede. Atenção, logits e
+mantém f16 como padrão para o estado oculto; nenhum peso trafega pela rede. Atenção, logits e
 operações restantes continuam no `LlmEngine`, que fornece a fronteira de
 cálculo restante ao redor do bloco próprio.
 

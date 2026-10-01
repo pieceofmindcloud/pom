@@ -1070,6 +1070,9 @@ mod ipv6_tests {
         assert!(plan
             .validate_wire_dtype(crate::wire::WireDtype::F16)
             .is_ok());
+        assert!(plan
+            .validate_wire_dtype(crate::wire::WireDtype::F32)
+            .is_ok());
     }
 
     #[test]

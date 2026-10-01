@@ -343,6 +343,9 @@ export interface PhaseTrace {
   calls: number;
   reported_spans?: number;
   client_encode_ms: number;
+  /** Subset of client encode/decode spent on f32<->f16 conversion. */
+  client_f16_encode_ms?: number | null;
+  client_f16_decode_ms?: number | null;
   response_headers_ms: number;
   response_body_ms: number;
   client_decode_ms: number;
@@ -381,6 +384,8 @@ export interface PhaseTrace {
   node_residual_capture_postprocess_ms?: number;
   node_residual_capture_bytes?: number;
   node_residual_capture_copies?: number;
+  node_residual_wire_f16_encode_ms?: number | null;
+  node_residual_wire_f16_decode_ms?: number | null;
   node_residual_wire_f8_conversion_ms?: number;
   node_residual_wire_frame_serialize_ms?: number;
   node_residual_wire_encode_calls?: number;

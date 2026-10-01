@@ -47,7 +47,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `ChatStreamResult` retains trace, generation timings and source so Chat can
   associate the complete telemetry capture with the specific reply while the
   persisted message patch settles.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Capture stages distinguish scheduler ask-to-ready from tensor-get call wall and postprocess; f8 conversion, frame serialization and QUIC body-send wait have separate totals. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Capture stages distinguish scheduler ask-to-ready from tensor-get call wall and postprocess; peer/client f32/f16 conversion, f8 conversion, frame serialization and QUIC body-send wait have separate totals. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
   `stream_duration_ms` is measured locally from the first SSE data frame to
   receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
   separate `time_last_token_to_response_end_ms` isolates that tail.
@@ -173,7 +173,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   ordered physical files and multipart_error carries the concrete reason a
   declared set cannot be sliced; the UI uses metadata_complete to avoid
   displaying a first-part byte count while enrichment is pending.
-  `RuntimeParams.hidden_state_dtype` is the deployment-wide f16/f8/i4g64/i4g128 choice;
+  `RuntimeParams.hidden_state_dtype` is the deployment-wide
+  f32/f16/f8/i4g64/i4g128 choice; f16 remains the default and f32 is lossless
+  at four bytes per value.
   `RuntimeParams.max_new_tokens` is only the size of one backend leg. The
   cycle detector settings in `RuntimeParams` control the gateway's bounded
   repetition safety stop and can be disabled explicitly. The total output

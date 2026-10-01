@@ -312,6 +312,10 @@ pub struct SentFrame {
     pub hidden_state_bytes_received: u64,
     /// Wire precision selected for this crossing.
     pub hidden_state_dtype: WireDtype,
+    /// Conversion work inside the client frame encoder/decoder, in nanoseconds.
+    /// These are subsets of client_encode_ms/client_decode_ms.
+    pub client_f16_encode_ns: u64,
+    pub client_f16_decode_ns: u64,
     pub client_encode_ms: u64,
     /// For QUIC, wall time awaiting request body send and finish. Batch
     /// responses attribute the shared upload once to avoid duplicate totals.
@@ -609,7 +613,8 @@ async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
         Err(error) => Err(error),
         Ok(items) => {
             async {
-                let body = wire::encode_batch_items(&path, batch_id.clone(), &items)?;
+                let (body, encode_timing) =
+                    wire::encode_batch_items_profiled(&path, batch_id.clone(), &items)?;
                 let first = calls.first().expect("non-empty calls");
                 let profiling = crate::prefill::TelemetryContext::from_meta(
                     &first.meta,
@@ -636,7 +641,8 @@ async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
                     profiling,
                 )
                 .await?;
-                let (_, decoded) = wire::decode_batch_items(&response.body)?;
+                let (_, decoded, decode_timing) =
+                    wire::decode_batch_items_profiled(&response.body)?;
                 let mut by_id = decoded
                     .into_iter()
                     .map(|item| (item.item_id.clone(), item))
@@ -674,6 +680,16 @@ async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
                         hidden_state_bytes_sent,
                         hidden_state_bytes_received,
                         hidden_state_dtype: call.dtype,
+                        client_f16_encode_ns: if output.is_empty() {
+                            encode_timing.f16_conversion_ns
+                        } else {
+                            0
+                        },
+                        client_f16_decode_ns: if output.is_empty() {
+                            decode_timing.f16_conversion_ns
+                        } else {
+                            0
+                        },
                         client_encode_ms: response.client_encode_ms,
                         request_body_send_us: if output.is_empty() {
                             response.request_body_send_us
@@ -742,6 +758,8 @@ impl SentFrame {
             "hidden_state_bytes_received": self.hidden_state_bytes_received,
             "hidden_state_dtype": self.hidden_state_dtype.as_str(),
             "client_encode_ms": self.client_encode_ms,
+            "client_f16_encode_ms": self.client_f16_encode_ns as f64 / 1_000_000.0,
+            "client_f16_decode_ms": self.client_f16_decode_ns as f64 / 1_000_000.0,
             "request_body_send_us": self.request_body_send_us,
             "response_headers_ms": self.response_headers_ms,
             "response_body_ms": self.response_body_ms,
@@ -966,17 +984,17 @@ pub fn extract_relay_failure(e: &anyhow::Error) -> Option<RelayFailure> {
 /// means exactly one try, no retry at all (the decode/`/v1/step` path has
 /// never retried, since, unlike prefill chunks, a step has no KV-rollback
 /// idempotency protection against being redecoded).
-fn encode_frame_body(
+fn encode_frame_body_profiled(
     meta: &Value,
     tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
     _encoding: FrameEncoding,
     use_batch_frame: bool,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, wire::WireEncodeTiming)> {
     if use_batch_frame {
-        wire::encode_batch_single(meta, tensor, dtype)
+        wire::encode_batch_single_profiled(meta, tensor, dtype)
     } else {
-        wire::encode(meta, tensor, dtype)
+        wire::encode_profiled(meta, tensor, dtype)
     }
 }
 
@@ -984,13 +1002,13 @@ fn can_use_single_link(path: &str) -> bool {
     matches!(path, "/v1/prefill" | "/v1/step")
 }
 
-fn encode_link_single(
+fn encode_link_single_profiled(
     path: &str,
     batch_id: &str,
     meta: &Value,
     tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, wire::WireEncodeTiming)> {
     let session_id = meta
         .get("session_id")
         .and_then(Value::as_str)
@@ -1001,7 +1019,7 @@ fn encode_link_single(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(batch_id);
-    wire::encode_batch_items(
+    wire::encode_batch_items_profiled(
         path,
         batch_id,
         &[wire::BatchPayloadItem {
@@ -1055,7 +1073,8 @@ async fn send_frame_in_process(
     debug!(peer = peer_label, path, "inferência em processo");
     let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
-    let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
+    let (body, encode_timing) =
+        encode_frame_body_profiled(meta, tensor, dtype, encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
     let started = Instant::now();
     let bytes_sent = body.len() as u64;
@@ -1070,7 +1089,7 @@ async fn send_frame_in_process(
         }));
     }
     let client_decode_started = Instant::now();
-    let (meta, tensor) = wire::decode(&bytes)?;
+    let (meta, tensor, decode_timing) = wire::decode_profiled(&bytes)?;
     let hidden_state_bytes_received = received_hidden_state_bytes(
         &meta,
         tensor
@@ -1093,6 +1112,8 @@ async fn send_frame_in_process(
         hidden_state_bytes_sent,
         hidden_state_bytes_received,
         hidden_state_dtype: dtype,
+        client_f16_encode_ns: encode_timing.f16_conversion_ns,
+        client_f16_decode_ns: decode_timing.f16_conversion_ns,
         client_encode_ms,
         request_body_send_us: None,
         response_headers_ms: 0,
@@ -1174,7 +1195,8 @@ async fn send_frame_with_protocol(
     let (http, connection_state) = clients.for_peer_with_state(peer_id)?;
     let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
-    let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
+    let (body, encode_timing) =
+        encode_frame_body_profiled(meta, tensor, dtype, encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
     let attempts = attempts.max(1);
     let mut last_error = String::new();
@@ -1214,7 +1236,7 @@ async fn send_frame_with_protocol(
                 {
                     Ok(response) if response.status.is_success() => {
                         let client_decode_started = Instant::now();
-                        let (meta, tensor) = wire::decode(&response.body)?;
+                        let (meta, tensor, decode_timing) = wire::decode_profiled(&response.body)?;
                         let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
                         let hidden_state_bytes_received = received_hidden_state_bytes(
                             &meta,
@@ -1247,6 +1269,8 @@ async fn send_frame_with_protocol(
                             hidden_state_bytes_sent,
                             hidden_state_bytes_received,
                             hidden_state_dtype: dtype,
+                            client_f16_encode_ns: encode_timing.f16_conversion_ns,
+                            client_f16_decode_ns: decode_timing.f16_conversion_ns,
                             client_encode_ms,
                             request_body_send_us: Some(response.request_body_send_us),
                             response_headers_ms: response.response_headers_ms,
@@ -1354,7 +1378,7 @@ async fn send_frame_with_protocol(
                         response_received_at,
                     );
                     let client_decode_started = Instant::now();
-                    let (meta, tensor) = match wire::decode(&bytes) {
+                    let (meta, tensor, decode_timing) = match wire::decode_profiled(&bytes) {
                         Ok(decoded) => decoded,
                         Err(error) => {
                             on_issue(SendIssue {
@@ -1392,6 +1416,8 @@ async fn send_frame_with_protocol(
                         hidden_state_bytes_sent,
                         hidden_state_bytes_received,
                         hidden_state_dtype: dtype,
+                        client_f16_encode_ns: encode_timing.f16_conversion_ns,
+                        client_f16_decode_ns: decode_timing.f16_conversion_ns,
                         client_encode_ms,
                         request_body_send_us: None,
                         response_headers_ms,
@@ -2658,7 +2684,8 @@ async fn send_frame_or_tunnel_inner(
     {
         let batch_id = uuid::Uuid::new_v4().to_string();
         let encode_started = Instant::now();
-        let body = encode_link_single(path, &batch_id, meta, tensor.clone(), dtype)?;
+        let (body, encode_timing) =
+            encode_link_single_profiled(path, &batch_id, meta, tensor.clone(), dtype)?;
         let client_encode_ms = encode_started.elapsed().as_millis() as u64;
         let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
         let profiling = profile_context_for_path(meta, peer_label, path, encode_started);
@@ -2677,7 +2704,8 @@ async fn send_frame_or_tunnel_inner(
         {
             Ok(response) => {
                 let client_decode_started = Instant::now();
-                let (meta, tensor) = wire::decode_batch_single(&response.body)?;
+                let (meta, tensor, decode_timing) =
+                    wire::decode_batch_single_profiled(&response.body)?;
                 let hidden_state_bytes_received = received_hidden_state_bytes(
                     &meta,
                     tensor
@@ -2700,6 +2728,8 @@ async fn send_frame_or_tunnel_inner(
                     hidden_state_bytes_sent,
                     hidden_state_bytes_received,
                     hidden_state_dtype: dtype,
+                    client_f16_encode_ns: encode_timing.f16_conversion_ns,
+                    client_f16_decode_ns: decode_timing.f16_conversion_ns,
                     client_encode_ms,
                     request_body_send_us: None,
                     response_headers_ms: 0,
@@ -2993,11 +3023,8 @@ async fn send_frame_via_tunnel_with_auth(
 ) -> Result<SentFrame> {
     let hidden_state_bytes_sent = hidden_state_bytes(tensor.clone(), dtype)?;
     let encode_started = Instant::now();
-    let body = if use_batch_frame {
-        wire::encode_batch_single(meta, tensor, dtype)?
-    } else {
-        wire::encode(meta, tensor, dtype)?
-    };
+    let (body, encode_timing) =
+        encode_frame_body_profiled(meta, tensor, dtype, _encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
 
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -3070,7 +3097,7 @@ async fn send_frame_via_tunnel_with_auth(
 
     let response_body_ms = 0;
     let client_decode_started = Instant::now();
-    let (meta, tensor) = wire::decode(&response.body)?;
+    let (meta, tensor, decode_timing) = wire::decode_profiled(&response.body)?;
     let hidden_state_bytes_received = received_hidden_state_bytes(
         &meta,
         tensor
@@ -3103,6 +3130,8 @@ async fn send_frame_via_tunnel_with_auth(
         hidden_state_bytes_sent,
         hidden_state_bytes_received,
         hidden_state_dtype: dtype,
+        client_f16_encode_ns: encode_timing.f16_conversion_ns,
+        client_f16_decode_ns: decode_timing.f16_conversion_ns,
         client_encode_ms,
         request_body_send_us: None,
         response_headers_ms: round_trip_ms,
@@ -3567,6 +3596,8 @@ mod tests {
             hidden_state_bytes_sent: 0,
             hidden_state_bytes_received: 0,
             hidden_state_dtype: WireDtype::F16,
+            client_f16_encode_ns: 0,
+            client_f16_decode_ns: 0,
             client_encode_ms: 1,
             request_body_send_us: None,
             response_headers_ms: 5,

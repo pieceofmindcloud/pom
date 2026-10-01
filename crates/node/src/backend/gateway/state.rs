@@ -447,7 +447,7 @@ impl GatewayState {
 
     /// GET de controle assinado ao gateway de `peer`, por todos os caminhos
     /// que ele anuncia (endereços e, por último, o túnel libp2p - ver
-    /// `peer_client::send_to_gateway`). `path` pode trazer query string; a
+    /// `peer_client::send_to_gateway_over`). `path` pode trazer query string; a
     /// assinatura cobre só o caminho, como em `control_get_request`.
     pub(crate) async fn control_get(
         &self,

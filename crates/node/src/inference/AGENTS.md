@@ -208,8 +208,10 @@ visibilidade dos controles de implantação na UI local.
   scheduler, wall da chamada `ggml_backend_tensor_get`, pós-processamento e
   encode do payload e do frame residual. Ask-to-ready inclui compute e sync do
   scheduler; `tensor_get` em CUDA pode incluir D2H e sync da stream, sem expor
-  esses custos internos separadamente. O wire mede o loop de conversão f8
-  separado da serialização do cabeçalho/frame.
+  esses custos internos separadamente. O wire mede as conversões de ativação
+  f32/f16 no peer e no cliente, além do loop f8 e da serialização do
+  cabeçalho/frame; as conversões são subconjuntos dos tempos gerais de
+  encode/decode.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
   inicializa o backend para que o sysmon possa consultar descricoes de
   dispositivos, decode, hidden state com
@@ -617,8 +619,9 @@ visibilidade dos controles de implantação na UI local.
   as lanes CPU e GPU executam em paralelo; a telemetria publica chamadas de
   cada lane e a fração escolhida. A validação CUDA e os números observados
   vivem em `docs/subsystems/freetoken-moe.md`.
-  O wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
-  atenção, demais camadas ou a amostragem do `LlmEngine`.
+  O wire usa f16 por padrão (f32 é opção de implantação) e nenhum peso trafega;
+  a costura não substitui ainda atenção, demais camadas ou a amostragem do
+  `LlmEngine`.
   Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` pode percorrer os
   payloads canônicos por camada, expert, papel e dtype em uma thread separada,
   usando a mesma admissão do cache residente. O aquecimento é padrão e pode ser
@@ -788,12 +791,13 @@ visibilidade dos controles de implantação na UI local.
   texto sem sentido (18/08).
 - `wire.rs` - o único lugar que conhece o dtype/codificação do tensor em
   trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
-  `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN e i4g64/i4g128
-  assinado com escala f16 por grupo na borda, sempre devolvendo f32 ao motor;
-  `encode_profiled` mede o loop f8 e a serialização do cabeçalho/frame em
-  limites separados. `prefill/`
-  e `relay.rs` propagam o dtype escolhido e registram bytes enviados, recebidos
-  e formato efetivo por hop.
+  `WireDtype` mantém f16 como padrão, oferece f32 sem perda como opção de
+  implantação e implementa f8 FP8 E4M3FN e i4g64/i4g128 assinados com escala
+  f16 por grupo; decode sempre devolve f32. As variantes perfiladas medem a
+  conversão f32/f16 separada do total do frame. A telemetria por fase também
+  separa a conversão observada no peer e no cliente; f32 usa quatro bytes por
+  valor e não exige capability. `prefill/` e `relay.rs` propagam o dtype
+  escolhido e registram bytes enviados, recebidos e formato efetivo por hop.
 
 ## Funções-chave
 

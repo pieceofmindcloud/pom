@@ -107,25 +107,6 @@ impl TunnelPeer {
 /// diretas (`webui::PEER_TIMEOUT`, 4 s) não contam com isso.
 const TUNNEL_MIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Envia uma chamada de controle ao gateway de um peer por todos os caminhos
-/// que ele anuncia: cada endereço, na ordem, e por último o túnel libp2p.
-///
-/// `build` monta o pedido para uma base (`http(s)://host:porta`) e é chamada
-/// uma vez por tentativa. Vale a primeira resposta HTTP, qualquer que seja o
-/// status - só falha de conexão passa para o próximo caminho. Para um peer
-/// atrás de NAT simétrico, que nenhum endereço alcança, o túnel é o único que
-/// chega; do outro lado o pedido conta como remoto (`serve::request_origin`) e
-/// a rota tem de estar em `infer_tunnel::gateway_path_is_allowed`.
-pub(crate) async fn send_to_gateway<F>(
-    peer: &crate::network::PeerInfo,
-    build: F,
-) -> Result<reqwest::Response>
-where
-    F: Fn(&str) -> reqwest::RequestBuilder,
-{
-    send_to_gateway_over(peer, &peer.gateway_candidates(), build).await
-}
-
 /// Cabeçalho com o `node_id` de quem respondeu, carimbado pelo gateway e pelo
 /// servidor de inferência em toda resposta (`stamp_node_id`).
 pub const NODE_ID_HEADER: &str = "x-pom-node-id";
@@ -157,10 +138,9 @@ pub(crate) fn answered_by_other_node(
     (actual != expected).then(|| actual.to_string())
 }
 
-/// `send_to_gateway` com a lista de endereços dada por quem chama - vazia,
-/// só o túnel. Para quem já percorreu os endereços com critério próprio (a
-/// memória de falha do `RouteTable`, por exemplo) e só precisa do último
-/// recurso.
+/// Envia uma chamada de controle usando a lista de endereços definida pelo
+/// chamador, que pode ser vazia para tentar somente o túnel. Útil quando quem
+/// chama já ordenou os endpoints pela memória de falha do `RouteTable`.
 pub(crate) async fn send_to_gateway_over<F>(
     peer: &crate::network::PeerInfo,
     bases: &[String],
@@ -1068,10 +1048,6 @@ mod tests {
         );
     }
 
-    /// Uma entrega apenas lenta não é uma rota morta: o teto de uma tentativa
-    /// não pode ser o critério de quarentena. A primeira falha só tira o
-    /// endereço da preferência.
-    #[test]
     /// A marca é aprendizado, não configuração: liga com uma entrega do
     /// túnel, desliga com um sucesso direto.
     #[test]

@@ -680,9 +680,10 @@ codificação em trânsito. Formato:
 [4 bytes big-endian: tamanho do header][JSON header][tensor cru]
 ```
 
-- `dtype`/`shape` vão no JSON; o corpo é **binário** f16 por padrão ou f8
-  quando a implantação escolhe a alternativa (nunca base64). Precisão e
-  codificação são parâmetro de `encode`/`decode`, não suposição.
+- `dtype`/`shape` vão no JSON; o corpo é **binário** em f16 por padrão,
+  f32 quando o operador escolhe a precisão integral, ou f8/int4 groupwise nas
+  alternativas com perda (nunca base64). Precisão e codificação são parâmetro
+  de `encode`/`decode`, não suposição.
 - `frame_version=1` (`inference/frame-v1-batch`) é o primeiro e único contrato
   oficial. Um header JSON carrega `batch_id` e itens `{item_id, session_id,
   shape, dtype, offset, len, meta}`, seguido pelo payload concatenado. O
@@ -705,26 +706,41 @@ codificação em trânsito. Formato:
   request. Uma recusa determinística de tamanho não repete o mesmo prefill a
   frio.
 - O decode sempre devolve o tensor como f32: precisão reduzida é propriedade do
-  fio, nunca da matemática. `f16` é o padrão; `f8` usa FP8 E4M3FN, e `i4g64` /
-  `i4g128` usam int4 assinado com uma escala FP16 por grupo de 64 / 128 valores.
-  Os formatos com perda são escolhas explícitas de `RuntimeParams`; o i4 empacota
-  dois valores por byte além das escalas. O conversor recusa valores não finitos
-  e escalas FP16 fora do alcance em vez de saturá-los silenciosamente. O f32
-  continua representável em caminhos internos, mas não é uma opção de implantação.
+  fio, nunca da matemática. `f16` segue como padrão. `f32` preserva exatamente
+  os valores f32 capturados e usa quatro bytes por valor, o dobro do payload
+  f16, sem conversão de precisão. `f8` usa FP8 E4M3FN, e `i4g64` / `i4g128`
+  usam int4 assinado com uma escala FP16 por grupo de 64 / 128 valores. f8 e i4
+  são escolhas explícitas com perda; o i4 empacota dois valores por byte além
+  das escalas. O conversor recusa valores não finitos e escalas FP16 fora do
+  alcance em vez de saturá-los silenciosamente.
 - `RuntimeParams.hidden_state_dtype` é global para a implantação e segue o
   mesmo caminho persistido de contexto, batch, chunk prefill e cache KV. O
-  padrão é `f16`; f8/i4 só são enviados quando o operador os escolhe
-  explicitamente. Cada peer anuncia capabilities separadas para
-  `inference/frame-v1-dtype-f8`, `inference/frame-v1-dtype-i4g64` e
-  `inference/frame-v1-dtype-i4g128` em `/api/ui/node`. O planejador bloqueia a
-  implantação se qualquer peer selecionado não anunciar o formato escolhido,
-  e o servidor ainda recusa um frame incompatível com mensagem explícita. Não
-  há interpretação silenciosa.
+  padrão continua `f16`; `f32` é uma opção sem perda disponível na tela de
+  implantação e não exige negociação extra, pois é o formato base do wire.
+  f8/i4 só são enviados quando o operador os escolhe explicitamente. Cada peer
+  anuncia capabilities separadas para `inference/frame-v1-dtype-f8`,
+  `inference/frame-v1-dtype-i4g64` e `inference/frame-v1-dtype-i4g128` em
+  `/api/ui/node`. O planejador bloqueia a implantação se qualquer peer
+  selecionado não anunciar o formato com perda escolhido, e o servidor ainda
+  recusa um frame incompatível com mensagem explícita. Não há interpretação
+  silenciosa.
 - O trace de cada hop registra `hidden_state_bytes_sent`,
   `hidden_state_bytes_received` e `hidden_state_dtype`. A UI mostra esses
   campos por travessia e o formato efetivo, inclusive quando uma configuração
   pedida não pode ser usada. O número observado, e não uma estimativa de
   transporte, é a medida para comparar f16 e f8.
+
+### Telemetria da conversão do wire
+
+A telemetria por fase separa `residual_wire_f16_encode_ms` e
+`residual_wire_f16_decode_ms` do tempo geral de encode/decode do peer. Também
+separa `client_f16_encode_ms` e `client_f16_decode_ms` no lado que monta e
+consome o frame remoto. Esses quatro campos medem somente a conversão de
+ativações entre f32 e f16; são subconjuntos dos tempos gerais, não devem ser
+somados de novo a eles nem ao cálculo do llama.cpp. Com f32 no fio, as métricas
+de conversão f16 são zero, mas a serialização, leitura do payload e custo de
+rede continuam. A linha de telemetria do Chat exibe essas conversões ao lado da
+conversão f8 e da serialização do frame.
 
 ### Forma do residual e custo por token
 
@@ -783,10 +799,11 @@ ordem entregue pelo `split_simple`, habilitado por `kv_unified=true`.
 Medido com `tcpdump` no peer 2 (requisição de 35 tokens de prompt + 34
 gerados): 565.336 bytes de estado oculto da cabeça para a cauda, 6.715 bytes de
 tokens amostrados na volta. 565.336 / 69 tokens = **8.192 bytes por token por
-hop**, exatamente `hidden_dim 4096 × 2` (f16). O formato antigo (f32 em
-base64) custava 4096 × 4 × 4/3 = 21.846 bytes por token por hop - **62,5%
-menos bytes** na rede hoje. Um pedaço de prefill de 512 tokens é ~8 MiB f16 por
-hop por pedaço. Com f8, o payload do mesmo tensor cai para um byte por valor,
+hop**, exatamente `hidden_dim 4096 × 2` (f16). Quando `f32` é selecionado, o
+payload binário custa `4096 × 4 = 16.384` bytes por token por hop. O formato
+histórico f32 em base64 custava `4096 × 4 × 4/3 = 21.846` bytes por token por
+hop; o frame binário f16 medido usa **62,5% menos bytes** que aquele formato
+histórico. Um pedaço de prefill de 512 tokens é ~8 MiB f16 por hop por pedaço. Com f8, o payload do mesmo tensor cai para um byte por valor,
 mas a redução efetiva deve ser lida em `hidden_state_bytes_*`, por travessia,
 porque header, transporte e padrão de tráfego também entram na medição.
 

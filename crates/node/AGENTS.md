@@ -95,7 +95,9 @@ A variável vence o `pom.json`: `apply_env_overrides` troca `p2p_port` e
 `gateway_port` gravados quando `parse_args` viu o valor vir do ambiente
 (`ValueSource::EnvVariable`). Na linha de comando essas duas continuam cedendo à
 config - só valem no modo setup, e é isso que mantém uma troca de porta feita
-pela interface depois do respawn, que repete o argv.
+pela interface depois do respawn, que repete o argv. A variável manual
+`POM_FORCE_SETUP` é tratada por `force_setup_if_requested`; a lista que a isola
+na prova de cobertura de flags é compilada somente em testes.
 
 Não existe um teto absoluto adicional no `pom.json`. A capacidade de saída é
 derivada do `n_ctx` efetivo confirmado por cada runtime e agregada entre os

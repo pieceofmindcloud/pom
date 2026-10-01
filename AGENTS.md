@@ -136,7 +136,8 @@ rotas `/v1` rodam **somente** o pipeline distribuído - sem plano cobrindo
 `0..total_layers` a requisição falha com mensagem, não há fallback para Ollama.
 O servidor de inferência de cada peer (`/v1/prefill`, `/v1/step`) carrega o
 modelo em-processo via `llama-cpp-sys-2` e troca estado oculto em f16 por
-padrão; f8 e i4 groupwise são formatos com perda opcionais negociados por hop.
+padrão; f32 é uma opção sem perda que dobra o payload, e f8/i4 groupwise são
+formatos com perda opcionais negociados por hop.
 Concorrência: Tokio, estado compartilhado em `Arc<RwLock<>>`.
 
 Módulos em `crates/node/src/`: `main.rs` (CLI e orquestração), `models/`

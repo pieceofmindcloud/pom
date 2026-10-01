@@ -123,8 +123,10 @@ Per-file list:
   `node_backend_call_ms` (`llama_decode`/avaliação) de
   `node_backend_sync_ms` (`llama_synchronize`). A linha da captura mostra o
   ask-to-ready do scheduler, a chamada opaca `tensor_get`, o pós-processamento,
-  bytes e contagem de leituras; a conversão f8, a serialização do frame residual
-  e a espera de envio/finalização do corpo QUIC aparecem em linhas próprias.
+  bytes e contagem de leituras; as conversões f32/f16 no peer e no cliente, a
+  conversão f8, a serialização do frame residual e a espera de envio/finalização
+  do corpo QUIC aparecem em linhas próprias. Os tempos de conversão são
+  subconjuntos do encode/decode geral, não devem ser somados novamente.
   Cobertura de decode usa callbacks quando disponíveis, ou tokens de saída por
   hop no caminho normal; sem tokens ou callbacks esperados, mostra não medido.
   Uma coleta de transporte incompleta continua visível mesmo quando a resposta
@@ -569,10 +571,11 @@ Key logic carriers:
   estado tri-state retornado pelo plano: oculta incompatíveis, mantém
   indeterminados visíveis, acionáveis e com alerta de risco, e preserva sempre o
   controle `no_embeddings`.
-  O seletor `hidden_state_dtype` mantém f16 como padrão e oferece f8, i4g64 e
-  i4g128 somente como escolhas explícitas. Os formatos com perda ficam
-  desabilitados até todos os peers selecionados anunciarem suporte; a dica
-  mostra o motivo da capability correspondente ao formato selecionado.
+  O seletor `hidden_state_dtype` mantém f16 como padrão, oferece f32 como
+  opção sem perda de quatro bytes por valor e f8/i4g64/i4g128 como escolhas
+  explícitas com perda. f32/f16 não exigem capability; os formatos com perda
+  ficam desabilitados até todos os peers selecionados anunciarem suporte, e a
+  dica mostra o motivo da capability correspondente ao formato escolhido.
   `RuntimeParamsForm` recebe a mesma flag e oculta os controles de ciclo e
   recuo MTP quando ela está desligada.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may

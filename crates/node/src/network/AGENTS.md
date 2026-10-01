@@ -43,7 +43,7 @@ fallback continua em `addr_candidates` + `RouteTable`.
   `serve::request_origin` o trata como remoto. Sem a marca, qualquer rota da
   lista daria a administração do nó (modo localhost, `install_trust_anchor`) a
   qualquer peer do swarm. O método do pedido é repassado como veio (GET, POST,
-  ...). `peer_client::send_to_gateway` é o emissor do plano de controle: cada
+  ...). `peer_client::send_to_gateway_over` é o emissor do plano de controle: cada
   endereço anunciado e, por último, o túnel. POSTs sem `Content-Type` recebem o padrão binário, mas um
   `Content-Type` explícito, como `application/json` no ciclo de vida da sessão,
   nunca é duplicado nem sobrescrito. `measure_rtt` mede a ida e volta pelo

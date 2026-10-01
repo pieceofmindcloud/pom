@@ -505,6 +505,8 @@ fn transport_receipt(hop_index: usize, sent: &crate::relay::SentFrame) -> Value 
         "tls": sent.tls,
         "tls_handshake_ms": sent.tls_handshake_ms,
         "client_encode_ms": sent.client_encode_ms,
+        "client_f16_encode_ms": sent.client_f16_encode_ns as f64 / 1_000_000.0,
+        "client_f16_decode_ms": sent.client_f16_decode_ns as f64 / 1_000_000.0,
         "response_headers_ms": sent.response_headers_ms,
         "response_body_ms": sent.response_body_ms,
         "client_decode_ms": sent.client_decode_ms,
@@ -1410,6 +1412,8 @@ pub fn hop_entry(processing_ms: &Value, node_timings: &Value, inbound_bytes: usi
         "bytes_sent": inbound_bytes,
         "bytes_received": 0,
         "client_encode_ms": 0,
+        "client_f16_encode_ms": 0,
+        "client_f16_decode_ms": 0,
         "response_headers_ms": 0,
         "response_body_ms": 0,
         "client_decode_ms": 0,
@@ -1462,6 +1466,8 @@ pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::re
     hop["bytes_sent"] = json!(sent.bytes_sent);
     hop["bytes_received"] = json!(sent.bytes_received);
     hop["client_encode_ms"] = json!(sent.client_encode_ms);
+    hop["client_f16_encode_ms"] = json!(sent.client_f16_encode_ns as f64 / 1_000_000.0);
+    hop["client_f16_decode_ms"] = json!(sent.client_f16_decode_ns as f64 / 1_000_000.0);
     hop["response_headers_ms"] = json!(sent.response_headers_ms);
     hop["response_body_ms"] = json!(sent.response_body_ms);
     hop["client_decode_ms"] = json!(sent.client_decode_ms);
@@ -1806,6 +1812,8 @@ mod tests {
                 hidden_state_bytes_sent: 0,
                 hidden_state_bytes_received: 0,
                 hidden_state_dtype: crate::wire::WireDtype::F16,
+                client_f16_encode_ns: 0,
+                client_f16_decode_ns: 0,
                 client_encode_ms: 1,
                 request_body_send_us: None,
                 response_headers_ms: 2,
@@ -2131,6 +2139,8 @@ mod tests {
             hidden_state_bytes_sent: 0,
             hidden_state_bytes_received: 0,
             hidden_state_dtype: crate::wire::WireDtype::F16,
+            client_f16_encode_ns: 0,
+            client_f16_decode_ns: 0,
             client_encode_ms: 3,
             request_body_send_us: None,
             response_headers_ms: 4,

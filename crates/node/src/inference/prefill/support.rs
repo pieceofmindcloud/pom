@@ -1167,6 +1167,9 @@ pub struct PhaseTrace {
     /// tokens.
     pub reported_spans: u64,
     pub client_encode_ms: u64,
+    /// Subset of client frame encode/decode spent on f32<->f16 conversion.
+    pub client_f16_encode_ms: Option<f64>,
+    pub client_f16_decode_ms: Option<f64>,
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
     pub client_decode_ms: u64,
@@ -1238,6 +1241,8 @@ pub struct PhaseTrace {
     pub node_residual_capture_postprocess_ms: f64,
     pub node_residual_capture_bytes: u64,
     pub node_residual_capture_copies: u64,
+    pub node_residual_wire_f16_encode_ms: Option<f64>,
+    pub node_residual_wire_f16_decode_ms: Option<f64>,
     pub node_residual_wire_f8_conversion_ms: f64,
     pub node_residual_wire_frame_serialize_ms: f64,
     pub node_residual_wire_encode_calls: u64,
@@ -1279,6 +1284,12 @@ pub struct PhaseTrace {
     pub(super) selected_path_seen: bool,
     #[serde(skip)]
     pub(super) hidden_state_dtype_mixed: bool,
+}
+
+fn add_optional_ms(total: &mut Option<f64>, sample: Option<f64>) {
+    if let Some(sample) = sample {
+        *total = Some((*total).unwrap_or(0.0) + sample);
+    }
 }
 
 impl PhaseTrace {
@@ -1380,6 +1391,16 @@ impl PhaseTrace {
         self.calls += 1;
         self.reported_spans = self.reported_spans.saturating_add(1);
         self.client_encode_ms += client_encode_ms;
+        add_optional_ms(
+            &mut self.client_f16_encode_ms,
+            node.get("client_f16_encode_ms")
+                .and_then(serde_json::Value::as_f64),
+        );
+        add_optional_ms(
+            &mut self.client_f16_decode_ms,
+            node.get("client_f16_decode_ms")
+                .and_then(serde_json::Value::as_f64),
+        );
         self.response_headers_ms += response_headers_ms;
         self.response_body_ms += response_body_ms;
         self.client_decode_ms += client_decode_ms;
@@ -1421,6 +1442,16 @@ impl PhaseTrace {
             node.get("residual_capture_copies")
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
+        );
+        add_optional_ms(
+            &mut self.node_residual_wire_f16_encode_ms,
+            node.get("residual_wire_f16_encode_ms")
+                .and_then(serde_json::Value::as_f64),
+        );
+        add_optional_ms(
+            &mut self.node_residual_wire_f16_decode_ms,
+            node.get("residual_wire_f16_decode_ms")
+                .and_then(serde_json::Value::as_f64),
         );
         self.node_residual_wire_f8_conversion_ms += node_ms("residual_wire_f8_conversion_ms");
         self.node_residual_wire_frame_serialize_ms += node_ms("residual_wire_frame_serialize_ms");
@@ -1563,6 +1594,8 @@ impl PhaseTrace {
         self.calls += next.calls;
         self.reported_spans = self.reported_spans.saturating_add(next.reported_spans);
         self.client_encode_ms += next.client_encode_ms;
+        add_optional_ms(&mut self.client_f16_encode_ms, next.client_f16_encode_ms);
+        add_optional_ms(&mut self.client_f16_decode_ms, next.client_f16_decode_ms);
         self.response_headers_ms += next.response_headers_ms;
         self.response_body_ms += next.response_body_ms;
         self.client_decode_ms += next.client_decode_ms;
@@ -1602,6 +1635,14 @@ impl PhaseTrace {
         self.node_residual_capture_copies = self
             .node_residual_capture_copies
             .saturating_add(next.node_residual_capture_copies);
+        add_optional_ms(
+            &mut self.node_residual_wire_f16_encode_ms,
+            next.node_residual_wire_f16_encode_ms,
+        );
+        add_optional_ms(
+            &mut self.node_residual_wire_f16_decode_ms,
+            next.node_residual_wire_f16_decode_ms,
+        );
         self.node_residual_wire_f8_conversion_ms += next.node_residual_wire_f8_conversion_ms;
         self.node_residual_wire_frame_serialize_ms += next.node_residual_wire_frame_serialize_ms;
         self.node_residual_wire_encode_calls = self
@@ -2634,6 +2675,18 @@ impl RequestTrace {
             .get("processing_ms")
             .and_then(|value| value.as_u64())
             .unwrap_or(0);
+        let mut node_timings = sent
+            .meta
+            .get("node_timings")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !node_timings.is_object() {
+            node_timings = serde_json::json!({});
+        }
+        node_timings["client_f16_encode_ms"] =
+            serde_json::json!(sent.client_f16_encode_ns as f64 / 1_000_000.0);
+        node_timings["client_f16_decode_ms"] =
+            serde_json::json!(sent.client_f16_decode_ns as f64 / 1_000_000.0);
         self.record_hop(
             hop,
             phase,
@@ -2649,9 +2702,7 @@ impl RequestTrace {
                 on: sent.tls,
                 handshake_ms: sent.tls_handshake_ms,
             },
-            sent.meta
-                .get("node_timings")
-                .unwrap_or(&serde_json::Value::Null),
+            &node_timings,
         );
         if let Some(measured_network_ms) =
             TransportTrace::measured_network_ms(sent.transport_rtt_us)
@@ -3049,6 +3100,18 @@ impl RequestTrace {
     /// process made itself.
     pub fn record_hop_from_json(&mut self, hop: usize, phase: Phase, entry: &serde_json::Value) {
         let get = |key: &str| entry.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+        let mut node_timings = entry
+            .get("node_timings")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !node_timings.is_object() {
+            node_timings = serde_json::json!({});
+        }
+        for key in ["client_f16_encode_ms", "client_f16_decode_ms"] {
+            if let Some(value) = entry.get(key) {
+                node_timings[key] = value.clone();
+            }
+        }
         self.record_hop(
             hop,
             phase,
@@ -3064,9 +3127,7 @@ impl RequestTrace {
                 on: entry.get("tls").and_then(|v| v.as_bool()).unwrap_or(false),
                 handshake_ms: get("tls_handshake_ms"),
             },
-            entry
-                .get("node_timings")
-                .unwrap_or(&serde_json::Value::Null),
+            &node_timings,
         );
         if let Some(measured_network_ms) = TransportTrace::measured_network_ms(
             entry

@@ -40,7 +40,7 @@ struct QuicReply {
 /// já respondeu primeiro, e por último pelo túnel libp2p (`/api/cluster/quic`
 /// está na lista do túnel). Só o primeiro endereço anunciado falhava para
 /// sempre com um principal atrás de NAT ou num IPv6 inalcançável.
-pub async fn fetch_from_principal(
+pub(crate) async fn fetch_from_principal(
     clients: &PeerClients,
     principal_id: &str,
     base_urls: &[String],

@@ -185,16 +185,20 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   motivo de falha da coletiva de dentro do decode; `node` instala as funções
   reais (`tp::install_probe`) no arranque. Sem instalação, `is_active()` é
   `false` (caminho não-TP).
-- `wire.rs` - formato binário do estado oculto entre peers
-  (f16/f8/i4g64/i4g128, zstd). I4 usa valores assinados de 4 bits e uma escala
-  f16 por grupo; o decodificador entrega f32 ao motor. A
-  identidade de sessão do `BatchItem` é autoritativa ao decodificar, para que
-  um relay não reative uma sessão sintética a partir de metadata antiga. O
-  caminho quente não copia o tensor à toa: `encode_batch_items` escreve direto
-  no buffer que vai para o fio, `split_frame` empresta o payload em vez de o
-  copiar, e `peek_batch_header`/`validate_batch_bytes` leem só o cabeçalho para
-  quem precisa da rota, do `batch_id` ou de uma validação. Detalhe e números em
-  `docs/subsystems/inferencia.md` §2.2.
+- `wire.rs` - formato binário do estado oculto entre peers. f16 é o padrão;
+  f32 está disponível na implantação como formato sem perda de precisão, e
+  f8/i4g64/i4g128 são alternativas com perda. I4 usa valores assinados de 4
+  bits e uma escala f16 por grupo; o decodificador sempre entrega f32 ao motor.
+  `encode_profiled`/`decode_profiled` e as variantes batch medem separadamente
+  a conversão f32/f16; esses nanos são subconjuntos do tempo total de
+  encode/decode. A identidade de sessão do `BatchItem` é autoritativa ao
+  decodificar, para que um relay não reative uma sessão sintética a partir de
+  metadata antiga. O caminho quente não copia o tensor à toa:
+  `encode_batch_items` escreve direto no buffer que vai para o fio,
+  `split_frame` empresta o payload em vez de o copiar, e
+  `peek_batch_header`/`validate_batch_bytes` leem só o cabeçalho para quem
+  precisa da rota, do `batch_id` ou de uma validação. Detalhe e números em
+  `docs/subsystems/inferencia.md` §2.
 - `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo nomes de
   identidade (`general.name`, `general.basename` e `general.base_model.*`),
   `embedding_length` textual e `clip.vision.projection_dim` para associar

@@ -334,9 +334,9 @@ profile policy remains the effective authorization boundary.
   ETA when measurable, terminal errors and partial outputs.
   (local or forwarded to a peer).
 - `RuntimeParams.hidden_state_dtype` is persistido e encaminhado pelo mesmo
-  caminho de apply/launch dos demais ajustes globais; `NodeInfo` e
-  `DeployPlan.capabilities.hidden_state_f8/hidden_state_i4g64/hidden_state_i4g128`
-  expõem as capabilities usadas para bloquear formato não suportado. O redeploy consulta
+  caminho de apply/launch dos demais ajustes globais. f16 continua padrão, f32
+  é a opção sem perda sem negociação extra; `DeployPlan.capabilities` para
+  f8/i4 bloqueia os formatos com perda quando algum peer não anuncia suporte. O redeploy consulta
   `/api/ui/node` de todos os participantes antes de reconfigurar qualquer nó,
   evitando uma implantação parcialmente misturada.
 - **Implantações são versionadas** (`Deployment`, `DEPLOYMENT_VERSION = 2`,
@@ -564,7 +564,7 @@ profile policy remains the effective authorization boundary.
   `GatewayState::control_get`/`control_post_json`/`control_post_empty`: assina
   uma vez, tenta cada endereço anunciado - na ordem de `gateway_bases`, o host
   que já respondeu primeiro - e cai no túnel libp2p
-  (`peer_client::send_to_gateway`), que é o único caminho para um peer atrás de
+  (`peer_client::send_to_gateway_over`), que é o caminho para um peer atrás de
   NAT simétrico. `control_get_via_tunnel` é o último recurso de quem já
   percorreu os endereços com a memória de falha do `RouteTable` (a leitura do
   `/api/ui/cluster`). Ficam fora do túnel a transferência de pesos e a

@@ -688,6 +688,9 @@ pub(crate) fn step_blocking(
         Some((&residual.values, residual.shape.clone())),
         wire_dtype,
     )?;
+    timings.residual_wire_f16_encode_ns = timings
+        .residual_wire_f16_encode_ns
+        .saturating_add(wire_timing.f16_conversion_ns);
     timings.residual_wire_f8_conversion_us = timings
         .residual_wire_f8_conversion_us
         .saturating_add(wire_timing.f8_conversion_us);

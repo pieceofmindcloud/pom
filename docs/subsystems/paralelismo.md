@@ -9,15 +9,17 @@ consegue carregar o modelo.
 No pipeline, cada nó mantém uma faixa completa de camadas do transformer. O
 planejador ordena as faixas pela camada inicial e só aceita um plano que cubra
 as camadas necessárias sem sobreposição. O nó que serve a camada 0 recebe o
-prompt inteiro, processa a própria faixa e entrega um estado oculto f16 para o
-próximo nó. O processo se repete até a cabeça de saída, que amostra o próximo
-token.
+prompt inteiro, processa a própria faixa e entrega ao próximo nó o estado
+oculto f16 por padrão. A implantação também pode escolher f32, sem perda de
+precisão no wire, ou f8/int4 groupwise com perda e negociação de capability. O
+processo se repete até a cabeça de saída, que amostra o próximo token.
 
 Os pesos nunca são enviados durante a inferência. Cada máquina precisa ter a
 própria cópia ou as próprias fatias do GGUF. O que trafega é o estado oculto,
-com aproximadamente `hidden_dim * 2` bytes por token por salto, mais os headers
-do frame. No decode, a resposta direta entrega o token da cauda diretamente ao
-gateway; no modo de anel antigo, o resultado borbulha de volta pela cadeia.
+com aproximadamente `hidden_dim * bytes_per_value` bytes por token por salto,
+mais os headers do frame: dois bytes por valor em f16 e quatro em f32. No
+decode, a resposta direta entrega o token da cauda diretamente ao gateway; no
+modo de anel antigo, o resultado borbulha de volta pela cadeia.
 
 O pipeline é a opção recomendada entre máquinas na internet. Ele faz uma
 travessia por fronteira de camada para cada token e não precisa de uma barreira

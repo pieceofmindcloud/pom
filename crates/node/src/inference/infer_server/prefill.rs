@@ -128,7 +128,7 @@ pub(super) async fn handle_prefill(
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
-    let (meta, tensor) = match wire::decode_inference_request(&body) {
+    let (meta, tensor, inbound_wire_timing) = match wire::decode_inference_request_profiled(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
@@ -351,16 +351,25 @@ pub(super) async fn handle_prefill(
     };
     reply.timings.frame_decode_us = frame_decode_us;
     reply.timings.input_prepare_us = input_prepare_us;
+    reply.timings.residual_wire_f16_decode_ns = reply
+        .timings
+        .residual_wire_f16_decode_ns
+        .saturating_add(inbound_wire_timing.f16_conversion_ns);
 
     // Same reasoning as handle_step: decode once so the relay branch below
     // can inspect what came back, patch in this hop's own processing_ms/
     // node_timings either way, and only then decide whether to relay or
     // just re-encode and return.
     let elapsed = processing_started.elapsed();
-    let (mut local_meta, local_tensor) = match wire::decode(&reply.bytes) {
-        Ok(v) => v,
-        Err(e) => return err500(e),
-    };
+    let (mut local_meta, local_tensor, reply_wire_timing) =
+        match wire::decode_profiled(&reply.bytes) {
+            Ok(v) => v,
+            Err(e) => return err500(e),
+        };
+    reply.timings.residual_wire_f16_decode_ns = reply
+        .timings
+        .residual_wire_f16_decode_ns
+        .saturating_add(reply_wire_timing.f16_conversion_ns);
     if local_meta
         .get("token_id")
         .and_then(|value| value.as_u64())
@@ -1951,7 +1960,19 @@ pub(super) fn prefill_batch_blocking(
                 meta["tokens"] = json!(tokens);
             }
             let started = Instant::now();
-            let bytes = wire::encode(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
+            let (bytes, wire_timing) =
+                wire::encode_profiled(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
+            timings.residual_wire_f16_encode_ns = timings
+                .residual_wire_f16_encode_ns
+                .saturating_add(wire_timing.f16_conversion_ns);
+            timings.residual_wire_f8_conversion_us = timings
+                .residual_wire_f8_conversion_us
+                .saturating_add(wire_timing.f8_conversion_us);
+            timings.residual_wire_frame_serialize_us = timings
+                .residual_wire_frame_serialize_us
+                .saturating_add(wire_timing.frame_serialize_us);
+            timings.residual_wire_encode_calls =
+                timings.residual_wire_encode_calls.saturating_add(1);
             timings.encode_us = started.elapsed().as_micros() as u64;
             Ok(TimedReply { bytes, timings })
         })();
@@ -2405,7 +2426,19 @@ pub(super) fn step_batch_blocking(
                 meta["tokens"] = json!(tokens);
             }
             let encode_started = Instant::now();
-            let bytes = wire::encode(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
+            let (bytes, wire_timing) =
+                wire::encode_profiled(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
+            timings.residual_wire_f16_encode_ns = timings
+                .residual_wire_f16_encode_ns
+                .saturating_add(wire_timing.f16_conversion_ns);
+            timings.residual_wire_f8_conversion_us = timings
+                .residual_wire_f8_conversion_us
+                .saturating_add(wire_timing.f8_conversion_us);
+            timings.residual_wire_frame_serialize_us = timings
+                .residual_wire_frame_serialize_us
+                .saturating_add(wire_timing.frame_serialize_us);
+            timings.residual_wire_encode_calls =
+                timings.residual_wire_encode_calls.saturating_add(1);
             timings.encode_us = encode_started.elapsed().as_micros() as u64;
             Ok(TimedReply { bytes, timings })
         })();

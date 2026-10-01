@@ -61,8 +61,6 @@ pub(super) enum HeldKind {
 pub(super) struct Machine {
     pub(super) node_id: String,
     pub(super) hostname: String,
-    /// URL do gateway HTTP do peer (para o coordenador falar com ele).
-    pub(super) gateway_url: Option<String>,
     /// URL do servidor de inferência do peer (rank 0 de um grupo TP).
     pub(super) inference_url: Option<String>,
     /// Todos os endereços anunciados para o servidor de inferência, na ordem
@@ -708,7 +706,6 @@ pub(super) async fn survey(
             Some((
                 Machine {
                     node_id: peer.node_id.clone(),
-                    gateway_url: peer.gateway_url(),
                     inference_url: inference_candidates.first().cloned(),
                     inference_candidates,
                     addr_candidates,

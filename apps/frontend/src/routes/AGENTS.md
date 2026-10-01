@@ -172,8 +172,10 @@ Per-file list:
   `thinking_enabled` a cada mensagem, persistindo até nova ação do usuário.
   Missing snapshots stay visible as missing data. The environment card also
   renders the effective MoE executor and its concrete reason from `/health`.
-  Phase rows also render
-  hidden-state bytes sent/received and the effective f16/f8 dtype. Its picker uses `../lib/chatModels` to hide deployment-qualified
+  Phase rows also render hidden-state bytes sent/received and the effective
+  f32/f16/f8/i4 dtype. The conversion row separates peer and client f32/f16
+  encode/decode work from the general frame timings. Its picker uses
+  `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
   resolution retain those ids. Um frame de erro compatível com OpenAI dentro
   do stream fica junto de qualquer resposta parcial e mostra a mensagem exata

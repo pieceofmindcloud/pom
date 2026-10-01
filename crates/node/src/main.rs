@@ -407,6 +407,7 @@ const ARG_ENV: &[(&str, &str)] = &[
 /// Opções cuja variável não é o mesmo valor da flag e por isso não passa pelo
 /// clap: `--setup` é booleana, e `POM_FORCE_SETUP` é um token lido em
 /// `force_setup_if_requested`, que força o wizard uma vez por valor.
+#[cfg(test)]
 const MANUAL_ARG_ENV: &[(&str, &str)] = &[("setup", "FORCE_SETUP")];
 
 /// A linha de comando com as variáveis de `ARG_ENV`. As flags booleanas leem a

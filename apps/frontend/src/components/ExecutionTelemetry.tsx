@@ -503,6 +503,10 @@ function PhaseRow({
           copies: phase.node_residual_capture_copies ?? 0,
         })}</span>
         <span className="block">{t("chat.telemetry.residualWireRow", {
+          f16Encode: phase.node_residual_wire_f16_encode_ms ?? t("chat.telemetry.notMeasured"),
+          f16Decode: phase.node_residual_wire_f16_decode_ms ?? t("chat.telemetry.notMeasured"),
+          clientF16Encode: phase.client_f16_encode_ms ?? t("chat.telemetry.notMeasured"),
+          clientF16Decode: phase.client_f16_decode_ms ?? t("chat.telemetry.notMeasured"),
           f8: phase.node_residual_wire_f8_conversion_ms ?? 0,
           serialize: phase.node_residual_wire_frame_serialize_ms ?? 0,
           calls: phase.node_residual_wire_encode_calls ?? 0,

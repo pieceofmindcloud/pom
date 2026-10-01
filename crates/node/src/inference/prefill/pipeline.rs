@@ -1266,6 +1266,8 @@ pub(super) fn record_direct_hops(
                 "bytes_sent",
                 "bytes_received",
                 "client_encode_ms",
+                "client_f16_encode_ms",
+                "client_f16_decode_ms",
                 "response_headers_ms",
                 "response_body_ms",
                 "client_decode_ms",

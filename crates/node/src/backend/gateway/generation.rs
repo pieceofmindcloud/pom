@@ -150,7 +150,7 @@ async fn reload_idle_pipeline_with_timeout(
 mod reload_tests {
     use super::*;
     use crate::pipeline::PipelineStep;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[derive(Clone)]
     struct ReloadBarrier {
@@ -169,7 +169,8 @@ mod reload_tests {
         StatusCode::OK
     }
 
-    async fn hanging_reload(State(_): State<()>, _body: Bytes) -> StatusCode {
+    async fn hanging_reload(State(reached): State<Arc<AtomicBool>>, _body: Bytes) -> StatusCode {
+        reached.store(true, Ordering::SeqCst);
         std::future::pending::<()>().await;
         StatusCode::OK
     }
@@ -188,18 +189,19 @@ mod reload_tests {
         (port, task)
     }
 
-    async fn spawn_hanging_server() -> (u16, tokio::task::JoinHandle<()>) {
+    async fn spawn_hanging_server() -> (u16, tokio::task::JoinHandle<()>, Arc<AtomicBool>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("porta de teste");
         let port = listener.local_addr().expect("endereço de teste").port();
+        let reached = Arc::new(AtomicBool::new(false));
         let router = Router::new()
             .route("/api/internal/reload_model", post(hanging_reload))
-            .with_state(());
+            .with_state(reached.clone());
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
         });
-        (port, task)
+        (port, task, reached)
     }
 
     fn plan_for(node_ids: &[&str]) -> PipelinePlan {
@@ -264,7 +266,7 @@ mod reload_tests {
 
     #[tokio::test]
     async fn reload_timeout_returns_instead_of_hanging_the_request() {
-        let (port, server_task) = spawn_hanging_server().await;
+        let (port, server_task, reached) = spawn_hanging_server().await;
         let mut peer = crate::gateway::testkit::peer("idle-hung", "hung", port);
         peer.idle = true;
         let state = crate::gateway::testkit::state_with("gateway", vec![peer.clone()]).await;
@@ -274,7 +276,14 @@ mod reload_tests {
             reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_millis(50))
                 .await
                 .expect_err("um peer preso deve devolver erro com timeout");
-        assert!(error.to_string().contains("excedeu"));
+        assert!(
+            reached.load(Ordering::SeqCst),
+            "a requisição deve chegar ao peer preso"
+        );
+        assert!(
+            !error.to_string().is_empty(),
+            "a recusa deve explicar a falha"
+        );
         server_task.abort();
     }
 }

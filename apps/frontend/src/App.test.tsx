@@ -21,6 +21,8 @@ const pluginUi = vi.hoisted(() => ({ plugins: [] as unknown[] }));
  */
 vi.mock("./lib/queries", () => ({
   useAdminSurface: () => ({ data: adminSurface.value, isLoading: false, isError: false }),
+  useAdminAccess: () => ({ data: { default_password: false } }),
+  useNetworkChat: () => ({ data: { notices: [] } }),
   usePluginUi: () => ({ data: { plugins: pluginUi.plugins }, isLoading: false, isError: false }),
   // Nó completo o bastante para a barra superior e o rodapé do menu
   // renderizarem: um `data: null` derruba o `NodeChip` no `node.data!` e o

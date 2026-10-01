@@ -943,10 +943,11 @@ resposta; ela aparece em um bloco que quebra linhas, permite seleção e oferece
 um botão de cópia. A mensagem genérica de resposta vazia só aparece quando o
 stream termina sem tokens e sem erro.
 Cada fase também mostra os bytes de estado oculto enviados e recebidos na
-travessia e o `dtype` efetivamente usado, para comparar execuções f16/f8.
-No decode, a linha do backend separa a prontidão observada pelo scheduler, a
-wall de `ggml_backend_tensor_get` e o pós-processamento da captura, além da
-conversão f8 e da serialização do frame residual. O total antigo de
+travessia e o `dtype` efetivamente usado. No decode, a linha do backend separa a
+prontidão observada pelo scheduler, a wall de `ggml_backend_tensor_get` e o
+pós-processamento da captura. A telemetria distingue as conversões f32/f16 do
+peer e do cliente, a conversão f8 e a serialização do frame residual; os tempos
+de conversão são subconjuntos do encode/decode geral. O total antigo de
 captura permanece identificado como compatível; `tensor_get` pode incluir a
 cópia D2H e o sync interno do backend CUDA. A tabela de transporte QUIC também
 mostra a espera em `send_data` e `finish`, separada da espera por headers e do
@@ -1173,10 +1174,11 @@ impressão digital é só modelo + conjunto de faixas.
   máquina (`n_gpu_layers`, o booleano de KV na GPU e capacidade local, na mesma linha de propriedade
   das globais - `[i]`, nome, controle); ao selecionar uma máquina, o
   inspetor também mostra as camadas que ela executará. A precisão do estado
-  oculto (f16/f8) só aparece quando o estado atravessa a fronteira de um peer -
-  um pipeline de fatias com faixas adjacentes distintas; em modelo inteiro,
-  Tensor ou fatias numa máquina só, o estado nunca é serializado e o seletor
-  seria inerte. Nas globais, a seção
+  oculto (f32/f16/f8/i4g64/i4g128) só aparece quando o estado atravessa a
+  fronteira de um peer - um pipeline de fatias com faixas adjacentes distintas;
+  em modelo inteiro, Tensor ou fatias numa máquina só, o estado nunca é
+  serializado e o seletor seria inerte. f16 continua sendo o padrão; f32 é uma
+  opção sem perda com quatro bytes por valor, enquanto f8 e i4 têm perda. Nas globais, a seção
   de fatos do modelo inteiro e seu seletor de máquina não são exibidos: a
   máquina escolhida no mapa é a única que vale para a implantação. Nas globais,
   a seção de execução separa a especulação por lookup do MTP; ao marcar MTP, a

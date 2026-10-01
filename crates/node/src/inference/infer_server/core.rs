@@ -183,6 +183,8 @@ pub(super) struct NodeTimings {
     pub(super) residual_capture_postprocess_us: u64,
     pub(super) residual_capture_bytes: u64,
     pub(super) residual_capture_copies: u64,
+    pub(super) residual_wire_f16_encode_ns: u64,
+    pub(super) residual_wire_f16_decode_ns: u64,
     pub(super) residual_wire_f8_conversion_us: u64,
     pub(super) residual_wire_frame_serialize_us: u64,
     pub(super) residual_wire_encode_calls: u64,
@@ -433,6 +435,10 @@ impl NodeTimings {
             Value::from(ms(self.residual_capture_postprocess_us));
         value["residual_capture_bytes"] = Value::from(self.residual_capture_bytes);
         value["residual_capture_copies"] = Value::from(self.residual_capture_copies);
+        value["residual_wire_f16_encode_ms"] =
+            Value::from(self.residual_wire_f16_encode_ns as f64 / 1_000_000.0);
+        value["residual_wire_f16_decode_ms"] =
+            Value::from(self.residual_wire_f16_decode_ns as f64 / 1_000_000.0);
         value["residual_wire_f8_conversion_ms"] =
             Value::from(ms(self.residual_wire_f8_conversion_us));
         value["residual_wire_frame_serialize_ms"] =
@@ -1292,6 +1298,8 @@ mod tests {
             residual_capture_ready_wait_us: 1_468_000,
             residual_capture_copy_us: 1_200,
             residual_capture_postprocess_us: 340,
+            residual_wire_f16_encode_ns: 1_234_000,
+            residual_wire_f16_decode_ns: 2_345_000,
             residual_wire_f8_conversion_us: 210,
             residual_wire_frame_serialize_us: 90,
             residual_wire_encode_calls: 1,
@@ -1320,6 +1328,8 @@ mod tests {
         assert_eq!(json["residual_capture_tensor_get_ms"].as_f64(), Some(1.2));
         assert_eq!(json["residual_capture_copy_ms"].as_f64(), Some(1.2));
         assert_eq!(json["residual_capture_postprocess_ms"].as_f64(), Some(0.34));
+        assert_eq!(json["residual_wire_f16_encode_ms"].as_f64(), Some(1.234));
+        assert_eq!(json["residual_wire_f16_decode_ms"].as_f64(), Some(2.345));
         assert_eq!(json["residual_wire_f8_conversion_ms"].as_f64(), Some(0.21));
         assert_eq!(
             json["residual_wire_frame_serialize_ms"].as_f64(),

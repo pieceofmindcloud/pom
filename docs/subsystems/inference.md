@@ -928,6 +928,13 @@ answer body, has a single deadline, the frame's: (1 s + 50 ms per token + 2 s
 per image) x remaining hops (`relay::frame_deadline`), the same on QUIC,
 HTTP/HTTPS, the persistent channel and the tunnel. A peer that went down is
 detected earlier by the connection's lifetime (`QUIC_MAX_IDLE`, TCP keep-alive).
+A prefill chunk (`/v1/prefill`, `relay::frame_deadline_for_path`) is the
+exception: its deadline is a liveness one, 10 min per hop
+(`PREFILL_FRAME_DEADLINE_PER_HOP`), because the chunk may wait in the peer's
+queue behind another session's chunk; the work-based deadline expired during
+that wait, the delivered frame could not be repeated, and both sessions failed
+in cascade ("libp2p tunnel did not answer in time"). The gateway's wait for each
+chunk's direct result (`prefill/pipeline.rs`) uses the same deadline.
 
 **Cleanup.** Every pending delivery lives in a per-channel registry and leaves
 it on a guard's `Drop`, on any exit path: answer, error, deadline, caller

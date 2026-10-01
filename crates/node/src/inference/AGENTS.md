@@ -1243,7 +1243,10 @@ reason that only shows up in the error of a tunnel that also failed.
   antigo borbulhou a resposta inteira - `token_id` presente vale como
   resultado), e o prazo do frame que o chamador passa (`relay::frame_deadline`
   com os tokens da rodada e todos os hops do plano; hop morreu depois de
-  aceitar). `RemoteDecodeStream::next` usa o mesmo cálculo entre dois
+  aceitar). In prefill the deadline is a liveness one,
+  `relay::prefill_frame_deadline` (10 min per hop): the chunk may wait in the
+  peer's queue behind another session, and the work-based deadline brought both
+  down. `RemoteDecodeStream::next` usa o mesmo cálculo entre dois
   callbacks. Se o resultado chega antes do ack, ele não espera telemetria
   atrasada: o futuro do ack continua em tarefa destacada para registrar a
   evidência do primeiro hop.

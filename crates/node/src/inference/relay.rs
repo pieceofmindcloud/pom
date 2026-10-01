@@ -184,6 +184,48 @@ tokio::task_local! {
     static FRAME_DEADLINE: Instant;
 }
 
+/// Deadline of a prefill chunk, per hop. It is not a work estimate: a chunk may
+/// wait in the peer's queue behind another session's chunk (there is a single
+/// engine and it serves one frame at a time), and the deadline computed from
+/// the work itself expired during that wait - the already delivered frame
+/// cannot be repeated, the request failed, and the peer still ran the
+/// abandoned chunk, delaying the other session until it failed too. A dead
+/// peer is detected by the connection's lifetime (QUIC idle 1.2 s, TCP
+/// keep-alive ~4 s, libp2p connection closed), not by this deadline; it only
+/// bounds a live peer that stopped making progress. Decode keeps the tight
+/// `frame_deadline`.
+#[cfg(not(test))]
+pub(crate) const PREFILL_FRAME_DEADLINE_PER_HOP: Duration = Duration::from_secs(600);
+#[cfg(test)]
+pub(crate) const PREFILL_FRAME_DEADLINE_PER_HOP: Duration = Duration::from_secs(30);
+
+/// Path of the prefill chunks, at the head and when forwarded between hops.
+pub(crate) const PREFILL_PATH: &str = "/v1/prefill";
+
+/// Deadline of a prefill chunk crossing `hops` hops.
+pub(crate) fn prefill_frame_deadline(hops: usize) -> Duration {
+    PREFILL_FRAME_DEADLINE_PER_HOP.saturating_mul(hops.max(1) as u32)
+}
+
+/// The deadline of a frame sent on `path`: prefill gets the liveness deadline
+/// of `prefill_frame_deadline`; everything else, that of the work it asks for.
+pub(crate) fn frame_deadline_for_path(
+    path: &str,
+    meta: &Value,
+    tensor_rows: Option<usize>,
+) -> Duration {
+    if path == PREFILL_PATH {
+        let hops = 1 + meta
+            .get("next_hops")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        prefill_frame_deadline(hops)
+    } else {
+        frame_deadline_for(meta, tensor_rows)
+    }
+}
+
 /// `(base + tokens x por_token + imagens x por_imagem) x hops`.
 pub(crate) fn frame_deadline(tokens: usize, images: usize, hops: usize) -> Duration {
     let per_hop = FRAME_DEADLINE_BASE
@@ -2595,7 +2637,7 @@ pub async fn send_frame_or_tunnel(
     let rows = tensor
         .as_ref()
         .and_then(|(_, shape)| shape.first().copied());
-    let own = Instant::now() + frame_deadline_for(meta, rows);
+    let own = Instant::now() + frame_deadline_for_path(path, meta, rows);
     let deadline = FRAME_DEADLINE
         .try_with(|outer| (*outer).min(own))
         .unwrap_or(own);
@@ -3239,6 +3281,28 @@ mod tests {
         assert_eq!(
             frame_deadline_for(&json!({"chunk_size": 512}), Some(32)),
             frame_deadline(32, 0, 1)
+        );
+    }
+
+    /// A prefill chunk has a liveness deadline, not one from the work it asks
+    /// for: it may wait in the peer's queue behind another session. Decode
+    /// stays tight.
+    #[test]
+    fn prefill_frames_get_a_liveness_deadline_and_decode_keeps_the_work_one() {
+        let chunk = json!({"chunk_size": 48, "next_hops": [null]});
+        assert_eq!(
+            frame_deadline_for_path(PREFILL_PATH, &chunk, None),
+            prefill_frame_deadline(2)
+        );
+        assert!(prefill_frame_deadline(2) > frame_deadline_for(&chunk, None));
+        assert_eq!(
+            frame_deadline_for_path(PREFILL_PATH, &json!({}), Some(48)),
+            PREFILL_FRAME_DEADLINE_PER_HOP
+        );
+        let decode = json!({"next_hops": [null]});
+        assert_eq!(
+            frame_deadline_for_path("/v1/step", &decode, None),
+            frame_deadline_for(&decode, None)
         );
     }
 

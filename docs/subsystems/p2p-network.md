@@ -1269,7 +1269,9 @@ path too. Each complete transport attempt, including handshake, send, headers
 and body, has a single deadline: the frame's, (1 s + 50 ms per token + 2 s per
 image) x remaining hops (`relay::frame_deadline`), the same on QUIC,
 HTTP/HTTPS, the persistent channel and the tunnel. Decoding one token over 2
-hops = 2.1 s; a 512-token prefill chunk over 2 hops = 53 s. The deadline is born
+hops = 2.1 s. A prefill chunk does not use that formula: it has a liveness
+deadline of 10 min per hop (`relay::prefill_frame_deadline`), because it waits
+in the peer's queue behind another session. The deadline is born
 in `send_frame_or_tunnel` and never exceeds its caller's. A peer that went down
 is caught earlier by the connection's lifetime: `QUIC_MAX_IDLE` (1.2 s) and TCP
 keep-alive (~4 s). Per-hop telemetry publishes the effective transport as

@@ -180,7 +180,8 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   HTTP/3; não é o tempo de resposta nem uma confirmação de entrega pelo peer.
   Cada tentativa completa, do handshake ao corpo da resposta, tem um só
   prazo: o prazo do frame (`relay::frame_deadline`: (1 s + 50 ms por token + 2 s por
-  imagem) x hops restantes, fixado em `send_frame_or_tunnel` e lido pelos
+  imagem) x hops restantes; a prefill chunk has a liveness deadline of 10 min
+  per hop, `frame_deadline_for_path`), fixado em `send_frame_or_tunnel` e lido pelos
   transportes com `relay::frame_time_left`). Não há teto menor aninhado; peer que caiu é detectado pela
   vida da conexão (`QUIC_MAX_IDLE` 1,2 s, keep-alive TCP de ~4 s em
   `peer_client::with_liveness`). As memórias de falha (rota, quarentena QUIC,

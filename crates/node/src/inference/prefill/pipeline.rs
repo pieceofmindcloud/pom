@@ -946,10 +946,16 @@ pub(super) async fn run_direct(
                                 std::future::ready(Ok(head_sent)),
                                 &mut ticket,
                                 &head.node_id,
-                                crate::relay::frame_deadline(
-                                    chunk_size as usize,
-                                    if ci == 0 { images.len() } else { 0 },
-                                    plan.steps.len(),
+                                // A liveness deadline, not a work one: the chunk
+                                // may wait in the peer's queue behind another
+                                // session (see
+                                // `relay::PREFILL_FRAME_DEADLINE_PER_HOP`).
+                                crate::relay::prefill_frame_deadline(plan.steps.len()).max(
+                                    crate::relay::frame_deadline(
+                                        chunk_size as usize,
+                                        if ci == 0 { images.len() } else { 0 },
+                                        plan.steps.len(),
+                                    ),
                                 ),
                                 |_| {},
                             ),

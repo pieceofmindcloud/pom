@@ -12,6 +12,72 @@
         assert_eq!(a.taking, Some([0, 15]));
     }
 
+    fn plan_requesting(
+        machines: &[Machine],
+        selection: &[SelectedSlice],
+        mmproj: Option<&str>,
+    ) -> Plan {
+        plan_with_rtt_options(
+            "vision",
+            machines,
+            Some(selection),
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Shards,
+            None,
+            DeployStrategy::Simple,
+            "vision",
+            &[],
+            &PairwiseRtt::default(),
+            None,
+            mmproj,
+        )
+    }
+
+    /// The screen may send another machine's projector path (the admin listed
+    /// its own catalog). The head has the same copy in another folder: the plan
+    /// uses the head's path, by file name, instead of refusing.
+    #[test]
+    fn a_projector_from_another_machine_resolves_to_the_heads_copy_by_name() {
+        let mut machines = build(vec![
+            m("head", 100_000, &[(0, 15)]),
+            m("tail", 100_000, &[(16, 31)]),
+        ]);
+        machines[0].held[0].mmproj_path = Some("/models/mmproj-vision-f16.gguf".into());
+        machines[0].held[0].mmproj_candidates = vec![
+            "/models/mmproj-vision-f16.gguf".into(),
+            "/models/mmproj-vision-q8.gguf".into(),
+        ];
+        let selection = [pick(0, 15, "head"), pick(16, 31, "tail")];
+
+        let planned =
+            plan_requesting(&machines, &selection, Some("/data/models/mmproj-vision-q8.gguf"));
+        assert_eq!(planned.blocked, None);
+        assert_eq!(planned.mmproj_path.as_deref(), Some("/models/mmproj-vision-q8.gguf"));
+
+        let planned =
+            plan_requesting(&machines, &selection, Some("/models/mmproj-vision-f16.gguf"));
+        assert_eq!(planned.mmproj_path.as_deref(), Some("/models/mmproj-vision-f16.gguf"));
+
+        // The head does not have that projector: refuse, naming it.
+        let planned =
+            plan_requesting(&machines, &selection, Some("/data/models/mmproj-other.gguf"));
+        assert!(planned
+            .blocked
+            .as_deref()
+            .is_some_and(|reason| reason.contains("mmproj-other.gguf")));
+    }
+
+    #[test]
+    fn resolve_head_projector_refuses_an_ambiguous_name() {
+        let candidates = vec!["/a/mmproj.gguf".to_string(), "/b/mmproj.gguf".to_string()];
+        assert_eq!(
+            super::resolve_head_projector("/a/mmproj.gguf", &candidates).as_deref(),
+            Some("/a/mmproj.gguf")
+        );
+        assert_eq!(super::resolve_head_projector("/c/mmproj.gguf", &candidates), None);
+    }
+
     #[test]
     fn sliced_vision_uses_only_the_selected_pipeline_head() {
         let mut machines = build(vec![

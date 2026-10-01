@@ -1222,6 +1222,10 @@ inteiro ou do `ShardSet` escolhido. A interface pré-seleciona o primeiro
 candidato compatível e pode enviar `DeployRequest.mmproj_path` para escolher
 outro formato na cabeça selecionada. A seleção da cabeça usa a faixa e o nome
 do candidato escolhido, não o primeiro arquivo de visão da máquina.
+`deploy::launch` only passes `mmproj_path` to the plan with `vision: true`, and
+`planning::resolve_head_projector` resolves it against the head by path or, if
+the screen sent another machine's copy, by the unique file name among the
+head's candidates; with no match, the plan refuses naming the file.
 `DeployRequest.vision` só habilita o projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
 `webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
 `openai` extrai imagens base64 dos pedidos multimodais. A recusa de visão devolve

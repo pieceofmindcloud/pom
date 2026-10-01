@@ -377,6 +377,55 @@ describe("DeployModel", () => {
     });
   });
 
+  it("without vision sends no projector, neither in the plan nor in the deployment", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    p.mmproj_path = "/models/mmproj-qwen-f16.gguf";
+    p.mmproj_candidates = ["/models/mmproj-qwen-f16.gguf"];
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/deploy" ? Promise.resolve({ job_id: "plain-job" }) : Promise.resolve(p),
+    );
+    mount();
+
+    const deploy = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((deploy as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(deploy);
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/api/ui/deploy", expect.objectContaining({ vision: false }));
+    });
+    const deployBody = post.mock.calls.find(([url]) => url === "/api/ui/deploy")?.[1] as Record<string, unknown>;
+    expect(deployBody).not.toHaveProperty("mmproj_path");
+    for (const [url, body] of post.mock.calls) {
+      if (url === "/api/ui/deploy/plan") expect(body).not.toHaveProperty("mmproj_path");
+    }
+  });
+
+  it("once the plan is in, only offers the head machine's projectors", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    // The head is another machine: the paths are its own.
+    p.mmproj_path = "/peer/models/mmproj-qwen-f16.gguf";
+    p.mmproj_candidates = ["/peer/models/mmproj-qwen-f16.gguf"];
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/deploy" ? Promise.resolve({ job_id: "vision-job" }) : Promise.resolve(p),
+    );
+    mount();
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Globais" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Ativar visão" }));
+
+    const deploy = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((deploy as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(deploy);
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/api/ui/deploy", expect.objectContaining({
+        vision: true,
+        mmproj_path: "/peer/models/mmproj-qwen-f16.gguf",
+      }));
+    });
+  });
+
   it("explica quando o plano fatiado não tem mmproj", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;

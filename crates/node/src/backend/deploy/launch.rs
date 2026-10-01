@@ -54,7 +54,9 @@ pub(super) async fn deploy_endpoint(
         &req.preferred_node_ids,
         &pairwise_rtt,
         layer_options,
-        req.mmproj_path.as_deref(),
+        // The projector only matters with vision on: without it, a path the
+        // screen still holds must not refuse the deployment.
+        req.mmproj_path.as_deref().filter(|_| req.vision),
     );
     if req.vision && plan.mmproj_path.is_none() {
         return bad(json!({

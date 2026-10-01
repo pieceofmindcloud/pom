@@ -925,8 +925,15 @@ refused so a preference that will not be honored is not presented.
 
 In deployments with vision, `DeployPlan.mmproj_candidates` lists the compatible
 local paths on the peer serving layer 0. The UI preselects one of them and can
-send `DeployRequest.mmproj_path` to choose another format.
-`DeployRequest.vision` still enables the projector only on the head. The
+send `DeployRequest.mmproj_path` to choose another format;
+`POST /api/ui/deploy/plan` ignores that field. `DeployRequest.vision` still
+enables the projector only on the head, and `mmproj_path` is only considered
+with `vision: true` - without vision, a path that was sent does not refuse the
+deployment. The path is resolved against the head
+(`planning::resolve_head_projector`): the same path, or the head's only
+candidate with the same file name, because each machine keeps its own copy in
+different folders. The plan refuses, naming the file, only when the head does
+not have it. The
 backend redoes the survey, checks the chosen path against the GGUF headers in
 the peer's apply and does not compute the SHA-256 of the `mmproj` payload to
 discover or select candidates.

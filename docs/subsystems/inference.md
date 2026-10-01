@@ -409,9 +409,13 @@ the fitted MTP context's `n_ctx` once: `kv_unified=true` allocates one unified
 buffer of that total capacity, while `kv_seq_budget` sets sequence IDs and does
 not multiply the KV cell count. The reservation follows llama.cpp's actual
 `tensor_split` layer mapping, so each NextN layer is charged to the device that
-will hold it, even when the suffix spans devices. POM repeats the joint fit up
-to four times until that reservation and the resulting split agree; if the
-split cannot be estimated or does not converge, MTP uses its CPU companion
+will hold it, even when the suffix spans devices. When llama.cpp returns an
+all-zero split because its initial fit needed no changes, the native model
+loader would derive the split from free VRAM. POM mirrors that default from the
+fit's memory snapshot and carries the resulting explicit split into the real
+load; an absent split is not itself grounds to send MTP to RAM. POM repeats the
+joint fit up to four times until the reservation and resulting split agree; if
+the split cannot be estimated or does not converge, MTP uses its CPU companion
 instead of accepting an under-reserved VRAM fit. This calculation neither
 opens a model nor builds a dry MTP context to measure `compute`: the exact
 measurement would require building the graph, and an internal llama.cpp assert

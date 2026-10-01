@@ -366,6 +366,15 @@ pub(super) fn fit_memory_margins_with_mtp(
         .collect()
 }
 
+/// The split and KV budget used for the accepted MTP fit. `tensor_split` is
+/// always explicit here, including when llama.cpp's fit left it all zero to
+/// request the native free-memory split.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct MtpVramEstimate {
+    pub costs: Vec<usize>,
+    pub tensor_split: Vec<f32>,
+}
+
 /// Estimates the MTP context's KV cache without loading the model or building
 /// its graph. The fitted `n_ctx` is already the total context capacity, and
 /// `kv_unified=true` allocates one `n_ctx`-cell buffer regardless of
@@ -375,17 +384,27 @@ pub(super) fn fit_memory_margins_with_mtp(
 /// llama.cpp places each KV layer on `model.dev_layer(il)`. The NextN layers
 /// are a suffix of the model, but a multi-layer NextN suffix can cross device
 /// boundaries. Use the joint fit's `tensor_split` to mirror its layer mapping
-/// rather than charging every NextN layer to the final device.
+/// rather than charging every NextN layer to the final device. When the fit
+/// returns an all-zero split, it made no placement changes and the model
+/// loader will choose its native split from free memory. Resolve that split
+/// from the same memory snapshot and pass it explicitly to the real load, so
+/// the reservation and placement agree instead of rejecting every multi-GPU
+/// fit that needed no adjustment.
 pub(super) fn estimate_mtp_vram_costs(
     info: &crate::gguf::GgufInfo,
     cfg: &EngineConfig,
     n_ctx: u32,
     tensor_split: &[f32],
+    device_memories: &[FitDeviceMemory],
     n_devices: usize,
-) -> Option<Vec<usize>> {
+) -> Option<MtpVramEstimate> {
+    let resolved_split = resolve_mtp_tensor_split(tensor_split, device_memories, n_devices)?;
     let mut costs = vec![0usize; n_devices];
     if !cfg.offload_kqv || n_devices == 0 {
-        return Some(costs);
+        return Some(MtpVramEstimate {
+            costs,
+            tensor_split: resolved_split,
+        });
     }
 
     let block_count = info.block_count?;
@@ -398,7 +417,7 @@ pub(super) fn estimate_mtp_vram_costs(
 
     for (offset, layer_geometry) in geometry.iter().enumerate() {
         let layer = first_nextn_layer.checked_add(u32::try_from(offset).ok()?)?;
-        let device = llama_layer_device_from_split(layer, block_count, tensor_split, n_devices)?;
+        let device = llama_layer_device_from_split(layer, block_count, &resolved_split, n_devices)?;
         let bytes = crate::kv_budget::kv_bytes_for_layers(
             u64::from(n_ctx),
             1,
@@ -410,7 +429,54 @@ pub(super) fn estimate_mtp_vram_costs(
         let bytes = usize::try_from(bytes).ok()?;
         costs[device] = costs[device].checked_add(bytes)?;
     }
-    Some(costs)
+    Some(MtpVramEstimate {
+        costs,
+        tensor_split: resolved_split,
+    })
+}
+
+/// Resolve an all-zero split exactly as llama.cpp's model loader does: use
+/// free-memory weights in device order. The returned vector retains the
+/// compile-time capacity because llama.cpp copies `llama_max_devices()` values.
+fn resolve_mtp_tensor_split(
+    tensor_split: &[f32],
+    device_memories: &[FitDeviceMemory],
+    n_devices: usize,
+) -> Option<Vec<f32>> {
+    if n_devices == 0 {
+        return Some(tensor_split.to_vec());
+    }
+    let splits = tensor_split.get(..n_devices)?;
+    if splits
+        .iter()
+        .any(|split| !split.is_finite() || *split < 0.0)
+    {
+        return None;
+    }
+    if splits.iter().any(|split| *split > 0.0) {
+        let split_sum = splits.iter().copied().sum::<f32>();
+        return (split_sum.is_finite() && split_sum > 0.0).then(|| tensor_split.to_vec());
+    }
+
+    let mut resolved = tensor_split.to_vec();
+    if n_devices == 1 {
+        resolved[0] = 1.0;
+        return Some(resolved);
+    }
+    let memories = device_memories.get(..n_devices)?;
+    let mut split_sum = 0.0f32;
+    for (index, memory) in memories.iter().enumerate() {
+        if memory.total_bytes == 0 || memory.free_bytes > memory.total_bytes {
+            return None;
+        }
+        let free_bytes = memory.free_bytes as f32;
+        if !free_bytes.is_finite() {
+            return None;
+        }
+        resolved[index] = free_bytes;
+        split_sum += free_bytes;
+    }
+    (split_sum.is_finite() && split_sum > 0.0).then_some(resolved)
 }
 
 /// Mirrors llama.cpp's layer-device selection for `LLAMA_SPLIT_MODE_LAYER`:
@@ -656,8 +722,11 @@ mod fit_memory_margin_tests {
 
         assert_eq!(kv_seq_budget(cfg.max_sessions), 6);
         assert_eq!(
-            estimate_mtp_vram_costs(&info, &cfg, fitted_n_ctx, &tensor_split, 2),
-            Some(vec![0, 2048 * 2 * 64 * 2 * 2])
+            estimate_mtp_vram_costs(&info, &cfg, fitted_n_ctx, &tensor_split, &[], 2),
+            Some(MtpVramEstimate {
+                costs: vec![0, 2048 * 2 * 64 * 2 * 2],
+                tensor_split: vec![39.0, 3.0],
+            })
         );
     }
 
@@ -678,13 +747,16 @@ mod fit_memory_margin_tests {
         let bytes_per_layer = 1024 * 2 * 64 * 2;
 
         assert_eq!(
-            estimate_mtp_vram_costs(&info, &cfg, cfg.n_ctx, &tensor_split, 2),
-            Some(vec![2 * bytes_per_layer, 2 * bytes_per_layer])
+            estimate_mtp_vram_costs(&info, &cfg, cfg.n_ctx, &tensor_split, &[], 2),
+            Some(MtpVramEstimate {
+                costs: vec![2 * bytes_per_layer, 2 * bytes_per_layer],
+                tensor_split: vec![7.5, 3.5],
+            })
         );
     }
 
     #[test]
-    fn multi_device_mtp_fit_requires_a_native_tensor_split() {
+    fn multi_device_mtp_fit_requires_a_split_or_a_valid_free_memory_snapshot() {
         let info = crate::gguf::GgufInfo {
             block_count: Some(41),
             nextn_predict_layers: Some(1),
@@ -696,9 +768,42 @@ mod fit_memory_margin_tests {
         let cfg = cfg_for_mtp_vram_estimate(4096, 1);
 
         assert_eq!(
-            estimate_mtp_vram_costs(&info, &cfg, cfg.n_ctx, &[0.0, 0.0], 2),
+            estimate_mtp_vram_costs(&info, &cfg, cfg.n_ctx, &[0.0, 0.0], &[], 2),
             None
         );
+    }
+
+    #[test]
+    fn all_zero_joint_fit_uses_native_free_memory_split_and_keeps_capacity() {
+        let info = crate::gguf::GgufInfo {
+            block_count: Some(41),
+            nextn_predict_layers: Some(1),
+            attention_head_count_kv: Some(vec![2]),
+            attention_key_length: Some(vec![64]),
+            attention_value_length: Some(vec![64]),
+            ..Default::default()
+        };
+        let cfg = cfg_for_mtp_vram_estimate(4096, 1);
+        let tensor_split = vec![0.0; 16];
+        let memories = [
+            FitDeviceMemory {
+                total_bytes: 64,
+                free_bytes: 39,
+            },
+            FitDeviceMemory {
+                total_bytes: 16,
+                free_bytes: 3,
+            },
+        ];
+        let expected_cost = 4096 * 2 * 64 * 2 * 2;
+
+        let estimate = estimate_mtp_vram_costs(&info, &cfg, cfg.n_ctx, &tensor_split, &memories, 2)
+            .expect("all-zero fit split should resolve from free-memory weights");
+        let mut expected_split = vec![0.0; 16];
+        expected_split[0] = 39.0;
+        expected_split[1] = 3.0;
+        assert_eq!(estimate.costs, vec![0, expected_cost]);
+        assert_eq!(estimate.tensor_split, expected_split);
     }
 
     #[test]
@@ -714,12 +819,13 @@ mod fit_memory_margin_tests {
         let cfg = cfg_for_mtp_vram_estimate(4096, 1);
         let physical = fit_device_count(2, 2, 16);
         let tensor_split = [39.0, 3.0];
-        let costs = estimate_mtp_vram_costs(&info, &cfg, cfg.n_ctx, &tensor_split, physical)
-            .expect("the MTP context cost should be estimable");
+        let estimate =
+            estimate_mtp_vram_costs(&info, &cfg, cfg.n_ctx, &tensor_split, &[], physical)
+                .expect("the MTP context cost should be estimable");
 
-        assert_eq!(costs.len(), 2);
+        assert_eq!(estimate.costs.len(), 2);
         assert!(
-            costs[1] > 0,
+            estimate.costs[1] > 0,
             "the final nextn layer maps to the final device"
         );
     }
@@ -1386,11 +1492,12 @@ pub(super) fn fit_plan(
                 exhausted_attempts = false;
                 break;
             };
-            let Some(actual_mtp_cost) = estimate_mtp_vram_costs(
+            let Some(estimate) = estimate_mtp_vram_costs(
                 mtp_info,
                 cfg,
                 mtp_cparams.n_ctx,
                 &mtp_tensor_split,
+                &fit_memories,
                 physical_devices,
             ) else {
                 warn!("não foi possível estimar o KV MTP pela divisão nativa; usando o recuo para RAM");
@@ -1398,9 +1505,12 @@ pub(super) fn fit_plan(
                 exhausted_attempts = false;
                 break;
             };
+            let actual_mtp_cost = estimate.costs;
+            let effective_tensor_split = estimate.tensor_split;
             tracing::info!(
                 attempt,
                 mtp_vram_cost_estimate = ?actual_mtp_cost,
+                mtp_tensor_split = ?effective_tensor_split.get(..physical_devices),
                 "llama.cpp fit calculou o KV MTP por dispositivo pela divisão efetiva de camadas"
             );
 
@@ -1408,7 +1518,7 @@ pub(super) fn fit_plan(
                 selected_mtp_mode = MtpFitMode::Vram;
                 selected_n_gpu_layers = mtp_mparams.n_gpu_layers;
                 selected_n_ctx = mtp_cparams.n_ctx;
-                selected_tensor_split = mtp_tensor_split;
+                selected_tensor_split = effective_tensor_split;
                 selected_tensor_buft_overrides = mtp_tensor_buft_overrides;
                 exhausted_attempts = false;
                 break;

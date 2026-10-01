@@ -27,8 +27,12 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   `tp_probe` (see below). In `llm/config.rs`, `llama_max_devices()` is only
   the capacity of vectors passed to C; `fit_device_count` counts physical
   devices. The MTP KV reservation counts the fitted unified context once and
-  follows the native `tensor_split` per NextN layer; the joint fit repeats until
-  the reservation and split agree, then falls back to RAM if they do not. See
+  follows the native `tensor_split` per NextN layer. When llama.cpp leaves the
+  split all-zero because no fit adjustment was needed, resolve its default from
+  the free-memory snapshot and preserve that explicit split for the real load;
+  otherwise the joint fit would always reject MTP on multi-GPU systems. The
+  joint fit repeats until reservation and split agree, then falls back to RAM
+  if they do not. See
   `docs/subsystems/inference.md`, the fit section.
   Os snapshots nativos usados por `/health` passam pelo
   `wrapper_common.cpp`; eles devem tratar qualquer nome/descrição C nulo antes

@@ -195,8 +195,12 @@ peer, and then the dialer goes back to deriving it from `addr`.
 
 The `Announce` is not the source of truth for the network metadata. After
 validating that the sender is the anchored principal, the node triggers a
-signed read of `/api/cluster/network-settings` and persists the full
-`NetworkSettings` for the Network Information screen. On a public network the
+signed read of `/api/cluster/network-settings` - through the principal's
+addresses and, last, through the libp2p tunnel, like the other ratchets - and
+persists the full `NetworkSettings` for the Network Information screen. Until
+it succeeds, the read repeats on every Announce from the principal; the failure
+warning only goes out on the 1st, 2nd, 4th, 8th... consecutive time, with the
+tunnel's reason. On a public network the
 answer does not carry the `connection_key`; the public record stays limited to
 the invitation and discovery.
 

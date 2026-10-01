@@ -264,6 +264,10 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
     state.network.set_network_settings_probe(tx);
     tokio::spawn(async move {
         let mut last_attempt: Option<(String, Instant)> = None;
+        // Consecutive failures: the trigger arrives on every Announce (~5 s)
+        // until the sync succeeds, and only the 1st, 2nd, 4th, 8th... becomes
+        // a `warn`.
+        let mut failures: u32 = 0;
         while let Some((principal, announced_tls)) = rx.recv().await {
             if last_attempt
                 .as_ref()
@@ -314,11 +318,43 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
                     break;
                 }
             }
+            // No direct address answered: the libp2p tunnel, like the other
+            // policy ratchets. A node that only reaches the principal through
+            // the relay (Docker bridge, NAT) has no other path.
+            let mut tunnel_error = None;
+            if fetched.is_none() {
+                match state
+                    .control_get_via_tunnel(&peer, NETWORK_SETTINGS_POLICY_PATH, PEER_TIMEOUT)
+                    .await
+                {
+                    Ok(response) if response.status().is_success() => {
+                        match response.json::<NetworkSettingsEnvelope>().await {
+                            Ok(envelope) => fetched = Some(envelope),
+                            Err(error) => tunnel_error = Some(format!("invalid response: {error}")),
+                        }
+                    }
+                    Ok(response) => tunnel_error = Some(format!("HTTP {}", response.status())),
+                    Err(error) => tunnel_error = Some(format!("{error:#}")),
+                }
+            }
 
             let Some(envelope) = fetched else {
-                warn!(principal = %principal, "não foi possível buscar os detalhes da rede no principal");
+                failures = failures.saturating_add(1);
+                let reason = tunnel_error.unwrap_or_else(|| "no route".to_string());
+                if failures.is_power_of_two() {
+                    warn!(
+                        principal = %principal,
+                        "could not fetch the network details from the principal (consecutive failure #{failures}): {reason}"
+                    );
+                } else {
+                    tracing::debug!(
+                        principal = %principal,
+                        "could not fetch the network details from the principal (consecutive failure #{failures}): {reason}"
+                    );
+                }
                 continue;
             };
+            failures = 0;
             match apply_network_settings_with_key(
                 &state,
                 envelope.network,

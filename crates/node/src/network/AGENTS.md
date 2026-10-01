@@ -234,13 +234,16 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   dele muda a política autoritativa. A retransmissão do Chat da rede é estrela:
   o principal valida API key ativa e `blocked_nodes` antes de enviar a outros
   `node_id`.
-- `NetworkSettings` tem a mesma fronteira de autoridade, mas com leitura
-  explícita: depois do primeiro `Announce` autenticado do principal,
-  `Network::handle_message` acorda a catraca de `GET /api/cluster/network-settings`.
-  O gateway assina a consulta, persiste o documento completo no nó read-only e
-  nunca envia a `connection_key` quando a rede é pública. O subconjunto do
-  diretório público continua sendo apenas convite e descoberta, não fonte de
-  verdade dos metadados.
+- `NetworkSettings` has the same authority boundary, but with an explicit
+  read: after the principal's first authenticated `Announce`,
+  `Network::handle_message` wakes the `GET /api/cluster/network-settings`
+  ratchet. The gateway signs the query, tries the principal's addresses and,
+  last, the tunnel (`GatewayState::control_get_via_tunnel`), persists the full
+  document on the read-only node and never sends the `connection_key` when the
+  network is public. Until it syncs, the ratchet is woken on every Announce,
+  and only the 1st, 2nd, 4th, 8th... consecutive failure becomes a `warn`. The
+  public directory subset is still only invitation and discovery, not the
+  source of truth for the metadata.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health`, histerese contra troca de rota por ruído e invalidação imediata
   quando o peer muda seus endereços anunciados. Guarda também a **memória de

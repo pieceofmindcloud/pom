@@ -22,7 +22,7 @@ O aviso de atualização do `pom_core` **não** vive aqui: ele saiu deste crate
 com o pivô de plugins e é tipo interno de `crates/node/src/pom_core_update.rs`,
 porque o binário `pom` não é um plugin e sua atualização não é parte do
 contrato de licença. A referência de arquitetura e os limites restantes estão
-em `docs/subsystems/licenciamento-enterprise.md`.
+em `docs/subsystems/enterprise-licensing.md`.
 
 ## Maintaining this file
 

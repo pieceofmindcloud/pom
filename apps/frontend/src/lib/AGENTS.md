@@ -295,7 +295,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   de `unreachable` ("atendeu e a leitura quebrou"); `ModelCoverage.unreadable_nodes`
   nomeia as máquinas de que a cobertura depende sem conseguir ler, e é o que
   impede o Painel de pintar "completo" em verde nesse estado. Ver
-  `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder". A carga
+  `docs/subsystems/p2p-network.md`, "Endereço que deixou de responder". A carga
   em voo de `PeerView` é `null` quando o relatório vivo do peer não chegou;
   zero só representa um peer que de fato reportou estar ocioso.
 - `ShardSet` identifies a slicing round with the technical `group`, readable

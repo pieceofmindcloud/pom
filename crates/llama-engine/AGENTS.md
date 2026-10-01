@@ -11,7 +11,7 @@ os ~40 arquivos que os usam.
 
 O build nativo (o fork do `/llama.cpp`, `cmake`, as features
 `cuda`/`metal`/`vulkan`) é o mesmo de antes, agora declarado aqui. Ver
-`docs/subsystems/build-execucao.md`.
+`docs/subsystems/build-and-run.md`.
 
 `build.rs` aceita `CCACHE` como comando wrapper para o `nvcc`; portanto
 `CCACHE=sccache` e valido. `CUDAARCHS` seleciona todas as arquiteturas dos
@@ -27,7 +27,7 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   `tp_probe` (ver abaixo). Em `llm/config.rs`, `llama_max_devices()` é só a
   capacidade dos vetores entregues ao C; quantas placas existem é
   `fit_device_count`, e é ela que posiciona a reserva de KV do contexto MTP na
-  última placa **real** - ver `docs/subsystems/inferencia.md`, seção do fit.
+  última placa **real** - ver `docs/subsystems/inference.md`, seção do fit.
   Os snapshots nativos usados por `/health` passam pelo
   `wrapper_common.cpp`; eles devem tratar qualquer nome/descrição C nulo antes
   de chegar a `std::string` ou JSON, pois essa falha pode virar
@@ -95,7 +95,7 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   `mtp_initial_context_error` para quando os pesos couberam na VRAM mas o
   buffer de compute do ubatch de pior caso não coube (`op_offload=true`
   deixa o agendador tentar GPU mesmo com pesos em CPU). As duas camadas
-  falharam ao vivo na ksia em rodadas separadas, 2026-09-18: primeiro
+  falharam ao vivo no servidor CUDA de teste em rodadas separadas, 2026-09-18: primeiro
   `cudaMalloc failed` na criação do contexto (camada 2, corrigida antes),
   depois `cudaMalloc failed: out of memory` no próprio
   `llama_model_load_from_file` do rascunho, com `mtp_fit_mode=Ram` já
@@ -150,7 +150,7 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   orçamento (`baseline_free`, `current_free`, compute, reserva, limites e
   entradas residentes). Isso separa pressão real do orçamento de uma eviction
   indevida de lease ativo e permite auditar uma margem conservadora.
-  Por decisão aprovada do captain, o contexto principal com
+  Por decisão aprovada do operador, o contexto principal com
   `moe_external_executor` usa `n_ubatch=128` para devolver VRAM ao cache
   residente. Essa exceção também reduz o microlote de atenção e KV desse
   contexto, trade-off aceito para o caminho MoE. O caminho denso do llama.cpp
@@ -176,7 +176,7 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   transferência D2H não paga o staging pageable em cada chamada.
   Com o perfil CUDA, `cuda_device_calls` separa chamadas, experts e tempos por
   ordinal para distinguir bytes residentes de uso efetivo da placa.
-  A cobertura CUDA por dtype e os números da ksia ficam em
+  A cobertura CUDA por dtype e os números do servidor CUDA de teste ficam em
   `docs/subsystems/freetoken-moe.md`.
 - `collective.rs` - `reduce_sum` + `ReduceBarrier` do tensor parallelism
   (caminho C). O transporte HTTP e a coordenação com o primary ficam em
@@ -198,7 +198,7 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   `split_frame` empresta o payload em vez de o copiar, e
   `peek_batch_header`/`validate_batch_bytes` leem só o cabeçalho para quem
   precisa da rota, do `batch_id` ou de uma validação. Detalhe e números em
-  `docs/subsystems/inferencia.md` §2.
+  `docs/subsystems/inference.md` §2.
 - `gguf.rs` + `multipart.rs` - leitura de cabeçalhos GGUF, incluindo nomes de
   identidade (`general.name`, `general.basename` e `general.base_model.*`),
   `embedding_length` textual e `clip.vision.projection_dim` para associar
@@ -221,7 +221,7 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
   macOS e equivalentes (`/boot/efi`, `/boot`, `/efi`) são retiradas de `disks`,
   enquanto volumes de dados permanecem. `disk` é o volume do projeto;
   `disks` é toda partição montada relevante. Detalhe por plataforma em
-  `docs/subsystems/operacao.md` ("Monitor de carga").
+  `docs/subsystems/operations.md` ("Monitor de carga").
 - `lib.rs` - re-exporta `KvCacheType`, `DEFAULT_FIT_MEMORY_MARGIN_MB` e
   `llama_cpp_sys_2` (para `node` alcançar a FFI crua sem redeclarar a dep).
 

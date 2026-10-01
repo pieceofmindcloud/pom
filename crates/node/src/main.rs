@@ -47,7 +47,7 @@ mod auth;
 // `crates/llama-engine`) para que editar backend/rede/roteamento não os
 // reconstrua. Re-exportados abaixo para que `crate::brand::…`, `crate::llm::…`
 // etc. continuem resolvendo em todo o `node` sem tocar os ~40 arquivos que os
-// usam. Ver `docs/subsystems/build-execucao.md`.
+// usam. Ver `docs/subsystems/build-and-run.md`.
 use ::brand;
 pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
 #[path = "admin_trust.rs"]

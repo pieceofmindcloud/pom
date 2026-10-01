@@ -10,7 +10,7 @@
  * wide screen, while tables and diagrams are allowed to use the full width -
  * they are scanned, not read.
  */
-import { ArrowRight, Info, TriangleAlert } from "lucide-react";
+import { ArrowRight, CircleCheck, ChevronRight, Info, TriangleAlert } from "lucide-react";
 import { useI18n } from "../i18n/provider";
 import type { Block, Guide as GuideType } from "./content";
 import { Diagram } from "./diagrams";
@@ -65,14 +65,16 @@ function BlockView({
         </h3>
       );
     case "steps":
+      // A timeline: the numbered dots sit on one rail, so the order reads at a
+      // glance before any text is read.
       return (
-        <ol className="my-5 space-y-3">
+        <ol className="relative my-6 space-y-4 before:absolute before:bottom-3 before:left-3 before:top-3 before:w-px before:bg-gradient-to-b before:from-iris/50 before:via-iris/20 before:to-transparent">
           {block.items.map((item, i) => (
-            <li key={item.title} className="flex gap-3.5">
-              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-iris/40 bg-iris/10 font-mono text-[0.7rem] font-semibold text-iris">
+            <li key={item.title} className="relative flex gap-4">
+              <span className="relative z-10 mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-iris/50 bg-surface font-mono text-[0.7rem] font-semibold text-iris shadow-[0_0_0_4px_rgb(var(--iris)/0.08)]">
                 {i + 1}
               </span>
-              <div className="min-w-0 max-w-[64ch]">
+              <div className="min-w-0 max-w-[64ch] rounded-lg pb-1">
                 <p className="text-[0.9rem] font-semibold text-fg">{item.title}</p>
                 <p className="mt-0.5 text-[0.86rem] leading-relaxed text-muted">{item.text}</p>
               </div>
@@ -84,10 +86,53 @@ function BlockView({
       return (
         <div className="my-5 grid gap-3 sm:grid-cols-2">
           {block.items.map((item) => (
-            <div key={item.title} className="rounded-xl border border-line bg-raised p-4">
+            <div
+              key={item.title}
+              className="group relative overflow-hidden rounded-xl border border-line bg-raised p-4 transition-colors duration-200 hover:border-iris/40"
+            >
+              <span className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-iris/50 to-transparent opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
               <p className="text-[0.88rem] font-semibold text-fg">{item.title}</p>
               <p className="mt-1.5 text-[0.83rem] leading-relaxed text-muted">{item.text}</p>
             </div>
+          ))}
+        </div>
+      );
+    case "stats":
+      return (
+        <div className="my-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {block.items.map((item) => (
+            <div key={item.label} className="rounded-xl border border-line bg-raised px-4 py-3">
+              <p className="font-display text-[1.35rem] font-bold tracking-tight text-iris">{item.value}</p>
+              <p className="mt-0.5 text-[0.76rem] leading-snug text-muted">{item.label}</p>
+            </div>
+          ))}
+        </div>
+      );
+    case "checklist":
+      return (
+        <div className="my-6 rounded-xl border border-aqua/30 bg-aqua/[0.06] p-4">
+          <p className="mb-2.5 text-[0.86rem] font-semibold text-fg">{block.title}</p>
+          <ul className="space-y-2">
+            {block.items.map((item) => (
+              <li key={item} className="flex gap-2.5 text-[0.85rem] leading-relaxed text-muted">
+                <CircleCheck className="mt-0.5 h-4 w-4 shrink-0 text-aqua" />
+                <span className="min-w-0">{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
+    case "faq":
+      return (
+        <div className="my-6 divide-y divide-line overflow-hidden rounded-xl border border-line bg-raised">
+          {block.items.map((item) => (
+            <details key={item.q} className="group">
+              <summary className="flex cursor-pointer list-none items-center gap-2.5 px-4 py-3 text-[0.87rem] font-medium text-fg transition-colors hover:bg-line/30 [&::-webkit-details-marker]:hidden">
+                <ChevronRight className="h-4 w-4 shrink-0 text-faint transition-transform duration-200 group-open:rotate-90 group-open:text-iris" />
+                {item.q}
+              </summary>
+              <p className="guide-enter px-4 pb-4 pl-11 text-[0.85rem] leading-relaxed text-muted">{item.a}</p>
+            </details>
           ))}
         </div>
       );
@@ -136,7 +181,7 @@ function BlockView({
       );
     case "diagram":
       return (
-        <figure className="my-6 rounded-xl border border-line bg-raised p-4">
+        <figure className="my-6 overflow-hidden rounded-xl border border-line bg-gradient-to-b from-raised to-surface p-4">
           <Diagram id={block.id} />
           <figcaption className="mt-3 border-t border-line pt-3 text-[0.78rem] leading-relaxed text-faint">
             {block.caption}
@@ -183,9 +228,12 @@ export function GuideView({
         </h2>
         <p className="mt-1 text-[0.88rem] text-muted">{guide.summary}</p>
       </header>
-      {body.map((block, i) => (
-        <BlockView key={`${block.kind}-${i}`} block={block} onOpenDoc={onOpenDoc} />
-      ))}
+      {/* Keyed by guide so switching pages replays the entrance. */}
+      <div key={guide.id} className="guide-enter">
+        {body.map((block, i) => (
+          <BlockView key={`${block.kind}-${i}`} block={block} onOpenDoc={onOpenDoc} />
+        ))}
+      </div>
       {deeper.length > 0 && (
         <section className="mt-10 border-t border-line pt-6">
           <p className="eyebrow mb-3">{t("docs.deeper")}</p>

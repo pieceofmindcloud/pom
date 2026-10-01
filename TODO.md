@@ -18,7 +18,7 @@ contexto e não devem voltar a ser propostas como defeitos novos.
 ## Travessia de NAT (IPv4 sem endereço público)
 
 Entregue em 2026-09-22, em seis partes. O diagnóstico e o desenho final estão
-em `docs/subsystems/rede-p2p.md`, seção "Travessia de NAT"; esta lista fica
+em `docs/subsystems/p2p-network.md`, seção "NAT traversal"; esta lista fica
 como registro do que foi feito e não tem item aberto.
 
 - [x] **N1 - Swarm capaz de travessia.** QUIC no `SwarmBuilder` e nos listen
@@ -55,7 +55,7 @@ como registro do que foi feito e não tem item aberto.
   **Afetados:** disponibilidade e controle operacional em clusters com papéis
   separados.
   **Esforço:** baixo para o gate, médio para revisar autorização, testes e UI.
-  **Decisão do captain:** decidir se o desimplante deve continuar aberto a
+  **Decisão do operador:** decidir se o desimplante deve continuar aberto a
   qualquer papel autenticado; não corrigir sem essa decisão.
 
 - [ ] **13 - Rollback não é repassado ao TP**
@@ -202,7 +202,7 @@ como registro do que foi feito e não tem item aberto.
 ## Histórico preservado
 
 O TODO anterior veio do levantamento de 2026-08-15, teve última limpeza em
-2026-08-17 e registrava 29 itens triados pelo captain, dos quais 23 haviam
+2026-08-17 e registrava 29 itens triados pelo operador, dos quais 23 haviam
 saído, 4 estavam adiados e 2 recusados. Essa contagem é histórica e não é
 substituída pela classificação da auditoria de 2026-09-07.
 

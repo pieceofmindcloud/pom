@@ -90,8 +90,8 @@ Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada a
   observada no runtime depois do carregamento do modelo e chega ao gateway por
   `n_ctx`; o gateway agrega o menor valor entre os peers vivos. O único limite
   de geração definido no deploy é `max_new_tokens`, que limita uma perna.
-  Consulte `docs/subsystems/implantacao.md`, seção 1.3, e
-  `docs/subsystems/inferencia.md`, seção 9.1.
+  Consulte `docs/subsystems/deployment.md`, seção 1.3, e
+  `docs/subsystems/inference.md`, seção 9.1.
 - `cache_type_k`/`cache_type_v` - tipo numérico do cache K/V para todos os
   contextos llama.cpp desta instalação. O padrão é `f16`; os valores aceitos
   são `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0` e

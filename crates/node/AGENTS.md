@@ -51,8 +51,8 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   novo, clonando a branch `pom-tensor-parallel` quando o symlink versionado
   aponta para uma árvore ausente. `LLAMA_SOURCE` permite reutilizar um checkout
   local que contenha `ggml`; falhas de preparo exibem o comando de recuperação.
-  O procedimento completo está em `docs/subsystems/build-execucao.md`, seção
-  "Preparar um worktree local".
+  O procedimento completo está em `docs/subsystems/build-and-run.md`, seção
+  "Preparing a local worktree".
 - Durante o build, `crates/llama-engine/build/mtp_arch.rs` lê o fork local em modo
   somente leitura:
   descobre as verificações efetivas de `LLM_GRAPH_TYPE_DECODER_MTP` em
@@ -63,9 +63,9 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   As regras do extrator têm testes unitários no próprio arquivo; a dependência
   operacional da extração está em `TODO.md`, item 10.
 - Com a feature `cuda`, `build.rs` compila os kernels MoE com `CUDACXX`; em uma
-  validação da ksia, `CUDAARCHS=120` limita a arquitetura e `CCACHE=ccache`
+  validação no servidor CUDA, `CUDAARCHS=120` limita a arquitetura e `CCACHE=ccache`
   envolve o `nvcc`. O procedimento e o target separado estão em
-  `docs/subsystems/build-execucao.md`.
+  `docs/subsystems/build-and-run.md`.
 - No alvo macOS, `build.rs` compila `src/macos_status.m` e liga somente os
   frameworks AppKit e WebKit do sistema. Linux e Windows não recebem essa
   ponte.
@@ -103,7 +103,7 @@ Não existe um teto absoluto adicional no `pom.json`. A capacidade de saída é
 derivada do `n_ctx` efetivo confirmado por cada runtime e agregada entre os
 peers vivos; `max_new_tokens` continua sendo apenas o tamanho de uma perna.
 Consulte `/v1/models` depois de todos os peers confirmarem o runtime. O passo
-operacional completo está em `docs/subsystems/implantacao.md`, seção 1.3.
+operacional completo está em `docs/subsystems/deployment.md`, seção 1.3.
 
 **Fluxo (`main`):**
 1. `respawn::remember_argv` + tracing.
@@ -309,7 +309,7 @@ acionável de instalação/handshake, persistida por plugin. Esses campos têm
 (`GET /v1/licenses/status`, consultada em `restore()` e no clique manual em
 "Atualizar" via `refresh_license_status`), nunca o `lease_expires_at` técnico -
 confundir os dois já vazou para a UI uma vez, ver
-`docs/subsystems/licenciamento-enterprise.md`. Repositórios GitHub são uma fonte
+`docs/subsystems/enterprise-licensing.md`. Repositórios GitHub são uma fonte
 local independente: `plugin_github.rs` valida o manifesto da raiz ou o
 manifesto de UI `ui/manifest.json`, a ABI, o alvo, o digest SHA-256 e o tamanho
 do asset selecionado. Instalar a release
@@ -412,15 +412,14 @@ empresta o lease do plugin `enterprise` para autenticar o manifest genérico
 `pom_core` e, só com uma confirmação explícita da UI, delega decisão, hash,
 troca atômica e reinício a `core_update.rs` - que continua puro e sem
 dependência de licenciamento. A fronteira e os limites restantes estão em
-`docs/subsystems/licenciamento-enterprise.md`.
+`docs/subsystems/enterprise-licensing.md`.
 
 ## Ligações
 
 - **Depende de**: `routing-contract`, `llama-engine` e `brand` (crates irmãos);
   `config` é um módulo interno de `node`.
-- **Chamado por**: ninguém (é o binário). Os scripts Python
-  (`old/python-inference/`) são legado - o servidor de inferência e o splitter
-  são Rust, em-processo.
+- **Chamado por**: ninguém (é o binário). O servidor de inferência e o
+  splitter são Rust, em-processo.
 
 ## Defeitos anotados
 

@@ -20,8 +20,8 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   API key de inferência em `POM_BENCH_API_KEY` para cada chamada ao
   `/api/generate`; a variável não é impressa nem gravada no CSV. Por padrao
   omite `model` no `/api/generate`, para o gateway usar o modelo atualmente
-  servido; `POM_BENCH_MODEL` e um override opcional. A origem `salem-ksia`
-  usa `SALEM_PASS` em tempo de execucao, nunca uma senha gravada no
+  servido; `POM_BENCH_MODEL` e um override opcional. A origem remota alcançada por SSH
+  usa a variável de senha do script em tempo de execucao, nunca uma senha gravada no
   repositorio. Veja o cabecalho do script para as colunas, URLs e opcoes
   `--origens`, `--repeticoes` e `--csv`.
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
@@ -40,7 +40,7 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   pois o fork entra somente pelo named context. O script deriva
   `POM_CUDA_ARCH_CACHE_KEY` da lista real de arquiteturas e chama
   `docker compose build`. Os composes por cluster vivem no repositório
-  `pom-cluster-config`, que chama este script com `COMPOSE_FILE`. Salem e Ksia usam o mesmo target `runtime`, com um
+  `pom-cluster-config`, que chama este script com `COMPOSE_FILE`. Todas as máquinas do cluster usam o mesmo target `runtime`, com um
   `pom` universal CUDA+Vulkan e os módulos CPU/Vulkan/CUDA no mesmo runtime.
   O frontend é um estágio independente e sua cópia de `dist` é a última camada
   da imagem; Fork/tag, toolkit, arquitetura e toolchain não invalidam a UI, e
@@ -66,9 +66,9 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 - `test-docker-entrypoint.sh` - smoke test do entrypoint Docker com binários
   falsos: confirma o caminho do host, o `exec` do `pom` e a preservação dos
   argumentos.
-- `test-docker-compose.py` - materializa os Compose da Salem e da Ksia. Valida
+- `test-docker-compose.py` - materializa os Compose das máquinas do cluster. Valida
   que todos os nós usam a mesma imagem/build/binário, além de volumes e
-  visibilidade de NVIDIA/Radeon; a entrada Ksia tem um serviço `node-1` com as
+  visibilidade de NVIDIA/Radeon; a entrada do servidor CUDA tem um serviço `node-1` com as
   GPUs 0 e 1 e os argumentos de arquitetura/cache coerentes.
 - `gen-node-configs.py` - gera um `pom.json` por no em
   `tests/fixtures/node-<N>/`. As portas de cada no vem da config, nao do CLI
@@ -84,7 +84,7 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   o socket 42777.
 - `test_gen_node_configs.py` - testes unitarios do override de
   `advertise_addr`, incluindo a preservacao dos demais campos da config.
-- `bench-llamacpp.sh` - CLI do benchmark do llama.cpp puro na ksia. Recebe o
+- `bench-llamacpp.sh` - CLI do benchmark do llama.cpp puro no servidor CUDA. Recebe o
   snapshot `.config.json` do pom-bench, seleciona uma implantacao `whole`,
   verifica VRAM livre, sobe o `llama-server` do fork remoto do POM em uma porta
   local ao host remoto, mede os cinco prompts da bateria e derruba somente o
@@ -99,7 +99,7 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   Quando `mtp_enabled=true`, a configuracao vira `--spec-type draft-mtp`,
   `--spec-draft-n-max` e `--spec-draft-p-min`; o fork usa a cabeca `nextn` do
   proprio GGUF, sem modelo draft separado.
-  Os artefatos vao por padrao para `/Users/jairpereira/scripts/reports` e a
+  Os artefatos vao por padrao para a pasta de relatórios padrão e a
   CLI, o mapa de flags e as limitacoes estao no relatorio operacional da
   tarefa. Se o `nvcc` nao estiver no `PATH` remoto, o harness autodetecta
   `/usr/local/cuda/bin/nvcc`, `/usr/local/cuda-13.0/bin/nvcc` ou
@@ -119,7 +119,7 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   (`enterprise-plugin`, domínio de auditoria de Logs/Estatísticas) foi
   extraído para o repositório `pom-plugin-logs`, que tem seu próprio script de
   build, empacotamento, workflows de release e publicação no servidor de
-  licenças - ver `docs/subsystems/licenciamento-enterprise.md`.
+  licenças - ver `docs/subsystems/enterprise-licensing.md`.
 - `resolve-release-version.py` - lê a resposta de `GET /internal/releases` e
   escolhe o maior SemVer entre todas as plataformas, incrementando o metadado
   `build.N` para o `pom-release.sh`.
@@ -132,7 +132,7 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   variante compila `-p node -p pom-plugin-host` e põe o host ao lado do `pom`
   no pacote. Chamado por `.github/workflows/release-ksia.yml`.
 - `test-release-ksia.sh` - dry-run de cada variante (inclusive a cópia do
-  `pom-plugin-host`) e checagem de que o workflow da ksia não usa armazenamento
+  `pom-plugin-host`) e checagem de que o workflow do runner Linux não usa armazenamento
   do GitHub.
 - `test_pom_release.sh` - smoke test local do incremento automático, override
   manual e `--dry-run`, usando `curl` e `cargo` falsos. Cobre só `pom_core`
@@ -165,50 +165,16 @@ O plugin `enterprise` (Logs de Requisições/Estatísticas) não é mais liberad
 por este script: seu release (build, empacotamento, GitHub Actions e
 publicação no servidor de licenças) vive inteiramente em `pom-plugin-logs`.
 
-## Python (nao esta na raiz - esta em old/python-inference/)
+## Python legado
 
-`inference_server.py` e `split_model.py` **nao vivem na raiz do repo**.
-O runtime suportado hoje e Rust
-(`crates/node/src/inference/infer_server.rs`, `crates/node/src/models/splitter.rs`);
-os scripts Python sao legado preservado em `old/python-inference/` e nao sao
-invocados pelo binario (ver o `README.md` de la).
-
-- `old/python-inference/inference_server.py` - servidor FastAPI por no
-  (llama-cpp-python), pipeline por estado oculto: primeiro no tokeniza e roda
-  eval, nos do meio injetam via `llama_batch.embd`, o ultimo amostra. Rotas:
-  `POST /v1/infer`, `POST /v1/prefill`, `POST /v1/step`,
-  `POST /v1/session/release`, `GET /health`. Estado oculto cru em f16, mesmo
-  formato de `src/inference/wire.rs` (`[4 bytes de tamanho][JSON][tensor]`).
-  Captura o residual real da ultima camada via callback do ggml scheduler
-  (`_capture_callback`) em vez de `llama_get_embeddings_ith`, que devolve h
-  **depois** do output_norm. Pool de sessoes (`_MAX_SESSIONS = 8`) divide o
-  `--n-ctx` em `n_ctx_seq` (contexto recriado com `n_seq_max`); `_rollback_seq_kv`
-  rebobina o KV antes de refazer um prefill reenviado (retentativa idempotente).
-  `_load_ggml` liga `ggml_backend_tensor_get` por ctypes (CPU/CUDA/Metal).
-- `old/python-inference/split_model.py` - splitter GGUF so com stdlib (struct,
-  mmap, pathlib). Seleciona `blk.<N>.*` da faixa (renomeados para `blk.i.*`),
-  sempre `token_embd.weight`; `output_norm`/`output.weight` reais so na ultima
-  fatia, e nas demais injeta um `output_norm` fake all-ones (`_fake_output_norm`).
-  Atualiza `block_count` do KV. `_GGML_TYPE_INFO` e a tabela de tamanhos ggml e
-  **tem que bater** com `ggml_type_info` em `src/models/gguf.rs`
-  (`split_model_type_table_matches` quebra o build se divergirem; tipo
-  desconhecido e recusa, nunca estimativa). Imprime `RDMAP2P_PROGRESS <pct>`
-  no stderr.
-- `old/python-inference/split.py` - divide em N partes iguais (`--qtd`). Caminho
-  legado, nao usado pelo fatiamento por orcamento (`plan.rs`).
-- `old/python-inference/inspect_model.py`, `inspect_gguf.py` - utilitarios de
-  inspecao do modelo e do cabecalho GGUF.
-- `old/scripts/` - lancadores legados (`run-p1.sh`, `run-p2.sh`, `run-inf.sh`,
-  `request.sh`, `run.sh`, `run-p0.sh`, `p2.sh`), para referencia do operador
-  apenas (o procedimento de subida esta em `docs/subsystems/operacao.md`).
-  `run-inf.sh`
-  invoca `old/python-inference/inference_server.py` explicitamente (unico
-  caminho de compatibilidade).
+Não há mais servidor de inferência nem splitter em Python no repositório: o
+runtime é Rust (`crates/node/src/inference/infer_server.rs`,
+`crates/node/src/models/splitter.rs`). A antiga pasta `old/` foi removida.
 
 ## Infra de build e dev na raiz
 
 - `Dockerfile` - estagios compartilhados de dependencias, Rust, frontend e
-  runtime. Salem e Ksia compilam um executável `pom` com CPU, CUDA e Vulkan,
+  runtime. Todas as máquinas do cluster compilam um executável `pom` com CPU, CUDA e Vulkan,
   mais `pom-plugin-host`; os builds usam cache mounts e o frontend é
   independente. O target adicional `dev-runtime` instala Rust/Cargo e
   ferramentas nativas só na imagem de desenvolvimento local; `runtime` não
@@ -228,11 +194,11 @@ invocados pelo binario (ver o `README.md` de la).
   `POM_DOCKER_TARGET=runtime` seleciona a imagem sem toolchain. Cada nó monta
   `POM_DEV_PLUGINS_DIR` (default `../projects`) em `/opt/pom/dev-plugins` e
   define `POM_DESENV=1`; a API ainda limita a allowlist de repositórios. O
-  padrao mapeia a topologia da Salem; a Ksia sobe pelo repositório
+  padrao mapeia uma topologia de GPUs mistas; o servidor CUDA sobe pelo repositório
   `pom-cluster-config`. `docker-compose.salem.yml`
   tambem e selecionavel diretamente. Os dois estendem a definicao comum em
   `docker-compose.common.yml`, mantendo os mesmos servicos, contexto, imagem,
-  volumes e variaveis. Todos os nós Salem/Ksia usam o mesmo executável; o
+  volumes e variaveis. Todos os nós do cluster usam o mesmo executável; o
   backend é descoberto a partir dos dispositivos visíveis. A UI é
   reencontrada por
   `POM_UI_DIST=/app/apps/frontend/dist` porque `POM_HOME=/data` nao e o
@@ -245,9 +211,9 @@ invocados pelo binario (ver o `README.md` de la).
   `apps/frontend/dist` + README, para `config::project_root` achar a UI a partir
   do diretorio do executavel. Windows empacota com 7z.
 - `.github/workflows/release-ksia.yml` - release manual compilado só no runner
-  `ksia` (sem cota do GitHub): jobs `linux-cpu`, `linux-cuda`, `windows-cpu`
+  Linux self-hosted (label `ksia`) (sem cota do GitHub): jobs `linux-cpu`, `linux-cuda`, `windows-cpu`
   ligados por entrada, cada um chama `scripts/release-ksia.sh` e anexa o pacote
-  à tag. Ver `build-execucao.md`, "Release na ksia".
+  à tag. Ver `build-and-run.md`, "Release on the self-hosted Linux runner".
 - `.cargo/config.toml` - `BINDGEN_EXTRA_CLANG_ARGS` aponta o bindgen do
   llama-cpp-sys para os headers do GCC no Ubuntu (o clang do apt nao os traz);
   perfil release com `opt-level = 3`, `lto = "fat"`, `codegen-units = 1`,
@@ -293,7 +259,7 @@ toda subida e numa maquina ja migrada nao ha o que dizer.
 
 Cobre tambem as **variantes por papel** (`rdma-p2p-cpu.json`,
 `.rdma-p2p-node-cpu.key`): o `.gitignore` do projeto sempre usou os padroes
-`rdma-p2p*.json` e `.rdma-p2p-node*.key`, e a ksia tinha as duas variantes no
+`rdma-p2p*.json` e `.rdma-p2p-node*.key`, e uma máquina do cluster tinha as duas variantes no
 disco - migrar so os nomes exatos deixava chave orfa.
 
 ## make-macos-app.sh

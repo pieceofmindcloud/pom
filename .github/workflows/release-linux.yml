@@ -2,7 +2,7 @@ name: Release · Linux
 
 # Só roda quando você mandar, e roda no **runner self-hosted `ksia`** - não
 # consome cota nenhuma. Se a ksia estiver desligada o job fica na fila em vez de
-# falhar. Ver `docs/subsystems/build-execucao.md`, "Release pelo GitHub
+# falhar. Ver `docs/subsystems/build-and-run.md`, "Release pelo GitHub
 # Actions".
 on:
   workflow_dispatch:

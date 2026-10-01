@@ -6,7 +6,7 @@ name: Release · ksia (Linux + CUDA, Windows)
 # release direto da ksia, e o que precisa persistir entre execuções (checkout
 # do llama.cpp, `target/` por variante, cargo-xwin e o SDK do Windows) fica em
 # `~/.cache/pom-release` na máquina. O build de cada variante está em
-# `scripts/release-ksia.sh`; ver `docs/subsystems/build-execucao.md`,
+# `scripts/release-ksia.sh`; ver `docs/subsystems/build-and-run.md`,
 # "Release na ksia".
 #
 # Os workflows `release-linux.yml`, `release-macos.yml` e `release-windows.yml`

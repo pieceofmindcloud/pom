@@ -766,7 +766,7 @@ pub(crate) struct PersistedPluginState {
     /// ação) corrompia sua própria base de comparação e sempre concluía "sem
     /// atualização" - sem relação com o formato semver do release (`+build.N`
     /// funciona normalmente na comparação por string; o problema era a ordem
-    /// de escrita, não o formato). Ver `docs/subsystems/licenciamento-enterprise.md`.
+    /// de escrita, não o formato). Ver `docs/subsystems/enterprise-licensing.md`.
     #[serde(rename = "plugin_release_id")]
     pub installed_release_id: String,
     pub plugin_version: String,
@@ -3536,7 +3536,7 @@ fn merge_preferences(
 
 /// Protocolo único de eventos que o POM envia aos plugins, pelo SDK do
 /// navegador e pela operação nativa `host.event`. Ver
-/// `docs/subsystems/plugins-ui.md`, seção "Eventos e notificações".
+/// `docs/subsystems/plugins-ui.md`, seção "Events and notifications".
 pub(crate) const PLUGIN_EVENTS_PROTOCOL: &str = "pom-plugin-events/v1";
 
 pub(crate) fn plugin_event_envelope(

@@ -37,7 +37,7 @@ Per-file list:
 - `GpuTemperature.tsx` - shared GPU temperature badge used by Flow and machine
   details. Uma máquina pode ter mais de uma placa: os dois cards mostram **uma
   linha por GPU**, nomeada por `gpuDisplayName` (que acrescenta `#índice`
-  quando duas placas têm o mesmo nome, o caso das duas RTX 5060 Ti da ksia).
+  quando duas placas têm o mesmo nome, o caso de um servidor com duas RTX 5060 Ti).
   It uses `SystemLoad.gpu_kind` as the source of truth: `none` returns
   no markup, while a real GPU with a missing reading shows only the unavailable
   sensor message. Flow and machine details pass through this component so the
@@ -345,7 +345,7 @@ Per-file list:
   `dashboard.rediscovering`). Endereços IPv6 temporários rodam sozinhos, então o
   segundo estado é o comum e resolve-se na volta seguinte do gossip - mostrá-lo
   como beco sem saída mandava o utilizador procurar um defeito inexistente. Ver
-  `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder".
+  `docs/subsystems/p2p-network.md`, "Endereço que deixou de responder".
   `PipelineRail` e `ModelNetworkCanvas` fazem a mesma distinção.
   `RemoveNode`, `LeaveNode` e `ReleaseSlice` renderizam daqui - todos em uma
   **barra de ferramentas no topo do card**, ao lado do distintivo de MTP, em

@@ -40,7 +40,7 @@ usage() {
 # Este script só libera `pom_core` desde que o plugin `enterprise`
 # (request_logs/statistics) foi extraído para o repositório pom-plugin-logs,
 # que tem seu próprio `release.sh`, workflows do GitHub Actions e script de
-# publicação no servidor de licenças. Ver `docs/subsystems/licenciamento-enterprise.md`.
+# publicação no servidor de licenças. Ver `docs/subsystems/enterprise-licensing.md`.
 while (($# > 0)); do
   case "$1" in
     --platform) (($# >= 2)) || die '--platform precisa de um valor'; platform="$2"; shift 2 ;;

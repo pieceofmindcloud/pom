@@ -1,7 +1,7 @@
 name: Release · Windows
 
 # Só roda quando você mandar. Em repositório privado o minuto de runner Windows
-# conta 2x. Ver `docs/subsystems/build-execucao.md`, seção "Release pelo GitHub
+# conta 2x. Ver `docs/subsystems/build-and-run.md`, seção "Release pelo GitHub
 # Actions".
 #
 # Duas variantes, escolhidas na entrada `variantes`:

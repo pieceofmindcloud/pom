@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Gera um GGUF qwen4exp minimo e estruturalmente valido, para a tarefa
-sl-mtp-draft-attach (ver o `## Defeitos anotados` de docs/subsystems/inferencia.md
+sl-mtp-draft-attach (ver o `## Defeitos anotados` de docs/subsystems/inference.md
 para a causa raiz e o conserto).
 
 mode="draft": espelha o rascunho externo real da Unsloth ("shared MTP

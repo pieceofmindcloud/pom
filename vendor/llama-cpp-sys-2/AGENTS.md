@@ -64,7 +64,7 @@ reconfigure, um arquivo de modelo presente no checkout pode continuar fora de
 
 O mesmo caminho é usado em Linux, macOS e Windows. No Windows o checkout pode
 materializar o symlink como um arquivo de texto; o `build.rs` o substitui pelo
-checkout no caminho que o Cargo lê. Ver `docs/subsystems/build-execucao.md`,
+checkout no caminho que o Cargo lê. Ver `docs/subsystems/build-and-run.md`,
 "Release pelo GitHub Actions".
 
 O `build.rs` repassa `CMAKE_C_COMPILER_LAUNCHER`,
@@ -153,7 +153,7 @@ O preço de usar cabeçalho interno é que uma atualização do fork pode mudar
 `llama_model` sem aviso. O sintoma é erro de compilação alto e na hora, nunca
 resultado errado em silêncio, e o conserto é reler o cabeçalho novo - a
 alternativa, derivar a colocação de `n_gpu_layers`, mente sempre que um override
-de buffer type entra. Ver `docs/subsystems/inferencia.md`, "Onde as camadas
+de buffer type entra. Ver `docs/subsystems/inference.md`, "Onde as camadas
 ficaram".
 
 ## Estado recorrente no Kimi-K3
@@ -164,7 +164,7 @@ Kimi-K3 precisa declarar suporte a rollback recorrente e materializar as
 Sem isso, `llama_context` reduz `n_rs_seq` a zero e o estado KDA fica
 incompatível com o rollback/replay usado pela inferência especulativa. A
 regressão executável está em `llama.cpp/tests/test-hybrid-memory-batch.cpp`;
-consulte `docs/subsystems/inferencia.md`, seção 5.3, para a invariável do
+consulte `docs/subsystems/inference.md`, seção 5.3, para a invariável do
 batch e do estado.
 
 ## Maintaining this file

@@ -36,7 +36,7 @@ type InboundTunnelResponse = (
 /// fixados aqui já estavam obsoletos. O resultado era uma reserva que nunca
 /// era aceita, sem um erro que dissesse isso - e, sem reserva, o DCuTR nunca
 /// roda, porque o hole punch é coordenado por cima de uma conexão relayed que
-/// não existia. Ver `docs/subsystems/rede-p2p.md`, seção "Travessia de NAT".
+/// não existia. Ver `docs/subsystems/p2p-network.md`, seção "NAT traversal".
 ///
 /// Um relé útil para este projeto é um nó pom com IP público rodando
 /// `serve_relay`: só ele honra `max_circuit_bytes` do tamanho de um frame de

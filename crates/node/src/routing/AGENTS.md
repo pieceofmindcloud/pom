@@ -27,7 +27,7 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   candidatos vivos. O modo de volta (`ReturnMode`: resposta direta ou anel) é
   escolhido junto com o caminho - a programação dinâmica roda por modo -, e
   `return_path_prefers_ring` é a regra de reserva para o planejador guloso.
-  Ver `docs/subsystems/paralelismo.md`, "Escolha da pipeline por tempo de
+  Ver `docs/subsystems/parallelism.md`, "Escolha da pipeline por tempo de
   entrega".
 
 ## Funções-chave

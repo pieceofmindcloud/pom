@@ -91,7 +91,7 @@ if [ "$mode" = release ]; then
 else
   if ! llama_commit=$(git -C "$llama_source_dir" rev-parse --short HEAD 2>/dev/null); then
     echo "não foi possível ler o commit do fork em $llama_source_dir." >&2
-    echo "prepare o checkout (ver docs/subsystems/build-execucao.md) antes de construir a imagem." >&2
+    echo "prepare o checkout (ver docs/subsystems/build-and-run.md) antes de construir a imagem." >&2
     exit 1
   fi
   if ! llama_source_hash=$(

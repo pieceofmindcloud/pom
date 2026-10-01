@@ -352,7 +352,7 @@ impl PipelinePlan {
     /// ela quem anuncia `CAP_SPECULATE_MTP`. A cabeça (que monta o lote)
     /// recebe o rascunho pronto do gateway, que por sua vez o colheu da
     /// resposta direta da cauda na rodada anterior (`docs/subsystems/
-    /// inferencia.md` §5.2). **Todos** precisam de `CAP_SPECULATE_LOOKUP`
+    /// inference.md` §5.2). **Todos** precisam de `CAP_SPECULATE_LOOKUP`
     /// porque o lote maior que um token passa por eles, e **todos** precisam
     /// de `CAP_SPECULATE_MTP_SLICED` porque o protocolo novo (rascunho
     /// pré-fabricado + `tokens` + `mtp_k` na wire) só existe em binários

@@ -196,7 +196,7 @@ fallback continua em `addr_candidates` + `RouteTable`.
   ingressos por saída, mas não usa seu swarm privado como descoberta pública.
 - `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
   `ServerCertVerifier` que confere `SHA256(pubkey) == node_id`. Nada vai para o
-  disco; não há CA. Ver `docs/subsystems/rede-p2p.md`, seção 5.
+  disco; não há CA. Ver `docs/subsystems/p2p-network.md`, seção 5.
 - `tls_policy.rs` - a catraca: o campo `tls` do Announce é gatilho, e só a
   busca autenticada em `GET /api/cluster/tls` no principal grava a política.
   Busca que falha preserva o valor local.
@@ -230,7 +230,7 @@ fallback continua em `addr_candidates` + `RouteTable`.
   `/health`, histerese contra troca de rota por ruído e invalidação imediata
   quando o peer muda seus endereços anunciados. Guarda também a **memória de
   falha por `(node_id, URL)`**, que serve tanto ao pipeline quanto ao plano de
-  controle - ver `docs/subsystems/rede-p2p.md`, "Endereço que deixou de
+  controle - ver `docs/subsystems/p2p-network.md`, "Endereço que deixou de
   responder". `RttTable` guarda a medição direcional deste nó para cada
   destino, sem inferir o sentido inverso, e expõe snapshots com idade: só os
   RTTs com menos de cinco minutos entram em seleção.
@@ -267,7 +267,7 @@ fallback continua em `addr_candidates` + `RouteTable`.
   tela de participantes: HTTP direto que respondeu, conexão libp2p direta
   (marcada quando nasceu de hole punch) ou só circuito pelo relé. As conexões
   vêm de `note_libp2p_link`/`drop_libp2p_link`/`mark_hole_punched`, chamados
-  pelo laço do swarm em `discovery.rs`; ver `rede-p2p.md`, "Diagnóstico".
+  pelo laço do swarm em `discovery.rs`; ver `p2p-network.md`, "Diagnóstico".
 
 ## Funções-chave
 
@@ -331,7 +331,7 @@ fallback continua em `addr_candidates` + `RouteTable`.
   dual-stack. Sem isto o macOS devolve EINVAL em todo send e a descoberta morre
   num sentido só (Linux aceita, por isso parecia unilateral).
 - `peer_list_chunks` - fatia `PeerList` para caber em `MAX_DATAGRAM_PAYLOAD`
-  (1200 B, o piso que o IPv6 garante; a 5G do captain tem MTU 1450 e IPv6 não
+  (1200 B, o piso que o IPv6 garante; a 5G do operador tem MTU 1450 e IPv6 não
   fragmenta).
 - `advertised_addr` - normaliza endereço digitado à mão (IPv6 puro precisa de
   colchetes para ganhar porta) em `host:port`.
@@ -451,8 +451,8 @@ fallback continua em `addr_candidates` + `RouteTable`.
 - `is_private_or_local` - decide se um endereço observado por um peer é notícia
   sobre o IP público deste nó. Além de RFC 1918 e `fc00::/7`, recusa
   **`100.64/10` (RFC 6598)**: é a faixa do CGNAT e é a que a Tailscale usa.
-  Medido em 2026-08-16 no MacBook: a primeira resposta de `identify` veio por
-  um peer alcançado pelo tailnet e reportou `100.122.132.97`, que o nó adotou
+  Medido em 2026-08-16 num notebook: a primeira resposta de `identify` veio por
+  um peer alcançado pelo tailnet e reportou um `100.x.y.z`, que o nó adotou
   como endereço *público* e anunciou ao cluster inteiro.
 - `local_addrs` - `/sbin/ifconfig` (macOS) / `ip -o addr` (Linux); macOS usa
   caminho absoluto porque processos iniciados pela GUI podem não ter `/sbin` no
@@ -475,7 +475,7 @@ fallback continua em `addr_candidates` + `RouteTable`.
 `route.rs`:
 - `choose_route` - melhor candidato vivo; só troca de rota atual se o ganho
   passar de 25% relativo **e** 2 ms absolutos (medido 9,6 vs 7,2 ms
-  MacBook↔ksia não pode trocar a cada ciclo).
+  notebook↔servidor CUDA não pode trocar a cada ciclo).
 - `RouteTable::measure_peer` - sonda `GET /health` na própria URL de inferência
   anunciada, não no gateway. Assim um gateway saudável não promove uma porta
   de inferência que engole SYN. A sonda aceita o certificado autoassinado e o

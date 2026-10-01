@@ -59,8 +59,8 @@ No handoff entre peers, a preferência QUIC escolhe o endpoint HTTP/3; sem ela,
 o link persistente publica `https-link` ou `http-link` conforme o endereço
 efetivamente usado. O prefill e o decode usam essa mesma escada, e uma queda
 para libp2p ou para HTTP direto permanece registrada com a razão de fallback.
-O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
-(`inference_server.py` de `old/python-inference/` é legado). Os caminhos
+O modelo é carregado **em-processo** por `llm.rs`; não há processo Python.
+Os caminhos
 normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção
 controlada, pois coordena seus ranks e seu túnel de transporte neste diretório.
 O campo `NodeConfig.inference_mode` seleciona `dense/llama.cpp`, `moe/q4_0` ou
@@ -129,7 +129,7 @@ visibilidade dos controles de implantação na UI local.
   item: assim ele usa o mesmo canal persistente e aparece como `https-link`.
   A chave do `BatchCoordinator` marca esses lotes como especulativos para não
   misturá-los com frames densos.
-  Ver `docs/subsystems/inferencia.md` §2.1.
+  Ver `docs/subsystems/inference.md` §2.1.
 - `link_lab.rs` (520, `#![cfg(test)]`) - a bancada do custo de rede por ficha
   no salto interno: hops falsos servidos por cima de um `TcpStream` com
   contador, para o número sair dos bytes que passaram no soquete e não de
@@ -141,7 +141,7 @@ visibilidade dos controles de implantação na UI local.
   `/v1/step-stream`, `/v1/link`,
   `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
   `/v1/session/slot` (save/restore/erase de um snapshot de KV em disco, como o
-  `--slot-save-path` do llama-server - ver `inferencia.md` §3.1.1),
+  `--slot-save-path` do llama-server - ver `inference.md` §3.1.1),
   `/health`; `perf.rs` mede a velocidade da fatia (`run_bench`, um teste
   local ao carregar o modelo, e `observe_prefill`/`observe_decode`, média móvel
   do tráfego real, chamados no fim do decode de `prefill.rs` e
@@ -400,7 +400,7 @@ visibilidade dos controles de implantação na UI local.
   padrão 7 dias) e orçamento LRU (`slot_auto_max_bytes`, padrão 2 GiB),
   devolvendo os `key_hash` a apagar. O gateway ainda faz debounce por
   `SLOT_AUTO_MIN_GROWTH_TOKENS` antes de regravar. Ligado por
-  `slot_persist_prefix_cache`; ver `inferencia.md` §3.1.1.
+  `slot_persist_prefix_cache`; ver `inference.md` §3.1.1.
 - `prefix_cache_lab.rs` - autoteste diferencial da política do cache, ou seja da
   **escolha**. A referência acompanha lookup, insert, busy, release e eviction;
   o proxy propositalmente quebra `cached_tokens` e a bateria precisa registrar a
@@ -514,7 +514,7 @@ visibilidade dos controles de implantação na UI local.
   A ponte IQ CUDA tem diagnóstico diferencial por dtype e estágio nos testes
   `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` e
   `diagnostico_cuda_iq_divergencia_por_estagio`. A implementação da ponte não
-  é prova de correção por si só: a prova CUDA na `ksia` comparou IQ3_S, IQ2_S
+  é prova de correção por si só: a prova CUDA no servidor CUDA de teste comparou IQ3_S, IQ2_S
   e IQ4_XS contra o decoder CPU em `gate_up`, ativação e `down`, sem primeira
   divergência. Os três dtypes podem ser publicados pelo dispatch somente após
   essa prova; uma divergência futura deve reativar a recusa nominal, não cair
@@ -598,7 +598,7 @@ visibilidade dos controles de implantação na UI local.
   orçamento medido permitem. O cache frio de RAM e o cache quente de device têm
   estatísticas separadas. Depois de qualquer mudança
   CUDA, execute a build com
-  `--features vulkan,cuda` na ksia e repita tanto os testes CUDA diferenciais
+  `--features vulkan,cuda` no servidor CUDA e repita tanto os testes CUDA diferenciais
   quanto as provas reais `executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real`
   e `nvfp4_matches_llama_cpp_from_first_layer_and_stage`.
   Os loaders aceitam tanto `ffn_gate_up_exps.weight` fundido quanto
@@ -910,7 +910,7 @@ visibilidade dos controles de implantação na UI local.
   sessão nova `retained` na fronteira salva. `slot_dir` vem de
   `NodeConfig.slot_save_path`; sem ele a rota responde 400. `replicate_slot_call`
   repassa a ação aos workers de TP. Capability `inference/slot-persist-v1`.
-  Ver `inferencia.md` §3.1.1.
+  Ver `inference.md` §3.1.1.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
   reinício do processo também remove o estado em memória. Se um desses eventos
   ocorrer no meio de um prefill, o peer devolve sessão desconhecida e o gateway
@@ -1266,7 +1266,7 @@ falha de transporte.
   ≈ `minimum_legs` (tolerância 1 perna para acomodar overhead do frame); as duas pontas empatam; a pior
   entrada (meio) custa no máximo uma perna a mais que a cabeça; e o anel
   borbulhado com a cabeça remota paga 4 pernas (o caso que doía, a queda de 25
-  para 14 tok/s do captain), provando que é correção e não o comportamento de
+  para 14 tok/s do operador), provando que é correção e não o comportamento de
   sempre. Assere ainda que cada quadro de resultado é entregue direto
   exatamente uma vez e que os recibos de transporte não entram nessa contagem.
   O prompt de mais de um pedaço atravessa inteiro (um `prompt_progress`
@@ -1355,7 +1355,7 @@ falha de transporte.
   oculto inteiro. `validate_items` expressa a validação sobre o **tamanho** do
   payload, que é o que torna as duas coisas possíveis. A conversão passa por um
   bloco de pilha: crescer o vetor valor a valor custa mais que a conversão em
-  si. Números em `docs/subsystems/inferencia.md` §2.2.
+  si. Números em `docs/subsystems/inference.md` §2.2.
 - `FrameEncoding::F16` permanece somente como marcador de chamadas internas;
   o fio oficial é sempre `inference/frame-v1-batch`. O helper
   `encode_with_encoding` é exclusivo da prova de equivalência em testes;
@@ -1447,7 +1447,7 @@ aborta a rodada se a remoção efetiva falhar.
 
 **Ainda sem medição de tok/s** (cortado por cota em 2026-08-16): o ganho
 prometido pelo bloco é real no LM Studio (21 → 35 tok/s no Qwen3.8-27B-Q3_K_S,
-medido pelo captain), aqui a implementação está completa e verde nos testes de
+medido pelo operador), aqui a implementação está completa e verde nos testes de
 unidade mas **não** tem número medido de ponta a ponta.
 
 ## Ligações
@@ -1472,8 +1472,7 @@ unidade mas **não** tem número medido de ponta a ponta.
   `spawn_health_watch`; `routing/AGENTS.md` lista as capabilities que
   `infer_server.rs`/`relay.rs` executam.
 - **Externo**: nenhum processo externo. O modelo carrega em-processo via
-  `llm.rs` (llama-cpp-sys-2). `old/python-inference/inference_server.py` e
-  `split_model.py` são legado, não são mais invocados.
+  `llm.rs` (llama-cpp-sys-2).
 
 ### Prefill multimodal
 
@@ -1508,7 +1507,7 @@ que cada fatia a jusante preserve as posições lógicas da cabeça.
 Este arquivo é um mapa de responsabilidades da pasta. Ao mudar uma interface
 de inferência ou uma invariável de sessão, atualize aqui e o README do
 subsistema no mesmo commit. Mantenha detalhes de implementação no código ou
-em `docs/subsystems/inferencia.md`, para que este índice continue curto.
+em `docs/subsystems/inference.md`, para que este índice continue curto.
 
 ## Maintaining this file
 

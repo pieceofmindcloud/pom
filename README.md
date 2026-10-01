@@ -38,7 +38,7 @@ O binário estará em `./target/release/pom`.
 ./scripts/build-docker.sh
 ```
 
-Salem e Ksia compilam o mesmo executável `pom` com CPU, CUDA e Vulkan e o
+Todas as máquinas do cluster compilam o mesmo executável `pom` com CPU, CUDA e Vulkan e o
 `pom-plugin-host`; os módulos GGML escolhem o backend disponível em runtime. O
 frontend é um estágio independente. Os builds de desenvolvimento usam por
 padrão as bibliotecas da release exata do fork `pereirajair/llama.cpp` (pacote
@@ -112,7 +112,7 @@ Ao iniciar, o nó:
 ### 2. Implantação
 A implantação é feita pela interface web: ela mede o que cada nó tem de memória
 e GPU, planeja quais camadas cada um serve, e cada peer extrai a própria faixa
-da própria cópia do modelo. Ver `docs/subsystems/implantacao.md`.
+da própria cópia do modelo. Ver `docs/subsystems/deployment.md`.
 
 ### 3. Gossip P2P
 Cada 5 segundos o nó:
@@ -140,7 +140,6 @@ crates/
 ├── config/                     # ponto de extração para esquemas de configuração públicos
 └── types/                      # ponto de extração para tipos de domínio públicos
 apps/frontend/                  # fonte React/Vite; build lido do disco pelo node em runtime
-old/                            # ferramentas Python e scripts legados, fora do runtime suportado
 ```
 
 `cargo build`, `cargo test` e `cargo run --bin pom -- <argumentos>` na

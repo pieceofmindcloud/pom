@@ -36,7 +36,7 @@
 //! modelo inteiro** (cabeça e cauda são o mesmo processo, e o rascunho não
 //! atravessa rede nenhuma). Num pipeline de N nós o motor da cabeça não tem o
 //! bloco, `MtpDrafter::attach` devolve `None` e o nó simplesmente não anuncia
-//! a capacidade. Ver `docs/subsystems/inferencia.md` para a conta do que
+//! a capacidade. Ver `docs/subsystems/inference.md` para a conta do que
 //! custaria estender ao caso fatiado.
 //!
 //! # GGUF de rascunho separado ("shared MTP module")
@@ -140,7 +140,7 @@
 //! primeiro `observe` (`llama_get_embeddings_nextn_ith` devolve `NULL`) e
 //! desliga o MTP daquela sessão com aviso - a mesma degradação que já existe
 //! para um peer velho que não ecoa a composição do lote no MTP fatiado (ver
-//! `docs/subsystems/inferencia.md`, 5.2). Ver a sonda
+//! `docs/subsystems/inference.md`, 5.2). Ver a sonda
 //! `an_external_mtp_draft_attaches_to_a_target_without_embedded_nextn` nos
 //! testes deste módulo para o roteiro de validação com os arquivos reais, e
 //! `crates/llama-engine/src/llm/model.rs::mtp_draft_tests` para a

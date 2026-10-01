@@ -11,7 +11,7 @@
 # (default ~/.cache/pom-release): the llama.cpp checkout, one Cargo target
 # directory per variant, cargo-xwin with its MSVC/Windows SDK download, and the
 # ninja binary. Nothing is stored on GitHub: no artifacts, no Actions cache.
-# The runner user needs no sudo; see docs/subsystems/build-execucao.md,
+# The runner user needs no sudo; see docs/subsystems/build-and-run.md,
 # "Release na ksia".
 set -euo pipefail
 
@@ -109,7 +109,7 @@ if [[ "$variant" == linux-cuda && ! -x "${cuda_home}/bin/nvcc" ]]; then
   missing="${missing} nvcc(${cuda_home})"
 fi
 if [[ -n "$missing" ]] && ((! dry_run)); then
-  die "missing on this machine:${missing}. Provision them once as root (see build-execucao.md, \"Release na ksia\")."
+  die "missing on this machine:${missing}. Provision them once as root (see build-and-run.md, \"Release na ksia\")."
 fi
 
 # --- llama.cpp fork -----------------------------------------------------------
@@ -156,7 +156,7 @@ case "$variant" in
     ;;
   linux-cuda)
     # An empty CUDAARCHS makes the vendored CMake pick the toolkit's whole
-    # architecture list instead of this machine's GPU (build-execucao.md,
+    # architecture list instead of this machine's GPU (build-and-run.md,
     # "Arquiteturas de GPU"). Never inherit a narrow development value here.
     unset CMAKE_CUDA_ARCHITECTURES
     export CUDAARCHS=''

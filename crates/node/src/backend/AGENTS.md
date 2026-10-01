@@ -285,7 +285,7 @@ profile policy remains the effective authorization boundary.
   pipeline quando cada peer contribuinte tem `runtime_capacity` confirmado
   pelo `/health` ou está `idle`; capacidades de gossip durante o boot ficam
   visíveis como cobertura, mas não são apresentadas como prontas.
-  Endereços IPv6 temporários rodam sozinhos: ver `docs/subsystems/rede-p2p.md`,
+  Endereços IPv6 temporários rodam sozinhos: ver `docs/subsystems/p2p-network.md`,
   "Endereço que deixou de responder".
   `plan` reads the GGUF header from the node that owns `model_path` and, when
   calculating budget-driven ranges, includes the configured context, sessions
@@ -497,7 +497,7 @@ profile policy remains the effective authorization boundary.
   tamanho de uma perna. O contexto disponível reduz o orçamento quando o
   prompt já ocupa parte da janela.
   `messages.rs` aceita `output_config.task_budget` (advisory, nunca corta) e
-  injeta o marcador de contagem regressiva no prompt; ver `api-http.md`.
+  injeta o marcador de contagem regressiva no prompt; ver `http-api.md`.
   **Os argumentos de uma chamada saem em fragmentos** (`CallArgsStreamer`),
   conforme o modelo gera: `eager_input_streaming` por ferramenta no
   `/v1/messages`, sempre no `/v1/chat/completions` porque a OpenAI não tem
@@ -577,13 +577,13 @@ profile policy remains the effective authorization boundary.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
   request (`request_origin`: um pedido do loopback com a marca do túnel libp2p
   vira `TUNNELED_ORIGIN`, não-loopback, e o cabeçalho da marca sai de todo
-  pedido - ver `rede-p2p.md`) e serve TLS ou texto claro na mesma porta TCP, com upgrades de
+  pedido - ver `p2p-network.md`) e serve TLS ou texto claro na mesma porta TCP, com upgrades de
   conexão habilitados (o WebSocket do proxy de plugins,
   `crate::plugin_proxy`). O endpoint HTTP/3
   recebe configuração QUIC separada e sobe na porta UDP dedicada anunciada,
   mesmo quando o TCP está em HTTP puro; `TlsServer` cobre somente o certificado
   TCP, modo estrito e duração do último handshake. Ver
-  `docs/subsystems/rede-p2p.md`, seção 5.
+  `docs/subsystems/p2p-network.md`, seção 5.
 - `models::OllamaClient::is_available` é apenas uma sonda opcional do
   `/health`: devolve o último valor e agenda em background uma checagem de
   500 ms no máximo a cada 15 s. Não herda os 300 s da geração, e um Ollama frio
@@ -655,7 +655,7 @@ faz o download autenticado do blob persistido.
   refusal shared by both admission paths, and a gateway with no local model
   admits against the peer's announced `RuntimeCapacity` before any health probe
   - without it a 30k-char prompt reached the peer's decode and aborted the
-  whole process on CUDA OOM (ksia, 2026-09-08), see `inferencia.md` §9; `generate_stream_with_stops`
+  whole process on CUDA OOM (servidor CUDA, 2026-09-08), see `inference.md` §9; `generate_stream_with_stops`
   builds a `crate::direct::DirectReply` from `reply_inbox` +
   `self_reply_urls(self_reply_hosts(), gateway_port)` and hands `direct` to the
   prefill and decode executors, so the tail can answer this node directly
@@ -766,7 +766,7 @@ faz o download autenticado do blob persistido.
   a devolve estruturada e incompleta (`TagScanner::finish_truncated`), com os
   argumentos numa string JSON inacabada - possível porque o scanner segura o
   corpo da chamada até a tag fechar, então nada vazou. Ver
-  `docs/subsystems/inferencia.md` (9.1) e a bancada `continuation_lab.rs`.
+  `docs/subsystems/inference.md` (9.1) e a bancada `continuation_lab.rs`.
 - `openai.rs` - the shared `DEFAULT_MAX_TOKENS=512` is used only when the
   client omits its output budget; there is no backend hard cap. The effective
   request budget is the minimum of the client request and the remaining `n_ctx`
@@ -908,7 +908,7 @@ faz o download autenticado do blob persistido.
   peer em vez de chamar toda resposta sem `ok` de binário velho. Daí em diante é o mesmo planner, o mesmo
   `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as recusas
   mudam de substantivo (`DeployKind::unit`). Ver
-  `docs/subsystems/implantacao.md` §1.1 e §1.2.
+  `docs/subsystems/deployment.md` §1.1 e §1.2.
   O `survey` preserva o `PeerId`, os candidatos de endereço UDP e a capability
   do túnel de cada máquina; os candidatos vêm do `/api/ui/node` do próprio
   peer, e não somente do anúncio que o coordenador recebeu. `tp_members`
@@ -1047,7 +1047,7 @@ faz o download autenticado do blob persistido.
   snapshots plus `prefix_auto_cache` index stats when Phase 3 is on),
   `POST /admin/slots/:name?action=save|restore|erase` (orchestrates
   a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
-  `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
+  `docs/subsystems/inference.md` §3.1.1 and `http-api.md`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty,
   and gives each remote peer a `route` (`Network::peer_route`): the path this
   node actually uses to reach it - direct HTTP, direct libp2p (maybe hole

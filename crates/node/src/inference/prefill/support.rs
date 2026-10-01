@@ -1952,7 +1952,7 @@ pub struct RequestTrace {
     /// `cold`. O gateway troca por `session-lost-cold` quando precisou
     /// reconstruir a sessão após um peer perder seu estado, e por `disk`
     /// quando o reuso veio de um snapshot automático em disco
-    /// (`slot_persist_prefix_cache`, ver `inferencia.md` §3.1.1).
+    /// (`slot_persist_prefix_cache`, ver `inference.md` §3.1.1).
     pub prefix_reuse_status: Option<String>,
     /// Razão local para o gateway não ter encontrado sessão em memória.
     /// Diferencia cache vazio, rota diferente, prompt que divergiu e lease

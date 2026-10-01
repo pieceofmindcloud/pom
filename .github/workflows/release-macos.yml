@@ -2,7 +2,7 @@ name: Release · macOS
 
 # Só roda quando você mandar, e roda no **runner self-hosted `macbook`** - não
 # consome cota nenhuma. Se o MacBook estiver desligado o job fica na fila em vez
-# de falhar. Ver `docs/subsystems/build-execucao.md`, "Release pelo GitHub
+# de falhar. Ver `docs/subsystems/build-and-run.md`, "Release pelo GitHub
 # Actions".
 on:
   workflow_dispatch:

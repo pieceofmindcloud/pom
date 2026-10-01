@@ -7,7 +7,7 @@ build = "build.rs"
 # Todo o código que fala com `llama-cpp-sys-2` (FFI, MTP, executor MoE, tensor
 # parallelism, leitura de GGUF, monitor de sistema) vive aqui, isolado de
 # `crates/node` para que editar o backend/rede/roteamento não reconstrua este
-# lado. Ver `docs/subsystems/build-execucao.md`.
+# lado. Ver `docs/subsystems/build-and-run.md`.
 
 [features]
 default = []

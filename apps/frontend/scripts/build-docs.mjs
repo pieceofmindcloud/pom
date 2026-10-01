@@ -12,8 +12,8 @@
  * The set is the curated "documentação viva": every AGENTS.md in the repo
  * (the root one, the per-folder ones from the documentation pass), the
  * subsystem READMEs under `docs/subsystems/`, plus `README.md` and
- * `apps/frontend/README.md`. `docs/superpowers/` (historical design specs) and
- * `old/` are deliberately left out.
+ * `apps/frontend/README.md`. `docs/superpowers/` (historical design specs) is
+ * deliberately left out.
  */
 import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -26,7 +26,7 @@ const out = join(here, "..", "src", "docs");
 // `docs` é o diretório de saída (`src/docs`): a caminhada do frontend não pode
 // re-coletar os arquivos que ela própria embute, ou os AGENTS.md copiados
 // viram duplicatas dentro da lista.
-const SKIP_DIRS = new Set(["node_modules", "dist", "target", ".git", "old", "venv", "docs"]);
+const SKIP_DIRS = new Set(["node_modules", "dist", "target", ".git", "venv", "docs"]);
 
 /** Walks a subtree collecting every file whose name is `name`. */
 function collect(root, dir, name, acc) {
@@ -115,7 +115,7 @@ function scopeOf(p) {
 
 /**
  * Short human label for the navigation. Titles written for agents carry
- * prefixes that only repeat the tree ("Subsistema: ", "AGENTS.md - "); the
+ * prefixes that only repeat the tree ("Subsystem: ", "AGENTS.md - "); the
  * reader already knows which section they clicked.
  */
 function labelOf(p, title) {
@@ -126,7 +126,7 @@ function labelOf(p, title) {
     return parts[parts.length - 1] + "/";
   }
   let label = title
-    .replace(/^Subsistema:\s*/i, "")
+    .replace(/^(Subsystem|Subsistema):\s*/i, "")
     .replace(/^AGENTS\.md\s*-\s*/i, "")
     .trim();
   // A subject, not a sentence: everything after the first ":", " - ", " — " or
@@ -166,15 +166,15 @@ for (const p of [...wanted].sort()) {
 }
 
 const SUBSYSTEMS_ORDER = [
-  "operacao.md",
-  "rede-p2p.md",
-  "fatiamento.md",
-  "implantacao.md",
-  "inferencia.md",
-  "transferencia.md",
-  "api-http.md",
+  "operations.md",
+  "p2p-network.md",
+  "slicing.md",
+  "deployment.md",
+  "inference.md",
+  "file-transfer.md",
+  "http-api.md",
   "web-ui.md",
-  "build-execucao.md",
+  "build-and-run.md",
 ];
 function subsystemsOrder(p) {
   const file = p.split("/").pop();

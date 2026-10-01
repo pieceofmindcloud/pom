@@ -15,18 +15,24 @@ em `AGENTS.md - crates/routing-base/`.
 - `content.ts` - **os textos**, nos dois idiomas (`guidesFor(locale)`). Um guia
   é `{ id, label, summary, title, blocks }` e um bloco é dado, não JSX:
   `lead`, `p`, `h`, `steps`, `cards`, `note`, `warn`, `table`, `code`,
-  `diagram`, `deep`. Guias hoje: `visao-geral`, `requisicao`,
-  `fatiar-implantar`, `operar`, `acesso`.
-  Os blocos `deep` de `requisicao` e `fatiar-implantar` também apontam para
-  `docs/subsystems/paralelismo.md`, que explica quando preferir pipeline ou TP.
+  `diagram`, `stats` (números de destaque), `checklist`, `faq` (perguntas que
+  abrem sob demanda, `<details>`) e `deep`. Guias hoje, nesta ordem:
+  `visao-geral`, `primeiros-passos`, `perfis`, `requisicao`,
+  `fatiar-implantar`, `usar-api`, `rede-internet`, `plugins`, `operar`,
+  `acesso`. Os `id` são o endereço `?guia=` e não mudam com o idioma.
 - `Guide.tsx` - `GuideView`, o renderizador. Cada tipo de bloco tem **um** visual,
   decidido aqui e em nenhum outro lugar: é por isso que os guias são dados. Quem
   escreve uma página nova escolhe entre os blocos existentes e ganha espaçamento,
   cor e tema escuro de graça, sem poder inventar um quarto tipo de aviso. Os
   blocos `deep` são separados do corpo e agrupados no fim, sob `docs.deeper`.
-- `diagrams.tsx` - SVG inline (`topology`, `request`, `slicing`, `lifecycle`).
-  Cor pelos mesmos tokens do painel (`fill-iris`, `stroke-line`), então trocar
-  de tema redesenha sem trabalho e nenhuma captura de tela envelhece.
+- `diagrams.tsx` - SVG inline (`topology`, `request`, `slicing`, `lifecycle`,
+  `setup`, `profiles`, `network`, `api`, `plugins`). Cor pelos mesmos tokens do
+  painel (`fill-iris`, `stroke-line`), então trocar de tema redesenha sem
+  trabalho e nenhuma captura de tela envelhece. O movimento (pacotes que
+  atravessam um salto, tracejado que corre, anéis de descoberta) é CSS puro,
+  classes `guide-*` em `src/index.css`: a regra global de
+  `prefers-reduced-motion` o congela, e todo pacote animado fica sobre uma
+  seta estática, então o desenho continua legível parado.
 
 ## Duas regras que mantêm isto honesto
 
@@ -34,7 +40,7 @@ em `AGENTS.md - crates/routing-base/`.
    Quando os dois divergirem, o markdown (que acompanha o código) vence e este
    conteúdo é corrigido. Todo guia termina em links `deep` para a referência,
    em vez de duplicar o detalhe.
-   A tabela do guia de fatiar e implantar acompanha `docs/subsystems/implantacao.md`:
+   A tabela do guia de fatiar e implantar acompanha `docs/subsystems/deployment.md`:
    faixas válidas podem compartilhar uma máquina, mas gap global e sobreposição
    continuam recusas.
 2. **A letra dentro de um diagrama é neutra de idioma** - letras de máquina,

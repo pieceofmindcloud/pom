@@ -1,716 +1,717 @@
-# Goal FreeToken e caminho MoE
+# FreeToken goal and the MoE path
 
-Este documento acompanha o goal `feat/ftk`. Ele registra as medições, decisões
-e limites do caminho MoE novo sem alterar o contrato do caminho denso, que
-continua usando o `llama.cpp`.
+This document follows the `feat/ftk` goal. It records the measurements,
+decisions and limits of the new MoE path without changing the contract of the
+dense path, which keeps using `llama.cpp`.
 
-## Fonte e escopo
+Machine names are generic on purpose: "the CUDA test server" is the
+multi-GPU Linux CUDA machine used for most measurements, and "the operator" is
+whoever ran the cluster.
 
-A fonte primária do estudo é
-`/Users/jairpereira/Sites/firstmate/data/rdma-freetoken-estudo/report.md`, lido
-integralmente antes do trabalho. O FreeToken foi usado como fonte de desenho e
-algoritmo, não de código. Nenhum peso trafega na rede por causa do fatiamento.
+## Source and scope
 
-O goal será entregue em fases coesas:
+The primary source of the study was an external FreeToken study report (kept
+outside this repository), read in full before the work. FreeToken was used as a
+source of design and algorithms, not code. No weight travels over the network
+because of slicing.
 
-1. medições locais e documentação do baseline;
-2. orçamento de KV em bytes, rebuild de contexto sem reler pesos, cancelamento
-   de prefill e stop strings;
-3. detecção de MoE com bifurcação reversível;
-4. motor MoE próprio com um formato de quantização por vez e cache LRU global;
-5. co-execução CPU/GPU baseada em banda medida, inicialmente no executor NVFP4
-   CUDA.
+The goal will be delivered in cohesive phases:
 
-### Fase 1: S9 entregue
+1. local measurements and baseline documentation;
+2. KV budget in bytes, context rebuild without rereading weights, prefill
+   cancellation and stop strings;
+3. MoE detection with a reversible fork;
+4. an own MoE engine with one quantization format at a time and a global LRU
+   cache;
+5. CPU/GPU co-execution based on measured bandwidth, initially in the CUDA
+   NVFP4 executor.
 
-O gateway agora aceita `stop` no formato OpenAI e `stop_sequences` no formato
-Anthropic, além do campo equivalente em `/api/generate`. Todos passam por um
-`StopMatcher` incremental comum. Ele só libera texto quando o próximo sufixo
-não pode mais completar nenhuma parada; ao casar, descarta a parada e o texto
-posterior, encerra a geração e propaga `finish_reason=stop` mais
-`stop_sequence`. O protocolo entre peers não mudou.
+### Phase 1: S9 delivered
 
-Os testes unitários cobrem parada dividida entre eventos, prefixo pendente,
-UTF-8, duplicatas e múltiplas paradas. A suíte nativa foi executada depois de
-materializar localmente o `llama.cpp` exigido pelo build script; os números
-consolidados ficam na seção de validação ao fim deste documento.
+The gateway now accepts `stop` in the OpenAI format and `stop_sequences` in the
+Anthropic format, plus the equivalent field in `/api/generate`. All of them go
+through a common incremental `StopMatcher`. It only releases text when the next
+suffix can no longer complete any stop; on a match, it drops the stop and the
+text after it, ends the generation and propagates `finish_reason=stop` plus
+`stop_sequence`. The protocol between peers did not change.
 
-Modelos densos devem continuar no caminho existente. A seleção do caminho MoE
-será uma decisão explícita baseada em metadados GGUF, com teste que proíbe um
-modelo denso de entrar no motor novo.
+The unit tests cover a stop split across events, a pending prefix, UTF-8,
+duplicates and multiple stops. The native suite was run after materializing
+locally the `llama.cpp` required by the build script; the consolidated numbers
+are in the validation section at the end of this document.
 
-### Fase 2: S1, cache de prefixo entre turnos
+Dense models must stay on the existing path. Selecting the MoE path will be an
+explicit decision based on GGUF metadata, with a test that forbids a dense model
+from entering the new engine.
 
-Mesmo sem o baseline de desempenho, conforme a decisão registrada pelo captain,
-o cache de prefixo foi implementado por segurança de estado e reaproveitamento
-de trabalho. `PrefixCache` é global ao gateway, com capacidade nominal de 32
-entradas e LRU entre entradas ociosas. Leases ocupados não são despejados, então
-o total pode exceder a capacidade até uma geração terminar. A política não
-guarda pesos nem tensors: cada entrada guarda somente a chave do modelo e dos
-hops, o texto do prompt, o
-`session_id` e a quantidade de tokens confirmada pela cabeça. Um lease marca a
-sessão como ocupada para impedir que duas gerações usem o mesmo KV.
+### Phase 2: S1, prefix cache between turns
 
-Em um miss, uma entrada ociosa pode ser reciclada para que o cache não exija
-um segundo slot de KV quando `max_sessions=1`; o prefill novo reseta essa
-sequência antes de decodificar. Entradas ocupadas nunca são compartilhadas.
+Even without the performance baseline, following the decision recorded by the
+operator, the prefix cache was implemented for state safety and work reuse.
+`PrefixCache` is global to the gateway, with a nominal capacity of 32 entries
+and LRU among idle entries. Busy leases are not evicted, so the total can exceed
+the capacity until a generation ends. The policy keeps neither weights nor
+tensors: each entry only keeps the model and hops key, the prompt text, the
+`session_id` and the number of tokens confirmed by the head. A lease marks the
+session as busy to stop two generations from using the same KV.
 
-Ao terminar o prefill com sucesso, o gateway envia `/v1/session/rewind` a todos
-os peers do plano. Cada peer remove do KV o sufixo gerado e confirma o
-`n_past` resultante. Só depois de todas as confirmações o lease entra no cache;
-qualquer falha descarta a entrada e libera a sessão. No turno seguinte, um hit
-mantém a rota e a sessão, sinaliza `reuse_prefix` no primeiro chunk e a cabeça
-tokeniza o novo prompt. Ela calcula o maior prefixo de tokens comum, recua o KV
-para essa posição e propaga `start_pos`/`next_pos` nos chunks seguintes. Os
-peers que não tokenizam recebem apenas o estado oculto, mas executam na posição
-explícita, evitando buracos silenciosos entre estágios.
+On a miss, an idle entry can be recycled so the cache does not require a second
+KV slot when `max_sessions=1`; the new prefill resets that sequence before
+decoding. Busy entries are never shared.
 
-Os campos são metadados adicionais do frame de inferência existente; o envelope
-binário e as APIs públicas não mudaram. O autoteste diferencial de
-`prefix_cache_lab.rs` executa operações contra uma referência simples e exige
-que um proxy que altera `cached_tokens` seja detectado. O teste puro do cache
-também cobre maior prefixo, leases ocupados e eviction LRU. A suíte nativa foi
-executada com o symlink local documentado em `build-execucao.md`. Nenhum ganho
-de desempenho é afirmado; os números ficam para a medição posterior pelo
-captain.
+When the prefill finishes successfully, the gateway sends `/v1/session/rewind`
+to every peer of the plan. Each peer removes the generated suffix from the KV
+and confirms the resulting `n_past`. Only after all confirmations does the lease
+enter the cache; any failure drops the entry and releases the session. On the
+next turn, a hit keeps the route and the session, signals `reuse_prefix` on the
+first chunk and the head tokenizes the new prompt. It computes the longest
+common token prefix, rolls the KV back to that position and propagates
+`start_pos`/`next_pos` on the following chunks. The peers that do not tokenize
+only get the hidden state, but run at the explicit position, avoiding silent
+holes between stages. (Today generation runs on a separate KV sequence and reuse
+is append-only; see `inference.md`, section 3.1.)
 
-### Fase 3: detecção de MoE e bifurcação reversível
+The fields are additional metadata of the existing inference frame; the binary
+envelope and the public APIs did not change. The differential self-test of
+`prefix_cache_lab.rs` runs operations against a simple reference and requires a
+proxy that changes `cached_tokens` to be detected. The pure cache test also
+covers the longest prefix, busy leases and LRU eviction. The native suite was
+run with the local symlink documented in `build-and-run.md`. No performance
+gain is claimed; the numbers were left for a later measurement by the operator.
 
-`gguf::read_info` agora lê `<arquitetura>.expert_count` e
-`<arquitetura>.expert_used_count`. A classificação é positiva somente quando
-`expert_count > 1`; nome de arquivo, falha de carga e nomes de arquitetura sem
-essa evidência não selecionam MoE. Em `auto`, um cabeçalho denso ou ausente
-segue explicitamente para `dense/llama.cpp`.
+### Phase 3: MoE detection and a reversible fork
 
-O override `POM_INFERENCE_MODE` aceita `auto`, `dense` ou `moe` quando o deploy
-está em `auto`; uma escolha explícita persistida pelo deploy vence o ambiente.
-`dense` força o caminho existente mesmo para um GGUF MoE. `moe` recusa um modelo sem
-`expert_count > 1`, em vez de desviar silenciosamente. O caminho MoE desta
-fase foi inicialmente `moe/llama.cpp-delegated`, uma delegação temporária ao
-`LlmEngine`. A costura posterior da Fase 4 substituiu essa seleção operacional
-por `moe/q4_0`; a referência à delegação permanece somente para explicar o
-estado histórico e o teste de telemetria que garante que uma delegação nunca
-seja rotulada como motor MoE. Os testes de classificação cobrem denso, MoE,
-override e metadados ausentes.
-Os testes isolados de GGUF e executor passaram em um harness `rustc` com 15
-casos. A suíte `cargo test -p node` também passou com o symlink local do
-`llama.cpp` materializado durante a validação.
+`gguf::read_info` now reads `<architecture>.expert_count` and
+`<architecture>.expert_used_count`. Classification is only positive when
+`expert_count > 1`; file name, load failure and architecture names without that
+evidence do not select MoE. In `auto`, a dense or missing header goes
+explicitly to `dense/llama.cpp`.
 
-### Fase 4: cache global, loader GGUF e primeiro bloco MoE
+The `POM_INFERENCE_MODE` override accepts `auto`, `dense` or `moe` when the
+deploy is in `auto`; an explicit choice persisted by the deploy beats the
+environment. `dense` forces the existing path even for a MoE GGUF. `moe`
+refuses a model without `expert_count > 1`, instead of silently diverting. This
+phase's MoE path was initially `moe/llama.cpp-delegated`, a temporary
+delegation to `LlmEngine`. Phase 4's later wiring replaced that operational
+selection with `moe/q4_0`; the reference to the delegation only remains to
+explain the historical state and the telemetry test that guarantees a
+delegation is never labeled as the MoE engine. The classification tests cover
+dense, MoE, override and missing metadata. The isolated GGUF and executor tests
+passed in a `rustc` harness with 15 cases. The `cargo test -p node` suite also
+passed with the local `llama.cpp` symlink materialized during validation.
 
-O desenho foi reimplementado em Rust a partir do FreeToken fixado em
-`bd372b630a028e3faa51f4ab0ef6a98c2f2de501`. A instância `ExpertCache` é
-compartilhada pelo servidor e indexa cada entrada por modelo, camada, expert e
-formato. Um `ExpertLease` conta referências ativas; eviction só escolhe a
-entrada ociosa com menor `last_used`, portanto uma requisição em andamento não
-perde seu peso.
+### Phase 4: global cache, GGUF loader and the first MoE block
 
-`admission::MemoryAccount` não usa uma constante de VRAM. Ele desconta do
-baseline livre medido os pesos, buffers fixos e a reserva de ativações, e cruza
-esse teto com uma nova leitura de memória livre antes de cada miss. A sonda
-local usa `MemAvailable` no Linux, `vm_stat` no macOS e
-`GlobalMemoryStatusEx` no Windows. Uma futura sonda de VRAM pode implementar a
-mesma trait sem mudar a política.
+The design was reimplemented in Rust from FreeToken pinned at
+`bd372b630a028e3faa51f4ab0ef6a98c2f2de501`. The `ExpertCache` instance is
+shared by the server and indexes each entry by model, layer, expert and format.
+An `ExpertLease` counts active references; eviction only picks the idle entry
+with the lowest `last_used`, so a request in progress does not lose its weight.
 
-O primeiro formato é Q4_0 packed. `format_q4_0.rs` valida a geometria GGML,
-mmapa o GGUF, copia somente os bancos do expert solicitado para o cache,
-decodifica os blocos de 32 elementos, executa gate-up, SiLU gated e down. Com
-`--features cuda`, `block.rs` mantém o payload admitido no cache residente e a
-ponte heterogênea executa as três fases na GPU; sem CUDA, o mesmo decoder roda
-explicitamente em `CPUReference`. O loader aceita tanto
-`ffn_gate_up_exps.weight` fundido quanto
-`ffn_gate_exps.weight` + `ffn_up_exps.weight` separados, recombinando estes
-últimos no payload interno do executor. `router.rs` escolhe top-k de forma
-determinística e renormaliza os pesos;
-`block.rs` conecta essa seleção ao `Q4_0Executor`, usando uma chave global por
-modelo, camada, expert e formato. Nenhuma linha do FreeToken foi copiada.
+`admission::MemoryAccount` does not use a VRAM constant. It subtracts from the
+measured free baseline the weights, fixed buffers and the activation reserve,
+and crosses that ceiling with a new free memory read before each miss. The local
+probe uses `MemAvailable` on Linux, `vm_stat` on macOS and
+`GlobalMemoryStatusEx` on Windows. A future VRAM probe can implement the same
+trait without changing the policy.
 
-O harness isolado passou com 28 testes, incluindo parser GGUF sintético,
-router F32, forward do bloco, cache hit, eviction global, memória medida,
-leases ativos e rejeições de geometria. Isso prova as fronteiras puras do
-motor, não um modelo completo. O parser também aceita arrays GGUF grandes,
-limitando-os pelo espaço restante do arquivo em vez de um teto arbitrário.
-O runtime HTTP agora detecta o dtype dos bancos de experts, abre o decoder
-próprio correspondente e calcula os logits do router antes de aplicar o bloco
-ao hidden state recebido ou ao residual que será encaminhado. Q4_0 e NVFP4
-compartilham a mesma fronteira de cache e dispatch, e Q4_K (12), Q6_K (14),
-IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e MXFP4 (39) agora também
-passam por essa seleção. O
-decoder K-quant valida a ordem GGUF
-`[columns, rows, experts]`, os blocos de 256 elementos e a convenção fundida ou
-separada dos bancos gate/up antes de copiar um expert. O frame continua em f16
-e não leva pesos.
-Na convenção separada, gate e up têm a geometria GGUF
-`[hidden, intermediate, experts]`; o loader não pode trocar `dims[0]` e
-`dims[1]` ao transformar essa metadata em `hidden` e `intermediate`. O callback
-valida também o rank e as dimensões recebidas do llama.cpp e, em caso de
-divergência, informa a forma observada e a esperada.
-O decoder NVFP4 aplica a mesma regra de dimensões: no GGUF, uma matriz de peso
-é `[input, output, experts]`. Portanto gate/up usam
-`[hidden, intermediate, experts]` e down usa
-`[intermediate, hidden, experts]`; inverter esses eixos produz um runtime com
-hidden errado e recusa no primeiro forward, em vez de truncar o residual.
-Ainda delegam ao `LlmEngine` a atenção, as operações que não pertencem ao
-bloco costurado e a amostragem final do token; portanto esta entrega não
-afirma ser um transformer MoE completo. O captain assumiu a prova ponta a
-ponta com um modelo real e fará essa validação fora deste ambiente, sem
-alterar o caminho denso.
+The first format is packed Q4_0. `format_q4_0.rs` validates the GGML geometry,
+mmaps the GGUF, copies only the requested expert's banks into the cache, decodes
+the 32-element blocks, runs gate-up, gated SiLU and down. With
+`--features cuda`, `block.rs` keeps the admitted payload in the resident cache
+and the heterogeneous bridge runs the three phases on the GPU; without CUDA, the
+same decoder runs explicitly in `CPUReference`. The loader accepts both a fused
+`ffn_gate_up_exps.weight` and separate `ffn_gate_exps.weight` +
+`ffn_up_exps.weight`, recombining the latter into the executor's internal
+payload. `router.rs` picks top-k deterministically and renormalizes the
+weights; `block.rs` connects that selection to `Q4_0Executor`, using a global
+key per model, layer, expert and format. No line of FreeToken was copied.
 
-O bloco K-quant foi validado localmente com fixtures Q2_K, Q3_K, Q4_K e Q6_K, nas duas
-convenções de nomes, e com `MoeRuntime::open` seguido de `forward_batch`. A
-falha inicial era uma inversão no validator: GGUF declara a dimensão de
-colunas em `dims[0]`, enquanto o contrato do mat-vec recebe `rows, columns`.
-O validator agora checa as duas dimensões e o eixo de experts antes do forward.
-O teste retangular usa `hidden=2048` e `intermediate=512`, portanto falha se os
-eixos forem trocados. Não há ainda uma prova física de Qwen3.6 neste worktree.
+The isolated harness passed with 28 tests, including a synthetic GGUF parser,
+an F32 router, the block's forward, a cache hit, global eviction, measured
+memory, active leases and geometry rejections. That proves the engine's pure
+boundaries, not a complete model. The parser also accepts large GGUF arrays,
+bounding them by the file's remaining space instead of an arbitrary ceiling.
+The HTTP runtime now detects the dtype of the expert banks, opens the matching
+own decoder and computes the router logits before applying the block to the
+received hidden state or to the residual that will be forwarded. Q4_0 and NVFP4
+share the same cache and dispatch boundary, and Q4_K (12), Q6_K (14),
+IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) and MXFP4 (39) now also go
+through that selection. The K-quant decoder validates the GGUF order
+`[columns, rows, experts]`, the 256-element blocks and the fused or separate
+convention of the gate/up banks before copying an expert. The frame stays f16
+and carries no weights. In the separate convention, gate and up have the GGUF
+geometry `[hidden, intermediate, experts]`; the loader must not swap `dims[0]`
+and `dims[1]` when turning that metadata into `hidden` and `intermediate`. The
+callback also validates the rank and the dimensions received from llama.cpp and,
+on a divergence, reports the observed and the expected shape. The NVFP4 decoder
+applies the same dimension rule: in GGUF, a weight matrix is
+`[input, output, experts]`. So gate/up use `[hidden, intermediate, experts]` and
+down uses `[intermediate, hidden, experts]`; swapping those axes produces a
+runtime with the wrong hidden width and a refusal on the first forward, instead
+of truncating the residual. Attention, the operations that do not belong to the
+wired block and the final token sampling still delegate to `LlmEngine`; so this
+delivery does not claim to be a complete MoE transformer. The operator took on
+the end-to-end proof with a real model, to be validated outside that
+environment, without changing the dense path.
 
-Em 2026-09-02, a prova de um bloco Q6_K real fechou a causa do NaN do caminho
-`k_quant`: o layout GGML é `ql[128]`, `qh[64]`, `scales[16]` e `d[2]` no fim
-dos 210 bytes. O decoder Rust e `k_dot_q6_k` liam `d` no início, deslocando
-também todos os demais campos. A correção usa os offsets do `block_q6_K` real
-nos dois executores. As provas
-`q6_k_gate_up_oito_experts_hidden_2048_e_finito` e
-`q6_k_gate_up_heterogeneo_oito_experts_hidden_2048_e_finito` usam entrada
-finita e oito experts, e a primeira também verifica os índices de expert
-carregados pelo GGUF. A validação CUDA exige `nvcc` na máquina de GPU; não há
-GGUF Qwen3.6 nem compilador CUDA neste worktree local.
+The K-quant block was validated locally with Q2_K, Q3_K, Q4_K and Q6_K
+fixtures, in both naming conventions, and with `MoeRuntime::open` followed by
+`forward_batch`. The initial failure was an inversion in the validator: GGUF
+declares the column dimension in `dims[0]`, while the mat-vec contract receives
+`rows, columns`. The validator now checks both dimensions and the experts axis
+before the forward. The rectangular test uses `hidden=2048` and
+`intermediate=512`, so it fails if the axes are swapped. There was no physical
+proof of Qwen3.6 in that worktree yet.
 
-Durante essa validação também foi corrigida uma inconsistência preexistente no
-decoder IQ: `IQ4_NL` tem blocos GGML de 32 elementos, enquanto os demais IQ
-priorizados usam blocos de 256. O cálculo de bytes por linha e o tamanho
-passado ao dequantizador agora respeitam essa diferença; a prova local de
-dequantização deixa de ler além de um bloco de 18 bytes.
+On 2026-09-02, the proof of a real Q6_K block closed the cause of the
+`k_quant` path's NaN: the GGML layout is `ql[128]`, `qh[64]`, `scales[16]` and
+`d[2]` at the end of the 210 bytes. The Rust decoder and `k_dot_q6_k` read `d`
+at the start, also shifting every other field. The fix uses the real
+`block_q6_K` offsets in both executors. The proofs
+`q6_k_gate_up_oito_experts_hidden_2048_e_finito` and
+`q6_k_gate_up_heterogeneo_oito_experts_hidden_2048_e_finito` use finite input
+and eight experts, and the first also checks the expert indexes loaded from the
+GGUF. CUDA validation requires `nvcc` on the GPU machine; there was neither a
+Qwen3.6 GGUF nor a CUDA compiler in that local worktree.
 
-Os IQ-quants priorizados usam o mesmo loader e a mesma fronteira de cache.
-O executor próprio mantém parser, mmap, router, top-k e mat-vec; a expansão do
-bloco usa as primitivas de dequantização GGML linkadas pelo crate nativo, sem
-duplicar os codebooks oficiais em Rust. Fixtures locais cobrem IQ3_S, IQ2_S e
-IQ4_XS, os dois nomes de gate/up e a execução ponta a ponta do runtime. A ponte
-CUDA cobre IQ3_XXS, IQ3_S, IQ2_S e IQ4_XS; um dtype fora dos decoders externos
-continua recusado pelo dispatch com ID e nome.
+That validation also fixed a pre-existing inconsistency in the IQ decoder:
+`IQ4_NL` has 32-element GGML blocks, while the other prioritized IQ formats use
+256-element blocks. The bytes per row computation and the size passed to the
+dequantizer now respect that difference; the local dequantization proof no
+longer reads past an 18-byte block.
 
-### Fase 4A: F32, F16 e BF16
+The prioritized IQ-quants use the same loader and the same cache boundary. The
+own executor keeps parser, mmap, router, top-k and mat-vec; expanding the block
+uses the GGML dequantization primitives linked by the native crate, without
+duplicating the official codebooks in Rust. Local fixtures cover IQ3_S, IQ2_S
+and IQ4_XS, both gate/up names and the runtime's end-to-end run. The CUDA bridge
+covers IQ3_XXS, IQ3_S, IQ2_S and IQ4_XS; a dtype outside the external decoders
+is still refused by the dispatch with its ID and name.
 
-Os dtypes escalares `F32` (0), `F16` (1) e `BF16` (30) agora têm decoder CPU
-próprio em `format_plain.rs`. O loader valida rank 3, ordem lógica
-`[columns, rows, experts]`, todas as dimensões, dtype e limites do mmap antes
-de copiar um expert para o cache. As convenções fundida
-`ffn_gate_up_exps.weight` e separada `ffn_gate_exps.weight` mais
-`ffn_up_exps.weight` são aceitas; o down continua exigindo
-`ffn_down_exps.weight`. O router escalar pode ser F32, F16 ou BF16 e é
-decodificado pelo dtype declarado no próprio tensor.
+### Phase 4A: F32, F16 and BF16
 
-O bloco próprio aplica o mesmo top-k, cache LRU e contrato de hidden state dos
-demais formatos. Um dtype quantizado entregue a esse decoder recusa com o ID e
-nome GGML, e o dispatcher geral agora encaminha 0, 1 e 30 para essa família em
-vez de tentar Q4_0.
+The scalar dtypes `F32` (0), `F16` (1) and `BF16` (30) now have their own CPU
+decoder in `format_plain.rs`. The loader validates rank 3, the logical order
+`[columns, rows, experts]`, every dimension, dtype and the mmap limits before
+copying an expert into the cache. The fused `ffn_gate_up_exps.weight` and the
+separate `ffn_gate_exps.weight` plus `ffn_up_exps.weight` conventions are
+accepted; down still requires `ffn_down_exps.weight`. The scalar router can be
+F32, F16 or BF16 and is decoded by the dtype declared in the tensor itself.
 
-Não há um GGUF MoE F32, F16 ou BF16 disponível neste worktree para prova física.
-Os fixtures sintéticos cobrem os três dtypes, as duas convenções de nomes, o
-forward com cache e a recusa nominal, portanto estes formatos estão
-**implementados, mas não provados em GGUF real**. Nenhum número de desempenho é
-afirmado.
+The own block applies the same top-k, LRU cache and hidden-state contract as the
+other formats. A quantized dtype handed to this decoder is refused with the GGML
+ID and name, and the general dispatcher now routes 0, 1 and 30 to this family
+instead of trying Q4_0.
 
-### Fase 4B: Q4_1, Q5_0, Q5_1 e Q8_0
+There was no F32, F16 or BF16 MoE GGUF available in that worktree for a
+physical proof. The synthetic fixtures cover the three dtypes, both naming
+conventions, the forward with cache and the refusal by name, so these formats
+are **implemented, but not proven on a real GGUF**. No performance number is
+claimed.
 
-Os blocos clássicos `Q4_1` (3), `Q5_0` (6), `Q5_1` (7) e `Q8_0` (8) têm
-decoder CPU próprio em `format_legacy_quants.rs`. Os tamanhos dos blocos e as
-fórmulas de dequantização seguem a definição ativa em `ggml-common.h` e
-`ggml-quants.c`: escalas e mínimos em F16, quinto bit separado para Q5 e
-quantes assinados para Q8. O loader valida divisibilidade por blocos de 32,
-dimensões `[columns, rows, experts]`, dtype uniforme, offsets e limites do
-arquivo. Gate/up fundido e separado compartilham o mesmo caminho de cache e
-router, mas nenhum dtype é aceito pelo decoder de outro.
+### Phase 4B: Q4_1, Q5_0, Q5_1 and Q8_0
 
-Os testes locais cobrem vetor de referência para cada bloco, forward do expert,
-as duas convenções de nomes e o forward do `MoeRuntime`. Não há GGUF MoE
-Q4_1/Q5_0/Q5_1/Q8_0 disponível neste worktree, então estes formatos estão
-**implementados, mas não provados em GGUF real**. Nenhum número de desempenho é
-afirmado.
+The classic blocks `Q4_1` (3), `Q5_0` (6), `Q5_1` (7) and `Q8_0` (8) have their
+own CPU decoder in `format_legacy_quants.rs`. Block sizes and dequantization
+formulas follow the active definition in `ggml-common.h` and `ggml-quants.c`:
+F16 scales and minimums, a separate fifth bit for Q5 and signed quants for Q8.
+The loader validates divisibility by 32-element blocks, the
+`[columns, rows, experts]` dimensions, a uniform dtype, offsets and file
+limits. Fused and separate gate/up share the same cache and router path, but no
+dtype is accepted by another's decoder.
 
-Não há número de desempenho nesta fase. A validação nativa foi executada com o
-symlink local de `llama.cpp` documentado em `build-execucao.md`; esse artefato
-não entra no commit e não substitui a prova ponta a ponta com um modelo real.
+The local tests cover a reference vector for each block, the expert's forward,
+both naming conventions and the `MoeRuntime` forward. There was no
+Q4_1/Q5_0/Q5_1/Q8_0 MoE GGUF available in that worktree, so these formats are
+**implemented, but not proven on a real GGUF**. No performance number is
+claimed.
 
-### Fase 4C: MXFP4, TQ1_0, TQ2_0, Q1_0 e Q2_0
+There is no performance number in this phase. Native validation was run with
+the local `llama.cpp` symlink documented in `build-and-run.md`; that artifact
+does not enter the commit and does not replace the end-to-end proof with a real
+model.
 
-Os formatos de baixa largura `MXFP4` (39), `TQ1_0` (34), `TQ2_0` (35),
-`Q1_0` (41) e `Q2_0` (42) têm decoder próprio em `format_low_bits.rs`. Cada
-formato declara seu bloco, tamanho packed e fórmula de dequantização. MXFP4
-usa expoente E8M0 por bloco; TQ1/TQ2 usam seus codebooks ternários; Q1/Q2
-usam os campos de bits GGML correspondentes. O loader valida dtype, rank,
-geometria `[columns, rows, experts]`, offsets e limites do mmap antes de
-admitir qualquer expert no cache.
+### Phase 4C: MXFP4, TQ1_0, TQ2_0, Q1_0 and Q2_0
 
-O caminho aceita gate/up fundido e separado, calcula o slice por expert sem
-confundir bytes de uma linha com bytes de um bloco e liga o executor ao
-`MoeRuntime`. Há testes de vetor, fonte mmap, cache, router, convenções de
-nomes e forward ponta a ponta para os cinco dtypes. Não há um GGUF MoE real
-destes formatos disponível neste worktree; portanto estão **implementados,
-mas não provados em GGUF real**. Nenhum número de desempenho é afirmado.
+The low-width formats `MXFP4` (39), `TQ1_0` (34), `TQ2_0` (35), `Q1_0` (41) and
+`Q2_0` (42) have their own decoder in `format_low_bits.rs`. Each format declares
+its block, packed size and dequantization formula. MXFP4 uses an E8M0 exponent
+per block; TQ1/TQ2 use their ternary codebooks; Q1/Q2 use the matching GGML bit
+fields. The loader validates dtype, rank, the `[columns, rows, experts]`
+geometry, offsets and mmap limits before admitting any expert into the cache.
 
-### Fase 4D: K-quants restantes
+The path accepts fused and separate gate/up, computes the per-expert slice
+without confusing a row's bytes with a block's bytes and wires the executor to
+`MoeRuntime`. There are vector, mmap source, cache, router, naming convention
+and end-to-end forward tests for the five dtypes. There was no real MoE GGUF of
+these formats available in that worktree; so they are **implemented, but not
+proven on a real GGUF**. No performance number is claimed.
 
-`format_k_quants.rs` agora cobre também `Q2_K` (10), `Q3_K` (11), `Q5_K`
-(13) e `Q8_K` (15), além de `Q4_K` e `Q6_K`. Cada formato usa o tamanho de
-bloco e a disposição de campos GGML próprios: escalas e mínimos quantizados
-de Q2/Q4/Q5, high bits de Q3/Q5 e o bloco escalar de Q8. O dispatch por dtype,
-o cálculo de bytes por linha e a validação de `[columns, rows, experts]` são
-compartilhados sem aceitar um bloco com decoder de outro formato.
+### Phase 4D: remaining K-quants
 
-Os testes cobrem dequantização dos quatro formatos novos, slices por expert
-com gate/up fundidos e separados, cache e forward do `MoeRuntime` para todos
-os seis K-quants. Não há GGUF MoE real K-quant disponível neste worktree;
-estes formatos estão **implementados, mas não provados em GGUF real**. Nenhum
-número de desempenho é afirmado.
+`format_k_quants.rs` now also covers `Q2_K` (10), `Q3_K` (11), `Q5_K` (13) and
+`Q8_K` (15), besides `Q4_K` and `Q6_K`. Each format uses its own GGML block size
+and field layout: quantized scales and minimums for Q2/Q4/Q5, high bits for
+Q3/Q5 and Q8's scalar block. Dispatch by dtype, the bytes-per-row computation and
+the `[columns, rows, experts]` validation are shared without accepting a block
+with another format's decoder.
 
-### Fase 4E: IQ-quants restantes
+The tests cover dequantization of the four new formats, per-expert slices with
+fused and separate gate/up, cache and the `MoeRuntime` forward for all six
+K-quants. There was no real K-quant MoE GGUF available in that worktree; these
+formats are **implemented, but not proven on a real GGUF**. No performance
+number is claimed.
 
-`format_iq_quants.rs` agora cobre `IQ2_XXS` (16), `IQ2_XS` (17), `IQ3_XXS`
-(18), `IQ1_S` (19), `IQ4_NL` (20) e `IQ1_M` (29), além de `IQ3_S`, `IQ2_S` e
-`IQ4_XS`. O executor seleciona a estrutura packed e a rotina de
-dequantização C correspondente a cada dtype do GGML; nenhum codebook de um
-IQ é usado para outro. Parser, mmap, validação de geometria, cache, router e
-top-k permanecem no motor Rust próprio.
+### Phase 4E: remaining IQ-quants
 
-Os testes cobrem os nove IQ-quants ativos, payload truncado, recusa de dtype
-fora da enumeração, gate/up fundidos e separados e forward do `MoeRuntime`.
-Não há GGUF MoE real IQ disponível neste worktree; os seis formatos novos estão
-**implementados, mas não provados em GGUF real**. Nenhum número de desempenho é
-afirmado.
+`format_iq_quants.rs` now covers `IQ2_XXS` (16), `IQ2_XS` (17), `IQ3_XXS` (18),
+`IQ1_S` (19), `IQ4_NL` (20) and `IQ1_M` (29), besides `IQ3_S`, `IQ2_S` and
+`IQ4_XS`. The executor selects the packed structure and the C dequantization
+routine matching each GGML dtype; no IQ codebook is used for another. Parser,
+mmap, geometry validation, cache, router and top-k stay in the own Rust engine.
 
-### Travessia UD heterogênea
+The tests cover the nine active IQ-quants, a truncated payload, refusing a dtype
+outside the enumeration, fused and separate gate/up and the `MoeRuntime`
+forward. There was no real IQ MoE GGUF available in that worktree; the six new
+formats are **implemented, but not proven on a real GGUF**. No performance
+number is claimed.
 
-`format_heterogeneous.rs` mantém o dtype e a geometria de cada papel do expert
-separadamente. O callback e o inventário Rust falam a mesma forma GGML
-`[columns, rows, experts]`, enquanto ids e pesos da rota continuam em ordem
-token-major `[token, slot]`. No CPU, o lote agrupa temporariamente as entradas
-por expert e percorre cada linha de gate, up e down uma vez para todos os tokens
-que a selecionaram; isso evita a descodificação integral repetida que fazia
-combinações grandes falharem como timeout no prefill. A saída é reconstruída
-na posição original de cada token e mantém os pesos da rota, tanto para bancos
-fundidos quanto separados.
 
-Essa é a combinação observada no `deepseek4` real da ksia: IQ3_XXS (18) em
-gate/up e MXFP4 (39) em down, com 256 experts e top-6. Esses dois formatos têm
-decoders CPU externos e ponte CUDA heterogênea; o plano mantém os experts fora
-do buffer de pesos do llama.cpp e a execução em lote não cai na execução token a
-token. Para
-uma combinação sem decoder CPU ou ponte CUDA, `MoeRuntime::external_executor_plan`
-devolve a razão com os dtypes e o servidor recusa a carga antes de abrir o
-modelo; não há retorno silencioso ao MoE nativo.
+### Heterogeneous UD crossing
 
-### Ligação e telemetria do hop
+`format_heterogeneous.rs` keeps the dtype and geometry of each expert role
+separately. The callback and the Rust inventory speak the same GGML shape
+`[columns, rows, experts]`, while the route's ids and weights stay in token-major
+order `[token, slot]`. On the CPU, the batch temporarily groups the entries by
+expert and walks each gate, up and down row once for every token that selected
+it; that avoids the repeated full decoding that made large combinations fail as
+a timeout in prefill. The output is rebuilt at each token's original position
+and keeps the route's weights, for both fused and separate banks.
 
-`infer_server` mantém o caminho denso em `llama.cpp`. Quando a seleção GGUF é
-MoE, `MoeRuntime` é aberto somente para esse caminho e o router local escolhe
-os experts do decoder selecionado. O ownership do bloco de fronteira é
-explícito: um hidden recebido ou um residual destinado ao próximo hop só é
-entregue ao runtime MoE quando o caminho selecionado é MoE; no hop terminal a
-captura do residual também chama o runtime antes da amostragem. O executor é
-registrado somente depois de o forward retornar com sucesso, portanto uma
-seleção MoE sem chamada real continua aparecendo como divergência. O wire
-mantém f16 como padrão para o estado oculto; nenhum peso trafega pela rede. Atenção, logits e
-operações restantes continuam no `LlmEngine`, que fornece a fronteira de
-cálculo restante ao redor do bloco próprio.
+That is the combination observed on the real `deepseek4` on the CUDA test
+server: IQ3_XXS (18) on gate/up and MXFP4 (39) on down, with 256 experts and
+top-6. Those two formats have external CPU decoders and a heterogeneous CUDA
+bridge; the plan keeps the experts out of llama.cpp's weight buffer and batched
+execution does not fall back to token-by-token execution. For a combination
+without a CPU decoder or a CUDA bridge, `MoeRuntime::external_executor_plan`
+returns the reason with the dtypes and the server refuses the load before
+opening the model; there is no silent return to the native MoE.
 
-Cada resposta de inferência publica `selected_path`, `executed_engine`, a lista
-`executed_engines` e as flags `engine_mismatch`/`mixed_execution`. O primeiro
-vem da seleção GGUF; os demais só são gravados depois que o decode llama.cpp
-ou o forward MoE retornam. `/health` publica `selected_path` e o estado
-efetivo do executor MoE (`moe_requested`, `moe_executor`, dtypes e motivo),
-porque uma seleção sem executor precisa ser visível mesmo antes de uma
-requisição. O gateway agrega os campos por fase de
-cada hop, sem deduzi-los do nome do modelo, da arquitetura ou de tempos. A
-interface mostra o caminho selecionado e o motor observado; mistura e
-divergência ficam visíveis como diagnóstico, nunca são reduzidas a um rótulo
-único.
+### Hop wiring and telemetry
 
-### Diagnóstico do executor CUDA
+`infer_server` keeps the dense path on `llama.cpp`. When the GGUF selection is
+MoE, `MoeRuntime` is only opened for that path and the local router picks the
+selected decoder's experts. Ownership of the boundary block is explicit: a
+received hidden state or a residual bound for the next hop is only handed to the
+MoE runtime when the selected path is MoE; on the terminal hop the residual
+capture also calls the runtime before sampling. The executor is only recorded
+after the forward returns successfully, so a MoE selection without a real call
+still shows up as a divergence. The wire keeps f16 as the default for the
+hidden state; no weight travels over the network. Attention, logits and the
+remaining operations stay in `LlmEngine`, which provides the remaining compute
+boundary around the own block.
 
-O primeiro instrumento da Fase 5 publica também `moe_executor`,
-`moe_executors`, `moe_executor_dtypes`, `moe_executor_reason` e
-`moe_forward_ms`. O backend só entra nesses campos depois de
-`MoeRuntime::forward_batch` retornar com sucesso. `cuda` significa o executor
-CUDA NVFP4; `cpu-reference` significa o decoder de referência; nesse caso a
-telemetria lista os dtypes GGML concretos e informa que não há ponte CUDA;
-`not-run` é uma seleção MoE sem forward registrado e `mixed` denuncia mais de
-um backend no mesmo hop. O `PhaseTrace` do gateway preserva os campos por hop
-e por fase. Um binário sem a feature `cuda` usa o executor CPU próprio para os
-formatos suportados. NVFP4 continua recusando a carga com a mensagem nominal
-do executor, salvo quando `POM_MOE_NVFP4_BACKEND=cpu` pede explicitamente o
-executor de referência.
+Each inference answer publishes `selected_path`, `executed_engine`, the
+`executed_engines` list and the `engine_mismatch`/`mixed_execution` flags. The
+first comes from the GGUF selection; the others are only recorded after the
+llama.cpp decode or the MoE forward return. `/health` publishes `selected_path`
+and the MoE executor's effective state (`moe_requested`, `moe_executor`, dtypes
+and reason), because a selection without an executor must be visible even
+before a request. The gateway aggregates the fields per phase of each hop,
+without deducing them from the model name, the architecture or timings. The UI
+shows the selected path and the observed engine; mixing and divergence stay
+visible as a diagnosis, never reduced to a single label.
 
-No Qwen3.6-35B-A3B-UD-IQ3_S real, a ponte agora está autorizada a publicar
-`moe_executor=cuda`, `moe_executor_dtypes=[21,22,23]` e nenhum motivo de
-CPUReference, depois da prova diferencial dos três dtypes na GPU real. Q4_0
-usa o mesmo contrato CUDA com dtype GGML `2`; a validação preserva blocos de 32
-para esse formato, em vez de aplicar a exigência de 256 usada pelos K/IQ-quants.
-Q5_K entra pelo dtype GGML `13`, bloco de 176 bytes em 256 elementos
-(`d[2] dmin[2] scales[12] qh[32] ql[128]`): é o Q4_K com um plano de bit alto,
-e `k_value_q5_k`/`k_dot_q5_k` reproduzem `dequantize_q5_k_block` do decoder CPU.
+### CUDA executor diagnosis
 
-### Um dtype sem ponte derruba a rota inteira
+Phase 5's first instrument also publishes `moe_executor`, `moe_executors`,
+`moe_executor_dtypes`, `moe_executor_reason` and `moe_forward_ms`. The backend
+only enters those fields after `MoeRuntime::forward_batch` returns
+successfully. `cuda` means the CUDA NVFP4 executor; `cpu-reference` means the
+reference decoder; in that case telemetry lists the concrete GGML dtypes and
+says there is no CUDA bridge; `not-run` is a MoE selection with no recorded
+forward and `mixed` reports more than one backend on the same hop. The gateway's
+`PhaseTrace` keeps the fields per hop and per phase. A binary without the `cuda`
+feature uses the own CPU executor for the supported formats. NVFP4 still refuses
+the load with the executor's message by name, unless `POM_MOE_NVFP4_BACKEND=cpu`
+explicitly asks for the reference executor.
 
-`Ornith-1.5-35B-A3B-Q5_K_S` mede 2 dtypes Q4_0 e 13 Q5_K nos experts: enquanto
-Q5_K não tinha kernel, a rota caía inteira para `CPUReference` mesmo com a
-ponte Q4_0 pronta. Quants dinâmicos (UD) misturam dtypes **por papel de
-expert**, portanto a cobertura da ponte se confere pelo dtype concreto na
-telemetria (`moe_executor_dtypes`), nunca pelo nome do ficheiro. Provar o ganho
-num modelo cujo dtype já tinha ponte engana a medição.
+On the real Qwen3.6-35B-A3B-UD-IQ3_S, the bridge is now allowed to publish
+`moe_executor=cuda`, `moe_executor_dtypes=[21,22,23]` and no CPUReference
+reason, after the differential proof of the three dtypes on the real GPU. Q4_0
+uses the same CUDA contract with GGML dtype `2`; validation keeps 32-element
+blocks for that format, instead of applying the 256 requirement used by the
+K/IQ-quants. Q5_K enters through GGML dtype `13`, a 176-byte block of 256
+elements (`d[2] dmin[2] scales[12] qh[32] ql[128]`): it is Q4_K with a high bit
+plane, and `k_value_q5_k`/`k_dot_q5_k` reproduce the CPU decoder's
+`dequantize_q5_k_block`.
 
-### `offloaded 42/42 layers to GPU` não fala dos experts
+### One dtype without a bridge drops the whole route
 
-Com `moe_external_executor` ligado, o llama.cpp carrega a metadata dos experts
-mas **não aloca os pesos deles** (`EngineConfig::moe_external_executor`). Logo
-o seu `offloaded N/N layers to GPU` é verdadeiro sobre o que ele próprio possui
-- atenção, normas, saída - e omite a maior parte do modelo. Na ksia isso
-apareceu como `offloaded 42/42` ao lado de apenas ~1,6 GB de buffers de modelo
-em GPU (CUDA0 615,83 MiB + CUDA1 978,08 MiB) num modelo de 35 B, com
-`CPU_Mapped` de 333,44 MiB: a leitura correta do operador, "o modelo está todo
-na RAM", estava certa. Quem aloja os experts é o executor MoE do POM, e onde
-eles ficam depende do executor escolhido: no cache residente de device quando
-há ponte CUDA para **todos** os dtypes, mmapados na RAM quando é
-`CPUReference`. O log de inicialização do `infer_server` diz isso
-explicitamente para que as duas linhas não se contradigam aos olhos de quem lê.
-A prova física desse GGUF ainda não foi executada neste worktree, portanto a
-telemetria esperada é um contrato a verificar, não um resultado já afirmado.
+`Ornith-1.5-35B-A3B-Q5_K_S` measures 2 Q4_0 dtypes and 13 Q5_K in the experts:
+while Q5_K had no kernel, the whole route fell to `CPUReference` even with the
+Q4_0 bridge ready. Dynamic quants (UD) mix dtypes **per expert role**, so the
+bridge's coverage is checked by the concrete dtype in telemetry
+(`moe_executor_dtypes`), never by the file name. Proving the gain on a model
+whose dtype already had a bridge misleads the measurement.
 
-Para separar uma falha de dados recebidos de uma falha na leitura Rust, execute
-o processo com `POM_MOE_ROUTE_DIAGNOSTICS=1`. Cada entrada do callback ganha
-duas linhas adjacentes, `callback_entry_default` no target padrão e
-`callback_entry` no target `moe.route_diagnostic`, como primeira ação, antes
-das validações. A dupla testa o sink e um eventual filtro por target no mesmo
-ponto do callback. Ambas registram os ponteiros e contagens crus; cada retorno
-`false` ganha ainda uma linha
-`callback_exit` com o motivo do caminho que abortou, inclusive argumentos
-nulos, geometria, normalização, metadata e forward. A primeira chamada de cada
-requisição e qualquer rota não finita ganham a amostra detalhada, sem depender
-do índice da camada. Ela registra valores crus de token 0, slot e deslocamento
-na ordem token-major, ponteiros e bytes das regiões lidas, quantidade de
-elementos declarada pelo
-llama.cpp versus esperada pelo POM, dtypes da metadata de gate/up/down e os
-dtypes assumidos nos argumentos do callback. Depois da normalização, registra
-novamente a amostra e as contagens de NaN. A variável é opt-in, fica desligada
-por padrão e não altera a execução. Na carga do primeiro `LoadedModel` do
-processo, uma linha adicional no target padrão registra uma vez o valor bruto
-da variável e o booleano efetivo do gate. Assim o log do próximo deploy mostra
-se o `OnceLock` reconheceu o ambiente, antes da primeira rota.
+### `offloaded 42/42 layers to GPU` does not talk about the experts
 
-Antes de normalizar a rota, o callback também valida que o hidden de entrada é
-finito. Depois do forward, valida a saída do executor antes de copiá-la para o
-llama.cpp. NaN ou infinito publica uma falha com camada, índice e estágio
-(`hidden_input_non_finite` ou `forward_output_non_finite`), interrompendo a
-requisição em vez de contaminar a camada seguinte silenciosamente.
+With `moe_external_executor` on, llama.cpp loads the experts' metadata but
+**does not allocate their weights** (`EngineConfig::moe_external_executor`).
+So its `offloaded N/N layers to GPU` is true about what it owns itself -
+attention, norms, output - and omits most of the model. On the CUDA test server
+that showed up as `offloaded 42/42` next to only ~1.6 GB of model buffers on GPU
+(CUDA0 615.83 MiB + CUDA1 978.08 MiB) for a 35 B model, with `CPU_Mapped` at
+333.44 MiB: the operator's reading, "the whole model is in RAM", was right. The
+experts are housed by POM's MoE executor, and where they live depends on the
+chosen executor: in the device-resident cache when there is a CUDA bridge for
+**all** dtypes, mmapped in RAM when it is `CPUReference`. The `infer_server`
+startup log says so explicitly so the two lines do not contradict each other in
+the reader's eyes. The physical proof of that GGUF had not been run in that
+worktree yet, so the expected telemetry is a contract to verify, not an already
+claimed result.
 
-O teste ignorado
+To separate a failure in the received data from a failure in the Rust read, run
+the process with `POM_MOE_ROUTE_DIAGNOSTICS=1`. Each callback entry gets two
+adjacent lines, `callback_entry_default` on the default target and
+`callback_entry` on the `moe.route_diagnostic` target, as the first action,
+before the validations. The pair tests the sink and a possible target filter at
+the same point of the callback. Both log the raw pointers and counts; each
+`false` return also gets a `callback_exit` line with the reason of the path that
+aborted, including null arguments, geometry, normalization, metadata and
+forward. The first call of each request and any non-finite route get the
+detailed sample, without depending on the layer index. It logs raw values of
+token 0, slot and offset in token-major order, pointers and bytes of the regions
+read, the element count declared by llama.cpp versus expected by POM, the
+gate/up/down metadata dtypes and the dtypes assumed in the callback's arguments.
+After normalization, it logs the sample and the NaN counts again. The variable
+is opt-in, off by default and does not change execution. When the process loads
+its first `LoadedModel`, an extra line on the default target logs once the
+variable's raw value and the gate's effective boolean. So the next deploy's log
+shows whether the `OnceLock` recognized the environment, before the first route.
+
+Before normalizing the route, the callback also validates that the input hidden
+state is finite. After the forward, it validates the executor's output before
+copying it to llama.cpp. NaN or infinity publishes a failure with layer, index
+and stage (`hidden_input_non_finite` or `forward_output_non_finite`), stopping
+the request instead of silently contaminating the next layer.
+
+The ignored test
 `llm::moe_route_tests::callback_global_emite_diagnostico_em_thread_externa_e_registra_gate`
-instala o dispatcher global com `.init` equivalente, cria uma thread
-`std::thread` fora do runtime Tokio e exige no mesmo sink a configuração, o
-`callback_entry_default`, o `callback_entry` com target MoE e o `callback_exit`.
-Ele passou localmente com `RUST_LOG=info`; isso prova o transporte no processo de
-teste, mas não substitui a confirmação no binário implantado.
+installs the global dispatcher with an equivalent `.init`, creates a
+`std::thread` outside the Tokio runtime and requires in the same sink the
+configuration, `callback_entry_default`, `callback_entry` with the MoE target and
+`callback_exit`. It passed locally with `RUST_LOG=info`; that proves the
+transport in the test process, but does not replace the confirmation on the
+deployed binary.
 
-O callback do `llama.cpp` recebe a rota na ordem token-major que resulta do
-`ggml_get_rows` com dimensões `[1, experts_usados, tokens]`: slot é o índice
-mais rápido dentro de cada token. A normalização Rust valida e preserva essa
-ordem, sem transposição. O teste unitário
+The `llama.cpp` callback receives the route in the token-major order that
+results from `ggml_get_rows` with dimensions `[1, experts_used, tokens]`: slot is
+the fastest index within each token. The Rust normalization validates and keeps
+that order, without transposing. The unit test
 `llm::moe_route_tests::rota_do_get_rows_do_llama_cpp_ja_chega_em_ordem_token_major`
-fixa o contrato contra a sequência física produzida pelo builder C++.
+pins the contract against the physical sequence produced by the C++ builder.
 
-As mensagens `resolve_fused_ops: ... enabled` não provam que uma operação
-fundida foi usada: a sonda também imprime `enabled` quando não encontra nenhum
-nó daquele tipo. No `qwen35moe.cpp`, o FFN MoE continua passando pelo builder
-genérico e o expert compartilhado passa separadamente por `build_ffn`; a
-presença real de HC fundido precisa ser demonstrada pelos nós da reserva ou
-pelos logs da entrada do callback.
+The `resolve_fused_ops: ... enabled` messages do not prove a fused operation was
+used: the probe also prints `enabled` when it finds no node of that type. In
+`qwen35moe.cpp`, the MoE FFN still goes through the generic builder and the
+shared expert goes separately through `build_ffn`; the real presence of fused HC
+must be shown by the reservation's nodes or by the callback entry logs.
 
-### Fase 5.1: ponte CUDA por dtype
+### Phase 5.1: CUDA bridge per dtype
 
-Esta foi a fase formal da ponte por dtype. O executor CUDA cobre NVFP4 (40),
-escalares, Q2_K/Q3_K/Q4_K/Q6_K e IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e
-MXFP4 (39) na ponte heterogênea. A prova diferencial de Q2_K e Q3_K foi
-executada na GPU real; o E2E do GGUF Qwen3.6 continua pendente. IQ-quants
-restantes, K-quants restantes, legacy e low-bit continuam no `CPUReference`,
-com a escolha visível na telemetria. Quando uma combinação heterogênea contém
-dtype sem ponte CUDA, a camada inteira usa `CPUReference` se houver decoder
-externo; sem decoder, a carga é recusada antes do modelo. Cada tensor conserva
-seu dtype e o decoder correspondente é escolhido por tensor.
+This was the formal phase of the per-dtype bridge. The CUDA executor covers
+NVFP4 (40), scalars, Q2_K/Q3_K/Q4_K/Q6_K and IQ3_XXS (18), IQ3_S (21), IQ2_S
+(22), IQ4_XS (23) and MXFP4 (39) in the heterogeneous bridge. The differential
+proof of Q2_K and Q3_K was run on the real GPU; the E2E of the Qwen3.6 GGUF was
+still pending. The remaining IQ-quants, remaining K-quants, legacy and low-bit
+stay in `CPUReference`, with the choice visible in telemetry. When a
+heterogeneous combination contains a dtype without a CUDA bridge, the whole
+layer uses `CPUReference` if there is an external decoder; without a decoder,
+the load is refused before the model. Each tensor keeps its dtype and the
+matching decoder is chosen per tensor.
 
-Critério de pronto por bloco: prova numérica contra o oráculo GGML para cada
-dtype, telemetria por hop/fase mostrando `cuda` sem `moe_executor_reason` de
-CPU, prova E2E com GGUF real heterogêneo quando disponível e medição na ksia
-de prefill, decode, bytes H2D/D2H, alocações e banda. A comparação deve
-separar custo de kernel e transferência; nenhum ganho de desempenho será
-afirmado apenas por suite verde.
+Done criterion per block: a numeric proof against the GGML oracle for each
+dtype, per hop/phase telemetry showing `cuda` without a CPU
+`moe_executor_reason`, an E2E proof with a real heterogeneous GGUF when
+available and a measurement on the CUDA test server of prefill, decode, H2D/D2H
+bytes, allocations and bandwidth. The comparison must separate kernel and
+transfer costs; no performance gain will be claimed just from a green suite.
 
-### Fase 5.2: Q2_K/Q3_K no Qwen3.6 e fallback CPU paralelo - 2026-09-04
+### Phase 5.2: Q2_K/Q3_K on Qwen3.6 and parallel CPU fallback - 2026-09-04
 
-A reprodução E2E fornecida pelo captain estabeleceu a linha de base no mesmo
-`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf` e na ksia: o caminho `moe/q4_0` selecionava
-`cpu-reference` por causa dos dtypes Q2_K (10) e Q3_K (11), com `0,3 tok/s`.
-O caminho `llama.cpp`, nas mesmas condições, entregava `160 tok/s`. O trace
-atribuía `91936 ms` de `llama_decode` ao backend local, não ao transporte.
+The E2E reproduction provided by the operator set the baseline on the same
+`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf` on the CUDA test server: the `moe/q4_0` path
+selected `cpu-reference` because of the Q2_K (10) and Q3_K (11) dtypes, with
+`0.3 tok/s`. The `llama.cpp` path, under the same conditions, delivered
+`160 tok/s`. The trace attributed `91936 ms` of `llama_decode` to the local
+backend, not to the transport.
 
-Esta fase adiciona a ponte CUDA dos dois formatos. Q2_K usa blocos de 256
-elementos e 84 bytes, com escalas, quants, `d` e `min`; Q3_K usa 256 elementos
-e 110 bytes, com high bits, quants, escalas compactadas e `d`. O kernel faz o
-produto diretamente no layout GGML, sem reinterpretar Q2_K ou Q3_K como Q6_K.
-O validador Rust, a geometria da ponte heterogênea e a escolha de executor
-agora aceitam `10` e `11`; Q5_K e Q8_K continuam fora da ponte e não podem
-ser enviados ao kernel como outro formato.
+This phase adds the CUDA bridge for both formats. Q2_K uses 256-element blocks
+of 84 bytes, with scales, quants, `d` and `min`; Q3_K uses 256 elements and 110
+bytes, with high bits, quants, packed scales and `d`. The kernel does the
+product directly in the GGML layout, without reinterpreting Q2_K or Q3_K as
+Q6_K. The Rust validator, the heterogeneous bridge's geometry and the executor
+choice now accept `10` and `11`; Q5_K and Q8_K stay outside the bridge and
+cannot be sent to the kernel as another format.
 
-O fallback CPU deixou de executar a rota em série: experts distintos são
-processados em workers escopados, cada um com um vetor de saída próprio, e a
-agregação ocorre em ordem de expert estável. A rota de token único usa a mesma
-primitiva paralela. Isso mantém a soma determinística e transforma panic de
-worker em erro de inferência. O diagnóstico `POM_MOE_LAYER_INPUT` da camada 0
-fica desligado por padrão; só é habilitado com
-`POM_MOE_LAYER_INPUT_DIAGNOSTIC=1` (também `true`, `yes` ou `on`).
+The CPU fallback stopped running the route serially: distinct experts are
+processed in scoped workers, each with its own output vector, and aggregation
+happens in a stable expert order. The single-token route uses the same parallel
+primitive. That keeps the sum deterministic and turns a worker panic into an
+inference error. The layer 0 `POM_MOE_LAYER_INPUT` diagnostic is off by default;
+it is only enabled with `POM_MOE_LAYER_INPUT_DIAGNOSTIC=1` (also `true`, `yes`
+or `on`).
 
-A validação CUDA própria na ksia foi executada com `CUDAARCHS=120`, `nvcc`
-12.9 e target separado. Os testes diferenciais do executor passaram:
+The own CUDA validation on the CUDA test server was run with `CUDAARCHS=120`,
+`nvcc` 12.9 and a separate target. The executor's differential tests passed:
 
-| prova | resultado |
+| proof | result |
 |---|---:|
-| Q2_K, Q3_K, Q4_K e Q6_K contra decoder CPU | 1 teste verde |
-| rota heterogênea Q2_K gate + Q3_K up + Q4_K down contra decoder CPU | 1 teste verde |
-| tolerância da comparação CUDA | `abs <= 1e-3` ou `rel <= 1e-5` |
+| Q2_K, Q3_K, Q4_K and Q6_K against the CPU decoder | 1 green test |
+| heterogeneous route Q2_K gate + Q3_K up + Q4_K down against the CPU decoder | 1 green test |
+| CUDA comparison tolerance | `abs <= 1e-3` or `rel <= 1e-5` |
 
-A medição E2E pós-ponte do GGUF Qwen3.6 ainda depende de o captain colocar
-esta build na implantação compartilhada. Até essa execução, os números de
-throughput são honestamente:
+The post-bridge E2E measurement of the Qwen3.6 GGUF still depended on the
+operator putting that build in the shared deployment. Until that run, the
+throughput numbers honestly were:
 
-| caminho | antes | depois | referência |
+| path | before | after | reference |
 |---|---:|---:|---:|
-| MoE | `0,3 tok/s` | pendente de E2E | - |
+| MoE | `0.3 tok/s` | E2E pending | - |
 | llama.cpp | - | - | `160 tok/s` |
 
-O contrato esperado após a implantação é `moe_executor=cuda`,
-`moe_executor_dtypes=[10,11,21,22,23]` e `moe_executor_reason` ausente. A
-quebra por fase deve registrar TTFT/prefill, decode, `host_batch_prepare_ms`,
-`cuda_kernel_ms`, H2D/D2H e tok/s; a suíte CUDA não substitui essa medição.
+The contract expected after deployment is `moe_executor=cuda`,
+`moe_executor_dtypes=[10,11,21,22,23]` and no `moe_executor_reason`. The
+per-phase breakdown must record TTFT/prefill, decode, `host_batch_prepare_ms`,
+`cuda_kernel_ms`, H2D/D2H and tok/s; the CUDA suite does not replace that
+measurement.
 
-### Fase 5.3: prefill Q6_K em lote e especulação - 2026-09-04
+### Phase 5.3: batched Q6_K prefill and speculation - 2026-09-04
 
-O segundo par de medições do captain isolou a causa do prefill. No mesmo
-`Ornith-1.5-35B-Q6_K.gguf`, na ksia, com `n_batch=512`, o dtype Q6_K já tinha
-ponte CUDA, mas o MoE entregava somente `7,7` e `17,0 tok/s` de prefill,
-contra `183,0` e `183,5 tok/s` do `llama.cpp`. A geração ficou em `15,9` e
-`15,4 tok/s` no MoE, contra `36,2` e `38,2 tok/s` no denso. O TTFT foi
-`6,57 s` e `6,41 s` no MoE, contra `3,21 s` e `574 ms` no denso.
+The operator's second pair of measurements isolated the prefill's cause. On the
+same `Ornith-1.5-35B-Q6_K.gguf`, on the CUDA test server, with `n_batch=512`,
+the Q6_K dtype already had a CUDA bridge, but MoE only delivered `7.7` and
+`17.0 tok/s` of prefill, against `183.0` and `183.5 tok/s` for `llama.cpp`.
+Generation stayed at `15.9` and `15.4 tok/s` on MoE, against `36.2` and
+`38.2 tok/s` on dense. TTFT was `6.57 s` and `6.41 s` on MoE, against `3.21 s`
+and `574 ms` on dense.
 
-| caminho | turno 1 | turno 2 | observação |
+| path | turn 1 | turn 2 | note |
 |---|---:|---:|---|
-| MoE, geração | `15,9 tok/s` | `15,4 tok/s` | `2,3x` a `2,5x` abaixo do denso |
-| MoE, prefill | `7,7 tok/s` | `17,0 tok/s` | `3.615,538 ms` e `4.883,604 ms` |
-| llama.cpp, geração | `36,2 tok/s` | `38,2 tok/s` | referência |
-| llama.cpp, prefill | `183,0 tok/s` | `183,5 tok/s` | referência |
+| MoE, generation | `15.9 tok/s` | `15.4 tok/s` | `2.3x` to `2.5x` below dense |
+| MoE, prefill | `7.7 tok/s` | `17.0 tok/s` | `3,615.538 ms` and `4,883.604 ms` |
+| llama.cpp, generation | `36.2 tok/s` | `38.2 tok/s` | reference |
+| llama.cpp, prefill | `183.0 tok/s` | `183.5 tok/s` | reference |
 
-No decode, a latência por chamada era próxima (`56,157` a `62,733 ms` no
-MoE, contra `54,744 ms` no denso), mas o denso produzia várias fichas por
-chamada: `14` chamadas para `27` fichas, contra `60` para `61` e `196` para
-`197` no MoE. Isso torna a elegibilidade de MTP/especulação uma segunda
-prioridade. O sampling MoE também acumulou `33,495 ms` de top-k em 61 fichas
-e `113,09 ms` em 197 fichas; os bytes medidos foram cerca de 28 vezes maiores.
+In decode, the latency per call was close (`56.157` to `62.733 ms` on MoE,
+against `54.744 ms` on dense), but dense produced several tokens per call: `14`
+calls for `27` tokens, against `60` for `61` and `196` for `197` on MoE. That
+makes MTP/speculation eligibility a second priority. MoE sampling also
+accumulated `33.495 ms` of top-k over 61 tokens and `113.09 ms` over 197 tokens;
+the measured bytes were about 28 times larger.
 
-A primeira fatia de correção daquela medição atuou no maior buraco medido: o pipeline K CUDA
-mantém workspace de device por executor e reutiliza buffers entre chamadas,
-alocando somente quando a capacidade do lote cresce. Gate/up e down Q6_K
-usam redução cooperativa por linha com 128 threads; Q2_K e Q3_K usam a mesma
-ponte de dtype e a rota heterogênea também usa redução cooperativa para os
-formatos cobertos. O `FIT_MAX_UBATCH` permanece `512`.
+The first fix slice of that measurement acted on the largest measured hole: the
+CUDA K pipeline keeps a device workspace per executor and reuses buffers across
+calls, only allocating when the batch's capacity grows. Q6_K gate/up and down
+use a cooperative per-row reduction with 128 threads; Q2_K and Q3_K use the same
+dtype bridge and the heterogeneous route also uses cooperative reduction for the
+covered formats. `FIT_MAX_UBATCH` stays `512`.
 
-O benchmark sintético na geometria Q6_K real (`hidden=2048`,
-`intermediate=512`, 28 tokens e 224 rotas) mediu `12,233 ms` de parede, com
-`11,653 ms` de kernel, `0,118 ms` de H2D, `0,194 ms` de D2H e `0,157 ms` de
-alocação na primeira capacidade. É uma medida do executor, não uma promessa
-de E2E. A suíte CUDA na ksia passou com `325` testes e zero falhas.
+The synthetic benchmark at the real Q6_K geometry (`hidden=2048`,
+`intermediate=512`, 28 tokens and 224 routes) measured `12.233 ms` of wall time,
+with `11.653 ms` of kernel, `0.118 ms` of H2D, `0.194 ms` of D2H and
+`0.157 ms` of allocation at the first capacity. It is a measure of the
+executor, not an E2E promise. The CUDA suite on the CUDA test server passed with
+`325` tests and zero failures.
 
-Na data desta fase o E2E pós-fatia ainda precisava ser coletado nos dois
-modelos. A tabela histórica permaneceu pendente até o binário novo servir a
-mesma requisição:
+On that phase's date the post-slice E2E still had to be collected on both
+models. The historical table stayed pending until the new binary served the
+same request:
 
-| caminho | antes | depois | referência |
+| path | before | after | reference |
 |---|---:|---:|---:|
-| Qwen3.6 MoE | `0,3 tok/s` | pendente de E2E | llama.cpp `160 tok/s` |
-| Ornith Q6_K MoE | `15,9`/`15,4 tok/s` | pendente de E2E | llama.cpp `36,2`/`38,2 tok/s` |
+| Qwen3.6 MoE | `0.3 tok/s` | E2E pending | llama.cpp `160 tok/s` |
+| Ornith Q6_K MoE | `15.9`/`15.4 tok/s` | E2E pending | llama.cpp `36.2`/`38.2 tok/s` |
 
-Com a nova evidência, a ordem de trabalho é: corrigir o MTP no contexto
-metadata-only do MoE; confirmar a especulação por chamada; atacar o custo base
-de `5,8x` por chamada, incluindo a duplicação estrutural e a sincronização
-antecipada; só então atacar o prefill, que continua a pior distância por
-chamada. A telemetria continua obrigatória para confirmar `moe_executor`,
-`moe_executor_dtypes`, `moe_executor_reason`, MTP, TTFT, fases e tok/s depois
-do deploy.
+With the new evidence, the work order is: fix MTP in MoE's metadata-only
+context; confirm speculation per call; attack the base cost of `5.8x` per call,
+including the structural duplication and the early synchronization; only then
+attack the prefill, which is still the worst gap per call. Telemetry stays
+mandatory to confirm `moe_executor`, `moe_executor_dtypes`,
+`moe_executor_reason`, MTP, TTFT, phases and tok/s after the deploy.
 
-### Fase 5.4: escopo da telemetria e primeira fatia de prefill - 2026-09-04
 
-O par pós-implantação do captain usou `Ornith-1.5-35B-Q4_K_M.gguf` e confirmou
-que a ponte CUDA estava ativa (`moe_executor=cuda`). O resultado ainda ficou
-longe do denso: no turno longo, `11,3 tok/s` no MoE contra `140,7 tok/s` no
-llama.cpp; o prefill ficou em `16,1 tok/s` contra `1.343,6 tok/s` e o p50 por
-chamada foi `2.515,7 ms` contra `135,8 ms`. No decode, foram `197` chamadas
-para `198` fichas no MoE, contra `62` para `197` no denso; o p50 foi `84,6 ms`
-contra `20,8 ms`. O acerto de prefixo com 19 fichas não retirou o custo de
-`3.106,96 ms` do prefill MoE. Esse par é a linha de base E2E da fatia seguinte,
-não uma prova isolada de ganho da ponte.
+### Phase 5.4: telemetry scope and the first prefill slice - 2026-09-04
 
-O par Q6_K com CUDA confirma a prioridade, mas não prova o ganho da ponte:
-Q6_K já estava entre os dtypes cobertos antes da mudança. No turno longo, o
-MoE foi de `15,4` para `16,4 tok/s`, enquanto o prefill mediu `17,0` e
-`23,4 tok/s` contra `619,0 tok/s` do llama.cpp. O p50 do prefill CUDA ficou em
-`1.826 ms` contra `54,6 ms`, uma distância de 33x; o decode ficou em
-`50,3 ms` contra `21,7 ms` e ainda houve `196` chamadas para `197` fichas,
-contra `73` para `197`. A prova da ponte continua sendo o Qwen
-`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`, que antes caía para `CPUReference` por
-Q2_K/Q3_K.
+The operator's post-deployment pair used `Ornith-1.5-35B-Q4_K_M.gguf` and
+confirmed the CUDA bridge was active (`moe_executor=cuda`). The result was still
+far from dense: on the long turn, `11.3 tok/s` on MoE against `140.7 tok/s` on
+llama.cpp; prefill stayed at `16.1 tok/s` against `1,343.6 tok/s` and the p50
+per call was `2,515.7 ms` against `135.8 ms`. In decode, there were `197` calls
+for `198` tokens on MoE, against `62` for `197` on dense; the p50 was
+`84.6 ms` against `20.8 ms`. The 19-token prefix hit did not remove the
+`3,106.96 ms` cost of the MoE prefill. That pair is the next slice's E2E
+baseline, not an isolated proof of the bridge's gain.
 
-A aparente contradição entre `caminho selecionado: moe/q4_0` no ambiente e
-`llama.cpp` nos hops foi investigada no código. O `/health` usado pelo cartão
-de ambiente publica o estado atual do processo: `InferState.inference_path`,
-executor MoE instalado e colocação efetiva. Já cada `NodeTimings` do trace é
-criado durante a requisição e publica `selected_path`, `executed_engine`,
-`executed_engines`, `engine_mismatch` e `mixed_execution`. São escopos
-distintos. O código também recusa um executor externo MoE sem callback e recusa
-um callback instalado que não tenha observado nenhum forward, portanto não há
-fallback denso silencioso autorizado no binário atual.
+The Q6_K pair with CUDA confirms the priority, but does not prove the bridge's
+gain: Q6_K was already among the covered dtypes before the change. On the long
+turn, MoE went from `15.4` to `16.4 tok/s`, while the prefill measured `17.0`
+and `23.4 tok/s` against llama.cpp's `619.0 tok/s`. The CUDA prefill's p50 was
+`1,826 ms` against `54.6 ms`, a 33x gap; decode was `50.3 ms` against `21.7 ms`
+and there were still `196` calls for `197` tokens, against `73` for `197`. The
+bridge's proof is still the Qwen `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`, which used
+to fall to `CPUReference` because of Q2_K/Q3_K.
 
-Assim, as linhas resumidas como "motor llama.cpp" não permitem concluir um
-desvio de caminho sem os campos `selected_path`, `engine_mismatch`,
-`mixed_execution`, `node_id` e o trace bruto da mesma resposta. A conclusão
-comprovada é que o rótulo do ambiente estava sendo usado como se fosse prova
-da requisição, embora seja apenas um snapshot atual. O cartão de telemetria
-agora mostra separadamente `estado atual` e `nesta execução`, mostra o
-`selected_path` em cada fase e avisa quando um snapshot atual diverge do path
-observado. Se um trace bruto novo trouxer `selected_path=moe/q4_0` e
-`executed_engine=llama.cpp`, ele aparecerá como divergência explícita e deve
-ser tratado como processo antigo ou desvio real, nunca como resultado MoE.
+The apparent contradiction between `selected path: moe/q4_0` in the environment
+and `llama.cpp` on the hops was investigated in the code. The `/health` used by
+the environment card publishes the process's current state:
+`InferState.inference_path`, the installed MoE executor and the effective
+placement. Each `NodeTimings` of the trace, on the other hand, is created during
+the request and publishes `selected_path`, `executed_engine`,
+`executed_engines`, `engine_mismatch` and `mixed_execution`. They are distinct
+scopes. The code also refuses an external MoE executor without a callback and
+refuses an installed callback that observed no forward, so no silent dense
+fallback is allowed in the current binary.
 
-A primeira fatia de otimização do prefill preserva o lote inteiro no executor
-CUDA e troca os kernels escalares de gate/up e down por uma redução cooperativa
-de 128 threads por linha para Q2_K, Q3_K, Q4_K e Q6_K. O benchmark sintético,
-com `hidden=2048`, `intermediate=512`, 28 tokens e 224 rotas, mediu:
+So the lines summarized as "llama.cpp engine" do not allow concluding a path
+deviation without the `selected_path`, `engine_mismatch`, `mixed_execution`,
+`node_id` fields and the raw trace of the same answer. The proven conclusion is
+that the environment label was being used as if it were proof of the request,
+although it is only a current snapshot. The telemetry card now shows `current
+state` and `in this run` separately, shows `selected_path` in each phase and
+warns when a current snapshot diverges from the observed path. If a new raw
+trace brings `selected_path=moe/q4_0` and `executed_engine=llama.cpp`, it shows
+up as an explicit divergence and must be treated as an old process or a real
+deviation, never as a MoE result.
 
-| dtype | parede | kernel | H2D | D2H | alocação |
+The first prefill optimization slice keeps the whole batch in the CUDA executor
+and swaps the scalar gate/up and down kernels for a cooperative 128-thread
+per-row reduction for Q2_K, Q3_K, Q4_K and Q6_K. The synthetic benchmark, with
+`hidden=2048`, `intermediate=512`, 28 tokens and 224 routes, measured:
+
+| dtype | wall | kernel | H2D | D2H | allocation |
 |---|---:|---:|---:|---:|---:|
-| Q4_K | `12,471 ms` | `11,907 ms` | `0,118 ms` | `0,194 ms` | `0,153 ms` |
-| Q6_K | `11,517 ms` | `11,080 ms` | `0,116 ms` | `0,098 ms` | `0,152 ms` |
+| Q4_K | `12.471 ms` | `11.907 ms` | `0.118 ms` | `0.194 ms` | `0.153 ms` |
+| Q6_K | `11.517 ms` | `11.080 ms` | `0.116 ms` | `0.098 ms` | `0.152 ms` |
 
-Essa medida é do executor isolado na ksia, com `nvcc 12.9`, `CUDAARCHS=120`
-e target separado; não é ainda o depois E2E. O `FIT_MAX_UBATCH` continua em
-`512`. A suíte CUDA passou com `325` testes e o diferencial novo de Q4_K em
-lote passou; o número E2E após essa fatia fica para a implantação integrada do
-captain.
+That measure is of the isolated executor on the CUDA test server, with
+`nvcc 12.9`, `CUDAARCHS=120` and a separate target; it is not yet the E2E
+after. `FIT_MAX_UBATCH` stays at `512`. The CUDA suite passed with `325` tests
+and the new batched Q4_K differential passed; the E2E number after that slice
+was left for the operator's integrated deployment.
 
-### Fase 5.5: MTP no modelo MoE e controle sem especulação - 2026-09-04
+### Phase 5.5: MTP on the MoE model and a control without speculation - 2026-09-04
 
-O controle do captain no mesmo `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`, com MTP e
-especulação desligados nos dois motores, isolou o custo base. O MoE fez `16,9`
-tok/s contra `93,7` do llama.cpp no turno longo; ambos produziram uma ficha por
-chamada, mas o p50 da chamada foi `57,4 ms` contra `9,9 ms`, uma distância de
-`5,8x`. O prefill continuou separado e muito pior: `1.105,8-3.065,9 ms` por
-chamada no MoE contra `37,8-42,3 ms`, ou `26x-73x`. Portanto MTP não explica o
-custo base, embora possa multiplicar a diferença: no par anterior o denso fazia
-`3,8` fichas por chamada.
+The operator's control on the same `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`, with MTP
+and speculation off on both engines, isolated the base cost. MoE did `16.9`
+tok/s against llama.cpp's `93.7` on the long turn; both produced one token per
+call, but the call's p50 was `57.4 ms` against `9.9 ms`, a `5.8x` gap. Prefill
+stayed separate and much worse: `1,105.8-3,065.9 ms` per call on MoE against
+`37.8-42.3 ms`, or `26x-73x`. So MTP does not explain the base cost, although it
+can multiply the difference: in the previous pair dense did `3.8` tokens per
+call.
 
-O `/health` do deploy MoE mostrou `mtp_ready=false` com
-`llama_decode no contexto MTP falhou rc=-1`. A causa é a combinação do modelo
-metadata-only com o fork: `llama_init_from_model` herda
-`moe_external_executor`, mas o contexto `nextn` não tinha callback. O fork
-recusa esse decode para não tentar experts nativos sem buffers. A correção em
-`MtpDrafter` registra se o contexto usa ownership externo e
-`LlmEngine::set_moe_runtime` instala o callback do runtime tanto no alvo quanto
-no contexto MTP. O acompanhante CPU usado quando o contexto MTP recua para RAM
-continua nativo e não recebe esse hook.
+The MoE deploy's `/health` showed `mtp_ready=false` with
+`llama_decode no contexto MTP falhou rc=-1` ("llama_decode in the MTP context
+failed rc=-1"). The cause is the combination of the metadata-only model with the
+fork: `llama_init_from_model` inherits `moe_external_executor`, but the `nextn`
+context had no callback. The fork refuses that decode so it does not try native
+experts without buffers. The fix in `MtpDrafter` records whether the context
+uses external ownership and `LlmEngine::set_moe_runtime` installs the runtime's
+callback both on the target and on the MTP context. The CPU companion used when
+the MTP context falls back to RAM stays native and does not get that hook.
 
-O caminho de especulação já existia: `should_draft` exige `mtp_ready` para MTP,
-`mtp_draft` constrói o lote e a cauda verifica cada posição pelo sampler normal.
-Assim, depois que o contexto externo ficar pronto, o mesmo caminho volta a
-produzir lotes maiores no MoE sem alterar a distribuição da resposta. A
-telemetria esperada após a implantação é `mtp_ready=true`, sem
-`mtp_unavailable_reason`, e `speculation_active=true` quando o draft atingir o
-limiar de probabilidade.
+The speculation path already existed: `should_draft` requires `mtp_ready` for
+MTP, `mtp_draft` builds the batch and the tail checks each position through the
+normal sampler. So once the external context is ready, the same path produces
+larger batches on MoE again without changing the answer's distribution. The
+telemetry expected after deployment is `mtp_ready=true`, without
+`mtp_unavailable_reason`, and `speculation_active=true` when the draft reaches
+the probability threshold.
 
-O callback externo do MoE já é o ponto de substituição de `build_moe_ffn` no
-fork usado pelo projeto: quando o ownership externo está ativo, o builder
-retorna o nó do callback e não acrescenta as matmuls nativas dos experts. No
-Rust, o caminho de hidden/residual agora também falha fechado se o executor
-externo estiver ativo sem hook, em vez de rodar um segundo forward no sidecar.
-Isso preserva a correção e evita que um binário incompatível transforme uma
-falha de instalação em duplicação silenciosa. O fork vendorizado não foi
-alterado nesta fatia.
+The external MoE callback is already the replacement point of `build_moe_ffn` in
+the fork used by the project: when external ownership is active, the builder
+returns the callback's node and does not add the experts' native matmuls. In
+Rust, the hidden/residual path now also fails closed if the external executor
+is active without a hook, instead of running a second forward on the sidecar.
+That keeps correctness and stops an incompatible binary from turning an install
+failure into silent duplication. The vendored fork was not changed in that
+slice.
 
-A ordem de medição e otimização fica: (1) confirmar MTP funcional no MoE;
-(2) confirmar a especulação por chamada; (3) reduzir o custo base de `5,8x`,
-incluindo qualquer duplicação comprovada e a sincronização antecipada; (4)
-atacar o prefill, que segue sendo a maior distância absoluta. A medição E2E
-após a correção MTP fica para a implantação integrada do captain.
+The order of measurement and optimization stays: (1) confirm working MTP on
+MoE; (2) confirm speculation per call; (3) reduce the `5.8x` base cost,
+including any proven duplication and the early synchronization; (4) attack the
+prefill, which is still the largest absolute gap. The E2E measurement after the
+MTP fix was left for the operator's integrated deployment.
 
-### Fase 5.6: diagnóstico da reserva de sessões - 2026-09-04
+### Phase 5.6: diagnosis of the session reservation - 2026-09-04
 
-A revisão da janela entre o binário bom e o mau não encontrou uma regressão no
-caminho denso. `99d8977` só instala o callback externo no MTP quando
-`moe_external_executor` está ativo; `74ab819` deixa a captura de logs fora do
-caminho quando ela está desativada; e `84e7141` consulta o mapa de rotas no
-envio, não durante o `llama_decode` local. Portanto nenhum desses commits
-explica o salto de `20,8 ms` para `87,5 ms` por chamada.
+Reviewing the window between the good and the bad binary found no regression on
+the dense path. `99d8977` only installs the external callback on MTP when
+`moe_external_executor` is active; `74ab819` keeps log capture off the path when
+it is disabled; and `84e7141` queries the route map on send, not during the
+local `llama_decode`. So none of those commits explains the jump from `20.8 ms`
+to `87.5 ms` per call.
 
-O contrafactual controlado foi executado na ksia com o binário `4868f79`, o
-GGUF real `Ornith-1.5-35B-Q4_K_M.gguf`, GPU `99`, `n_batch=512`, MTP ligado e
-os mesmos prompt e parâmetros. A única variável foi `max_sessions`:
+The controlled counterfactual was run on the CUDA test server with binary
+`4868f79`, the real GGUF `Ornith-1.5-35B-Q4_K_M.gguf`, GPU `99`,
+`n_batch=512`, MTP on and the same prompt and parameters. The only variable was
+`max_sessions`:
 
-| configuração | node_p50_ms por chamada | observação |
+| configuration | node_p50_ms per call | note |
 |---|---:|---|
-| `max_sessions=1` | `20,944 ms` | linha alinhada ao binário bom do captain |
-| `max_sessions=2` | `105,3-124,4 ms` | mesmo binário, sem alteração de código |
+| `max_sessions=1` | `20.944 ms` | in line with the operator's good binary |
+| `max_sessions=2` | `105.3-124.4 ms` | same binary, no code change |
 
-No segundo caso, `/health` confirmou `n_ctx_total=500224`, `n_ctx_per_session=250112`,
-`kv_seq_max=4` e `max_sessions=2`; a ocupação medida das duas RTX 5060 Ti
-ficou em aproximadamente `15,3 GiB` por placa. A diferença reproduz o efeito
-de fit e reserva de KV que contamina a comparação, embora o harness próprio
-tenha uma latência absoluta maior que a implantação do captain. O resultado
-descarta a hipótese de regressão introduzida pelo callback MTP no caminho
-denso e identifica `max_sessions=2` com janela de `250k` como a causa do caso
-medido.
+In the second case, `/health` confirmed `n_ctx_total=500224`,
+`n_ctx_per_session=250112`, `kv_seq_max=4` and `max_sessions=2`; the measured
+usage of the two RTX 5060 Ti stayed at about `15.3 GiB` per card. The difference
+reproduces the fit and KV reservation effect that contaminates the comparison,
+although the own harness has a higher absolute latency than the operator's
+deployment. The result rules out the hypothesis of a regression introduced by
+the MTP callback on the dense path and identifies `max_sessions=2` with a
+`250k` window as the cause of the measured case.
 
-O cartão de detalhes agora mostra um aviso localizado quando o `/health`
-efetivo combina múltiplas sessões com KV medido em dispositivo: total de
-contexto, contexto por sessão, estado do fit e o risco de latência por pressão
-de VRAM. Uma sessão ou KV em CPU não gera o aviso. A mudança é diagnóstica e
-não altera a seleção densa, MTP, transporte ou executor MoE. Para comparar
-throughput com a linha de base, fixe `max_sessions=1` ou registre explicitamente
-o total de contexto e a ocupação de VRAM de cada execução.
+The details card now shows a localized warning when the effective `/health`
+combines multiple sessions with KV measured on a device: total context, context
+per session, fit state and the latency risk from VRAM pressure. A single session
+or KV on the CPU does not produce the warning. The change is diagnostic and does
+not change dense selection, MTP, transport or the MoE executor. To compare
+throughput with the baseline, pin `max_sessions=1` or record explicitly the
+total context and the VRAM usage of each run.
 
-#### Procedimento E2E para a implantação do captain
+#### E2E procedure for the operator's deployment
 
-Quando a implantação integrada estiver pronta, o captain deve medir cada
-modelo em duas seleções separadas, `dense` e `moe`, mantendo a mesma máquina,
-GPUs, `n_ctx`, `n_batch=512`, `n_gpu_layers`, número de sessões, temperatura,
-prompt e `max_tokens`. A seleção deve ser feita no deploy e o processo deve
-ser reiniciado pelo ciclo normal da implantação; não se deve tentar trocar
-`POM_INFERENCE_MODE` num processo já servindo.
+When the integrated deployment is ready, the operator must measure each model in
+two separate selections, `dense` and `moe`, keeping the same machine, GPUs,
+`n_ctx`, `n_batch=512`, `n_gpu_layers`, number of sessions, temperature, prompt
+and `max_tokens`. The selection must be made in the deploy and the process must
+be restarted through the deployment's normal cycle; do not try to switch
+`POM_INFERENCE_MODE` on a process that is already serving.
 
-Em cada seleção, confirmar primeiro a porta de inferência e guardar a
-telemetria de executor:
+In each selection, first confirm the inference port and keep the executor
+telemetry:
 
 ```bash
 MODEL=Ornith-1.5-35B-Q6_K.gguf
-GATEWAY=http://ksia:8080
-INFERENCE=http://ksia:8092
+GATEWAY=http://<gateway-host>:8080
+INFERENCE=http://<gateway-host>:8092
 
 curl -fsS "$INFERENCE/health" |
   jq '{selected_path,moe_requested,moe_executor,moe_executor_dtypes,moe_executor_reason,n_ubatch_effective,mtp_ready,mtp_unavailable_reason}'
 ```
 
-Depois executar a mesma requisição em cada modo. O `tee` guarda o JSON bruto;
-o `jq` imprime geração, TTFT, prefill, decode, contagem de chamadas e a
-telemetria por hop:
+Then run the same request in each mode. `tee` keeps the raw JSON; `jq` prints
+generation, TTFT, prefill, decode, call count and the per-hop telemetry:
 
 ```bash
-MODE=dense # repetir com MODE=moe após selecionar o deploy correspondente
-PROMPT='Escreva hello world 10 vezes.'
+MODE=dense # repeat with MODE=moe after selecting the matching deploy
+PROMPT='Write hello world 10 times.'
 curl -fsS "$GATEWAY/api/generate" \
+  -H "authorization: Bearer $POM_API_KEY" \
   -H 'content-type: application/json' \
   --data "$(jq -nc --arg model "$MODEL" --arg prompt "$PROMPT" \
     '{model:$model,prompt:$prompt,max_tokens:64}')" \
@@ -718,31 +719,29 @@ curl -fsS "$GATEWAY/api/generate" \
   | jq '{tokens_generated,tokens_per_sec,duration_ms,timings,trace:{input_tokens,output_tokens,hops:[.trace.hops[] | {node_id,start_layer,end_layer,prefill:(.prefill | {selected_path,executed_engine,executed_engines,engine_mismatch,mixed_execution,processing_ms,calls,node_p50_ms,node_p95_ms,moe_executor,moe_executor_dtypes,moe_executor_reason}),decode:(.decode | {selected_path,executed_engine,executed_engines,engine_mismatch,mixed_execution,processing_ms,calls,node_p50_ms,node_p95_ms,moe_executor,moe_executor_dtypes,moe_executor_reason})}]}}'
 ```
 
-Repetir o mesmo bloco para
-`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`. No resultado MoE, exigir
-`moe_executor=cuda`, dtypes `[14]` no Ornith e `[10,11,21,22,23]` no Qwen,
-sem `moe_executor_reason`; no denso, exigir `moe_executor=not-requested`.
-No Qwen MoE após esta correção, exigir também `mtp_ready=true` e
-`mtp_unavailable_reason=null`.
-Comparar `timings.generation_tokens_per_sec` e `tokens_per_sec` como geração,
-`timings.prefill_tokens_per_sec` como prefill e `timings.ttft_ms` como TTFT.
-Também registrar de `trace.hops[].prefill` e `.decode` os campos
-`processing_ms`, `calls`, `node_p50_ms`, `node_p95_ms`, bytes e
-`moe_executor_diagnostics`. Guardar o intervalo completo do log para conferir
-que `POM_MOE_LAYER_INPUT` só aparece quando
-`POM_MOE_LAYER_INPUT_DIAGNOSTIC=1` foi explicitamente solicitado.
+Repeat the same block for `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`. In the MoE result,
+require `moe_executor=cuda`, dtypes `[14]` on Ornith and `[10,11,21,22,23]` on
+Qwen, without `moe_executor_reason`; on dense, require
+`moe_executor=not-requested`. On Qwen MoE after this fix, also require
+`mtp_ready=true` and `mtp_unavailable_reason=null`. Compare
+`timings.generation_tokens_per_sec` and `tokens_per_sec` as generation,
+`timings.prefill_tokens_per_sec` as prefill and `timings.ttft_ms` as TTFT. Also
+record from `trace.hops[].prefill` and `.decode` the fields `processing_ms`,
+`calls`, `node_p50_ms`, `node_p95_ms`, bytes and `moe_executor_diagnostics`.
+Keep the full log interval to check that `POM_MOE_LAYER_INPUT` only shows up
+when `POM_MOE_LAYER_INPUT_DIAGNOSTIC=1` was explicitly requested.
 
-#### Procedimento E2E do impacto dos logs na ksia
+#### E2E procedure for the impact of logs
 
-O teste de impacto deve comparar o mesmo modelo, máquina, plano, prompt e
-parâmetros com a captura desligada e ligada. O interruptor é aplicado pelo
-principal, sem reinício, e a chamada de geração continua na rota pública:
+The impact test must compare the same model, machine, plan, prompt and
+parameters with capture off and on. The switch is applied by the principal,
+without a restart, and the generation call stays on the public route:
 
 ```bash
 MODEL=Ornith-1.5-35B-Q6_K.gguf
-GATEWAY=http://ksia:8080
-TOKEN='connection-key-do-cluster'
-PROMPT='Escreva hello world 10 vezes.'
+GATEWAY=http://<gateway-host>:8080
+TOKEN='<cluster-connection-key>'
+PROMPT='Write hello world 10 times.'
 BODY=$(jq -nc --arg model "$MODEL" --arg prompt "$PROMPT" \
   '{model:$model,prompt:$prompt,max_tokens:64}')
 
@@ -752,9 +751,11 @@ for enabled in false true; do
     -H 'content-type: application/json' \
     --data "{\"logs_enabled\":$enabled}" >/dev/null
   curl -fsS "$GATEWAY/api/generate" \
+    -H "authorization: Bearer $POM_API_KEY" \
     --data "$BODY" >/dev/null
   for run in $(seq 1 10); do
     curl -fsS "$GATEWAY/api/generate" \
+      -H "authorization: Bearer $POM_API_KEY" \
       --data "$BODY" > "cluster-logs-${enabled}-${run}.json"
   done
   jq -s '{runs:length,
@@ -765,849 +766,852 @@ for enabled in false true; do
 done
 ```
 
-Guardar os vinte JSONs e registrar no relatório o sistema, commit, modelo,
-GPU, `n_ctx`, `n_batch=512`, `n_gpu_layers`, sessões, temperatura e os dez
-valores de cada lado. Comparar a mediana e a média de
-`generation_tokens_per_sec` e `tokens_per_sec`; conferir também que o
-`GET /api/ui/cluster-logs` contém linhas quando `enabled=true` e que o contador
-de descartes permanece explícito. Repetir trocando `MODEL` pelo Qwen3.6 se a
-medição MoE desse modelo também fizer parte da entrega. A captura local usa
-fila `try_send` limitada, então qualquer aumento deve ser investigado sem
-transformar o envio em espera síncrona.
+Keep the twenty JSON files and record in the report the system, commit, model,
+GPU, `n_ctx`, `n_batch=512`, `n_gpu_layers`, sessions, temperature and the ten
+values on each side. Compare the median and the mean of
+`generation_tokens_per_sec` and `tokens_per_sec`; also check that
+`GET /api/ui/cluster-logs` contains lines when `enabled=true` and that the drop
+counter stays explicit. Repeat swapping `MODEL` for Qwen3.6 if that model's MoE
+measurement is also part of the delivery. Local capture uses a bounded
+`try_send` queue, so any increase must be investigated without turning the send
+into a synchronous wait.
 
-A investigação histórica da medição Gemma4 encontrou, antes da costura do
-callback externo atual, uma divergência anterior a qualquer otimização de
-kernel. O contexto capturava `l_out-29`, mas em
-`vendor/llama-cpp-sys-2/llama.cpp/src/models/gemma4.cpp` esse tensor é criado
-depois de `build_moe_ffn`, `ffn_post_norm`, a soma residual e `build_cvec`. O
-callback de captura copia o tensor e retorna `true`; portanto a chamada de
-`llama_decode` continua pelo grafo. Em seguida, `infer_server::apply_moe_hidden`
-chama o `MoeRuntime` depois de `take_residual`. Isso acrescenta uma passada dos
-experts à passada completa do llama.cpp, em vez de substituir `build_moe_ffn`.
+The historical investigation of the Gemma4 measurement found, before the current
+external callback wiring, a divergence older than any kernel optimization. The
+context captured `l_out-29`, but in
+`vendor/llama-cpp-sys-2/llama.cpp/src/models/gemma4.cpp` that tensor is created
+after `build_moe_ffn`, `ffn_post_norm`, the residual sum and `build_cvec`. The
+capture callback copies the tensor and returns `true`; so the `llama_decode` call
+continues through the graph. Then `infer_server::apply_moe_hidden` called the
+`MoeRuntime` after `take_residual`. That added a pass over the experts to
+llama.cpp's full pass, instead of replacing `build_moe_ffn`.
 
-O contrafactual mínimo foi identificado no próprio callback daquela versão:
-retornar `false`
-ao encontrar `l_out-29` só abandonaria nós posteriores a esse tensor, mas não
-impediria o `build_moe_ffn` que já o produziu. Logo, esse contrafactual não
-elimina o trabalho duplicado; a correção estrutural precisava mover a fronteira
-para antes do FFN MoE e injetar a saída no restante do bloco. A fonte atual do
-fork já faz essa substituição no `build_moe_ffn`: com
-`moe_external_executor`, o builder retorna o nó customizado antes das matmuls
-nativas. O Rust também deixa de aplicar o sidecar ao hidden quando o hook está
-instalado e recusa fechado se o executor externo estiver sem hook. Portanto o
-perfil histórico não deve ser usado para afirmar duplicação no binário atual;
-ele precisa ser repetido na implantação integrada e conferido pelos campos
-`executed_engine`, `engine_mismatch` e `mixed_execution`. A medição também
-mostrou uma segunda causa possível, ainda não quantificada isoladamente: o
-executor CUDA atual aloca buffers e copia hidden, gate/up e down de host para a
-GPU em cada chamada, sincroniza os kernels e copia o resultado de volta. Esse
-perfil só deve ser otimizado depois de separar o custo da transferência do
-custo do kernel.
+The minimal counterfactual was identified in that version's callback itself:
+returning `false` on finding `l_out-29` would only drop the nodes after that
+tensor, but would not stop the `build_moe_ffn` that already produced it. So that
+counterfactual does not remove the duplicated work; the structural fix needed to
+move the boundary to before the MoE FFN and inject the output into the rest of
+the block. The fork's current source already does that replacement in
+`build_moe_ffn`: with `moe_external_executor`, the builder returns the custom
+node before the native matmuls. Rust also stops applying the sidecar to the
+hidden state when the hook is installed and refuses closed if the external
+executor has no hook. So the historical profile must not be used to claim
+duplication in the current binary; it must be repeated on the integrated
+deployment and checked through the `executed_engine`, `engine_mismatch` and
+`mixed_execution` fields. The measurement also showed a second possible cause,
+not yet quantified in isolation: the current CUDA executor allocates buffers and
+copies hidden, gate/up and down from host to GPU on each call, synchronizes the
+kernels and copies the result back. That profile should only be optimized after
+separating the transfer cost from the kernel cost.
 
-O renderer Gemma4 lê `tokenizer.chat_template` do próprio GGUF, valida os
-marcadores `<bos>`, `<|turn>`, `<turn|>`, `<|think|>`, `<|channel>` e
-`<channel|>`, e reproduz o controle `enable_thinking` e
-`add_generation_prompt`. Não há fallback Qwen nem sistema inventado quando o
-template não pede um bloco system. Um template Gemma4 que não contenha os
-marcadores esperados é recusado nominalmente. A geração termina por EOS ou pela
-sequência de fim de turno tokenizada pelo mesmo vocabulário; o marcador de
-controle não é enviado ao cliente. O teste ignorado
-`gemma4_hello_world_request_uses_moe_and_stops_on_its_turn` exercita a rota
-`/api/generate` real quando `POM_FTK_E2E_URL` aponta para um gateway Gemma4.
+The Gemma4 renderer reads `tokenizer.chat_template` from the GGUF itself,
+validates the markers `<bos>`, `<|turn>`, `<turn|>`, `<|think|>`, `<|channel>`
+and `<channel|>`, and reproduces the `enable_thinking` and
+`add_generation_prompt` control. There is no Qwen fallback nor an invented
+system block when the template does not ask for one. A Gemma4 template without
+the expected markers is refused by name. Generation ends on EOS or on the
+end-of-turn sequence tokenized by the same vocabulary; the control marker is not
+sent to the client. The ignored test
+`gemma4_hello_world_request_uses_moe_and_stops_on_its_turn` exercises the real
+`/api/generate` route when `POM_FTK_E2E_URL` points to a Gemma4 gateway.
 
-O Gemma4 real inspecionado na ksia usa os nomes separados, com dimensões
-`[2816, 704, 128]` para gate/up, `[704, 2816, 128]` para down,
-`dtype=40` (NVFP4), 30 camadas, 128 experts e top-k 8. A mesma requisição
-`Escreva hello world 10 vezes.` foi validada na rota real: HTTP 200, 55 tokens
-gerados, `input_tokens=22`, `complete=true`, 6,42 tok/s, e prefill/decode com
-`executed_engine=moe`, sem divergência ou mistura. Os testes puros do executor,
-do parser de nomes separados e da telemetria continuam cobrindo as fronteiras
-locais; a validação física confirma a costura NVFP4 no modelo real.
+The real Gemma4 inspected on the CUDA test server uses the separate names, with
+dimensions `[2816, 704, 128]` for gate/up, `[704, 2816, 128]` for down,
+`dtype=40` (NVFP4), 30 layers, 128 experts and top-k 8. The same request
+`Escreva hello world 10 vezes.` ("write hello world 10 times") was validated on
+the real route: HTTP 200, 55 tokens generated, `input_tokens=22`,
+`complete=true`, 6.42 tok/s, and prefill/decode with `executed_engine=moe`,
+with no divergence or mixing. The pure tests of the executor, the separate
+names parser and the telemetry still cover the local boundaries; the physical
+validation confirms the NVFP4 wiring on the real model.
 
-### Linha de base CUDA observada na ksia
 
-Em 2026-08-25, com `rdma-p2p=b8e24aa`, `llama.cpp=03902a5`, a mesma
-requisição `Escreva hello world 10 vezes` foi executada no Gemma4 NVFP4, primeiro
-com MoE e depois com o caminho denso. O pedido MoE teve `input_tokens=21`,
-`output_tokens=30`, `prefill_ms=35655`, `decode.processing_ms=49706` em 29
-chamadas e `moe_executor=cuda`, dtype `[40]`, sem divergência. Isso equivale a
-`1697,857 ms/token` de prefill e `1714,000 ms/token` por chamada de decode.
-O denso teve `input_tokens=21`, `output_tokens=55`, `prefill_ms=337` e
-`decode.processing_ms=2414` em 54 chamadas, ou `16,048 ms/token` e
-`44,704 ms/token`, respectivamente.
+### CUDA baseline observed on the CUDA test server
 
-No trace MoE, o tempo do backend e a chamada medida no nó coincidem:
+On 2026-08-25, with `pom=b8e24aa`, `llama.cpp=03902a5`, the same request
+`Escreva hello world 10 vezes` ("write hello world 10 times") was run on Gemma4
+NVFP4, first with MoE and then with the dense path. The MoE request had
+`input_tokens=21`, `output_tokens=30`, `prefill_ms=35655`,
+`decode.processing_ms=49706` over 29 calls and `moe_executor=cuda`, dtype
+`[40]`, with no divergence. That amounts to `1697.857 ms/token` of prefill and
+`1714.000 ms/token` per decode call. Dense had `input_tokens=21`,
+`output_tokens=55`, `prefill_ms=337` and `decode.processing_ms=2414` over 54
+calls, or `16.048 ms/token` and `44.704 ms/token`, respectively.
 
-| fase | backend total (`processing_ms`) | componentes backend | `node_decode_ms` |
+In the MoE trace, the backend time and the call measured on the node match:
+
+| phase | backend total (`processing_ms`) | backend components | `node_decode_ms` |
 |---|---:|---:|---:|
-| prefill | 35649,000 ms | 35649,057 ms | 35649,066 ms |
-| decode | 49706,000 ms | 49697,058 ms | 49697,246 ms |
+| prefill | 35649.000 ms | 35649.057 ms | 35649.066 ms |
+| decode | 49706.000 ms | 49697.058 ms | 49697.246 ms |
 
-Isso confirma que não há uma segunda execução escondida, mas não diz ainda qual
-parcela interna do executor CUDA domina. A instrumentação diagnóstica separa
-alocação, H2D, kernel, lançamento, sincronização, D2H e liberação.
+That confirms there is no hidden second run, but does not say yet which
+internal share of the CUDA executor dominates. The diagnostic instrumentation
+separates allocation, H2D, kernel, launch, synchronization, D2H and free.
 
-### Perfil interno CUDA observado na ksia
+### Internal CUDA profile observed on the CUDA test server
 
-O perfil foi executado em uma instância isolada, sem alterar o serviço nas
-portas 8080/8092, com `rdma-p2p=8187aad`, `llama.cpp=03902a5`,
-`POM_MOE_CUDA_PROFILE=1` e o GGUF real `Gemma4-26b-NVFP4.gguf`. A requisição
-OpenAI tinha `input_tokens=20` e produziu `hello`; o trace confirmou
-`executed_engine=moe`, `moe_executor=cuda`, `profiled=true` e
+The profile was run on an isolated instance, without touching the service on
+ports 8080/8092, with `pom=8187aad`, `llama.cpp=03902a5`,
+`POM_MOE_CUDA_PROFILE=1` and the real GGUF `Gemma4-26b-NVFP4.gguf`. The OpenAI
+request had `input_tokens=20` and produced `hello`; the trace confirmed
+`executed_engine=moe`, `moe_executor=cuda`, `profiled=true` and
 `engine_mismatch=false`.
 
-Os contadores de CUDA abaixo são os tempos acumulados publicados pelo executor.
-Na linha decode, subtraí os contadores do fim do prefill dos contadores do fim
-do decode: o runtime mantém o diagnóstico por modelo, então a linha representa
-os 240 experts selecionados desse único token de decode, não os 5040 calls
-acumulados. Percentuais são somente da soma das categorias instrumentadas, não
-do tempo total do nó.
+The CUDA counters below are the accumulated times published by the executor.
+On the decode row, the end-of-prefill counters were subtracted from the
+end-of-decode counters: the runtime keeps the diagnostic per model, so the row
+represents the 240 experts selected for that single decode token, not the 5040
+accumulated calls. Percentages are only of the sum of the instrumented
+categories, not of the node's total time.
 
-| fase | calls | backend/enqueue | H2D | kernel | alloc | launch | sync | D2H | free |
+| phase | calls | backend/enqueue | H2D | kernel | alloc | launch | sync | D2H | free |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| prefill, 20 tokens | 4800 | 33784,602 ms | 10189,819 ms | 19882,414 ms | 324,379 ms | 59,956 ms | 302,153 ms | 49,750 ms | 269,494 ms |
-| decode, delta de 1 token | 240 | 1738,734 ms | 621,394 ms | 967,158 ms | 16,860 ms | 3,174 ms | 14,713 ms | 2,589 ms | 13,685 ms |
+| prefill, 20 tokens | 4800 | 33784.602 ms | 10189.819 ms | 19882.414 ms | 324.379 ms | 59.956 ms | 302.153 ms | 49.750 ms | 269.494 ms |
+| decode, delta of 1 token | 240 | 1738.734 ms | 621.394 ms | 967.158 ms | 16.860 ms | 3.174 ms | 14.713 ms | 2.589 ms | 13.685 ms |
 
-A soma das categorias instrumentadas foi `31077,965 ms` no prefill e
-`1639,573 ms` no decode. O restante até o backend/enqueue foi,
-respectivamente, `2706,637 ms` e `99,161 ms`, portanto também não é atribuído
-ao kernel por inferência. Dentro do que foi medido, o kernel responde por
-`63,98%` do prefill e `58,99%` do decode; H2D responde por `32,79%` e
-`37,90%`. Portanto a transferência é grande, mas não é a maior categoria
-medida nesta execução.
+The sum of the instrumented categories was `31077.965 ms` in prefill and
+`1639.573 ms` in decode. The rest up to backend/enqueue was, respectively,
+`2706.637 ms` and `99.161 ms`, so it is not attributed to the kernel by
+inference either. Within what was measured, the kernel accounts for `63.98%` of
+prefill and `58.99%` of decode; H2D accounts for `32.79%` and `37.90%`. So the
+transfer is large, but it is not the largest category measured in that run.
 
-### Diagnóstico estrutural do caminho CUDA
+### Structural diagnosis of the CUDA path
 
-O LRU não ficou órfão. `MoeRuntime::open` cria uma instância de
-`ExpertCache::measured_system`, compartilha o mesmo `Arc<ExpertCache>` entre
-todos os blocos e `Nvfp4Executor::run_with_loader` faz `lookup` antes de
-`admit`, inclusive no caminho CUDA. O que o LRU mantém é o payload NVFP4 bruto
-em RAM. Ele não mantém buffers CUDA nem um lease de device.
+The LRU was not orphaned. `MoeRuntime::open` creates an
+`ExpertCache::measured_system` instance, shares the same `Arc<ExpertCache>`
+across every block and `Nvfp4Executor::run_with_loader` does a `lookup` before
+`admit`, including on the CUDA path. What the LRU keeps is the raw NVFP4 payload
+in RAM. It keeps neither CUDA buffers nor a device lease.
 
-Para o Gemma4 real, a geometria observada no GGUF e no hook é `hidden=2816`,
-`intermediate=704`, 30 camadas, 128 experts e top-k 8. O caminho atual faz,
-por token de decode:
+For the real Gemma4, the geometry observed in the GGUF and in the hook is
+`hidden=2816`, `intermediate=704`, 30 layers, 128 experts and top-k 8. The
+current path does, per decode token:
 
-| operação | contagem |
+| operation | count |
 |---|---:|
-| chamadas de expert | 30 x 8 = 240 |
-| cópias H2D de `gate_up` | 240 |
-| cópias H2D de `down` | 240 |
-| bytes H2D só de pesos | 802897920 (765,7 MiB) |
-| bytes H2D incluindo hidden | 805601280 (768,3 MiB) |
-| lançamentos de kernel | 480 |
+| expert calls | 30 x 8 = 240 |
+| `gate_up` H2D copies | 240 |
+| `down` H2D copies | 240 |
+| H2D bytes of weights only | 802897920 (765.7 MiB) |
+| H2D bytes including hidden | 805601280 (768.3 MiB) |
+| kernel launches | 480 |
 | `cudaDeviceSynchronize` | 480 |
-| `cudaMalloc` e `cudaFree` | 1200 de cada |
-| cópias D2H de saída | 240 |
+| `cudaMalloc` and `cudaFree` | 1200 of each |
+| output D2H copies | 240 |
 
-Cada expert selecionado atravessa PCIe uma vez por tensor de peso em cada
-chamada, mesmo quando o `ExpertCache` registra hit. O perfil mediu
-`805601280` bytes H2D por token de decode, dos quais `802897920` são pesos:
-240 cópias de `gate_up` e 240 de `down`, ou `3.345.408 bytes` de pesos por uso de
-expert. No prefill de 20 tokens, foram `4800` chamadas de expert e
-`9600` cópias H2D de peso, totalizando `16112025600` bytes H2D. Além disso,
-`Nvfp4CudaExecutor::run` repete a validação do cabeçalho do payload em CPU em
-cada chamada.
+Each selected expert crosses PCIe once per weight tensor on every call, even
+when the `ExpertCache` records a hit. The profile measured `805601280` H2D bytes
+per decode token, of which `802897920` are weights: 240 `gate_up` copies and 240
+`down` copies, or `3,345,408 bytes` of weights per expert use. In the 20-token
+prefill, there were `4800` expert calls and `9600` weight H2D copies, totaling
+`16112025600` H2D bytes. Also, `Nvfp4CudaExecutor::run` repeats the payload
+header validation on the CPU on every call.
 
-O LRU estava efetivamente ativo: no fim do prefill havia `1279` misses,
-`3521` hits e `1279` admissões; no decode houve mais `22` misses e `218` hits,
-chegando a `1301` entradas e `4352417440` bytes residentes em RAM. Porém o
-delta do decode ainda transferiu os pesos dos 240 usos, inclusive os 218 hits.
-Assim, a resposta objetiva à pergunta de PCIe é: um tensor de peso cruza uma
-vez por uso selecionado, e não uma vez por miss do LRU. Uma determinada chave
-de expert cruza tantas vezes quanto for selecionada no roteamento; neste token,
-o agregado foi 480 transferências de peso.
+The LRU was effectively active: at the end of prefill there were `1279` misses,
+`3521` hits and `1279` admissions; in decode there were `22` more misses and
+`218` hits, reaching `1301` entries and `4352417440` bytes resident in RAM. But
+the decode delta still transferred the weights of the 240 uses, including the
+218 hits. So the objective answer to the PCIe question is: a weight tensor
+crosses once per selected use, not once per LRU miss. A given expert key crosses
+as many times as it is selected in routing; on this token, the aggregate was 480
+weight transfers.
 
-O caminho que produziu esse perfil tinha uma divergência concreta em
-`cuda_kernels.cu`: o buffer copiado para device (`d_gate_up`) não era o ponteiro
-passado a `gate_up_kernel`; o kernel recebia o ponteiro host `gate_up`. O teste
-CUDA diferencial reproduziu a consequência antes da correção com tamanhos
-impossíveis (`262144 != 262128`), consistente com corrupção causada pela
-fronteira host/device. A correção passa `d_gate_up` ao kernel, sem mudar o
-formato do payload ou o cálculo. O perfil de custo precisa ser repetido depois
-desta correção antes de atribuir os `19882,414 ms` de kernel do prefill ou os
-`967,158 ms` do decode ao cálculo NVFP4 em si.
+The path that produced that profile had a concrete divergence in
+`cuda_kernels.cu`: the buffer copied to the device (`d_gate_up`) was not the
+pointer passed to `gate_up_kernel`; the kernel got the host pointer `gate_up`.
+The differential CUDA test reproduced the consequence before the fix with
+impossible sizes (`262144 != 262128`), consistent with corruption caused by the
+host/device boundary. The fix passes `d_gate_up` to the kernel, without changing
+the payload format or the computation. The cost profile had to be repeated after
+that fix before attributing the prefill's `19882.414 ms` of kernel or the
+decode's `967.158 ms` to the NVFP4 computation itself.
 
-O commit de validação `22f6c23` também alinhou o cálculo CUDA à convenção
-numérica do ggml. Cada entrada de matmul é quantizada em blocos Q8_0 de 32
-valores, com escala arredondada para FP16; o dot NVFP4 acumula os produtos
-inteiros por subbloco e aplica as duas escalas depois da soma. A ativação GeGLU
-usa o mesmo corte e o mesmo arredondamento FP16 do caminho ggml antes de ser
-quantizada para o `down`. Isso é uma convenção do pipeline ggml, não uma regra
-de Gemma4 ou de NVFP4: dimensões e payload continuam vindo da metadata do
-tensor, e um formato CUDA que não possua esse contrato deve recusar o dtype.
+The validation commit `22f6c23` also aligned the CUDA computation with ggml's
+numeric convention. Each matmul input is quantized in Q8_0 blocks of 32 values,
+with the scale rounded to FP16; the NVFP4 dot accumulates the integer products
+per sub-block and applies both scales after the sum. The GeGLU activation uses
+the same cut and the same FP16 rounding as the ggml path before being quantized
+for `down`. That is a convention of the ggml pipeline, not a Gemma4 or NVFP4
+rule: dimensions and payload still come from the tensor's metadata, and a CUDA
+format that does not have that contract must refuse the dtype.
 
-A validação real no GGUF Gemma4 (`hidden=2816`, `intermediate=704`) passou
-contra o oráculo ggml em todas as camadas e estágios. A ponte GPU passou ainda
-nos testes diferenciais CUDA com entrada uniforme e com entrada na região
-GELU, ambos comparando o mesmo payload e hidden entre Rust CPU e CUDA. A build
-`cargo build --release --features vulkan,cuda` passou na ksia em 9m01s; o teste
-CUDA filtrado passou em `2 passed, 0 failed` e a prova real passou em `1 passed,
-0 failed`. Os dois avisos restantes são `Nvfp4Trace` não consumido fora do
-diagnóstico e o helper `fp4_value`, já conhecidos. A prova real GPU com o GGUF
-deve ser repetida antes de qualquer otimização agrupada, porque o teste CUDA
-unitário não substitui a geometria real do modelo.
+The real validation on the Gemma4 GGUF (`hidden=2816`, `intermediate=704`)
+passed against the ggml oracle on every layer and stage. The GPU bridge also
+passed the differential CUDA tests with a uniform input and with an input in
+the GELU region, both comparing the same payload and hidden between Rust CPU and
+CUDA. The `cargo build --release --features vulkan,cuda` build passed on the
+CUDA test server in 9m01s; the filtered CUDA test passed with
+`2 passed, 0 failed` and the real proof passed with `1 passed, 0 failed`. The
+two remaining warnings are `Nvfp4Trace` not consumed outside the diagnostic and
+the `fp4_value` helper, both already known. The real GPU proof with the GGUF
+must be repeated before any grouped optimization, because the unit CUDA test
+does not replace the model's real geometry.
 
-### Diagnóstico do kernel CUDA antes do agrupamento
+### CUDA kernel diagnosis before grouping
 
-O kernel atual usa paralelismo por saída: `gate_up_kernel` lança uma thread por
-linha de gate/up e `down_kernel` uma thread por linha de saída, com blocos de
-128 threads. Cada thread percorre todos os blocos e subblocos da sua linha. Há
-paralelismo entre linhas, mas não existe cooperação entre threads para uma
-matriz, tile em memória compartilhada, ou lote de experts. A leitura não foi
-projetada como uma carga tiled coalescida: threads adjacentes percorrem linhas
-distintas e repetem os mesmos bytes quantizados para cada saída. O grau real de
-coalescência ainda precisa de Nsight Compute; o código atual não permite
-afirmar coalescência eficiente.
+The current kernel uses per-output parallelism: `gate_up_kernel` launches one
+thread per gate/up row and `down_kernel` one thread per output row, in blocks of
+128 threads. Each thread walks every block and sub-block of its row. There is
+parallelism across rows, but no cooperation between threads for a matrix, no
+shared memory tile and no expert batch. The read was not designed as a coalesced
+tiled load: adjacent threads walk distinct rows and repeat the same quantized
+bytes for each output. The real degree of coalescing still needs Nsight
+Compute; the current code does not allow claiming efficient coalescing.
 
-A descompactação E2M1 e UE4M3 ocorre dentro de `dot_nvfp4` a cada uso do
-expert. A quantização Q8_0 da ativação também é refeita por chamada, e o
-GeGLU é recalculado antes do `down`. Portanto um hit do LRU não deixa os pesos
-nem as ativações descompactados na GPU. O perfil anterior, feito antes do
-alinhamento numérico, mediu `480` lançamentos por token de decode; esses
-números não devem ser usados como ganho de uma implementação correta até o
-perfil ser repetido. A próxima etapa aprovada é agrupar o trabalho preservando
-primeiro a prova numérica; F5-E2 e a residência em VRAM vêm depois.
+E2M1 and UE4M3 unpacking happens inside `dot_nvfp4` on every expert use. The
+activation's Q8_0 quantization is also redone per call, and GeGLU is recomputed
+before `down`. So an LRU hit leaves neither weights nor activations unpacked on
+the GPU. The earlier profile, taken before the numeric alignment, measured
+`480` launches per decode token; those numbers must not be used as the gain of a
+correct implementation until the profile is repeated. The next approved step is
+grouping the work while keeping the numeric proof first; F5-E2 and VRAM
+residency come after.
 
-### Primeira validação do agrupamento CUDA
+### First validation of CUDA grouping
 
-O commit `379ce6a` agrupou os experts ativos de uma rota em uma chamada CUDA:
-o hidden é quantizado uma vez, os payloads são copiados em um bloco contíguo e
-gate/up, GeGLU e down usam índices `(expert, linha)`. A chamada agrupada faz
-cinco lançamentos de kernel e duas sincronizações para o lote inteiro, em vez
-de repetir a sequência por expert. A soma ponderada continua no Rust, na ordem
-original do roteamento. O agrupamento é genérico por contagem e geometria do
-lote; não há ramo por arquitetura ou dtype.
+Commit `379ce6a` grouped a route's active experts into one CUDA call: the hidden
+state is quantized once, the payloads are copied into a contiguous block and
+gate/up, GeGLU and down use `(expert, row)` indexes. The grouped call does five
+kernel launches and two synchronizations for the whole batch, instead of
+repeating the sequence per expert. The weighted sum stays in Rust, in the
+routing's original order. Grouping is generic by the batch's count and
+geometry; there is no branch per architecture or dtype.
 
-O primeiro teste CUDA revelou um defeito específico da nova indexação: a
-quantização Q8_0 comparava o índice global do lote com o comprimento de um
-único vetor, deixando os vetores a partir do segundo sem valores. `379ce6a`
-separa o deslocamento dentro do vetor do índice global. O caso de dois experts
-falhava antes e passou depois da correção, sem mudar a fórmula de quantização.
+The first CUDA test revealed a defect specific to the new indexing: the Q8_0
+quantization compared the batch's global index with the length of a single
+vector, leaving the vectors from the second one on without values. `379ce6a`
+separates the offset within the vector from the global index. The two-expert
+case failed before and passed after the fix, without changing the quantization
+formula.
 
-Na revisão final `fb8da96`, validada na ksia, os resultados foram:
+In the final review `fb8da96`, validated on the CUDA test server, the results
+were:
 
-- `cargo build --release --features vulkan,cuda`: passou em `3m22s`, com os
-  dois avisos conhecidos de `Nvfp4Trace` e `fp4_value` não consumidos;
-- os três testes CUDA sintéticos, incluindo o lote, `3 passed, 0 failed`;
-- lote CUDA com dois experts extraídos do GGUF real Gemma4, dimensões derivadas
-  do arquivo: `1 passed, 0 failed`;
-- comparação real camada a camada contra o oráculo ggml do mesmo Gemma4:
+- `cargo build --release --features vulkan,cuda`: passed in `3m22s`, with the
+  two known warnings of `Nvfp4Trace` and `fp4_value` not consumed;
+- the three synthetic CUDA tests, including the batch, `3 passed, 0 failed`;
+- a CUDA batch with two experts extracted from the real Gemma4 GGUF, dimensions
+  derived from the file: `1 passed, 0 failed`;
+- a real layer-by-layer comparison against the ggml oracle of the same Gemma4:
   `1 passed, 0 failed`.
 
-O teste real do lote compara os mesmos bytes e hidden entre CUDA e o decoder
-CPU, enquanto a prova do oráculo compara o decoder CPU com o llama.cpp. Essa
-separação evita que o teste CUDA valide o próprio oráculo. A medição E2E
-agrupada está registrada abaixo. O cache continua em RAM, sem residência de
-experts em VRAM; F5-E2 permanece posterior ao agrupamento.
+The real batch test compares the same bytes and hidden state between CUDA and
+the CPU decoder, while the oracle proof compares the CPU decoder with
+llama.cpp. That separation keeps the CUDA test from validating the oracle
+itself. The grouped E2E measurement is recorded below. The cache stays in RAM,
+with no expert residency in VRAM; F5-E2 stays after grouping.
 
-Conclusão desta medição: o LRU está ativo no caminho do hook, mas é somente
-cache de RAM. O caminho CUDA repete transferência de pesos para cada expert
-selecionado. A correção do ponteiro `gate_up` é uma etapa de correção numérica,
-não uma otimização; depois dela, a telemetria deve ser coletada novamente antes
-de comparar o custo do kernel. Os números acima continuam sendo a linha de
-base pré-correção; nenhuma otimização foi feita nesta etapa.
+Conclusion of that measurement: the LRU is active on the hook path, but it is
+only a RAM cache. The CUDA path repeats the weight transfer for every selected
+expert. The `gate_up` pointer fix is a numeric correctness step, not an
+optimization; after it, telemetry must be collected again before comparing the
+kernel's cost. The numbers above stay the pre-fix baseline; no optimization was
+done in that step.
 
-### Medição E2E do agrupamento CUDA
+### E2E measurement of CUDA grouping
 
-Em 2026-08-25, a medição foi repetida na ksia com `rdma-p2p=340efc8`,
-`llama.cpp=03902a5`, RTX 5060 Ti e o GGUF real `Gemma4-26b-NVFP4.gguf`.
-Para obter a quebra interna sem reiniciar o nó servível, usei uma instância
-isolada do mesmo binário, no mesmo GPU e em portas separadas, com
-`POM_MOE_CUDA_PROFILE=1`. O serviço principal permaneceu ativo com o Gemma4 em
-modo MoE. A requisição foi `Escreva hello world 10 vezes.`, com
-`max_tokens=64`; ela produziu 30 tokens em 10 linhas coerentes e tinha
+On 2026-08-25, the measurement was repeated on the CUDA test server with
+`pom=340efc8`, `llama.cpp=03902a5`, an RTX 5060 Ti and the real GGUF
+`Gemma4-26b-NVFP4.gguf`. To get the internal breakdown without restarting the
+serving node, an isolated instance of the same binary was used, on the same GPU
+and on separate ports, with `POM_MOE_CUDA_PROFILE=1`. The main service stayed
+up with Gemma4 in MoE mode. The request was `Escreva hello world 10 vezes.`,
+with `max_tokens=64`; it produced 30 tokens in 10 coherent lines and had
 `input_tokens=22`.
 
-No MoE agrupado, o trace mostrou `executed_engine=moe`,
-`moe_executor=cuda`, `engine_mismatch=false`, `mixed_execution=false`,
-`prefill_ms=6962`, `decode.processing_ms=5396` em 29 chamadas e duração total
-de `12525 ms`. Portanto, prefill foi `316,455 ms/token` e decode foi
-`186,069 ms/token`.
+With grouped MoE, the trace showed `executed_engine=moe`, `moe_executor=cuda`,
+`engine_mismatch=false`, `mixed_execution=false`, `prefill_ms=6962`,
+`decode.processing_ms=5396` over 29 calls and a total duration of `12525 ms`.
+So prefill was `316.455 ms/token` and decode was `186.069 ms/token`.
 
-| fase | backend total | chamada de decode no nó | H2D | kernel CUDA | chamadas de experts |
+| phase | backend total | node decode call | H2D | CUDA kernel | expert calls |
 |---|---:|---:|---:|---:|---:|
-| prefill, 22 tokens | `6957 ms` | `6956,219 ms` | `1758,498 ms` (`79,932 ms/token`) | `157,755 ms` (`7,171 ms/token`) | `5280` |
-| decode, 29 tokens | `5396 ms` | `5390,302 ms` | `1892,275 ms` (`65,251 ms/token`) | `234,272 ms` (`8,078 ms/token`) | `6960` |
+| prefill, 22 tokens | `6957 ms` | `6956.219 ms` | `1758.498 ms` (`79.932 ms/token`) | `157.755 ms` (`7.171 ms/token`) | `5280` |
+| decode, 29 tokens | `5396 ms` | `5390.302 ms` | `1892.275 ms` (`65.251 ms/token`) | `234.272 ms` (`8.078 ms/token`) | `6960` |
 
-Na linha decode, H2D e kernel são o delta dos contadores acumulados ao fim do
-prefill. Os `6960` experts são `29 x 240`, e o H2D foi
-`23294062080` bytes no total do delta, ou `803243520 bytes/token`
-(`766,033 MiB/token`). O agrupamento reduziu os lançamentos para cinco por
-lote, mas ainda copia os payloads selecionados para a GPU.
+On the decode row, H2D and kernel are the delta of the counters accumulated at
+the end of prefill. The `6960` experts are `29 x 240`, and H2D was `23294062080`
+bytes in total for the delta, or `803243520 bytes/token` (`766.033 MiB/token`).
+Grouping reduced the launches to five per batch, but still copies the selected
+payloads to the GPU.
 
-O par denso, na mesma instância e com a mesma requisição, produziu o mesmo
-texto com `executed_engine=llama.cpp`, `engine_mismatch=false`,
-`prefill_ms=398`, `decode.processing_ms=1402` em 29 chamadas e duração total
-de `1970 ms`: `18,091 ms/token` de prefill e `48,345 ms/token` de decode.
-H2D/kernel de experts não se aplica ao caminho denso, que não executa o
-executor MoE.
+The dense pair, on the same instance and with the same request, produced the
+same text with `executed_engine=llama.cpp`, `engine_mismatch=false`,
+`prefill_ms=398`, `decode.processing_ms=1402` over 29 calls and a total duration
+of `1970 ms`: `18.091 ms/token` of prefill and `48.345 ms/token` of decode.
+Expert H2D/kernel does not apply to the dense path, which does not run the MoE
+executor.
 
-Comparado à linha de base pré-agrupamento de `1689,3 ms/token` no prefill,
-`1738,7 ms/token` no decode, `621,4 ms/token` de H2D e `967,2 ms/token` de
-kernel no decode, o agrupamento medido foi uma melhoria isolada: cerca de
-`5,34x` no prefill, `9,34x` no decode, `9,52x` no H2D e `119,73x` no kernel.
-O nó principal terminou servível em `8080/8092`, com Gemma4 NVFP4 ativo em
-modo MoE; a instância isolada foi encerrada após a medição.
+Compared to the pre-grouping baseline of `1689.3 ms/token` in prefill,
+`1738.7 ms/token` in decode, `621.4 ms/token` of H2D and `967.2 ms/token` of
+kernel in decode, the measured grouping was an isolated improvement: about
+`5.34x` in prefill, `9.34x` in decode, `9.52x` in H2D and `119.73x` in the
+kernel. The main node ended serving on `8080/8092`, with Gemma4 NVFP4 active in
+MoE mode; the isolated instance was shut down after the measurement.
 
-### Decomposição fechada do tempo após o agrupamento
+### Closed time breakdown after grouping
 
-Para separar submedições CUDA que podem se sobrepor, repeti a mesma requisição
-em uma instância isolada do ramo de validação `0d6d70f`, compilado na ksia com
-`--features vulkan,cuda`. O serviço principal não foi reiniciado. A medição
-usou `POM_MOE_CUDA_PROFILE=1` e acrescentou duas paredes não sobrepostas:
-`runtime_forward_ms` para o forward MoE inteiro e `cuda_call_wall_ms` para a
-chamada FFI CUDA inteira. O texto foi novamente dez linhas de `hello world`,
-com 30 tokens de saída e 22 tokens de entrada.
+To separate CUDA sub-measurements that may overlap, the same request was
+repeated on an isolated instance of the validation branch `0d6d70f`, built on
+the CUDA test server with `--features vulkan,cuda`. The main service was not
+restarted. The measurement used `POM_MOE_CUDA_PROFILE=1` and added two
+non-overlapping walls: `runtime_forward_ms` for the whole MoE forward and
+`cuda_call_wall_ms` for the whole CUDA FFI call. The text was again ten lines of
+`hello world`, with 30 output tokens and 22 input tokens.
 
-| fase | backend total | forward MoE | restante llama.cpp | total por token |
+| phase | backend total | MoE forward | llama.cpp rest | total per token |
 |---|---:|---:|---:|---:|
-| prefill, 22 tokens | `8039,369 ms` | `7802,851 ms` (`97,058%`) | `236,518 ms` (`2,942%`) | `365,426 ms/token` |
-| decode, 29 chamadas | `5979,008 ms` | `5481,247 ms` (`91,675%`) | `497,761 ms` (`8,325%`) | `206,173 ms/token` |
+| prefill, 22 tokens | `8039.369 ms` | `7802.851 ms` (`97.058%`) | `236.518 ms` (`2.942%`) | `365.426 ms/token` |
+| decode, 29 calls | `5979.008 ms` | `5481.247 ms` (`91.675%`) | `497.761 ms` (`8.325%`) | `206.173 ms/token` |
 
-O restante é a diferença medida entre a parede do backend e o forward MoE,
-não uma estimativa de custo. Dentro do forward MoE, a partição também fecha
-exatamente:
+The rest is the measured difference between the backend wall and the MoE
+forward, not a cost estimate. Inside the MoE forward, the partition also closes
+exactly:
 
-| componente não sobreposto | prefill | decode, delta de 29 chamadas |
+| non-overlapping component | prefill | decode, delta of 29 calls |
 |---|---:|---:|
-| lookup do cache | `1,263 ms` | `3,784 ms` |
-| leitura do expert no GGUF | `501,936 ms` | `92,603 ms` |
-| admissão no cache RAM | `696,284 ms` | `57,419 ms` |
-| preparação do lote no host | `3622,166 ms` | `2166,206 ms` |
-| parede da chamada CUDA | `2836,915 ms` | `3086,384 ms` |
-| cópia do resultado no host | `6,197 ms` | `7,706 ms` |
-| agregação ponderada | `2,229 ms` | `2,258 ms` |
-| restante de orquestração do runtime | `135,860 ms` | `64,887 ms` |
-| **total do forward MoE** | **`7802,851 ms`** | **`5481,247 ms`** |
+| cache lookup | `1.263 ms` | `3.784 ms` |
+| expert read from the GGUF | `501.936 ms` | `92.603 ms` |
+| admission into the RAM cache | `696.284 ms` | `57.419 ms` |
+| batch preparation on the host | `3622.166 ms` | `2166.206 ms` |
+| CUDA call wall | `2836.915 ms` | `3086.384 ms` |
+| result copy on the host | `6.197 ms` | `7.706 ms` |
+| weighted aggregation | `2.229 ms` | `2.258 ms` |
+| remaining runtime orchestration | `135.860 ms` | `64.887 ms` |
+| **MoE forward total** | **`7802.851 ms`** | **`5481.247 ms`** |
 
-Assim, o maior componente isolado do prefill é a preparação do lote no host
-(`45,055%` do backend), seguida da parede CUDA (`35,288%`). No decode, a
-parede CUDA é o maior componente (`51,620%`), seguida da preparação do lote
-(`36,230%`). A leitura do expert e a admissão deixam de dominar no decode,
-porque o LRU está ativo: o prefill teve `1448` misses e `3832` hits; o delta
-do decode teve `177` misses e `6783` hits. Mesmo assim, cada token de decode
-mediu `803243520` bytes (`766,033 MiB`) de H2D, pois o cache é de RAM e não
-residente em VRAM.
+So the largest single prefill component is batch preparation on the host
+(`45.055%` of the backend), followed by the CUDA wall (`35.288%`). In decode,
+the CUDA wall is the largest component (`51.620%`), followed by batch
+preparation (`36.230%`). Expert reading and admission stop dominating in
+decode, because the LRU is active: prefill had `1448` misses and `3832` hits;
+the decode delta had `177` misses and `6783` hits. Even so, each decode token
+measured `803243520` bytes (`766.033 MiB`) of H2D, because the cache is in RAM
+and not resident in VRAM.
 
-As submedições internas da parede CUDA, que não devem ser somadas à tabela
-acima, foram no prefill: H2D `2246,346 ms` para `17671357440` bytes, kernel
-`378,780 ms`, alocação `95,688 ms`, lançamentos `253,452 ms`, sincronização
-`6,492 ms`, D2H `15,196 ms` e liberação `66,257 ms`. No delta de decode: H2D
-`2618,950 ms`, kernel `224,304 ms`, alocação `100,680 ms`, lançamentos
-`27,006 ms`, sincronização `16,399 ms`, D2H `21,769 ms` e liberação
-`76,018 ms`. A parede CUDA é a medida para a soma de 100%; essas fases
-internas explicam o conteúdo dela e podem ter sobreposição de relógios.
+The internal sub-measurements of the CUDA wall, which must not be added to the
+table above, were in prefill: H2D `2246.346 ms` for `17671357440` bytes, kernel
+`378.780 ms`, allocation `95.688 ms`, launches `253.452 ms`, sync `6.492 ms`,
+D2H `15.196 ms` and free `66.257 ms`. In the decode delta: H2D `2618.950 ms`,
+kernel `224.304 ms`, allocation `100.680 ms`, launches `27.006 ms`, sync
+`16.399 ms`, D2H `21.769 ms` and free `76.018 ms`. The CUDA wall is the measure
+for the 100% sum; those internal phases explain its content and their clocks
+may overlap.
 
-O campo legado `node_moe_forward_ms` continuou zerado no trace de decode,
-apesar de `runtime_forward_ms` ter crescido `5481,247 ms`; a decomposição usa
-o contador de parede do runtime e registra essa divergência de telemetria em
-vez de ocultá-la. O executor observado foi `cuda`, dtype `[40]`,
-`executed_engine=moe`, `engine_mismatch=false` e `mixed_execution=false`.
-O maior próximo alvo medido é reduzir a transferência e a preparação do lote,
-mas esta medição não inicia F5-E2 nem afirma ganho dela.
+The legacy field `node_moe_forward_ms` stayed zero in the decode trace, even
+though `runtime_forward_ms` grew by `5481.247 ms`; the breakdown uses the
+runtime's wall counter and records that telemetry divergence instead of hiding
+it. The observed executor was `cuda`, dtype `[40]`, `executed_engine=moe`,
+`engine_mismatch=false` and `mixed_execution=false`. The largest next measured
+target is reducing the transfer and the batch preparation, but that measurement
+neither starts F5-E2 nor claims its gain.
 
-### Diagnóstico do prefill após a cobertura escalar - 2026-08-25
 
-O benchmark mais recente do captain mediu três rodadas válidas do Gemma4 no
-gateway: `38,4 tok/s` de prefill e `23,0 tok/s` de decode. Isso equivale a
-`26,042 ms/token` e `43,478 ms/token`, respectivamente. A referência histórica
-do `llama.cpp` é `49,0/20,4 tok/s` e a do FreeToken é `359,1/47,7 tok/s`.
-Portanto o prefill atual está `1,276x` mais lento que o `llama.cpp` e `9,352x`
-abaixo do FreeToken; o decode está `1,127x` acima do `llama.cpp` e ainda
-`2,074x` abaixo do FreeToken. O benchmark novo não trouxe tamanho do prompt,
-`n_ubatch` efetivo nem o trace interno, então esses números não autorizam
-atribuir a diferença a uma única hipótese.
+### Prefill diagnosis after scalar coverage - 2026-08-25
 
-As hipóteses foram confrontadas com o caminho real:
+The operator's most recent benchmark measured three valid rounds of Gemma4 on
+the gateway: `38.4 tok/s` of prefill and `23.0 tok/s` of decode. That amounts to
+`26.042 ms/token` and `43.478 ms/token`, respectively. The historical
+`llama.cpp` reference is `49.0/20.4 tok/s` and FreeToken's is
+`359.1/47.7 tok/s`. So the current prefill is `1.276x` slower than `llama.cpp`
+and `9.352x` below FreeToken; decode is `1.127x` above `llama.cpp` and still
+`2.074x` below FreeToken. The new benchmark brought neither the prompt size,
+the effective `n_ubatch` nor the internal trace, so those numbers do not allow
+attributing the difference to a single hypothesis.
 
-1. **Prefill token a token.** Refutada no nível do servidor. `prefill::run`
-   envia um pedaço inteiro e `prefill_blocking` chama `decode_tokens` uma vez
-   com todos os tokens daquele pedaço. O padrão do pedaço é 512 e ele é
-   limitado por `n_batch`; o `llama_batch` recebe o lote inteiro. Isso não
-   significa um único cálculo físico: o `llama.cpp` processa o lote em
-   microbatches e o hook externo é chamado dentro de cada um. O CUDA agrupado
-   recebe `n_tokens` do microbatch e processa as rotas daquele lote em quatro
-   kernels, não uma chamada por token.
+The hypotheses were checked against the real path:
 
-2. **`n_ubatch=128`.** Confirmada como limitador potencial, não como causa
-   suficiente. Um candidato temporário reduziu `n_batch=512` para 128 quando
-   `fit_memory=true` e `moe_external_executor` estava ligado; para um prompt
-   maior que 128, o grafo era repetido em `ceil(tokens/128)` microbatches e o
-   callback MoE repetia a preparação de rotas, transferências de descritores
-   e sincronização por microbatch. O perfil instrumentado que temos como
-   quebra completa tinha 22 tokens, logo cabia em um único microbatch, e mesmo
-   assim a preparação de lote dominou. A exceção aprovada fica restrita ao
-   contexto principal MoE: o caminho denso e o MTP mantêm o limite operacional
-   de 512. A fração atribuível ao microlote continua uma decisão separada para
-   o contexto MoE.
+1. **Token-by-token prefill.** Refuted at the server level. `prefill::run`
+   sends a whole chunk and `prefill_blocking` calls `decode_tokens` once with
+   every token of that chunk. The chunk's default is 512 and it is capped by
+   `n_batch`; `llama_batch` gets the whole batch. That does not mean a single
+   physical computation: `llama.cpp` processes the batch in microbatches and
+   the external hook is called inside each one. Grouped CUDA gets the
+   microbatch's `n_tokens` and processes that batch's routes in four kernels,
+   not one call per token.
 
-3. **Sincronização por camada no prefill.** Existe sincronização no executor
-   externo, mas não é o gargalo observado. Cada chamada FFI CUDA registra
-   `sync_count=1` e executa `cudaDeviceSynchronize` depois dos quatro kernels;
-   como o callback está dentro do grafo, isso ocorre por camada e microbatch.
-   No perfil histórico, `sync_ms=6,492 ms` no prefill, contra
-   `cuda_call_wall_ms=2836,915 ms`; no delta de decode foram `16,399 ms`
-   contra `3086,384 ms`. Isso não sustenta a hipótese de que a espera de
-   sincronização fosse o custo principal daquela carga, mas não é evidência
-   do estado atual.
+2. **`n_ubatch=128`.** Confirmed as a potential limiter, not as a sufficient
+   cause. A temporary candidate reduced `n_batch=512` to 128 when
+   `fit_memory=true` and `moe_external_executor` was on; for a prompt longer than
+   128, the graph was repeated in `ceil(tokens/128)` microbatches and the MoE
+   callback repeated route preparation, descriptor transfers and
+   synchronization per microbatch. The instrumented profile we have as a full
+   breakdown had 22 tokens, so it fit in a single microbatch, and even so batch
+   preparation dominated. The approved exception stays restricted to the main
+   MoE context: the dense path and MTP keep the operational limit of 512. The
+   share attributable to the microbatch stays a separate decision for the MoE
+   context.
 
-A quebra abaixo pertence exclusivamente ao perfil histórico de 22 tokens,
-anterior ao estado que produziu `38,4 tok/s`. Ela fica registrada para
-reprodução, mas está deliberadamente excluída de qualquer conclusão sobre o
-prefill atual:
+3. **Per-layer synchronization in prefill.** There is synchronization in the
+   external executor, but it is not the observed bottleneck. Each CUDA FFI call
+   records `sync_count=1` and runs `cudaDeviceSynchronize` after the four
+   kernels; since the callback is inside the graph, that happens per layer and
+   microbatch. In the historical profile, `sync_ms=6.492 ms` in prefill, against
+   `cuda_call_wall_ms=2836.915 ms`; in the decode delta it was `16.399 ms`
+   against `3086.384 ms`. That does not support the hypothesis that the sync
+   wait was the main cost of that load, but it is not evidence about the
+   current state.
 
-| componente | tempo | fração do backend total |
+The breakdown below belongs exclusively to the historical 22-token profile,
+earlier than the state that produced `38.4 tok/s`. It is recorded for
+reproduction, but deliberately excluded from any conclusion about the current
+prefill:
+
+| component | time | share of the backend total |
 |---|---:|---:|
-| restante do `llama.cpp` fora do forward MoE | `236,518 ms` | `2,942%` |
-| lookup do cache | `1,263 ms` | `0,016%` |
-| leitura do expert no GGUF | `501,936 ms` | `6,244%` |
-| admissão no cache RAM | `696,284 ms` | `8,661%` |
-| preparação do lote no host | `3622,166 ms` | `45,055%` |
-| parede da chamada CUDA | `2836,915 ms` | `35,288%` |
-| cópia do resultado no host | `6,197 ms` | `0,077%` |
-| agregação ponderada | `2,229 ms` | `0,028%` |
-| restante da orquestração do runtime | `135,860 ms` | `1,690%` |
-| **backend total** | **`8039,369 ms`** | **`100%`** |
+| `llama.cpp` rest outside the MoE forward | `236.518 ms` | `2.942%` |
+| cache lookup | `1.263 ms` | `0.016%` |
+| expert read from the GGUF | `501.936 ms` | `6.244%` |
+| admission into the RAM cache | `696.284 ms` | `8.661%` |
+| batch preparation on the host | `3622.166 ms` | `45.055%` |
+| CUDA call wall | `2836.915 ms` | `35.288%` |
+| result copy on the host | `6.197 ms` | `0.077%` |
+| weighted aggregation | `2.229 ms` | `0.028%` |
+| remaining runtime orchestration | `135.860 ms` | `1.690%` |
+| **backend total** | **`8039.369 ms`** | **`100%`** |
 
-Essa tabela não prova onde o tempo está hoje. O perfil novo ainda está
-pendente porque a GPU está sendo usada pelo benchmark de concorrência. A
-coleta correta deve repetir exatamente as três rodadas atuais com
-`POM_MOE_CUDA_PROFILE=1` e registrar o tamanho do prompt, `n_batch`,
-`n_ubatch`, número de callbacks e a quebra equivalente. Só depois dessa
-coleta, com a placa livre, será possível decidir entre aumentar o microbatch,
-reutilizar a preparação de host ou alterar a sincronização.
+That table does not prove where the time is today. The new profile was still
+pending because the GPU was being used by the concurrency benchmark. The right
+collection must repeat exactly the current three rounds with
+`POM_MOE_CUDA_PROFILE=1` and record the prompt size, `n_batch`, `n_ubatch`, the
+number of callbacks and the equivalent breakdown. Only after that collection,
+with the card free, is it possible to decide between growing the microbatch,
+reusing the host preparation or changing the synchronization.
 
-### Análise formal de lacunas: FreeToken versus o caminho MoE atual
+### Formal gap analysis: FreeToken versus the current MoE path
 
-Esta análise foi feita em 2026-08-25, sem alterar código e sem acessar a ksia.
-A fonte do lado FreeToken é o relatório de estudo em
-`/Users/jairpereira/Sites/firstmate/data/rdma-freetoken-estudo/report.md`,
-que leu o commit `bd372b630a028e3faa51f4ab0ef6a98c2f2de501`. A fonte do lado
-local são os commits e perfis registrados neste documento. A ordem abaixo é
-por impacto observado, não por facilidade de implementação.
+This analysis was done on 2026-08-25, without changing code and without
+accessing the CUDA test server. The source on the FreeToken side is the
+external study report (kept outside this repository), which read commit
+`bd372b630a028e3faa51f4ab0ef6a98c2f2de501`. The source on the local side is the
+commits and profiles recorded in this document. The order below is by observed
+impact, not by ease of implementation.
 
-| prioridade | lacuna | FreeToken tem | rdma-p2p tem | custo observado e ganho esperado |
+| priority | gap | FreeToken has | POM has | observed cost and expected gain |
 |---|---|---|---|---|
-| 1 | LRU de experts residente na VRAM | `moe/offload_cache.py` mantém um cache global de experts no device, com admissão pelo orçamento de memória livre. O payload quente não precisa cruzar PCIe a cada seleção. | `moe/cache.rs` mantém o payload canônico em RAM do host. O executor CUDA usa staging temporário e transfere o peso mesmo em hit do LRU. | Evidência direta: `803243520` bytes H2D por token de decode (`766,033 MiB`), com `240` usos de experts por token. No perfil fechado, H2D foi `2618,950 ms` em 29 tokens (`90,309 ms/token`) dentro de `cuda_call_wall_ms=3086,384 ms` (`106,427 ms/token`). Se a residência eliminar essas cópias, esse é o teto direto da redução da parede CUDA nessa carga, não uma promessa de reduzir o backend inteiro: a preparação no host continua. |
-| 2 | Kernels CUDA para cada família de quantização | O relatório enumera bancos próprios em `_BANK_SCHEMAS`: `bf16`, `fp8_block`, `q4_0`, `nvfp4`, `mxfp4` e `ds_fp4`, com kernels CUDA/Triton fora do llama.cpp. | O executor CPU cobre várias famílias GGUF; a ponte CUDA cobre NVFP4, escalares, Q2_K/Q3_K/Q4_K/Q6_K e IQ3_S/IQ2_S/IQ4_XS após provas diferenciais, enquanto os demais dtypes publicam `CPUReference` com recusa nominal. | A linha de base histórica do Qwen UD-IQ3_S em `CPUReference` não é uma previsão do ganho atual: a ponte IQ foi aceita somente após comparar os três estágios na GPU real. |
-| 3 | Preparação do lote fora do caminho quente | O relatório mostra um escalonador GPU-cêntrico que entrega views dos bancos para os kernels e sobrepõe o prefetch da próxima camada. Ele não publica uma métrica separada chamada `host_batch_prepare`; portanto não há evidência para afirmar que o FreeToken tenha custo zero nessa etapa. | O callback Rust monta lotes e descritores no host a cada forward. A telemetria mede esse custo como `host_batch_prepare_ms`, antes da chamada CUDA. | No perfil histórico, foi o maior componente do prefill: `3622,166 ms`. Isso não foi confirmado no estado atual de `38,4 tok/s`; o ganho real de reutilizar descritores e buffers depende do novo perfil. |
-| 4 | Política compute-versus-transfer baseada em banda medida e double buffer real | `moe/benchbw.py` mede RAM/PCIe; `moe/bench_profile.py` grava perfil por GPU e calcula a fração híbrida `pcie/(pcie+cpu)`. `layers/moe.py` inicia o prefetch da camada seguinte e o orçamento reserva dois conjuntos de buffers. | `BandwidthProfile` persiste as bandas, `coexecution.rs` divide misses únicos e executa lanes CPU/GPU em paralelo no NVFP4; `DoubleBuffer` valida a reserva de dois slots. | A costura ainda precisa da prova CUDA desta revisão. Os números de H2D e kernel registrados no documento são históricos e não são uma promessa de ganho. |
-| 5 | CUDA Graphs para o MoE quantizado | O FreeToken captura e recaptura CUDA graphs para as formas de lote e o cache, evitando custo repetido de montagem e lançamento. | Não há captura/replay de CUDA graph para o callback MoE Rust. O llama.cpp pode usar seus próprios graphs para o restante do transformer, mas isso não cobre o executor externo. | Depois do agrupamento, os lançamentos CUDA custaram `27,006 ms` em 29 tokens (`0,931 ms/token`) e sincronização `16,399 ms` (`0,565 ms/token`). Portanto graphs podem reduzir overhead de lançamento e alocação, mas o máximo explicitamente medido nessa categoria é pequeno diante dos `74,697 ms/token` de preparação host e `90,309 ms/token` de H2D. |
+| 1 | VRAM-resident expert LRU | `moe/offload_cache.py` keeps a global expert cache on the device, with admission by the free memory budget. The hot payload does not need to cross PCIe on every selection. | `moe/cache.rs` keeps the canonical payload in host RAM. The CUDA executor uses temporary staging and transfers the weight even on an LRU hit. | Direct evidence: `803243520` H2D bytes per decode token (`766.033 MiB`), with `240` expert uses per token. In the closed profile, H2D was `2618.950 ms` over 29 tokens (`90.309 ms/token`) inside `cuda_call_wall_ms=3086.384 ms` (`106.427 ms/token`). If residency removes those copies, that is the direct ceiling of the CUDA wall's reduction on that load, not a promise to reduce the whole backend: host preparation remains. |
+| 2 | CUDA kernels for each quantization family | The report lists its own banks in `_BANK_SCHEMAS`: `bf16`, `fp8_block`, `q4_0`, `nvfp4`, `mxfp4` and `ds_fp4`, with CUDA/Triton kernels outside llama.cpp. | The CPU executor covers several GGUF families; the CUDA bridge covers NVFP4, scalars, Q2_K/Q3_K/Q4_K/Q6_K and IQ3_S/IQ2_S/IQ4_XS after differential proofs, while the other dtypes publish `CPUReference` with a refusal by name. | The historical baseline of Qwen UD-IQ3_S on `CPUReference` is not a forecast of the current gain: the IQ bridge was only accepted after comparing the three stages on the real GPU. |
+| 3 | Batch preparation off the hot path | The report shows a GPU-centric scheduler that hands bank views to the kernels and overlaps the next layer's prefetch. It publishes no separate metric called `host_batch_prepare`; so there is no evidence to claim FreeToken has zero cost at that step. | The Rust callback builds batches and descriptors on the host on every forward. Telemetry measures that cost as `host_batch_prepare_ms`, before the CUDA call. | In the historical profile, it was the largest prefill component: `3622.166 ms`. That was not confirmed in the current `38.4 tok/s` state; the real gain of reusing descriptors and buffers depends on the new profile. |
+| 4 | Compute-versus-transfer policy based on measured bandwidth and a real double buffer | `moe/benchbw.py` measures RAM/PCIe; `moe/bench_profile.py` writes a per-GPU profile and computes the hybrid fraction `pcie/(pcie+cpu)`. `layers/moe.py` starts the next layer's prefetch and the budget reserves two sets of buffers. | `BandwidthProfile` persists the bandwidths, `coexecution.rs` splits unique misses and runs CPU/GPU lanes in parallel on NVFP4; `DoubleBuffer` validates the two-slot reservation. | The wiring still needs this revision's CUDA proof. The H2D and kernel numbers recorded in the document are historical and are not a promise of gain. |
+| 5 | CUDA Graphs for the quantized MoE | FreeToken captures and recaptures CUDA graphs for the batch shapes and the cache, avoiding repeated build and launch cost. | There is no CUDA graph capture/replay for the Rust MoE callback. llama.cpp can use its own graphs for the rest of the transformer, but that does not cover the external executor. | After grouping, CUDA launches cost `27.006 ms` over 29 tokens (`0.931 ms/token`) and sync `16.399 ms` (`0.565 ms/token`). So graphs can reduce launch and allocation overhead, but the maximum explicitly measured in that category is small next to the `74.697 ms/token` of host preparation and `90.309 ms/token` of H2D. |
 
-#### Item 1: cache em VRAM
+#### Item 1: VRAM cache
 
-O ponto do captain está confirmado e é estrutural. O hit do nosso LRU significa
-que evitamos reler e descompactar o payload do GGUF, não que o device já possui
-o peso. O caminho `lookup -> admit -> staging H2D` preserva o hit em RAM, mas
-repete a travessia PCIe. O perfil anterior também mediu `805601280` bytes por
-token antes do agrupamento; o agrupamento reduziu lançamentos, não o volume de
-peso transferido. F5-E2, que remove a residência dos experts do carregador
-llama.cpp, evita residência dupla no modelo, mas não transforma o LRU Rust em
-cache de VRAM. São problemas distintos e ambos precisam aparecer na medição.
+The operator's point is confirmed and it is structural. A hit in our LRU means
+we avoid rereading and unpacking the payload from the GGUF, not that the device
+already has the weight. The `lookup -> admit -> staging H2D` path keeps the hit
+in RAM, but repeats the PCIe crossing. The earlier profile also measured
+`805601280` bytes per token before grouping; grouping reduced launches, not the
+volume of transferred weights. F5-E2, which removes the experts' residency from
+the llama.cpp loader, avoids double residency in the model, but does not turn
+the Rust LRU into a VRAM cache. They are distinct problems and both must show up
+in the measurement.
 
-#### Item 2: banda medida e double buffer
+#### Item 2: measured bandwidth and double buffer
 
-O ponto também está confirmado, com uma correção de escopo. O FreeToken não
-simplesmente escolhe sempre GPU: ele mede a banda de CPU e PCIe por formato e
-GPU, ignora perfil de outra placa e usa a fração calculada para decidir o
-trabalho híbrido. O nosso executor tem os campos de diagnóstico e a intenção
-documentada, mas não um perfil de banda carregado pelo runtime nem dois buffers
-CUDA alternados em produção. O double buffer do relatório é principalmente
-prefetch entre camadas durante o prefill; ele não é equivalente a apenas
-agrupar experts em uma chamada.
+This point is also confirmed, with a scope correction. FreeToken does not simply
+always pick the GPU: it measures CPU and PCIe bandwidth per format and GPU,
+ignores another card's profile and uses the computed fraction to decide the
+hybrid work. Our executor has the diagnostic fields and the documented intent,
+but neither a bandwidth profile loaded by the runtime nor two alternating CUDA
+buffers in production. The report's double buffer is mainly prefetch between
+layers during prefill; it is not equivalent to just grouping experts into one
+call.
 
 #### Item 3: CUDA Graphs
 
-Também está confirmado, mas o impacto atual é menor que a cópia H2D e a
-preparação host. O agrupamento já reduziu o número de lançamentos. Assim, um
-graph deve ser medido depois de o layout dos buffers ser estável e depois da
-residência em VRAM; capturar uma rota dinâmica antes disso arriscaria recapturas
-frequentes e esconderia o custo que realmente domina.
+Also confirmed, but the current impact is smaller than the H2D copy and the host
+preparation. Grouping already reduced the number of launches. So a graph should
+be measured after the buffer layout is stable and after VRAM residency;
+capturing a dynamic route before that would risk frequent recaptures and hide
+the cost that really dominates.
 
-#### Item 4: kernels por formato
+#### Item 4: kernels per format
 
-O relatório confirma seis bancos próprios do FreeToken, não uma prova de todos
-os dtypes GGUF existentes. A comparação correta é: nós temos uma camada de
-decodificação CPU mais ampla e recusa nominal por tensor; a ponte CUDA cobre
-somente os formatos que passaram a prova, atualmente NVFP4, escalares, Q4_K,
-Q6_K, IQ3_S, IQ2_S e IQ4_XS. A ordem de ataque deve ser determinada por
-modelos reais e por prova numérica, não pela lista do relatório como se ela
-cobrisse automaticamente IQ-quants.
+The report confirms six of FreeToken's own banks, not a proof of every existing
+GGUF dtype. The right comparison is: we have a broader CPU decoding layer and a
+refusal by name per tensor; the CUDA bridge only covers the formats that passed
+the proof, currently NVFP4, scalars, Q4_K, Q6_K, IQ3_S, IQ2_S and IQ4_XS. The
+attack order must be decided by real models and by numeric proof, not by the
+report's list as if it automatically covered IQ-quants.
 
-#### Item 5: montagem do lote no host
+#### Item 5: building the batch on the host
 
-O FreeToken oferece evidência de uma organização GPU-cêntrica com views de
-bancos, prefetch e streams, mas o relatório não mede uma caixa equivalente a
-`host_batch_prepare_ms`. Portanto a afirmação segura é que o nosso custo foi
-medido e o deles não foi decomposto dessa forma, não que o FreeToken "monta
-tudo na GPU". A lacuna local é objetiva: no nosso perfil o host prepara o
-lote por token antes da chamada CUDA e ocupa mais tempo que o kernel. Qualquer
-ganho atribuído a mover essa montagem precisa preservar a rota dinâmica, a
-ordem dos experts e a prova numérica por dtype.
+FreeToken offers evidence of a GPU-centric organization with bank views,
+prefetch and streams, but the report does not measure a box equivalent to
+`host_batch_prepare_ms`. So the safe statement is that our cost was measured and
+theirs was not broken down that way, not that FreeToken "builds everything on
+the GPU". The local gap is objective: in our profile the host prepares the batch
+per token before the CUDA call and takes longer than the kernel. Any gain
+attributed to moving that build must keep the dynamic route, the experts' order
+and the numeric proof per dtype.
 
-#### Histórico do número de 9,3 tok/s e da execução duplicada
+#### History of the 9.3 tok/s number and the duplicated execution
 
-Não existe no repositório, no status persistido ou na documentação uma linha
-que associe explicitamente o número `9,3 tok/s` a um SHA de implantação. O
-estado duplicado que é possível provar no código e que corresponde ao período
-anterior ao hook do fork é `5304228c0cf45dc729524bee21c217dd346be0af`,
-commitado em 2026-08-24 às 18:15:18, com a ressalva de que o log de deploy que
-ligaria esse SHA ao número 9,3 não foi preservado.
+There is no line in the repository, the persisted status or the documentation
+that explicitly ties the `9.3 tok/s` number to a deployment SHA. The duplicated
+state that can be proven in the code and matches the period before the fork's
+hook is `5304228c0cf45dc729524bee21c217dd346be0af`, committed on 2026-08-24 at
+18:15:18, with the caveat that the deploy log that would tie that SHA to the 9.3
+number was not kept.
 
-Nesse commit, `infer_server.rs` fazia primeiro `decode_hidden` ou
-`decode_tokens` (`linhas 2870-2887`), isto é, deixava o llama.cpp executar o
-grafo completo. No terminal, depois desse retorno, fazia
-`take_residual` e chamava `apply_moe_hidden`, mas descartava o resultado com
-`let _ = s.apply_moe_hidden(...)` (`linhas 2889-2892`). Logo depois, os logits
-eram lidos de `s.engine.logits_ith(...)` e amostrados (`linhas 2936-2941`),
-sem usar a saída do executor externo. Para uma requisição terminal de um hop,
-a resposta vinha do llama.cpp; a passada externa era trabalho adicional
-descartado. O commit ainda não tinha o callback opt-in
-`moe_external_executor` que hoje permite impedir o bloco nativo.
+In that commit, `infer_server.rs` first did `decode_hidden` or `decode_tokens`
+(`lines 2870-2887`), that is, it let llama.cpp run the whole graph. On the
+terminal hop, after that return, it did `take_residual` and called
+`apply_moe_hidden`, but discarded the result with
+`let _ = s.apply_moe_hidden(...)` (`lines 2889-2892`). Right after, the logits
+were read from `s.engine.logits_ith(...)` and sampled (`lines 2936-2941`),
+without using the external executor's output. For a one-hop terminal request,
+the answer came from llama.cpp; the external pass was extra, discarded work. The
+commit did not have yet the opt-in `moe_external_executor` callback that today
+lets the native block be prevented.
 
-A leitura do captain precisa de uma correção de precisão: naquele commit a
-telemetria não reportava somente o caminho escolhido. Ela já serializava
-`selected_path` e `executed_engine`, mas `record_terminal_engine` marcava
-`executed_engine=moe` quando a passada externa terminava (`linhas 1188-1196`),
-sem registrar que o llama.cpp também havia executado o grafo. Assim, o rótulo
-`moe` era uma evidência de que a passada externa ocorreu, não de que ela era o
-único executor nem de que sua saída alimentou a amostragem. Não havia detecção
-de duplicação ou de mistura nesse caso.
+The operator's reading needs a precision correction: in that commit telemetry
+did not only report the chosen path. It already serialized `selected_path` and
+`executed_engine`, but `record_terminal_engine` marked `executed_engine=moe`
+when the external pass ended (`lines 1188-1196`), without recording that
+llama.cpp had also run the graph. So the `moe` label was evidence that the
+external pass happened, not that it was the only executor nor that its output
+fed the sampling. There was no detection of duplication or mixing in that case.
 
-Portanto, a afirmação forte "9,3 era a vazão do nosso motor" é incorreta para
-esse estado duplicado. A afirmação mais precisa é: se o ensaio de 9,3 foi feito
-no estado `5304228`, a resposta terminal não foi produzida pelo nosso executor
-MoE e esse número não é baseline de velocidade do motor próprio. O repositório
-não permite afirmar, sem o log de deploy, que `5304228` foi exatamente o SHA
-do ensaio de 9,3; afirmar esse vínculo como fato seria inventar evidência.
+So the strong claim "9.3 was our engine's throughput" is wrong for that
+duplicated state. The more precise claim is: if the 9.3 test was done on the
+`5304228` state, the terminal answer was not produced by our MoE executor and
+that number is not a speed baseline of the own engine. The repository does not
+allow claiming, without the deploy log, that `5304228` was exactly the SHA of
+the 9.3 test; stating that link as a fact would be inventing evidence.
 
-O perfil honesto posterior é comparável por fase, não pelo tok/s agregado de
-uma conversa: a medição agrupada registrou `316,455 ms/token` de prefill e
-`186,069 ms/token` de decode, contra `1689,3` e `1738,7 ms/token` antes do
-agrupamento. A repetição instrumentada registrou `365,426` e `206,173
-ms/token`. Logo, nesses números por token o estado honesto posterior é melhor,
-não pior. O `tok/s` agregado pode cair quando o prompt é longo porque inclui o
-prefill; ele não invalida essa comparação por fase.
+The later honest profile is comparable per phase, not by a conversation's
+aggregated tok/s: the grouped measurement recorded `316.455 ms/token` of prefill
+and `186.069 ms/token` of decode, against `1689.3` and `1738.7 ms/token` before
+grouping. The instrumented repeat recorded `365.426` and `206.173 ms/token`. So
+in those per-token numbers the later honest state is better, not worse. The
+aggregated `tok/s` can drop when the prompt is long because it includes the
+prefill; it does not invalidate that per-phase comparison.
 
-#### Decisão de prioridade
+#### Priority decision
 
-O próximo ganho mensurável deve começar pelo cache residente em VRAM, porque é
-o único item que já tem custo direto de `766 MiB` de peso por token medido. Em
-impacto de throughput entre modelos, a ponte CUDA por dtype vem logo depois:
-o Qwen UD mediu segundos por token em `CPUReference` antes da ponte IQ. Dentro do Gemma NVFP4, a
-preparação host é o próximo alvo, seguida da política de banda e do double
-buffer reais. Cada ponte de dtype exige prova numérica por formato. CUDA Graphs
-fica depois de estabilizar residência, layout e política, pois os lançamentos
-já agrupados são uma parcela pequena do tempo explicitamente medido.
+The next measurable gain should start with the VRAM-resident cache, because it
+is the only item that already has a direct measured cost of `766 MiB` of weights
+per token. In throughput impact across models, the per-dtype CUDA bridge comes
+right after: Qwen UD measured seconds per token on `CPUReference` before the IQ
+bridge. Within Gemma NVFP4, host preparation is the next target, followed by the
+real bandwidth policy and double buffer. Each dtype bridge requires a numeric
+proof per format. CUDA Graphs come after stabilizing residency, layout and
+policy, since the already grouped launches are a small share of the explicitly
+measured time.
 
-### Objetivo formal: inversão da residência dos experts
+### Formal objective: inverting the experts' residency
 
-O estado atual é consequência histórica, não uma decisão de produto. O cache
-foi criado em `7a09d316befc51a2cbaf97775ece9caaab933f28` (2026-08-24,
-`feat: adicionar cache global de experts q4_0`) quando o executor era CPU. O
-`ExpertCache` guardava `Arc<[u8]>`, e a sonda padrão era `SystemFreeMemory`, que
-lia `MemAvailable` no Linux, `vm_stat` no macOS e memória física disponível no
-Windows. O próprio comentário dizia que uma sonda de VRAM seria uma integração
-futura. Nesse contexto, manter o payload em RAM era coerente: era o cache do
-decodificador de referência, funcionava sem CUDA e não assumia GPU discreta.
+The current state is a historical consequence, not a product decision. The
+cache was created in `7a09d316befc51a2cbaf97775ece9caaab933f28` (2026-08-24,
+`feat: adicionar cache global de experts q4_0`) when the executor was CPU-only.
+The `ExpertCache` kept `Arc<[u8]>`, and the default probe was
+`SystemFreeMemory`, which read `MemAvailable` on Linux, `vm_stat` on macOS and
+available physical memory on Windows. The comment itself said a VRAM probe would
+be a future integration. In that context, keeping the payload in RAM made sense:
+it was the reference decoder's cache, worked without CUDA and did not assume a
+discrete GPU.
 
-A ponte CUDA entrou depois, em `c782e557a8738d44afdc8505de7cba75261aa793`
-(2026-08-24 às 20:14:30). Ela recebia `lease.bytes()` do cache e alocava os
-buffers CUDA dentro de cada execução. Não houve nesse commit mudança de
-residência em `cache.rs`, sonda de device ou política de admissão. O perfil
-posterior confirmou a consequência: hits do LRU evitavam leitura e
-descompactação no host, mas ainda transferiam o peso para a GPU. Portanto a
-explicação do captain está correta: houve inércia de integração entre a Fase 4
-CPU e a Fase 5 CUDA, não uma limitação técnica que obrigasse o cache a ficar em
-RAM.
+The CUDA bridge came later, in `c782e557a8738d44afdc8505de7cba75261aa793`
+(2026-08-24 at 20:14:30). It got `lease.bytes()` from the cache and allocated
+the CUDA buffers inside each run. That commit made no residency change in
+`cache.rs`, no device probe and no admission policy. The later profile confirmed
+the consequence: LRU hits avoided reading and unpacking on the host, but still
+transferred the weight to the GPU. So the operator's explanation is right: there
+was integration inertia between the CPU Phase 4 and the CUDA Phase 5, not a
+technical limitation forcing the cache to stay in RAM.
 
-O segundo lado da inversão também tem causa histórica objetiva. No carregador
-da fase CPU, `llama_model_default_params` recebia `n_gpu_layers=-1` durante o
-ajuste de memória e não havia `moe_external_executor`; o carregamento normal do
-llama.cpp podia colocar os tensores de experts em `CUDA0`. A opção de não
-alocar experts foi adicionada depois como F5-E2. Assim, a residência do
-llama.cpp na placa e a residência do nosso cache em RAM foram duas decisões
-independentes que nunca foram fechadas como um único orçamento de device.
+The other side of the inversion also has an objective historical cause. In the
+CPU phase's loader, `llama_model_default_params` got `n_gpu_layers=-1` during
+the memory fit and there was no `moe_external_executor`; llama.cpp's normal load
+could put the expert tensors on `CUDA0`. The option to not allocate experts was
+added later as F5-E2. So llama.cpp's residency on the card and our cache's
+residency in RAM were two independent decisions never closed as a single device
+budget.
 
-Este objetivo corrige a inversão como contrato do caminho MoE, sem alterar o
-caminho denso:
+This objective fixes the inversion as a contract of the MoE path, without
+changing the dense path:
 
-1. O cache global de experts do executor próprio torna-se residente na VRAM do
-   device que executará o lote. Um hit devolve ponteiros ou handles de device e
-   não faz H2D. Um miss admite o expert uma vez, aguarda a conclusão do evento
-   CUDA antes de publicar o lease e só então o reutiliza entre tokens e
-   sessões.
-2. F5-E2 deixa de ser apenas higiene de memória e vira pré-requisito. Quando o
-   executor externo está selecionado, o loader do llama.cpp não aloca nem
-   gerencia os pesos de experts em qualquer buffer de device. Ele conserva
-   somente metadata e descriptors necessários ao hook; a fonte GGUF e o cache
-   próprio continuam responsáveis pelos bytes. Sem o opt-in, o llama.cpp
-   permanece byte a byte no comportamento denso atual.
-3. A fronteira é genérica. A chave de residência inclui modelo, device,
-   camada, expert, tensor/papel, dtype e geometria efetiva. Arquitetura,
-   convenção gate/up e formato são dados do descriptor do hook. Um dtype,
-   tensor, geometria ou arquitetura que não tenha decoder compatível recusa
-   nominalmente no limite de admissão, nomeando o item; nunca reativa os pesos
-   nativos nem assume CPU ou H2D silenciosamente.
-4. A admissão usa orçamento real de VRAM, não constante. Para CUDA, cada miss
-   consulta a memória livre do device e desconta pesos que continuam no
-   llama.cpp, buffers fixos, KV, ativações, staging e uma reserva operacional.
-   Após F5-E2, o termo de pesos de experts do llama.cpp deve ser zero. O limite
-   é recalculado quando a memória externa muda e a eviction só pode remover
-   entries sem lease e sem operação CUDA pendente.
+1. The own executor's global expert cache becomes resident in the VRAM of the
+   device that will run the batch. A hit returns device pointers or handles and
+   does no H2D. A miss admits the expert once, waits for the CUDA event to
+   complete before publishing the lease and only then reuses it across tokens
+   and sessions.
+2. F5-E2 stops being only memory hygiene and becomes a prerequisite. When the
+   external executor is selected, the llama.cpp loader neither allocates nor
+   manages the expert weights in any device buffer. It only keeps the metadata
+   and descriptors needed by the hook; the GGUF source and the own cache stay
+   responsible for the bytes. Without the opt-in, llama.cpp stays byte for byte
+   on the current dense behavior.
+3. The boundary is generic. The residency key includes model, device, layer,
+   expert, tensor/role, dtype and effective geometry. Architecture, gate/up
+   convention and format are data of the hook's descriptor. A dtype, tensor,
+   geometry or architecture without a compatible decoder is refused by name at
+   the admission limit, naming the item; it never reactivates the native weights
+   nor silently assumes CPU or H2D.
+4. Admission uses the real VRAM budget, not a constant. For CUDA, each miss
+   queries the device's free memory and subtracts weights still in llama.cpp,
+   fixed buffers, KV, activations, staging and an operational reserve. After
+   F5-E2, the llama.cpp expert weights term must be zero. The limit is
+   recomputed when external memory changes and eviction can only remove entries
+   without a lease and without a pending CUDA operation.
 
-#### Desenho de armazenamento e fluxo
+#### Storage design and flow
 
-O cache lógico atual será separado da representação física. A chave, LRU,
-leases e estatísticas continuam comuns; a entrada passa a conter um backend de
-armazenamento por device, um handle de alocação, bytes residentes, dtype,
-geometria, evento de prontidão e último uso. O payload mmapado do GGUF pode
-continuar como fonte fria ou fallback CPU explícito, mas não é confundido com
-o cache quente CUDA.
+The current logical cache will be separated from the physical representation.
+The key, LRU, leases and statistics stay common; the entry now holds a storage
+backend per device, an allocation handle, resident bytes, dtype, geometry, a
+readiness event and last use. The GGUF's mmapped payload can stay as a cold
+source or an explicit CPU fallback, but is not confused with the hot CUDA cache.
 
 ```text
-GGUF mmap / fonte fria
+GGUF mmap / cold source
         |
-        | miss + orçamento de VRAM medido
+        | miss + measured VRAM budget
         v
-cache de device: aloca -> H2D uma vez -> evento pronto -> lease
+device cache: allocate -> H2D once -> ready event -> lease
         |
-        | hit: lease do mesmo device pointer, sem H2D
+        | hit: lease of the same device pointer, no H2D
         v
-kernel agrupado por dtype -> agregação -> release do lease
+kernel grouped by dtype -> aggregation -> lease release
 ```
 
-O descriptor não pode publicar um handle antes do H2D e dos sidecars do
-expert estarem prontos no stream correto. A eviction deve esperar o evento de
-uso, não apenas observar `active == 0`; isso evita reutilizar uma alocação
-enquanto o kernel ainda está lendo. Quando um expert não cabe mesmo depois de
-eviction ociosa, o erro deve nomear `device`, `dtype`, tensor, camada, expert,
-bytes solicitados e orçamento disponível.
+The descriptor must not publish a handle before the expert's H2D and sidecars
+are ready on the right stream. Eviction must wait for the use event, not just
+observe `active == 0`; that avoids reusing an allocation while the kernel is
+still reading it. When an expert does not fit even after idle eviction, the
+error must name `device`, `dtype`, tensor, layer, expert, requested bytes and
+available budget.
 
-#### Fases e critério de pronto
 
-- **R0, contrato e orçamento.** Definir a trait de device allocator/probe,
-  separar bytes frios de handles residentes, e testar a aritmética com probes
-  falsos. Pronto quando a decisão de admissão for reproduzível sem CUDA e
-  nenhuma constante de VRAM existir no executor.
-- **R1, F5-E2 do loader.** Ativar a opção externa no fork, manter metadata em
-  contexto `no_alloc` e impedir buffers de experts do llama.cpp. Pronto quando
-  o caminho MoE não mostrar bytes de experts em `CUDA0` ou `CUDA_Host`, enquanto
-  o denso continuar carregando e executando sem a opção.
-- **R2, cache CUDA residente.** Implementar a residência para o descriptor
-  genérico e validar primeiro NVFP4 por ser o único dtype CUDA já provado. Uma
-  sequência warm-up seguida de hits deve mostrar H2D de pesos igual a zero por
-  uso, e um miss deve mostrar exatamente uma admissão por tensor residente.
-  Pronto também exige a comparação numérica camada a camada já aprovada.
-- **R3, formatos e arquiteturas.** Conectar cada ponte CUDA adicional por
-  tensor e dtype, começando pelos modelos reais restantes. Cada bloco precisa
-  de prova CPU Rust versus llama.cpp, CPU versus CUDA, recusa nominal para
-  combinação não atendida e E2E coerente; não há promoção por fixture
-  homogêneo.
-- **R4, prova de inversão.** Na ksia, registrar antes/depois com a mesma
-  build: `CUDA0`, `CUDA_Host`, CPU, RSS/PSS, bytes do cache de device, hits,
-  misses, H2D de pesos e H2D de ativações. O critério é `llama.cpp expert
-  bytes on device = 0`, cache MoE residente maior que zero, H2D de peso zero
-  nos hits, e ausência de uma segunda residência. Medir prefill e decode por
-  token no mesmo ensaio, sem atribuir ganho antes de fechar essa contabilidade.
+#### Phases and done criteria
 
-### Goal retomado: executor CUDA e co-execução CPU/GPU
+- **R0, contract and budget.** Define the device allocator/probe trait,
+  separate cold bytes from resident handles, and test the arithmetic with fake
+  probes. Done when the admission decision is reproducible without CUDA and no
+  VRAM constant exists in the executor.
+- **R1, the loader's F5-E2.** Turn on the external option in the fork, keep the
+  metadata in a `no_alloc` context and prevent llama.cpp's expert buffers. Done
+  when the MoE path shows no expert bytes on `CUDA0` or `CUDA_Host`, while dense
+  keeps loading and running without the option.
+- **R2, resident CUDA cache.** Implement residency for the generic descriptor
+  and validate NVFP4 first since it is the only CUDA dtype already proven. A
+  warm-up sequence followed by hits must show weight H2D equal to zero per use,
+  and a miss must show exactly one admission per resident tensor. Done also
+  requires the already approved layer-by-layer numeric comparison.
+- **R3, formats and architectures.** Wire each additional CUDA bridge per tensor
+  and dtype, starting with the remaining real models. Each block needs a proof of
+  Rust CPU versus llama.cpp, CPU versus CUDA, a refusal by name for an unserved
+  combination and a coherent E2E; there is no promotion based on a homogeneous
+  fixture.
+- **R4, inversion proof.** On the CUDA test server, record before/after with the
+  same build: `CUDA0`, `CUDA_Host`, CPU, RSS/PSS, device cache bytes, hits,
+  misses, weight H2D and activation H2D. The criterion is
+  `llama.cpp expert bytes on device = 0`, a resident MoE cache greater than
+  zero, zero weight H2D on hits, and no second residency. Measure prefill and
+  decode per token in the same test, without attributing a gain before closing
+  that accounting.
 
-Este é o novo goal formal da Fase 5, decidido pelo captain depois da medição
-na ksia com Gemma4 NVFP4 na mesma GPU. O caminho CPU atual mede cerca de
-`54 ms/token` no prefill e `80 ms/token` no decode; a referência FreeToken mede
-`3,1 ms/token` e `18,8 ms/token`, respectivamente. A diferença observada é de
-aproximadamente `17,4x` no prefill e `4,3x` no decode. Mais de 90% do tempo do
-nosso caminho fica fora de `llama_decode`, no decodificador de referência em
-CPU. O fato de o FreeToken manter experts em CPU/RAM elimina offload como
-explicação suficiente: o gargalo é o cálculo do expert.
+### Goal resumed: CUDA executor and CPU/GPU co-execution
 
-Há uma segunda referência, medida no CHAT real da ksia sem a amarra de batch 8:
-o `llama.cpp` faz `292` tokens de entrada em `983 ms`, cerca de `3,4 ms/token`
-de prefill, e estabiliza em cerca de `30 ms/token` no p50 de decode. Portanto,
-o prefill de `3,1 ms/token` é simultaneamente o alvo FreeToken e a paridade
-prática com `llama.cpp`; no decode, `30 ms/token` é um marco intermediário de
-paridade com o motor denso antes do alvo FreeToken de `18,8 ms/token`.
+This is Phase 5's new formal goal, decided by the operator after the
+measurement on the CUDA test server with Gemma4 NVFP4 on the same GPU. The
+current CPU path measures about `54 ms/token` in prefill and `80 ms/token` in
+decode; the FreeToken reference measures `3.1 ms/token` and `18.8 ms/token`,
+respectively. The observed gap is about `17.4x` in prefill and `4.3x` in decode.
+More than 90% of our path's time is outside `llama_decode`, in the CPU reference
+decoder. The fact that FreeToken keeps experts in CPU/RAM rules out offload as a
+sufficient explanation: the bottleneck is the expert's computation.
 
-O objetivo é reimplementar a abordagem de cálculo do FreeToken na plataforma
-Rust, com kernels CUDA próprios e chamadas feitas pelo host Rust. Python,
-Triton e o FreeToken como motor externo estão fora do escopo. O FreeToken é
-somente fonte de desenho e algoritmo; nenhum código é copiado. O caminho denso
-continua em `llama.cpp` sem alteração de seleção ou de comportamento.
+There is a second reference, measured on the real Chat on the CUDA test server
+without the batch-8 constraint: `llama.cpp` does `292` input tokens in `983 ms`,
+about `3.4 ms/token` of prefill, and settles at about `30 ms/token` at the decode
+p50. So the `3.1 ms/token` prefill is at the same time the FreeToken target and
+practical parity with `llama.cpp`; in decode, `30 ms/token` is an intermediate
+parity milestone with the dense engine before the FreeToken target of
+`18.8 ms/token`.
 
-O estado instrumentado atual ainda reutiliza o `ExpertCache` global com entrada
-canônica em CPU/RAM e buffers CUDA de staging temporário. Isso é precisamente a
-lacuna coberta pelo objetivo formal de inversão acima, não o desenho final. O
-router e a política de admissão continuam no Rust. Cada forward deve publicar
-`gpu_expert_calls`, `cpu_expert_calls`, bytes e banda H2D/D2H, `buffer_index`,
-tempo de sobreposição, bytes residentes por device e o motivo de qualquer
+The objective is to reimplement FreeToken's computation approach on the Rust
+platform, with own CUDA kernels and calls made by the Rust host. Python, Triton
+and FreeToken as an external engine are out of scope. FreeToken is only a source
+of design and algorithms; no code is copied. The dense path stays on `llama.cpp`
+with no change of selection or behavior.
+
+The current instrumented state still reuses the global `ExpertCache` with a
+canonical entry in CPU/RAM and temporary staging CUDA buffers. That is exactly
+the gap covered by the formal inversion objective above, not the final design.
+The router and the admission policy stay in Rust. Each forward must publish
+`gpu_expert_calls`, `cpu_expert_calls`, H2D/D2H bytes and bandwidth,
+`buffer_index`, overlap time, resident bytes per device and the reason for any
 fallback.
 
-### Objetivo formal: substituir execução e carga dos experts
+### Formal objective: replacing the experts' execution and loading
 
-Este objetivo é uma extensão formal da Fase 5. O motor MoE deve substituir o
-bloco de experts do `llama.cpp` sem manter uma segunda residência dos mesmos
-pesos. A ordem é deliberada: primeiro provar e medir a supressão da execução
-duplicada; somente depois suprimir a carga dos pesos. Assim, a variação de cada
-medição atribui-se a uma mudança isolada.
+This objective is a formal extension of Phase 5. The MoE engine must replace
+`llama.cpp`'s expert block without keeping a second residency of the same
+weights. The order is deliberate: first prove and measure the suppression of the
+duplicated execution; only then suppress the loading of the weights. So the
+variation of each measurement is attributed to an isolated change.
 
-#### F5-E1: substituição genérica da execução
+#### F5-E1: generic replacement of execution
 
-O ponto de extensão vive no `build_moe_ffn` comum do fork. Quando o callback
-opt-in está instalado, ele recebe os ids e pesos de roteamento já resolvidos,
-quantidade total e ativa de experts, arquitetura, ativação, convenção de
-gate/up fundida ou separada, nomes, geometrias, dtypes e escalas GGML. O
-executor Rust escolhe o decoder pelo dtype recebido como dado. Não há ramo de
-substituição por arquitetura ou `dtype == NVFP4`.
+The extension point lives in the fork's common `build_moe_ffn`. When the opt-in
+callback is installed, it gets the already resolved routing ids and weights, the
+total and active expert counts, architecture, activation, fused or separate
+gate/up convention, names, geometries, dtypes and GGML scales. The Rust executor
+picks the decoder by the dtype received as data. There is no replacement branch
+per architecture or `dtype == NVFP4`.
 
-O callback retorna diretamente a saída do bloco e impede que os matmuls nativos
-de experts entrem no grafo. Atenção, normalizações, cache KV, embeddings,
-tokenização e amostragem continuam no `llama.cpp`. Callback ausente preserva o
-grafo nativo, inclusive para modelos densos. Arquitetura, geometria, ativação
-ou dtype que o executor não consiga atender devem produzir recusa nominal no
-limite de decode, nunca executar o bloco nativo como fallback silencioso.
+The callback returns the block's output directly and keeps the native expert
+matmuls out of the graph. Attention, normalizations, KV cache, embeddings,
+tokenization and sampling stay in `llama.cpp`. A missing callback keeps the
+native graph, including for dense models. An architecture, geometry, activation
+or dtype the executor cannot serve must produce a refusal by name at the decode
+boundary, never run the native block as a silent fallback.
 
-O inventário segue a mesma prioridade do llama.cpp quando um GGUF traz
-`ffn_gate_up_exps.weight` fundido junto com `ffn_gate_exps.weight` e
-`ffn_up_exps.weight`: o tensor fundido é a representação ativa e os split
-duplicados são ignorados. Isso evita transformar cópias do mesmo expert em
-papéis concorrentes no descriptor. Nos caminhos K e heterogêneo, cada tensor
-ativo também procura os sidecars canônicos removendo `.weight` do nome base e
-anexando `.scale` ou `.input_scale`. Os valores por expert são validados como
-escalares finitos, carregados no payload/descriptor e aplicados nos produtos
-gate, up e down. O tensor compartilhado `ffn_*_shexp` continua fora desse
-inventário.
+The inventory follows llama.cpp's same priority when a GGUF carries a fused
+`ffn_gate_up_exps.weight` together with `ffn_gate_exps.weight` and
+`ffn_up_exps.weight`: the fused tensor is the active representation and the
+duplicated splits are ignored. That avoids turning copies of the same expert
+into competing roles in the descriptor. On the K and heterogeneous paths, each
+active tensor also looks for the canonical sidecars by removing `.weight` from
+the base name and appending `.scale` or `.input_scale`. The per-expert values are
+validated as finite scalars, loaded into the payload/descriptor and applied in
+the gate, up and down products. The shared tensor `ffn_*_shexp` stays out of
+that inventory.
 
-Os testes `expert_shared_nao_entra_no_inventario_de_rota` e
-`inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars` confirmam que somente
-os quatro tensores `*_exps.weight` são classificados como rota: `*_shexp` e
-`.scale`/`.input_scale` ficam fora. O teste
-`sidecars_fundidos_usam_componente_e_fallback_separado_corretos` confirma a
-associação do componente 0/1 nos sidecars do tensor fundido e o fallback para
-os sidecars de gate/up separados. As hipóteses de expert compartilhado contado
-e sidecar associado ao componente errado não explicam, portanto, o NaN
-observado no Ornith.
+The tests `expert_shared_nao_entra_no_inventario_de_rota` and
+`inventario_de_rota_separa_exps_de_shexp_e_dos_sidecars` confirm that only the
+four `*_exps.weight` tensors are classified as route: `*_shexp` and
+`.scale`/`.input_scale` stay out. The test
+`sidecars_fundidos_usam_componente_e_fallback_separado_corretos` confirms the
+association of component 0/1 in the fused tensor's sidecars and the fallback to
+the separate gate/up sidecars. So the hypotheses of a counted shared expert and
+a sidecar tied to the wrong component do not explain the NaN observed on Ornith.
 
-O descriptor CUDA heterogêneo é uma estrutura C compatível com `#[repr(C)]`:
-`data` fica no offset 0, `bytes` no 8, `dtype` no 16, `scale` no 20,
-`input_scale` no 24, `secondary_scale` no 28 e `secondary_input_scale` no 32;
-o tamanho final é 40 bytes. Asserções de offset e tamanho existem no Rust e no
-`cuda_kernels.cu`. Essa parte não é coberta pela compilação local no macOS:
-qualquer mudança no kernel precisa de build com `nvcc` na ksia.
+The heterogeneous CUDA descriptor is a C structure compatible with
+`#[repr(C)]`: `data` at offset 0, `bytes` at 8, `dtype` at 16, `scale` at 20,
+`input_scale` at 24, `secondary_scale` at 28 and `secondary_input_scale` at 32;
+the final size is 40 bytes. Offset and size assertions exist in Rust and in
+`cuda_kernels.cu`. That part is not covered by the local build on macOS: any
+kernel change needs an `nvcc` build on the CUDA test server.
 
-O ponto comum normaliza os tensores de ids e pesos da rota antes de remodelá-los.
-Como esses buffers cruzam do backend que calcula top-k/gather para o custom op
-CPU, o stride aparentemente contíguo não prova que a alocação do produtor já
-foi materializada para a cópia do scheduler. O grafo cria sempre um produtor
-`ggml_cont` antes do reshape, inclusive para o primeiro token e slot. Isso
-fecha a leitura de memória não inicializada que aparecia como `NaN` em
-`ffn_moe_weights`; `llama.cpp/tests/test-moe-route-layout.cpp` cobre as vistas
-contígua e estriada.
+The common point normalizes the route's ids and weights tensors before
+reshaping them. Since those buffers cross from the backend that computes
+top-k/gather to the CPU custom op, an apparently contiguous stride does not prove
+that the producer's allocation was already materialized for the scheduler's
+copy. The graph always creates a `ggml_cont` producer before the reshape,
+including for the first token and slot. That closes the read of uninitialized
+memory that showed up as `NaN` in `ffn_moe_weights`;
+`llama.cpp/tests/test-moe-route-layout.cpp` covers the contiguous and strided
+views.
 
-#### Prova numérica antes de desempenho
+#### Numeric proof before performance
 
-A resposta coerente do caminho MoE não prova que o callback calculou o FFN:
-telemetria só prova seleção e execução. A regressão numérica começa na primeira
-camada e no primeiro estágio, e só avança quando a comparação passa. O teste
-ignorado `nvfp4_matches_llama_cpp_from_first_layer_and_stage` recebe um GGUF
-real por `POM_MOE_NUMERIC_MODEL`, deriva a quantidade de experts dos tensores do
-arquivo e percorre as camadas em ordem. Para cada expert e hidden determinísticos
-iguais, ele compara `gate`, `up`, ativação e `down` do decoder Rust CPU com um
-oráculo construído pelo próprio ggml/llama.cpp sobre os mesmos tensores do
-modelo. O estágio que falhar primeiro é o diagnóstico publicado antes de
-qualquer correção.
+The MoE path's coherent answer does not prove the callback computed the FFN:
+telemetry only proves selection and execution. The numeric regression starts at
+the first layer and the first stage, and only moves on when the comparison
+passes. The ignored test `nvfp4_matches_llama_cpp_from_first_layer_and_stage`
+gets a real GGUF through `POM_MOE_NUMERIC_MODEL`, derives the number of experts
+from the file's tensors and walks the layers in order. For each identical
+deterministic expert and hidden state, it compares `gate`, `up`, activation and
+`down` of the Rust CPU decoder with an oracle built by ggml/llama.cpp itself on
+the model's same tensors. The first stage that fails is the diagnosis published
+before any fix.
 
-O critério inicial é `abs(a-b) <= 1e-4` ou erro relativo `<= 2e-3` para os
-formatos quantizados; F32 usa `1e-5` absoluto e relativo. Valores não finitos
-ou uma divergência acima do limite falham com camada, estágio, índice, erro
-absoluto e relativo. A mesma matriz será repetida com o executor CUDA contra o
-Rust CPU depois que a matriz CPU Rust versus llama.cpp estiver verde. Isso
-separa erro de descompactação/escala, erro de geometria ou roteamento e erro
-do kernel CUDA sem atribuir desempenho a um resultado incorreto.
+The initial criterion is `abs(a-b) <= 1e-4` or relative error `<= 2e-3` for the
+quantized formats; F32 uses `1e-5` absolute and relative. Non-finite values or a
+divergence above the limit fail with layer, stage, index, absolute and relative
+error. The same matrix will be repeated with the CUDA executor against Rust CPU
+once the Rust CPU versus llama.cpp matrix is green. That separates
+unpacking/scale errors, geometry or routing errors and CUDA kernel errors
+without attributing performance to a wrong result.
 
-##### Convenção NVFP4 usada pela prova
+##### NVFP4 convention used by the proof
 
-A resolução dos sidecars é genérica: para um tensor base `X.weight`, o nome
-canônico de um sidecar é `X.scale` ou `X.input_scale`. O loader recusa o
-tensor canônico ausente, nomeando-o; ele não transforma ausência em escala 1.
-Os seis sidecars por expert são preservados no payload: `.scale` e
-`.input_scale` para gate, up e down.
+Sidecar resolution is generic: for a base tensor `X.weight`, a sidecar's
+canonical name is `X.scale` or `X.input_scale`. The loader refuses a missing
+canonical tensor, naming it; it does not turn absence into a scale of 1. The six
+sidecars per expert are kept in the payload: `.scale` and `.input_scale` for
+gate, up and down.
 
-O cálculo externo segue a semântica observada no oráculo nativo do fork. O
-`build_lora_mm_id` faz a multiplicação com o peso NVFP4 e aplica o `.scale`
-correspondente depois do resultado por expert. O campo `.input_scale` é
-carregado pelo modelo, mas não é consumido pelo `build_moe_ffn` nativo nem
-aparece em outra operação desse FFN. Por isso o executor externo não o aplica
-ao hidden, ao gate/up ou à ativação down. Isso não descarta o metadata: se uma
-futura operação GGML declarar explicitamente esse campo como parte da
-quantização de entrada, a regra será aplicá-lo antes da multiplicação daquela
-operação, com uma prova independente; não se deve reutilizar esta decisão sem
-essa evidência.
+The external computation follows the semantics observed in the fork's native
+oracle. `build_lora_mm_id` does the multiplication with the NVFP4 weight and
+applies the matching `.scale` after the per-expert result. The `.input_scale`
+field is loaded by the model, but is consumed neither by the native
+`build_moe_ffn` nor by any other operation of that FFN. That is why the external
+executor does not apply it to the hidden state, to gate/up or to the down
+activation. That does not discard the metadata: if a future GGML operation
+explicitly declares that field as part of the input quantization, the rule will
+be to apply it before that operation's multiplication, with an independent
+proof; this decision must not be reused without that evidence.
 
-Para os valores E2M1, o fork define `kvalues_fp4` como os valores dobrados
-`[0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12]`. A escala UE4M3
-é convertida para o valor bruto dividido por dois. A tabela dobrada e o fator
-`0.5` são uma única convenção do ggml, compartilhada por NVFP4 e MXFP4; usar a
-tabela E2M1 pela metade junto com UE4M3 dividido por dois aplica uma redução
-dupla. CPU Rust e CUDA usam agora exatamente essa convenção, protegida por
-teste unitário e pela comparação contra o ggml.
+For the E2M1 values, the fork defines `kvalues_fp4` as the doubled values
+`[0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12]`. The UE4M3 scale is
+converted to the raw value divided by two. The doubled table and the `0.5`
+factor are a single ggml convention, shared by NVFP4 and MXFP4; using the halved
+E2M1 table together with UE4M3 divided by two applies a double reduction. Rust
+CPU and CUDA now use exactly that convention, protected by a unit test and by
+the comparison against ggml.
 
-Há um limite conhecido na entrada sintética `POM_MOE_NUMERIC_INPUT=ones`: no
-host x86 da ksia, o backend nativo usa oito acumuladores AVX2, FMA e redução
-horizontal, enquanto uma implementação escalar acumula subbloco a subbloco.
-Essa não-associatividade produz erro centrado apenas no estágio down de alguns
-casos sintéticos, sem indicar diferença de escala, zero-point ou roteamento.
-O executor seleciona a ordem AVX2 quando as capacidades correspondentes estão
-disponíveis e conserva a redução escalar nas demais arquiteturas. A prova com
-hidden determinístico do GGUF real Gemma4 passou em todas as camadas e estágios;
-esse resultado real, e não o relaxamento da tolerância, é o critério de
-correção.
+There is a known limit on the synthetic input `POM_MOE_NUMERIC_INPUT=ones`: on
+the CUDA test server's x86 host, the native backend uses eight AVX2
+accumulators, FMA and a horizontal reduction, while a scalar implementation
+accumulates sub-block by sub-block. That non-associativity produces an error
+centered only on the down stage of some synthetic cases, without indicating a
+scale, zero-point or routing difference. The executor selects the AVX2 order
+when the matching capabilities are available and keeps the scalar reduction on
+other architectures. The proof with a deterministic hidden state on the real
+Gemma4 GGUF passed on every layer and stage; that real result, and not a
+relaxed tolerance, is the correctness criterion.
 
-Comando da prova real, fora da suíte padrão por exigir um arquivo grande:
+The real proof's command, outside the default suite because it needs a large
+file:
 
 ```bash
-POM_MOE_NUMERIC_MODEL=/caminho/modelo.gguf \
+POM_MOE_NUMERIC_MODEL=/path/model.gguf \
 POM_MOE_NUMERIC_ACTIVATION=2 \
 cargo test -p node nvfp4_matches_llama_cpp_from_first_layer_and_stage -- --ignored --nocapture
 ```
 
-`POM_MOE_NUMERIC_ACTIVATION` é dado do GGUF, não uma seleção por arquitetura no
-executor. A captura de rota não é usada como oráculo: o teste primeiro usa o
-mesmo hidden, expert e pesos de um caso isolado; a prova E2E posterior reutiliza
-o hidden real de cada camada. O `ggml_cont` da correção de layout é
-deliberadamente chamado mesmo quando `ggml_is_contiguous` retorna verdadeiro:
-somente a execução do produtor prova que a área está pronta para a cópia entre
-backends. O custo por camada/token ainda precisa ser medido separadamente, pois
-a telemetria atual não conta bytes ou tempo dessa cópia.
+`POM_MOE_NUMERIC_ACTIVATION` is GGUF data, not a per-architecture selection in
+the executor. The route capture is not used as the oracle: the test first uses
+the same hidden state, expert and weights of an isolated case; the later E2E
+proof reuses each layer's real hidden state. The layout fix's `ggml_cont` is
+deliberately called even when `ggml_is_contiguous` returns true: only the
+producer's execution proves the area is ready for the cross-backend copy. The
+per layer/token cost still has to be measured separately, since current
+telemetry counts neither bytes nor time of that copy.
 
-Para provar a regressão completa antes de reimplantar, execute isoladamente o
-teste ignorado abaixo com um GGUF `qwen35moe` e CUDA real:
+To prove the full regression before redeploying, run the ignored test below in
+isolation with a `qwen35moe` GGUF and real CUDA:
 
 ```bash
-POM_MOE_NUMERIC_MODEL=/caminho/qwen35moe.gguf \
+POM_MOE_NUMERIC_MODEL=/path/qwen35moe.gguf \
 POM_MOE_NUMERIC_GPU_LAYERS=99 \
 cargo test -p node --features cuda --bin pom \
   inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer \
   -- --ignored --nocapture
 ```
 
-Ele captura a saída da camada 1 para quatro tokens no caminho nativo e no
-callback externo, exige `moe_forward_us > 0` e somente executores `cuda`, e
-falha se qualquer residual não for finito. A medição publicada
-`MOE_NUMERIC_PROOF` deve mostrar `max_abs` e `max_relative`; cada elemento deve
-satisfazer `abs <= 5e-2 + 2e-2 * max(abs(native), 1)`. Essa combinação prova
-que a rota foi materializada e lida sem NaN, que o callback realmente usou
-CUDA e que o resultado externo acompanha o bloco nativo. O comando exige a
-feature CUDA e não deve ser substituído por `cargo test` sem `--ignored`.
+It captures layer 1's output for four tokens on the native path and on the
+external callback, requires `moe_forward_us > 0` and only `cuda` executors, and
+fails if any residual is not finite. The published `MOE_NUMERIC_PROOF`
+measurement must show `max_abs` and `max_relative`; each element must satisfy
+`abs <= 5e-2 + 2e-2 * max(abs(native), 1)`. That combination proves the route
+was materialized and read without NaN, that the callback really used CUDA and
+that the external result follows the native block. The command requires the
+CUDA feature and must not be replaced by `cargo test` without `--ignored`.
 
-Para a prova do Ornith-1.5-35B-Q4_K_M, usar o GGUF completo real, não uma
-fatia, no valor de `POM_MOE_NUMERIC_MODEL`. O caminho exato não está neste
-worktree e não foi consultado na ksia nesta etapa, então permanece um
-placeholder explícito:
+For the Ornith-1.5-35B-Q4_K_M proof, use the real full GGUF, not a slice, as
+the value of `POM_MOE_NUMERIC_MODEL`. The exact path was not in that worktree,
+so it stays an explicit placeholder:
 
 ```bash
-POM_MOE_NUMERIC_MODEL=/caminho/absoluto/Ornith-1.5-35B-Q4_K_M.gguf \
+POM_MOE_NUMERIC_MODEL=/absolute/path/Ornith-1.5-35B-Q4_K_M.gguf \
 POM_MOE_NUMERIC_GPU_LAYERS=99 \
 CUDAARCHS=120 \
 CUDACXX=/usr/local/cuda-12/bin/nvcc \
@@ -1619,278 +1623,280 @@ cargo test -p node --features cuda --bin pom \
   -- --ignored --nocapture
 ```
 
-Essa prova não foi executada: aguarda autorização explícita para gastar
-CPU/GPU na ksia.
+That proof was not run: it was waiting for explicit authorization to spend
+CPU/GPU on the CUDA test server.
 
-Pronto quando a telemetria de uma requisição MoE mostrar o callback executado,
-`executed_engine=MoE`, sem divergência, e a medição isolada comparar prefill e
-decode contra F5.0. O grafo denso deve continuar sem callback e sem regressão.
+Done when the telemetry of a MoE request shows the callback executed,
+`executed_engine=MoE`, with no divergence, and the isolated measurement compares
+prefill and decode against F5.0. The dense graph must stay without a callback and
+without regression.
 
-#### F5-E2: supressão opt-in da carga dos pesos
+#### F5-E2: opt-in suppression of weight loading
 
-Quando e somente quando F5-E1 estiver selecionada, o carregador do fork recebe
-uma opção explícita para não alocar os tensores de experts. Ele preserva no
-objeto do modelo apenas a metadata necessária para construir o descriptor do
-hook: nomes, rank e geometrias, dtype, quantidade total de experts e quantidade
-ativa, além das escalas e da indicação de gate/up fundido ou separado. Os bytes
-dos pesos continuam acessíveis somente à fonte GGUF do executor Rust e ao seu
-cache LRU, não a buffers do `llama.cpp`.
+When and only when F5-E1 is selected, the fork's loader gets an explicit option
+to not allocate the expert tensors. It keeps in the model object only the
+metadata needed to build the hook's descriptor: names, rank and geometries,
+dtype, total and active expert counts, plus the scales and whether gate/up is
+fused or separate. The weight bytes stay accessible only to the Rust executor's
+GGUF source and its LRU cache, not to `llama.cpp` buffers.
 
-A implementação local já propaga `EngineConfig::moe_external_executor` até
-`llama_model_params`, separa essa opção na identidade do `ModelCache` e cria os
-experts roteados do descriptor em um contexto GGML `no_alloc`. Eles não entram
-em `ctxs_bufs`, não recebem buffer CUDA/CPU e não passam por
-`load_all_data`. O contexto de metadata fica vivo em `llama_model` para que o
-hook continue lendo nome, dtype e geometria. A classificação é pelos enums
-semânticos genéricos `LLM_TENSOR_*EXP`, nunca por arquitetura, nome de modelo
-ou dtype. Experts compartilhados (`LLM_TENSOR_*SHEXP`) permanecem no
-`llama.cpp` porque são um cálculo nativo separado e ainda não fazem parte do
-descriptor do callback; eles não são descartados silenciosamente nem contados
-como propriedade do cache Rust.
+The local implementation already propagates
+`EngineConfig::moe_external_executor` down to `llama_model_params`, separates
+that option in the `ModelCache` identity and creates the descriptor's routed
+experts in a GGML `no_alloc` context. They do not enter `ctxs_bufs`, get no
+CUDA/CPU buffer and do not go through `load_all_data`. The metadata context
+stays alive in `llama_model` so the hook keeps reading name, dtype and geometry.
+Classification is by the generic semantic enums `LLM_TENSOR_*EXP`, never by
+architecture, model name or dtype. Shared experts (`LLM_TENSOR_*SHEXP`) stay in
+`llama.cpp` because they are a separate native computation and are not yet part
+of the callback's descriptor; they are neither silently discarded nor counted as
+owned by the Rust cache.
 
-O documento do fork em `llama.cpp/docs/rdma-p2p-moe-hook.md` registra o ponto de
-carga, o contexto de metadata e o comportamento padrão. A ausência de callback
-no modo opt-in recusa no limite de decode, portanto não reativa os experts
-nativos por fallback silencioso. A compilação local sem CUDA passou; a
-validação obrigatória com `--features vulkan,cuda` será feita no ramo
-`fm/ftk-cuda-check` da ksia depois que a implantação corrente liberar a placa,
-antes de promover esta fase a `feat/ftk`.
+The fork's document `llama.cpp/docs/rdma-p2p-moe-hook.md` records the load
+point, the metadata context and the default behavior. A missing callback in
+opt-in mode refuses at the decode boundary, so it does not reactivate the native
+experts through a silent fallback. The local build without CUDA passed; the
+mandatory validation with `--features vulkan,cuda` was to be done on the
+`fm/ftk-cuda-check` branch on the CUDA test server after the current deployment
+freed the card, before promoting this phase to `feat/ftk`.
 
-O opt-in deve ser genérico por arquitetura e dtype. Sem ele, ou sem o motor
-MoE selecionado, o carregador mantém o comportamento atual byte a byte. Um
-modelo denso nunca pode ativar a opção. O fork terá documento próprio com o
-ponto de carga alterado, a metadata preservada e o comportamento padrão.
+The opt-in must be generic per architecture and dtype. Without it, or without
+the MoE engine selected, the loader keeps the current behavior byte for byte. A
+dense model can never turn the option on. The fork will have its own document
+with the changed load point, the preserved metadata and the default behavior.
 
-Pronto somente com medição na ksia usando o mesmo modelo e configuração: VRAM
-e RAM antes e depois, com quebra por buffer (`CUDA0`, `CUDA_Host` e CPU), RSS e
-PSS do processo, mais prefill e decode por token. A prova deve mostrar que os
-buffers de experts do `llama.cpp` desaparecem e que não existe residência dupla
-com o cache do executor. Nenhum ganho será atribuído à supressão de carga sem
-comparar esses números isoladamente aos números obtidos após F5-E1.
+Done only with a measurement on the CUDA test server using the same model and
+configuration: VRAM and RAM before and after, with a per-buffer breakdown
+(`CUDA0`, `CUDA_Host` and CPU), the process's RSS and PSS, plus prefill and
+decode per token. The proof must show that `llama.cpp`'s expert buffers
+disappear and that there is no double residency with the executor's cache. No
+gain will be attributed to the load suppression without comparing those numbers
+in isolation to the numbers obtained after F5-E1.
 
-#### Implementação local da residência de device
 
-O F5-E2 do loader já está no fork publicado em `03902a5ba` e o ramo Rust já
-propaga `EngineConfig::moe_external_executor` até ele. A implementação nova
-separa o armazenamento quente da fonte fria: `DeviceExpertCache` guarda apenas
-um handle opaco do backend e seus leases, enquanto `ExpertCache` continua sendo
-a LRU de RAM para os caminhos CPU. No caminho CUDA, um miss lê o payload da
-fonte GGUF e o descarta depois do upload. A LRU de device é criada uma
-vez por `MoeRuntime` NVFP4 e compartilhada por todas as camadas, portanto não
-há uma LRU independente por camada.
+#### Local implementation of device residency
 
-O contrato é deliberadamente independente de CUDA e NVFP4. `DeviceAllocator`
-mede memória livre, faz upload e devolve uma alocação com tamanho e handle;
-qualquer backend futuro pode implementar a mesma fronteira. A implementação
-CUDA atual usa `cudaMemGetInfo`, `cudaMalloc`, `cudaMemcpy` apenas na admissão e
-`cudaFree` na eviction. O orçamento parte da memória livre observada depois da
-carga do modelo e é recalculado a cada miss; não há capacidade fixa de placa.
-Uma recusa nomeia o device, a chave do expert, os bytes pedidos e o limite
-medido. Payload vazio, falha de sonda, upload incompleto ou handle nulo também
-recusam explicitamente.
+The loader's F5-E2 is already in the fork published at `03902a5ba` and the Rust
+branch already propagates `EngineConfig::moe_external_executor` down to it. The
+new implementation separates hot storage from the cold source:
+`DeviceExpertCache` only keeps an opaque backend handle and its leases, while
+`ExpertCache` stays the RAM LRU for the CPU paths. On the CUDA path, a miss reads
+the payload from the GGUF source and drops it after the upload. The device LRU
+is created once per NVFP4 `MoeRuntime` and shared by every layer, so there is no
+independent LRU per layer.
 
-#### Correção de admissão por workspace medido
+The contract is deliberately independent of CUDA and NVFP4. `DeviceAllocator`
+measures free memory, uploads and returns an allocation with size and handle;
+any future backend can implement the same boundary. The current CUDA
+implementation uses `cudaMemGetInfo`, `cudaMalloc`, `cudaMemcpy` only on
+admission and `cudaFree` on eviction. The budget starts from the free memory
+observed after loading the model and is recomputed on each miss; there is no
+fixed card capacity. A refusal names the device, the expert key, the requested
+bytes and the measured limit. An empty payload, a probe failure, an incomplete
+upload or a null handle also refuse explicitly.
 
-O orçamento agora também preserva o workspace transitório que o próprio
-`llama.cpp` mediu depois de construir o contexto. `LlmEngine::cuda_compute_bytes`
-extrai os buffers `CUDA*` de `llama_rs_context_memory_json`, soma apenas o
-campo `compute` residente no device e ignora `CUDA_Host`; relatório ausente,
-incompleto ou sem bytes CUDA positivos recusa o executor CUDA com mensagem
-explícita. A reserva é `ceil(1,25 * compute_bytes)` usando aritmética inteira,
-uma margem relativa de 25% para crescimento do grafo e fragmentação, e não uma
-capacidade fixa de placa, contexto ou modelo.
+#### Admission fix by measured workspace
 
-O `DeviceExpertCache` usa essa reserva tanto no teto inicial quanto na nova
-medição de memória livre de cada miss. Se o expert nomeado pela chave
-`modelo/camada/expert/formato` não couber depois da reserva e da eviction de
-entradas ociosas, a admissão recusa e inclui device, chave, bytes solicitados e
-limite disponível. Não há tentativa de alocação para descobrir se cabe, nem
-fallback silencioso para uma residência que consumiria o workspace do grafo.
-O teste `cache_device_recusa_expert_quando_workspace_medido_consumiu_o_orcamento`
-cobre o caso apertado com allocator falso. Esta correção está em implementação
-local; a promoção exige build CUDA no ramo de checagem e validação no ambiente
-real, sem alterar o serviço durante a medição do captain.
+The budget now also keeps the transient workspace `llama.cpp` itself measured
+after building the context. `LlmEngine::cuda_compute_bytes` extracts the
+`CUDA*` buffers from `llama_rs_context_memory_json`, only sums the
+device-resident `compute` field and ignores `CUDA_Host`; a missing, incomplete
+report or one without positive CUDA bytes refuses the CUDA executor with an
+explicit message. The reserve is `ceil(1.25 * compute_bytes)` using integer
+arithmetic, a relative margin of 25% for graph growth and fragmentation, not a
+fixed card, context or model capacity.
 
-No NVFP4, o lote agora envia a lista pequena de ponteiros residentes para a
-GPU. O H2D interno do lote contém hidden e ponteiros, não os pesos; `upload_ms`
-e `upload_bytes` ficam separados nas estatísticas `device_cache_*`. O primeiro
-acesso de uma chave é um miss e faz uma admissão/upload; hits posteriores não
-fazem H2D de peso. A vida de um handle é protegida por lease, e a eviction só
-remove entrada sem lease. A contiguidade, a geometria e a validação numérica do
-payload continuam sendo verificadas antes da admissão, então a residência não
-relaxa a prova de correção.
+`DeviceExpertCache` uses that reserve both in the initial ceiling and in each
+miss's new free memory measurement. If the expert named by the
+`model/layer/expert/format` key does not fit after the reserve and the eviction
+of idle entries, admission refuses and includes device, key, requested bytes and
+available limit. There is no allocation attempt to find out whether it fits, nor
+a silent fallback to a residency that would eat the graph's workspace. The test
+`cache_device_recusa_expert_quando_workspace_medido_consumiu_o_orcamento` covers
+the tight case with a fake allocator. That fix was a local implementation;
+promotion requires a CUDA build on the check branch and validation in the real
+environment, without touching the service during the operator's measurement.
 
-O teste unitário `cache_device_hit_reutiliza_handle_sem_novo_upload` usa um
-allocator falso e prova um upload para dois acessos; os testes adjacentes
-provam lease ativo e recusa pelo orçamento medido. Esses testes não substituem
-a validação CUDA. Ainda falta compilar este commit na ksia com
-`--features vulkan,cuda`; nenhum deploy, troca de modelo ou medição de
-throughput foi feito nesta etapa porque a placa está sendo usada pelo captain.
+In NVFP4, the batch now sends the small list of resident pointers to the GPU.
+The batch's internal H2D contains the hidden state and pointers, not the
+weights; `upload_ms` and `upload_bytes` stay separate in the `device_cache_*`
+statistics. A key's first access is a miss and does one admission/upload; later
+hits do no weight H2D. A handle's lifetime is protected by a lease, and eviction
+only removes an entry without a lease. The payload's contiguity, geometry and
+numeric validation are still checked before admission, so residency does not
+relax the correctness proof.
 
-O fork não mudou nesta etapa: a ABI genérica de substituição e o loader
-metadata-only já estão em `03902a5ba`. Se a build CUDA revelar incompatibilidade
-da ABI do kernel, ela será um commit separado no fork e será publicada antes da
-promoção do ramo Rust.
+The unit test `cache_device_hit_reutiliza_handle_sem_novo_upload` uses a fake
+allocator and proves one upload for two accesses; the adjacent tests prove an
+active lease and a refusal by the measured budget. Those tests do not replace
+CUDA validation. That commit still had to be built on the CUDA test server with
+`--features vulkan,cuda`; no deploy, model swap or throughput measurement was
+done in that step because the card was in use by the operator.
 
-#### F5-E3: lote de rotas no device
+The fork did not change in that step: the generic replacement ABI and the
+metadata-only loader are already in `03902a5ba`. If the CUDA build reveals a
+kernel ABI incompatibility, it will be a separate commit in the fork, published
+before promoting the Rust branch.
 
-Depois da residência, o caminho NVFP4 ainda chamava o FFI uma vez por token e
-devolvia um vetor por expert para a agregação Rust. Isso mantinha a montagem do
-lote no host e repetia alocações, cópias de hidden e D2H intermediário. A revisão
-seguinte mantém a rota resolvida como dados: os ids de expert, ids de token,
-pesos e offsets por token entram em um único FFI por camada. O CUDA calcula
-gate/up, GeGLU e down para todos os pares `(token, expert)` residentes e faz a
-soma ponderada no device; somente o resultado final `[tokens, hidden]` volta ao
-host. O caminho CPU continua token a token e não é alterado por esta fase.
+#### F5-E3: route batch on the device
 
-Esta mudança não afirma ganho de tok/s sem medição. Ela precisa ser validada
-com a prova numérica do mesmo hidden, pesos e rota antes de qualquer benchmark.
-O teste CUDA `executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device` compara
-dois tokens, quatro pares de rota e a agregação do device contra o decoder CPU.
-O teste de build CUDA na ksia permanece obrigatório antes da promoção; nenhum
-deploy, troca de modelo ou medição de throughput faz parte desta etapa enquanto
-a placa estiver sendo usada pelo captain.
+After residency, the NVFP4 path still called the FFI once per token and
+returned one vector per expert for the Rust aggregation. That kept building the
+batch on the host and repeated allocations, hidden copies and intermediate D2H.
+The next revision keeps the resolved route as data: the expert ids, token ids,
+weights and per-token offsets go into a single FFI per layer. CUDA computes
+gate/up, GeGLU and down for every resident `(token, expert)` pair and does the
+weighted sum on the device; only the final `[tokens, hidden]` result goes back to
+the host. The CPU path stays token by token and is not changed by this phase.
 
-#### F5-E4: regressão e publicação
+This change claims no tok/s gain without a measurement. It must be validated
+with the numeric proof of the same hidden state, weights and route before any
+benchmark. The CUDA test `executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device`
+compares two tokens, four route pairs and the device aggregation against the CPU
+decoder. The CUDA build test on the CUDA test server stays mandatory before
+promotion; no deploy, model swap or throughput measurement is part of that step
+while the card is in use by the operator.
 
-Cada fase produz commit separado no `rdma-p2p` e no fork. O teste de execução
-deve cobrir callback opt-in, callback ausente e recusa nominal. O teste de
-carga deve cobrir metadata preservada, ausência de tensor de dados e caminho
-denso intacto. A suíte densa continua obrigatória; a prova de desempenho e de
-residência exige o modelo real na ksia e não pode ser substituída por fixture.
+#### F5-E4: regression and publication
 
-#### F5-E5: pontes CUDA por dtype, antes dos CUDA Graphs
+Each phase produces a separate commit in POM and in the fork. The execution test
+must cover the opt-in callback, a missing callback and the refusal by name. The
+load test must cover preserved metadata, absence of the data tensor and an
+intact dense path. The dense suite stays mandatory; the performance and
+residency proof requires the real model on the CUDA test server and cannot be
+replaced by a fixture.
 
-Esta foi a lacuna ativa desta fase. A prioridade é estrutural e está ancorada nos
-números já medidos, não em uma expectativa de ganho pequeno: no decode, o
-executor MoE honesto está em `5,4 tok/s`, contra `20,7 tok/s` do llama.cpp e
-`53,3 tok/s` do FreeToken; no prefill, está em `3,2 tok/s`, contra `55 tok/s`
-e `325 tok/s`, respectivamente. Os dtypes IQ do Qwen UD ficaram em
-`CPUReference`, aproximadamente cinco segundos por token, antes da ponte CUDA
-por dtype. A ponte agora está provada em fixture diferencial; a medição E2E do
-Qwen UD continua sendo a próxima validação de produto.
+#### F5-E5: CUDA bridges per dtype, before CUDA Graphs
 
-Após a execução agrupada e a residência em device, a medição mais recente do
-chat na mesma máquina registrou `23,3 tok/s` no MoE contra `26,7 tok/s` no
-llama.cpp. No prefill foram `449,8 ms` para 23 tokens no MoE
-(`19,56 ms/token`) contra `172,3 ms` (`7,49 ms/token`) no denso, e o decode
-p50 foi `29,712 ms` contra `29,231 ms`. O p95 do MoE foi `38,363 ms`, contra
-`29,521 ms` no denso; isso caracteriza cauda pior, mas não prova sozinho um
-miss de cache. A quebra de colocação observada foi 30 camadas com peso em GPU
-no MoE contra 23 em GPU e 7 mistas no denso. Esses números são linha de base,
-não declaração de que a reserva de VRAM já foi validada.
+This was the active gap of that phase. The priority is structural and anchored
+in the numbers already measured, not in the expectation of a small gain: in
+decode, the honest MoE executor was at `5.4 tok/s`, against llama.cpp's
+`20.7 tok/s` and FreeToken's `53.3 tok/s`; in prefill, it was at `3.2 tok/s`,
+against `55 tok/s` and `325 tok/s`, respectively. The Qwen UD IQ dtypes stayed
+on `CPUReference`, about five seconds per token, before the per-dtype CUDA
+bridge. The bridge is now proven with a differential fixture; the Qwen UD E2E
+measurement is still the next product validation.
 
-A ordem concreta é Q4_K (`dtype=12`) e Q6_K (`dtype=14`), usados pelo Qwen3.6
-Q4_K_M, seguidos por IQ3_S (`21`), IQ2_S (`22`) e IQ4_XS (`23`), usados pelos
-dois GGUF UD reais do corpus. A implementação recebe dtype, geometria, papel e
-payload como dados; não há ramo por arquitetura, nome de modelo ou família
-global. Cada ponte precisa comparar a saída CUDA com o decoder Rust CPU para o
-mesmo payload, hidden e rota, começando pela primeira camada e pelo primeiro
-estágio. A prova com arquivo real move o formato de "implementado" para
-"provado"; fixture sintética ou `cargo test` sem execução CUDA não faz essa
-promoção.
+After grouped execution and device residency, the most recent Chat measurement
+on the same machine recorded `23.3 tok/s` on MoE against `26.7 tok/s` on
+llama.cpp. In prefill it was `449.8 ms` for 23 tokens on MoE (`19.56 ms/token`)
+against `172.3 ms` (`7.49 ms/token`) on dense, and the decode p50 was
+`29.712 ms` against `29.231 ms`. MoE's p95 was `38.363 ms`, against `29.521 ms`
+on dense; that characterizes a worse tail, but does not prove a cache miss by
+itself. The observed placement breakdown was 30 layers with weights on the GPU
+on MoE against 23 on the GPU and 7 mixed on dense. Those numbers are a baseline,
+not a statement that the VRAM reserve was already validated.
 
-Um dtype sem ponte permanece explicitamente visível como `CPUReference`, com
-`dtype=<id> (<nome>)` e motivo, ou é recusado no limite de uma chamada CUDA
-quando o contrato exigir CUDA. Nunca se interpreta um payload não coberto como
-outro formato. Nesta entrega a ponte é declarada para Q2_K, Q3_K, Q4_K, Q6_K, IQ3_XXS,
-IQ3_S, IQ2_S, IQ4_XS e MXFP4 somente depois das respectivas provas; os demais
-IQ continuam protegidos pela recusa nominal.
+The concrete order is Q4_K (`dtype=12`) and Q6_K (`dtype=14`), used by Qwen3.6
+Q4_K_M, followed by IQ3_S (`21`), IQ2_S (`22`) and IQ4_XS (`23`), used by the
+corpus's two real UD GGUFs. The implementation gets dtype, geometry, role and
+payload as data; there is no branch per architecture, model name or global
+family. Each bridge must compare the CUDA output with the Rust CPU decoder for
+the same payload, hidden state and route, starting at the first layer and the
+first stage. The proof with a real file moves the format from "implemented" to
+"proven"; a synthetic fixture or `cargo test` without CUDA execution does not
+grant that promotion.
 
-Quando uma rota heterogênea combina somente esses nove dtypes, a decisão CUDA é
-feita por tensor, e não pela igualdade de um `KQuantFormat` global. Assim, uma
-combinação Q2_K/Q3_K/Q4_K/Q6_K como a do Qwen3.6 pode usar o mesmo executor heterogêneo,
-com `k_dot` escolhendo o decoder já validado de cada tensor. Um dtype fora desse
-conjunto usa o decoder CPU externo quando ele existe; se não existe, a admissão
-recusa a combinação antes da carga e lista os dtypes que bloquearam a ponte. A comparação diferencial específica
-da rota mista está no teste
-`executor_cuda_k_quants_heterogeneos_preserva_q2k_q3k_q4k_do_decoder_cpu`, com
-tolerância absoluta de `1e-4` e relatório também da diferença relativa; ela foi
-executada com CUDA real antes de declarar a combinação provada.
+A dtype without a bridge stays explicitly visible as `CPUReference`, with
+`dtype=<id> (<name>)` and a reason, or is refused at the boundary of a CUDA call
+when the contract requires CUDA. An uncovered payload is never interpreted as
+another format. In that delivery the bridge is declared for Q2_K, Q3_K, Q4_K,
+Q6_K, IQ3_XXS, IQ3_S, IQ2_S, IQ4_XS and MXFP4 only after the respective proofs;
+the other IQ formats stay protected by the refusal by name.
 
-O callback comum do llama.cpp entrega `selected_experts` e `weights` na ordem
-token-major produzida por `ggml_get_rows` para `[1, experts_usados, tokens]`,
-enquanto o runtime Rust também agrupa lotes como `[token, expert_slot]`. A
-fronteira em `llm.rs` valida e preserva essa ordem, sem transposição adicional,
-antes de chamar o runtime. A validação de finitude permanece antes do upload e
-identifica `ffn_moe_weights`, arquitetura, camada, token, slot e expert no erro.
-Isso é importante para `qwen35moe`, que usa o mesmo `build_moe_ffn` genérico
-para experts roteados e mantém o expert compartilhado em outro caminho; não há
-um contrato de rota alternativo por arquitetura.
+When a heterogeneous route only combines those nine dtypes, the CUDA decision is
+made per tensor, not by the equality of a global `KQuantFormat`. So a
+Q2_K/Q3_K/Q4_K/Q6_K combination like Qwen3.6's can use the same heterogeneous
+executor, with `k_dot` choosing each tensor's already validated decoder. A dtype
+outside that set uses the external CPU decoder when it exists; if it does not,
+admission refuses the combination before loading and lists the dtypes that
+blocked the bridge. The mixed route's specific differential comparison is in the
+test `executor_cuda_k_quants_heterogeneos_preserva_q2k_q3k_q4k_do_decoder_cpu`,
+with an absolute tolerance of `1e-4` and a report of the relative difference too;
+it was run with real CUDA before declaring the combination proven.
 
-Critério de pronto por bloco: build `--features vulkan,cuda` verde no ramo de
-checagem; teste diferencial executado para cada dtype; GGUF real correspondente
-sobe e responde com `moe_executor=cuda`, sem `engine_mismatch` nem fallback
-silencioso; e uma medição posterior em tok/s mostra o valor real contra a linha
-de base `5,4/3,2` e o alvo FreeToken `53,3/325`. Enquanto a ksia estiver em
-uso, a compilação é permitida somente com aviso prévio no status e nenhuma
-medição ou alteração do serviço.
+llama.cpp's common callback delivers `selected_experts` and `weights` in the
+token-major order produced by `ggml_get_rows` for `[1, experts_used, tokens]`,
+while the Rust runtime also groups batches as `[token, expert_slot]`. The
+boundary in `llm.rs` validates and keeps that order, with no extra transposition,
+before calling the runtime. The finiteness validation stays before the upload
+and identifies `ffn_moe_weights`, architecture, layer, token, slot and expert in
+the error. That matters for `qwen35moe`, which uses the same generic
+`build_moe_ffn` for routed experts and keeps the shared expert on another path;
+there is no alternative route contract per architecture.
 
-#### F5-E6: CUDA Graphs do caminho MoE
+Done criterion per block: a green `--features vulkan,cuda` build on the check
+branch; a differential test run for each dtype; the matching real GGUF starts and
+answers with `moe_executor=cuda`, without `engine_mismatch` or a silent fallback;
+and a later tok/s measurement shows the real value against the `5.4/3.2`
+baseline and the FreeToken target `53.3/325`. While the CUDA test server is in
+use, building is only allowed with prior notice in the status and no measurement
+or service change.
 
-Graphs vêm depois das pontes por dtype. O graph será dirigido por dados e
-indexado por uma chave de forma que inclua device, dtype, hidden, intermediate,
-quantidade de tokens, pares de rota, strides e modo de ativação. A captura só
-ocorre depois de os handles do cache residente, workspaces e descritores terem
-estabilidade; mudanças de forma criam outro graph ou recusam nominalmente a
-captura. Replay não pode trocar silenciosamente para CPUReference.
+#### F5-E6: CUDA Graphs of the MoE path
 
-O critério de pronto é uma prova numérica antes/depois do replay para cada
-chave, seguida de build CUDA e medição em tok/s na mesma carga. O ganho será
-reportado como diferença de tok/s e de custo de lançamento/alocação, sem
-atribuir aos graphs ganhos que vierem da ponte de dtype, do cache em VRAM ou da
-montagem do lote. O alvo do goal continua sendo aproximar `53,3 tok/s` no
-decode e `325 tok/s` no prefill do FreeToken; suite verde sem número não fecha
-nenhuma dessas fases.
+Graphs come after the per-dtype bridges. The graph will be data driven and
+indexed by a shape key that includes device, dtype, hidden, intermediate, number
+of tokens, route pairs, strides and activation mode. Capture only happens after
+the resident cache's handles, workspaces and descriptors are stable; shape
+changes create another graph or refuse the capture by name. Replay must not
+silently switch to CPUReference.
 
-### Fases do goal CUDA
+The done criterion is a numeric proof before/after replay for each key,
+followed by a CUDA build and a tok/s measurement on the same load. The gain will
+be reported as a difference in tok/s and in launch/allocation cost, without
+attributing to the graphs gains that came from the dtype bridge, the VRAM cache
+or the batch build. The goal's target stays approaching FreeToken's
+`53.3 tok/s` in decode and `325 tok/s` in prefill; a green suite without a number
+closes none of those phases.
 
-1. **F5.0, perfil de referência reproduzível.** Reexecutar na ksia o mesmo
-   Gemma4, GPU, prompt e configuração que produziram os números do captain,
-   separando router, espera do LRU, dequantização, H2D, kernel, D2H e o
-   restante de `llama_decode`. O alvo desta fase é reproduzir `54 ms/token` de
-   prefill e `80 ms/token` de decode dentro de uma faixa de `+/-10%`, com a
-   fração fora de `llama_decode` ainda acima de 90%. Sem essa concordância o
-   número novo não é comparável.
+### Phases of the CUDA goal
 
-2. **F5.1, executor CUDA mínimo para prefill.** Implementar em CUDA o
-   mat-vec dos experts e a soma gate/up/down, com dispatch, leases e cópia dos
-   slices controlados pelo Rust. O primeiro caminho cobre o Gemma4 NVFP4 já
-   provado e mantém o decoder CPU somente como fallback explícito. Pronto
-   quando 100% dos forwards de expert do prefill da carga de referência
-   publicarem `gpu_expert_calls`, `cpu_expert_calls=0`, a saída passar a
-   comparação numérica com o decoder CPU e o prefill atingir `<= 5,4
-   ms/token`, uma redução de pelo menos uma ordem de grandeza sobre os `54
-   ms/token` atuais. O alvo final de `3,1 ms/token` continua sendo medido na
-   F5.3; o marco de `5,4` não pode ser substituído por apenas não regredir.
+1. **F5.0, reproducible reference profile.** Rerun on the CUDA test server the
+   same Gemma4, GPU, prompt and configuration that produced the operator's
+   numbers, separating router, LRU wait, dequantization, H2D, kernel, D2H and the
+   rest of `llama_decode`. This phase's target is reproducing `54 ms/token` of
+   prefill and `80 ms/token` of decode within a `+/-10%` band, with the share
+   outside `llama_decode` still above 90%. Without that agreement the new number
+   is not comparable.
 
-3. **F5.2, perfil de banda e double buffer reais.** Medir H2D e D2H na mesma
-   GPU, para os tamanhos de tokens e experts da carga, persistir o perfil
-   efetivo e selecionar a política CPU/GPU pelo tempo medido. Substituir o
-   andaime de testes por dois buffers CUDA realmente alternados, de modo que
-   enquanto um buffer é calculado o outro possa ser transferido. Pronto quando
-   o runtime carregar o perfil medido, registrar os dois índices em uso e, em
-   100 iterações aquecidas por ponto de carga, o tempo combinado satisfizer
-   `T_total <= 1,10 * max(T_compute, T_transfer)`. O alvo de segurança é não
-   regredir o prefill medido na F5.1.
+2. **F5.1, minimal CUDA executor for prefill.** Implement in CUDA the experts'
+   mat-vec and the gate/up/down sum, with dispatch, leases and slice copies
+   controlled by Rust. The first path covers the already proven Gemma4 NVFP4 and
+   keeps the CPU decoder only as an explicit fallback. Done when 100% of the
+   expert forwards of the reference load's prefill publish `gpu_expert_calls`,
+   `cpu_expert_calls=0`, the output passes the numeric comparison with the CPU
+   decoder and prefill reaches `<= 5.4 ms/token`, a reduction of at least one
+   order of magnitude over the current `54 ms/token`. The final target of
+   `3.1 ms/token` is still measured in F5.3; the `5.4` milestone cannot be
+   replaced by just not regressing.
 
-#### Medição inicial da F5.2 - 2026-08-25
+3. **F5.2, real bandwidth profile and double buffer.** Measure H2D and D2H on
+   the same GPU, for the load's token and expert sizes, persist the effective
+   profile and select the CPU/GPU policy by the measured time. Replace the test
+   scaffold with two truly alternating CUDA buffers, so while one buffer is
+   computed the other can be transferred. Done when the runtime loads the
+   measured profile, records the two indexes in use and, over 100 warm iterations
+   per load point, the combined time satisfies
+   `T_total <= 1.10 * max(T_compute, T_transfer)`. The safety target is not
+   regressing the prefill measured in F5.1.
 
-A medição foi executada na ksia, em uma RTX 5060 Ti, com `POM_MOE_CUDA_PROFILE=1`,
-`CARGO_TARGET_DIR=/data/ftk-cuda-target` e `CUDACXX=/usr/local/cuda-12/bin/nvcc`.
-O serviço não foi tocado: o teste rodou em um checkout temporário e os pesos
-dos experts ficaram residentes no cache CUDA antes das 100 iterações de cada
-ponto. O comando reproduzível foi:
+#### Initial F5.2 measurement - 2026-08-25
+
+The measurement was run on the CUDA test server, on an RTX 5060 Ti, with
+`POM_MOE_CUDA_PROFILE=1`, `CARGO_TARGET_DIR=/data/ftk-cuda-target` and
+`CUDACXX=/usr/local/cuda-12/bin/nvcc`. The service was not touched: the test ran
+on a temporary checkout and the expert weights were resident in the CUDA cache
+before the 100 iterations of each point. The reproducible command was:
 
 ```text
-PATH=/home/jairpereira/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH \
 POM_MOE_CUDA_PROFILE=1 CARGO_TARGET_DIR=/data/ftk-cuda-target \
 CUDACXX=/usr/local/cuda-12/bin/nvcc \
 cargo test -p node --features vulkan,cuda --bin pom \
   mede_banda_h2d_d2h_do_lote_nvfp4 -- --ignored --nocapture
 ```
 
-Saída observada:
+Observed output:
 
 ```text
 CUDA_BANDWIDTH case=tiny hidden=64 intermediate=64 tokens=2 active_experts=2 calls=400 h2d_bytes=60000 h2d_ms=1.998 effective_h2d_GB_s=0.030 d2h_bytes=51200 d2h_ms=0.760 effective_d2h_GB_s=0.067 kernel_ms=7.400 wall_ms=14.320
@@ -1898,27 +1904,28 @@ CUDA_BANDWIDTH case=gemma4_token hidden=2816 intermediate=704 tokens=1 active_ex
 CUDA_BANDWIDTH case=gemma4_batch8 hidden=2816 intermediate=704 tokens=8 active_experts=8 calls=6400 h2d_bytes=9120800 h2d_ms=3.543 effective_h2d_GB_s=2.574 d2h_bytes=9011200 d2h_ms=2.209 effective_d2h_GB_s=4.079 kernel_ms=162.502 wall_ms=185.358
 ```
 
-Esses valores são taxas efetivas das cópias pequenas feitas por uma chamada
-FFI síncrona, não a banda máxima do PCIe. Os bytes dos pesos não aparecem no
-H2D da chamada porque o teste mede o caminho residente; o upload inicial é
-contabilizado separadamente pelo cache. A chamada atual ainda aloca e libera
-buffers por forward, faz duas `cudaDeviceSynchronize` e só então retorna, por
-isso não há sobreposição nesta medição. Nos dois pontos representativos,
-`T_total / max(T_compute, T_transfer)` foi `39,021 / 22,398 = 1,742` e
-`185,358 / 162,502 = 1,141`, respectivamente. Ambos falham o critério de
-`1,10`; a F5.2 continua aberta e nenhum ganho de co-execução foi declarado.
+Those values are effective rates of the small copies made by a synchronous FFI
+call, not the PCIe's maximum bandwidth. The weight bytes do not show up in the
+call's H2D because the test measures the resident path; the initial upload is
+accounted separately by the cache. The current call still allocates and frees
+buffers per forward, does two `cudaDeviceSynchronize` and only then returns,
+which is why there is no overlap in that measurement. At the two representative
+points, `T_total / max(T_compute, T_transfer)` was `39.021 / 22.398 = 1.742` and
+`185.358 / 162.502 = 1.141`, respectively. Both fail the `1.10` criterion; F5.2
+stayed open and no co-execution gain was declared.
 
-#### Medição após os dois slots CUDA - 2026-08-25
+#### Measurement after the two CUDA slots - 2026-08-25
 
-O commit `00bf6f1` substituiu o caminho de rota por um pipeline com dois slots
-persistentes. Cada slot tem stream, buffers de device e buffers host pinned;
-quando há pelo menos dois grupos de tokens com rotas, o segundo grupo é
-preparado e transferido enquanto o primeiro calcula. A telemetria passou a
-separar `kernel_ms` (trabalho somado), `kernel_span_ms` (janela crítica entre
-slots) e `transfer_span_ms` (H2D mais D2H da janela crítica), além de publicar
-`buffer_mask` e `buffer_switches`.
+Commit `00bf6f1` replaced the route path with a pipeline of two persistent
+slots. Each slot has a stream, device buffers and pinned host buffers; when there
+are at least two token groups with routes, the second group is prepared and
+transferred while the first computes. Telemetry now separates `kernel_ms`
+(summed work), `kernel_span_ms` (critical window across slots) and
+`transfer_span_ms` (H2D plus D2H of the critical window), and publishes
+`buffer_mask` and `buffer_switches`.
 
-Na mesma ksia, GPU e comando da medição anterior, a saída foi:
+On the same CUDA test server, GPU and command as the previous measurement, the
+output was:
 
 ```text
 CUDA_BANDWIDTH case=tiny hidden=64 intermediate=64 tokens=2 active_experts=2 calls=400 buffer_mask=3 buffer_switches=100 h2d_bytes=60800 h2d_ms=2.885 effective_h2d_GB_s=0.021 d2h_bytes=51200 d2h_ms=0.795 effective_d2h_GB_s=0.064 kernel_ms=8.576 kernel_span_ms=6.053 transfer_span_ms=1.959 wall_ms=16.260
@@ -1926,222 +1933,228 @@ CUDA_BANDWIDTH case=gemma4_token hidden=2816 intermediate=704 tokens=1 active_ex
 CUDA_BANDWIDTH case=gemma4_batch8 hidden=2816 intermediate=704 tokens=8 active_experts=8 calls=6400 buffer_mask=3 buffer_switches=100 h2d_bytes=9121600 h2d_ms=4.120 effective_h2d_GB_s=2.214 d2h_bytes=9011200 d2h_ms=1.386 effective_d2h_GB_s=6.502 kernel_ms=333.662 kernel_span_ms=168.081 transfer_span_ms=3.036 wall_ms=180.647
 ```
 
-O ponto `gemma4_batch8` satisfaz o critério medido: `180,647 / max(168,081,
-3,036) = 1,075`, abaixo de `1,10`, e o `buffer_mask=3` prova o uso dos dois
-slots. O ponto de um token ainda fica em `28,768 / 22,553 = 1,276`, e o ponto
-pequeno em `16,260 / 6,053 = 2,686`; portanto o resultado não autoriza
-declarar a F5.2 inteira pronta. Na revisão que produziu essa medição, o
-pipeline estava integrado ao runtime e a telemetria registrava os slots, mas o
-perfil ainda não era persistido/carregado e a seleção CPU/GPU ainda não
-consumia tempos comparáveis medidos para os dois backends. A entrega F5.2b
-abaixo fecha essa lacuna de seleção e deixa a medição CUDA como gate restante.
+The `gemma4_batch8` point satisfies the measured criterion:
+`180.647 / max(168.081, 3.036) = 1.075`, below `1.10`, and `buffer_mask=3`
+proves both slots were used. The one-token point is still at
+`28.768 / 22.553 = 1.276`, and the small point at `16.260 / 6.053 = 2.686`; so
+the result does not allow declaring the whole F5.2 done. In the revision that
+produced that measurement, the pipeline was integrated into the runtime and
+telemetry recorded the slots, but the profile was not persisted/loaded yet and
+the CPU/GPU selection did not consume comparable times measured for both
+backends. The F5.2b delivery below closes that selection gap and leaves the CUDA
+measurement as the remaining gate.
 
-#### F5.2b: co-execução NVFP4 por banda medida
 
-Esta entrega fecha a costura operacional seguinte, sem declarar ganho de
-desempenho antes da medição. `BandwidthProfile` persiste no sidecar CUDA as
-bandas CPU e transferência medidas em isolamento e sob disputa; quando as
-bandas sobrepostas existem, elas têm precedência. A fração de misses enviada à
-GPU é `transfer/(cpu+transfer)`, limitada ao intervalo `[0, 1]`, e a política
-divide experts únicos em ordem determinística. Hits já residentes no cache de
-device permanecem na GPU, portanto um expert repetido na mesma rota não é
-admitido nas duas lanes.
+#### F5.2b: NVFP4 co-execution by measured bandwidth
 
-O runtime carrega o perfil uma vez por modelo NVFP4 e o passa a cada bloco. No
-forward de rota, a lane CPU usa o `ExpertCache` global de RAM e o decoder
-NVFP4 Rust; a lane GPU usa o cache residente e o kernel CUDA. As duas funções
-rodam em threads irmãs e a saída é somada por token, com validação da largura
-antes da combinação. O caminho unitário converte a rota em um lote de um token,
-para não abrir uma exceção sem co-execução. Ausência de perfil mantém todos os
-misses na GPU, preservando o comportamento anterior; perfil inválido recusa a
-carga nominalmente.
+This delivery closes the next operational wiring, without declaring a
+performance gain before measuring. `BandwidthProfile` persists in the CUDA
+sidecar the CPU and transfer bandwidths measured in isolation and under
+contention; when the overlapped bandwidths exist, they take precedence. The
+share of misses sent to the GPU is `transfer/(cpu+transfer)`, bounded to
+`[0, 1]`, and the policy splits unique experts in a deterministic order. Hits
+already resident in the device cache stay on the GPU, so an expert repeated in
+the same route is not admitted on both lanes.
 
-Os diagnósticos agora expõem `cpu_expert_calls`, `gpu_expert_calls` e
-`coexecution_gpu_fraction`, além das medições CUDA já existentes. Os testes
-unitários cobrem a política de banda, duplicatas, erro de uma lane, reserva do
-double buffer, soma das lanes e persistência do sidecar. A compilação CUDA e
-os testes focados desta revisão foram executados na ksia; nenhuma velocidade
-ou sobreposição efetiva é afirmada neste texto além das medições sintéticas
-registradas abaixo.
+The runtime loads the profile once per NVFP4 model and passes it to each block.
+In the route forward, the CPU lane uses the global RAM `ExpertCache` and the Rust
+NVFP4 decoder; the GPU lane uses the resident cache and the CUDA kernel. The two
+functions run in sibling threads and the output is summed per token, with the
+width validated before combining. The single path turns the route into a
+one-token batch, so no exception without co-execution is opened. A missing
+profile keeps every miss on the GPU, preserving the previous behavior; an
+invalid profile refuses the load by name.
 
-Na ksia, a build desta revisão `ffe9669` foi executada com `CUDAARCHS=120`,
-`CUDACXX=/usr/local/cuda-12/bin/nvcc`, `CCACHE=ccache`,
-`RUSTC_WRAPPER=ccache` e `CARGO_TARGET_DIR=/data/ftk-cuda-target`. O build
-release terminou em `9m45s`, com `BUILD_EXIT=0`; o ccache registrou `524/532`
-chamadas cacheáveis (`98,50%`) e zero hits porque o target estava frio. Os
-testes CUDA focados passaram: `7` testes de co-execução, `1` de persistência
-do sidecar e o benchmark sintético de H2D/D2H.
+Diagnostics now expose `cpu_expert_calls`, `gpu_expert_calls` and
+`coexecution_gpu_fraction`, besides the existing CUDA measurements. The unit
+tests cover the bandwidth policy, duplicates, a lane error, the double buffer
+reservation, the lanes' sum and the sidecar's persistence. The CUDA build and
+this revision's focused tests were run on the CUDA test server; no effective
+speed or overlap is claimed in this text beyond the synthetic measurements
+recorded below.
 
-O ensaio de co-execução mediu CPU e uploads CUDA simultaneamente em oito
-experts sintéticos da geometria Gemma4. A saída foi:
+On the CUDA test server, the build of revision `ffe9669` was run with
+`CUDAARCHS=120`, `CUDACXX=/usr/local/cuda-12/bin/nvcc`, `CCACHE=ccache`,
+`RUSTC_WRAPPER=ccache` and `CARGO_TARGET_DIR=/data/ftk-cuda-target`. The release
+build ended in `9m45s`, with `BUILD_EXIT=0`; ccache recorded `524/532` cacheable
+calls (`98.50%`) and zero hits because the target was cold. The focused CUDA
+tests passed: `7` co-execution tests, `1` sidecar persistence test and the
+synthetic H2D/D2H benchmark.
+
+The co-execution test measured CPU and CUDA uploads simultaneously on eight
+synthetic experts of the Gemma4 geometry. The output was:
 
 ```text
 COEXEC_PROFILE cpu_ms=925.491 gpu_ms=117.632 upload_ms=3.765 payload_bytes=3345440 gpu_fraction=0.9959
 ```
 
-O sidecar produzido pelo ensaio continha `cpu_wall_ms=925.491047`,
-`cuda_wall_ms=117.632127`, `cpu_overlap_bytes_per_sec=28918183.58` e
-`transfer_overlap_bytes_per_sec=7107826903.09`, resultando em fração GPU
-`0.9959`. Isso é uma medição sintética de uma geometria, não uma medição E2E
-do modelo real. A ksia tinha apenas o manifesto `.pom` de Gemma4 no caminho
-consultado, sem os GGUF das fatias, então as provas ignoradas
-`executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real` e
-`nvfp4_matches_llama_cpp_from_first_layer_and_stage` ficaram sem executar por
-ausência do arquivo exigido. Não se atribui ganho de desempenho ao caminho
-co-executado com base nesse ensaio.
+The sidecar produced by the test contained `cpu_wall_ms=925.491047`,
+`cuda_wall_ms=117.632127`, `cpu_overlap_bytes_per_sec=28918183.58` and
+`transfer_overlap_bytes_per_sec=7107826903.09`, resulting in a GPU fraction of
+`0.9959`. That is a synthetic measurement of one geometry, not an E2E
+measurement of the real model. The CUDA test server only had the Gemma4 `.pom`
+manifest at the queried path, without the slices' GGUFs, so the ignored proofs
+`executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real` and
+`nvfp4_matches_llama_cpp_from_first_layer_and_stage` did not run for lack of
+the required file. No performance gain is attributed to the co-executed path on
+the basis of that test.
 
-4. **F5.3, prefill no alvo.** Otimizar agrupamento de experts, fusão de
-   operações e reutilização do LRU/staging guiado pelo perfil da F5.2. Pronto
-   somente quando a média de prefill, com a mesma definição da referência,
-   for `<= 3,1 ms/token` na ksia, com erro numérico dentro da tolerância da
-   F5.1, `engine_mismatch=false`, sem fallback CPU e decode ainda `<= 80
-   ms/token` durante a medição.
+4. **F5.3, prefill on target.** Optimize expert grouping, operation fusion and
+   LRU/staging reuse guided by the F5.2 profile. Done only when the prefill
+   average, with the same definition as the reference, is `<= 3.1 ms/token` on
+   the CUDA test server, with the numeric error within F5.1's tolerance,
+   `engine_mismatch=false`, no CPU fallback and decode still `<= 80 ms/token`
+   during the measurement.
 
-5. **F5.4, paridade de decode com llama.cpp.** Aplicar a mesma lane ao decode
-   de um token, primeiro sem exigir o alvo FreeToken. Pronto quando o p50 de
-   decode atingir `<= 30 ms/token` na mesma carga e GPU, empatando o
-   `llama.cpp` medido no CHAT real, enquanto o prefill permanecer `<= 3,1
-   ms/token`. A telemetria deve mostrar `executed_engine=MoE`, sem mistura ou
-   divergência; um fallback deve falhar nominalmente ou aparecer com seu
-   motivo, nunca ser contado como GPU.
+5. **F5.4, decode parity with llama.cpp.** Apply the same lane to one-token
+   decode, first without requiring the FreeToken target. Done when the decode
+   p50 reaches `<= 30 ms/token` on the same load and GPU, tying the `llama.cpp`
+   measured on the real Chat, while the prefill stays `<= 3.1 ms/token`.
+   Telemetry must show `executed_engine=MoE`, without mixing or divergence; a
+   fallback must fail by name or show up with its reason, never be counted as
+   GPU.
 
-6. **F5.5, alvo FreeToken e co-execução completa.** Sobrepor roteamento,
-   transferência e cálculo entre requests, preservando leases do LRU. Pronto
-   quando o decode atingir `<= 18,8 ms/token` na mesma carga e GPU, o prefill
-   permanecer `<= 3,1 ms/token`, e a telemetria de cada hop mostrar
-   `executed_engine=MoE`, sem mistura ou divergência.
+6. **F5.5, FreeToken target and full co-execution.** Overlap routing, transfer
+   and computation across requests, keeping the LRU's leases. Done when decode
+   reaches `<= 18.8 ms/token` on the same load and GPU, prefill stays
+   `<= 3.1 ms/token`, and each hop's telemetry shows `executed_engine=MoE`,
+   without mixing or divergence.
 
-7. **F5.6, prova final e regressão.** Repetir os pontos F5.0 a F5.5 em pelo
-   menos três execuções independentes na ksia, anexar mediana e dispersão dos
-   tempos, e rodar a suíte densa completa. O goal só fecha se os limites
-   `3,1 ms/token` e `18,8 ms/token` forem atingidos na carga de referência,
-   sem regressão funcional ou de desempenho observada no caminho denso. Caso
-   uma fase não alcance seu número, registrar o valor real e a evidência, sem
-   declarar verde por suite unitária.
+7. **F5.6, final proof and regression.** Repeat points F5.0 to F5.5 in at least
+   three independent runs on the CUDA test server, attach the median and spread
+   of the times, and run the full dense suite. The goal only closes if the
+   `3.1 ms/token` and `18.8 ms/token` limits are reached on the reference load,
+   with no functional or performance regression observed on the dense path. If a
+   phase does not reach its number, record the real value and the evidence,
+   without declaring it green from a unit suite.
 
-Esta retomada substitui o estado anterior de “Fase 5 ainda não ativa”. Antes
-de qualquer kernel, o desenho e esses alvos devem ser publicados no status do
-goal. A F5.1 já tem a primeira entrega de código: `cuda.rs` faz o dispatch
-Rust e `cuda_kernels.cu` executa gate/up/down NVFP4 em CUDA, compilados pelo
-`build.rs` somente com a feature `cuda`. `POM_MOE_NVFP4_BACKEND=cpu` é o
-fallback explícito para comparação; uma falha do kernel CUDA não cai em CPU
-silenciosamente. O build CUDA foi validado na ksia, mas a comparação numérica
-do kernel e a medição de prefill ainda aguardam uma janela sem disputa de GPU.
-Até essa prova, nenhuma melhoria de desempenho é afirmada.
+This resumption replaces the earlier state of "Phase 5 not active yet". Before
+any kernel, the design and those targets had to be published in the goal's
+status. F5.1 already has its first code delivery: `cuda.rs` does the Rust
+dispatch and `cuda_kernels.cu` runs NVFP4 gate/up/down in CUDA, compiled by
+`build.rs` only with the `cuda` feature. `POM_MOE_NVFP4_BACKEND=cpu` is the
+explicit fallback for comparison; a CUDA kernel failure does not silently fall
+to the CPU. The CUDA build was validated on the CUDA test server, but the
+kernel's numeric comparison and the prefill measurement were still waiting for a
+window without GPU contention. Until that proof, no performance improvement is
+claimed.
 
-## Goal: executor MoE para todos os dtypes GGUF
+## Goal: MoE executor for every GGUF dtype
 
-Este é um goal formal adicional ao caminho `feat/ftk`: o runtime próprio deve
-executar experts MoE em todos os dtypes GGUF ativos suportados pelo
-`ggml_type` do `llama.cpp`, e não somente em Q4_0. A fonte da enumeração é
-`llama.cpp/ggml/include/ggml.h`, especialmente `GGML_TYPE_COUNT`; os IDs
-removidos de arquivos GGUF não são tratados como formatos válidos. O escopo
-preserva a bifurcação: modelos densos continuam no `llama.cpp`, e nenhum peso
-ou bloco de quantização atravessa a rede por causa do fatiamento.
+This is a formal goal added to the `feat/ftk` path: the own runtime must run MoE
+experts in every active GGUF dtype supported by `llama.cpp`'s `ggml_type`, not
+only Q4_0. The source of the enumeration is `llama.cpp/ggml/include/ggml.h`,
+especially `GGML_TYPE_COUNT`; IDs removed from GGUF files are not treated as
+valid formats. The scope keeps the fork: dense models stay on `llama.cpp`, and no
+weight or quantization block crosses the network because of slicing.
 
-O contrato de segurança é comum a todas as fases: o cabeçalho GGUF é validado
-antes de qualquer decodificação, o dispatch usa o ID e a geometria do tensor,
-e uma combinação não implementada recusa com `dtype=<id> (<nome>)`. Um dtype
-desconhecido também é recusado com seu ID bruto. É proibido interpretar bytes
-de um formato como se fossem outro. Ao concluir o goal, essa recusa será o
-caminho raro para um dtype realmente novo ou um tensor inválido, não a saída
-normal para modelos conhecidos.
+The safety contract is common to every phase: the GGUF header is validated
+before any decoding, dispatch uses the tensor's ID and geometry, and an
+unimplemented combination refuses with `dtype=<id> (<name>)`. An unknown dtype
+is also refused with its raw ID. Interpreting one format's bytes as another's is
+forbidden. When the goal is done, that refusal will be the rare path for a truly
+new dtype or an invalid tensor, not the normal exit for known models.
 
-### Reorganização do marco de entrega - 2026-08-25
+### Reorganized delivery milestone - 2026-08-25
 
-O critério operacional deste goal foi reorganizado para entregar valor nos
-quatro MoE reais disponíveis na ksia antes de ampliar a cobertura abstrata de
-todos os dtypes. O marco é: Gemma4 NVFP4, Qwen3.6 Q4_K_M com Q4_K/Q6_K, Qwen
-UD-IQ3_S com IQ3_S/IQ2_S/IQ4_XS heterogêneos e Ornith UD-IQ3_XXS. Cada um
-precisa subir e responder no caminho MoE, com `moe_executor` visível por hop,
-sem `CPUReference` silencioso e sem regressão contra o llama.cpp na mesma
-build. O número de aceitação é tok/s medido na ksia; suite verde ou carga de
-metadata sozinha não fecha o marco.
+This goal's operational criterion was reorganized to deliver value on the four
+real MoE models available on the CUDA test server before broadening the
+abstract coverage of every dtype. The milestone is: Gemma4 NVFP4, Qwen3.6
+Q4_K_M with Q4_K/Q6_K, Qwen UD-IQ3_S with heterogeneous IQ3_S/IQ2_S/IQ4_XS and
+Ornith UD-IQ3_XXS. Each one must start and answer on the MoE path, with
+`moe_executor` visible per hop, without a silent `CPUReference` and without
+regression against llama.cpp on the same build. The acceptance number is tok/s
+measured on the CUDA test server; a green suite or a metadata load alone does
+not close the milestone.
 
-A ordem vigente passa a ser:
+The current order becomes:
 
-1. **Salvaguarda por dtype e reserva de VRAM.** A reserva medida de
-`53decb4` e o ownership por camada chegam juntos. Uma camada cujos tensores de
-experts tenham executor CUDA ou `CPUReference` disponível pode ser retirada do
-llama.cpp. Dtypes sem cache device usam `CPUReference` e publicam os dtypes
-concretos; uma combinação sem decoder externo é recusada antes da carga.
-Somente uma limitação real do runtime mantém a camada nativa, com motivo
-visível, nunca deixando a placa sem dono.
-2. **Cobertura do marco.** NVFP4, Q2_K/Q3_K/Q4_K/Q6_K e, em seguida, IQ3_S/IQ2_S/IQ4_XS
-   por tensor, incluindo o cache device e a combinação heterogênea usada pelos
-   dois UD. O decoder é escolhido por tensor e dtype; arquitetura, nomes,
-   geometrias e convenções entram como metadata. Cada bloco exige prova
-   numérica contra o oráculo, GGUF real quando disponível e prova E2E nos quatro
-   modelos antes de ser chamado de pronto.
-3. **Depois do marco.** Prefill, CUDA graphs e redução da cauda, priorizados
-   por perfil medido. Os dtypes restantes seguem cobertos pela salvaguarda e
-   só entram no executor device depois do marco, sem alterar o caminho nativo.
+1. **Per-dtype safeguard and VRAM reserve.** The measured reserve of `53decb4`
+   and per-layer ownership arrive together. A layer whose expert tensors have a
+   CUDA executor or an available `CPUReference` can be taken out of llama.cpp.
+   Dtypes without a device cache use `CPUReference` and publish the concrete
+   dtypes; a combination without an external decoder is refused before loading.
+   Only a real runtime limitation keeps the layer native, with a visible
+   reason, never leaving the card without an owner.
+2. **Milestone coverage.** NVFP4, Q2_K/Q3_K/Q4_K/Q6_K and then
+   IQ3_S/IQ2_S/IQ4_XS per tensor, including the device cache and the
+   heterogeneous combination used by the two UD models. The decoder is chosen
+   per tensor and dtype; architecture, names, geometries and conventions come in
+   as metadata. Each block requires a numeric proof against the oracle, a real
+   GGUF when available and an E2E proof on the four models before being called
+   done.
+3. **After the milestone.** Prefill, CUDA graphs and tail reduction, prioritized
+   by the measured profile. The remaining dtypes stay covered by the safeguard
+   and only enter the device executor after the milestone, without changing the
+   native path.
 
-Esta reorganização substitui a fila anterior como ordem de entrega, mas não
-remove o inventário completo nem a recusa nominal: os demais dtypes continuam
-listados e explicitamente protegidos, e voltam à implementação depois que os
-quatro modelos do marco tiverem números honestos.
+This reorganization replaces the previous queue as the delivery order, but does
+not remove the full inventory nor the refusal by name: the other dtypes stay
+listed and explicitly protected, and come back to implementation once the four
+milestone models have honest numbers.
 
-### Estado da cobertura IQ heterogênea - 2026-08-25
+### State of heterogeneous IQ coverage - 2026-08-25
 
-A ponte device da fase seguinte está implementada localmente para os dtypes
-IQ3_S (21), IQ2_S (22) e IQ4_XS (23), tanto em arquivos homogêneos quanto em
-GGUF heterogêneo. No caso heterogêneo, o cache mantém uma entrada residente
-por `(modelo, camada, expert, papel, dtype)`; o kernel recebe descritores
-separados para `gate_up` fundido ou `gate`/`up` separados e `down`, e escolhe
-o codebook pelo dtype de cada tensor. Isso evita transformar o UD em um
-payload homogêneo no host e evita transferência de pesos em hits do cache.
+The next phase's device bridge is implemented locally for the dtypes IQ3_S
+(21), IQ2_S (22) and IQ4_XS (23), both in homogeneous files and in
+heterogeneous GGUFs. In the heterogeneous case, the cache keeps one resident
+entry per `(model, layer, expert, role, dtype)`; the kernel gets separate
+descriptors for fused `gate_up` or separate `gate`/`up` and `down`, and picks the
+codebook by each tensor's dtype. That avoids turning the UD into a homogeneous
+payload on the host and avoids weight transfers on cache hits.
 
-O plano só externaliza uma combinação heterogênea quando todos os dtypes dos
-experts pertencem ao conjunto suportado. Uma combinação como `[12, 21, 23]`
-fica inteira com o llama.cpp e publica a recusa nominal; não há externalização
-parcial que pudesse remover um tensor sem executor. A prova na `ksia` executou
-o caminho individual para IQ3_S, IQ2_S e IQ4_XS contra o decoder CPU e também
-o caminho heterogêneo com gate IQ3_S, up IQ2_S e down IQ4_XS. Em todos os casos
-`gate_up`, ativação e `down` ficaram sem primeira divergência na tolerância
-`1e-4`. A prova E2E nos GGUF reais dos dois UD e a medição de produto ainda
-estão pendentes.
+The plan only externalizes a heterogeneous combination when every expert dtype
+belongs to the supported set. A combination like `[12, 21, 23]` stays entirely
+with llama.cpp and publishes the refusal by name; there is no partial
+externalization that could remove a tensor without an executor. The proof on the
+CUDA test server ran the individual path for IQ3_S, IQ2_S and IQ4_XS against the
+CPU decoder and also the heterogeneous path with gate IQ3_S, up IQ2_S and down
+IQ4_XS. In every case `gate_up`, activation and `down` had no first divergence at
+the `1e-4` tolerance. The E2E proof on the two UD models' real GGUFs and the
+product measurement were still pending.
 
-### Estado da cobertura CUDA escalar - 2026-08-25
+### State of scalar CUDA coverage - 2026-08-25
 
-F32 (0), F16 (1) e BF16 (30) agora compartilham uma ponte CUDA parametrizada
-por `PlainFormat`. O payload usado pelo `PlainSource` é admitido uma única vez
-no `DeviceExpertCache`, incluindo o cabeçalho de comprimentos de `gate_up` e
-`down`; o kernel valida esses comprimentos, decodifica o dtype informado e
-executa gate/up, SiLU, down e agregação no lote de rotas. Não há ramo por
-arquitetura ou nome de modelo, e um dtype fora de `{0, 1, 30}` é recusado antes
-do lançamento.
+F32 (0), F16 (1) and BF16 (30) now share a CUDA bridge parameterized by
+`PlainFormat`. The payload used by `PlainSource` is admitted only once into
+`DeviceExpertCache`, including the `gate_up` and `down` length header; the kernel
+validates those lengths, decodes the given dtype and runs gate/up, SiLU, down and
+aggregation in the route batch. There is no branch per architecture or model
+name, and a dtype outside `{0, 1, 30}` is refused before launch.
 
-O teste CUDA diferencial cobre os três formatos com os mesmos payloads e
-hidden do `PlainExpert` CPU, com tolerância `1e-5` para F32 e `2e-3` para F16 e
-BF16. A build e esse teste ainda precisam passar no worktree de validação, em
-`/data/ftk-cuda-target`; também não há prova E2E com um GGUF MoE real desses
-três dtypes. Sem CUDA, ou se a admissão por orçamento medido recusar o payload,
-a posse permanece no llama.cpp e a telemetria informa o motivo.
+The differential CUDA test covers the three formats with the same payloads and
+hidden state as the CPU `PlainExpert`, with a tolerance of `1e-5` for F32 and
+`2e-3` for F16 and BF16. The build and that test still had to pass on the
+validation worktree, in `/data/ftk-cuda-target`; there is also no E2E proof with
+a real MoE GGUF of those three dtypes. Without CUDA, or if admission by the
+measured budget refuses the payload, ownership stays with llama.cpp and
+telemetry reports the reason.
 
-### Diagnóstico diferencial IQ - 2026-08-25
+### IQ differential diagnosis - 2026-08-25
 
-O commit `d631442` tornou a comparação IQ diagnosticável por dtype e estágio:
-o teste CPU informa o primeiro valor não finito, e a prova CUDA registra o
-primeiro índice divergente em `gate`, `up`, ativação ou `down`, com valor atual,
-esperado, erro absoluto e erro relativo. A fixture CPU isolada passou:
+Commit `d631442` made the IQ comparison diagnosable per dtype and stage: the CPU
+test reports the first non-finite value, and the CUDA proof records the first
+diverging index in `gate`, `up`, activation or `down`, with the actual value,
+the expected one, absolute error and relative error. The isolated CPU fixture
+passed:
 
 ```text
 CARGO_TARGET_DIR="$PWD/target/ftk-cuda-check" cargo test -p node --bin pom cada_iq_priorizado_tem_bloco_e_dequantizacao_determinados -- --nocapture
 1 passed, 891 filtered out
 ```
 
-A primeira tentativa remota carregou `--ignored`, mas esses testes não são
-ignorados e a saída foi `0 passed, 907 filtered out`; esse resultado não foi
-tratado como sucesso. A validação foi repetida na `ksia`, com
-`CARGO_TARGET_DIR=/data/ftk-cuda-target` e
-`CUDACXX=/usr/local/cuda-12/bin/nvcc`, e a build nativa CUDA concluiu.
+The first remote attempt passed `--ignored`, but those tests are not ignored and
+the output was `0 passed, 907 filtered out`; that result was not treated as a
+success. Validation was repeated on the CUDA test server, with
+`CARGO_TARGET_DIR=/data/ftk-cuda-target` and
+`CUDACXX=/usr/local/cuda-12/bin/nvcc`, and the native CUDA build completed.
 
-No commit `e1a7ab5`, o teste correto chegou à salvaguarda e retornou
-`BackendUnavailable("dtype GGML 22 (iq2_s) ainda não tem ponte CUDA IQ-quant")`.
-Para investigar sem alterar o dispatch de produção, `86226c7` adicionou um
-construtor somente de teste. Com ele, no mesmo target CUDA, a prova individual
-retornou `1 passed` e o diagnóstico por estágio publicou:
+In commit `e1a7ab5`, the right test reached the safeguard and returned
+`BackendUnavailable("dtype GGML 22 (iq2_s) ainda não tem ponte CUDA IQ-quant")`
+("has no IQ-quant CUDA bridge yet"). To investigate without changing the
+production dispatch, `86226c7` added a test-only constructor. With it, on the
+same CUDA target, the individual proof returned `1 passed` and the per-stage
+diagnosis published:
 
 ```text
 IQ iq3_s estágios: gate_up=None, activation=None, down=None
@@ -2149,266 +2162,267 @@ IQ iq2_s estágios: gate_up=None, activation=None, down=None
 IQ iq4_xs estágios: gate_up=None, activation=None, down=None
 ```
 
-A prova heterogênea `executor_cuda_iq_heterogeneo_preserva_gate_up_down_por_dtype`
-também retornou `1 passed`. Não foi reproduzida a divergência histórica e não
-houve mudança no kernel; a única mudança de produção desta fase é reabilitar
-os três dtypes depois dessa evidência. O construtor de teste foi removido na
-mesma entrega, para que a prova passe pelo dispatch normal.
+The heterogeneous proof `executor_cuda_iq_heterogeneo_preserva_gate_up_down_por_dtype`
+also returned `1 passed`. The historical divergence was not reproduced and there
+was no kernel change; the only production change of that phase was re-enabling
+the three dtypes after that evidence. The test constructor was removed in the
+same delivery, so the proof goes through the normal dispatch.
 
-No commit final `89156d9`, o dispatch normal repetiu a prova individual e
-retornou `1 passed`; o diagnóstico por estágio e o teste heterogêneo também
-retornaram `1 passed`. A suíte completa com
-`cargo test -p node --features vulkan,cuda --bin pom` terminou com `891 passed`,
-`6 failed` e `10 ignored`, de `907` testes. As seis falhas são:
+In the final commit `89156d9`, the normal dispatch repeated the individual proof
+and returned `1 passed`; the per-stage diagnosis and the heterogeneous test also
+returned `1 passed`. The full suite with
+`cargo test -p node --features vulkan,cuda --bin pom` ended with `891 passed`,
+`6 failed` and `10 ignored`, out of `907` tests. The six failures are:
 
 - `gguf::tests::canonical_qwen35_nextn_metadata_and_tensor_names_prove_mtp`,
-  `gguf::tests::mtp_is_proven_by_real_nextn_tensors_even_without_metadata` e
-  `gguf::tests::read_layout_sees_nextn_predict_layers`: `GGUF truncado antes
-  da seção de dados`;
+  `gguf::tests::mtp_is_proven_by_real_nextn_tensors_even_without_metadata` and
+  `gguf::tests::read_layout_sees_nextn_predict_layers`: `GGUF truncado antes da
+  seção de dados` ("GGUF truncated before the data section");
 - `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`:
-  `N=2 entrada=0: 7,06 pernas por token, esperado 2`;
+  `N=2 entrada=0: 7,06 pernas por token, esperado 2` ("7.06 legs per token,
+  expected 2");
 - `transfer::offer_latency_tests::an_offer_leaves_without_reading_the_whole_file`:
-  `oferta demorou 27,110586968s; ela não pode depender do tamanho do arquivo`;
+  `oferta demorou 27,110586968s; ela não pode depender do tamanho do arquivo`
+  ("the offer took 27.1 s; it must not depend on the file size");
 - `webui::tests::merge_parts_joins_two_slices_into_a_whole`: metadata
-  `llama.attention.head_count_kv_by_layer` com comprimento 16, esperado 1 ou 32.
+  `llama.attention.head_count_kv_by_layer` with length 16, expected 1 or 32.
 
-Essas falhas não envolvem o dispatch IQ alterado. A build release foi executada
-no mesmo checkout e terminou com código 0:
+Those failures do not involve the changed IQ dispatch. The release build was run
+on the same checkout and ended with code 0:
 
 ```text
 CARGO_TARGET_DIR=/data/ftk-cuda-target CUDACXX=/usr/local/cuda-12/bin/nvcc cargo build --release --features vulkan,cuda
 Finished `release` profile [optimized] target(s) in 25m 38s
 ```
 
-Na mesma rodada, a suíte densa local foi executada com
+In the same round, the local dense suite was run with
 `CARGO_TARGET_DIR="$PWD/target/ftk-cuda-check" cargo test -p node --bin pom`:
-`879 passed`, `4 failed`, `9 ignored`, de `892` testes. As falhas observadas
-foram:
+`879 passed`, `4 failed`, `9 ignored`, out of `892` tests. The observed failures
+were:
 
 - `gguf::tests::canonical_qwen35_nextn_metadata_and_tensor_names_prove_mtp`:
-  `GGUF truncado antes da seção de dados` em `gguf.rs:1202:52`;
+  `GGUF truncado antes da seção de dados` at `gguf.rs:1202:52`;
 - `gguf::tests::mtp_is_proven_by_real_nextn_tensors_even_without_metadata`:
-  `GGUF truncado antes da seção de dados` em `gguf.rs:1174:52`;
+  `GGUF truncado antes da seção de dados` at `gguf.rs:1174:52`;
 - `gguf::tests::read_layout_sees_nextn_predict_layers`:
-  `GGUF truncado antes da seção de dados` em `gguf.rs:1325:38`;
+  `GGUF truncado antes da seção de dados` at `gguf.rs:1325:38`;
 - `webui::tests::merge_parts_joins_two_slices_into_a_whole`:
-  `array metadata 'llama.attention.head_count_kv_by_layer' tem comprimento 16; esperado 1 ou 32 (contagem original de blocos)` em `webui.rs:5114:61`.
+  `array metadata 'llama.attention.head_count_kv_by_layer' tem comprimento 16; esperado 1 ou 32 (contagem original de blocos)`
+  at `webui.rs:5114:61`.
 
-Essas falhas ficaram fora dos arquivos de diagnóstico IQ. Elas não constituem
-prova da ponte CUDA nem alteram a salvaguarda.
+Those failures stayed outside the IQ diagnosis files. They are no proof of the
+CUDA bridge and do not change the safeguard.
 
-### Fases e critérios de pronto
 
-1. **Inventário e conformance.** Mapear todos os IDs ativos da enumeração,
-   nomeá-los no loader, levantar os dtypes dos experts em um corpus real e
-   adicionar fixtures de cabeçalho para formatos suportados e recusados. Pronto
-   quando cada ID chega a uma decisão explícita, cada recusa nomeia o dtype e o
-   parser não lê um payload sem validar limites, rank, geometria e offset.
+### Phases and done criteria
 
-2. **NVFP4, dtype 40.** Implementar primeiro o decoder CPU de referência para
-   o layout NVFP4 usado pelo Gemma4, incluindo escalas E4M3, blocos, gate/up
-   fundido ou separado e down. Pronto quando fixtures sintéticas cobrem cada
-   escala e sinal, o resultado é comparado operação a operação com uma
-   referência independente e um GGUF real NVFP4 completa a abertura e o
-   forward do expert sem cair no loader Q4_0.
+1. **Inventory and conformance.** Map every active ID of the enumeration, name
+   them in the loader, survey the expert dtypes in a real corpus and add header
+   fixtures for supported and refused formats. Done when each ID reaches an
+   explicit decision, each refusal names the dtype and the parser reads no
+   payload without validating bounds, rank, geometry and offset.
 
-3. **Camada genérica e compatibilidade Q4_0.** Extrair `ExpertDecoder` e um
-   dispatch por dtype, mantendo a chave do cache, admissão por memória e
-   formatos de nomes fora do decoder. Migrar Q4_0 e NVFP4 para essa camada,
-   com testes de contrato idênticos por formato. Pronto quando o caminho denso
-   não importar o runtime MoE, Q4_0 continuar passando e nenhum branch puder
-   escolher um decoder por nome de arquivo.
+2. **NVFP4, dtype 40.** First implement the reference CPU decoder for the NVFP4
+   layout used by Gemma4, including E4M3 scales, blocks, fused or separate
+   gate/up, and down. Done when synthetic fixtures cover each scale and sign,
+   the result is compared operation by operation with an independent reference
+   and a real NVFP4 GGUF completes the opening and the expert forward without
+   falling into the Q4_0 loader.
 
-4. **Cobertura por impacto, sem recorte de famílias.** Depois dos blocos já
-   publicados NVFP4, K-quants `Q4_K` (12) e `Q6_K` (14), e IQ-quants `IQ3_S`
-   (21), `IQ2_S` (22) e `IQ4_XS` (23), a fila restante segue esta ordem:
-   primeiro os escalares `F32` (0), `F16` (1) e `BF16` (30), depois os blocos
-   clássicos `Q4_1` (3), `Q5_0` (6), `Q5_1` (7) e `Q8_0` (8), e então
-   `MXFP4` (39), `TQ1_0` (34), `TQ2_0` (35), `Q1_0` (41) e `Q2_0` (42).
-   A próxima fila cobre os demais tipos, sem abandonar nenhum: numéricos
-   `F64`, `I8`, `I16`, `I32` e `I64`; K-quants `Q2_K`, `Q3_K`, `Q5_K` e
-   `Q8_K`; e IQ-quants `IQ1_M`, `IQ1_S`, `IQ2_XS`, `IQ2_XXS`, `IQ3_XXS` e
-   `IQ4_NL`. A ordem dos dois primeiros blocos foi definida pelos modelos
-   reais disponíveis na ksia. Nenhum MoE Q4_0 existe na ksia, então Q4_0
-   permanece coberto por testes locais, sem ser fila de validação física.
-   Cada subgrupo fica pronto com decoder, fixture de payload, rejeições de
-   geometria e teste diferencial antes do próximo.
+3. **Generic layer and Q4_0 compatibility.** Extract `ExpertDecoder` and a
+   per-dtype dispatch, keeping the cache key, memory admission and name formats
+   outside the decoder. Migrate Q4_0 and NVFP4 to that layer, with identical
+   contract tests per format. Done when the dense path does not import the MoE
+   runtime, Q4_0 keeps passing and no branch can pick a decoder by file name.
 
-5. **Prova real e encerramento.** Executar um modelo MoE real para cada dtype
-   presente no corpus, medir carregamento, cache, forward e tok/s, e comparar
-   com a referência do `llama.cpp` ou uma referência numérica independente.
-   Pronto quando todos os dtypes ativos da enumeração têm teste de formato e
-   pelo menos uma prova de execução; apenas IDs removidos, desconhecidos ou
-   GGUF inválidos podem terminar em recusa nominal. A suíte densa completa
-   continua obrigatória em cada fase.
+4. **Coverage by impact, with no family cut.** After the already published
+   blocks NVFP4, K-quants `Q4_K` (12) and `Q6_K` (14), and IQ-quants `IQ3_S`
+   (21), `IQ2_S` (22) and `IQ4_XS` (23), the remaining queue follows this order:
+   first the scalars `F32` (0), `F16` (1) and `BF16` (30), then the classic
+   blocks `Q4_1` (3), `Q5_0` (6), `Q5_1` (7) and `Q8_0` (8), and then `MXFP4`
+   (39), `TQ1_0` (34), `TQ2_0` (35), `Q1_0` (41) and `Q2_0` (42). The next queue
+   covers the other types, abandoning none: numeric `F64`, `I8`, `I16`, `I32`
+   and `I64`; K-quants `Q2_K`, `Q3_K`, `Q5_K` and `Q8_K`; and IQ-quants
+   `IQ1_M`, `IQ1_S`, `IQ2_XS`, `IQ2_XXS`, `IQ3_XXS` and `IQ4_NL`. The order of
+   the first two blocks was set by the real models available on the CUDA test
+   server. No Q4_0 MoE exists there, so Q4_0 stays covered by local tests,
+   without being a physical validation queue. Each subgroup is done with
+   decoder, payload fixture, geometry rejections and a differential test before
+   the next one.
 
-### Inventário GGUF atual
+5. **Real proof and closing.** Run a real MoE model for each dtype present in
+   the corpus, measure loading, cache, forward and tok/s, and compare with the
+   `llama.cpp` reference or an independent numeric reference. Done when every
+   active dtype of the enumeration has a format test and at least one execution
+   proof; only removed or unknown IDs, or invalid GGUFs, may end in a refusal by
+   name. The full dense suite stays mandatory in each phase.
 
-Os dtypes ativos são: `0 F32`, `1 F16`, `2 Q4_0`, `3 Q4_1`, `6 Q5_0`,
+### Current GGUF inventory
+
+The active dtypes are: `0 F32`, `1 F16`, `2 Q4_0`, `3 Q4_1`, `6 Q5_0`,
 `7 Q5_1`, `8 Q8_0`, `9 Q8_1`, `10 Q2_K`, `11 Q3_K`, `12 Q4_K`, `13 Q5_K`,
 `14 Q6_K`, `15 Q8_K`, `16 IQ2_XXS`, `17 IQ2_XS`, `18 IQ3_XXS`, `19 IQ1_S`,
 `20 IQ4_NL`, `21 IQ3_S`, `22 IQ2_S`, `23 IQ4_XS`, `24 I8`, `25 I16`, `26 I32`,
 `27 I64`, `28 F64`, `29 IQ1_M`, `30 BF16`, `34 TQ1_0`, `35 TQ2_0`,
-`39 MXFP4`, `40 NVFP4`, `41 Q1_0` e `42 Q2_0`.
+`39 MXFP4`, `40 NVFP4`, `41 Q1_0` and `42 Q2_0`.
 
-Os IDs `4 Q4_2`, `5 Q4_3`, `31 Q4_0_4_4`, `32 Q4_0_4_8`, `33 Q4_0_8_8`,
-`36 IQ4_NL_4_4`, `37 IQ4_NL_4_8` e `38 IQ4_NL_8_8` permanecem na faixa
-histórica da enumeração, mas o `llama.cpp` marca-os como removidos de arquivos
-GGUF. O loader deve rejeitá-los como dtype removido, com o ID e o nome na
-mensagem, em vez de tratá-los como um dos formatos ativos.
+IDs `4 Q4_2`, `5 Q4_3`, `31 Q4_0_4_4`, `32 Q4_0_4_8`, `33 Q4_0_8_8`,
+`36 IQ4_NL_4_4`, `37 IQ4_NL_4_8` and `38 IQ4_NL_8_8` stay in the historical
+range of the enumeration, but `llama.cpp` marks them as removed from GGUF files.
+The loader must reject them as a removed dtype, with the ID and the name in the
+message, instead of treating them as one of the active formats.
 
-### Quadro final de cobertura dos dtypes ativos
+### Final coverage table of the active dtypes
 
-Este quadro é o fechamento honesto desta rodada, conferido contra
-`GGML_TYPE_COUNT` e a enumeração de `llama.cpp/ggml/include/ggml.h`. Cada linha
-é individual para não transformar uma fixture em prova de modelo. A única prova
-física registrada é o Gemma4 NVFP4; não há arquivo GGUF local para repetir uma
-prova E2E dos K-quants ou IQ-quants da ksia neste worktree, e nenhum acesso
-remoto foi feito nesta validação.
+This table is the honest closing of this round, checked against
+`GGML_TYPE_COUNT` and the enumeration in `llama.cpp/ggml/include/ggml.h`. Each
+row is individual so as not to turn a fixture into a model proof. The only
+physical proof recorded is Gemma4 NVFP4; there is no local GGUF file to repeat
+an E2E proof of the CUDA test server's K-quants or IQ-quants in this worktree,
+and no remote access was made in this validation.
 
-| ID | dtype | estado |
+| ID | dtype | state |
 |---:|---|---|
-| 0 | F32 | implementado e NÃO PROVADO |
-| 1 | F16 | implementado e NÃO PROVADO |
-| 2 | Q4_0 | implementado e NÃO PROVADO |
-| 3 | Q4_1 | implementado e NÃO PROVADO |
-| 6 | Q5_0 | implementado e NÃO PROVADO |
-| 7 | Q5_1 | implementado e NÃO PROVADO |
-| 8 | Q8_0 | implementado e NÃO PROVADO |
-| 9 | Q8_1 | não coberto |
-| 10 | Q2_K | implementado e NÃO PROVADO |
-| 11 | Q3_K | implementado e NÃO PROVADO |
-| 12 | Q4_K | implementado e NÃO PROVADO |
-| 13 | Q5_K | implementado e NÃO PROVADO |
-| 14 | Q6_K | implementado; prova local de formato e `gate_up` CPU; CUDA/E2E real pendentes |
-| 15 | Q8_K | implementado e NÃO PROVADO |
-| 16 | IQ2_XXS | implementado e NÃO PROVADO |
-| 17 | IQ2_XS | implementado e NÃO PROVADO |
-| 18 | IQ3_XXS | implementado e NÃO PROVADO |
-| 19 | IQ1_S | implementado e NÃO PROVADO |
-| 20 | IQ4_NL | implementado e NÃO PROVADO |
-| 21 | IQ3_S | implementado e PROVADO por comparação CUDA diferencial |
-| 22 | IQ2_S | implementado e PROVADO por comparação CUDA diferencial |
-| 23 | IQ4_XS | implementado e PROVADO por comparação CUDA diferencial |
-| 24 | I8 | não coberto |
-| 25 | I16 | não coberto |
-| 26 | I32 | não coberto |
-| 27 | I64 | não coberto |
-| 28 | F64 | não coberto |
-| 29 | IQ1_M | implementado e NÃO PROVADO |
-| 30 | BF16 | implementado e NÃO PROVADO |
-| 34 | TQ1_0 | implementado e NÃO PROVADO |
-| 35 | TQ2_0 | implementado e NÃO PROVADO |
-| 39 | MXFP4 | implementado e NÃO PROVADO |
-| 40 | NVFP4 | implementado e PROVADO com arquivo real |
-| 41 | Q1_0 | implementado e NÃO PROVADO |
-| 42 | Q2_0 | implementado e NÃO PROVADO |
+| 0 | F32 | implemented and NOT PROVEN |
+| 1 | F16 | implemented and NOT PROVEN |
+| 2 | Q4_0 | implemented and NOT PROVEN |
+| 3 | Q4_1 | implemented and NOT PROVEN |
+| 6 | Q5_0 | implemented and NOT PROVEN |
+| 7 | Q5_1 | implemented and NOT PROVEN |
+| 8 | Q8_0 | implemented and NOT PROVEN |
+| 9 | Q8_1 | not covered |
+| 10 | Q2_K | implemented and NOT PROVEN |
+| 11 | Q3_K | implemented and NOT PROVEN |
+| 12 | Q4_K | implemented and NOT PROVEN |
+| 13 | Q5_K | implemented and NOT PROVEN |
+| 14 | Q6_K | implemented; local format proof and CPU `gate_up`; real CUDA/E2E pending |
+| 15 | Q8_K | implemented and NOT PROVEN |
+| 16 | IQ2_XXS | implemented and NOT PROVEN |
+| 17 | IQ2_XS | implemented and NOT PROVEN |
+| 18 | IQ3_XXS | implemented and NOT PROVEN |
+| 19 | IQ1_S | implemented and NOT PROVEN |
+| 20 | IQ4_NL | implemented and NOT PROVEN |
+| 21 | IQ3_S | implemented and PROVEN by differential CUDA comparison |
+| 22 | IQ2_S | implemented and PROVEN by differential CUDA comparison |
+| 23 | IQ4_XS | implemented and PROVEN by differential CUDA comparison |
+| 24 | I8 | not covered |
+| 25 | I16 | not covered |
+| 26 | I32 | not covered |
+| 27 | I64 | not covered |
+| 28 | F64 | not covered |
+| 29 | IQ1_M | implemented and NOT PROVEN |
+| 30 | BF16 | implemented and NOT PROVEN |
+| 34 | TQ1_0 | implemented and NOT PROVEN |
+| 35 | TQ2_0 | implemented and NOT PROVEN |
+| 39 | MXFP4 | implemented and NOT PROVEN |
+| 40 | NVFP4 | implemented and PROVEN with a real file |
+| 41 | Q1_0 | implemented and NOT PROVEN |
+| 42 | Q2_0 | implemented and NOT PROVEN |
 
-O dispatcher continua recusando tanto um dtype ativo sem decoder quanto um ID
-fora da enumeração antes de ler o payload. `Q4LoadError::UnsupportedTensorType`
-renderiza `dtype=<id> (<nome>)`; para um ID desconhecido, o nome é
-`desconhecido`. Os testes `dtype_desconhecido_informa_id_e_nome` e
-`dtype_ativo_sem_decoder_informa_id_e_nome` cobrem, respectivamente, os casos
-999 e Q8_1. Portanto a lacuna é observável e nomeada, nunca uma interpretação
-silenciosa como outro formato.
+The dispatcher keeps refusing both an active dtype without a decoder and an ID
+outside the enumeration before reading the payload.
+`Q4LoadError::UnsupportedTensorType` renders `dtype=<id> (<name>)`; for an
+unknown ID, the name is `desconhecido` ("unknown"). The tests
+`dtype_desconhecido_informa_id_e_nome` and
+`dtype_ativo_sem_decoder_informa_id_e_nome` cover, respectively, the cases 999
+and Q8_1. So the gap is observable and named, never a silent interpretation as
+another format.
 
-O quadro deixa seis dtypes ativos sem decoder próprio: Q8_1, I8, I16, I32, I64
-e F64. Eles permanecem trabalho futuro explícito; o fechamento não os declara
-implementados. Os 29 dtypes restantes têm decoder e testes locais, mas somente
-o ID 40 tem prova E2E com arquivo GGUF real.
+The table leaves six active dtypes without their own decoder: Q8_1, I8, I16,
+I32, I64 and F64. They stay explicit future work; the closing does not declare
+them implemented. The other 29 dtypes have a decoder and local tests, but only
+ID 40 has an E2E proof with a real GGUF file.
 
-### Experts com dtypes heterogêneos
+### Experts with heterogeneous dtypes
 
-O inventário antigo exigia um dtype único por modelo e recusava os GGUF UD que
-misturam IQ3_S, IQ2_S e IQ4_XS. Essa premissa foi removida para a fase F5-E1.
-`detect_expert_format` agora devolve `Heterogeneous` quando os tensores de
-expert têm mais de um dtype; `format_heterogeneous.rs` constrói um inventário
-por camada e papel (`gate_up`, `gate`, `up`, `down`) e o `MoeRuntime` escolhe o
-decoder de cada tensor individualmente. A rota, a ativação e a normalização
-continuam vindo do descriptor do hook comum do llama.cpp. Não há ramo por
-arquitetura, família de quantização ou nome de modelo.
+The old inventory required a single dtype per model and refused the UD GGUFs
+that mix IQ3_S, IQ2_S and IQ4_XS. That premise was removed for phase F5-E1.
+`detect_expert_format` now returns `Heterogeneous` when the expert tensors have
+more than one dtype; `format_heterogeneous.rs` builds an inventory per layer and
+role (`gate_up`, `gate`, `up`, `down`) and `MoeRuntime` picks each tensor's
+decoder individually. The route, the activation and the normalization still
+come from the descriptor of llama.cpp's common hook. There is no branch per
+architecture, quantization family or model name.
 
-O caminho heterogêneo aceita, por tensor, os dtypes com decoders já existentes:
+The heterogeneous path accepts, per tensor, the dtypes with existing decoders:
 F32, F16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_K,
 IQ2_XXS, IQ2_XS, IQ3_XXS, IQ1_S, IQ4_NL, IQ3_S, IQ2_S, IQ4_XS, IQ1_M, BF16,
-TQ1_0, TQ2_0, MXFP4, Q1_0 e Q2_0. NVFP4 continua provado no caminho homogêneo;
-se aparecer misturado com outro dtype, a combinação é recusada nominalmente
-por tensor até que suas escalas sejam incluídas no inventário heterogêneo. Q8_1,
-I8, I16, I32, I64 e F64 continuam sem decoder. Qualquer dtype não coberto
-produz o nome do tensor, o ID e o nome GGML, sem interpretar os bytes por outro
-formato.
+TQ1_0, TQ2_0, MXFP4, Q1_0 and Q2_0. NVFP4 stays proven on the homogeneous path;
+if it shows up mixed with another dtype, the combination is refused by name per
+tensor until its scales are included in the heterogeneous inventory. Q8_1, I8,
+I16, I32, I64 and F64 still have no decoder. Any uncovered dtype produces the
+tensor name, the ID and the GGML name, without interpreting the bytes as another
+format.
 
-Na ponte CUDA, o subconjunto heterogêneo validado é Q4_K (12), Q6_K (14),
-IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) e MXFP4 (39). Os kernels
-recebem um descriptor por expert e papel, validam o tamanho da matriz segundo o
-dtype e despacham para o decoder K, IQ ou MXFP4 correspondente. Isso preserva
-o caminho IQ anterior e permite que gate, up e down usem dtypes diferentes; a
-ausência de uma ponte com decoder externo em qualquer tensor recusa a carga e
-informa o dtype bloqueador.
+In the CUDA bridge, the validated heterogeneous subset is Q4_K (12), Q6_K (14),
+IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23) and MXFP4 (39). The kernels
+receive one descriptor per expert and role, validate the matrix size according
+to the dtype and dispatch to the matching K, IQ or MXFP4 decoder. That keeps the
+previous IQ path and lets gate, up and down use different dtypes; a missing
+bridge with an external decoder in any tensor refuses the load and reports the
+blocking dtype.
 
-O teste ignorado
-`qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor` exige
-`POM_REAL_MOE_GGUF` e o arquivo real
-`Qwen3.6-35B-A3B-UD-IQ3_S.gguf`; ele valida 40 camadas, 256 experts e os
-dtypes `{21, 22, 23}`. A geometria observada é `[2048, 512, 256]` em
-gate/up e `[512, 2048, 256]` em down. A abertura local sem esse arquivo não é considerada
-prova. A prova E2E deve executar a mesma revisão do código no host que contém
-o GGUF e mostrar resposta, `executed_engine=moe`, sem divergência e com
-`input_tokens > 0`.
+The ignored test `qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor` requires
+`POM_REAL_MOE_GGUF` and the real file `Qwen3.6-35B-A3B-UD-IQ3_S.gguf`; it
+validates 40 layers, 256 experts and the dtypes `{21, 22, 23}`. The observed
+geometry is `[2048, 512, 256]` in gate/up and `[512, 2048, 256]` in down. A
+local opening without that file is not considered proof. The E2E proof must run
+the same code revision on the host that holds the GGUF and show an answer,
+`executed_engine=moe`, no divergence and `input_tokens > 0`.
 
-### Aquecimento do cache residente - F5-E3a
+### Resident cache warmup - F5-E3a
 
-O cache de device começa vazio por desenho: a carga do modelo cria o
-`DeviceExpertCache`, mas a primeira admissão acontecia somente quando uma rota
-selecionava um expert. Isso deixava a VRAM baixa após o carregamento e fazia as
-primeiras requisições pagarem a leitura do GGUF e o upload dos pesos.
+The device cache starts empty by design: loading the model creates the
+`DeviceExpertCache`, but the first admission only happened when a route
+selected an expert. That left VRAM low after loading and made the first
+requests pay for reading the GGUF and uploading the weights.
 
-Quando existe uma ponte CUDA para a fonte selecionada, o `MoeRuntime` pode
-iniciar uma thread de aquecimento assíncrona no carregamento do modelo. Ela
-percorre os experts por camada e índice, pede ao próprio loader o payload
-canônico de cada tensor e chama a mesma admissão do caminho quente. O dispatch
-é por `MoeSource` e pelos metadados do tensor; não há ramo por arquitetura,
-modelo ou versão de quantização. Em um GGUF heterogêneo, cada papel e dtype
-recebe a mesma chave e descriptor que o forward usa.
+When there is a CUDA bridge for the selected source, `MoeRuntime` can start an
+asynchronous warmup thread when the model loads. It walks the experts by layer
+and index, asks the loader itself for each tensor's canonical payload and calls
+the same admission as the hot path. Dispatch is by `MoeSource` and by the tensor
+metadata; there is no branch per architecture, model or quantization version.
+In a heterogeneous GGUF, each role and dtype gets the same key and descriptor
+the forward uses.
 
-O aquecimento é padrão para restaurar a VRAM pré-aquecida. O operador pode
-desligá-lo explicitamente com `POM_MOE_WARMUP=0`, `false`, `off` ou `no` para
-medir uma rota fria; `POM_MOE_WARMUP_MAX_MS` continua controlando o prazo, com
-30.000 ms como padrão. A ordem dos experts no arquivo não é a ordem da rota
-real, portanto o orçamento limita o preenchimento e a primeira rota cancela o
-restante antes do forward.
+Warmup is the default, to restore pre-warmed VRAM. The operator can turn it off
+explicitly with `POM_MOE_WARMUP=0`, `false`, `off` or `no` to measure a cold
+route; `POM_MOE_WARMUP_MAX_MS` still controls the deadline, with 30,000 ms as
+the default. The order of the experts in the file is not the order of the real
+route, so the budget limits the fill and the first route cancels the rest
+before the forward.
 
-O limite continua sendo o orçamento de VRAM medido, incluindo a reserva de
-compute já reportada pelo `llama.cpp`. Quando a admissão devolve
-`NoBudget`/`BusyAndNoEviction`, o aquecimento para com
-`budget-exhausted`; os candidatos ainda não visitados ficam explicitamente
-fora do aquecimento e continuam sujeitos ao LRU sob demanda. Ele não falha o
-carregamento por o modelo inteiro não caber.
+The limit is still the measured VRAM budget, including the compute reserve
+already reported by `llama.cpp`. When admission returns
+`NoBudget`/`BusyAndNoEviction`, warmup stops with `budget-exhausted`; the
+candidates not yet visited stay explicitly out of the warmup and remain subject
+to the on-demand LRU. It does not fail the load because the whole model does
+not fit.
 
-O prazo pode ser ajustado por `POM_MOE_WARMUP_MAX_MS`. A thread verifica o
-prazo e um `AtomicBool` antes de cada candidato; o callback de inferência apenas
-sinaliza a parada e não aguarda uma admissão CUDA em andamento, sem remover
-entradas admitidas. O `join` de `MoeRuntime::cancel_device_warmup` fica restrito
-à troca explícita de warmup, fora do caminho quente. Logs de início e fim registram modelo, status, bytes
-admitidos e motivo de parada. A telemetria
-`moe_executor_diagnostics` publica `warmup_status`, candidatos visitados,
-experts admitidos, bytes residentes, duração e erro. Assim uma subida não fica
-bloqueada indefinidamente e uma parada por orçamento, prazo ou erro não vira
-cache frio silencioso.
+The deadline can be tuned with `POM_MOE_WARMUP_MAX_MS`. The thread checks the
+deadline and an `AtomicBool` before each candidate; the inference callback only
+signals the stop and does not wait for a CUDA admission in progress, without
+removing admitted entries. The `join` in `MoeRuntime::cancel_device_warmup` is
+restricted to an explicit warmup swap, outside the hot path. Start and end logs
+record model, status, admitted bytes and stop reason. The
+`moe_executor_diagnostics` telemetry publishes `warmup_status`, visited
+candidates, admitted experts, resident bytes, duration and error. So a startup
+is not blocked indefinitely, and a stop by budget, deadline or error does not
+become a silent cold cache.
 
-Os testes de cache cobrem aquecimento até o orçamento, cancelamento antes do
-primeiro payload e prazo zero. A validação CUDA da integração e a comparação
-E2E do Qwen UD após o aquecimento ainda precisam ser executadas no diretório
-isolado `/data/ftk-cuda-target`; nenhum número de ganho é afirmado antes dessa
-medição.
+The cache tests cover warmup up to the budget, cancellation before the first
+payload and a zero deadline. The CUDA validation of the integration and the E2E
+comparison of Qwen UD after warmup still have to be run in the isolated
+directory `/data/ftk-cuda-target`; no gain number is claimed before that
+measurement.
 
-## Fase 0: baseline local
+## Phase 0: local baseline
 
-### Método reproduzível
+### Reproducible method
 
-Para uma conversa real, cada resposta deve guardar o objeto `trace` retornado
-por `/api/generate` ou por `/v1/chat/completions` com `stream_options` de uso.
-Para cada turno, registrar:
+For a real conversation, each answer must keep the `trace` object returned by
+`/api/generate` or by `/v1/chat/completions` with usage `stream_options`. For
+each turn, record:
 
 ```text
 prefill_fraction = prefill_ms / (prefill_ms + decode_wall_ms)
@@ -2416,734 +2430,730 @@ input_tokens, output_tokens, prefill_ms, total_ms
 sum(hop.prefill.processing_ms), sum(hop.decode.processing_ms)
 ```
 
-O tempo total é medido no cliente ao redor da requisição. O `RequestTrace` já
-separa `prefill` e `decode` por salto e não deve ser reconstruído a partir de
-um total agregado. A conversa deve ter pelo menos quatro turnos, mantendo o
-contexto anterior em cada pedido.
+The total time is measured on the client around the request. `RequestTrace`
+already separates `prefill` and `decode` per hop and must not be rebuilt from an
+aggregated total. The conversation must have at least four turns, keeping the
+previous context in each request.
 
-Para throughput, usar o mesmo prompt e `max_new_tokens` em todos os ensaios,
-executar 1, 2 e 4 requisições simultâneas, e repetir com `max_sessions` 1, 2 e
-4. O A/B de `kv_unified` deve manter todos os outros parâmetros iguais. Para
-cada célula registrar tokens de saída, duração de parede, tok/s por requisição,
-tok/s agregado, erros e a configuração efetiva reportada por `/health`.
+For throughput, use the same prompt and `max_new_tokens` in every run, run 1, 2
+and 4 simultaneous requests, and repeat with `max_sessions` 1, 2 and 4. The
+`kv_unified` A/B must keep every other parameter equal. For each cell record
+output tokens, wall duration, tok/s per request, aggregated tok/s, errors and
+the effective configuration reported by `/health`.
 
-### Ambiente encontrado nesta execução
+### Environment found in this run
 
-| Medição | Resultado local | Motivo da lacuna |
+| Measurement | Local result | Reason for the gap |
 |---|---|---|
-| Conversa real multi-turno | não executada, `0` requisições | não há modelo GGUF no worktree, `ollama list` não lista modelos e as portas locais 8181/8080 não têm servidor POM |
-| Prefill/decode | `n/a` | depende da geração real e do `RequestTrace` produzido por um modelo carregado |
-| Tok/s com 1, 2 e 4 requisições | `n/a`, `0` células | não há runtime local nem modelo para carregar |
-| A/B `kv_unified=true` | não executado | o parâmetro ainda não está exposto no runtime e a única instância POM observada pertence a outro worktree e mantém conexões com o cluster remoto, que está fora do escopo |
+| Real multi-turn conversation | not run, `0` requests | there is no GGUF model in the worktree, `ollama list` lists no models and local ports 8181/8080 have no POM server |
+| Prefill/decode | `n/a` | depends on real generation and on the `RequestTrace` produced by a loaded model |
+| Tok/s with 1, 2 and 4 requests | `n/a`, `0` cells | there is no local runtime nor model to load |
+| A/B `kv_unified=true` | not run | the parameter was not exposed in the runtime yet and the only POM instance observed belonged to another worktree and held connections to the remote cluster, which is out of scope |
 
-Nenhum acesso ao cluster remoto, SSH ou deploy foi feito. Portanto, não há
-número de desempenho para inventar. Por decisão do captain, a Fase 2 seguirá
-mesmo sem esse baseline; a medição posterior deve usar o método acima.
+No access to the remote cluster, SSH or deploy was made. So there is no
+performance number to make up. By the operator's decision, Phase 2 went ahead
+even without that baseline; the later measurement must use the method above.
 
-As medições de geração continuam fora do alcance deste worktree sem um GGUF e
-um servidor local. A infraestrutura nativa, porém, foi validada com o symlink
-temporário documentado em `build-execucao.md`; os resultados estão abaixo.
+Generation measurements stayed out of reach of this worktree without a GGUF and
+a local server. The native infrastructure, however, was validated with the
+temporary symlink documented in `build-and-run.md`; the results are below.
 
-### Validação executada
+### Validation run
 
-No worktree com `<worktree>/llama.cpp` apontando para
-`/Users/jairpereira/Sites/rdma-p2p/llama.cpp`:
+In the worktree with `<worktree>/llama.cpp` pointing to a local checkout of the
+fork:
 
-- `cargo build -p node`: código 0, 0 erros e nenhum warning.
-- `cargo test -p node`: 761 testes passaram, 5 ignorados.
-- `cargo fmt --check`: código 0.
-- `cargo clippy -p node`: código 0, 0 erros, 45 warnings restantes, todos fora
-  do motor MoE e do gateway refatorado neste goal; não foram silenciados.
-- `apps/frontend`: `npm run build` passou, com o aviso do Vite sobre chunk
-  maior que 500 kB; `npm test` passou com 44 arquivos e 278 testes.
+- `cargo build -p node`: code 0, 0 errors and no warning.
+- `cargo test -p node`: 761 tests passed, 5 ignored.
+- `cargo fmt --check`: code 0.
+- `cargo clippy -p node`: code 0, 0 errors, 45 remaining warnings, all outside
+  the MoE engine and the gateway refactored in this goal; they were not
+  silenced.
+- `apps/frontend`: `npm run build` passed, with Vite's warning about a chunk
+  larger than 500 kB; `npm test` passed with 44 files and 278 tests.
 
-Os warnings restantes foram preservados no registro de execução; não houve erro
-do provider Hugging Face nesta validação e nenhum arquivo desse provider foi
-alterado. O symlink foi removido ao fim e não é artefato versionado.
+The remaining warnings were kept in the run log; there was no Hugging Face
+provider error in this validation and no file of that provider was changed. The
+symlink was removed at the end and is not a versioned artifact.
 
-### Perfil novo do prefill após a correção de `max_tokens`
+### New prefill profile after the `max_tokens` fix
 
-Em 2026-08-25, depois de a GPU ser liberada, executei uma instância isolada
-com o binário compilado em `/data/ftk-cuda-target`, código da correção
-`72cc5cc` (promovido ao histórico publicado `e3d1751`), fork
-`llama.cpp=4bb64b070`, `--features vulkan,cuda`, `n_gpu_layers=99`,
-`n_ctx=8192`, `n_batch=512`, `POM_MOE_CUDA_PROFILE=1` e `--no-thinking`. O
-serviço nas portas 8080/8092 não foi reiniciado nem alterado. A instância usou
-portas 18082/18094, `no-discovery` e o GGUF real Gemma4 NVFP4. A requisição
-`Escreva hello world 10 vezes.` pediu `max_tokens=30` e retornou exatamente 30
-tokens, com dez linhas coerentes e sem marcadores de template.
+On 2026-08-25, after the GPU was freed, an isolated instance was run with the
+binary built in `/data/ftk-cuda-target`, code from fix `72cc5cc` (promoted to
+the published history as `e3d1751`), fork `llama.cpp=4bb64b070`,
+`--features vulkan,cuda`, `n_gpu_layers=99`, `n_ctx=8192`, `n_batch=512`,
+`POM_MOE_CUDA_PROFILE=1` and `--no-thinking`. The service on ports 8080/8092 was
+neither restarted nor changed. The instance used ports 18082/18094,
+`no-discovery` and the real Gemma4 NVFP4 GGUF. The request
+`Escreva hello world 10 vezes.` ("Write hello world 10 times.") asked for
+`max_tokens=30` and returned exactly 30 tokens, with ten coherent lines and no
+template markers.
 
-O trace real foi: `input_tokens=22`, `output_tokens=30`,
+The real trace was: `input_tokens=22`, `output_tokens=30`,
 `executed_engine=moe`, `moe_executor=cuda`, `engine_mismatch=false`,
 `mixed_execution=false`, prefill `processing_ms=1351`, decode
-`processing_ms=923` em 29 chamadas. Isso dá `61,409 ms/token` (`16,284
-tok/s`) no prefill e `31,828 ms/token` (`31,419 tok/s`) no decode. O p50 de
-decode foi `28,886 ms` e o p95 `44,083 ms`. A composição instrumentada do
-prefill foi:
+`processing_ms=923` in 29 calls. That gives `61.409 ms/token` (`16.284 tok/s`)
+in prefill and `31.828 ms/token` (`31.419 tok/s`) in decode. The decode p50 was
+`28.886 ms` and the p95 `44.083 ms`. The instrumented prefill breakdown was:
 
-| métrica | valor bruto |
+| metric | raw value |
 |---|---:|
-| backend / `node_decode_ms` | `1351 ms` / `1350,694 ms` |
-| `node_moe_forward_ms` / `runtime_forward_ms` | `1132,604 ms` / `1131,824 ms` |
-| `cuda_call_wall_ms` | `158,385 ms` |
-| `host_expert_load_ms` | `405,762 ms` |
+| backend / `node_decode_ms` | `1351 ms` / `1350.694 ms` |
+| `node_moe_forward_ms` / `runtime_forward_ms` | `1132.604 ms` / `1131.824 ms` |
+| `cuda_call_wall_ms` | `158.385 ms` |
+| `host_expert_load_ms` | `405.762 ms` |
 | `host_batch_prepare_ms` | `0 ms` |
-| `cuda_h2d_ms` / bytes | `1,390 ms` / `7.524.240` |
-| `cuda_kernel_ms` | `145,731 ms` |
-| `cuda_d2h_ms` / bytes | `1,511 ms` / `7.434.240` |
-| chamadas de experts | `5280` |
+| `cuda_h2d_ms` / bytes | `1.390 ms` / `7,524,240` |
+| `cuda_kernel_ms` | `145.731 ms` |
+| `cuda_d2h_ms` / bytes | `1.511 ms` / `7,434,240` |
+| expert calls | `5280` |
 
-O prefill de 22 tokens fez uma chamada batelada de
-`MoeRuntime::forward_batch_with_route`, não 22 passadas de gateway. As 5280
-chamadas de experts são `22 tokens × 30 camadas × 8 experts ativos` dentro
-dessa passada; portanto a métrica `calls` conta registros de experts, não
-passadas do prefill. O perfil atual não mostra `host_batch_prepare_ms` como
-gargalo, ao contrário do perfil histórico de antes do agrupamento; a quebra
-nova é a que vale para a próxima investigação.
+The 22-token prefill made one batched call of
+`MoeRuntime::forward_batch_with_route`, not 22 gateway passes. The 5280 expert
+calls are `22 tokens × 30 layers × 8 active experts` inside that pass; so the
+`calls` metric counts expert records, not prefill passes. The current profile
+does not show `host_batch_prepare_ms` as a bottleneck, unlike the historical
+profile from before grouping; the new breakdown is the one that counts for the
+next investigation.
 
-O mesmo ensaio confirmou o limite da rota: o pedido de 30 terminou em 30, e
-não em 31. O fork não mudou nesta correção: `max_tokens` é contrato do
-gateway Rust, então não há campo de API novo para sincronizar no
-`llama.cpp`.
+The same run confirmed the route limit: the request for 30 ended at 30, not 31.
+The fork did not change in this fix: `max_tokens` is a contract of the Rust
+gateway, so there is no new API field to sync in `llama.cpp`.
 
-### Reexecução
+### Rerun
 
-Com um GGUF local e uma instância iniciada a partir deste worktree, repetir o
-ensaio sem cluster remoto:
+With a local GGUF and an instance started from this worktree, repeat the run
+without a remote cluster:
 
 ```bash
 POM_HOME=/tmp/pom-ftk-local ./target/release/pom --gateway-port 8080 --no-discovery
 ```
 
-Configurar o nó em `http://127.0.0.1:8080/` e implantar pela interface o GGUF
-local num único nó, com `n_ctx` 8192 e `max_new_tokens` 128: o binário não
-aceita modelo nem parâmetros de inferência pela linha de comando. Depois, enviar a conversa e as células de concorrência para o gateway local e
-anexar as tabelas de números abaixo deste baseline. O executor deve registrar
-commit, sistema, CPU/GPU, memória, feature de build, tipo de KV, `n_ctx`,
-`max_sessions`, `n_batch`, `max_new_tokens`, modelo e temperatura.
-
-## Invariantes de segurança
-
-- Metadados ausentes não viram zero silenciosamente. Um orçamento de KV só pode
-  ser calculado quando a geometria necessária estiver presente.
-- Um rebuild acontece como nova geração: o servidor anterior para de aceitar
-  conexões, drena requisições em voo e só então libera o contexto antigo.
-  Reconfiguração compatível mantém os pesos no `ModelCache`; troca de fatia ou
-  de carregamento limpa esse cache. Falha de rebuild não pode deixar a nova
-  geração anunciada como pronta.
-- Cancelamento é cooperativo e idempotente. O fechamento do stream interrompe
-  a chamada do gateway em voo e impede o próximo chunk ou hop; um frame que já
-  foi aceito pelo peer pode terminar. O cleanup libera a sessão em todos os
-  peers alcançados.
-- O motor novo nunca é selecionado por nome heurístico ou por falha do
-  `llama.cpp`; a arquitetura GGUF precisa declarar MoE e a configuração pode
-  forçar o caminho denso enquanto o caminho novo estiver em validação.
-- O cache LRU de experts é local à máquina. Ele nunca atravessa o fatiamento e
-  não transforma peso em tráfego de rede.
-
-### Estado da travessia MoE - 2026-09-01
-
-O layout separado dos experts K-quant segue `[hidden, intermediate, experts]`;
-o loader agora preserva essa ordem, inclusive quando `hidden != intermediate`.
-O callback valida nome, dtype, rank e dimensões contra a fonte e informa as
-duas geometrias quando divergem. A fonte dos experts continua externa ao
-buffer de pesos do llama.cpp: a medição da ksia encontrou 2.531,86 MiB nesse
-buffer para um modelo com 256 experts, enquanto os payloads roteados ficam no
-cache próprio.
-
-O caminho heterogêneo agrupa as rotas em lote e cobre IQ3_XXS (18) mais MXFP4
-(39), a combinação do `deepseek4`, na ponte CUDA e no decoder CPU de referência.
-Os índices da rota são lidos como I32 em ordem token-major, inclusive valores
-acima de 127. Uma combinação sem decoder externo é recusada antes da carga do
-modelo, com os dtypes que a bloquearam; não há fallback nativo silencioso.
-Ainda não há prova CUDA nesta máquina, porque não existe compilador CUDA local;
-a prova diferencial e o E2E nos GGUF reais precisam ser executados na ksia.
-
-### Fase 5.7: cache residente e execução CUDA multi-GPU - 2026-09-15
-
-O diagnóstico do captain na ksia comparou `moe/q4_0` e
-`dense/llama.cpp` no mesmo nó `5b035803`, com duas RTX 5060 Ti. O MoE mediu
-`765 ms` p50 e `952 ms` p95 por chamada de decode, enquanto o denso mediu
-`52 ms` e `93 ms`. A contagem `36 GPU / 0 CPU / 0 mixed` não provava que o
-executor externo usava as duas placas: ela descrevia somente as camadas que o
-llama.cpp alocou.
-
-A causa raiz ficou confirmada no código próprio do POM, não no fork
-`vendor/llama-cpp-sys-2/llama.cpp`: `cuda_kernels.cu` fixava
-`kMoeCudaDevice = 0`, e todas as alocações, uploads, streams, eventos e
-liberações do executor usavam esse device. Além disso, `DeviceExpertCache`
-mantinha uma única conta de memória e um único allocator. O caminho denso, em
-contraste, passa a lista de devices e o `tensor_split` do `FitPlan` para
-`llama_model_params` antes de `llama_model_load_from_file`; o fork recebe essa
-configuração pelo caminho nativo, mas o executor MoE não a recebia.
-
-O conserto mantém a mesma topologia observada pelo contexto denso:
-
-- `cuda_compute_bytes_by_device` agrupa os compute buffers por `CUDA<n>` e
-  ignora `CUDA_Host`;
-- `DeviceExpertCache::new_sharded` cria um orçamento, LRU e allocator por placa.
-  O hash estável de modelo/camada/expert mantém todos os papéis do mesmo expert
-  na mesma GPU e os leases carregam o ordinal para a ponte CUDA;
-- as pipelines residentes e todas as entradas FFI recebem o ordinal explícito.
-  O RAII CUDA seleciona a placa para cada chamada e restaura o device anterior;
-- uma rota é agrupada por GPU, cada grupo roda em sua pipeline própria em
-  paralelo e os vetores completos são somados no host. Assim os experts
-  selecionados em placas diferentes não voltam a CUDA0 nem compartilham um
-  único mutex de pipeline.
-
-A segunda execução sem melhora também tinha uma causa de estado no caminho
-  externo. O orçamento agregado era aplicado a uma única placa, de modo que o
-  LRU expulsava experts residentes quando o working set não cabia na capacidade
-  de CUDA0, mesmo havendo VRAM livre na CUDA1. Em paralelo, o aquecimento
-  assíncrono continuava admitindo experts de camadas futuras e podia competir
-  com a primeira rota, causando misses, eviction e chamadas que não terminavam
-  no tempo esperado. O orçamento agora é por placa e a primeira rota real chama
-  `cancel_device_warmup`, preservando as entradas já admitidas e deixando o
-  working set da requisição controlar o cache. Hits posteriores retornam o
-  mesmo handle e o mesmo ordinal sem novo upload.
-
-Os testes de parser e cache cobrem a separação por `CUDA0`/`CUDA1`, a admissão
-em ambos os shards e a reutilização do device de uma chave. Neste worktree,
-`cargo test -p llama-engine` passou com `306` testes e `11` ignorados. Não há
-GPU NVIDIA nem `nvcc` local, então a prova física de duas placas, a medição de
-decode e a confirmação final da queda de 15x precisam ser repetidas pelo
-captain na ksia com o perfil CUDA ligado. O fork nativo não foi alterado nesta
-correção.
-
-### Fase 5.8: hot path heterogêneo alinhado ao FreeToken - 2026-09-15
-
-A telemetria mais recente da ksia mostrou que fila e setup do nó ficavam abaixo
-de 1 ms, enquanto o backend heterogêneo gastava `978-1495 ms` no prefill e
-`83-117 ms` por chamada de decode. Portanto os timeouts de scheduler não eram a
-causa daquele trace. O caminho também carregava bytes do mmap para cada papel
-antes de consultar o cache residente; um hit descartava essa cópia. Isso
-contradizia a decisão do FreeToken de manter o working set de experts residente
-no device e explica por que uma segunda requisição não ficava materialmente
-mais barata.
-
-O caminho de produção agora usa três fronteiras explícitas:
-
-- `HeterogeneousTensorSpec` valida papel, dtype, geometria e escalas sem copiar
-  payload. `HeterogeneousMoeBlock` consulta primeiro o `DeviceExpertCache` e só
-  chama `load_expert_tensor` em um miss real;
-- `HeterogeneousRoutePipeline` mantém descriptors, hidden, ids, pesos, offsets,
-  ativações, resultados intermediários e saída alocados por device. O pipeline
-  é compartilhado por todas as camadas do runtime e indexado por
-  `(CUDA<n>, hidden, intermediate)`, evitando uma reserva grande por camada;
-- os experts continuam particionados pelo hash estável de modelo, camada e
-  expert. Cada grupo por ordinal é executado em sua própria pipeline dentro do
-  `sum_parallel_device_outputs`, e grupos em `CUDA0` e `CUDA1` podem progredir
-  simultaneamente. A contagem de camadas do llama.cpp não é usada como prova de
-  utilização das duas placas: a confirmação em campo deve olhar os bytes
-  residentes e os contadores por device.
-
-O pipeline copia apenas os metadados de rota e o hidden a cada chamada. A
-`cudaMemcpy` D2H da saída continua sendo a barreira necessária para devolver o
-resultado ao callback, mas o `cudaDeviceSynchronize` adicional foi removido;
-`sync_count=0` no perfil desse caminho. `alloc_ms` só aparece quando a
-capacidade cresce, e não em cada token. A atualização é código CUDA próprio em
-`crates/llama-engine/src/moe/cuda_kernels.cu`; o fork do llama.cpp continua
-inalterado e fornece apenas o callback e os metadados.
-
-O cancelamento do aquecimento também é observado depois que um candidato é
-obtido. Assim, uma leitura que terminou depois da chegada de uma requisição
-real não pode admitir bytes de camadas futuras e expulsar o working set ativo.
-O caminho ainda permite que uma única admissão já em andamento termine, mas não
-inicia outra depois do cancelamento. O teste
-`warmup_cancelado_depois_de_obter_candidato_nao_admite_payload` fixa essa
-fronteira.
-
-Esta fase elimina cópias, alocações e sincronizações redundantes, mas não
-transforma o particionamento de experts em tensor parallelism. Se todos os
-experts escolhidos por um token caírem no mesmo shard, a outra placa ficará
-ociosa nessa rota; o caminho denso do llama.cpp pode usar as duas para cada
-matriz por meio de `tensor_split`. A medição na ksia deve separar esse efeito
-de roteamento do custo de kernel antes de declarar throughput superior ao
-llama.cpp ou ao FreeToken.
-
-### Fase 5.9: caminho efetivo IQ3_XXS e kernel cooperativo - 2026-09-15
-
-A telemetria do modelo `Mistral-Small-4-119B-2603-UD-IQ3_XXS-9c2b030b`
-mostrou os dtypes GGML `18`, `22` e `23` juntos. Isso significa que o modelo
-usa o `HeterogeneousCudaExecutor`, não o `IqQuantCudaExecutor` uniforme. A
-otimização heterogênea da fase anterior ainda deixava o dot product escalar:
-o `HeterogeneousRoutePipeline` atribuía uma linha a um bloco de 128 threads,
-e cada thread repetia o loop completo sobre as colunas.
-Além disso, cada thread do kernel IQ calculava sozinha o dot product completo
-de uma linha, repetindo o mesmo trabalho dentro do bloco. Esse era o custo
-local observado como `978-1495 ms` no prefill e `83-117 ms` por decode, não uma
-espera de fila: a telemetria do nó registrou fila e setup abaixo de 1 ms.
-
-O caminho IQ uniforme continua compartilhando o mesmo workspace persistente por
-`(device, geometria)` usado pelos K-quants. O runtime cria um pipeline para
-cada shard `CUDA<n>` do cache residente, agrupa as rotas pelo ordinal e executa
-os grupos em paralelo; nenhum device é escolhido como `main_gpu` único pelo
-executor.
-Os IQs genéricos atribuem uma linha a um bloco de 128 threads e reduzem os
-fragmentos do dot product em shared memory. Para o IQ3_XXS medido, cada linha
-usa uma única warp de 32 threads: cada lane processa os oito valores de uma
-fatia `(group, il)` e a soma usa shuffle. Gate e up são calculados na mesma
-warp, reutilizando o hidden e reduzindo pela metade os blocos dessa etapa.
-Isso reduz de quatro para uma warp o trabalho de coordenação da linha e elimina a árvore de shared memory, mantendo a sequência
-gate/up, SiLU, down e agregação. O D2H síncrono continua sendo a barreira
-necessária para devolver o resultado ao callback, mas o
-`cudaDeviceSynchronize` adicional foi removido e o perfil publica
-`sync_count=0`. IQ3_XXS agora é elegível para a ponte CUDA e valida a geometria
-do payload antes do lançamento.
-
-No IQ3_XXS, as 32 lanes cobrem os 256 elementos do superbloco em grupos de
-oito. O `aux32`, os dois índices do codebook e os sinais são lidos uma vez por
-fatia, em vez de reconstruir esses metadados para cada par de colunas. Os
-outros IQs mantêm o decoder cooperativo genérico até terem a mesma prova
-diferencial de layout.
-
-O cache não copia a fonte fria em hits: a admissão continua sendo por hash de
-modelo, camada e expert em shards independentes. Assim, uma segunda chamada
-reutiliza o mesmo handle em CUDA0 ou CUDA1. O warmup é cancelado antes de cada
-`llama_decode` que tem callback MoE, e novamente na primeira rota como defesa;
-isso impede que uma admissão concorrente expulse o working set ou segure o
-shard enquanto o grafo já está em execução;
-se os contadores por device ainda mostrarem uma única placa em uso, o próximo
-diagnóstico é a distribuição efetiva dos experts selecionados, não um timeout.
-
-Com `POM_MOE_CUDA_PROFILE=1`, `moe_executor_diagnostics.cuda_device_calls` agora
-registra por ordinal o número de chamadas, experts processados e tempo de
-kernel/parede. Esse campo deve ser comparado com
-`device_cache_resident_bytes_by_device`: bytes em uma placa sem chamadas
-indicam somente capacidade residente, enquanto chamadas em `CUDA0` e `CUDA1`
-confirmam participação efetiva da rota.
-
-Esta correção é código CUDA próprio em `cuda_kernels.cu`; não altera o fork do
-llama.cpp. O fork continua fornecendo o callback externo e os metadados de
-memória. A comparação contra `dense/llama.cpp` e contra FreeToken precisa ser
-repetida na ksia com o build CUDA novo: este worktree não possui `nvcc` nem
-GPU, então não há uma alegação local de throughput.
-
-### Fase 5.11: MMVQ q8 também no executor heterogêneo - 2026-09-15
-
-O JSON da telemetria fechou a causa do intervalo de cinco segundos. No prefill
-de 45 tokens, `node_moe_forward_ms=4706,821` dentro de
-`node_backend_call_ms=4994,464`; `node_queue_ms=0,038`,
-`node_lock_wait_ms=0`, `node_scheduler_wait_ms=0,012`, rede `0 ms` e a cópia
-D2H `0,394 ms`. Portanto não havia um timeout de cinco segundos no pipeline.
-O campo `node_moe_forward_ms` é o callback externo síncrono que o llama.cpp
-espera terminar antes de devolver o prefill.
-
-O mesmo JSON mostra o custo que dominava esse callback: do fim do prefill ao
-fim do decode entraram mais `2406` misses/admissions, `2399` evictions e
-`10,5 GB` de uploads para os devices. O cache residente tinha aproximadamente
-`8,25 GB` em CUDA0 e `8,17 GB` em CUDA1, e o warmup já tinha admitido `3766`
-experts antes de atingir o orçamento. Isso é thrashing por working set, não
-fila de scheduler. Como os leases são liberados ao fim de cada camada e o
-decode visita novas rotas, uma nova requisição pode expulsar os experts usados
-no prefill; por isso repetir o prompt não garante hit. O `warmup_status` foi
-`budget-exhausted`, não `timed-out`, e o warmup é assíncrono, então seus
-`4726 ms` não representam uma espera bloqueante no decode.
-
-O pipeline heterogêneo agora quantiza hidden e ativação em `block_q8_1` usando
-buffers persistentes, chama os `vec_dot_*_q8_1` canônicos do fork para Q4/K/IQ
-e faz uma warp de 32 lanes por linha. Isso elimina os quatro warps redundantes
-do bloco escalar e usa dp4a também quando gate/up/down têm dtypes diferentes.
-O lançamento passa de quatro para seis kernels (duas quantizações, gate/up,
-ativação, down e agregação), sem `cudaDeviceSynchronize`; a cópia D2H continua
-sendo a barreira de conclusão.
-
-Para confirmar o restante na ksia, basta iniciar o executor MoE. Os
-diagnósticos são automáticos e devem mostrar `cuda_device_calls` para CUDA0 e CUDA1 e
-separar `kernel_ms` de `cuda_call_wall_ms`; os contadores cumulativos de cache
-devem ser comparados por delta entre prefill e decode. A otimização q8 reduz o
-compute do callback, mas não pode fazer caber em 16 GB um working set de
-experts maior que a VRAM: se os misses continuarem altos, o próximo ajuste é
-afinidade/prefetch por camada, não um timeout maior.
-
-### Fase 5.12: admissões heterogêneas paralelas por GPU - 2026-09-15
-
-O caminho quente heterogêneo agora faz duas passagens sobre a rota. A primeira
-consulta o cache e agrupa cada miss pelo mesmo hash de afinidade que escolhe o
-shard. Uma thread por `CUDA<n>` lê os slices do mmap e faz os uploads em série
-naquela GPU; threads de shards diferentes trabalham em paralelo. A segunda
-passagem monta os descriptors somente depois de todas as admissões, mantendo
-os leases vivos durante o forward para impedir eviction prematura.
-
-Cada upload usa diretamente a fatia do mmap. O caminho CUDA não cria mais um
-`Vec<u8>` intermediário para cada tensor, reduzindo uma cópia de dezenas de GB
-na preparação de uma rota fria.
-
-As especificações dos experts da mesma camada também são montadas em lote, em
-uma travessia única do inventário. Isso evita repetir a busca de entradas e
-geometria para cada expert selecionado durante o prefill.
-
-Isso alinha a admissão ao agrupamento que já existia no kernel: o cache não
-escolhe mais uma única fila global para dezenas de GB de H2D. A mudança é
-somente no crate Rust e usa o allocator CUDA existente, que seleciona o ordinal
-explicitamente em cada upload; o fork do llama.cpp não foi alterado. O ganho
-de parede e a ocupação efetiva de cada placa ainda precisam ser medidos na
-ksia. Com `POM_MOE_CUDA_PROFILE=1`, comparar `device_cache_upload_ms` por delta
-com `cuda_device_calls` em `CUDA0` e `CUDA1`, sempre com `POM_MOE_WARMUP` ausente
-ou desabilitado para medir a rota fria sem poluição especulativa.
-
-Além disso, o callback agora usa a variante não bloqueante de
-`cancel_device_warmup`: sinaliza o `AtomicBool` e inicia o forward imediatamente.
-A admissão corrente continua protegida pelo mutex do shard e por leases, e a
-thread verifica o cancelamento antes de cada próximo candidato. A variante que
-faz `join` só é usada ao substituir um warmup, evitando transformar uma cópia
-de peso em TTFT sem permitir duas varreduras simultâneas do cache.
-
-### Fase 5.16: cancelamento não bloqueante do warmup - 2026-09-16
-
-O desenho do FreeToken trata o warmup como trabalho de fundo que prepara o
-working set sem bloquear o escalonador. O runtime POM tinha a mesma thread,
-mas `begin_moe_callback` chamava `cancel_device_warmup`, que sinalizava e fazia
-`join`. Se uma admissão de peso estivesse em andamento, o primeiro callback
-ficava parado até ela terminar, embora fila, mutex do contexto, transporte e
-scheduler estivessem livres.
-
-O callback e a entrada de `forward_batch_with_route` agora chamam
-`cancel_device_warmup_for_forward`, que só publica a flag de cancelamento. A
-admissão já iniciada termina com a proteção normal do shard; leases ativos
-impedem que seus handles sejam desalojados, e o stream CUDA conserva a ordem
-das operações. A API de troca continua usando `cancel_device_warmup` com
-`join`, para que um novo warmup nunca concorra com o anterior.
-
-Esta mudança atua somente na espera de TTFT durante a transição warmup-forward;
-ela não aumenta o orçamento nem finge que o modelo inteiro cabe na VRAM. A
-validação obrigatória na ksia deve comparar três rodadas do mesmo prompt com
-`nvidia-smi` sem processos concorrentes, conferindo `ttft_ms`,
-`node_moe_forward_ms`, `generation_tokens_per_sec`, hits/misses e a saída
-textual contra a referência `0c088521`. O ganho não é afirmado antes dessa
-medição.
-
-### Comparação isolada em uma máquina - 2026-09-15
-
-Uma execução real no nó `5b035803`, com duas RTX 5060 Ti e sem salto de
-pipeline, confirmou que o transporte não é o gargalo. O MoE usou 46 tokens de
-prefill e gerou 188 tokens: `5667,7 ms` de prefill (`8,1 tok/s`) e
-`35009,3 ms` de decode em 95 chamadas (`5,3 tok/s`), com p50/p95 de
-`347,2/617,1 ms` por chamada. A rede foi `0-16 ms`, a fila e o setup ficaram
-abaixo de `2 ms`, e `99%` do tempo ficou em `llama_decode` local.
-
-O controle `dense/llama.cpp` no mesmo nó gerou 178 tokens a `18,5 tok/s`, com
-`749,7 ms` de prefill (`29,2 tok/s`) para 22 tokens e p50/p95 de
-`125,4/129,8 ms` por chamada de decode. A comparação não tem prompt idêntico
-(`46` contra `22` tokens), portanto é evidência de ordem de grandeza, não uma
-medição pareada final. Mesmo assim, o MoE ficou cerca de `3,6x` mais lento por
-token no decode e `3,6x` mais lento no prefill normalizado, apesar de anunciar
-`36 GPU / 0 CPU / 0 mixed`; esse contador descreve camadas do llama.cpp e não
-prova utilização de CUDA0 e CUDA1 pelo executor externo.
-
-A execução ainda não tinha `POM_MOE_CUDA_PROFILE=1`, então não permite dizer
-qual ordinal recebeu as rotas nem separar kernel, H2D, D2H e misses do cache.
-Para o próximo ensaio na ksia, o perfil deve ser ligado desde o arranque e a
-telemetria deve incluir `cuda_device_calls` e
-`device_cache_resident_bytes_by_device`. A ausência de transporte e de espera
-de scheduler já elimina timeouts como hipótese principal; a hipótese restante
-é o custo do callback por camada, das cópias host/device e do decoder IQ3_XXS
-customizado, a comparar com as chamadas CUDA otimizadas do caminho denso.
-
-### Fase 5.10: caminho IQ3_XXS alinhado ao MMVQ CUDA - 2026-09-15
-
-O decoder cooperativo anterior ainda fazia a aritmética do codebook em float.
-Isso divergia do caminho MMVQ do fork, que primeiro quantiza a ativação para
-`block_q8_1` e usa `vec_dot_iq3_xxs_q8_1` com `dp4a`. O pipeline IQ3_XXS agora
-mantém buffers q8 persistentes para hidden e ativação, quantiza cada linha em
-uma warp e usa o decoder canônico do checkout ativo do fork. Gate e up usam a
-mesma warp e down reutiliza a ativação q8. O `build.rs` inclui
-`ggml/src/ggml-cuda/vecdotq.cuh` do mesmo `LLAMA_SOURCE` usado pelo binding;
-nenhum arquivo do fork foi alterado.
-
-O mapeamento de lanes segue a fórmula MMVQ para IQ3_XXS: oito chunks q8 por
-superbloco, quatro superblocos cobertos em paralelo por warp, e cada lane
-avança de quatro em quatro superblocos. Isso evita deixar 24 lanes ociosas no
-dot product. As verificações de geometria e a capacidade persistente continuam
-impedindo overflow ou realocação no caminho estável.
-
-Duas medições posteriores na mesma máquina de duas RTX 5060 Ti confirmaram o
-perfil do gargalo antes desta otimização. Para 16 tokens de prompt e 15 de
-saída, o prefill levou `5323 ms` e o decode teve p50/p95 de `254,5/382,0 ms`.
-Para 45 tokens de prompt e 91 de saída, o prefill levou `4998 ms` e o decode
-teve p50/p95 de `277,1/470,7 ms`. Rede, fila e espera do mutex do motor ficaram
-em torno de `0-4 ms`, e o setup caiu de `152 ms` na primeira carga para menos
-de `1 ms` na seguinte. O prefill quase fixo perto de cinco segundos, mesmo com
-prompts de tamanhos diferentes, é trabalho de compute dos 36 callbacks, não
-timeout ou espera de transporte. O caminho q8/dp4a ataca justamente esse
-trabalho, mas a confirmação de throughput e de correção numérica precisa ser
-feita na ksia com `POM_MOE_CUDA_PROFILE=1`.
-
-### Fase 5.13: lote CUDA para admissões e rotas repetidas - 2026-09-15
-
-O JSON mais recente da ksia não mostra um timeout escondido de cinco segundos.
-No mesmo nó, `node_lock_wait_ms` foi `0`, a fila e o scheduler somaram poucos
-milissegundos e o transporte somou `54 ms`. O trabalho está em
-`node_moe_forward_ms` (`6445,8 ms` no prefill) e nas chamadas de decode, não em
-um `wait` do pipeline. O atraso observado no primeiro token acompanha o
-prefill local de `6656,5 ms`.
-
-O diagnóstico do cache identifica a causa operacional: em 320 chamadas de
-decode houve `94522` misses/admissões, `90762` evictions e aproximadamente
-`412 GB` de uploads cumulativos. Os shards estavam equilibrados em `CUDA0` e
-`CUDA1` (`8242/8165 MB` residentes), portanto as duas placas eram usadas para
-residência, mas o working set excedia o orçamento e era recarregado. O
-`runtime_forward_ms` e `device_cache_upload_ms` são contadores cumulativos de
-callbacks e devices; não são um único wait de cinco segundos.
-
-O caminho quente agora agrupa os misses por shard e faz uma única consulta de
-orçamento por GPU. O `DeviceAllocator` ganhou `upload_many`; o allocator CUDA
-enfileira todas as alocações e cópias no stream default e sincroniza somente
-uma vez por lote. Evictions usam `cudaFreeAsync`, mantendo a ordem do stream e
-evitando a sincronização global de `cudaFree` em cada tensor. A sincronização da
-cópia continua necessária porque os bytes vêm de uma fatia de `mmap` que pode
-ser liberada assim que a admissão retorna. O fork do llama.cpp não foi
-alterado.
-
-Na mesma rota, o executor deduplica somente pares com o mesmo descriptor de
-expert e o mesmo token. O kernel calcula o FFN uma vez e a agregação aplica
-novamente cada peso através do mapa de rotas, preservando a semântica do
-router. Isso reduz trabalho quando o top-k repete um expert para um token sem
-alterar a soma de rotas distintas.
-
-A telemetria `d5eeeaa` ainda foi gerada antes de `fef71ae`, que corrigiu a
-escala compartilhada do `block_q8_1` no kernel de quantização. A saída sem
-sentido daquela execução não é uma medição válida de qualidade do modelo; a
-ksia precisa repetir o mesmo prompt com o SHA que contém essa correção e esta
-otimização de lote. Este ambiente não possui `nvcc` nem GPU para medir a
-redução final de prefill/decode localmente.
-
-### Fase 5.14: warmup padrão e coexecução heterogênea medida - 2026-09-15
-
-Os logs da ksia confirmaram uma regressão de configuração: o processo que
-produziu a telemetria tinha `POM_MOE_WARMUP` ausente e, por isso, o warmup
-estava `disabled`. O comportamento agora volta a ser o pré-aquecimento padrão.
-`POM_MOE_WARMUP=0`, `false`, `off` ou `no` continua disponível para ensaios
-explicitamente frios. O warmup permanece limitado pelo orçamento independente
-de cada GPU; em uma 5060 Ti ele pode terminar com `budget-exhausted` antes de
-carregar todos os experts, porque o modelo inteiro não cabe na VRAM.
-Para aproveitar melhor esse orçamento, a enumeração do warmup é expert-major:
-ela alterna as camadas para cada expert antes de avançar ao próximo expert.
-Assim, quando a VRAM não comporta o modelo inteiro, todas as camadas recebem
-um working set residente em vez de somente o prefixo do modelo.
-
-O intervalo de aproximadamente cinco segundos não era timeout: no trace
-pareado, `node_lock_wait_ms`, fila, scheduler e transporte ficaram próximos de
-zero, enquanto `node_moe_forward_ms` consumiu praticamente todo o prefill. O
-executor heterogêneo passa agora a aceitar o mesmo `BandwidthProfile` medido
-que o NVFP4. Experts com todos os tensors residentes continuam na GPU; misses
-são divididos por expert entre rotas CPU e GPU, executadas em paralelo e
-somadas com a mesma largura de saída. A consulta de residência não cria lease
-nem toca LRU, para que o planejador não falsifique hits ou impeça eviction.
-
-Os diagnósticos são automáticos quando o executor CUDA MoE está ativo;
-`POM_MOE_CUDA_PROFILE` não é necessário e não altera a execução. O sidecar
-`<modelo>.cuda-profile.json` com o campo `bandwidth` continua sendo necessário
-para habilitar a divisão medida entre as lanes CPU e GPU. Sem esse arquivo, o
-runtime mantém a política exclusivamente CUDA e não fabrica uma taxa para a
-CPU escalar Rust. Na ksia, a validação deve repetir o mesmo prompt com o
-warmup padrão, persistir o sidecar medido para este modelo e comparar prefill,
-decode, corretude textual e deltas de uploads.
-
-### Fase 5.15: staging host pinned na saída heterogênea - 2026-09-16
-
-A telemetria da ksia após o pipeline q8 separou o custo que ainda dominava o
-callback. No prefill, o kernel CUDA acumulou aproximadamente `177 ms`, mas as
-transferências D2H acumularam `6317 ms`; no decode, foram aproximadamente
-`680 ms` de kernel contra `12801 ms` de D2H. O resultado correto precisava
-continuar sendo escrito no tensor host do callback, então o contrato externo
-não permitia simplesmente deixar a saída na VRAM. O custo observado vinha do
-`cudaMemcpy` síncrono diretamente para a memória pageable que o llama.cpp
-entrega ao callback.
-
-Cada `HeterogeneousRoutePipeline` agora reserva um `cudaMallocHost` persistente
-com a mesma capacidade do output device. A cópia D2H vai para esse staging
-pinned e, depois da barreira de conclusão, um `memcpy` curto entrega o resultado
-ao buffer host original. O staging é liberado junto com os buffers persistentes
-da pipeline e cresce somente quando a geometria do lote muda. Isso remove o
-staging implícito repetido do runtime CUDA sem alterar a semântica do callback,
-a agregação de rotas ou a captura de grafo do llama.cpp.
-
-O ganho precisa ser confirmado na ksia comparando `cuda_d2h_ms`,
-`cuda_call_wall_ms`, `node_moe_forward_ms` e a corretude textual com o mesmo
-prompt. A meta de superar o caminho denso em 1,5x ainda não está comprovada.
-
-### Fase 5.17: despacho q8 heterogêneo direto por dtype - 2026-09-16
-
-O kernel q8 heterogêneo recebia um ponteiro de função CUDA escolhido pelo dtype
-e chamava esse ponteiro dentro do loop de blocos de cada linha. Isso preservava
-o resultado, mas impedia o compilador de fazer inline das primitivas
-`vec_dot_*_q8_1` canônicas do fork. Para a rota Mistral-Small, que mistura os
-dtypes 18, 22 e 23, o dispatch agora seleciona um helper compilado por dtype;
-cada helper chama diretamente a primitiva correspondente. O layout de
-`block_q8_1`, a quantização, a redução warp e o número de lançamentos não
-mudaram.
-
-Um teste de fonte impede o retorno do alias de ponteiro de função no caminho
-q8. No deploy `ea58bfab`, o build CUDA da ksia passou em `4m52s`; três rodadas
-com `nvidia-smi` sem processo concorrente mediram `10,6127`, `11,8136` e
-`10,9890 tok/s`, mediana `10,9890 tok/s`. Isso é `1,073x` a referência
-`b4df3c22` (`10,2416 tok/s`) e `1,125x` a referência anterior `0c088521`
-(`9,770 tok/s`). A rodada de corretude devolveu a lista numerada esperada,
-sem texto corrompido. O resultado é uma melhoria observada, mas ainda está
-abaixo da meta de `1,5x` sobre o denso.
-
-### Fase 5.18: telemetria de working set e orçamento CUDA - 2026-09-16
-
-A política de `DeviceExpertCache` mantém leases ativos protegidos: `Drop`
-apenas reduz `active`, e uma entrada só é removida quando o LRU encontra uma
-entrada ociosa (`active == 0`). Portanto os milhares de evictions observados
-em uma execução não demonstram expulsão de experts em uso. Eles podem ser
-residência ociosa churnada por um working set maior que o limite efetivo, mas
-antes não havia uma medição por camada para separar as hipóteses.
-
-O diagnóstico do executor heterogêneo agora acumula, por camada, lotes,
-tokens, ocorrências de rota, experts distintos no lote e a soma/máximo de
-experts distintos por token. Também publica a capacidade efetiva atual por
-GPU, calculada com a mesma fórmula de `MemoryAccount` e uma leitura de memória
-livre do allocator CUDA. A capacidade é um snapshot de diagnóstico e não muda
-a política de admissão.
-
-Esta instrumentação deve ser usada antes de outro ajuste de kernel ou dispatch:
-compare `cache_working_set_by_layer` com
-`device_cache_capacity_bytes_by_device`, além de misses, evictions e uploads.
-Se a capacidade estiver correta e o working set exceder repetidamente o limite,
-o problema é pressão legítima do conjunto de experts; se houver capacidade
-disponível apesar da churn, investigue a conta de memória e a granularidade da
-admissão. `device_cache_budget_by_device` expõe a conta completa por shard:
-`baseline_free_bytes`, `current_free_bytes`, `compute_bytes`, `reserve_bytes`,
-os limites intermediários e as entradas residentes. `device_cache_entries_by_device`
-permite converter a capacidade em entradas reais, sem confundir o campo
-genérico `cache_entries` do cache de host. A medição de throughput da
-instrumentação foi feita na ksia em `e8709f09`: três rodadas sem processo
-concorrente tiveram `11,018`, `10,440` e `10,351 tok/s`; a capacidade
-efetiva variou de `15,337` a `17,803 GB` e a residência terminou encostada
-nesse limite. A Fase 5.19 usou esse detalhamento para confirmar a margem
-recuperável dos buffers de compute e orientar a exceção aprovada para o
-contexto principal MoE.
-
-### Fase 5.19: exceção de microlote físico do contexto MoE - 2026-09-16
-
-As sondagens brutas da ksia mostraram que `MemoryAccount` não subestima a
-VRAM: depois dos buffers do contexto, cada RTX 5060 Ti tinha cerca de `0,5 GB`
-livre, enquanto o compute buffer ocupava aproximadamente `3,1 GB`. O cache
-residente terminava encostado em `15,3-17,8 GB` agregados, abaixo dos `19,62 GB`
-de `4499` candidatos aquecidos. O conjunto não cabe com `n_ubatch=512` e não
-há evidência de outra carga de GPU.
-
-A exceção mantém `n_batch=512` como lote público, mas limita `n_ubatch` a
-`128` somente no contexto principal quando `moe_external_executor` está ativo.
-O grafo do llama.cpp passa a reservar workspaces físicos menores, devolvendo
-VRAM para o cache de experts sem alterar o contexto denso. Em três rodadas na
-ksia, com apenas o processo `pom` visível no `nvidia-smi` das duas placas, o
-decode do mesmo prompt mediu `16,001`, `15,968` e `13,631 tok/s`, mediana
-`15,968 tok/s`. A referência anterior do mesmo teste mediu `10,560 tok/s`, um
-ganho de `1,512x` sobre o estado anterior do executor MoE.
-
-`FIT_MAX_UBATCH=512` continua sendo a preferência operacional deliberada para
-o caminho denso e para o contexto MTP: `n_ubatch` influencia o processamento
-de prompt e o buffer do contexto MTP. O captain aprovou uma exceção restrita
-porque o contexto principal com `moe_external_executor` precisa devolver VRAM
-ao cache residente. Esse contexto usa 128, enquanto o denso e o MTP continuam
-em 512.
-
-A investigação de isolamento encontrou duas fronteiras. O caminho denso
-permanece em 512 por usar a política comum, enquanto uma política explícita
-separada faz apenas o contexto principal que usa o executor MoE usar 128. O
-MTP permanece em 512 chamando sua própria política ao criar o contexto `MTP`.
-Porém não é possível reduzir somente o consumo do cache a partir do callback Rust: o
-`llama_context_params` possui um único `n_ubatch`, o scheduler usa esse valor
-para dividir o grafo inteiro, e o callback recebe apenas o microbatch já
-dividido. Portanto a alternativa MoE-only ainda reduz o microlote de atenção,
-KV e demais operações do contexto alvo, além de liberar VRAM para experts.
-O trade-off de reduzir também o microlote de atenção e KV do contexto MoE foi
-aceito nessa exceção. A implementação mantém essa separação em
-`effective_n_ubatch` e `apply_mtp_context_batch_params`; não há novo ajuste de
-kernel ou dispatch nesta fase.
-
-O diagnóstico confirma a causa: a capacidade agregada subiu para
-`20,925-23,500 GB`, contra `15,337-17,803 GB` antes, e a residência terminou
-encostada no limite em todas as rodadas. Os snapshots mostraram cerca de
-`12,82/12,68 GB` livres no baseline por placa, compute de
-`1,02/1,00 GB`, reserva de `0,26/0,25 GB` e somente `0,27 GB` livres depois da
-residência. Não há evidência de VRAM livre omitida pela `MemoryAccount`.
-
-O working set observado teve exatamente quatro ocorrências de rota por token
-em cada uma das 36 camadas. Na rodada de 832 tokens, a soma de experts
-distintos por lote variou de `2228` a `2810` entre camadas. A telemetria de
-cache ainda acumulou `29.846` misses e `24.876` evictions, logo a pressão de
-working set não foi eliminada, apenas reduzida. Como os leases ativos nunca
-são vítimas do LRU, esses contadores representam churn de entradas ociosas que
-não cabem na capacidade efetiva.
-
-O particionamento entre GPUs já é expert-parallel: `CUDA0` e `CUDA1` têm LRU,
-orçamento e allocator independentes, e o hash de cada chave escolhe um único
-shard. Na rodada de melhor capacidade, havia `2719` e `2660` entradas, com
-`11,859` e `11,603 GB` residentes nas duas placas. Não há uma segunda cópia do
-mesmo cache a ser substituída por expert-parallel. O alvo de superar o denso
-em `1,5x` ainda não foi atingido; esse resultado é uma melhoria de capacidade
-do MoE e deve permanecer como referência antes de qualquer nova mudança.
-
-### Investigação NCCL no tensor parallelism - 2026-09-16
-
-O host ksia confirmou duas RTX 5060 Ti e a instalação do NCCL pelo loader do
-sistema:
+Configure the node at `http://127.0.0.1:8080/` and deploy the local GGUF on a
+single node through the interface, with `n_ctx` 8192 and `max_new_tokens` 128:
+the binary accepts neither a model nor inference parameters on the command
+line. Then send the conversation and the concurrency cells to the local gateway
+and attach the number tables below this baseline. The runner must record
+commit, system, CPU/GPU, memory, build feature, KV type, `n_ctx`,
+`max_sessions`, `n_batch`, `max_new_tokens`, model and temperature.
+
+
+## Safety invariants
+
+- Missing metadata does not silently become zero. A KV budget can only be
+  computed when the required geometry is present.
+- A rebuild happens as a new generation: the previous server stops accepting
+  connections, drains in-flight requests and only then frees the old context.
+  A compatible reconfiguration keeps the weights in `ModelCache`; a slice or
+  loading change clears that cache. A rebuild failure must not leave the new
+  generation announced as ready.
+- Cancellation is cooperative and idempotent. Closing the stream interrupts the
+  in-flight gateway call and prevents the next chunk or hop; a frame already
+  accepted by the peer may finish. Cleanup frees the session on every peer
+  reached.
+- The new engine is never selected by a name heuristic or by a `llama.cpp`
+  failure; the GGUF architecture must declare MoE and the configuration can
+  force the dense path while the new path is under validation.
+- The expert LRU cache is local to the machine. It never crosses slicing and
+  does not turn weights into network traffic.
+
+### State of the MoE path - 2026-09-01
+
+The split layout of the K-quant experts follows
+`[hidden, intermediate, experts]`; the loader now keeps that order, including
+when `hidden != intermediate`. The callback validates name, dtype, rank and
+dimensions against the source and reports both geometries when they diverge.
+The expert source stays outside llama.cpp's weight buffer: the measurement on
+the CUDA test server found 2,531.86 MiB in that buffer for a model with 256
+experts, while the routed payloads stay in the own cache.
+
+The heterogeneous path batches the routes and covers IQ3_XXS (18) plus MXFP4
+(39), the `deepseek4` combination, in the CUDA bridge and in the reference CPU
+decoder. Route indices are read as I32 in token-major order, including values
+above 127. A combination without an external decoder is refused before the
+model loads, with the dtypes that blocked it; there is no silent native
+fallback. There was no CUDA proof on the development machine yet, because it
+has no CUDA compiler; the differential proof and the E2E on the real GGUFs had
+to be run on the CUDA test server.
+
+### Phase 5.7: resident cache and multi-GPU CUDA execution - 2026-09-15
+
+The operator's diagnosis on the CUDA test server compared `moe/q4_0` and
+`dense/llama.cpp` on the same node `5b035803`, with two RTX 5060 Ti. MoE
+measured `765 ms` p50 and `952 ms` p95 per decode call, while dense measured
+`52 ms` and `93 ms`. The count `36 GPU / 0 CPU / 0 mixed` did not prove that the
+external executor used both cards: it only described the layers llama.cpp
+allocated.
+
+The root cause was confirmed in POM's own code, not in the fork
+`vendor/llama-cpp-sys-2/llama.cpp`: `cuda_kernels.cu` hardcoded
+`kMoeCudaDevice = 0`, and every allocation, upload, stream, event and release of
+the executor used that device. Besides, `DeviceExpertCache` kept a single memory
+account and a single allocator. The dense path, by contrast, passes the device
+list and the `FitPlan`'s `tensor_split` to `llama_model_params` before
+`llama_model_load_from_file`; the fork gets that configuration through the
+native path, but the MoE executor did not.
+
+The fix keeps the same topology seen by the dense context:
+
+- `cuda_compute_bytes_by_device` groups the compute buffers by `CUDA<n>` and
+  ignores `CUDA_Host`;
+- `DeviceExpertCache::new_sharded` creates a budget, LRU and allocator per
+  card. The stable hash of model/layer/expert keeps every role of the same
+  expert on the same GPU, and the leases carry the ordinal to the CUDA bridge;
+- the resident pipelines and every FFI entry get the explicit ordinal. The CUDA
+  RAII selects the card for each call and restores the previous device;
+- a route is grouped by GPU, each group runs in its own pipeline in parallel and
+  the full vectors are summed on the host. So experts selected on different
+  cards do not go back to CUDA0 nor share a single pipeline mutex.
+
+The second run without improvement also had a state cause in the external path.
+The aggregated budget was applied to a single card, so the LRU evicted resident
+experts when the working set did not fit in CUDA0's capacity, even with free
+VRAM on CUDA1. Meanwhile, the asynchronous warmup kept admitting experts of
+future layers and could compete with the first route, causing misses, eviction
+and calls that did not finish in the expected time. The budget is now per card
+and the first real route calls `cancel_device_warmup`, keeping the entries
+already admitted and letting the request's working set control the cache. Later
+hits return the same handle and the same ordinal without a new upload.
+
+The parser and cache tests cover the split by `CUDA0`/`CUDA1`, admission into
+both shards and reuse of a key's device. In that worktree, `cargo test -p
+llama-engine` passed with `306` tests and `11` ignored. There was no NVIDIA GPU
+nor local `nvcc`, so the physical two-card proof, the decode measurement and the
+final confirmation of the 15x drop had to be repeated by the operator on the
+CUDA test server with the CUDA profile on. The native fork was not changed in
+this fix.
+
+### Phase 5.8: heterogeneous hot path aligned with FreeToken - 2026-09-15
+
+The latest telemetry from the CUDA test server showed that the node's queue and
+setup stayed below 1 ms, while the heterogeneous backend spent `978-1495 ms` in
+prefill and `83-117 ms` per decode call. So the scheduler timeouts were not the
+cause of that trace. The path also loaded bytes from the mmap for each role
+before checking the resident cache; a hit threw that copy away. That
+contradicted FreeToken's decision to keep the expert working set resident on
+the device and explains why a second request did not get materially cheaper.
+
+The production path now uses three explicit boundaries:
+
+- `HeterogeneousTensorSpec` validates role, dtype, geometry and scales without
+  copying the payload. `HeterogeneousMoeBlock` checks the `DeviceExpertCache`
+  first and only calls `load_expert_tensor` on a real miss;
+- `HeterogeneousRoutePipeline` keeps descriptors, hidden, ids, weights,
+  offsets, activations, intermediate results and output allocated per device.
+  The pipeline is shared by every layer of the runtime and indexed by
+  `(CUDA<n>, hidden, intermediate)`, avoiding a large reservation per layer;
+- experts stay partitioned by the stable hash of model, layer and expert. Each
+  group per ordinal runs in its own pipeline inside
+  `sum_parallel_device_outputs`, and groups on `CUDA0` and `CUDA1` can progress
+  simultaneously. llama.cpp's layer count is not used as proof that both cards
+  are used: the field confirmation must look at the resident bytes and the
+  per-device counters.
+
+The pipeline only copies the route metadata and the hidden state on each call.
+The output's D2H `cudaMemcpy` is still the barrier needed to return the result
+to the callback, but the extra `cudaDeviceSynchronize` was removed;
+`sync_count=0` in that path's profile. `alloc_ms` only shows up when the
+capacity grows, not on each token. The update is POM's own CUDA code in
+`crates/llama-engine/src/moe/cuda_kernels.cu`; the llama.cpp fork stays
+unchanged and only provides the callback and the metadata.
+
+Warmup cancellation is also checked after a candidate is obtained. So a read
+that finished after a real request arrived cannot admit bytes of future layers
+and evict the active working set. The path still lets a single admission
+already in progress finish, but does not start another one after cancellation.
+The test `warmup_cancelado_depois_de_obter_candidato_nao_admite_payload` pins
+that boundary.
+
+This phase removes redundant copies, allocations and synchronizations, but does
+not turn expert partitioning into tensor parallelism. If every expert chosen by
+a token falls in the same shard, the other card stays idle on that route; the
+dense llama.cpp path can use both for each matrix through `tensor_split`. The
+measurement on the CUDA test server must separate that routing effect from the
+kernel cost before claiming throughput higher than llama.cpp or FreeToken.
+
+### Phase 5.9: effective IQ3_XXS path and cooperative kernel - 2026-09-15
+
+The telemetry of the model `Mistral-Small-4-119B-2603-UD-IQ3_XXS-9c2b030b`
+showed GGML dtypes `18`, `22` and `23` together. That means the model uses
+`HeterogeneousCudaExecutor`, not the uniform `IqQuantCudaExecutor`. The previous
+phase's heterogeneous optimization still left the dot product scalar:
+`HeterogeneousRoutePipeline` assigned one row to a 128-thread block, and each
+thread repeated the full loop over the columns. Besides, each thread of the IQ
+kernel computed the full dot product of a row by itself, repeating the same work
+inside the block. That was the local cost observed as `978-1495 ms` in prefill
+and `83-117 ms` per decode, not a queue wait: the node telemetry recorded queue
+and setup below 1 ms.
+
+The uniform IQ path keeps sharing the same persistent workspace per
+`(device, geometry)` used by the K-quants. The runtime creates a pipeline for
+each `CUDA<n>` shard of the resident cache, groups the routes by ordinal and
+runs the groups in parallel; no device is picked as a single `main_gpu` by the
+executor. The generic IQs assign one row to a 128-thread block and reduce the
+dot product fragments in shared memory. For the measured IQ3_XXS, each row uses
+a single 32-thread warp: each lane processes the eight values of a
+`(group, il)` slice and the sum uses shuffle. Gate and up are computed in the
+same warp, reusing the hidden state and halving that stage's blocks. That cuts
+the row's coordination work from four warps to one and removes the shared memory
+tree, keeping the sequence gate/up, SiLU, down and aggregation. The synchronous
+D2H is still the barrier needed to return the result to the callback, but the
+extra `cudaDeviceSynchronize` was removed and the profile publishes
+`sync_count=0`. IQ3_XXS is now eligible for the CUDA bridge and validates the
+payload geometry before launch.
+
+In IQ3_XXS, the 32 lanes cover the superblock's 256 elements in groups of
+eight. `aux32`, the two codebook indices and the signs are read once per slice,
+instead of rebuilding that metadata for each pair of columns. The other IQs keep
+the generic cooperative decoder until they have the same differential layout
+proof.
+
+The cache does not copy the cold source on hits: admission is still by hash of
+model, layer and expert in independent shards. So a second call reuses the same
+handle on CUDA0 or CUDA1. Warmup is cancelled before each `llama_decode` that
+has an MoE callback, and again on the first route as a defense; that keeps a
+concurrent admission from evicting the working set or holding the shard while
+the graph is already running. If the per-device counters still show a single
+card in use, the next diagnosis is the effective distribution of the selected
+experts, not a timeout.
+
+With `POM_MOE_CUDA_PROFILE=1`, `moe_executor_diagnostics.cuda_device_calls` now
+records per ordinal the number of calls, experts processed and kernel/wall time.
+That field must be compared with `device_cache_resident_bytes_by_device`: bytes
+on a card with no calls only show resident capacity, while calls on `CUDA0` and
+`CUDA1` confirm effective participation in the route.
+
+This fix is POM's own CUDA code in `cuda_kernels.cu`; it does not change the
+llama.cpp fork. The fork keeps providing the external callback and the memory
+metadata. The comparison against `dense/llama.cpp` and against FreeToken must be
+repeated on the CUDA test server with the new CUDA build: the development
+worktree has neither `nvcc` nor a GPU, so there is no local throughput claim.
+
+### Phase 5.11: q8 MMVQ in the heterogeneous executor too - 2026-09-15
+
+The telemetry JSON closed the cause of the five-second gap. In the 45-token
+prefill, `node_moe_forward_ms=4706.821` inside `node_backend_call_ms=4994.464`;
+`node_queue_ms=0.038`, `node_lock_wait_ms=0`, `node_scheduler_wait_ms=0.012`,
+network `0 ms` and the D2H copy `0.394 ms`. So there was no five-second timeout
+in the pipeline. The `node_moe_forward_ms` field is the synchronous external
+callback that llama.cpp waits for before returning the prefill.
+
+The same JSON shows the cost that dominated that callback: from the end of
+prefill to the end of decode there were another `2406` misses/admissions,
+`2399` evictions and `10.5 GB` of uploads to the devices. The resident cache
+held about `8.25 GB` on CUDA0 and `8.17 GB` on CUDA1, and warmup had already
+admitted `3766` experts before reaching the budget. That is working set
+thrashing, not a scheduler queue. Since the leases are released at the end of
+each layer and decode visits new routes, a new request can evict the experts
+used in prefill; that is why repeating the prompt does not guarantee a hit.
+`warmup_status` was `budget-exhausted`, not `timed-out`, and warmup is
+asynchronous, so its `4726 ms` are not a blocking wait in decode.
+
+The heterogeneous pipeline now quantizes hidden state and activation into
+`block_q8_1` using persistent buffers, calls the fork's canonical
+`vec_dot_*_q8_1` for Q4/K/IQ and uses one 32-lane warp per row. That removes the
+four redundant warps of the scalar block and uses dp4a also when gate/up/down
+have different dtypes. The launch goes from four to six kernels (two
+quantizations, gate/up, activation, down and aggregation), without
+`cudaDeviceSynchronize`; the D2H copy is still the completion barrier.
+
+To confirm the rest on the CUDA test server, just start the MoE executor. The
+diagnostics are automatic and must show `cuda_device_calls` for CUDA0 and CUDA1
+and separate `kernel_ms` from `cuda_call_wall_ms`; the cumulative cache counters
+must be compared by delta between prefill and decode. The q8 optimization cuts
+the callback's compute, but cannot fit in 16 GB an expert working set larger
+than VRAM: if misses stay high, the next adjustment is per-layer
+affinity/prefetch, not a larger timeout.
+
+### Phase 5.12: parallel heterogeneous admissions per GPU - 2026-09-15
+
+The heterogeneous hot path now makes two passes over the route. The first
+checks the cache and groups each miss by the same affinity hash that picks the
+shard. One thread per `CUDA<n>` reads the mmap slices and uploads them serially
+on that GPU; threads of different shards work in parallel. The second pass
+builds the descriptors only after every admission, keeping the leases alive
+during the forward to prevent premature eviction.
+
+Each upload uses the mmap slice directly. The CUDA path no longer creates an
+intermediate `Vec<u8>` for each tensor, removing a copy of tens of GB when
+preparing a cold route.
+
+The specs of the experts of the same layer are also built in a batch, in a
+single walk of the inventory. That avoids repeating the lookup of entries and
+geometry for each selected expert during prefill.
+
+That aligns admission with the grouping that already existed in the kernel: the
+cache no longer picks a single global queue for tens of GB of H2D. The change is
+only in the Rust crate and uses the existing CUDA allocator, which selects the
+ordinal explicitly on each upload; the llama.cpp fork was not changed. The wall
+gain and the effective occupancy of each card still have to be measured on the
+CUDA test server. With `POM_MOE_CUDA_PROFILE=1`, compare
+`device_cache_upload_ms` by delta with `cuda_device_calls` on `CUDA0` and
+`CUDA1`, always with `POM_MOE_WARMUP` unset or disabled to measure the cold
+route without speculative pollution.
+
+Besides, the callback now uses the non-blocking variant of
+`cancel_device_warmup`: it signals the `AtomicBool` and starts the forward
+immediately. The current admission stays protected by the shard mutex and by
+leases, and the thread checks cancellation before each next candidate. The
+variant that does `join` is only used when replacing a warmup, avoiding turning
+a weight copy into TTFT without allowing two simultaneous cache sweeps.
+
+### Phase 5.16: non-blocking warmup cancellation - 2026-09-16
+
+FreeToken's design treats warmup as background work that prepares the working
+set without blocking the scheduler. The POM runtime had the same thread, but
+`begin_moe_callback` called `cancel_device_warmup`, which signaled and did a
+`join`. If a weight admission was in progress, the first callback stalled until
+it finished, even though queue, context mutex, transport and scheduler were
+free.
+
+The callback and the entry of `forward_batch_with_route` now call
+`cancel_device_warmup_for_forward`, which only publishes the cancellation flag.
+The admission already started finishes with the shard's normal protection;
+active leases keep its handles from being evicted, and the CUDA stream keeps the
+order of operations. The swap API still uses `cancel_device_warmup` with `join`,
+so a new warmup never competes with the previous one.
+
+This change only acts on the TTFT wait during the warmup-to-forward transition;
+it does not raise the budget nor pretend the whole model fits in VRAM. The
+mandatory validation on the CUDA test server must compare three rounds of the
+same prompt with `nvidia-smi` showing no competing processes, checking
+`ttft_ms`, `node_moe_forward_ms`, `generation_tokens_per_sec`, hits/misses and
+the text output against the reference `0c088521`. The gain is not claimed before
+that measurement.
+
+### Isolated comparison on one machine - 2026-09-15
+
+A real run on node `5b035803`, with two RTX 5060 Ti and no pipeline hop,
+confirmed that transport is not the bottleneck. MoE used 46 prefill tokens and
+generated 188 tokens: `5667.7 ms` of prefill (`8.1 tok/s`) and `35009.3 ms` of
+decode in 95 calls (`5.3 tok/s`), with p50/p95 of `347.2/617.1 ms` per call.
+Network was `0-16 ms`, queue and setup stayed below `2 ms`, and `99%` of the time
+was in local `llama_decode`.
+
+The `dense/llama.cpp` control on the same node generated 178 tokens at
+`18.5 tok/s`, with `749.7 ms` of prefill (`29.2 tok/s`) for 22 tokens and
+p50/p95 of `125.4/129.8 ms` per decode call. The comparison does not have an
+identical prompt (`46` against `22` tokens), so it is order-of-magnitude
+evidence, not a final paired measurement. Even so, MoE was about `3.6x` slower
+per token in decode and `3.6x` slower in normalized prefill, despite announcing
+`36 GPU / 0 CPU / 0 mixed`; that counter describes llama.cpp layers and does not
+prove use of CUDA0 and CUDA1 by the external executor.
+
+The run did not have `POM_MOE_CUDA_PROFILE=1` yet, so it cannot tell which
+ordinal received the routes nor separate kernel, H2D, D2H and cache misses. For
+the next run on the CUDA test server, the profile must be on from startup and
+the telemetry must include `cuda_device_calls` and
+`device_cache_resident_bytes_by_device`. The absence of transport and scheduler
+wait already rules out timeouts as the main hypothesis; the remaining hypothesis
+is the cost of the per-layer callback, of host/device copies and of the custom
+IQ3_XXS decoder, to be compared with the optimized CUDA calls of the dense path.
+
+
+### Phase 5.10: IQ3_XXS path aligned with CUDA MMVQ - 2026-09-15
+
+The previous cooperative decoder still did the codebook arithmetic in float.
+That diverged from the fork's MMVQ path, which first quantizes the activation to
+`block_q8_1` and uses `vec_dot_iq3_xxs_q8_1` with `dp4a`. The IQ3_XXS pipeline
+now keeps persistent q8 buffers for hidden state and activation, quantizes each
+row in one warp and uses the canonical decoder of the fork's active checkout.
+Gate and up use the same warp and down reuses the q8 activation. `build.rs`
+includes `ggml/src/ggml-cuda/vecdotq.cuh` from the same `LLAMA_SOURCE` used by
+the binding; no fork file was changed.
+
+The lane mapping follows the MMVQ formula for IQ3_XXS: eight q8 chunks per
+superblock, four superblocks covered in parallel per warp, and each lane
+advances four superblocks at a time. That avoids leaving 24 lanes idle in the
+dot product. The geometry checks and the persistent capacity still prevent
+overflow or reallocation on the stable path.
+
+Two later measurements on the same two-RTX-5060-Ti machine confirmed the
+bottleneck profile before this optimization. For 16 prompt tokens and 15 output
+tokens, prefill took `5323 ms` and decode had a p50/p95 of `254.5/382.0 ms`. For
+45 prompt tokens and 91 output tokens, prefill took `4998 ms` and decode had a
+p50/p95 of `277.1/470.7 ms`. Network, queue and engine mutex wait stayed around
+`0-4 ms`, and setup dropped from `152 ms` on the first load to under `1 ms` on
+the next. The almost fixed prefill near five seconds, even with prompts of
+different sizes, is compute work of the 36 callbacks, not a timeout or a
+transport wait. The q8/dp4a path attacks exactly that work, but the throughput
+and numeric correctness confirmation had to be done on the CUDA test server with
+`POM_MOE_CUDA_PROFILE=1`.
+
+### Phase 5.13: CUDA batch for admissions and repeated routes - 2026-09-15
+
+The latest JSON from the CUDA test server does not show a hidden five-second
+timeout. On the same node, `node_lock_wait_ms` was `0`, queue and scheduler
+added up to a few milliseconds and transport added up to `54 ms`. The work is in
+`node_moe_forward_ms` (`6445.8 ms` in prefill) and in the decode calls, not in a
+pipeline `wait`. The delay observed on the first token follows the local
+prefill of `6656.5 ms`.
+
+The cache diagnosis identifies the operational cause: in 320 decode calls there
+were `94522` misses/admissions, `90762` evictions and about `412 GB` of
+cumulative uploads. The shards were balanced on `CUDA0` and `CUDA1`
+(`8242/8165 MB` resident), so both cards were used for residence, but the
+working set exceeded the budget and was reloaded. `runtime_forward_ms` and
+`device_cache_upload_ms` are cumulative counters of callbacks and devices; they
+are not a single five-second wait.
+
+The hot path now groups misses by shard and makes a single budget check per GPU.
+`DeviceAllocator` gained `upload_many`; the CUDA allocator queues every
+allocation and copy on the default stream and synchronizes only once per batch.
+Evictions use `cudaFreeAsync`, keeping the stream order and avoiding
+`cudaFree`'s global synchronization on each tensor. The copy's synchronization
+is still needed because the bytes come from an `mmap` slice that can be released
+as soon as admission returns. The llama.cpp fork was not changed.
+
+In the same route, the executor only deduplicates pairs with the same expert
+descriptor and the same token. The kernel computes the FFN once and the
+aggregation applies each weight again through the route map, keeping the
+router's semantics. That cuts work when top-k repeats an expert for a token
+without changing the sum of distinct routes.
+
+Telemetry `d5eeeaa` was still produced before `fef71ae`, which fixed the
+shared scale of `block_q8_1` in the quantization kernel. The nonsensical output
+of that run is not a valid measurement of the model's quality; the CUDA test
+server must repeat the same prompt with the SHA that contains that fix and this
+batch optimization. The development environment has neither `nvcc` nor a GPU to
+measure the final prefill/decode reduction locally.
+
+### Phase 5.14: default warmup and measured heterogeneous co-execution - 2026-09-15
+
+The CUDA test server's logs confirmed a configuration regression: the process
+that produced the telemetry had `POM_MOE_WARMUP` unset and, because of that,
+warmup was `disabled`. The behavior now goes back to pre-warming by default.
+`POM_MOE_WARMUP=0`, `false`, `off` or `no` stays available for explicitly cold
+runs. Warmup stays limited by each GPU's independent budget; on a 5060 Ti it can
+end with `budget-exhausted` before loading every expert, because the whole model
+does not fit in VRAM. To make better use of that budget, the warmup enumeration
+is expert-major: it alternates the layers for each expert before moving to the
+next expert. So when VRAM cannot hold the whole model, every layer gets a
+resident working set instead of only the model's prefix.
+
+The roughly five-second gap was not a timeout: in the paired trace,
+`node_lock_wait_ms`, queue, scheduler and transport stayed close to zero, while
+`node_moe_forward_ms` took practically the whole prefill. The heterogeneous
+executor now accepts the same measured `BandwidthProfile` as NVFP4. Experts with
+every tensor resident stay on the GPU; misses are split per expert between CPU
+and GPU routes, run in parallel and summed with the same output width. The
+residence check creates no lease and does not touch the LRU, so the planner does
+not fake hits or block eviction.
+
+Diagnostics are automatic when the MoE CUDA executor is active;
+`POM_MOE_CUDA_PROFILE` is not needed and does not change execution. The sidecar
+`<model>.cuda-profile.json` with the `bandwidth` field is still required to
+enable the measured split between the CPU and GPU lanes. Without that file, the
+runtime keeps the CUDA-only policy and does not make up a rate for the scalar
+Rust CPU. On the CUDA test server, validation must repeat the same prompt with
+the default warmup, persist the measured sidecar for this model and compare
+prefill, decode, text correctness and upload deltas.
+
+### Phase 5.15: pinned host staging on the heterogeneous output - 2026-09-16
+
+The CUDA test server's telemetry after the q8 pipeline isolated the cost that
+still dominated the callback. In prefill, the CUDA kernel added up to about
+`177 ms`, but D2H transfers added up to `6317 ms`; in decode, about `680 ms` of
+kernel against `12801 ms` of D2H. The correct result still had to be written to
+the callback's host tensor, so the external contract did not allow simply
+leaving the output in VRAM. The observed cost came from the synchronous
+`cudaMemcpy` straight into the pageable memory that llama.cpp hands to the
+callback.
+
+Each `HeterogeneousRoutePipeline` now reserves a persistent `cudaMallocHost`
+with the same capacity as the device output. The D2H copy goes to that pinned
+staging and, after the completion barrier, a short `memcpy` hands the result to
+the original host buffer. The staging is freed together with the pipeline's
+persistent buffers and only grows when the batch geometry changes. That removes
+the CUDA runtime's repeated implicit staging without changing the callback's
+semantics, the route aggregation or llama.cpp's graph capture.
+
+The gain has to be confirmed on the CUDA test server by comparing
+`cuda_d2h_ms`, `cuda_call_wall_ms`, `node_moe_forward_ms` and the text
+correctness with the same prompt. The goal of beating the dense path by 1.5x is
+not proven yet.
+
+### Phase 5.17: direct heterogeneous q8 dispatch by dtype - 2026-09-16
+
+The heterogeneous q8 kernel received a CUDA function pointer chosen by the dtype
+and called that pointer inside the block loop of each row. That kept the result,
+but prevented the compiler from inlining the fork's canonical `vec_dot_*_q8_1`
+primitives. For the Mistral-Small route, which mixes dtypes 18, 22 and 23, the
+dispatch now selects a helper compiled per dtype; each helper calls the matching
+primitive directly. The `block_q8_1` layout, the quantization, the warp
+reduction and the number of launches did not change.
+
+A source test keeps the function pointer alias from coming back in the q8 path.
+In deploy `ea58bfab`, the CUDA build on the CUDA test server passed in `4m52s`;
+three rounds with `nvidia-smi` showing no competing process measured `10.6127`,
+`11.8136` and `10.9890 tok/s`, median `10.9890 tok/s`. That is `1.073x` the
+reference `b4df3c22` (`10.2416 tok/s`) and `1.125x` the earlier reference
+`0c088521` (`9.770 tok/s`). The correctness round returned the expected numbered
+list, with no corrupted text. The result is an observed improvement, but still
+below the goal of `1.5x` over dense.
+
+### Phase 5.18: working set and CUDA budget telemetry - 2026-09-16
+
+The `DeviceExpertCache` policy keeps active leases protected: `Drop` only lowers
+`active`, and an entry is only removed when the LRU finds an idle entry
+(`active == 0`). So the thousands of evictions observed in a run do not show
+eviction of experts in use. They can be idle residence churned by a working set
+larger than the effective limit, but before there was no per-layer measurement
+to separate the hypotheses.
+
+The heterogeneous executor's diagnostics now accumulate, per layer, batches,
+tokens, route occurrences, distinct experts in the batch and the sum/max of
+distinct experts per token. They also publish the current effective capacity
+per GPU, computed with the same formula as `MemoryAccount` and a free memory
+read from the CUDA allocator. The capacity is a diagnostic snapshot and does not
+change the admission policy.
+
+This instrumentation must be used before another kernel or dispatch tweak:
+compare `cache_working_set_by_layer` with
+`device_cache_capacity_bytes_by_device`, plus misses, evictions and uploads. If
+the capacity is right and the working set repeatedly exceeds the limit, the
+problem is legitimate pressure from the expert set; if there is capacity
+available despite the churn, investigate the memory accounting and the
+admission granularity. `device_cache_budget_by_device` exposes the full account
+per shard: `baseline_free_bytes`, `current_free_bytes`, `compute_bytes`,
+`reserve_bytes`, the intermediate limits and the resident entries.
+`device_cache_entries_by_device` lets you convert capacity into real entries,
+without confusing the generic `cache_entries` field of the host cache. The
+instrumentation's throughput was measured on the CUDA test server at
+`e8709f09`: three rounds with no competing process had `11.018`, `10.440` and
+`10.351 tok/s`; the effective capacity ranged from `15.337` to `17.803 GB` and
+residence ended up pressed against that limit. Phase 5.19 used that breakdown to
+confirm the recoverable margin of the compute buffers and guide the approved
+exception for the main MoE context.
+
+### Phase 5.19: physical micro-batch exception for the MoE context - 2026-09-16
+
+The raw probes on the CUDA test server showed that `MemoryAccount` does not
+underestimate VRAM: after the context buffers, each RTX 5060 Ti had about
+`0.5 GB` free, while the compute buffer took about `3.1 GB`. The resident cache
+ended up pressed against `15.3-17.8 GB` in aggregate, below the `19.62 GB` of
+`4499` warmed candidates. The set does not fit with `n_ubatch=512` and there is
+no evidence of another GPU load.
+
+The exception keeps `n_batch=512` as the public batch, but limits `n_ubatch` to
+`128` only in the main context when `moe_external_executor` is active.
+llama.cpp's graph then reserves smaller physical workspaces, giving VRAM back to
+the expert cache without changing the dense context. In three rounds on the CUDA
+test server, with only the `pom` process visible in `nvidia-smi` on both cards,
+the decode of the same prompt measured `16.001`, `15.968` and `13.631 tok/s`,
+median `15.968 tok/s`. The previous reference of the same test measured
+`10.560 tok/s`, a gain of `1.512x` over the earlier state of the MoE executor.
+
+`FIT_MAX_UBATCH=512` stays the deliberate operational preference for the dense
+path and for the MTP context: `n_ubatch` affects prompt processing and the MTP
+context's buffer. The operator approved a restricted exception because the main
+context with `moe_external_executor` has to give VRAM back to the resident
+cache. That context uses 128, while dense and MTP stay at 512.
+
+The isolation investigation found two boundaries. The dense path stays at 512
+because it uses the common policy, while a separate explicit policy makes only
+the main context that uses the MoE executor use 128. MTP stays at 512 by calling
+its own policy when creating the `MTP` context. However, it is not possible to
+reduce only the cache's consumption from the Rust callback:
+`llama_context_params` has a single `n_ubatch`, the scheduler uses that value to
+split the whole graph, and the callback only receives the already split
+micro-batch. So the MoE-only alternative also reduces the micro-batch of
+attention, KV and the other operations of the target context, besides freeing
+VRAM for experts. The trade-off of also reducing the attention and KV
+micro-batch of the MoE context was accepted in this exception. The
+implementation keeps that split in `effective_n_ubatch` and
+`apply_mtp_context_batch_params`; there is no new kernel or dispatch tweak in
+this phase.
+
+The diagnostics confirm the cause: aggregate capacity rose to
+`20.925-23.500 GB`, against `15.337-17.803 GB` before, and residence ended up
+pressed against the limit in every round. The snapshots showed about
+`12.82/12.68 GB` free at baseline per card, compute of `1.02/1.00 GB`, reserve
+of `0.26/0.25 GB` and only `0.27 GB` free after residence. There is no evidence
+of free VRAM omitted by `MemoryAccount`.
+
+The observed working set had exactly four route occurrences per token in each of
+the 36 layers. In the 832-token round, the sum of distinct experts per batch
+ranged from `2228` to `2810` across layers. The cache telemetry still
+accumulated `29,846` misses and `24,876` evictions, so the working set pressure
+was not removed, only reduced. Since active leases are never LRU victims, those
+counters represent churn of idle entries that do not fit in the effective
+capacity.
+
+The partitioning across GPUs is already expert-parallel: `CUDA0` and `CUDA1`
+have independent LRU, budget and allocator, and each key's hash picks a single
+shard. In the best-capacity round, there were `2719` and `2660` entries, with
+`11.859` and `11.603 GB` resident on the two cards. There is no second copy of
+the same cache to be replaced by expert parallelism. The goal of beating dense
+by `1.5x` was not reached yet; this result is an MoE capacity improvement and
+must stay as the reference before any new change.
+
+### NCCL investigation in tensor parallelism - 2026-09-16
+
+The CUDA test server confirmed two RTX 5060 Ti and the NCCL install through the
+system loader:
 
 ```text
 libnccl.so.2 => /lib/x86_64-linux-gnu/libnccl.so.2
 libnccl.so   => /lib/x86_64-linux-gnu/libnccl.so
 ```
 
-O diagnóstico inicial foi reproduzido no build: `vendor/llama-cpp-sys-2/build.rs`
-repassava as variáveis `GGML_*` ao CMake, mas depois definia
-`GGML_CUDA_NCCL=OFF` incondicionalmente. Após permitir o opt-in, o CMake gravou
-`GGML_CUDA_NCCL=ON`, `NCCL_INCLUDE_DIR=/usr/include` e
-`NCCL_LIBRARY=/usr/lib/x86_64-linux-gnu/libnccl.so`. O primeiro link revelou a
-segunda fronteira: os archives estáticos produzidos pelo CMake não propagavam
-`NCCL::NCCL` para o link final do binário Rust. O build script agora adiciona o
-diretório resolvido e `dylib=nccl` somente quando o opt-in está ligado, mantendo
-o build padrão sem dependência nova.
+The initial diagnosis was reproduced in the build:
+`vendor/llama-cpp-sys-2/build.rs` passed the `GGML_*` variables on to CMake, but
+then set `GGML_CUDA_NCCL=OFF` unconditionally. After allowing the opt-in, CMake
+recorded `GGML_CUDA_NCCL=ON`, `NCCL_INCLUDE_DIR=/usr/include` and
+`NCCL_LIBRARY=/usr/lib/x86_64-linux-gnu/libnccl.so`. The first link revealed the
+second boundary: the static archives produced by CMake did not propagate
+`NCCL::NCCL` to the Rust binary's final link. The build script now adds the
+resolved directory and `dylib=nccl` only when the opt-in is on, keeping the
+default build without a new dependency.
 
-O binário isolado resultante foi
-`112aeef362fbc44d0b66fbf799822ed609a2dd6b3a007f853a137bab4b426a45`. A prova de
-link foi:
+The resulting isolated binary was
+`112aeef362fbc44d0b66fbf799822ed609a2dd6b3a007f853a137bab4b426a45`. The link
+proof was:
 
 ```text
 libnccl.so.2 => /lib/x86_64-linux-gnu/libnccl.so.2
 ```
 
-Foi feita uma fumaça E2E fora do serviço produtivo, com o mesmo GGUF
-`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`, as duas GPUs, o prompt curto
-`Oi, teste. Responda em uma frase curta.` e `max_tokens=32`. Com um processo
-isolado sem identidade TP, o caminho `dense/llama.cpp` mediu
-`29,674`, `60,606` e `53,030 tok/s` em três chamadas, mediana de `53,030 tok/s`.
-Essa rodada confirma que o executável carrega o modelo nas duas placas, mas
-não é uma medição de NCCL: `tp` não foi configurado e a divisão observada é de
-camadas, não o grupo de ranks do tensor parallelism. A variação inclui o
-aquecimento do processo e não deve ser comparada diretamente ao controle
-histórico do deployment.
+An E2E smoke test was run outside the production service, with the same GGUF
+`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`, both GPUs, the short prompt
+`Oi, teste. Responda em uma frase curta.` ("Hi, test. Answer in one short
+sentence.") and `max_tokens=32`. With an isolated process without a TP
+identity, the `dense/llama.cpp` path measured `29.674`, `60.606` and
+`53.030 tok/s` in three calls, median `53.030 tok/s`. That round confirms that
+the executable loads the model on both cards, but it is not an NCCL
+measurement: `tp` was not configured and the observed split is by layers, not
+the tensor parallelism rank group. The variation includes the process warmup and
+must not be compared directly with the deployment's historical control.
 
-A tentativa de selecionar `POM_INFERENCE_MODE=moe` no mesmo arranque direto não
-é uma medição válida: o caminho de linha de comando fixa `Dense` e o pedido
-continua registrando `dense/llama.cpp`. Ao preparar um journal isolado MoE, o
-executor alcançou as duas GPUs, mas a chamada terminou em
-`kernel CUDA MoE falhou (código 400)`, sem tokens e sem tok/s aproveitável.
-Isso não atribui a falha ao NCCL. O executor MoE próprio não usa a coletiva do
-llama.cpp, e o benchmark MoE pós-build ainda depende de uma implantação MoE
-válida.
+The attempt to select `POM_INFERENCE_MODE=moe` in the same direct startup is not
+a valid measurement: the command line path hardcodes `Dense` and the request
+keeps recording `dense/llama.cpp`. When preparing an isolated MoE journal, the
+executor reached both GPUs, but the call ended in
+`kernel CUDA MoE falhou (código 400)` ("MoE CUDA kernel failed (code 400)"),
+with no tokens and no usable tok/s. That does not attribute the failure to
+NCCL. The own MoE executor does not use llama.cpp's collective, and the
+post-build MoE benchmark still depends on a valid MoE deployment.
 
-Como referência comparável já registrada na ksia, o melhor MoE confirmado foi
-`15,968 tok/s` no SHA `f4b7eb4`, enquanto o controle denso foi `24,97 tok/s`.
-Esses números são pré-NCCL. A comparação pós-NCCL no deployment produtivo não
-foi executada nesta rodada porque trocar o binário servido e reiniciar os
-processos da ksia requer autorização operacional explícita. Portanto, ainda
-não há evidência de melhora real de throughput. A conclusão técnica disponível
-é somente: o host encontra o NCCL, o binário novo está linkado com
-`libnccl.so.2`, e o caminho MoE próprio não se beneficia diretamente dessa
-coletiva.
+As a comparable reference already recorded on the CUDA test server, the best
+confirmed MoE was `15.968 tok/s` at SHA `f4b7eb4`, while the dense control was
+`24.97 tok/s`. Those numbers are pre-NCCL. The post-NCCL comparison on the
+production deployment was not run in this round, because swapping the served
+binary and restarting the processes on that server requires explicit
+operational authorization. So there is no evidence of a real throughput
+improvement yet. The available technical conclusion is only: the host finds
+NCCL, the new binary is linked with `libnccl.so.2`, and the own MoE path does
+not benefit directly from that collective.
 
-## Defeitos anotados
+## Defects noted
 
-- As medições de throughput e de divisão prefill/decode ainda não são possíveis
-  neste ambiente local sem obter um modelo e iniciar um runtime próprio.
-- A bateria CUDA filtrada ainda tem uma falha numérica NVFP4 histórica, não
-  introduzida pelo aquecimento. Em `ef36059` e em `c292403`, o teste isolado
-  `executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device` reproduziu
-  `13.464294 != 164.57135`. A prova IQ de `86226c7` não reproduziu as antigas
-  diferenças IQ; os três dtypes passaram a prova diferencial e não devem ser
-  protegidos por uma tolerância mais larga.
+- Throughput and prefill/decode split measurements are still not possible in a
+  local environment without getting a model and starting an own runtime.
+- The filtered CUDA battery still has a historical NVFP4 numeric failure, not
+  introduced by warmup. At `ef36059` and at `c292403`, the isolated test
+  `executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device` reproduced
+  `13.464294 != 164.57135`. The IQ proof of `86226c7` did not reproduce the old
+  IQ differences; the three dtypes passed the differential proof and must not
+  be protected by a wider tolerance.
+

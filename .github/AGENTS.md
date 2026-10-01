@@ -4,12 +4,12 @@ Os workflows em `workflows/` publicam os pacotes de Linux, macOS e Windows.
 O build nativo passa pela action composta `actions/llama-cache`, que resolve o
 SHA atual da branch `pom-tensor-parallel`, restaura o checkout por SHA e valida
 o clone antes de o Cargo usá-lo. A estratégia completa, incluindo `sccache`,
-vive em `docs/subsystems/build-execucao.md`, seção "Cache no GitHub Actions".
+vive em `docs/subsystems/build-and-run.md`, seção "Cache in GitHub Actions".
 
 Ao alterar a estratégia de cache, mantenha a invalidação separada por sistema,
 arquitetura e SHA do fork. Alterações no lockfile devem continuar compondo a
 chave do cache Cargo no workflow Windows. Não dispare uma release para testar
-alterações de conveniência sem autorização explícita do captain.
+alterações de conveniência sem autorização explícita do operador.
 
 ## Maintaining this file
 

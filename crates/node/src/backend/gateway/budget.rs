@@ -259,7 +259,7 @@ pub struct GenerateRequest {
 /// provedores - `max_tokens` é teto por resposta, atingi-lo é parada terminal,
 /// e a saída trunca no meio. O que existe no lugar do transbordo é o orçamento
 /// de tarefa (`messages::TaskBudget`), que avisa o modelo em vez de esticar o
-/// teto. Ver `docs/subsystems/inferencia.md` (9.1).
+/// teto. Ver `docs/subsystems/inference.md` (9.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputBudget {
     /// Teto da requisição inteira, somando todas as pernas.

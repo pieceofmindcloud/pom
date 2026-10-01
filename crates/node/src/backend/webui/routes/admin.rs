@@ -96,6 +96,11 @@ pub(super) fn routes() -> Router<GatewayState> {
                 .layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route(
+            "/api/ui/plugins/:code/proxy/",
+            axum::routing::any(crate::plugin_proxy::plugin_proxy)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
             "/api/ui/plugins/:code/proxy/*path",
             axum::routing::any(crate::plugin_proxy::plugin_proxy)
                 .layer(axum::extract::DefaultBodyLimit::disable()),

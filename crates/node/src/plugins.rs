@@ -6227,6 +6227,18 @@ mod tests {
         assert_eq!(body["token"], token.as_str());
         assert_eq!(body["cookie"], false, "a sessão do POM não chega ao plugin");
 
+        let root = app
+            .clone()
+            .oneshot(request(
+                "/api/ui/plugins/enterprise/proxy/?folder=/workspace",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(root.status(), axum::http::StatusCode::OK);
+        let root_body = crate::gateway::testkit::body_of(root).await;
+        assert_eq!(root_body["uri"], "/?folder=/workspace");
+
         let forged = app
             .clone()
             .oneshot(request(

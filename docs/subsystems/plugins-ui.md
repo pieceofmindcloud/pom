@@ -327,8 +327,12 @@ is through the `ui.upstream` operation:
 ```
 
 (`{"status": "starting"}` and `{"status": "error", "error": "..."}` become
-503.) `crates/node/src/plugin_proxy.rs` mounts that server at
-`/api/ui/plugins/<code>/proxy/`, on the same origin as the UI, and forwards:
+503.) `crates/node/src/plugin_proxy.rs` mounts that server on the same origin
+as the UI and explicitly matches `/proxy`, `/proxy/` and `/proxy/*path`. Both
+root forms reach the upstream `/`. The explicit `/proxy/` route is required
+because Axum catch-all routes do not match an empty path remainder. The trailing
+slash keeps relative code-server assets under the proxy prefix. The proxy
+forwards:
 
 - HTTP with streaming bodies in both directions, and upgrades (WebSocket);
 - the path after the prefix, byte for byte, and the query intact;

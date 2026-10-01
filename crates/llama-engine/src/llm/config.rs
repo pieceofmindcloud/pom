@@ -366,14 +366,21 @@ pub(super) fn fit_memory_margins_with_mtp(
         .collect()
 }
 
-/// Calcula apenas o cache KV do contexto MTP, sem abrir o modelo nem montar
-/// seu grafo. O espaço de compute é deliberadamente deixado para a tentativa
-/// real de `llama_init_from_model`, que pode recuar para a RAM se não couber.
-/// Como o bloco nextn fica no fim, sua reserva vai para o último dispositivo
-/// na ordem slow-to-fast usada pelo fit.
+/// Estimates the MTP context's KV cache without loading the model or building
+/// its graph. The fitted `n_ctx` is already the total context capacity, and
+/// `kv_unified=true` allocates one `n_ctx`-cell buffer regardless of
+/// `n_seq_max`; only the sequence IDs, not the cell count, use
+/// `kv_seq_budget`.
+///
+/// llama.cpp places each KV layer on `model.dev_layer(il)`. The NextN layers
+/// are a suffix of the model, but a multi-layer NextN suffix can cross device
+/// boundaries. Use the joint fit's `tensor_split` to mirror its layer mapping
+/// rather than charging every NextN layer to the final device.
 pub(super) fn estimate_mtp_vram_costs(
     info: &crate::gguf::GgufInfo,
     cfg: &EngineConfig,
+    n_ctx: u32,
+    tensor_split: &[f32],
     n_devices: usize,
 ) -> Option<Vec<usize>> {
     let mut costs = vec![0usize; n_devices];
@@ -382,22 +389,63 @@ pub(super) fn estimate_mtp_vram_costs(
     }
 
     let block_count = info.block_count?;
-    let last_layer = block_count.checked_sub(1)?;
     let nextn_layers = info.nextn_predict_layers.unwrap_or(1).max(1);
     let first_nextn_layer = block_count.checked_sub(nextn_layers)?;
+    let last_layer = block_count.checked_sub(1)?;
     let geometry = info
         .kv_geometry_for_range(first_nextn_layer, last_layer)
         .ok()?;
-    let bytes = crate::kv_budget::kv_bytes_for_layers(
-        u64::from(cfg.n_ctx),
-        u64::from(kv_seq_budget(cfg.max_sessions)),
-        &geometry,
-        cfg.cache_type_k,
-        cfg.cache_type_v,
-    )
-    .ok()?;
-    costs[n_devices - 1] = usize::try_from(bytes).ok()?;
+
+    for (offset, layer_geometry) in geometry.iter().enumerate() {
+        let layer = first_nextn_layer.checked_add(u32::try_from(offset).ok()?)?;
+        let device = llama_layer_device_from_split(layer, block_count, tensor_split, n_devices)?;
+        let bytes = crate::kv_budget::kv_bytes_for_layers(
+            u64::from(n_ctx),
+            1,
+            std::slice::from_ref(layer_geometry),
+            cfg.cache_type_k,
+            cfg.cache_type_v,
+        )
+        .ok()?;
+        let bytes = usize::try_from(bytes).ok()?;
+        costs[device] = costs[device].checked_add(bytes)?;
+    }
     Some(costs)
+}
+
+/// Mirrors llama.cpp's layer-device selection for `LLAMA_SPLIT_MODE_LAYER`:
+/// cumulative `tensor_split` fractions are compared with `il/(n_layer_all+1)`.
+fn llama_layer_device_from_split(
+    layer: u32,
+    block_count: u32,
+    tensor_split: &[f32],
+    n_devices: usize,
+) -> Option<usize> {
+    if n_devices == 1 {
+        return Some(0);
+    }
+    let splits = tensor_split.get(..n_devices)?;
+    if splits
+        .iter()
+        .any(|split| !split.is_finite() || *split < 0.0)
+    {
+        return None;
+    }
+    let split_sum = splits.iter().copied().sum::<f32>();
+    if !split_sum.is_finite() || split_sum <= 0.0 {
+        return None;
+    }
+
+    let layer_slots = block_count.checked_add(1)?;
+    let layer_fraction = layer as f32 / layer_slots as f32;
+    let mut cumulative = 0.0f32;
+    for (device, split) in splits.iter().enumerate() {
+        cumulative += *split;
+        if cumulative / split_sum > layer_fraction {
+            return Some(device);
+        }
+    }
+    Some(n_devices - 1)
 }
 
 /// Quantas GPUs físicas o fit deve considerar.
@@ -567,26 +615,17 @@ mod fit_memory_margin_tests {
         );
     }
 
-    #[test]
-    fn reserva_mtp_analitica_calcula_so_o_kv_e_coloca_no_ultimo_dispositivo() {
-        let info = crate::gguf::GgufInfo {
-            block_count: Some(41),
-            nextn_predict_layers: Some(1),
-            attention_head_count_kv: Some(vec![2]),
-            attention_key_length: Some(vec![64]),
-            attention_value_length: Some(vec![64]),
-            ..Default::default()
-        };
-        let cfg = EngineConfig {
-            n_ctx: 4096,
-            max_sessions: 1,
+    fn cfg_for_mtp_vram_estimate(n_ctx: u32, max_sessions: u32) -> EngineConfig {
+        EngineConfig {
+            n_ctx,
+            max_sessions,
             offload_kqv: true,
             cache_type_k: crate::KvCacheType::F16,
             cache_type_v: crate::KvCacheType::F16,
             fit_memory: true,
             fit_memory_margin_mb: 256,
             n_batch: 128,
-            n_gpu_layers: 99,
+            n_gpu_layers: DEFAULT_GPU_LAYERS,
             n_threads: 0,
             need_embeddings: false,
             mtp: true,
@@ -596,21 +635,56 @@ mod fit_memory_margin_tests {
             moe_external_executor_layers: Vec::new(),
             mmproj_path: None,
             mtp_draft_path: None,
-        };
+        }
+    }
 
+    #[test]
+    fn mtp_reservation_counts_the_unified_context_cells_once() {
+        let info = crate::gguf::GgufInfo {
+            block_count: Some(41),
+            nextn_predict_layers: Some(1),
+            attention_head_count_kv: Some(vec![2]),
+            attention_key_length: Some(vec![64]),
+            attention_value_length: Some(vec![64]),
+            ..Default::default()
+        };
+        let cfg = cfg_for_mtp_vram_estimate(4096, 3);
+        let fitted_n_ctx = 2048;
+        // `n_ctx` is the total context, while max_sessions only increases the
+        // sequence-ID budget. llama.cpp allocates one unified n_ctx-cell KV.
+        let tensor_split = [39.0, 3.0];
+
+        assert_eq!(kv_seq_budget(cfg.max_sessions), 6);
         assert_eq!(
-            estimate_mtp_vram_costs(&info, &cfg, 2),
-            Some(vec![0, 2 * 4096 * 2 * 64 * 2 * 2])
+            estimate_mtp_vram_costs(&info, &cfg, fitted_n_ctx, &tensor_split, 2),
+            Some(vec![0, 2048 * 2 * 64 * 2 * 2])
         );
     }
 
-    /// Regressão do defeito de 2026-09-08 na ksia: com `llama_max_devices()`
-    /// (16) no lugar da contagem física, a reserva de KV do contexto MTP caía
-    /// no índice 15 - um dispositivo que não existe - e as duas RTX ficavam
-    /// com margem zero para ele. O fit então planejava sobre VRAM já
-    /// prometida e o decode abortava na segunda placa.
     #[test]
-    fn reserva_mtp_vai_para_a_ultima_placa_real_e_nao_para_o_limite_de_compilacao() {
+    fn multi_layer_nextn_reservation_follows_llama_cpp_layer_split() {
+        let info = crate::gguf::GgufInfo {
+            block_count: Some(10),
+            nextn_predict_layers: Some(4),
+            attention_head_count_kv: Some(vec![1]),
+            attention_key_length: Some(vec![64]),
+            attention_value_length: Some(vec![64]),
+            ..Default::default()
+        };
+        let cfg = cfg_for_mtp_vram_estimate(1024, 2);
+        // With 11 layer slots (including the output head), llama.cpp's split
+        // puts nextn layers 6-7 on device 0 and layers 8-9 on device 1.
+        let tensor_split = [7.5, 3.5];
+        let bytes_per_layer = 1024 * 2 * 64 * 2;
+
+        assert_eq!(
+            estimate_mtp_vram_costs(&info, &cfg, cfg.n_ctx, &tensor_split, 2),
+            Some(vec![2 * bytes_per_layer, 2 * bytes_per_layer])
+        );
+    }
+
+    #[test]
+    fn multi_device_mtp_fit_requires_a_native_tensor_split() {
         let info = crate::gguf::GgufInfo {
             block_count: Some(41),
             nextn_predict_layers: Some(1),
@@ -619,39 +693,35 @@ mod fit_memory_margin_tests {
             attention_value_length: Some(vec![64]),
             ..Default::default()
         };
-        let cfg = EngineConfig {
-            n_ctx: 4096,
-            max_sessions: 1,
-            offload_kqv: true,
-            cache_type_k: crate::KvCacheType::F16,
-            cache_type_v: crate::KvCacheType::F16,
-            fit_memory: true,
-            fit_memory_margin_mb: 256,
-            n_batch: 128,
-            n_gpu_layers: 99,
-            n_threads: 0,
-            need_embeddings: false,
-            mtp: true,
-            mtp_cpu_fallback_enabled: true,
-            rs_seq_window: 0,
-            moe_external_executor: false,
-            moe_external_executor_layers: Vec::new(),
-            mmproj_path: None,
-            mtp_draft_path: None,
+        let cfg = cfg_for_mtp_vram_estimate(4096, 1);
+
+        assert_eq!(
+            estimate_mtp_vram_costs(&info, &cfg, cfg.n_ctx, &[0.0, 0.0], 2),
+            None
+        );
+    }
+
+    #[test]
+    fn mtp_reservation_uses_the_physical_device_count() {
+        let info = crate::gguf::GgufInfo {
+            block_count: Some(41),
+            nextn_predict_layers: Some(1),
+            attention_head_count_kv: Some(vec![2]),
+            attention_key_length: Some(vec![64]),
+            attention_value_length: Some(vec![64]),
+            ..Default::default()
         };
-
+        let cfg = cfg_for_mtp_vram_estimate(4096, 1);
         let physical = fit_device_count(2, 2, 16);
-        let costs = estimate_mtp_vram_costs(&info, &cfg, physical)
-            .expect("o custo do contexto MTP precisa ser estimável");
+        let tensor_split = [39.0, 3.0];
+        let costs = estimate_mtp_vram_costs(&info, &cfg, cfg.n_ctx, &tensor_split, physical)
+            .expect("the MTP context cost should be estimable");
 
-        assert_eq!(costs.len(), 2, "só existem duas placas nesta máquina");
-        assert!(costs[1] > 0, "a reserva pertence à última placa real");
-
-        // O que acontecia antes: um vetor de 16 posições cuja reserva o C
-        // nunca leria, porque ele só indexa os dispositivos que existem.
-        let inflado = estimate_mtp_vram_costs(&info, &cfg, 16)
-            .expect("o custo do contexto MTP precisa ser estimável");
-        assert_eq!(inflado[1], 0, "a última placa real ficava sem reserva");
+        assert_eq!(costs.len(), 2);
+        assert!(
+            costs[1] > 0,
+            "the final nextn layer maps to the final device"
+        );
     }
 
     #[test]
@@ -1263,59 +1333,99 @@ pub(super) fn fit_plan(
     let mut selected_tensor_buft_overrides = primary_tensor_buft_overrides;
 
     if mtp_mode == MtpFitMode::Vram && primary_gpu_layers == -1 {
-        let mut mtp_mparams = make_model_params(true);
-        let mtp_cparams = make_context_params(true);
-        let mut joint_margins = match crate::gguf::read_info(std::path::Path::new(model_path))
-            .ok()
-            .and_then(|info| estimate_mtp_vram_costs(&info, cfg, physical_devices))
-        {
-            Some(mtp_cost) => {
-                tracing::info!(
-                    mtp_vram_cost_estimate = ?mtp_cost,
-                    "llama.cpp fit reservou o KV estimado do contexto MTP por dispositivo"
-                );
-                fit_memory_margins_with_mtp(&margins, &mtp_cost, MtpFitMode::Vram)
-            }
-            None => {
-                warn!(
-                    "não foi possível estimar o KV do contexto MTP; o grafo não será sondado e o recuo para RAM ficará disponível se a GPU falhar"
-                );
-                margins.clone()
-            }
-        };
-        let mut mtp_tensor_split = vec![0.0_f32; n_devices];
-        let mut mtp_tensor_buft_overrides = vec![
-            sys::llama_model_tensor_buft_override {
-                pattern: ptr::null(),
-                buft: ptr::null_mut(),
+        // First discover the native layer split, then charge each NextN layer's
+        // KV to the device llama.cpp assigned to it. Refit until the split and
+        // the reservation agree; otherwise use the CPU companion rather than
+        // accepting a fit with an unreserved device.
+        const MAX_MTP_FIT_ATTEMPTS: usize = 4;
+        let mtp_info = crate::gguf::read_info(std::path::Path::new(model_path)).ok();
+        let mut reserved_mtp_cost = vec![0usize; physical_devices];
+        let mut exhausted_attempts = true;
+
+        for attempt in 0..MAX_MTP_FIT_ATTEMPTS {
+            let mut joint_margins =
+                fit_memory_margins_with_mtp(&margins, &reserved_mtp_cost, MtpFitMode::Vram);
+            let mut mtp_mparams = make_model_params(true);
+            let mut mtp_cparams = make_context_params(true);
+            let mut mtp_tensor_split = vec![0.0_f32; n_devices];
+            let mut mtp_tensor_buft_overrides = vec![
+                sys::llama_model_tensor_buft_override {
+                    pattern: ptr::null(),
+                    buft: ptr::null_mut(),
+                };
+                n_overrides
+            ];
+            let mtp_status = unsafe {
+                sys::llama_rs_fit_params(
+                    path.as_ptr(),
+                    &mut mtp_mparams,
+                    &mut mtp_cparams,
+                    mtp_tensor_split.as_mut_ptr(),
+                    mtp_tensor_buft_overrides.as_mut_ptr(),
+                    joint_margins.as_mut_ptr(),
+                    FIT_MIN_CONTEXT,
+                    sys::GGML_LOG_LEVEL_WARN,
+                )
             };
-            n_overrides
-        ];
-        let mut mtp_cparams = mtp_cparams;
-        let mtp_status = unsafe {
-            sys::llama_rs_fit_params(
-                path.as_ptr(),
-                &mut mtp_mparams,
-                &mut mtp_cparams,
-                mtp_tensor_split.as_mut_ptr(),
-                mtp_tensor_buft_overrides.as_mut_ptr(),
-                joint_margins.as_mut_ptr(),
-                FIT_MIN_CONTEXT,
-                sys::GGML_LOG_LEVEL_WARN,
-            )
-        };
-        let joint_gpu_layers = (mtp_status == 0).then_some(mtp_mparams.n_gpu_layers);
-        selected_mtp_mode = choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, joint_gpu_layers);
-        if selected_mtp_mode == MtpFitMode::Vram {
-            selected_n_gpu_layers = mtp_mparams.n_gpu_layers;
-            selected_n_ctx = mtp_cparams.n_ctx;
-            selected_tensor_split = mtp_tensor_split;
-            selected_tensor_buft_overrides = mtp_tensor_buft_overrides;
-        } else {
+            let joint_gpu_layers = (mtp_status == 0).then_some(mtp_mparams.n_gpu_layers);
+            let joint_mode = choose_mtp_fit_mode(mtp_mode, primary_gpu_layers, joint_gpu_layers);
+            if joint_mode != MtpFitMode::Vram {
+                selected_mtp_mode = joint_mode;
+                tracing::info!(
+                    primary_gpu_layers,
+                    joint_gpu_layers = ?joint_gpu_layers,
+                    "llama.cpp fit recusou a reserva MTP para preservar as camadas principais"
+                );
+                exhausted_attempts = false;
+                break;
+            }
+
+            let Some(mtp_info) = mtp_info.as_ref() else {
+                warn!("não foi possível ler a geometria GGUF do KV MTP; usando o recuo para RAM");
+                selected_mtp_mode = MtpFitMode::Ram;
+                exhausted_attempts = false;
+                break;
+            };
+            let Some(actual_mtp_cost) = estimate_mtp_vram_costs(
+                mtp_info,
+                cfg,
+                mtp_cparams.n_ctx,
+                &mtp_tensor_split,
+                physical_devices,
+            ) else {
+                warn!("não foi possível estimar o KV MTP pela divisão nativa; usando o recuo para RAM");
+                selected_mtp_mode = MtpFitMode::Ram;
+                exhausted_attempts = false;
+                break;
+            };
             tracing::info!(
-                primary_gpu_layers,
-                joint_gpu_layers = ?joint_gpu_layers,
-                "llama.cpp fit recusou a reserva MTP para preservar as camadas principais"
+                attempt,
+                mtp_vram_cost_estimate = ?actual_mtp_cost,
+                "llama.cpp fit calculou o KV MTP por dispositivo pela divisão efetiva de camadas"
+            );
+
+            if actual_mtp_cost == reserved_mtp_cost {
+                selected_mtp_mode = MtpFitMode::Vram;
+                selected_n_gpu_layers = mtp_mparams.n_gpu_layers;
+                selected_n_ctx = mtp_cparams.n_ctx;
+                selected_tensor_split = mtp_tensor_split;
+                selected_tensor_buft_overrides = mtp_tensor_buft_overrides;
+                exhausted_attempts = false;
+                break;
+            }
+
+            tracing::debug!(
+                attempt,
+                reserved_mtp_cost = ?reserved_mtp_cost,
+                actual_mtp_cost = ?actual_mtp_cost,
+                "llama.cpp fit repetirá para alinhar o orçamento MTP à divisão de camadas"
+            );
+            reserved_mtp_cost = actual_mtp_cost;
+        }
+
+        if exhausted_attempts {
+            tracing::info!(
+                "MTP usará o acompanhante em RAM porque a reserva por dispositivo não convergiu"
             );
         }
     } else if mtp_mode == MtpFitMode::Vram {

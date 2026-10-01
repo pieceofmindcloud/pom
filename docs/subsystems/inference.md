@@ -379,17 +379,13 @@ value is not queried when `fit_memory=false`. `llama_max_devices()` is the
 the number of cards present. The vectors handed to C keep that capacity, but
 every physical decision uses `fit_device_count`, which counts the eligible
 handles of `llama_rs_get_devices` and falls back to the memory snapshot's count,
-with a minimum slot for the host. Confusing the two had two consequences, both
-observed on a two-GPU CUDA server on 2026-09-08: the `snapshot parcial de
-memória` ("partial memory snapshot") warning fired on every machine with fewer
-than 16 GPUs (`reported_devices=2 expected_devices=16`), and - the real defect -
-the MTP context's KV reservation, which belongs to the last card, landed on
-index 15, a nonexistent device C never reads. The fit then planned over VRAM
-already promised to the MTP context. That native fit is exclusive to the real
-load. The Deploy screen's capacity preview uses GGUF metadata,
-`plan::range_cost` and the current free VRAM for an analytical estimate; it
-calls neither `llama_backend_init`, `llama_rs_fit_params` nor `fit_plan`, so it
-does not compete with a load in progress.
+with a minimum slot for the host. This prevents the compile-time capacity from
+being mistaken for installed hardware, both in the memory snapshot and in the
+per-device MTP reservation. The native fit is exclusive to the real load. The
+Deploy screen's capacity preview uses GGUF metadata, `plan::range_cost` and the
+current free VRAM for an analytical estimate; it calls neither
+`llama_backend_init`, `llama_rs_fit_params` nor `fit_plan`, so it does not
+compete with a load in progress.
 
 When `mtp_enabled=true`, the fit first fits the main model and its context
 without MTP. Before considering the optional reservation, it reads
@@ -407,20 +403,27 @@ metadata or an architecture outside the generated list turns MTP off before
 creating any context and publishes the reason in `mtp_unavailable_reason`. The
 `nextn` weight alone is not proof that the graph is valid.
 
-For a known architecture, the combined reservation only computes the KV of the
-`nextn` blocks from the GGUF geometry, using `n_ctx`, `kv_seq_budget` and the
-configured cache types, and puts that cost on the last device of the
-slow-to-fast order. It neither opens a model nor builds a dry MTP context to
-measure `compute`: the exact measurement would require building the graph, and
-an internal llama.cpp assert at that stage would abort the node before POM
-could fall back. The compute cost is therefore only validated on the real
-attempt to create the context, which can fall back to RAM. The combined attempt
-is only accepted when it keeps that full fit; if it reduces `n_gpu_layers` or
-fails, the main plan wins, the target is left without `nextn` weights in VRAM
-and MTP falls back to the companion model in RAM, if allowed, or becomes
-unavailable. So the conservative reservation protects the layers each token
-needs to run without making the fit a source of aborts. MTP off reads no MTP
-metadata, estimates no budget and does not try to attach a context. Before
+For a known architecture, the combined reservation computes only the KV of
+the `nextn` blocks from GGUF geometry and the configured cache types. It uses
+the fitted MTP context's `n_ctx` once: `kv_unified=true` allocates one unified
+buffer of that total capacity, while `kv_seq_budget` sets sequence IDs and does
+not multiply the KV cell count. The reservation follows llama.cpp's actual
+`tensor_split` layer mapping, so each NextN layer is charged to the device that
+will hold it, even when the suffix spans devices. POM repeats the joint fit up
+to four times until that reservation and the resulting split agree; if the
+split cannot be estimated or does not converge, MTP uses its CPU companion
+instead of accepting an under-reserved VRAM fit. This calculation neither
+opens a model nor builds a dry MTP context to measure `compute`: the exact
+measurement would require building the graph, and an internal llama.cpp assert
+at that stage would abort the node before POM could fall back. The compute cost
+is therefore only validated on the real attempt to create the context, which
+can fall back to RAM. The combined attempt is only accepted when it keeps the
+main model's full fit; if it reduces `n_gpu_layers` or fails, the main plan
+wins, the target is left without `nextn` weights in VRAM and MTP falls back to
+the companion model in RAM, if allowed, or becomes unavailable. So the
+conservative reservation protects the layers each token needs to run without
+making the fit a source of aborts. MTP off reads no MTP metadata, estimates no
+budget and does not try to attach a context. Before
 creating the draft context, the runtime checks the evidence of the `nextn`
 tensors in the GGUF and whether they were requested in
 `llama_model_params.load_mtp`; `llama_model_n_layer_nextn` alone is not enough,

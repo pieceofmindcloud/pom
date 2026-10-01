@@ -24,10 +24,12 @@ para `120a`). As pontes C/C++ compiladas por `cc` tambem herdam o
 - `llm/` - wrapper FFI do llama.cpp dividido por responsabilidade em captura,
   configuração, modelo, engine, batch, amostragem e testes. É a única
   superfície `unsafe` do produto. Alcança o estado da coletiva TP por
-  `tp_probe` (ver abaixo). Em `llm/config.rs`, `llama_max_devices()` é só a
-  capacidade dos vetores entregues ao C; quantas placas existem é
-  `fit_device_count`, e é ela que posiciona a reserva de KV do contexto MTP na
-  última placa **real** - ver `docs/subsystems/inference.md`, seção do fit.
+  `tp_probe` (see below). In `llm/config.rs`, `llama_max_devices()` is only
+  the capacity of vectors passed to C; `fit_device_count` counts physical
+  devices. The MTP KV reservation counts the fitted unified context once and
+  follows the native `tensor_split` per NextN layer; the joint fit repeats until
+  the reservation and split agree, then falls back to RAM if they do not. See
+  `docs/subsystems/inference.md`, the fit section.
   Os snapshots nativos usados por `/health` passam pelo
   `wrapper_common.cpp`; eles devem tratar qualquer nome/descrição C nulo antes
   de chegar a `std::string` ou JSON, pois essa falha pode virar

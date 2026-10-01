@@ -871,6 +871,8 @@ impl RemoteStreamDelivery {
         // silently keep using the persistent TCP link when the cluster opted
         // into QUIC: otherwise the MTP/remote-stream trace would describe a
         // different transport than the one the gateway requested.
+        let _route_use = node_id
+            .map(|id| crate::route_plan::book().begin_use(id, crate::route_plan::Plane::Gateway));
         let pinned = node_id
             .and_then(|id| crate::route_plan::book().active(id, crate::route_plan::Plane::Gateway));
         let use_link = match pinned.as_ref().map(|route| route.kind) {
@@ -1167,6 +1169,8 @@ async fn deliver_pinned(
 ) -> Option<Delivery> {
     use crate::route_plan::{book, FailureOutcome, Plane, RouteKind};
 
+    // The return leg to the gateway also pins the route while delivering.
+    let _route_use = book().begin_use(node_id, Plane::Gateway);
     for _ in 0..MAX_PINNED_DELIVERIES {
         let route = book().active(node_id, Plane::Gateway)?;
         let delivered = match route.kind {

@@ -267,7 +267,11 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   POST HTTP/3 por endpoint QUIC (qualquer status prova o caminho) e `/health`
   pelo túnel; duas amostras, vale a menor. `record_failure` repete a rota uma
   vez, depois passa para a próxima medida e, com a lista esgotada, apaga a
-  aresta e acorda o planejador (reanálise). `establish_budget` dá o orçamento de
+  aresta e acorda o planejador (reanálise). `begin_use` returns the `RouteUse`
+  guard every frame and every return delivery holds: with a frame in flight or
+  until `PIN_GRACE` (60 s) after the last one, the planner neither probes the
+  edge nor swaps its route, and `active` ignores `PLAN_TTL`; only the frame's
+  own failure swaps it. `establish_budget` dá o orçamento de
   conexão: 3x o RTT medido entre 100 ms e o teto, 150 ms sem medição.
   `snapshot`/`signature` alimentam o campo `route_plan` de `/api/ui/cluster`.
 - `Network::gateway_bases` - os endereços do gateway de um peer na ordem em

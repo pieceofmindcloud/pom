@@ -872,6 +872,19 @@ frame's deadline. Now the route is **measured once and pinned**.
   same frame; an exhausted list erases the edge, wakes the planner and the frame
   still goes down the full ladder. A failure after delivery never switches
   routes, because the peer may have executed the frame.
+- **Route pinned during inference.** Every frame
+  (`relay::send_frame_or_tunnel`) and every return delivery (`direct`,
+  `Gateway` plane) holds a `RouteBook::begin_use` guard on the edge. With a
+  frame in flight, or until `PIN_GRACE` (60 s) after the last one, the planner
+  does not probe the edge (`claim_measurement`) and drops an analysis that
+  finishes in between (`install`), including an empty one; and `active` keeps
+  returning the route even with the analysis expired (`PLAN_TTL`), so a long
+  generation does not drop to the full ladder halfway. The frame's own failure
+  still switches routes (`record_failure`). Once the edge is idle, the stale
+  fingerprint or deadline leads to a new analysis on the next round. What the
+  pin does not hold: a switch underneath the tunnel (relay to direct through a
+  hole punch) and the `prefer_tunnel` mark of `PeerClients`, which only applies
+  to an edge without an analysis.
 - **Connection wait.** QUIC's setup budget is 3x the peer's measured RTT,
   between 100 ms and 300 ms; without a measurement, 150 ms. A target with no
   local route (missing address family) fails at once through

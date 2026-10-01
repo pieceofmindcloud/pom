@@ -2489,6 +2489,11 @@ async fn send_frame_planned(
 ) -> Result<SentFrame> {
     use crate::route_plan::{book, FailureOutcome, Plane};
 
+    // The frame pins the edge's route while in flight and for
+    // `route_plan::PIN_GRACE` afterwards: the planner does not swap the route
+    // of an inference in progress. The frame's own failure still swaps it,
+    // below.
+    let _route_use = book().begin_use(&step.node_id, Plane::Inference);
     if !crate::infer_tunnel::is_local_node(&step.node_id) {
         for _ in 0..MAX_PINNED_ATTEMPTS {
             let Some(route) = book().active(&step.node_id, Plane::Inference) else {

@@ -334,22 +334,24 @@ pub struct Config {
     /// devolve pela API: a interface recebe apenas estado e máscara.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huggingface_token: Option<String>,
-    /// Diretório onde os snapshots de KV cache são gravados e lidos, como o
-    /// `--slot-save-path` do llama-server. Propriedade da máquina, não da
-    /// implantação: cada peer grava a fatia dele aqui. A variável de ambiente
-    /// `POM_SLOT_SAVE_PATH` tem precedência sobre este campo - use
-    /// `slot_save_path_effective()`, nunca o campo cru.
-    /// Ausente/vazio em todas as fontes desliga o recurso e as rotas de
-    /// snapshot respondem "não configurado".
+    /// Directory where KV cache snapshots are written and read, like
+    /// llama-server's `--slot-save-path`. A machine property, not a
+    /// deployment one: each peer writes its own slice here. The
+    /// `POM_SLOT_SAVE_PATH` environment variable takes precedence over this
+    /// field - use `slot_save_path_effective()`, never the raw field.
+    /// Absent in every source means the default `~/.pom/kv-slots`
+    /// (`default_slot_save_dir`); an empty value turns the feature off and the
+    /// snapshot routes answer "not configured".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_save_path: Option<String>,
-    /// Liga a persistência automática do cache de prefixo: ao fim de cada turno
-    /// o gateway grava o KV retido em `slot_save_path` e, num miss após
-    /// reinício, restaura em vez de refazer o prefill a frio. Exige
-    /// `slot_save_path` em todos os hops. Desligado por padrão até ter prova de
-    /// campo; a env var `POM_SLOT_PERSIST_PREFIX_CACHE=1` também liga. Use
+    /// Turns on automatic persistence of the prefix cache: at the end of each
+    /// turn the gateway writes the retained KV to `slot_save_path` and, on a
+    /// miss after a restart, restores it instead of redoing a cold prefill.
+    /// Requires `slot_save_path` on every hop. On by default (a `pom.json`
+    /// without the field gets `true`); `false` here or
+    /// `POM_SLOT_PERSIST_PREFIX_CACHE=0` turns it off. Use
     /// `slot_persist_prefix_cache_enabled()`.
-    #[serde(default)]
+    #[serde(default = "default_slot_persist_prefix_cache")]
     pub slot_persist_prefix_cache: bool,
     /// Orçamento de disco para os snapshots automáticos de prefixo, somado
     /// entre as fatias. `None` usa `DEFAULT_SLOT_AUTO_MAX_BYTES` (2 GiB). Use
@@ -756,18 +758,21 @@ impl Config {
         (self.shard_max_gb() * 1_073_741_824.0).round() as u64
     }
 
-    /// Diretório efetivo de snapshots de KV cache, ou `None` quando o recurso
-    /// está desligado. Precedência: a variável de ambiente `POM_SLOT_SAVE_PATH`
-    /// (derivada da marca, `brand::env("SLOT_SAVE_PATH")`) vence o campo do
-    /// `pom.json`. Vazio em qualquer uma conta como desligado, igual à regra de
-    /// `shard_dir`. Como a env var é por processo, ela **não** é persistida:
-    /// `save()` continua gravando só o campo do arquivo.
+    /// Effective KV cache snapshot directory, or `None` when the feature is
+    /// off. Precedence: the `POM_SLOT_SAVE_PATH` environment variable (derived
+    /// from the brand, `brand::env("SLOT_SAVE_PATH")`) beats the `pom.json`
+    /// field, and with neither set the default is `~/.pom/kv-slots`
+    /// (`default_slot_save_dir`). An empty value in the variable or the field
+    /// turns the feature off. Since the env var is per process, it is **not**
+    /// persisted: `save()` keeps writing only the file's field.
     pub fn slot_save_path_effective(&self) -> Option<String> {
-        crate::brand::env("SLOT_SAVE_PATH")
+        match crate::brand::env("SLOT_SAVE_PATH")
             .ok()
             .or_else(|| self.slot_save_path.clone())
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
+        {
+            Some(value) => Some(value.trim().to_string()).filter(|value| !value.is_empty()),
+            None => Some(default_slot_save_dir().to_string_lossy().into_owned()),
+        }
     }
 
     pub fn slot_save_dir(&self) -> Option<PathBuf> {
@@ -864,6 +869,19 @@ pub fn default_workspace_root() -> PathBuf {
     crate::catalog::home_dir()
         .unwrap_or_else(project_root)
         .join("pom_workspace")
+}
+
+/// `~/.pom/kv-slots` is where KV cache snapshots (manual and the persistent
+/// prefix cache) go when `slot_save_path` is not configured.
+pub fn default_slot_save_dir() -> PathBuf {
+    crate::catalog::home_dir()
+        .unwrap_or_else(project_root)
+        .join(".pom")
+        .join("kv-slots")
+}
+
+fn default_slot_persist_prefix_cache() -> bool {
+    true
 }
 
 /// `~/.pom/models` is the first-access destination for whole models.
@@ -1481,6 +1499,30 @@ mod tests {
         let shard_dir = default_shard_dir();
         assert!(model_dir.ends_with(Path::new(".pom").join("models")));
         assert!(shard_dir.ends_with(Path::new(".pom").join("models_sliced")));
+    }
+
+    /// KV snapshots and the persistent prefix cache are on by default, in
+    /// `~/.pom/kv-slots`; an empty `slot_save_path` or `false` turns them off.
+    #[test]
+    fn kv_slots_are_on_by_default_in_the_pom_home() {
+        if crate::brand::env("SLOT_SAVE_PATH").is_ok()
+            || crate::brand::env("SLOT_PERSIST_PREFIX_CACHE").is_ok()
+        {
+            return;
+        }
+        let defaulted: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        assert!(defaulted.slot_persist_prefix_cache_enabled());
+        assert!(defaulted
+            .slot_save_dir()
+            .unwrap()
+            .ends_with(Path::new(".pom").join("kv-slots")));
+
+        let off: Config = serde_json::from_str(
+            r#"{"profile":"node","slot_save_path":"","slot_persist_prefix_cache":false}"#,
+        )
+        .unwrap();
+        assert_eq!(off.slot_save_dir(), None);
+        assert!(!off.slot_persist_prefix_cache_enabled());
     }
 
     #[test]

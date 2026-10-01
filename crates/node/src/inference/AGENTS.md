@@ -922,7 +922,8 @@ visibilidade dos controles de implantação na UI local.
   mais o sidecar `<name>.json` (identidade do modelo e da fatia).
   `restore_slot` confere o sidecar antes de tocar no motor, `alloc_seq` uma
   sessão nova `retained` na fronteira salva. `slot_dir` vem de
-  `NodeConfig.slot_save_path`; sem ele a rota responde 400. `replicate_slot_call`
+  `NodeConfig.slot_save_path` (default `~/.pom/kv-slots`, from
+  `Config::slot_save_path_effective`); with it empty the route answers 400. `replicate_slot_call`
   repassa a ação aos workers de TP. Capability `inference/slot-persist-v1`.
   Ver `inference.md` §3.1.1.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;

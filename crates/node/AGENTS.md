@@ -87,7 +87,8 @@ access).
 (`merged_relay_peers`, config primeiro), como `--bootstrap` a
 `bootstrap_nodes`. Não há flag de modelo, memória, faixa de camadas, amostragem
 nem porta de inferência: isso vem da implantação (`runtime::NodeConfig`) e do
-`pom.json` (`inference_port`, padrão 8181; `slot_save_path`).
+`pom.json` (`inference_port`, padrão 8181; `slot_save_path`, default
+`~/.pom/kv-slots`).
 
 **Toda flag tem variável de ambiente** (`ARG_ENV`, nome por
 `brand::env_var`: `--gateway-port` → `POM_GATEWAY_PORT`), aplicada por

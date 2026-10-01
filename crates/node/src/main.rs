@@ -983,7 +983,7 @@ async fn start_setup_mode(
         node_name: None,
         huggingface_token: None,
         slot_save_path: None,
-        slot_persist_prefix_cache: false,
+        slot_persist_prefix_cache: true,
         slot_auto_max_bytes: None,
         slot_auto_ttl_secs: None,
     })));

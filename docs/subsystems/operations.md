@@ -38,12 +38,15 @@ field.
   machine, not the deploy. Two sources, in this precedence: the
   `POM_SLOT_SAVE_PATH` variable and the `slot_save_path` field of `pom.json`.
   The env var is per process and is not persisted to `pom.json`. With neither,
-  the feature is off and `POST /v1/session/slot` / `POST /admin/slots/{name}`
-  answer "not configured". See `inference.md` §3.1.1 and `http-api.md`.
+  the directory is `~/.pom/kv-slots` (created on the first save); an empty
+  value turns the feature off and `POST /v1/session/slot` /
+  `POST /admin/slots/{name}` answer "not configured". See `inference.md` §3.1.1 and `http-api.md`.
 - **Persistent prefix cache:** `slot_persist_prefix_cache` in `pom.json` (or
   `POM_SLOT_PERSIST_PREFIX_CACHE=1`) makes the gateway write the retained KV at
   the end of each turn and restore it on a miss after a restart, without a
-  manual call. Off by default; requires `slot_save_path` on every hop. A
+  manual call. On by default (`false` in `pom.json` or
+  `POM_SLOT_PERSIST_PREFIX_CACHE=0` turns it off); requires `slot_save_path`
+  on every hop, which the `~/.pom/kv-slots` default provides. A
   growing conversation keeps a single snapshot (supersession); short turns do
   not rewrite it (debounce). `slot_auto_max_bytes` caps the disk use (default
   2 GiB) and `slot_auto_ttl_secs` / `POM_SLOT_AUTO_TTL_SECS` the TTL (default 7

@@ -1431,7 +1431,9 @@ disappears"). The snapshot directory turns on a mechanism to write and reread
 that KV, equivalent to llama-server's `--slot-save-path`. It comes, in this
 precedence, from the `POM_SLOT_SAVE_PATH` variable or the `slot_save_path` field
 of `pom.json` (`Config::slot_save_path_effective`); the env var is per process
-and not persisted. The value is injected into `NodeConfig` in `apply_locked`
+and not persisted. With neither set, it is `~/.pom/kv-slots`
+(`config::default_slot_save_dir`), so every peer serves snapshots by default; an
+empty value turns the feature off. The value is injected into `NodeConfig` in `apply_locked`
 from the installation, like `cache_type_*`.
 
 - **Engine** (`llama-engine`): `LlmEngine::state_seq_save_file` /
@@ -1477,7 +1479,8 @@ no partial removal, so the mechanism applies to every served model.
 #### Persistent prefix cache (automatic)
 
 With `slot_persist_prefix_cache` on (a `pom.json` field or
-`POM_SLOT_PERSIST_PREFIX_CACHE=1`; off by default) and `slot_save_path`
+`POM_SLOT_PERSIST_PREFIX_CACHE`; on by default, a `pom.json` without the field
+reads `true`) and `slot_save_path`
 configured on **every** hop, the gateway makes the prefix cache survive restarts,
 with no manual call:
 

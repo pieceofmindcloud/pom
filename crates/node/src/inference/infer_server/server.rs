@@ -1224,6 +1224,53 @@ pub(super) fn context_per_session(n_ctx_total: u32, max_sessions: u32) -> u32 {
     n_ctx_total / max_sessions.max(1)
 }
 
+/// The tokenized prompt fits in the session window, with room for at least one
+/// generated token. With the unified KV cache llama.cpp would accept a larger
+/// prompt - it would take another session's cells -, so the boundary is
+/// enforced here. The gateway already refuses by the estimate; this catches a
+/// prompt denser than it and any caller that does not go through the gateway.
+pub(super) fn check_prompt_fits_session(
+    s: &super::InferState,
+    prompt_tokens: usize,
+) -> anyhow::Result<()> {
+    let window = context_per_session(s.engine.n_ctx(), s.max_sessions);
+    match prompt_window_refusal(prompt_tokens, window) {
+        Some(reason) => Err(anyhow::anyhow!(reason)),
+        None => Ok(()),
+    }
+}
+
+pub(super) fn prompt_window_refusal(prompt_tokens: usize, window: u32) -> Option<String> {
+    (prompt_tokens >= window as usize).then(|| {
+        format!(
+            "the prompt has {prompt_tokens} tokens and the session window is {window}; \
+             there is no room left for the answer"
+        )
+    })
+}
+
+/// This session's generation still fits in the window. Reaching it is a stop:
+/// the gateway bounds the total (`OutputBudget::within_session_window`) and
+/// ends with `length` before getting here; this refusal is the safety net for
+/// the path that does not go through it and for the head that generates ahead
+/// in remote-stream mode.
+pub(super) fn check_decode_fits_session(s: &super::InferState, n_past: u32) -> anyhow::Result<()> {
+    let window = context_per_session(s.engine.n_ctx(), s.max_sessions);
+    match decode_window_refusal(n_past, window) {
+        Some(reason) => Err(anyhow::anyhow!(reason)),
+        None => Ok(()),
+    }
+}
+
+pub(super) fn decode_window_refusal(n_past: u32, window: u32) -> Option<String> {
+    (n_past >= window).then(|| {
+        format!(
+            "the session window is full ({n_past} of {window} positions); \
+             generation stopped at the context limit"
+        )
+    })
+}
+
 // ── /health ───────────────────────────────────────────────────────────────────
 
 pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Response {

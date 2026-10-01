@@ -2294,6 +2294,26 @@ measures the prompt (`estimate_tokens` ≈ chars/3, pessimistic) **before** any
 peer sees the prompt and refuses with a message citing the flags. `/health`
 exposes both values as `n_ctx_total` and `n_ctx_per_session`.
 
+**The session window is enforced, not just estimated.** The KV cache is
+unified (`kv_unified`), so llama.cpp lets a sequence grow beyond `n_ctx` by
+using another session's cells - and reports `n_ctx_seq = n_ctx_total`, which
+produces the warning `n_ctx_seq (...) > n_ctx_train (...) -- possible training
+context overflow` when the total exceeds the training context. The warning is
+about the whole pool; each session's window is still `n_ctx`, enforced at three
+points:
+
+- **gateway, after prefill:** `OutputBudget::within_session_window` recomputes
+  the total with the **real** prompt size (`n_ctx_per_session - prompt`). A
+  prompt denser than the 3-characters-per-token estimate (code, CJK) no longer
+  lets the generation cross the window; reaching it ends with
+  `finish_reason: "length"`.
+- **peer, at prefill:** `check_prompt_fits_session` refuses a tokenized prompt
+  that fills the whole window, leaving no room for the answer.
+- **peer, at decode:** `check_decode_fits_session` refuses to decode with the
+  session already at the window's last position - the safety net for a caller
+  that does not go through the gateway and for the head that generates ahead in
+  remote-stream.
+
 That admission applies **also on a gateway that loads no model at all**. Until
 2026-09-08 it only existed when there was a local `NodeConfig`; a gateway-only
 node let the prompt cross whole, and the peer's decode aborted the process with
@@ -2351,13 +2371,14 @@ Today there are **two numbers**, never a single one (`gateway::OutputBudget`):
 | | who decides | what it limits |
 |---|---|---|
 | **leg** (`leg`) | the deployment's `NodeConfig.max_new_tokens` | **one** backend generation |
-| **total** (`total`) | `min(request, n_ctx - prompt)` | the **whole request** |
+| **total** (`total`) | `min(request, n_ctx - prompt)`, recomputed with the real prompt after prefill | the **whole request** |
 
 Exhausting the leg does not end the answer. `gateway::note_leg_boundary` counts
 the leg and the loop keeps decoding on the **same** KV session, on the same
 connection, in the same SSE stream: nothing is re-prefilled, nothing is resent,
 the client has no way to tell the stitch apart. Only the **total** ends it, and
-only it produces `finish_reason: "length"`. `x_pom.continuation_legs` says how
+only it produces `finish_reason: "length"` - whether it is the client's
+`max_tokens` or the session window. `x_pom.continuation_legs` says how
 many legs the answer used - `1` is a single generation.
 
 That applies to `stream: true` and `stream: false` through the same path:

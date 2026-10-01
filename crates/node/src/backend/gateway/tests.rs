@@ -1119,6 +1119,37 @@ mod tests {
     }
 
     #[test]
+    fn the_output_budget_stops_at_the_session_window() {
+        let budget = OutputBudget {
+            total: 50_000,
+            leg: 1_024,
+        };
+        // Real prompt larger than estimated: the total shrinks to the window.
+        let windowed = budget.within_session_window(Some(150_016), 140_000);
+        assert_eq!(
+            windowed,
+            OutputBudget {
+                total: 10_016,
+                leg: 1_024
+            }
+        );
+        // More room than requested: nothing changes.
+        assert_eq!(budget.within_session_window(Some(150_016), 1_000), budget);
+        // Full window: only the token that came with the prefill is left.
+        assert_eq!(
+            budget.within_session_window(Some(150_016), 150_016),
+            OutputBudget { total: 1, leg: 1 }
+        );
+        // With no known capacity, the budget stays as it was.
+        assert_eq!(budget.within_session_window(None, 150_016), budget);
+        // And the usual loop ends with `length` when it reaches the total.
+        assert_eq!(
+            generation_finish_reason(windowed.total, windowed.total, false),
+            Some("length")
+        );
+    }
+
+    #[test]
     fn generation_finish_reason_prioritizes_the_effective_limit() {
         assert_eq!(generation_finish_reason(4000, 4000, true), Some("length"));
         assert_eq!(generation_finish_reason(4000, 3640, true), Some("stop"));

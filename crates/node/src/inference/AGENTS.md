@@ -847,6 +847,13 @@ visibilidade dos controles de implantação na UI local.
   quente, não capacidade: contá-la como slot admitia um prefill que, no worker,
   só entrava destruindo o prefixo de outra conversa.
   `SchedulerQueue::oldest_new_session_wait` é o relógio dessa carência.
+- `check_prompt_fits_session`/`check_decode_fits_session`
+  (`infer_server/server.rs`) - one session's window
+  (`context_per_session = n_ctx_total / max_sessions`) is enforced on the peer:
+  the tokenized prompt must leave room for one token, and decode refuses with
+  the session at the last position. With `kv_unified` llama.cpp would let it
+  go past it using another session's cells. The gateway stops earlier, with
+  `length`.
 - `handle_prefill`/`handle_step` - autenticação, decode do frame e envio para o
   scheduler local. O worker usa `prefill_batch_blocking` ou
   `step_batch_blocking` quando as entradas são compatíveis e mantém o caminho

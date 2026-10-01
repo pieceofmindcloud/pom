@@ -215,13 +215,15 @@ quebra o produto inteiro.
   O `v1` de `frame/v1-batch` identifica o primeiro contrato oficial atual, não
   uma obrigação de suportar um protocolo legado; mudanças futuras devem
   evoluir esse contrato de forma explícita. → `inference.md`
-- **O `max_new_tokens` da implantação limita uma geração, não a requisição.**
-  Ele nunca foi teto do backend - o `infer_server` não o conhece. É o teto de
-  uma **perna** do laço de continuação do gateway, que atravessa a perna na
-  mesma sessão de KV e no mesmo SSE, sem reprefill e sem o cliente ver nada.
-  Quem limita a requisição é o `max_tokens` do cliente, e só ele produz
-  `finish_reason: "length"`. Vazar o `length` de uma perna fazia o harness largar
-  a chamada de ferramenta pela metade. → `inference.md` (9.1)
+- **The deployment's `max_new_tokens` bounds one generation, not the request.**
+  It was never a backend cap - the `infer_server` does not know it. It caps one
+  **leg** of the gateway's continuation loop, which crosses the leg in the same
+  KV session and the same SSE, with no re-prefill and nothing visible to the
+  client. What bounds the request is the client's `max_tokens` and the
+  session's context window (`n_ctx_per_session`, counted with the real
+  prompt), and only they produce `finish_reason: "length"`. Leaking a leg's
+  `length` made the harness drop the tool call halfway. → `inference.md`
+  (9, 9.1)
 - **O teto pedido pelo cliente é imposto e inviolável, e atingi-lo é parada
   terminal.** Nada o ultrapassa, nem uma chamada de ferramenta aberta no token
   do corte - é o que OpenAI e Anthropic fazem, e o que existe no lugar do

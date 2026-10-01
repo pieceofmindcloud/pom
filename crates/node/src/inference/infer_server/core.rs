@@ -1249,6 +1249,19 @@ mod tests {
         assert_eq!(context_per_session(100_000, 0), 100_000);
     }
 
+    /// One session's window is the peer's boundary: the prompt must leave room
+    /// for one token, and decode stops at its last position.
+    #[test]
+    fn the_session_window_bounds_prompt_and_decode() {
+        let window = context_per_session(300_032, 2);
+        assert_eq!(window, 150_016);
+        assert_eq!(prompt_window_refusal(150_015, window), None);
+        assert!(prompt_window_refusal(150_016, window).is_some());
+        assert_eq!(decode_window_refusal(150_015, window), None);
+        assert!(decode_window_refusal(150_016, window)
+            .is_some_and(|reason| reason.contains("150016 of 150016")));
+    }
+
     #[test]
     fn retained_sessions_do_not_create_capacity_for_a_new_prefill() {
         assert_eq!(new_session_slots(0, 1), 0);

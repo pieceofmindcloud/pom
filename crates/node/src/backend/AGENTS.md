@@ -750,7 +750,10 @@ faz o download autenticado do blob persistido.
 - `gateway/` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
   número. `leg` é o `max_new_tokens` da implantação: o teto de **uma** geração
   de backend, escolha do operador, que a decisão do produto proíbe levantar.
-  `total` é o teto da **requisição**: `min(pedido, n_ctx restante)`. Esgotar a
+  `total` é o teto da **requisição**: `min(pedido, n_ctx restante)`, recomputed
+  after prefill with the real prompt (`OutputBudget::within_session_window`,
+  against `n_ctx_per_session`); reaching the window also ends with `length`.
+  Esgotar a
   perna não encerra a resposta -
   `note_leg_boundary` conta a perna e o laço segue decodificando na **mesma**
   sessão de KV, no mesmo fluxo SSE, sem reprefill e sem o cliente ver nada

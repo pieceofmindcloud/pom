@@ -82,6 +82,7 @@ pub(crate) fn step_blocking(
     session.last_used = Instant::now();
     let n_past = session.n_past;
     let seq_id = session.seq_id();
+    super::server::check_decode_fits_session(&s, n_past)?;
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
     if let Some(context) = profiling.as_ref() {
         timings.record_profile_span(

@@ -283,6 +283,27 @@ impl OutputBudget {
             leg: self.leg.clamp(1, total),
         }
     }
+
+    /// The total fits in one session's window: real prompt plus output never
+    /// exceeds `window` (the `n_ctx_per_session` announced by `/health`).
+    ///
+    /// Admission only had the prompt estimate (`estimate_tokens`); after
+    /// prefill the real size is known, and a prompt denser than the estimate
+    /// let the generation cross the window - with the unified KV cache,
+    /// taking another session's cells and, at the limit, positions beyond the
+    /// training context. Reaching the window is a `length` stop, like reaching
+    /// the client's `max_tokens`. The first token already came with the
+    /// prefill, so the total never drops below one.
+    pub(super) fn within_session_window(self, window: Option<u32>, prompt_tokens: u32) -> Self {
+        let Some(window) = window.filter(|window| *window > 0) else {
+            return self;
+        };
+        let total = self.total.min(window.saturating_sub(prompt_tokens)).max(1);
+        Self {
+            total,
+            leg: self.leg.clamp(1, total),
+        }
+    }
 }
 
 /// The output budget visible to a protocol adapter after applying the selected

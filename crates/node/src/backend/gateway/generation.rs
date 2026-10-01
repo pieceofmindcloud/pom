@@ -474,7 +474,7 @@ pub(super) async fn generate_stream_inner(
         preferred_head,
         request_details: _,
     } = input;
-    let budget = budget.normalized();
+    let mut budget = budget.normalized();
     if cancellation.is_cancelled() {
         log_early_outcome("cancelado", "o cliente desistiu antes do início");
         return;
@@ -508,6 +508,13 @@ pub(super) async fn generate_stream_inner(
             }
         }
     }
+    // One session's window (`n_ctx_per_session`): the same capacity the
+    // admission above uses, applied again to the total after prefill, with the
+    // real prompt size (`OutputBudget::within_session_window`).
+    let session_window = match state.runtime_capacity_for_model(Some(&model)).await {
+        (Some(capacity), false) => Some(capacity.n_ctx),
+        _ => state.runtime.config().await.map(|cfg| cfg.n_ctx),
+    };
     record_gateway_span(
         &mut gateway_spans,
         request_started,
@@ -1097,6 +1104,15 @@ pub(super) async fn generate_stream_inner(
                 return;
             }
         };
+
+        let windowed = budget.within_session_window(session_window, first.prompt_tokens);
+        if windowed.total < budget.total {
+            info!(
+                "output limited by the session window: {} of {} tokens (prompt {} of {:?})",
+                windowed.total, budget.total, first.prompt_tokens, session_window
+            );
+            budget = windowed;
+        }
 
         let first_token_at = Instant::now();
         let mut next_token = first.token_id;

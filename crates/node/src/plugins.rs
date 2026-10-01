@@ -775,6 +775,9 @@ pub(crate) struct PersistedPluginState {
     pub plugin_path: Option<String>,
     #[serde(default)]
     pub preferences_schema: Option<enterprise_protocol::PluginPreferencesSchema>,
+    /// Última falha de instalação/handshake, sem alterar o estado da licença.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_error: Option<String>,
 }
 
 /// State for a public GitHub plugin installed without a license lease. Stored
@@ -813,6 +816,7 @@ pub(crate) struct PluginUpdateInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PluginStatus {
     pub code: String,
+    /// `true` somente quando o host do plugin foi instalado e está pronto.
     pub active: bool,
     pub state: LicenseState,
     pub features: Vec<String>,
@@ -835,6 +839,9 @@ pub(crate) struct PluginStatus {
     pub installed_at: Option<String>,
     pub update_checked_at: Option<String>,
     pub available_update: Option<PluginUpdateInfo>,
+    /// Falha de instalação exibida separadamente do estado de validade da licença.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_error: Option<String>,
     #[serde(default)]
     pub public_install: bool,
     /// URL da origem GitHub local usada pela instalação pública, se instalada.
@@ -865,6 +872,7 @@ impl PluginStatus {
             installed_at: None,
             update_checked_at: None,
             available_update: None,
+            installation_error: None,
             public_install: false,
             github_repository: None,
             preferences_schema: None,
@@ -896,6 +904,9 @@ pub(crate) struct PluginRuntime {
     persisted: Arc<Mutex<Option<PersistedPluginState>>>,
     database: Option<Arc<crate::db::PomDb>>,
     host: Arc<Mutex<Option<crate::plugin_host::PluginHost>>>,
+    /// Explicitly models a ready host in tests that do not spawn a process.
+    #[cfg(test)]
+    mock_host_ready: std::sync::atomic::AtomicBool,
     update_lock: Arc<Mutex<()>>,
     public_install: Arc<Mutex<Option<PublicPluginInstallState>>>,
     /// Contexto que o nó entrega a todo host de plugin (`host.configure`),
@@ -932,6 +943,8 @@ impl PluginRuntime {
             persisted: Arc::new(Mutex::new(None)),
             database,
             host: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            mock_host_ready: std::sync::atomic::AtomicBool::new(false),
             update_lock: Arc::new(Mutex::new(())),
             public_install: Arc::new(Mutex::new(public_install)),
             host_context,
@@ -939,12 +952,17 @@ impl PluginRuntime {
     }
 
     /// Sobe o host do plugin e já lhe entrega o contexto do nó, se houver.
+    fn plugin_database_path(&self) -> std::path::PathBuf {
+        let database_path = self.database.as_ref().map(|database| database.path());
+        plugin_database_path_for(&self.code, database_path)
+    }
+
     async fn start_host(
         &self,
         path: &std::path::Path,
-        database_path: &std::path::Path,
     ) -> anyhow::Result<crate::plugin_host::PluginHost> {
-        let host = crate::plugin_host::PluginHost::start(&self.code, path, database_path).await?;
+        let database_path = self.plugin_database_path();
+        let host = crate::plugin_host::PluginHost::start(&self.code, path, &database_path).await?;
         self.configure_host(&host).await;
         Ok(host)
     }
@@ -1180,13 +1198,28 @@ impl PluginRuntime {
             return;
         };
         *self.persisted.lock().await = Some(persisted.clone());
+        let restore_error = persisted.installation_error.clone().unwrap_or_else(|| {
+            "O plugin não tem um binário instalado. Reative-o para repetir a instalação.".into()
+        });
         let Some(path) = persisted.plugin_path.clone().map(std::path::PathBuf::from) else {
+            let mut status = self.status.write().await;
+            status.state = LicenseState::Unavailable;
+            status.licensed_plugins = persisted.licensed_plugins.clone();
+            status.license_expires_at = persisted.license_expires_at.clone();
+            status.installation_error = Some(restore_error);
             return;
         };
-        if !path.is_file() {
-            return;
-        }
-        if self.database.is_none() {
+        if !path.is_file() || self.database.is_none() {
+            let mut status = self.status.write().await;
+            status.state = LicenseState::Unavailable;
+            status.licensed_plugins = persisted.licensed_plugins.clone();
+            status.license_expires_at = persisted.license_expires_at.clone();
+            status.installation_error = Some(if path.is_file() {
+                "O banco local do POM não está disponível para iniciar o host do plugin.".into()
+            } else {
+                "O binário instalado do plugin está ausente. Reative-o para baixá-lo novamente."
+                    .into()
+            });
             return;
         }
         let this = self.clone();
@@ -1268,12 +1301,7 @@ impl PluginRuntime {
             let _ = std::fs::remove_file(path);
             return;
         }
-        let database_path = self
-            .database
-            .as_ref()
-            .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
-            .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
-        match self.start_host(path, &database_path).await {
+        match self.start_host(path).await {
             Ok(host) => {
                 *self.host.lock().await = Some(host);
                 let mut status = self.status.write().await;
@@ -1291,17 +1319,22 @@ impl PluginRuntime {
                 status.plugin_usage.clear();
                 status.activation_candidates.clear();
                 status.available_update = None;
+                status.installation_error = None;
             }
             Err(error) => {
                 tracing::warn!(plugin_code = %self.code, %error, "plugin público instalado não pôde ser iniciado");
-                self.status.write().await.state = LicenseState::Unavailable;
+                let mut status = self.status.write().await;
+                status.active = false;
+                status.state = LicenseState::Unavailable;
+                status.installation_error = Some(error.to_string());
             }
         }
     }
 
     async fn restore_ready(&self, persisted: &PersistedPluginState) {
+        let host_ready = self.host.lock().await.is_some();
         let mut status = self.status.write().await;
-        status.active = true;
+        status.active = host_ready;
         status.state = LicenseState::Active;
         status.features = persisted.features.clone();
         status.plugin_version = Some(persisted.plugin_version.clone());
@@ -1315,6 +1348,13 @@ impl PluginRuntime {
         status.installed_at = persisted.installed_at.clone();
         status.update_checked_at = persisted.update_checked_at.clone();
         status.available_update = None;
+        status.installation_error = if host_ready {
+            None
+        } else {
+            persisted.installation_error.clone().or_else(|| {
+                Some("O host do plugin não ficou pronto. Consulte o erro e tente novamente.".into())
+            })
+        };
     }
 
     /// Fluxo completo: valida a chave para este plugin_code, instala o
@@ -1323,6 +1363,14 @@ impl PluginRuntime {
     async fn activate_and_install(&self, license_key: &str) -> Result<(), LicenseClientError> {
         let _guard = self.update_lock.lock().await;
         self.activate(license_key).await?;
+        let result = self.install_pending_activation().await;
+        if let Err(error) = &result {
+            self.record_installation_failure(error.to_string()).await;
+        }
+        result
+    }
+
+    async fn install_pending_activation(&self) -> Result<(), LicenseClientError> {
         let pending = self.pending.lock().await.clone().ok_or_else(|| {
             LicenseClientError::new(
                 LicenseErrorCode::LeaseUnknown,
@@ -1349,18 +1397,13 @@ impl PluginRuntime {
             &self.fingerprint.arch,
         )?;
         install_plugin_atomically(&path, &bytes)?;
-        let database_path = self
-            .database
-            .as_ref()
-            .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
-            .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
-        let host = match self.start_host(&path, &database_path).await {
+        let host = match self.start_host(&path).await {
             Ok(host) => host,
             Err(error) => {
                 let _ = std::fs::remove_file(&path);
                 return Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
-                    error.to_string(),
+                    format!("{error:#}"),
                 ));
             }
         };
@@ -1373,6 +1416,7 @@ impl PluginRuntime {
         persisted.plugin_sha256 = manifest.manifest.sha256.clone();
         persisted.plugin_path = Some(path.to_string_lossy().into_owned());
         persisted.preferences_schema = manifest.manifest.preferences.clone();
+        persisted.installation_error = None;
         persisted.last_success_at = Some(chrono::Utc::now().to_rfc3339());
         if let Some(database) = &self.database {
             if let Err(error) = database.save_local_setting(&self.setting_key(), &persisted) {
@@ -1388,6 +1432,31 @@ impl PluginRuntime {
         }
         *self.persisted.lock().await = Some(persisted);
         self.mark_plugin_ready(&manifest.manifest.version).await
+    }
+
+    async fn record_installation_failure(&self, error: String) {
+        if let Some(host) = self.host.lock().await.take() {
+            let _ = host.stop().await;
+        }
+        let mut persisted = self.persisted.lock().await;
+        if let Some(state) = persisted.as_mut() {
+            state.installation_error = Some(error.clone());
+            if let Some(database) = &self.database {
+                if let Err(save_error) = database.save_local_setting(&self.setting_key(), state) {
+                    tracing::warn!(plugin_code = %self.code, error = %save_error, "falha de instalação do plugin não pôde ser persistida");
+                }
+            }
+        }
+        drop(persisted);
+
+        let mut status = self.status.write().await;
+        status.active = false;
+        status.state = LicenseState::Active;
+        status.features.clear();
+        status.plugin_version = None;
+        status.installed_at = None;
+        status.available_update = None;
+        status.installation_error = Some(error);
     }
 
     /// Só a etapa de licença (validate + activate + persistência do lease),
@@ -1484,6 +1553,7 @@ impl PluginRuntime {
             plugin_sha256: response.plugin_manifest.sha256,
             plugin_path: None,
             preferences_schema: response.plugin_manifest.preferences.clone(),
+            installation_error: None,
         };
         if let Some(database) = &self.database {
             database
@@ -1495,7 +1565,7 @@ impl PluginRuntime {
         *self.persisted.lock().await = Some(persisted);
         let mut status = self.status.write().await;
         status.active = false;
-        status.state = LicenseState::Unavailable;
+        status.state = LicenseState::Active;
         status.features = Vec::new();
         status.plugin_version = None;
         status.lease_expires_at = None;
@@ -1508,6 +1578,7 @@ impl PluginRuntime {
         status.installed_at = None;
         status.update_checked_at = None;
         status.available_update = None;
+        status.installation_error = None;
         Ok(())
     }
 
@@ -1529,13 +1600,9 @@ impl PluginRuntime {
             }
             if let Some(database) = &self.database {
                 if let Err(error) = database.delete_local_setting(&self.public_install_key()) {
-                    let database_path = database.path().with_file_name(format!("{}.db", self.code));
                     if std::path::Path::new(&installed.plugin_path).is_file() {
                         match self
-                            .start_host(
-                                std::path::Path::new(&installed.plugin_path),
-                                &database_path,
-                            )
+                            .start_host(std::path::Path::new(&installed.plugin_path))
                             .await
                         {
                             Ok(host) => *self.host.lock().await = Some(host),
@@ -1587,10 +1654,27 @@ impl PluginRuntime {
 
     /// Reinicia o host do plugin quando a licença está ativa mas o host não
     /// está rodando (por exemplo, depois que uma revogação temporária o
-    /// parou e um heartbeat subsequente restaurou a licença). Não faz nada
-    /// se o host já estiver de pé ou se faltar o caminho do plugin instalado.
+    /// parou e um heartbeat subsequente restaurou a licença). Só marca o
+    /// plugin pronto depois do handshake; falhas mantêm `active` falso e
+    /// publicam `installation_error`.
     /// Usada tanto na restauração de boot (`restore`) quanto no self-heal do
     /// heartbeat (`heartbeat`) - mesma lógica, um só lugar.
+    async fn clear_installation_failure(&self) {
+        let mut persisted = self.persisted.lock().await;
+        if let Some(state) = persisted.as_mut() {
+            state.installation_error = None;
+            if let Some(database) = &self.database {
+                if let Err(error) = database.save_local_setting(&self.setting_key(), state) {
+                    tracing::warn!(plugin_code = %self.code, %error, "estado de instalação pronta do plugin não pôde ser persistido");
+                }
+            }
+        }
+        drop(persisted);
+        let mut status = self.status.write().await;
+        status.active = true;
+        status.installation_error = None;
+    }
+
     async fn ensure_host_running(&self, persisted: &PersistedPluginState) {
         if self.host.lock().await.is_some() {
             return;
@@ -1599,19 +1683,29 @@ impl PluginRuntime {
             return;
         };
         if !path.is_file() {
+            self.record_installation_failure(
+                "O binário instalado do plugin está ausente. Reative-o para baixá-lo novamente."
+                    .into(),
+            )
+            .await;
             return;
         }
-        let Some(database) = &self.database else {
+        if self.database.is_none() {
+            self.record_installation_failure(
+                "O banco local do POM não está disponível para iniciar o host do plugin.".into(),
+            )
+            .await;
             return;
-        };
-        let database_path = database.path().with_file_name(format!("{}.db", self.code));
-        match self.start_host(&path, &database_path).await {
+        }
+        match self.start_host(&path).await {
             Ok(host) => {
                 *self.host.lock().await = Some(host);
+                self.clear_installation_failure().await;
                 tracing::info!(plugin_code = %self.code, "host do plugin reiniciado após licença voltar a ficar ativa");
             }
             Err(error) => {
                 tracing::warn!(plugin_code = %self.code, error = %error, "host do plugin não pôde ser reiniciado após licença voltar a ficar ativa");
+                self.record_installation_failure(error.to_string()).await;
             }
         }
     }
@@ -1724,6 +1818,7 @@ impl PluginRuntime {
         status.plugin_version = Some(plugin_version.to_owned());
         status.lease_expires_at = Some(pending.response.lease_expires_at);
         status.installed_at = Some(installed_at);
+        status.installation_error = None;
         status.available_update = None;
         Ok(())
     }
@@ -1831,9 +1926,15 @@ impl PluginRuntime {
                         "heartbeat indicou alteração de release do plugin"
                     );
                 }
+                let host_running = self.host.lock().await.is_some();
+                #[cfg(test)]
+                let host_running = host_running
+                    || self
+                        .mock_host_ready
+                        .load(std::sync::atomic::Ordering::Relaxed);
                 let mut status = self.status.write().await;
-                let was_active = status.active;
-                status.active = true;
+                let license_was_active = status.state == LicenseState::Active;
+                status.active = host_running;
                 status.state = LicenseState::Active;
                 status.features = features;
                 status.lease_expires_at = Some(lease_expires_at);
@@ -1844,7 +1945,7 @@ impl PluginRuntime {
                 status.plugin_usage = plugin_usage;
                 status.activation_candidates = activation_candidates;
                 drop(status);
-                if !was_active {
+                if !license_was_active {
                     tracing::info!(
                         plugin_code = %self.code,
                         "licença do plugin voltou a ficar ativa após heartbeat bem-sucedido"
@@ -2088,19 +2189,12 @@ impl PluginRuntime {
         if let Some(host) = self.host.lock().await.take() {
             let _ = host.stop().await;
         }
-        let database_path = self
-            .database
-            .as_ref()
-            .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
-            .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
-        let host = self
-            .start_host(&path, &database_path)
-            .await
-            .map_err(|error| {
-                LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
-            })?;
+        let host = self.start_host(&path).await.map_err(|error| {
+            LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
+        })?;
         *self.host.lock().await = Some(host);
         let mut persisted = persisted;
+        persisted.installation_error = None;
         persisted.installed_release_id = manifest.manifest.release_id.clone();
         persisted.plugin_version = manifest.manifest.version.clone();
         persisted.plugin_sha256 = manifest.manifest.sha256.clone();
@@ -2120,6 +2214,7 @@ impl PluginRuntime {
         status.plugin_version = Some(manifest.manifest.version);
         status.installed_at = persisted.installed_at.clone();
         status.available_update = None;
+        status.installation_error = None;
         drop(status);
         self.reconfigure_running_host().await;
         Ok(())
@@ -2184,11 +2279,6 @@ impl PluginRuntime {
             preferences_schema: manifest.preferences.clone(),
             installed_at: chrono::Utc::now().to_rfc3339(),
         };
-        let database_path = self
-            .database
-            .as_ref()
-            .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
-            .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
         if let Some(old_host) = self.host.lock().await.take() {
             if let Err(error) = old_host.stop().await {
                 *self.host.lock().await = Some(old_host);
@@ -2198,11 +2288,11 @@ impl PluginRuntime {
                 ));
             }
         }
-        let host = match self.start_host(&path, &database_path).await {
+        let host = match self.start_host(&path).await {
             Ok(host) => host,
             Err(error) => {
                 if let Some(old_path) = old_path.as_deref().filter(|path| path.is_file()) {
-                    match self.start_host(old_path, &database_path).await {
+                    match self.start_host(old_path).await {
                         Ok(host) => *self.host.lock().await = Some(host),
                         Err(restart_error) => {
                             tracing::error!(plugin_code = %self.code, error = %restart_error, "previous public plugin host could not be restored after selected release failed to start")
@@ -2220,7 +2310,7 @@ impl PluginRuntime {
             {
                 let _ = host.stop().await;
                 if let Some(old_path) = old_path.as_deref().filter(|path| path.is_file()) {
-                    match self.start_host(old_path, &database_path).await {
+                    match self.start_host(old_path).await {
                         Ok(host) => *self.host.lock().await = Some(host),
                         Err(restart_error) => {
                             tracing::error!(plugin_code = %self.code, error = %restart_error, "previous public plugin host could not be restored after selected release state failed to persist")
@@ -2250,6 +2340,7 @@ impl PluginRuntime {
         status.activation_candidates.clear();
         status.installed_at = Some(installed.installed_at);
         status.available_update = None;
+        status.installation_error = None;
         Ok(())
     }
 
@@ -2320,12 +2411,6 @@ impl PluginRuntime {
                     .as_ref()
                     .map(|state| state.plugin_path.clone().into())
             });
-        let database_path = self
-            .database
-            .as_ref()
-            .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
-            .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
-
         let old_host = self.host.lock().await.take();
         if let Some(host) = old_host {
             if let Err(error) = host.stop().await {
@@ -2337,11 +2422,11 @@ impl PluginRuntime {
                 ));
             }
         }
-        let host = match self.start_host(&path, &database_path).await {
+        let host = match self.start_host(&path).await {
             Ok(host) => host,
             Err(error) => {
                 if let Some(old_path) = old_path.as_deref().filter(|path| path.is_file()) {
-                    match self.start_host(old_path, &database_path).await {
+                    match self.start_host(old_path).await {
                         Ok(host) => *self.host.lock().await = Some(host),
                         Err(restart_error) => {
                             tracing::error!(plugin_code = %self.code, error = %restart_error, "previous plugin host could not be restored after development rebuild failed")
@@ -2381,7 +2466,7 @@ impl PluginRuntime {
         if let Err(error) = save_result {
             let _ = host.stop().await;
             if let Some(old_path) = old_path.as_deref().filter(|path| path.is_file()) {
-                match self.start_host(old_path, &database_path).await {
+                match self.start_host(old_path).await {
                     Ok(host) => *self.host.lock().await = Some(host),
                     Err(restart_error) => {
                         tracing::error!(plugin_code = %self.code, error = %restart_error, "previous plugin host could not be restored after development state persistence failed")
@@ -3108,8 +3193,8 @@ impl PluginManager {
 
     /// Valida a chave uma vez para descobrir quais `plugin_code` ela concede,
     /// cria os runtimes necessários e ativa/instala cada um deles. Concede
-    /// sucesso se ao menos um plugin ativou; plugins que falharam ficam só no
-    /// log - o operador vê o resultado real na lista de status atualizada.
+    /// sucesso se ao menos um plugin ativou; falhas individuais também ficam
+    /// no `PluginStatus.installation_error` para a interface mostrar o motivo.
     pub(crate) async fn activate(
         &self,
         license_key: &str,
@@ -4005,6 +4090,21 @@ fn license_base_url() -> String {
         .unwrap_or_else(|| "https://license.pieceofmind.cloud".into())
 }
 
+fn plugin_database_path_for(
+    code: &str,
+    pom_database_path: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    let filename = if code == "enterprise" {
+        "logs.db".to_owned()
+    } else {
+        format!("{code}.db")
+    };
+    pom_database_path
+        .and_then(std::path::Path::parent)
+        .map(|directory| directory.join(&filename))
+        .unwrap_or_else(|| crate::config::database_dir().join(filename))
+}
+
 fn plugin_path(
     code: &str,
     release_id: &str,
@@ -4568,6 +4668,19 @@ mod tests {
         assert_eq!(
             url,
             "https://license.example/v1/plugins/pom_core/manifest?lease_id=lease-1&os=macos&arch=aarch64&channel=stable&host_version=0.1.0&plugin_abi=1"
+        );
+    }
+
+    #[test]
+    fn enterprise_plugin_database_uses_persistent_pom_database_directory() {
+        let database = std::path::Path::new("/data/pom.db");
+        assert_eq!(
+            plugin_database_path_for("enterprise", Some(database)),
+            std::path::Path::new("/data/logs.db")
+        );
+        assert_eq!(
+            plugin_database_path_for("analytics", Some(database)),
+            std::path::Path::new("/data/analytics.db")
         );
     }
 
@@ -5448,6 +5561,9 @@ mod tests {
         let manager = PluginManager::test_manager(&["enterprise"], service.clone());
         let runtime = manager.runtime_for("enterprise").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
+        runtime
+            .mock_host_ready
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         assert!(runtime.status().await.available_update.is_none());
 
         // O servidor publica a release seguinte, só com o metadado de build
@@ -5496,6 +5612,9 @@ mod tests {
         let manager = PluginManager::test_manager(&["enterprise"], service.clone());
         let runtime = manager.runtime_for("enterprise").expect("runtime");
         activate_ready(&runtime, "PM-test-key", "0.1.0").await;
+        runtime
+            .mock_host_ready
+            .store(true, std::sync::atomic::Ordering::Relaxed);
 
         updated.plugin_manifest.release_id = "ent-2".into();
         updated.plugin_manifest.version = "0.2.0".into();
@@ -5595,6 +5714,118 @@ mod tests {
             fake_host.display()
         );
         fake_host
+    }
+
+    #[tokio::test]
+    async fn enterprise_activation_passes_logs_db_in_the_pom_database_directory() {
+        let _serial = REAL_HOST.lock().await;
+        let directory = tempfile::tempdir().expect("tempdir");
+        let _environment = RestoreEnvironment::capture(&[
+            "POM_HOME",
+            "POM_PLUGIN_HOST",
+            "POM_FAKE_HOST_LOG",
+            "POM_FAKE_HOST_UPSTREAM",
+            "POM_FAKE_HOST_READY_ERROR",
+        ]);
+        let host_log = directory.path().join("host.log");
+        let data_dir = directory.path().join("data");
+        std::fs::create_dir(&data_dir).expect("criar diretório persistente");
+        std::env::set_var("POM_HOME", directory.path());
+        std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
+        std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
+        std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
+        std::env::remove_var("POM_FAKE_HOST_READY_ERROR");
+
+        let database =
+            Arc::new(crate::db::PomDb::open(data_dir.join("pom.db")).expect("abrir banco do POM"));
+        let service = Arc::new(MockLicenseService::single(
+            "enterprise",
+            activation("enterprise", "ent-1"),
+        ));
+        let manager = PluginManager::test_manager_with_database(&["enterprise"], service, database);
+
+        assert_eq!(
+            manager
+                .activate("PM-test-key")
+                .await
+                .expect("ativar plugin"),
+            vec!["enterprise"]
+        );
+        let expected_path = data_dir.join("logs.db");
+        let host_log = std::fs::read_to_string(&host_log).expect("ler log do host");
+        assert!(host_log.contains(&format!("POM_PLUGIN_DB={}", expected_path.display())));
+        assert!(!host_log.contains("enterprise.db"));
+        manager
+            .runtime_for("enterprise")
+            .expect("runtime")
+            .stop_host_for_test()
+            .await;
+    }
+
+    #[tokio::test]
+    async fn failed_plugin_host_handshake_keeps_license_valid_but_not_ready() {
+        let _serial = REAL_HOST.lock().await;
+        let directory = tempfile::tempdir().expect("tempdir");
+        let _environment = RestoreEnvironment::capture(&[
+            "POM_HOME",
+            "POM_PLUGIN_HOST",
+            "POM_FAKE_HOST_LOG",
+            "POM_FAKE_HOST_UPSTREAM",
+            "POM_FAKE_HOST_READY_ERROR",
+        ]);
+        let host_log = directory.path().join("host.log");
+        std::env::set_var("POM_HOME", directory.path());
+        std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
+        std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
+        std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
+        std::env::set_var("POM_FAKE_HOST_READY_ERROR", "plugin recusou configuração");
+
+        let database = Arc::new(
+            crate::db::PomDb::open(directory.path().join("pom.db")).expect("abrir banco do POM"),
+        );
+        let service = Arc::new(MockLicenseService::single(
+            "enterprise",
+            activation("enterprise", "ent-1"),
+        ));
+        let manager =
+            PluginManager::test_manager_with_database(&["enterprise"], service, database.clone());
+
+        let error = manager
+            .activate("PM-test-key")
+            .await
+            .expect_err("handshake recusado deve falhar a instalação");
+        let status = manager.status("enterprise").await.expect("status");
+        assert_eq!(
+            error.code(),
+            LicenseErrorCode::ServerError,
+            "falha de instalação deve voltar como erro: {error}"
+        );
+        assert_eq!(
+            status.state,
+            LicenseState::Active,
+            "licença continua válida"
+        );
+        assert!(
+            !status.active,
+            "handshake recusado não deixa o plugin pronto"
+        );
+        assert!(status.installed_at.is_none());
+        assert!(!status.has_feature("request_logs"));
+        assert!(
+            status
+                .installation_error
+                .as_deref()
+                .is_some_and(|message| message
+                    .contains("plugin host recusou ready: plugin recusou configuração")),
+            "installation_error={:?}; host_log={}",
+            status.installation_error,
+            std::fs::read_to_string(&host_log).unwrap_or_default()
+        );
+        let persisted = database
+            .local_setting_json("plugin_license:enterprise")
+            .expect("ler estado persistido")
+            .expect("estado de licença persistido");
+        assert!(persisted.contains("plugin recusou configuração"));
     }
 
     /// Contexto do nó (`host.configure`) chega ao host na subida, no

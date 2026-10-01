@@ -219,9 +219,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   somente para o perfil admin com `pom_desenv`; seus DTOs descrevem o resultado
   seguro do rebuild local, sem saída de compilador. A rota Plugins não usa esse
   fluxo para instalar plugins inativos nem substitui a escolha de release GitHub.
-  `PluginStatus` também carrega `installed_at`, `update_checked_at` e
-  `public_install` do estado real persistido pelo nó; não derive a data da última
-  instalação do heartbeat. Uma instalação pública mantém `licensed_plugins`
+  `PluginStatus` também carrega `installed_at`, `update_checked_at`,
+  `installation_error` e `public_install` do estado real persistido pelo nó; não
+  derive a data da última instalação do heartbeat. `active` significa host
+  pronto, enquanto `state` continua descrevendo a validade da licença. Uma
+  instalação pública mantém `licensed_plugins`
   vazio e usa estado local próprio, sem lease.
   `license_expires_at` é a validade da LICENÇA (de `GET /v1/licenses/status`) e
   é o campo certo para "Licença válida até" na tela de Plugins - nunca

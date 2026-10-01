@@ -84,9 +84,12 @@ Per-file list:
   fallback para inglês. Validade, plugins concedidos, candidatos de ativação e
   uso por `plugin_code` vêm do estado autenticado do nó, nunca do catálogo
   público. A tela full-bleed segue o cabeçalho e o contêiner
-  interno de `/modelos`. O estado de licença, validade, última instalação,
-  versão e ações continuam vindo do nó; plugins locais ativos permanecem visíveis mesmo quando faltam no catálogo
-  público. Desativação exige confirmação. O formulário de chave aparece se
+  interno de `/modelos`. `state` representa validade da licença; `active` só é
+  verdadeiro quando o host concluiu o handshake e está pronto. O estado local
+  pode publicar `installation_error`, exibido no card com o detalhe acionável;
+  uma ativação que falha atualiza o status antes de sair da tela. Plugins locais
+  ativos permanecem visíveis mesmo quando faltam no catálogo público.
+  Desativação exige confirmação. O formulário de chave aparece se
   qualquer entrada pública que exige licença não estiver ativa no estado local,
   mesmo quando outro plugin já tem licença/contexto. Ele também aparece quando
   falta status local ou o status está expirado/revogado, e some quando todos os

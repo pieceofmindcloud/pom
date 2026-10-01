@@ -64,6 +64,19 @@ que é uma fronteira de produto separada desde antes e continua sendo).
   são campos opcionais com default ao ler estados já persistidos. `last_success_at`
   segue reservado ao heartbeat e nunca serve como data de instalação.
 
+  `PluginStatus.state` representa a validade da licença; `active` só é verdadeiro
+  quando o host conclui o handshake e está pronto. Se a licença for aceita mas
+  manifest, download ou handshake falhar, `active` fica falso e
+  `installation_error` guarda o detalhe acionável no estado local, inclusive
+  após reinício. A tela mantém a licença separada da instalação e mostra o erro;
+  heartbeat bem-sucedido não marca como pronto um host que não subiu.
+
+  `PluginHost::start` recebe `POM_PLUGIN_DB` com o caminho derivado do diretório
+  do banco do POM. Para `plugin_code=enterprise`, o arquivo é `logs.db`, então
+  o volume persistente existente `/data` recebe `/data/logs.db`. Outros códigos
+  mantêm `<plugin_code>.db`; o POM não passa `enterprise.db`, não há
+  `POM_ENTERPRISE_DB` nem volume adicional.
+
   `PluginStatus.license_expires_at` é a validade da LICENÇA, distinta do
   `lease_expires_at` técnico acima: o lease é um prazo curto de renovação que
   o heartbeat empurra a cada poucos dias, a licença é o que a compra realmente
@@ -205,10 +218,12 @@ interface roda na origem de cada nó. Erros voltam como `checkout_request_invali
 vistos pelo runtime. O catálogo público `GET /v1/plugins` é lido diretamente
 pelo browser e inclui plugins ainda sem estado local. Cada estado local tem
 seu próprio entitlement, `manage_url` e `available_update`. A resposta começa
-em `needs_activation`. Ativação, grant, manifest, lease e host pronto precisam
-existir antes de `active` ficar verdadeiro. Falha transitória de heartbeat
-entra em `degraded` durante a janela de tolerância; licença revogada ou
-expirada desativa as features - de UM plugin, nunca dos outros.
+em `needs_activation`. O campo `state` acompanha a licença, enquanto `active`
+exige o host instalado e pronto. Uma falha depois da licença ser aceita mantém
+`state=active`, `active=false` e o motivo em `installation_error`; a falha não
+aparece como plugin pronto. Falha transitória de heartbeat entra em `degraded`
+durante a janela de tolerância; licença revogada ou expirada desativa as
+features - de UM plugin, nunca dos outros.
 `POST /api/ui/plugins/activate` recebe só `{license_key}` (nenhum
 `plugin_code`: a resposta `{activated: [...]}` nomeia quais plugins aquela
 chave concedeu e instalou). `POST /api/ui/plugins/:code/refresh|deactivate`

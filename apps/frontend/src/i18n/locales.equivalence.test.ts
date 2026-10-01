@@ -17,6 +17,8 @@ const dump = reference as ReferenceDump;
 // The dump is the frozen pre-ICU baseline. Keep intentional product-copy
 // revisions here rather than rewriting the generated 1.8 MB single-line file.
 const copyUpdates: Record<string, string> = {
+  "en:plugins.state.active": "License active",
+  "pt-BR:plugins.state.active": "Licença ativa",
   "en:deploy.knob.hidden_state_dtypeHint":
     "Controls bytes sent between inference peers. f16 remains the default; f32 preserves the in-memory activation values but doubles payload size. f8 and groupwise int4 are opt-in lossy formats and require every selected peer to advertise support.",
   "pt-BR:deploy.knob.hidden_state_dtypeHint":

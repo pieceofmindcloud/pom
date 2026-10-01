@@ -24,6 +24,7 @@ function pluginStatus(code: string, overrides: Record<string, unknown> = {}) {
     installed_at: null,
     update_checked_at: null,
     available_update: null,
+    installation_error: null,
     public_install: false,
     ...overrides,
   };
@@ -101,7 +102,9 @@ const mocks = vi.hoisted(() => ({
       installed_at: string | null;
       update_checked_at: string | null;
       available_update: { release_id: string; version: string; changelog: string | null } | null;
+      installation_error?: string | null;
     }>,
+
     isLoading: false,
     isError: false,
     error: null as Error | null,
@@ -213,6 +216,24 @@ describe("Plugins", () => {
     expect(screen.queryByText("PM-invalid")).toBeNull();
   });
 
+  it("mostra uma falha de instalação sem apresentar o plugin como pronto", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("enterprise", { display_name: "Enterprise" })] };
+    mocks.plugins.data = [pluginStatus("enterprise", {
+      state: "active",
+      licensed_plugins: ["enterprise"],
+      installation_error: "handshake ready do plugin host falhou: plugin recusou configuração",
+    })];
+    renderPage();
+
+    const card = screen.getByRole("heading", { name: "Enterprise" }).closest(".panel");
+    expect(within(card as HTMLElement).getByText("Licença ativa")).toBeTruthy();
+    expect(within(card as HTMLElement).getByRole("alert").textContent).toContain(
+      "handshake ready do plugin host falhou: plugin recusou configuração",
+    );
+    expect(within(card as HTMLElement).queryByRole("button", { name: "Desativar" })).toBeNull();
+    expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
+  });
+
   it("lista vários plugins públicos e mostra os metadados disponíveis", () => {
     const purchasedCode = "alpha_beta";
     mocks.catalog.data = {
@@ -255,7 +276,7 @@ describe("Plugins", () => {
     const screenshotGroup = screen.getByRole("group", { name: "Capturas de tela" });
     expect(within(screenshotGroup).getAllByRole("img", { name: /captura de tela/i })).toHaveLength(4);
     expect(screen.getByText("Sigma")).toBeTruthy();
-    expect(screen.getByText("Ativo")).toBeTruthy();
+    expect(screen.getByText("Licença ativa")).toBeTruthy();
     expect(screen.getByText("1.1.0")).toBeTruthy();
 
     expect(screen.getByRole("button", { name: "Comprar" })).toBeTruthy();
@@ -421,7 +442,7 @@ describe("Plugins", () => {
     const full = screen.getByRole("heading", { name: "full" }).closest(".panel");
     expect(within(partial as HTMLElement).getByText("2 de 5 ativações usadas")).toBeTruthy();
     expect(within(partial as HTMLElement).getByText("Parcialmente utilizada")).toBeTruthy();
-    expect(within(partial as HTMLElement).getByText("Ativo")).toBeTruthy();
+    expect(within(partial as HTMLElement).getByText("Licença ativa")).toBeTruthy();
     expect(within(full as HTMLElement).getByText("5 de 5 ativações usadas")).toBeTruthy();
     expect(within(full as HTMLElement).getByText("Limite atingido")).toBeTruthy();
   });

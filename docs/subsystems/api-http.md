@@ -694,11 +694,14 @@ restaurados ou vistos pelo runtime, incluindo `licensed_plugins`,
 `activation_candidates`, `plugin_usage` por
 `plugin_code`, `license_expires_at` e contadores de ativação daquele plugin.
 Esses dados vêm das respostas autenticadas de validação, ativação e heartbeat;
-tokens de licença não aparecem no status JSON. O browser consulta o catálogo
-comercial público diretamente em `/v1/plugins`, sem credenciais. A ativação
-valida a chave uma vez e cria os runtimes para todos os `plugin_code` concedidos,
-ativando-os separadamente. Comprar redireciona plugins licenciados à loja pública
-com `plugin=<plugin_code>` codificado. O catálogo comercial não registra,
+tokens de licença não aparecem no status JSON. `state` descreve validade da
+licença e `active` só indica host instalado e pronto. Falha de instalação
+publica `installation_error` e mantém `active=false`, sem perder a distinção da
+licença. O browser consulta o catálogo comercial público diretamente em
+`/v1/plugins`, sem credenciais. A ativação valida a chave uma vez e cria os
+runtimes para todos os `plugin_code` concedidos, ativando-os separadamente.
+Comprar redireciona plugins licenciados à loja pública com
+`plugin=<plugin_code>` codificado. O catálogo comercial não registra,
 autoriza ou fornece repositórios GitHub para instalação.
 
 As releases GitHub têm um registro local independente por nó. O card

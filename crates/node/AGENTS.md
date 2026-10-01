@@ -300,9 +300,11 @@ o heartbeat escrevia ali direto e corrompia a base que `detect_update`
 compara contra o manifest, fazendo "Atualizar" nunca mostrar a atualização
 real). `PluginStatus.update_checked_at` só avança quando a consulta de manifest
 termina com sucesso; `installed_at` só avança quando o host fica pronto após
-instalação ou aplicação. Ambos persistem por plugin, têm `serde(default)` para
-estados existentes e não são derivados de `last_success_at`, que é atualizado
-por heartbeat. `public_install` identifica um host GitHub sem lease e
+instalação ou aplicação. `active` significa host pronto, não só licença válida;
+`state` preserva a validade da licença e `installation_error` publica a falha
+acionável de instalação/handshake, persistida por plugin. Esses campos têm
+`serde(default)` para estados existentes e não são derivados de
+`last_success_at`, que é atualizado por heartbeat. `public_install` identifica um host GitHub sem lease e
 `PluginStatus.licensed_plugins` continua vazio nesse caso. `PluginStatus.license_expires_at` é a validade da LICENÇA
 (`GET /v1/licenses/status`, consultada em `restore()` e no clique manual em
 "Atualizar" via `refresh_license_status`), nunca o `lease_expires_at` técnico -
@@ -327,14 +329,13 @@ O `PluginStatus` também publica a expiração, os plugins concedidos, candidato
 com release elegível e uso autenticado por `plugin_code`, preservados da
 validação/ativação/heartbeat. `GET /api/ui/plugins` é AdminOnly; esse JSON não
 inclui tokens de licença. O catálogo comercial permanece público e separado.
-Todo heartbeat com SUCESSO marca
-o plugin ativo e chama `ensure_host_running` (mesma lógica usada na
-restauração de boot, extraída em um só lugar): se o host daquele plugin
-estiver `None` - porque uma revogação temporária o derrubou, ou porque o
-handshake `ready` no boot falhou - ele sobe de novo sem esperar um restart
-completo do processo `pom`. `ingest_audit_event` avisa em log quando descarta
-um evento por falta de host, porque antes esse caminho falhava 100%
-silencioso e só dava pra confirmar lendo o banco do plugin direto.
+Todo heartbeat com SUCESSO atualiza a validade da licença e chama
+`ensure_host_running` (a mesma lógica da restauração de boot): se o host daquele
+plugin estiver `None`, ele tenta subir de novo sem esperar um restart completo
+do processo `pom`. Só o host que conclui o handshake torna `PluginStatus.active`
+verdadeiro; falha mantém o estado da licença separado e publica
+`installation_error`, que a tela de Plugins exibe. `ingest_audit_event` avisa
+em log quando descarta um evento por falta de host.
 
 A restauração de boot (`PluginRuntime::restore`) é uma tarefa concorrente que
 sobrescreve o estado em memória com o do banco e pode religar o host por conta
@@ -347,8 +348,11 @@ fazia `heartbeat_success_restarts_the_stopped_plugin_host` falhar ora por
 `plugin_host.rs` (`PluginHost`) é o único adaptador do `pom` para o processo
 auxiliar `pom-plugin-host` - já suporta várias instâncias concorrentes, uma
 por plugin ativo. `PluginHost::start` passa o `plugin_code` para o binário
-auxiliar, que resolve `pom_<plugin_code>_plugin_v1` e usa `POM_PLUGIN_DB`; o
-host usa `kill_on_drop` e mata explicitamente
+auxiliar, que resolve `pom_<plugin_code>_plugin_v1` e usa `POM_PLUGIN_DB`.
+`PluginRuntime::plugin_database_path` deriva o arquivo do diretório do banco do
+POM: `enterprise` recebe `logs.db` (em Docker, `/data/logs.db`) e outros
+plugins recebem `<plugin_code>.db`; não há volume ou variável Enterprise
+separados. O host usa `kill_on_drop` e mata explicitamente
 o processo quando o handshake `ready` falha ou estoura o timeout de 30s - sem
 isso, um handshake lento (máquina ainda se recuperando de um OOM) deixava
 `pom-plugin-host` órfão no SO enquanto o `PluginRuntime` continuava sem host,

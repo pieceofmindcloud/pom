@@ -294,6 +294,7 @@ export interface DevelopmentPluginError {
 
 export interface PluginStatus {
   code: string;
+  /** True only when the plugin host is installed and ready. */
   active: boolean;
   state: PluginLicenseState;
   features: string[];
@@ -316,6 +317,8 @@ export interface PluginStatus {
   /** Last successful manifest lookup, regardless of whether it found an update. */
   update_checked_at: string | null;
   available_update: PluginUpdateInfo | null;
+  /** Actionable installation failure, independent of license validity. */
+  installation_error?: string | null;
   /** Installed and running from a public GitHub source without a license lease. */
   public_install?: boolean;
   github_repository?: string | null;

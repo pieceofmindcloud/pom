@@ -239,7 +239,12 @@ ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
   ativa no estado local, mesmo se outro plugin já estiver ativo ou houver
   contexto de licença; ausência de status local, expiração e revogação mantêm o
   formulário visível. Ele some quando todos os plugins licenciáveis conhecidos
-  estão ativos. Desativação pede confirmação. A rota usa `FullBleedHeader` e
+  estão ativos. O badge `Licença ativa` reflete o estado da licença, não a
+  prontidão do host; `active` só habilita ações do plugin quando o host está
+  pronto. Falha de instalação aparece no card com o detalhe de
+  `PluginStatus.installation_error`; quando o POST de ativação falha, a tela
+  relê o status local para mostrar esse diagnóstico. Desativação pede
+  confirmação. A rota usa `FullBleedHeader` e
   rolagem interna como `/modelos`; o painel de Plugins usa
   `overscroll-y-contain` para não propagar a rolagem ao limite para a página.
   O documento permanece sem rolagem; as áreas internas definem seus próprios

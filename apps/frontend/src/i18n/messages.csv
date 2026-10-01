@@ -1663,6 +1663,7 @@ plugins.githubUninstallConfirmTitle,Uninstall {name}?,Desinstalar {name}?
 plugins.githubUpdate,Update,Atualizar
 plugins.githubUpdateConfirmTitle,Update {name} from GitHub?,Atualizar {name} pelo GitHub?
 plugins.inactiveTitle,Available,Disponível
+plugins.installationFailed,"Plugin installation failed. The host is not ready. Resolve the error below and activate again.","Falha na instalação do plugin. O host não está pronto. Corrija o erro abaixo e tente ativar novamente."
 plugins.installedAt,Last installed,Última instalação
 plugins.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
 plugins.licenseExpires,License expires,Licença válida até
@@ -1691,7 +1692,7 @@ plugins.screenshotOpen,Open screenshot {number} of {name},Abrir captura de tela 
 plugins.screenshotPrevious,Previous screenshot,Captura de tela anterior
 plugins.screenshots,Screenshots,Capturas de tela
 plugins.screenshotsTitle,Screenshots for {name},Capturas de tela de {name}
-plugins.state.active,Active,Ativo
+plugins.state.active,License active,Licença ativa
 plugins.state.degraded,Degraded,Degradado
 plugins.state.expired,Expired,Expirado
 plugins.state.needs_activation,Not activated,Não ativado

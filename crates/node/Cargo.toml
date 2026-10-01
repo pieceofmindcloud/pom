@@ -8,9 +8,8 @@ build = "build.rs"
 name = "pom"
 path = "src/main.rs"
 
-# Host IPC falso, usado só pelo teste de regressão de
-# `enterprise::heartbeat_success_restarts_stopped_host_...` em
-# `src/enterprise.rs`. Não faz parte do produto.
+# Host IPC falso, usado apenas pelos testes de regressão de ciclo de vida,
+# caminho POM_PLUGIN_DB e handshake em `src/plugins.rs`. Não faz parte do produto.
 [[bin]]
 name = "pom-fake-enterprise-plugin-host"
 path = "tests/support/fake_plugin_host.rs"

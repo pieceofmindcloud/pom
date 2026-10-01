@@ -516,6 +516,12 @@ function PluginCard({
         ) : (
           <p className="text-xs text-faint">{t("plugins.metadataUnavailable")}</p>
         )}
+        {status?.installation_error && (
+          <div role="alert" className="space-y-1 rounded-lg border border-rose/35 bg-rose/5 px-3 py-2 text-xs text-rose">
+            <p className="font-medium">{t("plugins.installationFailed")}</p>
+            <p className="break-words">{status.installation_error}</p>
+          </div>
+        )}
         {repository && (
           <a className="block truncate text-[0.7rem] text-iris underline" href={repository.repository_url} target="_blank" rel="noreferrer">
             {repository.repository_url.replace(/^https:\/\//, "")}
@@ -802,6 +808,7 @@ export function Plugins() {
       await refreshPluginData();
     } catch {
       setActivateError(true);
+      await refreshPluginData();
     } finally {
       setActivateBusy(false);
     }

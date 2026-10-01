@@ -57,7 +57,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   local das preferências tipadas e do rebuild/reinstall de fontes locais de
   desenvolvimento, com erros limitados a etapas e códigos de saída. Os erros de
   release incluem o detalhe validado
-  pelo nó. Todos os rótulos precisam existir nas colunas
+  pelo nó. A ativação também mostra falha de instalação e detalhe do handshake,
+  separando a licença válida do host ainda não pronto. Todos os rótulos precisam existir nas colunas
   `en` e `pt-BR`; nomes, descrições, códigos, releases e URLs de imagem são
   dados do catálogo público, não traduções fixas. A descrição do catálogo tem
   fallback para inglês quando o idioma selecionado não está disponível. Validade

@@ -854,6 +854,13 @@ visibilidade dos controles de implantação na UI local.
   the session at the last position. With `kv_unified` llama.cpp would let it
   go past it using another session's cells. The gateway stops earlier, with
   `length`.
+- `handle_health` (`infer_server/server.rs`) - never waits for the engine: it
+  tries the `InferState` lock without blocking; when busy, it returns the last
+  snapshot (`HealthSnapshot`, `busy: true`, `snapshot_age_ms`) with queue and
+  routes recomputed; when free, it builds the body (`health_body`) and stores
+  the snapshot again. With no snapshot yet, it waits for the lock in
+  `spawn_blocking`. The gateway's readiness probe and the route plan's probe
+  depend on this on a peer with a long prefill.
 - `handle_prefill`/`handle_step` - autenticação, decode do frame e envio para o
   scheduler local. O worker usa `prefill_batch_blocking` ou
   `step_batch_blocking` quando as entradas são compatíveis e mantém o caminho

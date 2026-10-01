@@ -101,10 +101,17 @@ impl AdmissionHealth {
 /// request this guard exists to stop.
 pub(super) const CHARS_PER_TOKEN: usize = 3;
 
-/// Prazo do `/v1/session/rewind`. Curto de propósito: o evento final do stream
-/// espera por ele (ver `generate_stream_inner`), e do outro lado é só apagar
-/// uma sequência de KV.
-pub(super) const REWIND_TIMEOUT: Duration = Duration::from_secs(3);
+/// Deadline of the session lifecycle on the peer (`/v1/session/{rewind,release,
+/// rollback}`). On the other side it only erases or checks a KV sequence, but
+/// the handler needs the engine lock, and on a peer busy with another session's
+/// prefill chunk that waits for the whole chunk (~10 s per 512 tokens on slow
+/// hardware). The old 3 s deadline expired during that wait: the rewind failed
+/// and the conversation lost its retained prefix, and the release left the
+/// session stuck in the KV. A dead peer is caught earlier by the connection's
+/// lifetime. The stream's final event waits for the rewind (see
+/// `generate_stream_inner`), so on a busy peer it arrives later instead of
+/// arriving without the prefix.
+pub(super) const SESSION_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ── State ────────────────────────────────────────────────────────────────────
 

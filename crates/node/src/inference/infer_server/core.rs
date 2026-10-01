@@ -732,6 +732,9 @@ pub(crate) struct InferenceAppState {
     /// Keeps direct prefill forwarding in chunk order while the next chunk is
     /// already being computed by the preceding hop.
     pub(super) direct_forward_order: DirectForwardOrder,
+    /// Last `/health` snapshot, served while the engine is busy
+    /// (`handle_health`).
+    pub(super) health_snapshot: super::server::HealthSnapshot,
 }
 
 #[derive(Clone, Default)]
@@ -1247,6 +1250,24 @@ mod tests {
     fn health_reports_the_context_window_per_session() {
         assert_eq!(context_per_session(400_000, 4), 100_000);
         assert_eq!(context_per_session(100_000, 0), 100_000);
+    }
+
+    /// With the engine busy, `/health` returns the last snapshot, marked
+    /// `busy`; with no snapshot yet, there is nothing to return without waiting
+    /// for the engine.
+    #[test]
+    fn a_busy_engine_answers_health_from_the_last_snapshot() {
+        let snapshot = super::super::server::HealthSnapshot::default();
+        assert!(super::super::server::snapshot_health_body(&snapshot).is_none());
+        super::super::server::store_health_snapshot(
+            &snapshot,
+            &serde_json::json!({"model_loaded": true, "busy": false, "n_ctx_per_session": 150016}),
+        );
+        let body = super::super::server::snapshot_health_body(&snapshot).unwrap();
+        assert_eq!(body["busy"], true);
+        assert_eq!(body["model_loaded"], true);
+        assert_eq!(body["n_ctx_per_session"], 150016);
+        assert!(body["snapshot_age_ms"].is_u64());
     }
 
     /// One session's window is the peer's boundary: the prompt must leave room

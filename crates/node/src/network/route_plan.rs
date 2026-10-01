@@ -298,8 +298,8 @@ impl RouteBook {
             .unwrap_or_default()
     }
 
-    /// Grava o resultado de uma análise. Lista vazia apaga a aresta: a escada
-    /// completa volta a valer até a próxima análise.
+    /// Records an analysis result. An empty list keeps the existing route
+    /// (renewing its deadline); only a real frame's failure erases it.
     pub fn install(
         &self,
         node_id: &str,
@@ -329,10 +329,23 @@ impl RouteBook {
             .and_then(|edge| edge.routes.get(edge.active).cloned());
         let label = short(node_id);
         if routes.is_empty() {
-            if edges.remove(&key).is_some() {
+            // An empty analysis does not erase a route that worked: the probe
+            // has a short deadline and a busy peer (engine lock held by
+            // another session's prefill chunk) did not answer in time - the
+            // tunnel route vanished and the session lifecycle went to
+            // unreachable direct addresses. The route stays until a real frame
+            // fails on it (`record_failure` exhausts and erases it), and the
+            // analysis repeats on schedule.
+            if let Some(edge) = edges.get_mut(&key) {
+                edge.measured_at = Instant::now();
+                edge.fingerprint = fingerprint;
                 warn!(
-                    "rota {} para {label}: nenhuma rota respondeu à análise; usando a escada completa",
-                    plane.as_str()
+                    "route {} to {label}: no route answered the analysis; keeping {}",
+                    plane.as_str(),
+                    edge.routes
+                        .get(edge.active)
+                        .map(PlannedRoute::describe)
+                        .unwrap_or_default()
                 );
             }
             return;
@@ -1070,6 +1083,37 @@ mod tests {
             book.active("peer", Plane::Inference).unwrap().kind,
             RouteKind::Tunnel
         );
+    }
+
+    /// An empty analysis (a probe that did not answer in time on a busy peer)
+    /// does not erase a route that worked; only a real frame's failure does.
+    #[test]
+    fn an_empty_analysis_keeps_the_working_route() {
+        let book = RouteBook::default();
+        book.install(
+            "peer",
+            Plane::Inference,
+            vec![route(RouteKind::Tunnel, "", 12)],
+            1,
+        );
+        book.install("peer", Plane::Inference, Vec::new(), 2);
+        assert_eq!(
+            book.active("peer", Plane::Inference).unwrap().kind,
+            RouteKind::Tunnel
+        );
+        assert!(
+            !book.claim_measurement("peer", Plane::Inference, 2),
+            "deadline renewed"
+        );
+        assert_eq!(
+            book.record_failure("peer", Plane::Inference),
+            FailureOutcome::Retry
+        );
+        assert_eq!(
+            book.record_failure("peer", Plane::Inference),
+            FailureOutcome::Exhausted
+        );
+        assert!(book.active("peer", Plane::Inference).is_none());
     }
 
     #[test]

@@ -23,7 +23,15 @@ slice record to `serving`, see `slicing.md`) and exposes the executable identity
 `model_label`/`deploy_id` and its range `start_layer`/`end_layer`/
 `total_layers`. The gateway uses that range during admission when the P2P
 announcement is still late. The endpoint also exposes `kv_can_shift`, the
-condition for the head to draft in speculative decoding. The internal routes of
+condition for the head to draft in speculative decoding. It **does not wait for
+the engine**: with the `InferState` lock held (a prefill chunk may take
+seconds), it returns the last snapshot with `busy: true` and `snapshot_age_ms`,
+recomputing only the scheduler queue and the routes; the snapshot is stored
+again whenever the lock is free. With no snapshot yet, it waits for the lock on
+a blocking thread. It used to wait, and the gateway's readiness probe (3 s
+through the tunnel) and the route plan's probe (2 s) expired on a busy peer -
+the peer dropped out of the plan ("Gap at layer 0") and the tunnel route was
+erased. The internal routes of
 that listener require the `connection_key` and `x-pom-internal-node: 1` on
 private networks; on public networks, HTTPS and QUIC can use the secure
 transport and the marker, while the HTTP fallback carries the same shared

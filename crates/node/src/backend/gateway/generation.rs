@@ -2102,7 +2102,7 @@ pub(super) async fn rewind_sessions(
             "/v1/session/rewind",
             &body,
             session_id,
-            REWIND_TIMEOUT,
+            SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
         {
@@ -2161,7 +2161,7 @@ pub(super) async fn release_sessions(
             "/v1/session/release",
             &body,
             session_id,
-            Duration::from_secs(10),
+            SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
         {
@@ -2202,7 +2202,7 @@ pub(super) async fn rollback_sessions(
             "/v1/session/rollback",
             &body,
             session_id,
-            Duration::from_secs(10),
+            SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
         {

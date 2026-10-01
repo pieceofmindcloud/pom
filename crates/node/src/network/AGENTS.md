@@ -275,7 +275,9 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
   guard every frame and every return delivery holds: with a frame in flight or
   until `PIN_GRACE` (60 s) after the last one, the planner neither probes the
   edge nor swaps its route, and `active` ignores `PLAN_TTL`; only the frame's
-  own failure swaps it. `establish_budget` dá o orçamento de
+  own failure swaps it. An empty analysis keeps the existing route (refreshing
+  its deadline and fingerprint); only an exhausted `record_failure` erases it.
+  `establish_budget` dá o orçamento de
   conexão: 3x o RTT medido entre 100 ms e o teto, 150 ms sem medição.
   `snapshot`/`signature` alimentam o campo `route_plan` de `/api/ui/cluster`.
 - `Network::gateway_bases` - os endereços do gateway de um peer na ordem em

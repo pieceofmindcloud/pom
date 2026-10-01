@@ -861,7 +861,11 @@ frame's deadline. Now the route is **measured once and pinned**.
   older than 5 min or whose peer changed addresses, ports, `deploy_id` or layer
   range. A deployment that becomes `serving` changes the announced range, so
   the analysis runs before the first request. An analysis that found no route
-  repeats every 5 s in the background.
+  repeats every 5 s in the background when the edge had no route yet; with a
+  route, an empty analysis **keeps** the existing route and renews its
+  deadline - the probe has a short cap and a busy peer did not answer in time,
+  erasing the tunnel route. The route only goes away when a real frame fails on
+  it (`record_failure`).
 - **How it measures.** With the real transport, in parallel, two samples per
   route (the smaller wins, because the first pays the handshake): `GET /health`
   over HTTP with the pinned client, an HTTP/3 POST per QUIC endpoint (any status
@@ -914,7 +918,10 @@ frame's deadline. Now the route is **measured once and pinned**.
   `slot_call_step`: save, restore and erase, including the automatic ones of
   the persistent prefix cache) follow the same rule; an HTTP refusal from the
   peer is still final, and `post_json_via_tunnel` returns the refusal reason
-  together with the status.
+  together with the status. The lifecycle deadline is 60 s
+  (`SESSION_LIFECYCLE_TIMEOUT`): the peer's handler needs the engine lock, and
+  on a peer busy with another session's prefill chunk the previous 3 s expired
+  (lost prefix, session stuck in the KV).
 - **Relay.** On every round (2 s) the planner records in
   `RouteBook::relayed_nodes` the peers with which every live libp2p connection
   is `/p2p-circuit` - the hole punch did not close. A `tunnel` route to one of

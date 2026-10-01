@@ -635,7 +635,11 @@ faz o download autenticado do blob persistido.
   inference `/health` before planning, trying every inference address in
   `Network::inference_bases` order (the host that already answered first) with
   the `ADMISSION_PROBE_TIMEOUT` of 300ms each, then `/health` over the libp2p
-  tunnel (`infer_tunnel::health_via_tunnel`, 3 s); probing only the first
+  tunnel (`infer_tunnel::health_via_tunnel`, 3 s). The peer answers `/health`
+  without waiting for its engine (a busy peer returns its last snapshot with
+  `busy: true`), so a peer mid-prefill stays in the plan. Session lifecycle
+  calls use `SESSION_LIFECYCLE_TIMEOUT` (60 s), because the peer's handler
+  needs the engine lock. Probing only the first
   announced address left a peer behind an unreachable IPv6 out of every plan
   ("Gap at layer 0"). A direct success is remembered with
   `RouteTable::mark_success`. The probe follows the pinned route

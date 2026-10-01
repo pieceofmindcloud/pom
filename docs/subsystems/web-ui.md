@@ -259,9 +259,12 @@ does not get past that clip. The minimized choice is persisted in the browser.
   the inner areas define their own limits. Loading, error and empty catalog
   have their own states. On `admin`, when `pom_desenv=true` in `/api/ui/node`,
   the column also queries the local development sources and offers
-  rebuild/reinstall of already active plugins; those controls do not show up
-  for other profiles or for nodes without the flag. That endpoint is AdminOnly
-  and the UI only gets success or the step/exit code, not compiler logs. The
+  build/install even for a plugin that has never been activated; those controls
+  do not show up for other profiles or for nodes without the flag. A
+  development-only install grants no licensed features, while rebuilding an
+  existing licensed or GitHub install preserves its entitlement. That endpoint
+  is AdminOnly and the UI only gets success or the step/exit code, not compiler
+  logs. The
   GitHub release flow stays separate. See `docs/subsystems/plugins-ui.md`,
   section "Local rebuild in development".
 - `/documentacao` -> Documentation (full screen; see its own section below)

@@ -186,39 +186,41 @@ profile policy remains the effective authorization boundary.
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
-  `GET /api/ui/plugins` (todo perfil) lista os estados locais de plugins
-  independentes já restaurados ou vistos pelo runtime (`crate::plugins`), cada
-  um com features, validade, uso autenticado e atualização próprios;
-  `POST /api/ui/plugins/activate` ativa em lote todo `plugin_code` que a chave
-  receber do servidor, e `POST /api/ui/plugins/:code/refresh|
-  deactivate|update/check|update/apply` agem sobre um plugin só. Repositórios
-  GitHub são locais ao nó e usam as rotas AdminOnly `GET/POST
-  /api/ui/plugins/github-repositories`, `POST
-  /api/ui/plugins/github-repositories/:id/refresh`, `DELETE
-  /api/ui/plugins/github-repositories/:id` e `POST
-  /api/ui/plugins/github-repositories/:id/install` com `{release_id}`. O POM
-  consulta somente o GitHub, sem perguntar ao servidor de licenças se o plugin
-  exige licença. As fontes ficam em `plugin_github_repositories`; instalações
-  em `plugin_public_install:<code>`, sem lease ou grant. Preferências tipadas
-  ficam locais em `/api/ui/plugins/:code/preferences`; essas rotas não ativam
-  licença. Quando `POM_DESENV=1`, `GET /api/ui/plugins/dev-sources` lista
-  fontes montadas e `POST /api/ui/plugins/dev-sources/:repository/rebuild-install`
-  recompila e reinstala somente um plugin já ativo. Ambas são AdminOnly; o
-  handler limita repositórios e comandos, preserva o estado de licença/GitHub e
-  não expõe saída do compilador. O catálogo comercial é consultado pelo browser
-  sem credenciais.
-  Comprar envia o operador à loja pública com
-  o código do plugin. A detecção
-  da release `pom_core` é outra fronteira, deliberadamente separada
-  (`crate::pom_core_update`): `GET /api/ui/pom-update/status`,
-  `POST /api/ui/pom-update/check` força a detecção sob demanda, e
-  `POST /api/ui/pom-update/apply` exige a confirmação explícita dessa
-  release antes de baixar e reiniciar. A
-  cluster view transporta `SystemLoad.gpus[].power_watts` como telemetria
-  opcional, mantendo `null` quando o sistema não expõe consumo da placa.
-  leitura `/api/ui/network/geo-reference` entrega a referência SQLite de
-  países e cidades para os selects da UI e é `InferNodeAdmin`; não cria nem
-  altera dados de rede. `GET /api/ui/deployments` é `NodeAdmin` para permitir
+  `GET /api/ui/plugins` (all profiles) lists local state for independent
+  plugins restored or seen by the runtime (`crate::plugins`), each with its
+  own features, validity, authenticated usage and updates.
+  `POST /api/ui/plugins/activate` activates every `plugin_code` granted by the
+  server in one batch; `POST /api/ui/plugins/:code/refresh|deactivate|update/check|update/apply`
+  acts on one plugin. GitHub repositories are local to the node and use the
+  AdminOnly routes `GET/POST /api/ui/plugins/github-repositories`,
+  `POST /api/ui/plugins/github-repositories/:id/refresh`,
+  `DELETE /api/ui/plugins/github-repositories/:id` and
+  `POST /api/ui/plugins/github-repositories/:id/install` with
+  `{release_id}`. POM queries GitHub directly and does not ask the license
+  server whether a plugin requires a license. Sources are stored in
+  `plugin_github_repositories`; installations use
+  `plugin_public_install:<code>` without a lease or grant. Typed preferences
+  stay local at `/api/ui/plugins/:code/preferences`; these routes do not
+  activate a license. With `POM_DESENV=1`, `GET
+  /api/ui/plugins/dev-sources` lists mounted sources and
+  `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
+  installs or rebuilds a local plugin without prior activation. Both routes
+  are AdminOnly; the handler restricts repositories and commands and never
+  exposes compiler output. A development-only installation persists in
+  `plugin_dev_install:<code>` and starts the host without granting licensed
+  features. If a license or GitHub installation already exists, its
+  entitlement is preserved. The browser reads the commercial catalog without
+  credentials. Purchases redirect the operator to the public store with the
+  plugin code. Updating the `pom_core` release is a separate boundary in
+  `crate::pom_core_update`: `GET /api/ui/pom-update/status`,
+  `POST /api/ui/pom-update/check` forces an on-demand check, and
+  `POST /api/ui/pom-update/apply` requires explicit confirmation before
+  downloading the release and restarting. The cluster view transports
+  `SystemLoad.gpus[].power_watts` as optional telemetry and keeps it `null`
+  when the system does not report board power. The
+  `/api/ui/network/geo-reference` route returns the SQLite country and city
+  reference for UI selectors and uses `InferNodeAdmin`; it does not create or
+  change network data. `GET /api/ui/deployments` é `NodeAdmin` para permitir
   que node veja o inspetor somente leitura, enquanto mutações e ações de
   implantação continuam sob a política administrativa existente.
   superfície de autoridade expõe o contrato de apresentação em

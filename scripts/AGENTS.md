@@ -187,22 +187,21 @@ runtime é Rust (`crates/node/src/inference/infer_server.rs`,
   executaveis, fixa o caminho do host e preserva os argumentos do container.
   Nao inicia um host vazio no boot porque o host precisa do caminho do plugin
   Enterprise, que so existe depois da ativacao.
-- `docker-compose.yml` - cluster local de 4 servicos (`node-gpu`, `node-gpu2`,
-  `node-gpu-3`, `node-cpu`) com `network_mode: host`, uma ancora comum de
-  build/imagem e estado persistido em `tests/fixtures/<nome>`. O target local
-  padrao e `dev-runtime`, que inclui Cargo e ferramentas para rebuild de plugin;
-  `POM_DOCKER_TARGET=runtime` seleciona a imagem sem toolchain. Cada nó monta
-  `POM_DEV_PLUGINS_DIR` (default `../projects`) em `/opt/pom/dev-plugins` e
-  define `POM_DESENV=1`; a API ainda limita a allowlist de repositórios. O
-  padrao mapeia uma topologia de GPUs mistas; o servidor CUDA sobe pelo repositório
-  `pom-cluster-config`. `docker-compose.salem.yml`
-  tambem e selecionavel diretamente. Os dois estendem a definicao comum em
-  `docker-compose.common.yml`, mantendo os mesmos servicos, contexto, imagem,
-  volumes e variaveis. Todos os nós do cluster usam o mesmo executável; o
-  backend é descoberto a partir dos dispositivos visíveis. A UI é
-  reencontrada por
-  `POM_UI_DIST=/app/apps/frontend/dist` porque `POM_HOME=/data` nao e o
-  `/app` da imagem.
+- `docker-compose.yml` - four-service local cluster (`node-gpu`, `node-gpu2`,
+  `node-gpu-3`, `node-cpu`) using `network_mode: host`, shared build/image
+  anchors and persisted state under `tests/fixtures/<name>`. The default local
+  target is `dev-runtime`, which includes Cargo and native tools for plugin
+  builds; `POM_DOCKER_TARGET=runtime` selects the image without a toolchain.
+  Each node mounts `POM_DEV_PLUGINS_DIR` (default `..`, the workspace directory
+  containing sibling plugin repositories) at `/opt/pom/dev-plugins` and sets
+  `POM_DESENV=1`; the API still restricts the repository allowlist. The default
+  setup maps a mixed-GPU topology; the CUDA server is started from the
+  `pom-cluster-config` repository. `docker-compose.salem.yml` can also be
+  selected directly. Both extend `docker-compose.common.yml`, keeping the same
+  services, context, image, volumes and variables. Every cluster node uses the
+  same executable, and the backend is detected from visible devices. The UI is
+  found at `POM_UI_DIST=/app/apps/frontend/dist` because `POM_HOME=/data` is
+  not the image's `/app` directory.
 - `.github/workflows/release.yml` - release so manual (`workflow_dispatch` com
   `version` e `prerelease`). Job `ui` builda a interface uma vez; matriz de 4
   alvos (macOS arm64 Metal, Linux x86_64 CPU, Linux x86_64 CUDA 12.6, Windows

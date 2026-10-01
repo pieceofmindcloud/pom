@@ -58,6 +58,7 @@ pub(crate) const ENTERPRISE_PLUGIN_CODE: &str = "enterprise";
 
 const PERSISTED_SETTING_PREFIX: &str = "plugin_license:";
 const PUBLIC_INSTALL_SETTING_PREFIX: &str = "plugin_public_install:";
+const DEVELOPMENT_INSTALL_SETTING_PREFIX: &str = "plugin_dev_install:";
 const GITHUB_REPOSITORIES_SETTING: &str = "plugin_github_repositories";
 const PREFERENCES_SETTING_PREFIX: &str = "plugin_preferences:";
 
@@ -800,6 +801,17 @@ struct PublicPluginInstallState {
     installed_at: String,
 }
 
+/// Local development artifact installed from a mounted source. Kept separate
+/// from license and GitHub state: it starts a host but grants no features.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DevelopmentPluginInstallState {
+    fingerprint: Fingerprint,
+    plugin_sha256: String,
+    size: u64,
+    plugin_path: String,
+    installed_at: String,
+}
+
 /// Uma atualização de versão disponível para instalação - do próprio plugin,
 /// nunca do `pom_core` (ver `crate::pom_core_update::CoreUpdate`, o tipo
 /// irmão deliberadamente separado).
@@ -844,6 +856,9 @@ pub(crate) struct PluginStatus {
     pub installation_error: Option<String>,
     #[serde(default)]
     pub public_install: bool,
+    /// True when the running artifact was built from a local development source.
+    #[serde(default)]
+    pub development_install: bool,
     /// URL da origem GitHub local usada pela instalação pública, se instalada.
     #[serde(default)]
     pub github_repository: Option<String>,
@@ -874,6 +889,7 @@ impl PluginStatus {
             available_update: None,
             installation_error: None,
             public_install: false,
+            development_install: false,
             github_repository: None,
             preferences_schema: None,
             preferences: None,
@@ -909,6 +925,7 @@ pub(crate) struct PluginRuntime {
     mock_host_ready: std::sync::atomic::AtomicBool,
     update_lock: Arc<Mutex<()>>,
     public_install: Arc<Mutex<Option<PublicPluginInstallState>>>,
+    development_install: Arc<Mutex<Option<DevelopmentPluginInstallState>>>,
     /// Contexto que o nó entrega a todo host de plugin (`host.configure`),
     /// compartilhado com o [`PluginManager`]. `None` até o gateway ficar pronto.
     host_context: HostContext,
@@ -934,6 +951,15 @@ impl PluginRuntime {
                     .flatten()
             })
             .and_then(|value| serde_json::from_str(&value).ok());
+        let development_install = database
+            .as_ref()
+            .and_then(|database| {
+                database
+                    .local_setting_json(&format!("{DEVELOPMENT_INSTALL_SETTING_PREFIX}{code}"))
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|value| serde_json::from_str(&value).ok());
         Self {
             code: code.to_owned(),
             service,
@@ -947,6 +973,7 @@ impl PluginRuntime {
             mock_host_ready: std::sync::atomic::AtomicBool::new(false),
             update_lock: Arc::new(Mutex::new(())),
             public_install: Arc::new(Mutex::new(public_install)),
+            development_install: Arc::new(Mutex::new(development_install)),
             host_context,
         }
     }
@@ -1035,6 +1062,10 @@ impl PluginRuntime {
         format!("{PUBLIC_INSTALL_SETTING_PREFIX}{}", self.code)
     }
 
+    fn development_install_key(&self) -> String {
+        format!("{DEVELOPMENT_INSTALL_SETTING_PREFIX}{}", self.code)
+    }
+
     fn preferences_for(
         &self,
         schema: &enterprise_protocol::PluginPreferencesSchema,
@@ -1062,6 +1093,13 @@ impl PluginRuntime {
             .await
             .clone()
             .filter(|installed| installed.fingerprint == self.fingerprint);
+        let development_install = self
+            .development_install
+            .lock()
+            .await
+            .clone()
+            .filter(|installed| installed.fingerprint == self.fingerprint);
+        status.development_install = development_install.is_some();
         status.github_repository = public_install
             .as_ref()
             .and_then(|installed| installed.repository_url.clone());
@@ -1195,6 +1233,9 @@ impl PluginRuntime {
             .filter(|state| state.fingerprint == self.fingerprint)
         else {
             self.restore_public_install().await;
+            if !self.status.read().await.active {
+                self.restore_development_install().await;
+            }
             return;
         };
         *self.persisted.lock().await = Some(persisted.clone());
@@ -1255,9 +1296,12 @@ impl PluginRuntime {
                 Err(_) => lease_allows_offline(&persisted),
             };
             if !allowed {
-                let mut status = this.status.write().await;
-                status.active = false;
-                status.state = LicenseState::Expired;
+                {
+                    let mut status = this.status.write().await;
+                    status.active = false;
+                    status.state = LicenseState::Expired;
+                }
+                this.restore_development_install().await;
                 return;
             }
             *this.persisted.lock().await = Some(restored.clone());
@@ -1331,10 +1375,66 @@ impl PluginRuntime {
         }
     }
 
+    async fn restore_development_install(&self) {
+        let _guard = self.update_lock.lock().await;
+        if self.status.read().await.active {
+            return;
+        }
+        let Some(installed) = self.development_install.lock().await.clone() else {
+            return;
+        };
+        if installed.fingerprint != self.fingerprint || self.database.is_none() {
+            return;
+        }
+        let path = std::path::Path::new(&installed.plugin_path);
+        let Ok(bytes) = std::fs::read(path) else {
+            tracing::warn!(plugin_code = %self.code, "binário local de desenvolvimento está ausente");
+            if let Some(database) = &self.database {
+                let _ = database.delete_local_setting(&self.development_install_key());
+            }
+            *self.development_install.lock().await = None;
+            return;
+        };
+        if bytes.len() as u64 != installed.size
+            || !hex::encode(sha2::Sha256::digest(&bytes))
+                .eq_ignore_ascii_case(&installed.plugin_sha256)
+        {
+            tracing::error!(plugin_code = %self.code, "integridade do plugin local de desenvolvimento não confere");
+            if let Some(database) = &self.database {
+                let _ = database.delete_local_setting(&self.development_install_key());
+            }
+            *self.development_install.lock().await = None;
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+        match self.start_host(path).await {
+            Ok(host) => {
+                *self.host.lock().await = Some(host);
+                let mut status = self.status.write().await;
+                status.active = true;
+                status.state = LicenseState::NeedsActivation;
+                status.features.clear();
+                status.plugin_version = None;
+                status.installed_at = Some(installed.installed_at);
+                status.development_install = true;
+                status.installation_error = None;
+            }
+            Err(error) => {
+                tracing::warn!(plugin_code = %self.code, %error, "plugin local de desenvolvimento não pôde ser iniciado");
+                let mut status = self.status.write().await;
+                status.state = LicenseState::NeedsActivation;
+                status.development_install = true;
+                status.installation_error = Some(error.to_string());
+            }
+        }
+    }
+
     async fn restore_ready(&self, persisted: &PersistedPluginState) {
         let host_ready = self.host.lock().await.is_some();
+        let development_install = self.development_install.lock().await.is_some();
         let mut status = self.status.write().await;
         status.active = host_ready;
+        status.development_install = development_install;
         status.state = LicenseState::Active;
         status.features = persisted.features.clone();
         status.plugin_version = Some(persisted.plugin_version.clone());
@@ -1397,9 +1497,34 @@ impl PluginRuntime {
             &self.fingerprint.arch,
         )?;
         install_plugin_atomically(&path, &bytes)?;
+        let previous_development = self.development_install.lock().await.clone();
+        let old_host = self.host.lock().await.take();
+        if let Some(host) = old_host {
+            if let Err(error) = host.stop().await {
+                *self.host.lock().await = Some(host);
+                let _ = std::fs::remove_file(&path);
+                return Err(LicenseClientError::new(
+                    LicenseErrorCode::ServerError,
+                    format!("host local anterior não pôde ser parado: {error}"),
+                ));
+            }
+        }
+        let previous_path =
+            match previous_development.as_ref() {
+                Some(previous) => Some(std::path::PathBuf::from(&previous.plugin_path)),
+                None => self.persisted.lock().await.as_ref().and_then(|previous| {
+                    previous.plugin_path.as_ref().map(std::path::PathBuf::from)
+                }),
+            };
         let host = match self.start_host(&path).await {
             Ok(host) => host,
             Err(error) => {
+                if let Some(previous_path) = previous_path.as_deref().filter(|path| path.is_file())
+                {
+                    if let Ok(host) = self.start_host(previous_path).await {
+                        *self.host.lock().await = Some(host);
+                    }
+                }
                 let _ = std::fs::remove_file(&path);
                 return Err(LicenseClientError::new(
                     LicenseErrorCode::ServerError,
@@ -1429,8 +1554,19 @@ impl PluginRuntime {
                     error.to_string(),
                 ));
             }
+            database
+                .delete_local_setting(&self.development_install_key())
+                .map_err(|error| {
+                    LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
+                })?;
         }
+        *self.development_install.lock().await = None;
         *self.persisted.lock().await = Some(persisted);
+        if let Some(previous) =
+            previous_development.filter(|previous| previous.plugin_path != path.to_string_lossy())
+        {
+            let _ = std::fs::remove_file(previous.plugin_path);
+        }
         self.mark_plugin_ready(&manifest.manifest.version).await
     }
 
@@ -1584,6 +1720,42 @@ impl PluginRuntime {
 
     async fn deactivate(&self) -> Result<(), LicenseClientError> {
         let public_install = self.public_install.lock().await.clone();
+        let development_install = self.development_install.lock().await.clone();
+        let status_snapshot = self.status.read().await.clone();
+        let licensed_install = status_snapshot
+            .licensed_plugins
+            .iter()
+            .any(|code| code == &self.code)
+            && matches!(
+                status_snapshot.state,
+                LicenseState::Active | LicenseState::Degraded
+            );
+        if development_install.is_some() && public_install.is_none() && !licensed_install {
+            let _guard = self.update_lock.lock().await;
+            let installed = self.development_install.lock().await.clone();
+            if let Some(host) = self.host.lock().await.take() {
+                if let Err(error) = host.stop().await {
+                    *self.host.lock().await = Some(host);
+                    return Err(LicenseClientError::new(
+                        LicenseErrorCode::ServerError,
+                        format!("plugin local não pôde ser parado: {error}"),
+                    ));
+                }
+            }
+            if let Some(database) = &self.database {
+                database
+                    .delete_local_setting(&self.development_install_key())
+                    .map_err(|error| {
+                        LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
+                    })?;
+            }
+            *self.development_install.lock().await = None;
+            *self.status.write().await = PluginStatus::inactive(&self.code);
+            if let Some(installed) = installed {
+                let _ = std::fs::remove_file(installed.plugin_path);
+            }
+            return Ok(());
+        }
         if public_install.is_some() {
             let _guard = self.update_lock.lock().await;
             let Some(installed) = self.public_install.lock().await.clone() else {
@@ -1599,7 +1771,10 @@ impl PluginRuntime {
                 }
             }
             if let Some(database) = &self.database {
-                if let Err(error) = database.delete_local_setting(&self.public_install_key()) {
+                if let Err(error) = database
+                    .delete_local_setting(&self.public_install_key())
+                    .and_then(|_| database.delete_local_setting(&self.development_install_key()))
+                {
                     if std::path::Path::new(&installed.plugin_path).is_file() {
                         match self
                             .start_host(std::path::Path::new(&installed.plugin_path))
@@ -1618,6 +1793,7 @@ impl PluginRuntime {
                 }
             }
             *self.public_install.lock().await = None;
+            *self.development_install.lock().await = None;
             *self.status.write().await = PluginStatus::inactive(&self.code);
             if let Err(error) = std::fs::remove_file(&installed.plugin_path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
@@ -1642,13 +1818,18 @@ impl PluginRuntime {
         if let Some(database) = &self.database {
             database
                 .delete_local_setting(&self.setting_key())
+                .and_then(|_| database.delete_local_setting(&self.development_install_key()))
                 .map_err(|error| {
                     LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
                 })?;
         }
         *self.pending.lock().await = None;
         *self.persisted.lock().await = None;
+        *self.development_install.lock().await = None;
         *self.status.write().await = PluginStatus::inactive(&self.code);
+        if let Some(installed) = development_install {
+            let _ = std::fs::remove_file(installed.plugin_path);
+        }
         Ok(())
     }
 
@@ -2262,10 +2443,17 @@ impl PluginRuntime {
             install_plugin_atomically(&path, &downloaded.bytes)?;
         }
         let previous = self.public_install.lock().await.clone();
+        let previous_development = self.development_install.lock().await.clone();
         let old_path = previous
             .as_ref()
             .filter(|previous| previous.fingerprint == self.fingerprint)
-            .map(|previous| std::path::PathBuf::from(&previous.plugin_path));
+            .map(|previous| std::path::PathBuf::from(&previous.plugin_path))
+            .or_else(|| {
+                previous_development
+                    .as_ref()
+                    .filter(|previous| previous.fingerprint == self.fingerprint)
+                    .map(|previous| std::path::PathBuf::from(&previous.plugin_path))
+            });
         let installed = PublicPluginInstallState {
             fingerprint: self.fingerprint.clone(),
             repository_id: Some(repository.id.clone()),
@@ -2322,13 +2510,20 @@ impl PluginRuntime {
                     error.to_string(),
                 ));
             }
+            database
+                .delete_local_setting(&self.development_install_key())
+                .map_err(|error| {
+                    LicenseClientError::new(LicenseErrorCode::ServerError, error.to_string())
+                })?;
         }
         *self.host.lock().await = Some(host);
+        *self.development_install.lock().await = None;
         *self.public_install.lock().await = Some(installed.clone());
         let mut status = self.status.write().await;
         status.active = true;
         status.state = LicenseState::Active;
         status.public_install = true;
+        status.development_install = false;
         status.features = installed.features.clone();
         status.plugin_version = Some(installed.plugin_version.clone());
         status.lease_expires_at = None;
@@ -2341,27 +2536,22 @@ impl PluginRuntime {
         status.installed_at = Some(installed.installed_at);
         status.available_update = None;
         status.installation_error = None;
+        if let Some(old_path) = old_path.filter(|path| {
+            path.as_path() != std::path::Path::new(&installed.plugin_path)
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("dev-"))
+        }) {
+            let _ = std::fs::remove_file(old_path);
+        }
         Ok(())
     }
 
-    async fn development_install_allowed(&self) -> bool {
-        let status = self.status.read().await;
-        if !status.active {
-            return false;
-        }
-        let licensed = self.persisted.lock().await.is_some()
-            && status
-                .licensed_plugins
-                .iter()
-                .any(|code| code == &self.code)
-            && matches!(status.state, LicenseState::Active | LicenseState::Degraded);
-        let public = self.public_install.lock().await.is_some() && status.public_install;
-        licensed || public
-    }
-
-    /// Replaces only the binary of an already-active installation. This never
-    /// activates a license or creates a public installation; the existing
-    /// license/public-install state remains the authorization source.
+    /// Installs a development artifact without changing license or GitHub
+    /// entitlement. In a local-only install the host is active, but its
+    /// feature list stays empty and the license state remains
+    /// `NeedsActivation`.
     async fn install_development_artifact(
         &self,
         bytes: &[u8],
@@ -2371,23 +2561,9 @@ impl PluginRuntime {
             return Err(update_unavailable("plugin de desenvolvimento inválido"));
         }
 
-        let status = self.status.read().await.clone();
         let mut licensed = self.persisted.lock().await.clone();
         let mut public = self.public_install.lock().await.clone();
-        let licensed_allowed = licensed.is_some()
-            && status.active
-            && status
-                .licensed_plugins
-                .iter()
-                .any(|code| code == &self.code)
-            && matches!(status.state, LicenseState::Active | LicenseState::Degraded);
-        let public_allowed = public.is_some() && status.active && status.public_install;
-        if !licensed_allowed && !public_allowed {
-            return Err(update_unavailable(
-                "plugin precisa estar instalado e ativo antes do rebuild local",
-            ));
-        }
-
+        let previous_development = self.development_install.lock().await.clone();
         let digest = hex::encode(sha2::Sha256::digest(bytes));
         let release_id = format!(
             "dev-{}-{}",
@@ -2408,6 +2584,11 @@ impl PluginRuntime {
             .map(std::path::PathBuf::from)
             .or_else(|| {
                 public
+                    .as_ref()
+                    .map(|state| state.plugin_path.clone().into())
+            })
+            .or_else(|| {
+                previous_development
                     .as_ref()
                     .map(|state| state.plugin_path.clone().into())
             });
@@ -2445,21 +2626,38 @@ impl PluginRuntime {
             state.plugin_path = Some(path.to_string_lossy().into_owned());
             state.plugin_sha256 = format!("sha256:{digest}");
             state.installed_at = Some(installed_at.clone());
-        } else if let Some(state) = public.as_mut() {
+        }
+        if let Some(state) = public.as_mut() {
             state.plugin_path = path.to_string_lossy().into_owned();
             state.plugin_sha256 = format!("sha256:{digest}");
             state.size = bytes.len() as u64;
             state.installed_at = installed_at.clone();
         }
+        let development = DevelopmentPluginInstallState {
+            fingerprint: self.fingerprint.clone(),
+            plugin_sha256: digest,
+            size: bytes.len() as u64,
+            plugin_path: path.to_string_lossy().into_owned(),
+            installed_at: installed_at.clone(),
+        };
 
         let save_result = if let Some(database) = &self.database {
-            if let Some(state) = &licensed {
+            let result = if let Some(state) = &licensed {
                 database.save_local_setting(&self.setting_key(), state)
-            } else if let Some(state) = &public {
-                database.save_local_setting(&self.public_install_key(), state)
             } else {
                 Ok(())
-            }
+            };
+            result
+                .and_then(|()| {
+                    if let Some(state) = &public {
+                        database.save_local_setting(&self.public_install_key(), state)
+                    } else {
+                        Ok(())
+                    }
+                })
+                .and_then(|()| {
+                    database.save_local_setting(&self.development_install_key(), &development)
+                })
         } else {
             Ok(())
         };
@@ -2481,6 +2679,7 @@ impl PluginRuntime {
         }
 
         *self.host.lock().await = Some(host);
+        *self.development_install.lock().await = Some(development);
         if let Some(state) = licensed {
             *self.persisted.lock().await = Some(state);
         }
@@ -2489,6 +2688,25 @@ impl PluginRuntime {
             self.status.write().await.installed_at = Some(state.installed_at);
         } else {
             self.status.write().await.installed_at = Some(installed_at.clone());
+        }
+        let has_license_or_github_install =
+            self.persisted.lock().await.is_some() || self.public_install.lock().await.is_some();
+        {
+            let mut status = self.status.write().await;
+            status.active = true;
+            status.development_install = true;
+            if !has_license_or_github_install {
+                status.state = LicenseState::NeedsActivation;
+                status.features.clear();
+                status.public_install = false;
+                status.licensed_plugins.clear();
+                status.lease_expires_at = None;
+                status.activation_count = None;
+                status.max_activations = None;
+            } else if !matches!(status.state, LicenseState::Active | LicenseState::Degraded) {
+                status.features.clear();
+            }
+            status.installation_error = None;
         }
         if let Some(old_path) = old_path.filter(|old_path| {
             old_path.as_path() != path.as_path()
@@ -2677,10 +2895,16 @@ impl PluginManager {
                         .local_setting_keys_with_prefix(PUBLIC_INSTALL_SETTING_PREFIX)
                         .unwrap_or_default(),
                 );
+                keys.extend(
+                    database
+                        .local_setting_keys_with_prefix(DEVELOPMENT_INSTALL_SETTING_PREFIX)
+                        .unwrap_or_default(),
+                );
                 keys.into_iter()
                     .filter_map(|key| {
                         key.strip_prefix(PERSISTED_SETTING_PREFIX)
                             .or_else(|| key.strip_prefix(PUBLIC_INSTALL_SETTING_PREFIX))
+                            .or_else(|| key.strip_prefix(DEVELOPMENT_INSTALL_SETTING_PREFIX))
                             .map(str::to_owned)
                     })
                     .filter(|code| is_valid_plugin_code(code))
@@ -2891,7 +3115,14 @@ impl PluginManager {
             .all_statuses()
             .await
             .into_iter()
-            .map(|status| (status.code, status.active, status.public_install))
+            .map(|status| {
+                (
+                    status.code,
+                    status.active,
+                    status.public_install,
+                    status.development_install,
+                )
+            })
             .collect::<Vec<_>>();
         crate::plugin_dev::list_mounted_sources(
             std::path::Path::new(crate::plugin_dev::DEV_PLUGIN_ROOT),
@@ -2911,20 +3142,13 @@ impl PluginManager {
                     exit_code: None,
                 }
             })?;
-        let runtime =
-            self.runtime_for(plugin_code)
-                .ok_or_else(|| crate::plugin_dev::DevPluginError {
-                    code: crate::plugin_dev::DevPluginErrorCode::PluginNotActive,
-                    stage: None,
-                    exit_code: None,
-                })?;
-        if !runtime.development_install_allowed().await {
-            return Err(crate::plugin_dev::DevPluginError {
-                code: crate::plugin_dev::DevPluginErrorCode::PluginNotActive,
+        let runtime = self.get_or_create_runtime(plugin_code).map_err(|_| {
+            crate::plugin_dev::DevPluginError {
+                code: crate::plugin_dev::DevPluginErrorCode::UnknownRepository,
                 stage: None,
                 exit_code: None,
-            });
-        }
+            }
+        })?;
         let built = crate::plugin_dev::build_source(
             std::path::Path::new(crate::plugin_dev::DEV_PLUGIN_ROOT),
             repository,
@@ -3752,13 +3976,8 @@ pub(crate) async fn rebuild_install_development_plugin(
                 crate::plugin_dev::DevPluginErrorCode::MountMissing => {
                     axum::http::StatusCode::SERVICE_UNAVAILABLE
                 }
-                crate::plugin_dev::DevPluginErrorCode::InvalidSource => {
-                    axum::http::StatusCode::UNPROCESSABLE_ENTITY
-                }
-                crate::plugin_dev::DevPluginErrorCode::PluginNotActive => {
-                    axum::http::StatusCode::CONFLICT
-                }
-                crate::plugin_dev::DevPluginErrorCode::BuildFailed
+                crate::plugin_dev::DevPluginErrorCode::InvalidSource
+                | crate::plugin_dev::DevPluginErrorCode::BuildFailed
                 | crate::plugin_dev::DevPluginErrorCode::ArtifactMissing => {
                     axum::http::StatusCode::UNPROCESSABLE_ENTITY
                 }
@@ -5714,6 +5933,65 @@ mod tests {
             fake_host.display()
         );
         fake_host
+    }
+
+    #[tokio::test]
+    async fn a_local_development_install_runs_without_granting_or_deactivating_a_license() {
+        let _serial = REAL_HOST.lock().await;
+        let directory = tempfile::tempdir().expect("tempdir");
+        let _environment = RestoreEnvironment::capture(&[
+            "POM_HOME",
+            "POM_PLUGIN_HOST",
+            "POM_FAKE_HOST_LOG",
+            "POM_FAKE_HOST_UPSTREAM",
+            "POM_FAKE_HOST_READY_ERROR",
+        ]);
+        let host_log = directory.path().join("host.log");
+        let data_dir = directory.path().join("data");
+        std::fs::create_dir(&data_dir).expect("create persistent directory");
+        std::env::set_var("POM_HOME", directory.path());
+        std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
+        std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
+        std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
+        std::env::remove_var("POM_FAKE_HOST_READY_ERROR");
+
+        let database =
+            Arc::new(crate::db::PomDb::open(data_dir.join("pom.db")).expect("open POM database"));
+        let service = Arc::new(MockLicenseService::new());
+        let manager = PluginManager::test_manager_with_database(
+            &["local_plugin"],
+            service.clone(),
+            database.clone(),
+        );
+        let runtime = manager.runtime_for("local_plugin").expect("runtime");
+
+        runtime
+            .install_development_artifact(b"local development artifact")
+            .await
+            .expect("install local development build");
+
+        let status = runtime.status().await;
+        assert!(status.active, "the local plugin host should be ready");
+        assert!(status.development_install);
+        assert_eq!(status.state, LicenseState::NeedsActivation);
+        assert!(status.features.is_empty());
+        assert!(status.licensed_plugins.is_empty());
+        assert!(database
+            .local_setting_json("plugin_dev_install:local_plugin")
+            .expect("development install lookup")
+            .is_some());
+        assert!(database
+            .local_setting_json("plugin_license:local_plugin")
+            .expect("license lookup")
+            .is_none());
+
+        runtime.deactivate().await.expect("uninstall local build");
+        assert_eq!(service.deactivate_calls().await, 0);
+        assert!(database
+            .local_setting_json("plugin_dev_install:local_plugin")
+            .expect("development install lookup")
+            .is_none());
+        assert!(!runtime.status().await.active);
     }
 
     #[tokio::test]

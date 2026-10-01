@@ -271,7 +271,7 @@ export interface DevelopmentPluginSource {
   plugin_code: string;
   display_name: string;
   active: boolean;
-  install_kind: "github" | "licensed" | null;
+  install_kind: "development" | "github" | "licensed" | null;
 }
 
 export interface DevelopmentPluginSources {
@@ -296,6 +296,8 @@ export interface PluginStatus {
   code: string;
   /** True only when the plugin host is installed and ready. */
   active: boolean;
+  /** The running artifact was built from a locally mounted development source. */
+  development_install: boolean;
   state: PluginLicenseState;
   features: string[];
   manage_url: string;

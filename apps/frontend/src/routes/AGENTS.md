@@ -74,59 +74,63 @@ Per-file list:
   Descrição, regras e o campo único de canais Discord ou Telegram são editados
   como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
   mesmo renderer Markdown compartilhado pelo Chat.
-- `Plugins.tsx` - rota `/plugins`. Cruza o catálogo público de
-  `https://license.pieceofmind.cloud/v1/plugins` com o estado local de
-  `GET /api/ui/plugins`, usando `code` como identidade. O cliente público fica
-  em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita plugins com
-  release comercial compatível; dados de imagem incompletos viram
-  placeholders, e até quatro screenshots abrem em lightbox com Escape e foco
-  restaurado. Descrições usam português brasileiro quando disponível e têm
-  fallback para inglês. Validade, plugins concedidos, candidatos de ativação e
-  uso por `plugin_code` vêm do estado autenticado do nó, nunca do catálogo
-  público. A tela full-bleed segue o cabeçalho e o contêiner
-  interno de `/modelos`. `state` representa validade da licença; `active` só é
-  verdadeiro quando o host concluiu o handshake e está pronto. O estado local
-  pode publicar `installation_error`, exibido no card com o detalhe acionável;
-  uma ativação que falha atualiza o status antes de sair da tela. Plugins locais
-  ativos permanecem visíveis mesmo quando faltam no catálogo público.
-  Desativação exige confirmação. O formulário de chave aparece se
-  qualquer entrada pública que exige licença não estiver ativa no estado local,
-  mesmo quando outro plugin já tem licença/contexto. Ele também aparece quando
-  falta status local ou o status está expirado/revogado, e some quando todos os
-  plugins licenciáveis conhecidos estão ativos. Comprar redireciona plugins
-  licenciados à loja pública com `plugin=<code>` codificado em
-  `lib/pluginPurchase.ts`. Os cards são compactos, dois por linha a partir de
-  `xl`, um por `plugin_code`: catálogo comercial, repositório GitHub e estado
-  local ativo do mesmo código viram um único card. A coluna da direita traz,
-  no topo, o card "Adicionar do GitHub" (URL de repositório público) e, logo
-  abaixo, a ativação de licença. O card de um repositório mostra a descrição
-  e as capturas vindas do manifesto (`raw.githubusercontent.com`), atualizar
-  e remover como ícones, e um select só com as releases compatíveis com este
-  nó (`available_for_node`), já marcado na mais recente, com a ação
-  Instalar, Atualizar (quando a instalação pública veio deste repositório) ou
-  Instalada (desabilitada, quando a tag escolhida é a versão atual). Instalar
-  ou atualizar exige confirmação; essa origem não consulta `requires_license`
-  nem o servidor de licenças. O card não mostra funcionalidades nem a última
-  consulta de update, e a linha de release comercial só aparece quando existe
-  release para o alvo do nó. Ações de ativação, instalação, atualização e
-  desativação invalidam `keys.pluginUi` para atualizar o menu do plugin na
-  hora; o polling de 30 s cobre mudanças feitas fora desta aba. Um único
-  formulário ativa em lote todo `plugin_code` que o servidor conceder
-  (`POST /api/ui/plugins/activate`, resposta `{activated}`); atualizar e
-  desativar continuam por plugin. As preferências abrem num modal pelo ícone
-  de engrenagem no topo do card (só com plugin ativo e schema no release
-  instalado), mostram defaults tipados boolean/diretório, enviam os valores
-  só à rota local do nó e exibem o motivo devolvido pelo nó quando falham.
-  A atualização do binário `pom` em si fica separada em `About.tsx` (ver
-  `crates/node/src/pom_core_update.rs`). Com perfil `admin` e
-  `NodeInfo.pom_desenv=true`, a tela consulta fontes locais e oferece
-  `Recompilar e reinstalar` somente para plugins já ativos; a ação chama a rota
-  de desenvolvimento AdminOnly e mostra resultado ou etapa/código de saída sem
-  revelar saída do compilador. Ela não ativa licença nem usa a rota de release
-  GitHub. A rota tem entrada própria no menu, Configurações > Plugins. No card
-  comercial, a release exibida é escolhida pela combinação
-  `system.os`/`system.arch` do nó local; se o catálogo não publicar esse alvo,
-  a tela mostra ausência em vez de sugerir a release de outra plataforma.
+- `Plugins.tsx` - `/plugins` combines the public catalog at
+  `https://license.pieceofmind.cloud/v1/plugins` with local state from
+  `GET /api/ui/plugins`, using `code` as the identity. The public client lives
+  in `lib/pluginCatalog.ts`, sends no node credentials and accepts plugins
+  with a compatible commercial release. Missing image data uses placeholders;
+  up to four screenshots open in an Escape-dismissible lightbox that restores
+  focus. Descriptions use Brazilian Portuguese when available and otherwise
+  fall back to English. License validity, granted plugins, activation
+  candidates and usage by `plugin_code` come from the node's authenticated
+  state, never the public catalog. The full-bleed screen follows the header and
+  inner container used by `/modelos`. `state` represents license validity;
+  `active` is true only after the host completes its handshake and is ready.
+  Local state may publish `installation_error`, shown on the card with an
+  actionable detail; a failed activation refreshes status before the screen
+  exits. Active local plugins remain visible even when absent from the public
+  catalog.
+
+  Deactivation requires confirmation. The license-key form appears whenever
+  any public entry requiring a license is not active locally, even if another
+  plugin already has a license or context. It also appears when local status is
+  missing or expired/revoked, and is hidden when all known licensed plugins
+  are active. Purchase redirects licensed plugins to the public store with an
+  encoded `plugin=<code>` parameter via `lib/pluginPurchase.ts`. Cards are
+  compact, two per row from `xl`, and grouped by `plugin_code`: the commercial
+  catalog, GitHub repository and local state for the same code share one card.
+  The right column contains the "Add from GitHub" card (public repository URL)
+  above license activation. A repository card shows its manifest description
+  and screenshots (`raw.githubusercontent.com`), refresh/remove icon actions,
+  and a selector containing only releases compatible with this node
+  (`available_for_node`), defaulting to the latest. Its action is Install,
+  Update (when the public installation came from that repository), or disabled
+  Installed (when the selected tag is already current). Install/update requires
+  confirmation; this source does not check `requires_license` or contact the
+  license server. The card does not show features or the last update check, and
+  the commercial release row appears only when the catalog has a release for
+  the node's target. Activation, installation, update and deactivation
+  invalidate `keys.pluginUi` so the plugin menu updates immediately; 30-second
+  polling covers changes made outside this tab. One form activates every
+  `plugin_code` granted by the server in a batch (`POST
+  /api/ui/plugins/activate`, response `{activated}`); updates and deactivation
+  remain per-plugin. Preferences open in a modal from the card's settings
+  icon, only when the plugin is active and its installed release has a schema.
+  The modal displays typed boolean/directory defaults, sends values only to the
+  node's local route and shows the node's reason on failure.
+
+  Updating the `pom` binary is separate in `About.tsx` (see
+  `crates/node/src/pom_core_update.rs`). With profile `admin` and
+  `NodeInfo.pom_desenv=true`, the screen queries local sources and allows
+  building and installing even inactive plugins. A local build is separate
+  from license state, grants no licensed features and does not activate a
+  license; an existing licensed/GitHub installation keeps its entitlement.
+  The action calls the AdminOnly route and shows success or the build
+  stage/exit code without compiler output, and does not use the GitHub release
+  route. The page has its own Settings > Plugins menu entry. Commercial release
+  data is selected for the local node's `system.os`/`system.arch`; if the
+  catalog does not publish that target, the screen shows no release rather than
+  suggesting one for another platform.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,

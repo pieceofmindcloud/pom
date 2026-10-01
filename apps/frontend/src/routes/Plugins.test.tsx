@@ -26,6 +26,7 @@ function pluginStatus(code: string, overrides: Record<string, unknown> = {}) {
     available_update: null,
     installation_error: null,
     public_install: false,
+    development_install: false,
     ...overrides,
   };
 }
@@ -103,6 +104,8 @@ const mocks = vi.hoisted(() => ({
       update_checked_at: string | null;
       available_update: { release_id: string; version: string; changelog: string | null } | null;
       installation_error?: string | null;
+      public_install?: boolean;
+      development_install?: boolean;
     }>,
 
     isLoading: false,
@@ -910,13 +913,56 @@ describe("Plugins", () => {
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
       "/api/ui/plugins/dev-sources/pom-plugin-base/rebuild-install",
     ));
-    expect(await screen.findByText(/foi recompilado e reinstalado em .* ms/)).toBeTruthy();
+    expect(await screen.findByText(/foi compilado e instalado localmente em .* ms/)).toBeTruthy();
     expect(mocks.post).not.toHaveBeenCalledWith(
       expect.stringContaining("github-repositories"),
       expect.anything(),
     );
     expect(mocks.developmentSources.refetch).toHaveBeenCalled();
     expect(mocks.plugins.refetch).toHaveBeenCalled();
+  });
+
+  it("builds and installs an inactive mounted source without requiring a license", async () => {
+    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.developmentSources.data = {
+      mount_available: true,
+      sources: [{
+        repository: "pom-plugin-harness",
+        plugin_code: "harness",
+        display_name: "POM Plugin Harness",
+        active: false,
+        install_kind: null,
+      }],
+    };
+    mocks.post.mockResolvedValue({
+      repository: "pom-plugin-harness",
+      plugin_code: "harness",
+      build_ms: 1234,
+      installed_at: "2026-10-01T10:00:00Z",
+    });
+    renderPage();
+
+    const install = screen.getByRole("button", { name: "Compilar e instalar localmente" });
+    expect((install as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(install);
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/dev-sources/pom-plugin-harness/rebuild-install",
+    ));
+    expect(await screen.findByText(/foi compilado e instalado localmente/)).toBeTruthy();
+  });
+
+  it("keeps license activation available for a running local development build", () => {
+    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.catalog.data = { plugins: [publicPlugin("enterprise")] };
+    mocks.plugins.data = [pluginStatus("enterprise", {
+      active: true,
+      development_install: true,
+      state: "needs_activation",
+    })];
+    renderPage();
+
+    expect(screen.getByText("Build local")).toBeTruthy();
+    expect(screen.getByText("Digite sua chave de licença")).toBeTruthy();
   });
 
   it("shows a safe build failure stage and exit code without compiler output", async () => {

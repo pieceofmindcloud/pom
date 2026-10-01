@@ -50,7 +50,7 @@ services:
       # Stable persistent root shared by user projects and plugin data. Keep it
       # separate from model volumes so plugin state survives model changes.
       - ${POM_WORKSPACE_DIR:-./workspace}:/data/workspace
-      - ${POM_DEV_PLUGINS_DIR:-../projects}:/opt/pom/dev-plugins:rw
+      - ${POM_DEV_PLUGINS_DIR:-..}:/opt/pom/dev-plugins:rw
       - ./tests/fixtures/node-gpu:/data
 
   node-gpu2:
@@ -60,7 +60,7 @@ services:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
       - ${POM_WORKSPACE_DIR:-./workspace}:/data/workspace
-      - ${POM_DEV_PLUGINS_DIR:-../projects}:/opt/pom/dev-plugins:rw
+      - ${POM_DEV_PLUGINS_DIR:-..}:/opt/pom/dev-plugins:rw
       - ./tests/fixtures/node-gpu-2:/data
 
   node-gpu-3:
@@ -70,7 +70,7 @@ services:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
       - ${POM_WORKSPACE_DIR:-./workspace}:/data/workspace
-      - ${POM_DEV_PLUGINS_DIR:-../projects}:/opt/pom/dev-plugins:rw
+      - ${POM_DEV_PLUGINS_DIR:-..}:/opt/pom/dev-plugins:rw
       - ./tests/fixtures/node-gpu-3:/data
 
   node-cpu:
@@ -83,5 +83,5 @@ services:
       - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
       - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
       - ${POM_WORKSPACE_DIR:-./workspace}:/data/workspace
-      - ${POM_DEV_PLUGINS_DIR:-../projects}:/opt/pom/dev-plugins:rw
+      - ${POM_DEV_PLUGINS_DIR:-..}:/opt/pom/dev-plugins:rw
       - ./tests/fixtures/node-cpu:/data

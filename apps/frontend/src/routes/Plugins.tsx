@@ -364,6 +364,11 @@ function PluginCard({
   const uiPlugin = pluginUiSnapshot().find((plugin) => plugin.code === code);
   const name = entry?.display_name ?? repository?.manifest.display_name ?? code;
   const active = Boolean(status?.active);
+  const localOnlyDevelopmentInstall = Boolean(
+    status?.development_install
+      && !status.public_install
+      && !status.licensed_plugins.includes(code),
+  );
   const description = entry
     ? locale === "pt-BR" ? entry.description_pt_br ?? entry.description : entry.description
     : localizedText(repository?.description, locale)
@@ -402,7 +407,8 @@ function PluginCard({
   const isLicenseEnded = status?.state === "expired" || status?.state === "revoked";
   const hasLicense = entry?.requires_license !== false
     && status?.public_install !== true
-    && (status?.active === true
+    && (status?.licensed_plugins.includes(code) === true
+      || (!status?.development_install && status?.active === true)
       || (!isLicenseEnded && licenseStatus?.licensed_plugins.includes(code) === true));
   const directCount = status?.activation_count;
   const directMaximum = status?.max_activations;
@@ -469,6 +475,7 @@ function PluginCard({
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <Badge tone={badgeTone}>{licenseLabel}</Badge>
             {fromGithub && <Badge tone="neutral">GitHub</Badge>}
+            {status?.development_install && <Badge tone="neutral">{t("plugins.devInstalled")}</Badge>}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
@@ -634,7 +641,7 @@ function PluginCard({
         )}
 
         <div className="mt-auto flex flex-wrap gap-2">
-          {active && status?.public_install !== true && (
+          {active && status?.public_install !== true && !localOnlyDevelopmentInstall && (
             <>
               <Button variant="outline" loading={busyCode === code} icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => onRefresh(code)}>
                 {t("plugins.refresh")}
@@ -643,6 +650,11 @@ function PluginCard({
                 {t("plugins.deactivate")}
               </Button>
             </>
+          )}
+          {localOnlyDevelopmentInstall && (
+            <Button variant="outline" loading={busyCode === code} icon={<XCircle className="h-3.5 w-3.5" />} onClick={() => onDeactivate(code)}>
+              {t("plugins.devUninstall")}
+            </Button>
           )}
           {active && status?.public_install === true && (
             <Button variant="outline" loading={busyCode === code} icon={<XCircle className="h-3.5 w-3.5" />} onClick={() => onDeactivate(code)}>
@@ -934,7 +946,11 @@ export function Plugins() {
   const shouldShowActivation = publicEntries.some((entry) => {
     if (entry.requires_license !== true) return false;
     const status = localByCode.get(entry.code);
-    return status?.active !== true || status.state === "expired" || status.state === "revoked";
+    const licensed = status?.active === true
+      && (status.public_install === true
+        || status.licensed_plugins.includes(entry.code)
+        || status.development_install !== true);
+    return !licensed || status?.state === "expired" || status?.state === "revoked";
   });
   // Um card por `plugin_code`: catálogo comercial, repositório GitHub e estado
   // local ativo se somam no mesmo card quando falam do mesmo plugin.
@@ -958,6 +974,11 @@ export function Plugins() {
   const deactivateCard = cards.find(({ status }) => status?.code === deactivateTarget);
   const deactivateName = deactivateCard?.entry?.display_name ?? deactivateCard?.repository?.manifest.display_name ?? deactivateTarget ?? "";
   const uninstallingPublicPlugin = deactivateCard?.status?.public_install === true;
+  const uninstallingLocalDevelopmentPlugin = Boolean(
+    deactivateCard?.status?.development_install
+      && !deactivateCard.status.public_install
+      && !deactivateCard.status.licensed_plugins.includes(deactivateCard.code),
+  );
   const preferencesCard = cards.find(({ code }) => code === preferencesCode);
   const preferencesSchema = preferencesCard?.status?.preferences_schema ?? null;
 
@@ -1062,12 +1083,14 @@ export function Plugins() {
                       </div>
                       <Button
                         variant="outline"
-                        disabled={!source.active || developmentBusyRepository !== null}
+                        disabled={developmentBusyRepository !== null}
                         loading={developmentBusyRepository === source.repository}
                         icon={<Hammer className="h-3.5 w-3.5" aria-hidden="true" />}
                         onClick={() => void rebuildDevelopmentPlugin(source)}
                       >
-                        {developmentBusyRepository === source.repository ? t("plugins.devBuilding") : t("plugins.devRebuildInstall")}
+                        {developmentBusyRepository === source.repository
+                          ? t("plugins.devBuilding")
+                          : source.active ? t("plugins.devRebuildInstall") : t("plugins.devInstall")}
                       </Button>
                     </div>
                   ))}
@@ -1170,11 +1193,17 @@ export function Plugins() {
         open={deactivateTarget !== null}
         title={uninstallingPublicPlugin
           ? t("plugins.githubUninstallConfirmTitle", { name: deactivateName })
-          : t("plugins.deactivateConfirmTitle", { name: deactivateName })}
+          : uninstallingLocalDevelopmentPlugin
+            ? t("plugins.devUninstallConfirmTitle", { name: deactivateName })
+            : t("plugins.deactivateConfirmTitle", { name: deactivateName })}
         description={uninstallingPublicPlugin
           ? t("plugins.githubUninstallConfirmDescription")
-          : t("plugins.deactivateConfirmDescription")}
-        confirmLabel={uninstallingPublicPlugin ? t("plugins.githubUninstall") : t("plugins.deactivate")}
+          : uninstallingLocalDevelopmentPlugin
+            ? t("plugins.devUninstallConfirmDescription")
+            : t("plugins.deactivateConfirmDescription")}
+        confirmLabel={uninstallingPublicPlugin
+          ? t("plugins.githubUninstall")
+          : uninstallingLocalDevelopmentPlugin ? t("plugins.devUninstall") : t("plugins.deactivate")}
         tone="danger"
         busy={deactivateTarget !== null && busyCode === deactivateTarget}
         onConfirm={() => deactivateTarget && void deactivate(deactivateTarget)}

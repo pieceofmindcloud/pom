@@ -741,11 +741,13 @@ node) and use `ConnectionAuth`:
   `{release_id}` to download and install exactly that chosen release.
 - With `POM_DESENV=1`, `GET /api/ui/plugins/dev-sources` only lists known
   repositories and valid mounted sources;
-  `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` rebuilds and
-  reinstalls an already active plugin. These two routes are the exception:
-  they stay AdminOnly. The server validates the paths, only uses fixed Cargo
-  commands and does not return the build's stdout/stderr; the mutation keeps
-  the license or GitHub install and does not activate a license.
+  `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
+  installs or rebuilds the local plugin without requiring an existing
+  activation. These two routes stay AdminOnly. The server validates the paths,
+  only uses fixed Cargo commands and does not return the build's stdout/stderr.
+  A development-only install has no licensed features; rebuilding an existing
+  licensed or GitHub install preserves that install's entitlement and never
+  activates a license.
 
 The root manifest declares ABI, `plugin_code`, features, optional preferences
 and the asset name per platform. For `ui/manifest.json`, the releases attach

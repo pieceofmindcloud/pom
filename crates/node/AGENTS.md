@@ -316,13 +316,16 @@ do asset selecionado. Instalar a release
 escolhida não consulta o catálogo ou o servidor de licenças e não cria lease;
 um conflito local de `plugin_code` com uma instalação licenciada impede que um
 host seja substituído silenciosamente.
-`src/plugin_dev.rs` limita rebuild local à allowlist de repositórios conhecidos
-sob `/opt/pom/dev-plugins`, valida caminhos canônicos, manifestos e o único
-`cdylib` do pacote, e executa argumentos fixos de `cargo metadata`/`cargo
-build`. As rotas AdminOnly só funcionam com `POM_DESENV=1`; `PluginManager`
-reconfere que o plugin já está ativo por licença ou instalação GitHub antes de
-substituir atomicamente o binário e reiniciar só o host daquele plugin. Não ativa
-licença, consulta GitHub nem reinicia o nó.
+`src/plugin_dev.rs` restricts local builds to the allowlist of known
+repositories under `/opt/pom/dev-plugins`, validates canonical paths,
+manifests and the package's single `cdylib`, and runs fixed `cargo metadata`/
+`cargo build` arguments. AdminOnly routes work only with `POM_DESENV=1`; a
+build may install a local plugin without a license or prior installation,
+persisting its binary and state in `plugin_dev_install:<code>` without granting
+licensed features. If a licensed or GitHub installation already exists, the
+local artifact replaces its binary without changing entitlement. The flow
+restarts only the plugin host and does not query GitHub/licenses or restart the
+node.
 As preferências opcionais do manifesto são guardadas localmente por
 `plugin_preferences:<code>`, fora do snapshot/licença.
 O `PluginStatus` também publica a expiração, os plugins concedidos, candidatos

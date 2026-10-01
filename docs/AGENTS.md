@@ -104,8 +104,9 @@ The permanent runtime guides. Beyond what their titles say:
   audit screens, the `pom`/`pom-plugin-host` boundary, the `enterprise.db`
   plugin and the remaining P2P/release limits. The `/plugins` showcase crosses
   the public catalog with the node's local plugin state (open to every
-  profile) and sends purchases to the public store by `plugin_code`. With
-  `http-api.md` and `build-and-run.md` it documents the daily `pom_core`
+  profile), local development installs without license activation, and sends
+  purchases to the public store by `plugin_code`. With `http-api.md` and
+  `build-and-run.md` it documents the daily `pom_core`
   release notice, applied only after explicit authorization in the UI; that
   notice is not a plugin and lives in `crates/node/src/pom_core_update.rs`
   with its own routes and screen (`/api/ui/pom-update/*`, `/config/sobre`).

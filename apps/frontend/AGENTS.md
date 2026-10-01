@@ -151,14 +151,15 @@ desenhado**, porque uma vista só não é uma escolha.
   `/config/compartilhamento` (TrustAnchor com máquina, raiz e chave de conexão)
   e `/config/keys/api`. A rota antiga `/config/confianca` continua como alias
   compatível da tela da raiz de confiança.
-- `/plugins` -> Plugins, lista todo plugin do catálogo (ativo ou não), com
-  ativação por chave de licença que indica quais plugins ela concede,
-  atualização de versão própria por plugin e desativação por plugin. Com perfil
-  `admin` e `pom_desenv=true`, oferece também o rebuild/reinstall local de
-  fontes montadas para plugins já ativos. Não trata da atualização do binário
-  `pom` em si - isso é só em `/config/sobre`. Substituiu a antiga `/enterprise`
-  de produto único (`Enterprise.tsx`); ver `src/routes/AGENTS.md` e
-  `crates/node/src/plugins.rs`.
+- `/plugins` -> Plugins, lists every plugin in the catalog, active or not, with
+  license-key activation that identifies the plugins granted by that key,
+  per-plugin version updates and deactivation. With `admin` and
+  `pom_desenv=true`, it also builds and installs plugins directly from mounted
+  sources without requiring an active license; local builds grant no licensed
+  features and do not change existing entitlement. Updating the `pom` binary
+  is handled separately in `/config/sobre`. This replaced the former
+  single-product `/enterprise` screen (`Enterprise.tsx`); see
+  `src/routes/AGENTS.md` and `crates/node/src/plugins.rs`.
 - `/config/preferencias` -> Preferences com exposição, Hugging Face e proteção
 térmica; `/config/armazenamento` -> ModelPaths, que também configura a raiz
 persistente compartilhada de projetos e dados dinâmicos dos plugins;

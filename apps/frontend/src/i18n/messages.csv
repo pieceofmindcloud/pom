@@ -1620,20 +1620,25 @@ plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
 plugins.deactivateFailed,Could not deactivate this plugin.,Não foi possível desativar este plugin.
 plugins.devArtifactMissing,The build completed but no plugin library was found.,"A compilação terminou, mas nenhuma biblioteca do plugin foi encontrada."
 plugins.devBuildFailed,Plugin build failed during {stage}.,A compilação do plugin falhou durante {stage}.
-plugins.devBuilding,Building and reinstalling…,Recompilando e reinstalando…
-plugins.devDescription,Rebuilds a mounted source and replaces the already-installed plugin locally. It does not publish a GitHub release.,Recompila uma fonte montada e substitui localmente o plugin já instalado. Não publica release no GitHub.
+plugins.devBuilding,Building and installing…,Compilando e instalando…
+plugins.devDescription,Builds and installs or rebuilds a mounted source locally without requiring or activating a license. It does not publish a GitHub release.,Compila e instala ou recompila localmente uma fonte montada sem exigir nem ativar uma licença. Não publica release no GitHub.
 plugins.devDisabled,Local plugin development is disabled on this node.,O desenvolvimento local de plugins está desabilitado neste nó.
 plugins.devExitCode,(exit code {code}),(código de saída {code})
+plugins.devInstall,Build and install locally,Compilar e instalar localmente
 plugins.devInstallFailed,The rebuilt plugin could not be installed.,Não foi possível instalar o plugin recompilado.
+plugins.devInstalled,Local build,Build local
 plugins.devInvalidSource,This mounted source is invalid or does not match its known plugin.,Esta fonte montada é inválida ou não corresponde ao plugin conhecido.
 plugins.devListFailed,Could not inspect mounted plugin sources.,Não foi possível verificar as fontes de plugins montadas.
 plugins.devLoading,Checking mounted plugin sources…,Verificando fontes de plugins montadas…
 plugins.devMountMissing,The development source mount is not available.,O volume de fontes de desenvolvimento não está disponível.
 plugins.devNoSources,No valid known plugin sources are mounted.,Nenhuma fonte válida de plugin conhecido está montada.
-plugins.devPluginInactive,Install and activate this plugin first. Local rebuilds do not activate licenses.,Instale e ative este plugin primeiro. Rebuild local não ativa licenças.
+plugins.devPluginInactive,Not installed yet. Build and install it locally without activating a license.,Ainda não instalado. Compile e instale localmente sem ativar uma licença.
 plugins.devRebuildInstall,Rebuild and reinstall,Recompilar e reinstalar
-plugins.devSucceeded,Rebuilt and reinstalled {name} in {duration} ms. No GitHub release was published.,{name} foi recompilado e reinstalado em {duration} ms. Nenhuma release foi publicada no GitHub.
+plugins.devSucceeded,Built and installed {name} locally in {duration} ms. No GitHub release or license activation occurred.,{name} foi compilado e instalado localmente em {duration} ms. Nenhuma release do GitHub foi publicada e nenhuma licença foi ativada.
 plugins.devTitle,Local development builds,Builds locais de desenvolvimento
+plugins.devUninstall,Uninstall local build,Desinstalar build local
+plugins.devUninstallConfirmDescription,This removes the local development plugin from this node. It does not activate or deactivate a license.,Isso remove o plugin de desenvolvimento local deste nó. Não ativa nem desativa uma licença.
+plugins.devUninstallConfirmTitle,Remove local build of {name}?,Remover o build local de {name}?
 plugins.devUnknownFailure,The local rebuild failed.,O rebuild local falhou.
 plugins.devUnknownRepository,This repository is not in the supported plugin list.,Este repositório não está na lista de plugins compatíveis.
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.

@@ -229,6 +229,7 @@ function inactivePlugin(code: string): PluginStatus {
   return {
     code,
     active: false,
+    development_install: false,
     state: "needs_activation",
     features: [],
     manage_url: "https://pieceofmind.cloud/enterprise",

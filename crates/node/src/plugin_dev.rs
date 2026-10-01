@@ -79,7 +79,6 @@ pub(crate) enum DevPluginErrorCode {
     UnknownRepository,
     MountMissing,
     InvalidSource,
-    PluginNotActive,
     BuildFailed,
     ArtifactMissing,
     InstallFailed,
@@ -317,7 +316,7 @@ fn validate_plugin_manifests(root: &Path, spec: KnownPlugin) -> Result<(), DevPl
 
 pub(crate) fn list_mounted_sources(
     root: &Path,
-    statuses: &[(String, bool, bool)],
+    statuses: &[(String, bool, bool, bool)],
 ) -> MountedPluginSources {
     let Ok(canonical_root) = root.canonicalize() else {
         return MountedPluginSources {
@@ -337,11 +336,13 @@ pub(crate) fn list_mounted_sources(
         .filter_map(|spec| {
             let source = canonical_source(&canonical_root, spec.repository).ok()?;
             let _ = source;
-            let (active, public_install) = statuses
+            let (active, public_install, development_install) = statuses
                 .iter()
-                .find(|(code, _, _)| code == spec.plugin_code)
-                .map(|(_, active, public_install)| (*active, *public_install))
-                .unwrap_or((false, false));
+                .find(|(code, _, _, _)| code == spec.plugin_code)
+                .map(|(_, active, public_install, development_install)| {
+                    (*active, *public_install, *development_install)
+                })
+                .unwrap_or((false, false, false));
             Some(MountedPluginSource {
                 repository: spec.repository.to_owned(),
                 plugin_code: spec.plugin_code.to_owned(),
@@ -349,6 +350,8 @@ pub(crate) fn list_mounted_sources(
                 active,
                 install_kind: if !active {
                     None
+                } else if development_install {
+                    Some("development".into())
                 } else if public_install {
                     Some("github".into())
                 } else {
@@ -614,12 +617,18 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         make_source(temp.path());
         std::fs::create_dir_all(temp.path().join("pom-plugin-not-allowed")).unwrap();
-        let listing = list_mounted_sources(temp.path(), &[("base".into(), true, true)]);
+        let listing = list_mounted_sources(temp.path(), &[("base".into(), true, true, false)]);
         assert!(listing.mount_available);
         assert_eq!(listing.sources.len(), 1);
         assert_eq!(listing.sources[0].repository, "pom-plugin-base");
         assert!(listing.sources[0].active);
         assert_eq!(listing.sources[0].install_kind.as_deref(), Some("github"));
+
+        let development = list_mounted_sources(temp.path(), &[("base".into(), true, false, true)]);
+        assert_eq!(
+            development.sources[0].install_kind.as_deref(),
+            Some("development")
+        );
     }
 
     #[tokio::test]

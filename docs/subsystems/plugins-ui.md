@@ -189,7 +189,7 @@ applies to new data and the plugin decides how to preserve its legacy data.
 
 ## Local rebuild in development
 
-The local Compose mounts `POM_DEV_PLUGINS_DIR` (default `../projects`) at
+The local Compose mounts `POM_DEV_PLUGINS_DIR` (default `..`, the workspace directory containing the sibling plugin repositories) at
 `/opt/pom/dev-plugins` and enables `POM_DESENV=1`. The local image target
 `dev-runtime` includes Rust/Cargo and native tools; the release `runtime` image
 still has no compiler. The panel offers the rebuild block only on the `admin`
@@ -204,14 +204,7 @@ arguments for `cargo metadata --no-deps --locked` and `cargo build --release
 the repository, manifests and artifact inside the mounted source. There is no
 shell command and no build argument taken from the request.
 
-The rebuild only replaces a plugin that is already active through a licensed
-install (Active or Degraded state) or a local GitHub install. The manager
-checks that condition again before the swap, writes the artifact atomically and
-restarts only that plugin's isolated host. It does not activate or renew a
-license, call GitHub or the license server, change the release selection or
-restart the POM process. The response exposes success or the step/exit code,
-never the compiler's stderr. The GitHub release install flow stays independent
-and unchanged.
+The local build can install a plugin even when it has never been installed or activated. It writes a separate development-install record, starts only that plugin's isolated host, and grants no licensed features or license state. If a licensed or GitHub installation already exists, the local artifact replaces its running binary without changing that entitlement. The operation never activates or renews a license, calls GitHub or the license server, changes the release selection or restarts the POM process. The response exposes success or the step/exit code, never the compiler's stderr. The GitHub release install flow stays independent and unchanged.
 
 ## Node context (`host.configure`)
 

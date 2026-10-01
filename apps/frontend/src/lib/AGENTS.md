@@ -200,40 +200,42 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   - nunca misture os dois: a tela de Plugins só aplica atualização de plugin,
   e `About.tsx` só aplica atualização do `pom`, cada uma após confirmação
   explícita do operador.
-- `pluginCatalog.ts` - consulta diretamente o catálogo público de plugins do
-  servidor de licenças, com `credentials: "omit"`; não usa `api.ts` nem envia a
-  chave de conexão ou a sessão administrativa. Valida os campos obrigatórios de
-  cada release comercial e descarta plugins sem release válida; metadados de
-  repositório GitHub do catálogo são ignorados, pois as fontes GitHub são locais.
-  Mantém campos opcionais ausentes como dados desconhecidos e aceita imagens somente do host público
-  esperado, sem credenciais embutidas na URL. Também valida `description_pt_br`
-  quando publicados. Estado de licença, candidatos e uso por `plugin_code` vêm
-  da API autenticada do nó (`PluginStatus`), nunca do catálogo público.
-  `pluginPurchase.ts` constrói a URL da loja pública com o `plugin_code` em
-  parâmetro codificado e não envia credenciais. `usePublicPluginCatalog` em `queries.ts`
-  controla carregamento, erro e atualização periódica dessa leitura.
-  `useGithubRepositories` consulta `/api/ui/plugins/github-repositories`, lista
-  local autenticada que não depende do catálogo comercial. Cada fonte informa
-  `manifest_path` e pode devolver o manifesto de UI original quando a origem é
-  `ui/manifest.json`. `useDevelopmentPluginSources` consulta fontes montadas
-  somente para o perfil admin com `pom_desenv`; seus DTOs descrevem o resultado
-  seguro do rebuild local, sem saída de compilador. A rota Plugins não usa esse
-  fluxo para instalar plugins inativos nem substitui a escolha de release GitHub.
-  `PluginStatus` também carrega `installed_at`, `update_checked_at`,
-  `installation_error` e `public_install` do estado real persistido pelo nó; não
-  derive a data da última instalação do heartbeat. `active` significa host
-  pronto, enquanto `state` continua descrevendo a validade da licença. Uma
-  instalação pública mantém `licensed_plugins`
-  vazio e usa estado local próprio, sem lease.
-  `license_expires_at` é a validade da LICENÇA (de `GET /v1/licenses/status`) e
-  é o campo certo para "Licença válida até" na tela de Plugins - nunca
-  `lease_expires_at`, um prazo técnico de renovação de poucos dias que o
-  heartbeat empurra sozinho. O status também expõe a URL do repositório GitHub
-  da instalação pública local; as releases disponíveis e os erros de leitura
-  pertencem ao registro de repositórios, não ao catálogo de licenças. Isso não
-  muda `licensed_plugins`. `preferences_schema` vem do manifesto instalado,
-  enquanto `preferences` são valores locais, enviados somente à rota local de
-  configuração do plugin e nunca à API de licenças.
+- `pluginCatalog.ts` - reads the public plugin catalog directly from the
+  license server with `credentials: "omit"`; it does not use `api.ts` or send
+  the connection key or administrative session. It validates required fields
+  for each commercial release and discards plugins without a valid release.
+  GitHub repository metadata in the catalog is ignored because GitHub sources
+  are local. Missing optional fields remain unknown; images are accepted only
+  from the expected public host and URLs may not embed credentials. Published
+  `description_pt_br` values are validated too. License state, activation
+  candidates and usage by `plugin_code` come from the node's authenticated API
+  (`PluginStatus`), never from the public catalog.
+  `pluginPurchase.ts` builds a public-store URL with an encoded `plugin_code`
+  and sends no credentials. `usePublicPluginCatalog` in `queries.ts` manages
+  loading, errors and periodic refreshes. `useGithubRepositories` reads
+  `/api/ui/plugins/github-repositories`, an authenticated local list that does
+  not depend on the commercial catalog. Each source reports `manifest_path`
+  and may return the original UI manifest when its source is `ui/manifest.json`.
+  `useDevelopmentPluginSources` queries mounted sources only for the admin
+  profile when `pom_desenv` is enabled. Its DTOs describe local builds and
+  installs without compiler output. It can install inactive plugins as
+  development builds without a license or licensed features, and does not
+  replace the GitHub release selection. `PluginStatus.development_install`
+  distinguishes a local artifact from license validity. Status also includes
+  `installed_at`, `update_checked_at`, `installation_error` and
+  `public_install` from the node's actual state; do not derive the last-install
+  time from the heartbeat. `active` means the host is ready, while `state`
+  continues to describe license validity. A public installation keeps
+  `licensed_plugins` empty and uses separate local state without a lease.
+  `license_expires_at` is the actual license expiration from
+  `GET /v1/licenses/status` and is the field for "License valid until" on the
+  Plugins screen. Never use `lease_expires_at`, a short technical renewal
+  deadline extended by the heartbeat. Status also exposes the GitHub URL for a
+  locally installed public repository. Available releases and read errors
+  belong to the repository registry, not the license catalog, and do not change
+  `licensed_plugins`. `preferences_schema` comes from the installed manifest;
+  `preferences` are local values sent only to the plugin's local configuration
+  route and never to the license API.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

@@ -339,15 +339,17 @@ already installed by the license mechanism is refused so that host is not
 silently replaced; no license server query is made to decide whether the
 repository needs a license.
 
-The local development rebuild is another AdminOnly operation and requires
-`POM_DESENV=1`: the source is picked from an allowlist mounted under
-`/opt/pom/dev-plugins`, and only an already active plugin can receive the new
-`cdylib`. `PluginManager` checks again whether the licensed install is
-active/degraded or the GitHub install is still active, replaces the artifact
-and restarts only that plugin's host. It does not activate a license, query
-GitHub/the license server or restart POM. The local Compose provides the
-`dev-runtime` target; the release `runtime` image does not include the
-toolchain. The contract and limits are in `docs/subsystems/plugins-ui.md`,
+The local development build/install is another AdminOnly operation and
+requires `POM_DESENV=1`: the source is picked from an allowlist mounted under
+`/opt/pom/dev-plugins`. It can install a development-only plugin with no prior
+license or GitHub installation, persisting it separately in
+`plugin_dev_install:<code>`; this starts the host but grants no licensed
+features or entitlement. If a licensed or GitHub installation already exists,
+`PluginManager` replaces its binary and restarts only that plugin's host while
+preserving the existing entitlement. The operation does not activate a
+license, query GitHub/the license server or restart POM. The local Compose
+provides the `dev-runtime` target; the release `runtime` image does not include
+the toolchain. The contract and limits are in `docs/subsystems/plugins-ui.md`,
 "Local rebuild in development".
 
 `PluginManifest.preferences` is optional and omitted on serialization when

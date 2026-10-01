@@ -56,6 +56,14 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugins::apply_plugin_update),
         )
         .route(
+            "/api/ui/plugins/dev-sources",
+            get(crate::plugins::list_development_plugin_sources),
+        )
+        .route(
+            "/api/ui/plugins/dev-sources/:repository/rebuild-install",
+            post(crate::plugins::rebuild_install_development_plugin),
+        )
+        .route(
             "/api/ui/plugins/github-repositories",
             get(crate::plugins::list_github_repositories)
                 .post(crate::plugins::add_github_repository),

@@ -78,8 +78,10 @@ cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 ```
 
 A imagem Docker também compila `pom-plugin-host` e o coloca ao lado de `pom`;
-o entrypoint mantém o caminho explícito e o próprio `pom` inicia o host após
-baixar o plugin Enterprise, usando IPC por stdin/stdout. Os builds Docker de
+o entrypoint mantém o caminho explícito e o nó inicia um host isolado quando um
+plugin é instalado. O Compose local usa `dev-runtime`, monta as fontes
+allowlisted em `/opt/pom/dev-plugins` e habilita `POM_DESENV=1` para o rebuild
+local; a imagem `runtime` de release não inclui toolchain. Os builds Docker de
 desenvolvimento usam por padrão bibliotecas da release exata do fork; para
 compilar fontes locais, use `POM_LLAMA_CPP_MODE=source` e, opcionalmente,
 `POM_LLAMA_CPP_SOURCE_DIR=/caminho/para/llama.cpp` com os scripts de build.

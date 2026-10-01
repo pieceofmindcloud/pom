@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 import { Plugins } from "./Plugins";
+import { ApiError } from "../lib/api";
 
 function pluginStatus(code: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -76,6 +77,12 @@ const mocks = vi.hoisted(() => ({
     error: null as Error | null,
     refetch: vi.fn(),
   },
+  developmentSources: {
+    data: undefined as { mount_available: boolean; sources: Array<Record<string, unknown>> } | undefined,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  },
   plugins: {
     data: [] as Array<{
       code: string;
@@ -113,11 +120,17 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => mocks.queryClient }));
-vi.mock("../lib/api", () => ({ api: { post: mocks.post, del: mocks.del } }));
+vi.mock("../lib/api", () => ({
+  api: { post: mocks.post, del: mocks.del },
+  ApiError: class extends Error {
+    constructor(readonly status: number, message: string, readonly body?: unknown) { super(message); }
+  },
+}));
 vi.mock("../lib/queries", () => ({
   keys: { pluginUi: ["plugin-ui"] },
   usePlugins: () => mocks.plugins,
   useGithubRepositories: () => mocks.githubRepositories,
+  useDevelopmentPluginSources: () => mocks.developmentSources,
   usePublicPluginCatalog: () => mocks.catalog,
   useNode: () => mocks.node,
 }));
@@ -148,6 +161,10 @@ describe("Plugins", () => {
     mocks.githubRepositories.isError = false;
     mocks.githubRepositories.error = null;
     mocks.githubRepositories.refetch.mockReset();
+    mocks.developmentSources.data = undefined;
+    mocks.developmentSources.isLoading = false;
+    mocks.developmentSources.isError = false;
+    mocks.developmentSources.refetch.mockReset();
     mocks.catalog.data = { plugins: [] };
     mocks.catalog.isLoading = false;
     mocks.catalog.isError = false;
@@ -846,6 +863,69 @@ describe("Plugins", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Não foi possível salvar estas preferências localmente.");
     expect(alert.textContent).toContain("preferência booleana desconhecida para este plugin");
+  });
+
+  it("rebuilds and reinstalls only an active mounted source without using the GitHub release route", async () => {
+    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.developmentSources.data = {
+      mount_available: true,
+      sources: [{
+        repository: "pom-plugin-base",
+        plugin_code: "base",
+        display_name: "POM Plugin Base",
+        active: true,
+        install_kind: "licensed",
+      }],
+    };
+    mocks.post.mockResolvedValue({
+      repository: "pom-plugin-base",
+      plugin_code: "base",
+      build_ms: 1234,
+      installed_at: "2026-10-01T10:00:00Z",
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Recompilar e reinstalar" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/dev-sources/pom-plugin-base/rebuild-install",
+    ));
+    expect(await screen.findByText(/foi recompilado e reinstalado em .* ms/)).toBeTruthy();
+    expect(mocks.post).not.toHaveBeenCalledWith(
+      expect.stringContaining("github-repositories"),
+      expect.anything(),
+    );
+    expect(mocks.developmentSources.refetch).toHaveBeenCalled();
+    expect(mocks.plugins.refetch).toHaveBeenCalled();
+  });
+
+  it("shows a safe build failure stage and exit code without compiler output", async () => {
+    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.developmentSources.data = {
+      mount_available: true,
+      sources: [{
+        repository: "pom-plugin-base",
+        plugin_code: "base",
+        display_name: "POM Plugin Base",
+        active: true,
+        install_kind: "github",
+      }],
+    };
+    mocks.post.mockRejectedValue(new ApiError(422, "build failed", {
+      error: { code: "build_failed", stage: "compile", exit_code: 101, stderr: "secret build output" },
+    }));
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Recompilar e reinstalar" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("falhou durante compile");
+    expect(alert.textContent).toContain("código de saída 101");
+    expect(alert.textContent).not.toContain("secret build output");
+  });
+
+  it("does not offer local rebuilds to non-admin profiles", () => {
+    mocks.node.data = { profile: "node", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    renderPage();
+    expect(screen.queryByText("Builds locais de desenvolvimento")).toBeNull();
   });
 
   it("desativa um plugin sem chamar rota de atualização do pom_core", async () => {

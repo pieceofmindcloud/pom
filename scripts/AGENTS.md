@@ -210,7 +210,9 @@ invocados pelo binario (ver o `README.md` de la).
 - `Dockerfile` - estagios compartilhados de dependencias, Rust, frontend e
   runtime. Salem e Ksia compilam um executável `pom` com CPU, CUDA e Vulkan,
   mais `pom-plugin-host`; os builds usam cache mounts e o frontend é
-  independente. O commit do host vira `ENV
+  independente. O target adicional `dev-runtime` instala Rust/Cargo e
+  ferramentas nativas só na imagem de desenvolvimento local; `runtime` não
+  inclui compilador. O commit do host vira `ENV
   POM_BUILD_COMMIT` no runtime, sem invalidar as camadas Cargo/npm. O
   `docker-entrypoint.sh` faz `exec` do `pom` e exporta `POM_PLUGIN_HOST`; na
   ativacao, o `pom` inicia o host como filho com o plugin baixado e IPC por
@@ -221,8 +223,12 @@ invocados pelo binario (ver o `README.md` de la).
   Enterprise, que so existe depois da ativacao.
 - `docker-compose.yml` - cluster local de 4 servicos (`node-gpu`, `node-gpu2`,
   `node-gpu-3`, `node-cpu`) com `network_mode: host`, uma ancora comum de
-  build/imagem e estado persistido em `tests/fixtures/<nome>`. O padrao
-  mapeia a topologia da Salem; a Ksia sobe pelo repositório
+  build/imagem e estado persistido em `tests/fixtures/<nome>`. O target local
+  padrao e `dev-runtime`, que inclui Cargo e ferramentas para rebuild de plugin;
+  `POM_DOCKER_TARGET=runtime` seleciona a imagem sem toolchain. Cada nó monta
+  `POM_DEV_PLUGINS_DIR` (default `../projects`) em `/opt/pom/dev-plugins` e
+  define `POM_DESENV=1`; a API ainda limita a allowlist de repositórios. O
+  padrao mapeia a topologia da Salem; a Ksia sobe pelo repositório
   `pom-cluster-config`. `docker-compose.salem.yml`
   tambem e selecionavel diretamente. Os dois estendem a definicao comum em
   `docker-compose.common.yml`, mantendo os mesmos servicos, contexto, imagem,

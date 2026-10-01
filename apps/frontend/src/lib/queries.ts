@@ -61,6 +61,7 @@ import type {
   WindowsFirewallStatus,
   PluginStatus,
   GithubRepository,
+  DevelopmentPluginSources,
   PomCoreUpdateStatus,
 } from "./types";
 
@@ -104,6 +105,7 @@ export const keys = {
   apiKeys: ["api-keys"] as const,
   plugins: ["plugins"] as const,
   githubRepositories: ["github-repositories"] as const,
+  developmentPluginSources: ["development-plugin-sources"] as const,
   publicPluginCatalog: ["public-plugin-catalog"] as const,
   pomCoreUpdate: ["pom-core-update"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
@@ -262,6 +264,17 @@ export function useGithubRepositories() {
   return useQuery<GithubRepository[]>({
     queryKey: keys.githubRepositories,
     queryFn: () => optional(api.get<GithubRepository[]>("/api/ui/plugins/github-repositories"), []),
+    retry: false,
+    refetchInterval: 60_000,
+  });
+}
+
+/** Local mounted plugin sources are queried only by the development admin view. */
+export function useDevelopmentPluginSources(enabled: boolean) {
+  return useQuery<DevelopmentPluginSources>({
+    queryKey: keys.developmentPluginSources,
+    queryFn: () => api.get<DevelopmentPluginSources>("/api/ui/plugins/dev-sources"),
+    enabled,
     retry: false,
     refetchInterval: 60_000,
   });

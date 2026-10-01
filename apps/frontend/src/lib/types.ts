@@ -266,6 +266,32 @@ export interface GithubRepository {
   check_error: string | null;
 }
 
+export interface DevelopmentPluginSource {
+  repository: string;
+  plugin_code: string;
+  display_name: string;
+  active: boolean;
+  install_kind: "github" | "licensed" | null;
+}
+
+export interface DevelopmentPluginSources {
+  mount_available: boolean;
+  sources: DevelopmentPluginSource[];
+}
+
+export interface DevelopmentPluginRebuildResult {
+  repository: string;
+  plugin_code: string;
+  build_ms: number;
+  installed_at: string;
+}
+
+export interface DevelopmentPluginError {
+  code: string;
+  stage?: "inspect" | "metadata" | "compile" | "install";
+  exit_code?: number | null;
+}
+
 export interface PluginStatus {
   code: string;
   active: boolean;

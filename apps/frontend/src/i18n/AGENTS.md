@@ -54,7 +54,8 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   de screenshots, ativação e ações por plugin, um único card global para
   cadastrar repositórios GitHub locais, identificar o caminho do manifesto,
   listar releases e confirmar a instalação da tag escolhida, além da edição
-  local das preferências tipadas. Os erros de
+  local das preferências tipadas e do rebuild/reinstall de fontes locais de
+  desenvolvimento, com erros limitados a etapas e códigos de saída. Os erros de
   release incluem o detalhe validado
   pelo nó. Todos os rótulos precisam existir nas colunas
   `en` e `pt-BR`; nomes, descrições, códigos, releases e URLs de imagem são

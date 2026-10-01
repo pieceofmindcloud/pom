@@ -115,11 +115,15 @@ Per-file list:
   instalado), mostram defaults tipados boolean/diretório, enviam os valores
   só à rota local do nó e exibem o motivo devolvido pelo nó quando falham.
   A atualização do binário `pom` em si fica separada em `About.tsx` (ver
-  `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,
-  Configurações > Plugins. No card comercial, a release exibida é escolhida
-  pela combinação `system.os`/`system.arch` do nó local; se o catálogo não
-  publicar esse alvo, a tela mostra ausência em vez de sugerir a release de
-  outra plataforma.
+  `crates/node/src/pom_core_update.rs`). Com perfil `admin` e
+  `NodeInfo.pom_desenv=true`, a tela consulta fontes locais e oferece
+  `Recompilar e reinstalar` somente para plugins já ativos; a ação chama a rota
+  de desenvolvimento AdminOnly e mostra resultado ou etapa/código de saída sem
+  revelar saída do compilador. Ela não ativa licença nem usa a rota de release
+  GitHub. A rota tem entrada própria no menu, Configurações > Plugins. No card
+  comercial, a release exibida é escolhida pela combinação
+  `system.os`/`system.arch` do nó local; se o catálogo não publicar esse alvo,
+  a tela mostra ausência em vez de sugerir a release de outra plataforma.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,

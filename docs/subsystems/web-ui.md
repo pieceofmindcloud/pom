@@ -244,7 +244,13 @@ ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
   `overscroll-y-contain` para não propagar a rolagem ao limite para a página.
   O documento permanece sem rolagem; as áreas internas definem seus próprios
   limites.
-  Carregamento, erro e catálogo vazio têm estados próprios.
+  Carregamento, erro e catálogo vazio têm estados próprios. Em `admin`, quando
+  `pom_desenv=true` em `/api/ui/node`, a coluna também consulta as fontes locais
+  de desenvolvimento e oferece rebuild/reinstall de plugins já ativos; os
+  controles não aparecem para outros perfis ou nós sem a flag. O endpoint é
+  AdminOnly e a UI recebe somente sucesso ou etapa/código de saída, não logs do
+  compilador. O fluxo de release GitHub permanece separado. Ver
+  `docs/subsystems/plugins-ui.md`, seção "Rebuild local em desenvolvimento".
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/redes-publicas` -> PublicNetworks, catálogo full-bleed de redes públicas
   descobertas pela camada pkarr. A tabela agrupa por país/cidade e ordena pela

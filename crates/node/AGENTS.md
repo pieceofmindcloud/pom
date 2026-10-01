@@ -43,10 +43,10 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 - `build_commit()` em `main.rs` é exposto em `/api/ui/node` e usado na checagem
   de atualizações - identifica peer ou executável sem shell local.
 - `main.rs` lê `POM_DESENV` uma vez no startup; somente o valor exato `1` habilita
-  controles de desenvolvimento, e `NodeInfo.pom_desenv` publica essa decisão
-  para a interface. A flag só controla a visibilidade local: os handlers de
-  implantação preservam os valores de `RuntimeParams` recebidos pela rede, e
-  o modo ausente usa `dense` (`llama.cpp`) como padrão.
+  controles de desenvolvimento e as rotas locais de rebuild de plugins, e
+  `NodeInfo.pom_desenv` publica a decisão para a interface. A flag não altera
+  a política de licença nem os `RuntimeParams` recebidos pela rede; o modo
+  ausente usa `dense` (`llama.cpp`) como padrão.
 - O build nativo prepara automaticamente o fork de `llama.cpp` em um worktree
   novo, clonando a branch `pom-tensor-parallel` quando o symlink versionado
   aponta para uma árvore ausente. `LLAMA_SOURCE` permite reutilizar um checkout
@@ -314,6 +314,13 @@ do asset selecionado. Instalar a release
 escolhida não consulta o catálogo ou o servidor de licenças e não cria lease;
 um conflito local de `plugin_code` com uma instalação licenciada impede que um
 host seja substituído silenciosamente.
+`src/plugin_dev.rs` limita rebuild local à allowlist de repositórios conhecidos
+sob `/opt/pom/dev-plugins`, valida caminhos canônicos, manifestos e o único
+`cdylib` do pacote, e executa argumentos fixos de `cargo metadata`/`cargo
+build`. As rotas AdminOnly só funcionam com `POM_DESENV=1`; `PluginManager`
+reconfere que o plugin já está ativo por licença ou instalação GitHub antes de
+substituir atomicamente o binário e reiniciar só o host daquele plugin. Não ativa
+licença, consulta GitHub nem reinicia o nó.
 As preferências opcionais do manifesto são guardadas localmente por
 `plugin_preferences:<code>`, fora do snapshot/licença.
 O `PluginStatus` também publica a expiração, os plugins concedidos, candidatos

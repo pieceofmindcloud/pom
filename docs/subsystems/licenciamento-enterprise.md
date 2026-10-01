@@ -316,6 +316,16 @@ pelo mecanismo de licença é recusado para não substituir silenciosamente esse
 host; nenhuma consulta ao servidor de licenças é feita para decidir se o
 repositório exige licença.
 
+O rebuild local de desenvolvimento é outra operação AdminOnly e exige
+`POM_DESENV=1`: a fonte é escolhida de uma allowlist montada sob
+`/opt/pom/dev-plugins`, e só um plugin já ativo pode receber o novo `cdylib`.
+`PluginManager` revalida se a instalação licenciada está ativa/degradada ou se
+a instalação GitHub segue ativa, substitui o artefato e reinicia apenas o host
+daquele plugin. Não
+ativa licença, não consulta GitHub/license-server e não reinicia o POM. O
+Compose local fornece o target `dev-runtime`; a imagem `runtime` de release
+não inclui o toolchain. O contrato e os limites estão em
+`docs/subsystems/plugins-ui.md`, "Rebuild local em desenvolvimento".
 
 `PluginManifest.preferences` é opcional e omitido na serialização quando não
 existe, mantendo manifests antigos e a canonicalização assinada. O schema

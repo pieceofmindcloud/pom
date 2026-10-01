@@ -201,7 +201,12 @@ profile policy remains the effective authorization boundary.
   exige licença. As fontes ficam em `plugin_github_repositories`; instalações
   em `plugin_public_install:<code>`, sem lease ou grant. Preferências tipadas
   ficam locais em `/api/ui/plugins/:code/preferences`; essas rotas não ativam
-  licença. O catálogo comercial é consultado pelo browser sem credenciais.
+  licença. Quando `POM_DESENV=1`, `GET /api/ui/plugins/dev-sources` lista
+  fontes montadas e `POST /api/ui/plugins/dev-sources/:repository/rebuild-install`
+  recompila e reinstala somente um plugin já ativo. Ambas são AdminOnly; o
+  handler limita repositórios e comandos, preserva o estado de licença/GitHub e
+  não expõe saída do compilador. O catálogo comercial é consultado pelo browser
+  sem credenciais.
   Comprar envia o operador à loja pública com
   o código do plugin. A detecção
   da release `pom_core` é outra fronteira, deliberadamente separada

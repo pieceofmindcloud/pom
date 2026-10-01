@@ -181,6 +181,32 @@ arquivos fixos de instalação continuam fora da workspace. O POM não migra nem
 remove conteúdo já existente de plugins: a adoção do campo vale para novos
 dados e o plugin decide como preservar seus dados legados.
 
+## Rebuild local em desenvolvimento
+
+O Compose local monta `POM_DEV_PLUGINS_DIR` (default `../projects`) em
+`/opt/pom/dev-plugins` e habilita `POM_DESENV=1`. O target de imagem local
+`dev-runtime` inclui Rust/Cargo e ferramentas nativas; a imagem `runtime` de
+release continua sem compilador. O painel oferece o bloco de rebuild somente no
+perfil `admin` quando `/api/ui/node` confirma `pom_desenv=true`.
+
+O backend conhece explicitamente `pom-plugin-base`,
+`pom-plugin-deepseek-harness`, `pom-plugin-harness` e `pom-plugin-logs`.
+`GET /api/ui/plugins/dev-sources` lista apenas fontes montadas válidas. A rota
+AdminOnly `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` usa
+argumentos fixos de `cargo metadata --no-deps --locked` e `cargo build
+--release --locked`, exige um único target `cdylib` e confere os caminhos
+canônicos do repositório, manifestos e artefato dentro da fonte montada. Não há
+comando shell nem argumentos de build recebidos da requisição.
+
+O rebuild só substitui um plugin que já esteja ativo por instalação licenciada
+(estado Active ou Degraded) ou por instalação GitHub local. O manager confere
+novamente essa condição antes da troca, grava o artefato atomicamente e reinicia
+somente o host isolado daquele
+plugin. Não ativa ou renova licença, não chama GitHub nem o servidor de
+licenças, não altera a seleção de release e não reinicia o processo POM. A
+resposta expõe sucesso ou etapa/código de saída, nunca stderr do compilador.
+O fluxo de instalação de releases GitHub continua independente e inalterado.
+
 ## Contexto do nó (`host.configure`)
 
 Um plugin que chama os modelos do nó não embute endereço nem credencial: o

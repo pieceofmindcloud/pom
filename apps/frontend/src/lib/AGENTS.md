@@ -215,7 +215,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `useGithubRepositories` consulta `/api/ui/plugins/github-repositories`, lista
   local autenticada que não depende do catálogo comercial. Cada fonte informa
   `manifest_path` e pode devolver o manifesto de UI original quando a origem é
-  `ui/manifest.json`.
+  `ui/manifest.json`. `useDevelopmentPluginSources` consulta fontes montadas
+  somente para o perfil admin com `pom_desenv`; seus DTOs descrevem o resultado
+  seguro do rebuild local, sem saída de compilador. A rota Plugins não usa esse
+  fluxo para instalar plugins inativos nem substitui a escolha de release GitHub.
   `PluginStatus` também carrega `installed_at`, `update_checked_at` e
   `public_install` do estado real persistido pelo nó; não derive a data da última
   instalação do heartbeat. Uma instalação pública mantém `licensed_plugins`

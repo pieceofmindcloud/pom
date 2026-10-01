@@ -555,6 +555,10 @@ mod policy_tests {
             RouteScope::AdminOnly
         );
         assert_eq!(
+            scope_of("/api/ui/plugins/dev-sources"),
+            RouteScope::AdminOnly
+        );
+        assert_eq!(
             scope_of("/api/ui/pom-update/status"),
             RouteScope::CommonOrInternal
         );
@@ -567,6 +571,7 @@ mod policy_tests {
             "/api/ui/plugins/github-repositories",
             "/api/ui/plugins/github-repositories/repository-id/refresh",
             "/api/ui/plugins/github-repositories/repository-id/install",
+            "/api/ui/plugins/dev-sources/pom-plugin-base/rebuild-install",
             "/api/ui/plugins/enterprise/preferences",
             "/api/ui/pom-update/check",
             "/api/ui/pom-update/apply",
@@ -665,6 +670,25 @@ mod policy_tests {
             scope_of("/api/internal/api-keys/validate"),
             RouteScope::CommonOrInternal
         );
+    }
+
+    #[test]
+    fn development_plugin_routes_are_administrator_only() {
+        use crate::profile::NodeProfile::{Admin, Infer, Node};
+
+        for (method, path) in [
+            (Method::GET, "/api/ui/plugins/dev-sources"),
+            (
+                Method::POST,
+                "/api/ui/plugins/dev-sources/pom-plugin-base/rebuild-install",
+            ),
+        ] {
+            let scope = route_scope(&method, path);
+            assert_eq!(scope, RouteScope::AdminOnly, "{method} {path}");
+            assert!(profile_can_access(Admin, scope));
+            assert!(!profile_can_access(Node, scope));
+            assert!(!profile_can_access(Infer, scope));
+        }
     }
 
     #[test]

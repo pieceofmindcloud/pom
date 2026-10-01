@@ -1,12 +1,12 @@
-import { ChevronLeft, ChevronRight, Download, ExternalLink, GitBranch, KeyRound, Package, RefreshCw, Save, Settings, ShieldCheck, Trash2, X, XCircle } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, GitBranch, Hammer, KeyRound, Package, RefreshCw, Save, Settings, ShieldCheck, Trash2, X, XCircle } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Tone } from "../components/ui";
 import { Badge, Button, Empty, ErrorState, FullBleedHeader, Input, Panel, PanelHeader, Select, Skeleton } from "../components/ui";
 import { Confirm, Modal } from "../components/Confirm";
-import { api } from "../lib/api";
-import { keys, useGithubRepositories, useNode, usePlugins, usePublicPluginCatalog } from "../lib/queries";
-import type { GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginStatus } from "../lib/types";
+import { ApiError, api } from "../lib/api";
+import { keys, useDevelopmentPluginSources, useGithubRepositories, useNode, usePlugins, usePublicPluginCatalog } from "../lib/queries";
+import type { DevelopmentPluginError, DevelopmentPluginRebuildResult, DevelopmentPluginSource, GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginStatus } from "../lib/types";
 import { releaseForTarget, type PublicPluginCatalogEntry, type PublicPluginPrice } from "../lib/pluginCatalog";
 import { navigateToPluginPurchase } from "../lib/pluginPurchase";
 import { pluginAssetUrl, pluginUiSnapshot } from "../lib/pluginUi";
@@ -47,6 +47,21 @@ function formatDateTime(value: string | null | undefined, locale: string, time =
   } catch {
     return null;
   }
+}
+
+function developmentError(error: unknown): DevelopmentPluginError {
+  if (!(error instanceof ApiError) || !error.body || typeof error.body !== "object") {
+    return { code: "unknown" };
+  }
+  const body = error.body as { error?: unknown; code?: unknown; stage?: unknown; exit_code?: unknown };
+  const detail = body.error && typeof body.error === "object"
+    ? body.error as { code?: unknown; stage?: unknown; exit_code?: unknown }
+    : body;
+  return {
+    code: typeof detail.code === "string" ? detail.code : "unknown",
+    ...(typeof detail.stage === "string" ? { stage: detail.stage as DevelopmentPluginError["stage"] } : {}),
+    ...(typeof detail.exit_code === "number" ? { exit_code: detail.exit_code } : {}),
+  };
 }
 
 function localizedText(texts: Record<string, string> | undefined, locale: string): string | null {
@@ -741,6 +756,8 @@ export function Plugins() {
   const catalog = usePublicPluginCatalog();
   const githubRepositories = useGithubRepositories();
   const node = useNode();
+  const developmentEnabled = node.data?.profile === "admin" && node.data?.pom_desenv === true;
+  const developmentSources = useDevelopmentPluginSources(developmentEnabled);
   const [licenseKey, setLicenseKey] = useState("");
   const [activateBusy, setActivateBusy] = useState(false);
   const [activateError, setActivateError] = useState(false);
@@ -750,6 +767,9 @@ export function Plugins() {
   const [githubBusyId, setGithubBusyId] = useState<string | null>(null);
   const [githubFailedId, setGithubFailedId] = useState<string | null>(null);
   const [githubFailureMessage, setGithubFailureMessage] = useState<string | null>(null);
+  const [developmentBusyRepository, setDevelopmentBusyRepository] = useState<string | null>(null);
+  const [developmentFailure, setDevelopmentFailure] = useState<{ repository: string; error: DevelopmentPluginError } | null>(null);
+  const [developmentResult, setDevelopmentResult] = useState<DevelopmentPluginRebuildResult | null>(null);
   const [installTarget, setInstallTarget] = useState<{ repository: GithubRepository; release: GithubRepositoryRelease; update: boolean } | null>(null);
   const [preferencesCode, setPreferencesCode] = useState<string | null>(null);
   const [preferencesError, setPreferencesError] = useState<string | null>(null);
@@ -837,6 +857,41 @@ export function Plugins() {
       await Promise.all([githubRepositories.refetch(), refreshPluginData()]);
       setGithubBusyId(null);
     }
+  }
+
+  async function rebuildDevelopmentPlugin(source: DevelopmentPluginSource) {
+    setDevelopmentBusyRepository(source.repository);
+    setDevelopmentFailure(null);
+    setDevelopmentResult(null);
+    try {
+      const result = await api.post<DevelopmentPluginRebuildResult>(
+        `/api/ui/plugins/dev-sources/${encodeURIComponent(source.repository)}/rebuild-install`,
+      );
+      setDevelopmentResult(result);
+      await Promise.all([developmentSources.refetch(), refreshPluginData()]);
+    } catch (error) {
+      setDevelopmentFailure({ repository: source.repository, error: developmentError(error) });
+    } finally {
+      setDevelopmentBusyRepository(null);
+    }
+  }
+
+  function developmentErrorText(error: DevelopmentPluginError): string {
+    let message: string;
+    switch (error.code) {
+      case "development_disabled": message = t("plugins.devDisabled"); break;
+      case "unknown_repository": message = t("plugins.devUnknownRepository"); break;
+      case "mount_missing": message = t("plugins.devMountMissing"); break;
+      case "invalid_source": message = t("plugins.devInvalidSource"); break;
+      case "plugin_not_active": message = t("plugins.devPluginInactive"); break;
+      case "build_failed": message = t("plugins.devBuildFailed", { stage: error.stage ?? "build" }); break;
+      case "artifact_missing": message = t("plugins.devArtifactMissing"); break;
+      case "install_failed": message = t("plugins.devInstallFailed"); break;
+      default: message = t("plugins.devUnknownFailure");
+    }
+    return typeof error.exit_code === "number"
+      ? `${message} ${t("plugins.devExitCode", { code: error.exit_code })}`
+      : message;
   }
 
   async function savePreferences(code: string, preferences: PluginPreferences) {
@@ -970,6 +1025,61 @@ export function Plugins() {
           </div>
 
           <div className="order-1 min-w-0 space-y-4 self-start lg:order-2">
+            {developmentEnabled && (
+              <Panel>
+                <PanelHeader
+                  eyebrow="Development"
+                  title={t("plugins.devTitle")}
+                  subtitle={t("plugins.devDescription")}
+                  actions={<Hammer className="h-5 w-5 text-iris" aria-hidden="true" />}
+                />
+                <div className="space-y-3 px-5 py-4">
+                  {developmentSources.isLoading && (
+                    <p role="status" className="text-xs text-muted">{t("plugins.devLoading")}</p>
+                  )}
+                  {developmentSources.isError && (
+                    <p role="alert" className="text-xs text-rose">{t("plugins.devListFailed")}</p>
+                  )}
+                  {developmentSources.data && !developmentSources.data.mount_available && (
+                    <p role="status" className="text-xs text-muted">{t("plugins.devMountMissing")}</p>
+                  )}
+                  {developmentSources.data?.mount_available && developmentSources.data.sources.length === 0 && (
+                    <p role="status" className="text-xs text-muted">{t("plugins.devNoSources")}</p>
+                  )}
+                  {developmentSources.data?.sources.map((source) => (
+                    <div key={source.repository} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line bg-raised/30 p-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-fg">{source.display_name}</p>
+                        <p className="truncate font-mono text-[0.68rem] text-faint">{source.repository} · {source.plugin_code}</p>
+                        {!source.active && <p className="mt-1 text-[0.68rem] text-muted">{t("plugins.devPluginInactive")}</p>}
+                      </div>
+                      <Button
+                        variant="outline"
+                        disabled={!source.active || developmentBusyRepository !== null}
+                        loading={developmentBusyRepository === source.repository}
+                        icon={<Hammer className="h-3.5 w-3.5" aria-hidden="true" />}
+                        onClick={() => void rebuildDevelopmentPlugin(source)}
+                      >
+                        {developmentBusyRepository === source.repository ? t("plugins.devBuilding") : t("plugins.devRebuildInstall")}
+                      </Button>
+                    </div>
+                  ))}
+                  {developmentResult && (
+                    <p role="status" className="text-xs text-aqua">
+                      {t("plugins.devSucceeded", {
+                        name: developmentSources.data?.sources.find((source) => source.repository === developmentResult.repository)?.display_name ?? developmentResult.plugin_code,
+                        duration: developmentResult.build_ms,
+                      })}
+                    </p>
+                  )}
+                  {developmentFailure && (
+                    <p role="alert" className="break-words text-xs text-rose">
+                      {developmentSources.data?.sources.find((source) => source.repository === developmentFailure.repository)?.display_name ?? developmentFailure.repository}: {developmentErrorText(developmentFailure.error)}
+                    </p>
+                  )}
+                </div>
+              </Panel>
+            )}
             <GithubSourceCard
               busy={githubBusyId === "add"}
               failed={githubFailedId === "add"}

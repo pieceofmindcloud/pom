@@ -724,6 +724,12 @@ usam ConnectionAuth:
   desinstalar o plugin já instalado;
 - `POST /api/ui/plugins/github-repositories/:id/install` recebe
   `{release_id}` para baixar e instalar exatamente aquela release escolhida.
+- Com `POM_DESENV=1`, `GET /api/ui/plugins/dev-sources` lista apenas repositórios
+  conhecidos e fontes montadas válidas; `POST
+  /api/ui/plugins/dev-sources/:repository/rebuild-install` recompila e reinstala
+  um plugin já ativo. As duas rotas são AdminOnly. O servidor valida os caminhos,
+  usa somente comandos Cargo fixos e não devolve stdout/stderr do build; a
+  mutação preserva a instalação por licença ou GitHub e não ativa licença.
 
 O manifesto da raiz declara ABI, `plugin_code`, features, preferências
 opcionais e o nome do asset por plataforma. Para `ui/manifest.json`, as releases

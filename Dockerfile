@@ -281,3 +281,25 @@ RUN if [ "$POM_LLAMA_CPP_MODE" != release ]; then \
 # Keep the UI bundle as the final image layer: frontend-only edits replace this
 # COPY without invalidating backend assembly or rerunning Cargo.
 COPY --from=frontend /build/apps/frontend/dist /app/apps/frontend/dist
+
+# Development-only image target used by the local Compose cluster. Release
+# images still target `runtime` and contain no compiler or package manager.
+FROM runtime AS dev-runtime
+ARG RUST_TOOLCHAIN=stable
+ENV CARGO_HOME=/root/.cargo \
+    RUSTUP_HOME=/root/.rustup \
+    PATH=/root/.cargo/bin:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    clang \
+    cmake \
+    curl \
+    git \
+    libclang-dev \
+    libssl-dev \
+    nodejs \
+    npm \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path

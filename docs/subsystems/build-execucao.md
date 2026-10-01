@@ -442,14 +442,18 @@ offload no primeiro clique.
   `cuda-13.4` do fork, compilado pelo CI dele (`release.yml`, CUDA 13.4.1) e
   não pela base desta imagem; tag do fork sem esse pacote falha no download. Para conferir, rode
   `test-backend-ops test -o MUL_MAT -b CUDA0` e veja se nenhum `iq*_s` falha.
-  Salem e Ksia usam o mesmo target `runtime`, portanto não repetem
-  builds de CPU-only e Vulkan-only nem selecionam binários distintos por nó. Em
+  Os builds de release da Salem e da Ksia usam o mesmo target `runtime`, portanto
+  não repetem builds CPU-only e Vulkan-only nem selecionam binários distintos
+  por nó. O Compose local deste repositório usa `dev-runtime` para permitir o
+  rebuild de plugin sem alterar o artefato de release. Em
   `release`, o core e os módulos vêm de uma tag publicada do fork; em `source`,
   o CMake compila o checkout escolhido por `POM_LLAMA_CPP_SOURCE_DIR`. O runtime
   usa a imagem CUDA `runtime` para cuBLAS no modo release (`base` no source),
   mantém o loader Vulkan e o RADV, define `POM_HOME=/app` e usa
   `docker-entrypoint.sh`. `POM_BUILD_COMMIT` é exportado como `ENV` somente no
-  runtime.
+  runtime. O target local `dev-runtime` deriva dele e instala Rust/Cargo e
+  ferramentas nativas para rebuild de plugins; o target `runtime` de release
+  continua sem toolchain.
 - **Contexto e conteúdo da imagem**: o contexto principal ignora a cópia local
   `llama.cpp/`; o fork entra apenas como named context, e o script de build
   remove `.git`, builds, modelos, credenciais e arquivos dotenv desse contexto.
@@ -558,7 +562,9 @@ offload no primeiro clique.
 - **`docker-compose.yml`**: quatro serviços compartilhados entre Ksia e Salem:
   `node-gpu`, `node-gpu2`, `node-gpu-3` e `node-cpu`. Todos herdam a mesma
   definição comum em `docker-compose.common.yml`, que centraliza build,
-  imagem `pom:latest`, contexto, runtime, volumes e `network_mode: host`.
+  imagem `pom:latest`, contexto, target de imagem, volumes e `network_mode: host`.
+  O Compose local usa `dev-runtime` por padrão; `POM_DOCKER_TARGET=runtime`
+  seleciona a imagem sem toolchain.
   O padrão é a topologia Salem, com NVIDIA 0 e
   Radeon em `node-gpu`, NVIDIA 0 em `node-gpu2`, Radeon em `node-gpu-3` e
   nenhuma reserva em `node-cpu`. Salem usa `docker-compose.yml` por padrão;
@@ -569,10 +575,13 @@ offload no primeiro clique.
   `pom-docker.sh` também gera Compose remoto com reservas de GPU para Ksia.
   Os serviços mantêm os volumes de
   modelos e de estado em `tests/fixtures/<nome>`. Cada serviço
-  define `POM_HOME=/data`, `POM_UI_DIST=/app/apps/frontend/dist` e o caminho
-  explícito `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (a UI não ficaria
-  sob o diretório de dados montado). O plugin baixado e `enterprise.db` ficam
-  no volume `/data`; não há volume de socket, pois o IPC é por pipes filho-pai.
+  define `POM_HOME=/data`, `POM_UI_DIST=/app/apps/frontend/dist`,
+  `POM_DESENV=1` e o caminho explícito
+  `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (a UI não ficaria sob o
+  diretório de dados montado). `POM_DEV_PLUGINS_DIR` (default `../projects`)
+  monta as fontes locais em `/opt/pom/dev-plugins`. O plugin baixado e
+  `enterprise.db` ficam no volume `/data`; não há volume de socket, pois o IPC
+  é por pipes filho-pai.
   Os nós configurados usam as portas persistidas em `pom.json`, daí o gerador
   abaixo. Para o primeiro boot sem `/data/pom.json`, `node-cpu` passa
   `--port 42807 --gateway-port 8083`: são portas de contingência apenas para o
@@ -680,7 +689,9 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_SLICE_BENCH` | `0` desliga o teste de velocidade da fatia ao carregar o modelo (`infer_server/perf.rs`). |
 | `POM_CONFIG` | Caminho do `pom.json` (padrão `<project_root>/pom.json`). |
 | `POM_DB_DIR` | Diretório de `pom.db` e seus arquivos WAL/SHM. Se ausente ou vazio, usa `<project_root>`; o diretório é criado no arranque. |
-| `POM_DEV` | O Compose comum envia `1` a todos os serviços. O código deste checkout não lê essa variável diretamente. |
+| `POM_DEV` | O Compose comum envia `1` para configuração de desenvolvimento; não é a flag que habilita os rebuilds locais. |
+| `POM_DESENV` | Somente o valor exato `1` habilita o painel e as rotas AdminOnly de rebuild/reinstall de plugin. O Compose local envia esse valor. |
+| `POM_DEV_PLUGINS_DIR` | Diretório host com fontes de plugins conhecidas (`../projects` por padrão), montado em `/opt/pom/dev-plugins` no Compose local. |
 | `POM_UI_DIST` | Onde `webapp.rs` lê o bundle da UI (padrão `<project_root>/apps/frontend/dist`). A imagem Docker a seta explicitamente. |
 | `POM_MODEL_DIRS` / `POM_SHARD_DIR` | Pastas de modelos inteiros (várias, separadas como o `PATH`: `:` no Unix, `;` no Windows) e pasta das fatias. Vencem `model_dirs`/`shard_dir` do `pom.json` e não são persistidas; vazias contam como ausentes. A tela Armazenamento trava o campo definido por uma delas. |
 | `POM_SLOT_SAVE_PATH` | Diretório de snapshots de KV cache (`--slot-save-path` do llama-server). Vence o campo `slot_save_path` do `pom.json`. Por processo, não persistida. Ausente desliga `POST /v1/session/slot` e `/admin/slots`. Ver `inferencia.md` §3.1.1. |

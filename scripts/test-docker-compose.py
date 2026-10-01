@@ -9,7 +9,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_SERVICES = {"node-gpu", "node-gpu2", "node-gpu-3", "node-cpu"}
-EXPECTED_VOLUME_TARGETS = {"/data", "/data/models", "/data/source-models"}
+EXPECTED_VOLUME_TARGETS = {
+    "/data",
+    "/data/models",
+    "/data/source-models",
+    "/data/workspace",
+    "/opt/pom/dev-plugins",
+}
 
 
 def fail(message: str) -> None:
@@ -79,8 +85,8 @@ def check_config(
         fail(f"{filename}: servicos nao compartilham imagem e build")
     shared_build = next(iter(services.values()))["build"]
     build_args = shared_build.get("args", {})
-    if shared_build.get("target") != "runtime":
-        fail(f"{filename}: Salem deve manter a imagem completa runtime")
+    if shared_build.get("target") != "dev-runtime":
+        fail(f"{filename}: cluster local deve usar a imagem de desenvolvimento")
     if "POM_BUILD_VARIANTS" in build_args:
         fail(f"{filename}: obsolete per-variant build selector")
     if build_args.get("POM_LLAMA_CPP_MODE") != "release":
@@ -104,6 +110,8 @@ def check_config(
         environment = service.get("environment", {})
         if environment.get("POM_HOME") != "/data":
             fail(f"{filename}: {name} perdeu POM_HOME=/data")
+        if environment.get("POM_DESENV") != "1":
+            fail(f"{filename}: {name} não habilita os controles de desenvolvimento")
         if environment.get("NVIDIA_DRIVER_CAPABILITIES") != "compute,utility":
             fail(f"{filename}: {name} alterou as capacidades NVIDIA")
         targets = {volume["target"] for volume in service.get("volumes", [])}

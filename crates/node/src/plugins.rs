@@ -2252,6 +2252,170 @@ impl PluginRuntime {
         status.available_update = None;
         Ok(())
     }
+
+    async fn development_install_allowed(&self) -> bool {
+        let status = self.status.read().await;
+        if !status.active {
+            return false;
+        }
+        let licensed = self.persisted.lock().await.is_some()
+            && status
+                .licensed_plugins
+                .iter()
+                .any(|code| code == &self.code)
+            && matches!(status.state, LicenseState::Active | LicenseState::Degraded);
+        let public = self.public_install.lock().await.is_some() && status.public_install;
+        licensed || public
+    }
+
+    /// Replaces only the binary of an already-active installation. This never
+    /// activates a license or creates a public installation; the existing
+    /// license/public-install state remains the authorization source.
+    async fn install_development_artifact(
+        &self,
+        bytes: &[u8],
+    ) -> Result<String, LicenseClientError> {
+        let _guard = self.update_lock.lock().await;
+        if bytes.is_empty() || bytes.len() as u64 > 512 * 1024 * 1024 {
+            return Err(update_unavailable("plugin de desenvolvimento inválido"));
+        }
+
+        let status = self.status.read().await.clone();
+        let mut licensed = self.persisted.lock().await.clone();
+        let mut public = self.public_install.lock().await.clone();
+        let licensed_allowed = licensed.is_some()
+            && status.active
+            && status
+                .licensed_plugins
+                .iter()
+                .any(|code| code == &self.code)
+            && matches!(status.state, LicenseState::Active | LicenseState::Degraded);
+        let public_allowed = public.is_some() && status.active && status.public_install;
+        if !licensed_allowed && !public_allowed {
+            return Err(update_unavailable(
+                "plugin precisa estar instalado e ativo antes do rebuild local",
+            ));
+        }
+
+        let digest = hex::encode(sha2::Sha256::digest(bytes));
+        let release_id = format!(
+            "dev-{}-{}",
+            chrono::Utc::now().timestamp_millis(),
+            &digest[..16]
+        );
+        let path = plugin_path(
+            &self.code,
+            &release_id,
+            &self.fingerprint.platform,
+            &self.fingerprint.arch,
+        )?;
+        install_plugin_atomically(&path, bytes)?;
+        let installed_at = chrono::Utc::now().to_rfc3339();
+        let old_path = licensed
+            .as_ref()
+            .and_then(|state| state.plugin_path.as_ref())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                public
+                    .as_ref()
+                    .map(|state| state.plugin_path.clone().into())
+            });
+        let database_path = self
+            .database
+            .as_ref()
+            .map(|database| database.path().with_file_name(format!("{}.db", self.code)))
+            .unwrap_or_else(|| crate::config::project_root().join(format!("{}.db", self.code)));
+
+        let old_host = self.host.lock().await.take();
+        if let Some(host) = old_host {
+            if let Err(error) = host.stop().await {
+                *self.host.lock().await = Some(host);
+                let _ = std::fs::remove_file(&path);
+                return Err(LicenseClientError::new(
+                    LicenseErrorCode::ServerError,
+                    format!("o host anterior do plugin não pôde ser parado: {error}"),
+                ));
+            }
+        }
+        let host = match self.start_host(&path, &database_path).await {
+            Ok(host) => host,
+            Err(error) => {
+                if let Some(old_path) = old_path.as_deref().filter(|path| path.is_file()) {
+                    match self.start_host(old_path, &database_path).await {
+                        Ok(host) => *self.host.lock().await = Some(host),
+                        Err(restart_error) => {
+                            tracing::error!(plugin_code = %self.code, error = %restart_error, "previous plugin host could not be restored after development rebuild failed")
+                        }
+                    }
+                }
+                let _ = std::fs::remove_file(&path);
+                return Err(LicenseClientError::new(
+                    LicenseErrorCode::ServerError,
+                    error.to_string(),
+                ));
+            }
+        };
+
+        if let Some(state) = licensed.as_mut() {
+            state.plugin_path = Some(path.to_string_lossy().into_owned());
+            state.plugin_sha256 = format!("sha256:{digest}");
+            state.installed_at = Some(installed_at.clone());
+        } else if let Some(state) = public.as_mut() {
+            state.plugin_path = path.to_string_lossy().into_owned();
+            state.plugin_sha256 = format!("sha256:{digest}");
+            state.size = bytes.len() as u64;
+            state.installed_at = installed_at.clone();
+        }
+
+        let save_result = if let Some(database) = &self.database {
+            if let Some(state) = &licensed {
+                database.save_local_setting(&self.setting_key(), state)
+            } else if let Some(state) = &public {
+                database.save_local_setting(&self.public_install_key(), state)
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        };
+        if let Err(error) = save_result {
+            let _ = host.stop().await;
+            if let Some(old_path) = old_path.as_deref().filter(|path| path.is_file()) {
+                match self.start_host(old_path, &database_path).await {
+                    Ok(host) => *self.host.lock().await = Some(host),
+                    Err(restart_error) => {
+                        tracing::error!(plugin_code = %self.code, error = %restart_error, "previous plugin host could not be restored after development state persistence failed")
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&path);
+            return Err(LicenseClientError::new(
+                LicenseErrorCode::ServerError,
+                error.to_string(),
+            ));
+        }
+
+        *self.host.lock().await = Some(host);
+        if let Some(state) = licensed {
+            *self.persisted.lock().await = Some(state);
+        }
+        if let Some(state) = public {
+            *self.public_install.lock().await = Some(state.clone());
+            self.status.write().await.installed_at = Some(state.installed_at);
+        } else {
+            self.status.write().await.installed_at = Some(installed_at.clone());
+        }
+        if let Some(old_path) = old_path.filter(|old_path| {
+            old_path.as_path() != path.as_path()
+                && old_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("dev-"))
+        }) {
+            let _ = std::fs::remove_file(old_path);
+        }
+        Ok(installed_at)
+    }
 }
 
 /// Coleção dinâmica de [`PluginRuntime`], uma por `plugin_code` concedido ou
@@ -2633,6 +2797,76 @@ impl PluginManager {
             .collect::<Vec<_>>();
         repositories.sort_by(|left, right| left.repository_url.cmp(&right.repository_url));
         repositories
+    }
+
+    pub(crate) async fn development_plugin_sources(
+        &self,
+    ) -> crate::plugin_dev::MountedPluginSources {
+        let statuses = self
+            .all_statuses()
+            .await
+            .into_iter()
+            .map(|status| (status.code, status.active, status.public_install))
+            .collect::<Vec<_>>();
+        crate::plugin_dev::list_mounted_sources(
+            std::path::Path::new(crate::plugin_dev::DEV_PLUGIN_ROOT),
+            &statuses,
+        )
+    }
+
+    pub(crate) async fn rebuild_and_install_development_plugin(
+        &self,
+        repository: &str,
+    ) -> Result<crate::plugin_dev::RebuildInstallResult, crate::plugin_dev::DevPluginError> {
+        let plugin_code =
+            crate::plugin_dev::plugin_code_for_repository(repository).ok_or_else(|| {
+                crate::plugin_dev::DevPluginError {
+                    code: crate::plugin_dev::DevPluginErrorCode::UnknownRepository,
+                    stage: None,
+                    exit_code: None,
+                }
+            })?;
+        let runtime =
+            self.runtime_for(plugin_code)
+                .ok_or_else(|| crate::plugin_dev::DevPluginError {
+                    code: crate::plugin_dev::DevPluginErrorCode::PluginNotActive,
+                    stage: None,
+                    exit_code: None,
+                })?;
+        if !runtime.development_install_allowed().await {
+            return Err(crate::plugin_dev::DevPluginError {
+                code: crate::plugin_dev::DevPluginErrorCode::PluginNotActive,
+                stage: None,
+                exit_code: None,
+            });
+        }
+        let built = crate::plugin_dev::build_source(
+            std::path::Path::new(crate::plugin_dev::DEV_PLUGIN_ROOT),
+            repository,
+            &crate::plugin_dev::CargoCommandRunner,
+        )
+        .await?;
+        if built.plugin_code != plugin_code {
+            return Err(crate::plugin_dev::DevPluginError {
+                code: crate::plugin_dev::DevPluginErrorCode::InvalidSource,
+                stage: Some(crate::plugin_dev::BuildStage::Inspect),
+                exit_code: None,
+            });
+        }
+        let installed_at = runtime
+            .install_development_artifact(&built.bytes)
+            .await
+            .map_err(|_| crate::plugin_dev::DevPluginError {
+                code: crate::plugin_dev::DevPluginErrorCode::InstallFailed,
+                stage: Some(crate::plugin_dev::BuildStage::Install),
+                exit_code: None,
+            })?;
+        Ok(crate::plugin_dev::RebuildInstallResult {
+            repository: built.repository,
+            plugin_code: built.plugin_code,
+            build_ms: built.elapsed_ms,
+            installed_at,
+        })
     }
 
     fn persist_github_repositories(
@@ -3391,6 +3625,65 @@ pub(crate) async fn list_github_repositories(
     axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
 ) -> axum::Json<Vec<crate::plugin_github::GithubRepository>> {
     axum::Json(state.plugins.github_repositories())
+}
+
+pub(crate) async fn list_development_plugin_sources(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+) -> axum::response::Response {
+    if !crate::pom_desenv_enabled() {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "code": "development_disabled" })),
+        )
+            .into_response();
+    }
+    axum::Json(state.plugins.development_plugin_sources().await).into_response()
+}
+
+pub(crate) async fn rebuild_install_development_plugin(
+    _auth: crate::auth::ConnectionAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+    axum::extract::Path(repository): axum::extract::Path<String>,
+) -> axum::response::Response {
+    if !crate::pom_desenv_enabled() {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "code": "development_disabled" })),
+        )
+            .into_response();
+    }
+    match state
+        .plugins
+        .rebuild_and_install_development_plugin(&repository)
+        .await
+    {
+        Ok(result) => axum::Json(result).into_response(),
+        Err(error) => {
+            let status = match error.code {
+                crate::plugin_dev::DevPluginErrorCode::UnknownRepository => {
+                    axum::http::StatusCode::NOT_FOUND
+                }
+                crate::plugin_dev::DevPluginErrorCode::MountMissing => {
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                }
+                crate::plugin_dev::DevPluginErrorCode::InvalidSource => {
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY
+                }
+                crate::plugin_dev::DevPluginErrorCode::PluginNotActive => {
+                    axum::http::StatusCode::CONFLICT
+                }
+                crate::plugin_dev::DevPluginErrorCode::BuildFailed
+                | crate::plugin_dev::DevPluginErrorCode::ArtifactMissing => {
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY
+                }
+                crate::plugin_dev::DevPluginErrorCode::InstallFailed => {
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR
+                }
+            };
+            (status, axum::Json(serde_json::json!({ "error": error }))).into_response()
+        }
+    }
 }
 
 pub(crate) async fn add_github_repository(

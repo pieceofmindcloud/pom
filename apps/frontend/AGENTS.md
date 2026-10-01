@@ -153,10 +153,12 @@ desenhado**, porque uma vista só não é uma escolha.
   compatível da tela da raiz de confiança.
 - `/plugins` -> Plugins, lista todo plugin do catálogo (ativo ou não), com
   ativação por chave de licença que indica quais plugins ela concede,
-  atualização de versão própria por plugin e desativação por plugin. Não
-  trata da atualização do binário `pom` em si - isso é só em `/config/sobre`.
-  Substituiu a antiga `/enterprise` de produto único (`Enterprise.tsx`); ver
-  `src/routes/AGENTS.md` e `crates/node/src/plugins.rs`.
+  atualização de versão própria por plugin e desativação por plugin. Com perfil
+  `admin` e `pom_desenv=true`, oferece também o rebuild/reinstall local de
+  fontes montadas para plugins já ativos. Não trata da atualização do binário
+  `pom` em si - isso é só em `/config/sobre`. Substituiu a antiga `/enterprise`
+  de produto único (`Enterprise.tsx`); ver `src/routes/AGENTS.md` e
+  `crates/node/src/plugins.rs`.
 - `/config/preferencias` -> Preferences com exposição, Hugging Face e proteção
 térmica; `/config/armazenamento` -> ModelPaths, que também configura a raiz
 persistente compartilhada de projetos e dados dinâmicos dos plugins;

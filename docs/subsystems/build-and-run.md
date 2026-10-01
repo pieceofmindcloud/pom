@@ -448,8 +448,12 @@ loses offload on the first click.
   source), keeps the Vulkan loader and RADV, sets `POM_HOME=/app` and uses
   `docker-entrypoint.sh`. `POM_BUILD_COMMIT` is exported as an `ENV` only in
   the runtime. The local `dev-runtime` target derives from it and installs
-  Rust/Cargo and native tools for plugin rebuilds; the release `runtime` target
-  still has no toolchain.
+  Rust/Cargo under world-readable toolchain directories, plus native tools for
+  plugin rebuilds. The cluster's optional development overlays use this target
+  and give non-root nodes a writable `CARGO_HOME` in the project data volume;
+  plugin build output stays in
+  `<project_root>/.pom-dev-plugin-builds`, not in
+  the mounted source. The release `runtime` target still has no toolchain.
 - **Image context and content**: the main context ignores the local
   `llama.cpp/` copy; the fork only enters as a named context, and the build
   script removes `.git`, builds, models, credentials and dotenv files from that
@@ -573,8 +577,13 @@ loses offload on the first click.
   `POM_PLUGIN_HOST=/usr/local/bin/pom-plugin-host` (the UI would not be under
   the mounted data directory). `POM_DEV_PLUGINS_DIR` (default `..`, the
   workspace directory containing the sibling plugin repositories) mounts the
-  local sources at `/opt/pom/dev-plugins`. The downloaded plugin and
-  `enterprise.db` live in the `/data` volume; there is no socket volume, since
+  local sources at `/opt/pom/dev-plugins`. The optional cluster overlay
+  `pom-cluster-config/pom-jair/<host>/docker-compose.dev-plugins.yml` mounts
+  those sources read-only, selects `dev-runtime` and keeps Cargo's writable
+  cache in the project data volume. Rust artifacts are written to
+  `<project_root>/.pom-dev-plugin-builds`.
+  The downloaded plugin and `enterprise.db` live in the `/data` volume; there
+  is no socket volume, since
   the IPC is through child-parent pipes. Configured nodes use the ports
   persisted in `pom.json`, hence the generator below. For the first boot without
   `/data/pom.json`, `node-cpu` passes `--port 42807 --gateway-port 8083`: these

@@ -317,10 +317,15 @@ escolhida não consulta o catálogo ou o servidor de licenças e não cria lease
 um conflito local de `plugin_code` com uma instalação licenciada impede que um
 host seja substituído silenciosamente.
 `src/plugin_dev.rs` restricts local builds to the allowlist of known
-repositories under `/opt/pom/dev-plugins`, validates canonical paths,
-manifests and the package's single `cdylib`, and runs fixed `cargo metadata`/
-`cargo build` arguments. AdminOnly routes work only with `POM_DESENV=1`; a
-build may install a local plugin without a license or prior installation,
+repositories under `/opt/pom/dev-plugins`, validates canonical source and
+manifest paths and the package's single `cdylib`, and runs fixed `cargo
+metadata`/`cargo build` arguments. Cargo artifacts go to
+`<project_root>/.pom-dev-plugin-builds/<repository>`, outside the source mount,
+so read-only source binds work. The cluster development image exposes Cargo to
+its non-root node user and points `CARGO_HOME` to a writable cache in the
+project data volume.
+AdminOnly routes work only with `POM_DESENV=1`; a build may install a local
+plugin without a license or prior installation,
 persisting its binary and state in `plugin_dev_install:<code>` without granting
 licensed features. If a licensed or GitHub installation already exists, the
 local artifact replaces its binary without changing entitlement. The flow

@@ -190,19 +190,25 @@ applies to new data and the plugin decides how to preserve its legacy data.
 ## Local rebuild in development
 
 The local Compose mounts `POM_DEV_PLUGINS_DIR` (default `..`, the workspace directory containing the sibling plugin repositories) at
-`/opt/pom/dev-plugins` and enables `POM_DESENV=1`. The local image target
-`dev-runtime` includes Rust/Cargo and native tools; the release `runtime` image
-still has no compiler. The panel offers the rebuild block only on the `admin`
-profile when `/api/ui/node` confirms `pom_desenv=true`.
+`/opt/pom/dev-plugins` and enables `POM_DESENV=1`. The optional cluster
+`docker-compose.dev-plugins.yml` keeps each source bind read-only and overrides
+the build image to `dev-runtime`; that target includes Rust/Cargo and native
+tools, exposes the toolchain to the non-root node user and sets `CARGO_HOME`
+to a writable cache in the project data volume. The release
+`runtime` image still has no compiler. The panel offers the rebuild block only
+on the `admin` profile when `/api/ui/node` confirms `pom_desenv=true`.
 
 The backend explicitly knows `pom-plugin-base`, `pom-plugin-deepseek-harness`,
 `pom-plugin-harness` and `pom-plugin-logs`. `GET /api/ui/plugins/dev-sources`
 lists only valid mounted sources. The AdminOnly route
 `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` uses fixed
 arguments for `cargo metadata --no-deps --locked` and `cargo build --release
---locked`, requires a single `cdylib` target and checks the canonical paths of
-the repository, manifests and artifact inside the mounted source. There is no
-shell command and no build argument taken from the request.
+--locked`, requires a single `cdylib` target and checks canonical source and
+manifest paths. `CARGO_TARGET_DIR` points to
+`<project_root>/.pom-dev-plugin-builds/<repository>`, outside the mounted source,
+so read-only source binds are supported; the installed artifact must canonicalize
+inside that build directory. There is no shell command and no build argument
+taken from the request.
 
 The local build can install a plugin even when it has never been installed or activated. It writes a separate development-install record, starts only that plugin's isolated host, and grants no licensed features or license state. If a licensed or GitHub installation already exists, the local artifact replaces its running binary without changing that entitlement. The operation never activates or renews a license, calls GitHub or the license server, changes the release selection or restarts the POM process. The response exposes success or the step/exit code, never the compiler's stderr. The GitHub release install flow stays independent and unchanged.
 

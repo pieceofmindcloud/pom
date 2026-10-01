@@ -282,13 +282,13 @@ RUN if [ "$POM_LLAMA_CPP_MODE" != release ]; then \
 # COPY without invalidating backend assembly or rerunning Cargo.
 COPY --from=frontend /build/apps/frontend/dist /app/apps/frontend/dist
 
-# Development-only image target used by the local Compose cluster. Release
-# images still target `runtime` and contain no compiler or package manager.
+# Development-only image target for local plugin rebuilds. Release images still
+# target `runtime` and contain no compiler or package manager.
 FROM runtime AS dev-runtime
 ARG RUST_TOOLCHAIN=stable
-ENV CARGO_HOME=/root/.cargo \
-    RUSTUP_HOME=/root/.rustup \
-    PATH=/root/.cargo/bin:$PATH
+ENV CARGO_HOME=/opt/cargo \
+    RUSTUP_HOME=/opt/rustup \
+    PATH=/opt/cargo/bin:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     clang \
@@ -302,4 +302,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path
+      | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path \
+    && chmod -R a+rX /opt/cargo /opt/rustup

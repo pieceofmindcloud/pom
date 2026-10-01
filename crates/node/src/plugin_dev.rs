@@ -1,8 +1,8 @@
 //! Local-only plugin rebuilds from the mounted source tree.
 //!
-//! The executable and arguments are fixed here. A mounted repository can
-//! provide Cargo source, but cannot choose a shell command, package path, or
-//! destination outside its canonical repository directory.
+//! The executable and arguments are fixed here. A mounted repository provides
+//! Cargo source, but cannot choose a shell command, package path, or build
+//! destination. Artifacts go to a POM-managed build directory outside the source.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -266,14 +266,36 @@ fn canonical_source(root: &Path, repository: &str) -> Result<Source, DevPluginEr
     })
 }
 
-fn canonical_target_directory(source: &Path) -> Result<PathBuf, DevPluginError> {
-    let target = source.join("target");
+fn canonical_target_directory(
+    build_root: &Path,
+    repository: &str,
+    source_root: &Path,
+) -> Result<PathBuf, DevPluginError> {
+    if known_plugin(repository).is_none() {
+        return Err(DevPluginError::new(DevPluginErrorCode::UnknownRepository));
+    }
+    std::fs::create_dir_all(build_root)
+        .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
+    let canonical_root = build_root
+        .canonicalize()
+        .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
+    if !canonical_root.is_dir()
+        || canonical_root.starts_with(source_root)
+        || source_root.starts_with(&canonical_root)
+    {
+        return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
+    }
+
+    let target = canonical_root.join(repository);
     std::fs::create_dir_all(&target)
         .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
     let canonical = target
         .canonicalize()
         .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
-    if canonical.starts_with(source) && canonical.is_dir() {
+    if canonical.parent() == Some(canonical_root.as_path())
+        && canonical.file_name().and_then(|name| name.to_str()) == Some(repository)
+        && canonical.is_dir()
+    {
         Ok(canonical)
     } else {
         Err(DevPluginError::new(DevPluginErrorCode::InvalidSource))
@@ -368,12 +390,13 @@ pub(crate) fn list_mounted_sources(
 
 pub(crate) async fn build_source(
     root: &Path,
+    build_root: &Path,
     repository: &str,
     runner: &dyn DevCommandRunner,
 ) -> Result<BuiltPlugin, DevPluginError> {
     let started = std::time::Instant::now();
     let source = canonical_source(root, repository)?;
-    let target_directory = canonical_target_directory(&source.root)?;
+    let target_directory = canonical_target_directory(build_root, repository, &source.root)?;
 
     let metadata_args = vec![
         "metadata".to_owned(),
@@ -467,7 +490,7 @@ pub(crate) async fn build_source(
         .map_err(|_| DevPluginError::new(DevPluginErrorCode::ArtifactMissing))?;
     let metadata = std::fs::metadata(&canonical_artifact)
         .map_err(|_| DevPluginError::new(DevPluginErrorCode::ArtifactMissing))?;
-    if !canonical_artifact.starts_with(&source.root)
+    if !canonical_artifact.starts_with(&target_directory)
         || !metadata.is_file()
         || metadata.len() == 0
         || metadata.len() > MAX_PLUGIN_BYTES
@@ -577,18 +600,31 @@ mod tests {
         #[cfg(unix)]
         {
             let target_outside = tempfile::tempdir().unwrap();
-            std::os::unix::fs::symlink(
-                target_outside.path(),
-                temp.path().join("pom-plugin-base/target"),
-            )
-            .unwrap();
+            let build_root = temp.path().join("builds");
+            std::fs::create_dir_all(&build_root).unwrap();
+            std::os::unix::fs::symlink(target_outside.path(), build_root.join("pom-plugin-base"))
+                .unwrap();
             assert!(matches!(
-                canonical_target_directory(&temp.path().join("pom-plugin-base"))
-                    .unwrap_err()
-                    .code,
+                canonical_target_directory(
+                    &build_root,
+                    "pom-plugin-base",
+                    &temp.path().join("pom-plugin-base"),
+                )
+                .unwrap_err()
+                .code,
                 DevPluginErrorCode::InvalidSource
             ));
-            std::fs::remove_file(temp.path().join("pom-plugin-base/target")).unwrap();
+            std::fs::remove_file(build_root.join("pom-plugin-base")).unwrap();
+            assert!(matches!(
+                canonical_target_directory(
+                    &temp.path().join("pom-plugin-base"),
+                    "pom-plugin-base",
+                    &temp.path().join("pom-plugin-base"),
+                )
+                .unwrap_err()
+                .code,
+                DevPluginErrorCode::InvalidSource
+            ));
 
             let outside = tempfile::tempdir().unwrap();
             std::fs::remove_dir_all(temp.path().join("pom-plugin-base")).unwrap();
@@ -632,9 +668,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_uses_fixed_cargo_arguments_and_returns_only_the_in_tree_cdylib() {
+    async fn build_uses_fixed_cargo_arguments_and_keeps_artifacts_outside_the_source() {
         let temp = tempfile::tempdir().unwrap();
         let source = make_source(temp.path());
+        let build_root = temp.path().join("builds");
         let manifest = source.join("Cargo.toml").canonicalize().unwrap();
         let metadata = serde_json::json!({
             "packages": [{
@@ -656,12 +693,14 @@ mod tests {
             }),
         ]);
 
-        let built = build_source(temp.path(), "pom-plugin-base", &runner)
+        let built = build_source(temp.path(), &build_root, "pom-plugin-base", &runner)
             .await
             .unwrap();
         assert_eq!(built.repository, "pom-plugin-base");
         assert_eq!(built.plugin_code, "base");
         assert_eq!(built.bytes, b"plugin bytes");
+        assert!(!source.join("target").exists());
+        assert!(build_root.join("pom-plugin-base/release").is_dir());
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(
@@ -695,6 +734,7 @@ mod tests {
     async fn build_failure_reports_only_safe_stage_and_exit_code() {
         let temp = tempfile::tempdir().unwrap();
         let source = make_source(temp.path());
+        let build_root = temp.path().join("builds");
         let metadata = serde_json::json!({
             "packages": [{
                 "name": "base-plugin",
@@ -714,7 +754,7 @@ mod tests {
                 stdout: Vec::new(),
             }),
         ]);
-        let error = build_source(temp.path(), "pom-plugin-base", &runner)
+        let error = build_source(temp.path(), &build_root, "pom-plugin-base", &runner)
             .await
             .unwrap_err();
         assert_eq!(error.code, DevPluginErrorCode::BuildFailed);

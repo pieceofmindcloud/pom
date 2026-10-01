@@ -32,6 +32,7 @@ pom*.json
 /pom.db-wal
 /pom.db-shm
 .pom-node*.key
+/.pom-dev-plugin-builds/
 
 # lixo do Finder do macOS; entrava no repo por si so
 .DS_Store

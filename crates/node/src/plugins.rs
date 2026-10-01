@@ -3149,8 +3149,10 @@ impl PluginManager {
                 exit_code: None,
             }
         })?;
+        let build_root = crate::config::project_root().join(".pom-dev-plugin-builds");
         let built = crate::plugin_dev::build_source(
             std::path::Path::new(crate::plugin_dev::DEV_PLUGIN_ROOT),
+            &build_root,
             repository,
             &crate::plugin_dev::CargoCommandRunner,
         )

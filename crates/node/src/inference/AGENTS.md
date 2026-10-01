@@ -1151,7 +1151,11 @@ visibilidade dos controles de implantação na UI local.
 `http`, `https`, `quic` ou `remote-stream`). O detalhe interno
 `https-link` é normalizado para `http`/`https` na telemetria. O campo
 `transport_fallback` denuncia quando a chamada desceu a escada depois de
-falha de transporte.
+falha de transporte. A frame that goes straight to the tunnel without trying
+the direct path - route pinned to the tunnel (`tunnel_first`) or a peer marked
+by `prefer_tunnel` - is **not** a fallback: only what had already failed before
+the ladder counts (the persistent channel, for example). `DIRECT_SKIPPED` is the
+reason that only shows up in the error of a tunnel that also failed.
 - `send_batch_body` é o único ponto por onde todo lote remoto passa, inclusive
   as ativações `remote_stream` que não podem ser agrupadas com uma sessão
   diferente. É ali que a seleção de transporte vive: com QUIC ligado, tenta
@@ -1161,7 +1165,9 @@ falha de transporte.
   usado depois de o anterior falhar por **transporte**; uma recusa HTTP do peer
   é final, exceto 404/405 no QUIC, que significam peer sem a rota HTTP/3. O
   degrau usado vira `transport`, e ter descido a escada vira
-  `transport_fallback`.
+  `transport_fallback`. With the direct path skipped on purpose, a tunnel that
+  delivers does not mark a fallback and there is no empty-reason "did not
+  receive the batch".
 - O transporte por requisição tenta QUIC antes do cliente TCP quando a
   preferência está ligada; uma falha QUIC cai no cliente HTTP pinado e, só se
   todos os endereços diretos falharem, no túnel libp2p/Noise. Os destinos QUIC

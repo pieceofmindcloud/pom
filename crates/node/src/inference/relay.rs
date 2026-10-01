@@ -238,6 +238,13 @@ pub(crate) async fn with_frame_deadline<F: std::future::Future>(
     FRAME_DEADLINE.scope(deadline, Box::pin(work)).await
 }
 
+/// Reason for a frame that went straight to the tunnel without trying the
+/// direct path: route pinned to the tunnel (`HopTransport::tunnel_first`) or a
+/// peer marked as only reachable through it (`PeerClients::prefer_tunnel`). It
+/// only shows up in the error of a tunnel that also failed; a tunnel that
+/// delivers this way is not a fallback.
+const DIRECT_SKIPPED: &str = "direct skipped: this peer only answers through the tunnel";
+
 /// Transporte que realmente carregou um frame de inferência.
 ///
 /// `tls` continua separado porque o túnel libp2p é cifrado por Noise, mas não
@@ -2020,8 +2027,16 @@ async fn send_batch_body(
                 }
             }
         }
+        // With the direct path skipped on purpose (route pinned to the tunnel
+        // or a peer that only answers through it) there was no direct attempt:
+        // there is no "did not receive" to report, and the tunnel is not a
+        // fallback.
         let direct_error = anyhow::Error::new(FrameNotDelivered {
-            message: format!("{peer_label} não recebeu o batch: {last_error}"),
+            message: if skip_direct {
+                format!("{peer_label}: {DIRECT_SKIPPED}")
+            } else {
+                format!("{peer_label} não recebeu o batch: {last_error}")
+            },
         });
 
         // Cada tentativa percorre a escada completa antes do recuo: QUIC,
@@ -2044,11 +2059,19 @@ async fn send_batch_body(
             {
                 Ok(mut response) => {
                     clients.remember_tunnel_win(&step.node_id);
-                    response.transport_fallback = true;
-                    response.transport_fallback_reason = Some(match transport_fallback_reason {
-                        Some(previous) => format!("{previous}; http: {direct_error}"),
-                        None => format!("http: {direct_error}"),
-                    });
+                    if skip_direct {
+                        // Only what had already failed before (the persistent
+                        // channel, for example) counts as a fallback.
+                        response.transport_fallback = transport_fallback;
+                        response.transport_fallback_reason = transport_fallback_reason;
+                    } else {
+                        response.transport_fallback = true;
+                        response.transport_fallback_reason =
+                            Some(match transport_fallback_reason {
+                                Some(previous) => format!("{previous}; http: {direct_error}"),
+                                None => format!("http: {direct_error}"),
+                            });
+                    }
                     return Ok(response);
                 }
                 Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
@@ -2823,7 +2846,7 @@ async fn send_frame_or_tunnel_inner(
                     None => direct_stage,
                 }
             }
-            None => "direto pulado: este peer só responde pelo túnel".to_string(),
+            None => DIRECT_SKIPPED.to_string(),
         };
         last_error = direct_reason.clone();
 
@@ -2847,8 +2870,15 @@ async fn send_frame_or_tunnel_inner(
             {
                 Ok(mut sent) => {
                     clients.remember_tunnel_win(&step.node_id);
-                    sent.transport_fallback = true;
-                    sent.transport_fallback_reason = Some(direct_reason);
+                    if direct_error.is_some() {
+                        sent.transport_fallback = true;
+                        sent.transport_fallback_reason = Some(direct_reason);
+                    } else {
+                        // Tunnel chosen on purpose: not a fallback. Only what
+                        // had already failed before this ladder counts.
+                        sent.transport_fallback = transport_fallback;
+                        sent.transport_fallback_reason = transport_fallback_reason.clone();
+                    }
                     return Ok(sent);
                 }
                 Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
@@ -4439,6 +4469,84 @@ mod tests {
             .transport_fallback_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("quic")));
+    }
+
+    /// Peer marked as only reachable through the tunnel: the frame goes
+    /// straight to it, without trying the direct path, and that is not a
+    /// fallback - telemetry must not count the chosen route as a failure.
+    #[tokio::test]
+    async fn a_tunnel_chosen_on_purpose_is_not_a_fallback() {
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        let step = step_with(
+            "http://127.0.0.1:1",
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        clients.remember_tunnel_win(&step.node_id);
+        let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: tunnel_body,
+        }));
+
+        let sent = send_frame_or_tunnel(
+            &clients,
+            &step,
+            Some(&tunnel_tx),
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("the chosen tunnel must deliver");
+
+        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert!(!sent.transport_fallback);
+        assert_eq!(sent.transport_fallback_reason, None);
+    }
+
+    /// The same on the prefill batch path, which used to report "did not
+    /// receive the batch: " with an empty reason.
+    #[tokio::test]
+    async fn a_batch_sent_through_the_chosen_tunnel_is_not_a_fallback() {
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        let step = step_with(
+            "http://127.0.0.1:1",
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        clients.remember_tunnel_win(&step.node_id);
+        let reply =
+            wire::encode_batch_single(&json!({"done": true}), None, WireDtype::F16).unwrap();
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: reply,
+        }));
+        let body = wire::encode_batch_single(&json!({}), None, WireDtype::F16).unwrap();
+
+        let response = send_batch_body(
+            &clients,
+            &step,
+            Some(&tunnel_tx),
+            None,
+            "/v1/prefill",
+            "batch-1",
+            Bytes::from(body),
+            1,
+            "peer-x",
+            None,
+            None,
+        )
+        .await
+        .expect("the chosen tunnel must deliver the batch");
+
+        assert!(!response.transport_fallback);
+        assert_eq!(response.transport_fallback_reason, None);
     }
 
     #[tokio::test]

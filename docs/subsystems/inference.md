@@ -1887,7 +1887,11 @@ covers both situations.
 describes itself on the way out and the caller sends separate evidence of the
 crossing. `transport_traversals` holds one entry per call, in order, with
 `transport` (`local`, `libp2p-tunnel`, `http`, `https` or `quic`),
-`transport_fallback`, time and bytes sent and received. The trace copies each
+`transport_fallback`, time and bytes sent and received. `transport_fallback`
+only marks a call that tried one transport and fell to another after a failure;
+a tunnel chosen on purpose (route pinned to it or a peer that only answers
+through it) is not a fallback. The Chat shows the sum as "transport fallback"
+(`https_fallback_calls`, an old internal name), with the reasons. The trace copies each
 entry to the matching hop and phase, without charging the residual to the first
 hop. The result does not wait for late receipts: if some evidence has not
 arrived yet, the request proceeds with `transport_trace_complete=false` and the

@@ -205,8 +205,9 @@ profile policy remains the effective authorization boundary.
   /api/ui/plugins/dev-sources` lists mounted sources and
   `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
   installs or rebuilds a local plugin without prior activation. Both routes
-  are AdminOnly; the handler restricts repositories and commands and never
-  exposes compiler output. A development-only installation persists in
+  are AdminOnly; the handler accepts mounted direct-child `pom-plugin-*`
+  sources only after validating their manifests and plugin codes, uses fixed
+  Cargo commands and never exposes compiler output. A development-only installation persists in
   `plugin_dev_install:<code>` and starts the host without granting licensed
   features. If a license or GitHub installation already exists, its
   entitlement is preserved. The browser reads the commercial catalog without

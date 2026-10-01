@@ -17,37 +17,38 @@ const MAX_PLUGIN_BYTES: u64 = 512 * 1024 * 1024;
 const CARGO_METADATA_TIMEOUT: Duration = Duration::from_secs(90);
 const CARGO_BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-#[derive(Debug, Clone, Copy)]
-struct KnownPlugin {
-    repository: &'static str,
-    plugin_code: &'static str,
-    display_name: &'static str,
+/// A source name is a single safe repository slug under the mounted plugin
+/// root. Its plugin identity comes from the validated manifest, not a catalog
+/// compiled into the node.
+fn is_plugin_repository_name(repository: &str) -> bool {
+    let Some(slug) = repository.strip_prefix("pom-plugin-") else {
+        return false;
+    };
+    let bytes = slug.as_bytes();
+    !bytes.is_empty()
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.'))
 }
 
-/// Repositories accepted by the development workflow. Additions must name a
-/// real plugin repository and use the fixed Cargo cdylib build below.
-const KNOWN_PLUGINS: &[KnownPlugin] = &[
-    KnownPlugin {
-        repository: "pom-plugin-base",
-        plugin_code: "base",
-        display_name: "POM Plugin Base",
-    },
-    KnownPlugin {
-        repository: "pom-plugin-deepseek-harness",
-        plugin_code: "deepseek_harness",
-        display_name: "DeepSeek Harness",
-    },
-    KnownPlugin {
-        repository: "pom-plugin-harness",
-        plugin_code: "harness",
-        display_name: "POM Plugin Harness",
-    },
-    KnownPlugin {
-        repository: "pom-plugin-logs",
-        plugin_code: "enterprise",
-        display_name: "Request Logs and Statistics",
-    },
-];
+fn display_name_for_repository(repository: &str) -> String {
+    repository
+        .strip_prefix("pom-plugin-")
+        .unwrap_or(repository)
+        .split(|character| matches!(character, '-' | '_' | '.'))
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut characters = part.chars();
+            match characters.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), characters.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct MountedPluginSource {
@@ -129,7 +130,9 @@ pub(crate) struct RebuildInstallResult {
 
 #[derive(Debug, Clone)]
 struct Source {
-    spec: KnownPlugin,
+    repository: String,
+    plugin_code: String,
+    display_name: String,
     root: PathBuf,
     cargo_manifest: PathBuf,
 }
@@ -220,32 +223,22 @@ impl DevCommandRunner for CargoCommandRunner {
     }
 }
 
-fn known_plugin(repository: &str) -> Option<KnownPlugin> {
-    KNOWN_PLUGINS
-        .iter()
-        .copied()
-        .find(|plugin| plugin.repository == repository)
-}
-
-pub(crate) fn plugin_code_for_repository(repository: &str) -> Option<&'static str> {
-    known_plugin(repository).map(|plugin| plugin.plugin_code)
-}
-
 fn canonical_source(root: &Path, repository: &str) -> Result<Source, DevPluginError> {
-    let spec = known_plugin(repository)
-        .ok_or_else(|| DevPluginError::new(DevPluginErrorCode::UnknownRepository))?;
+    if !is_plugin_repository_name(repository) {
+        return Err(DevPluginError::new(DevPluginErrorCode::UnknownRepository));
+    }
     let canonical_root = root
         .canonicalize()
         .map_err(|_| DevPluginError::new(DevPluginErrorCode::MountMissing))?;
     if !canonical_root.is_dir() {
         return Err(DevPluginError::new(DevPluginErrorCode::MountMissing));
     }
-    let candidate = canonical_root.join(spec.repository);
+    let candidate = canonical_root.join(repository);
     let source = candidate
         .canonicalize()
         .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
     if !source.starts_with(&canonical_root)
-        || source.file_name().and_then(|name| name.to_str()) != Some(spec.repository)
+        || source.file_name().and_then(|name| name.to_str()) != Some(repository)
         || !source.is_dir()
     {
         return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
@@ -258,9 +251,11 @@ fn canonical_source(root: &Path, repository: &str) -> Result<Source, DevPluginEr
     if !cargo_manifest.starts_with(&source) || !cargo_manifest.is_file() {
         return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
     }
-    validate_plugin_manifests(&source, spec)?;
+    let plugin_code = validate_plugin_manifests(&source)?;
     Ok(Source {
-        spec,
+        repository: repository.to_owned(),
+        plugin_code,
+        display_name: display_name_for_repository(repository),
         root: source,
         cargo_manifest,
     })
@@ -271,7 +266,7 @@ fn canonical_target_directory(
     repository: &str,
     source_root: &Path,
 ) -> Result<PathBuf, DevPluginError> {
-    if known_plugin(repository).is_none() {
+    if !is_plugin_repository_name(repository) {
         return Err(DevPluginError::new(DevPluginErrorCode::UnknownRepository));
     }
     std::fs::create_dir_all(build_root)
@@ -302,8 +297,8 @@ fn canonical_target_directory(
     }
 }
 
-fn validate_plugin_manifests(root: &Path, spec: KnownPlugin) -> Result<(), DevPluginError> {
-    let mut found = false;
+fn validate_plugin_manifests(root: &Path) -> Result<String, DevPluginError> {
+    let mut plugin_code = None;
     for relative in [Path::new("manifest.json"), Path::new("ui/manifest.json")] {
         let path = root.join(relative);
         if !path.exists() {
@@ -324,16 +319,22 @@ fn validate_plugin_manifests(root: &Path, spec: KnownPlugin) -> Result<(), DevPl
             .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
         let value: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
-        if value.get("plugin_code").and_then(serde_json::Value::as_str) != Some(spec.plugin_code) {
+        let Some(code) = value
+            .get("plugin_code")
+            .and_then(serde_json::Value::as_str)
+            .filter(|code| crate::plugins::is_valid_plugin_code(code))
+        else {
+            return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
+        };
+        if plugin_code
+            .as_deref()
+            .is_some_and(|existing| existing != code)
+        {
             return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
         }
-        found = true;
+        plugin_code = Some(code.to_owned());
     }
-    if found {
-        Ok(())
-    } else {
-        Err(DevPluginError::new(DevPluginErrorCode::InvalidSource))
-    }
+    plugin_code.ok_or_else(|| DevPluginError::new(DevPluginErrorCode::InvalidSource))
 }
 
 pub(crate) fn list_mounted_sources(
@@ -353,22 +354,25 @@ pub(crate) fn list_mounted_sources(
         };
     }
 
-    let sources = KNOWN_PLUGINS
-        .iter()
-        .filter_map(|spec| {
-            let source = canonical_source(&canonical_root, spec.repository).ok()?;
-            let _ = source;
+    let mut sources = std::fs::read_dir(&canonical_root)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|repository| is_plugin_repository_name(repository))
+        .filter_map(|repository| {
+            let source = canonical_source(&canonical_root, &repository).ok()?;
             let (active, public_install, development_install) = statuses
                 .iter()
-                .find(|(code, _, _, _)| code == spec.plugin_code)
+                .find(|(code, _, _, _)| code == &source.plugin_code)
                 .map(|(_, active, public_install, development_install)| {
                     (*active, *public_install, *development_install)
                 })
                 .unwrap_or((false, false, false));
             Some(MountedPluginSource {
-                repository: spec.repository.to_owned(),
-                plugin_code: spec.plugin_code.to_owned(),
-                display_name: spec.display_name.to_owned(),
+                repository: source.repository,
+                plugin_code: source.plugin_code,
+                display_name: source.display_name,
                 active,
                 install_kind: if !active {
                     None
@@ -381,7 +385,8 @@ pub(crate) fn list_mounted_sources(
                 },
             })
         })
-        .collect();
+        .collect::<Vec<_>>();
+    sources.sort_by(|left, right| left.repository.cmp(&right.repository));
     MountedPluginSources {
         mount_available: true,
         sources,
@@ -500,8 +505,8 @@ pub(crate) async fn build_source(
     let bytes = std::fs::read(canonical_artifact)
         .map_err(|_| DevPluginError::new(DevPluginErrorCode::ArtifactMissing))?;
     Ok(BuiltPlugin {
-        repository: source.spec.repository.to_owned(),
-        plugin_code: source.spec.plugin_code.to_owned(),
+        repository: source.repository,
+        plugin_code: source.plugin_code,
         bytes,
         elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
     })
@@ -557,9 +562,15 @@ mod tests {
             if args.first().is_some_and(|arg| arg == "build") && output.success {
                 let release_dir = target_directory.join("release");
                 std::fs::create_dir_all(&release_dir).unwrap();
+                let package = args
+                    .windows(2)
+                    .find(|pair| pair[0] == "--package")
+                    .map(|pair| pair[1].replace('-', "_"))
+                    .expect("build package argument");
                 let artifact = format!(
-                    "{}base_plugin.{}",
+                    "{}{}.{}",
                     std::env::consts::DLL_PREFIX,
+                    package,
                     std::env::consts::DLL_EXTENSION
                 );
                 std::fs::write(release_dir.join(artifact), b"plugin bytes").unwrap();
@@ -569,12 +580,16 @@ mod tests {
     }
 
     fn make_source(root: &Path) -> PathBuf {
-        let source = root.join("pom-plugin-base");
+        make_source_with_identity(root, "pom-plugin-base", "base")
+    }
+
+    fn make_source_with_identity(root: &Path, repository: &str, plugin_code: &str) -> PathBuf {
+        let source = root.join(repository);
         std::fs::create_dir_all(source.join("ui")).unwrap();
         std::fs::write(source.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
         std::fs::write(
             source.join("ui/manifest.json"),
-            r#"{"schema":"pom-plugin-ui/v1","plugin_code":"base"}"#,
+            serde_json::json!({"schema":"pom-plugin-ui/v1","plugin_code":plugin_code}).to_string(),
         )
         .unwrap();
         source
@@ -640,6 +655,26 @@ mod tests {
     }
 
     #[test]
+    fn any_valid_prefixed_source_is_listed_with_its_manifest_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        make_source_with_identity(temp.path(), "pom-plugin-code-server", "code_server");
+        make_source_with_identity(temp.path(), "pom-plugin-custom-tool", "custom.tool-v2");
+        make_source_with_identity(temp.path(), "pom-plugin-bad-code", "../escape");
+        let invalid = temp.path().join("pom-plugin-broken");
+        std::fs::create_dir_all(&invalid).unwrap();
+
+        let listing = list_mounted_sources(temp.path(), &[]);
+        assert!(listing.mount_available);
+        assert_eq!(listing.sources.len(), 2);
+        assert_eq!(listing.sources[0].repository, "pom-plugin-code-server");
+        assert_eq!(listing.sources[0].plugin_code, "code_server");
+        assert_eq!(listing.sources[0].display_name, "Code Server");
+        assert_eq!(listing.sources[1].repository, "pom-plugin-custom-tool");
+        assert_eq!(listing.sources[1].plugin_code, "custom.tool-v2");
+        assert_eq!(listing.sources[1].display_name, "Custom Tool");
+    }
+
+    #[test]
     fn missing_mount_is_reported_without_listing_unmounted_plugins() {
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join("absent");
@@ -649,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn source_listing_only_exposes_valid_allowlisted_directories_and_install_state() {
+    fn source_listing_exposes_only_valid_prefixed_directories_and_install_state() {
         let temp = tempfile::tempdir().unwrap();
         make_source(temp.path());
         std::fs::create_dir_all(temp.path().join("pom-plugin-not-allowed")).unwrap();
@@ -670,14 +705,15 @@ mod tests {
     #[tokio::test]
     async fn build_uses_fixed_cargo_arguments_and_keeps_artifacts_outside_the_source() {
         let temp = tempfile::tempdir().unwrap();
-        let source = make_source(temp.path());
+        let source =
+            make_source_with_identity(temp.path(), "pom-plugin-code-server", "code_server");
         let build_root = temp.path().join("builds");
         let manifest = source.join("Cargo.toml").canonicalize().unwrap();
         let metadata = serde_json::json!({
             "packages": [{
-                "name": "base-plugin",
+                "name": "pom-plugin-code-server",
                 "manifest_path": manifest,
-                "targets": [{"name":"base_plugin","kind":["cdylib"]}]
+                "targets": [{"name":"pom_plugin_code_server","kind":["cdylib"]}]
             }]
         });
         let runner = FakeRunner::new(vec![
@@ -693,14 +729,14 @@ mod tests {
             }),
         ]);
 
-        let built = build_source(temp.path(), &build_root, "pom-plugin-base", &runner)
+        let built = build_source(temp.path(), &build_root, "pom-plugin-code-server", &runner)
             .await
             .unwrap();
-        assert_eq!(built.repository, "pom-plugin-base");
-        assert_eq!(built.plugin_code, "base");
+        assert_eq!(built.repository, "pom-plugin-code-server");
+        assert_eq!(built.plugin_code, "code_server");
         assert_eq!(built.bytes, b"plugin bytes");
         assert!(!source.join("target").exists());
-        assert!(build_root.join("pom-plugin-base/release").is_dir());
+        assert!(build_root.join("pom-plugin-code-server/release").is_dir());
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(
@@ -724,7 +760,7 @@ mod tests {
                 "--manifest-path",
                 manifest.to_str().unwrap(),
                 "--package",
-                "base-plugin",
+                "pom-plugin-code-server",
                 "--lib",
             ]
         );

@@ -62,10 +62,10 @@ const DEVELOPMENT_INSTALL_SETTING_PREFIX: &str = "plugin_dev_install:";
 const GITHUB_REPOSITORIES_SETTING: &str = "plugin_github_repositories";
 const PREFERENCES_SETTING_PREFIX: &str = "plugin_preferences:";
 
-/// Plugin codes vêm do serviço de licenças e também compõem segmentos de URL
-/// e diretórios locais. Aceitamos slugs genéricos, mas nunca separadores ou
-/// segmentos de caminho.
-fn is_valid_plugin_code(code: &str) -> bool {
+/// Plugin codes vêm do serviço de licenças, de releases GitHub ou de
+/// manifestos de fontes locais. Também compõem segmentos de URL e diretórios;
+/// aceitamos slugs genéricos, mas nunca separadores ou segmentos de caminho.
+pub(crate) fn is_valid_plugin_code(code: &str) -> bool {
     let bytes = code.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= 128
@@ -3134,21 +3134,6 @@ impl PluginManager {
         &self,
         repository: &str,
     ) -> Result<crate::plugin_dev::RebuildInstallResult, crate::plugin_dev::DevPluginError> {
-        let plugin_code =
-            crate::plugin_dev::plugin_code_for_repository(repository).ok_or_else(|| {
-                crate::plugin_dev::DevPluginError {
-                    code: crate::plugin_dev::DevPluginErrorCode::UnknownRepository,
-                    stage: None,
-                    exit_code: None,
-                }
-            })?;
-        let runtime = self.get_or_create_runtime(plugin_code).map_err(|_| {
-            crate::plugin_dev::DevPluginError {
-                code: crate::plugin_dev::DevPluginErrorCode::UnknownRepository,
-                stage: None,
-                exit_code: None,
-            }
-        })?;
         let build_root = crate::config::project_root().join(".pom-dev-plugin-builds");
         let built = crate::plugin_dev::build_source(
             std::path::Path::new(crate::plugin_dev::DEV_PLUGIN_ROOT),
@@ -3157,13 +3142,13 @@ impl PluginManager {
             &crate::plugin_dev::CargoCommandRunner,
         )
         .await?;
-        if built.plugin_code != plugin_code {
-            return Err(crate::plugin_dev::DevPluginError {
+        let runtime = self
+            .get_or_create_runtime(&built.plugin_code)
+            .map_err(|_| crate::plugin_dev::DevPluginError {
                 code: crate::plugin_dev::DevPluginErrorCode::InvalidSource,
                 stage: Some(crate::plugin_dev::BuildStage::Inspect),
                 exit_code: None,
-            });
-        }
+            })?;
         let installed_at = runtime
             .install_development_artifact(&built.bytes)
             .await

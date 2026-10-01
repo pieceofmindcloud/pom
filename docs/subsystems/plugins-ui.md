@@ -198,9 +198,12 @@ to a writable cache in the project data volume. The release
 `runtime` image still has no compiler. The panel offers the rebuild block only
 on the `admin` profile when `/api/ui/node` confirms `pom_desenv=true`.
 
-The backend explicitly knows `pom-plugin-base`, `pom-plugin-deepseek-harness`,
-`pom-plugin-harness` and `pom-plugin-logs`. `GET /api/ui/plugins/dev-sources`
-lists only valid mounted sources. The AdminOnly route
+The backend discovers direct child directories named `pom-plugin-*` under the
+source mount; a mounted directory is listed only when its Cargo manifest and
+root `manifest.json` or `ui/manifest.json` are valid and all plugin manifests
+agree on a safe `plugin_code`. The code-server source uses
+`plugin_code: "code_server"`. `GET /api/ui/plugins/dev-sources` lists only
+valid mounted sources. The AdminOnly route
 `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` uses fixed
 arguments for `cargo metadata --no-deps --locked` and `cargo build --release
 --locked`, requires a single `cdylib` target and checks canonical source and

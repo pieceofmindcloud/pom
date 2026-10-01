@@ -316,10 +316,11 @@ do asset selecionado. Instalar a release
 escolhida não consulta o catálogo ou o servidor de licenças e não cria lease;
 um conflito local de `plugin_code` com uma instalação licenciada impede que um
 host seja substituído silenciosamente.
-`src/plugin_dev.rs` restricts local builds to the allowlist of known
-repositories under `/opt/pom/dev-plugins`, validates canonical source and
-manifest paths and the package's single `cdylib`, and runs fixed `cargo
-metadata`/`cargo build` arguments. Cargo artifacts go to
+`src/plugin_dev.rs` discovers direct child sources under
+`/opt/pom/dev-plugins` whose names match `pom-plugin-*`; it derives each
+`plugin_code` from valid, agreeing root/UI manifests and rejects unsafe codes.
+It validates canonical source paths and the package's single `cdylib`, then runs
+fixed `cargo metadata`/`cargo build` arguments. Cargo artifacts go to
 `<project_root>/.pom-dev-plugin-builds/<repository>`, outside the source mount,
 so read-only source binds work. The cluster development image exposes Cargo to
 its non-root node user and points `CARGO_HOME` to a writable cache in the

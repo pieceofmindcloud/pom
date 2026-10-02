@@ -553,7 +553,19 @@ pub(super) fn generation_finish_reason(
 /// budget. Transport failures remain `partial`, even when they happened to
 /// produce the same amount of text.
 pub(super) fn audit_status_for_summary(summary: &GenSummary) -> &'static str {
-    if summary.finish_reason.as_deref() == Some("length") {
+    // A typed decision (`/v1/systemone`) asks for exactly one token, so it
+    // always ends by `length`: that is its normal, complete outcome.
+    let decision = summary
+        .trace
+        .as_ref()
+        .is_some_and(|trace| trace.jev.is_some() || trace.probe.is_some());
+    if decision {
+        if summary.partial {
+            "partial"
+        } else {
+            "ok"
+        }
+    } else if summary.finish_reason.as_deref() == Some("length") {
         "incomplete"
     } else if summary.partial {
         "partial"

@@ -781,8 +781,10 @@ faz o download autenticado do blob persistido.
   histórico de 513 tokens; a resposta separa TTFT, velocidade do prefill,
   velocidade da geração e total em `timings`. `generation_finish_reason` testa o
   orçamento total antes do EOS em cada ramo de decodificação;
-  `audit_status_for_summary` registra `length` como `incomplete`, e reserva
-  `partial` para falha de transporte com texto salvo.
+  `audit_status_for_summary` registra `length` como `incomplete` - exceto
+  numa decisão tipada (trace com `jev`/`probe`), que sempre para no seu único
+  token e por isso é `ok` -, e reserva `partial` para falha de transporte com
+  texto salvo.
   O detector de ciclos (`inference/cycle.rs`) roda depois de cada peça no
   gateway. Ele exige três janelas canônicas, trata sufixos numéricos de
   identificadores como a mesma estrutura e preserva números de dados. Quando

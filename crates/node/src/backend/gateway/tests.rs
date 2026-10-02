@@ -1323,6 +1323,15 @@ mod tests {
             audit_status_for_summary(&summary(Some("stop"), false)),
             "ok"
         );
+
+        // A typed decision always stops at its single token: that is `ok`.
+        let mut decision = summary(Some("length"), false);
+        let mut trace = crate::prefill::RequestTrace::new("qwen", &[("node-a", 0, 15)]);
+        trace.jev = Some(json!({"enabled": true}));
+        decision.trace = Some(trace);
+        assert_eq!(audit_status_for_summary(&decision), "ok");
+        decision.partial = true;
+        assert_eq!(audit_status_for_summary(&decision), "partial");
     }
 
     /// O endereco anunciado tem que ganhar do IP da LAN. Esta entrada viaja

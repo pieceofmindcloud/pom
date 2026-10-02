@@ -1858,7 +1858,9 @@ and builds `RequestTrace::jev` (`DecisionProbe::trace_summary`): `enabled`,
 `probabilities` per label, `selected`, `selected_option`, `confidence`
 (normalized top probability), `mass`, `probe_ms`, `probe_tokens`,
 `prefill_ms` and `cache_hit_tokens`. `refresh_telemetry` expects no decode
-spans for such a trace.
+spans for such a trace. A decision always stops at its single token with
+`finish_reason: "length"`; the request log records that as `ok`, not
+`incomplete` (`audit_status_for_summary`).
 
 ## 4. Ring mode vs direct reply
 

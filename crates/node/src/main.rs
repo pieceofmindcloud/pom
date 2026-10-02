@@ -132,6 +132,8 @@ mod network_chat_policy;
 mod network_chat_tests;
 #[path = "models/ollama.rs"]
 mod ollama;
+#[path = "backend/decisions.rs"]
+mod decisions;
 #[path = "backend/openai.rs"]
 mod openai;
 #[path = "network/peer_client.rs"]

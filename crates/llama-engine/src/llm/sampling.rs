@@ -37,6 +37,41 @@ pub(super) static SAMPLER_RNG: Mutex<u64> = Mutex::new(0x853c49e6748fea9b);
 #[cfg(test)]
 pub(super) static SAMPLER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Probability of each candidate answer at one position, read from the raw
+/// logits (temperature 1, no penalty, no truncation).
+///
+/// Used by typed decisions: instead of sampling, the last peer reports how
+/// much of the model's next-token distribution falls on each candidate. A
+/// candidate is a group of token ids (for example `"A"` and `" A"`); its
+/// probability is the sum of theirs. `mass` is the total probability the
+/// candidates cover, so a caller can tell a confident pick among them from a
+/// model that wanted to say something else.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbeResult {
+    pub probabilities: Vec<f32>,
+    pub mass: f32,
+}
+
+pub fn probe_candidates(logits: &[f32], candidates: &[Vec<i32>]) -> ProbeResult {
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if logits.is_empty() || !max.is_finite() {
+        return ProbeResult { probabilities: vec![0.0; candidates.len()], mass: 0.0 };
+    }
+    let total: f64 = logits.iter().map(|value| f64::from((value - max).exp())).sum();
+    let mut seen = std::collections::HashSet::new();
+    let probabilities: Vec<f32> = candidates
+        .iter()
+        .map(|ids| {
+            ids.iter()
+                .filter(|id| **id >= 0 && (**id as usize) < logits.len() && seen.insert(**id))
+                .map(|id| f64::from((logits[*id as usize] - max).exp()) / total)
+                .sum::<f64>() as f32
+        })
+        .collect();
+    let mass = probabilities.iter().sum();
+    ProbeResult { probabilities, mass }
+}
+
 /// Temperature + top-k + top-p + repetition-penalty sampling.
 ///
 /// Returns the sampled token id. When `temperature <= 0` this is greedy argmax.
@@ -805,4 +840,27 @@ pub(super) fn render_gemma4_template(
 
 pub(super) fn token_sequence_ends_with(tokens: &[i32], suffix: &[i32]) -> bool {
     !suffix.is_empty() && tokens.len() >= suffix.len() && tokens.ends_with(suffix)
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn candidates_get_their_share_of_the_full_distribution() {
+        // ln(4) vs ln(1): ids 0 and 1 hold 4/7 and 1/7 of the mass.
+        let logits = [4f32.ln(), 1f32.ln(), 2f32.ln()];
+        let result = probe_candidates(&logits, &[vec![0], vec![1]]);
+        assert!((result.probabilities[0] - 4.0 / 7.0).abs() < 1e-5);
+        assert!((result.probabilities[1] - 1.0 / 7.0).abs() < 1e-5);
+        assert!((result.mass - 5.0 / 7.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn spelling_variants_add_up_and_an_id_counts_once() {
+        let logits = [0.0f32, 0.0, 0.0, 0.0];
+        let result = probe_candidates(&logits, &[vec![0, 1], vec![1, 2], vec![99, -1]]);
+        assert_eq!(result.probabilities, vec![0.5, 0.25, 0.0]);
+        assert!(probe_candidates(&[], &[vec![0]]).probabilities == vec![0.0]);
+    }
 }

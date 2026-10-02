@@ -275,6 +275,9 @@ impl PrefillOverlapWindow {
 #[derive(Debug, Clone)]
 pub struct PrefillOutcome {
     pub token_id: u32,
+    /// `probe_result` do último peer quando o prefill levou rótulos de uma
+    /// decisão tipada: `{labels, probabilities, mass}`.
+    pub probe: Option<serde_json::Value>,
     pub text: String,
     pub done: bool,
     /// Prompt length as counted by the peer that tokenised it.
@@ -1894,6 +1897,10 @@ pub fn critical_path_ms(spans: &[TraceSpan], host: &str) -> u64 {
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestTrace {
     pub trace_id: String,
+    /// Probabilidade de cada rótulo quando o pedido era uma decisão tipada
+    /// (`/v1/systemone`): `{labels, probabilities, mass}` do último peer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe: Option<serde_json::Value>,
     pub profile: crate::telemetry::Profile,
     pub request_state: RequestState,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -2254,6 +2261,7 @@ impl RequestTrace {
     ) -> Self {
         Self {
             trace_id: trace_id.into(),
+            probe: None,
             profile: crate::telemetry::Profile::current(),
             request_state: RequestState::Unknown,
             spans: Vec::new(),
@@ -3416,6 +3424,18 @@ pub(super) fn head_prefill_meta(
     });
     if let Some(trace_id) = trace_id {
         meta["trace_id"] = json!(trace_id);
+    }
+    meta
+}
+
+/// Leva os rótulos de uma decisão tipada até o último peer, que responde com
+/// a probabilidade de cada um em `probe_result`.
+pub(super) fn add_probe_to_head_meta(
+    mut meta: serde_json::Value,
+    probe: Option<&[String]>,
+) -> serde_json::Value {
+    if let Some(labels) = probe.filter(|labels| !labels.is_empty()) {
+        meta["probe"] = json!(labels);
     }
     meta
 }

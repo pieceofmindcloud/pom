@@ -1471,6 +1471,7 @@ mod tests {
             "/api/generate",
             crate::reqlog::Caller::operator(),
             crate::gateway::GenerationInput {
+                probe: None,
                 state,
                 inference_token: "test-api-key".into(),
                 model: "ornith".into(),

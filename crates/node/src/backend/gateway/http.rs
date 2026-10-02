@@ -1078,6 +1078,7 @@ pub(super) async fn handle_generate(
         "/api/generate",
         caller,
         GenerationInput {
+            probe: None,
             trace_id: Some(Uuid::new_v4().simple().to_string()),
             state,
             inference_token,

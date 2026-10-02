@@ -42,6 +42,9 @@ pub fn routes() -> Router<GatewayState> {
         .route("/v1/models/:id", get(get_model))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
+        // Typed decisions in the TypeSafe Jev shape (see `crate::decisions`).
+        .route("/v1/systemone", post(crate::decisions::systemone))
+        .route("/v1/decisions", post(crate::decisions::systemone))
         // Browser-based harnesses preflight before posting.
         .route("/v1/chat/completions", axum::routing::options(preflight))
         .route("/v1/completions", axum::routing::options(preflight))
@@ -844,6 +847,7 @@ async fn blocking_response(
         route,
         caller,
         GenerationInput {
+            probe: None,
             trace_id: Some(id.clone()),
             state,
             inference_token,
@@ -1054,6 +1058,7 @@ fn stream_response(
         route,
         caller,
         GenerationInput {
+            probe: None,
             trace_id: Some(id.clone()),
             state,
             inference_token,

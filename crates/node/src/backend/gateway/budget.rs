@@ -672,6 +672,9 @@ pub(crate) struct GenerationInput {
     /// The parsed HTTP request body, retained for audit without headers or
     /// credentials.
     pub(crate) request_details: serde_json::Value,
+    /// Rótulos de uma decisão tipada (`/v1/systemone`). O último peer devolve a
+    /// probabilidade de cada um em `GenSummary::trace.probe`.
+    pub(crate) probe: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

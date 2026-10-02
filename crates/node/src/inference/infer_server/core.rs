@@ -513,6 +513,9 @@ pub(super) struct PrefillJob {
     /// Escolha do Chat que a cabeça deve aplicar ao template. Hops apenas
     /// repassam o campo junto do estado oculto.
     pub(super) thinking_enabled: Option<bool>,
+    /// Rótulos-candidatos de uma decisão tipada. Só o último hop usa: devolve
+    /// em `probe_result` a probabilidade de cada rótulo no lugar de decidir.
+    pub(super) probe: Option<Vec<String>>,
     pub(super) tensor: Option<(Vec<f32>, TensorShape)>,
     pub(super) chunk_tokens: Option<Vec<i32>>,
     pub(super) queued_at: Instant,
@@ -1099,7 +1102,7 @@ pub(super) fn execute_scheduled_batch(
     if items.iter().any(|item| {
         matches!(
             &item.payload,
-            InferenceCommand::Prefill { job, .. } if job.images.as_ref().is_some_and(|images| !images.is_empty())
+            InferenceCommand::Prefill { job, .. } if job.images.as_ref().is_some_and(|images| !images.is_empty()) || job.probe.is_some()
         )
     }) {
         for item in items {
@@ -1171,6 +1174,7 @@ pub(super) fn execute_one_command(state: SharedState, command: InferenceCommand)
                 job.images,
                 job.chat_template,
                 job.thinking_enabled,
+                job.probe,
                 job.tensor,
                 job.capture_block,
                 job.chunk_tokens,

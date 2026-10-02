@@ -473,6 +473,7 @@ pub(super) async fn generate_stream_inner(
         cache_key,
         preferred_head,
         request_details: _,
+        probe,
     } = input;
     let mut budget = budget.normalized();
     if cancellation.is_cancelled() {
@@ -983,6 +984,7 @@ pub(super) async fn generate_stream_inner(
                 max_inflight_chunks,
                 resume,
                 trace_id.as_deref(),
+                probe.as_deref(),
             )
         };
         let mut prefill_result = prefill_attempt(reuse_prefix, None).await;
@@ -1053,6 +1055,7 @@ pub(super) async fn generate_stream_inner(
         }
         let first = match prefill_result {
             Ok(mut o) => {
+                o.trace.probe = o.probe.take();
                 o.trace.gateway_prefix_miss_reason =
                     prefix_lease.miss_reason().map(str::to_owned);
                 o.trace.prefill_chunk_tokens = chunk_tokens;

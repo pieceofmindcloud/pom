@@ -630,6 +630,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: b
         crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS,
         None,
         None,
+        None,
     )
     .await
     .expect("prefill");

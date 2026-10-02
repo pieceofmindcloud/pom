@@ -237,6 +237,10 @@ pub(super) async fn handle_prefill(
     };
     let chat_template = meta.get("chat_template").and_then(|v| v.as_bool());
     let thinking_enabled = meta.get("thinking_enabled").and_then(|v| v.as_bool());
+    let probe = match parse_probe(&meta) {
+        Ok(probe) => probe,
+        Err(error) => return err400(error),
+    };
     // A composição dos tokens deste pedaço, gerada na cabeça (que tokenizou o
     // prompt) e ecoada até a cauda — é o que alimenta o `observe` da cabeça
     // `nextn` no `decode_hidden` (ver `prefill_blocking`). Ausente é peer antigo.
@@ -312,6 +316,7 @@ pub(super) async fn handle_prefill(
         mrope_positions,
         chat_template,
         thinking_enabled,
+        probe,
         tensor,
         capture_block,
         chunk_tokens,
@@ -384,6 +389,9 @@ pub(super) async fn handle_prefill(
     if let Some(value) = meta.get("thinking_enabled") {
         local_meta["thinking_enabled"] = value.clone();
     }
+    if let Some(value) = meta.get("probe") {
+        local_meta["probe"] = value.clone();
+    }
     preserve_batch_identity(&meta, &mut local_meta);
 
     // Resposta direta — ver o bloco gêmeo em `handle_step`. A diferença é o
@@ -452,6 +460,9 @@ pub(super) async fn handle_prefill(
         }
         if let Some(value) = local_meta.get("thinking_enabled") {
             forward["thinking_enabled"] = value.clone();
+        }
+        if let Some(value) = local_meta.get("probe") {
+            forward["probe"] = value.clone();
         }
         for field in ["start_pos", "next_pos", "stable_len"] {
             if let Some(value) = local_meta.get(field) {
@@ -585,6 +596,9 @@ pub(super) async fn handle_prefill(
         }
         if let Some(value) = local_meta.get("thinking_enabled") {
             relay_meta["thinking_enabled"] = value.clone();
+        }
+        if let Some(value) = local_meta.get("probe") {
+            relay_meta["probe"] = value.clone();
         }
         if ring_overlap {
             relay_meta["ring_overlap"] = json!(true);
@@ -906,6 +920,52 @@ fn apply_mrope_positions(meta: &mut Value, positions: Option<&[[u32; 4]]>) {
     }
 }
 
+/// Rótulos de uma decisão tipada (`probe`): 1 a 256 textos curtos.
+pub(super) fn parse_probe(meta: &Value) -> std::result::Result<Option<Vec<String>>, String> {
+    let Some(value) = meta.get("probe").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let labels: Vec<String> = serde_json::from_value(value.clone())
+        .map_err(|_| "campo probe deve ser uma lista de rótulos".to_owned())?;
+    if labels.is_empty() || labels.len() > 256 {
+        return Err("campo probe aceita de 1 a 256 rótulos".into());
+    }
+    if labels.iter().any(|label| label.trim().is_empty() || label.len() > 32) {
+        return Err("rótulo de probe vazio ou maior que 32 bytes".into());
+    }
+    Ok(Some(labels))
+}
+
+/// Ids do primeiro token de cada rótulo, com e sem espaço inicial: o modelo
+/// pode começar a resposta de qualquer um dos dois jeitos.
+pub(super) fn probe_token_groups(engine: &LlmEngine, labels: &[String]) -> Vec<Vec<i32>> {
+    labels
+        .iter()
+        .map(|label| {
+            let mut ids = Vec::new();
+            for text in [label.clone(), format!(" {label}")] {
+                if let Some(first) = engine.tokenize(&text, false, false).first() {
+                    if !ids.contains(first) {
+                        ids.push(*first);
+                    }
+                }
+            }
+            ids
+        })
+        .collect()
+}
+
+/// Probabilidade de cada rótulo na posição seguinte ao prompt.
+pub(super) fn probe_reply(engine: &LlmEngine, logits: &[f32], labels: &[String]) -> Value {
+    let groups = probe_token_groups(engine, labels);
+    let result = crate::llm::probe_candidates(logits, &groups);
+    json!({
+        "labels": labels,
+        "probabilities": result.probabilities,
+        "mass": result.mass,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prefill_blocking(
     state: SharedState,
@@ -925,6 +985,7 @@ pub(super) fn prefill_blocking(
     images: Option<Vec<Vec<u8>>>,
     chat_template: Option<bool>,
     thinking_enabled: Option<bool>,
+    probe: Option<Vec<String>>,
     tensor: Option<(Vec<f32>, TensorShape)>,
     capture_block: Option<u32>,
     // A composição dos tokens deste pedaço, vinda da cabeça via `tokens` na
@@ -1253,6 +1314,9 @@ pub(super) fn prefill_blocking(
         let recent = s.sessions[&sid_key].recent_tokens.clone();
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
+        let probe_result = probe
+            .as_deref()
+            .map(|labels| probe_reply(&s.engine, logits, labels));
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
         super::core::mark_first_token_produced(&mut timings, decode_started);
         let done = s.engine.is_generation_stop(&recent, next_id);
@@ -1315,6 +1379,9 @@ pub(super) fn prefill_blocking(
             expected_pos + n_tokens as u32,
             done,
         );
+        if let Some(result) = probe_result {
+            reply["probe_result"] = result;
+        }
         apply_prefix_decision(
             &mut reply,
             chunk_index,
@@ -1464,6 +1531,8 @@ pub(super) fn prefill_batch_blocking(
             next_pos,
             chat_template,
             thinking_enabled,
+            // Pedidos com sonda nunca entram em lote (`execute_scheduled_batch`).
+            probe: _probe,
             tensor,
             capture_block,
             chunk_tokens,

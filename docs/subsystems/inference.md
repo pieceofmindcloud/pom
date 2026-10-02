@@ -1117,12 +1117,20 @@ chunk is decoded at its own position and the hidden state travels alone.
   `min(prefill_chunk_tokens, n_batch)` (`prompt_chunk_of`), because a chunk is
   decoded as one batch on the peer and anything larger than `n_batch` would
   abort llama.cpp just like the whole prompt used to.
-- **Adaptive chunk**: the gateway learns bytes per token, bandwidth, compute per
-  token and RTT from finished prefill traces, separately per model and route. On
-  the next request it picks a size that balances bandwidth-delay and compute
-  per RTT, rounded to blocks of 16 and capped by `prefill_chunk_tokens` and
-  `n_batch`. A route without samples uses the configured ceiling; the choice
-  makes no probe and adds no wait on the request path.
+- **Adaptive chunk**: the gateway models every hop and every link into a hop
+  as a stage whose call costs `fixed + per_token * chunk`, fitted per model and
+  route by decaying least squares over finished prefill traces (two points per
+  hop and trace: the mean call and the median, full-chunk call; a link's fixed
+  part is its network RTT). For the next request it simulates the chunked
+  pipeline with the expected new tokens (prompt bytes / 4 minus the prefix it
+  will reuse) and `prefill_max_inflight_chunks`, and picks the chunk size, in
+  steps of 16 from 32, whose last chunk finishes first; when one chunk holding
+  the whole prompt wins it sends the ceiling. Capped by `prefill_chunk_tokens`
+  and `n_batch`. A route without samples uses the ceiling; the choice makes no
+  probe and adds no wait on the request path. The fixed part is what the
+  earlier bandwidth-delay heuristic missed: on a LAN with a ~0 ms RTT it cut a
+  199-token decision into five 48-token chunks and paid the per-call overhead
+  (GPU sync, frame encode, ~20-30 ms per hop) five times.
 - **Transport failure in prefill**: a chunk can be tried up to three times
   (`relay::CHUNK_ATTEMPTS = 3`) with a backoff of 100 ms and 200 ms, but only
   when every path proves the body was not delivered. If earlier chunks were

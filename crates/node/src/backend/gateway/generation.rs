@@ -848,6 +848,11 @@ pub(super) async fn generate_stream_inner(
     // Chunk size, wire precision, and the speculative-decoding knobs all come
     // from the node's configuration, so they're operator knobs rather than
     // constants baked into the protocol.
+    // The head tokenizes; the gateway only needs the size to plan chunks.
+    // About 4 bytes per token, minus what the prefix cache will reuse.
+    let estimated_new_prompt_tokens = ((prompt.len() as f64 / 4.0).ceil() as u32)
+        .saturating_sub(if reuse_prefix { prefix_lease.cached_tokens } else { 0 })
+        .max(1);
     let (
         chunk_tokens,
         max_inflight_chunks,
@@ -871,6 +876,8 @@ pub(super) async fn generate_stream_inner(
                         &adaptive_chunk_route,
                         prompt_chunk_tokens(config),
                         config.n_batch,
+                        estimated_new_prompt_tokens,
+                        config.prefill_max_inflight_chunks as usize,
                     )
                 })
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),

@@ -135,9 +135,11 @@ profile policy remains the effective authorization boundary.
   builds `GatewayState.prefix_disk`, `generate_stream_with_stops` spills each
   retained turn to disk in a detached task and, on a memory miss, restores the
   longest strict-prefix snapshot before prefill (`prefix_reuse_status = "disk"`),
-  the adaptive chunk tuner learns bytes/token, bandwidth, compute and RTT from
-  completed prefill traces for each model/route without waiting on the next
-  request, capped by `prefill_chunk_tokens` and `n_batch`, and the `testkit`
+  the adaptive chunk tuner fits each hop and link as fixed + per-token cost
+  from completed prefill traces for each model/route and simulates the chunked
+  pipeline for the next prompt's size to pick the chunk (see
+  `docs/subsystems/inference.md`, "Adaptive chunk"), capped by
+  `prefill_chunk_tokens` and `n_batch`, and the `testkit`
   test scaffold (peer/state_with/body_of).
 - `db.rs` - único armazenamento SQLite local, interno ao crate: schema criado no arranque,
   WAL/timeout, implantações, API keys e revogações, preferências térmicas,

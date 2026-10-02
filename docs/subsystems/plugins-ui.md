@@ -134,13 +134,39 @@ targets of the same `plugin_code`, so an internal navigation does not retain
 the previous route's component. The plugin does not bundle another React:
 `lib/pluginHost.ts` exposes on `globalThis.__POM_HOST__` React, ReactDOM, the
 JSX runtime, React Query, the design kit (`components/ui`), `format`,
-`useI18n`, `useTheme`, `useCluster`, `api.get`, `Modal`, `ExecutionTelemetry`,
-`Markdown` and `storageKey`. The plugin swaps those imports for reads of that
-object when bundling; hooks and contexts are the application's. The surface is
-versioned (`PLUGIN_HOST_VERSION`) and only grows compatibly. Version 2 added
-`context()` (current language and theme), `events`, `protocol` and
-`plugin(code)`, the door to the event protocol described below. The plugin's
-CSS uses the same color tokens (CSS variables) as POM.
+`useI18n`, `useTheme`, `useCluster`, `api.get`, `Modal`, `TelemetryLine`,
+`ExecutionTelemetry`, `Markdown` and `storageKey`. The plugin swaps those
+imports for reads of that object when bundling; hooks and contexts are the
+application's. The surface is versioned (`PLUGIN_HOST_VERSION`) and only grows
+compatibly. Version 2 added `context()` (current language and theme), `events`,
+`protocol` and `plugin(code)`, the door to the event protocol described below.
+Version 3 added `TelemetryLine` (the basic one-line telemetry) and the
+`chat.telemetry` slot; the detailed telemetry view left the POM, so
+`ExecutionTelemetry` is kept only for bundles built against version 2 and now
+renders that basic line. The plugin's CSS uses the same color tokens (CSS
+variables) as POM.
+
+## Slots inside native screens
+
+`slots` maps a slot id (lowercase, dots, dashes or underscores, up to 64
+characters; at most 16 per manifest) to a key of `screens`. Both
+`plugin_ui.rs` and `lib/pluginUi.ts` reject a manifest whose slot names an
+undeclared screen. A host screen that offers a slot asks
+`usePluginSlot("<id>")` (`components/PluginSlot.tsx`) and renders `PluginSlot`
+with its own props; the first active plugin in the node's order that claims the
+id wins. Loading or render failures show the slot's fallback instead of an
+error card. Hosts ignore slot ids they do not offer.
+
+| Slot | Where | Props |
+|---|---|---|
+| `chat.telemetry` | end of the compact telemetry line under each Chat answer (not for `infer`, not while streaming) | `ChatTelemetrySlotProps` in `lib/chatTelemetry.ts`: `messageId`, `trace`, `timings`, `source`, `environment` (cluster snapshot, network RTT, runtimes - fetched only while a plugin claims the slot), `model`, `onAsk({visibleText, requestContent})`, `askDisabled` |
+
+~~~json
+{
+  "screens": { "chat-telemetry": { "module": "ui/screens.js", "export": "chatTelemetry", "styles": ["ui/plugin.css"] } },
+  "slots": { "chat.telemetry": "chat-telemetry" }
+}
+~~~
 
 ## Release preferences and host context
 

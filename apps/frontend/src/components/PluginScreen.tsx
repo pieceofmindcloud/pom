@@ -27,7 +27,9 @@ function loadStyles(code: string, styles: string[] | undefined, version: string 
 }
 
 /** Cada (plugin, versão, módulo) é importado uma única vez. */
-export function loadPluginScreen(resolved: ResolvedPluginRoute): Promise<ComponentType> {
+export function loadPluginScreen(
+  resolved: Pick<ResolvedPluginRoute, "code" | "screen" | "version">,
+): Promise<ComponentType> {
   const { code, screen, version } = resolved;
   const url = pluginAssetUrl(code, screen.module) + (version ? `?v=${encodeURIComponent(version)}` : "");
   const cacheKey = `${url}#${screen.export ?? "default"}`;

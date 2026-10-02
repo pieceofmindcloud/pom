@@ -103,6 +103,12 @@ pub(crate) struct PluginUiManifest {
     #[serde(default)]
     pub routes: Vec<RouteSpec>,
     pub screens: std::collections::BTreeMap<String, ScreenSpec>,
+    /// Extension slots inside native POM screens: slot id -> key of `screens`.
+    /// The host mounts that component in place of (or next to) its own basic
+    /// content, e.g. `chat.telemetry`. Unknown slot ids are accepted and
+    /// ignored by hosts that do not offer them.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub slots: std::collections::BTreeMap<String, String>,
     /// Catálogos de texto do plugin: idioma -> asset JSON plano
     /// (`{"<plugin_code>.chave": "texto ICU"}`). O plugin é dono dos próprios
     /// textos; o POM só carrega e resolve. Se declarado, `en` é obrigatório.
@@ -131,6 +137,16 @@ pub(crate) struct PluginDocumentationEntry {
 }
 
 const MAX_CATALOG_KEYS: usize = 5000;
+const MAX_SLOTS: usize = 16;
+
+/// A slot id is a short dotted name such as `chat.telemetry`.
+fn valid_slot_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id.starts_with(|c: char| c.is_ascii_lowercase())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'))
+}
 const MAX_CATALOG_TEXT: usize = 8 * 1024;
 
 fn valid_locale(tag: &str) -> bool {
@@ -316,6 +332,14 @@ impl PluginUiManifest {
                 || !manifest.screens.contains_key(&route.screen)
             {
                 return Err(format!("rota {:?} inválida", route.path));
+            }
+        }
+        if manifest.slots.len() > MAX_SLOTS {
+            return Err("slots demais".into());
+        }
+        for (slot, screen) in &manifest.slots {
+            if !valid_slot_id(slot) || !manifest.screens.contains_key(screen) {
+                return Err(format!("slot {slot:?} inválido"));
             }
         }
         for asset in &manifest.assets {
@@ -763,6 +787,27 @@ mod tests {
         let parsed = PluginUiManifest::parse("enterprise", value).expect("valid");
         assert_eq!(parsed.screens["stats"].export.as_deref(), Some("stats"));
         assert_eq!(parsed.i18n.len(), 2);
+    }
+
+    #[test]
+    fn slots_point_at_declared_screens() {
+        let mut value = manifest();
+        value["slots"] = json!({ "chat.telemetry": "logs" });
+        let parsed = PluginUiManifest::parse("enterprise", value.clone()).expect("valid slot");
+        assert_eq!(parsed.slots["chat.telemetry"], "logs");
+        let served = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(served["slots"]["chat.telemetry"], "logs");
+
+        for slots in [
+            json!({ "chat.telemetry": "missing" }),
+            json!({ "Chat.Telemetry": "logs" }),
+            json!({ "": "logs" }),
+            json!({ "chat/telemetry": "logs" }),
+        ] {
+            let mut bad = value.clone();
+            bad["slots"] = slots;
+            assert!(PluginUiManifest::parse("enterprise", bad).is_err());
+        }
     }
 
     #[test]

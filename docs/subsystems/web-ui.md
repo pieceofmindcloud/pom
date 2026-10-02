@@ -461,9 +461,9 @@ restored on future visits. The Statistics screen uses the same aggregated
 source, but is not a tab inside Logs. Each Markdown area also has an icon-only
 expand button in the top right corner; reading opens in a large window,
 follows the global toggle and keeps the same sanitization and credential
-redaction. REQUEST and TELEMETRY keep the full JSON, with TELEMETRY separating
-the request path from the visual `ExecutionTelemetry` card, shared with the
-Chat. The loading indicator takes a slot to the left of the errors badge,
+redaction. REQUEST and TELEMETRY keep the full JSON; TELEMETRY shows the request path,
+the plugin's visual telemetry panel (the same one the Chat opens) and the raw
+JSON. The loading indicator takes a slot to the left of the errors badge,
 keeping the badge fixed on the right. Copying redacts credentials, including
 the `key` of records in `api_keys` when the value has a known secret format,
 without hiding innocent `key` fields. `in_progress`, `incomplete`, `partial`,
@@ -936,21 +936,20 @@ left the screen where it was - the menu looked like it had stopped responding.
 Whoever is already in the chat is not sent again, so equal entries do not pile
 up in the browser history.
 
-- **Run telemetry arrives collapsed** (`components/ExecutionTelemetry.tsx`): the
-  phase table and the dense network and environment sections sit below the
-  answer; opening them is one click. The summary line shows `N from cache` next
-  to the input tokens when the turn reused the previous turn's prefix
-  (`trace.cached_tokens`); it is what the pipeline **executed**, not what the
-  cache chose, and it disappears when there was no reuse - see `inference.md`,
-  section 3.1. The same section shows the `trace_id`, profile, cold/warm state,
-  the timeline of local spans, `outside_node_total_ms`,
-  `outside_node_accounted_ms` and `outside_node_unaccounted_ms`. The main
-  bottleneck is only highlighted among measurements present; time that did not
-  reach a boundary stays explicitly unattributed.
+- **Each answer shows one telemetry line** (`components/TelemetryLine.tsx`):
+  generation speed and tokens, TTFT, end-to-end total, prompt tokens and their
+  processing speed, and the pipeline. That is the whole open-source telemetry.
+  When an active plugin claims the `chat.telemetry` slot
+  (`docs/subsystems/plugins-ui.md`), its component is mounted at the end of the
+  line with the trace, timings, origin and the captured environment, and
+  provides the detailed view (in the enterprise plugin: a side panel that opens
+  a full dialog, with the animated pipeline, request waterfall, per-phase
+  breakdown, findings and JSON/AI export). The network RTT and runtime queries
+  for that environment run only while a plugin claims the slot.
   At the end of the stream, `Bubble` temporarily uses the trace, timings and
   origin from `telemetryCapture` when the final capture arrives before the
   message's immutable update. `telemetrySnapshots` keeps the full capture per
-  `messageId`, so earlier messages keep their own quick summary and closed card.
+  `messageId`, so earlier messages keep their own line and slot props.
   Once the history gets `message.trace` and `message.timings`, they stay the
   preferred source; that transition keeps the footer visible without reloading
   the page.
@@ -965,11 +964,9 @@ up in the browser history.
 `chatStream` separates `<think>` from the visible content without leaking the
 delimiter between chunks; `finishChatStream` records the summary of TTFT,
 prompt preprocessing speed, output generation speed and end-to-end total, plus
-the per-hop trace. The Chat shows those lines in the answer summary, plus
-`server_ttft_ms`, `engine_ttft_ms`, `client_ttft_ms` and the observed network
-time, before the closed card. The summary stays visible without expanding the
-telemetry and says explicitly when a rate is not measurable, as with full prefix
-reuse or a one-token answer. During the SSE, the browser measures first chunk,
+the per-hop trace. The Chat shows the basic numbers in the telemetry line; the
+remaining fields (`server_ttft_ms`, `engine_ttft_ms`, `client_ttft_ms`, network
+time) travel in the trace to the `chat.telemetry` slot. During the SSE, the browser measures first chunk,
 first token, duration, end of the last token, chunks and bytes with
 `performance.now()`; the `Date.now()` attached on receipt only serves to
 correlate with the peers' wall timestamps. No clocks of different machines are

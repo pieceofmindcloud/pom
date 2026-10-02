@@ -28,12 +28,9 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   aqui, sem strings hard-coded nas rotas.
   As métricas do card de máquina usam aqui os rótulos de GPUs, uso e potência
   para manter o detalhe disponível nas duas línguas.
-  `chat.telemetry.backendRow` distingue chamada de avaliação e sincronização,
-  sem rotular o tempo de avaliação como enqueue. As linhas de captura e wire
-  residual distinguem ask-to-ready, wall do tensor-get, pós-processamento,
-  conversão f32/f16 no peer e no cliente, conversão f8 e serialização do frame;
-  o resumo de transporte também nomeia a espera de envio e finalização do corpo
-  QUIC. As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16
+  `chat.telemetryLine.*` covers the compact telemetry line of the Chat; the
+  detailed telemetry texts moved to the plugin that claims `chat.telemetry`
+  (`locales.equivalence.test.ts` lists them as moved). As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16
   permanece padrão, f32 usa quatro bytes por valor sem perda e f8/i4g64/i4g128
   são opções com perda sujeitas a capability.
   `deploy.visionUnavailable` orienta que a tela só oferece visão quando a

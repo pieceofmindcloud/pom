@@ -173,7 +173,6 @@ chat.emptyResponse,The network replied without any tokens. Check the Dashboard t
 chat.errorCopied,Copied,Copiado
 chat.filePrompt,"File {name}:\n{content}","Arquivo {name}:\n{content}"
 chat.fileRejected,File rejected,Ficheiro recusado
-chat.generationSpeed,Generation,Geração
 chat.headAlternatives,Other heads,Outras cabeças
 chat.headCandidateCount,"{count} candidate{count, plural, =1 {} other {s}}","{count} candidata{count, plural, =1 {} other {s}}"
 chat.headCapacity,"context {context} · leg {leg} tokens","contexto {context} · perna {leg} tokens"
@@ -219,9 +218,6 @@ chat.noModelDetail,Assign a model to the nodes in Settings before testing.,Atrib
 chat.openLargerWindow,Open the chat in a larger window,Abrir o chat em uma janela maior
 chat.openLargerWindowShort,Larger window,Janela maior
 chat.placeholder,Write to the network…,Escreva para a rede…
-chat.prefillSpeed,Prefill,Pré-processamento
-chat.promptTokensUnit,prompt tokens,tokens do prompt
-chat.rateUnavailable,not measurable,não mensurável
 chat.removeAttachment,Remove {name},Remover {name}
 chat.renameAria,Conversation name,Nome da conversa
 chat.renameHint,Click to rename this conversation,Clique para renomear esta conversa
@@ -230,209 +226,23 @@ chat.serverError,Server error,Erro do servidor
 chat.speedUnit,tok/s,tok/s
 chat.stop,Stop,Parar
 chat.surfaceLabel,Chat surface,Superfície do chat
-chat.telemetry.accumulatedCompute,Accumulated peer compute,Compute acumulado dos peers
-chat.telemetry.accumulatedTransport,Accumulated transport,Transporte acumulado
-chat.telemetry.analysis,Execution analysis,Análise da execução
-chat.telemetry.analysis.backendDetail,Most measured processing time is inside llama_decode rather than transport or queue wait.,"A maior parte do tempo medido está dentro do llama_decode, não no transporte ou na fila."
-chat.telemetry.analysis.backendNextStep,"Compare model quantisation, GPU offload and batch settings on this node.","Compare quantização, offload para GPU e configurações de batch neste nó."
-chat.telemetry.analysis.backendTitle,Local backend work dominates,O trabalho local do backend domina
-chat.telemetry.analysis.balancedDetail,"The available measurements are balanced or incomplete, so this result does not justify one dominant cause.","As medições disponíveis estão equilibradas ou incompletas, então não sustentam uma causa dominante."
-chat.telemetry.analysis.balancedNextStep,Use the detailed tables and compare several requests before changing the deployment.,Use as tabelas detalhadas e compare várias execuções antes de mudar a implantação.
-chat.telemetry.analysis.balancedTitle,No single bottleneck was identified,Nenhum gargalo único foi identificado
-chat.telemetry.analysis.label,Execution reading,Leitura da execução
-chat.telemetry.analysis.outsideNodeDetail,"The end-to-end time is much larger than the node measurements. This gap can be route selection, callback delivery, connection setup or another wait outside the inference engine.","O tempo ponta a ponta é muito maior que as medições do nó. A diferença pode estar na escolha de rota, na entrega de callbacks, na abertura da conexão ou em outra espera fora do motor de inferência."
-chat.telemetry.analysis.outsideNodeNextStep,"Check advertised addresses, route failures and transport callbacks before changing the model or GPU settings.","Confira endereços anunciados, falhas de rota e callbacks de transporte antes de mudar o modelo ou as configurações da GPU."
-chat.telemetry.analysis.outsideNodeTitle,Time outside the node dominates,O tempo fora do nó domina
-chat.telemetry.analysis.pipelineDetail,Time outside the node handler is larger than the local work. In pipeline mode this includes hidden-state movement and HTTP overhead.,O tempo fora do handler do nó é maior que o trabalho local. No pipeline isso inclui estado oculto e overhead HTTP.
-chat.telemetry.analysis.pipelineNextStep,"Check hop placement, frame size and the direct versus tunnel path.","Confira a colocação dos hops, o tamanho dos frames e o caminho direto ou túnel."
-chat.telemetry.analysis.pipelineTitle,Pipeline transport or residual transfer dominates,O transporte ou residual do pipeline domina
-chat.telemetry.analysis.queueDetail,A large mutex wait means another request was decoding on the same node.,Uma espera grande no mutex significa que outra requisição estava decodificando no mesmo nó.
-chat.telemetry.analysis.queueNextStep,Reduce concurrent requests on this node or add capacity.,Reduza a concorrência neste nó ou adicione capacidade.
-chat.telemetry.analysis.queueTitle,The inference engine is busy,O motor de inferência está ocupado
-chat.telemetry.analysis.remoteTelemetryIncompleteDetail,"The response is complete, but distributed spans are still collecting or missing. The available wall-clock gap is not classified as outside-node time.","A resposta está completa, mas os spans distribuídos ainda estão sendo coletados ou estão ausentes. A diferença do relógio ponta a ponta não é classificada como tempo fora do nó."
-chat.telemetry.analysis.remoteTelemetryIncompleteNextStep,"Wait for trace reconciliation or inspect the missing peer and transport receipts before diagnosing a bottleneck.","Aguarde a reconciliação do trace ou confira o peer ausente e os recibos de transporte antes de diagnosticar um gargalo."
-chat.telemetry.analysis.remoteTelemetryIncompleteTitle,Distributed telemetry is incomplete,A telemetria distribuída está incompleta
-chat.telemetry.analysis.tpDetail,The measured TP collective wait is a large part of decode. The hop is waiting for activation reductions between ranks.,A espera medida das coletivas TP ocupa grande parte do decode. O hop está aguardando as reduções de ativações entre os ranks.
-chat.telemetry.analysis.tpNextStep,"Check RTT, route, tunnel fallback and the number of reductions per token. This is not weight traffic.","Confira RTT, fallback para túnel e a quantidade de reduções por token. Pesos não estão trafegando."
-chat.telemetry.analysis.tpTitle,Tensor-parallel network wait dominates,A espera de rede do TP domina
-chat.telemetry.analysisPrompt,Analyze this execution,Analise esta execução
-chat.telemetry.analyze,Analyze with AI,Analisar com IA
-chat.telemetry.backendHeader,backend,backend
-chat.telemetry.backendRow,backend: evaluation call {call} ms · sync {sync} ms · D2H capture {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms,backend: chamada de avaliação {call} ms · sincronização {sync} ms · D2H da captura {d2hCapture} ms · p50 {p50} ms · p95 {p95} ms
-chat.telemetry.backendRowCurrent,backend: evaluation call {call} ms · sync {sync} ms · decode p50 {p50} ms · p95 {p95} ms,backend: chamada de avaliação {call} ms · sincronização {sync} ms · decode p50 {p50} ms · p95 {p95} ms
-chat.telemetry.bytesHeader,bytes,bytes
-chat.telemetry.calls,calls,chamadas
-chat.telemetry.capacity,Capacity,Capacidade
-chat.telemetry.clientTtft,Client TTFT,TTFT do cliente
-chat.telemetry.configIntent,Configured intent,Intenção configurada
-chat.telemetry.configOff,off,desligado
-chat.telemetry.configOn,on,ligado
-chat.telemetry.connectionSummary,connections: {fresh} new · {reused} reused · {unknown} unknown,conexões: {fresh} novas · {reused} reutilizadas · {unknown} desconhecidas
-chat.telemetry.cpu,CPU: {count} cores,CPU: {count} núcleos
-chat.telemetry.cpuBackedLayers,CPU-backed layers: {count},Camadas com peso em CPU: {count}
-chat.telemetry.criticalPath,Critical path,Caminho crítico
-chat.telemetry.currentPath,current state: selected path: {value},estado atual: caminho selecionado: {value}
-chat.telemetry.decode,decode,decode
-chat.telemetry.decodeCoverage,Decode spans observed / expected,Spans de decode observados / esperados
-chat.telemetry.decodeSummary,decode calls: {calls} · tokens: {tokens} · tokens/call: {perCall},chamadas de decode: {calls} · tokens: {tokens} · tokens/chamada: {perCall}
-chat.telemetry.distributedTitle,Distributed execution,Execução distribuída
-chat.telemetry.effectivePlacement,Effective layer placement,Colocação efetiva das camadas
-chat.telemetry.engine,engine: {value},motor: {value}
-chat.telemetry.engineHeader,engine,motor
-chat.telemetry.engineLlamaCpp,llama.cpp,llama.cpp
-chat.telemetry.engineMismatch,path/engine mismatch,divergência caminho/motor
-chat.telemetry.engineMixed,mixed,misto
-chat.telemetry.engineMoe,MoE engine,motor MoE
-chat.telemetry.engineTtft,Engine TTFT,TTFT do motor
-chat.telemetry.engineUnknown,unknown,desconhecido
-chat.telemetry.engineWait,engine wait {ms} ms,espera do motor {ms} ms
-chat.telemetry.environmentPathMismatch,Current state differs from this execution: current {current}; observed {observed}.,O estado atual diverge desta execução: atual {current}; observado {observed}.
-chat.telemetry.environmentScopeExplain,Environment values are a current /health snapshot; the execution path is recorded by each hop.,Os valores do ambiente são um snapshot atual de /health; o caminho desta execução é registrado por cada hop.
-chat.telemetry.environmentTitle,Pipeline machines,Máquinas do pipeline
-chat.telemetry.firstTokenClient,first token at client: {value},primeiro token no cliente: {value}
-chat.telemetry.firstTokenEngine,first token from engine: {value},primeiro token no motor: {value}
-chat.telemetry.firstTokenNode,node serialization: {value},serialização no nó: {value}
-chat.telemetry.firstTokenTransport,node to gateway: {value},nó até gateway: {value}
-chat.telemetry.fitMemory,Fit memory: {value},Ajuste à memória: {value}
-chat.telemetry.footnote,"""Gateway"" is the work of the gateway alone (encode + decode the frame). ""Backend"" is the node''s llama_decode; the detail line also shows completion measured by llama_synchronize, which includes already-queued output transfers - not pure kernel time. ""Residual"" is the hidden-state read that forces GPU to CPU. ""Transport"" is the round trip outside the node handler, not pure packet latency. ""Engine wait"" is time spent waiting on the llama_context mutex, which is unsafe for concurrent use: two requests on the same node decode one at a time, and this is the queue. Wait larger than backend means busy node, not slow node. POM_PROFILE_SYNC is shown per machine in the environment section.","""Gateway"" é só o trabalho do gateway (codificar + decodificar o frame). ""Backend"" é o llama_decode do nó; a linha detalhada mostra também a conclusão medida por llama_synchronize, que inclui transferências de saída já enfileiradas - não é tempo puro de kernel. ""Residual"" é a leitura do estado oculto que força GPU -> CPU. ""Transporte"" é a ida e volta fora do handler do nó, não latência de pacote pura. ""Espera do motor"" é o tempo parado no mutex do llama_context, que não é seguro para uso concorrente: duas requisições no mesmo nó decodificam uma de cada vez, e esta é a fila. Espera maior que o backend significa nó ocupado, não nó lento. POM_PROFILE_SYNC aparece por máquina na seção de ambiente."
-chat.telemetry.gatewayHeader,gateway,gateway
-chat.telemetry.gatewayRow,gateway: encode {encode} ms · to headers {headers} ms · body {body} ms · decode {decode} ms,gateway: codificar {encode} ms · até headers {headers} ms · corpo {body} ms · decodificar {decode} ms
-chat.telemetry.gpu,GPU: {value},GPU: {value}
-chat.telemetry.gpuBackedLayers,GPU-backed layers: {count},Camadas com peso em GPU: {count}
-chat.telemetry.hiddenState,hidden state: {sent} sent / {received} received · {dtype},estado oculto: {sent} enviados / {received} recebidos · {dtype}
-chat.telemetry.hop,hop,hop
-chat.telemetry.integrity,integrity: {duplicates} duplicate · {late} late · {orphan} orphan spans,integridade: {duplicates} duplicados · {late} tardios · {orphan} spans órfãos
-chat.telemetry.legacyBoth,both,as duas
-chat.telemetry.legacyDecodeRow,decode/token p50 {decodeP50} ms · p95 {decodeP95} ms · gateway: encode {encode} ms · to headers {headers} ms · body {body} ms · decode {decode} ms,decode/token p50 {decodeP50} ms · p95 {decodeP95} ms · gateway: codificar {encode} ms · até headers {headers} ms · corpo {body} ms · decodificar {decode} ms
-chat.telemetry.legacyNodeRow,"node: frame {frame} ms · prepare {prepare} ms · queue {queue} ms · setup {setup} ms · frame out {frameOut} ms{__notZero_unattributed, select, false {} other { · unattributed {unattributed} ms}}","nó: frame {frame} ms · preparar {prepare} ms · fila {queue} ms · setup {setup} ms · frame out {frameOut} ms{__notZero_unattributed, select, false {} other { · não atribuído {unattributed} ms}}"
-chat.telemetry.legacyNote,"legacy telemetry: this run was recorded before the phase split, so the numbers above sum prefill and decode ({prefillCalls} prefill + {decodeCalls} tokens) and cannot be separated now.","telemetria antiga: esta execução foi gravada antes da separação por fase, então os números acima somam prefill e decode ({prefillCalls} prefill + {decodeCalls} tokens) e não dá para separá-los agora."
-chat.telemetry.machineCount,"{count} machine{count, plural, =1 {} other {s}}","{count}{count, plural, =1 { máquina} other { máquinas}}"
-chat.telemetry.missingPeers,Missing peers: {peers},Peers ausentes: {peers}
-chat.telemetry.mixedLayers,Mixed layers: {count},Camadas mistas: {count}
-chat.telemetry.moeExecutor,MoE executor: {value},executor MoE: {value}
-chat.telemetry.moeExecutorReason,MoE executor reason: {reason},motivo do executor MoE: {reason}
-chat.telemetry.nBatch,Batch: {count},Batch: {count}
-chat.telemetry.nCtx,Context: {count},Contexto: {count}
-chat.telemetry.networkLoading,Reading directional RTT...,Lendo o RTT direcional...
-chat.telemetry.networkTotal,Observed network time: {ms} ms,Tempo de rede observado: {ms} ms
-chat.telemetry.networkTotalMissing,Observed network time: not available for this trace,Tempo de rede observado: indisponível neste trace
-chat.telemetry.networkUnavailable,Directional RTT unavailable,RTT direcional indisponível
-chat.telemetry.noEdges,"This execution used one peer, so there are no inter-peer edges to measure.","Esta execução usou uma máquina, então não há arestas entre peers para medir."
-chat.telemetry.noMeasurement,not measured,não medido
-chat.telemetry.nodeResidual,node residual {ms} ms,residual do nó {ms} ms
-chat.telemetry.nodeRow,node: frame {frame} ms · prepare {prepare} ms · queue {queue} ms · engine wait {engineWait} ms · setup {setup} ms · MTP draft {mtpDraft} ms · frame out {frameOut} ms,nó: frame {frame} ms · preparar {prepare} ms · fila {queue} ms · espera do motor {engineWait} ms · draft MTP {mtpDraft} ms · setup {setup} ms · frame out {frameOut} ms
-chat.telemetry.notInformed,not informed,não informado
-chat.telemetry.notMeasured,not measured,não medido
-chat.telemetry.observedPath,this execution: selected path: {value},nesta execução: caminho selecionado: {value}
-chat.telemetry.offloadKqv,KV offload request: {value},Pedido de offload KV: {value}
-chat.telemetry.outsideAccounted,outside node accounted,fora do nó atribuído
-chat.telemetry.outsideTotal,outside node total,total fora do nó
-chat.telemetry.outsideUnaccounted,outside node unaccounted,fora do nó não atribuído
-chat.telemetry.overlap,"prefill pipeline: depth {depth}/{limit}, {chunks} chunk(s) overlapped","pipeline do prefill: profundidade {depth}/{limit}, {chunks} pedaço(s) sobrepostos"
-chat.telemetry.overlapMeasured,Measured overlap,Overlap medido
-chat.telemetry.pathMixed,mixed paths,caminhos mistos
-chat.telemetry.pathNotReported,not reported,não informado
-chat.telemetry.peersCoverage,Peers reported / expected,Peers reportados / esperados
-chat.telemetry.phase,phase,fase
-chat.telemetry.phasePath,selected path: {value},caminho selecionado: {value}
-chat.telemetry.pipelineRttExplain,Each value is measured from the origin peer to the destination peer. It is not the gateway card RTT.,Cada valor é medido do peer de origem até o peer de destino. Não é o RTT do card do gateway.
-chat.telemetry.pipelineRttTitle,Edge RTT (pipeline source -> destination),RTT da aresta (origem -> destino)
-chat.telemetry.pipelineTitle,Pipeline network,Rede do pipeline
-chat.telemetry.placementMissing,not measured after load,não medido depois da carga
-chat.telemetry.prefill,prefill,prefill
-chat.telemetry.prefillChunk,chunk: {count} tokens,pedaço: {count} tokens
-chat.telemetry.prefillMs,{ms} ms prefill,{ms} ms prefill
-chat.telemetry.prefixCandidate,{count} prefix candidate,{count} candidatos no prefixo
-chat.telemetry.prefixMissReason,gateway cache miss: {reason},miss do cache no gateway: {reason}
-chat.telemetry.prefixStatus,prefix: {status},prefixo: {status}
-chat.telemetry.principalBottleneck,Principal bottleneck,Gargalo principal
-chat.telemetry.profileSync,POM_PROFILE_SYNC: {state},POM_PROFILE_SYNC: {state}
-chat.telemetry.profileSyncActive,active,ativo
-chat.telemetry.profileSyncOff,off,desligado
-chat.telemetry.profileSyncUnknown,not informed,não informado
-chat.telemetry.quicRequestSend,"QUIC request body send and finish {ms} ms over {calls, plural, one {# request} other {# requests}}","envio e finalização do corpo QUIC {ms} ms em {calls, plural, one {# requisição} other {# requisições}}"
-chat.telemetry.ram,RAM: {available} available / {total} total,RAM: {available} disponível / {total} total
-chat.telemetry.remoteStreamCompute,remote compute total {total} ms · p50 {p50} ms · p95 {p95} ms,compute remoto total {total} ms · p50 {p50} ms · p95 {p95} ms
-chat.telemetry.remoteStreamFrames,frames received / sent {received} / {sent} · bytes {bytes},frames recebidos / enviados {received} / {sent} · bytes {bytes}
-chat.telemetry.remoteStreamLatency,frame latency first / p50 / p95 / max {first} / {p50} / {p95} / {max} ms,latência de frame primeira / p50 / p95 / máxima {first} / {p50} / {p95} / {max} ms
-chat.telemetry.remoteStreamTitle,Remote stream,Remote stream
-chat.telemetry.remoteStreamTokenDelivery,token delivery interval samples {samples} · p50/p95/p99/max {p50}/{p95}/{p99}/{max} ms,amostras do intervalo de entrega de tokens {samples} · p50/p95/p99/máximo {p50}/{p95}/{p99}/{max} ms
-chat.telemetry.remoteStreamWait,stream wait total {total} ms · p50 {p50} ms · p95 {p95} ms,espera do stream total {total} ms · p50 {p50} ms · p95 {p95} ms
-chat.telemetry.remoteStreamWaitSplit,producer total/p95 {producerTotal}/{producerP95} ms · channel send total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · queued token total/p95 {queueTotal}/{queueP95} ms · prior delivery total/p95 {deliveryTotal}/{deliveryP95} ms,produção total/p95 {producerTotal}/{producerP95} ms · envio ao canal total/p95 {channelTotal}/{channelP95} ms · downstream total/p95 {downstreamTotal}/{downstreamP95} ms · token na fila total/p95 {queueTotal}/{queueP95} ms · entrega anterior total/p95 {deliveryTotal}/{deliveryP95} ms
-chat.telemetry.requestedGpuLayers,Requested GPU layers (intent): {count},Camadas GPU pedidas (intenção): {count}
-chat.telemetry.residualCaptureRow,residual capture: scheduler ask-to-ready {ready} ms · tensor_get wall {tensorGet} ms · postprocess {postprocess} ms · compatibility total {total} ms · {bytes} bytes in {copies} reads,captura residual: scheduler até pronto {ready} ms · tensor_get {tensorGet} ms · pós-processamento {postprocess} ms · total compatível {total} ms · {bytes} bytes em {copies} leituras
-chat.telemetry.residualHeader,residual,residual
-chat.telemetry.residualWireRow,"residual wire f16 encode/decode {f16Encode}/{f16Decode} ms (submetrics) · client f16 encode/decode {clientF16Encode}/{clientF16Decode} ms (submetrics) · f8 conversion {f8} ms · frame/header serialization {serialize} ms · residual frame encode count {calls}","wire do residual: encode/decode f16 no peer {f16Encode}/{f16Decode} ms (submétricas) · encode/decode f16 no cliente {clientF16Encode}/{clientF16Decode} ms (submétricas) · conversão f8 {f8} ms · serialização do frame/cabeçalho {serialize} ms · contagem de frames codificados {calls}"
-chat.telemetry.rttTotal,Aggregate execution RTT: {ms} ms,RTT agregado da execução: {ms} ms
-chat.telemetry.rttTotalMissing,Aggregate execution RTT: not available for this trace,RTT agregado da execução: indisponível neste trace
-chat.telemetry.runtimeLoading,Reading effective runtime state...,Lendo o estado efetivo do runtime...
-chat.telemetry.runtimeNotLoaded,Effective state unavailable: {reason},Estado efetivo indisponível: {reason}
-chat.telemetry.samplingHeader,sampling,sampling
-chat.telemetry.samplingRow,sampling: access {access} ms · clone {clone} ms · penalty {penalty} ms · softmax {softmax} ms · top-k {topK} ms · top-p {topP} ms · selection {selection} ms · text {text} ms,sampling: acesso {access} ms · clone {clone} ms · penalidade {penalty} ms · softmax {softmax} ms · top-k {topK} ms · top-p {topP} ms · seleção {selection} ms · texto {text} ms
-chat.telemetry.selectedPath,selected path: {value},caminho selecionado: {value}
-chat.telemetry.serverTtft,Server TTFT,TTFT do servidor
-chat.telemetry.sessions,Sessions: {count},Sessões: {count}
-chat.telemetry.snapshotMissing,The environment snapshot was not captured for this execution.,O snapshot do ambiente não foi capturado nesta execução.
-chat.telemetry.spanFirstTokenReturn,first-token return,retorno do primeiro token
-chat.telemetry.spanOrchestration,orchestration,orquestração
-chat.telemetry.spanPipelineSelection,pipeline selection,seleção da pipeline
-chat.telemetry.spanRouteResolution,route resolution,resolução da rota
-chat.telemetry.spanSessionAcquire,session acquire,aquisição da sessão
-chat.telemetry.spanUnknown,{name},{name}
-chat.telemetry.spanValidation,validation,validação
-chat.telemetry.status.collecting,collecting,coletando
-chat.telemetry.status.complete,complete,completa
-chat.telemetry.status.incomplete,incomplete,incompleta
-chat.telemetry.status.response_complete,response complete,resposta completa
-chat.telemetry.status.timeout,timeout,expirada
-chat.telemetry.statusLabel,Trace status: {status},Estado do trace: {status}
-chat.telemetry.streamingSummary,stream: {chunks} chunks · first chunk -> [DONE]: {duration} · last token -> [DONE]: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk,stream: {chunks} chunks · primeiro chunk -> [DONE]: {duration} · último token -> [DONE]: {lastToken} · {bytes} bytes · {tokensPerChunk} tokens/chunk
-chat.telemetry.timelineTitle,Execution timeline,Linha do tempo da execução
-chat.telemetry.timelineUnavailable,Detailed spans are not available for this trace. The missing time remains unaccounted.,Spans detalhados indisponíveis para este trace. O tempo ausente continua não atribuído.
-chat.telemetry.title,Execution telemetry,Telemetria da execução
-chat.telemetry.tlsIdle,channel: no calls in this phase,canal: nenhuma chamada nesta fase
-chat.telemetry.tlsOff,channel: in the clear,canal: texto claro
-chat.telemetry.tlsOn,"channel: TLS · handshake {handshake} ms (per connection, not per token; pooled connections report 0)","canal: TLS · handshake {handshake} ms (por conexão, não por token; conexão reaproveitada dá 0)"
-chat.telemetry.tlsPartial,channel: TLS on {cifradas}/{total} calls — the rest went in the clear · handshake {handshake} ms,canal: TLS em {cifradas}/{total} chamadas — as demais foram em claro · handshake {handshake} ms
-chat.telemetry.tokensCached,{count} reused,{count} do cache
-chat.telemetry.tokensCachedHint,Prompt tokens the pipeline did not reprocess: they were already in this conversation''s KV cache.,Tokens do prompt que o pipeline não reprocessou: já estavam no cache KV desta conversa.
-chat.telemetry.tokensIn,{count} in,{count} in
-chat.telemetry.tokensOut,{count} out,{count} out
-chat.telemetry.tokensTransmitted,{count} crossed,{count} atravessaram
-chat.telemetry.tpBroadcastShort,broadcast,broadcast
-chat.telemetry.tpBytes,collective bytes,bytes da coletiva
-chat.telemetry.tpChannel,channel,canal
-chat.telemetry.tpDirect,direct {calls},direto {calls}
-chat.telemetry.tpMachineScope,TP worker machines are not named in this execution trace; only participating pipeline peers are shown.,As máquinas workers do TP não são nomeadas neste trace; só os peers do pipeline identificados aparecem.
-chat.telemetry.tpReduces,reduces / expected,reduções / esperado
-chat.telemetry.tpTitle,Tensor parallelism collectives,Coletivas do tensor parallelism
-chat.telemetry.tpTunnel,tunnel {calls} · fallback {fallback},túnel {calls} · fallback {fallback}
-chat.telemetry.tpWait,TP wait,espera TP
-chat.telemetry.traceMissing,trace not reported,trace não informado
-chat.telemetry.transportFallbackTotal,fallback total {calls},fallback total {calls}
-chat.telemetry.transportHeader,transport,transporte
-chat.telemetry.transportHttpsFallback,"Transport fallback: {calls, plural, =0 {0 times} one {1 time} other {# times}} · reason(s): {reasons}","fallback de transporte: {calls, plural, =0 {0 vezes} one {1 vez} other {# vezes}} · motivo(s): {reasons}"
-chat.telemetry.transportMissing,transport traversal: not measured,travessia de transporte: não medida
-chat.telemetry.transportSummary,{transport}: {calls} calls · sent {sent} · received {received} · execution RTT min/median/p95/max {min}/{median}/{p95}/{max} ms · network RTT {netMin}/{netMedian}/{netP95}/{netMax} ms · fallback {fallback},{transport}: {calls} chamadas · enviados {sent} · recebidos {received} · RTT de execução mínimo/mediana/p95/máximo {min}/{median}/{p95}/{max} ms · RTT de rede mínimo/mediana/p95/máximo {netMin}/{netMedian}/{netP95}/{netMax} ms · fallback {fallback}
-chat.telemetry.transportSwitch,transport switch {from} -> {to} ({calls}),troca de transporte {from} -> {to} ({calls})
-chat.telemetry.transportTraceIncomplete,Transport trace incomplete: the result arrived before every traversal receipt.,Telemetria de transporte incompleta: o resultado chegou antes de todas as travessias.
-chat.telemetry.transportValue,transport: {value},transporte: {value}
-chat.telemetry.trueResidual,True residual,Residual verdadeiro
-chat.telemetry.unaccounted,unaccounted,não atribuído
-chat.telemetry.unattributed,unattributed {ms} ms,não atribuído {ms} ms
-chat.telemetry.unknownLayers,Unclassified layers: {count},Camadas não classificadas: {count}
+chat.telemetryLine.generationHint,"Generation speed after the first token, and tokens generated","Velocidade de geração após o primeiro token, e tokens gerados"
+chat.telemetryLine.prefill,prompt {count} tok · {rate} tok/s,prompt {count} tok · {rate} tok/s
+chat.telemetryLine.prefillHint,"Prompt tokens processed before the first token, and their processing speed","Tokens do prompt processados antes do primeiro token, e a velocidade desse processamento"
+chat.telemetryLine.rate,{value} tok/s,{value} tok/s
+chat.telemetryLine.sourceHint,Pipeline that served this answer: {source},Pipeline que atendeu esta resposta: {source}
+chat.telemetryLine.tokens,"{count, plural, one {# token} other {# tokens}}","{count, plural, one {# token} other {# tokens}}"
+chat.telemetryLine.total,total {value},total {value}
+chat.telemetryLine.totalHint,End-to-end time of the request,Tempo ponta a ponta da requisição
+chat.telemetryLine.ttft,TTFT {value},TTFT {value}
+chat.telemetryLine.ttftHint,Time to first token,Tempo até o primeiro token
 chat.thinkToggle,Think,Think
 chat.thinkToggleHint,"Use thinking for this inference. The choice stays active in this conversation.","Usar thinking nesta inferência. A escolha permanece ativa nesta conversa."
 chat.thinking,Thinking,Pensamento
 chat.through,moving through the pipeline,atravessando o pipeline
 chat.timeUnit,s,s
 chat.title,Chat,Chat
-chat.tokensPerSecondUnit,tokens/s,tokens/s
 chat.tokensUnit,tokens,tokens
-chat.totalTime,End-to-end total,Total ponta a ponta
-chat.ttft,First token (TTFT),Primeiro token (TTFT)
-chat.ttftClient,Client first token,Primeiro token no cliente
-chat.ttftPipeline,Pipeline first token,Primeiro token do pipeline
 chat.ttftServer,Server TTFT,TTFT do servidor
 cluster.peerCount,"{count, plural, one {{count} node} other {{count} nodes}}","{count, plural, one {{count} nó} other {{count} nós}}"
 common.cancel,Cancel,Cancelar

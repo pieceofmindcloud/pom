@@ -671,23 +671,13 @@ Key logic carriers:
   the partial session on a 50 ms scheduler while the stream is active. The
   final or interrupted state is flushed immediately. Route unmounts do not
   abort it; `stopStream` and a new message do.
-- `components/ExecutionTelemetry.tsx` (`ExecutionTelemetry`) - the
-  closed-by-default telemetry card shared by Chat and Logs: per-hop
-  prefill/decode phases, selected
-  path versus backend-reported executed engine, mixed/mismatch evidence,
-  gateway vs backend vs residual vs transport timing, bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
-  optional TP collective table, aggregate transport identity, execution RTT and
-  measured network RTT distributions, bytes with fallback and switch counts,
-  prefix reuse counters, overlap counters and a pure diagnosis card. The
-  request summary stays visible before the closed details card and shows TTFT,
-  prompt-token prefill rate, output-token generation rate, observed network RTT
-  and end-to-end total, including an explicit unavailable state when a rate has
-  no measurable interval. The AI action sends
-  both tables as private request content, while the initial model is shown as
-  a non-turn mark before chat messages. Decode rows separate scheduler-ready,
-  `tensor_get`, residual postprocess and wire encoding/serialization timings;
-  QUIC summaries show request body send/finish wall separately from response
-  header wait.
+- `components/TelemetryLine.tsx` plus the `chat.telemetry` slot - each answer
+  shows the basic one-line telemetry; when an active plugin claims the slot,
+  `Bubble` mounts its component at the end of that line with the props of
+  `lib/chatTelemetry.ts` (trace, timings, source, captured environment,
+  `onAsk`). Only then does `ChatScreen` fetch the per-node network RTT and
+  runtimes for the environment. `onAsk` sends the plugin's question as a turn
+  whose visible text differs from the request content.
 - `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime
   knobs, including `prefill_max_inflight_chunks` (prefill pipeline depth, 1..8)
   and `fit_memory_margin_mb` (per-device VRAM safety reserve).

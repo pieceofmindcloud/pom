@@ -94,43 +94,18 @@ Per-file list:
   se a carga ou a renderização falhar. A rota normalizada faz parte da
   identidade da montagem para a troca entre telas do mesmo plugin não reter o
   componente anterior. Ver `docs/subsystems/plugins-ui.md`.
-- `ExecutionTelemetry.tsx` - cartão compartilhado do trace de execução usado
-  pelo Chat. Mantém a tabela de fases, tempos por hop,
-  rede, ambiente, diagnóstico e demais detalhes em um único componente. Cruza
-  também os timings ponta a ponta com o processamento medido no nó, para não
-  chamar de gargalo do backend uma espera que ocorreu fora dele. A seção
-  distribuída mostra estado de coleta, cobertura de peers/spans, caminho
-  crítico, compute/transporte acumulados, overlap somente quando medido e os
-  histogramas agregados do `remote-stream`; não deduz `outside-node` por
-  subtração do wall-clock. Mostra também
-  o executor MoE efetivo e o motivo publicado pelo runtime quando há fallback
-  CPU ou indisponibilidade. O cartão distingue o caminho selecionado no
-  snapshot atual de `/health` do caminho observado no trace desta requisição;
-  cada fase também mostra seu `selected_path`, e uma divergência entre os dois
-  escopos é sinalizada. A timeline também mostra spans medidos, a decomposição
-  de `outside_node`, TTFT do servidor/motor/cliente, primeiro token, stream,
-  conexões e tokens por chamada; fronteiras ausentes permanecem não medidas.
-  O resumo exibe sempre a contagem e as razões do fallback HTTPS e, quando há
-  amostras, os quantis do intervalo de entrega de tokens do `remote-stream`,
-  separando produção, downstream, reserva do canal, fila e callback anterior;
-  o detalhe por nó também mostra o custo síncrono do draft MTP quando presente.
-  `TimingSummary` fica fora do `<details>` fechado para manter tokens/s, TTFT,
-  tempo de rede e total visíveis. O Chat fornece trace, timings e origem por
-  mensagem, então a mesma captura permanece disponível em mensagens anteriores.
-  O resumo por transporte diferencia RTT de execução, que inclui processamento
-  remoto, do RTT de rede medido no limite do transporte; a linha QUIC usa a
-  medição da conexão quando disponível. A linha do backend separa
-  `node_backend_call_ms` (`llama_decode`/avaliação) de
-  `node_backend_sync_ms` (`llama_synchronize`). A linha da captura mostra o
-  ask-to-ready do scheduler, a chamada opaca `tensor_get`, o pós-processamento,
-  bytes e contagem de leituras; as conversões f32/f16 no peer e no cliente, a
-  conversão f8, a serialização do frame residual e a espera de envio/finalização
-  do corpo QUIC aparecem em linhas próprias. Os tempos de conversão são
-  subconjuntos do encode/decode geral, não devem ser somados novamente.
-  Cobertura de decode usa callbacks quando disponíveis, ou tokens de saída por
-  hop no caminho normal; sem tokens ou callbacks esperados, mostra não medido.
-  Uma coleta de transporte incompleta continua visível mesmo quando a resposta
-  terminou.
+- `TelemetryLine.tsx` - the open-source telemetry of a Chat answer: one compact
+  line with generation speed and tokens, TTFT, end-to-end total, prompt tokens
+  and their processing speed, and the pipeline (`source`). `basicTelemetry`
+  derives those numbers from the timings or, without them, from the trace.
+  Children render at the end of the line; the Chat puts the `chat.telemetry`
+  plugin slot there. The detailed, visual telemetry is not part of the POM.
+- `PluginSlot.tsx` - mounts the component an active plugin declares for a
+  native extension slot (`slots` in `pom-plugin-ui/v1`), through the same
+  module loader as `PluginScreen`. `usePluginSlot(slot)` resolves the claimant
+  from the plugin registry; while loading, without a claimant, or when the
+  module fails to load or render, the slot shows its fallback (nothing by
+  default) so a broken plugin never breaks the host screen.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

@@ -27,13 +27,18 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
 import { ChatSessionList } from "../components/ChatSessionList";
-import { ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
+import { PluginSlot, usePluginSlot } from "../components/PluginSlot";
+import { TelemetryLine } from "../components/TelemetryLine";
 import { InferenceHeadChoice } from "../components/InferenceHeadChoice";
 import { Badge, Button, Empty } from "../components/ui";
 import { isNearBottom } from "../lib/chatScroll";
 import {
-  buildTelemetryAnalysisPrompt,
-} from "../lib/telemetryAnalysis";
+  CHAT_TELEMETRY_SLOT,
+  type ChatTelemetryEnvironment,
+  type ChatTelemetryQuestion,
+  type ChatTelemetrySlotProps,
+} from "../lib/chatTelemetry";
+import type { ResolvedPluginSlot } from "../lib/pluginUi";
 import {
   ChatSessionProvider,
   newId,
@@ -69,8 +74,7 @@ import { useI18n } from "../i18n/provider";
 import type { ClusterView, PeerRuntime } from "../lib/types";
 import { useProfile } from "../lib/profile";
 
-export { ExecutionTelemetry } from "../components/ExecutionTelemetry";
-export type { ExecutionTelemetryEnvironment } from "../components/ExecutionTelemetry";
+export type { ChatTelemetryEnvironment } from "../lib/chatTelemetry";
 export { OpenNativeChatWindowButton } from "../components/OpenNativeChatWindowButton";
 
 function isTextFile(file: File): boolean {
@@ -210,14 +214,15 @@ interface ChatTelemetryCapture {
 }
 
 interface ChatTelemetrySnapshot extends ChatTelemetryCapture {
-  environment?: ExecutionTelemetryEnvironment;
+  environment?: ChatTelemetryEnvironment;
 }
 
 export function Bubble({
   message,
   streaming,
-  onAnalyze,
+  onAsk,
   analysisDisabled = false,
+  telemetryPlugin = null,
   telemetryEnvironment,
   telemetryTrace,
   telemetryTimings,
@@ -225,9 +230,12 @@ export function Bubble({
 }: {
   message: ChatMessage;
   streaming: boolean;
-  onAnalyze?: (trace: RequestTrace) => void;
+  /** Sends a follow-up turn on behalf of the telemetry plugin. */
+  onAsk?: (question: ChatTelemetryQuestion) => void;
   analysisDisabled?: boolean;
-  telemetryEnvironment?: ExecutionTelemetryEnvironment;
+  /** The plugin claiming the `chat.telemetry` slot, when one is active. */
+  telemetryPlugin?: ResolvedPluginSlot | null;
+  telemetryEnvironment?: ChatTelemetryEnvironment;
   /** The final stream capture can arrive one render before the transcript patch. */
   telemetryTrace?: RequestTrace;
   /** The final stream timings can arrive with the trace before the transcript patch. */
@@ -292,25 +300,32 @@ export function Bubble({
           {message.error && (
             <ChatError message={message.error} />
           )}
-          {showTelemetry && source && (
+          {showTelemetry && !trace && !timings && source && (
             <p className="mt-2 font-mono text-[0.68rem] text-faint">{source}</p>
           )}
-          {showTelemetry && !trace && message.tokensPerSecond != null && (
+          {showTelemetry && !trace && !timings && message.tokensPerSecond != null && (
             <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[0.68rem] text-faint">
               <span>{t("chat.legacyTotalSpeed", { value: num(message.tokensPerSecond, 1) })}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${ms(message.durationMs)}`}</span>
             </div>
           )}
-          {showTelemetry && trace && (
-            <div className="mt-2">
-              <ExecutionTelemetry
-                trace={trace}
-                timings={timings}
-                source={source}
-                environment={telemetryEnvironment}
-                onAnalyze={onAnalyze}
-                analyzeDisabled={analysisDisabled || streaming}
-              />
-            </div>
+          {showTelemetry && (trace || timings) && (
+            <TelemetryLine trace={trace} timings={timings} source={source} className="mt-2">
+              {trace && telemetryPlugin && !streaming && (
+                <PluginSlot<ChatTelemetrySlotProps>
+                  resolved={telemetryPlugin}
+                  props={{
+                    messageId: message.id,
+                    trace,
+                    timings,
+                    source,
+                    environment: telemetryEnvironment,
+                    model: trace.model,
+                    onAsk,
+                    askDisabled: analysisDisabled || streaming,
+                  }}
+                />
+              )}
+            </TelemetryLine>
           )}
         </div>
       )}
@@ -506,15 +521,18 @@ function ChatScreen() {
     () => Array.from(new Set(telemetryCapture?.trace.hops.map((hop) => hop.node_id) ?? [])).sort(),
     [telemetryCapture],
   );
-  const telemetryNetwork = useChatTelemetryNetwork(telemetryNodeIds, showTelemetry && telemetryCapture != null, telemetryCapture?.messageId);
-  const runtimeQueries = usePeerRuntimes(telemetryNodeIds, showTelemetry && telemetryCapture != null, telemetryCapture?.messageId);
+  // The per-node environment only feeds the plugin's detailed telemetry.
+  const telemetryPlugin = usePluginSlot(CHAT_TELEMETRY_SLOT);
+  const environmentWanted = showTelemetry && telemetryCapture != null && telemetryPlugin != null;
+  const telemetryNetwork = useChatTelemetryNetwork(telemetryNodeIds, environmentWanted, telemetryCapture?.messageId);
+  const runtimeQueries = usePeerRuntimes(telemetryNodeIds, environmentWanted, telemetryCapture?.messageId);
   const runtimeByNode = useStableRecord(
     Object.fromEntries(
       telemetryNodeIds.map((nodeId, index) => [nodeId, runtimeQueries[index]?.data]),
     ) as Record<string, PeerRuntime | undefined>,
   );
   const runtimesLoading = runtimeQueries.some((query) => query.isLoading);
-  const telemetryEnvironment = useMemo<ExecutionTelemetryEnvironment | undefined>(
+  const telemetryEnvironment = useMemo<ChatTelemetryEnvironment | undefined>(
     () => telemetryCapture
       ? {
           snapshotCaptured: true,
@@ -862,11 +880,8 @@ function ChatScreen() {
     });
   }
 
-  function analyzeTrace(trace: RequestTrace) {
-    void send({
-      visibleText: t("chat.telemetry.analysisPrompt"),
-      requestContent: buildTelemetryAnalysisPrompt(trace, locale === "pt-BR"),
-    });
+  function askAboutTelemetry(question: ChatTelemetryQuestion) {
+    void send(question);
   }
 
   /**
@@ -1003,8 +1018,9 @@ function ChatScreen() {
                         key={m.id}
                         message={m}
                         streaming={streaming && m.id === session.messages[session.messages.length - 1]?.id}
-                        onAnalyze={analyzeTrace}
+                        onAsk={askAboutTelemetry}
                         analysisDisabled={streaming || !model}
+                        telemetryPlugin={showTelemetry ? telemetryPlugin : null}
                         telemetryTrace={telemetry?.trace}
                         telemetryTimings={telemetry?.timings}
                         telemetrySource={telemetry?.source}

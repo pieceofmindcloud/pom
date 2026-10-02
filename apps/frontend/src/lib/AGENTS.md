@@ -66,13 +66,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   tokens times pipeline hops; with no output or callbacks it is not measured.
   An incomplete transport receipt remains visible independently of response
   completeness.
-- `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue,
-  backend cost and time outside the node; compara timings ponta a ponta com o
-  processamento medido no nó antes de nomear o gargalo. It refuses to label
-  a distributed gap as `outside-node` while telemetry is incomplete and keeps
-  the fixed/per-token regression as an analysis helper only. Derives the observed
-  execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer
-  counts from actual buffers.
+- `chatTelemetry.ts` - the data contract of the `chat.telemetry` plugin slot:
+  slot id, captured environment (cluster snapshot, network RTT, runtimes),
+  the question type a plugin hands back through `onAsk`, and the slot props.
+  The diagnosis and visual analysis of a trace live in the plugin that claims
+  the slot, not in the POM.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
@@ -620,11 +618,15 @@ When updating this file, preserve this bar for all agents and keep entries conci
   entradas Markdown dos guias e da referência. `menu[].children` vira seção
   com submenus (`pluginMenuItems` devolve só os filhos visíveis ao perfil;
   o `roles` do filho é interseção com o do pai) e `pluginDisplayName` dá o
-  nome humano do plugin. Não conhece plugin algum.
+  nome humano do plugin. `slots` maps native extension slots to declared
+  screens; `pluginSlot(id)` returns the first active claimant. Não conhece
+  plugin algum.
 - `pluginHost.ts` - o SDK em `globalThis.__POM_HOST__` (React, React Query, kit de
   design, i18n, tema, `api.get`...) que as telas de plugin usam em vez de
   empacotar cópias próprias. Versão 2: `context()`, `events`, `protocol` e
-  `plugin(code)` (eventos e comandos com escopo do plugin).
+  `plugin(code)` (eventos e comandos com escopo do plugin). Version 3 adds
+  `components.TelemetryLine`; `components.ExecutionTelemetry` stays for
+  version-2 bundles and renders the same basic line.
 - `pluginEvents.ts` - o protocolo `pom-plugin-events/v1`: envelope, barramento
   (`publishPluginEvent`, `subscribePluginEvents`, replay do último evento
   global), entrega por `CustomEvent("pom:plugin-event")` e `postMessage` para

@@ -74,6 +74,7 @@ vi.mock("../lib/queries", () => ({
   useInferenceHeads: () => headQuery,
   useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
   usePeerRuntimes: () => [],
+  usePluginUi: () => ({ data: { plugins: [] }, isLoading: false, isError: false }),
 }));
 
 vi.mock("../lib/imageResize", () => {

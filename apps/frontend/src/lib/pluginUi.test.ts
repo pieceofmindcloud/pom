@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { pluginAssetUrl, pluginDisplayName, pluginLabel, pluginMenuItems, pluginRouteProfiles, pluginUiSnapshot, resolvePluginRoute, setPluginUi, type ActivePluginUi } from "./pluginUi";
+import { pluginAssetUrl, pluginDisplayName, pluginSlot, pluginLabel, pluginMenuItems, pluginRouteProfiles, pluginUiSnapshot, resolvePluginRoute, setPluginUi, type ActivePluginUi } from "./pluginUi";
 import { canAccessRoute } from "./access";
 import { navForProfile } from "../components/nav";
 
@@ -417,5 +417,39 @@ describe("plugin UI registry", () => {
     expect(pluginUiSnapshot()).toHaveLength(0);
     setPluginUi([manifest([{ id: "other", label: { en: "Other" }, to: "/missing" }])]);
     expect(pluginUiSnapshot()).toHaveLength(0);
+  });
+});
+
+describe("plugin slots", () => {
+  afterEach(() => setPluginUi([]));
+
+  it("resolves a slot to the declared screen and keeps it in the snapshot", () => {
+    setPluginUi([{ ...plugin, manifest: { ...plugin.manifest, slots: { "chat.telemetry": "extra" } } }]);
+
+    expect(pluginSlot("chat.telemetry")).toEqual({
+      code: "acme",
+      slot: "chat.telemetry",
+      screen: { module: "b.js" },
+      version: "2.0.0",
+    });
+    expect(pluginSlot("dashboard.card")).toBeNull();
+    expect(pluginUiSnapshot()[0].manifest.slots).toEqual({ "chat.telemetry": "extra" });
+  });
+
+  it("drops a manifest whose slot points at an undeclared screen or has a bad id", () => {
+    for (const slots of [{ "chat.telemetry": "missing" }, { "Chat Telemetry": "extra" }]) {
+      setPluginUi([{ ...plugin, manifest: { ...plugin.manifest, slots } }]);
+      expect(pluginSlot("chat.telemetry")).toBeNull();
+      expect(pluginUiSnapshot()).toHaveLength(0);
+    }
+  });
+
+  it("gives the slot to the first active plugin that claims it", () => {
+    setPluginUi([
+      { ...basePlugin, manifest: { ...basePlugin.manifest, slots: { "chat.telemetry": "plugin" } } },
+      { ...plugin, manifest: { ...plugin.manifest, slots: { "chat.telemetry": "extra" } } },
+    ]);
+
+    expect(pluginSlot("chat.telemetry")?.code).toBe("base");
   });
 });

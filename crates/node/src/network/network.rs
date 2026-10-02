@@ -47,8 +47,118 @@ const ADMISSION_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const ADMISSION_TIMEOUT: Duration = Duration::from_millis(200);
 
+/// A sonda pelo túnel pode ter de montar um circuito por um relé na internet
+/// antes de mandar o pedido, e roda fora do laço do swarm
+/// (`admit_in_background`): não precisa do orçamento curto das diretas.
+#[cfg(not(test))]
+const ADMISSION_TUNNEL_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[cfg(test)]
+const ADMISSION_TUNNEL_TIMEOUT: Duration = Duration::from_millis(500);
+
 const ADMISSION_CACHE_TTL: Duration = Duration::from_secs(30);
 const REJECTED_ADMISSION_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Quanto tempo um peer que já provou pertencimento continua admitido enquanto
+/// as sondas seguintes não chegam a ele. Um par que só o relé alcança perde a
+/// rota a cada circuito que cai; sem esta folga, uma sonda nesse intervalo o
+/// tirava da tabela (`Removed timed-out peers`) e ele voltava minutos depois.
+/// Recusa explícita não usa a folga.
+const ADMISSION_UNREACHABLE_GRACE: Duration = Duration::from_secs(10 * 60);
+
+/// Uma conexão libp2p viva com um par.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Libp2pLink {
+    /// `host:porta (transporte)` da outra ponta; num circuito, o do relé.
+    /// Vazio quando o circuito entrou por um relé que este nó não conhece.
+    pub address: String,
+    pub relayed: bool,
+    /// PeerId do relé, quando a conexão é um circuito.
+    pub relay_peer_id: Option<String>,
+    /// Conexão direta nascida de um hole punch (DCuTR) bem-sucedido.
+    pub hole_punched: bool,
+}
+
+/// Por onde este nó fala de fato com um peer - observado, não anunciado.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PeerRoute {
+    /// `http`: um endereço direto respondeu há pouco (`RouteTable::last_success`).
+    /// `p2p_direct`: conexão libp2p direta, discada ou por hole punch.
+    /// `relayed`: só um circuito pelo relé - o hole punch não fechou.
+    /// `none`: nenhuma das três.
+    pub kind: &'static str,
+    /// O endereço da rota; em `relayed`, o do relé.
+    pub address: Option<String>,
+    /// Alguma conexão direta com o par saiu de um hole punch.
+    pub hole_punched: bool,
+    /// Todas as conexões libp2p vivas, para o detalhe da tela.
+    pub links: Vec<Libp2pLink>,
+}
+
+/// Host de `http(s)://host:porta[/...]`, com os colchetes do IPv6, para
+/// comparar endereços do mesmo peer em portas diferentes.
+fn url_host(url: &str) -> &str {
+    let rest = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let rest = rest.split('/').next().unwrap_or(rest);
+    if rest.starts_with('[') {
+        return rest.split_inclusive(']').next().unwrap_or(rest);
+    }
+    rest.rsplit_once(':').map_or(rest, |(host, _)| host)
+}
+
+/// `host:porta (transporte)` de um multiaddress, e o relé quando é circuito.
+///
+/// Num circuito o host e a porta são os do relé, que vêm antes de
+/// `/p2p-circuit`; o que vem depois é o próprio par.
+pub(crate) fn describe_multiaddr(address: &libp2p::Multiaddr) -> (String, bool, Option<String>) {
+    use libp2p::multiaddr::Protocol;
+    let mut host: Option<String> = None;
+    let mut port: Option<(u16, &'static str)> = None;
+    let mut last_peer: Option<String> = None;
+    let mut relay: Option<String> = None;
+    let mut relayed = false;
+    for protocol in address.iter() {
+        if relayed {
+            continue;
+        }
+        match protocol {
+            Protocol::Ip4(ip) => host = Some(ip.to_string()),
+            Protocol::Ip6(ip) => host = Some(format!("[{ip}]")),
+            Protocol::Dns(name) | Protocol::Dns4(name) | Protocol::Dns6(name) => {
+                host = Some(name.to_string())
+            }
+            Protocol::Tcp(p) => port = Some((p, "TCP")),
+            Protocol::Udp(p) => port = Some((p, "UDP")),
+            Protocol::QuicV1 => port = port.map(|(p, _)| (p, "QUIC")),
+            Protocol::P2p(peer) => last_peer = Some(peer.to_string()),
+            Protocol::P2pCircuit => {
+                relayed = true;
+                relay = last_peer.take();
+            }
+            _ => {}
+        }
+    }
+    let text = match (host, port) {
+        (Some(host), Some((port, transport))) => format!("{host}:{port} ({transport})"),
+        (Some(host), None) => host,
+        _ => String::new(),
+    };
+    (text, relayed, relay)
+}
+
+/// Resultado de uma sonda `/handshake`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdmissionProbe {
+    Approved,
+    /// O próprio peer disse não: pelo túnel (PeerId autenticado) ou por HTTPS
+    /// com o certificado fixado no `node_id`. Uma resposta HTTP em claro não
+    /// conta - qualquer máquina naquele endereço poderia tê-la dado.
+    Refused,
+    /// Nenhuma resposta autêntica chegou.
+    Unreachable,
+}
 
 /// De quanto em quanto tempo, no máximo, se repergunta o endereço de um peer
 /// ilegível.
@@ -138,6 +248,36 @@ pub struct RuntimeCapacity {
     pub max_new_tokens: u32,
 }
 
+/// O que este nó sabe sobre a própria travessia de NAT.
+///
+/// Existe porque diagnosticar "os dois nós não se falam" dependia de
+/// `RUST_LOG=debug` na máquina certa no momento certo. Estado do AutoNAT,
+/// reservas de circuito e resultado do DCuTR são exatamente o que diz em que
+/// degrau a travessia parou.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TraversalStatus {
+    /// `unknown`, `public` ou `private`, como o AutoNAT reportou.
+    pub nat: String,
+    /// Multiaddresses que este nó publica hoje (inclui circuito).
+    pub addrs: Vec<String>,
+    /// `PeerId` dos relés que aceitaram reserva.
+    pub reservations: Vec<String>,
+    /// Hole punches concluídos e falhados desde o arranque.
+    pub hole_punch_ok: u64,
+    pub hole_punch_failed: u64,
+    /// Última falha de DCuTR, para dizer *por que* parou.
+    pub last_hole_punch_error: Option<String>,
+}
+
+impl TraversalStatus {
+    fn new() -> Self {
+        Self {
+            nat: "unknown".to_string(),
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct RuntimeCapacityState {
     generation: u64,
@@ -161,6 +301,42 @@ struct PeerAdmission {
 struct AdmissionCacheEntry {
     allowed: bool,
     expires_at: Instant,
+    /// Última aprovação de verdade, para `ADMISSION_UNREACHABLE_GRACE`.
+    proven_at: Option<Instant>,
+}
+
+/// O que entra no cache depois de uma sonda. Aprovado vale por
+/// `ADMISSION_CACHE_TTL`; recusado sai. Sem resposta, um peer aprovado há menos
+/// de `ADMISSION_UNREACHABLE_GRACE` continua admitido, com validade curta para
+/// a sonda tentar de novo logo; sem prova recente, sai.
+fn admission_verdict(
+    probe: AdmissionProbe,
+    previous_proof: Option<Instant>,
+    now: Instant,
+) -> AdmissionCacheEntry {
+    let rejected = AdmissionCacheEntry {
+        allowed: false,
+        expires_at: now + REJECTED_ADMISSION_CACHE_TTL,
+        proven_at: None,
+    };
+    match probe {
+        AdmissionProbe::Approved => AdmissionCacheEntry {
+            allowed: true,
+            expires_at: now + ADMISSION_CACHE_TTL,
+            proven_at: Some(now),
+        },
+        AdmissionProbe::Refused => rejected,
+        AdmissionProbe::Unreachable => match previous_proof
+            .filter(|proven| now.saturating_duration_since(*proven) < ADMISSION_UNREACHABLE_GRACE)
+        {
+            Some(proven) => AdmissionCacheEntry {
+                allowed: true,
+                expires_at: now + REJECTED_ADMISSION_CACHE_TTL,
+                proven_at: Some(proven),
+            },
+            None => rejected,
+        },
+    }
 }
 
 /// Message types exchanged between nodes
@@ -238,6 +414,16 @@ pub enum P2PMessage {
         /// libp2p NAT-tunnel fallback (`transport/libp2p-tunnel-v1`).
         #[serde(default)]
         libp2p_peer_id: Option<String>,
+        /// Multiaddresses libp2p que este nó publica, já com `/p2p/<peer-id>`.
+        ///
+        /// É a única forma capaz de expressar um circuito de relay
+        /// (`.../p2p/<relé>/p2p-circuit/p2p/<self>`): a convenção `host:port`
+        /// com porta `UDP+10000` não tem como carregar um, e era por isso que
+        /// uma reserva aceita nunca chegava ao outro lado e o DCuTR nunca
+        /// tinha conexão relayed para coordenar o hole punch. Vazio num peer
+        /// antigo, e aí quem disca volta a derivar o endereço do `addr`.
+        #[serde(default)]
+        libp2p_addrs: Vec<String>,
         /// Identidade de tensor parallelism, quando este nó é primary/worker de
         /// um grupo. Ausente = nó sem TP (o caso de hoje).
         #[serde(default)]
@@ -347,6 +533,9 @@ pub struct PeerInfo {
     /// See `P2PMessage::Announce::libp2p_peer_id`.
     #[serde(default)]
     pub libp2p_peer_id: Option<String>,
+    /// Ver `P2PMessage::Announce::libp2p_addrs`.
+    #[serde(default)]
+    pub libp2p_addrs: Vec<String>,
     /// Ver `P2PMessage::Announce::tp`.
     #[serde(default)]
     pub tp: Option<TpIdentity>,
@@ -393,6 +582,68 @@ fn bare_host(host: &str) -> &str {
 /// Destinations may be private or loopback when the cluster is local, but an
 /// unspecified, multicast, broadcast, or `0.0.0.0/8` address is never a peer.
 /// Hostnames remain valid here and are checked by `lookup_host` at send time.
+/// Porta UDP/p2p deste processo, anotada quando o socket abre. Com ela e os
+/// IPs das interfaces, `is_self_endpoint` reconhece um candidato de outro peer
+/// que na verdade aponta para este nó.
+static SELF_P2P_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// IPs das interfaces locais, sem loopback. `addrs::local_addrs` executa um
+/// processo (`ip -o addr`), então o resultado vale por alguns segundos.
+fn local_interface_ips() -> std::collections::HashSet<String> {
+    static CACHE: std::sync::Mutex<Option<(Instant, std::collections::HashSet<String>)>> =
+        std::sync::Mutex::new(None);
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((at, ips)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_secs(10) {
+            return ips.clone();
+        }
+    }
+    let ips: std::collections::HashSet<String> = crate::addrs::local_addrs()
+        .into_iter()
+        .map(|local| bare_host(&local.ip).to_string())
+        .filter(|ip| {
+            ip.parse::<IpAddr>()
+                .is_ok_and(|parsed| !parsed.is_loopback())
+        })
+        .collect();
+    *cache = Some((Instant::now(), ips.clone()));
+    ips
+}
+
+/// `host:porta` que é este próprio processo: IP de uma interface local com a
+/// porta p2p deste nó.
+///
+/// Dois nós em Docker com rede bridge costumam receber o mesmo IP interno
+/// (`172.18.0.2`) e a mesma porta. O candidato `172.18.0.2:42778` que a ksia
+/// anuncia, visto do salem, é o próprio salem: o Painel mostrava a mesma
+/// máquina duas vezes (o `/health` "da ksia" era respondido pelo salem) e o
+/// deploy planejado para a ksia caía no salem.
+pub(crate) fn is_self_endpoint(addr: &str) -> bool {
+    let port = SELF_P2P_PORT.load(std::sync::atomic::Ordering::Relaxed);
+    if port == 0 {
+        return false;
+    }
+    let Some((host, candidate_port)) = split_host_port(addr) else {
+        return false;
+    };
+    candidate_port == port && local_interface_ips().contains(bare_host(&host))
+}
+
+fn split_host_port(addr: &str) -> Option<(String, u16)> {
+    let (host, port) = addr.rsplit_once(':')?;
+    Some((host.to_string(), port.parse().ok()?))
+}
+
+/// `is_valid_destination` para um candidato de **outro** peer: recusa também
+/// o endereço que é este próprio processo. A entrada deste nó na tabela
+/// continua com todos os seus endereços.
+fn is_peer_destination(node_id: &str, addr: &str) -> bool {
+    is_valid_destination(addr)
+        && (crate::infer_tunnel::is_local_node(node_id) || !is_self_endpoint(addr))
+}
+
 pub(crate) fn is_valid_destination(addr: &str) -> bool {
     if !has_nonzero_port(addr) {
         return false;
@@ -463,6 +714,32 @@ fn current_public_local_host(local: Vec<crate::addrs::LocalAddr>) -> Option<Stri
     crate::addrs::filter_candidates(local, None)
         .into_iter()
         .find(|ip| !crate::addrs::is_private_or_local(bare_host(ip)))
+}
+
+/// Host this node describes itself by, IPv6 always in brackets.
+///
+/// The pinned and observed hosts come out of `ip_host`, which keeps the
+/// brackets of `[v6]:port`. The local-interface host comes from
+/// `filter_candidates`, which returns the bare address - and callers append
+/// `:port` to this host or feed it back to `ip_host`, so a bare IPv6 became
+/// `2804:...:5eb8:42777` in the self entry and `2804` in `self_reply_hosts`.
+fn choose_effective_host(
+    pinned: Option<String>,
+    local: Vec<crate::addrs::LocalAddr>,
+    observed: Option<String>,
+) -> Option<String> {
+    if pinned.is_some() {
+        return pinned;
+    }
+    if let Some(current) = current_public_local_host(local) {
+        let host = bare_host(&current);
+        return Some(if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        });
+    }
+    observed.map(|addr| ip_host(&addr).to_string())
 }
 
 fn choose_announce_addr(
@@ -548,9 +825,11 @@ impl PeerInfo {
     pub fn dialable_addr(&self) -> Option<&str> {
         self.addr_candidates
             .iter()
-            .find(|addr| is_valid_destination(addr))
+            .find(|addr| is_peer_destination(&self.node_id, addr))
             .map(String::as_str)
-            .or_else(|| is_valid_destination(&self.addr).then_some(self.addr.as_str()))
+            .or_else(|| {
+                is_peer_destination(&self.node_id, &self.addr).then_some(self.addr.as_str())
+            })
     }
 
     /// Todos os destinos UDP conhecidos, sem transformar o primeiro endereço
@@ -565,7 +844,9 @@ impl PeerInfo {
             .map(String::as_str)
             .chain(std::iter::once(self.addr.as_str()))
         {
-            if is_valid_destination(address) && !addresses.iter().any(|known| known == address) {
+            if is_peer_destination(&self.node_id, address)
+                && !addresses.iter().any(|known| known == address)
+            {
                 addresses.push(address.to_string());
             }
         }
@@ -576,13 +857,23 @@ impl PeerInfo {
     /// listen interface, while the pipeline must dial the endpoint selected
     /// by the peer's Announce. Keep the multi-address fallback policy for UDP
     /// control traffic, but use one announced endpoint for the tunnel.
+    /// Endereços que o swarm pode discar para alcançar este peer.
+    ///
+    /// Os multiaddresses anunciados vêm primeiro e são devolvidos **todos**:
+    /// é onde mora o endereço de circuito, e devolver só o primeiro endereço
+    /// deixava um peer atrás de NAT sem nenhum destino alcançável. A derivação
+    /// por `addr`/`addr_candidates` fica como compatibilidade com um peer que
+    /// ainda não publica `libp2p_addrs`.
     pub fn libp2p_dialable_addrs(&self) -> Vec<String> {
-        is_valid_destination(&self.addr)
+        if !self.libp2p_addrs.is_empty() {
+            return self.libp2p_addrs.clone();
+        }
+        is_peer_destination(&self.node_id, &self.addr)
             .then_some(self.addr.as_str())
             .or_else(|| {
                 self.addr_candidates
                     .iter()
-                    .find(|address| is_valid_destination(address))
+                    .find(|address| is_peer_destination(&self.node_id, address))
                     .map(String::as_str)
             })
             .map(str::to_owned)
@@ -605,7 +896,7 @@ impl PeerInfo {
             .chain(std::iter::once(self.addr.as_str()));
         let mut urls = Vec::with_capacity(self.addr_candidates.len() + 1);
         for address in base {
-            if !is_valid_destination(address) {
+            if !is_peer_destination(&self.node_id, address) {
                 continue;
             }
             let url = format!(
@@ -689,7 +980,7 @@ impl PeerInfo {
         base.extend(self.addr_candidates.iter().map(String::as_str));
         let mut urls: Vec<String> = Vec::with_capacity(base.len());
         for a in base {
-            if !is_valid_destination(a) {
+            if !is_peer_destination(&self.node_id, a) {
                 continue;
             }
             let url = crate::peer_client::peer_base_url(&ip_host(a), porta, tls);
@@ -809,7 +1100,19 @@ pub struct Network {
     /// reais sempre a configuram antes de iniciar a Network.
     admission: Option<Arc<PeerAdmission>>,
     admission_cache: std::sync::RwLock<HashMap<String, AdmissionCacheEntry>>,
-    /// Este nó tem `--slot-save-path` configurado e serve `POST
+    /// Peers com sonda de admissão em andamento fora do laço do swarm (ver
+    /// `admit_in_background`), para um anúncio a cada 5 s não empilhar sondas.
+    pending_admissions: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Conexões libp2p vivas por PeerId, alimentadas pelo laço do swarm
+    /// (`discovery.rs`). É o que diz se um par é alcançado direto ou só pelo
+    /// relé - ver `peer_route`.
+    libp2p_links:
+        std::sync::RwLock<HashMap<String, Vec<(libp2p::swarm::ConnectionId, Libp2pLink)>>>,
+    /// Conexões que o DCuTR anunciou como fruto de hole punch. O evento pode
+    /// chegar antes ou depois do `ConnectionEstablished` da mesma conexão,
+    /// então a marca fica guardada até a conexão fechar.
+    hole_punched_links: std::sync::Mutex<std::collections::HashSet<libp2p::swarm::ConnectionId>>,
+    /// Este nó tem `slot_save_path` configurado e serve `POST
     /// /v1/session/slot`. Vira verdadeiro no `apply` de uma implantação e volta
     /// a falso ao parar; o gateway exige a cap de todos os hops antes de
     /// orquestrar um snapshot de implantação.
@@ -863,6 +1166,12 @@ pub struct Network {
     /// node with nothing to offer remote peers but a private LAN IP from
     /// local-interface enumeration. See `set_observed_addr`.
     observed_addr: std::sync::RwLock<Option<String>>,
+    /// Multiaddresses que o swarm libp2p publica hoje, mantidas por
+    /// `Discovery` (ver `set_libp2p_addrs`). Vivem aqui, e não no `Discovery`,
+    /// porque quem monta o `Announce` é o `Network`.
+    libp2p_addrs: std::sync::RwLock<Vec<String>>,
+    /// Diagnóstico da travessia, mantido por `Discovery`. Ver `TraversalStatus`.
+    traversal: std::sync::RwLock<TraversalStatus>,
     /// Peers cujo endereço este nó está a reencontrar. Ver
     /// `request_peer_addresses`.
     rediscovery: std::sync::RwLock<HashMap<String, Rediscovery>>,
@@ -1124,6 +1433,7 @@ impl Network {
                 Ok(s) => {
                     let socket = UdpSocket::from_std(s)?;
                     let bind_addr = socket.local_addr()?;
+                    SELF_P2P_PORT.store(bind_addr.port(), std::sync::atomic::Ordering::Relaxed);
                     info!("UDP socket bound to [::]:{} (dual-stack)", bind_addr.port());
                     (socket, bind_addr)
                 }
@@ -1133,6 +1443,7 @@ impl Network {
                     let s = UdpSocket::bind(v4).await?;
                     s.set_broadcast(true)?;
                     let bind_addr = s.local_addr()?;
+                    SELF_P2P_PORT.store(bind_addr.port(), std::sync::atomic::Ordering::Relaxed);
                     info!("UDP socket bound to 0.0.0.0:{} (IPv4)", bind_addr.port());
                     (s, bind_addr)
                 }
@@ -1253,6 +1564,9 @@ impl Network {
             batching_ready: Arc::new(AtomicBool::new(false)),
             admission: None,
             admission_cache: std::sync::RwLock::new(HashMap::new()),
+            pending_admissions: std::sync::Mutex::new(std::collections::HashSet::new()),
+            libp2p_links: std::sync::RwLock::new(HashMap::new()),
+            hole_punched_links: std::sync::Mutex::new(std::collections::HashSet::new()),
             slot_persist_ready: Arc::new(AtomicBool::new(false)),
             tls: Arc::new(AtomicBool::new(false)),
             tls_probe: std::sync::RwLock::new(None),
@@ -1266,6 +1580,8 @@ impl Network {
             policy_principal_pubkey: std::sync::RwLock::new(None),
             broadcast_warning_logged: AtomicBool::new(false),
             observed_addr: std::sync::RwLock::new(None),
+            libp2p_addrs: std::sync::RwLock::new(Vec::new()),
+            traversal: std::sync::RwLock::new(TraversalStatus::new()),
             rediscovery: std::sync::RwLock::new(HashMap::new()),
         }
     }
@@ -1325,7 +1641,14 @@ impl Network {
     }
 
     pub async fn begin_local_auto_discovery_search(&self) -> anyhow::Result<String> {
-        self.local_discovery.begin_search().await
+        self.local_discovery
+            .begin_search(Some(
+                crate::local_discovery::DiscoveredMachine::from_system(
+                    &crate::sysmon::sample().await,
+                    Some(self.hostname.clone()),
+                ),
+            ))
+            .await
     }
 
     pub(crate) fn local_discovery(&self) -> Arc<crate::local_discovery::LocalDiscoveryRuntime> {
@@ -1419,6 +1742,73 @@ impl Network {
     /// `host_port`'s host is still private/loopback/link-local
     /// (`addrs::is_private_or_local`) — that's not new information, just a
     /// peer on the same LAN or a NAT rewriting within another private range.
+    /// Publica no `Announce` os multiaddresses que o swarm escuta hoje.
+    ///
+    /// Chamado por `Discovery` sempre que um listener, um endereço externo
+    /// confirmado ou uma reserva de circuito entra ou sai. Devolve `true`
+    /// quando a lista mudou, para o chamador logar a mudança; o anúncio novo
+    /// sai no gossip seguinte, em no máximo 5 s.
+    pub fn set_libp2p_addrs(&self, addrs: Vec<String>) -> bool {
+        let mut guard = self.libp2p_addrs.write().expect("libp2p_addrs lock");
+        if *guard == addrs {
+            return false;
+        }
+        *guard = addrs.clone();
+        drop(guard);
+        self.traversal.write().expect("traversal lock").addrs = addrs;
+        true
+    }
+
+    /// Um multiaddress público e direto deste nó, quando existe.
+    ///
+    /// Circuito fica de fora de propósito: o registro pkarr é republicado a
+    /// cada 30 min e uma reserva não dura previsivelmente tanto, então
+    /// publicar um circuito ali deixaria o registro apontando a maior parte do
+    /// tempo para um relé que não vale mais. O que vale no DHT é o endereço
+    /// que o AutoNAT confirmou, para um nó público ser encontrável a frio.
+    /// Retrato da travessia para a UI e para o operador.
+    pub fn traversal_status(&self) -> TraversalStatus {
+        self.traversal.read().expect("traversal lock").clone()
+    }
+
+    pub fn set_nat_status(&self, nat: &str) {
+        self.traversal.write().expect("traversal lock").nat = nat.to_string();
+    }
+
+    pub fn remember_reservation(&self, relay_peer_id: &str) {
+        let mut guard = self.traversal.write().expect("traversal lock");
+        if !guard.reservations.iter().any(|id| id == relay_peer_id) {
+            guard.reservations.push(relay_peer_id.to_string());
+        }
+    }
+
+    pub fn remember_hole_punch(&self, result: Result<(), String>) {
+        let mut guard = self.traversal.write().expect("traversal lock");
+        match result {
+            Ok(()) => {
+                guard.hole_punch_ok += 1;
+                guard.last_hole_punch_error = None;
+            }
+            Err(error) => {
+                guard.hole_punch_failed += 1;
+                guard.last_hole_punch_error = Some(error);
+            }
+        }
+    }
+
+    pub fn public_libp2p_addr(&self) -> Option<String> {
+        self.libp2p_addrs
+            .read()
+            .expect("libp2p_addrs lock")
+            .iter()
+            .find(|addr| !addr.contains("/p2p-circuit"))
+            .cloned()
+    }
+
+    pub fn libp2p_addrs(&self) -> Vec<String> {
+        self.libp2p_addrs.read().expect("libp2p_addrs lock").clone()
+    }
+
     pub fn set_observed_addr(&self, host_port: &str) {
         if !has_nonzero_port(host_port) {
             return;
@@ -1451,17 +1841,11 @@ impl Network {
     /// `pub` because `GatewayState::all_peers` uses the same choice for the
     /// node's own dashboard entry.
     pub fn effective_host(&self) -> Option<String> {
-        let pinned = self.advertised_host();
-        if pinned.is_some() {
-            return pinned;
-        }
-
-        if let Some(current) = current_public_local_host(crate::addrs::local_addrs()) {
-            return Some(current);
-        }
-
-        let observed = self.observed_addr();
-        observed.map(|addr| ip_host(&addr).to_string())
+        choose_effective_host(
+            self.advertised_host(),
+            crate::addrs::local_addrs(),
+            self.observed_addr(),
+        )
     }
 
     /// Enderecos que este no anuncia de si.
@@ -1715,6 +2099,7 @@ impl Network {
             disk_total_mb: 0,
             disk_free_mb: 0,
             libp2p_peer_id: self.libp2p_peer_id.clone(),
+            libp2p_addrs: self.libp2p_addrs(),
             tp: self.tp.read().expect("tp lock").clone(),
             runtime_capacity: self
                 .runtime_capacity
@@ -2300,23 +2685,6 @@ impl Network {
         }
     }
 
-    /// Get all covered layers in the network (by other peers)
-    pub async fn get_covered_layers(&self, model: &str) -> Vec<u32> {
-        let peers = self.peers.read().await;
-        let mut covered = Vec::new();
-        for peer in peers.values() {
-            if peer.is_alive() && peer.model == model {
-                for layer in peer.start_layer..=peer.end_layer {
-                    if !covered.contains(&layer) {
-                        covered.push(layer);
-                    }
-                }
-            }
-        }
-        covered.sort();
-        covered
-    }
-
     /// Start background tasks: gossip, heartbeat, receive loop
     pub async fn start(
         self: Arc<Self>,
@@ -2438,6 +2806,11 @@ impl Network {
             }
         });
 
+        // Plano de rotas por aresta: mede em segundo plano o transporte até
+        // cada peer vivo, para o frame usar uma rota fixada em vez de
+        // redescobrir a escada a cada chamada. Ver `route_plan`.
+        crate::route_plan::spawn_planner(self.clone());
+
         // Reach out to the configured bootstrap nodes right away. This belongs
         // here, not in the caller: every start path needs it, and the
         // gateway-only path used to skip it.
@@ -2525,6 +2898,7 @@ impl Network {
                 disk_total_mb,
                 disk_free_mb,
                 libp2p_peer_id,
+                libp2p_addrs,
                 tp,
                 runtime_capacity,
                 cluster_logs_enabled,
@@ -2575,6 +2949,7 @@ impl Network {
                     disk_free_mb,
                     api_keys_active: 0,
                     libp2p_peer_id,
+                    libp2p_addrs,
                     tp,
                     runtime_capacity,
                     idle,
@@ -2932,21 +3307,26 @@ impl Network {
         urls
     }
 
-    async fn private_peer_is_admitted(&self, peer: &PeerInfo, connection_key: &str) -> bool {
+    async fn private_peer_is_admitted(
+        &self,
+        peer: &PeerInfo,
+        connection_key: &str,
+    ) -> AdmissionProbe {
         if !Self::legacy_identity_matches(&peer.node_id, &peer.pubkey) {
-            return false;
+            return AdmissionProbe::Refused;
         }
+        let tls = self.tls_enabled();
         let mut builder = reqwest::Client::builder()
             .connect_timeout(ADMISSION_TIMEOUT)
             .timeout(ADMISSION_TIMEOUT);
-        if self.tls_enabled() {
+        if tls {
             let Ok(config) = crate::tls::client_config(&peer.node_id) else {
-                return false;
+                return AdmissionProbe::Refused;
             };
             builder = builder.use_preconfigured_tls(config);
         }
         let Ok(client) = builder.build() else {
-            return false;
+            return AdmissionProbe::Unreachable;
         };
         let body = serde_json::json!({
             "node_id": self.node_id,
@@ -2955,23 +3335,63 @@ impl Network {
             "nonce": null,
             "signature": null,
         });
+        let approves = |status: u16, body: &serde_json::Value| {
+            body.get("approved").and_then(serde_json::Value::as_bool) == Some(true)
+                || (status == reqwest::StatusCode::FORBIDDEN.as_u16()
+                    && body.get("reason").and_then(serde_json::Value::as_str)
+                        == Some("challenge_required"))
+        };
         for url in self.admission_urls(peer) {
             let Ok(response) = client.post(&url).json(&body).send().await else {
                 continue;
             };
-            let status = response.status();
-            let Ok(body) = response.json::<serde_json::Value>().await else {
+            let status = response.status().as_u16();
+            let Ok(parsed) = response.json::<serde_json::Value>().await else {
                 continue;
             };
-            if body.get("approved").and_then(serde_json::Value::as_bool) == Some(true)
-                || (status == reqwest::StatusCode::FORBIDDEN
-                    && body.get("reason").and_then(serde_json::Value::as_str)
-                        == Some("challenge_required"))
-            {
-                return true;
+            if approves(status, &parsed) {
+                return AdmissionProbe::Approved;
+            }
+            if tls {
+                return AdmissionProbe::Refused;
             }
         }
-        false
+        // Último recurso, e para um par atrás de NAT/CGNAT o **único** que
+        // chega: a sonda pelo túnel libp2p. Sem ela a admissão nunca conclui
+        // para esse par, ele não entra na tabela `peers`, e roteamento, UI e
+        // pipeline continuam cegos para ele mesmo com o hole punch pronto.
+        let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(peer) else {
+            return AdmissionProbe::Unreachable;
+        };
+        let Ok(encoded) = serde_json::to_vec(&body) else {
+            return AdmissionProbe::Unreachable;
+        };
+        let response = crate::peer_client::tunnel_gateway_call(
+            &tunnel,
+            "POST",
+            "/handshake",
+            encoded,
+            vec![(
+                reqwest::header::CONTENT_TYPE.to_string(),
+                "application/json".to_string(),
+            )],
+            ADMISSION_TUNNEL_TIMEOUT,
+        )
+        .await;
+        match response {
+            Ok(response) => match response.json::<serde_json::Value>() {
+                Ok(parsed) if approves(response.status, &parsed) => AdmissionProbe::Approved,
+                Ok(_) => AdmissionProbe::Refused,
+                Err(_) => AdmissionProbe::Unreachable,
+            },
+            Err(error) => {
+                debug!(
+                    "admissão de {} pelo túnel não concluiu: {error}",
+                    short(&peer.node_id)
+                );
+                AdmissionProbe::Unreachable
+            }
+        }
     }
 
     /// Confere pertencimento antes de qualquer efeito derivado do peer.
@@ -2980,8 +3400,204 @@ impl Network {
     /// compartilhada; concluir a assinatura do nonce seria uma prova de
     /// identidade adicional, não necessária para a admissão privada atual.
     pub(crate) async fn admit_peer(&self, peer: &PeerInfo) -> bool {
+        if let Some(allowed) = self.admission_without_probe(peer).await {
+            return allowed;
+        }
         let Some(admission) = self.admission.as_ref() else {
             return true;
+        };
+        let connection_key = admission.auth.read().await.connection_key.clone();
+        let cache_key = self.admission_cache_key(peer, &connection_key);
+        let probe = self.private_peer_is_admitted(peer, &connection_key).await;
+        let Ok(mut cache) = self.admission_cache.write() else {
+            return probe == AdmissionProbe::Approved;
+        };
+        let now = Instant::now();
+        let previous_proof = cache.get(&cache_key).and_then(|entry| entry.proven_at);
+        let entry = admission_verdict(probe, previous_proof, now);
+        if probe == AdmissionProbe::Unreachable && entry.allowed {
+            debug!(
+                "admissão de {}: sem resposta, mantido pela prova anterior",
+                short(&peer.node_id)
+            );
+        }
+        let allowed = entry.allowed;
+        cache.insert(cache_key, entry);
+        allowed
+    }
+
+    /// Uma conexão libp2p com `peer` abriu (`ConnectionEstablished`).
+    pub(crate) fn note_libp2p_link(
+        &self,
+        peer: &libp2p::PeerId,
+        id: libp2p::swarm::ConnectionId,
+        address: &libp2p::Multiaddr,
+    ) {
+        let (text, relayed, relay_peer_id) = describe_multiaddr(address);
+        let hole_punched = self
+            .hole_punched_links
+            .lock()
+            .is_ok_and(|punched| punched.contains(&id));
+        let link = Libp2pLink {
+            address: text,
+            relayed,
+            relay_peer_id,
+            hole_punched,
+        };
+        if let Ok(mut links) = self.libp2p_links.write() {
+            let entry = links.entry(peer.to_string()).or_default();
+            entry.retain(|(existing, _)| *existing != id);
+            entry.push((id, link));
+        }
+    }
+
+    /// A conexão `id` com `peer` fechou (`ConnectionClosed`).
+    pub(crate) fn drop_libp2p_link(&self, peer: &libp2p::PeerId, id: libp2p::swarm::ConnectionId) {
+        if let Ok(mut punched) = self.hole_punched_links.lock() {
+            punched.remove(&id);
+        }
+        if let Ok(mut links) = self.libp2p_links.write() {
+            let key = peer.to_string();
+            if let Some(entry) = links.get_mut(&key) {
+                entry.retain(|(existing, _)| *existing != id);
+                if entry.is_empty() {
+                    links.remove(&key);
+                }
+            }
+        }
+    }
+
+    /// O DCuTR fechou o hole punch com `peer` e a conexão direta é `id`.
+    pub(crate) fn mark_hole_punched(&self, peer: &libp2p::PeerId, id: libp2p::swarm::ConnectionId) {
+        if let Ok(mut punched) = self.hole_punched_links.lock() {
+            punched.insert(id);
+        }
+        if let Ok(mut links) = self.libp2p_links.write() {
+            if let Some(entry) = links.get_mut(&peer.to_string()) {
+                for (existing, link) in entry.iter_mut() {
+                    if *existing == id {
+                        link.hole_punched = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Conexões libp2p vivas com o par de PeerId `peer_id`. Um circuito que
+    /// entrou sem o endereço do relé ganha o endereço da conexão deste nó com
+    /// o próprio relé, quando existe.
+    pub fn libp2p_links(&self, peer_id: &str) -> Vec<Libp2pLink> {
+        let Ok(links) = self.libp2p_links.read() else {
+            return Vec::new();
+        };
+        let mut out: Vec<Libp2pLink> = links
+            .get(peer_id)
+            .map(|entry| entry.iter().map(|(_, link)| link.clone()).collect())
+            .unwrap_or_default();
+        for link in out
+            .iter_mut()
+            .filter(|link| link.relayed && link.address.is_empty())
+        {
+            if let Some(relay) = link.relay_peer_id.as_deref() {
+                if let Some(direct) = links
+                    .get(relay)
+                    .and_then(|entry| entry.iter().find(|(_, l)| !l.relayed))
+                {
+                    link.address = direct.1.address.clone();
+                }
+            }
+        }
+        out
+    }
+
+    /// Endereços do gateway de `peer`, na ordem em que vale tentar: primeiro o
+    /// do host que respondeu por último a este nó (`RouteTable::last_success`),
+    /// depois os que não falharam há pouco, na ordem anunciada, e por último
+    /// os desacreditados.
+    ///
+    /// O primeiro endereço anunciado pode ser um IPv6 que ninguém alcança; um
+    /// endereço que já respondeu é fato, não palpite. `last_success` pode ter
+    /// vindo da porta de inferência (o caminho de inferência também o
+    /// alimenta), por isso a comparação é pelo host.
+    pub fn gateway_bases(&self, peer: &PeerInfo) -> Vec<String> {
+        self.order_by_proven_host(&peer.node_id, peer.gateway_candidates())
+    }
+
+    /// `gateway_bases` para o servidor de inferência do peer.
+    pub fn inference_bases(&self, peer: &PeerInfo) -> Vec<String> {
+        self.order_by_proven_host(&peer.node_id, peer.inference_candidates())
+    }
+
+    /// A mesma ordem para uma lista de endereços do gateway montada por quem
+    /// chama - com o esquema anunciado pelo peer, por exemplo, como fazem as
+    /// catracas de política.
+    pub fn order_gateway_bases(&self, node_id: &str, bases: Vec<String>) -> Vec<String> {
+        self.order_by_proven_host(node_id, bases)
+    }
+
+    fn order_by_proven_host(&self, node_id: &str, mut bases: Vec<String>) -> Vec<String> {
+        let proven_host = self
+            .routes
+            .last_success(node_id)
+            .map(|url| url_host(&url).to_string());
+        bases.sort_by_key(|base| {
+            if proven_host.as_deref() == Some(url_host(base)) {
+                0
+            } else if self.routes.is_failed(node_id, base) {
+                2
+            } else {
+                1
+            }
+        });
+        bases
+    }
+
+    /// A rota em uso para `peer`, na ordem em que o plano de controle a tenta:
+    /// endereço HTTP direto que respondeu, conexão libp2p direta, circuito
+    /// pelo relé.
+    pub fn peer_route(&self, peer: &PeerInfo) -> PeerRoute {
+        let links = peer
+            .libp2p_peer_id
+            .as_deref()
+            .map(|id| self.libp2p_links(id))
+            .unwrap_or_default();
+        let hole_punched = links.iter().any(|link| link.hole_punched);
+        let direct = links.iter().find(|link| !link.relayed);
+        let relayed = links.iter().find(|link| link.relayed);
+        let (kind, address) = if let Some(url) = self.routes.last_success(&peer.node_id) {
+            let address = url
+                .trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .to_string();
+            ("http", Some(address))
+        } else if let Some(link) = direct {
+            ("p2p_direct", Some(link.address.clone()))
+        } else if let Some(link) = relayed {
+            (
+                "relayed",
+                Some(if link.address.is_empty() {
+                    link.relay_peer_id.clone().unwrap_or_default()
+                } else {
+                    link.address.clone()
+                }),
+            )
+        } else {
+            ("none", None)
+        };
+        PeerRoute {
+            kind,
+            address,
+            hole_punched,
+            links,
+        }
+    }
+
+    /// O que `admit_peer` responde sem abrir conexão: a rede pública e a chave
+    /// vazia se decidem localmente, e a rede privada pelo cache. `None` quando
+    /// a resposta depende da sonda `/handshake`.
+    pub(crate) async fn admission_without_probe(&self, peer: &PeerInfo) -> Option<bool> {
+        let Some(admission) = self.admission.as_ref() else {
+            return Some(true);
         };
         let (connection_key, is_public_network, access_policy) = {
             let config = admission.auth.read().await;
@@ -2992,36 +3608,55 @@ impl Network {
             )
         };
         if is_public_network {
-            return Self::public_peer_is_admitted(peer, admission, access_policy);
+            return Some(Self::public_peer_is_admitted(
+                peer,
+                admission,
+                access_policy,
+            ));
         }
         if connection_key.is_empty() {
-            return false;
+            return Some(false);
         }
-
         let cache_key = self.admission_cache_key(peer, &connection_key);
-        if let Ok(cache) = self.admission_cache.read() {
-            if let Some(entry) = cache.get(&cache_key) {
-                if entry.expires_at > Instant::now() {
-                    return entry.allowed;
+        let cache = self.admission_cache.read().ok()?;
+        cache
+            .get(&cache_key)
+            .filter(|entry| entry.expires_at > Instant::now())
+            .map(|entry| entry.allowed)
+    }
+
+    /// Roda a sonda de admissão numa tarefa própria e só aquece o cache: o
+    /// próximo anúncio do peer (no máximo 5 s depois) encontra o veredito e
+    /// segue o caminho normal de `discovery.rs`.
+    ///
+    /// Existe por causa do laço do swarm. A sonda cai, por último, no túnel
+    /// libp2p, e o pedido do túnel é atendido por esse mesmo laço. Aguardada
+    /// dentro dele, a sonda esperava por si mesma até o `ADMISSION_TIMEOUT` e
+    /// falhava sempre: um peer que só o relé alcança era admitido uma vez
+    /// enquanto alguma rota direta funcionava, e saía da tabela (`Removed
+    /// timed-out peers`) quando o cache vencia. As sondas diretas, 2 s por
+    /// endereço, também paravam o swarm inteiro enquanto esperavam.
+    pub(crate) fn admit_in_background(self: &Arc<Self>, peer: PeerInfo) {
+        match self.pending_admissions.lock() {
+            Ok(mut pending) => {
+                if !pending.insert(peer.node_id.clone()) {
+                    return;
                 }
             }
+            Err(_) => return,
         }
-        let allowed = self.private_peer_is_admitted(peer, &connection_key).await;
-        if let Ok(mut cache) = self.admission_cache.write() {
-            cache.insert(
-                cache_key,
-                AdmissionCacheEntry {
-                    allowed,
-                    expires_at: Instant::now()
-                        + if allowed {
-                            ADMISSION_CACHE_TTL
-                        } else {
-                            REJECTED_ADMISSION_CACHE_TTL
-                        },
-                },
+        let network = Arc::clone(self);
+        tokio::spawn(async move {
+            let allowed = network.admit_peer(&peer).await;
+            if let Ok(mut pending) = network.pending_admissions.lock() {
+                pending.remove(&peer.node_id);
+            }
+            debug!(
+                "admissão de {} concluída fora do swarm: {}",
+                short(&peer.node_id),
+                if allowed { "admitido" } else { "recusado" }
             );
-        }
-        allowed
+        });
     }
 
     /// A rede pública tem uma porta de descoberta aberta, mas isso não é uma
@@ -3487,6 +4122,42 @@ mod tests {
         );
     }
 
+    /// O host efetivo sai sempre com o IPv6 entre colchetes, venha de onde
+    /// vier. O da interface local vinha cru, e a entrada do próprio nó virava
+    /// `2804:...:5eb8:42777` na tela de participantes e `2804` para quem
+    /// passa o host por `ip_host`.
+    #[test]
+    fn the_effective_host_brackets_ipv6_from_every_source() {
+        let local = |ip: &str| {
+            vec![crate::addrs::LocalAddr {
+                ip: ip.into(),
+                interface: None,
+                deprecated: false,
+                temporary: false,
+            }]
+        };
+        let from_interface = choose_effective_host(None, local("2001:db8::1"), None);
+        assert_eq!(from_interface.as_deref(), Some("[2001:db8::1]"));
+        assert_eq!(
+            ip_host(&format!("{}:42777", from_interface.unwrap())),
+            "[2001:db8::1]"
+        );
+
+        assert_eq!(
+            choose_effective_host(None, vec![], Some("[2001:db8::9]:9999".into())).as_deref(),
+            Some("[2001:db8::9]")
+        );
+        assert_eq!(
+            choose_effective_host(Some("[2001:db8::7]".into()), local("2001:db8::1"), None)
+                .as_deref(),
+            Some("[2001:db8::7]")
+        );
+        assert_eq!(
+            choose_effective_host(None, local("203.0.113.5"), None).as_deref(),
+            Some("203.0.113.5")
+        );
+    }
+
     /// A troca de endereço local entre dois anúncios deve aparecer no anúncio
     /// seguinte sem reiniciar o processo. O teste usa duas fotografias de
     /// interface para não depender do estado IPv6 desta máquina.
@@ -3600,6 +4271,20 @@ mod tests {
 
         assert_eq!(addr, "100.122.132.97:42777");
         assert_eq!(candidates, vec!["100.122.132.97:42777"]);
+    }
+
+    /// O que o peer publicou vence a derivação por `host:port`, e vem
+    /// inteiro: o endereço de circuito costuma ser o segundo da lista, e
+    /// devolver só o primeiro deixava um par atrás de NAT sem destino.
+    #[test]
+    fn os_multiaddresses_anunciados_vencem_e_vem_todos() {
+        let mut peer = peer_com_candidatos(vec!["192.168.100.210:42777"]);
+        peer.libp2p_addrs = vec![
+            "/ip4/203.0.113.7/udp/52777/quic-v1".to_string(),
+            "/ip4/198.51.100.4/tcp/4001/p2p/12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK/p2p-circuit".to_string(),
+        ];
+
+        assert_eq!(peer.libp2p_dialable_addrs(), peer.libp2p_addrs);
     }
 
     #[test]
@@ -3743,6 +4428,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -3794,6 +4480,7 @@ mod tests {
             disk_free_mb: 200000,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -3885,6 +4572,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -4027,6 +4715,7 @@ mod tests {
                 disk_total_mb: 0,
                 disk_free_mb: 0,
                 libp2p_peer_id: None,
+                libp2p_addrs: Vec::new(),
                 tp: None,
                 runtime_capacity: None,
                 idle: false,
@@ -4344,6 +5033,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -4363,9 +5053,11 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: Default::default(),
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: crate::config::NetworkSettings {
                 visibility,
@@ -4430,6 +5122,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -4483,6 +5176,350 @@ mod tests {
         );
         valid.insert_peer(admission_peer(gateway_port)).await;
         assert_eq!(valid.peer_count().await, 1);
+
+        server.abort();
+    }
+
+    /// O endereço que já respondeu vem antes do primeiro anunciado, mesmo que
+    /// tenha respondido na porta de inferência; os que falharam vão para o fim.
+    #[tokio::test]
+    async fn gateway_bases_put_the_proven_host_first() {
+        let _politica = crate::peer_client::POLITICA_GLOBAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let network = Network::testkit("eu".into(), String::new(), vec![], None, None, None)
+            .await
+            .unwrap();
+        let mut peer = admission_peer(8081);
+        peer.addr = "[2804:d55::1]:42777".into();
+        peer.addr_candidates = vec![
+            "[2804:d55::1]:42777".into(),
+            "10.0.0.9:42777".into(),
+            "192.168.0.37:42777".into(),
+        ];
+        let host_of = |bases: Vec<String>| {
+            bases
+                .iter()
+                .map(|base| url_host(base).to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            host_of(network.gateway_bases(&peer)),
+            vec!["[2804:d55::1]", "10.0.0.9", "192.168.0.37"]
+        );
+
+        network
+            .routes
+            .mark_success(&peer.node_id, "http://192.168.0.37:8181");
+        let scheme = crate::peer_client::peer_scheme();
+        network
+            .routes
+            .mark_failure(&peer.node_id, &format!("{scheme}://[2804:d55::1]:8081"));
+        assert_eq!(
+            host_of(network.gateway_bases(&peer)),
+            vec!["192.168.0.37", "10.0.0.9", "[2804:d55::1]"]
+        );
+    }
+
+    #[test]
+    fn url_host_keeps_ipv6_brackets_and_drops_port_and_path() {
+        assert_eq!(url_host("http://[2804:d55::1]:8080"), "[2804:d55::1]");
+        assert_eq!(url_host("https://192.168.0.37:8181/health"), "192.168.0.37");
+        assert_eq!(url_host("http://node.example:8080"), "node.example");
+    }
+
+    #[test]
+    fn describe_multiaddr_names_the_far_end_and_the_relay() {
+        let relay = libp2p::PeerId::random();
+        let peer = libp2p::PeerId::random();
+        let quic: libp2p::Multiaddr = format!("/ip4/189.75.167.63/udp/28515/quic-v1/p2p/{peer}")
+            .parse()
+            .unwrap();
+        assert_eq!(
+            describe_multiaddr(&quic),
+            ("189.75.167.63:28515 (QUIC)".to_string(), false, None)
+        );
+        let tcp6: libp2p::Multiaddr = "/ip6/2001:db8::1/tcp/52777".parse().unwrap();
+        assert_eq!(describe_multiaddr(&tcp6).0, "[2001:db8::1]:52777 (TCP)");
+
+        let dialed: libp2p::Multiaddr =
+            format!("/ip4/82.25.69.187/tcp/52777/p2p/{relay}/p2p-circuit/p2p/{peer}")
+                .parse()
+                .unwrap();
+        assert_eq!(
+            describe_multiaddr(&dialed),
+            (
+                "82.25.69.187:52777 (TCP)".to_string(),
+                true,
+                Some(relay.to_string())
+            )
+        );
+        // Circuito que chegou: sem host, só o relé.
+        let inbound: libp2p::Multiaddr = format!("/p2p/{relay}/p2p-circuit/p2p/{peer}")
+            .parse()
+            .unwrap();
+        assert_eq!(
+            describe_multiaddr(&inbound),
+            (String::new(), true, Some(relay.to_string()))
+        );
+    }
+
+    /// Dois nós em Docker bridge recebem o mesmo IP interno e a mesma porta:
+    /// o candidato que o outro anuncia com esse IP é este próprio processo e
+    /// não pode virar destino de controle, de inferência nem de QUIC.
+    #[test]
+    fn a_peer_candidate_that_is_this_node_is_never_a_destination() {
+        let Some(local_ip) = local_interface_ips()
+            .into_iter()
+            .find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+        else {
+            return; // máquina sem IPv4 de interface: nada a provar aqui
+        };
+        let previous = SELF_P2P_PORT.swap(59_931, std::sync::atomic::Ordering::Relaxed);
+        let mut peer = admission_peer(8081);
+        peer.node_id = "outro-no".into();
+        peer.addr = "203.0.113.9:59931".into();
+        peer.addr_candidates = vec!["203.0.113.9:59931".into(), format!("{local_ip}:59931")];
+        peer.inference_port = Some(8181);
+        peer.inference_quic_port = Some(43778);
+
+        let gateway = peer.gateway_candidates();
+        let inference = peer.inference_candidates();
+        let quic = peer.quic_addr_candidates();
+        // Mesmo IP local em outra porta é outro processo nesta máquina.
+        let mut neighbour = peer.clone();
+        neighbour.addr_candidates = vec![format!("{local_ip}:59932")];
+        let neighbour_ok = neighbour.dialable_addrs();
+        SELF_P2P_PORT.store(previous, std::sync::atomic::Ordering::Relaxed);
+
+        assert!(
+            gateway.iter().all(|url| !url.contains(&local_ip)),
+            "{gateway:?}"
+        );
+        assert!(gateway.iter().any(|url| url.contains("203.0.113.9")));
+        assert!(
+            inference.iter().all(|url| !url.contains(&local_ip)),
+            "{inference:?}"
+        );
+        assert!(
+            quic.iter().all(|addr| !addr.contains(&local_ip)),
+            "{quic:?}"
+        );
+        assert!(neighbour_ok.contains(&format!("{local_ip}:59932")));
+    }
+
+    /// A rota mostrada é a observada: HTTP que respondeu, depois conexão
+    /// libp2p direta, depois o relé - nunca o endereço anunciado.
+    #[tokio::test]
+    async fn peer_route_prefers_http_then_direct_then_relay() {
+        use libp2p::swarm::ConnectionId;
+        let network = Network::testkit("eu".into(), String::new(), vec![], None, None, None)
+            .await
+            .unwrap();
+        let relay = libp2p::PeerId::random();
+        let remote = libp2p::PeerId::random();
+        let mut peer = admission_peer(8080);
+        peer.addr = "[2804:d55::1]:42777".into();
+        peer.libp2p_peer_id = Some(remote.to_string());
+        assert_eq!(network.peer_route(&peer).kind, "none");
+
+        // Este nó falando com o relé direto; o par chega por um circuito que
+        // não traz o endereço do relé.
+        network.note_libp2p_link(
+            &relay,
+            ConnectionId::new_unchecked(1),
+            &"/ip4/82.25.69.187/tcp/52777".parse().unwrap(),
+        );
+        network.note_libp2p_link(
+            &remote,
+            ConnectionId::new_unchecked(2),
+            &format!("/p2p/{relay}/p2p-circuit/p2p/{remote}")
+                .parse()
+                .unwrap(),
+        );
+        let route = network.peer_route(&peer);
+        assert_eq!(route.kind, "relayed");
+        assert_eq!(route.address.as_deref(), Some("82.25.69.187:52777 (TCP)"));
+        assert!(!route.hole_punched);
+
+        // O DCuTR avisa antes de a conexão direta aparecer: a marca vale igual.
+        network.mark_hole_punched(&remote, ConnectionId::new_unchecked(3));
+        network.note_libp2p_link(
+            &remote,
+            ConnectionId::new_unchecked(3),
+            &"/ip4/189.75.167.63/udp/28515/quic-v1".parse().unwrap(),
+        );
+        let route = network.peer_route(&peer);
+        assert_eq!(route.kind, "p2p_direct");
+        assert_eq!(route.address.as_deref(), Some("189.75.167.63:28515 (QUIC)"));
+        assert!(route.hole_punched);
+        assert_eq!(route.links.len(), 2);
+
+        network
+            .routes
+            .mark_success(&peer.node_id, "http://192.168.0.37:8080");
+        let route = network.peer_route(&peer);
+        assert_eq!(route.kind, "http");
+        assert_eq!(route.address.as_deref(), Some("192.168.0.37:8080"));
+
+        // A rota HTTP que falha sai; a direta fecha; sobra o relé.
+        network
+            .routes
+            .mark_failure(&peer.node_id, "http://192.168.0.37:8080");
+        network.drop_libp2p_link(&remote, ConnectionId::new_unchecked(3));
+        assert_eq!(network.peer_route(&peer).kind, "relayed");
+    }
+
+    /// Sem veredito no cache a resposta é `None`, sem sonda: é o que o laço do
+    /// swarm consulta, e ali uma sonda esperaria pelo próprio laço (ver
+    /// `admit_in_background`).
+    #[tokio::test]
+    async fn a_cache_miss_is_answered_without_probing() {
+        let identity = crate::identity::Identity::generate();
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config("correct", crate::config::NetworkVisibility::Private),
+            Arc::new(crate::admin_trust::AdminTrust::empty()),
+        );
+        // Porta 1: nada escuta ali, a sonda direta falha.
+        let peer = admission_peer(1);
+
+        assert_eq!(network.admission_without_probe(&peer).await, None);
+        assert!(!network.admit_peer(&peer).await);
+        assert_eq!(network.admission_without_probe(&peer).await, Some(false));
+    }
+
+    /// Sem resposta, só a prova recente segura o peer; recusa nunca segura.
+    #[test]
+    fn an_unreachable_recheck_keeps_only_a_recently_proven_peer() {
+        let now = Instant::now();
+        let recent = now - StdDuration::from_secs(60);
+        let stale = now - ADMISSION_UNREACHABLE_GRACE - StdDuration::from_secs(1);
+
+        let kept = admission_verdict(AdmissionProbe::Unreachable, Some(recent), now);
+        assert!(kept.allowed);
+        assert_eq!(kept.proven_at, Some(recent), "a folga não renova a prova");
+        assert_eq!(kept.expires_at, now + REJECTED_ADMISSION_CACHE_TTL);
+
+        assert!(!admission_verdict(AdmissionProbe::Unreachable, Some(stale), now).allowed);
+        assert!(!admission_verdict(AdmissionProbe::Unreachable, None, now).allowed);
+        assert!(!admission_verdict(AdmissionProbe::Refused, Some(recent), now).allowed);
+
+        let approved = admission_verdict(AdmissionProbe::Approved, None, now);
+        assert!(approved.allowed);
+        assert_eq!(approved.proven_at, Some(now));
+    }
+
+    /// Ponta a ponta: aprovado pelo `/handshake`, o gateway some e o cache
+    /// vence; a nova sonda não chega a ninguém e o peer continua admitido.
+    #[tokio::test]
+    async fn a_proven_peer_survives_a_recheck_that_reaches_nobody() {
+        let remote = admission_config("correct", crate::config::NetworkVisibility::Private);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gateway_port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/handshake",
+                axum::routing::post(crate::session::handle_handshake),
+            )
+            .with_state(remote);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let identity = crate::identity::Identity::generate();
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_admission(
+            admission_config("correct", crate::config::NetworkVisibility::Private),
+            Arc::new(crate::admin_trust::AdminTrust::empty()),
+        );
+        let peer = admission_peer(gateway_port);
+        assert!(network.admit_peer(&peer).await);
+
+        server.abort();
+        let _ = server.await;
+        for entry in network.admission_cache.write().unwrap().values_mut() {
+            entry.expires_at = Instant::now() - StdDuration::from_secs(1);
+        }
+        assert!(
+            network.admit_peer(&peer).await,
+            "sem resposta, a prova recente mantém o peer"
+        );
+    }
+
+    /// A sonda em segundo plano só aquece o cache, uma vez por peer, e não
+    /// mexe na tabela: quem insere é o próximo anúncio.
+    #[tokio::test]
+    async fn background_admission_warms_the_cache_once() {
+        let remote = admission_config("correct", crate::config::NetworkVisibility::Private);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gateway_port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/handshake",
+                axum::routing::post(crate::session::handle_handshake),
+            )
+            .with_state(remote);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let identity = crate::identity::Identity::generate();
+        let network = Arc::new(
+            Network::testkit(
+                identity.node_id.0.clone(),
+                identity.public_key_hex(),
+                vec![],
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config("correct", crate::config::NetworkVisibility::Private),
+                Arc::new(crate::admin_trust::AdminTrust::empty()),
+            ),
+        );
+        let peer = admission_peer(gateway_port);
+
+        network.admit_in_background(peer.clone());
+        network.admit_in_background(peer.clone());
+        assert_eq!(network.pending_admissions.lock().unwrap().len(), 1);
+
+        let verdict = tokio::time::timeout(StdDuration::from_secs(5), async {
+            loop {
+                if let Some(allowed) = network.admission_without_probe(&peer).await {
+                    return allowed;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a sonda em segundo plano deve concluir");
+        assert!(verdict);
+        assert_eq!(network.peer_count().await, 0);
+        tokio::time::timeout(StdDuration::from_secs(1), async {
+            while !network.pending_admissions.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a marca de sonda pendente deve sair");
 
         server.abort();
     }

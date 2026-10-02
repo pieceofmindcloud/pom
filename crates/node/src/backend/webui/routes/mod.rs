@@ -136,23 +136,21 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::CommonOrInternal,
     },
-    // Estado privado e fontes locais dos plugins independentes (ver
-    // `crate::plugins`): leitura e mutação são AdminOnly - inclusive
-    // sob `/api/ui/plugins/:code/...`, porque a regra casa por prefixo de
-    // segmento e um `:code` no meio não muda o escopo de nenhuma ação.
+    // Plugins são locais de cada nó (ver `crate::plugins`): ativar uma
+    // licença, cadastrar um repositório GitHub, instalar, atualizar e usar a
+    // interface de um plugin é ato de qualquer perfil sobre a própria máquina.
+    // A regra casa por prefixo de segmento e vale para todo método, inclusive
+    // sob `/api/ui/plugins/:code/...` e no proxy de interfaces.
     RouteRule {
         prefix: "/api/ui/plugins",
-        method: Some(Method::GET),
-        scope: RouteScope::AdminOnly,
+        method: None,
+        scope: RouteScope::InferNodeAdmin,
     },
+    // O rebuild local de desenvolvimento compila fontes montadas no nó e
+    // continua sendo ato de administrador.
     RouteRule {
-        prefix: "/api/ui/plugins",
-        method: Some(Method::POST),
-        scope: RouteScope::AdminOnly,
-    },
-    RouteRule {
-        prefix: "/api/ui/plugins",
-        method: Some(Method::DELETE),
+        prefix: "/api/ui/plugins/dev-sources",
+        method: None,
         scope: RouteScope::AdminOnly,
     },
     // Atualização do binário `pom` em si - fronteira separada dos plugins de
@@ -549,17 +547,24 @@ mod policy_tests {
             RouteScope::AdminOnly
         );
         assert_eq!(scope_of("/api/ui/requests/stats"), RouteScope::AdminOnly);
-        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::AdminOnly);
+        assert_eq!(scope_of("/api/ui/plugins"), RouteScope::InferNodeAdmin);
         assert_eq!(
             scope_of("/api/ui/plugins/github-repositories"),
+            RouteScope::InferNodeAdmin
+        );
+        assert_eq!(
+            scope_of("/api/ui/plugins/dev-sources"),
             RouteScope::AdminOnly
         );
         assert_eq!(
             scope_of("/api/ui/pom-update/status"),
             RouteScope::CommonOrInternal
         );
+        // Plugins são locais de cada nó: ativar, cadastrar repositório,
+        // instalar e atualizar é permitido a todo perfil.
         for path in [
             "/api/ui/plugins/activate",
+            "/api/ui/plugins/checkout",
             "/api/ui/plugins/enterprise/refresh",
             "/api/ui/plugins/enterprise/deactivate",
             "/api/ui/plugins/enterprise/update/check",
@@ -568,6 +573,14 @@ mod policy_tests {
             "/api/ui/plugins/github-repositories/repository-id/refresh",
             "/api/ui/plugins/github-repositories/repository-id/install",
             "/api/ui/plugins/enterprise/preferences",
+        ] {
+            let scope = route_scope(&Method::POST, path);
+            assert_eq!(scope, RouteScope::InferNodeAdmin, "rota={path}");
+            assert!(profile_can_access(crate::profile::NodeProfile::Node, scope));
+            assert!(profile_can_access(crate::profile::NodeProfile::Infer, scope));
+        }
+        for path in [
+            "/api/ui/plugins/dev-sources/pom-plugin-base/rebuild-install",
             "/api/ui/pom-update/check",
             "/api/ui/pom-update/apply",
         ] {
@@ -582,10 +595,10 @@ mod policy_tests {
                 &Method::DELETE,
                 "/api/ui/plugins/github-repositories/repository-id"
             ),
-            RouteScope::AdminOnly
+            RouteScope::InferNodeAdmin
         );
-        // O proxy de interfaces de plugin atende qualquer método e herda o
-        // fechamento por prefixo: AdminOnly em todos, inclusive nos sem regra.
+        // O proxy de interfaces de plugin atende qualquer método e herda a
+        // regra por prefixo: aberto a todo perfil em todos os métodos.
         for method in [
             Method::GET,
             Method::POST,
@@ -599,7 +612,7 @@ mod policy_tests {
                     &method,
                     "/api/ui/plugins/deepseek_harness/proxy/api/remote.mux"
                 ),
-                RouteScope::AdminOnly,
+                RouteScope::InferNodeAdmin,
                 "método={method}"
             );
         }
@@ -665,6 +678,25 @@ mod policy_tests {
             scope_of("/api/internal/api-keys/validate"),
             RouteScope::CommonOrInternal
         );
+    }
+
+    #[test]
+    fn development_plugin_routes_are_administrator_only() {
+        use crate::profile::NodeProfile::{Admin, Infer, Node};
+
+        for (method, path) in [
+            (Method::GET, "/api/ui/plugins/dev-sources"),
+            (
+                Method::POST,
+                "/api/ui/plugins/dev-sources/pom-plugin-base/rebuild-install",
+            ),
+        ] {
+            let scope = route_scope(&method, path);
+            assert_eq!(scope, RouteScope::AdminOnly, "{method} {path}");
+            assert!(profile_can_access(Admin, scope));
+            assert!(!profile_can_access(Node, scope));
+            assert!(!profile_can_access(Infer, scope));
+        }
     }
 
     #[test]

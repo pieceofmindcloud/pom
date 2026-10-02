@@ -11,7 +11,7 @@
 # (default ~/.cache/pom-release): the llama.cpp checkout, one Cargo target
 # directory per variant, cargo-xwin with its MSVC/Windows SDK download, and the
 # ninja binary. Nothing is stored on GitHub: no artifacts, no Actions cache.
-# The runner user needs no sudo; see docs/subsystems/build-execucao.md,
+# The runner user needs no sudo; see docs/subsystems/build-and-run.md,
 # "Release na ksia".
 set -euo pipefail
 
@@ -109,7 +109,7 @@ if [[ "$variant" == linux-cuda && ! -x "${cuda_home}/bin/nvcc" ]]; then
   missing="${missing} nvcc(${cuda_home})"
 fi
 if [[ -n "$missing" ]] && ((! dry_run)); then
-  die "missing on this machine:${missing}. Provision them once as root (see build-execucao.md, \"Release na ksia\")."
+  die "missing on this machine:${missing}. Provision them once as root (see build-and-run.md, \"Release na ksia\")."
 fi
 
 # --- llama.cpp fork -----------------------------------------------------------
@@ -151,19 +151,19 @@ fi
 binary=""
 case "$variant" in
   linux-cpu)
-    run cargo build --release --locked -p node
+    run cargo build --release --locked -p node -p pom-plugin-host
     binary="${target_dir}/release/pom"
     ;;
   linux-cuda)
     # An empty CUDAARCHS makes the vendored CMake pick the toolkit's whole
-    # architecture list instead of this machine's GPU (build-execucao.md,
+    # architecture list instead of this machine's GPU (build-and-run.md,
     # "Arquiteturas de GPU"). Never inherit a narrow development value here.
     unset CMAKE_CUDA_ARCHITECTURES
     export CUDAARCHS=''
     export CUDA_PATH="$cuda_home"
     export CUDACXX="${cuda_home}/bin/nvcc"
     export PATH="${cuda_home}/bin:${PATH}"
-    run cargo build --release --locked -p node --features cuda
+    run cargo build --release --locked -p node -p pom-plugin-host --features cuda
     binary="${target_dir}/release/pom"
     ;;
   windows-cpu)
@@ -198,7 +198,7 @@ case "$variant" in
       export CFLAGS="${CFLAGS:+${CFLAGS} }/Z7"
       export CXXFLAGS="${CXXFLAGS:+${CXXFLAGS} }/Z7"
     fi
-    run cargo xwin build --release --locked -p node --target "$windows_target"
+    run cargo xwin build --release --locked -p node -p pom-plugin-host --target "$windows_target"
     binary="${target_dir}/${windows_target}/release/pom.exe"
     ;;
 esac
@@ -217,6 +217,10 @@ run rm -rf "$stage"
 run mkdir -p "${stage}/apps/frontend"
 run cp -R "$root/apps/frontend/dist" "${stage}/apps/frontend/dist"
 run cp "$binary" "$stage/"
+# pom starts plugins only through the pom-plugin-host sibling of its own
+# executable (plugin_host::host_executable); a package without it cannot
+# install any plugin.
+run cp "$(dirname "$binary")/pom-plugin-host${binary##*/pom}" "$stage/"
 if ((debug_symbols)); then run cp "${binary%.exe}.pdb" "$stage/"; fi
 if [[ -f "$root/README.md" ]]; then run cp "$root/README.md" "$stage/"; fi
 case "$variant" in

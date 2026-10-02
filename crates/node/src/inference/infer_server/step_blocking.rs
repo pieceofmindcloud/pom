@@ -138,15 +138,25 @@ pub(crate) fn step_blocking(
         // cabeça via `tokens` na wire); sem ela, ele desliga o MTP com aviso.
         n_tokens = shape[0];
         let logits_all = incoming_draft.is_some() || !is_last;
-        engine_timing = s.engine.decode_hidden(
-            &hidden,
-            &shape,
-            n_tokens,
-            n_past,
-            seq_id,
-            logits_all,
-            batch_tokens.as_deref(),
-        )?;
+        // Rodada sem `mtp_k` nem rascunho MTP não vai rascunhar: a cauda não
+        // aceita nem produz `next_draft` nela (ver o bloco do `mtp_tail_reason`
+        // abaixo). Rodar o `observe` da cabeça `nextn` mesmo assim era um
+        // segundo decode por token no caminho crítico - no stream remoto de
+        // dois ou mais hops, todo token.
+        engine_timing = if mtp_verification {
+            s.engine.decode_hidden(
+                &hidden,
+                &shape,
+                n_tokens,
+                n_past,
+                seq_id,
+                logits_all,
+                batch_tokens.as_deref(),
+            )?
+        } else {
+            s.engine
+                .decode_hidden_without_mtp(&hidden, &shape, n_tokens, n_past, seq_id, logits_all)?
+        };
         // `batch_tokens` segue vivo: a cauda usa-o no gate do `next_draft`
         // (verificação) e no caminho plain.
         reply_tokens = batch_tokens.clone();
@@ -254,6 +264,7 @@ pub(crate) fn step_blocking(
         timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
+    s.perf.observe_decode(decode_started.elapsed(), n_tokens);
     if let Some(context) = profiling.as_ref() {
         timings.record_profile_span(
             context,
@@ -266,6 +277,7 @@ pub(crate) fn step_blocking(
     }
     timings.backend_call_us += engine_timing.backend_call_us;
     timings.backend_sync_us += engine_timing.backend_sync_us;
+    timings.mtp_observe_us += engine_timing.mtp_observe_us;
     timings.merge_engine_capture(&engine_timing);
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;
@@ -676,6 +688,9 @@ pub(crate) fn step_blocking(
         Some((&residual.values, residual.shape.clone())),
         wire_dtype,
     )?;
+    timings.residual_wire_f16_encode_ns = timings
+        .residual_wire_f16_encode_ns
+        .saturating_add(wire_timing.f16_conversion_ns);
     timings.residual_wire_f8_conversion_us = timings
         .residual_wire_f8_conversion_us
         .saturating_add(wire_timing.f8_conversion_us);

@@ -15,9 +15,8 @@
 #   node-gpu2   : NVIDIA 0 only
 #   node-gpu-3  : Radeon (/dev/dri) only
 #   node-cpu    : no GPU
-# Ksia has two NVIDIA RTX 5060 Ti and no Radeon. Set COMPOSE_FILE to
-# docker-compose.ksia.yml there. Shared build/runtime data is in
-# docker-compose.common.yml.
+# Ksia is brought up from the pom-cluster-config repository. Shared
+# build/runtime data is in docker-compose.common.yml.
 services:
   node-gpu:
     extends:

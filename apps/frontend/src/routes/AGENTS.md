@@ -21,31 +21,19 @@ Per-file list:
   no mesmo resumo e não fazem chamadas ao backend; ver `TODO.md`, item 22. O `Setup.tsx` continua
   sendo a tela real de bootstrap quando `/api/ui/node` retorna 404.
 
-- `Setup.tsx` - Wizard real de primeiro acesso. Começa pelo hardware e usa
-  `setupWizardFlow.ts` para manter os percursos separados: administrador cria
-  a rede, escolhe a identidade e informa o IPv6 anunciado na primeira tela;
-  node e infer importam a identidade completa da rede pelo trust document. O
-  caminho node/infer não mostra localização, nome público, endereço,
-  bootstrap ou ingressos do diretório: pede somente o arquivo de confiança e,
-  para redes privadas, a chave de conexão. O admin continua escolhendo
-  país/cidade pela referência SQLite; rede pública exige os dois. As telas
-  conversam com `/api/setup/*`; não confundir com o protótipo
-  `SetupWizard.tsx`.
-
-  Ingressos do diretório federado são opcionais no wizard: o admin pode deixá-los
-  vazios e configurá-los por ambiente ou depois na administração. Quando
-  existem, o admin grava esses ingressos, o nome público, a política e o
-  bootstrap no bloco `setup` assinado dentro do `.pom-admin-trust.json`; o node
-  apenas importa esse bloco.
-  O join público encerra a sessão privada antes de reconfigurar o nó, sem
-  suporte a duas redes P2P simultâneas no v1. Na etapa de convite, a chave de
-  conexão fica em primeiro plano para redes privadas ou locais; o documento de
-  confiança começa recolhido, embora copiar e baixar continuem disponíveis no
-  cabeçalho do cartão. A etapa de descoberta local fica ativa somente durante
-  o setup: admin espera um nó e node/infer procuram um admin. O documento
-  público é oferecido primeiro; a chave só é entregue após o handshake de
-  prova efêmera. Fora do wizard, o interruptor vive em
-  `/config/preferencias/admin` e começa desligado.
+- `Setup.tsx` - Wizard real de primeiro acesso, na identidade do portão de
+  acesso (painel escuro com a marca e a trilha de passos animada como os nós
+  do site). Três passos para o administrador (Início, Rede, Convite) e dois
+  para nó e inferência (Início, Entrar), definidos em `setupWizardFlow.ts`.
+  Pergunta só papel, nome da máquina, nome e visibilidade da rede (privada ou
+  pública; país e cidade só na pública) e, para quem entra, a raiz e a chave -
+  trazidas pela descoberta local (`LocalDiscoveryPanel`) ou coladas em
+  `TrustFields`, que só monta quando o bloco manual é aberto. No convite, cada
+  computador que procura a rede aparece em `DiscoveredMachineCard` com nome,
+  sistema, IP, CPU, RAM e GPU. Pastas, disco, reservas, senha (`admin`) e
+  workspace (`~/pom_workspace`) são padrões ajustados depois. As telas conversam
+  com `/api/setup/*`; não confundir com o protótipo `SetupWizard.tsx`. Ver
+  `docs/subsystems/web-ui.md`, "Wizard de primeiro acesso".
 
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
   padrão de Logs: tabela rolável com nome público, organização, localização,
@@ -69,7 +57,12 @@ Per-file list:
   visibilidade e localização; um administrador autorizado pode editar o bloco
   completo. A edição grava no nó, propaga o envelope assinado aos peers e
   atualiza a descoberta pública. País e cidade usam a referência de geografia
-  do nó em selects, sem expor o código do país. A tela também agrega nós,
+  do nó em selects, sem expor o código do país. `TraversalPanel` mostra o campo
+  `traversal` de `/api/ui/cluster` - estado do AutoNAT, endereços diretos e
+  circuitos publicados, reservas de relé e hole punches - porque dois nós atrás
+  de NAT que não se enxergam falham num de três degraus e antes disso descobrir
+  qual exigia log de depuração na máquina certa; nó antigo não manda o campo e
+  o painel não aparece. A tela também agrega nós,
   latência média, VRAM e modelos conhecidos. A lista de participantes foi
   movida para a rota `/config/rede/participantes`, apenas para `admin` e
   `node`. O painel de informações também oferece `Esquecer rede`, que pede
@@ -81,52 +74,63 @@ Per-file list:
   Descrição, regras e o campo único de canais Discord ou Telegram são editados
   como Markdown com prévia ao vivo e, quando a tela é somente leitura, usam o
   mesmo renderer Markdown compartilhado pelo Chat.
-- `Plugins.tsx` - rota `/plugins`. Cruza o catálogo público de
-  `https://license.pieceofmind.cloud/v1/plugins` com o estado local de
-  `GET /api/ui/plugins`, usando `code` como identidade. O cliente público fica
-  em `lib/pluginCatalog.ts`, não envia credenciais do nó e aceita plugins com
-  release comercial compatível; dados de imagem incompletos viram
-  placeholders, e até quatro screenshots abrem em lightbox com Escape e foco
-  restaurado. Descrições usam português brasileiro quando disponível e têm
-  fallback para inglês. Validade, plugins concedidos, candidatos de ativação e
-  uso por `plugin_code` vêm do estado autenticado do nó, nunca do catálogo
-  público. A tela full-bleed segue o cabeçalho e o contêiner
-  interno de `/modelos`. O estado de licença, validade, última instalação,
-  versão e ações continuam vindo do nó; plugins locais ativos permanecem visíveis mesmo quando faltam no catálogo
-  público. Desativação exige confirmação. O formulário de chave aparece se
-  qualquer entrada pública que exige licença não estiver ativa no estado local,
-  mesmo quando outro plugin já tem licença/contexto. Ele também aparece quando
-  falta status local ou o status está expirado/revogado, e some quando todos os
-  plugins licenciáveis conhecidos estão ativos. Comprar redireciona plugins
-  licenciados à loja pública com `plugin=<code>` codificado em
-  `lib/pluginPurchase.ts`. Os cards são compactos, dois por linha a partir de
-  `xl`, um por `plugin_code`: catálogo comercial, repositório GitHub e estado
-  local ativo do mesmo código viram um único card. A coluna da direita traz,
-  no topo, o card "Adicionar do GitHub" (URL de repositório público) e, logo
-  abaixo, a ativação de licença. O card de um repositório mostra a descrição
-  e as capturas vindas do manifesto (`raw.githubusercontent.com`), atualizar
-  e remover como ícones, e um select só com as releases compatíveis com este
-  nó (`available_for_node`), já marcado na mais recente, com a ação
-  Instalar, Atualizar (quando a instalação pública veio deste repositório) ou
-  Instalada (desabilitada, quando a tag escolhida é a versão atual). Instalar
-  ou atualizar exige confirmação; essa origem não consulta `requires_license`
-  nem o servidor de licenças. O card não mostra funcionalidades nem a última
-  consulta de update, e a linha de release comercial só aparece quando existe
-  release para o alvo do nó. Ações de ativação, instalação, atualização e
-  desativação invalidam `keys.pluginUi` para atualizar o menu do plugin na
-  hora; o polling de 30 s cobre mudanças feitas fora desta aba. Um único
-  formulário ativa em lote todo `plugin_code` que o servidor conceder
-  (`POST /api/ui/plugins/activate`, resposta `{activated}`); atualizar e
-  desativar continuam por plugin. As preferências abrem num modal pelo ícone
-  de engrenagem no topo do card (só com plugin ativo e schema no release
-  instalado), mostram defaults tipados boolean/diretório, enviam os valores
-  só à rota local do nó e exibem o motivo devolvido pelo nó quando falham.
-  A atualização do binário `pom` em si fica separada em `About.tsx` (ver
-  `crates/node/src/pom_core_update.rs`). A rota tem entrada própria no menu,
-  Configurações > Plugins. No card comercial, a release exibida é escolhida
-  pela combinação `system.os`/`system.arch` do nó local; se o catálogo não
-  publicar esse alvo, a tela mostra ausência em vez de sugerir a release de
-  outra plataforma.
+- `Plugins.tsx` - `/plugins` combines the public catalog at
+  `https://license.pieceofmind.cloud/v1/plugins` with local state from
+  `GET /api/ui/plugins`, using `code` as the identity. The public client lives
+  in `lib/pluginCatalog.ts`, sends no node credentials and accepts plugins
+  with a compatible commercial release. Missing image data uses placeholders;
+  up to four screenshots open in an Escape-dismissible lightbox that restores
+  focus. Descriptions use Brazilian Portuguese when available and otherwise
+  fall back to English. License validity, granted plugins, activation
+  candidates and usage by `plugin_code` come from the node's authenticated
+  state, never the public catalog. The full-bleed screen follows the header and
+  inner container used by `/modelos`. `state` represents license validity;
+  `active` is true only after the host completes its handshake and is ready.
+  Local state may publish `installation_error`, shown on the card with an
+  actionable detail; a failed activation refreshes status before the screen
+  exits. Active local plugins remain visible even when absent from the public
+  catalog.
+
+  Deactivation requires confirmation. The license-key form appears whenever
+  any public entry requiring a license is not active locally, even if another
+  plugin already has a license or context. It also appears when local status is
+  missing or expired/revoked, and is hidden when all known licensed plugins
+  are active. Purchase redirects licensed plugins to the public store with an
+  encoded `plugin=<code>` parameter via `lib/pluginPurchase.ts`. Cards are
+  compact, two per row from `xl`, and grouped by `plugin_code`: the commercial
+  catalog, GitHub repository and local state for the same code share one card.
+  The right column contains the "Add from GitHub" card (public repository URL)
+  above license activation. A repository card shows its manifest description
+  and screenshots (`raw.githubusercontent.com`), refresh/remove icon actions,
+  and a selector containing only releases compatible with this node
+  (`available_for_node`), defaulting to the latest. Its action is Install,
+  Update (when the public installation came from that repository), or disabled
+  Installed (when the selected tag is already current). Install/update requires
+  confirmation; this source does not check `requires_license` or contact the
+  license server. The card does not show features or the last update check, and
+  the commercial release row appears only when the catalog has a release for
+  the node's target. Activation, installation, update and deactivation
+  invalidate `keys.pluginUi` so the plugin menu updates immediately; 30-second
+  polling covers changes made outside this tab. One form activates every
+  `plugin_code` granted by the server in a batch (`POST
+  /api/ui/plugins/activate`, response `{activated}`); updates and deactivation
+  remain per-plugin. Preferences open in a modal from the card's settings
+  icon, only when the plugin is active and its installed release has a schema.
+  The modal displays typed boolean/directory defaults, sends values only to the
+  node's local route and shows the node's reason on failure.
+
+  Updating the `pom` binary is separate in `About.tsx` (see
+  `crates/node/src/pom_core_update.rs`). With profile `admin` and
+  `NodeInfo.pom_desenv=true`, the screen queries local sources and allows
+  building and installing even inactive plugins. A local build is separate
+  from license state, grants no licensed features and does not activate a
+  license; an existing licensed/GitHub installation keeps its entitlement.
+  The action calls the AdminOnly route and shows success or the build
+  stage/exit code without compiler output, and does not use the GitHub release
+  route. The page has its own Settings > Plugins menu entry. Commercial release
+  data is selected for the local node's `system.os`/`system.arch`; if the
+  catalog does not publish that target, the screen shows no release rather than
+  suggesting one for another platform.
 - `MyMachine.tsx` - "Minha Máquina" (rota `/config/minha-maquina`, entrada
   própria no menu Rede, acessível também ao `infer`). Contém exatamente o que
   saiu de `NetworkSettings.tsx`: o painel "Esta máquina" (hostname, `node_id`,
@@ -179,8 +183,10 @@ Per-file list:
   `thinking_enabled` a cada mensagem, persistindo até nova ação do usuário.
   Missing snapshots stay visible as missing data. The environment card also
   renders the effective MoE executor and its concrete reason from `/health`.
-  Phase rows also render
-  hidden-state bytes sent/received and the effective f16/f8 dtype. Its picker uses `../lib/chatModels` to hide deployment-qualified
+  Phase rows also render hidden-state bytes sent/received and the effective
+  f32/f16/f8/i4 dtype. The conversion row separates peer and client f32/f16
+  encode/decode work from the general frame timings. Its picker uses
+  `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
   resolution retain those ids. Um frame de erro compatível com OpenAI dentro
   do stream fica junto de qualquer resposta parcial e mostra a mensagem exata
@@ -283,7 +289,8 @@ Per-file list:
   The model graph receives directional transport measurements and
   `pipeline_routes` for every complete deployed route. It renders the
   distributed cycle as Gateway -> peers -> Gateway, orders route cards by
-  aggregate RTT with node ID as a stable tie-breaker, and uses the least-cost
+  the backend's per-token `total_ms` (network in the chosen return mode plus
+  compute; never the raw sum of legs) with node ID as a stable tie-breaker, and uses the least-cost
   route for the headline while keeping alternatives visible. An observed
   `pipeline_cost` from a completed chat execution remains available when every
   execution leg and compute measurement is known.
@@ -385,7 +392,9 @@ Per-file list:
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
   repetition, cycle detection, fit-memory, hidden-state dtype, execution toggles and the installation-wide KV cache
-  types. The two K/V cache combos apply changes immediately through
+  types. The hidden-state selector appears only for a sliced pipeline crossing
+  peer boundaries and offers f32/f16/f8/i4, with f16 as the default; the route
+  test checks that f32 reaches the deploy request. The two K/V cache combos apply changes immediately through
   `POST /api/ui/cache-types`; the save button, subtitle and `global` badge are
   intentionally absent. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can
   then edit that probability before deploying. The machine section includes
@@ -520,7 +529,9 @@ Per-file list:
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
   `/config/rede/participantes`; the route is allowed only to `admin` and
-  `node`, and block/unblock mutations remain admin-only.
+  `node`, and block/unblock mutations remain admin-only. Each peer row shows
+  the route actually in use (`AdminNode.route`: `RouteBadge` + `routeAddress`),
+  never the advertised `addr`, which only goes into the row's `title`.
   (`POST /api/ui/leave` / `/api/ui/rejoin`, reachable by every profile: leaving
   is abdication, not a privilege) and the known-node list from
   `GET /admin/nodes` (`node+admin`: reading the roster is what this screen
@@ -576,25 +587,6 @@ Per-file list:
   it again and the receiver sees only an opaque grant. Full-bleed shell
   (`FullBleedHeader` + scrolling body), same contract as `Deployments`/
   `PublicNetworks`.
-- `Setup.tsx` - First run (no `pom.json`): real wizard backed by
-  `/api/setup/hardware`, `/api/setup/geo-reference`,
-  `/api/setup/admin-anchor/preview`, `/api/setup/health` and
-  `/api/setup/save`. The hardware response includes the effective `p2p_port`,
-  so the first screen renders the IPv6 host and its configured port without a
-  frontend port constant. The admin preview signs the network identity,
-  announced address, bootstrap and public-directory replicas into the trust
-  document. A joining node accepts that document by paste or `.json` upload,
-  derives the anchor fingerprint and imports those values without asking for
-  another network form. Public networks use signed control without a shared
-  secret; private networks also carry one connection secret. The node saves
-  config and trust root, respawns and the screen reloads. The first machine
-  screen exposes the shared-disk capacity as a slider against detected free
-  space. The health checks and final summary are one `Revisão` step after the
-  invitation or trust import, rather than two wizard steps. It reuses
-  `WizardLayout` without a second product toolbar, but is separate from the
-  mock-only `SetupWizard.tsx`. The setup-only local discovery step lets an admin
-  wait and a node or infer search; the trust document is public, while the
-  connection key is delivered only after the ephemeral proof handshake.
 - `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
   only shows the difference), with who is missing it. Pipeline `parts` and TP
   `tp_parts` are separate sections; TP groups are ordered by group size and

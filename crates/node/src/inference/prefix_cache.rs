@@ -10,7 +10,7 @@
 //! de disco opcional: com `slot_persist_prefix_cache` ligado, o gateway grava
 //! um snapshot de KV por prefixo em `slot_save_path` e, num miss após
 //! reinício, restaura-o em vez de refazer o prefill a frio. Ver
-//! `docs/subsystems/inferencia.md` §3.1.1 e `gateway::build_prefix_disk_index`.
+//! `docs/subsystems/inference.md` §3.1.1 e `gateway::build_prefix_disk_index`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

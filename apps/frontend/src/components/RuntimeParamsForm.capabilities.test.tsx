@@ -321,6 +321,32 @@ describe("RuntimeParamsForm", () => {
     );
   });
 
+  it("oferece f32 sem negociação e mantém f16 como padrão", () => {
+    const onChange = vi.fn();
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RuntimeParamsForm
+          value={FORM_PARAMS}
+          onChange={onChange}
+          capabilities={hiddenStateCapabilities({
+            state: "unsupported",
+            source: "teste",
+            reason: "capacidade com perda indisponível",
+          })}
+        />
+      </LocaleProvider>,
+    );
+
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(select.value).toBe("f16");
+    const f32 = screen.getByRole("option", { name: /^f32/ }) as HTMLOptionElement;
+    expect(f32.disabled).toBe(false);
+    fireEvent.change(select, { target: { value: "f32" } });
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ hidden_state_dtype: "f32" }),
+    );
+  });
+
   it("não oferece f8 quando a capacidade do cluster foi recusada", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">

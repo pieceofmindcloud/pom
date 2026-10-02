@@ -12,7 +12,7 @@
 //! por HTTP/túnel libp2p) fica em `node`; `llm` alcança o estado dela pela
 //! ponte fina `tp_probe`, que `node` instala no arranque.
 //!
-//! Ver `docs/subsystems/build-execucao.md` (o preparo do fork em `/llama.cpp` e
+//! Ver `docs/subsystems/build-and-run.md` (o preparo do fork em `/llama.cpp` e
 //! as features `cuda`/`metal`/`vulkan` continuam valendo, agora neste crate).
 
 pub mod collective;

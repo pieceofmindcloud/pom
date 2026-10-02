@@ -59,8 +59,8 @@ No handoff entre peers, a preferência QUIC escolhe o endpoint HTTP/3; sem ela,
 o link persistente publica `https-link` ou `http-link` conforme o endereço
 efetivamente usado. O prefill e o decode usam essa mesma escada, e uma queda
 para libp2p ou para HTTP direto permanece registrada com a razão de fallback.
-O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
-(`inference_server.py` de `old/python-inference/` é legado). Os caminhos
+O modelo é carregado **em-processo** por `llm.rs`; não há processo Python.
+Os caminhos
 normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção
 controlada, pois coordena seus ranks e seu túnel de transporte neste diretório.
 O campo `NodeConfig.inference_mode` seleciona `dense/llama.cpp`, `moe/q4_0` ou
@@ -88,6 +88,13 @@ visibilidade dos controles de implantação na UI local.
   resultado direto pode ser liberado antes de recibos de transporte tardios; o
   `ReplyInbox` retém um snapshot limitado, deduplica por ticket e índice de hop
   e o reconcilia até a expiração.
+  As URLs de `reply_to` saem das interfaces locais do gateway, então atrás de
+  NAT/CGNAT nenhuma delas vale na outra ponta: `deliver_via_tunnel` é a última
+  via, pelo túnel libp2p até o `libp2p_peer_id`/`libp2p_addrs` que o `reply_to`
+  passou a carregar. Sem ela o quadro morria calado até o prazo do frame. O transporte anotado na
+  metadata é `libp2p-tunnel`, para o trace do gateway não publicar como HTTP um
+  caminho que não foi. Gateway em binário anterior não manda os campos e a
+  entrega segue sem a última via.
 - `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
   token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
@@ -122,7 +129,7 @@ visibilidade dos controles de implantação na UI local.
   item: assim ele usa o mesmo canal persistente e aparece como `https-link`.
   A chave do `BatchCoordinator` marca esses lotes como especulativos para não
   misturá-los com frames densos.
-  Ver `docs/subsystems/inferencia.md` §2.1.
+  Ver `docs/subsystems/inference.md` §2.1.
 - `link_lab.rs` (520, `#![cfg(test)]`) - a bancada do custo de rede por ficha
   no salto interno: hops falsos servidos por cima de um `TcpStream` com
   contador, para o número sair dos bytes que passaram no soquete e não de
@@ -134,8 +141,18 @@ visibilidade dos controles de implantação na UI local.
   `/v1/step-stream`, `/v1/link`,
   `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
   `/v1/session/slot` (save/restore/erase de um snapshot de KV em disco, como o
-  `--slot-save-path` do llama-server - ver `inferencia.md` §3.1.1),
-  `/health`; estado das sessões, seleção do caminho `dense/llama.cpp` ou
+  `--slot-save-path` do llama-server - ver `inference.md` §3.1.1),
+  `/health`; `perf.rs` mede a velocidade da fatia (`run_bench`, um teste
+  local ao carregar o modelo, e `observe_prefill`/`observe_decode`, média móvel
+  do tráfego real, chamados no fim do decode de `prefill.rs` e
+  `step_blocking.rs`); o `/health` publica `perf`, `active_generations` (sessões
+  não retidas), o RTT e o transporte das rotas fixadas deste nó
+  (`route_rtt_ms`, `gateway_rtt_ms`, `route_kinds`, `gateway_route_kinds`,
+  e `relayed_peers`, os peers que ele só alcança por relé, inseridos fora do `json!`, que está no limite de recursão) para o
+  planejador do gateway; o teste de velocidade envia o estado oculto na forma
+  que a captura produz (`perf::hidden_input_layout`: `[tokens, n_embd,
+  fluxos]` em modelo com vários fluxos de residual) e `POM_SLICE_BENCH=0` o
+  desliga; estado das sessões, seleção do caminho `dense/llama.cpp` ou
   `moe/q4_0` e o branch de relay. O runtime MoE recebe hidden states antes do
   decode local ou transforma o residual que vai para o próximo hop somente
   quando o caminho selecionado é MoE; no hop terminal a captura do residual
@@ -191,8 +208,10 @@ visibilidade dos controles de implantação na UI local.
   scheduler, wall da chamada `ggml_backend_tensor_get`, pós-processamento e
   encode do payload e do frame residual. Ask-to-ready inclui compute e sync do
   scheduler; `tensor_get` em CUDA pode incluir D2H e sync da stream, sem expor
-  esses custos internos separadamente. O wire mede o loop de conversão f8
-  separado da serialização do cabeçalho/frame.
+  esses custos internos separadamente. O wire mede as conversões de ativação
+  f32/f16 no peer e no cliente, além do loop f8 e da serialização do
+  cabeçalho/frame; as conversões são subconjuntos dos tempos gerais de
+  encode/decode.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
   inicializa o backend para que o sysmon possa consultar descricoes de
   dispositivos, decode, hidden state com
@@ -308,7 +327,11 @@ visibilidade dos controles de implantação na UI local.
   os leva pelos hops restantes, até `W` em voo. `PrefillOverlapWindow` limita
   por contagem (`prefill_max_inflight_chunks`, efetivo 1..8, padrão 8) e por
   bytes de estado oculto em RAM no gateway (`INFLIGHT_BYTE_BUDGET`, 512 MiB);
-  o permit de cada limite viaja com o pedaço. A janela cancela as futures em
+  o permit de cada limite viaja com o pedaço. No anel (`run_ring`), a janela
+  maior que 1 vira `ring_overlap`: o gateway manda um pedaço por vez e cada
+  hop que repassa responde ao intermediário depois do próprio compute,
+  repassando em segundo plano em ordem por sessão (`ring_relay_slot` em
+  `infer_server/prefill.rs`); o último pedaço é síncrono. A janela cancela as futures em
   voo no erro ou no cancelamento e preserva a ordem do resultado. Um pedaço
   `k>0` que falha depois de a cadeia aceitar os anteriores anexa um
   `PrefillResumable` ao erro para diagnóstico, mas o gateway não repete esse
@@ -336,9 +359,11 @@ visibilidade dos controles de implantação na UI local.
   e o emitter separa `remote_stream_wait` em produção, reserva do canal, fila
   e callback anterior, sem timer artificial. `remote_stream_downstream_wait_ms`
   identifica o relay aninhado dentro da produção; `node_timings.mtp_draft_ms`
-  identifica o custo síncrono do nextn. Em plano remoto fatiado, MTP é omitido
-  quando imporia esse draft a cada callback, enquanto o caminho legado continua
-  elegível. `handle_step_stream` copia o
+  identifica o custo síncrono do nextn e `node_timings.mtp_observe_ms` o do
+  `observe`. `RemoteStreamTelemetry::merge` junta também as distribuições de
+  `downstream_wait` e `delivery`; sem isso os p50/p95 desses dois campos
+  saíam zerados na resposta embora os totais estivessem certos. Em plano remoto fatiado o MTP é pedido
+  à cabeça remota, como no caminho legado. `handle_step_stream` copia o
   `session_id` do frame de controle para o `reply_to`, e cada lote de retorno
   o recoloca no envelope antes de chegar ao ticket. O retorno normal usa o
   canal persistente e só o fallback usa HTTPS por callback, com contagem e
@@ -375,7 +400,7 @@ visibilidade dos controles de implantação na UI local.
   padrão 7 dias) e orçamento LRU (`slot_auto_max_bytes`, padrão 2 GiB),
   devolvendo os `key_hash` a apagar. O gateway ainda faz debounce por
   `SLOT_AUTO_MIN_GROWTH_TOKENS` antes de regravar. Ligado por
-  `slot_persist_prefix_cache`; ver `inferencia.md` §3.1.1.
+  `slot_persist_prefix_cache`; ver `inference.md` §3.1.1.
 - `prefix_cache_lab.rs` - autoteste diferencial da política do cache, ou seja da
   **escolha**. A referência acompanha lookup, insert, busy, release e eviction;
   o proxy propositalmente quebra `cached_tokens` e a bateria precisa registrar a
@@ -489,7 +514,7 @@ visibilidade dos controles de implantação na UI local.
   A ponte IQ CUDA tem diagnóstico diferencial por dtype e estágio nos testes
   `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` e
   `diagnostico_cuda_iq_divergencia_por_estagio`. A implementação da ponte não
-  é prova de correção por si só: a prova CUDA na `ksia` comparou IQ3_S, IQ2_S
+  é prova de correção por si só: a prova CUDA no servidor CUDA de teste comparou IQ3_S, IQ2_S
   e IQ4_XS contra o decoder CPU em `gate_up`, ativação e `down`, sem primeira
   divergência. Os três dtypes podem ser publicados pelo dispatch somente após
   essa prova; uma divergência futura deve reativar a recusa nominal, não cair
@@ -573,7 +598,7 @@ visibilidade dos controles de implantação na UI local.
   orçamento medido permitem. O cache frio de RAM e o cache quente de device têm
   estatísticas separadas. Depois de qualquer mudança
   CUDA, execute a build com
-  `--features vulkan,cuda` na ksia e repita tanto os testes CUDA diferenciais
+  `--features vulkan,cuda` no servidor CUDA e repita tanto os testes CUDA diferenciais
   quanto as provas reais `executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real`
   e `nvfp4_matches_llama_cpp_from_first_layer_and_stage`.
   Os loaders aceitam tanto `ffn_gate_up_exps.weight` fundido quanto
@@ -594,8 +619,9 @@ visibilidade dos controles de implantação na UI local.
   as lanes CPU e GPU executam em paralelo; a telemetria publica chamadas de
   cada lane e a fração escolhida. A validação CUDA e os números observados
   vivem em `docs/subsystems/freetoken-moe.md`.
-  O wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
-  atenção, demais camadas ou a amostragem do `LlmEngine`.
+  O wire usa f16 por padrão (f32 é opção de implantação) e nenhum peso trafega;
+  a costura não substitui ainda atenção, demais camadas ou a amostragem do
+  `LlmEngine`.
   Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` pode percorrer os
   payloads canônicos por camada, expert, papel e dtype em uma thread separada,
   usando a mesma admissão do cache residente. O aquecimento é padrão e pode ser
@@ -724,7 +750,7 @@ visibilidade dos controles de implantação na UI local.
   com o marcador, mas o fallback HTTP também leva o bearer compartilhado; sem a
   prova correspondente, a chamada é recusada em vez de cair para uma API key de
   cliente. A tentativa HTTP direta inteira, incluindo autorização, headers e
-  corpo, também respeita o deadline de transporte compartilhado de 30 s.
+  corpo, também respeita o prazo único do frame (`relay::frame_time_left`).
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de
@@ -765,12 +791,13 @@ visibilidade dos controles de implantação na UI local.
   texto sem sentido (18/08).
 - `wire.rs` - o único lugar que conhece o dtype/codificação do tensor em
   trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
-  `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN e i4g64/i4g128
-  assinado com escala f16 por grupo na borda, sempre devolvendo f32 ao motor;
-  `encode_profiled` mede o loop f8 e a serialização do cabeçalho/frame em
-  limites separados. `prefill/`
-  e `relay.rs` propagam o dtype escolhido e registram bytes enviados, recebidos
-  e formato efetivo por hop.
+  `WireDtype` mantém f16 como padrão, oferece f32 sem perda como opção de
+  implantação e implementa f8 FP8 E4M3FN e i4g64/i4g128 assinados com escala
+  f16 por grupo; decode sempre devolve f32. As variantes perfiladas medem a
+  conversão f32/f16 separada do total do frame. A telemetria por fase também
+  separa a conversão observada no peer e no cliente; f32 usa quatro bytes por
+  valor e não exige capability. `prefill/` e `relay.rs` propagam o dtype
+  escolhido e registram bytes enviados, recebidos e formato efetivo por hop.
 
 ## Funções-chave
 
@@ -875,7 +902,7 @@ visibilidade dos controles de implantação na UI local.
   o gateway fan-out para todos os hops.
 - `handle_slot` + `InferState::{save_slot,restore_slot,check_slot_compatible}` /
   `erase_slot`/`count_slot_entries` - snapshot de KV em disco
-  (`--slot-save-path`). O health conta sidecars pela estrutura do diretório,
+  (`slot_save_path`). O health conta sidecars pela estrutura do diretório,
   fora do lock do motor, e só abre o JSON quando precisa salvar ou restaurar.
   `save_slot` grava **`prompt_seq` truncado em `prompt_len`**, nunca `gen_seq`,
   mais o sidecar `<name>.json` (identidade do modelo e da fatia).
@@ -883,7 +910,7 @@ visibilidade dos controles de implantação na UI local.
   sessão nova `retained` na fronteira salva. `slot_dir` vem de
   `NodeConfig.slot_save_path`; sem ele a rota responde 400. `replicate_slot_call`
   repassa a ação aos workers de TP. Capability `inference/slot-persist-v1`.
-  Ver `inferencia.md` §3.1.1.
+  Ver `inference.md` §3.1.1.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
   reinício do processo também remove o estado em memória. Se um desses eventos
   ocorrer no meio de um prefill, o peer devolve sessão desconhecida e o gateway
@@ -1107,6 +1134,17 @@ visibilidade dos controles de implantação na UI local.
   hop/step para auditoria.
 
 `relay.rs`:
+- `send_frame_planned` - entrada de todo frame remoto (`send_frame_or_tunnel`):
+  com rota fixada no plano (`route_plan`, plano `Inference`) o passo é reduzido
+  a ela por `pin_step` e `hop_transport` libera **só** o transporte medido
+  (`HopTransport`: canal persistente e TCP para HTTP, só QUIC para QUIC, só o
+  túnel para túnel). Falha antes da entrega repete a rota uma vez, depois passa
+  para a próxima medida no mesmo frame; lista esgotada pede reanálise e o frame
+  ainda desce a escada completa. Falha depois da entrega nunca troca de rota.
+  Sem rota fixada, `HopTransport::unplanned` é a escada de sempre.
+- `BatchFailure` - a falha de um lote chega a cada chamada preservando se foi
+  antes da entrega (`FrameNotDelivered`) e a recusa HTTP (`HttpRefusal`); antes
+  virava texto e a troca de rota não reconhecia a falha.
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;
   `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`
   também identifica `transport` (`local`, `libp2p-tunnel`, `https`,
@@ -1148,6 +1186,12 @@ falha de transporte.
   reconstrução fria com motivo explícito.
 
 `direct.rs`:
+- `deliver_pinned` - a volta ao gateway usa a rota fixada do plano `Gateway`
+  (`route_plan`) antes da escada de `reply_to`: HTTP no endereço medido, QUIC
+  no endpoint medido ou direto o túnel. Mesma regra de falha do `relay.rs`;
+  `None` devolve a entrega à escada completa. `RemoteStreamDelivery` só usa o
+  canal persistente quando a rota fixada é HTTP (naquele endereço); QUIC ou
+  túnel fixados vão pela entrega por requisição sem marcar fallback.
 - `ReplyInbox`/`Ticket` - mapa ticket→canal oneshot que vive no `GatewayState`
   (é o gateway que abre a requisição); `register` sorteia UUID v4 por quadro;
   `Drop` remove o ticket ainda não entregue do inbox em qualquer caminho de
@@ -1184,8 +1228,10 @@ falha de transporte.
 - `await_result_with_ack` - `select!` biased entre três coisas: o resultado do inbox
   (caso normal), o ack da cabeça (só interessa quando falha, ou quando um peer
   antigo borbulhou a resposta inteira - `token_id` presente vale como
-  resultado), e o prazo `DIRECT_REPLY_DEADLINE=600 s` (hop morreu depois de
-  aceitar). Se o resultado chega antes do ack, ele não espera telemetria
+  resultado), e o prazo do frame que o chamador passa (`relay::frame_deadline`
+  com os tokens da rodada e todos os hops do plano; hop morreu depois de
+  aceitar). `RemoteDecodeStream::next` usa o mesmo cálculo entre dois
+  callbacks. Se o resultado chega antes do ack, ele não espera telemetria
   atrasada: o futuro do ack continua em tarefa destacada para registrar a
   evidência do primeiro hop.
 - `deliver_result` - a cauda (ou o hop que falhou) tenta cada URL de `reply_to`
@@ -1220,7 +1266,7 @@ falha de transporte.
   ≈ `minimum_legs` (tolerância 1 perna para acomodar overhead do frame); as duas pontas empatam; a pior
   entrada (meio) custa no máximo uma perna a mais que a cabeça; e o anel
   borbulhado com a cabeça remota paga 4 pernas (o caso que doía, a queda de 25
-  para 14 tok/s do captain), provando que é correção e não o comportamento de
+  para 14 tok/s do operador), provando que é correção e não o comportamento de
   sempre. Assere ainda que cada quadro de resultado é entregue direto
   exatamente uma vez e que os recibos de transporte não entram nessa contagem.
   O prompt de mais de um pedaço atravessa inteiro (um `prompt_progress`
@@ -1272,13 +1318,13 @@ falha de transporte.
   (SIGKILL). Devolve `Err(motivo)` quando o ocupante não é identificável ou a
   porta segue presa depois de 5 s, e o supervisor põe esse motivo no
   `status.detail` como `Failed` **desde a primeira tentativa** - antes o
-  operador via só "carregando" até `MAX_RESTARTS` esgotar, e a TUI anunciava
-  saúde enquanto o servidor morria em laço.
+  operador via só "carregando" até `MAX_RESTARTS` esgotar enquanto o servidor
+  morria em laço.
 - `log_file_path` / `append_log` - `<project_root>/infer_server_<porta>.log`,
   um por porta, apontado por `RuntimeStatus.log_path` (`set_log`, chamado no
   arranque do supervisor). Carrega o ciclo de vida do servidor (arranque,
-  tentativa, motivo da queda, modelo carregado); o stdout não serve porque a
-  TUI limpa a tela a cada `--refresh`.
+  tentativa, motivo da queda, modelo carregado); o stdout não guarda esse
+  histórico.
 - `needs_residual_export` - **única** condição para instalar o callback de
   captura: custa 7,8-8,2 ms/token contra 0,14-0,67 ms sem ele (medido
   2026-08-12); sem o callback, `hidden_state` recusa com "residual capture
@@ -1309,7 +1355,7 @@ falha de transporte.
   oculto inteiro. `validate_items` expressa a validação sobre o **tamanho** do
   payload, que é o que torna as duas coisas possíveis. A conversão passa por um
   bloco de pilha: crescer o vetor valor a valor custa mais que a conversão em
-  si. Números em `docs/subsystems/inferencia.md` §2.2.
+  si. Números em `docs/subsystems/inference.md` §2.2.
 - `FrameEncoding::F16` permanece somente como marcador de chamadas internas;
   o fio oficial é sempre `inference/frame-v1-batch`. O helper
   `encode_with_encoding` é exclusivo da prova de equivalência em testes;
@@ -1356,7 +1402,16 @@ caminho qwen35/qwen35moe do upstream):
    com o estado oculto deslocado uma posição (linha `k` recebe `h` de `k-1`,
    linha 0 recebe o `pending_h` da chamada anterior) e guarda as linhas de `h`
    do alvo. Ficar dentro do `decode_tokens`, e não em cada chamador, é o que
-   impede um caminho novo de esquecer o passo.
+   impede um caminho novo de esquecer o passo. A exceção é a cauda numa
+   rodada de decode que não especula (sem `mtp_k` nem rascunho MTP, ou seja,
+   todo token do `remote-stream` de dois ou mais hops): `step_blocking` chama
+   `decode_hidden_without_mtp`, que pula o `observe` e chama
+   `MtpDrafter::forget` para a sequência (remoção total no contexto MTP), de
+   modo que um `observe` futuro não caia num buraco de posições. O `observe`
+   rodava por token sem uso e, com o MTP na RAM, dominava o decode da cauda.
+   O tempo do `observe` sai em `node_timings.mtp_observe_ms`, e a barreira de
+   `POM_PROFILE_SYNC` roda antes dele, então `backend_sync_ms` é o tronco
+   terminando na GPU e não se mistura com a cabeça `nextn`.
 2. `MtpDrafter::accept(accept_len)` move o `pending_h` para a linha que a
    verificação confirmou.
 3. `MtpDrafter::draft` decodifica a cabeça uma vez por token rascunhado e
@@ -1392,7 +1447,7 @@ aborta a rodada se a remoção efetiva falhar.
 
 **Ainda sem medição de tok/s** (cortado por cota em 2026-08-16): o ganho
 prometido pelo bloco é real no LM Studio (21 → 35 tok/s no Qwen3.8-27B-Q3_K_S,
-medido pelo captain), aqui a implementação está completa e verde nos testes de
+medido pelo operador), aqui a implementação está completa e verde nos testes de
 unidade mas **não** tem número medido de ponta a ponta.
 
 ## Ligações
@@ -1417,8 +1472,7 @@ unidade mas **não** tem número medido de ponta a ponta.
   `spawn_health_watch`; `routing/AGENTS.md` lista as capabilities que
   `infer_server.rs`/`relay.rs` executam.
 - **Externo**: nenhum processo externo. O modelo carrega em-processo via
-  `llm.rs` (llama-cpp-sys-2). `old/python-inference/inference_server.py` e
-  `split_model.py` são legado, não são mais invocados.
+  `llm.rs` (llama-cpp-sys-2).
 
 ### Prefill multimodal
 
@@ -1453,7 +1507,7 @@ que cada fatia a jusante preserve as posições lógicas da cabeça.
 Este arquivo é um mapa de responsabilidades da pasta. Ao mudar uma interface
 de inferência ou uma invariável de sessão, atualize aqui e o README do
 subsistema no mesmo commit. Mantenha detalhes de implementação no código ou
-em `docs/subsystems/inferencia.md`, para que este índice continue curto.
+em `docs/subsystems/inference.md`, para que este índice continue curto.
 
 ## Maintaining this file
 

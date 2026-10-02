@@ -15,7 +15,25 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   falha expirável em vez de tratar `addr` como verdade permanente. O destino
   QUIC nunca é derivado da `inference_url`.
 
+- `fastest.rs` - planejador por tempo de entrega (`plan_fastest`), usado pelo
+  gateway antes do guloso: programação dinâmica sobre as faixas somando o custo
+  de cada estágio (velocidade medida × fila) e de cada aresta (RTT das rotas
+  fixadas). `PeerPerf::from_health` lê `perf`, `active_generations`,
+  `route_rtt_ms` e `gateway_rtt_ms` do `/health`; `estimate_chain` estima um
+  caminho dado (o de um prefixo em cache, com os tokens já retidos
+  descontados); `describe_chain` descreve um caminho para o Painel com as
+  mesmas fontes, sem palpite (perna não medida fica `None`), devolvendo pernas,
+  modo de volta, rede por token e compute; `resolve_chain` valida uma cadeia de `node_id`s contra os
+  candidatos vivos. O modo de volta (`ReturnMode`: resposta direta ou anel) é
+  escolhido junto com o caminho - a programação dinâmica roda por modo -, e
+  `return_path_prefers_ring` é a regra de reserva para o planejador guloso.
+  Ver `docs/subsystems/parallelism.md`, "Escolha da pipeline por tempo de
+  entrega".
+
 ## Funções-chave
+
+- `step_for`/`plan_from_steps` - montagem de um passo e do plano com arestas,
+  compartilhada pelo guloso e por `fastest.rs`.
 
 - `plan_pipeline_with_rtt` - varre de 0 até `total_layers`; em cada posição
   escolhe somente um peer cuja faixa carregada comece exatamente na posição.
@@ -54,7 +72,8 @@ alto consumida pelo `gateway.rs` (`generate_stream_with_stops`).
   plano inteiro; uma ausência identificada bloqueia o deploy ou a requisição
   com a razão do peer, sem deixar bytes serem interpretados como outro dtype.
   `CAP_FRAME_DTYPE_I4G64` e `CAP_FRAME_DTYPE_I4G128` aplicam a mesma regra para
-  os formatos groupwise int4; f16 permanece o padrão e não requer capability.
+  os formatos groupwise int4. f16 permanece o padrão, e f32 é a opção integral
+  de quatro bytes por valor; ambos são formatos-base que não exigem capability.
 - `CAP_REMOTE_TOKEN_STREAM` - capability anunciada pelo servidor de inferência
   para que um head remoto mantenha o laço de decode no peer e entregue tokens
   ao gateway em callbacks limitados por lotes oportunistas. O gateway exige

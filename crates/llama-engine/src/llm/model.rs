@@ -242,6 +242,11 @@ impl ModelCache {
 pub struct DecodeTimings {
     pub backend_call_us: u64,
     pub backend_sync_us: u64,
+    /// Tempo do `observe` da cabeça `nextn` depois do decode do alvo: um
+    /// segundo `llama_decode` no contexto MTP, que pode morar na CPU quando o
+    /// fit mandou os pesos para a RAM. Zero quando não há MTP ou quando a
+    /// rodada não especula e o `observe` é pulado.
+    pub mtp_observe_us: u64,
     /// Compatibility total for the old aggregate field: ready wait plus the
     /// actual device-to-host read.
     pub residual_capture_d2h_sync_us: u64,

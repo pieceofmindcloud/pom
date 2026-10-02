@@ -56,6 +56,14 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugins::apply_plugin_update),
         )
         .route(
+            "/api/ui/plugins/dev-sources",
+            get(crate::plugins::list_development_plugin_sources),
+        )
+        .route(
+            "/api/ui/plugins/dev-sources/:repository/rebuild-install",
+            post(crate::plugins::rebuild_install_development_plugin),
+        )
+        .route(
             "/api/ui/plugins/github-repositories",
             get(crate::plugins::list_github_repositories)
                 .post(crate::plugins::add_github_repository),
@@ -73,6 +81,10 @@ pub(super) fn routes() -> Router<GatewayState> {
             axum::routing::delete(crate::plugins::remove_github_repository),
         )
         .route(
+            "/api/ui/plugins/checkout",
+            post(crate::plugins::start_plugin_checkout),
+        )
+        .route(
             "/api/ui/plugins/:code/preferences",
             post(crate::plugins::save_plugin_preferences),
         )
@@ -80,6 +92,11 @@ pub(super) fn routes() -> Router<GatewayState> {
         // Uploads atravessam o proxy, então o corpo não tem o teto padrão.
         .route(
             "/api/ui/plugins/:code/proxy",
+            axum::routing::any(crate::plugin_proxy::plugin_proxy)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/ui/plugins/:code/proxy/",
             axum::routing::any(crate::plugin_proxy::plugin_proxy)
                 .layer(axum::extract::DefaultBodyLimit::disable()),
         )

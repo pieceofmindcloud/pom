@@ -233,7 +233,7 @@ pub struct OutputConfig {
 /// `{"type": "tokens", "total": N, "remaining": M?}`, mínimo de 20.000 no
 /// `total`, `remaining` opcional e igual a `total` quando ausente. Lá ele é
 /// beta, atrás do header `task-budgets-2026-03-13`. Ver
-/// `docs/subsystems/api-http.md`.
+/// `docs/subsystems/http-api.md`.
 ///
 /// **Limite deste nó, declarado:** lá o marcador atravessa o laço agêntico
 /// inteiro e atualiza sozinho a cada turno; aqui ele é injetado uma vez por

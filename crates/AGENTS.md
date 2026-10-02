@@ -82,7 +82,7 @@ segundo é uma `cdylib` de teste e o terceiro é o único carregador de plugins.
 O licenciamento é por `plugin_code` independente, não de um produto único -
 `pom-plugin-host` sobe uma instância por plugin ativo, e os nomes com
 "enterprise" ficaram por história de git. O contrato e as lacunas de extração
-estão em `docs/subsystems/licenciamento-enterprise.md`.
+estão em `docs/subsystems/enterprise-licensing.md`.
 
 ## Maintaining this file
 

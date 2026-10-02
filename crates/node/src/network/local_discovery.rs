@@ -37,6 +37,11 @@ pub enum LocalAutoDiscoveryMessage {
         request_id: String,
         node_ephemeral_public: String,
         node_nonce: String,
+        /// Resumo do computador que procura a rede (nome, sistema, RAM,
+        /// GPUs), para o wizard do administrador mostrá-lo. Informativo: não
+        /// entra no transcript nem autoriza nada.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<DiscoveredMachine>,
     },
     Offer {
         version: u8,
@@ -80,6 +85,93 @@ pub struct LocalDiscoveryStatus {
 pub struct LocalDiscoveryPeer {
     pub request_id: String,
     pub address: String,
+    /// O que o computador informou de si ao procurar a rede. O IP é o
+    /// `address`, visto pelo administrador, não declarado.
+    pub machine: Option<DiscoveredMachine>,
+    /// `true` depois que ele recebeu a raiz e a chave; antes disso ele só
+    /// apareceu procurando a rede.
+    pub joined: bool,
+}
+
+/// Resumo de uma máquina que procura a rede local.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscoveredMachine {
+    pub hostname: String,
+    #[serde(default)]
+    pub os: String,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default)]
+    pub cpu_count: u32,
+    #[serde(default)]
+    pub ram_mb: u64,
+    #[serde(default)]
+    pub gpus: Vec<DiscoveredGpu>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscoveredGpu {
+    pub name: String,
+    #[serde(default)]
+    pub vram_mb: Option<u64>,
+}
+
+/// Texto que veio da rede local: sem caracteres de controle e com tamanho
+/// limitado, porque vai direto para a tela.
+fn clean_text(text: &str, limit: usize) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(limit)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+impl DiscoveredMachine {
+    /// O resumo desta máquina. `name` é o nome escolhido no wizard, quando há.
+    pub fn from_system(system: &crate::sysmon::SystemLoad, name: Option<String>) -> Self {
+        Self {
+            hostname: name
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| system.hostname.clone()),
+            os: system.os.to_string(),
+            arch: system.arch.to_string(),
+            cpu_count: system.cpu_count as u32,
+            ram_mb: system.ram.total_mb.max(0.0) as u64,
+            gpus: system
+                .gpus
+                .iter()
+                .map(|gpu| DiscoveredGpu {
+                    name: gpu.name.clone(),
+                    vram_mb: gpu.vram_total_mb.map(|mb| mb.max(0.0) as u64),
+                })
+                .collect(),
+        }
+    }
+
+    /// Limpa e limita o que chegou pela rede. `None` sem nome utilizável.
+    fn sanitized(self) -> Option<Self> {
+        let hostname = clean_text(&self.hostname, 64);
+        if hostname.is_empty() {
+            return None;
+        }
+        Some(Self {
+            hostname,
+            os: clean_text(&self.os, 32),
+            arch: clean_text(&self.arch, 16),
+            cpu_count: self.cpu_count.min(4096),
+            ram_mb: self.ram_mb,
+            gpus: self
+                .gpus
+                .into_iter()
+                .take(4)
+                .map(|gpu| DiscoveredGpu {
+                    name: clean_text(&gpu.name, 64),
+                    vram_mb: gpu.vram_mb,
+                })
+                .collect(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -245,7 +337,7 @@ impl LocalDiscoveryRuntime {
             .and_then(|search| search.result.clone())
     }
 
-    pub async fn begin_search(&self) -> Result<String> {
+    pub async fn begin_search(&self, machine: Option<DiscoveredMachine>) -> Result<String> {
         let (request_id, message) = {
             let mut state = self.state.lock().await;
             let mut request_id_bytes = [0u8; 16];
@@ -260,6 +352,7 @@ impl LocalDiscoveryRuntime {
                 request_id: request_id.clone(),
                 node_ephemeral_public: encode(node_ephemeral_public.as_bytes()),
                 node_nonce: encode(&node_nonce),
+                machine: machine.and_then(DiscoveredMachine::sanitized),
             };
             state.search = Some(SearchSession {
                 request_id: request_id.clone(),
@@ -328,6 +421,7 @@ impl LocalDiscoveryRuntime {
                 request_id,
                 node_ephemeral_public,
                 node_nonce,
+                machine,
             } if version == PROTOCOL_VERSION => {
                 let Some(admin) = state.admin.as_ref() else {
                     return responses;
@@ -367,6 +461,19 @@ impl LocalDiscoveryRuntime {
                         source,
                     },
                 );
+                // O computador aparece no wizard do administrador assim que
+                // procura a rede; `joined` marca quando ele recebe a raiz.
+                let peer = LocalDiscoveryPeer {
+                    request_id: request_id.clone(),
+                    address: source.to_string(),
+                    machine: machine.and_then(DiscoveredMachine::sanitized),
+                    joined: false,
+                };
+                state.peers.retain(|known| known.address != peer.address);
+                if state.peers.len() >= 32 {
+                    state.peers.remove(0);
+                }
+                state.peers.push(peer);
                 responses.push((
                     source,
                     LocalAutoDiscoveryMessage::Offer {
@@ -497,15 +604,27 @@ impl LocalDiscoveryRuntime {
                 if ciphertext.chunks(MAX_SECRET_CHUNK_BYTES).len() != chunk_count as usize {
                     return responses;
                 }
-                let peer = LocalDiscoveryPeer {
-                    request_id: request_id.clone(),
-                    address: source.to_string(),
-                };
-                state.peers.retain(|known| known.address != peer.address);
-                if state.peers.len() >= 32 {
-                    state.peers.remove(0);
+                match state
+                    .peers
+                    .iter_mut()
+                    .find(|known| known.request_id == request_id)
+                {
+                    Some(known) => known.joined = true,
+                    None => {
+                        state
+                            .peers
+                            .retain(|known| known.address != source.to_string());
+                        if state.peers.len() >= 32 {
+                            state.peers.remove(0);
+                        }
+                        state.peers.push(LocalDiscoveryPeer {
+                            request_id: request_id.clone(),
+                            address: source.to_string(),
+                            machine: None,
+                            joined: true,
+                        });
+                    }
                 }
-                state.peers.push(peer);
                 for (chunk_index, chunk) in ciphertext.chunks(MAX_SECRET_CHUNK_BYTES).enumerate() {
                     let Ok(chunk_index) = u16::try_from(chunk_index) else {
                         return responses;

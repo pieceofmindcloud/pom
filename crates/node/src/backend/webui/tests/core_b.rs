@@ -245,6 +245,7 @@ mod chat_telemetry_tests {
                 to_node_id: "b".into(),
                 rtt_ms: 9.0,
                 transport: "https-link".into(),
+                relayed: false,
             }]
         );
     }
@@ -288,6 +289,7 @@ mod chat_telemetry_tests {
                 to_node_id: "tail".into(),
                 rtt_ms: 7.0,
                 transport: "https-link".into(),
+                relayed: false,
             }]
         );
     }
@@ -319,18 +321,21 @@ mod chat_telemetry_tests {
                     to_node_id: "b".into(),
                     rtt_ms: 30.0,
                     transport: "http".into(),
+                    relayed: false,
                 },
                 ChatTelemetryMeasurement {
                     from_node_id: "b".into(),
                     to_node_id: "c".into(),
                     rtt_ms: 31.0,
                     transport: "quic".into(),
+                    relayed: false,
                 },
                 ChatTelemetryMeasurement {
                     from_node_id: "c".into(),
                     to_node_id: "gateway".into(),
                     rtt_ms: 29.0,
                     transport: "https".into(),
+                    relayed: false,
                 },
             ]
         );
@@ -368,33 +373,8 @@ mod chat_telemetry_tests {
                 to_node_id: "tail".into(),
                 rtt_ms: 1.0,
                 transport: "quic".into(),
+                relayed: false,
             }]
-        );
-    }
-
-    #[test]
-    fn execution_network_rtts_use_wire_values_for_route_costs() {
-        let trace = json!({
-            "pipeline_cycle": {
-                "prefill": [
-                    {"from_node_id": "gateway", "to_node_id": "head", "transport_summary": {
-                        "transports": [{"transport": "quic", "calls": 1, "rtt_median_ms": 559, "net_rtt_median_ms": 24}]
-                    }}
-                ],
-                "decode": [
-                    {"from_node_id": "head", "to_node_id": "tail", "transport_summary": {
-                        "transports": [{"transport": "quic", "calls": 4, "rtt_median_ms": 30, "net_rtt_median_ms": 26}]
-                    }}
-                ]
-            }
-        });
-
-        assert_eq!(
-            execution_network_rtts(&trace, "gateway"),
-            HashMap::from([
-                (("gateway".into(), "head".into()), 24.0),
-                (("head".into(), "tail".into()), 26.0),
-            ])
         );
     }
 
@@ -425,55 +405,192 @@ mod chat_telemetry_tests {
         );
     }
 
+    fn route_perf(
+        decode_ms: f64,
+        route: &[(&str, f64)],
+        back: &[(&str, f64)],
+    ) -> crate::fastest::PeerPerf {
+        crate::fastest::PeerPerf {
+            decode_ms_per_step: Some(decode_ms),
+            route_rtt_ms: route.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            gateway_rtt_ms: back.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            route_kinds: route.iter().map(|(k, _)| (k.to_string(), "tunnel".to_string())).collect(),
+            gateway_route_kinds: back.iter().map(|(k, _)| (k.to_string(), "quic".to_string())).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn route_inputs<'a>(
+        requester: &'a str,
+        requester_rtt: &'a HashMap<String, f64>,
+        perf: &'a HashMap<String, crate::fastest::PeerPerf>,
+        load: &'a HashMap<String, u32>,
+    ) -> crate::fastest::CostInputs<'a> {
+        crate::fastest::CostInputs {
+            requester,
+            requester_rtt_ms: requester_rtt,
+            perf,
+            local_load: load,
+            prompt_tokens: 1.0,
+            decode_tokens: 1.0,
+            forced_return: None,
+        }
+    }
+
     #[test]
-    fn pipeline_routes_include_each_head_and_sum_every_hop() {
+    fn pipeline_routes_include_each_head_and_cost_the_network_like_the_planner() {
         let peers = vec![
             served_peer("head-fast", 0, 15),
             served_peer("head-slow", 0, 15),
             served_peer("tail", 16, 31),
         ];
-        let rtts = HashMap::from([
-            (("gateway".into(), "head-fast".into()), 4.0),
-            (("gateway".into(), "head-slow".into()), 18.0),
-            (("head-fast".into(), "tail".into()), 12.0),
-            (("head-slow".into(), "tail".into()), 12.0),
-            (("tail".into(), "gateway".into()), 3.0),
+        let requester_rtt = HashMap::from([
+            ("head-fast".to_string(), 4.0),
+            ("head-slow".to_string(), 18.0),
         ]);
+        let perf = HashMap::from([
+            ("head-fast".to_string(), route_perf(10.0, &[("tail", 12.0)], &[])),
+            ("head-slow".to_string(), route_perf(10.0, &[("tail", 12.0)], &[])),
+            ("tail".to_string(), route_perf(20.0, &[], &[("gateway", 3.0)])),
+        ]);
+        let load = HashMap::new();
+        let inputs = route_inputs("gateway", &requester_rtt, &perf, &load);
 
-        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, "gateway", &rtts);
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, &inputs);
 
-        assert_eq!(
-            routes
-                .iter()
-                .map(|route| (&route.node_ids, route.rtt_ms))
-                .collect::<Vec<_>>(),
-            vec![
-                (
-                    &vec!["head-fast".into(), "tail".into(), "gateway".into()],
-                    Some(19.0)
-                ),
-                (
-                    &vec!["head-slow".into(), "tail".into(), "gateway".into()],
-                    Some(33.0)
-                ),
-            ]
-        );
+        // Resposta direta: meio RTT de cada perna da ida e meio da volta.
+        // head-fast: (4 + 12) / 2 + 3 / 2 = 9.5 ms, abaixo do anel (16 ms).
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].node_ids, vec!["head-fast", "tail", "gateway"]);
+        assert_eq!(routes[0].legs_ms, vec![Some(4.0), Some(12.0), Some(3.0)]);
+        assert_eq!(routes[0].rtt_ms, Some(19.0));
+        assert_eq!(routes[0].network_ms, Some(9.5));
+        assert_eq!(routes[0].return_mode, Some(crate::fastest::ReturnMode::Direct));
+        assert_eq!(routes[0].compute_ms, Some(30.0));
+        assert_eq!(routes[0].total_ms, Some(39.5));
+        assert_eq!(routes[1].node_ids, vec!["head-slow", "tail", "gateway"]);
+        assert_eq!(routes[1].total_ms, Some(46.5));
+
+        let measurements = planned_route_measurements(&routes, &inputs);
+        assert!(measurements.contains(&ChatTelemetryMeasurement {
+            from_node_id: "head-fast".into(),
+            to_node_id: "tail".into(),
+            rtt_ms: 12.0,
+            transport: "libp2p-tunnel".into(),
+            relayed: false,
+        }));
+        assert!(measurements.contains(&ChatTelemetryMeasurement {
+            from_node_id: "tail".into(),
+            to_node_id: "gateway".into(),
+            rtt_ms: 3.0,
+            transport: "quic".into(),
+            relayed: false,
+        }));
+    }
+
+    #[test]
+    fn a_slow_return_leg_is_costed_as_the_ring() {
+        // O gateway é a cabeça; a volta da cauda é tão cara quanto a ida. O
+        // card somava ida e volta inteiras (67 + 67); o planejador paga um
+        // RTT por token, pelo anel.
+        let peers = vec![served_peer("gateway", 0, 15), served_peer("tail", 16, 31)];
+        let requester_rtt = HashMap::from([("tail".to_string(), 67.0)]);
+        let perf = HashMap::from([
+            ("gateway".to_string(), route_perf(25.0, &[("tail", 67.0)], &[])),
+            ("tail".to_string(), route_perf(66.0, &[], &[("gateway", 80.0)])),
+        ]);
+        let load = HashMap::new();
+        let inputs = route_inputs("gateway", &requester_rtt, &perf, &load);
+
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, &inputs);
+
+        assert_eq!(routes[0].node_ids, vec!["gateway", "tail", "gateway"]);
+        assert_eq!(routes[0].legs_ms, vec![Some(0.0), Some(67.0), Some(80.0)]);
+        assert_eq!(routes[0].return_mode, Some(crate::fastest::ReturnMode::Ring));
+        assert_eq!(routes[0].network_ms, Some(67.0));
+        assert_eq!(routes[0].total_ms, Some(158.0));
+    }
+
+    #[test]
+    fn a_tunnel_leg_through_a_relay_marks_the_route_and_the_edge() {
+        let peers = vec![served_peer("head", 0, 15), served_peer("tail", 16, 31)];
+        let requester_rtt = HashMap::from([("head".to_string(), 5.0)]);
+        let mut head = route_perf(10.0, &[("tail", 67.0)], &[]);
+        head.relayed_peers.insert("tail".into());
+        let perf = HashMap::from([
+            ("head".to_string(), head),
+            ("tail".to_string(), route_perf(20.0, &[], &[("gateway", 3.0)])),
+        ]);
+        let load = HashMap::new();
+        let inputs = route_inputs("gateway", &requester_rtt, &perf, &load);
+
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, &inputs);
+        assert!(routes[0].relayed);
+        assert_eq!(routes[0].relayed_legs, vec![["head".to_string(), "tail".to_string()]]);
+        let measurements = planned_route_measurements(&routes, &inputs);
+        let edge = measurements
+            .iter()
+            .find(|m| m.from_node_id == "head" && m.to_node_id == "tail")
+            .unwrap();
+        assert!(edge.relayed);
+        // A volta da cauda é QUIC direto: não é relé.
+        let back = measurements
+            .iter()
+            .find(|m| m.from_node_id == "tail")
+            .unwrap();
+        assert!(!back.relayed);
+
+        // Túnel com conexão direta (hole punch fechou) não é relé.
+        let mut direct = perf.clone();
+        direct.get_mut("head").unwrap().relayed_peers.clear();
+        let inputs = route_inputs("gateway", &requester_rtt, &direct, &load);
+        assert!(!pipeline_routes_for(&peers, "qwen35", None, 32, &inputs)[0].relayed);
+    }
+
+    #[test]
+    fn a_relayed_return_leg_does_not_count_when_the_answer_comes_back_by_the_ring() {
+        // Gateway é a cabeça; a ida até a cauda é QUIC e só a volta direta
+        // passa por relé. O planejador escolhe o anel, que não usa essa volta.
+        let peers = vec![served_peer("gateway", 0, 15), served_peer("tail", 16, 31)];
+        let requester_rtt = HashMap::from([("tail".to_string(), 30.0)]);
+        let mut tail = route_perf(66.0, &[], &[("gateway", 52.0)]);
+        tail.gateway_route_kinds.insert("gateway".into(), "tunnel".into());
+        tail.relayed_peers.insert("gateway".into());
+        let perf = HashMap::from([
+            ("gateway".to_string(), route_perf(25.0, &[("tail", 30.0)], &[])),
+            ("tail".to_string(), tail),
+        ]);
+        let load = HashMap::new();
+        let inputs = route_inputs("gateway", &requester_rtt, &perf, &load);
+
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, &inputs);
+
+        assert_eq!(routes[0].return_mode, Some(crate::fastest::ReturnMode::Ring));
+        assert!(!routes[0].relayed);
+        assert!(routes[0].relayed_legs.is_empty());
+        assert!(routes[0].relay_bypassed_by_ring);
     }
 
     #[test]
     fn pipeline_route_does_not_append_gateway_when_gateway_is_already_the_tail() {
-        let peers = vec![served_peer("head", 0, 15), served_peer("gateway", 16, 31)];
-        let rtts = HashMap::from([
-            (("gateway".into(), "head".into()), 23.0),
-            (("head".into(), "gateway".into()), 24.0),
-        ]);
+        let peers = vec![served_peer("head", 0, 15), served_peer("gw", 16, 31)];
+        let requester_rtt = HashMap::from([("head".to_string(), 23.0)]);
+        let perf = HashMap::from([("head".to_string(), route_perf(10.0, &[("gw", 24.0)], &[]))]);
+        let load = HashMap::new();
+        let inputs = route_inputs("gw", &requester_rtt, &perf, &load);
 
-        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, "gateway", &rtts);
+        let routes = pipeline_routes_for(&peers, "qwen35", None, 32, &inputs);
 
         assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].node_ids, vec!["head", "gateway"]);
+        assert_eq!(routes[0].node_ids, vec!["head", "gw"]);
         assert_eq!(routes[0].legs_ms, vec![Some(23.0), Some(24.0)]);
         assert_eq!(routes[0].rtt_ms, Some(47.0));
+        // A última aresta é passagem de ida, não volta: no trace ela aparece
+        // com o nó de destino, não como `gateway`.
+        let measurements = planned_route_measurements(&routes, &inputs);
+        assert_eq!(measurements.len(), 1);
+        assert_eq!(measurements[0].to_node_id, "gw");
+        assert_eq!(measurements[0].transport, "libp2p-tunnel");
     }
 
     #[tokio::test]

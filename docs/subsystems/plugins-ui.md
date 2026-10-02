@@ -1,59 +1,61 @@
-# Subsistema: interface fornecida por plugins
+# Subsystem: UI provided by plugins
 
-Um plugin pode entregar, junto do backend, o próprio menu, telas, rotas,
-perfis e textos. O POM só implementa o mecanismo genérico (contrato
-`pom-plugin-ui/v1`); nenhum plugin específico é conhecido pelo frontend. As
-rotas nativas `/logs` e `/estatisticas` continuam como **fallbacks de
-propaganda** do `EnterpriseFeatureShowcase`, mas um manifesto pode declarar
-uma delas para substituir a tela nessa URL. As demais telas de plugin ficam sob
-o namespace de cada `plugin_code`. O código real de Logs de Requisições e
-Estatísticas mora em `pom-plugin-logs`, não aqui.
+A plugin can ship, together with its backend, its own menu, screens, routes,
+profiles and texts. POM only implements the generic mechanism (the
+`pom-plugin-ui/v1` contract); the frontend knows no specific plugin. The native
+routes `/logs` and `/estatisticas` remain as **advertising fallbacks** of
+`EnterpriseFeatureShowcase`, but a manifest can declare one of them to replace
+the screen at that URL. Other plugin screens live under each `plugin_code`'s
+namespace. The real code of Request Logs and Statistics lives in
+`pom-plugin-logs`, not here.
 
-## Como chega ao navegador
+## How it reaches the browser
 
-1. O artefato do plugin (o mesmo binário verificado por SHA-256 na instalação)
-   carrega o manifesto, o bundle JS/CSS e os catálogos i18n. O host do plugin
-   responde as operações `ui.manifest` e `ui.asset` do `query` genérico. Nada
-   muda no servidor de licenças, e manifesto e backend nunca divergem de versão.
-2. `crates/node/src/plugin_ui.rs` valida o manifesto (`PluginUiManifest::parse`)
-   e serve:
-   - `GET /api/ui/plugins/ui` - `{plugins: [{code, version, manifest}]}` só dos
-     plugins **ativos** com host rodando e manifesto válido. Inativo, ausente
-     ou inválido = não aparece = só os fallbacks.
-   - `GET /api/ui/plugins/:code/assets/*path` - só o que o manifesto lista em
-     `assets`; tipo de conteúdo numa lista fechada, `nosniff`, `no-cache`.
-     Isso inclui o PNG do menu e Markdown da documentação.
-     Catálogos i18n passam por `validate_catalog` antes de sair.
-   Ambas são GET comuns de `/api/ui/plugins` (`RouteScope::CommonOrInternal`);
-   a autorização dos dados que a tela lê continua nas rotas do plugin (por
-   exemplo `/api/ui/requests`, AdminOnly).
-3. O frontend (`usePluginUi`) guarda o resultado em `lib/pluginUi.ts`. O menu
-   (`components/nav.ts`), o guarda de perfil (`lib/access.ts`), o carregamento
-   de textos (`lib/pluginI18n.ts`) e o roteador (`App.tsx`) consultam o mesmo
-   registro validado. A tela Plugins invalida essa consulta após ações de
-   ativação, instalação, atualização ou desativação, para que a navegação
-   acompanhe a mudança assim que o nó a confirma; o polling de 30 s cobre
-   mudanças feitas fora desta aba.
+1. The plugin artifact (the same binary verified by SHA-256 at install time)
+   carries the manifest, the JS/CSS bundle and the i18n catalogs. The plugin
+   host answers the `ui.manifest` and `ui.asset` operations of the generic
+   `query`. Nothing changes on the license server, and manifest and backend
+   never drift in version.
+2. `crates/node/src/plugin_ui.rs` validates the manifest
+   (`PluginUiManifest::parse`) and serves:
+   - `GET /api/ui/plugins/ui` - `{plugins: [{code, version, manifest}]}` only for
+     **active** plugins with a running host and a valid manifest. Inactive,
+     missing or invalid = not listed = only the fallbacks.
+   - `GET /api/ui/plugins/:code/assets/*path` - only what the manifest lists in
+     `assets`; content type from a closed list, `nosniff`, `no-cache`. This
+     includes the menu PNG and documentation Markdown. i18n catalogs go through
+     `validate_catalog` before leaving.
+   Both sit under `/api/ui/plugins`, open to every profile
+   (`RouteScope::InferNodeAdmin`, since plugins are local to each node); the
+   authorization of the data the screen reads stays in the plugin's routes (for
+   example `/api/ui/requests`, AdminOnly).
+3. The frontend (`usePluginUi`) stores the result in `lib/pluginUi.ts`. The menu
+   (`components/nav.ts`), the profile guard (`lib/access.ts`), text loading
+   (`lib/pluginI18n.ts`) and the router (`App.tsx`) all read the same validated
+   registry. The Plugins screen invalidates that query after activation,
+   install, update or deactivation actions, so navigation follows the change as
+   soon as the node confirms it; the 30 s polling covers changes made outside
+   this tab.
 
-## Manifesto (`pom-plugin-ui/v1`)
+## Manifest (`pom-plugin-ui/v1`)
 
-| Campo | Regra |
+| Field | Rule |
 |---|---|
-| `schema`, `plugin_code` | `pom-plugin-ui/v1`; o código tem de ser o do plugin instalado |
-| `icon_image` | opcional; caminho de um asset `.png`. O frontend o usa no menu e volta ao `menu[].icon` quando a imagem falha ou não existe |
-| `description` | opcional; texto curto por idioma (`en` obrigatório, até 2000 bytes cada), mostrado no card da tela Plugins |
-| `screenshots` | opcional; até 8 imagens (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) como caminhos relativos à raiz do repositório GitHub do plugin ou URLs `https://` sem credenciais. Não são assets e o nó nunca as serve: caminhos relativos viram `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<caminho>` e o navegador as carrega direto do GitHub |
-| `menu[]` | `id` (único no manifesto, inclusive entre filhos), `label` por idioma (`en` obrigatório), `icon` (nome conhecido, senão genérico), `to`, `roles` opcional (`admin`/`node`/`infer`); sem `roles` nem o campo legado `profiles`, todos os perfis são elegíveis. `group` é aceito, mas não organiza itens |
-| `menu[].children[]` | opcional; submenus com `id`, `label`, `icon`, `to` e `roles` (interseção com os do pai). Com filhos, o item vira seção expansível do menu lateral; o `to` do pai continua obrigatório para hosts sem suporte a submenus |
-| `routes[]` | `path`, `screen`, `roles` opcional (`admin`/`node`/`infer`) ou `profiles` legado (`admin`/`node`/`infer`, não vazio), `full_bleed`; sem os dois, todos os perfis são elegíveis |
-| `screens{}` | `module` (asset ES), `export` (padrão `default`), `styles[]` |
-| `i18n{}` | idioma -> asset JSON; se presente, `en` é obrigatório |
-| `documentation` | opcional; formato atual com `guides[]` e `reference[]`, cada entrada com `id`, `title` localizado (com `en`) e asset Markdown relativo sob `docs/`; uma lista publicada de caminhos `docs/*.md` também é normalizada para guias |
-| `assets[]` | lista fechada; caminhos relativos, sem `..`; tudo o que telas, documentação e i18n citam tem de estar aqui |
+| `schema`, `plugin_code` | `pom-plugin-ui/v1`; the code must be the installed plugin's |
+| `icon_image` | optional; path of a `.png` asset. The frontend uses it in the menu and falls back to `menu[].icon` when the image fails or is missing |
+| `description` | optional; short text per language (`en` required, up to 2000 bytes each), shown on the Plugins screen card |
+| `screenshots` | optional; up to 8 images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) as paths relative to the root of the plugin's GitHub repository or `https://` URLs without credentials. They are not assets and the node never serves them: relative paths become `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>` and the browser loads them straight from GitHub |
+| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`node`/`infer`); with neither `roles` nor the legacy `profiles` field, every profile is eligible. `group` is accepted but does not organize items |
+| `menu[].children[]` | optional; submenus with `id`, `label`, `icon`, `to` and `roles` (intersected with the parent's). With children, the item becomes an expandable section of the sidebar; the parent's `to` is still required for hosts without submenu support |
+| `routes[]` | `path`, `screen`, optional `roles` (`admin`/`node`/`infer`) or legacy `profiles` (`admin`/`node`/`infer`, non-empty), `full_bleed`; with neither, every profile is eligible |
+| `screens{}` | `module` (ES asset), `export` (default `default`), `styles[]` |
+| `i18n{}` | language -> JSON asset; if present, `en` is required |
+| `documentation` | optional; current format with `guides[]` and `reference[]`, each entry with `id`, a localized `title` (with `en`) and a relative Markdown asset under `docs/`; a published list of `docs/*.md` paths is also normalized into guides |
+| `assets[]` | closed list; relative paths, no `..`; everything screens, documentation and i18n mention must be here |
 
-Um manifesto que também publica a documentação usa este formato. O plugin
-mantém os arquivos dentro da pasta `docs/` do pacote; o POM não grava nem
-move esses arquivos para a workspace.
+A manifest that also publishes documentation uses this format. The plugin
+keeps the files inside the package's `docs/` folder; POM does not write or move
+them into the workspace.
 
 ~~~json
 {
@@ -78,113 +80,146 @@ move esses arquivos para a workspace.
 }
 ~~~
 
-A tela `/admin-ui/documentacao` acrescenta as guias e a referência dos
-plugins ativos à documentação do sistema. Ela baixa cada Markdown pela rota de
-assets somente quando a pessoa o abre; plugin inativo ou manifesto inválido
-não publica páginas.
+The `/admin-ui/documentacao` screen adds the guides and reference of active
+plugins to the system documentation. It downloads each Markdown file through
+the assets route only when the person opens it; an inactive plugin or an
+invalid manifest publishes no pages.
 
-O host normaliza cada `menu[].to` e `routes[].path` sob `/<plugin_code>/...` e
-guarda os dois no mesmo registro. Assim, `plugin_code: "base"` com `to: "/example"`
-e `path: "/example"` usa `/base/example` tanto no link quanto no matcher; no
-navegador, o basename acrescenta `/admin-ui`. Barras repetidas e finais são
-normalizadas. Um prefixo já igual ao `plugin_code` não é duplicado, mantendo
-manifestos que já carregam esse segmento. Caminhos com `.`/`..`, separadores
-codificados, schema inválido, código divergente ou estruturas inconsistentes
-fazem o host ignorar o manifesto inteiro. O destino do menu também precisa ser
-coberto por uma rota declarada.
+The host normalizes each `menu[].to` and `routes[].path` under
+`/<plugin_code>/...` and keeps both in the same registry. So
+`plugin_code: "base"` with `to: "/example"` and `path: "/example"` uses
+`/base/example` both in the link and in the matcher; in the browser, the
+basename adds `/admin-ui`. Repeated and trailing slashes are normalized. A
+prefix already equal to the `plugin_code` is not duplicated, which keeps
+manifests that already carry that segment working. Paths with `.`/`..`,
+encoded separators, an invalid schema, a mismatched code or inconsistent
+structures make the host ignore the whole manifest. A menu target must also be
+covered by a declared route.
 
-Plugins diferentes podem usar o mesmo caminho relativo: seus destinos ficam,
-por exemplo, em `/base/example` e `/analytics/example`. `/logs` e
-`/estatisticas` são pontos de extensão nativos: se exatamente um plugin ativo
-declarar um deles, sua rota e seu menu usam a URL nativa e substituem o fallback
-correspondente. Se dois plugins reivindicarem o mesmo ponto, nenhum assume a
-URL nativa e ambos ficam sob seus namespaces, evitando colisão. Sem uma
-declaração única, o fallback do POM permanece disponível.
+Different plugins can use the same relative path: their targets end up at, for
+example, `/base/example` and `/analytics/example`. `/logs` and `/estatisticas`
+are native extension points: if exactly one active plugin declares one of
+them, its route and menu use the native URL and replace the matching fallback.
+If two plugins claim the same point, neither takes the native URL and both stay
+under their namespaces, avoiding a collision. Without a single declaration,
+POM's fallback stays available.
 
-Menus novos são exibidos como itens de primeiro nível antes de Documentação,
-na ordem em que aparecem nos manifestos e na lista de plugins. Um item com
-`children` vira uma seção expansível, como Modelos ou Rede, com um submenu por
-filho visível ao perfil; a seção some quando nenhum filho sobra. O campo
-`group` continua sem efeito. Hosts anteriores ignoram `children` e mostram só o
-`to` do pai, por isso o contrato continua `pom-plugin-ui/v1`. O registro normaliza
-uma vez cada destino e a navegação e o roteador consomem esse mesmo caminho.
-O basename `/admin-ui` continua sendo aplicado pelo `BrowserRouter`, inclusive
-em recarga direta e navegação pelo histórico do navegador.
+New menus are shown as top-level items before Documentation, in the order they
+appear in the manifests and in the plugin list. An item with `children`
+becomes an expandable section, like Models or Network, with one submenu per
+child visible to the profile; the section disappears when no child is left. The
+`group` field still has no effect. Older hosts ignore `children` and only show
+the parent's `to`, which is why the contract is still `pom-plugin-ui/v1`. The
+registry normalizes each target once and both navigation and the router
+consume that same path. The `/admin-ui` basename is still applied by
+`BrowserRouter`, including on direct reloads and browser history navigation.
 
-Os perfis da rota decidem quem entra na tela do plugin - inclusive `infer`, cuja
-lista reduzida do POM não se aplica a essas rotas. `menu[].roles` restringe a
-visibilidade do link e a rota direta correspondente; `routes[].roles` tem
-precedência sobre `routes[].profiles`, e a lista efetiva é a interseção com os
-menus que cobrem o destino. Para manifests existentes,
-`menu[].profiles` continua aceito como equivalente quando `roles` não foi
-declarado; `roles` prevalece quando os dois campos aparecem. Sem nenhum dos
-campos do menu ou da rota, todos os perfis são elegíveis. Perfil fora da lista
-efetiva recebe a recusa normal.
+The route's profiles decide who enters the plugin screen - including `infer`,
+whose reduced POM list does not apply to these routes. `menu[].roles`
+restricts the link's visibility and the matching direct route;
+`routes[].roles` takes precedence over `routes[].profiles`, and the effective
+list is the intersection with the menus that cover the target. For existing
+manifests, `menu[].profiles` is still accepted as an equivalent when `roles`
+was not declared; `roles` wins when both fields appear. With none of the menu
+or route fields, every profile is eligible. A profile outside the effective
+list gets the normal refusal.
 
-## Telas
+## Screens
 
-`components/PluginScreen.tsx` importa o módulo do asset (mesma origem, a sessão
-vale) e monta o export declarado como componente React da própria árvore, com
-`ErrorBoundary`; falha vira um cartão de erro. O host remonta a tela quando a
-rota normalizada muda, inclusive entre destinos do mesmo `plugin_code`, para
-que uma navegação interna não retenha o componente da rota anterior. O plugin não empacota outro
-React: `lib/pluginHost.ts` expõe em `globalThis.__POM_HOST__` React, ReactDOM,
-o runtime JSX, React Query, o kit de design (`components/ui`), `format`,
+`components/PluginScreen.tsx` imports the asset module (same origin, the
+session applies) and mounts the declared export as a React component of the
+app's own tree, with an `ErrorBoundary`; a failure becomes an error card. The
+host remounts the screen when the normalized route changes, including between
+targets of the same `plugin_code`, so an internal navigation does not retain
+the previous route's component. The plugin does not bundle another React:
+`lib/pluginHost.ts` exposes on `globalThis.__POM_HOST__` React, ReactDOM, the
+JSX runtime, React Query, the design kit (`components/ui`), `format`,
 `useI18n`, `useTheme`, `useCluster`, `api.get`, `Modal`, `ExecutionTelemetry`,
-`Markdown` e `storageKey`. O plugin troca esses imports por leituras desse
-objeto na hora de empacotar; hooks e contextos são os da aplicação. A
-superfície é versionada (`PLUGIN_HOST_VERSION`) e só cresce de forma
-compatível. A versão 2 acrescentou `context()` (idioma e tema atuais),
-`events`, `protocol` e `plugin(code)`, a porta do protocolo de eventos descrito
-abaixo. O CSS do plugin usa os mesmos tokens de cor (variáveis CSS) do POM.
+`Markdown` and `storageKey`. The plugin swaps those imports for reads of that
+object when bundling; hooks and contexts are the application's. The surface is
+versioned (`PLUGIN_HOST_VERSION`) and only grows compatibly. Version 2 added
+`context()` (current language and theme), `events`, `protocol` and
+`plugin(code)`, the door to the event protocol described below. The plugin's
+CSS uses the same color tokens (CSS variables) as POM.
 
-## Preferências de release e contexto do host
+## Release preferences and host context
 
-As preferências locais não fazem parte do contrato de tela `pom-plugin-ui/v1`
-acima. O schema tipado é opcional em `PluginManifest.preferences` no contrato
-de release/licença (`crates/enterprise-protocol`): toggles booleanos e um
-campo opcional de diretório de armazenamento. O POM valida esse schema, aplica
-os defaults, persiste os valores por `plugin_code` no `pom.db` e nunca envia os
-valores ao servidor de licenças nem os trata como entitlement. A tela Plugins
-edita os valores num modal aberto pelo ícone de engrenagem no topo do card,
-apenas enquanto o plugin está ativo, e mostra o motivo devolvido pelo nó quando
-o salvamento é recusado. Um diretório de armazenamento absoluto que ainda não
-existe é criado ao salvar. Depois de salvar, o nó reenvia `host.configure` e
-envia `host.event` com `preferences.changed`.
+Local preferences are not part of the `pom-plugin-ui/v1` screen contract
+above. The typed schema is optional in `PluginManifest.preferences` in the
+release/license contract (`crates/enterprise-protocol`): boolean toggles and an
+optional storage directory field. POM validates that schema, applies the
+defaults, persists the values per `plugin_code` in `pom.db` and never sends the
+values to the license server nor treats them as entitlement. The Plugins
+screen edits the values in a modal opened by the gear icon at the top of the
+card, only while the plugin is active, and shows the reason returned by the
+node when saving is refused. An absolute storage directory that does not exist
+yet is created on save. After saving, the node resends `host.configure` and
+sends `host.event` with `preferences.changed`.
 
-`host.configure` inclui os valores locais sob `preferences`, junto do contexto
-do gateway, para o próprio plugin ativo. Isso é IPC entre o nó e o host local,
-não tráfego para o license-server. O card **Adicionar do GitHub** fica no topo
-da coluna direita, acima da ativação de licença, e não lê nem consulta o
-catálogo do servidor. O operador cadastra qualquer repositório GitHub público; o POM lê
-`manifest.json` da raiz ou, se ausente, `ui/manifest.json` (`pom-plugin-ui/v1`)
-e lista as releases publicadas junto dos metadados do manifesto. No segundo
-formato, cada release anexa o manifesto por plataforma
-`pom-plugin-<os>-<arch>.json`. O manifesto declara `plugin_code`, nome,
-`plugin_abi`, features, preferências opcionais e um mapa `artifacts` por
-`<os>-<arch>`. Cada repositório vira (ou se soma a) um card de plugin com um
-select só das releases compatíveis com o nó, já marcado na mais recente, e a
-ação Instalar ou Atualizar; o operador pode escolher uma tag antiga. O POM valida ABI e manifesto, exige o digest
-SHA-256 da API do GitHub, baixa e verifica o asset e instala a versão escolhida
-sem consultar se exige licença. A lista de repositórios fica local no nó; a
-instalação não cria lease, grant ou entitlement. A ativação/licença de plugins
-continua separada. Ver `licenciamento-enterprise.md` para contrato, integridade
-e persistência.
+`host.configure` includes the local values under `preferences`, together with
+the gateway context, for the active plugin itself. This is IPC between the node
+and the local host, not traffic to the license server. The **Add from GitHub**
+card sits at the top of the right column, above license activation, and
+neither reads nor queries the server catalog. The operator registers any
+public GitHub repository; POM reads `manifest.json` from the root or, if
+missing, `ui/manifest.json` (`pom-plugin-ui/v1`) and lists the published
+releases together with the manifest metadata. In the second format, each
+release attaches the per-platform manifest `pom-plugin-<os>-<arch>.json`. The
+manifest declares `plugin_code`, name, `plugin_abi`, features, optional
+preferences and an `artifacts` map per `<os>-<arch>`. Each repository becomes
+(or joins) a plugin card with a select of only the releases compatible with the
+node, preselected on the latest, and the Install or Update action; the operator
+can pick an older tag. POM validates ABI and manifest, requires the SHA-256
+digest from the GitHub API, downloads and verifies the asset and installs the
+chosen version without checking whether it needs a license. The repository
+list stays local to the node; installing creates no lease, grant or
+entitlement. Plugin activation/licensing stays separate. Any profile (`admin`,
+`node`, `infer`) can register repositories, install and activate plugins on its
+own node. See `enterprise-licensing.md` for contract, integrity and
+persistence.
 
-O campo `workspace_root` do mesmo contrato é a única raiz configurável para
-projetos do usuário e dados dinâmicos dos plugins. Projetos ficam diretamente
-sob essa raiz. Cada plugin deve manter seu estado dinâmico sob um diretório
-oculto namespaced pelo próprio `plugin_code`, por exemplo
-`.deepseek_harness`; dados específicos de um projeto, quando necessários,
-ficam dentro do diretório oculto correspondente naquele projeto. Runtime e
-arquivos fixos de instalação continuam fora da workspace. O POM não migra nem
-remove conteúdo já existente de plugins: a adoção do campo vale para novos
-dados e o plugin decide como preservar seus dados legados.
+The `workspace_root` field of the same contract is the only configurable root
+for user projects and dynamic plugin data. Projects live directly under that
+root. Each plugin must keep its dynamic state under a hidden directory
+namespaced by its own `plugin_code`, for example `.deepseek_harness`;
+project-specific data, when needed, lives inside the matching hidden directory
+in that project. Runtime and fixed install files stay outside the workspace.
+POM neither migrates nor removes existing plugin content: adopting the field
+applies to new data and the plugin decides how to preserve its legacy data.
 
-## Contexto do nó (`host.configure`)
+## Local rebuild in development
 
-Um plugin que chama os modelos do nó não embute endereço nem credencial: o
-nó os entrega pelo `query` genérico, na operação `host.configure`:
+The local Compose mounts `POM_DEV_PLUGINS_DIR` (default `..`, the workspace directory containing the sibling plugin repositories) at
+`/opt/pom/dev-plugins` and enables `POM_DESENV=1`. The optional cluster
+`docker-compose.dev-plugins.yml` keeps each source bind read-only and overrides
+the build image to `dev-runtime`; that target includes Rust/Cargo and native
+tools, exposes the toolchain to the non-root node user and sets `CARGO_HOME`
+to a writable cache in the project data volume. The release
+`runtime` image still has no compiler. The panel offers the rebuild block only
+on the `admin` profile when `/api/ui/node` confirms `pom_desenv=true`.
+
+The backend discovers direct child directories named `pom-plugin-*` under the
+source mount; a mounted directory is listed only when its Cargo manifest and
+root `manifest.json` or `ui/manifest.json` are valid and all plugin manifests
+agree on a safe `plugin_code`. The code-server source uses
+`plugin_code: "code_server"`. `GET /api/ui/plugins/dev-sources` lists only
+valid mounted sources. The AdminOnly route
+`POST /api/ui/plugins/dev-sources/:repository/rebuild-install` uses fixed
+arguments for `cargo metadata --no-deps --locked` and `cargo build --release
+--locked`, requires a single `cdylib` target and checks canonical source and
+manifest paths. `CARGO_TARGET_DIR` points to
+`<project_root>/.pom-dev-plugin-builds/<repository>`, outside the mounted source,
+so read-only source binds are supported; the installed artifact must canonicalize
+inside that build directory. There is no shell command and no build argument
+taken from the request.
+
+The local build can install a plugin even when it has never been installed or activated. It writes a separate development-install record, starts only that plugin's isolated host, and grants no licensed features or license state. If a licensed or GitHub installation already exists, the local artifact replaces its running binary without changing that entitlement. The operation never activates or renews a license, calls GitHub or the license server, changes the release selection or restarts the POM process. The response exposes success or the step/exit code, never the compiler's stderr. The GitHub release install flow stays independent and unchanged.
+
+## Node context (`host.configure`)
+
+A plugin that calls the node's models embeds neither address nor credential:
+the node hands them over through the generic `query`, in the `host.configure`
+operation:
 
 ```json
 {"operation": "host.configure",
@@ -193,156 +228,163 @@ nó os entrega pelo `query` genérico, na operação `host.configure`:
  "preferences": {"features": {"capture_headers": false}, "storage_directory": null}}
 ```
 
-`openai_base_url` é o gateway do próprio nó em loopback (texto claro de
-loopback é sempre aceito, mesmo com TLS). `api_key` é a chave de chat do nó
-(`pom-<node_id>`), a mesma que o Chat da interface usa, para que também
-funcione num nó sem autoridade administrativa. O nó entrega o contexto a todo
-host que sobe e de novo quando ele muda (chave revogada e recriada); plugins
-que não conhecem a operação respondem erro, que é ignorado.
-`workspace_root` é um caminho absoluto visível e gravável pelo processo do
-plugin dentro do container. Em uma instalação nova o default persistido
-logicamente é `~/pom_workspace`, sem pergunta no wizard; em Compose o mount
-estável é `/data/workspace` e deve permanecer persistente entre reinícios.
-O POM verifica o caminho ao salvar a configuração e reenvia o contexto aos
-hosts em execução quando a raiz muda.
+`openai_base_url` is the node's own gateway on loopback (loopback clear text is
+always accepted, even with TLS). `api_key` is the node's chat key
+(`pom-<node_id>`), the same one the UI Chat uses, so it also works on a node
+without administrative authority. The node hands the context to every host
+that starts and again when it changes (key revoked and recreated); plugins that
+do not know the operation answer with an error, which is ignored.
+`workspace_root` is an absolute path visible and writable by the plugin
+process inside the container. On a new install the persisted default is
+logically `~/pom_workspace`, with no question in the wizard; in Compose the
+stable mount is `/data/workspace` and must stay persistent across restarts.
+POM checks the path when saving the configuration and resends the context to
+running hosts when the root changes.
 
-## Eventos e notificações (`pom-plugin-events/v1`)
+## Events and notifications (`pom-plugin-events/v1`)
 
-O POM e os plugins conversam por um único protocolo. Todo evento usa o mesmo
-envelope JSON, qualquer que seja o canal:
+POM and plugins talk through a single protocol. Every event uses the same JSON
+envelope, whatever the channel:
 
 ```json
 {"protocol": "pom-plugin-events/v1", "id": "<hex>", "type": "theme.changed",
  "target": "*", "source": "pom", "at": "<RFC 3339>", "payload": {"theme": "light"}}
 ```
 
-`target` é `*` (todos os plugins) ou um `plugin_code`. Eventos que o POM envia:
+`target` is `*` (all plugins) or a `plugin_code`. Events POM sends:
 
-| Tipo | Payload | Quando |
+| Type | Payload | When |
 |---|---|---|
-| `locale.changed` | `{locale}` | troca de idioma e uma vez ao montar o shell |
-| `theme.changed` | `{theme}` | troca de tema e uma vez ao montar o shell |
-| `preferences.changed` | `{preferences}` | preferências do plugin salvas (canal nativo) |
-| `notification.received` | `{message_id, plugin_code, title, body, level, sender_node_id, sent_at}` | aviso de plugin chegou pela rede |
-| `notification.response` | `{request_id, kind, action, error?}` | resposta a um comando do plugin |
-| `deployment.started` | `{kind, deploy_id, job_id, model, nodes, deployment_name?, reused?, version?}` | implantação (`kind: "deploy"`) ou reimplantação (`"redeploy"`) iniciada neste nó |
-| `model.serving` | `{model, deploy_ids, node_ids}` | um modelo passa a ser servido pela rede (entra em `/v1/models`) |
-| `model.stopped` | `{model}` | um modelo deixa de ser servido |
+| `locale.changed` | `{locale}` | language change and once when the shell mounts |
+| `theme.changed` | `{theme}` | theme change and once when the shell mounts |
+| `preferences.changed` | `{preferences}` | the plugin's preferences were saved (native channel) |
+| `notification.received` | `{message_id, plugin_code, title, body, level, sender_node_id, sent_at}` | a plugin notice arrived over the network |
+| `notification.response` | `{request_id, kind, action, error?}` | answer to a plugin command |
+| `deployment.started` | `{kind, deploy_id, job_id, model, nodes, deployment_name?, reused?, version?}` | a deployment (`kind: "deploy"`) or redeployment (`"redeploy"`) started on this node |
+| `model.serving` | `{model, deploy_ids, node_ids}` | a model starts being served by the network (enters `/v1/models`) |
+| `model.stopped` | `{model}` | a model stops being served |
 
-Canais do navegador (`lib/pluginEvents.ts`, alimentados pela
-`components/PluginBridge.tsx`):
+Browser channels (`lib/pluginEvents.ts`, fed by `components/PluginBridge.tsx`):
 
-- SDK: `__POM_HOST__.plugin(code).events.subscribe(tipo | "*", handler, {replay})`;
-  `replay` entrega de imediato o último `locale.changed`/`theme.changed`;
-- DOM: `CustomEvent("pom:plugin-event", {detail: envelope})` no `window`, para
-  código sem o SDK, como uma aplicação de terceiros embutida numa tela (o caso
-  do harness, que não usa os hooks React do POM);
-- iframes: `postMessage(envelope)` para `iframe[data-pom-plugin="<code>"]` da
-  mesma origem.
+- SDK: `__POM_HOST__.plugin(code).events.subscribe(type | "*", handler, {replay})`;
+  `replay` immediately delivers the last `locale.changed`/`theme.changed`;
+- DOM: `CustomEvent("pom:plugin-event", {detail: envelope})` on `window`, for
+  code without the SDK, such as a third-party application embedded in a screen
+  (the harness case, which does not use POM's React hooks);
+- iframes: `postMessage(envelope)` to `iframe[data-pom-plugin="<code>"]` of the
+  same origin.
 
-Canal nativo: o nó chama o `query` do host com
-`{"operation": "host.event", "event": <envelope>}` (`PluginRuntime::send_host_event`,
-envelope montado por `plugin_event_envelope`). Ele leva `preferences.changed`
-ao próprio plugin e, a todos os plugins em execução, os eventos do nó
-publicados por `PluginManager::publish_event`: `deployment.started` (emitido
-por `deploy_endpoint` e `redeploy_endpoint`) e `model.serving`/`model.stopped`
-(`spawn_serving_watcher`, que a cada 5 s compara os modelos servidos, os mesmos
-de `/v1/models`; o primeiro retrato é só a base). Os eventos do nó também ficam
-numa fila de 100 com sequência, lida pela interface em
-`GET /api/ui/plugins/events?after=<seq>` (AdminOnly, como o resto de
-`/api/ui/plugins`); sem `after`, a resposta traz só a sequência atual. A
-`PluginBridge` consulta a rota a cada 3 s e repassa os envelopes às telas pelos
-canais do navegador, preservando `id` e `at` (`forwardNodeEvent`). Plugin que não conhece a operação responde erro,
-ignorado como no `host.configure`.
+Native channel: the node calls the host's `query` with
+`{"operation": "host.event", "event": <envelope>}`
+(`PluginRuntime::send_host_event`, envelope built by `plugin_event_envelope`).
+It carries `preferences.changed` to the plugin itself and, to every running
+plugin, the node events published by `PluginManager::publish_event`:
+`deployment.started` (emitted by `deploy_endpoint` and `redeploy_endpoint`) and
+`model.serving`/`model.stopped` (`spawn_serving_watcher`, which every 5 s
+compares the served models, the same as `/v1/models`; the first snapshot is
+only the baseline). The node events also sit in a sequenced queue of 100, read
+by the UI at `GET /api/ui/plugins/events?after=<seq>` (open to every profile,
+like the rest of `/api/ui/plugins`); without `after`, the response only carries
+the current sequence. `PluginBridge` polls the route every 3 s and forwards the
+envelopes to the screens over the browser channels, keeping `id` and `at`
+(`forwardNodeEvent`). A plugin that does not know the operation answers with an
+error, ignored as with `host.configure`.
 
-No sentido inverso, o plugin envia comandos pelo SDK
-(`plugin(code).notifications.notify|confirm`, que devolvem a resposta) ou por
+In the other direction, the plugin sends commands through the SDK
+(`plugin(code).notifications.notify|confirm`, which return the answer) or
+through
 `CustomEvent("pom:plugin-request", {detail: {protocol, id, type, plugin_code, payload}})`
-e `postMessage` da mesma origem. `runPluginCommand` valida protocolo, plugin
-ativo e payload, e sempre responde com `notification.response` endereçado ao
-plugin:
+and same-origin `postMessage`. `runPluginCommand` validates protocol, active
+plugin and payload, and always answers with a `notification.response`
+addressed to the plugin:
 
-| Comando | Payload | Resultado |
+| Command | Payload | Result |
 |---|---|---|
-| `notification.notify` | `{title, body?, level?, scope?}` | `delivered` ou `failed` |
-| `notification.confirm` | `{title, body?, acceptLabel?, cancelLabel?, tone?, display?}` | `accepted` ou `cancelled` |
+| `notification.notify` | `{title, body?, level?, scope?}` | `delivered` or `failed` |
+| `notification.confirm` | `{title, body?, acceptLabel?, cancelLabel?, tone?, display?}` | `accepted` or `cancelled` |
 
-`scope: "local"` (padrão) mostra um toast só nesta interface e deixa o aviso
-no sino. `scope:
-"network"` publica `plugin_notice` pelo Chat da rede (ver `rede-p2p.md`,
-"Avisos de plugin"): exige o Chat da rede ligado, fica 24 h em memória em cada
-nó e aparece no sino e como toast nas outras interfaces, e como
-`notification.received` para os plugins. No sino, um aviso é só mensagem, sem
-botões: conta como não lido até a pessoa abrir o sino, quando fica lido (os
-ids lidos ficam no `localStorage`, então um aviso de rede ainda presente no
-snapshot não volta como novo depois de recarregar), e pode ser removido. `notification.confirm` põe o pedido no sino de notificações da barra
-superior do usuário atual, com Aceitar e Recusar, como uma oferta de
-transferência (`lib/pluginInbox.ts`, só nesta aba), e avisa com um
-toast; `display: "dialog"` abre um diálogo modal na hora. A resposta volta à
-janela do plugin. O `pom-plugin-base` é a
-referência: a tela Plugin demonstra os três comandos e lista os eventos
-recebidos pela tela e pelo backend nativo.
+`scope: "local"` (default) shows a toast only on this UI and leaves the notice
+in the bell. `scope: "network"` publishes a `plugin_notice` through the network
+Chat (see `p2p-network.md`, "Plugin notices"): it requires the network Chat to
+be on, stays 24 h in memory on each node and shows up in the bell and as a
+toast on the other UIs, and as `notification.received` for plugins. In the
+bell, a notice is only a message, without buttons: it counts as unread until
+the person opens the bell, when it becomes read (read ids stay in
+`localStorage`, so a network notice still present in the snapshot does not come
+back as new after a reload), and it can be removed. `notification.confirm` puts
+the request in the current user's top bar notification bell, with Accept and
+Refuse, like a transfer offer (`lib/pluginInbox.ts`, this tab only), and
+announces it with a toast; `display: "dialog"` opens a modal dialog right away.
+The answer goes back to the plugin's window. `pom-plugin-base` is the
+reference: its Plugin screen demonstrates the three commands and lists the
+events received by the screen and by the native backend.
 
-## Interface web servida pelo plugin (`/api/ui/plugins/:code/proxy/*`)
+## Web UI served by the plugin (`/api/ui/plugins/:code/proxy/*`)
 
-Uma tela de plugin pode depender de um servidor HTTP que o próprio plugin roda
-em loopback - por exemplo uma aplicação web inteira. O plugin anuncia onde ele
-está pela operação `ui.upstream`:
+A plugin screen can depend on an HTTP server the plugin itself runs on
+loopback - for example a whole web application. The plugin announces where it
+is through the `ui.upstream` operation:
 
 ```json
-{"status": "ready", "port": 43127, "token": "<segredo de 16 a 512 bytes ASCII>"}
+{"status": "ready", "port": 43127, "token": "<secret of 16 to 512 ASCII bytes>"}
 ```
 
-(`{"status": "starting"}` e `{"status": "error", "error": "..."}` viram 503.)
-`crates/node/src/plugin_proxy.rs` monta esse servidor em
-`/api/ui/plugins/<code>/proxy/`, na mesma origem da interface, e encaminha:
+(`{"status": "starting"}` and `{"status": "error", "error": "..."}` become
+503.) `crates/node/src/plugin_proxy.rs` mounts that server on the same origin
+as the UI and explicitly matches `/proxy`, `/proxy/` and `/proxy/*path`. Both
+root forms reach the upstream `/`. The explicit `/proxy/` route is required
+because Axum catch-all routes do not match an empty path remainder. The trailing
+slash keeps relative code-server assets under the proxy prefix. The proxy
+forwards:
 
-- HTTP com corpo em streaming nos dois sentidos, e upgrades (WebSocket);
-- o caminho depois do prefixo, byte a byte, e a query intacta;
-- `x-pom-plugin-token: <token>`, para que só o nó alcance o servidor do plugin;
-- `x-forwarded-prefix`, `x-forwarded-host` e `x-forwarded-proto`, para que o
-  plugin gere URLs sob o prefixo.
+- HTTP with streaming bodies in both directions, and upgrades (WebSocket);
+- the path after the prefix, byte for byte, and the query intact;
+- `x-pom-plugin-token: <token>`, so only the node reaches the plugin's server;
+- `x-forwarded-prefix`, `x-forwarded-host` and `x-forwarded-proto`, so the
+  plugin builds URLs under the prefix.
 
-Nunca seguem para o plugin o cookie de sessão, `Authorization` nem
-`x-pom-access-token`, e o nó descarta `Set-Cookie` das respostas. A rota é
-AdminOnly e usa a autorização da superfície administrativa, porque scripts,
-WebSockets e `EventSource` do navegador não carregam o `Authorization` da
-interface; em troca, recusa (403) `Origin` diferente do próprio nó,
-`Sec-Fetch-Site` fora de `same-origin`/`none` e chamadas entre nós.
+The session cookie, `Authorization` and `x-pom-access-token` never reach the
+plugin, and the node drops `Set-Cookie` from responses. The route is open to
+every profile (plugins are local to the node) and uses the administrative
+surface authorization, because the browser's scripts, WebSockets and
+`EventSource` do not carry the UI's `Authorization`; in exchange, it refuses
+(403) an `Origin` other than the node itself, a `Sec-Fetch-Site` other than
+`same-origin`/`none` and calls between nodes.
 
-## i18n do plugin
+## Plugin i18n
 
-Cada plugin leva os próprios textos: `{"<plugin_code>.chave": "texto ICU"}` por
-idioma. `lib/pluginI18n.ts` carrega os idiomas **selecionados** (o ativo e `en`
-como piso, só os que o manifesto declara e o POM suporta), valida de novo no
-navegador (chaves só no espaço `<plugin_code>.`, valores string, tetos) e
-entrega a `setPluginMessages` (`i18n/locales.ts`), que os coloca no mesmo mapa
-do `formatMessage` sem nunca sobrescrever chave do POM e os remove quando o
-plugin sai. Catálogo ausente, ilegível ou inválido é descartado com aviso: cai
-no `en` ou na chave. **O POM não é dono de nenhum texto de plugin.**
+Each plugin carries its own texts: `{"<plugin_code>.key": "ICU text"}` per
+language. `lib/pluginI18n.ts` loads the **selected** languages (the active one
+and `en` as a floor, only those the manifest declares and POM supports),
+validates them again in the browser (keys only in the `<plugin_code>.`
+namespace, string values, ceilings) and hands them to `setPluginMessages`
+(`i18n/locales.ts`), which puts them in the same `formatMessage` map without
+ever overwriting a POM key and removes them when the plugin leaves. A missing,
+unreadable or invalid catalog is dropped with a warning: it falls back to `en`
+or the key. **POM owns no plugin text.**
 
-## Testes
+## Tests
 
-- Rust: `cargo test -p node --bin pom plugin_ui` (manifesto, caminhos, perfis,
-  catálogos, o manifesto real do plugin `enterprise` e `ui/manifest.json` do
-  `pom-plugin-base`, incluindo documentação em lista); `plugin_proxy`
-  (`ui.upstream`, barreira de origem, cabeçalhos filtrados, HTTP e WebSocket
-  contra um servidor real); e
+- Rust: `cargo test -p node --bin pom plugin_ui` (manifest, paths, profiles,
+  catalogs, the real manifest of the `enterprise` plugin and the
+  `ui/manifest.json` of `pom-plugin-base`, including list-form documentation);
+  `plugin_proxy` (`ui.upstream`, origin barrier, filtered headers, HTTP and
+  WebSocket against a real server); and
   `plugins::tests::host_context_and_ui_proxy_reach_a_real_plugin_host`
-  (`host.configure` na subida, na troca e no reinício de um host real, e o
-  proxy pelo router da interface).
+  (`host.configure` on start, on change and on restart of a real host, and the
+  proxy through the UI router).
 - Rust: `plugin_ui::tests::menu_children_description_and_screenshots_are_validated`,
   `plugin_github::tests::finds_ui_manifest_and_installs_the_selected_platform_release_manifest`
-  (descrição e `screenshot_urls`) e
+  (description and `screenshot_urls`) and
   `network_chat_tests::plugin_notices_are_validated_kept_in_memory_and_never_persisted`.
-- Frontend: `lib/pluginUi.test.ts` (registro, namespaces, colisões, caminhos,
-  perfis, menu e submenus), `lib/pluginEvents.test.ts` (envelope, canais SDK,
-  DOM e iframe, replay, comandos e recusas), `lib/pluginI18n.test.ts` (instalação, idiomas selecionados,
-  ausência/invalidez), `routes/Plugins.test.tsx` (invalidação imediata do
-  manifesto após ações de ciclo de vida, card do GitHub acima da ativação,
-  releases compatíveis com a mais recente marcada, preferências pela
-  engrenagem e motivo da recusa), `App.test.tsx` (fallback, tela por
-  perfil, duas rotas relativas iguais e URL direta sob `/admin-ui`).
-- Ponta a ponta manual feita na entrega: o `cdylib` real carregado por
-  `pom-plugin-host` respondendo `ui.manifest`/`ui.asset`, e o bundle real
-  renderizado no `App` do POM com o catálogo pt-BR do plugin.
+- Frontend: `lib/pluginUi.test.ts` (registry, namespaces, collisions, paths,
+  profiles, menu and submenus), `lib/pluginEvents.test.ts` (envelope, SDK, DOM
+  and iframe channels, replay, commands and refusals), `lib/pluginI18n.test.ts`
+  (install, selected languages, missing/invalid), `routes/Plugins.test.tsx`
+  (immediate manifest invalidation after lifecycle actions, GitHub card above
+  activation, compatible releases with the latest preselected, preferences
+  through the gear and the refusal reason), `App.test.tsx` (fallback, screen by
+  profile, two equal relative routes and a direct URL under `/admin-ui`).
+- Manual end-to-end done at delivery: the real `cdylib` loaded by
+  `pom-plugin-host` answering `ui.manifest`/`ui.asset`, and the real bundle
+  rendered in POM's `App` with the plugin's pt-BR catalog.

@@ -15,6 +15,36 @@ continua anotado é pior que um defeito não anotado. As notas em
 `## Histórico preservado`, `## Recusados` e `## Dívida de documentação` são
 contexto e não devem voltar a ser propostas como defeitos novos.
 
+## Travessia de NAT (IPv4 sem endereço público)
+
+Entregue em 2026-09-22, em seis partes. O diagnóstico e o desenho final estão
+em `docs/subsystems/p2p-network.md`, seção "NAT traversal"; esta lista fica
+como registro do que foi feito e não tem item aberto.
+
+- [x] **N1 - Swarm capaz de travessia.** QUIC no `SwarmBuilder` e nos listen
+  addresses; `DEFAULT_RELAY_NODES` esvaziado, porque bootstrapper do IPFS não
+  concede reserva de Circuit Relay v2; `reserve_circuit` pede reserva a
+  qualquer par que anuncie `relay::HOP_PROTOCOL_NAME`; `NatStatus::Public`
+  chama `Swarm::add_external_address`.
+- [x] **N2 - Publicar e discar multiaddresses reais.** `Announce`/`PeerInfo`
+  levam `libp2p_addrs`, alimentado por `publish_swarm_addrs`;
+  `libp2p_dialable_addrs` devolve todos; `tunnel_peer_multiaddrs` aceita
+  multiaddress completo e `host:port` legado.
+- [x] **N3 - Plano de controle pelo swarm.** `TunnelRequest.target` escolhe
+  entre inferência e gateway; `gateway_path_is_allowed` é a lista fechada
+  conferida no receptor, porque o que sai do túnel chega ao gateway por
+  `127.0.0.1`. A sonda `/handshake` da admissão e as catracas de política caem
+  no túnel depois de todos os endereços diretos falharem.
+- [x] **N4 - Preferência aprendida pelo túnel.** `PeerClients::prefer_tunnel`
+  liga com uma entrega do túnel depois de a escada direta falhar inteira e
+  desliga no primeiro sucesso direto; ligada, o frame pula QUIC e HTTP na
+  primeira tentativa.
+- [x] **N5 - pkarr publica o endereço confirmado.** `public_libp2p_addr`
+  vence o multiaddress derivado no arranque. Circuito fica fora: o registro é
+  republicado a cada 30 min e a reserva não dura previsivelmente tanto.
+- [x] **N0 - Observabilidade.** `TraversalStatus` em `/api/ui/cluster` e no
+  painel "Travessia de NAT" da tela de Rede.
+
 ## Alta
 
 - [ ] **12 - Qualquer papel pode desimplantar a pipeline**
@@ -25,7 +55,7 @@ contexto e não devem voltar a ser propostas como defeitos novos.
   **Afetados:** disponibilidade e controle operacional em clusters com papéis
   separados.
   **Esforço:** baixo para o gate, médio para revisar autorização, testes e UI.
-  **Decisão do captain:** decidir se o desimplante deve continuar aberto a
+  **Decisão do operador:** decidir se o desimplante deve continuar aberto a
   qualquer papel autenticado; não corrigir sem essa decisão.
 
 - [ ] **13 - Rollback não é repassado ao TP**
@@ -172,7 +202,7 @@ contexto e não devem voltar a ser propostas como defeitos novos.
 ## Histórico preservado
 
 O TODO anterior veio do levantamento de 2026-08-15, teve última limpeza em
-2026-08-17 e registrava 29 itens triados pelo captain, dos quais 23 haviam
+2026-08-17 e registrava 29 itens triados pelo operador, dos quais 23 haviam
 saído, 4 estavam adiados e 2 recusados. Essa contagem é histórica e não é
 substituída pela classificação da auditoria de 2026-09-07.
 

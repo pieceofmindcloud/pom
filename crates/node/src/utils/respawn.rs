@@ -117,16 +117,16 @@ mod tests {
     fn argv_lembrado_volta_igual_sem_o_programa() {
         remember_argv(vec![
             "./target/release/pom".into(),
-            "--refresh".into(),
-            "3600".into(),
+            "--gateway-port".into(),
+            "8090".into(),
             "--advertise-addr".into(),
             "[2804:d55::1]:42777".into(),
         ]);
         assert_eq!(
             original_argv(),
             vec![
-                "--refresh".to_string(),
-                "3600".to_string(),
+                "--gateway-port".to_string(),
+                "8090".to_string(),
                 "--advertise-addr".to_string(),
                 "[2804:d55::1]:42777".to_string(),
             ],

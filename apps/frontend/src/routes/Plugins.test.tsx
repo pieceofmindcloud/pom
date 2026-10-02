@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 import { Plugins } from "./Plugins";
+import { ApiError } from "../lib/api";
 
 function pluginStatus(code: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -23,7 +24,9 @@ function pluginStatus(code: string, overrides: Record<string, unknown> = {}) {
     installed_at: null,
     update_checked_at: null,
     available_update: null,
+    installation_error: null,
     public_install: false,
+    development_install: false,
     ...overrides,
   };
 }
@@ -76,6 +79,12 @@ const mocks = vi.hoisted(() => ({
     error: null as Error | null,
     refetch: vi.fn(),
   },
+  developmentSources: {
+    data: undefined as { mount_available: boolean; sources: Array<Record<string, unknown>> } | undefined,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  },
   plugins: {
     data: [] as Array<{
       code: string;
@@ -94,7 +103,11 @@ const mocks = vi.hoisted(() => ({
       installed_at: string | null;
       update_checked_at: string | null;
       available_update: { release_id: string; version: string; changelog: string | null } | null;
+      installation_error?: string | null;
+      public_install?: boolean;
+      development_install?: boolean;
     }>,
+
     isLoading: false,
     isError: false,
     error: null as Error | null,
@@ -113,11 +126,17 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => mocks.queryClient }));
-vi.mock("../lib/api", () => ({ api: { post: mocks.post, del: mocks.del } }));
+vi.mock("../lib/api", () => ({
+  api: { post: mocks.post, del: mocks.del },
+  ApiError: class extends Error {
+    constructor(readonly status: number, message: string, readonly body?: unknown) { super(message); }
+  },
+}));
 vi.mock("../lib/queries", () => ({
   keys: { pluginUi: ["plugin-ui"] },
   usePlugins: () => mocks.plugins,
   useGithubRepositories: () => mocks.githubRepositories,
+  useDevelopmentPluginSources: () => mocks.developmentSources,
   usePublicPluginCatalog: () => mocks.catalog,
   useNode: () => mocks.node,
 }));
@@ -148,6 +167,10 @@ describe("Plugins", () => {
     mocks.githubRepositories.isError = false;
     mocks.githubRepositories.error = null;
     mocks.githubRepositories.refetch.mockReset();
+    mocks.developmentSources.data = undefined;
+    mocks.developmentSources.isLoading = false;
+    mocks.developmentSources.isError = false;
+    mocks.developmentSources.refetch.mockReset();
     mocks.catalog.data = { plugins: [] };
     mocks.catalog.isLoading = false;
     mocks.catalog.isError = false;
@@ -196,6 +219,24 @@ describe("Plugins", () => {
     expect(screen.queryByText("PM-invalid")).toBeNull();
   });
 
+  it("mostra uma falha de instalação sem apresentar o plugin como pronto", () => {
+    mocks.catalog.data = { plugins: [publicPlugin("enterprise", { display_name: "Enterprise" })] };
+    mocks.plugins.data = [pluginStatus("enterprise", {
+      state: "active",
+      licensed_plugins: ["enterprise"],
+      installation_error: "handshake ready do plugin host falhou: plugin recusou configuração",
+    })];
+    renderPage();
+
+    const card = screen.getByRole("heading", { name: "Enterprise" }).closest(".panel");
+    expect(within(card as HTMLElement).getByText("Licença ativa")).toBeTruthy();
+    expect(within(card as HTMLElement).getByRole("alert").textContent).toContain(
+      "handshake ready do plugin host falhou: plugin recusou configuração",
+    );
+    expect(within(card as HTMLElement).queryByRole("button", { name: "Desativar" })).toBeNull();
+    expect(screen.getByLabelText("Chave de licença")).toBeTruthy();
+  });
+
   it("lista vários plugins públicos e mostra os metadados disponíveis", () => {
     const purchasedCode = "alpha_beta";
     mocks.catalog.data = {
@@ -238,7 +279,7 @@ describe("Plugins", () => {
     const screenshotGroup = screen.getByRole("group", { name: "Capturas de tela" });
     expect(within(screenshotGroup).getAllByRole("img", { name: /captura de tela/i })).toHaveLength(4);
     expect(screen.getByText("Sigma")).toBeTruthy();
-    expect(screen.getByText("Ativo")).toBeTruthy();
+    expect(screen.getByText("Licença ativa")).toBeTruthy();
     expect(screen.getByText("1.1.0")).toBeTruthy();
 
     expect(screen.getByRole("button", { name: "Comprar" })).toBeTruthy();
@@ -404,7 +445,7 @@ describe("Plugins", () => {
     const full = screen.getByRole("heading", { name: "full" }).closest(".panel");
     expect(within(partial as HTMLElement).getByText("2 de 5 ativações usadas")).toBeTruthy();
     expect(within(partial as HTMLElement).getByText("Parcialmente utilizada")).toBeTruthy();
-    expect(within(partial as HTMLElement).getByText("Ativo")).toBeTruthy();
+    expect(within(partial as HTMLElement).getByText("Licença ativa")).toBeTruthy();
     expect(within(full as HTMLElement).getByText("5 de 5 ativações usadas")).toBeTruthy();
     expect(within(full as HTMLElement).getByText("Limite atingido")).toBeTruthy();
   });
@@ -846,6 +887,112 @@ describe("Plugins", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Não foi possível salvar estas preferências localmente.");
     expect(alert.textContent).toContain("preferência booleana desconhecida para este plugin");
+  });
+
+  it("rebuilds and reinstalls only an active mounted source without using the GitHub release route", async () => {
+    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.developmentSources.data = {
+      mount_available: true,
+      sources: [{
+        repository: "pom-plugin-base",
+        plugin_code: "base",
+        display_name: "POM Plugin Base",
+        active: true,
+        install_kind: "licensed",
+      }],
+    };
+    mocks.post.mockResolvedValue({
+      repository: "pom-plugin-base",
+      plugin_code: "base",
+      build_ms: 1234,
+      installed_at: "2026-10-01T10:00:00Z",
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Recompilar e reinstalar" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/dev-sources/pom-plugin-base/rebuild-install",
+    ));
+    expect(await screen.findByText(/foi compilado e instalado localmente em .* ms/)).toBeTruthy();
+    expect(mocks.post).not.toHaveBeenCalledWith(
+      expect.stringContaining("github-repositories"),
+      expect.anything(),
+    );
+    expect(mocks.developmentSources.refetch).toHaveBeenCalled();
+    expect(mocks.plugins.refetch).toHaveBeenCalled();
+  });
+
+  it("builds and installs an inactive mounted source without requiring a license", async () => {
+    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.developmentSources.data = {
+      mount_available: true,
+      sources: [{
+        repository: "pom-plugin-harness",
+        plugin_code: "harness",
+        display_name: "POM Plugin Harness",
+        active: false,
+        install_kind: null,
+      }],
+    };
+    mocks.post.mockResolvedValue({
+      repository: "pom-plugin-harness",
+      plugin_code: "harness",
+      build_ms: 1234,
+      installed_at: "2026-10-01T10:00:00Z",
+    });
+    renderPage();
+
+    const install = screen.getByRole("button", { name: "Compilar e instalar localmente" });
+    expect((install as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(install);
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
+      "/api/ui/plugins/dev-sources/pom-plugin-harness/rebuild-install",
+    ));
+    expect(await screen.findByText(/foi compilado e instalado localmente/)).toBeTruthy();
+  });
+
+  it("keeps license activation available for a running local development build", () => {
+    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.catalog.data = { plugins: [publicPlugin("enterprise")] };
+    mocks.plugins.data = [pluginStatus("enterprise", {
+      active: true,
+      development_install: true,
+      state: "needs_activation",
+    })];
+    renderPage();
+
+    expect(screen.getByText("Build local")).toBeTruthy();
+    expect(screen.getByText("Digite sua chave de licença")).toBeTruthy();
+  });
+
+  it("shows a safe build failure stage and exit code without compiler output", async () => {
+    mocks.node.data = { profile: "admin", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    mocks.developmentSources.data = {
+      mount_available: true,
+      sources: [{
+        repository: "pom-plugin-base",
+        plugin_code: "base",
+        display_name: "POM Plugin Base",
+        active: true,
+        install_kind: "github",
+      }],
+    };
+    mocks.post.mockRejectedValue(new ApiError(422, "build failed", {
+      error: { code: "build_failed", stage: "compile", exit_code: 101, stderr: "secret build output" },
+    }));
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Recompilar e reinstalar" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("falhou durante compile");
+    expect(alert.textContent).toContain("código de saída 101");
+    expect(alert.textContent).not.toContain("secret build output");
+  });
+
+  it("does not offer local rebuilds to non-admin profiles", () => {
+    mocks.node.data = { profile: "node", pom_desenv: true, system: { os: "linux", arch: "x86_64" } };
+    renderPage();
+    expect(screen.queryByText("Builds locais de desenvolvimento")).toBeNull();
   });
 
   it("desativa um plugin sem chamar rota de atualização do pom_core", async () => {

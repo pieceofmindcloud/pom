@@ -57,6 +57,7 @@ pub(crate) async fn fetch_from_principal_candidates(
     signing_key: &ed25519_dalek::SigningKey,
     authority_principal: &crate::admin_trust::AuthorityPrincipal,
     trust: &crate::admin_trust::AdminTrust,
+    tunnel: Option<&crate::peer_client::TunnelPeer>,
 ) -> Result<bool> {
     let headers = crate::gateway::GatewayState::signed_control_headers_for(
         signing_key,
@@ -73,12 +74,12 @@ pub(crate) async fn fetch_from_principal_candidates(
             NETWORK_CHAT_POLICY_PATH,
             connection_key,
             &headers,
+            tunnel,
         )
         .await
         .context("não deu para falar com o principal")?;
     Ok(response
         .json::<NetworkChatReply>()
-        .await
         .context("resposta do Chat da rede não parseou")?
         .network_chat_enabled)
 }
@@ -104,7 +105,10 @@ pub fn spawn_ratchet(
             else {
                 continue;
             };
-            let candidates = peer.gateway_candidates_with_tls(announced_tls);
+            let candidates = net.order_gateway_bases(
+                &peer.node_id,
+                peer.gateway_candidates_with_tls(announced_tls),
+            );
             if candidates.is_empty() {
                 warn!("principal {principal} não anuncia porta de gateway; política do Chat da rede não pôde ser confirmada");
                 continue;
@@ -126,6 +130,7 @@ pub fn spawn_ratchet(
                 &signing_key,
                 &authority_principal,
                 &trust,
+                crate::peer_client::TunnelPeer::from_peer(&peer).as_ref(),
             )
             .await;
             if let PolicyOutcome::Adopt(value) = adopt_or_keep(local, fetched) {

@@ -27,7 +27,7 @@
 //!   nomeando o nó que realmente morreu.
 //! * **Cauda morre** — idem, denunciada pelo hop anterior.
 //! * **Hop morre depois de aceitar** (processo caiu, máquina sumiu) — não há
-//!   quem denuncie; quem fecha a requisição é o prazo de [`DIRECT_REPLY_DEADLINE`].
+//!   quem denuncie; quem fecha a requisição é o prazo do frame (`relay::frame_deadline`).
 //! * **Resposta direta perdida** (gateway inalcançável a partir da cauda) —
 //!   mesmo prazo. A cauda tenta cada URL de `reply_to` antes de desistir.
 //! * **Resposta que chega depois da desistência** — o [`Ticket`] já saiu do
@@ -57,11 +57,9 @@ pub const RELAY_RESULT_PATH: &str = "/v1/relay-result";
 /// Callback used by the remote decode transport for each opportunistic batch.
 pub const REMOTE_STREAM_RESULT_PATH: &str = "/v1/remote-stream-result";
 
-/// Quanto o gateway espera pelo resultado direto antes de desistir do quadro.
-///
-/// Mesmo teto que `relay::send_frame` já usa por chamada: um hop que estoura
-/// isso não está lento, está morto, e a sessão precisa ser liberada.
-pub const DIRECT_REPLY_DEADLINE: Duration = Duration::from_secs(600);
+// Quanto o gateway espera pelo resultado direto é o prazo do frame
+// (`relay::frame_deadline`), proporcional aos tokens e aos hops da cadeia; o
+// chamador o passa para `await_result_with_ack`.
 
 /// Teto de uma tentativa de entrega quando **ainda há outro endereço** para
 /// tentar. Curto de propósito: um endereço que aceita o SYN e nunca responde
@@ -76,7 +74,7 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_millis(500);
 const DELIVERY_TIMEOUT: Duration = Duration::from_millis(150);
 
 /// Teto da **última** tentativa. Depois dela não há terceira via: o gateway
-/// espera o [`DIRECT_REPLY_DEADLINE`] inteiro e a sessão morre calada.
+/// espera o prazo do frame (`relay::frame_deadline`) inteiro e a sessão morre calada.
 ///
 /// Desistir aos 500 ms de uma entrega apenas lenta - portal ocupado, TLS frio,
 /// lote grande, WAN - troca dezenas de segundos de espera por dez minutos de
@@ -406,6 +404,12 @@ pub struct DirectReply {
     inbox: ReplyInbox,
     urls: Vec<String>,
     quic_addresses: Vec<String>,
+    /// `PeerId` e multiaddresses do gateway, para a entrega cair no túnel
+    /// libp2p quando nenhuma URL de `urls` é alcançável de onde a cauda está.
+    /// Atrás de NAT/CGNAT esse é o caso normal, não a exceção: as URLs saem
+    /// das interfaces locais do gateway e não valem nada na outra ponta.
+    libp2p_peer_id: Option<String>,
+    libp2p_addrs: Vec<String>,
     /// node_id de quem vai receber a resposta.
     ///
     /// Viaja no `reply_to` porque quem entrega precisa dele para fixar o
@@ -427,8 +431,18 @@ impl DirectReply {
             inbox,
             urls,
             quic_addresses: Vec::new(),
+            libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             node_id,
         })
+    }
+
+    /// Identidade libp2p deste gateway, para a volta ter um caminho quando
+    /// nenhuma URL direta é alcançável.
+    pub fn with_libp2p(mut self, peer_id: Option<String>, addrs: Vec<String>) -> Self {
+        self.libp2p_peer_id = peer_id;
+        self.libp2p_addrs = addrs;
+        self
     }
 
     /// Endereços `host:porta` do endpoint QUIC do gateway. Eles são separados
@@ -447,6 +461,8 @@ impl DirectReply {
         json!({
             "urls": self.urls,
             "quic_addresses": self.quic_addresses,
+            "libp2p_peer_id": self.libp2p_peer_id,
+            "libp2p_addrs": self.libp2p_addrs,
             "ticket": ticket,
             "node_id": self.node_id,
         })
@@ -489,6 +505,8 @@ fn transport_receipt(hop_index: usize, sent: &crate::relay::SentFrame) -> Value 
         "tls": sent.tls,
         "tls_handshake_ms": sent.tls_handshake_ms,
         "client_encode_ms": sent.client_encode_ms,
+        "client_f16_encode_ms": sent.client_f16_encode_ns as f64 / 1_000_000.0,
+        "client_f16_decode_ms": sent.client_f16_decode_ns as f64 / 1_000_000.0,
         "response_headers_ms": sent.response_headers_ms,
         "response_body_ms": sent.response_body_ms,
         "client_decode_ms": sent.client_decode_ms,
@@ -629,6 +647,7 @@ pub async fn await_result_with_ack<F, C>(
     ack: F,
     ticket: &mut Ticket,
     head_label: &str,
+    deadline: Duration,
     on_ack: C,
 ) -> Result<Value>
 where
@@ -637,7 +656,8 @@ where
 {
     let mut ack = Box::pin(ack);
     let mut on_ack = Some(on_ack);
-    let deadline = tokio::time::sleep(DIRECT_REPLY_DEADLINE);
+    let deadline_duration = deadline;
+    let deadline = tokio::time::sleep(deadline_duration);
     tokio::pin!(deadline);
     let mut acked = false;
 
@@ -677,8 +697,8 @@ where
             }
             _ = &mut deadline => {
                 return Err(anyhow!(
-                    "nenhum hop entregou o resultado em {}s (cadeia despachada em {head_label})",
-                    DIRECT_REPLY_DEADLINE.as_secs()
+                    "nenhum hop entregou o resultado em {:?} (cadeia despachada em {head_label})",
+                    deadline_duration
                 ));
             }
         }
@@ -697,7 +717,7 @@ pub fn result_failure(meta: &Value) -> Option<crate::relay::RelayFailure> {
 /// Existe porque "não entregou" tem dois significados opostos para quem
 /// emite um stream: o gateway já ter desistido (não há a quem reportar) e
 /// nenhum endereço ter aceitado (é preciso reportar, ou o gateway espera o
-/// [`DIRECT_REPLY_DEADLINE`] inteiro por uma falha que este lado já conhece).
+/// prazo do frame (`relay::frame_deadline`) inteiro por uma falha que este lado já conhece).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivery {
     /// O gateway recebeu.
@@ -844,11 +864,28 @@ impl RemoteStreamDelivery {
             .map(str::to_owned)
             .collect();
 
+        // Com rota fixada até o gateway (`route_plan`), ela decide: HTTP usa o
+        // canal persistente naquele endereço; QUIC e túnel vão direto para a
+        // entrega por requisição, que segue a rota fixada. Sem rota fixada,
         // QUIC is the authoritative preference for a new delivery. Do not
         // silently keep using the persistent TCP link when the cluster opted
         // into QUIC: otherwise the MTP/remote-stream trace would describe a
         // different transport than the one the gateway requested.
-        if self.persistent_failure.is_none() && !self.http.effective_quic_enabled() {
+        let pinned = node_id
+            .and_then(|id| crate::route_plan::book().active(id, crate::route_plan::Plane::Gateway));
+        let use_link = match pinned.as_ref().map(|route| route.kind) {
+            None => !self.http.effective_quic_enabled(),
+            Some(crate::route_plan::RouteKind::Http) => true,
+            Some(_) => false,
+        };
+        if pinned.is_some() && !use_link {
+            return deliver_stream_batch(&self.http, &self.reply_to, meta).await;
+        }
+        let urls = match &pinned {
+            Some(route) => vec![route.base_url.clone()],
+            None => urls,
+        };
+        if self.persistent_failure.is_none() && use_link {
             let reason = match (node_id, urls.is_empty()) {
                 (None, _) => Some(format!("{link_transport}: reply_to sem node_id")),
                 (Some(_), true) => Some(format!("{link_transport}: reply_to sem endereço")),
@@ -971,6 +1008,13 @@ async fn deliver_meta_at(
         },
         None => http.plain(),
     };
+    if let Some(node_id) = reply_to.get("node_id").and_then(Value::as_str) {
+        if let Some(delivery) =
+            deliver_pinned(http, reply_to, node_id, path, &base_meta, &cliente).await
+        {
+            return delivery;
+        }
+    }
     let ordered = http.route_order(&route_key, &urls);
     let quic_addresses: Vec<String> = reply_to
         .get("quic_addresses")
@@ -1085,6 +1129,15 @@ async fn deliver_meta_at(
             }
         }
     }
+    // Nenhuma URL direta chegou. Atrás de NAT/CGNAT esse é o caso normal: as
+    // URLs de `reply_to` saem das interfaces locais do gateway e não valem
+    // nada de fora da rede dele. O túnel libp2p é o mesmo caminho que a ida já
+    // usa, só que na volta - sem ele o quadro morre calado, e o gateway só
+    // percebe quando o prazo do frame vence.
+    if let Some(delivery) = deliver_via_tunnel(reply_to, path, &base_meta, &last).await {
+        return delivery;
+    }
+
     // Motivo vazio era a assinatura do defeito da lista de candidatos vazia.
     // Hoje `route_order` nunca esvazia a lista, então só sobra o caso de o
     // `reply_to` não trazer endereço nenhum - e isso se diz com todas as
@@ -1094,6 +1147,181 @@ async fn deliver_meta_at(
     }
     warn!("resultado direto não chegou ao gateway ({last})");
     Delivery::Failed
+}
+
+/// Quantas rotas fixadas uma entrega percorre antes da escada completa.
+const MAX_PINNED_DELIVERIES: usize = 8;
+
+/// Entrega pela rota fixada até o gateway (`route_plan`, plano `Gateway`).
+/// A falha repete a mesma rota uma vez e depois passa para a próxima medida;
+/// `None` devolve a entrega à escada completa de `reply_to`, que ainda tenta
+/// todos os endereços e o túnel. O plano é de quem entrega: a volta é uma
+/// aresta própria, e quem mediu a ida não sabe nada dela.
+async fn deliver_pinned(
+    http: &crate::peer_client::PeerClients,
+    reply_to: &Value,
+    node_id: &str,
+    path: &str,
+    base_meta: &Value,
+    cliente: &reqwest::Client,
+) -> Option<Delivery> {
+    use crate::route_plan::{book, FailureOutcome, Plane, RouteKind};
+
+    for _ in 0..MAX_PINNED_DELIVERIES {
+        let route = book().active(node_id, Plane::Gateway)?;
+        let delivered = match route.kind {
+            RouteKind::Tunnel => deliver_via_tunnel(reply_to, path, base_meta, "").await,
+            RouteKind::Http => {
+                let attempt_meta = delivery_meta(
+                    base_meta,
+                    path,
+                    tcp_transport_for_url(&route.base_url),
+                    false,
+                    None,
+                    None,
+                );
+                let body = encode_delivery_body(&attempt_meta).ok()?;
+                let target = format!("{}{path}", route.base_url.trim_end_matches('/'));
+                match cliente
+                    .post(&target)
+                    .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                    .body(body)
+                    .timeout(LAST_DELIVERY_TIMEOUT)
+                    .send()
+                    .await
+                {
+                    Ok(r) if r.status().is_success() => Some(Delivery::Accepted),
+                    Ok(r) if r.status() == StatusCode::GONE => Some(Delivery::GatewayGone),
+                    Ok(r) => {
+                        debug!("rota fixada {target} respondeu {}", r.status());
+                        None
+                    }
+                    Err(error) => {
+                        debug!("rota fixada {target} falhou: {error}");
+                        None
+                    }
+                }
+            }
+            RouteKind::Quic => {
+                let attempt_meta = delivery_meta(base_meta, path, "quic", false, None, None);
+                let body = encode_delivery_body(&attempt_meta).ok()?;
+                let addresses: Vec<String> = route.quic_addr.iter().cloned().collect();
+                match http
+                    .quic_post(
+                        node_id,
+                        &route.base_url,
+                        &addresses,
+                        path,
+                        body,
+                        None,
+                        LAST_DELIVERY_TIMEOUT,
+                    )
+                    .await
+                {
+                    Ok(response) if response.status.is_success() => Some(Delivery::Accepted),
+                    Ok(response) if response.status == StatusCode::GONE => {
+                        Some(Delivery::GatewayGone)
+                    }
+                    Ok(response) => {
+                        debug!("rota QUIC fixada respondeu {}", response.status);
+                        None
+                    }
+                    Err(error) => {
+                        debug!("rota QUIC fixada falhou: {error}");
+                        None
+                    }
+                }
+            }
+        };
+        match delivered {
+            Some(delivery) => {
+                book().record_success(node_id, Plane::Gateway);
+                return Some(delivery);
+            }
+            None => {
+                if book().record_failure(node_id, Plane::Gateway) == FailureOutcome::Exhausted {
+                    return None;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Última via da entrega: o túnel libp2p até o gateway.
+///
+/// `None` quando o `reply_to` não traz identidade libp2p (gateway em binário
+/// anterior) ou quando o próprio túnel não entrega - nos dois casos o chamador
+/// segue para o log de falha e o gateway fecha no prazo. A rota entra pela
+/// lista fechada de `infer_tunnel::gateway_path_is_allowed`.
+async fn deliver_via_tunnel(
+    reply_to: &Value,
+    path: &str,
+    base_meta: &Value,
+    direct_error: &str,
+) -> Option<Delivery> {
+    let peer_id = reply_to.get("libp2p_peer_id").and_then(Value::as_str)?;
+    let addrs: Vec<String> = reply_to
+        .get("libp2p_addrs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let tunnel = crate::peer_client::TunnelPeer::from_parts(peer_id, addrs)?;
+
+    // O transporte anotado é o que de fato levou o quadro: publicar "http"
+    // aqui faria o trace do gateway mentir sobre o caminho da volta.
+    let attempt_meta = delivery_meta(
+        base_meta,
+        path,
+        "libp2p-tunnel",
+        !direct_error.is_empty(),
+        (!direct_error.is_empty()).then_some(direct_error),
+        None,
+    );
+    let body = match encode_delivery_body(&attempt_meta) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            warn!("resultado direto não pôde ser codificado para o túnel: {error}");
+            return None;
+        }
+    };
+
+    match crate::peer_client::tunnel_gateway_call(
+        &tunnel,
+        "POST",
+        path,
+        body,
+        vec![(
+            reqwest::header::CONTENT_TYPE.to_string(),
+            "application/octet-stream".to_string(),
+        )],
+        LAST_DELIVERY_TIMEOUT,
+    )
+    .await
+    {
+        Ok(response) if response.is_success() => {
+            debug!("resultado direto entregue pelo túnel libp2p ({direct_error})");
+            Some(Delivery::Accepted)
+        }
+        Ok(response) if response.status == StatusCode::GONE.as_u16() => {
+            debug!("gateway já havia desistido do quadro entregue pelo túnel");
+            Some(Delivery::GatewayGone)
+        }
+        Ok(response) => {
+            warn!(
+                "túnel libp2p respondeu {} ao resultado direto",
+                response.status
+            );
+            None
+        }
+        Err(error) => {
+            warn!("resultado direto não chegou pelo túnel libp2p: {error}");
+            None
+        }
+    }
 }
 
 fn tcp_transport_for_url(url: &str) -> &'static str {
@@ -1184,6 +1412,8 @@ pub fn hop_entry(processing_ms: &Value, node_timings: &Value, inbound_bytes: usi
         "bytes_sent": inbound_bytes,
         "bytes_received": 0,
         "client_encode_ms": 0,
+        "client_f16_encode_ms": 0,
+        "client_f16_decode_ms": 0,
         "response_headers_ms": 0,
         "response_body_ms": 0,
         "client_decode_ms": 0,
@@ -1236,6 +1466,8 @@ pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::re
     hop["bytes_sent"] = json!(sent.bytes_sent);
     hop["bytes_received"] = json!(sent.bytes_received);
     hop["client_encode_ms"] = json!(sent.client_encode_ms);
+    hop["client_f16_encode_ms"] = json!(sent.client_f16_encode_ns as f64 / 1_000_000.0);
+    hop["client_f16_decode_ms"] = json!(sent.client_f16_decode_ns as f64 / 1_000_000.0);
     hop["response_headers_ms"] = json!(sent.response_headers_ms);
     hop["response_body_ms"] = json!(sent.response_body_ms);
     hop["client_decode_ms"] = json!(sent.client_decode_ms);
@@ -1392,7 +1624,7 @@ mod tests {
     /// único endereço de retorno acumular falhas suficientes para a
     /// quarentena, a entrega seguinte **tem** de continuar sendo tentada. Com
     /// a lista de candidatos esvaziada, o `for` não executava, o aviso saía
-    /// com o motivo vazio e o gateway esperava o `DIRECT_REPLY_DEADLINE`.
+    /// com o motivo vazio e o gateway esperava o prazo do frame.
     #[tokio::test]
     async fn um_endereco_em_quarentena_continua_sendo_tentado() {
         use axum::{body::Bytes, routing::post, Router};
@@ -1580,6 +1812,8 @@ mod tests {
                 hidden_state_bytes_sent: 0,
                 hidden_state_bytes_received: 0,
                 hidden_state_dtype: crate::wire::WireDtype::F16,
+                client_f16_encode_ns: 0,
+                client_f16_decode_ns: 0,
                 client_encode_ms: 1,
                 request_body_send_us: None,
                 response_headers_ms: 2,
@@ -1601,8 +1835,12 @@ mod tests {
             deliver_inbox.deliver(&deliver_ticket, json!({"token_id": 7}));
         });
 
-        let got =
-            await_result_with_ack(ack, &mut ticket, "head", move |sent| {
+        let got = await_result_with_ack(
+            ack,
+            &mut ticket,
+            "head",
+            Duration::from_secs(1),
+            move |sent| {
                 assert_eq!(sent.round_trip_ms, 17);
                 assert!(inbox_for_ack.record_transport(
                     &ticket_for_ack,
@@ -1610,9 +1848,10 @@ mod tests {
                     transport_receipt(0, sent),
                 ));
                 notify_on_ack.notify_one();
-            })
-            .await
-            .expect("resultado direto");
+            },
+        )
+        .await
+        .expect("resultado direto");
         assert_eq!(got["token_id"], 7);
         assert_eq!(got["transport_trace_complete"], false);
 
@@ -1844,6 +2083,47 @@ mod tests {
         );
     }
 
+    /// O `reply_to` tem de carregar a identidade libp2p do gateway: sem ela a
+    /// cauda atrás de NAT não tem como devolver o quadro, e o gateway fecha
+    /// no prazo sem dizer por quê.
+    #[test]
+    fn o_reply_to_carrega_a_identidade_libp2p_do_gateway() {
+        let reply = DirectReply::new(
+            ReplyInbox::new(),
+            vec!["http://192.168.100.210:8080".to_string()],
+            "n1".into(),
+        )
+        .expect("endereço presente")
+        .with_libp2p(
+            Some("12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN".to_string()),
+            vec!["/ip4/203.0.113.7/udp/52777/quic-v1".to_string()],
+        );
+
+        let value = reply.reply_to("t1");
+
+        assert_eq!(
+            value["libp2p_peer_id"].as_str(),
+            Some("12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN")
+        );
+        assert_eq!(
+            value["libp2p_addrs"][0].as_str(),
+            Some("/ip4/203.0.113.7/udp/52777/quic-v1")
+        );
+    }
+
+    /// Gateway em binário anterior não manda os campos, e a entrega tem de
+    /// seguir sem eles em vez de quebrar.
+    #[tokio::test]
+    async fn sem_identidade_libp2p_a_entrega_pelo_tunel_nao_e_tentada() {
+        let reply_to = json!({ "ticket": "t1", "urls": [] });
+
+        assert!(
+            deliver_via_tunnel(&reply_to, RELAY_RESULT_PATH, &json!({}), "sem rota")
+                .await
+                .is_none()
+        );
+    }
+
     #[test]
     fn a_direct_transport_receipt_updates_only_its_destination_hop() {
         let mut hops = vec![
@@ -1859,6 +2139,8 @@ mod tests {
             hidden_state_bytes_sent: 0,
             hidden_state_bytes_received: 0,
             hidden_state_dtype: crate::wire::WireDtype::F16,
+            client_f16_encode_ns: 0,
+            client_f16_decode_ns: 0,
             client_encode_ms: 3,
             request_body_send_us: None,
             response_headers_ms: 4,

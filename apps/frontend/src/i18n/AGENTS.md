@@ -11,7 +11,8 @@ por chave e as mensagens em ICU MessageFormat. `locales.ts` importa o CSV como
 texto bruto em build time e interpreta as mensagens sincronicamente com
 `intl-messageformat` 11.2.14. O provider continua separado. Testes:
 `locales.test.ts` (resolução + formatação), `locales.equivalence.test.ts`
-(dump de referência byte a byte) e `provider.test.tsx` (jsdom).
+(dump de referência congelado com revisões explícitas de copy) e
+`provider.test.tsx` (jsdom).
 
 ## Per-file
 
@@ -30,10 +31,11 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   `chat.telemetry.backendRow` distingue chamada de avaliação e sincronização,
   sem rotular o tempo de avaliação como enqueue. As linhas de captura e wire
   residual distinguem ask-to-ready, wall do tensor-get, pós-processamento,
-  conversão f8 e serialização do frame; o resumo de transporte também nomeia a
-  espera de envio e finalização do corpo QUIC.
-  As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16 permanece
-  padrão e que f8/i4g64/i4g128 são opções com perda sujeitas a capability.
+  conversão f32/f16 no peer e no cliente, conversão f8 e serialização do frame;
+  o resumo de transporte também nomeia a espera de envio e finalização do corpo
+  QUIC. As mensagens `deploy.knob.hidden_state_dtype*` explicam que f16
+  permanece padrão, f32 usa quatro bytes por valor sem perda e f8/i4g64/i4g128
+  são opções com perda sujeitas a capability.
   `deploy.visionUnavailable` orienta que a tela só oferece visão quando a
   identidade e as dimensões GGUF comprovam a associação do projetor.
 - As chaves `chat.attachmentResized` e `chat.imageContextTooSmallDetail` cobrem
@@ -46,20 +48,23 @@ texto bruto em build time e interpreta as mensagens sincronicamente com
   recusas concretas, confirmações e resultado das ações. O grupo
   `notifications.*` também nomeia ofertas de sucessão e de promoção
   infer-to-node, além do aviso sem botões de descida para infer.
-- O grupo `plugins.*` cobre o estado de carregamento, erro e catálogo vazio,
-  metadados ausentes, release disponível, preços, licença ativa ou não exigida,
-  uso e limite de ativações por plugin, link de compra à loja pública, lightbox
-  de screenshots, ativação e ações por plugin, um único card global para
-  cadastrar repositórios GitHub locais, identificar o caminho do manifesto,
-  listar releases e confirmar a instalação da tag escolhida, além da edição
-  local das preferências tipadas. Os erros de
-  release incluem o detalhe validado
-  pelo nó. Todos os rótulos precisam existir nas colunas
-  `en` e `pt-BR`; nomes, descrições, códigos, releases e URLs de imagem são
-  dados do catálogo público, não traduções fixas. A descrição do catálogo tem
-  fallback para inglês quando o idioma selecionado não está disponível. Validade
-  da licença, última instalação/aplicação e última consulta de update são datas
-  distintas do contrato do nó e recebem formatação no locale escolhido.
+- The `plugins.*` group covers loading, errors and empty-catalog states,
+  missing metadata, available releases, prices, active or unnecessary licenses,
+  per-plugin activation usage and limits, public-store purchase links, the
+  screenshot lightbox, activation and per-plugin actions, a single global card
+  for adding local GitHub repositories, manifest paths, releases and
+  confirmation of the selected tag, typed preferences, and local
+  development-source builds and installs without license activation. It also
+  provides an action to remove local builds and reports only build stages and
+  exit codes. Release errors include the detail validated by the node.
+  Activation also displays installation failures and handshake details,
+  distinguishing a valid license from a host that is not ready yet. Every label
+  must exist in both the `en` and `pt-BR` columns; names, descriptions, codes,
+  releases and image URLs come from the public catalog and are not fixed
+  translations. Catalog descriptions fall back to English when the selected
+  language is unavailable. License expiration, last installation/application
+  and last update check are distinct timestamps in the node contract and are
+  formatted using the selected locale.
 - `locales.ts` - parser CSV pequeno, carregamento síncrono do `?raw`, cache de
   `IntlMessageFormat` e a API pública de locale. Não coloque traduções novas
   aqui. O fallback continua sendo locale solicitado, depois inglês, depois a
@@ -111,7 +116,7 @@ instalação e reinício.
 - Cada chave deve existir nas duas colunas. Ao adicionar ou editar uma mensagem, altere diretamente a mesma linha no CSV e mantenha a chave ordenada.
 - Use a sintaxe ICU de `intl-messageformat`: `{count, plural, one {# node} other {# nodes}}` para plural, `{value}` para interpolação e `select` para escolhas textuais. Para mensagens condicionais, preserve os nomes dos valores que os componentes já passam.
 - O CSV entra no bundle por importação `?raw`; não use fetch, estado assíncrono ou carregamento por rota.
-- Rode `npm exec -- vitest run src/i18n/locales.test.ts src/i18n/locales.equivalence.test.ts` após qualquer alteração. O teste de equivalência compara todas as chaves, os dois idiomas e os casos do dump gerado antes da migração.
+- Rode `npm exec -- vitest run src/i18n/locales.test.ts src/i18n/locales.equivalence.test.ts` após qualquer alteração. O teste de equivalência compara todas as chaves, os dois idiomas e os casos do dump congelado; revisões deliberadas de copy ficam no mapa `copyUpdates` do teste para não regravar o dump minificado de 1,8 MB.
 
 - O grupo deploy.addNode* cobre o diálogo incremental: catálogo da máquina
   alvo, modelo inteiro, localização do cache KV e tipos K/V. Toda chave nova
@@ -165,6 +170,8 @@ textos de documento e de chave são dados do servidor, não mensagens de locale.
 As chaves `network.forgetNetwork*` nomeiam a confirmação e o resultado da
 limpeza local da rede; elas não devem ser confundidas com `network.leave`, que
 tira a máquina do cluster sem apagar sua configuração.
+As chaves `network.traversal*` rotulam o painel de travessia de NAT, incluindo
+os três estados de AutoNAT em `network.traversalNat.{unknown,public,private}`.
 As chaves `publicNetworks.*`, `network.metrics*`, `network.participants*`,
 `keys.*`, `preferences.admin*` e `nav.*` cobrem a reorganização das telas,
 incluindo estados de métrica indisponível, os estados reachable/unreachable do

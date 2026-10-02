@@ -121,13 +121,29 @@ canvas.legendInactive,Possible traffic,Tráfego possível
 canvas.legendParallel,Parallel route,Rota paralela
 canvas.legendPrimary,Live route,Rota em uso
 canvas.load,Load,Carga
+canvas.machineTps,decode {decode} · prefill {prefill} tok/s,decode {decode} · prefill {prefill} tok/s
+canvas.machineTpsUnknown,speed not measured,velocidade não medida
 canvas.memory,Memory,Memória
 canvas.meterUnknown,unknown,desconhecido
 canvas.noCapacity,No inference capacity announced yet.,Nenhuma capacidade de inferência anunciada ainda.
 canvas.noModel,No model deployed,Nenhum modelo implantado
 canvas.openDetails,Double-click to open this machine''s details,Duplo clique abre os detalhes desta máquina
 canvas.pipelineCostBreakdown,network {network} ms · compute {compute} ms,rede {network} ms · compute {compute} ms
+canvas.pipelineRouteBreakdown,network {network} ms ({mode}) · compute {compute} ms,rede {network} ms ({mode}) · compute {compute} ms
+canvas.returnDirect,direct return,resposta direta
+canvas.returnRing,ring,anel
+canvas.relayBadge,RELAY,RELAY
+"canvas.relayEdgeHint","This link goes through a relay peer: every frame crosses an intermediate server, which adds latency. Review the route.","Esta ligação passa por um peer de relé: cada frame atravessa um servidor intermediário, o que aumenta a latência. Reveja a rota."
+canvas.relayRouteTitle,Route through relay,Rota por relé
+canvas.relayLegs,Relayed legs: {legs},Pernas por relé: {legs}
+canvas.relayBypassedChip,Relay bypassed by the ring,Relé contornado pelo anel
+canvas.relayDetails,Relay route details,Detalhes da rota por relé
+canvas.relayClose,Close,Fechar
+"canvas.relayBypassed","The direct return {from} → {to} would go through the relay. POM is working around it: the answer comes back by the ring, over the same connections as the forward path.","A volta direta {from} → {to} passaria pelo relé. O POM está contornando: a resposta volta pelo anel, pelas mesmas conexões da ida."
+"canvas.relayNotBypassed","POM cannot work around these legs: they are part of the forward path. When the first leg leaves this node, only requests that enter through here pay for it.","O POM não consegue contornar essas pernas: elas fazem parte da ida da pipeline. Quando a primeira perna sai deste nó, só as requisições que entram por aqui pagam por ela."
+"canvas.relayRouteHint","The fastest route crosses a relay peer because the machines could not connect directly (NAT, firewall or a failed hole punch). Every token pays the detour to the relay. To improve it, give the machines a direct path: publish the node ports, advertise a reachable address (a VPN such as Tailscale with POM_ADVERTISE_ADDR) or open the firewall so the hole punch succeeds.","A rota mais rápida atravessa um peer de relé porque as máquinas não conseguiram se conectar diretamente (NAT, firewall ou hole punch que falhou). Cada token paga o desvio até o relé. Para melhorar, dê às máquinas um caminho direto: publique as portas do nó, anuncie um endereço alcançável (uma VPN como Tailscale com POM_ADVERTISE_ADDR) ou libere o firewall para o hole punch fechar."
 canvas.pipelineRouteCount,"{count} route{count, plural, =1 {} other {s}}","{count} rota{count, plural, =1 {} other {s}}"
+canvas.pipelineThroughput,≈ {tps} tok/s per token cycle,≈ {tps} tok/s por ciclo de token
 canvas.pipelineTotal,Pipeline total: {ms} ms,Total do pipeline: {ms} ms
 canvas.pipelineTotalLabel,cycle cost,custo do ciclo
 canvas.pipelineTotalUnknown,not measured,não medido
@@ -346,7 +362,7 @@ chat.telemetry.remoteStreamWaitSplit,producer total/p95 {producerTotal}/{produce
 chat.telemetry.requestedGpuLayers,Requested GPU layers (intent): {count},Camadas GPU pedidas (intenção): {count}
 chat.telemetry.residualCaptureRow,residual capture: scheduler ask-to-ready {ready} ms · tensor_get wall {tensorGet} ms · postprocess {postprocess} ms · compatibility total {total} ms · {bytes} bytes in {copies} reads,captura residual: scheduler até pronto {ready} ms · tensor_get {tensorGet} ms · pós-processamento {postprocess} ms · total compatível {total} ms · {bytes} bytes em {copies} leituras
 chat.telemetry.residualHeader,residual,residual
-chat.telemetry.residualWireRow,residual wire f8 conversion {f8} ms · frame/header serialization {serialize} ms · residual frame encode count {calls},wire do residual: conversão f8 {f8} ms · serialização do frame/cabeçalho {serialize} ms · contagem de frames codificados {calls}
+chat.telemetry.residualWireRow,"residual wire f16 encode/decode {f16Encode}/{f16Decode} ms (submetrics) · client f16 encode/decode {clientF16Encode}/{clientF16Decode} ms (submetrics) · f8 conversion {f8} ms · frame/header serialization {serialize} ms · residual frame encode count {calls}","wire do residual: encode/decode f16 no peer {f16Encode}/{f16Decode} ms (submétricas) · encode/decode f16 no cliente {clientF16Encode}/{clientF16Decode} ms (submétricas) · conversão f8 {f8} ms · serialização do frame/cabeçalho {serialize} ms · contagem de frames codificados {calls}"
 chat.telemetry.rttTotal,Aggregate execution RTT: {ms} ms,RTT agregado da execução: {ms} ms
 chat.telemetry.rttTotalMissing,Aggregate execution RTT: not available for this trace,RTT agregado da execução: indisponível neste trace
 chat.telemetry.runtimeLoading,Reading effective runtime state...,Lendo o estado efetivo do runtime...
@@ -638,8 +654,9 @@ deploy.knob.fit_memory_margin_mb,VRAM safety reserve (MiB),Reserva de segurança
 deploy.knob.fit_memory_margin_mbHint,"VRAM the automatic fit leaves unused on each device, to cover allocator drift and late workspaces. Raise it if a deploy starts then dies with an out-of-memory error.","VRAM que o ajuste automático deixa livre em cada dispositivo, para cobrir folga do alocador e buffers tardios. Aumente se uma implantação sobe e cai com erro de falta de memória."
 deploy.knob.hidden_state_dtype,Hidden-state precision,Precisão do estado oculto
 deploy.knob.hidden_state_dtypeF16,f16 - 2 bytes per value,f16 - 2 bytes por valor
+deploy.knob.hidden_state_dtypeF32,f32 - 4 bytes per value,f32 - 4 bytes por valor
 deploy.knob.hidden_state_dtypeF8,f8 - 1 byte per value,f8 - 1 byte por valor
-deploy.knob.hidden_state_dtypeHint,Controls bytes sent between inference peers. f16 remains the default. f8 and groupwise int4 are opt-in lossy formats and require every selected peer to advertise support.,Controla os bytes enviados entre peers de inferência. f16 continua como padrão. f8 e int4 por grupo são formatos com perda opcionais e exigem suporte anunciado por todos os peers selecionados.
+deploy.knob.hidden_state_dtypeHint,"Controls bytes sent between inference peers. f16 remains the default; f32 preserves the in-memory activation values but doubles payload size. f8 and groupwise int4 are opt-in lossy formats and require every selected peer to advertise support.","Controla os bytes enviados entre peers de inferência. f16 continua como padrão; f32 preserva os valores das ativações em memória, mas dobra o tamanho do payload. f8 e int4 por grupo são formatos com perda opcionais e exigem suporte anunciado por todos os peers selecionados."
 deploy.knob.hidden_state_dtypeI4G128,i4g128 - signed int4 with FP16 scale per 128 values,i4g128 - int4 assinado com escala FP16 a cada 128 valores
 deploy.knob.hidden_state_dtypeI4G64,i4g64 - signed int4 with FP16 scale per 64 values,i4g64 - int4 assinado com escala FP16 a cada 64 valores
 deploy.knob.hidden_state_dtypeUnavailable,Selected hidden-state format unavailable:,Formato selecionado do estado oculto indisponível:
@@ -873,29 +890,130 @@ docs.selectAria,Open {title},Abrir {title}
 docs.tab.guides,Guides,Guias
 docs.tab.reference,Reference,Referência
 enterprise.activateHere,Activate a license,Ativar uma licença
-enterprise.eyebrow,Enterprise,Enterprise
 enterprise.learnMore,Learn about Enterprise,Conhecer o Enterprise
 enterprise.licenseState,License state,Estado da licença
 enterprise.purchaseLink,Buy or manage Enterprise,Comprar ou gerenciar Enterprise
 enterprise.requiredSubtitle,Request Logs and Statistics become available after an Enterprise license is activated.,Logs de Requisições e Estatísticas ficam disponíveis após a ativação de uma licença Enterprise.
 enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
-enterprise.showcase.cta,Buy & install,Comprar e instalar
-enterprise.showcase.logs.bullet1,"Full request trail: prompt, response, hops and timings","Trilha completa da requisição: prompt, resposta, hops e tempos"
-enterprise.showcase.logs.bullet2,"Filter by API key, model, node and date range","Filtre por chave de API, modelo, nó e intervalo de datas"
-enterprise.showcase.logs.bullet3,Per-request inspector with redacted secrets,Inspetor por requisição com segredos redigidos
-enterprise.showcase.logs.description,Request Logs keeps a searchable audit trail of every request this cluster served.,Logs de Requisições mantém uma trilha de auditoria pesquisável de toda requisição que este cluster atendeu.
 enterprise.showcase.logs.screenshotAlt,Preview of the Request Logs screen,Prévia da tela de Logs de Requisições
 enterprise.showcase.logs.title,Request Logs,Logs de Requisições
-enterprise.showcase.pluginNote,Part of the enterprise plugin. Buy and install it from the Enterprise site.,Parte do plugin enterprise. Compre e instale pelo site Enterprise.
-enterprise.showcase.statistics.bullet1,Token volume and throughput by model and day,Volume de tokens e vazão por modelo e dia
-enterprise.showcase.statistics.bullet2,Per-node and per-key consumption breakdown,Detalhamento de consumo por nó e por chave
-enterprise.showcase.statistics.bullet3,Prefix cache hit rate and terminal-state distribution,Taxa de acerto do cache de prefixo e distribuição de estados terminais
-enterprise.showcase.statistics.description,Statistics aggregates the same audit trail into charts for capacity and usage.,Estatísticas agrega a mesma trilha de auditoria em gráficos de capacidade e uso.
 enterprise.showcase.statistics.screenshotAlt,Preview of the Statistics screen,Prévia da tela de Estatísticas
 enterprise.showcase.statistics.title,Statistics,Estatísticas
+enterprise.store.badgeInstant,Installs in seconds,Instala em segundos
+enterprise.store.badgeLocal,Your data stays on your nodes,Seus dados ficam nos seus nós
+enterprise.store.badgeStripe,Secure payment with Stripe,Pagamento seguro com Stripe
+enterprise.store.buy,Buy now,Comprar agora
+enterprise.store.buyFailed,Could not open the checkout right now.,Não foi possível abrir o checkout agora.
+enterprise.store.buyForbidden,Only an administrator of this node can buy plugins.,Só um administrador deste nó pode comprar plugins.
+enterprise.store.buyOnSite,Buy on pieceofmind.cloud,Comprar em pieceofmind.cloud
+enterprise.store.ctaBody,The price is shown at checkout. Cancel anytime.,O preço aparece no checkout. Cancele quando quiser.
+enterprise.store.ctaPrice,Statistics and Logs for {price}. Cancel anytime.,Estatísticas e Logs por {price}. Cancele quando quiser.
+enterprise.store.ctaTitle,Ready to see inside your cluster?,Pronto para enxergar dentro do seu cluster?
+enterprise.store.description,"Advanced observability for POM inference workloads: searchable request logs with a complete, redacted request inspector, and an operational statistics dashboard for tokens, latency, cache, nodes and network.","Observabilidade avançada para a inferência no POM: logs de requisições pesquisáveis com um inspetor completo e com segredos redigidos, e um painel de estatísticas operacionais de tokens, latência, cache, nós e rede."
+enterprise.store.eyebrow,POM plugin · Statistics and Logs,Plugin do POM · Estatísticas e Logs
+enterprise.store.faq1.a,"On your own administrative nodes, in the plugin's local database. Prompts and answers are never sent to POM or to the license server.","Nos seus próprios nós administradores, no banco local do plugin. Prompts e respostas nunca são enviados ao POM nem ao servidor de licenças."
+enterprise.store.faq1.q,Where is my request data stored?,Onde ficam os dados das minhas requisições?
+enterprise.store.faq2.a,Only to activate and to renew the license from time to time. Logging and charts work locally.,Só para ativar e renovar a licença de tempos em tempos. Os logs e os gráficos funcionam localmente.
+enterprise.store.faq2.q,Does it need internet access?,Precisa de acesso à internet?
+enterprise.store.faq3.a,"The plugin features stop when the license ends. Distributed inference, chat and everything else in the POM keep working.","Os recursos do plugin param quando a licença termina. A inferência distribuída, o chat e todo o resto do POM continuam funcionando."
+enterprise.store.faq3.q,What happens if I cancel?,O que acontece se eu cancelar?
+enterprise.store.faq4.a,"The screenshots above are the real screens, published with each release. The plugin store at pieceofmind.cloud has more details.","As capturas acima são as telas reais, publicadas junto de cada release. A loja em pieceofmind.cloud tem mais detalhes."
+enterprise.store.faq4.q,Can I try it before buying?,Posso ver antes de comprar?
+enterprise.store.faqLabel,Questions,Perguntas
+enterprise.store.faqTitle,Before you buy,Antes de comprar
+enterprise.store.featuresLabel,Features,Recursos
+enterprise.store.featuresTitle,"Two screens, one audit trail","Duas telas, uma trilha de auditoria"
+enterprise.store.haveKey,I already have a license key,Já tenho uma chave de licença
+enterprise.store.included1,Request Logs and Statistics screens,Telas de Logs de Requisições e Estatísticas
+enterprise.store.included2,Updates while the license is active,Atualizações enquanto a licença estiver ativa
+enterprise.store.included3,Activation on your cluster machines,Ativação nas máquinas do seu cluster
+enterprise.store.included4,Cancel anytime; the POM keeps working,Cancele quando quiser; o POM continua funcionando
+enterprise.store.interval,Billing period,Período de cobrança
+enterprise.store.interval.month,Monthly,Mensal
+enterprise.store.interval.year,Yearly,Anual
+enterprise.store.logs.feature1,Search and paginate every request the cluster served,Busca e paginação de toda requisição atendida pelo cluster
+enterprise.store.logs.feature2,"Filter by node, user, API key, model, prompt and time","Filtros por nó, usuário, chave de API, modelo, prompt e período"
+enterprise.store.logs.feature3,"Complete request, response, pipeline hops and execution telemetry","Requisição, resposta, hops do pipeline e telemetria de execução completas"
+enterprise.store.logs.feature4,"Status, tokens, latency, errors and network activity","Status, tokens, latência, erros e atividade de rede"
+enterprise.store.logs.feature5,"Redacted viewer with formatted or raw JSON, Markdown, copy and fullscreen","Visualizador com segredos redigidos, JSON formatado ou bruto, Markdown, cópia e tela cheia"
+enterprise.store.logs.lede,"Request Logs keeps a searchable trail of everything your cluster served: prompt, answer, pipeline hops, tokens, latency and errors, one click away.","Logs de Requisições guarda uma trilha pesquisável de tudo o que o seu cluster atendeu: prompt, resposta, hops do pipeline, tokens, latência e erros, a um clique."
+enterprise.store.logs.summary,Find any request and inspect it whole.,Encontre qualquer requisição e inspecione por inteiro.
+enterprise.store.logs.titleA,See every request.,Veja cada requisição.
+enterprise.store.logs.titleB,Fix issues in minutes.,Resolva problemas em minutos.
+enterprise.store.moreOnSite,More on the plugin store,Mais na loja de plugins
+enterprise.store.name,Statistics and Logs,Estatísticas e Logs
+enterprise.store.per.month,/month,/mês
+enterprise.store.per.year,/year,/ano
+enterprise.store.priceAtCheckout,Price shown at checkout,Preço mostrado no checkout
+enterprise.store.priceLabel,Price,Preço
+enterprise.store.shotAlt,{name} screenshot {number},Captura {number} de {name}
+enterprise.store.shotOpen,Open screenshot {number},Abrir captura {number}
+enterprise.store.shotsLabel,Screens,Telas
+enterprise.store.shotsTitle,"What you get, straight from the plugin","O que você recebe, direto do plugin"
+enterprise.store.statistics.feature1,Total input and output tokens and model throughput,Total de tokens de entrada e saída e vazão por modelo
+enterprise.store.statistics.feature2,Average inference time and time to first token,Tempo médio de inferência e tempo até o primeiro token
+enterprise.store.statistics.feature3,Prefix cache performance and terminal request states,Desempenho do cache de prefixo e estados finais das requisições
+enterprise.store.statistics.feature4,Daily usage and requests by API key and node,Uso diário e requisições por chave de API e por nó
+enterprise.store.statistics.feature5,Peer bandwidth and network latency,Banda entre peers e latência da rede
+enterprise.store.statistics.lede,"Statistics turns the same trail into charts: tokens, time to first token, prefix cache, usage per day, key, node and model, and the health of your network.","Estatísticas transforma a mesma trilha em gráficos: tokens, tempo até o primeiro token, cache de prefixo, uso por dia, chave, nó e modelo, e a saúde da sua rede."
+enterprise.store.statistics.summary,An operational overview for capacity and performance.,Uma visão operacional para capacidade e desempenho.
+enterprise.store.statistics.titleA,Know your cluster.,Conheça o seu cluster.
+enterprise.store.statistics.titleB,Optimize with data.,Otimize com dados.
+enterprise.store.step1.body,The button opens Stripe Checkout with the official price published by POM. Card data never touches your node.,O botão abre o checkout do Stripe com o preço oficial publicado pelo POM. Os dados do cartão nunca passam pelo seu nó.
+enterprise.store.step1.title,Buy with Stripe,Compre com Stripe
+enterprise.store.step2.body,"After payment, the confirmation page shows your license key.","Depois do pagamento, a página de confirmação mostra a sua chave de licença."
+enterprise.store.step2.title,Get your license key,Receba a sua chave de licença
+enterprise.store.step3.body,"Paste the key in Settings, Plugins. The plugin installs itself and these screens replace this page.","Cole a chave em Configurações, Plugins. O plugin se instala sozinho e as telas substituem esta página."
+enterprise.store.step3.title,Activate in Plugins,Ative em Plugins
+enterprise.store.stepsLabel,How it works,Como funciona
+enterprise.store.stepsTitle,From checkout to your first log in three steps,Do checkout ao primeiro log em três passos
 errorBoundary.detail,"The rest of the interface is still available: use the menu to open another screen. If it happens again, the detail below is what the browser recorded.","O resto da interface continua de pé: use o menu para ir a outra tela. Se insistir, o detalhe abaixo é o que o navegador registrou."
 errorBoundary.retry,Try rendering again,Tentar montar de novo
 errorBoundary.title,This screen stopped working,Esta tela parou de funcionar
+firstRun.adminDetail,Creates a new network and invites other machines.,Cria uma rede nova e convida outras máquinas.
+firstRun.advanced,Advanced,Avançado
+firstRun.copyTrust,Copy trust.json,Copiar trust.json
+firstRun.defaultPasswordChange,Change password,Trocar senha
+firstRun.defaultPasswordNotice,The administrative password is still the default (admin). Anyone who reaches this panel on the network can use it.,A senha administrativa ainda é a padrão (admin). Qualquer um que alcance este painel pela rede pode usá-la.
+firstRun.discoveryAdminOptional,Optional: open POM on another machine and choose Node or Inference. You can also add machines later.,Opcional: abra o POM em outra máquina e escolha Nó ou Inferência. Dá para adicionar máquinas depois.
+firstRun.discoveryAdminWaiting,Waiting for computers on the local network...,Esperando computadores na rede local...
+firstRun.discoveryPeers,"{count, plural, one {# computer found} other {# computers found}}","{count, plural, one {# computador encontrado} other {# computadores encontrados}}"
+firstRun.downloadTrust,Download {filename},Baixar {filename}
+firstRun.finish,Finish,Concluir
+firstRun.inferDetail,Only uses the network to chat and call the API.,Só usa a rede para conversar e chamar a API.
+firstRun.inviteDetailPrivate,"Other machines join with this key and the trust.json - or by themselves, over the local network.","Outras máquinas entram com esta chave e o trust.json - ou sozinhas, pela rede local."
+firstRun.inviteDetailPublic,"Other machines join with the trust.json - or by themselves, over the local network.","Outras máquinas entram com o trust.json - ou sozinhas, pela rede local."
+firstRun.inviteTitle,Your network is ready,Sua rede está pronta
+firstRun.joinDetail,"We look for the administrator on the local network. If it is not here, use the trust.json and the key.","Procuramos o administrador na rede local. Se ele não estiver aqui, use o trust.json e a chave."
+firstRun.joinFound,Network found,Rede encontrada
+firstRun.joinFoundDetail,The trust.json and the key came from the administrator - nothing to type.,O trust.json e a chave vieram do administrador - nada para digitar.
+firstRun.joinNetwork,Network,Rede
+firstRun.joinNotFound,No administrator answered,Nenhum administrador respondeu
+firstRun.joinSearching,Looking for the administrator on the local network...,Procurando o administrador na rede local...
+firstRun.joinSearchingDetail,Leave the administrator's wizard open on the invite step.,Deixe o wizard do administrador aberto no passo de convite.
+firstRun.joinTitle,Join your network,Entre na sua rede
+firstRun.machineJoined,joined,conectado
+firstRun.machineJoining,joining,entrando
+firstRun.machineUnknownSystem,system not informed,sistema não informado
+firstRun.manualJoin,Use the trust.json and the key,Usar o trust.json e a chave
+firstRun.networkDetail,Give it a name and choose who can find it.,Dê um nome e escolha quem pode encontrá-la.
+firstRun.networkNameHint,You can change it later.,Dá para mudar depois.
+firstRun.networkTitle,Create your network,Crie sua rede
+firstRun.nodeDetail,"Lends GPU, memory and disk to a network that already exists.","Empresta GPU, memória e disco para uma rede que já existe."
+firstRun.nodeNameHint,How the other machines will see this one.,Como as outras máquinas vão ver esta.
+firstRun.private,Private,Privada
+firstRun.privateDetail,Only machines with the connection key and the trust.json join. Nothing is published.,Só entra quem tiver a chave de conexão e o trust.json. Nada é publicado.
+firstRun.public,Public,Pública
+firstRun.publicDetail,Listed in the public directory; anyone with the trust.json can join.,Aparece no diretório público; qualquer um com o trust.json pode entrar.
+firstRun.publicLocationDetail,"Public networks publish their location in the directory, so people can find the closest one.","Redes públicas publicam a localização no diretório, para quem procura achar a mais próxima."
+firstRun.savedDetail,POM is restarting. The panel password is admin - POM will ask you to change it.,O POM está reiniciando. A senha do painel é admin - o POM vai pedir para você trocá-la.
+firstRun.searchAgain,Search again,Procurar de novo
+firstRun.startDetail,"How will this machine take part? Everything else can be adjusted later, inside POM.","Como esta máquina vai participar? O resto você ajusta depois, dentro do POM."
+firstRun.startTitle,Welcome to POM,Bem-vindo ao POM
+firstRun.stepInvite,Invite,Convite
+firstRun.stepJoin,Join,Entrar
+firstRun.stepNetwork,Network,Rede
+firstRun.stepStart,Start,Início
 forbidden.back,Back to dashboard,Voltar ao painel
 forbidden.detail,"The active profile is {profile}, and this screen is not part of it. The profile belongs to the node, so it cannot be changed from here.","O perfil ativo é {profile}, e esta tela não faz parte dele. O perfil é do nó, e não se troca por aqui."
 forbidden.title,Screen restricted to another profile,Tela restrita a outro perfil
@@ -1279,6 +1397,13 @@ network.requestNodePending,Request pending,Pedido pendente
 network.requestNodeRejected,The node request was rejected,O pedido para virar node foi recusado
 network.requestNodeSent,Request sent to the administrators,Pedido enviado aos administradores
 network.role,Role,Papel
+network.routeAdvertised,advertised: {addr},anunciado: {addr}
+network.routeDirect,Direct,Direto
+network.routeHolePunched,Direct (hole punch),Direto (hole punch)
+network.routeNone,No route,Sem rota
+network.routeP2pDirect,Direct (P2P),Direto (P2P)
+network.routeRelayed,Via relay,Via relé
+network.routeViaRelay,relay {address},relé {address}
 network.rules,Network rules,Regras da rede
 network.shareEyebrow,Share network access,Compartilhar acesso à rede
 network.shareLoading,Loading the sharing materials,Carregando os materiais para compartilhar
@@ -1315,6 +1440,19 @@ network.tlsPropagates,No restart needed. The other nodes confirm the change with
 network.tlsState,Cluster,Cluster
 network.tlsSubtitle,"When on, every HTTP call between peers goes over TLS, and each node''s certificate is verified against the node_id the cluster already knows.","Ligado, todo HTTP entre peers vai por TLS, e o certificado de cada nó é conferido contra o node_id que o cluster já conhece."
 network.tlsTitle,Encryption between nodes,Criptografia entre nós
+network.traversalCircuits,Relay circuits,Circuitos de relé
+network.traversalDirect,Direct addresses,Endereços diretos
+network.traversalEyebrow,Diagnostics,Diagnóstico
+network.traversalHolePunch,Hole punches,Hole punches
+network.traversalHolePunchCounts,"{ok} succeeded, {failed} failed","{ok} concluídos, {failed} falharam"
+network.traversalLastError,"Last hole punch failure: {error}","Última falha de hole punch: {error}"
+network.traversalNat,NAT status,Estado do NAT
+network.traversalNat.private,Behind NAT,Atrás de NAT
+network.traversalNat.public,Publicly reachable,Alcançável publicamente
+network.traversalNat.unknown,Not determined yet,Ainda não determinado
+network.traversalReservations,Relay reservations,Reservas de relé
+network.traversalSubtitle,"Where NAT traversal stands for this node: what it can publish, which relays accepted it, and whether hole punching works.","Em que pé está a travessia de NAT deste nó: o que ele consegue publicar, que relés o aceitaram e se o hole punch funciona."
+network.traversalTitle,NAT traversal,Travessia de NAT
 network.trustDocument,Trust document,Documento de confiança
 network.unblock,Unblock,Liberar
 network.unblockFailed,The node was not unblocked,O nó não foi liberado
@@ -1400,6 +1538,8 @@ paths.detectedSubtitle,What automatic detection would find.,O que a detecção a
 paths.emptyList,"An empty list means do not search anywhere, not detect again. Saving it leaves the full-model catalog empty.","Lista vazia significa não procurar em lugar nenhum, e não detectar de novo. Salvar assim deixa o catálogo de modelos inteiros vazio."
 paths.folder,Folder,Pasta
 paths.folderAria,Folder {count},Pasta {count}
+paths.fromEnvBadge,Set by {name},Definido por {name}
+paths.fromEnvNote,"The {name} environment variable sets this value and takes precedence over pom.json. To change it, change the variable and restart the node.","A variável de ambiente {name} define este valor e vence o pom.json. Para mudar, altere a variável e reinicie o nó."
 paths.fullDetail,"Read only. Each folder is read for what it is: an Ollama store, an LM Studio library, or a regular GGUF folder.","Só leitura. Cada pasta é lida pelo que ela é: store do Ollama, biblioteca do LM Studio, ou pasta comum de GGUF."
 paths.fullModels,Full models,Modelos inteiros
 paths.maxShardGb,Maximum slice storage (GB),Máximo da pasta de fatias (GB)
@@ -1478,6 +1618,29 @@ plugins.deactivate,Deactivate,Desativar
 plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
 plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
 plugins.deactivateFailed,Could not deactivate this plugin.,Não foi possível desativar este plugin.
+plugins.devArtifactMissing,The build completed but no plugin library was found.,"A compilação terminou, mas nenhuma biblioteca do plugin foi encontrada."
+plugins.devBuildFailed,Plugin build failed during {stage}.,A compilação do plugin falhou durante {stage}.
+plugins.devBuilding,Building and installing…,Compilando e instalando…
+plugins.devDescription,Builds and installs or rebuilds a mounted source locally without requiring or activating a license. It does not publish a GitHub release.,Compila e instala ou recompila localmente uma fonte montada sem exigir nem ativar uma licença. Não publica release no GitHub.
+plugins.devDisabled,Local plugin development is disabled on this node.,O desenvolvimento local de plugins está desabilitado neste nó.
+plugins.devExitCode,(exit code {code}),(código de saída {code})
+plugins.devInstall,Build and install locally,Compilar e instalar localmente
+plugins.devInstallFailed,The rebuilt plugin could not be installed.,Não foi possível instalar o plugin recompilado.
+plugins.devInstalled,Local build,Build local
+plugins.devInvalidSource,This mounted source is invalid or does not match its known plugin.,Esta fonte montada é inválida ou não corresponde ao plugin conhecido.
+plugins.devListFailed,Could not inspect mounted plugin sources.,Não foi possível verificar as fontes de plugins montadas.
+plugins.devLoading,Checking mounted plugin sources…,Verificando fontes de plugins montadas…
+plugins.devMountMissing,The development source mount is not available.,O volume de fontes de desenvolvimento não está disponível.
+plugins.devNoSources,No valid known plugin sources are mounted.,Nenhuma fonte válida de plugin conhecido está montada.
+plugins.devPluginInactive,Not installed yet. Build and install it locally without activating a license.,Ainda não instalado. Compile e instale localmente sem ativar uma licença.
+plugins.devRebuildInstall,Rebuild and reinstall,Recompilar e reinstalar
+plugins.devSucceeded,Built and installed {name} locally in {duration} ms. No GitHub release or license activation occurred.,{name} foi compilado e instalado localmente em {duration} ms. Nenhuma release do GitHub foi publicada e nenhuma licença foi ativada.
+plugins.devTitle,Local development builds,Builds locais de desenvolvimento
+plugins.devUninstall,Uninstall local build,Desinstalar build local
+plugins.devUninstallConfirmDescription,This removes the local development plugin from this node. It does not activate or deactivate a license.,Isso remove o plugin de desenvolvimento local deste nó. Não ativa nem desativa uma licença.
+plugins.devUninstallConfirmTitle,Remove local build of {name}?,Remover o build local de {name}?
+plugins.devUnknownFailure,The local rebuild failed.,O rebuild local falhou.
+plugins.devUnknownRepository,This repository is not in the supported plugin list.,Este repositório não está na lista de plugins compatíveis.
 plugins.formSubtitle,The key is sent only to the license server and is not saved by the POM interface.,A chave é enviada apenas ao servidor de licenças e não é salva pela interface do POM.
 plugins.formTitle,Enter your license key,Digite sua chave de licença
 plugins.githubCheck,Refresh releases,Atualizar releases
@@ -1505,6 +1668,7 @@ plugins.githubUninstallConfirmTitle,Uninstall {name}?,Desinstalar {name}?
 plugins.githubUpdate,Update,Atualizar
 plugins.githubUpdateConfirmTitle,Update {name} from GitHub?,Atualizar {name} pelo GitHub?
 plugins.inactiveTitle,Available,Disponível
+plugins.installationFailed,"Plugin installation failed. The host is not ready. Resolve the error below and activate again.","Falha na instalação do plugin. O host não está pronto. Corrija o erro abaixo e tente ativar novamente."
 plugins.installedAt,Last installed,Última instalação
 plugins.keyPrivacy,The license key stays in this form only while activation is running.,A chave fica somente neste formulário durante a ativação.
 plugins.licenseExpires,License expires,Licença válida até
@@ -1533,7 +1697,7 @@ plugins.screenshotOpen,Open screenshot {number} of {name},Abrir captura de tela 
 plugins.screenshotPrevious,Previous screenshot,Captura de tela anterior
 plugins.screenshots,Screenshots,Capturas de tela
 plugins.screenshotsTitle,Screenshots for {name},Capturas de tela de {name}
-plugins.state.active,Active,Ativo
+plugins.state.active,License active,Licença ativa
 plugins.state.degraded,Degraded,Degradado
 plugins.state.expired,Expired,Expirado
 plugins.state.needs_activation,Not activated,Não ativado
@@ -1959,6 +2123,7 @@ setupWizard.tlsPublicRequired,Extra encryption is optional on public networks.,A
 setupWizard.tlsRequired,Encrypt connections between nodes (optional),Criptografar conexões entre nós (opcional)
 setupWizard.trustDocument,Trust document,Documento de confiança
 setupWizard.trustDocumentHint,Paste the complete JSON document from the administrator or upload trust.json.,Cole o documento JSON completo enviado pelo administrador ou envie o trust.json.
+setupWizard.trustDocumentInvalid,This is not a valid trust document. Paste the whole JSON file exported by the network's administrator.,Isto não é um documento de confiança válido. Cole o arquivo JSON inteiro exportado pelo administrador da rede.
 setupWizard.trustFilename,Save the document as {filename},Salve o documento como {filename}
 setupWizard.trustJoinDetail,Import the trust file and enter the connection key supplied by the administrator.,Importe o arquivo de confiança e informe a chave de conexão fornecida pelo administrador.
 setupWizard.trustLabel,Trust root,Raiz de confiança

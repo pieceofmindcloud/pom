@@ -9,7 +9,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_SERVICES = {"node-gpu", "node-gpu2", "node-gpu-3", "node-cpu"}
-EXPECTED_VOLUME_TARGETS = {"/data", "/data/models", "/data/source-models"}
+EXPECTED_VOLUME_TARGETS = {
+    "/data",
+    "/data/models",
+    "/data/source-models",
+    "/data/workspace",
+    "/opt/pom/dev-plugins",
+}
 
 
 def fail(message: str) -> None:
@@ -79,8 +85,8 @@ def check_config(
         fail(f"{filename}: servicos nao compartilham imagem e build")
     shared_build = next(iter(services.values()))["build"]
     build_args = shared_build.get("args", {})
-    if shared_build.get("target") != "runtime":
-        fail(f"{filename}: Salem deve manter a imagem completa runtime")
+    if shared_build.get("target") != "dev-runtime":
+        fail(f"{filename}: cluster local deve usar a imagem de desenvolvimento")
     if "POM_BUILD_VARIANTS" in build_args:
         fail(f"{filename}: obsolete per-variant build selector")
     if build_args.get("POM_LLAMA_CPP_MODE") != "release":
@@ -104,6 +110,8 @@ def check_config(
         environment = service.get("environment", {})
         if environment.get("POM_HOME") != "/data":
             fail(f"{filename}: {name} perdeu POM_HOME=/data")
+        if environment.get("POM_DESENV") != "1":
+            fail(f"{filename}: {name} não habilita os controles de desenvolvimento")
         if environment.get("NVIDIA_DRIVER_CAPABILITIES") != "compute,utility":
             fail(f"{filename}: {name} alterou as capacidades NVIDIA")
         targets = {volume["target"] for volume in service.get("volumes", [])}
@@ -134,46 +142,10 @@ SALEM_BINS = {name: CUDA_BIN for name in EXPECTED_SERVICES}
 SALEM_GPUS = {"node-gpu": ["0"], "node-gpu2": ["0"]}
 SALEM_RADEON = {"node-gpu", "node-gpu-3"}
 
-def check_ksia_config() -> None:
-    filename = "docker-compose.ksia.yml"
-    services = compose_config(filename)["services"]
-    if set(services) != {"node-1"}:
-        fail(f"{filename}: servicos encontrados {sorted(services)}")
-
-    service = services["node-1"]
-    if service["image"] != "pom:ksia":
-        fail(f"{filename}: imagem inesperada {service['image']!r}")
-    if service["build"].get("dockerfile") != "Dockerfile":
-        fail(f"{filename}: Dockerfile de build incorreto")
-    if service["build"].get("target") != "runtime":
-        fail(f"{filename}: Ksia deve usar o target universal runtime")
-    if service["build"].get("additional_contexts", {}).get("llama-fork") != str(ROOT / "llama.cpp"):
-        fail(f"{filename}: named context do fork incorreto")
-    if service.get("network_mode") != "host":
-        fail(f"{filename}: node-1 perdeu network_mode: host")
-    if nvidia_ids(service) != ["0", "1"]:
-        fail(f"{filename}: node-1 deve reservar as NVIDIA 0 e 1")
-    if service.get("environment", {}).get("POM_BIN", CUDA_BIN) != CUDA_BIN:
-        fail(f"{filename}: node-1 deve usar o binário CUDA+Vulkan compartilhado")
-    args = service["build"].get("args", {})
-    if "POM_BUILD_VARIANTS" in args:
-        fail(f"{filename}: Ksia não deve selecionar executáveis por variante")
-    if args.get("POM_LLAMA_CPP_MODE") != "release" or args.get("CUDA_RUNTIME_FLAVOR") != "runtime":
-        fail(f"{filename}: build deve usar release prebuilt com CUDA runtime")
-    if args.get("POM_CUDA_ARCHITECTURES") != "86;120" or args.get(
-        "POM_CUDA_ARCH_CACHE_KEY"
-    ) != "86-120":
-        fail(f"{filename}: arquitetura CUDA e cache key devem corresponder")
-
-
 check_config("docker-compose.yml", SALEM_BINS, SALEM_GPUS, SALEM_RADEON)
 check_config("docker-compose.salem.yml", SALEM_BINS, SALEM_GPUS, SALEM_RADEON)
-check_ksia_config()
 
-for filename, service_name in (
-    ("docker-compose.yml", "node-gpu"),
-    ("docker-compose.ksia.yml", "node-1"),
-):
+for filename, service_name in (("docker-compose.yml", "node-gpu"),):
     build = compose_config(
         filename,
         {

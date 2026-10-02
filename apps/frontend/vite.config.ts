@@ -57,6 +57,7 @@ function brandHtml(): Plugin {
  * to handle. Start one with `--no-discovery` so it stays out of the cluster.
  */
 const target = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
+const frontendSrcDirectory = fileURLToPath(new URL("./src", import.meta.url)).replace(/\\/g, "/");
 const docsDirectory = fileURLToPath(new URL("./src/docs", import.meta.url)).replace(/\\/g, "/");
 
 /**
@@ -119,6 +120,8 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           const normalizedId = id.split("?")[0].replace(/\\/g, "/");
+          if (normalizedId.startsWith(`${frontendSrcDirectory}/i18n/`)) return "app-i18n";
+          if (normalizedId.startsWith(`${frontendSrcDirectory}/components/Markdown`)) return "app-markdown";
           if (normalizedId.startsWith(`${docsDirectory}/`) && normalizedId.endsWith(".md")) {
             const relativePath = normalizedId.slice(docsDirectory.length + 1);
             const chunkName = relativePath
@@ -128,6 +131,25 @@ export default defineConfig({
             return `docs-${chunkName}`;
           }
           if (!normalizedId.includes("/node_modules/")) return undefined;
+          if (
+            normalizedId.includes("/react-markdown/") ||
+            normalizedId.includes("/rehype-highlight/") ||
+            normalizedId.includes("/remark-gfm/") ||
+            normalizedId.includes("/highlight.js/") ||
+            normalizedId.includes("/unified/") ||
+            normalizedId.includes("/micromark") ||
+            normalizedId.includes("/mdast-util-") ||
+            normalizedId.includes("/hast-util-") ||
+            normalizedId.includes("/unist-util-") ||
+            normalizedId.includes("/vfile/") ||
+            normalizedId.includes("/trough/") ||
+            normalizedId.includes("/zwitch/") ||
+            normalizedId.includes("/bail/")
+          ) {
+            return "vendor-markdown";
+          }
+          if (normalizedId.includes("/@formatjs/")) return "vendor-i18n";
+          if (normalizedId.includes("/intl-messageformat/")) return "vendor-i18n";
           if (normalizedId.includes("/framer-motion/") || normalizedId.includes("/motion-dom/")) {
             return "vendor-motion";
           }

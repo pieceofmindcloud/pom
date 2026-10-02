@@ -13,20 +13,22 @@ export POM_RELEASE_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/pom-release-ksia.XXXXXX")
 trap 'rm -rf "$POM_RELEASE_CACHE"' EXIT
 
 out="$("$script" --variant linux-cpu --version v1.2.3 --dry-run)"
-has "$out" "+ cargo build --release --locked -p node"
+has "$out" "+ cargo build --release --locked -p node -p pom-plugin-host"
+has "$out" "release/pom-plugin-host "
 lacks "$out" "--features cuda"
 has "$out" "package=$root/dist-release-ksia/pom-v1.2.3-x86_64-unknown-linux-gnu-cpu.tar.gz"
 has "$out" "+ npm run build"
 
 out="$("$script" --variant linux-cuda --version v1.2.3 --dry-run)"
-has "$out" "+ cargo build --release --locked -p node --features cuda"
+has "$out" "+ cargo build --release --locked -p node -p pom-plugin-host --features cuda"
 has "$out" "package=$root/dist-release-ksia/pom-v1.2.3-x86_64-unknown-linux-gnu-cuda.tar.gz"
 # The full architecture list comes from an empty CUDAARCHS in the child env.
 grep -q "export CUDAARCHS=''" "$script" || fail "CUDAARCHS must be emptied for the CUDA variant"
 grep -q "unset CMAKE_CUDA_ARCHITECTURES" "$script" || fail "CMAKE_CUDA_ARCHITECTURES must be unset"
 
 out="$(POM_RELEASE_SKIP_UI=1 "$script" --variant windows-cpu --version v1.2.3 --dry-run)"
-has "$out" "+ cargo xwin build --release --locked -p node --target x86_64-pc-windows-msvc"
+has "$out" "+ cargo xwin build --release --locked -p node -p pom-plugin-host --target x86_64-pc-windows-msvc"
+has "$out" "release/pom-plugin-host.exe "
 has "$out" "+ rustup target add x86_64-pc-windows-msvc"
 has "$out" "clang-cl"
 has "$out" "lld-link"

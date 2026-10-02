@@ -28,6 +28,14 @@ recursos_macos="$raiz/assets/brand/macos"
 status_icon="$recursos_macos/pom-status-template.png"
 
 [ -x "$bin" ] || { echo "binário não encontrado: $bin" >&2; exit 1; }
+# O pom só inicia plugins pelo `pom-plugin-host` ao lado do próprio executável
+# (`plugin_host::host_executable`); sem ele nenhum plugin instala.
+host="$(dirname "$bin")/pom-plugin-host"
+[ -x "$host" ] || {
+    echo "pom-plugin-host não encontrado: $host" >&2
+    echo "compile com: cargo build --release -p node -p pom-plugin-host" >&2
+    exit 1
+}
 [ -f "$icns" ] || { echo "ícone não encontrado: $icns" >&2; exit 1; }
 # Um item de barra sem arte cai para um rótulo de texto, o que é uma entrega
 # pior e silenciosa. `scripts/derive-macos-status-icon.py` gera esta arte.
@@ -41,6 +49,7 @@ rm -rf "$destino"
 mkdir -p "$destino/Contents/MacOS" "$destino/Contents/Resources"
 
 cp "$bin" "$destino/Contents/MacOS/$slug"
+cp "$host" "$destino/Contents/MacOS/pom-plugin-host"
 cp "$icns" "$destino/Contents/Resources/$slug.icns"
 # As três resoluções entram com o nome original: o lado nativo procura as
 # companheiras `@2x` e `@3x` ao lado da arte 1x que o Rust lhe indica.

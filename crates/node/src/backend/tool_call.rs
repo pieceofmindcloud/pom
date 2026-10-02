@@ -247,7 +247,7 @@ pub(crate) enum ScanEvent {
 ///   documentado como string que nem sempre é JSON válido, a validar antes de
 ///   executar.
 ///
-/// Ver `docs/subsystems/inferencia.md` (9.1).
+/// Ver `docs/subsystems/inference.md` (9.1).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PartialCall {
     pub(crate) name: String,

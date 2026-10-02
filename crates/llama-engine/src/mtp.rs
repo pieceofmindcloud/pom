@@ -36,7 +36,7 @@
 //! modelo inteiro** (cabeça e cauda são o mesmo processo, e o rascunho não
 //! atravessa rede nenhuma). Num pipeline de N nós o motor da cabeça não tem o
 //! bloco, `MtpDrafter::attach` devolve `None` e o nó simplesmente não anuncia
-//! a capacidade. Ver `docs/subsystems/inferencia.md` para a conta do que
+//! a capacidade. Ver `docs/subsystems/inference.md` para a conta do que
 //! custaria estender ao caso fatiado.
 //!
 //! # GGUF de rascunho separado ("shared MTP module")
@@ -140,7 +140,7 @@
 //! primeiro `observe` (`llama_get_embeddings_nextn_ith` devolve `NULL`) e
 //! desliga o MTP daquela sessão com aviso - a mesma degradação que já existe
 //! para um peer velho que não ecoa a composição do lote no MTP fatiado (ver
-//! `docs/subsystems/inferencia.md`, 5.2). Ver a sonda
+//! `docs/subsystems/inference.md`, 5.2). Ver a sonda
 //! `an_external_mtp_draft_attaches_to_a_target_without_embedded_nextn` nos
 //! testes deste módulo para o roteiro de validação com os arquivos reais, e
 //! `crates/llama-engine/src/llm/model.rs::mtp_draft_tests` para a
@@ -522,6 +522,27 @@ impl MtpDrafter {
         self.pending_h
             .copy_from_slice(&self.verify_h[(n - 1) * self.hidden_width..n * self.hidden_width]);
         Ok(())
+    }
+
+    /// Descarta a sequência inteira do cache do contexto MTP e as linhas de
+    /// verificação pendentes.
+    ///
+    /// É o par de um lote que o alvo decodificou **sem** `observe`: a partir
+    /// dali o cache `nextn` desta sequência teria um buraco de posições, e um
+    /// `observe` posterior por cima de um buraco é recusado pelo llama.cpp
+    /// ("inconsistent sequence positions"), o que desligaria o MTP do motor
+    /// inteiro. Remoção total é aceita por todo motor e deixa a sequência
+    /// vazia, de onde qualquer posição inicial é válida. O custo é só de
+    /// metadado; o rascunho de uma sequência esquecida só perde aceitação,
+    /// nunca correção, porque todo rascunho é verificado pelo alvo.
+    pub fn forget(&mut self, seq_id: u32) {
+        unsafe {
+            let mem = sys::llama_get_memory(self.ctx);
+            if !mem.is_null() {
+                sys::llama_memory_seq_rm(mem, seq_id as i32, -1, -1);
+            }
+        }
+        self.verify_rows = 0;
     }
 
     /// Anota quantos tokens **do rascunho** a verificação aceitou, e move o

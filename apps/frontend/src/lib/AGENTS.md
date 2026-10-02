@@ -47,7 +47,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `ChatStreamResult` retains trace, generation timings and source so Chat can
   associate the complete telemetry capture with the specific reply while the
   persisted message patch settles.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Capture stages distinguish scheduler ask-to-ready from tensor-get call wall and postprocess; f8 conversion, frame serialization and QUIC body-send wait have separate totals. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter, request-level `GenerationTimings` and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, MoE executor and reason, hidden-state bytes/dtype, bounded `transport_summary` (including `http`, `https`, `quic` and opportunistic `remote-stream` callbacks) and optional TP telemetry. It also carries trace spans, outside-node accounting, first-token boundaries, connection counts, decode counts and browser-local stream observations. Capture stages distinguish scheduler ask-to-ready from tensor-get call wall and postprocess; peer/client f32/f16 conversion, f8 conversion, frame serialization and QUIC body-send wait have separate totals. `backend_call_ms` names the llama.cpp evaluation call and `backend_sync_ms` its explicit barrier; neither is a pure kernel-time measure or a proxy for `POM_PROFILE_SYNC`.
   `stream_duration_ms` is measured locally from the first SSE data frame to
   receipt of `[DONE]`; it excludes TTFT and includes the terminal tail. The
   separate `time_last_token_to_response_end_ms` isolates that tail.
@@ -173,7 +173,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   ordered physical files and multipart_error carries the concrete reason a
   declared set cannot be sliced; the UI uses metadata_complete to avoid
   displaying a first-part byte count while enrichment is pending.
-  `RuntimeParams.hidden_state_dtype` is the deployment-wide f16/f8/i4g64/i4g128 choice;
+  `RuntimeParams.hidden_state_dtype` is the deployment-wide
+  f32/f16/f8/i4g64/i4g128 choice; f16 remains the default and f32 is lossless
+  at four bytes per value.
   `RuntimeParams.max_new_tokens` is only the size of one backend leg. The
   cycle detector settings in `RuntimeParams` control the gateway's bounded
   repetition safety stop and can be disabled explicitly. The total output
@@ -183,8 +185,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   counts and stream measurements when the backend publishes them.
   `ChatTelemetryNetwork.pipeline_cost` carries the observed execution cycle
   legs and measured per-hop compute, while `pipeline_routes` carries every
-  complete deployed route and its aggregate network RTT for the Dashboard's
-  Gateway card. The observed cost is optional because an asynchronous return
+  complete deployed route for the Dashboard's Gateway card, costed by the
+  backend like the planner (`network_ms`, `return_mode`, `total_ms`). The observed cost is optional because an asynchronous return
   callback may not expose a sender-side RTT.
   `GpuStat.power_watts` é telemetria opcional: o card de detalhes mostra o
   valor quando NVIDIA ou AMD expõe a potência da placa e mantém desconhecido
@@ -198,35 +200,42 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   - nunca misture os dois: a tela de Plugins só aplica atualização de plugin,
   e `About.tsx` só aplica atualização do `pom`, cada uma após confirmação
   explícita do operador.
-- `pluginCatalog.ts` - consulta diretamente o catálogo público de plugins do
-  servidor de licenças, com `credentials: "omit"`; não usa `api.ts` nem envia a
-  chave de conexão ou a sessão administrativa. Valida os campos obrigatórios de
-  cada release comercial e descarta plugins sem release válida; metadados de
-  repositório GitHub do catálogo são ignorados, pois as fontes GitHub são locais.
-  Mantém campos opcionais ausentes como dados desconhecidos e aceita imagens somente do host público
-  esperado, sem credenciais embutidas na URL. Também valida `description_pt_br`
-  quando publicados. Estado de licença, candidatos e uso por `plugin_code` vêm
-  da API autenticada do nó (`PluginStatus`), nunca do catálogo público.
-  `pluginPurchase.ts` constrói a URL da loja pública com o `plugin_code` em
-  parâmetro codificado e não envia credenciais. `usePublicPluginCatalog` em `queries.ts`
-  controla carregamento, erro e atualização periódica dessa leitura.
-  `useGithubRepositories` consulta `/api/ui/plugins/github-repositories`, lista
-  local autenticada que não depende do catálogo comercial. Cada fonte informa
-  `manifest_path` e pode devolver o manifesto de UI original quando a origem é
-  `ui/manifest.json`.
-  `PluginStatus` também carrega `installed_at`, `update_checked_at` e
-  `public_install` do estado real persistido pelo nó; não derive a data da última
-  instalação do heartbeat. Uma instalação pública mantém `licensed_plugins`
-  vazio e usa estado local próprio, sem lease.
-  `license_expires_at` é a validade da LICENÇA (de `GET /v1/licenses/status`) e
-  é o campo certo para "Licença válida até" na tela de Plugins - nunca
-  `lease_expires_at`, um prazo técnico de renovação de poucos dias que o
-  heartbeat empurra sozinho. O status também expõe a URL do repositório GitHub
-  da instalação pública local; as releases disponíveis e os erros de leitura
-  pertencem ao registro de repositórios, não ao catálogo de licenças. Isso não
-  muda `licensed_plugins`. `preferences_schema` vem do manifesto instalado,
-  enquanto `preferences` são valores locais, enviados somente à rota local de
-  configuração do plugin e nunca à API de licenças.
+- `pluginCatalog.ts` - reads the public plugin catalog directly from the
+  license server with `credentials: "omit"`; it does not use `api.ts` or send
+  the connection key or administrative session. It validates required fields
+  for each commercial release and discards plugins without a valid release.
+  GitHub repository metadata in the catalog is ignored because GitHub sources
+  are local. Missing optional fields remain unknown; images are accepted only
+  from the expected public host and URLs may not embed credentials. Published
+  `description_pt_br` values are validated too. License state, activation
+  candidates and usage by `plugin_code` come from the node's authenticated API
+  (`PluginStatus`), never from the public catalog.
+  `pluginPurchase.ts` builds a public-store URL with an encoded `plugin_code`
+  and sends no credentials. `usePublicPluginCatalog` in `queries.ts` manages
+  loading, errors and periodic refreshes. `useGithubRepositories` reads
+  `/api/ui/plugins/github-repositories`, an authenticated local list that does
+  not depend on the commercial catalog. Each source reports `manifest_path`
+  and may return the original UI manifest when its source is `ui/manifest.json`.
+  `useDevelopmentPluginSources` queries mounted sources only for the admin
+  profile when `pom_desenv` is enabled. Its DTOs describe local builds and
+  installs without compiler output. It can install inactive plugins as
+  development builds without a license or licensed features, and does not
+  replace the GitHub release selection. `PluginStatus.development_install`
+  distinguishes a local artifact from license validity. Status also includes
+  `installed_at`, `update_checked_at`, `installation_error` and
+  `public_install` from the node's actual state; do not derive the last-install
+  time from the heartbeat. `active` means the host is ready, while `state`
+  continues to describe license validity. A public installation keeps
+  `licensed_plugins` empty and uses separate local state without a lease.
+  `license_expires_at` is the actual license expiration from
+  `GET /v1/licenses/status` and is the field for "License valid until" on the
+  Plugins screen. Never use `lease_expires_at`, a short technical renewal
+  deadline extended by the heartbeat. Status also exposes the GitHub URL for a
+  locally installed public repository. Available releases and read errors
+  belong to the repository registry, not the license catalog, and do not change
+  `licensed_plugins`. `preferences_schema` comes from the installed manifest;
+  `preferences` are local values sent only to the plugin's local configuration
+  route and never to the license API.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions
@@ -282,11 +291,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "idle" | "failed" | "thermal"`; `idle` means a live peer unloaded its model, while thermal is distinct from an unreachable or failed peer.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
+  `ClusterView.traversal` (`TraversalView`) é o diagnóstico da travessia de NAT
+  do nó que respondeu, não do cluster; é opcional porque nó antigo não o manda.
   `PeerView.rediscovering` distingue "endereço morreu, a rede já foi perguntada"
   de `unreachable` ("atendeu e a leitura quebrou"); `ModelCoverage.unreadable_nodes`
   nomeia as máquinas de que a cobertura depende sem conseguir ler, e é o que
   impede o Painel de pintar "completo" em verde nesse estado. Ver
-  `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder". A carga
+  `docs/subsystems/p2p-network.md`, "Endereço que deixou de responder". A carga
   em voo de `PeerView` é `null` quando o relatório vivo do peer não chegou;
   zero só representa um peer que de fato reportou estar ocioso.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
@@ -345,6 +356,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   (também em `adminAuthority.ts`) envia a cadeia colada e a impressão digital
   digitada; a tela nunca deriva a segunda da primeira, e `can_install` é
   apresentação - quem recusa é o servidor.
+- `trustFingerprint.ts` - `fingerprintFromTrustDocument` calcula a impressão
+  digital pública (SHA-256 do `anchor.principal.pubkey`), a mesma do módulo Rust,
+  e devolve `null` para o que não é documento de confiança. Usa
+  `crypto.subtle` quando existe e, fora de contexto seguro (o wizard aberto por
+  HTTP no IP da máquina), o `sha256` em TypeScript puro do mesmo arquivo -
+  sem ele a impressão digital nunca aparecia e o "Continuar" do wizard ficava
+  desligado sem aviso.
 
 ### queries.ts
 - `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):
@@ -353,7 +371,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   It subscribes to `onAdminSessionLost` and re-probes: the administrative
   session lives in the node's memory, so a restart or the 8h expiry kills it
   with the tab open, and a once-per-load probe would leave every screen
-  printing the server's raw 401 with no way back to the gate.
+  printing the server's raw 401 with no way back to the gate. It re-probes
+  only when the last answer was `available` and no probe is in flight: the
+  probe's own 401 also signals "session lost", and invalidating an in-flight
+  probe cancels and restarts it - thousands of probes a minute, the tab stuck
+  on the dashboard.
 - `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
 - `useAdminAccess()` - public one-shot metadata for the administrative password
   gate; it never receives the password.

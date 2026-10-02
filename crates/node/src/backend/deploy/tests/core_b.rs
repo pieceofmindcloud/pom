@@ -421,7 +421,6 @@
         Machine {
             node_id: id.to_string(),
             hostname: id.to_string(),
-            gateway_url: Some(format!("http://{id}:8080")),
             inference_url: Some(format!("http://{id}:8181")),
             inference_candidates: vec![format!("http://{id}:8181")],
             addr_candidates: Vec::new(),
@@ -990,11 +989,14 @@
             let _ = axum::serve(listener, app).await;
         });
 
-        let state = state_with("eu", vec![]).await;
+        let state = state_with(
+            "eu",
+            vec![crate::gateway::testkit::peer("primary", "ksia", port)],
+        )
+        .await;
         let machines = vec![Machine {
             node_id: "primary".into(),
             hostname: "ksia".into(),
-            gateway_url: Some(format!("http://127.0.0.1:{port}")),
             inference_url: Some(format!("http://127.0.0.1:{port}")),
             inference_candidates: vec![format!("http://127.0.0.1:{port}")],
             addr_candidates: Vec::new(),

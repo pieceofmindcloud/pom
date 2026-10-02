@@ -83,7 +83,7 @@ describe("Documentation", () => {
     fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
     // O leitor imprime o assunto no próprio cabeçalho e o markdown entra sem o
     // H1 dele, que só repetiria o mesmo em outra redação.
-    expect(screen.getByRole("heading", { name: "Rede P2P e descoberta", level: 2 })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "P2P network and discovery", level: 2 })).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
     expect(screen.getByRole("tab", { name: "Reference" }).getAttribute("aria-selected")).toBe(
       "true",
@@ -93,10 +93,10 @@ describe("Documentation", () => {
   it("a lista de arquivos não mostra nome de arquivo nem AGENTS.md", () => {
     renderDoc();
     openReference();
-    // "backend/" e não "AGENTS.md - crates/node/src/backend/"; "Rede P2P e
-    // descoberta" e não "rede-p2p.md".
+    // "backend/" e não "AGENTS.md - crates/node/src/backend/"; "P2P network
+    // and discovery" e não "p2p-network.md".
     expect(screen.getByRole("button", { name: "Open backend/" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open Rede P2P e descoberta" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open P2P network and discovery" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Open AGENTS\.md/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /\.md$/ })).toBeNull();
   });
@@ -109,20 +109,20 @@ describe("Documentation", () => {
   });
 
   it("uma seção pode ser recolhida mesmo segurando o documento aberto", async () => {
-    renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inferencia.md");
+    renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inference.md");
     const collapse = screen.getByRole("button", { name: "Collapse Subsystem docs" });
-    expect(screen.getByRole("button", { name: "Open Caminho de inferência" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Inference path" })).toBeTruthy();
 
     fireEvent.click(collapse);
 
     // O defeito antigo: a seção que continha a seleção voltava a abrir sozinha.
     // A saída é animada, então a folha some no fim da animação, não no clique.
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Open Caminho de inferência" })).toBeNull(),
+      expect(screen.queryByRole("button", { name: "Open Inference path" })).toBeNull(),
     );
     expect(screen.getByRole("button", { name: "Expand Subsystem docs" })).toBeTruthy();
     // Recolher não muda o que está sendo lido.
-    expect(screen.getByRole("heading", { name: "Caminho de inferência", level: 2 })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Inference path", level: 2 })).toBeTruthy();
   });
 
   it("a lista de navegação rola sozinha, e não a página", () => {
@@ -137,8 +137,8 @@ describe("Documentation", () => {
   });
 
   it("?doc= e ?guia= são endereços", () => {
-    renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inferencia.md");
-    expect(screen.getByRole("heading", { name: "Caminho de inferência", level: 2 })).toBeTruthy();
+    renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inference.md");
+    expect(screen.getByRole("heading", { name: "Inference path", level: 2 })).toBeTruthy();
     cleanup();
 
     renderDoc("/documentacao?tab=guias&guia=operar");
@@ -149,11 +149,11 @@ describe("Documentation", () => {
     renderDoc();
     openReference();
     const search = screen.getByLabelText("Search documentation");
-    fireEvent.change(search, { target: { value: "transferência" } });
+    fireEvent.change(search, { target: { value: "transfer" } });
     // Com busca ativa a árvore some; "Project root" ainda aparece como *dica*
     // de seção num resultado, então o que tem de sumir é o cabeçalho.
     expect(screen.queryByRole("button", { name: "Project root" })).toBeNull();
-    expect(screen.getByRole("button", { name: /Open .*ransferência/ })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /Open .*transfer/i }).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByLabelText("Clear search"));
     expect(screen.getByRole("button", { name: "Project root" })).toBeTruthy();
@@ -197,7 +197,7 @@ describe("Documentation", () => {
       const { container } = renderDoc();
       fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
 
-      expect(screen.getByRole("heading", { name: "Rede P2P e descoberta", level: 2 })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "P2P network and discovery", level: 2 })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
       expect(container.querySelector("nav")?.className).toContain("hidden");
       expect(screen.getByTestId("docs-reader").className).not.toContain("hidden");
@@ -212,13 +212,13 @@ describe("Documentation", () => {
       expect(container.querySelector("nav")?.className).not.toContain("hidden");
       expect(screen.getByTestId("docs-reader").className).toContain("hidden");
       // O conteúdo lido continua sendo o mesmo - só a vista mobile mudou.
-      expect(screen.getByRole("heading", { name: "Rede P2P e descoberta", level: 2 })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "P2P network and discovery", level: 2 })).toBeTruthy();
     });
 
     it("um deep link já chega como seleção, abrindo direto no leitor", () => {
-      renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inferencia.md");
+      renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inference.md");
       expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
-      expect(screen.getByRole("heading", { name: "Caminho de inferência", level: 2 })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Inference path", level: 2 })).toBeTruthy();
     });
   });
 });

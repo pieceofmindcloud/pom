@@ -8,9 +8,8 @@ build = "build.rs"
 name = "pom"
 path = "src/main.rs"
 
-# Host IPC falso, usado só pelo teste de regressão de
-# `enterprise::heartbeat_success_restarts_stopped_host_...` em
-# `src/enterprise.rs`. Não faz parte do produto.
+# Host IPC falso, usado apenas pelos testes de regressão de ciclo de vida,
+# caminho POM_PLUGIN_DB e handshake em `src/plugins.rs`. Não faz parte do produto.
 [[bin]]
 name = "pom-fake-enterprise-plugin-host"
 path = "tests/support/fake_plugin_host.rs"
@@ -37,7 +36,7 @@ socket2 = "0.5"
 tokio = { version = "1", features = ["full"] }
 chacha20poly1305 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env", "string"] }
 serde.workspace = true
 serde_json.workspace = true
 semver = "1"
@@ -75,7 +74,7 @@ memmap2 = "0.9"
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 libp2p = { version = "0.56", features = [
-    "tokio", "tcp", "dns", "noise", "yamux",
+    "tokio", "tcp", "quic", "dns", "noise", "yamux",
     "identify", "kad", "mdns", "gossipsub", "macros",
     "relay", "dcutr", "autonat", "request-response",
 ] }

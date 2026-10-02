@@ -47,7 +47,7 @@ mod auth;
 // `crates/llama-engine`) para que editar backend/rede/roteamento não os
 // reconstrua. Re-exportados abaixo para que `crate::brand::…`, `crate::llm::…`
 // etc. continuem resolvendo em todo o `node` sem tocar os ~40 arquivos que os
-// usam. Ver `docs/subsystems/build-execucao.md`.
+// usam. Ver `docs/subsystems/build-and-run.md`.
 use ::brand;
 pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
 #[path = "admin_trust.rs"]
@@ -83,12 +83,12 @@ mod direct;
 mod direct_lab;
 #[path = "network/discovery.rs"]
 mod discovery;
-#[path = "utils/display.rs"]
-mod display;
 #[path = "enterprise_p2p.rs"]
 mod enterprise_p2p;
 #[path = "inference/executor.rs"]
 mod executor;
+#[path = "routing/fastest.rs"]
+pub mod fastest;
 #[path = "backend/gateway/mod.rs"]
 mod gateway;
 #[path = "models/huggingface.rs"]
@@ -113,8 +113,6 @@ mod local_discovery;
 mod local_discovery_tests;
 #[cfg(target_os = "macos")]
 mod macos_status;
-#[path = "models/memory.rs"]
-mod memory;
 #[path = "backend/messages.rs"]
 mod messages;
 #[path = "models/model.rs"]
@@ -144,6 +142,7 @@ mod pipeline;
 mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
+mod plugin_dev;
 mod plugin_github;
 #[path = "plugin_host.rs"]
 mod plugin_host;
@@ -184,6 +183,8 @@ mod reqlog;
 mod respawn;
 #[path = "network/route.rs"]
 pub mod route;
+#[path = "network/route_plan.rs"]
+pub mod route_plan;
 #[path = "inference/runtime.rs"]
 mod runtime;
 #[path = "inference/scheduler.rs"]
@@ -228,8 +229,6 @@ use clap::Parser;
 use clap::Subcommand;
 use discovery::Discovery;
 use gateway::GatewayState;
-use memory::load_layer_memory;
-use model::{calculate_assignment, parse_memory, ModelProfile};
 use network::Network;
 use ollama::OllamaClient;
 #[cfg(windows)]
@@ -237,7 +236,7 @@ use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Subcommand, Debug)]
@@ -279,8 +278,9 @@ enum Command {
     name = "pom",
     about = "Inferência distribuída de LLM entre máquinas, sem servidor central",
     long_about = "Runs a node in a distributed LLM inference network.\n\
-                  Each node allocates a slice of RAM, loads model layers that fit,\n\
-                  and coordinates with peers to cover the full model."
+                  Models are deployed from the web UI served on --gateway-port;\n\
+                  each node loads its slice and coordinates with peers to cover\n\
+                  the full model."
 )]
 struct Args {
     /// Internal elevated child used by the Windows firewall permission flow.
@@ -290,15 +290,6 @@ struct Args {
 
     #[command(subcommand)]
     command: Option<Command>,
-
-    /// Model to load — built-in name (e.g. gemma3, llama3) or any Ollama model name.
-    /// Not required when using --list-models.
-    #[arg(long, short = 'm')]
-    model: Option<String>,
-
-    /// Memory to allocate for model layers (e.g. 10GB, 4096MB)
-    #[arg(long, short = 'M', default_value = "")]
-    memory: String,
 
     /// UDP port for P2P communication.
     /// Use different ports to run multiple nodes on the same machine.
@@ -317,129 +308,26 @@ struct Args {
     #[arg(long, default_value = "")]
     advertise_addr: String,
 
-    /// Refresh UI every N seconds
-    #[arg(long, default_value = "3")]
-    refresh: u64,
-
-    /// List built-in model profiles and Ollama models, then exit
-    #[arg(long)]
-    list_models: bool,
-
     /// Ollama base URL (model resolution, /health, e a porta anunciada aos peers)
     #[arg(long, default_value = "http://localhost:11434")]
     ollama_url: String,
-
-    /// Deprecated — every node now serves the HTTP API, e a porta do Ollama é
-    /// anunciada com ou sem a flag. Aceita só para não quebrar linha de comando
-    /// antiga; o único efeito que resta é marcar este nó como `primary` na
-    /// configuração de inferência montada pela linha de comando.
-    #[arg(long)]
-    gateway: bool,
 
     /// HTTP port for the gateway/API server (served by every node)
     #[arg(long, default_value = "8080")]
     gateway_port: u16,
 
-    /// Force this node to start at a specific layer (overrides auto gap-filling).
-    /// Example: --start-layer 10  means this node owns layers 10..N.
-    #[arg(long)]
-    start_layer: Option<u32>,
-
-    /// Force the last layer this node owns. Pairs with --start-layer; sem os
-    /// dois, a faixa vem do algoritmo que preenche buracos no cluster.
-    #[arg(long)]
-    end_layer: Option<u32>,
-
-    /// Port for the llama-cpp-python inference server on this node.
-    /// When set, pom auto-starts inference_server.py on this port.
-    #[arg(long)]
-    inference_port: Option<u16>,
-
-    /// GPU layers to offload to VRAM (passed to inference_server.py --n-gpu-layers).
-    /// Use 99 to offload all layers. Default 0 = CPU only.
-    #[arg(long, default_value = "0")]
-    n_gpu_layers: u32,
-
-    /// KV cache context length for the inference server (tokens).
-    #[arg(long, default_value = "8192")]
-    n_ctx: u32,
-
-    /// Maximum batch size for prompt processing (tokens). Directly controls
-    /// logit buffer size: lower = much less RAM (n_batch * vocab * 4 bytes).
-    #[arg(long, default_value = "512")]
-    n_batch: u32,
-
-    /// Max new tokens to generate per request.
-    #[arg(long, default_value = "512")]
-    max_new_tokens: u32,
-
-    /// Generations allowed in flight at once. Each generation gets the full
-    /// `n_ctx`; the total KV cache reservation grows with this number.
-    #[arg(long, default_value = "1")]
-    max_sessions: u32,
-
-    /// Keep the KV cache in system RAM instead of GPU VRAM.
-    #[arg(long)]
-    kv_cache_ram: bool,
-
-    /// Prompt tokens pushed through the pipeline per round trip.
-    #[arg(long, default_value = "512")]
-    prefill_chunk_tokens: u32,
-
-    /// Profundidade do pipeline de prefill: pedaços mantidos em voo pela cadeia
-    /// ao mesmo tempo. Efetivo entre 1 (sem sobreposição) e 8.
-    #[arg(long, default_value = "8")]
-    prefill_max_inflight_chunks: u32,
-
-    /// Predição multi-token pelo bloco `nextn` do modelo (MTP), quando ele
-    /// tiver um e este nó servir o modelo inteiro. Não é a "decodificação
-    /// especulativa" por lookup — ver `src/inference/mtp.rs`.
-    #[arg(long)]
-    mtp: bool,
-
-    /// Quantos tokens o MTP rascunha por rodada.
-    #[arg(long, default_value = "3")]
-    mtp_draft_tokens: u32,
-
-    /// Sampling temperature for inference (0 = greedy).
-    #[arg(long, default_value = "0.7")]
-    temperature: f32,
-
-    /// Top-p nucleus sampling cutoff.
-    #[arg(long, default_value = "0.9")]
-    top_p: f32,
-
-    /// Top-k sampling (0 = disabled).
-    #[arg(long, default_value = "40")]
-    top_k: u32,
-
-    /// Repetition penalty (1.0 = off).
-    #[arg(long, default_value = "1.15")]
-    repeat_penalty: f32,
-
-    /// How many recent tokens the repetition penalty looks back over.
-    #[arg(long, default_value = "64")]
-    repeat_last_n: u32,
+    /// IP the setup page listens on while the node has no pom.json. Defaults to
+    /// every interface so a fresh node (including one in a container with a
+    /// published port) is reachable for first access; hardening happens in the
+    /// setup itself. Pass 127.0.0.1 to keep the unauthenticated setup local.
+    /// The configured gateway always listens on every interface and ignores
+    /// this flag.
+    #[arg(long, default_value = "0.0.0.0")]
+    setup_bind: std::net::IpAddr,
 
     /// Enable the conservative cycle detector for this node (off by default).
     #[arg(long)]
     cycle_detection: bool,
-
-    /// Disable Qwen3.5 thinking mode (injects empty <think></think> block).
-    #[arg(long)]
-    no_thinking: bool,
-
-    /// Directory for KV-cache snapshots (like llama-server's `--slot-save-path`).
-    /// Precedence: this flag > `POM_SLOT_SAVE_PATH` env var > `slot_save_path`
-    /// in the config file. Unset everywhere disables `/v1/session/slot` and
-    /// `/admin/slots` on this node.
-    #[arg(long)]
-    slot_save_path: Option<String>,
-
-    /// Single-peer mode: loads model without embedding extraction (correct causal attention).
-    /// Enable when one node covers all layers.
-    #[arg(long)]
-    single_peer: bool,
 
     /// Pkarr public keys of known peers to dial on startup (comma-separated, format: pk:zbase32...).
     #[arg(long, default_value = "")]
@@ -456,12 +344,21 @@ struct Args {
     public_addr: String,
 
     /// Pkarr keys of relay nodes to use for NAT traversal (comma-separated, format: pk:zbase32...).
+    /// Added to `relay_peers` in pom.json.
     #[arg(long, default_value = "")]
     relay_peers: String,
 
     /// Run a relay server that accepts circuit connections from other peers (requires public IP).
     #[arg(long)]
     serve_relay: bool,
+
+    /// Força o wizard de primeiro acesso mesmo com a máquina configurada: a
+    /// configuração atual (pom.json, raiz de confiança e banco local) é movida
+    /// para `setup-backups/<data>` e o nó sobe em modo setup. Para testar o
+    /// wizard; a identidade (`.pom-node.key`) é mantida. Por variável, use
+    /// `POM_FORCE_SETUP=<token>` (ver `force_setup_if_requested`).
+    #[arg(long, alias = "wizard")]
+    setup: bool,
 
     /// Disable the built-in public IPFS relay nodes.
     #[arg(long)]
@@ -476,6 +373,88 @@ struct Args {
     /// Configurações › Rede brings it into the network when you want it there.
     #[arg(long)]
     no_discovery: bool,
+
+    /// `--port` veio da variável de ambiente, não da linha de comando.
+    /// Preenchido por `parse_args`; ver `apply_env_overrides`.
+    #[arg(skip)]
+    port_from_env: bool,
+
+    /// `--gateway-port` veio da variável de ambiente. Ver `port_from_env`.
+    #[arg(skip)]
+    gateway_port_from_env: bool,
+}
+
+/// Variável de ambiente de cada opção da linha de comando, pelo id do clap.
+///
+/// Toda opção tem a sua: a linha de comando vence a variável, que vence o
+/// padrão (a ordem do clap). O nome sai de `brand::env_var`, por isso não pode
+/// ir no atributo `env` do derive, que exige literal.
+const ARG_ENV: &[(&str, &str)] = &[
+    ("port", "PORT"),
+    ("bootstrap", "BOOTSTRAP"),
+    ("advertise_addr", "ADVERTISE_ADDR"),
+    ("ollama_url", "OLLAMA_URL"),
+    ("gateway_port", "GATEWAY_PORT"),
+    ("setup_bind", "SETUP_BIND"),
+    ("cycle_detection", "CYCLE_DETECTION"),
+    ("pkarr_peers", "PKARR_PEERS"),
+    ("public_addr", "PUBLIC_ADDR"),
+    ("relay_peers", "RELAY_PEERS"),
+    ("serve_relay", "SERVE_RELAY"),
+    ("no_default_relays", "NO_DEFAULT_RELAYS"),
+    ("no_discovery", "NO_DISCOVERY"),
+];
+
+/// Opções cuja variável não é o mesmo valor da flag e por isso não passa pelo
+/// clap: `--setup` é booleana, e `POM_FORCE_SETUP` é um token lido em
+/// `force_setup_if_requested`, que força o wizard uma vez por valor.
+#[cfg(test)]
+const MANUAL_ARG_ENV: &[(&str, &str)] = &[("setup", "FORCE_SETUP")];
+
+/// A linha de comando com as variáveis de `ARG_ENV`. As flags booleanas leem a
+/// variável como `1/0`, `true/false`, `yes/no` ou `on/off`, como as outras
+/// variáveis booleanas do projeto.
+fn cli_command() -> clap::Command {
+    let mut command = <Args as clap::CommandFactory>::command();
+    for (id, suffix) in ARG_ENV {
+        command = command.mut_arg(*id, |arg| {
+            let arg = arg.env(brand::env_var(suffix));
+            if matches!(arg.get_action(), clap::ArgAction::SetTrue) {
+                arg.value_parser(clap::builder::BoolishValueParser::new())
+            } else {
+                arg
+            }
+        });
+    }
+    command
+}
+
+fn parse_args() -> Args {
+    let matches = cli_command().get_matches();
+    let from_env =
+        |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::EnvVariable);
+    let mut args = <Args as clap::FromArgMatches>::from_arg_matches(&matches)
+        .unwrap_or_else(|error| error.exit());
+    args.port_from_env = from_env("port");
+    args.gateway_port_from_env = from_env("gateway_port");
+    args
+}
+
+/// A variável de ambiente vence o `pom.json`.
+///
+/// Nas outras opções isso já sai da precedência normal, porque a linha de
+/// comando vence ou se soma à config. `--port` e `--gateway-port` são a
+/// exceção: na linha de comando elas só valem para o modo setup, e a porta
+/// gravada vence - é o que mantém uma troca de porta feita pela interface
+/// depois do respawn, que repete o argv. Vindas do ambiente, elas vencem a
+/// config.
+fn apply_env_overrides(config: &mut config::Config, args: &Args) {
+    if args.port_from_env {
+        config.p2p_port = args.port;
+    }
+    if args.gateway_port_from_env {
+        config.gateway_port = args.gateway_port;
+    }
 }
 
 /// O nó é um serviço Tokio, e a thread principal é dele em toda plataforma
@@ -523,7 +502,7 @@ fn main() -> Result<()> {
     sysmon::set_disk_root(config::project_root());
     tp::install_probe();
 
-    let args = Args::parse();
+    let args = parse_args();
     #[cfg(windows)]
     if let Some(port) = args.windows_firewall_helper {
         return windows_firewall::run_elevated_helper(port);
@@ -531,6 +510,8 @@ fn main() -> Result<()> {
     if let Some(command) = args.command.as_ref() {
         return run_command(command);
     }
+
+    force_setup_if_requested(args.setup)?;
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let gateway_port = configured_gateway_port(&args);
@@ -698,6 +679,9 @@ fn select_gateway_port(config_port: Option<u16>, cli_port: u16) -> u16 {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn configured_gateway_port(args: &Args) -> u16 {
+    if args.gateway_port_from_env {
+        return args.gateway_port;
+    }
     let persisted = config::Config::load()
         .ok()
         .map(|config| config.gateway_port);
@@ -723,11 +707,14 @@ async fn async_main(
     // serve only the setup page. The latter keeps pom.json as a local
     // preference shell, so checking only for file existence would boot the old
     // network again.
-    let existing_config = if config::Config::exists() {
+    let mut existing_config = if config::Config::exists() {
         Some(config::Config::load()?)
     } else {
         None
     };
+    if let Some(config) = existing_config.as_mut() {
+        apply_env_overrides(config, &args);
+    }
     if existing_config
         .as_ref()
         .is_none_or(|config| config.setup_pending)
@@ -741,6 +728,7 @@ async fn async_main(
             .as_ref()
             .map_or(args.gateway_port, |config| config.gateway_port);
         start_setup_mode(
+            args.setup_bind,
             gateway_port,
             args.port,
             existing_config,
@@ -794,758 +782,42 @@ async fn async_main(
             escolhidas => info!("GPUs: {}", escolhidas.join(", ")),
         }
     }
-    let p2p_port = app_config.p2p_port;
     let gateway_port = app_config.gateway_port;
-    let inference_port = Some(
-        args.inference_port
-            .unwrap_or_else(|| app_config.inference_port_or_default()),
-    );
-
-    // ── list-models ─────────────────────────────────────────────────────────
-    if args.list_models {
-        println!("\nBuilt-in model profiles:\n");
-        for m in ModelProfile::known_models() {
-            println!(
-                "  {:20} {:5} layers  {:.0}MB/layer  {}",
-                m.name, m.total_layers, m.memory_per_layer_mb, m.description
-            );
-        }
-
-        println!("\nOllama models at {}:\n", args.ollama_url);
-        let ollama = OllamaClient::new(&args.ollama_url);
-        match ollama.list_models().await {
-            Ok(models) if models.is_empty() => {
-                println!("  (no models found — is Ollama running?)");
-            }
-            Ok(models) => {
-                for m in &models {
-                    let size_mb = m.size as f64 / (1024.0 * 1024.0);
-                    let profile_tag = if ModelProfile::find(&m.name).is_some() {
-                        " ← built-in profile"
-                    } else {
-                        ""
-                    };
-                    println!("  {:45} {:>8.0}MB{}", m.name, size_mb, profile_tag);
-                }
-            }
-            Err(e) => println!("  (could not reach Ollama: {})", e),
-        }
-        println!();
-        return Ok(());
-    }
 
     crate::gateway::ensure_gateway_port_available(app_config.gateway_port, None).await?;
 
-    // ── Branch: with model = full stack; without = gateway only (UI + admin) ──
-    let model_name = args.model.as_ref().map(|m| m.clone());
-
-    if model_name.is_none() {
-        info!("No --model provided — starting gateway without model binding");
-        return start_gateway_only(
-            gateway_port,
-            database.clone(),
-            app_config.clone(),
-            args.ollama_url,
-            args.no_discovery,
-            args.no_default_relays,
-            args.advertise_addr.clone(),
-            args.public_addr.clone(),
-            args.cycle_detection,
-            cluster_logs,
-            audit,
-            gateway_ready,
-        )
-        .await;
-    }
-
-    let model_name = model_name.unwrap();
-
-    // ── require --memory unless inference_port handles model loading ─────────
-    if args.memory.is_empty() && inference_port.is_none() {
-        error!("--memory is required (e.g. --memory 8GB) unless --inference-port is set.");
-        std::process::exit(1);
-    }
-
-    display::print_banner();
-
-    // ── Parse memory ─────────────────────────────────────────────────────────
-    let memory_mb = if args.memory.is_empty() {
-        0.0
-    } else {
-        match parse_memory(&args.memory) {
-            Ok(mb) => mb,
-            Err(_) => {
-                error!(
-                    "Invalid memory format '{}'. Use e.g. 10GB or 4096MB",
-                    args.memory
-                );
-                std::process::exit(1);
-            }
-        }
-    };
-
-    // Priority: (1) built-in profile, (2) Ollama size-based profile,
-    // (3) name-based estimate — so any Ollama model always works.
-
-    // If it's a path, use the filename for profile lookup
-    let profile_lookup_name = if model_name.contains('/') || model_name.contains('\\') {
-        std::path::Path::new(&model_name)
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or(&model_name)
-            .to_string()
-    } else {
-        model_name.clone()
-    };
-
-    let mut profile = if let Some(p) = ModelProfile::find(&profile_lookup_name) {
-        p
-    } else if let Some(p) = ModelProfile::find(&model_name) {
-        p
-    } else {
-        // Try Ollama to get exact file size for a better estimate
-        let ollama = OllamaClient::new(&args.ollama_url);
-        match ollama.list_models().await {
-            Ok(models) => {
-                let lower = profile_lookup_name.to_lowercase();
-                if let Some(om) = models.iter().find(|m| {
-                    let n = m.name.to_lowercase();
-                    n == lower || lower.starts_with(&n) || n.starts_with(&lower)
-                }) {
-                    info!(
-                        "'{}' found in Ollama ({:.0}MB) — using size-based profile",
-                        om.name,
-                        om.size as f64 / 1_048_576.0
-                    );
-                    ModelProfile::from_ollama_model(&profile_lookup_name, om.size)
-                } else {
-                    ModelProfile::guess_from_name(&model_name)
-                }
-            }
-            Err(_) => ModelProfile::guess_from_name(&model_name),
-        }
-    };
-
-    // Force profile name to be consistent if we found a match
-    if let Some(p) = ModelProfile::find(&profile.name) {
-        profile.name = p.name;
-    }
-
-    info!("Model: {} ({})", profile.name, profile.description);
-    info!(
-        "Memory allocated: {:.0}MB ({:.1}GB)",
-        memory_mb,
-        memory_mb / 1024.0
-    );
-
-    // ── Generate identity ────────────────────────────────────────────────────
-    let identity = identity::Identity::load_or_create(&identity::key_path());
-    let node_id = identity.node_id.0.clone();
-    let pubkey = identity.public_key_hex();
-    let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
-    let pom_core_update = pom_core_update::PomCoreUpdater::runtime(plugins.clone());
-
-    let pkarr_peer_keys: Vec<String> = args
-        .pkarr_peers
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    let relay_peer_keys: Vec<String> = args
-        .relay_peers
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    // ── Bootstrap nodes: config + CLI extras ─────────────────────────────────
-    // Normalised on the way in, config file included: an entry saved before
-    // there was any validation is exactly the one that fails at send time.
-    let mut bootstrap_nodes: Vec<String> = app_config
-        .bootstrap_nodes
-        .iter()
-        .map(|b| config::normalize_peer_addr(b))
-        .filter(|s| !s.is_empty())
-        .collect();
-    for b in args
-        .bootstrap
-        .split(',')
-        .map(config::normalize_peer_addr)
-        .filter(|s| !s.is_empty())
-    {
-        if !bootstrap_nodes.contains(&b) {
-            bootstrap_nodes.push(b);
-        }
-    }
-
-    // CLI wins over the config file, same as --bootstrap. `--public-addr`
-    // used to only reach the pkarr DHT record (below) — an operator who set
-    // it to get past NAT for pkarr resolution silently got no benefit for
-    // the Announce'd HTTP address, which is the one that actually matters
-    // for a peer trying to dial this node directly. Folded in here so one
-    // flag does the whole job; `--advertise-addr` stays the more specific
-    // override when both happen to be set.
-    let advertise_addr = resolve_advertise_addr(
-        &args.advertise_addr,
-        &args.public_addr,
-        app_config.advertise_addr.as_deref(),
-    );
-
-    if bootstrap_nodes.is_empty() {
-        info!(
-            "No bootstrap nodes — will rely on local LAN broadcast (port {})",
-            network::DISCOVERY_PORT
-        );
-        info!("Tip: use --bootstrap 127.0.0.1:<port> to connect multiple local instances");
-    } else {
-        info!("Bootstrap nodes: {:?}", bootstrap_nodes);
-    }
-
-    // ── Determine Ollama port to advertise ───────────────────────────────────
-    let ollama_port: Option<u16> = advertised_ollama_port(&args.ollama_url);
-    // Portas QUIC derivadas do `p2p_port` deste nó, nunca de gateway/inference:
-    // ver `quic::gateway_quic_port`.
-    let inference_quic_port =
-        inference_port.and_then(|_| crate::quic::inference_quic_port(p2p_port));
-    let gateway_quic_port = crate::quic::gateway_quic_port(p2p_port);
-
-    peer_client::set_quic_ativo(app_config.quic_enabled);
-
-    // ── Start P2P network + (best-effort) libp2p discovery ───────────────────
-    let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
-        Arc::new(tokio::sync::RwLock::new(app_config.clone()));
-    let admin_trust = Arc::new(crate::admin_trust::AdminTrust::load_or_empty(
-        config::admin_trust_path(),
-    ));
-    let node_display_name = match app_config.node_name.clone() {
-        Some(name) => name,
-        None => sysmon::sample().await.hostname,
-    };
-    let stack = start_p2p_stack(P2pStackArgs {
-        node_id: node_id.clone(),
-        pubkey: pubkey.clone(),
-        p2p_port,
-        bootstrap_nodes: bootstrap_nodes.clone(),
-        ollama_port,
-        inference_port,
-        inference_quic_port,
+    // O nó sobe sempre sem modelo: o que ele serve vem da implantação feita pela
+    // interface, restaurada do journal da fatia (`lastslice`) num reinício.
+    start_node(
         gateway_port,
-        gateway_quic_port,
-        profile: app_config.profile,
-        node_display_name,
-        advertise_addr: advertise_addr.clone(),
-        tls_required: app_config.tls_required,
-        cluster_logs: cluster_logs.clone(),
-        audit: audit.clone(),
-        plugins: plugins.clone(),
-        primary_authority_pubkey: admin_trust.current_primary().pubkey.clone(),
-        cluster_logs_enabled: app_config.cluster_logs_enabled,
-        network_chat_enabled: app_config.network_chat_enabled,
-        local_auto_discovery: app_config.local_auto_discovery,
-        auth: auth_config.clone(),
-        admin_trust: admin_trust.clone(),
-        database: database.clone(),
-        relay_peer_keys: relay_peer_keys.clone(),
-        serve_relay: args.serve_relay,
-        use_default_relays: !args.no_default_relays,
-        no_discovery: args.no_discovery,
-    })
-    .await?;
-    let authority_signing_key = Arc::new(stack.authority_signing_key.clone());
-    let authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
-        node_id.clone(),
-        stack.libp2p_peer_id.clone(),
-        &stack.authority_signing_key,
-    );
-    if app_config.profile == crate::profile::NodeProfile::Admin
-        && admin_trust
-            .effective_authority(&authority_principal, app_config.profile)
-            .is_none()
-    {
-        warn!(
-            "perfil admin sem concessão administrativa válida; capacidade efetiva permanece node. \
-             Para ancorar o primeiro principal nesta máquina: `pom admin-anchor --cluster-id <nome>`, \
-             confira a impressão digital exibida e repita com `--fingerprint <valor> --confirm`. \
-             Para um nó que já tem principal no cluster, copie {} do admin por um canal seu e rode \
-             `pom admin-anchor --from <arquivo> --fingerprint <valor> --confirm`",
-            config::admin_trust_filename()
-        );
-    }
-    let net = stack.net;
-    net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
-    let assignment_shared = stack.assignment_shared;
-    let tunnel_tx = stack.tunnel_tx;
-    let cluster_logs = stack.cluster_logs;
-    let network_chat = stack.network_chat;
-    let pkarr_node = stack.pkarr_node.map(Arc::new);
-    let local_is_admin = admin_trust
-        .effective_authority(&authority_principal, app_config.profile)
-        .is_some();
-    net.set_policy_principal_pubkey(admin_trust.current_primary().pubkey);
-    cluster_logs.set_admin_receiver(local_is_admin);
-    audit.set_admin_receiver(local_is_admin);
-    let disc_dial_tx = stack.disc_dial_tx;
-    let p2p_port = net.bind_addr.port();
-    display::print_node_info(&node_id, &pubkey, p2p_port);
-
-    // ── Compute pkarr multiaddr to publish ───────────────────────────────────
-    // Use the actual UDP port when the config requested an ephemeral bind.
-    let pkarr_multiaddr = pkarr_multiaddr_for_advertise(
-        (!args.public_addr.is_empty()).then_some(args.public_addr.as_str()),
-        pkarr_node::detect_local_ip(),
-        p2p_port,
-    );
-
-    info!("⏳ Scanning network for existing layer coverage...");
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    // ── Calculate layer assignment ───────────────────────────────────────────
-    let covered = net.get_covered_layers(&profile.name).await;
-    if !covered.is_empty() {
-        info!(
-            "Network already covers layers: {:?}",
-            &covered[..covered.len().min(10)]
-        );
-    }
-
-    // Layer range, in order of precedence: explicit flags, then the gap-filling
-    // algorithm.
-    //
-    // Havia um degrau no meio - adivinhar a faixa lendo dois números no nome do
-    // arquivo (`name_<start>_<end>.gguf`). Ele saiu junto com a convenção: uma
-    // parte se chama pelo próprio hash, e um modelo cujo nome termina em dois
-    // números não é uma fatia de nada. Quem sabe a faixa é o `.pom`, e quem
-    // carrega uma parte solta na mão passa `--start-layer`/`--end-layer`.
-    let explicit_range = match (args.start_layer, args.end_layer) {
-        (Some(s), Some(e)) => Some((s, e)),
-        _ => None,
-    };
-    let assignment = if let Some((s, e)) = explicit_range {
-        info!("Layers {}-{} set explicitly", s, e);
-        let actual_count = e - s + 1;
-        model::LayerAssignment {
-            deploy_id: String::new(),
-            model: profile.name.clone(),
-            total_layers: profile.total_layers,
-            start_layer: s,
-            end_layer: e,
-            layers_count: actual_count,
-            memory_used_mb: actual_count as f64 * profile.memory_per_layer_mb + profile.overhead_mb,
-            memory_allocated_mb: memory_mb,
-        }
-    } else {
-        calculate_assignment(&profile, memory_mb, &covered, args.start_layer)
-    };
-
-    info!(
-        "📦 Assigned layers {}-{} ({} layers, {:.0}MB)",
-        assignment.start_layer,
-        assignment.end_layer,
-        assignment.layers_count,
-        assignment.memory_used_mb
-    );
-
-    // When inference_server.py manages the model, skip RAM reservation —
-    // the Python process owns the model memory.
-    let (layer_buf, mem_source) = if inference_port.is_none() {
-        let buf = load_layer_memory(
-            &profile.name,
-            assignment.start_layer,
-            assignment.end_layer,
-            assignment.total_layers,
-            assignment.memory_used_mb,
-        );
-        let src = buf.source.to_string();
-        (Some(buf), src)
-    } else {
-        (None, "inference_server".to_string())
-    };
-
-    display::print_assignment(&assignment, &mem_source);
-    let _layer_buf = layer_buf; // keep alive for process lifetime
-
-    {
-        let mut a = assignment_shared.write().await;
-        *a = Some(assignment.clone());
-    }
-
-    let pkarr_publisher = pkarr_node.as_ref().map(|node| {
-        Arc::new(crate::gateway::PkarrPublishHandle::new(
-            node.clone(),
-            pkarr_multiaddr.clone(),
-            Some(gateway_port),
-            inference_port,
-            profile.name.clone(),
-            assignment_shared.clone(),
-            args.serve_relay,
-        ))
-    });
-
-    net.announce(Some(&assignment)).await?;
-
-    // ── Runtime: owns the model configuration and the inference server ──────
-    let hf_token_store =
-        huggingface::HfTokenStore::new_from_database(app_config.huggingface_token.clone());
-    // ── TLS entre peers ──────────────────────────────────────────────────────
-    // O certificado é derivado da identidade que acabou de ser carregada e
-    // nunca vai para o disco (ver `tls.rs`). Ele existe desde o arranque mesmo
-    // com a flag desligada, porque é o que permite ligar TLS sem reiniciar: o
-    // servidor já sabe falar as duas línguas, e a flag só decide se texto claro
-    // remoto continua aceito.
-    // Endereços que entram no certificado do navegador: os locais desta
-    // máquina, o que o operador fixou, e o hostname. Sem eles o navegador
-    // reclamaria do host, e não do emissor.
-    let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
-    let quic_config = match serve::quic_server_config(&identity) {
-        Ok(config) => Some(config),
-        Err(error) => {
-            warn!("endpoint HTTP/3 indisponível, mantendo fallback TCP: {error}");
-            None
-        }
-    };
-    let tls_server =
-        match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
-            Ok(t) => Some(t),
-            Err(e) => {
-                warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");
-                None
-            }
-        };
-
-    let node_runtime = runtime::NodeRuntime::new_with_tls_and_quic_and_auth(
-        net.clone(),
-        assignment_shared.clone(),
-        tls_server.clone(),
-        quic_config.clone(),
-        Some(auth_config.clone()),
-    );
-    node_runtime
-        .start_thermal_monitor(auth_config.clone())
-        .await;
-
-    // `--model` na linha de comando é intenção explícita e vence qualquer
-    // fatia anotada por um reinício anterior. Este caminho nunca consome o
-    // arquivo (só o caminho sem `--model`, mais abaixo, faz isso) — sem esta
-    // chamada, um nó que sempre sobe com `--model` deixaria um
-    // `*.last-slice.json` órfão no disco para sempre, escrito por uma rota de
-    // restart que nunca seria lida de volta.
-    // Uma intenção explícita de linha de comando substitui qualquer journal
-    // de uma implantação anterior.
-    lastslice::clear();
-
-    // ── HTTP API server - every node serves it ───────────────────────────────
-    // Bind before scheduling the model load. A model, fit, or runtime lock is
-    // allowed to take as long as it needs without hiding the control plane.
-    {
-        let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
-        peer_clients.apply_cluster_policy(app_config.tls_required);
-        peer_clients.set_quic(app_config.quic_enabled);
-        peer_clients.set_auth_state(auth_config.clone());
-        // A catraca do TLS: escuta o gatilho do gossip e confirma a política
-        // com o principal antes de gravar qualquer coisa. Ver `tls_policy`.
-        tls_policy::spawn_ratchet(
-            net.clone(),
-            peer_clients.clone(),
-            auth_config.clone(),
-            tls_server.clone(),
-            authority_signing_key.clone(),
-            authority_principal.clone(),
-            admin_trust.clone(),
-        );
-        quic_policy::spawn_ratchet(net.clone(), peer_clients.clone(), auth_config.clone());
-        cluster_logs_policy::spawn_ratchet(
-            net.clone(),
-            peer_clients.clone(),
-            auth_config.clone(),
-            cluster_logs.clone(),
-            authority_signing_key.clone(),
-            authority_principal.clone(),
-            admin_trust.clone(),
-        );
-        network_chat_policy::spawn_ratchet(
-            net.clone(),
-            peer_clients.clone(),
-            auth_config.clone(),
-            network_chat.clone(),
-            authority_signing_key.clone(),
-            authority_principal.clone(),
-            admin_trust.clone(),
-        );
-
-        let gw_state = GatewayState {
-            network: net.clone(),
-            ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
-            default_model: profile.name.clone(),
-            local_assignment: assignment_shared.clone(),
-            loads: node_runtime.load_tracker(),
-            prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
-            prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
-            adaptive_chunk_tuner: crate::gateway::AdaptiveChunkTuner::default_arc(),
-            peer_http: peer_clients.clone(),
-            admission_health: Default::default(),
-            runtime: node_runtime.clone(),
-            cycle_config: crate::cycle::CycleConfig {
-                enabled: args.cycle_detection,
-                ..crate::cycle::CycleConfig::default()
-            },
-            audit: audit.clone(),
-            plugins: plugins.clone(),
-            pom_core_update: pom_core_update.clone(),
-            database: database.clone(),
-            gateway_port,
-            quic_server: quic_config.clone(),
-            quic_port: net.gateway_quic_port,
-            auth: auth_config,
-            admin_trust: admin_trust.clone(),
-            authority_signing_key: authority_signing_key.clone(),
-            authority_principal: authority_principal.clone(),
-            admin_sessions: Arc::new(tokio::sync::Mutex::new(Default::default())),
-            transfers: Default::default(),
-            reply_inbox: crate::direct::ReplyInbox::new(),
-            tunnel_tx: Some(tunnel_tx.clone()),
-            tls_server: tls_server.clone(),
-            cluster_logs: cluster_logs.clone(),
-            network_chat: network_chat.clone(),
-            cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
-            model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
-                Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
-                    hf_token_store.clone(),
-                )),
-                hf_token_store,
-            )),
-            pkarr_publisher: pkarr_publisher.clone(),
-        };
-        let gw_port = gateway_port;
-        spawn_gateway_companions(&gw_state, &database, net.bind_addr.port());
-        tokio::spawn(async move {
-            if let Err(e) =
-                gateway::start_gateway_with_ready(gw_state, gw_port, gateway_ready).await
-            {
-                error!("HTTP API server error: {}", e);
-            }
-        });
-    }
-
-    if let Some(port) = inference_port {
-        let cfg = runtime::NodeConfig {
-            deploy_id: String::new(),
-            // Configurado pela linha de comando: não veio de implantação nenhuma.
-            model_path: model_name.clone(),
-            mmproj_path: None,
-            mtp_draft_path: None,
-            model_label: profile.name.clone(),
-            deployment_name: profile.name.clone(),
-            start_layer: assignment.start_layer,
-            end_layer: assignment.end_layer,
-            total_layers: assignment.total_layers,
-            peer_count: if args.single_peer { 1 } else { 2 },
-            peer_index: 0,
-            primary: args.gateway,
-            tp: None,
-            inference_mode: Default::default(),
-            inference_port: port,
-            n_gpu_layers: args.n_gpu_layers,
-            n_ctx: args.n_ctx,
-            offload_kqv: !args.kv_cache_ram,
-            hidden_state_dtype: crate::wire::WireDtype::F16,
-            cache_type_k: config::KvCacheType::F16,
-            cache_type_v: config::KvCacheType::F16,
-            // Precedência: flag > POM_SLOT_SAVE_PATH > pom.json
-            // (`slot_save_path_effective` resolve os dois últimos).
-            slot_save_path: args
-                .slot_save_path
-                .clone()
-                .or_else(|| app_config.slot_save_path_effective()),
-            fit_memory: true,
-            fit_memory_margin_mb: runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
-            n_batch: args.n_batch,
-            max_sessions: args.max_sessions,
-            batching_enabled: true,
-            max_queue_requests: 128,
-            batch_window_ms: 0,
-            max_batch_sequences: u32::MAX,
-            max_batch_tokens: u32::MAX,
-            prefill_chunk_tokens: args.prefill_chunk_tokens,
-            prefill_max_inflight_chunks: args.prefill_max_inflight_chunks,
-            max_new_tokens: args.max_new_tokens,
-            temperature: args.temperature,
-            top_p: args.top_p,
-            top_k: args.top_k,
-            repeat_penalty: args.repeat_penalty,
-            repeat_last_n: args.repeat_last_n,
-            cycle_detection_enabled: args.cycle_detection,
-            cycle_detection_min_window_tokens: cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
-            cycle_detection_max_window_tokens: cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
-            cycle_detection_repetitions: cycle::DEFAULT_CYCLE_REPETITIONS,
-            no_thinking: args.no_thinking,
-            single_peer: args.single_peer,
-            no_embeddings: false,
-            // No CLI flags for these yet — off by default, same as the web
-            // UI's kill-switch; turn it on from Configurar → ajustes avançados.
-            speculative_decoding_enabled: false,
-            speculative_k: 4,
-            speculative_lookup_window: 3,
-            mtp_enabled: args.mtp,
-            mtp_draft_tokens: args.mtp_draft_tokens,
-            mtp_min_probability: 0.0,
-            mtp_cpu_fallback_enabled: true,
-            unload_if_idle: false,
-            idle_minutes: 60,
-        };
-        if let Err(e) = node_runtime.apply(cfg).await {
-            error!("não foi possível iniciar o servidor de inferência: {e:#}");
-        }
-    }
-
-    // ── Resolve pkarr peers and dial on startup ──────────────────────────────
-    // (libp2p discovery + gossipsub re-announce already started inside
-    // `start_p2p_stack`; `disc_dial_tx` came back from it.)
-    if let (Some(ref pn), Some(dtx)) = (&pkarr_node, disc_dial_tx.as_ref()) {
-        if !pkarr_peer_keys.is_empty() {
-            let peers = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                pn.resolve_peers(&pkarr_peer_keys),
-            )
-            .await
-            .unwrap_or_default();
-            for peer in &peers {
-                if let Ok(ma) = peer.multiaddr.parse::<libp2p::Multiaddr>() {
-                    let _ = dtx.send(ma).await;
-                }
-            }
-        }
-    }
-
-    // ── Publish pkarr record and schedule 30-min republish ───────────────────
-    if let Some(publisher) = pkarr_publisher {
-        // Initial publish (best-effort, does not block startup)
-        {
-            let publisher = publisher.clone();
-            let geo_label = app_config.network.geo_label.clone();
-            tokio::spawn(async move {
-                if let Err(e) = publisher.publish_geo_label(&geo_label).await {
-                    warn!("pkarr initial publish failed: {}", e);
-                }
-            });
-        }
-
-        // Republish every 30 minutes to keep record alive
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30 * 60));
-            ticker.tick().await; // skip first immediate tick
-            loop {
-                ticker.tick().await;
-                let geo_label = crate::config::Config::load()
-                    .map(|config| config.network.geo_label)
-                    .unwrap_or_default();
-                if let Err(e) = publisher.publish_geo_label(&geo_label).await {
-                    warn!("pkarr republish failed: {}", e);
-                }
-            }
-        });
-    }
-
-    // ── Main display loop ────────────────────────────────────────────────────
-    let mut ticker = interval(Duration::from_secs(args.refresh));
-
-    println!("\n\x1b[2J\x1b[1;1H");
-
-    loop {
-        ticker.tick().await;
-
-        print!("\x1b[2J\x1b[1;1H");
-
-        let peers = net.alive_peers().await;
-        let asgn = assignment_shared.read().await;
-
-        if let Some(ref a) = *asgn {
-            let gateway_tag = format!(" │ 🌐 http:{}", gateway_port);
-            let infer_tag = if let Some(p) = inference_port {
-                format!(" │ ⚡ infer:{}", p)
-            } else {
-                String::new()
-            };
-
-            println!(
-                "\x1b[1m pom\x1b[0m  node:{} │ {}  │ peers:{} │ {}{}{}",
-                &node_id[..12],
-                chrono::Utc::now().format("%H:%M:%S"),
-                peers.len(),
-                if peers.is_empty() {
-                    "🔍 discovering..."
-                } else {
-                    "🟢 connected"
-                },
-                gateway_tag,
-                infer_tag,
-            );
-            println!();
-
-            // Vivo, não congelado: enquanto isto era a string fixa
-            // "inference_server", a TUI anunciava saúde mesmo com o servidor
-            // caído em laço (porta presa, por exemplo) e o peer só quebrava na
-            // hora da inferência.
-            let mem_source = match inference_port {
-                Some(_) => runtime_mem_source(&node_runtime.status().await),
-                None => mem_source.clone(),
-            };
-            display::print_assignment(a, &mem_source);
-            display::print_layer_map(a.total_layers, a.start_layer, a.end_layer, &peers);
-            display::print_peers(&peers);
-            display::print_network_health(
-                a.total_layers,
-                a.start_layer,
-                a.end_layer,
-                &peers,
-                &a.model,
-            );
-
-            let covered_now = net.get_covered_layers(&profile.name).await;
-            let gap_exists = (0..a.start_layer).any(|l| !covered_now.contains(&l));
-
-            if gap_exists {
-                println!();
-                println!("  💡 Uncovered layers detected earlier in the model.");
-                println!("     Restart with updated --bootstrap to rebalance assignments.");
-            }
-        }
-
-        println!();
-        println!("  \x1b[90mPress Ctrl+C to stop this node\x1b[0m");
-    }
-}
-
-/// Extract the port from an Ollama URL like "http://localhost:11434".
-/// O que a linha "Mem loaded" da TUI mostra sobre o servidor de inferência.
-///
-/// Estado e motivo, não um rótulo fixo: um servidor que não sobe tem que
-/// aparecer aqui, senão o operador só descobre a falha na primeira requisição.
-fn runtime_mem_source(status: &runtime::RuntimeStatus) -> String {
-    use runtime::ServerState;
-    match status.state {
-        ServerState::Ready => "inference_server".to_string(),
-        ServerState::Idle => format!("inference_server ocioso: {}", status.detail),
-        ServerState::Starting => format!("inference_server (subindo: {})", status.detail),
-        ServerState::Failed => format!("❌ inference_server parado: {}", status.detail),
-        ServerState::Disabled => format!("inference_server desligado: {}", status.detail),
-        ServerState::Thermal => format!(
-            "⚠️ inference_server suspenso por temperatura: {}",
-            status.detail
-        ),
-    }
+        database.clone(),
+        app_config.clone(),
+        args.ollama_url,
+        args.no_discovery,
+        args.no_default_relays,
+        merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap),
+        merged_relay_peers(&app_config.relay_peers, &args.relay_peers),
+        comma_list(&args.pkarr_peers),
+        args.serve_relay,
+        args.advertise_addr.clone(),
+        args.public_addr.clone(),
+        args.cycle_detection,
+        cluster_logs,
+        audit,
+        gateway_ready,
+    )
+    .await
 }
 
 /// A porta de Ollama que este nó anuncia aos peers.
 ///
-/// Não depende de flag nenhuma: dependia de `--gateway`, que está marcada como
-/// deprecated justamente porque todo nó já serve a API. Sem a flag, o nó
-/// servia o Ollama local e nenhum peer sabia disso, então ninguém podia rotear
-/// para cá.
+/// Não depende de flag nenhuma: todo nó serve a API, e um nó que servisse o
+/// Ollama local sem anunciar a porta ficaria invisível para o roteamento.
 fn advertised_ollama_port(ollama_url: &str) -> Option<u16> {
     parse_ollama_port(ollama_url)
 }
 
+/// Extract the port from an Ollama URL like "http://localhost:11434".
 fn parse_ollama_port(url: &str) -> Option<u16> {
     url.trim_start_matches("http://")
         .trim_start_matches("https://")
@@ -1555,7 +827,97 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
         .and_then(|s| s.parse::<u16>().ok())
 }
 
+/// Onde o último `POM_FORCE_SETUP` consumido fica gravado.
+fn forced_setup_marker() -> std::path::PathBuf {
+    config::project_root().join(format!(".{}-setup-forced", crate::brand::slug()))
+}
+
+/// Decide se o wizard é forçado nesta subida, uma vez por pedido.
+///
+/// O save do wizard reinicia o nó, e o que força não pode valer de novo nesse
+/// reinício - senão a configuração recém-criada iria para o backup e o wizard
+/// voltaria para sempre. Dois caminhos, porque os reinícios são diferentes:
+///
+/// - `--setup`: o reinício reexecuta o binário com os mesmos argumentos e o
+///   mesmo ambiente, então a marca `POM_SETUP_FORCED` no ambiente basta.
+/// - `POM_FORCE_SETUP=<token>`: em Docker o processo 1 encerra no reinício e o
+///   container sobe com o ambiente do compose, sem marca nenhuma. O token
+///   consumido fica num arquivo do project root; o mesmo token não força de
+///   novo. `up.sh <cluster> --wizard` (repositório `pom-cluster-config`) gera um token novo por chamada.
+fn force_setup_if_requested(cli_flag: bool) -> anyhow::Result<()> {
+    if cli_flag {
+        let consumed = crate::brand::env_var("SETUP_FORCED");
+        if std::env::var(&consumed).is_ok_and(|value| value == "1") {
+            return Ok(());
+        }
+        std::env::set_var(&consumed, "1");
+        return force_setup_mode();
+    }
+    let token = crate::brand::env("FORCE_SETUP").unwrap_or_default();
+    let token = token.trim();
+    if token.is_empty()
+        || matches!(
+            token.to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    {
+        return Ok(());
+    }
+    let marker = forced_setup_marker();
+    if std::fs::read_to_string(&marker).is_ok_and(|last| last.trim() == token) {
+        return Ok(());
+    }
+    force_setup_mode()?;
+    std::fs::write(&marker, token)?;
+    Ok(())
+}
+
+/// Guarda a configuração atual e deixa o nó sem ela, para subir no wizard.
+/// Roda antes de abrir o banco.
+fn force_setup_mode() -> anyhow::Result<()> {
+    let database = config::database_path();
+    let with_suffix = |suffix: &str| {
+        let mut name = database.clone().into_os_string();
+        name.push(suffix);
+        std::path::PathBuf::from(name)
+    };
+    let candidates = [
+        config::Config::config_path(),
+        config::admin_trust_path(),
+        database.clone(),
+        with_suffix("-wal"),
+        with_suffix("-shm"),
+    ];
+    let present: Vec<_> = candidates
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect();
+    if present.is_empty() {
+        info!("--setup: nenhuma configuração a guardar; subindo no wizard");
+        return Ok(());
+    }
+    let backup = config::project_root()
+        .join("setup-backups")
+        .join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
+    std::fs::create_dir_all(&backup)?;
+    for path in &present {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        std::fs::rename(path, backup.join(name)).map_err(|error| {
+            anyhow::anyhow!("--setup: não deu para guardar {}: {error}", path.display())
+        })?;
+    }
+    warn!(
+        "--setup: configuração guardada em {} ({} arquivo(s)); para voltar, pare o nó e mova-os de volta",
+        backup.display(),
+        present.len()
+    );
+    Ok(())
+}
+
 async fn start_setup_mode(
+    bind_ip: std::net::IpAddr,
     gateway_port: u16,
     p2p_port: u16,
     preserved: Option<config::Config>,
@@ -1590,9 +952,11 @@ async fn start_setup_mode(
         gateway_port,
         admin_exposure: config::AdminExposure::Localhost,
         admin_access_token: None,
+        admin_password_default: false,
         p2p_port: setup_p2p_port,
         inference_port: None,
         bootstrap_nodes: vec![],
+        relay_peers: vec![],
         advertise_addr: None,
         network: Default::default(),
         api_keys: vec![],
@@ -1675,8 +1039,12 @@ async fn start_setup_mode(
         })
         .layer(tower_http::compression::CompressionLayer::new());
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], gateway_port));
-    info!("Setup page available at http://localhost:{}", gateway_port);
+    let addr = SocketAddr::new(bind_ip, gateway_port);
+    if bind_ip.is_loopback() {
+        info!("Setup page available at http://localhost:{}", gateway_port);
+    } else {
+        warn!("Setup page listening on {addr} without authentication until setup is saved");
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     if let Some(ready) = gateway_ready {
@@ -1687,8 +1055,7 @@ async fn start_setup_mode(
 }
 
 /// `--advertise-addr` wins, else `--public-addr`, else the persisted config
-/// value. Factored out so `main()`'s CLI path and `start_gateway_only` can't
-/// drift on this precedence — `--public-addr` used to only reach the pkarr
+/// value. `--public-addr` used to only reach the pkarr
 /// DHT record; folding it in here is what makes it also reach the `Announce`
 /// peers actually dial.
 fn resolve_advertise_addr(
@@ -1746,9 +1113,8 @@ fn pkarr_multiaddr_for_advertise(
 }
 
 /// Everything `P2pStack` needs to bring up pkarr, a stable libp2p identity,
-/// `Network`, and (best-effort) `Discovery` — shared by `main()`'s CLI path
-/// and `start_gateway_only`, so the ordering constraint below can't be
-/// violated from outside this function: the libp2p keypair must be derived
+/// `Network`, and (best-effort) `Discovery`, kept in one function so the
+/// ordering constraint below can't be violated from outside it: the libp2p keypair must be derived
 /// *before* `Network::new()`'s builder chain (`.with_libp2p_peer_id(...)`
 /// needs the derived `PeerId` string), and `Network` becomes immutable the
 /// moment it's wrapped in `Arc`, right after that chain.
@@ -1785,8 +1151,6 @@ struct P2pStackArgs {
     /// identity, and that identity is loaded here, not by the caller; asking
     /// the caller to resolve first would mean loading pkarr twice (once to
     /// resolve, once inside this function) or restructuring who loads it.
-    /// Empty for `start_gateway_only` today — no CLI to source keys from
-    /// (see the plan's addendum on deferred parity).
     relay_peer_keys: Vec<String>,
     serve_relay: bool,
     use_default_relays: bool,
@@ -2014,17 +1378,53 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     })
 }
 
-/// Start the gateway with real routes but without model/network binding.
-/// The dashboard, admin, and handshake routes all work so the user can
-/// configure the model through the web UI.
-fn gateway_only_use_default_relays(no_default_relays: bool) -> bool {
-    !no_default_relays
+/// A comma-separated CLI list (`--relay-peers`, `--pkarr-peers`), trimmed and
+/// without empty entries.
+fn comma_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
-/// Tarefas de fundo que acompanham todo gateway, com ou sem `--model`. Os dois
-/// caminhos de arranque (`main()` e `start_gateway_only`) chamam só esta
-/// função, para que uma tarefa nova não fique restrita a um deles - foi assim
-/// que o `host.configure` dos plugins deixou de sair num nó sem modelo.
+/// Relay pkarr keys from `pom.json` (`relay_peers`) plus `--relay-peers`,
+/// config first, without duplicates, same as `merged_bootstrap_nodes`.
+fn merged_relay_peers(from_config: &[String], cli: &str) -> Vec<String> {
+    let mut keys: Vec<String> = from_config
+        .iter()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .collect();
+    for key in comma_list(cli) {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys
+}
+
+/// Bootstrap nodes from `pom.json` plus the `--bootstrap` extras, without
+/// duplicates. Normalised on the way in, config file included: an entry saved
+/// before there was any validation is exactly the one that fails at send time.
+fn merged_bootstrap_nodes(from_config: &[String], cli: &str) -> Vec<String> {
+    let mut nodes: Vec<String> = from_config
+        .iter()
+        .map(|b| config::normalize_peer_addr(b))
+        .filter(|s| !s.is_empty())
+        .collect();
+    for b in cli
+        .split(',')
+        .map(config::normalize_peer_addr)
+        .filter(|s| !s.is_empty())
+    {
+        if !nodes.contains(&b) {
+            nodes.push(b);
+        }
+    }
+    nodes
+}
+
+/// Tarefas de fundo que acompanham todo gateway.
 fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, bind_port: u16) {
     crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
@@ -2033,13 +1433,20 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
 }
 
-async fn start_gateway_only(
+/// Sobe o nó configurado: rede, gateway com todas as rotas e, se houver, a
+/// fatia anotada por um reinício. O modelo nunca vem da linha de comando: ele é
+/// implantado pela interface.
+async fn start_node(
     gateway_port: u16,
     database: Arc<db::PomDb>,
     app_config: config::Config,
     ollama_url: String,
     no_discovery: bool,
     no_default_relays: bool,
+    bootstrap_nodes: Vec<String>,
+    relay_peer_keys: Vec<String>,
+    pkarr_peer_keys: Vec<String>,
+    serve_relay: bool,
     advertise_addr_cli: String,
     public_addr_cli: String,
     cycle_detection_enabled: bool,
@@ -2077,7 +1484,7 @@ async fn start_gateway_only(
         node_id: node_id.clone(),
         pubkey: pubkey.clone(),
         p2p_port: app_config.p2p_port,
-        bootstrap_nodes: app_config.bootstrap_nodes.clone(),
+        bootstrap_nodes,
         ollama_port,
         inference_port,
         inference_quic_port,
@@ -2097,11 +1504,9 @@ async fn start_gateway_only(
         auth: auth_state.clone(),
         admin_trust: admin_trust.clone(),
         database: database.clone(),
-        // No CLI here to source pkarr/relay peer keys from — see the plan's
-        // addendum on deferred parity for `start_gateway_only`.
-        relay_peer_keys: vec![],
-        serve_relay: false,
-        use_default_relays: gateway_only_use_default_relays(no_default_relays),
+        relay_peer_keys,
+        serve_relay,
+        use_default_relays: !no_default_relays,
         no_discovery,
     })
     .await?;
@@ -2131,9 +1536,10 @@ async fn start_gateway_only(
     let tunnel_tx = stack.tunnel_tx;
     let cluster_logs = stack.cluster_logs;
     let network_chat = stack.network_chat;
+    let disc_dial_tx = stack.disc_dial_tx;
 
-    // A gateway-only public admin still needs a pkarr record so the public
-    // network directory can find it before a model is deployed.
+    // Um admin público ainda precisa do registro pkarr para o diretório de
+    // redes públicas encontrá-lo antes de qualquer implantação.
     let pkarr_node = stack.pkarr_node.map(Arc::new);
     let pkarr_multiaddr = pkarr_multiaddr_for_advertise(
         advertise_addr.as_deref(),
@@ -2148,14 +1554,34 @@ async fn start_gateway_only(
             None,
             String::new(),
             assignment_shared.clone(),
-            false,
+            serve_relay,
+            Some(net.clone()),
         ))
     });
     if let Some(publisher) = pkarr_publisher.clone() {
         let geo_label = app_config.network.geo_label.clone();
         tokio::spawn(async move {
             if let Err(error) = publisher.publish_geo_label(&geo_label).await {
-                warn!("pkarr gateway-only publish failed: {error}");
+                warn!("pkarr initial publish failed: {error}");
+            }
+        });
+    }
+    // `--pkarr-peers`: resolvidos uma vez e discados pelo libp2p, em segundo
+    // plano para a resolução (até 10 s) não atrasar o gateway.
+    if let (Some(node), Some(dial_tx), false) =
+        (pkarr_node.clone(), disc_dial_tx, pkarr_peer_keys.is_empty())
+    {
+        tokio::spawn(async move {
+            let peers = tokio::time::timeout(
+                Duration::from_secs(10),
+                node.resolve_peers(&pkarr_peer_keys),
+            )
+            .await
+            .unwrap_or_default();
+            for peer in &peers {
+                if let Ok(address) = peer.multiaddr.parse::<libp2p::Multiaddr>() {
+                    let _ = dial_tx.send(address).await;
+                }
             }
         });
     }
@@ -2247,8 +1673,6 @@ async fn start_gateway_only(
         local_assignment: assignment_shared.clone(),
         loads: node_runtime.load_tracker(),
         prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
-        // Nó implantado pela UI (sem `--model`): é este o caminho comum, e o
-        // cache de prefixo persistente precisa do índice aqui também.
         prefix_disk: crate::gateway::build_prefix_disk_index(&app_config),
         adaptive_chunk_tuner: crate::gateway::AdaptiveChunkTuner::default_arc(),
         peer_http: peer_clients.clone(),
@@ -2290,10 +1714,7 @@ async fn start_gateway_only(
         pkarr_publisher,
     };
 
-    info!(
-        "Gateway running at http://localhost:{} (model not yet configured)",
-        gateway_port
-    );
+    info!("Gateway running at http://localhost:{}", gateway_port);
     spawn_gateway_companions(&gw_state, &database, net.bind_addr.port());
     let gateway_task = tokio::spawn(async move {
         crate::gateway::start_gateway_with_ready(gw_state, gateway_port, gateway_ready).await
@@ -2470,10 +1891,94 @@ mod main_tests {
         assert_eq!(select_gateway_port(None, 8080), 8080);
     }
 
+    /// `--bootstrap` alone must reach the node: a start path that read only
+    /// `pom.json` left a NAT'd node pointed at a relay by the CLI undialled.
     #[test]
-    fn gateway_only_honors_the_default_relay_switch() {
-        assert!(gateway_only_use_default_relays(false));
-        assert!(!gateway_only_use_default_relays(true));
+    fn cli_bootstrap_counts_without_any_in_the_config() {
+        assert_eq!(
+            merged_bootstrap_nodes(&[], "203.0.113.10:42777"),
+            vec!["203.0.113.10:42777"]
+        );
+    }
+
+    #[test]
+    fn bootstrap_merge_keeps_config_first_and_drops_duplicates() {
+        assert_eq!(
+            merged_bootstrap_nodes(
+                &["203.0.113.10:42777".into(), " ".into()],
+                "203.0.113.10:42777, 2001:db8::10:42777,,relay.example:42777",
+            ),
+            vec![
+                "203.0.113.10:42777",
+                "[2001:db8::10]:42777",
+                "relay.example:42777"
+            ]
+        );
+    }
+
+    #[test]
+    fn relay_peers_merge_config_first_without_duplicates() {
+        assert_eq!(
+            merged_relay_peers(&["pk:relay-a".into(), " ".into()], "pk:relay-b, pk:relay-a"),
+            vec!["pk:relay-a", "pk:relay-b"]
+        );
+        assert_eq!(merged_relay_peers(&[], "pk:relay-b"), vec!["pk:relay-b"]);
+        assert_eq!(
+            merged_relay_peers(&["pk:relay-a".into()], ""),
+            vec!["pk:relay-a"]
+        );
+    }
+
+    /// Toda opção visível da linha de comando tem variável de ambiente, com o
+    /// nome derivado da marca e sem repetir. `mut_arg` com id errado entra em
+    /// pânico: montar o comando aqui também prova que a tabela bate com `Args`.
+    #[test]
+    fn every_cli_option_has_its_env_var() {
+        let command = cli_command();
+        let mut names = std::collections::HashSet::new();
+        for arg in command.get_arguments() {
+            if arg.get_long().is_none() || arg.is_hide_set() {
+                continue;
+            }
+            let id = arg.get_id().as_str();
+            if MANUAL_ARG_ENV.iter().any(|(arg_id, _)| *arg_id == id) {
+                continue;
+            }
+            let (_, suffix) = ARG_ENV
+                .iter()
+                .find(|(arg_id, _)| *arg_id == id)
+                .unwrap_or_else(|| panic!("--{id} sem variável de ambiente em ARG_ENV"));
+            let env = arg.get_env().expect("variável aplicada por cli_command");
+            assert_eq!(env.to_str(), Some(brand::env_var(suffix).as_str()));
+            assert!(names.insert(env.to_owned()), "variável repetida: {env:?}");
+        }
+    }
+
+    /// As portas vindas do ambiente vencem o `pom.json`; da linha de comando,
+    /// não - a gravada continua valendo.
+    #[test]
+    fn env_ports_override_the_config_and_cli_ports_do_not() {
+        let config: config::Config =
+            serde_json::from_str(r#"{"profile":"node","p2p_port":42777,"gateway_port":8080}"#)
+                .unwrap();
+
+        let mut from_cli = config.clone();
+        let cli = Args::parse_from(["pom", "--port", "43000", "--gateway-port", "9000"]);
+        apply_env_overrides(&mut from_cli, &cli);
+        assert_eq!((from_cli.p2p_port, from_cli.gateway_port), (42777, 8080));
+
+        let mut from_env = config;
+        let mut env = cli;
+        env.port_from_env = true;
+        env.gateway_port_from_env = true;
+        apply_env_overrides(&mut from_env, &env);
+        assert_eq!((from_env.p2p_port, from_env.gateway_port), (43000, 9000));
+    }
+
+    #[test]
+    fn comma_list_trims_and_drops_empty_entries() {
+        assert_eq!(comma_list(" pk:a, ,pk:b,"), vec!["pk:a", "pk:b"]);
+        assert!(comma_list("").is_empty());
     }
 
     #[test]
@@ -2482,53 +1987,35 @@ mod main_tests {
     }
 
     #[test]
-    fn cli_starts_the_gateway_before_scheduling_model_load() {
-        let source = include_str!("main.rs");
-        let gateway = source
-            .find("Bind before scheduling the model load")
-            .expect("o caminho CLI precisa iniciar o gateway");
-        let apply = source[gateway..]
-            .find("node_runtime.apply(cfg).await")
-            .map(|offset| gateway + offset)
-            .expect("o caminho CLI precisa agendar o carregamento");
-        assert!(
-            gateway < apply,
-            "o carregamento do modelo não pode atrasar o bind do gateway"
-        );
-    }
-
-    #[test]
-    fn gateway_only_starts_the_gateway_before_restoring_a_slice() {
+    fn the_gateway_starts_before_restoring_a_slice() {
         let source = include_str!("main.rs");
         let gateway = source
             .find("Bind the gateway before restoring a persisted slice")
-            .expect("o caminho sem --model precisa iniciar o gateway");
+            .expect("o arranque precisa iniciar o gateway");
         let restore = source[gateway..]
             .find("match lastslice::inspect()")
             .map(|offset| gateway + offset)
-            .expect("o caminho sem --model precisa tratar a fatia persistida");
+            .expect("o arranque precisa tratar a fatia persistida");
         assert!(
             gateway < restore,
             "a restauração da fatia não pode atrasar o bind do gateway"
         );
     }
 
-    /// A porta do Ollama anunciada não pode depender de `--gateway`: a flag está
-    /// marcada como deprecated porque todo nó já serve a API, e enquanto o
-    /// anúncio dependia dela um nó sem a flag servia o Ollama local sem que
-    /// nenhum peer soubesse - ninguém conseguia rotear para cá.
+    /// Todo nó anuncia a porta do Ollama da URL configurada, sem flag nenhuma:
+    /// quando o anúncio dependia de uma flag, um nó sem ela servia o Ollama
+    /// local sem que nenhum peer soubesse.
     #[test]
-    fn the_advertised_ollama_port_does_not_depend_on_the_deprecated_flag() {
-        let args = Args::parse_from(["pom"]);
-        assert!(!args.gateway, "sem a flag, que é o caso que quebrava");
-        assert_eq!(advertised_ollama_port(&args.ollama_url), Some(11434));
+    fn wizard_is_an_alias_of_setup_and_defaults_off() {
+        assert!(!Args::parse_from(["pom"]).setup);
+        assert!(Args::parse_from(["pom", "--setup"]).setup);
+        assert!(Args::parse_from(["pom", "--wizard"]).setup);
+    }
 
-        let com_flag = Args::parse_from(["pom", "--gateway"]);
-        assert_eq!(
-            advertised_ollama_port(&com_flag.ollama_url),
-            advertised_ollama_port(&args.ollama_url),
-            "a flag não pode mudar o que se anuncia"
-        );
+    #[test]
+    fn every_node_advertises_the_ollama_port() {
+        let args = Args::parse_from(["pom"]);
+        assert_eq!(advertised_ollama_port(&args.ollama_url), Some(11434));
     }
 
     /// Sem nenhuma flag de CLI, o detector de ciclos fica desligado - o padrão
@@ -2569,9 +2056,7 @@ mod main_tests {
     }
 
     /// `--advertise-addr` é mais específico que `--public-addr`, e os dois
-    /// vencem o que já estava salvo em `pom.json` — a mesma ordem que
-    /// `main()`'s CLI path e `start_gateway_only` têm que aplicar igual, ou
-    /// os dois divergem silenciosamente com o tempo.
+    /// vencem o que já estava salvo em `pom.json`.
     #[test]
     fn advertise_addr_wins_over_public_addr_wins_over_config() {
         assert_eq!(

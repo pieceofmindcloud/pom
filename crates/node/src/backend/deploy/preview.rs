@@ -91,16 +91,22 @@ pub(super) async fn enrich_capacity_previews(
         return;
     }
     let peer_count = plan.steps.len() as u32;
+    let peers = state.all_peers().await;
     let calls = plan
         .steps
         .iter()
         .enumerate()
         .map(|(index, step)| {
-            let http = state.peer_http.for_peer(&step.target_node_id);
-            let base = machines
+            let peer = machines
                 .iter()
-                .find(|m| m.node_id == step.target_node_id)
-                .and_then(|m| m.gateway_url.clone());
+                .any(|m| m.node_id == step.target_node_id)
+                .then(|| {
+                    peers
+                        .iter()
+                        .find(|peer| peer.node_id == step.target_node_id)
+                        .cloned()
+                })
+                .flatten();
             let model_path = step.target_path.clone();
             let eligible = !step.merged;
             let total_layers = step.total_layers.or(plan.total_layers);
@@ -116,30 +122,22 @@ pub(super) async fn enrich_capacity_previews(
                 n_gpu_layers: step.n_gpu_layers,
                 offload_kqv: step.offload_kqv,
             };
-            (index, http, base, model_path, eligible, total_layers, req)
+            (index, peer, model_path, eligible, total_layers, req)
         })
         .collect::<Vec<_>>()
         .into_iter()
         .map(
-            |(index, http, base, model_path, eligible, total_layers, req)| async move {
-                let (Some(base), Ok(http), Some(model_path), Some(_)) =
-                    (base, http, model_path, total_layers.filter(|_| eligible))
+            |(index, peer, model_path, eligible, total_layers, req)| async move {
+                let (Some(peer), Some(model_path), Some(_)) =
+                    (peer, model_path, total_layers.filter(|_| eligible))
                 else {
                     return (index, None);
                 };
                 let req = CapacityPreviewRequest { model_path, ..req };
-                let Ok(request) = state
-                    .control_json_request(
-                        http.post(format!("{base}/api/ui/deploy/capacity-preview"))
-                            .timeout(PEER_TIMEOUT),
-                        "/api/ui/deploy/capacity-preview",
-                        &req,
-                    )
+                let resp = state
+                    .control_post_json(&peer, "/api/ui/deploy/capacity-preview", &req, PEER_TIMEOUT)
                     .await
-                else {
-                    return (index, None);
-                };
-                let resp = request.send().await.ok();
+                    .ok();
                 let Some(resp) = resp.filter(|r| r.status().is_success()) else {
                     return (index, None);
                 };

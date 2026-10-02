@@ -186,34 +186,42 @@ profile policy remains the effective authorization boundary.
   preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs`, `POST /api/ui/network/logs`), slice retention
   e CRUD autenticado do histórico de conversas (`/api/ui/chat/history`).
-  `GET /api/ui/plugins` (AdminOnly) lista os estados locais de plugins
-  independentes já restaurados ou vistos pelo runtime (`crate::plugins`), cada
-  um com features, validade, uso autenticado e atualização próprios;
-  `POST /api/ui/plugins/activate` ativa em lote todo `plugin_code` que a chave
-  receber do servidor, e `POST /api/ui/plugins/:code/refresh|
-  deactivate|update/check|update/apply` agem sobre um plugin só. Repositórios
-  GitHub são locais ao nó e usam as rotas AdminOnly `GET/POST
-  /api/ui/plugins/github-repositories`, `POST
-  /api/ui/plugins/github-repositories/:id/refresh`, `DELETE
-  /api/ui/plugins/github-repositories/:id` e `POST
-  /api/ui/plugins/github-repositories/:id/install` com `{release_id}`. O POM
-  consulta somente o GitHub, sem perguntar ao servidor de licenças se o plugin
-  exige licença. As fontes ficam em `plugin_github_repositories`; instalações
-  em `plugin_public_install:<code>`, sem lease ou grant. Preferências tipadas
-  ficam locais em `/api/ui/plugins/:code/preferences`; essas rotas não ativam
-  licença. O catálogo comercial é consultado pelo browser sem credenciais.
-  Comprar envia o operador à loja pública com
-  o código do plugin. A detecção
-  da release `pom_core` é outra fronteira, deliberadamente separada
-  (`crate::pom_core_update`): `GET /api/ui/pom-update/status`,
-  `POST /api/ui/pom-update/check` força a detecção sob demanda, e
-  `POST /api/ui/pom-update/apply` exige a confirmação explícita dessa
-  release antes de baixar e reiniciar. A
-  cluster view transporta `SystemLoad.gpus[].power_watts` como telemetria
-  opcional, mantendo `null` quando o sistema não expõe consumo da placa.
-  leitura `/api/ui/network/geo-reference` entrega a referência SQLite de
-  países e cidades para os selects da UI e é `InferNodeAdmin`; não cria nem
-  altera dados de rede. `GET /api/ui/deployments` é `NodeAdmin` para permitir
+  `GET /api/ui/plugins` (all profiles) lists local state for independent
+  plugins restored or seen by the runtime (`crate::plugins`), each with its
+  own features, validity, authenticated usage and updates.
+  `POST /api/ui/plugins/activate` activates every `plugin_code` granted by the
+  server in one batch; `POST /api/ui/plugins/:code/refresh|deactivate|update/check|update/apply`
+  acts on one plugin. GitHub repositories are local to the node and use the
+  AdminOnly routes `GET/POST /api/ui/plugins/github-repositories`,
+  `POST /api/ui/plugins/github-repositories/:id/refresh`,
+  `DELETE /api/ui/plugins/github-repositories/:id` and
+  `POST /api/ui/plugins/github-repositories/:id/install` with
+  `{release_id}`. POM queries GitHub directly and does not ask the license
+  server whether a plugin requires a license. Sources are stored in
+  `plugin_github_repositories`; installations use
+  `plugin_public_install:<code>` without a lease or grant. Typed preferences
+  stay local at `/api/ui/plugins/:code/preferences`; these routes do not
+  activate a license. With `POM_DESENV=1`, `GET
+  /api/ui/plugins/dev-sources` lists mounted sources and
+  `POST /api/ui/plugins/dev-sources/:repository/rebuild-install` builds and
+  installs or rebuilds a local plugin without prior activation. Both routes
+  are AdminOnly; the handler accepts mounted direct-child `pom-plugin-*`
+  sources only after validating their manifests and plugin codes, uses fixed
+  Cargo commands and never exposes compiler output. A development-only installation persists in
+  `plugin_dev_install:<code>` and starts the host without granting licensed
+  features. If a license or GitHub installation already exists, its
+  entitlement is preserved. The browser reads the commercial catalog without
+  credentials. Purchases redirect the operator to the public store with the
+  plugin code. Updating the `pom_core` release is a separate boundary in
+  `crate::pom_core_update`: `GET /api/ui/pom-update/status`,
+  `POST /api/ui/pom-update/check` forces an on-demand check, and
+  `POST /api/ui/pom-update/apply` requires explicit confirmation before
+  downloading the release and restarting. The cluster view transports
+  `SystemLoad.gpus[].power_watts` as optional telemetry and keeps it `null`
+  when the system does not report board power. The
+  `/api/ui/network/geo-reference` route returns the SQLite country and city
+  reference for UI selectors and uses `InferNodeAdmin`; it does not create or
+  change network data. `GET /api/ui/deployments` é `NodeAdmin` para permitir
   que node veja o inspetor somente leitura, enquanto mutações e ações de
   implantação continuam sob a política administrativa existente.
   superfície de autoridade expõe o contrato de apresentação em
@@ -280,7 +288,7 @@ profile policy remains the effective authorization boundary.
   pipeline quando cada peer contribuinte tem `runtime_capacity` confirmado
   pelo `/health` ou está `idle`; capacidades de gossip durante o boot ficam
   visíveis como cobertura, mas não são apresentadas como prontas.
-  Endereços IPv6 temporários rodam sozinhos: ver `docs/subsystems/rede-p2p.md`,
+  Endereços IPv6 temporários rodam sozinhos: ver `docs/subsystems/p2p-network.md`,
   "Endereço que deixou de responder".
   `plan` reads the GGUF header from the node that owns `model_path` and, when
   calculating budget-driven ranges, includes the configured context, sessions
@@ -334,9 +342,9 @@ profile policy remains the effective authorization boundary.
   ETA when measurable, terminal errors and partial outputs.
   (local or forwarded to a peer).
 - `RuntimeParams.hidden_state_dtype` is persistido e encaminhado pelo mesmo
-  caminho de apply/launch dos demais ajustes globais; `NodeInfo` e
-  `DeployPlan.capabilities.hidden_state_f8/hidden_state_i4g64/hidden_state_i4g128`
-  expõem as capabilities usadas para bloquear formato não suportado. O redeploy consulta
+  caminho de apply/launch dos demais ajustes globais. f16 continua padrão, f32
+  é a opção sem perda sem negociação extra; `DeployPlan.capabilities` para
+  f8/i4 bloqueia os formatos com perda quando algum peer não anuncia suporte. O redeploy consulta
   `/api/ui/node` de todos os participantes antes de reconfigurar qualquer nó,
   evitando uma implantação parcialmente misturada.
 - **Implantações são versionadas** (`Deployment`, `DEPLOYMENT_VERSION = 2`,
@@ -492,7 +500,7 @@ profile policy remains the effective authorization boundary.
   tamanho de uma perna. O contexto disponível reduz o orçamento quando o
   prompt já ocupa parte da janela.
   `messages.rs` aceita `output_config.task_budget` (advisory, nunca corta) e
-  injeta o marcador de contagem regressiva no prompt; ver `api-http.md`.
+  injeta o marcador de contagem regressiva no prompt; ver `http-api.md`.
   **Os argumentos de uma chamada saem em fragmentos** (`CallArgsStreamer`),
   conforme o modelo gera: `eager_input_streaming` por ferramenta no
   `/v1/messages`, sempre no `/v1/chat/completions` porque a OpenAI não tem
@@ -560,15 +568,25 @@ profile policy remains the effective authorization boundary.
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
   e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
-  `peer_http.plain()`.
+  `peer_http.plain()`. Chamada de controle a outro nó usa
+  `GatewayState::control_get`/`control_post_json`/`control_post_empty`: assina
+  uma vez, tenta cada endereço anunciado - na ordem de `gateway_bases`, o host
+  que já respondeu primeiro - e cai no túnel libp2p
+  (`peer_client::send_to_gateway_over`), que é o caminho para um peer atrás de
+  NAT simétrico. `control_get_via_tunnel` é o último recurso de quem já
+  percorreu os endereços com a memória de falha do `RouteTable` (a leitura do
+  `/api/ui/cluster`). Ficam fora do túnel a transferência de pesos e a
+  sincronização de `admin.rs`.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
-  request e serve TLS ou texto claro na mesma porta TCP, com upgrades de
+  request (`request_origin`: um pedido do loopback com a marca do túnel libp2p
+  vira `TUNNELED_ORIGIN`, não-loopback, e o cabeçalho da marca sai de todo
+  pedido - ver `p2p-network.md`) e serve TLS ou texto claro na mesma porta TCP, com upgrades de
   conexão habilitados (o WebSocket do proxy de plugins,
   `crate::plugin_proxy`). O endpoint HTTP/3
   recebe configuração QUIC separada e sobe na porta UDP dedicada anunciada,
   mesmo quando o TCP está em HTTP puro; `TlsServer` cobre somente o certificado
   TCP, modo estrito e duração do último handshake. Ver
-  `docs/subsystems/rede-p2p.md`, seção 5.
+  `docs/subsystems/p2p-network.md`, seção 5.
 - `models::OllamaClient::is_available` é apenas uma sonda opcional do
   `/health`: devolve o último valor e agenda em background uma checagem de
   500 ms no máximo a cada 15 s. Não herda os 300 s da geração, e um Ollama frio
@@ -605,8 +623,19 @@ faz o download autenticado do blob persistido.
   local_assignment, loads, http, runtime, gateway_port, auth, transfers,
   reply_inbox); `FromRef<GatewayState> for AuthState`; `peers_visible_to_cluster`
   filters blocked nodes; `ready_for_pipeline` health-checks each peer's
-  `inference_url()/health` before planning, with the `ADMISSION_PROBE_TIMEOUT`
-  of 300ms and an `AdmissionHealth` quarantine for whoever fails - a single
+  inference `/health` before planning, trying every inference address in
+  `Network::inference_bases` order (the host that already answered first) with
+  the `ADMISSION_PROBE_TIMEOUT` of 300ms each, then `/health` over the libp2p
+  tunnel (`infer_tunnel::health_via_tunnel`, 3 s); probing only the first
+  announced address left a peer behind an unreachable IPv6 out of every plan
+  ("Gap at layer 0"). A direct success is remembered with
+  `RouteTable::mark_success`. The probe follows the pinned route
+  (`bases_by_route_plan`): a tunnel route goes straight to the tunnel, an
+  HTTP/QUIC route puts the measured address first. Each successful body also
+  feeds `AdmissionHealth::note_perf` (`fastest::PeerPerf`), which the
+  delivery-time planner (`generation::plan_by_delivery_time`) and the
+  dashboard telemetry (`catalog::model_peer_perf`) read. Whoever fails gets an `AdmissionHealth`
+  quarantine - a single
   unreachable announcer used to cost every inference 2,005ms, the
   `peer_client::CONNECT_TIMEOUT`, because `join_all` waits for the slowest. A
   successful health response also refreshes the model label, deployment id and
@@ -629,15 +658,14 @@ faz o download autenticado do blob persistido.
   refusal shared by both admission paths, and a gateway with no local model
   admits against the peer's announced `RuntimeCapacity` before any health probe
   - without it a 30k-char prompt reached the peer's decode and aborted the
-  whole process on CUDA OOM (ksia, 2026-09-08), see `inferencia.md` §9; `generate_stream_with_stops`
+  whole process on CUDA OOM (servidor CUDA, 2026-09-08), see `inference.md` §9; `generate_stream_with_stops`
   builds a `crate::direct::DirectReply` from `reply_inbox` +
   `self_reply_urls(self_reply_hosts(), gateway_port)` and hands `direct` to the
   prefill and decode executors, so the tail can answer this node directly
   (log says `resposta=direta|anel|hub`: direta when `direct` is Some and the
   plan supports direct reply, anel for `relay/v1-chain`, hub as the fallback);
   prefill in hub and direct paths runs as an ordered pipeline of configurable
-  depth (`prefill_max_inflight_chunks`, effective 1..8, default 8, also
-  `--prefill-max-inflight-chunks`), bounded also by a 512 MiB hidden-state byte
+  depth (`prefill_max_inflight_chunks`, effective 1..8, default 8), bounded also by a 512 MiB hidden-state byte
   budget; a chunk that fails after earlier chunks were accepted is rebuilt from
   chunk 0 because the lost response makes partial KV removal unsafe, while the
   ring stays serialized by its nested response contract; the request trace
@@ -650,12 +678,12 @@ faz o download autenticado do blob persistido.
   `response_complete` until the retained trace is complete, not as an
   invented `unaccounted` duration;
   MTP on a sliced plan (`mtp_enabled` + `plan.supports_mtp()` + >= 2 hops):
-  the remote-stream selector deliberately omits the synchronous `nextn` draft
-  because it would block every producer callback, recording
-  `remote_stream_sliced_mtp_disabled`; the legacy direct path keeps the
-  gateway-side store and injection. The callback still carries explicit
-  `speculated`, `speculation_active` and `speculation_disabled_reason` fields
-  when that path is selected. Both paths continue with `prefill::step` and a
+  the remote-stream selector asks the remote head for MTP: the tail drafts
+  `nextn` after sampling and returns `next_draft` in the same reply, and the
+  head installs it in its next step, so a round yields up to `mtp_k` tokens
+  for one head-to-tail round trip; the legacy direct path keeps the
+  gateway-side store and injection. The callback carries explicit
+  `speculated`, `speculation_active` and `speculation_disabled_reason` fields. Both paths continue with `prefill::step` and a
   named reason when speculation is unavailable;
   the gateway still chooses the pipeline replica per session. Continuous
   batching is owned by the inference process at that replica, not by a global
@@ -741,7 +769,7 @@ faz o download autenticado do blob persistido.
   a devolve estruturada e incompleta (`TagScanner::finish_truncated`), com os
   argumentos numa string JSON inacabada - possível porque o scanner segura o
   corpo da chamada até a tag fechar, então nada vazou. Ver
-  `docs/subsystems/inferencia.md` (9.1) e a bancada `continuation_lab.rs`.
+  `docs/subsystems/inference.md` (9.1) e a bancada `continuation_lab.rs`.
 - `openai.rs` - the shared `DEFAULT_MAX_TOKENS=512` is used only when the
   client omits its output budget; there is no backend hard cap. The effective
   request budget is the minimum of the client request and the remaining `n_ctx`
@@ -883,7 +911,7 @@ faz o download autenticado do blob persistido.
   peer em vez de chamar toda resposta sem `ok` de binário velho. Daí em diante é o mesmo planner, o mesmo
   `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as recusas
   mudam de substantivo (`DeployKind::unit`). Ver
-  `docs/subsystems/implantacao.md` §1.1 e §1.2.
+  `docs/subsystems/deployment.md` §1.1 e §1.2.
   O `survey` preserva o `PeerId`, os candidatos de endereço UDP e a capability
   do túnel de cada máquina; os candidatos vêm do `/api/ui/node` do próprio
   peer, e não somente do anúncio que o coordenador recebeu. `tp_members`
@@ -1022,8 +1050,11 @@ faz o download autenticado do blob persistido.
   snapshots plus `prefix_auto_cache` index stats when Phase 3 is on),
   `POST /admin/slots/:name?action=save|restore|erase` (orchestrates
   a deployment-wide KV snapshot via `gateway::{snapshot,restore,erase}` — see
-  `docs/subsystems/inferencia.md` §3.1.1 and `api-http.md`).
-  `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
+  `docs/subsystems/inference.md` §3.1.1 and `http-api.md`).
+  `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty,
+  and gives each remote peer a `route` (`Network::peer_route`): the path this
+  node actually uses to reach it - direct HTTP, direct libp2p (maybe hole
+  punched) or relayed - as opposed to `addr`, which is only what it advertises.
   Setup mode exposes `/api/setup/hardware`, `/api/setup/models`,
   `/api/setup/geo-reference`,
   `/api/setup/admin-anchor/preview`, `/api/setup/trust-anchor`,

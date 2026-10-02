@@ -213,12 +213,24 @@ pub struct Config {
     /// Não é a `connection_key`, que continua autenticando nós e pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_access_token: Option<String>,
+    /// A senha administrativa ainda é a padrão do primeiro acesso
+    /// (`auth::DEFAULT_ADMIN_PASSWORD`). Enquanto for, a interface entra sem
+    /// perguntá-la e pede para trocar. É uma marca gravada junto do hash para a
+    /// rota pública `/api/access` não precisar rodar Argon2 a cada visita.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin_password_default: bool,
     #[serde(default = "default_p2p_port")]
     pub p2p_port: u16,
     #[serde(default)]
     pub inference_port: Option<u16>,
     #[serde(default)]
     pub bootstrap_nodes: Vec<String>,
+    /// Chaves pkarr (`pk:...`) de relés para a travessia de NAT, somadas às de
+    /// `--relay-peers`. Resolvidas uma vez no arranque; só entra o registro
+    /// que se declara relé. Um relé que este nó já alcança como bootstrap não
+    /// precisa estar aqui (ver `relay_reservation_addrs` em `discovery.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relay_peers: Vec<String>,
     /// Address other nodes should keep for this one, e.g.
     /// `"[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777"` or just the bare IPv6.
     ///
@@ -325,8 +337,8 @@ pub struct Config {
     /// Diretório onde os snapshots de KV cache são gravados e lidos, como o
     /// `--slot-save-path` do llama-server. Propriedade da máquina, não da
     /// implantação: cada peer grava a fatia dele aqui. A variável de ambiente
-    /// `POM_SLOT_SAVE_PATH` e a flag `--slot-save-path` têm precedência sobre
-    /// este campo - use `slot_save_path_effective()`, nunca o campo cru.
+    /// `POM_SLOT_SAVE_PATH` tem precedência sobre este campo - use
+    /// `slot_save_path_effective()`, nunca o campo cru.
     /// Ausente/vazio em todas as fontes desliga o recurso e as rotas de
     /// snapshot respondem "não configurado".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -473,14 +485,38 @@ pub fn normalize_peer_addr(raw: &str) -> String {
     s.to_string()
 }
 
+/// Pastas de modelos inteiros vindas de `POM_MODEL_DIRS`, separadas como o
+/// `PATH` do sistema (`:` no Unix, `;` no Windows). Vence `model_dirs` do
+/// `pom.json` e, como toda variável de ambiente, não é persistida: `save()`
+/// continua gravando só o campo do arquivo, e tirar a variável devolve o que
+/// estava salvo. Vazia conta como ausente.
+pub fn model_dirs_from_env() -> Option<Vec<PathBuf>> {
+    parse_model_dirs(&std::env::var_os(crate::brand::env_var("MODEL_DIRS"))?)
+}
+
+/// Pasta das fatias vinda de `POM_SHARD_DIR`, com as mesmas regras de
+/// `model_dirs_from_env`.
+pub fn shard_dir_from_env() -> Option<PathBuf> {
+    parse_shard_dir(&std::env::var_os(crate::brand::env_var("SHARD_DIR"))?)
+}
+
+fn parse_model_dirs(raw: &std::ffi::OsStr) -> Option<Vec<PathBuf>> {
+    let dirs: Vec<PathBuf> = std::env::split_paths(raw)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .collect();
+    (!dirs.is_empty()).then_some(dirs)
+}
+
+fn parse_shard_dir(raw: &std::ffi::OsStr) -> Option<PathBuf> {
+    let trimmed = raw.to_string_lossy().trim().to_string();
+    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+}
+
 /// Port the local inference server listens on when the config does not name one.
 ///
-/// A node configured through the web UI never passes `--inference-port`, and
-/// without a port `apply` refused every model with "este nó subiu sem
-/// --inference-port" — the UI could configure nothing at all. Advertising it
-/// up front matches what `run-p1.sh`/`run-p2.sh` already do: the port is
-/// announced before the Python server exists, and the server is spawned when a
-/// slice is actually assigned.
+/// Every node advertises it from startup, before any slice is assigned:
+/// without a port `apply` refused every model and the UI could configure
+/// nothing at all. The server is spawned when a slice is actually assigned.
 pub const DEFAULT_INFERENCE_PORT: u16 = 8181;
 
 /// Directory `pom.json`, `models/` and `venv/` are resolved against.
@@ -659,7 +695,13 @@ impl Config {
 
     /// Directories to scan for whole models, falling back to what LM Studio and
     /// Ollama put on this machine while the operator has not chosen.
+    ///
+    /// `POM_MODEL_DIRS` (derivada da marca) vence o `pom.json`; ver
+    /// `model_dirs_from_env`.
     pub fn model_dir_paths(&self) -> Vec<PathBuf> {
+        if let Some(dirs) = model_dirs_from_env() {
+            return dirs;
+        }
         match &self.model_dirs {
             Some(dirs) => dirs.iter().map(PathBuf::from).collect(),
             None => crate::catalog::default_model_dirs(),
@@ -669,12 +711,18 @@ impl Config {
     /// True while the whole-model list is still the auto-detected one — the UI
     /// says so instead of pretending the operator picked these paths.
     pub fn model_dirs_are_default(&self) -> bool {
-        self.model_dirs.is_none()
+        self.model_dirs.is_none() && model_dirs_from_env().is_none()
     }
 
     /// Destination of local slicing, and the only directory a peer may pull
     /// from (see `transfer::safe_model_path`).
+    ///
+    /// `POM_SHARD_DIR` (derivada da marca) vence o `pom.json`; ver
+    /// `shard_dir_from_env`.
     pub fn shard_dir_path(&self) -> PathBuf {
+        if let Some(dir) = shard_dir_from_env() {
+            return dir;
+        }
         match self.shard_dir.as_deref().map(str::trim) {
             Some(d) if !d.is_empty() => PathBuf::from(d),
             _ => default_shard_dir(),
@@ -1032,9 +1080,11 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],
@@ -1136,9 +1186,11 @@ mod tests {
             gateway_port: 8090,
             admin_exposure: AdminExposure::Localhost,
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec!["192.168.1.1:42777".into()],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],
@@ -1180,6 +1232,36 @@ mod tests {
         .to_string();
         assert!(error.contains("campo `role` foi removido"));
         assert!(error.contains("use `profile`"));
+    }
+
+    #[test]
+    fn model_dirs_from_env_split_like_path_and_ignore_empty_entries() {
+        let joined = std::env::join_paths(["/data/models", "/mnt/gguf"]).unwrap();
+        assert_eq!(
+            parse_model_dirs(&joined),
+            Some(vec![
+                PathBuf::from("/data/models"),
+                PathBuf::from("/mnt/gguf")
+            ])
+        );
+        assert_eq!(parse_model_dirs(std::ffi::OsStr::new("")), None);
+        assert_eq!(
+            parse_shard_dir(std::ffi::OsStr::new("  /data/shards ")),
+            Some(PathBuf::from("/data/shards"))
+        );
+        assert_eq!(parse_shard_dir(std::ffi::OsStr::new("  ")), None);
+    }
+
+    #[test]
+    fn relay_peers_are_read_from_the_config_and_empty_stays_out_of_it() {
+        let cfg: Config =
+            serde_json::from_str(r#"{"profile":"node","relay_peers":["pk:relay"]}"#).unwrap();
+        assert_eq!(cfg.relay_peers, vec!["pk:relay"]);
+
+        let cfg: Config = serde_json::from_str(r#"{"profile":"node"}"#).unwrap();
+        assert!(cfg.relay_peers.is_empty());
+        let saved = serde_json::to_value(&cfg).unwrap();
+        assert!(saved.get("relay_peers").is_none());
     }
 
     #[test]
@@ -1261,9 +1343,11 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![],
@@ -1418,9 +1502,11 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: AdminExposure::Localhost,
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![

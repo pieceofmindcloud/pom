@@ -192,7 +192,7 @@ pub const CAP_FRAME_DTYPE_I4G128: &str = "inference/frame-v1-dtype-i4g128";
 /// loop and return generated tokens through bounded opportunistic batches.
 pub const CAP_REMOTE_TOKEN_STREAM: &str = "inference/remote-token-stream-v1";
 
-/// Advertised when this peer has a `--slot-save-path` configured and can save
+/// Advertised when this peer has a `slot_save_path` configured and can save
 /// or restore a session's KV cache to local disk via `POST /v1/session/slot`.
 /// A deployment snapshot is all-or-nothing: `gateway::snapshot_deployment`
 /// refuses unless every hop advertises this.
@@ -352,7 +352,7 @@ impl PipelinePlan {
     /// ela quem anuncia `CAP_SPECULATE_MTP`. A cabeça (que monta o lote)
     /// recebe o rascunho pronto do gateway, que por sua vez o colheu da
     /// resposta direta da cauda na rodada anterior (`docs/subsystems/
-    /// inferencia.md` §5.2). **Todos** precisam de `CAP_SPECULATE_LOOKUP`
+    /// inference.md` §5.2). **Todos** precisam de `CAP_SPECULATE_LOOKUP`
     /// porque o lote maior que um token passa por eles, e **todos** precisam
     /// de `CAP_SPECULATE_MTP_SLICED` porque o protocolo novo (rascunho
     /// pré-fabricado + `tokens` + `mtp_k` na wire) só existe em binários
@@ -600,35 +600,43 @@ pub async fn plan_pipeline_with_rtt_from_head(
             return None;
         };
 
-        // `PeerInfo::inference_url` is the one place that knows how to turn an
-        // address into a URL. Splitting `chosen.addr` on ':' here instead cut
-        // "[2804:d55:...]:42777" down to "[2804", and the hop died inside
-        // reqwest with nothing but "builder error" to show for it.
-        let Some(inference_url) = chosen.inference_url() else {
-            return None;
-        };
-
-        steps.push(PipelineStep {
-            node_id: chosen.node_id.clone(),
-            inference_url,
-            inference_candidates: chosen.inference_candidates(),
-            quic_addr_candidates: chosen.quic_addr_candidates(),
-            start_layer: chosen.start_layer,
-            end_layer: chosen.end_layer,
-            // O que falta cobrir a partir de `pos`, não a fatia inteira. Quando
-            // os dois coincidem - o caso comum - nada muda; quando não, é aqui
-            // que fica registrado que o peer teria de entrar no meio da faixa,
-            // em vez de o destinatário descobrir isso tarde demais.
-            exec_start: pos,
-            exec_end: chosen.end_layer,
-            inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
-            libp2p_peer_id: chosen.libp2p_peer_id.clone(),
-            libp2p_addr_candidates: chosen.libp2p_dialable_addrs(),
-        });
+        steps.push(step_for(chosen, pos)?);
 
         pos = chosen.end_layer + 1;
     }
 
+    Some(plan_from_steps(steps))
+}
+
+/// O passo que executa `peer` a partir da camada `pos`. `None` quando o peer
+/// não tem endereço de inferência.
+pub(crate) fn step_for(peer: &PeerInfo, pos: u32) -> Option<PipelineStep> {
+    // `PeerInfo::inference_url` is the one place that knows how to turn an
+    // address into a URL. Splitting `chosen.addr` on ':' here instead cut
+    // "[2804:d55:...]:42777" down to "[2804", and the hop died inside
+    // reqwest with nothing but "builder error" to show for it.
+    let inference_url = peer.inference_url()?;
+    Some(PipelineStep {
+        node_id: peer.node_id.clone(),
+        inference_url,
+        inference_candidates: peer.inference_candidates(),
+        quic_addr_candidates: peer.quic_addr_candidates(),
+        start_layer: peer.start_layer,
+        end_layer: peer.end_layer,
+        // O que falta cobrir a partir de `pos`, não a fatia inteira. Quando
+        // os dois coincidem - o caso comum - nada muda; quando não, é aqui
+        // que fica registrado que o peer teria de entrar no meio da faixa,
+        // em vez de o destinatário descobrir isso tarde demais.
+        exec_start: pos,
+        exec_end: peer.end_layer,
+        inference_frame_capabilities: peer.inference_frame_capabilities.clone(),
+        libp2p_peer_id: peer.libp2p_peer_id.clone(),
+        libp2p_addr_candidates: peer.libp2p_dialable_addrs(),
+    })
+}
+
+/// O plano com as arestas entre passos contíguos.
+pub(crate) fn plan_from_steps(steps: Vec<PipelineStep>) -> PipelinePlan {
     let edges = steps
         .windows(2)
         .filter(|pair| pair[1].exec_start == pair[0].exec_end.saturating_add(1))
@@ -639,8 +647,7 @@ pub async fn plan_pipeline_with_rtt_from_head(
             to_start_layer: pair[1].exec_start,
         })
         .collect();
-
-    Some(PipelinePlan { steps, edges })
+    PipelinePlan { steps, edges }
 }
 
 /// Endereco por onde falar com este hop, decidido por quem vai discar.
@@ -727,6 +734,7 @@ mod ipv6_tests {
             api_keys_active: 0,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -1061,6 +1069,9 @@ mod ipv6_tests {
         assert!(plan.validate_wire_dtype(crate::wire::WireDtype::F8).is_ok());
         assert!(plan
             .validate_wire_dtype(crate::wire::WireDtype::F16)
+            .is_ok());
+        assert!(plan
+            .validate_wire_dtype(crate::wire::WireDtype::F32)
             .is_ok());
     }
 

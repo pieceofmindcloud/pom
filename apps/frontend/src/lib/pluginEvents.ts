@@ -16,7 +16,7 @@
  * (`notification.notify`, `notification.confirm`) pelo SDK ou por
  * `CustomEvent("pom:plugin-request")`/`postMessage`. O resultado de todo comando
  * volta como o evento `notification.response`, com o `request_id` do pedido.
- * Ver `docs/subsystems/plugins-ui.md`, seção "Eventos e notificações".
+ * Ver `docs/subsystems/plugins-ui.md`, seção "Events and notifications".
  */
 import { randomId as newId } from "./id";
 

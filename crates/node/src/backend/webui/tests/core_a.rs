@@ -349,9 +349,19 @@ mod tests {
     }
 
     #[test]
-    fn hidden_state_dtype_defaults_to_f16_and_round_trips_f8() {
+    fn hidden_state_dtype_defaults_to_f16_and_round_trips_supported_formats() {
         let default: RuntimeParams = serde_json::from_str("{}").unwrap();
         assert_eq!(default.hidden_state_dtype, crate::wire::WireDtype::F16);
+
+        let raw: RuntimeParams = serde_json::from_value(serde_json::json!({
+            "hidden_state_dtype": "f32"
+        }))
+        .unwrap();
+        assert_eq!(raw.hidden_state_dtype, crate::wire::WireDtype::F32);
+        assert_eq!(
+            serde_json::to_value(raw).unwrap()["hidden_state_dtype"],
+            "f32"
+        );
 
         let explicit: RuntimeParams = serde_json::from_value(serde_json::json!({
             "hidden_state_dtype": "f8"

@@ -12,7 +12,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { TlsPanel } from "./Preferences";
-import { NetworkSettings } from "./NetworkSettings";
+import { NetworkParticipants, NetworkSettings } from "./NetworkSettings";
 import { api } from "../lib/api";
 
 const queryMocks = vi.hoisted(() => ({
@@ -286,5 +286,56 @@ describe("NetworkSettings", () => {
       expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/firewall/retry"),
     );
     queryMocks.firewall.data = { supported: false };
+  });
+});
+
+describe("NetworkParticipants", () => {
+  afterEach(cleanup);
+
+  it("mostra a rota em uso e se ela é direta ou pelo relé, não o endereço anunciado", () => {
+    queryMocks.node.data.profile = "admin";
+    queryMocks.node.data.authority_level = "primary";
+    const base = { role: "node", is_self: false, connected: true, blocked: false, verified: true };
+    queryMocks.nodes.data = [
+      {
+        ...base,
+        node_id: "furado",
+        short_id: "furado",
+        hostname: "ksia",
+        addr: "[2804:d55::1]:42777",
+        route: { kind: "p2p_direct", address: "189.75.167.63:28515 (QUIC)", hole_punched: true, links: [] },
+      },
+      {
+        ...base,
+        node_id: "relayed",
+        short_id: "relayed",
+        hostname: "salem",
+        addr: "[2804:d55::2]:42777",
+        route: { kind: "relayed", address: "82.25.69.187:52777 (TCP)", hole_punched: false, links: [] },
+      },
+      {
+        ...base,
+        node_id: "lan",
+        short_id: "lan",
+        hostname: "gpu",
+        addr: "192.168.0.37:42777",
+        route: { kind: "http", address: "192.168.0.37:8080", hole_punched: false, links: [] },
+      },
+    ] as any;
+
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <NetworkParticipants />
+      </LocaleProvider>,
+    );
+
+    expect(screen.getByText("Direto (hole punch)")).toBeTruthy();
+    expect(screen.getByText("Via relé")).toBeTruthy();
+    expect(screen.getByText("Direto")).toBeTruthy();
+    expect(screen.getByText(/relé 82\.25\.69\.187:52777/)).toBeTruthy();
+    expect(screen.getByText(/189\.75\.167\.63:28515/)).toBeTruthy();
+    // O anunciado fica só no `title`, para comparação.
+    expect(screen.queryByText(/2804:d55::1/)).toBeNull();
+    expect(screen.getByTitle("anunciado: [2804:d55::1]:42777")).toBeTruthy();
   });
 });

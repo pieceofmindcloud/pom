@@ -67,10 +67,11 @@ pub(crate) async fn handle_step(
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
-    let (mut meta, tensor) = match wire::decode_inference_request(&body) {
-        Ok(v) => v,
-        Err(e) => return err400(format!("quadro inválido: {e}")),
-    };
+    let (mut meta, tensor, inbound_wire_timing) =
+        match wire::decode_inference_request_profiled(&body) {
+            Ok(v) => v,
+            Err(e) => return err400(format!("quadro inválido: {e}")),
+        };
     meta["telemetry_source_peer_id"] = json!(app.load_node_id.clone());
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
     let wire_dtype = match meta.get("dtype").and_then(|value| value.as_str()) {
@@ -224,6 +225,10 @@ pub(crate) async fn handle_step(
     };
     reply.timings.frame_decode_us = frame_decode_us;
     reply.timings.input_prepare_us = input_prepare_us;
+    reply.timings.residual_wire_f16_decode_ns = reply
+        .timings
+        .residual_wire_f16_decode_ns
+        .saturating_add(inbound_wire_timing.f16_conversion_ns);
 
     // Decode what step_blocking already encoded so we can tell a residual
     // (needs relaying, if `next_hops` says so) from a final answer (the
@@ -232,10 +237,15 @@ pub(crate) async fn handle_step(
     // any further. `handle_prefill` does the identical patch for the same
     // reason.
     let elapsed = processing_started.elapsed();
-    let (mut local_meta, local_tensor) = match wire::decode(&reply.bytes) {
-        Ok(v) => v,
-        Err(e) => return err500(e),
-    };
+    let (mut local_meta, local_tensor, reply_wire_timing) =
+        match wire::decode_profiled(&reply.bytes) {
+            Ok(v) => v,
+            Err(e) => return err500(e),
+        };
+    reply.timings.residual_wire_f16_decode_ns = reply
+        .timings
+        .residual_wire_f16_decode_ns
+        .saturating_add(reply_wire_timing.f16_conversion_ns);
     if let Some(context) = profiling.as_ref() {
         reply.timings.record_profile_span(
             context,
@@ -1119,7 +1129,7 @@ pub(super) async fn emit_remote_stream_batches<F, Fut>(
             // O gateway já desistiu deste stream: não há a quem reportar.
             crate::direct::Delivery::GatewayGone => return,
             // Sem isto o emissor sumia em silêncio e o gateway só percebia
-            // quando o `DIRECT_REPLY_DEADLINE` vencia - dez minutos de espera
+            // quando o prazo do frame vencia - espera
             // por uma falha que este lado já conhecia. O aviso é um lote
             // terminal pequeno, e vai pela mesma escada de endereços, que
             // agora sempre tem pelo menos uma tentativa a pagar.

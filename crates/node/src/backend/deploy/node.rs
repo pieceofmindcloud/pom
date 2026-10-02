@@ -152,25 +152,10 @@ async fn target_json(
         .into_iter()
         .find(|peer| peer.node_id == target_node_id)
         .ok_or_else(|| "a máquina escolhida não está no cluster".to_string())?;
-    let base = peer
-        .gateway_url()
-        .ok_or_else(|| "a máquina escolhida não anuncia porta de gateway".to_string())?;
-    let client = state
-        .peer_http
-        .for_peer(target_node_id)
-        .map_err(|e| format!("sem cliente para o peer: {e}"))?;
-    let request = state
-        .control_get_request(
-            client.get(format!("{base}/api/ui/{path}")),
-            &format!("/api/ui/{path}"),
-        )
+    state
+        .control_get(&peer, &format!("/api/ui/{path}"), PEER_TIMEOUT)
         .await
-        .map_err(|e| format!("não foi possível assinar a consulta ao peer: {e}"))?;
-    request
-        .timeout(PEER_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| format!("peer inacessível: {e}"))?
+        .map_err(|e| format!("peer inacessível: {e:#}"))?
         .json()
         .await
         .map_err(|e| format!("resposta inválida do peer: {e}"))
@@ -218,26 +203,15 @@ async fn apply_target_cache_types(
         .into_iter()
         .find(|peer| peer.node_id == target_node_id)
         .ok_or_else(|| "a máquina escolhida não está no cluster".to_string())?;
-    let base = peer
-        .gateway_url()
-        .ok_or_else(|| "a máquina escolhida não anuncia porta de gateway".to_string())?;
-    let client = state
-        .peer_http
-        .for_peer(target_node_id)
-        .map_err(|e| format!("sem cliente para o peer: {e}"))?;
-    let request = state
-        .control_json_request(
-            client.post(format!("{base}/api/ui/cache-types")),
+    let response = state
+        .control_post_json(
+            &peer,
             "/api/ui/cache-types",
             &json!({ "cache_type_k": cache_type_k, "cache_type_v": cache_type_v }),
+            PEER_TIMEOUT,
         )
         .await
-        .map_err(|e| format!("não foi possível assinar a configuração do peer: {e}"))?;
-    let response = request
-        .timeout(PEER_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| format!("peer inacessível: {e}"))?;
+        .map_err(|e| format!("peer inacessível: {e:#}"))?;
     if response.status().is_success() {
         Ok(())
     } else {
@@ -651,30 +625,18 @@ pub(super) async fn remove_node_endpoint(
     if req.target_node_id == state.network.node_id {
         state.runtime.stop().await;
     } else {
-        let Some(base) = gateway_of(&state, &req.target_node_id).await else {
-            return bad(json!({ "error": "peer sem porta de gateway anunciada" }));
+        let Some(peer) = state
+            .all_peers()
+            .await
+            .into_iter()
+            .find(|peer| peer.node_id == req.target_node_id)
+        else {
+            return bad(json!({ "error": "a máquina escolhida não está no cluster" }));
         };
-        let cliente = match state.peer_http.for_peer(&req.target_node_id) {
-            Ok(c) => c,
-            Err(e) => return bad(json!({ "error": format!("sem cliente para o peer: {e}") })),
-        };
-        let request = match state
-            .authorize_control_request(
-                cliente
-                    .post(format!("{base}/api/ui/unload"))
-                    .timeout(PEER_TIMEOUT),
-                "POST",
-                "/api/ui/unload",
-                &[],
-            )
+        match state
+            .control_post_empty(&peer, "/api/ui/unload", PEER_TIMEOUT)
             .await
         {
-            Ok(request) => request,
-            Err(error) => {
-                return bad(json!({ "error": format!("não foi possível assinar: {error}") }));
-            }
-        };
-        match request.send().await {
             Ok(r) if r.status().is_success() => {}
             Ok(r) => {
                 return bad(json!({ "error": format!("o peer recusou: HTTP {}", r.status()) }));
@@ -974,25 +936,10 @@ pub(super) async fn release_one(
         state.runtime.stop().await;
         return Ok(());
     }
-    let base = peer
-        .gateway_url()
-        .ok_or_else(|| "peer sem porta de gateway anunciada".to_string())?;
-    let cliente = state
-        .peer_http
-        .for_peer(&peer.node_id)
-        .map_err(|e| format!("sem cliente para a máquina: {e}"))?;
-    let request = state
-        .authorize_control_request(
-            cliente
-                .post(format!("{base}/api/ui/unload"))
-                .timeout(PEER_TIMEOUT),
-            "POST",
-            "/api/ui/unload",
-            &[],
-        )
+    match state
+        .control_post_empty(peer, "/api/ui/unload", PEER_TIMEOUT)
         .await
-        .map_err(|error| format!("não foi possível assinar a liberação: {error}"))?;
-    match request.send().await {
+    {
         Ok(r) if r.status().is_success() => Ok(()),
         Ok(r) => Err(format!("a máquina recusou: HTTP {}", r.status())),
         Err(e) => Err(format!("máquina inacessível: {e}")),
@@ -1030,7 +977,7 @@ pub(super) async fn gateway_of(state: &GatewayState, node_id: &str) -> Option<St
         .await
         .iter()
         .find(|p| p.node_id == node_id)
-        .and_then(|p| p.gateway_url())
+        .and_then(|p| state.gateway_base(p))
 }
 
 /// Poll the machines doing the copying until they are all finished.

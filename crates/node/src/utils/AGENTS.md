@@ -9,8 +9,7 @@
 > `KvCacheType` saiu de `config.rs` para `llama_engine::kv_cache` e é
 > re-exportado por `crate::config`.
 
-Caminhos de configuração, a TUI de linha de comando, o respawn do processo e o
-monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
+Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 (no caso de `config` e `sysmon`) por praticamente todo o resto do crate.
 
 ## Arquivos
@@ -33,8 +32,6 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `cluster_logs_min_level` também vive no JSON, aceita
   `trace`, `debug`, `info`, `warn` e `error`, e assume `info` quando ausente;
   ele só controla o que `CaptureLayer` enfileira.
-- `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
-  health).
 - `respawn.rs` - reiniciar este processo preservando o argv do arranque,
   criando uma nova sessão em Unix e redirecionando stdout/stderr para
   `<project_root>/pom.log` para que falhas logo após o reinício deixem rastro.
@@ -80,6 +77,11 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `~/.pom/models_sliced`; configurações existentes ainda conservam sua escolha.
   `model_dirs` vazio não procura em lugar nenhum. `shard_max_gb` limita somente
   a pasta de fatias e assume 100 GB quando falta em um `pom.json` antigo.
+  `POM_MODEL_DIRS` (várias pastas, separadas como o `PATH`) e `POM_SHARD_DIR`
+  vencem os campos do `pom.json` nesses dois acessores (`model_dirs_from_env`,
+  `shard_dir_from_env`); não são persistidas, e vazias contam como ausentes.
+  `POST /api/ui/paths` não grava o campo que uma variável define, e
+  `GET /api/ui/paths` devolve o nome dela em `model_dirs_env`/`shard_dir_env`.
 - `workspace_root_path` - raiz absoluta efetiva da workspace compartilhada por
   projetos do usuário e dados dinâmicos de plugins. O campo persistido é
   opcional para configurações antigas e o default é `~/pom_workspace`, sem
@@ -88,8 +90,8 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   observada no runtime depois do carregamento do modelo e chega ao gateway por
   `n_ctx`; o gateway agrega o menor valor entre os peers vivos. O único limite
   de geração definido no deploy é `max_new_tokens`, que limita uma perna.
-  Consulte `docs/subsystems/implantacao.md`, seção 1.3, e
-  `docs/subsystems/inferencia.md`, seção 9.1.
+  Consulte `docs/subsystems/deployment.md`, seção 1.3, e
+  `docs/subsystems/inference.md`, seção 9.1.
 - `cache_type_k`/`cache_type_v` - tipo numérico do cache K/V para todos os
   contextos llama.cpp desta instalação. O padrão é `f16`; os valores aceitos
   são `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0` e
@@ -100,14 +102,6 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   principal e não é uma preferência da auditoria de requisições.
 - `DEFAULT_INFERENCE_PORT` (8181) - anunciado desde o arranque mesmo antes de
   a fatia ser atribuída (sem ele o `apply` recusava todo modelo).
-
-`display.rs`:
-- `print_banner`/`print_node_info` - identidade no arranque.
-- `print_assignment` - faixa de camadas e memória; diz "managed by inference
-  server" quando o Python é o dono da memória.
-- `print_layer_map` - grade de cobertura por camada (ME verde, peer azul,
-  descoberto cinza).
-- `print_network_health` - % de cobertura e lista de camadas faltantes.
 
 `respawn.rs`:
 - `remember_argv`/`original_argv` - captura o argv (sem argv[0]) no início do

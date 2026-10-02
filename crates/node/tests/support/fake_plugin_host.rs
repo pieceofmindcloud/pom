@@ -39,6 +39,13 @@ fn main() {
     let stdout = io::stdout();
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
+    let database_path = std::env::var("POM_PLUGIN_DB").unwrap_or_default();
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("abrir log do fake host");
+    writeln!(log, "POM_PLUGIN_DB={database_path}").expect("gravar caminho do banco do plugin");
 
     loop {
         let Some(request) = read_frame(&mut reader).expect("ler frame IPC") else {
@@ -53,11 +60,14 @@ fn main() {
 
         match method.as_str() {
             "ready" => {
-                write_frame(
-                    &mut writer,
-                    &json!({"id": id, "ok": true, "result": {"status": "ready"}, "error": null}),
-                )
-                .expect("responder ready");
+                let rejection = std::env::var("POM_FAKE_HOST_READY_ERROR").ok();
+                let reply = match rejection {
+                    Some(error) => json!({"id": id, "ok": false, "result": null, "error": error}),
+                    None => {
+                        json!({"id": id, "ok": true, "result": {"status": "ready"}, "error": null})
+                    }
+                };
+                write_frame(&mut writer, &reply).expect("responder ready");
             }
             "ingest" => {
                 let mut file = OpenOptions::new()

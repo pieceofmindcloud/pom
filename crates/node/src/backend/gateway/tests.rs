@@ -396,6 +396,7 @@ mod tests {
             state.authority_signing_key.as_ref(),
             &state.authority_principal,
             state.admin_trust.as_ref(),
+            None,
         )
         .await
         .unwrap());
@@ -407,6 +408,7 @@ mod tests {
             state.authority_signing_key.as_ref(),
             &state.authority_principal,
             state.admin_trust.as_ref(),
+            None,
         )
         .await
         .unwrap());
@@ -418,6 +420,7 @@ mod tests {
             state.authority_signing_key.as_ref(),
             &state.authority_principal,
             state.admin_trust.as_ref(),
+            None,
         )
         .await
         .unwrap());
@@ -1985,12 +1988,8 @@ mod remote_stream_selection_tests {
     }
 
     #[test]
-    fn stream_remoto_desliga_mtp_fatiado_mas_preserva_o_caminho_legado() {
-        assert!(disable_sliced_mtp_for_remote_stream(true, true));
-        assert!(!disable_sliced_mtp_for_remote_stream(false, true));
-        assert!(!disable_sliced_mtp_for_remote_stream(true, false));
-
-        let legacy = remote_stream_speculation(
+    fn stream_remoto_fatiado_pede_mtp_quando_o_plano_suporta() {
+        let sliced = remote_stream_speculation(
             &multi_plan_with_mtp(),
             true,
             true,
@@ -1999,9 +1998,9 @@ mod remote_stream_selection_tests {
             4,
             crate::prefill::DraftSource::Mtp,
         )
-        .expect("o caminho legado deve continuar elegível a MTP");
-        assert_eq!(legacy.source, crate::infer_server::DraftSource::Mtp);
-        assert_eq!(legacy.k, 4);
+        .expect("um plano fatiado com MTP deve pedir MTP no stream remoto");
+        assert_eq!(sliced.source, crate::infer_server::DraftSource::Mtp);
+        assert_eq!(sliced.k, 4);
     }
 
     fn multi_plan_with_mtp() -> PipelinePlan {
@@ -2030,23 +2029,6 @@ mod remote_stream_selection_tests {
             libp2p_addr_candidates: Vec::new(),
         });
         multi
-    }
-
-    #[test]
-    fn remote_stream_mtp_fatiado_e_omitido_por_cadencia_explicita() {
-        let multi = multi_plan_with_mtp();
-        let disabled = disable_sliced_mtp_for_remote_stream(true, true);
-        assert!(disabled);
-        assert!(remote_stream_speculation(
-            &multi,
-            true,
-            !disabled,
-            4,
-            3,
-            4,
-            crate::prefill::DraftSource::Mtp,
-        )
-        .is_none());
     }
 
     #[test]
@@ -2168,6 +2150,7 @@ mod peer_visibility_tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: None,
             idle: false,
@@ -2214,9 +2197,11 @@ mod peer_visibility_tests {
 
         let health = super::AdmissionHealth::default();
         let clientes = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
         let reachable = ready_for_pipeline(
             &clientes,
             &health,
+            &state.network,
             vec![healthy.clone(), stalled.clone()],
             Duration::from_millis(25),
         )
@@ -2231,6 +2216,7 @@ mod peer_visibility_tests {
         let reachable = ready_for_pipeline(
             &clientes,
             &health,
+            &state.network,
             vec![healthy, stalled],
             Duration::from_millis(25),
         )
@@ -2243,6 +2229,48 @@ mod peer_visibility_tests {
             em_quarentena < Duration::from_millis(25),
             "peer em quarentena voltou a ser sondado: {em_quarentena:?}"
         );
+    }
+
+    /// Um peer cujo primeiro endereço anunciado não responde - o IPv6 que
+    /// ninguém alcança, no caso real - entra no plano pelo endereço seguinte,
+    /// e esse endereço fica lembrado como o que respondeu.
+    #[tokio::test]
+    async fn the_admission_probe_tries_every_inference_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({ "status": "ok", "model_loaded": true }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut head = peer("head");
+        head.addr = "127.0.0.2:42777".into();
+        head.addr_candidates = vec!["127.0.0.2:42777".into(), "127.0.0.1:42777".into()];
+        head.inference_port = Some(port);
+
+        let health = super::AdmissionHealth::default();
+        let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let reachable = ready_for_pipeline(
+            &clients,
+            &health,
+            &state.network,
+            vec![head],
+            Duration::from_millis(500),
+        )
+        .await;
+
+        assert_eq!(reachable.len(), 1);
+        assert!(state
+            .network
+            .routes
+            .last_success("head")
+            .is_some_and(|url| url.contains("127.0.0.1")));
     }
 
     #[tokio::test]
@@ -2280,8 +2308,15 @@ mod peer_visibility_tests {
 
         let health = super::AdmissionHealth::default();
         let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
-        let reachable =
-            ready_for_pipeline(&clients, &health, vec![stale], Duration::from_millis(100)).await;
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let reachable = ready_for_pipeline(
+            &clients,
+            &health,
+            &state.network,
+            vec![stale],
+            Duration::from_millis(100),
+        )
+        .await;
 
         let peers = reachable;
         assert_eq!(peers[0].end_layer, 31);
@@ -2665,6 +2700,7 @@ pub(crate) mod testkit {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: Some("peer-eu".into()),
+            libp2p_addrs: Vec::new(),
             tp: None,
             runtime_capacity: Some(RuntimeCapacity {
                 n_ctx: 8_192,
@@ -2795,9 +2831,11 @@ pub(crate) mod testkit {
             gateway_port: 8080,
             admin_exposure: Default::default(),
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             api_keys: vec![],
             blocked_nodes: vec![],
@@ -2922,7 +2960,7 @@ pub(crate) mod testkit {
     /// A resposta direta só existe quando a cauda tem para onde entregar
     /// (`DirectReply::new`), e o endereço sai de `self_reply_hosts` + o
     /// `gateway_port`. Sem um servidor ali o modo direto de um teste esperaria
-    /// `DIRECT_REPLY_DEADLINE` inteiro.
+    /// prazo do frame inteiro.
     pub(crate) async fn with_self_reachable_gateway(mut state: GatewayState) -> GatewayState {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();

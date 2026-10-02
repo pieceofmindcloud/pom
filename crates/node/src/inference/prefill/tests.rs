@@ -1184,10 +1184,14 @@ mod tests {
                         "residual_capture_postprocess_ms": 0.1,
                         "residual_capture_bytes": 4096,
                         "residual_capture_copies": 1,
+                        "residual_wire_f16_encode_ms": 0.03,
+                        "residual_wire_f16_decode_ms": 0.04,
                         "residual_wire_f8_conversion_ms": 0.2,
                         "residual_wire_frame_serialize_ms": 0.1,
                         "residual_wire_encode_calls": 1
-                    }
+                    },
+                    "client_f16_encode_ms": 0.05,
+                    "client_f16_decode_ms": 0.06
                 }),
             );
         }
@@ -1203,6 +1207,10 @@ mod tests {
         assert_eq!(phase.node_residual_capture_postprocess_ms, 0.2);
         assert_eq!(phase.node_residual_capture_bytes, 8192);
         assert_eq!(phase.node_residual_capture_copies, 2);
+        assert_eq!(phase.node_residual_wire_f16_encode_ms, Some(0.06));
+        assert_eq!(phase.node_residual_wire_f16_decode_ms, Some(0.08));
+        assert_eq!(phase.client_f16_encode_ms, Some(0.1));
+        assert_eq!(phase.client_f16_decode_ms, Some(0.12));
         assert_eq!(phase.node_residual_wire_f8_conversion_ms, 0.4);
         assert_eq!(phase.node_residual_wire_frame_serialize_ms, 0.2);
         assert_eq!(phase.node_residual_wire_encode_calls, 2);
@@ -1302,6 +1310,26 @@ mod tests {
         assert_eq!(trace.telemetry.expected_decode_spans, 0);
         assert!(!trace.telemetry.decode_span_expectation_available);
         assert_eq!(trace.hops[0].decode.node_decode_ms, 0.0);
+    }
+
+    #[test]
+    fn speculative_decode_coverage_counts_rounds_not_tokens() {
+        // 84 tokens, 61 drafts aceitos: 23 rodadas por salto, não 84.
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 27), ("no2", 28, 47)]);
+        trace.output_tokens = 84;
+        trace.mtp_draft_tokens_accepted = 61;
+        for hop in 0..2 {
+            trace.record_hop_from_json(
+                hop,
+                Phase::Decode,
+                &json!({"span_count": 23, "round_trip_ms": 76, "processing_ms": 75}),
+            );
+        }
+        trace.complete = true;
+        trace.refresh_telemetry(76);
+
+        assert_eq!(trace.telemetry.expected_decode_spans, 46);
+        assert_eq!(trace.telemetry.completeness_percent, 100.0);
     }
 
     #[test]
@@ -1682,5 +1710,26 @@ mod tests {
         assert_eq!(trace.prefix_match_tokens, 2);
         assert_eq!(trace.cached_tokens, 0);
         assert_eq!(trace.prompt_tokens_transmitted, 5);
+    }
+
+    #[test]
+    fn juntar_telemetria_do_stream_preserva_percentis_de_espera_e_entrega() {
+        let batch = |downstream: u64, delivery: u64| {
+            json!({
+                "remote_stream_downstream_wait_ms": downstream,
+                "remote_stream_delivery_ms": delivery,
+            })
+        };
+        let mut first = RemoteStreamTelemetry::default();
+        first.record_batch(&batch(60, 25));
+        let mut second = RemoteStreamTelemetry::default();
+        second.record_batch(&batch(62, 26));
+
+        first.merge(&second);
+
+        assert_eq!(first.remote_stream_downstream_wait_total_ms, 122);
+        assert_eq!(first.remote_stream_delivery_total_ms, 51);
+        assert!(first.remote_stream_downstream_wait_p50_ms >= 60);
+        assert!(first.remote_stream_delivery_p50_ms >= 25);
     }
 }

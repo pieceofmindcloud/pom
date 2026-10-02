@@ -20,8 +20,16 @@ import {
   getHuggingFaceTokenConfig,
   listDeployments,
   searchRemoteModels,
+  setAdminAccessToken,
   setConnectionKey,
 } from "./api";
+
+/**
+ * Senha administrativa gravada no primeiro acesso (`auth::DEFAULT_ADMIN_PASSWORD`
+ * no nó). Não é segredo: enquanto estiver em vigor, `/api/access` diz
+ * `default_password` e a interface entra sem perguntá-la e pede a troca.
+ */
+export const DEFAULT_ADMIN_PASSWORD = "admin";
 import { modelDownloadJobs } from "./modelProvider";
 import { getTrendingModels } from "./publicModelDiscovery";
 import { fetchPublicPluginCatalog } from "./pluginCatalog";
@@ -53,6 +61,7 @@ import type {
   WindowsFirewallStatus,
   PluginStatus,
   GithubRepository,
+  DevelopmentPluginSources,
   PomCoreUpdateStatus,
 } from "./types";
 
@@ -96,6 +105,7 @@ export const keys = {
   apiKeys: ["api-keys"] as const,
   plugins: ["plugins"] as const,
   githubRepositories: ["github-repositories"] as const,
+  developmentPluginSources: ["development-plugin-sources"] as const,
   publicPluginCatalog: ["public-plugin-catalog"] as const,
   pomCoreUpdate: ["pom-core-update"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
@@ -168,6 +178,12 @@ export function useAdminSurface() {
   useEffect(
     () =>
       onAdminSessionLost(() => {
+        // Só uma aba que achava ter sessão sonda de novo. A própria sonda
+        // responde 401 enquanto não há sessão, e esse 401 também avisa
+        // "sessão perdida": sem este filtro cada resposta pedia outra sonda,
+        // milhares por minuto, e o portão remontava sem parar.
+        if (client.getQueryData(keys.adminSurface) !== "available") return;
+        if (client.isFetching({ queryKey: keys.adminSurface }) > 0) return;
         void client.invalidateQueries({ queryKey: keys.adminSurface });
       }),
     [client],
@@ -180,12 +196,24 @@ export function useAdminSurface() {
         return "available";
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return "setup";
-        if (error instanceof ApiError && error.status === 403) {
+        let access: AdminAccessStatus | null = null;
+        try {
+          access = await api.get<AdminAccessStatus>("/api/access", { auth: false });
+        } catch {
+          // A transient policy read must not expose a guessed UI state.
+        }
+        if (error instanceof ApiError && error.status === 403 && access?.admin_exposure === "localhost") {
+          return "local-only";
+        }
+        // Enquanto a senha for a padrão do primeiro acesso, o portão não a
+        // pergunta: a aba entra com ela e o aviso pede a troca.
+        if (access?.default_password) {
+          setAdminAccessToken(DEFAULT_ADMIN_PASSWORD);
           try {
-            const access = await api.get<AdminAccessStatus>("/api/access", { auth: false });
-            if (access.admin_exposure === "localhost") return "local-only";
+            await api.get<unknown>("/api/ui/node", { auth: false });
+            return "available";
           } catch {
-            // A transient policy read must not expose a guessed UI state.
+            setAdminAccessToken("");
           }
         }
         return "requires-password";
@@ -201,6 +229,7 @@ function inactivePlugin(code: string): PluginStatus {
   return {
     code,
     active: false,
+    development_install: false,
     state: "needs_activation",
     features: [],
     manage_url: "https://pieceofmind.cloud/enterprise",
@@ -236,6 +265,17 @@ export function useGithubRepositories() {
   return useQuery<GithubRepository[]>({
     queryKey: keys.githubRepositories,
     queryFn: () => optional(api.get<GithubRepository[]>("/api/ui/plugins/github-repositories"), []),
+    retry: false,
+    refetchInterval: 60_000,
+  });
+}
+
+/** Local mounted plugin sources are queried only by the development admin view. */
+export function useDevelopmentPluginSources(enabled: boolean) {
+  return useQuery<DevelopmentPluginSources>({
+    queryKey: keys.developmentPluginSources,
+    queryFn: () => api.get<DevelopmentPluginSources>("/api/ui/plugins/dev-sources"),
+    enabled,
     retry: false,
     refetchInterval: 60_000,
   });

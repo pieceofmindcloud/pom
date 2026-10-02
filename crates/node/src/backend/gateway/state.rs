@@ -17,7 +17,7 @@ pub const DEFAULT_MAX_TOKENS: u32 = 512;
 /// o mais lento, **um** anunciante inalcançável custava 2,005 s a toda
 /// inferência do cluster - medido em produção, constante entre motores, tamanhos
 /// de prompt e frio/quente.
-pub(super) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+pub(crate) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// Quanto tempo um peer que falhou a sonda fica fora sem ser sondado de novo.
 ///
@@ -26,7 +26,8 @@ pub(super) const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 /// redescobrir a cada requisição que o morto continua morto. A volta é
 /// automática - passado o prazo, a próxima requisição paga uma sonda e o peer
 /// reentra se responder -, então nenhum estado precisa ser limpo à mão.
-pub(super) const ADMISSION_FAILURE_COOLDOWN: Duration = Duration::from_secs(5);
+/// É a janela única de memória de falha (`peer_client::FAILURE_MEMORY`).
+pub(super) const ADMISSION_FAILURE_COOLDOWN: Duration = crate::peer_client::FAILURE_MEMORY;
 
 /// Quem falhou a sonda de admissão, e até quando fica fora.
 ///
@@ -35,6 +36,10 @@ pub(super) const ADMISSION_FAILURE_COOLDOWN: Duration = Duration::from_secs(5);
 #[derive(Default)]
 pub struct AdmissionHealth {
     quarantine: tokio::sync::RwLock<std::collections::HashMap<String, Instant>>,
+    /// Velocidade, fila e RTTs que o `/health` de cada peer publicou na última
+    /// sonda de admissão. É a entrada do planejador por tempo de entrega
+    /// (`fastest::plan_fastest`) e do Painel.
+    perf: std::sync::RwLock<std::collections::HashMap<String, (Instant, crate::fastest::PeerPerf)>>,
 }
 
 impl AdmissionHealth {
@@ -55,6 +60,38 @@ impl AdmissionHealth {
 
     async fn note_success(&self, node_id: &str) {
         self.quarantine.write().await.remove(node_id);
+    }
+
+    pub(crate) fn note_perf(&self, node_id: &str, perf: crate::fastest::PeerPerf) {
+        if let Ok(mut map) = self.perf.write() {
+            map.insert(node_id.to_string(), (Instant::now(), perf));
+        }
+    }
+
+    pub(crate) fn perf_snapshot(
+        &self,
+    ) -> std::collections::HashMap<String, crate::fastest::PeerPerf> {
+        self.perf
+            .read()
+            .map(|map| {
+                map.iter()
+                    .map(|(id, (_, perf))| (id.clone(), perf.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `true` quando `node_id` nunca foi sondado ou a última sonda tem mais de
+    /// `max_age`. O planejador sonda a cada requisição; quem só lê (o Painel)
+    /// usa isto para não mostrar o que um peer publicava minutos atrás.
+    pub(crate) fn perf_older_than(&self, node_id: &str, max_age: Duration) -> bool {
+        self.perf
+            .read()
+            .map(|map| {
+                map.get(node_id)
+                    .is_none_or(|(at, _)| at.elapsed() > max_age)
+            })
+            .unwrap_or(true)
     }
 }
 
@@ -97,6 +134,9 @@ pub(crate) struct PkarrPublishHandle {
     model_name: String,
     assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
     serve_relay: bool,
+    /// Fonte do endereço publicado, quando o AutoNAT já confirmou um. O `addr`
+    /// derivado no arranque continua sendo o fallback.
+    network: Option<Arc<crate::network::Network>>,
 }
 
 impl PkarrPublishHandle {
@@ -108,6 +148,7 @@ impl PkarrPublishHandle {
         model_name: String,
         assignment: Arc<tokio::sync::RwLock<Option<crate::model::LayerAssignment>>>,
         serve_relay: bool,
+        network: Option<Arc<crate::network::Network>>,
     ) -> Self {
         Self {
             node,
@@ -117,6 +158,7 @@ impl PkarrPublishHandle {
             model_name,
             assignment,
             serve_relay,
+            network,
         }
     }
 
@@ -134,9 +176,16 @@ impl PkarrPublishHandle {
                 )
             })
             .unwrap_or((0, 0, 0));
+        // O endereço confirmado pelo AutoNAT vence o derivado no arranque: é o
+        // que um nó que nunca viu este aqui precisa para discar a frio.
+        let addr = self
+            .network
+            .as_ref()
+            .and_then(|network| network.public_libp2p_addr())
+            .unwrap_or_else(|| self.addr.clone());
         self.node
             .publish(
-                &self.addr,
+                &addr,
                 self.gateway_port,
                 self.inference_port,
                 &self.model_name,
@@ -384,12 +433,130 @@ impl GatewayState {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(bytes))
     }
+    /// Endereços do gateway de `peer`, o que já respondeu primeiro. Ver
+    /// `Network::gateway_bases`.
+    pub(crate) fn gateway_bases(&self, peer: &crate::network::PeerInfo) -> Vec<String> {
+        self.network.gateway_bases(peer)
+    }
+
+    /// O primeiro de `gateway_bases`: o endereço do gateway de `peer` para
+    /// quem só pode usar um (um download, o endereço de volta de uma oferta).
+    pub(crate) fn gateway_base(&self, peer: &crate::network::PeerInfo) -> Option<String> {
+        self.gateway_bases(peer).into_iter().next()
+    }
+
+    /// GET de controle assinado ao gateway de `peer`, por todos os caminhos
+    /// que ele anuncia (endereços e, por último, o túnel libp2p - ver
+    /// `peer_client::send_to_gateway_over`). `path` pode trazer query string; a
+    /// assinatura cobre só o caminho, como em `control_get_request`.
+    pub(crate) async fn control_get(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call(peer, reqwest::Method::GET, path, None, timeout)
+            .await
+    }
+
+    /// POST JSON de controle assinado ao gateway de `peer`, pelos mesmos
+    /// caminhos de `control_get`.
+    pub(crate) async fn control_post_json<T: serde::Serialize>(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        body: &T,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        let bytes = serde_json::to_vec(body)?;
+        self.control_call(peer, reqwest::Method::POST, path, Some(bytes), timeout)
+            .await
+    }
+
+    /// `control_get` só pelo túnel, para quem já tentou os endereços do peer
+    /// com critério próprio (ver `send_to_gateway_over`).
+    pub(crate) async fn control_get_via_tunnel(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call_over(peer, &[], reqwest::Method::GET, path, None, timeout)
+            .await
+    }
+
+    /// POST sem corpo (assinado sobre corpo vazio), como `/api/ui/unload`.
+    pub(crate) async fn control_post_empty(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call(peer, reqwest::Method::POST, path, None, timeout)
+            .await
+    }
+
+    async fn control_call(
+        &self,
+        peer: &crate::network::PeerInfo,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.control_call_over(peer, &self.gateway_bases(peer), method, path, body, timeout)
+            .await
+    }
+
+    async fn control_call_over(
+        &self,
+        peer: &crate::network::PeerInfo,
+        bases: &[String],
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        let client = self.peer_http.for_peer(&peer.node_id)?;
+        let signed_path = path.split('?').next().unwrap_or(path);
+        let bytes = body.as_deref().unwrap_or_default();
+        let mut headers = self.signed_control_headers(method.as_str(), signed_path, bytes)?;
+        if let Some(connection_key) = {
+            let config = self.auth.read().await;
+            crate::auth::internal_node_token(&config)
+        } {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {connection_key}"))?,
+            );
+        }
+        if body.is_some() {
+            headers.insert(
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::HeaderValue::from_static("application/json"),
+            );
+        }
+        crate::peer_client::send_to_gateway_over(peer, bases, |base| {
+            let request = client
+                .request(method.clone(), format!("{base}{path}"))
+                .timeout(timeout)
+                .headers(headers.clone());
+            match &body {
+                Some(bytes) => request.body(bytes.clone()),
+                None => request,
+            }
+        })
+        .await
+    }
 }
 
 #[derive(Serialize)]
 pub(super) struct AdminAccessStatus {
     pub(super) admin_exposure: crate::config::AdminExposure,
     pub(super) requires_password: bool,
+    /// A senha em vigor é a padrão do primeiro acesso: a interface entra sem
+    /// perguntar e pede para trocá-la.
+    pub(super) default_password: bool,
     pub(super) gateway_port: u16,
 }
 
@@ -398,6 +565,7 @@ pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> im
     Json(AdminAccessStatus {
         admin_exposure: cfg.admin_exposure,
         requires_password: cfg.admin_exposure.requires_password(),
+        default_password: cfg.admin_exposure.requires_password() && cfg.admin_password_default,
         gateway_port: cfg.gateway_port,
     })
 }
@@ -506,10 +674,11 @@ pub(crate) async fn require_admin_for_surface(
         .extensions
         .get::<crate::serve::TransportSecurity>()
         .is_some_and(|transport| transport.0);
+    let cookie_name = crate::auth::admin_session_cookie_name(&parts.headers);
     let mut response = next.run(Request::from_parts(parts, body)).await;
     if let Some(session_id) = auth.session_id_to_set {
         for path in crate::auth::ADMIN_SESSION_COOKIE_PATHS {
-            let value = crate::auth::session_cookie_header(&session_id, secure, path);
+            let value = crate::auth::session_cookie_header(&cookie_name, &session_id, secure, path);
             if let Ok(value) = HeaderValue::from_str(&value) {
                 response.headers_mut().append(header::SET_COOKIE, value);
             }
@@ -722,9 +891,30 @@ fn refresh_peer_from_health(peer: PeerInfo, body: &serde_json::Value) -> Option<
     Some(current)
 }
 
-pub(super) async fn ready_for_pipeline(
+/// Prazo da sonda `/health` pelo túnel: um circuito pelo relé na internet não
+/// cabe nos 300 ms da sonda direta (`ADMISSION_PROBE_TIMEOUT`).
+const TUNNEL_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// A sonda de admissão segue a rota fixada (`route_plan`): rota de túnel vai
+/// direto ao túnel, rota HTTP/QUIC põe o endereço medido na frente. Sem isto a
+/// sonda, que roda a cada requisição, pagaria o endereço morto antes do túnel.
+fn bases_by_route_plan(node_id: &str, bases: Vec<String>) -> Vec<String> {
+    use crate::route_plan::{book, Plane, RouteKind};
+    match book().active(node_id, Plane::Inference) {
+        Some(route) if route.kind == RouteKind::Tunnel => Vec::new(),
+        Some(route) if !route.base_url.is_empty() => {
+            let mut ordered = vec![route.base_url.clone()];
+            ordered.extend(bases.into_iter().filter(|base| *base != route.base_url));
+            ordered
+        }
+        _ => bases,
+    }
+}
+
+pub(crate) async fn ready_for_pipeline(
     http: &crate::peer_client::PeerClients,
     health: &AdmissionHealth,
+    network: &crate::network::Network,
     peers: Vec<PeerInfo>,
     timeout: Duration,
 ) -> Vec<PeerInfo> {
@@ -733,10 +923,15 @@ pub(super) async fn ready_for_pipeline(
         // inferência vai falar com aquele nó, senão ela mede - ou recusa - um
         // caminho que a requisição de verdade não percorre.
         let cliente = http.for_peer(&peer.node_id);
+        // Todos os endereços de inferência, o que já respondeu primeiro. Só o
+        // primeiro anunciado - um IPv6 inalcançável, por exemplo - deixava o
+        // peer em quarentena e fora do plano ("Gap at layer 0") mesmo
+        // alcançável por outro endereço ou pelo túnel.
+        let bases = bases_by_route_plan(&peer.node_id, network.inference_bases(&peer));
         async move {
-            let Some(base) = peer.inference_url() else {
+            if bases.is_empty() && crate::peer_client::TunnelPeer::from_peer(&peer).is_none() {
                 return None;
-            };
+            }
             // Idle peers keep their assignment announced while `/health` has
             // no loaded model. They are valid plan members and are woken by
             // the reload event before inference starts.
@@ -751,28 +946,47 @@ pub(super) async fn ready_for_pipeline(
             if health.quarantined(&peer.node_id).await {
                 return None;
             }
-            let url = format!("{base}/health");
-            match tokio::time::timeout(timeout, cliente.get(url).send()).await {
-                Ok(Ok(response)) if response.status().is_success() => {
-                    let Ok(Ok(body)) =
-                        tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
-                    else {
-                        health.note_failure(&peer.node_id).await;
-                        return None;
-                    };
-                    let node_id = peer.node_id.clone();
-                    let Some(peer) = refresh_peer_from_health(peer, &body) else {
-                        health.note_failure(&node_id).await;
-                        return None;
-                    };
-                    health.note_success(&peer.node_id).await;
-                    Some(peer)
+            let mut body = None;
+            for base in &bases {
+                let url = format!("{base}/health");
+                let Ok(Ok(response)) = tokio::time::timeout(timeout, cliente.get(url).send()).await
+                else {
+                    continue;
+                };
+                if !response.status().is_success()
+                    || crate::peer_client::answered_by_other_node(response.headers(), &peer.node_id)
+                        .is_some()
+                {
+                    continue;
                 }
-                _ => {
-                    health.note_failure(&peer.node_id).await;
-                    None
+                if let Ok(Ok(value)) =
+                    tokio::time::timeout(timeout, response.json::<serde_json::Value>()).await
+                {
+                    network.routes.mark_success(&peer.node_id, base);
+                    body = Some(value);
+                    break;
                 }
             }
+            // Nenhum endereço respondeu: o túnel libp2p, que a inferência
+            // também usa quando o HTTP direto não chega.
+            if body.is_none() {
+                if let Some(tunnel) = crate::peer_client::TunnelPeer::from_peer(&peer) {
+                    body = crate::infer_tunnel::health_via_tunnel(&tunnel, TUNNEL_HEALTH_TIMEOUT)
+                        .await;
+                }
+            }
+            let Some(body) = body else {
+                health.note_failure(&peer.node_id).await;
+                return None;
+            };
+            let node_id = peer.node_id.clone();
+            health.note_perf(&node_id, crate::fastest::PeerPerf::from_health(&body));
+            let Some(peer) = refresh_peer_from_health(peer, &body) else {
+                health.note_failure(&node_id).await;
+                return None;
+            };
+            health.note_success(&peer.node_id).await;
+            Some(peer)
         }
     }))
     .await
@@ -929,6 +1143,7 @@ impl GatewayState {
                 disk_free_mb: 0,
                 api_keys_active: 0,
                 libp2p_peer_id: self.network.libp2p_peer_id.clone(),
+                libp2p_addrs: self.network.libp2p_addrs(),
                 tp: self.network.tp_identity(),
                 runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
                 idle: self.network.is_idle(),

@@ -294,6 +294,7 @@ export function RuntimeParamsForm({
               })
             }
           >
+            <option value="f32">{t("deploy.knob.hidden_state_dtypeF32")}</option>
             <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
             <option value="f8" disabled={f8Unavailable}>
               {t("deploy.knob.hidden_state_dtypeF8")}

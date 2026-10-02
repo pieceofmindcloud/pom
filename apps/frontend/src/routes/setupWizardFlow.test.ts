@@ -1,63 +1,30 @@
 import { describe, expect, it } from "vitest";
-import {
-  setupProfileHasModelAndFolders,
-  setupProfileHasResources,
-  setupProfileHasShardSlider,
-  setupProfileUsesOnlyTrust,
-  setupStepsFor,
-} from "./setupWizardFlow";
+import { setupProfileUsesOnlyTrust, setupStepsFor } from "./setupWizardFlow";
 
-const ids = (profile: "admin" | "node" | "infer") => setupStepsFor(profile).map((step) => step.id);
+const ids = (profile: "admin" | "node" | "infer" | null) => setupStepsFor(profile).map((step) => step.id);
 
 describe("first-access wizard flow", () => {
-  it("keeps the node path focused on hardware, shared capacity, and trust", () => {
-    expect(ids("node")).toEqual([
-      "setup-profile",
-      "setup-discovery",
-      "setup-trust",
-      "setup-review",
-    ]);
-    expect(setupProfileHasResources("node")).toBe(true);
-    expect(setupProfileHasShardSlider("node")).toBe(true);
-    expect(setupProfileHasModelAndFolders("node")).toBe(false);
+  it("creates a network in three steps: start, network and invite", () => {
+    expect(ids("admin")).toEqual(["setup-profile", "setup-network", "setup-invite"]);
   });
 
-  it("makes infer a short trust-only path after the hardware overview", () => {
-    expect(ids("infer")).toEqual([
-      "setup-profile",
-      "setup-discovery",
-      "setup-trust",
-      "setup-review",
-    ]);
-    expect(setupProfileUsesOnlyTrust("infer")).toBe(true);
-    expect(setupProfileHasResources("infer")).toBe(false);
-    expect(setupProfileHasModelAndFolders("infer")).toBe(false);
+  it("joins a network in two steps for node and infer", () => {
+    expect(ids("node")).toEqual(["setup-profile", "setup-join"]);
+    expect(ids("infer")).toEqual(["setup-profile", "setup-join"]);
+    expect(setupProfileUsesOnlyTrust("node")).toBe(true);
+    expect(setupProfileUsesOnlyTrust("admin")).toBe(false);
   });
 
-  it("keeps the complete network-creation path for administrators", () => {
-    expect(ids("admin")).toEqual([
-      "setup-profile",
-      "setup-location",
-      "setup-network",
-      "setup-invite",
-      "setup-discovery",
-      "setup-review",
-    ]);
-    expect(setupProfileHasResources("admin")).toBe(true);
-    expect(setupProfileHasModelAndFolders("admin")).toBe(false);
-    expect(setupProfileHasShardSlider("admin")).toBe(true);
+  it("starts with the single start step before a role is chosen", () => {
+    expect(ids(null)).toEqual(["setup-profile"]);
   });
 
-  it("does not expose model, storage, or security screens for any profile", () => {
+  it("never asks for location, review, password or resources as their own steps", () => {
     for (const profile of ["admin", "node", "infer"] as const) {
-      expect(ids(profile)).not.toEqual(expect.arrayContaining(["setup-model", "setup-storage", "setup-security"]));
+      const steps = ids(profile);
+      expect(steps).not.toContain("setup-location");
+      expect(steps).not.toContain("setup-review");
+      expect(steps).not.toContain("setup-trust");
     }
-  });
-
-  it("labels the merged opening step as the machine overview", () => {
-    expect(setupStepsFor("admin")[0]).toEqual({
-      id: "setup-profile",
-      labelKey: "setupWizard.stepHardware",
-    });
   });
 });

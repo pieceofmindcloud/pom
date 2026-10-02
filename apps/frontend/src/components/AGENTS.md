@@ -37,7 +37,7 @@ Per-file list:
 - `GpuTemperature.tsx` - shared GPU temperature badge used by Flow and machine
   details. Uma máquina pode ter mais de uma placa: os dois cards mostram **uma
   linha por GPU**, nomeada por `gpuDisplayName` (que acrescenta `#índice`
-  quando duas placas têm o mesmo nome, o caso das duas RTX 5060 Ti da ksia).
+  quando duas placas têm o mesmo nome, o caso de um servidor com duas RTX 5060 Ti).
   It uses `SystemLoad.gpu_kind` as the source of truth: `none` returns
   no markup, while a real GPU with a missing reading shows only the unavailable
   sensor message. Flow and machine details pass through this component so the
@@ -75,9 +75,14 @@ Per-file list:
   controle. `hint` (texto visível) segue existindo para as outras telas.
 - `EnterpriseFeatureShowcase.tsx` - fallback de propaganda de `/logs` e
   `/estatisticas` **quando nenhum plugin ativo as fornece** (renderizado fora
-  do `<Routes>` em `App.tsx`, como o chat). Recebe `kind: "logs" | "statistics"`,
-  mostra título, descrição, prévia SVG inline (mockup), três destaques e o link
-  de compra/instalação `https://pieceofmind.cloud/enterprise/index.html`.
+  do `<Routes>` em `App.tsx`, como o chat). Recebe `kind: "logs" | "statistics"`.
+  É a página de venda do plugin Estatísticas e Logs no visual do
+  pieceofmind.cloud (estilos `.pom-store*` em `index.css`): nome, descrição,
+  ícone, screenshots oficiais e preço vêm do catálogo público do license-server
+  (`usePublicPluginCatalog`), com texto e prévias SVG locais quando ele não
+  responde. "Comprar agora" chama `POST /api/ui/plugins/checkout` e leva o
+  navegador ao checkout do Stripe; o servidor escolhe o `price_id` pelo plugin e
+  intervalo. Testes em `EnterpriseFeatureShowcase.test.tsx`.
 - `PluginBridge.tsx` - montada uma vez no shell (`App.tsx`). Publica
   `locale.changed`/`theme.changed`, repassa os eventos do nó lidos a cada 3 s
   em `GET /api/ui/plugins/events`, executa os comandos dos plugins (toast
@@ -118,8 +123,10 @@ Per-file list:
   `node_backend_call_ms` (`llama_decode`/avaliação) de
   `node_backend_sync_ms` (`llama_synchronize`). A linha da captura mostra o
   ask-to-ready do scheduler, a chamada opaca `tensor_get`, o pós-processamento,
-  bytes e contagem de leituras; a conversão f8, a serialização do frame residual
-  e a espera de envio/finalização do corpo QUIC aparecem em linhas próprias.
+  bytes e contagem de leituras; as conversões f32/f16 no peer e no cliente, a
+  conversão f8, a serialização do frame residual e a espera de envio/finalização
+  do corpo QUIC aparecem em linhas próprias. Os tempos de conversão são
+  subconjuntos do encode/decode geral, não devem ser somados novamente.
   Cobertura de decode usa callbacks quando disponíveis, ou tokens de saída por
   hop no caminho normal; sem tokens ou callbacks esperados, mostra não medido.
   Uma coleta de transporte incompleta continua visível mesmo quando a resposta
@@ -260,6 +267,24 @@ Per-file list:
   imports it); only `trackOf` (the repeating color palette, `TRACKS`) is still
   exported, reused by `PeerDetailCard`, `Dashboard` and `DeployModel`.
   Currently rendered hidden on Dashboard.
+- `ModelNetworkCanvas.tsx` - Cada card de máquina mostra também o TPS medido de
+  decode e de prefill (`machine-tps`, de `peer_perf` do
+  `/api/ui/chat/telemetry`); sem medição diz "velocidade não medida". No
+  `PipelineGatewayNode`, o total de cada rota é o `total_ms` do backend
+  (`pipelineRouteTotalMs`): rede no modo de volta que o planejador escolheria
+  mais compute de um token, com o tok/s equivalente (`pipeline-throughput`) e a
+  divisão rede/modo/compute da melhor rota (`pipeline-route-breakdown`). A
+  interface nunca soma as pernas: isso contaria ida e volta inteiras de cada
+  aresta. As etiquetas de RTT das arestas vêm das rotas planejadas, iguais em
+  qualquer nó. Uma aresta com `relayed` (túnel por circuito num relé) fica em
+  laranja forte (token `--relay`, `stroke-relay` tracejado), e o
+  `RouteRttLabel` troca o transporte por "RELAY" com ícone de informação e a
+  explicação no `title`; se a melhor rota tem `relayed` ou
+  `relayBypassedByRing`, o gateway mostra uma linha compacta
+  (`pipeline-relay-warning`, laranja cheio quando a ida passa por relé,
+  contorno quando o anel evita o relé da volta) e o ícone abre o card
+  `pipeline-relay-popup` (fecha com Esc, clique fora ou X) com as pernas por
+  relé, se o POM contorna pelo anel e como melhorar.
 - `ModelNetworkCanvas.tsx` - A visão operacional principal: um grafo SVG com
   pan/zoom de nós (cards de faixa com medidores agrupados de RAM/carga/VRAM,
   seguidos pelas temperaturas compactas quando há GPU) e arestas curvas, guiado por
@@ -320,7 +345,7 @@ Per-file list:
   `dashboard.rediscovering`). Endereços IPv6 temporários rodam sozinhos, então o
   segundo estado é o comum e resolve-se na volta seguinte do gossip - mostrá-lo
   como beco sem saída mandava o utilizador procurar um defeito inexistente. Ver
-  `docs/subsystems/rede-p2p.md`, "Endereço que deixou de responder".
+  `docs/subsystems/p2p-network.md`, "Endereço que deixou de responder".
   `PipelineRail` e `ModelNetworkCanvas` fazem a mesma distinção.
   `RemoveNode`, `LeaveNode` e `ReleaseSlice` renderizam daqui - todos em uma
   **barra de ferramentas no topo do card**, ao lado do distintivo de MTP, em
@@ -524,7 +549,9 @@ Key logic carriers:
   `0.699999988079071`. Os controles de cache KV, fusão de fatias e precisão do
   estado oculto só aparecem quando quem monta os passa. Na edição da precisão,
   f8 e i4 ficam desabilitados até todos os peers selecionados anunciarem suporte,
-  e o aviso usa a razão da capability do formato escolhido. `VisionControl` segue
+  e o aviso usa a razão da capability do formato escolhido. O combo compacto do
+  Deploy Studio oferece f32, f16, f8 e i4; f16 continua padrão, e `f32` não
+  depende de capability. `VisionControl` segue
   a mesma fronteira: exibe e alterna o mmproj pré-selecionado para modelos
   inteiros e fatias, oferece os `mmproj_candidates` compatíveis para escolha de
   formato e mostra `mmproj_reason` quando não há candidatos. O teste de idle
@@ -546,10 +573,11 @@ Key logic carriers:
   estado tri-state retornado pelo plano: oculta incompatíveis, mantém
   indeterminados visíveis, acionáveis e com alerta de risco, e preserva sempre o
   controle `no_embeddings`.
-  O seletor `hidden_state_dtype` mantém f16 como padrão e oferece f8, i4g64 e
-  i4g128 somente como escolhas explícitas. Os formatos com perda ficam
-  desabilitados até todos os peers selecionados anunciarem suporte; a dica
-  mostra o motivo da capability correspondente ao formato selecionado.
+  O seletor `hidden_state_dtype` mantém f16 como padrão, oferece f32 como
+  opção sem perda de quatro bytes por valor e f8/i4g64/i4g128 como escolhas
+  explícitas com perda. f32/f16 não exigem capability; os formatos com perda
+  ficam desabilitados até todos os peers selecionados anunciarem suporte, e a
+  dica mostra o motivo da capability correspondente ao formato escolhido.
   `RuntimeParamsForm` recebe a mesma flag e oculta os controles de ciclo e
   recuo MTP quando ela está desligada.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may

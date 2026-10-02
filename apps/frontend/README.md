@@ -222,7 +222,7 @@ nó, via `/api/ui/jobs`, e não de estado do navegador.
 
 ### Por que o nó validado subiu sem modelo
 
-A máquina de validação é a de trabalho do captain: 16 GB no total, com ~5 GB
+A máquina de validação é a de trabalho do operador: 16 GB no total, com ~5 GB
 recuperáveis no momento da medição (`vm_stat`, páginas free + inactive +
 speculative + purgeable). A menor combinação de fatias que cobre um modelo
 inteiro entre as disponíveis é `qwen3-8b_0_31` (3,9 GB) + `qwen3-8b_32_35`
@@ -379,9 +379,9 @@ continua recebendo exatamente o plano automático de antes.
 
 ### Como isto foi revisado, e o que ficou de fora da revisão
 
-**Nada foi implantado no cluster do captain.** A ordem era clara: planejar,
+**Nada foi implantado no cluster do operador.** A ordem era clara: planejar,
 validar e revisar, sem apertar "Implantar" contra as máquinas dele, e sem tocar
-na ksia. Então:
+no servidor CUDA. Então:
 
 - **Backend real, uma máquina.** Um nó isolado (`--no-discovery`, com
   `POM_HOME` num diretório temporário) com quatro fatias GGUF de cabeçalho

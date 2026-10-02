@@ -49,6 +49,7 @@ pub(crate) async fn fetch_from_principal_candidates(
     signing_key: &ed25519_dalek::SigningKey,
     authority_principal: &crate::admin_trust::AuthorityPrincipal,
     trust: &crate::admin_trust::AdminTrust,
+    tunnel: Option<&crate::peer_client::TunnelPeer>,
 ) -> Result<bool> {
     let headers = crate::gateway::GatewayState::signed_control_headers_for(
         signing_key,
@@ -65,12 +66,12 @@ pub(crate) async fn fetch_from_principal_candidates(
             CLUSTER_LOGS_POLICY_PATH,
             connection_key,
             &headers,
+            tunnel,
         )
         .await
         .context("não deu para falar com o principal")?;
     let body: LogsReply = response
         .json()
-        .await
         .context("resposta da política de logs não parseou")?;
     Ok(body.logs_enabled)
 }
@@ -107,7 +108,8 @@ pub(crate) fn spawn_ratchet(
             else {
                 continue;
             };
-            let candidates = peer.gateway_candidates_with_tls(announced);
+            let candidates =
+                net.order_gateway_bases(&peer.node_id, peer.gateway_candidates_with_tls(announced));
             if candidates.is_empty() {
                 warn!("principal {principal} não anuncia porta de gateway; política de logs não pôde ser confirmada");
                 continue;
@@ -129,6 +131,7 @@ pub(crate) fn spawn_ratchet(
                 &signing_key,
                 &authority_principal,
                 &trust,
+                crate::peer_client::TunnelPeer::from_peer(&peer).as_ref(),
             )
             .await;
             if let PolicyOutcome::Adopt(value) = adopt_or_keep(local, fetched) {
@@ -299,6 +302,7 @@ mod tests {
                 disk_free_mb: 0,
                 api_keys_active: 0,
                 libp2p_peer_id: None,
+                libp2p_addrs: Vec::new(),
                 tp: None,
                 runtime_capacity: None,
                 idle: false,
@@ -332,6 +336,7 @@ mod tests {
             &signing_key,
             &authority_principal,
             &trust,
+            None,
         )
         .await
         .unwrap();

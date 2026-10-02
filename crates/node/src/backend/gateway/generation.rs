@@ -114,46 +114,27 @@ async fn reload_idle_pipeline_with_timeout(
                 }
                 .boxed()));
             }
-            let client = match state.peer_http.for_peer(&node_id) {
-                Ok(client) => client,
-                Err(error) => return Some(Err(error)),
-            };
-            let urls = peer.gateway_candidates();
-            if urls.is_empty() {
-                return Some(Ok(async move {
-                    Err(anyhow::anyhow!("peer {node_id} sem endpoint de gateway"))
-                }
-                .boxed()));
-            }
+            let peer = peer.clone();
             Some(Ok(async move {
-                let mut last_error = None;
-                for base in urls {
-                    let request = state
-                        .control_json_request(
-                            client.post(format!("{base}/api/internal/reload_model")),
-                            "/api/internal/reload_model",
-                            &serde_json::json!({ "event": "reload_model" }),
-                        )
-                        .await;
-                    let response = match request {
-                        Ok(request) => request.send().await,
-                        Err(error) => {
-                            last_error = Some(error.to_string());
-                            continue;
-                        }
-                    };
-                    match response {
-                        Ok(response) if response.status().is_success() => return Ok(()),
-                        Ok(response) => {
-                            last_error = Some(format!("HTTP {}", response.status()));
-                        }
-                        Err(error) => last_error = Some(error.to_string()),
-                    }
+                let response = state
+                    .control_post_json(
+                        &peer,
+                        "/api/internal/reload_model",
+                        &serde_json::json!({ "event": "reload_model" }),
+                        timeout,
+                    )
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("reload_model falhou para {node_id}: {error:#}")
+                    })?;
+                if response.status().is_success() {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "reload_model falhou para {node_id}: HTTP {}",
+                        response.status()
+                    ))
                 }
-                Err(anyhow::anyhow!(
-                    "reload_model falhou para {node_id}: {}",
-                    last_error.unwrap_or_else(|| "nenhum endereço respondeu".into())
-                ))
             }
             .boxed()))
         })
@@ -169,7 +150,7 @@ async fn reload_idle_pipeline_with_timeout(
 mod reload_tests {
     use super::*;
     use crate::pipeline::PipelineStep;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[derive(Clone)]
     struct ReloadBarrier {
@@ -188,7 +169,8 @@ mod reload_tests {
         StatusCode::OK
     }
 
-    async fn hanging_reload(State(_): State<()>, _body: Bytes) -> StatusCode {
+    async fn hanging_reload(State(reached): State<Arc<AtomicBool>>, _body: Bytes) -> StatusCode {
+        reached.store(true, Ordering::SeqCst);
         std::future::pending::<()>().await;
         StatusCode::OK
     }
@@ -207,18 +189,19 @@ mod reload_tests {
         (port, task)
     }
 
-    async fn spawn_hanging_server() -> (u16, tokio::task::JoinHandle<()>) {
+    async fn spawn_hanging_server() -> (u16, tokio::task::JoinHandle<()>, Arc<AtomicBool>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("porta de teste");
         let port = listener.local_addr().expect("endereço de teste").port();
+        let reached = Arc::new(AtomicBool::new(false));
         let router = Router::new()
             .route("/api/internal/reload_model", post(hanging_reload))
-            .with_state(());
+            .with_state(reached.clone());
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
         });
-        (port, task)
+        (port, task, reached)
     }
 
     fn plan_for(node_ids: &[&str]) -> PipelinePlan {
@@ -283,7 +266,7 @@ mod reload_tests {
 
     #[tokio::test]
     async fn reload_timeout_returns_instead_of_hanging_the_request() {
-        let (port, server_task) = spawn_hanging_server().await;
+        let (port, server_task, reached) = spawn_hanging_server().await;
         let mut peer = crate::gateway::testkit::peer("idle-hung", "hung", port);
         peer.idle = true;
         let state = crate::gateway::testkit::state_with("gateway", vec![peer.clone()]).await;
@@ -293,7 +276,14 @@ mod reload_tests {
             reload_idle_pipeline_with_timeout(&state, &plan, &[peer], Duration::from_millis(50))
                 .await
                 .expect_err("um peer preso deve devolver erro com timeout");
-        assert!(error.to_string().contains("excedeu"));
+        assert!(
+            reached.load(Ordering::SeqCst),
+            "a requisição deve chegar ao peer preso"
+        );
+        assert!(
+            !error.to_string().is_empty(),
+            "a recusa deve explicar a falha"
+        );
         server_task.abort();
     }
 }
@@ -365,6 +355,101 @@ mod generation_pump_tests {
         assert_eq!(response_telemetry["input_tokens"], 45_647);
         assert_eq!(response_telemetry["cached_tokens"], 13);
     }
+}
+
+/// Escolhe a pipeline pelo menor tempo de entrega estimado. `None` quando não
+/// há caminho viável: aí o planejador guloso (cobertura, RTT e carga local)
+/// decide como antes.
+///
+/// Candidatos: o melhor caminho da programação dinâmica e cada caminho que já
+/// tem o prefixo deste prompt retido, estimado com o prefill economizado.
+#[allow(clippy::too_many_arguments)]
+async fn plan_by_delivery_time(
+    state: &GatewayState,
+    peers: &[crate::network::PeerInfo],
+    model: &str,
+    deploy_id: Option<&str>,
+    total_layers: u32,
+    route_rtt: &std::collections::HashMap<String, f64>,
+    preferred_head: Option<&str>,
+    prefix_model: &str,
+    cache_prompt: &str,
+    requested_tokens: u32,
+    prefix_eligible: bool,
+) -> Option<(crate::pipeline::PipelinePlan, crate::fastest::ReturnMode)> {
+    // A rota fixada é a medida do transporte que o frame vai usar; o RTT de
+    // topologia fica para quem ainda não foi analisado.
+    let mut requester_rtt = route_rtt.clone();
+    requester_rtt.extend(crate::route_plan::book().rtt_map(crate::route_plan::Plane::Inference));
+    let perf = state.admission_health.perf_snapshot();
+    let mut local_load = std::collections::HashMap::new();
+    for peer in peers {
+        local_load.insert(peer.node_id.clone(), state.loads.load(&peer.node_id).await);
+    }
+    let inputs = crate::fastest::CostInputs {
+        requester: &state.network.node_id,
+        requester_rtt_ms: &requester_rtt,
+        perf: &perf,
+        local_load: &local_load,
+        prompt_tokens: (cache_prompt.len() as f64 / 4.0).max(1.0),
+        decode_tokens: (requested_tokens as f64).clamp(16.0, 512.0),
+        forced_return: crate::fastest::forced_return_mode(),
+    };
+    let (mut plan, mut estimate) = crate::fastest::plan_fastest(
+        peers,
+        model,
+        deploy_id,
+        total_layers,
+        &inputs,
+        preferred_head,
+    )?;
+
+    if prefix_eligible {
+        let candidates = crate::fastest::candidates(peers, model, deploy_id);
+        for snapshot in state.prefix_cache.snapshots() {
+            if snapshot.busy
+                || snapshot.key.model != prefix_model
+                || !cache_prompt.starts_with(&snapshot.prompt)
+            {
+                continue;
+            }
+            let node_ids: Vec<String> = snapshot
+                .key
+                .hops
+                .iter()
+                .filter_map(|hop| hop.split('@').next().map(str::to_owned))
+                .collect();
+            let Some(chain) =
+                crate::fastest::resolve_chain(&candidates, &node_ids, total_layers, preferred_head)
+            else {
+                continue;
+            };
+            let cached = crate::fastest::estimate_chain(
+                &chain,
+                &inputs,
+                &candidates,
+                snapshot.cached_tokens,
+            );
+            if cached.total_ms < estimate.total_ms {
+                if let Some(cached_plan) = crate::fastest::plan_for_chain(&chain) {
+                    plan = cached_plan;
+                    estimate = cached;
+                }
+            }
+        }
+    }
+
+    info!(
+        "pipeline por tempo de entrega: {} ~{:.0} ms, resposta {} (prefill {:.0} ms, {:.1} ms/token, filas {:?}, prefixo {} tokens)",
+        plan.hop_chain(),
+        estimate.total_ms,
+        estimate.return_mode.as_str(),
+        estimate.prefill_ms,
+        estimate.decode_ms_per_token,
+        estimate.stages.iter().map(|stage| stage.queue).collect::<Vec<_>>(),
+        estimate.cached_tokens,
+    );
+    Some((plan, estimate.return_mode))
 }
 
 pub(super) async fn generate_stream_inner(
@@ -439,6 +524,7 @@ pub(super) async fn generate_stream_inner(
     let peers = ready_for_pipeline(
         &state.peer_http,
         &state.admission_health,
+        &state.network,
         state.all_peers().await,
         ADMISSION_PROBE_TIMEOUT,
     )
@@ -474,17 +560,46 @@ pub(super) async fn generate_stream_inner(
         .collect::<std::collections::HashMap<_, _>>();
     let selection_started = Instant::now();
     let selection_wall = wall_clock_ms();
-    let Some(mut plan) = crate::pipeline::plan_pipeline_with_rtt_from_head(
+    let prefix_model = format!(
+        "{}|deployment={}|chat_template={chat_template}|thinking_enabled={thinking_enabled}",
+        model,
+        deploy_id.unwrap_or("<default>")
+    );
+    let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
+    // Planejamento por tempo de entrega (`fastest`): velocidade medida de cada
+    // peer, fila de toda a rede, RTT de cada aresta e o prefixo já retido.
+    // Sem nenhum caminho viável por ele, o planejador guloso de antes decide.
+    let fastest = plan_by_delivery_time(
+        &state,
         &peers,
         model,
         deploy_id,
         total_layers,
-        &state.loads,
         &route_rtt,
         preferred_head.as_deref(),
+        &prefix_model,
+        &cache_prompt,
+        budget.total,
+        images.is_empty(),
     )
-    .await
-    else {
+    .await;
+    let (planned, planned_return) = match fastest {
+        Some((plan, mode)) => (Some(plan), Some(mode)),
+        None => (
+            crate::pipeline::plan_pipeline_with_rtt_from_head(
+                &peers,
+                model,
+                deploy_id,
+                total_layers,
+                &state.loads,
+                &route_rtt,
+                preferred_head.as_deref(),
+            )
+            .await,
+            None,
+        ),
+    };
+    let Some(mut plan) = planned else {
         let error = format!(
             "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
         );
@@ -544,11 +659,7 @@ pub(super) async fn generate_stream_inner(
         "route_resolution",
     );
     let prefix_key = crate::prefix_cache::PrefixRouteKey::new(
-        format!(
-            "{}|deployment={}|chat_template={chat_template}|thinking_enabled={thinking_enabled}",
-            model,
-            deploy_id.unwrap_or("<default>")
-        ),
+        prefix_model.clone(),
         plan.steps.iter().map(|step| {
             format!(
                 "{}@{}:{}-{}",
@@ -562,7 +673,6 @@ pub(super) async fn generate_stream_inner(
     // completed its prefill, so an incomplete session cannot enter the cache.
     let session_started = Instant::now();
     let session_wall = wall_clock_ms();
-    let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
     let mut prefix_lease = state.prefix_cache.acquire(
         prefix_key.clone(),
         &cache_prompt,
@@ -654,7 +764,51 @@ pub(super) async fn generate_stream_inner(
         ),
         state.network.node_id.clone(),
     )
-    .map(|reply| reply.with_quic_addresses(state.network.gateway_quic_addr_candidates()));
+    .map(|reply| {
+        reply
+            .with_quic_addresses(state.network.gateway_quic_addr_candidates())
+            .with_libp2p(
+                state.network.libp2p_peer_id.clone(),
+                state.network.libp2p_addrs(),
+            )
+    });
+    // O modo de volta é escolhido junto com o caminho pelo planejador por
+    // tempo de entrega (`fastest::plan_fastest`): anel quando a resposta
+    // chega antes voltando pelas conexões da ida - ou quando a cauda não tem
+    // volta até aqui. O anel dispensa o `reply_to`. Com o planejador guloso de
+    // reserva, a regra `return_path_prefers_ring` decide.
+    // `POM_RETURN_MODE` vale também para o planejador guloso de reserva.
+    let planned_return = crate::fastest::forced_return_mode().or(planned_return);
+    let direct = match (direct, planned_return) {
+        (Some(_), Some(crate::fastest::ReturnMode::Ring)) => {
+            info!(
+                "resposta pelo anel ({})",
+                if crate::fastest::forced_return_mode().is_some() {
+                    "imposta por POM_RETURN_MODE"
+                } else {
+                    "escolhida no planejamento"
+                }
+            );
+            None
+        }
+        (Some(reply), Some(crate::fastest::ReturnMode::Direct)) => Some(reply),
+        (Some(reply), None) => {
+            let chain: Vec<String> = plan.steps.iter().map(|step| step.node_id.clone()).collect();
+            match crate::fastest::return_path_prefers_ring(
+                &chain,
+                &state.network.node_id,
+                &state.admission_health.perf_snapshot(),
+                &crate::route_plan::book().kind_map(crate::route_plan::Plane::Inference),
+            ) {
+                Some(reason) => {
+                    info!("resposta pelo anel: {reason}");
+                    None
+                }
+                None => Some(reply),
+            }
+        }
+        (None, _) => None,
+    };
 
     info!(
         "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} (perna {}) resposta={}",
@@ -1064,14 +1218,11 @@ pub(super) async fn generate_stream_inner(
             direct.is_some(),
         );
         let sliced_mtp_requested = mtp_enabled && plan_supports_mtp && plan.steps.len() >= 2;
-        let remote_stream_sliced_mtp_disabled =
-            disable_sliced_mtp_for_remote_stream(remote_stream_capable, sliced_mtp_requested);
-        let sliced_mtp = sliced_mtp_requested && !remote_stream_sliced_mtp_disabled;
+        let sliced_mtp = sliced_mtp_requested;
         info!(
             remote_stream_capable,
             sliced_mtp_requested,
             sliced_mtp,
-            remote_stream_sliced_mtp_disabled,
             plan_supports_mtp,
             "caminho de decode do pipeline"
         );
@@ -1081,22 +1232,17 @@ pub(super) async fn generate_stream_inner(
                 "pipeline fatiado sem MTP: seguindo com a capacidade disponível"
             );
         }
-        if remote_stream_sliced_mtp_disabled {
-            info!(
-                reason = crate::infer_server::SPECULATION_REASON_REMOTE_STREAM_MTP_DISABLED,
-                "MTP fatiado desativado no remote-stream: o draft síncrono bloquearia cada callback"
-            );
-        }
         let mut remote_stream = if remote_stream_capable {
-            // The remote head owns the autoregressive cycle. A sliced MTP
-            // request is deliberately omitted here: its synchronous nextn
-            // draft runs before the callback can be released and was measured
-            // as the dominant producer wait on this path. The established
-            // non-stream path keeps the opt-in MTP behavior.
+            // The remote head owns the autoregressive cycle, MTP included: the
+            // tail drafts `nextn` after sampling and returns `next_draft` in
+            // the same reply, and the head installs it in its next step. The
+            // draft costs one callback more time, but a round then yields up
+            // to `mtp_k` tokens instead of one, which is what pays the
+            // head-to-tail round trip.
             let speculate = remote_stream_speculation(
                 &plan,
                 speculative_enabled,
-                mtp_enabled && !remote_stream_sliced_mtp_disabled,
+                mtp_enabled,
                 speculative_k,
                 speculative_m,
                 mtp_k,
@@ -1144,10 +1290,7 @@ pub(super) async fn generate_stream_inner(
             None
         };
 
-        if plan.supports_speculation()
-            && speculative_enabled
-            && !remote_stream_sliced_mtp_disabled
-        {
+        if plan.supports_speculation() && speculative_enabled {
             // Vira `false` na primeira rodada em que a cabeça recusar o
             // rascunho. Pedir de novo só repetiria a recusa, e o pedido custa
             // caro por um motivo que não se vê: no caminho legado,
@@ -1795,6 +1938,43 @@ async fn post_session_lifecycle(
     session_id: &str,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
+    // A rota fixada pelo plano de rotas vale também para o ciclo de vida da
+    // sessão: um peer que só o túnel alcança não responde nos endereços
+    // anunciados, e tentar QUIC e TCP neles antes gastava o prazo inteiro - o
+    // rewind falhava (prefixo perdido) e o release também (KV preso no peer,
+    // que passava a aparecer com fila para o planejador).
+    let tunnel = crate::infer_tunnel::tunnel_sender().filter(|_| step.libp2p_peer_id.is_some());
+    let pinned_tunnel = crate::route_plan::book()
+        .kind_map(crate::route_plan::Plane::Inference)
+        .get(&step.node_id)
+        .is_some_and(|kind| kind == "tunnel");
+    if let (true, Some(tunnel)) = (pinned_tunnel, tunnel) {
+        return crate::relay::post_json_via_tunnel(
+            http, tunnel, step, path, body, session_id, timeout,
+        )
+        .await
+        .map_err(|error| error.to_string());
+    }
+    let result = post_session_lifecycle_direct(http, step, path, body, session_id, timeout).await;
+    match (result, tunnel) {
+        (Err(direct), Some(tunnel)) if !direct.contains(" respondeu HTTP ") => {
+            crate::relay::post_json_via_tunnel(http, tunnel, step, path, body, session_id, timeout)
+                .await
+                .map_err(|error| format!("{direct}; libp2p-tunnel: {error}"))
+        }
+        (result, _) => result,
+    }
+}
+
+/// QUIC e depois HTTP nos endereços anunciados do peer.
+async fn post_session_lifecycle_direct(
+    http: &crate::peer_client::PeerClients,
+    step: &crate::pipeline::PipelineStep,
+    path: &str,
+    body: &serde_json::Value,
+    session_id: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
     let route_key = format!("inference:{}", step.node_id);
     let candidates = inference_route_candidates(step);
     let payload = match serde_json::to_vec(body) {
@@ -1857,6 +2037,16 @@ async fn post_session_lifecycle(
             .send()
             .await
         {
+            Ok(response)
+                if crate::peer_client::answered_by_other_node(
+                    response.headers(),
+                    &step.node_id,
+                )
+                .is_some() =>
+            {
+                http.remember_route_failure(&route_key, &base);
+                last_error = Some(format!("{base}: respondeu outro nó"));
+            }
             Ok(response) if response.status().is_success() => {
                 http.remember_route_success(&route_key, &base);
                 return Ok(response

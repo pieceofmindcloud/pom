@@ -1,103 +1,103 @@
-# Cache KV em dispositivo separado dos pesos
+# KV cache on a device separate from the weights
 
-## Resultado
+## Result
 
-Na versão vendorizada atual do llama.cpp, sem alterar o checkout do fork, não
-é possível colocar o cache KV em uma GPU específica diferente da GPU que
-recebe os pesos do mesmo modelo. A tarefa não adiciona `context_gpu`,
-`kv_cache_gpu` nem um controle correspondente na tela de implantação, porque
-essas opções não teriam efeito real.
+With the current vendored llama.cpp version, and without changing the fork
+checkout, the KV cache cannot be placed on a specific GPU other than the GPU
+that holds the weights of the same model. This task does not add
+`context_gpu`, `kv_cache_gpu` or a matching control in the deployment screen,
+because those options would have no real effect.
 
-O caso do captain, com os pesos na RTX 3060 e o KV na Radeon RX 7800 XT, exige
-uma decisão antes de qualquer implementação nativa. O status desta tarefa usa
-`needs-decision [key=kv-cache-device-placement]`.
+The operator's case, with the weights on the RTX 3060 and the KV on the Radeon
+RX 7800 XT, needs a decision before any native implementation. The status of
+this task is `needs-decision [key=kv-cache-device-placement]`.
 
-## Evidência no contrato público
+## Evidence in the public contract
 
-O header `vendor/llama-cpp-sys-2/llama.cpp/include/llama.h` oferece:
+The header `vendor/llama-cpp-sys-2/llama.cpp/include/llama.h` offers:
 
-- `LLAMA_SPLIT_MODE_NONE`, `LAYER`, `ROW` e `TENSOR` (`:198-203`). Os modos
-  `LAYER` e `ROW` dizem explicitamente que dividem camadas e KV entre GPUs.
-- `llama_model_params.devices`, `split_mode`, `main_gpu` e `tensor_split`
-  (`:307-322`). Esses parâmetros escolhem os dispositivos e a divisão dos
-  pesos. `main_gpu` só escolhe a GPU do modelo no modo `NONE`.
-- `llama_model_tensor_buft_override` (`:302-305`), uma regra por padrão de
-  nome para tensores do modelo.
-- `llama_context_params.type_k`, `type_v`, `offload_kqv` e `kv_unified`
-  (`:421-470`). Não existe ali `kv_device`, `kv_buft` ou uma lista de
-  dispositivos do cache.
+- `LLAMA_SPLIT_MODE_NONE`, `LAYER`, `ROW` and `TENSOR` (`:198-203`). The
+  `LAYER` and `ROW` modes state explicitly that they split layers and KV across
+  GPUs.
+- `llama_model_params.devices`, `split_mode`, `main_gpu` and `tensor_split`
+  (`:307-322`). These parameters choose the devices and the split of the
+  weights. `main_gpu` only picks the model GPU in `NONE` mode.
+- `llama_model_tensor_buft_override` (`:302-305`), one rule per name pattern
+  for model tensors.
+- `llama_context_params.type_k`, `type_v`, `offload_kqv` and `kv_unified`
+  (`:421-470`). There is no `kv_device`, `kv_buft` or list of cache devices
+  there.
 
-O `ggml_backend_sched` também não oferece uma saída do contrato público do
-`llama_context` para substituir a alocação do KV. O scheduler é criado pelo
-contexto depois que a memória já foi montada, em
+`ggml_backend_sched` also offers no way out of the public `llama_context`
+contract to replace the KV allocation. The scheduler is created by the context
+after the memory has already been built, in
 `vendor/llama-cpp-sys-2/llama.cpp/src/llama-context.cpp:584-607`.
 
-## Caminho efetivo no llama.cpp
+## Effective path in llama.cpp
 
-1. `llama-model.cpp:1350-1384` calcula os pontos de divisão a partir de
-   `n_gpu_layers` e `tensor_split` e salva um `dev_layer` para cada camada.
-2. `llama-kv-cache.cpp:210-223` percorre as camadas do cache. Com
-   `offload=true`, chama `model.dev_layer(il)` e usa
-   `ggml_backend_dev_buffer_type(dev)`. Com `offload=false`, mantém o buffer
-   CPU.
-3. `llama-kv-cache.cpp:274-285` aloca os buffers agrupados por esse buffer
-   type. Não há uma segunda escolha de dispositivo para o KV.
-4. `llama-model-loader.cpp:1237-1254` consulta `tensor_buft_overrides` apenas
-   enquanto cria os tensores de peso do GGUF. Os tensores `cache_k_l*` e
-   `cache_v_l*` ainda não existem nessa etapa.
+1. `llama-model.cpp:1350-1384` computes the split points from `n_gpu_layers`
+   and `tensor_split` and stores a `dev_layer` for each layer.
+2. `llama-kv-cache.cpp:210-223` walks the cache layers. With `offload=true` it
+   calls `model.dev_layer(il)` and uses `ggml_backend_dev_buffer_type(dev)`.
+   With `offload=false` it keeps the CPU buffer.
+3. `llama-kv-cache.cpp:274-285` allocates the buffers grouped by that buffer
+   type. There is no second device choice for the KV.
+4. `llama-model-loader.cpp:1237-1254` only consults `tensor_buft_overrides`
+   while creating the GGUF weight tensors. The `cache_k_l*` and `cache_v_l*`
+   tensors do not exist yet at that stage.
 
-Isso também explica por que `split_mode=row` não resolve o pedido: ele pode
-usar um buffer dividido para os pesos, mas a criação do cache continua ligada
-à colocação da camada. Fazer `offload_kqv=false` resolve apenas o estouro de
-VRAM levando o KV para RAM.
+This also explains why `split_mode=row` does not solve the request: it can use
+a split buffer for the weights, but cache creation stays tied to the layer
+placement. `offload_kqv=false` only solves the VRAM overflow by moving the KV
+to RAM.
 
-## Fronteira atual do POM
+## Current POM boundary
 
-O wrapper Rust mantém a mesma separação:
+The Rust wrapper keeps the same separation:
 
-- `crates/llama-engine/src/llm/model.rs:429-447` passa `devices`,
-  `tensor_split` e `tensor_buft_overrides` na carga do modelo.
-- `crates/llama-engine/src/llm/config.rs:1012-1022` cria os parâmetros do
-  contexto com contexto, sessões, cache unificado, `offload_kqv` e tipos K/V.
-- `crates/llama-engine/src/mtp.rs:168-187` repete a mesma política para o
-  contexto MTP.
+- `crates/llama-engine/src/llm/model.rs:429-447` passes `devices`,
+  `tensor_split` and `tensor_buft_overrides` when loading the model.
+- `crates/llama-engine/src/llm/config.rs:1012-1022` builds the context
+  parameters with context size, sessions, unified cache, `offload_kqv` and the
+  K/V types.
+- `crates/llama-engine/src/mtp.rs:168-187` repeats the same policy for the MTP
+  context.
 
-Não existe no POM um ponto seguro para acessar uma estrutura interna de
-`llama_context` e trocar buffers depois da construção. Fazer isso por cast de
-ponteiro, alocação manual de GGML ou cópia parcial de KV seria um hack sem
-contrato de sincronização e não foi implementado.
+POM has no safe point to reach an internal `llama_context` structure and swap
+buffers after construction. Doing so through pointer casts, manual GGML
+allocation or a partial KV copy would be a hack with no synchronization
+contract, and it was not implemented.
 
-## Alternativas
+## Alternatives
 
-### Disponíveis agora, sem fork
+### Available now, without the fork
 
-- **KV em RAM:** definir `offload_kqv=false`. Mantém os pesos na colocação
-  escolhida, mas deixa a Radeon ociosa para esse uso e aumenta o custo de
-  acesso ao cache.
-- **Divisão conjunta:** usar `split_mode=layer`, `row` ou `tensor` com as duas
-  GPUs. Usa a VRAM total, mas distribui pesos, computação e KV conforme as
-  regras nativas; não atende ao requisito de pesos exclusivamente na RTX e KV
-  exclusivamente na Radeon.
-- **Reduzir a pressão do KV:** diminuir contexto/sessões ou usar tipos K/V
-  menores. Isso já é suportado pelo POM, mas não cria uma colocação separada.
+- **KV in RAM:** set `offload_kqv=false`. Keeps the weights where they were
+  placed, but leaves the Radeon idle for this purpose and raises the cache
+  access cost.
+- **Joint split:** use `split_mode=layer`, `row` or `tensor` with both GPUs.
+  Uses the total VRAM, but distributes weights, compute and KV by the native
+  rules; it does not meet the requirement of weights only on the RTX and KV
+  only on the Radeon.
+- **Lower the KV pressure:** reduce context/sessions or use smaller K/V types.
+  POM already supports this, but it does not create a separate placement.
 
-### Necessária para atender o pedido exato
+### Required for the exact request
 
-Uma tarefa futura autorizada a alterar o fork precisa introduzir um contrato
-explícito para a colocação do KV, por exemplo um `ggml_backend_buffer_type_t`
-ou uma lista de dispositivos em `llama_context_params`. A implementação teria
-de cobrir todas as famílias de memória nativas, incluindo `llama_kv_cache`,
-cache recorrente e memória híbrida, manter ambos os backends vivos no
-scheduler, garantir as cópias entre o dispositivo dos pesos e o dispositivo
-do KV e publicar a colocação efetiva para diagnóstico. Só depois disso o POM
-poderia adicionar um campo persistido, validação de índice/device e o controle
-na tela de implantação.
+A future task allowed to change the fork must introduce an explicit contract
+for KV placement, for example a `ggml_backend_buffer_type_t` or a device list
+in `llama_context_params`. The implementation would have to cover every
+native memory family, including `llama_kv_cache`, the recurrent cache and
+hybrid memory, keep both backends alive in the scheduler, guarantee the copies
+between the weights device and the KV device, and publish the effective
+placement for diagnostics. Only then could POM add a persisted field,
+index/device validation and the control in the deployment screen.
 
-## Decisão pedida
+## Decision requested
 
-Escolher uma das opções:
+Pick one of:
 
-1. aceitar temporariamente KV em RAM ou a divisão conjunta existente;
-2. autorizar uma tarefa futura, separada, para criar a API e a implementação
-   de KV em dispositivo independente no fork do llama.cpp;
-3. manter o comportamento atual até essa decisão.
+1. temporarily accept KV in RAM or the existing joint split;
+2. authorize a separate future task to create the API and the implementation
+   of KV on an independent device in the llama.cpp fork;
+3. keep the current behavior until that decision.

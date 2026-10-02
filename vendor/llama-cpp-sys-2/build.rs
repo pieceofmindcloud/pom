@@ -40,7 +40,7 @@ fn missing_llama_source_error(source: &Path) -> String {
          git clone --depth 1 --branch pom-tensor-parallel https://github.com/pereirajair/llama.cpp.git {}\n\n\
          Se você já tem um checkout local, use `LLAMA_SOURCE=/caminho/para/llama.cpp`\n\
          ao executar o build. O diretório informado precisa conter `ggml`.\n\
-         Consulte docs/subsystems/build-execucao.md, seção `Preparar um worktree local`.",
+         Consulte docs/subsystems/build-and-run.md, seção `Preparar um worktree local`.",
         source.display(),
         source.display(),
         source.display(),

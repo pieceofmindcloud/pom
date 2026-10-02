@@ -183,7 +183,7 @@ function Leaf({
   const { t } = useI18n();
   const name = nameOf(entry, t);
   // The hint says *where* the page lives, never the file name: a search result
-  // needs the section to be told apart, not `rede-p2p.md`.
+  // needs the section to be told apart, not `p2p-network.md`.
   return (
     <button
       type="button"

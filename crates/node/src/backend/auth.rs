@@ -24,7 +24,9 @@ pub type AuthState = Arc<RwLock<Config>>;
 /// cookie is not a durable credential. This is the single source of truth for
 /// the expiry advertised in the Set-Cookie header below.
 pub(crate) const ADMIN_SESSION_TTL: Duration = Duration::from_secs(8 * 60 * 60);
-pub(crate) const ADMIN_SESSION_COOKIE_NAME: &str = "pom_admin_session";
+/// Sufixo do nome do cookie de sessão; o nome inteiro sai de
+/// `admin_session_cookie_name`.
+const ADMIN_SESSION_COOKIE_SUFFIX: &str = "admin_session";
 pub(crate) const ADMIN_SESSION_COOKIE_PATHS: [&str; 3] = ["/api/ui", "/admin", "/admin-ui"];
 pub(crate) type AdminSessionState = Arc<Mutex<AdminSessionStore>>;
 
@@ -83,10 +85,35 @@ impl AdminSessionStore {
 /// disjoint path set, so the three copies cover the API, legacy admin routes,
 /// and the static UI mount without ever putting the session identifier on the
 /// inference paths.
-pub(crate) fn session_cookie_header(session_id: &str, secure: bool, path: &str) -> String {
+/// Nome do cookie de sessão para a porta que o navegador usou.
+///
+/// Cookies não separam por porta: dois nós no mesmo host (`ksia:8080` e
+/// `ksia:8081`) gravavam o mesmo nome, e entrar num derrubava a sessão do
+/// outro - a aba voltava ao portão sem que o nó tivesse reiniciado. A porta do
+/// `Host` entra no nome; sem porta explícita, fica só o nome base.
+pub(crate) fn admin_session_cookie_name(headers: &HeaderMap) -> String {
+    let base = format!("{}_{ADMIN_SESSION_COOKIE_SUFFIX}", crate::brand::slug());
+    let port = headers
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|host| host.rsplit_once(':'))
+        .map(|(_, port)| port)
+        .filter(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
+    match port {
+        Some(port) => format!("{base}_{port}"),
+        None => base,
+    }
+}
+
+pub(crate) fn session_cookie_header(
+    cookie_name: &str,
+    session_id: &str,
+    secure: bool,
+    path: &str,
+) -> String {
     let mut cookie = format!(
         "{}={}; Max-Age={}; Path={}; HttpOnly; SameSite=Strict",
-        ADMIN_SESSION_COOKIE_NAME,
+        cookie_name,
         session_id,
         ADMIN_SESSION_TTL.as_secs(),
         path,
@@ -98,13 +125,14 @@ pub(crate) fn session_cookie_header(session_id: &str, secure: bool, path: &str) 
 }
 
 fn session_id_from_cookie(headers: &HeaderMap) -> Option<&str> {
+    let cookie_name = admin_session_cookie_name(headers);
     headers
         .get(axum::http::header::COOKIE)
         .and_then(|value| value.to_str().ok())
         .and_then(|cookies| {
             cookies.split(';').find_map(|cookie| {
                 let (name, value) = cookie.trim().split_once('=')?;
-                (name == ADMIN_SESSION_COOKIE_NAME && !value.is_empty()).then_some(value)
+                (name == cookie_name && !value.is_empty()).then_some(value)
             })
         })
 }
@@ -444,6 +472,11 @@ pub(crate) fn constant_time_token_eq(expected: &str, supplied: &str) -> bool {
     let supplied_digest = Sha256::digest(supplied.as_bytes());
     expected_digest.ct_eq(&supplied_digest).into()
 }
+
+/// Senha administrativa gravada no primeiro acesso. O wizard não a pergunta:
+/// enquanto ela for a senha em vigor (`AppConfig::admin_password_default`), a
+/// interface entra sozinha e mostra o aviso para trocá-la.
+pub(crate) const DEFAULT_ADMIN_PASSWORD: &str = "admin";
 
 /// Hash a human administrative password with Argon2id's default password
 /// policy. The PHC string contains its random salt and parameters, so the
@@ -821,8 +854,41 @@ mod tests {
     }
 
     #[test]
+    fn two_nodes_on_one_host_do_not_share_the_session_cookie() {
+        let headers = |host: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(axum::http::header::HOST, host.parse().unwrap());
+            headers
+        };
+        let base = format!("{}_admin_session", crate::brand::slug());
+        assert_eq!(
+            admin_session_cookie_name(&headers("ksia:8080")),
+            format!("{base}_8080")
+        );
+        assert_eq!(
+            admin_session_cookie_name(&headers("ksia:8081")),
+            format!("{base}_8081")
+        );
+        assert_eq!(admin_session_cookie_name(&headers("ksia")), base);
+        assert_eq!(
+            admin_session_cookie_name(&headers("[::1]:8081")),
+            format!("{base}_8081")
+        );
+
+        // O cookie da 8080 não é lido como sessão pela 8081.
+        let mut request = headers("ksia:8081");
+        request.insert(
+            axum::http::header::COOKIE,
+            format!("{base}_8080=da-outra-porta; {base}_8081=desta-porta")
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(session_id_from_cookie(&request), Some("desta-porta"));
+    }
+
+    #[test]
     fn admin_session_cookie_is_scoped_and_never_contains_the_token() {
-        let header = session_cookie_header("session-id", false, "/api/ui");
+        let header = session_cookie_header("pom_admin_session", "session-id", false, "/api/ui");
 
         assert!(header.starts_with("pom_admin_session=session-id;"));
         assert!(header.contains("Max-Age=28800"));
@@ -832,7 +898,7 @@ mod tests {
         assert!(!header.contains("admin-secret"));
         assert!(!header.contains("Secure"));
 
-        let secure = session_cookie_header("session-id", true, "/admin");
+        let secure = session_cookie_header("pom_admin_session", "session-id", true, "/admin");
         assert!(secure.contains("Path=/admin"));
         assert!(secure.contains("Secure"));
     }
@@ -1063,9 +1129,11 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: Default::default(),
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![
@@ -1128,9 +1196,11 @@ mod tests {
             gateway_port: 8080,
             admin_exposure: Default::default(),
             admin_access_token: None,
+            admin_password_default: false,
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
+            relay_peers: vec![],
             advertise_addr: None,
             network: Default::default(),
             api_keys: vec![crate::config::ApiKey {

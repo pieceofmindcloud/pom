@@ -188,19 +188,6 @@ pub(super) fn mtp_enabled_for_plan(
     plan_supports_mtp && local_mtp_enabled.unwrap_or(true)
 }
 
-/// O callback `remote-stream` não tem uma rodada do gateway para esconder o
-/// custo do draft seguinte: o produtor remoto precisa terminar o `nextn`
-/// antes de liberar o próximo lote. Em uma pipeline fatiada, isso transforma
-/// cada tentativa de MTP em espera do produtor. O caminho legado continua
-/// podendo usar MTP; somente o stream remoto faz fallback para um token por
-/// rodada enquanto o draft não puder ser calculado fora desse ciclo.
-pub(super) fn disable_sliced_mtp_for_remote_stream(
-    remote_stream_capable: bool,
-    sliced_mtp_requested: bool,
-) -> bool {
-    remote_stream_capable && sliced_mtp_requested
-}
-
 #[cfg(test)]
 mod adaptive_chunk_tests {
     use super::*;
@@ -272,7 +259,7 @@ pub struct GenerateRequest {
 /// provedores - `max_tokens` é teto por resposta, atingi-lo é parada terminal,
 /// e a saída trunca no meio. O que existe no lugar do transbordo é o orçamento
 /// de tarefa (`messages::TaskBudget`), que avisa o modelo em vez de esticar o
-/// teto. Ver `docs/subsystems/inferencia.md` (9.1).
+/// teto. Ver `docs/subsystems/inference.md` (9.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputBudget {
     /// Teto da requisição inteira, somando todas as pernas.

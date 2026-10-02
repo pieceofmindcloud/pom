@@ -315,6 +315,32 @@ describe("DeployModel", () => {
     });
   });
 
+  it("oferece f32 no seletor de precisão usado pelo Deploy Studio e envia a escolha", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/deploy" ? Promise.resolve({ job_id: "f32-job" }) : Promise.resolve(p),
+    );
+    mount();
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Globais" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+
+    const precision = screen.getByRole("combobox", { name: "Precisão do estado oculto" });
+    expect((precision as HTMLSelectElement).value).toBe("f16");
+    expect(within(precision).getByRole("option", { name: "f32 - 4 bytes por valor" })).toBeTruthy();
+    fireEvent.change(precision, { target: { value: "f32" } });
+
+    const deploy = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((deploy as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(deploy);
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/api/ui/deploy", expect.objectContaining({
+        params: expect.objectContaining({ hidden_state_dtype: "f32" }),
+      }));
+    });
+  });
+
   it("mostra e envia a visão quando o plano fatiado encontra um mmproj", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;

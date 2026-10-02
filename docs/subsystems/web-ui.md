@@ -1,1359 +1,1424 @@
 # Web UI
 
-Interface web administrativa do POM, um SPA React 18 + TypeScript + Vite
-em `apps/frontend/`. É a interface do produto: todo nó serve a UI junto com a
-API na porta do gateway (`--gateway-port`, 8080 por padrão), no mount
-`/admin-ui/`; a raiz apenas redireciona para ele. O painel pode nascer somente
-em `localhost` ou ser exposto à rede com token e sessão de servidor, enquanto
-as rotas de inferência continuam dual-stack para o HTTP de reserva da pipeline.
+POM's administrative web UI, a React 18 + TypeScript + Vite SPA in
+`apps/frontend/`. It is the product's interface: every node serves the UI
+together with the API on the gateway port (`--gateway-port`, 8080 by default),
+under the `/admin-ui/` mount; the root only redirects to it. The panel can start
+`localhost`-only or be exposed to the network with a token and a server
+session, while the inference routes stay dual-stack for the pipeline's HTTP
+fallback.
 
-O nome e a logo que a tela mostra vêm do `brand.json` da raiz, copiado para o
-bundle por `scripts/build-brand.mjs` - o mesmo arquivo que o binário embute.
-`Logo.tsx` desenha a marca de `/brand/pom-mark.png` e escreve nome e slogan a
-partir dele; o título da aba e os ícones entram no `index.html` pelo plugin
-`brandHtml` do `vite.config.ts`. Nenhum dos dois tem o nome escrito à mão.
+UI labels are quoted below in English (the `en` locale); the Portuguese
+labels live in `apps/frontend/src/i18n/messages.csv`. Route paths keep their
+Portuguese names (`/implantar`, `/modelos`, ...) because they are part of the
+URL contract.
 
-## Como a interface sobe
+The name and logo the screen shows come from the root `brand.json`, copied
+into the bundle by `scripts/build-brand.mjs` - the same file the binary embeds.
+`Logo.tsx` draws the mark from `/brand/pom-mark.png` and writes name and slogan
+from it; the tab title and icons enter `index.html` through the `brandHtml`
+plugin in `vite.config.ts`. Neither has the name written by hand.
 
-- **O bundle é lido do disco a cada requisição**, não embutido no binário
-  (`crates/node/src/backend/webapp.rs`). `cargo build` nunca toca este
-  diretório; editar a UI só exige `npm run build` em `apps/frontend` (e
-  recarregar o navegador). O comentário no topo de `build.rs` registra a mesma
-  separação: build de UI e build Rust são passos independentes.
-- O diretório é decidido por `config::ui_dist_dir()` (`crates/node/src/utils/
-  config.rs`): `$POM_UI_DIST` se preenchida, senão
-  `<project_root>/apps/frontend/dist`. A imagem Docker usa a variável porque
-  `POM_HOME=/data` não é o `/app` da imagem; dev que guarda o bundle em
-  outro lugar aponta direto nela.
-- Sem `index.html` no diretório o nó sobe normalmente e responde **500** nas
-  rotas de UI, com a mensagem dizendo onde procurou e o comando de remédio
-  (`npm run build` ou apontar `POM_UI_DIST`). `dist/` e `dist-release/`
-  são artefatos locais ignorados pelo git.
+## How the UI comes up
 
-### Chat compacto da barra de menus do macOS
+- **The bundle is read from disk on every request**, not embedded in the
+  binary (`crates/node/src/backend/webapp.rs`). `cargo build` never touches
+  this directory; editing the UI only needs `npm run build` in `apps/frontend`
+  (and reloading the browser). The comment at the top of `build.rs` records the
+  same split: UI build and Rust build are independent steps.
+- The directory is decided by `config::ui_dist_dir()`
+  (`crates/node/src/utils/config.rs`): `$POM_UI_DIST` if set, otherwise
+  `<project_root>/apps/frontend/dist`. The Docker image uses the variable
+  because `POM_HOME=/data` is not the image's `/app`; a developer who keeps the
+  bundle elsewhere points it there directly.
+- Without `index.html` in the directory the node starts normally and answers
+  **500** on the UI routes, with a message saying where it looked and the fix
+  (`npm run build` or pointing `POM_UI_DIST`). `dist/` and `dist-release/` are
+  local artifacts ignored by git.
 
-O bundle macOS mantém o processo Rust como dono do gateway e acrescenta um
-`NSStatusItem` em `crates/node/src/macos_status.m`. O clique abre o mesmo SPA
-em `/admin-ui/chat`, sem sidebar nem topbar, num `WKWebView` de 390 x 844
-points - a tela lógica de um iPhone 14/15. Num ecrã que não comporte essa
-altura o painel encolhe para o que cabe; a largura de 390 é fixa. O botão
-`Janela maior` só aparece quando a ponte WebKit existe, e pede ao processo
-nativo uma janela redimensionável de 1120 x 880 points, maior que o painel nos
-dois eixos. No navegador comum esse botão não é renderizado.
+### Compact Chat in the macOS menu bar
 
-O bundle instala também o menu comum do aplicativo macOS no AppKit, com Sobre e
-Sair. A ação Sair chama o encerramento padrão do aplicativo e termina o processo
-inteiro, incluindo o serviço Tokio que fica na thread de fundo.
+The macOS bundle keeps the Rust process as the owner of the gateway and adds an
+`NSStatusItem` in `crates/node/src/macos_status.m`. A click opens the same SPA at
+`/admin-ui/chat`, without sidebar or topbar, in a `WKWebView` of 390 x 844
+points - the logical screen of an iPhone 14/15. On a screen that cannot fit
+that height the panel shrinks to what fits; the 390 width is fixed. The
+`Larger window` button only shows up when the WebKit bridge exists, and asks
+the native process for a resizable 1120 x 880 points window, larger than the
+panel on both axes. In a regular browser that button is not rendered.
 
-Quem escolhe as medidas e o endereço é o Rust (`macos_status.rs`), que os
-entrega ao Objective-C no arranque: o lado nativo não conhece a configuração do
-nó, e duplicar os números nos dois lados seria convite a desencontro.
+The bundle also installs the regular macOS application menu in AppKit, with
+About and Quit. Quit calls the standard application termination and ends the
+whole process, including the Tokio service on the background thread.
 
-Quando o serviço Rust termina, a ponte para e acorda o loop do AppKit sem
-encerrar o processo. Assim `macos_status.rs` consegue esperar a thread de
-serviço e devolver ao shell a mensagem e o código de saída de uma configuração
-inválida, em vez de sair silenciosamente com status 0.
+Rust chooses the dimensions and the address (`macos_status.rs`) and hands them
+to Objective-C at startup: the native side does not know the node's
+configuration, and duplicating the numbers on both sides would invite drift.
 
-### Janela e bandeja do Windows
+When the Rust service ends, the bridge stops and wakes the AppKit loop without
+ending the process. So `macos_status.rs` can wait for the service thread and
+return to the shell the message and exit code of an invalid configuration,
+instead of exiting silently with status 0.
 
-No Windows, o mesmo binário usa `windows_subsystem = "windows"`, então a
-interface não abre um console separado. `crates/node/src/windows_status.rs`
-cria uma janela Tao e um WebView2 real via Wry, carregando o mesmo
-`/admin-ui/chat` e a porta escolhida pelo Rust. O ícone da área de notificação
-usa a arte POM embutida no binário; o menu `Abrir POM` restaura e foca a janela.
+### Windows window and tray
 
-O X da janela não encerra o processo: ele a esconde na bandeja, mantendo o
-gateway e a sessão administrativa ativos, como o item de status do macOS. O
-menu `Sair do POM` é a saída terminal e encerra o processo inteiro. O runtime
-WebView2 é uma dependência instalada no Windows, não um executável auxiliar
-distribuído pelo POM.
+On Windows, the same binary uses `windows_subsystem = "windows"`, so the UI
+does not open a separate console. `crates/node/src/windows_status.rs` creates a
+Tao window and a real WebView2 through Wry, loading the same `/admin-ui/chat`
+and the port chosen by Rust. The notification area icon uses the POM art
+embedded in the binary; the `Open POM` menu restores and focuses the window.
 
-O endereço é `http://127.0.0.1:<gateway_port>/admin-ui/chat`, com a porta do
-`pom.json`, o `--gateway-port` como fallback e 8080 como default - o painel
-nunca crava 8080. Os dois WebViews usam
-`WKWebsiteDataStore.defaultDataStore`, então partilham cookies com o próprio
-painel e entre si; a rota fica **depois** do portão de acesso em `App.tsx` e
-usa a mesma sessão com cookie `HttpOnly` do navegador, sem credencial paralela.
-Se o gateway não responde, o delegate nativo mostra uma página localizada de
-indisponibilidade com botão de repetir, em vez de deixar o painel vazio. Os
-textos dessa página ficam em
+The window's X does not end the process: it hides it in the tray, keeping the
+gateway and the administrative session alive, like the macOS status item. The
+`Quit POM` menu is the terminal exit and ends the whole process. The WebView2
+runtime is a dependency installed on Windows, not a helper executable shipped
+by POM.
+
+The address is `http://127.0.0.1:<gateway_port>/admin-ui/chat`, with the port
+from `pom.json`, `--gateway-port` as a fallback and 8080 as the default - the
+panel never hardcodes 8080. Both WebViews use
+`WKWebsiteDataStore.defaultDataStore`, so they share cookies with the panel
+itself and with each other; the route sits **after** the access gate in
+`App.tsx` and uses the same `HttpOnly` cookie session as the browser, with no
+parallel credential. If the gateway does not answer, the native delegate shows
+a localized unavailability page with a retry button, instead of leaving the
+panel empty. That page's texts live in
 `assets/brand/macos/{en,pt-BR}.lproj/Localizable.strings`.
 
-No Windows, o serviço Tokio envia um sinal depois de o listener do gateway
-aceitar a porta; `windows_status.rs` só então constrói o WebView2. Isso evita
-que um arranque lento, especialmente com `RUST_LOG=debug`, abra a página antes
-de o gateway estar escutando e deixe `ERR_CONNECTION_REFUSED` preso na janela.
+On Windows, the Tokio service sends a signal after the gateway listener accepts
+the port; only then does `windows_status.rs` build the WebView2. That keeps a
+slow start, especially with `RUST_LOG=debug`, from opening the page before the
+gateway is listening and leaving `ERR_CONNECTION_REFUSED` stuck in the window.
 
-O ícone do item é uma **template image**: o AppKit descarta a cor e pinta o
-canal alfa com a cor da barra, o que resolve tema claro e escuro de uma só vez.
-Por isso ele não pode ser a marca como ela é - `pom-icon-src.png` é um quadrado
-azul opaco, e alfa 255 em toda parte viraria um retângulo preto sólido na
-barra. `scripts/derive-macos-status-icon.py` extrai o traço branco como alfa,
-descarta o wordmark (ilegível a 18 pontos) e grava
-`assets/brand/macos/pom-status-template{,@2x,@3x}.png`. As três entram como
-representações da mesma `NSImage` de 18 points.
+The item's icon is a **template image**: AppKit discards the color and paints
+the alpha channel with the bar's color, which solves light and dark themes at
+once. That is why it cannot be the mark as it is - `pom-icon-src.png` is an
+opaque blue square, and alpha 255 everywhere would become a solid black
+rectangle in the bar. `scripts/derive-macos-status-icon.py` extracts the white
+stroke as alpha, drops the wordmark (unreadable at 18 points) and writes
+`assets/brand/macos/pom-status-template{,@2x,@3x}.png`. The three go in as
+representations of the same 18-point `NSImage`.
 
-### Temperatura da GPU
+### GPU temperature
 
-Os dois cards mostram **uma linha por GPU**: o do Fluxo mostrava só a maior
-leitura da máquina e o medidor de VRAM da primeira placa, então numa caixa com
-duas placas metade do hardware sumia da tela - e a segunda podia estar
-fervendo sem ninguém ver. A VRAM do card em miniatura é a **soma** das placas
-que a reportam (`lib/gpu.ts`), e placas de nome igual ganham `#índice`. As faixas normal, atenção e
-crítica usam os tons existentes `aqua`, `amber` e `rose`; máquinas sem GPU
-omitem a seção de temperatura, enquanto uma GPU cujo sensor não responde mostra
-"temperatura desconhecida" e "sensor indisponível". A API
-`GET /api/ui/node` leva a política térmica junto com a máquina, e
-`GET/POST /api/ui/thermal` lê ou grava seus três valores.
+Both cards show **one line per GPU**: the Flow card used to show only the
+machine's highest reading and the VRAM gauge of the first card, so on a box
+with two cards half of the hardware vanished from the screen - and the second
+one could be boiling with nobody seeing it. The mini card's VRAM is the **sum**
+of the cards that report it (`lib/gpu.ts`), and cards with the same name get
+`#index`. The normal, attention and critical bands use the existing `aqua`,
+`amber` and `rose` tones; machines without a GPU omit the temperature section,
+while a GPU whose sensor does not answer shows "temperature unknown" and
+"sensor unavailable". The `GET /api/ui/node` API carries the thermal policy
+together with the machine, and `GET/POST /api/ui/thermal` reads or writes its
+three values.
 
-O painel de proteção térmica fica em Configurações > Preferências. O backend valida a
-política antes de persistir, exigindo corte mínimo de 70 °C e cooldown máximo de
-60 segundos, e o runtime do próprio nó aplica a histerese e o
-cooldown. Quando o modelo é pausado por calor, o estado do servidor aparece
-como "aguardando resfriar", distinto de peer indisponível ou falha.
+The thermal protection panel lives in Settings > Preferences. The backend
+validates the policy before persisting, requiring a minimum cutoff of 70 °C and
+a maximum cooldown of 60 seconds, and the node's own runtime applies the
+hysteresis and the cooldown. When the model is paused for heat, the server
+state shows up as "waiting to cool down", distinct from an unavailable peer or
+a failure.
 
-### Roteamento no axum (`webapp.rs`)
+### Routing in axum (`webapp.rs`)
 
-O bundle é montado por último no roteador sob `/admin-ui/`; `/` redireciona
-para esse mount e nenhum caminho antigo precisa expor o shell. Um arquivo real
-ganha (com `mime_guess`), um miss com extensão é 404 (`asset não encontrado`) e
-uma rota SPA recebe `index.html`, para recarregar o navegador em
-`/admin-ui/config/keys/api` funcionar. `resolve()` rejeita `..`, caminho
-absoluto e `Prefix` (há teste). Cache: `index.html` com `no-cache` (é o único
-arquivo que muda sob nome fixo), assets com hash de conteúdo `immutable` por 1
-ano. Em modo localhost, a fronteira do gateway recusa raiz, mount e assets
-vindos de fora com uma página HTML 403 autocontida; `/v1/**`, `/api/generate`,
-`/health`, `/peers` e demais rotas da pipeline continuam fora da fronteira.
+The bundle is mounted last in the router under `/admin-ui/`; `/` redirects to
+that mount and no old path needs to expose the shell. A real file wins (with
+`mime_guess`), a miss with an extension is 404 ("asset not found") and an SPA
+route gets `index.html`, so reloading the browser at
+`/admin-ui/config/keys/api` works. `resolve()` rejects `..`, absolute paths and
+`Prefix` (there is a test). Cache: `index.html` with `no-cache` (it is the only
+file that changes under a fixed name), content-hashed assets `immutable` for 1
+year. In localhost mode, the gateway boundary refuses root, mount and assets
+coming from outside with a self-contained 403 HTML page; `/v1/**`,
+`/api/generate`, `/health`, `/peers` and the other pipeline routes stay outside
+the boundary.
 
-## Build e desenvolvimento
+## Build and development
 
-- Scripts `package.json`: `dev` (`vite --port 5199 --strictPort`),
-  `build` (`tsc -b && vite build`, type-check via project references),
-  `preview` (`vite preview --port 5199 --strictPort`), `test` (`vitest run`).
-- Vite 6 + `@vitejs/plugin-react`; Tailwind 3.4 via PostCSS; React 18;
-  TypeScript 5.7. `cacheDir` pinado em `node_modules/.vite` porque o fallback
-  do Vite perde a config em silêncio (sem PostCSS, sem proxy) quando um
-  `git rebase`/troca de branch reinicia o dev server no meio da reescrita.
-- **Não há backend de exemplo**: toda tela lê um nó real. Em desenvolvimento o
-  dev server encaminha `/api`, `/v1`, `/admin`, `/peers`, `/health` e
-  `/generate` para `VITE_API_TARGET` (padrão `http://127.0.0.1:8080`; aponte
-  para um nó de verdade, ex. `VITE_API_TARGET=http://192.168.100.138:8090`).
-  Um nó destacado (`--no-discovery`) é o alvo de desenvolvimento legítimo.
-- Vitest 3: sem arquivo de config; testes que precisam de DOM optam por arquivo
-  com `// @vitest-environment jsdom`.
+- `package.json` scripts: `dev` (`vite --port 5199 --strictPort`), `build`
+  (`tsc -b && vite build`, type-check through project references), `preview`
+  (`vite preview --port 5199 --strictPort`), `test` (`vitest run`).
+- Vite 6 + `@vitejs/plugin-react`; Tailwind 3.4 through PostCSS; React 18;
+  TypeScript 5.7. `cacheDir` is pinned to `node_modules/.vite` because Vite's
+  fallback silently loses the config (no PostCSS, no proxy) when a
+  `git rebase`/branch switch restarts the dev server in the middle of the
+  rewrite.
+- **There is no sample backend**: every screen reads a real node. In
+  development the dev server forwards `/api`, `/v1`, `/admin`, `/peers`,
+  `/health` and `/generate` to `VITE_API_TARGET` (default
+  `http://127.0.0.1:8080`; point it at a real node, e.g.
+  `VITE_API_TARGET=http://<node-ip>:8090`). A detached node (`--no-discovery`)
+  is the legitimate development target.
+- Vitest 3: no config file; tests that need a DOM opt in per file with
+  `// @vitest-environment jsdom`.
 
-## Menu e rotas
+## Menu and routes
 
-`src/components/nav.ts` tem o menu como dados (`NAV`: seções e folhas com
-`labelKey`, rota e `end`), consumido pela Sidebar e pelo roteador de
-`src/App.tsx`. `Implantações` usa o foguete (`Rocket`) e `Histórico` o
-relógio (`History`): as duas seções usavam `Boxes`, o mesmo ícone de
-`Modelos`, e duas seções com o mesmo desenho não se distinguem de relance. A
-folha `/implantar` mantém `Rocket` sem colidir com a seção, porque a Sidebar
-não desenha ícone de folha. Dentro de `Modelos`, a ordem é `Encontrar Modelos HF`, `Modelos
-inteiros`, `Fatiar modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
-somente ícones, com cabeçalho da marca de 64px para alinhar à toolbar. Seções
-com folhas exibem submenu ao passar o mouse, receber foco ou clicar; selecionar
-uma folha navega para sua rota. No estado minimizado, a navegação usa
-`overflow-visible` sem `overflow-y-auto`, pois a combinação faz o navegador
-calcular overflow horizontal como auto e recorta os submenus; `z-index` não
-ultrapassa esse recorte. A escolha minimizada fica persistida no navegador. O
-`App` decide setup vs painel com `useIsSetupMode()` (probe de
-`/api/ui/node` com `auth: false`; 404 = só existe o router de setup). Rotas:
+`src/components/nav.ts` holds the menu as data (`NAV`: sections and leaves with
+`labelKey`, route and `end`), consumed by the Sidebar and by the router in
+`src/App.tsx`. `Deployments` uses the rocket (`Rocket`) and `History` the clock
+(`History`): both sections used to use `Boxes`, the same icon as `Models`, and
+two sections with the same drawing cannot be told apart at a glance. The
+`/implantar` leaf keeps `Rocket` without clashing with the section, because the
+Sidebar draws no leaf icons. Inside `Models`, the order is `Find HF models`,
+`Full models`, `Slice models`, `Shards`. The side menu can be minimized: in
+that state it only shows icons, with a 64px brand header to line up with the
+toolbar. Sections with leaves show a submenu on hover, focus or click; picking a
+leaf navigates to its route. In the minimized state, navigation uses
+`overflow-visible` without `overflow-y-auto`, because that combination makes the
+browser compute horizontal overflow as auto and clips the submenus; `z-index`
+does not get past that clip. The minimized choice is persisted in the browser.
+`App` decides setup vs panel with `useIsSetupMode()` (a probe of
+`/api/ui/node` with `auth: false`; 404 = only the setup router exists). Routes:
 
-- `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
-  dono de um stream vivo e do scroll; desmontar para animar derrubaria tokens);
-  `/network-chat` é o Chat da rede em página própria, com o mesmo padrão visual
-  do Chat de IA e segue o fim do histórico quando a pessoa está no rodapé;
-  `/admin-ui/chat` é o alias compacto usado pelo app de barra do macOS e
-  renderiza o mesmo Chat sem o chrome administrativo. As duas superfícies
-  exibem `ChatSurfaceTabs`, que permite alternar entre `/chat` e
-  `/network-chat` nos dois sentidos.
-  A entrada `Chat da rede` mostra o número de mensagens recebidas desde a
-  última leitura e entrar na tela zera o badge. Em viewport mobile, os usuários
-  online começam ocultos e aparecem pelo botão `Ver online`. As abas IA/REDE
-  são a primeira faixa do conteúdo das duas telas de chat, acima do cabeçalho e
-  da conversa.
-- `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; e
-  `/modelos/fatiar` -> SliceModels, com o painel de jobs e progresso de
-  fatiamento embutido
-- `/fatias` -> Shards;
-  `/fatias/implantar` -> redireciona para `/implantar` (link antigo)
-- Essas quatro rotas, mais `/transferencias` e `/transferencias/enviar`, são
-  tela cheia (`isFullBleed` em `App.tsx`), no mesmo contrato de
-  `/implantacoes`/`/implantacoes/logs`: cabeçalho fixo
-  (`FullBleedHeader`/`FullBleedToolbar`, `components/ui.tsx`) e uma tabela ou
-  o conteúdo próprio rolando por dentro, em vez da coluna central com
-  `max-w-[1400px]`. `WholeModels`, `Shards` e a busca de `RemoteModels` viraram
-  tabelas de largura total; `RemoteModelCard`, o cartão que a busca usava
-  antes, foi removido. `WholeModels` e `Shards` mostram uma coluna/nota de
-  visão com o nome do arquivo `mmproj` (`DiscoveredModel.mmproj_path`/
-  `ShardSet.mmproj_path`, resolvidos pelo catálogo com identidade GGUF e
-  dimensões compatíveis) ou "sem projetor" com o motivo da recusa. A tela nunca
-  inventa o nome.
-- `/implantar` -> DeployModel (entrada de primeiro nível para pôr fatias em
-  serviço)
-- `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,
-  versões por `deploy_id`, reimplantação por versão ou por parâmetros novos, e
-  desimplantação). Tela cheia, como a de Logs, e clicar na linha de uma versão
-  abre à direita o **mesmo** inspetor da tela de implantar, em somente
-  leitura, com os parâmetros com que aquela versão subiu
-- `/implantacoes/logs` -> DeploymentLogs, consola terminal do log de processo de
-  todo o cluster, em ordem de chegada ao principal e com filtro por `deploy_id`;
-  não confundir com a auditoria de requisições em `/logs`. O histórico é
-  limitado no principal aos últimos sete dias ou 500.000 registros, o que
-  ocorrer primeiro; `cluster_logs_min_level` em `pom.json` controla o nível
-  mínimo capturado e assume `info`.
+- `/` -> Dashboard; `/chat` -> Chat (outside `<Routes>`/the transition because
+  it owns a live stream and the scroll; unmounting it to animate would drop
+  tokens); `/network-chat` is the network Chat on its own page, with the same
+  visual pattern as the AI Chat, and follows the end of the history when the
+  person is at the bottom; `/admin-ui/chat` is the compact alias used by the
+  macOS menu bar app and renders the same Chat without the administrative
+  chrome. Both surfaces show `ChatSurfaceTabs`, which switches between `/chat`
+  and `/network-chat` in both directions. The `Network Chat` entry shows the
+  number of messages received since the last read, and entering the screen
+  clears the badge. On a mobile viewport, online users start hidden and show up
+  through the `See online` button. The AI/NETWORK tabs are the first strip of
+  the content on both chat screens, above the header and the conversation.
+- `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; and
+  `/modelos/fatiar` -> SliceModels, with the jobs panel and slicing progress
+  embedded
+- `/fatias` -> Shards; `/fatias/implantar` -> redirects to `/implantar` (old
+  link)
+- Those four routes, plus `/transferencias` and `/transferencias/enviar`, are
+  full screen (`isFullBleed` in `App.tsx`), under the same contract as
+  `/implantacoes`/`/implantacoes/logs`: a fixed header
+  (`FullBleedHeader`/`FullBleedToolbar`, `components/ui.tsx`) and a table or
+  its own content scrolling inside, instead of the central column with
+  `max-w-[1400px]`. `WholeModels`, `Shards` and the `RemoteModels` search became
+  full-width tables; `RemoteModelCard`, the card the search used before, was
+  removed. `WholeModels` and `Shards` show a vision column/note with the
+  `mmproj` file name (`DiscoveredModel.mmproj_path`/`ShardSet.mmproj_path`,
+  resolved by the catalog with a GGUF identity and compatible dimensions) or
+  "no projector" with the refusal reason. The screen never invents the name.
+- `/implantar` -> DeployModel (a top-level entry to put slices into service)
+- `/implantacoes` -> Deployments (the record of deployments, activating the
+  default one, versions per `deploy_id`, redeploying by version or by new
+  parameters, and undeploying). Full screen, like Logs, and clicking a
+  version's row opens on the right the **same** inspector as the deploy screen,
+  read-only, with the parameters that version started with
+- `/implantacoes/logs` -> DeploymentLogs, a terminal console of the whole
+  cluster's process log, in arrival order at the principal and filterable by
+  `deploy_id`; not to be confused with the request audit at `/logs`. The
+  history is capped on the principal at the last seven days or 500,000
+  records, whichever comes first; `cluster_logs_min_level` in `pom.json`
+  controls the minimum captured level and defaults to `info`.
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` e `/estatisticas` -> `EnterpriseFeatureShowcase` quando nenhum plugin
-  ativo declara o destino. Uma declaração única do manifesto substitui o
-  fallback nessa URL, inclusive para Enterprise. As demais telas de plugins
-  vêm de `pom-plugin-ui/v1` e ficam sob `/<plugin_code>/<path do manifesto>`;
-  por exemplo, `plugin_code: "base"` e `/example` abrem em
-  `/admin-ui/base/example`. Menu e matcher usam a mesma tabela normalizada;
-  menus novos aparecem na ordem do manifesto, antes de Documentação. Se dois
-  plugins reivindicarem `/logs` ou `/estatisticas`, ambos usam seus namespaces
-  e o fallback nativo permanece. `/logs/estatisticas` continua como alias
-  nativo de `/estatisticas`. `menu[].roles` filtra o menu e o acesso direto à
-  rota correspondente; sem `roles` nem o campo legado `profiles`, os três
-  perfis são aceitos, sempre respeitando os perfis da rota.
-- `/plugins` -> Plugins, vitrine dos itens publicáveis retornados por
-  `https://license.pieceofmind.cloud/v1/plugins`, cruzados pelo `code` com o
-  estado local de licença e instalação. O browser lê o catálogo público sem
-  credenciais do nó, e o cliente só aceita plugins com releases válidas. A tela
-  mostra ícone, até quatro screenshots, descrição, preço e release quando o
-  servidor fornece esses dados; campos e imagens ausentes têm fallback visual.
-  A descrição usa a versão pt-BR se existir, senão a descrição inglesa. Até
-  quatro screenshots podem ser ampliados em um diálogo de tela cheia, com
-  Escape e foco devolvido ao controle que abriu. Expiração e uso de ativações
-  por plugin vêm do estado autenticado publicado pelo nó, nunca do catálogo
-  público.
-  Plugins ativos no nó continuam listados mesmo quando faltam no catálogo
-  público, com as ações locais preservadas. Quando a licença exigida não está
-  ativa, Comprar redireciona para a loja pública com o `plugin_code` codificado
-  por `lib/pluginPurchase.ts`. Plugins ativos mostram expiração da
-  licença, última instalação/aplicação e última checagem de update como datas
-  distintas; a tela lê esses horários do estado persistido pelo nó. A chave de
-  ativação aparece quando qualquer entrada pública que exige licença não está
-  ativa no estado local, mesmo se outro plugin já estiver ativo ou houver
-  contexto de licença; ausência de status local, expiração e revogação mantêm o
-  formulário visível. Ele some quando todos os plugins licenciáveis conhecidos
-  estão ativos. Desativação pede confirmação. A rota usa `FullBleedHeader` e
-  rolagem interna como `/modelos`; o painel de Plugins usa
-  `overscroll-y-contain` para não propagar a rolagem ao limite para a página.
-  O documento permanece sem rolagem; as áreas internas definem seus próprios
-  limites.
-  Carregamento, erro e catálogo vazio têm estados próprios.
-- `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
-- `/redes-publicas` -> PublicNetworks, catálogo full-bleed de redes públicas
-  descobertas pela camada pkarr. A tabela agrupa por país/cidade e ordena pela
-  distância aproximada autorizada no navegador; mostra as métricas calculadas
-  quando o cluster local corresponde à rede e marca como indisponível o que o
-  catálogo público não fornece. O botão de entrada reaproveita a tela de
-  confiança sem segredo de rede pública.
-- `/setup` -> `Setup`, o wizard real do primeiro acesso, **em tela inteira**:
-  sem Sidebar e sem Topbar, como o bootstrap. Ele mostra hardware antes das
-  decisões de capacidade e modelo e conduz `admin`, `node` ou `infer` até o
-  save. No admin, a exposição da interface na rede é a única opção que pede
-  uma senha administrativa; a criptografia TLS entre peers é opcional e começa
-  desligada. A tela de convite baixa o arquivo da raiz com o nome retornado por
-  `admin_trust_filename` e mostra a chave de conexão apenas em redes local ou
-  privadas. Durante o setup, uma etapa de descoberta local deixa o admin
-  esperando e faz node/infer procurarem um admin; a chave só chega depois do
-  handshake explícito. `SetupWizard.tsx` continua sendo apenas o mock de
-  referência visual.
-- `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> a lista de
-  participantes para `admin` e `node`; `/config/preferencias` -> Preferences;
-  `/config/preferencias/admin` -> preferências administrativas;
-  `/config/sobre` -> About, último item de Configurações, com links para o
-  `LICENSE` AGPL-3.0 do repositório e a página GNU oficial, aviso de
-  privacidade/segurança LGPD e links do site, formulário de contato
-  (`https://pieceofmind.cloud/contact.html`) e repositórios oficiais; também
-  mostra o estado do plugin associado à atualização do `pom_core`
-  e a verificação sob demanda. Quando há atualização disponível, a própria
-  tela oferece aplicar e reiniciar; também mostra o catálogo de dependências
-  diretas agrupado por licença;
-  `/config/confianca` reúne esta máquina, compartilhamento e chaves de conexão;
+- `/logs` and `/estatisticas` -> `EnterpriseFeatureShowcase`, the sales page
+  of the Statistics and Logs plugin (public catalog and Stripe checkout), when
+  no active plugin declares the target. A single manifest declaration replaces
+  the fallback at that URL, including for Enterprise. Other plugin screens come
+  from `pom-plugin-ui/v1` and live under `/<plugin_code>/<manifest path>`; for
+  example, `plugin_code: "base"` and `/example` open at
+  `/admin-ui/base/example`. Menu and matcher use the same normalized table; new
+  menus show up in manifest order, before Documentation. If two plugins claim
+  `/logs` or `/estatisticas`, both use their namespaces and the native fallback
+  stays. `/logs/estatisticas` remains a native alias of `/estatisticas`.
+  `menu[].roles` filters the menu and direct access to the matching route;
+  without `roles` or the legacy `profiles` field, all three profiles are
+  accepted, always respecting the route's profiles.
+- `/plugins` -> Plugins, the showcase of publishable items returned by
+  `https://license.pieceofmind.cloud/v1/plugins`, crossed by `code` with the
+  local license and install state. Open to every profile: plugins are local to
+  each node, so `admin`, `node` and `infer` can activate licenses, add GitHub
+  repositories and install plugins on their own machine. The browser reads the
+  public catalog without node credentials, and the client only accepts plugins
+  with valid releases. The screen shows icon, up to four screenshots,
+  description, price and release when the server provides them; missing fields
+  and images have a visual fallback. The description uses the pt-BR version if
+  it exists, otherwise the English one. Up to four screenshots can be enlarged
+  in a full-screen dialog, with Escape and focus returned to the control that
+  opened it. Expiry and activation usage per plugin come from the authenticated
+  state published by the node, never from the public catalog. Plugins active on
+  the node stay listed even when missing from the public catalog, with local
+  actions preserved. When the required license is not active, Buy redirects to
+  the public store with the `plugin_code` encoded by `lib/pluginPurchase.ts`.
+  Active plugins show license expiry, last install/application and last update
+  check as distinct dates; the screen reads those times from the state
+  persisted by the node. The activation key shows up when any public entry that
+  needs a license is not active in the local state, even if another plugin is
+  already active or there is license context; missing local status, expiry and
+  revocation keep the form visible. It disappears when every known licensable
+  plugin is active. The `License active` badge reflects the license state, not
+  the host's readiness; `active` only enables plugin actions when the host is
+  ready. An install failure shows on the card with the detail of
+  `PluginStatus.installation_error`; when the activation POST fails, the screen
+  rereads the local status to show that diagnosis. Deactivation asks for
+  confirmation. The route uses `FullBleedHeader` and internal scrolling like
+  `/modelos`; the Plugins panel uses `overscroll-y-contain` so scrolling at the
+  edge does not propagate to the page. The document stays without scrolling;
+  the inner areas define their own limits. Loading, error and empty catalog
+  have their own states. On `admin`, when `pom_desenv=true` in `/api/ui/node`,
+  the column also queries the local development sources and offers
+  build/install even for a plugin that has never been activated; those controls
+  do not show up for other profiles or for nodes without the flag. A
+  development-only install grants no licensed features, while rebuilding an
+  existing licensed or GitHub install preserves its entitlement. That endpoint
+  is AdminOnly and the UI only gets success or the step/exit code, not compiler
+  logs. The
+  GitHub release flow stays separate. See `docs/subsystems/plugins-ui.md`,
+  section "Local rebuild in development".
+- `/documentacao` -> Documentation (full screen; see its own section below)
+- `/redes-publicas` -> PublicNetworks, a full-bleed catalog of public networks
+  discovered through the pkarr layer. The table groups by country/city and sorts
+  by the approximate distance authorized in the browser; it shows the computed
+  metrics when the local cluster matches the network and marks as unavailable
+  what the public catalog does not provide. The join button reuses the trust
+  screen without a public network secret.
+- `/setup` -> `Setup`, the real first access wizard, **full screen** and with
+  the access gate's identity (see "First access wizard" below).
+- `/config/rede` -> NetworkSettings; `/config/rede/participantes` -> the
+  participant list for `admin` and `node`; `/config/preferencias` ->
+  Preferences; `/config/preferencias/admin` -> administrative preferences;
+  `/config/sobre` -> About, the last item of Settings, with links to the
+  repository's AGPL-3.0 `LICENSE` and the official GNU page, an LGPD
+  privacy/security notice and site links, a contact form
+  (`https://pieceofmind.cloud/contact.html`) and official repositories; it also
+  shows the state of the plugin tied to the `pom_core` update and the on-demand
+  check. When an update is available, the screen itself offers to apply and
+  restart; it also shows the catalog of direct dependencies grouped by license;
+  `/config/confianca` gathers this machine, sharing and connection keys;
   `/config/keys/api` -> TokenKeys; `/config/armazenamento` -> ModelPaths
-  (`/config/pastas` continua como alias). O wizard de configuração não aparece
-  no menu, embora sua rota de teste continue disponível.
-
-Em uma rede pública, `NetworkSettings` local é uma réplica read-only para
-`node` e `infer`. O diretório de entrada carrega apenas os dados necessários
-para descobrir a rede; depois que o `Announce` autenticado do principal chega,
-o backend busca o documento completo, incluindo nome, organização, descrição,
-regras, canais e visibilidade. A tela não deve tratar capacidades anunciadas
-durante o boot como pipeline pronta: o catálogo só marca cobertura completa
-quando cada peer confirmou `/health` ou está `idle`.
+  (`/config/pastas` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`
+  sets a folder (`model_dirs_env`/`shard_dir_env` in `/api/ui/paths`), the
+  matching field is locked, with the variable's name in a badge and a note:
+  editing there would have no effect. The setup wizard does not show up in the
+  menu, although its test route stays available.
 - `*` -> NotFound
 
-No perfil `infer`, a Sidebar deixa de ser uma lista de telas: `ChatSessionList`
-ocupa o menu principal com `Conversa nova` e as conversas salvas. O botão novo
-fica fora da área rolável, a lista usa `min-h-0` + `overflow-y-auto` e a sessão
-ativa recebe destaque e `aria-pressed`; assim muitas conversas não escondem a
-rede nem fazem o menu crescer além da janela. A rede é o único destino principal
-adicional. Documentação e Configurações (a chave API permitida ao infer) são
-projeções de rodapé junto das bandeiras. `ChatSessionProvider` mantém a seleção
-da Sidebar e o Chat na mesma sessão. Administrador e node continuam recebendo a
-projeção normal de `NAV`.
+On a public network, the local `NetworkSettings` is a read-only replica for
+`node` and `infer`. The entry directory only carries the data needed to
+discover the network; after the principal's authenticated `Announce` arrives,
+the backend fetches the full document, including name, organization,
+description, rules, channels and visibility. The screen must not treat
+capabilities announced during boot as a ready pipeline: the catalog only marks
+full coverage when each peer confirmed `/health` or is `idle`.
 
-### Wizard de primeiro acesso
+On the `infer` profile, the Sidebar stops being a list of screens:
+`ChatSessionList` takes the main menu with `New conversation` and the saved
+conversations. The new button stays outside the scrollable area, the list uses
+`min-h-0` + `overflow-y-auto` and the active session gets a highlight and
+`aria-pressed`; so many conversations neither hide the network nor make the
+menu grow past the window. The network is the only extra main destination.
+Documentation and Settings (the API key allowed to infer) are footer
+projections next to the flags. `ChatSessionProvider` keeps the Sidebar's
+selection and the Chat in the same session. Administrator and node still get
+the normal `NAV` projection.
 
-`routes/Setup.tsx` é o wizard real, servido pelo router loopback
-`/api/setup/*`. Ele detecta hardware antes das decisões, pede localização
-país/cidade para todos os perfis, persiste a localização aproximada autorizada
-e usa etapas diferentes para `admin`, `node` e `infer`: admin cria a raiz,
-configura a rede e convida; node escolhe RAM, CPU, disco de fatias e proteção
-térmica; infer só confirma a confiança e entra. País e cidade são obrigatórios
-para rede pública e opcionais, mas persistidos, para local/private. O nome
-público também é obrigatório para rede pública em todos os perfis e aparece no
-passo de confiança de node/infer antes do salvamento. A cidade manual é válida
-quando a referência SQLite não a contém.
+### First access wizard
 
-O wizard não exige ingresso HTTP(S) do diretório federado para uma rede pública.
-Quando configurados por `POM_PUBLIC_DIRECTORY` ou posteriormente na
-administração, eles são persistidos no documento de confiança e usados para
-publicar ou consultar o catálogo. Um nó privado pode conservar esses ingressos
-para listar o catálogo por saída.
+`routes/Setup.tsx` is the real wizard, served by the loopback router
+`/api/setup/*`. It only asks what cannot be decided later
+(`routes/setupWizardFlow.ts`):
 
-O passo de modelos combina o catálogo local com referências do Hugging Face,
-sem iniciar download, e usa `~/.pom/models` e `~/.pom/models_sliced` como
-padrões. O convite do admin mostra e baixa a raiz `.pom.trust.json`, a
-fingerprint calculada e a chave de conexão apenas quando a rede é
-local/private. A chave pública não é exibida separadamente, pois já está na
-raiz. A verificação final cobre GPU, backend disponível, configuração,
-descoberta P2P e IPv6 público; a inferência do modelo fica para depois.
+- **Administrator, 3 steps:** Start (role and machine name, with a hardware
+  summary), Network (name and **Private** or **Public**; country and city only
+  for public, because they go to pkarr and the directory) and Invitation
+  (connection key, when private, and the `trust.json` to download or copy). The
+  advertised address comes suggested and sits under "Advanced". There is no
+  "local-only network" or "who can access" question: private requires the key
+  and the `trust.json`, public requires the `trust.json`.
+- **Node and inference, 2 steps:** Start and Join. Join looks for the
+  administrator through local discovery and receives the root and the key
+  without typing anything; pasting the `trust.json` and the key stays collapsed
+  as an alternative. The city of a public network comes in the `setup` block of
+  `trust.json`.
+- **Local discovery during the invitation (optional):** while the
+  administrator is on the invitation step, each computer looking for the
+  network shows up with an animation and what it reported about itself - name,
+  system, IP, CPU, RAM, GPUs and VRAM - and goes from "joining" to "connected"
+  when it receives the root. Finishing with nobody is normal.
+- **Defaults instead of questions:** model and slice folders, disk space,
+  RAM/CPU reserves and the thermal limit come from the machine; the UI is open
+  to the network with the password `admin`; the workspace is `~/pom_workspace`.
+  Everything can be adjusted later, inside POM. While the password is the
+  default one, the gate does not ask for it (`useAdminSurface` logs in with it
+  when `/api/access` says `default_password`) and `DefaultPasswordNotice` shows
+  a fixed banner asking to change it in Preferences.
 
-`routes/SetupWizard.tsx` e `components/setup-wizard/*` continuam sendo apenas o
-mock de referência visual. Não são usados pelo primeiro acesso real.
+The shell uses `.pom-login*` and `.pom-setup*` (`index.css`): the floating dark
+panel with the `assets/pom-mark-dark.png` mark, the `BrandLanguageSwitch`
+language selector and the step track drawn as connected nodes with a pulse of
+light traveling - the same animation as the gate, which is also the loading
+indicator. Inside the panel the dark theme tokens always apply
+(`.pom-setup-scope`).
 
-### Modelos remotos
+The wizard does not require HTTP(S) ingresses of the federated directory for a
+public network. When configured through `POM_PUBLIC_DIRECTORY` or later in
+administration, they are persisted in the trust document.
 
-`RemoteModels` carrega ao abrir os modelos GGUF em alta pela API pública do
-Hugging Face (`/api/models?sort=trendingScore&limit=20&filter=gguf`), sem enviar
-credenciais. A busca do provider continua usando o nó autenticado; o status de
-login fica compacto dentro da barra, junto ao botão Buscar. Depois da busca, o
-detalhe resolve a licença pelo
-provider e exibe o marcador de modelo gated antes da confirmação de download;
-assim a tela não presume uma licença nem inicia uma operação protegida sem
-explicar a autenticação exigida.
+`routes/SetupWizard.tsx` and `components/setup-wizard/*` are still only the
+visual reference mock. They are not used by the real first access.
 
-O título da tela é "Encontrar modelos no Hugging Face". O detalhe consulta
-`GET /api/ui/model-provider/storage` e mostra as pastas de modelos resolvidas da
-configuração antes de iniciar. O download escolhe uma dessas pastas; o job
-persistido em `GET /api/ui/jobs` registra o caminho final e o
-`ModelDownloadsPanel` mostra progresso, cancelamento e retry. Esse painel
-também aparece em `/transferencias`, junto das transferências de arquivos.
+### Remote models
 
-Em `/config/preferencias`, o `HuggingFaceSettingsPanel` oferece o token opcional para
-modelos privados e gated. O campo é `password`, começa vazio e mostra apenas a
-máscara devolvida pelo backend. Salvar ou remover chama
-`/api/ui/model-provider/config`, invalida o status e faz o provider reler a
-credencial sem reiniciar o processo; a precedência segue a documentada em
-`api-http.md`.
+`RemoteModels` loads, on opening, the trending GGUF models from the public
+Hugging Face API (`/api/models?sort=trendingScore&limit=20&filter=gguf`),
+without sending credentials. The provider search still uses the authenticated
+node; the login status stays compact inside the bar, next to the Search button.
+After the search, the detail resolves the license through the provider and
+shows the gated model marker before the download confirmation; so the screen
+neither assumes a license nor starts a protected operation without explaining
+the required authentication.
 
-### Perfis: o que cada um enxerga
+The screen title is "Find models on Hugging Face". The detail queries
+`GET /api/ui/model-provider/storage` and shows the model folders resolved from
+the configuration before starting. The download picks one of those folders; the
+job persisted in `GET /api/ui/jobs` records the final path and
+`ModelDownloadsPanel` shows progress, cancellation and retry. That panel also
+shows up in `/transferencias`, next to file transfers.
 
-O nó anuncia um perfil persistido em `pom.json`: `admin`, `node` ou `infer`.
-O administrador opera o cluster; o nó cuida da própria máquina; o `infer` tem
-uma vista reduzida para conversar com os modelos, ler a documentação, cuidar
-da própria API key e pedir entrada no processamento da rede.
-`GET /api/ui/node` é a fonte usada pelo browser e a toolbar mostra o rótulo
-pela i18n.
-O mesmo retrato traz `pom_desenv`, verdadeiro somente quando o processo foi
-iniciado com `POM_DESENV=1` exatamente. `DeployModel`, Histórico e a caixa de
-reimplantar escondem por completo `Configurações POM (DESENV)` quando a flag é
-falsa. Na tela `/implantar`, Tensor, as estratégias Simples/Completa e o botão
-"Voltar ao plano do nó" também ficam ocultos quando `pom_desenv` é falso. Isso é
-somente visibilidade local: a UI e o backend preservam os valores
-da implantação recebidos pela rede, mesmo quando o nó não pode editá-los.
+In `/config/preferencias`, `HuggingFaceSettingsPanel` offers the optional token
+for private and gated models. The field is `password`, starts empty and only
+shows the mask returned by the backend. Saving or removing calls
+`/api/ui/model-provider/config`, invalidates the status and makes the provider
+reread the credential without restarting the process; the precedence follows
+what is documented in `http-api.md`.
 
-No Dashboard, a leitura é separada por responsabilidade. O `admin` vê os
-agregados do cluster, como cobertura, máquinas, modelo ativo e carga em voo.
-Os perfis `node` e `infer` veem somente os fatos da máquina local: modelo
-servido, faixa de camadas e pedidos em voo. Para o `infer`, a cobertura global
-não é um indicador operacional da sua tela, então não é renderizada como um
-alarme de pipeline. Se `/api/ui/node` não estiver disponível, esses campos
-mostram indisponível; ausência de dados nunca vira modelo vazio, pipeline
-incompleto ou zero.
+### Profiles: what each one sees
 
-"Pedidos neste nó" mede o número de requisições de inferência atualmente em
-voo no `LoadTracker` daquela máquina. Zero é uma medição válida somente quando
-a própria máquina respondeu zero; falha de leitura permanece desconhecida.
-Da mesma forma, a carga de um peer no mapa de implantação vem do `/api/ui/node`
-do próprio peer, e não do tracker do coordenador.
+The node announces a profile persisted in `pom.json`: `admin`, `node` or
+`infer`. The administrator operates the cluster; the node takes care of its own
+machine; `infer` has a reduced view to talk to the models, read the
+documentation, manage its own API key and ask to join the network's processing.
+Any of the three can activate and install plugins on its own machine.
+`GET /api/ui/node` is the source the browser uses and the toolbar shows the
+label through i18n. The same snapshot carries `pom_desenv`, true only when the
+process was started with exactly `POM_DESENV=1`. `DeployModel`, History and the
+redeploy box completely hide `Configurações POM (DESENV)` ("POM settings
+(DEV)") when the flag is false. On the `/implantar` screen, Tensor, the
+Simple/Complete strategies and the "Back to the node's plan" button are also
+hidden when `pom_desenv` is false. This is only local visibility: the UI and the
+backend keep the deployment values received over the network, even when the
+node cannot edit them.
 
-`src/lib/access.ts` combina as rotas nativas com os perfis do registro de
-plugins (`lib/pluginUi.ts`); rota nativa ausente da tabela é livre para `admin`
-e `node`. Hoje `/implantar` e `/implantacoes` são só do administrador. As
-vitrines nativas `/logs` e `/estatisticas` ficam acessíveis para descoberta; as
-telas do plugin seguem os perfis declarados no manifesto. Para `infer`, a lista
-de rotas nativas permitidas e negadas vive em `INFER_ROUTES` e
-`INFER_DENIED_ROUTES`. No Chat, a telemetria da execução e seus resumos também
-ficam ocultos. A chave casa **segmento inteiro**, então `/logs` não cobre
-`/logs-antigos`.
+On the Dashboard, the reading is split by responsibility. The `admin` sees the
+cluster aggregates, such as coverage, machines, active model and in-flight
+load. The `node` and `infer` profiles only see the local machine's facts:
+served model, layer range and in-flight requests. For `infer`, global coverage
+is not an operational indicator of its screen, so it is not rendered as a
+pipeline alarm. If `/api/ui/node` is unavailable, those fields show
+unavailable; missing data never becomes an empty model, an incomplete pipeline
+or zero.
 
-No Chat, o `infer` recebe um recorte próprio por
-`GET /api/ui/infer/heads?model=...`: a caixa **Entrada da inferência** mostra a
-cabeça selecionada e as outras faixas que começam em L0, com RTT, idade e carga
-em voo. Se a leitura viva da candidata não chega, a carga aparece como
-indisponível, não zero. A política fica escrita na tela: cobertura primeiro, score ponderado de
-RTT fresco e carga, e empate por id. RTT sem medição fresca aparece como fallback, e um modelo sem cabeça
-ou sem caminho completo produz um aviso legível em vez de uma falha crua. Esse
-recorte não abre a lista geral de peers nem oferece autoridade de controle.
-Ao trocar o combo, o Chat envia o `node_id` escolhido como `inference_head` na
-próxima requisição; a pipeline e a telemetria usam essa cabeça, em vez de
-reaplicar o score de RTT/carga.
+"Requests on this node" measures the number of inference requests currently in
+flight in that machine's `LoadTracker`. Zero is a valid measurement only when
+the machine itself answered zero; a read failure stays unknown. Likewise, a
+peer's load on the deployment map comes from that peer's own `/api/ui/node`, not
+from the coordinator's tracker.
 
-`Logs` consulta `GET /api/ui/requests` com a chave de conexão do operador. A
-barra compacta aplica filtros por identidade não secreta da API key, texto do
-prompt, nó e período, lista primeiro as entradas mais recentes em páginas e
-carrega a próxima quando o sentinela entra na viewport. A tela de estatísticas
-consulta `GET /api/ui/requests/stats`, que aceita os mesmos filtros, incluindo o
-rótulo de usuário e o modelo, e agrega no servidor por token, nó, dia e peer,
-além de tokens de entrada/saída, inferência, TTFT, cache de prefixo e estados
-terminais. Clicar em qualquer área não interativa da linha
-  abre o inspetor, preserva a lupa e destaca a linha selecionada com cor de
-  acento distinta do hover. O cabeçalho do inspetor repete os detalhes da linha.
-  ENVIADO mostra a última mensagem de usuário como prompt novo e o restante do
-  histórico como contexto, inclusive respostas de assistente/ferramenta que
-  aparecem depois dela, em duas superfícies Markdown renderizadas de altura
-  dividida; Resposta usa o mesmo visualizador somente para
-  leitura, sem barra de edição, HTML, imagens ou links com protocolo inseguro.
-  O conteúdo exibido é limitado a 64 KiB para preservar a responsividade. A
-  preferência global entre Markdown renderizado e JSON cru fica em `localStorage`
-  e é restaurada em visitas futuras. A tela de Estatísticas usa a mesma fonte
-  agregada, mas não é uma aba dentro de Logs.
-  Cada área Markdown também tem um botão icon-only de expansão no canto
-  superior direito; a leitura abre em uma janela grande, acompanha o toggle
-  global e mantém a mesma sanitização e censura de credenciais.
-  REQUEST e TELEMETRIA mantêm o JSON completo, com TELEMETRIA separando o caminho
-  da requisição do cartão visual `ExecutionTelemetry`, compartilhado com o Chat.
-  O indicador de carregamento ocupa um slot à esquerda do badge de erros,
-  mantendo o badge fixo à direita. A cópia redige credenciais, inclusive `key` de
-registros em `api_keys` quando o valor tem formato de segredo conhecido, sem
-ocultar campos `key` inocentes.
-`in_progress`, `incomplete`, `partial`, erro e abandono recebem estados visuais
-distintos. A identidade exibida é o id e o rótulo configurados para a chave;
-nenhum segredo é pedido ao endpoint ou renderizado no navegador.
+`src/lib/access.ts` combines the native routes with the profiles from the
+plugin registry (`lib/pluginUi.ts`); a native route missing from the table is
+open to `admin` and `node`. Today `/implantar` and `/implantacoes` are
+administrator only. The native showcases `/logs` and `/estatisticas` stay
+reachable for discovery; plugin screens follow the profiles declared in the
+manifest. For `infer`, the list of allowed and denied native routes lives in
+`INFER_ROUTES` and `INFER_DENIED_ROUTES`. In the Chat, run telemetry and its
+summaries are also hidden. The key matches a **whole segment**, so `/logs` does
+not cover `/logs-antigos`.
 
-**Uma tabela só, lida em dois lugares.** O `App.tsx` a consulta para barrar a rota
-(`Forbidden` no lugar da tela) e o `navForProfile` (`components/nav.ts`) para podar
-o menu. Duas listas separadas dariam os dois defeitos clássicos: menu que oferece o
-que a rota recusa, ou rota aberta a um endereço digitado que o menu já escondia.
-Uma seção com folhas some quando **nenhuma** folha sobra - "Logs" desaparece
-inteira para o perfil `node`, "Configurações" continuaria de pé se só uma folha
-fechasse.
+In the Chat, `infer` gets its own slice through
+`GET /api/ui/infer/heads?model=...`: the **Inference entry** box shows the
+selected head and the other ranges starting at L0, with RTT, age and in-flight
+load. If the candidate's live read does not arrive, the load shows as
+unavailable, not zero. The policy is written on screen: coverage first, a
+weighted score of fresh RTT and load, and a tie-break by id. An RTT without a
+fresh measurement shows up as a fallback, and a model without a head or without
+a complete path produces a readable warning instead of a raw failure. That
+slice does not open the general peer list nor offer control authority. When the
+combo changes, the Chat sends the chosen `node_id` as `inference_head` on the
+next request; the pipeline and telemetry use that head, instead of reapplying
+the RTT/load score.
 
-**Isto não é a única autorização.** O perfil chega do nó em `pom.json` e o
-browser o usa para apresentação e navegação; a credencial continua sendo a
-chave de conexão, verificada no gateway (ver *Autenticação*). O backend também
-impõe a vista local do `infer`: `/api/ui/cluster` e `/api/ui/cluster/models`
-não fan-outam para peers, `/admin/nodes` responde 403 e detalhes de outra
-máquina respondem 403. Não existe troca de perfil na interface.
+`Logs` queries `GET /api/ui/requests` with the operator's connection key. The
+compact bar applies filters by the API key's non-secret identity, prompt text,
+node and period, lists the most recent entries first in pages and loads the
+next one when the sentinel enters the viewport. The statistics screen queries
+`GET /api/ui/requests/stats`, which accepts the same filters, including the
+user label and the model, and aggregates on the server by token, node, day and
+peer, plus input/output tokens, inference, TTFT, prefix cache and terminal
+states. Clicking any non-interactive area of a row opens the inspector, keeps
+the magnifier and highlights the selected row with an accent color distinct
+from hover. The inspector's header repeats the row's details. SENT shows the
+last user message as the new prompt and the rest of the history as context,
+including assistant/tool answers that show up after it, in two rendered
+Markdown surfaces of split height; Response uses the same read-only viewer,
+without an edit bar, HTML, images or links with an unsafe protocol. The
+displayed content is capped at 64 KiB to keep responsiveness. The global
+preference between rendered Markdown and raw JSON lives in `localStorage` and is
+restored on future visits. The Statistics screen uses the same aggregated
+source, but is not a tab inside Logs. Each Markdown area also has an icon-only
+expand button in the top right corner; reading opens in a large window,
+follows the global toggle and keeps the same sanitization and credential
+redaction. REQUEST and TELEMETRY keep the full JSON, with TELEMETRY separating
+the request path from the visual `ExecutionTelemetry` card, shared with the
+Chat. The loading indicator takes a slot to the left of the errors badge,
+keeping the badge fixed on the right. Copying redacts credentials, including
+the `key` of records in `api_keys` when the value has a known secret format,
+without hiding innocent `key` fields. `in_progress`, `incomplete`, `partial`,
+error and abandonment get distinct visual states. The identity shown is the id
+and label configured for the key; no secret is asked from the endpoint or
+rendered in the browser.
 
-Na tela `/config/rede`, um `infer` vê os dados da própria máquina e envia
-`POST /api/ui/network/request-node`. O pedido aparece no sino de notificações
-dos admins, e qualquer admin principal ou secundário pode aprová-lo ou recusá-lo.
-O nó só muda de perfil depois da aprovação do servidor. O administrador
-principal pode promover um nó com `POST /admin/nodes/{id}/promote-admin`; o
-gateway exige autoridade efetiva de principal, e o alvo valida a concessão
-Ed25519 na cadeia de confiança. A `connection_key` continua sendo apenas a
-credencial de transporte entre nós.
+**A single table, read in two places.** `App.tsx` queries it to block the route
+(`Forbidden` in place of the screen) and `navForProfile` (`components/nav.ts`)
+to prune the menu. Two separate lists would give the two classic defects: a menu
+offering what the route refuses, or a route open to a typed address the menu
+already hid. A section with leaves disappears when **no** leaf is left - "Logs"
+disappears entirely for the `node` profile, "Settings" would stay up if only
+one leaf closed.
 
-Na mesma tela, um `node` pode pedir a própria descida com
-`POST /api/ui/network/relinquish-node`. A confirmação avisa que novas
-inferências são desviadas primeiro, que as inferências em curso drenam sem corte
-e que só então o perfil muda e a fatia é liberada. Se não houver substituto
-capaz da mesma faixa, a UI avisa que a faixa ficará descoberta e as gerações
-que precisarem dela falharão claramente. O admin recebe no sino apenas um aviso
-sem botões.
+**This is not the only authorization.** The profile comes from the node in
+`pom.json` and the browser uses it for presentation and navigation; the backend
+enforces the same profile table (`ROUTE_RULES`, see `http-api.md`) and the
+credential is still checked at the gateway (see *Authentication*). The backend
+also enforces `infer`'s local view: `/api/ui/cluster` and
+`/api/ui/cluster/models` do not fan out to peers, `/admin/nodes` answers 403 and
+another machine's details answer 403. There is no profile switch in the UI.
 
-`/config/administracao` mostra o principal, os admins secundários, a cadeia de
-promoções e a elegibilidade do sucessor. Só o principal pode promover ou
-despromover. A resignação mostra o sucessor determinado pelo último promovido e
-recusa explicitamente os casos sem secundários ou sem secundário ativo. A
-oferta de transferência do papel de principal é respondida pelo sucessor no
-sino; até a aceitação, nada muda e o principal continua principal. A página e
-o sino consomem contratos de apresentação, sem carregar decisões de chave,
-assinatura ou armazenamento de concessões.
+On the `/config/rede` screen, an `infer` sees its own machine's data and sends
+`POST /api/ui/network/request-node`. The request shows up in the admins'
+notification bell, and any principal or secondary admin can approve or refuse
+it. The node only changes profile after the server's approval. The principal
+administrator can promote a node with `POST /admin/nodes/{id}/promote-admin`;
+the gateway requires effective principal authority, and the target validates
+the Ed25519 grant in the chain of trust. The `connection_key` stays only the
+transport credential between nodes.
 
-`/config/confianca` é a **raiz de confiança** da máquina, e é o trabalho que
-vem antes de tudo o que está acima. Ela mostra o estado - **Ancorado** ou **Por
-ancorar** - num relance, e, quando há raiz, a impressão digital SHA-256 em
-grupos de oito, com botão de cópia, ao lado do cluster e da máquina da raiz.
-Essa é a informação que o operador leva consigo para conferir noutro nó; é
-pública e não concede nada.
+On the same screen, a `node` can ask to step down itself with
+`POST /api/ui/network/relinquish-node`. The confirmation warns that new
+inferences are diverted first, that inferences in progress drain without being
+cut and that only then does the profile change and the slice get released. If
+there is no replacement able to serve the same range, the UI warns that the
+range will be uncovered and the generations that need it will fail clearly. The
+admin only gets a notice without buttons in the bell.
 
-Num nó ainda sem raiz, a mesma tela mostra o outro lado: um campo para colar o
-conteúdo do arquivo de confiança vindo do admin e outro para **digitar** a
-impressão digital que o operador leu lá. O segundo campo nunca é preenchido a
-partir do primeiro - derivá-lo anularia a conferência, que é a única coisa que
-faz o arquivo colado valer alguma coisa. Fora do loopback o formulário dá lugar
-à explicação de por que instalar é local, mas a decisão nunca é da tela: o
-servidor recusa loopback ausente, nó já ancorado e impressão digital que não
-corresponde, e devolve um código estável que a tela traduz (ver
-`api-http.md`, "Ancorar a raiz pela interface").
+`/config/administracao` shows the principal, the secondary admins, the
+promotion chain and the successor's eligibility. Only the principal can promote
+or demote. Resigning shows the successor determined by the last promoted one
+and explicitly refuses the cases with no secondaries or no active secondary.
+The offer to transfer the principal role is answered by the successor in the
+bell; until acceptance, nothing changes and the principal stays principal. The
+page and the bell consume presentation contracts, without carrying key,
+signature or grant storage decisions.
 
-**Ela é aberta aos três perfis de propósito.** Antes de ancorar, um nó com
-`profile: admin` não tem capacidade efetiva de admin e não abre a superfície
-administrativa - pôr esta tela atrás do perfil de administrador a deixaria
-inalcançável justamente no estado em que ela existe para servir. E quem recebe
-a âncora costuma ser um `node` ou um `infer`. Por isso `/config/confianca` não
-está em `RESTRICTED` (`lib/access.ts`), aparece no menu de Configurações e é
-promovida ao menu principal do `infer`.
+`/config/confianca` is the machine's **trust root**, and it is the work that
+comes before everything above. It shows the state - **Anchored** or **Not yet
+anchored** - at a glance, and, when there is a root, the SHA-256 fingerprint in
+groups of eight, with a copy button, next to the cluster and the root's
+machine. That is the information the operator carries to check on another
+node; it is public and grants nothing.
 
-O cabeçalho da `Topbar` mantém identificação do nó, perfil, notificações e o
-atalho de janela nativa; o botão `Este nó` não é renderizado. O indicador TLS
-da Sidebar (`components/TlsIndicator.tsx`) também está oculto para todos os
-perfis. A política continua disponível em Preferências administrativas; nenhuma
-configuração ou comportamento TLS foi alterado.
+On a node with no root yet, the same screen shows the other side: a field to
+paste the content of the trust file coming from the admin and another to
+**type** the fingerprint the operator read there. The second field is never
+filled from the first - deriving it would cancel the check, which is the only
+thing that makes the pasted file worth anything. Outside loopback the form gives
+way to the explanation of why installing is local, but the decision is never the
+screen's: the server refuses missing loopback, an already anchored node and a
+fingerprint that does not match, and returns a stable code the screen
+translates (see `http-api.md`, "Anchoring the root from the UI").
 
-Na tela `TokenKeys`, node e infer veem apenas as chaves do próprio nó, não
-escolhem outro nó e mantêm a criação vinculada a essa identidade. O admin pode
-escolher o nó ao criar, vê seus tokens completos e recebe os tokens de outros
-nós mascarados. Os tokens do admin ficam primeiro na tabela. No infer, gerar
-uma nova chave usa o endpoint atual e, em seguida, revoga a anterior.
+**It is open to all three profiles on purpose.** Before anchoring, a node with
+`profile: admin` has no effective admin capability and does not open the
+administrative surface - putting this screen behind the administrator profile
+would make it unreachable exactly in the state it exists to serve. And whoever
+receives the anchor is usually a `node` or an `infer`. That is why
+`/config/confianca` is not in `RESTRICTED` (`lib/access.ts`), shows up in the
+Settings menu and is promoted to `infer`'s main menu.
 
-Sidebar e Topbar vivem em `ErrorBoundary` próprio, então uma tela quebrada não
-derruba o menu. O **cabeçalho** da Sidebar traz só o lockup da marca, numa faixa de borda a
-borda (`LogoFull variant="band"`) fechada por uma linha divisória. O **rodapé**
-traz o idioma em **bandeiras** (`brand.flags`, do `brand.json`) em vez de
-"EN"/"PT-BR" - com o nome do idioma no `aria-label`/`title`, porque bandeira não
-é idioma para leitor de tela -, o `build_commit` do nó (só o hash, em mono, com
-a explicação no tooltip) e o tema claro/escuro. O PipelineRail ainda é renderizado oculto
-no Dashboard (`hidden`, para uma superfície futura).
+The `Topbar` header keeps the node's identification, profile, notifications and
+the native window shortcut; the `This node` button is not rendered. The
+Sidebar's TLS indicator (`components/TlsIndicator.tsx`) is also hidden for
+every profile. The policy is still available in Administrative preferences; no
+TLS configuration or behavior changed.
 
-No `infer`, o rodapé coloca Documentação e Configurações ao lado das bandeiras;
-o item principal de rede continua na coluna do histórico para preservar o acesso
-ao pedido de entrada no processamento. Essas posições são metadados de `NAV`, não uma segunda lista de
-rotas.
+On the `TokenKeys` screen, node and infer only see their own node's keys, do not
+pick another node and keep creation tied to that identity. The admin can pick
+the node when creating, sees its full tokens and gets other nodes' tokens
+masked. The admin's tokens come first in the table. On infer, generating a new
+key uses the current endpoint and then revokes the previous one.
 
-## Arquitetura do frontend
+Sidebar and Topbar live in their own `ErrorBoundary`, so a broken screen does
+not take down the menu. The Sidebar's **header** only carries the brand lockup,
+in an edge-to-edge band (`LogoFull variant="band"`) closed by a divider line.
+The **footer** carries the language as **flags** (`brand.flags`, from
+`brand.json`) instead of "EN"/"PT-BR" - with the language name in
+`aria-label`/`title`, because a flag is not a language for a screen reader -,
+the node's `build_commit` (only the hash, in mono, with the explanation in the
+tooltip) and the light/dark theme. The PipelineRail is still rendered hidden on
+the Dashboard (`hidden`, for a future surface).
 
-`src/` tem quatro subpastas, cada uma com seu `AGENTS.md` (mapa autoritativo):
+On `infer`, the footer puts Documentation and Settings next to the flags; the
+main network item stays in the history column to keep access to the request to
+join processing. Those positions are `NAV` metadata, not a second list of
+routes.
 
-- **`src/lib/`** - cliente HTTP, hooks react-query, persistência em
-  `localStorage`, stream/estado do chat, formatação, toasts e todos os tipos.
-  `api.ts` é o único caminho de fetch: caminho **relativo** (o nó serve API e
-  UI na mesma porta, o navegador nunca aprende endereço de peer), assinado com
-  `Authorization: Bearer <connectionKey>`, e também o leitor de SSE
-  (`streamSse`). `api.getConditional()` conserva os snapshots de
-  `/api/ui/cluster`, `/api/ui/jobs` e `/api/transfer/offers` por `ETag`,
-  aceitando 304 sem reparsear JSON. `queries.ts` concentra as leituras com
-  polling: `useNode` 4s (guarda a `connection_key`), `useCluster` 5s,
-  catálogo local 30s, catálogo do cluster 60s, `useJobs` 2s enquanto há job
-  rodando e 10s quando ocioso, `useTransfers` 2s, `useOffers` 2s enquanto
-  há oferta e 10s quando vazio, admin nodes 8s, log de requisições 3s. O
-  catálogo usa polling de 2s enquanto `metadata_complete` é falso, depois
-  volta ao intervalo normal.
-  `optional()` engole só 404 (nó antigo sem rota não é erro para mostrar).
-  `types.ts` é a fonte única das formas que o nó serve (comentários apontam
-  para o Rust).
+## Frontend architecture
+
+`src/` has four subfolders, each with its own `AGENTS.md` (authoritative map):
+
+- **`src/lib/`** - HTTP client, react-query hooks, `localStorage`
+  persistence, chat stream/state, formatting, toasts and all the types.
+  `api.ts` is the only fetch path: a **relative** path (the node serves API and
+  UI on the same port, the browser never learns a peer address), signed with
+  `Authorization: Bearer <connectionKey>`, and also the SSE reader
+  (`streamSse`). `api.getConditional()` keeps the snapshots of
+  `/api/ui/cluster`, `/api/ui/jobs` and `/api/transfer/offers` by `ETag`,
+  accepting 304 without reparsing JSON. `queries.ts` concentrates the polled
+  reads: `useNode` 4s (keeps the `connection_key`), `useCluster` 5s, local
+  catalog 30s, cluster catalog 60s, `useJobs` 2s while a job is running and 10s
+  when idle, `useTransfers` 2s, `useOffers` 2s while there is an offer and 10s
+  when empty, admin nodes 8s, request log 3s. The catalog polls every 2s while
+  `metadata_complete` is false, then goes back to the normal interval.
+  `optional()` only swallows 404 (an old node without the route is not an error
+  to show). `types.ts` is the single source of the shapes the node serves
+  (comments point to the Rust).
 - **`src/components/`** - chrome (`Sidebar`, `Topbar`, `Notifications`, `nav`)
-  e widgets compartilhados. `ui.tsx` é o design system num arquivo de propósito
-  (painéis, botões, inputs, badges, meters, estados) em classes por token CSS,
-  sem estilo em runtime. Visualizações do cluster: `ModelNetworkCanvas` (grafo
-  SVG pan/zoom com RAM/VRAM/carga e arestas principal/paralela/inativa,
-  posições persistidas por fingerprint de implantação; o card também resume
-  quantas camadas foram parar na GPU e quantas sobraram na CPU) e `PipelineRail` (o
-  caminho que a requisição percorre). Guardas de ação remota/destrutiva:
+  and shared widgets. `ui.tsx` is the design system in one file on purpose
+  (panels, buttons, inputs, badges, meters, states) with CSS token classes, no
+  runtime styling. Cluster visualizations: `ModelNetworkCanvas` (a pan/zoom SVG
+  graph with RAM/VRAM/load and main/parallel/inactive edges, positions
+  persisted per deployment fingerprint; the card also summarizes how many layers
+  landed on the GPU and how many stayed on the CPU) and `PipelineRail` (the path
+  the request travels). Guards for remote/destructive actions:
   `Confirm`/`Modal`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
   `UndeployPipeline`, `AddNodeDialog`.
-- **`src/i18n/`** - en + pt-BR em `locales.ts` (≈620 chaves por idioma, uma
-  tabela plana com `Message = (values, locale) => string`, pluralização via
-  `Intl.PluralRules`). `provider.tsx` expõe `useI18n().t` e o
-  `LanguageSelect`. `index.html` tem script pré-paint que carimba `lang` do
-  `codai.locale`/locale do navegador, para o primeiro render já estar no
-  idioma certo. `localizeServerText` mapeia strings em português que um
-  binário antigo possa enviar para o idioma da UI.
-- **`src/routes/`** - uma tela por rota, todas por react-query falando com o
-  gateway HTTP do nó; nenhuma guarda estado do cluster no navegador. As telas
-  principais estão descritas abaixo.
+- **`src/i18n/`** - en + pt-BR in `locales.ts` (a flat table with
+  `Message = (values, locale) => string`, pluralization through
+  `Intl.PluralRules`). `provider.tsx` exposes `useI18n().t` and the
+  `LanguageSelect`. `index.html` has a pre-paint script that stamps `lang` from
+  the stored locale/the browser locale, so the first render is already in the
+  right language. `localizeServerText` maps Portuguese strings an old binary
+  may send into the UI's language.
+- **`src/routes/`** - one screen per route, all through react-query talking to
+  the node's HTTP gateway; none keeps cluster state in the browser. The main
+  screens are described below.
 
-## Autenticação
+## Authentication
 
-Antes de chegar aos handlers, o gateway aplica a catraca administrativa a
-`/api/ui/**` e `/admin/**`. Em modo local ela confere o endereço real da
-conexão e aceita somente loopback; em modo de rede exige
-`X-POM-Access-Token`. O token de pessoa é diferente da `connection_key`: o
-primeiro abre a interface administrativa, enquanto a segunda autentica nós e
-clientes da pipeline. Chamadas de controle entre nós usam a segunda com um
-marcador interno próprio, que o navegador nunca envia.
+Before reaching the handlers, the gateway applies the administrative gate to
+`/api/ui/**` and `/admin/**`. In local mode it checks the connection's real
+address and only accepts loopback; in network mode it requires
+`X-POM-Access-Token`. The person's token is different from the
+`connection_key`: the first opens the administrative UI, while the second
+authenticates nodes and pipeline clients. Control calls between nodes use the
+second with an internal marker of their own, which the browser never sends.
 
-`GET /api/ui/node` devolve a `connection_key` somente para redes privadas, depois
-da catraca. A inferência usa exclusivamente a API key dedicada `pom-[node_id]`,
-obtida em `POST /api/ui/chat-key` e enviada como `X-API-Key` em cada chamada
-`/api/generate` ou `/v1`. Se ela for revogada, a próxima tentativa cria uma
-substituta e repete a mensagem uma única vez. O primeiro acesso usa o router
-de setup (sem `pom.json`), que serve hardware, modelos, prévia da raiz
-administrativa, senha administrativa, instalação da raiz, verificações e `POST /api/setup/save`. O save
-instala a raiz de confiança separada e grava `pom.json` antes do respawn. O
-respawn cria uma sessão independente em Unix, herda os argumentos originais e
-redireciona stdout/stderr para `<project_root>/pom.log`, para que uma falha de
-arranque após o save fique diagnosticável. No Windows o binário não cria
-console, então o tracing também abre `<project_root>/pom.log` diretamente; a
-redireção PowerShell `*> arquivo` não é a fonte confiável nesse modo. Para a
-reprodução nativa, use `RUST_LOG=debug` e recolha esse `pom.log` junto com
-`infer_server_<porta>.log`. A sugestão de `advertise_addr` usa
-a enumeração real das interfaces: IPv6 global não temporário primeiro, depois
-IPv4; ela é apenas uma sugestão editável e o anúncio continua redetectando os
-endereços em cada ciclo. A resposta de nó configurado publica
-`addr_candidates`, `libp2p_peer_id` e as
-capabilities do túnel, usados pelo deploy TP para transportar o endereço correto
-até cada rank.
+`GET /api/ui/node` only returns the `connection_key` for private networks,
+after the gate. Inference exclusively uses the dedicated API key
+`pom-[node_id]`, obtained at `POST /api/ui/chat-key` and sent as `X-API-Key` on
+each `/api/generate` or `/v1` call. If it is revoked, the next attempt creates a
+replacement and repeats the message once. The first access uses the setup
+router (no `pom.json`), which serves hardware, models, the administrative root
+preview, the administrative password, root installation, checks and
+`POST /api/setup/save`. The save installs the separate trust root and writes
+`pom.json` before the respawn. The respawn creates an independent session on
+Unix, inherits the original arguments and redirects stdout/stderr to
+`<project_root>/pom.log`, so a startup failure after the save can be
+diagnosed. On Windows the binary creates no console, so tracing also opens
+`<project_root>/pom.log` directly; the PowerShell `*> file` redirection is not
+the reliable source in that mode. For a native reproduction, use
+`RUST_LOG=debug` and collect that `pom.log` together with
+`infer_server_<port>.log`. The `advertise_addr` suggestion uses the real
+enumeration of the interfaces: non-temporary global IPv6 first, then IPv4; it
+is only an editable suggestion and the announcement keeps redetecting the
+addresses on every cycle. A configured node's answer publishes
+`addr_candidates`, `libp2p_peer_id` and the tunnel capabilities, used by the TP
+deploy to carry the right address to each rank.
 
-`GET /api/public/networks` combina cache e ingressos do diretório federado com
-a descoberta pkarr quando a rede ativa é pública. O label geo canônico (`com.<país>.<cidade>.<node>`)
-é campo do registro, nunca a chave pkarr. O índice local persiste labels já
-observados e aceita `geo_prefix`/`geo_suffix`, permitindo filtrar candidatos
-antes das sondas HTTP. A página `/redes-publicas` é full-bleed, como Logs, e
-mostra uma tabela com nome, organização, país/cidade, label, nós, latência,
-VRAM, modelos e endereço. As métricas do cluster local são calculadas de
-`ClusterView` quando a rede corresponde; os demais campos aparecem como
-indisponíveis porque o catálogo público atual não os fornece. O documento de
-confiança viaja dentro do registro federado assinado para o join sem segredo.
-Um nó privado consulta o diretório por saída HTTP(S), mas não usa o swarm
-privado para buscar candidatos. O endereço listado ainda pode ser inalcançável,
-por exemplo quando é IPv6 anunciado sem rota externa. Entrar numa rede pública
-encerra a rede privada atual; duas redes P2P simultâneas não são suportadas no
-v1.
+`GET /api/public/networks` combines the federated directory's cache and
+ingresses with pkarr discovery when the active network is public. The
+canonical geo label (`com.<country>.<city>.<node>`) is a field of the record,
+never the pkarr key. The local index persists labels already observed and
+accepts `geo_prefix`/`geo_suffix`, allowing candidates to be filtered before the
+HTTP probes. The `/redes-publicas` page is full-bleed, like Logs, and shows a
+table with name, organization, country/city, label, nodes, latency, VRAM,
+models and address. The local cluster's metrics are computed from
+`ClusterView` when the network matches; the other fields show as unavailable
+because the current public catalog does not provide them. The trust document
+travels inside the signed federated record for a join without a secret. A
+private node queries the directory over outgoing HTTP(S), but does not use the
+private swarm to look for candidates. The listed address may still be
+unreachable, for example when it is an IPv6 announced without an external
+route. Joining a public network ends the current private network; two
+simultaneous P2P networks are not supported in v1.
 
-O **perfil** da interface (*Menu e rotas*) não entra nesta conta: ele é escolha
-local do navegador e não vale como credencial. As rotas administrativas usam a
-chave de conexão; `/api/generate` e `/v1` usam exclusivamente a API key
-dedicada de inferência, seja qual for o perfil na tela.
+The UI **profile** (*Menu and routes*) is not part of this math as a
+credential: the browser uses it for navigation, and the backend enforces the
+same profile table independently. The administrative routes use the connection
+key; `/api/generate` and `/v1` exclusively use the dedicated inference API key,
+whatever the profile on screen.
 
-O Chat da rede gera ids de mensagem e digitação com `src/lib/id.ts`. Ele usa
-`crypto.getRandomValues` quando `crypto.randomUUID` não existe, portanto o
-composer continua funcionando na implantação HTTP da LAN, sem depender de
-secure context. A janela de mensagens segue novas entradas quando está próxima
-do fim; ao rolar para cima, preserva a posição até a pessoa retornar ao rodapé.
+The network Chat generates message and typing ids with `src/lib/id.ts`. It uses
+`crypto.getRandomValues` when `crypto.randomUUID` does not exist, so the
+composer keeps working on a LAN HTTP deployment, without depending on a secure
+context. The message window follows new entries when it is close to the end;
+when scrolled up, it keeps the position until the person goes back to the
+bottom.
 
-O Dashboard mantém os indicadores e ações na barra superior compacta. Quando há
-uma implantação ativa, o botão de propriedades é apenas um ícone dentro do
-mapa, no canto superior direito, alinhado aos controles de zoom e Fit.
+The Dashboard keeps the indicators and actions in the compact top bar. When
+there is an active deployment, the properties button is only an icon inside the
+map, in the top right corner, lined up with the zoom and Fit controls.
 
-## Janelas modais: portal e pilha de Esc
+## Modal windows: portal and Esc stack
 
-`Modal`/`Confirm` (`src/components/Confirm.tsx`) vão por `createPortal` para
-`document.body`. Não é preferência: `position: fixed` deixa de valer contra a
-janela quando algum ancestral tem `transform`, `filter` ou `backdrop-filter`
-(esse ancestral vira o bloco de contenção); a barra do topo e o cabeçalho do
-Painel têm `backdrop-blur`. `Modal` mantém uma pilha dos abertos e só o de
-cima responde ao Esc, porque uma janela pode abrir outra (a confirmação de
-sair da rede nasce de dentro do card). Há teste (`Confirm.test.tsx`) que
-afirma a causa (a janela é filha do `body`) porque o jsdom não calcula layout.
+`Modal`/`Confirm` (`src/components/Confirm.tsx`) go through `createPortal` to
+`document.body`. It is not a preference: `position: fixed` stops being relative
+to the window when some ancestor has `transform`, `filter` or `backdrop-filter`
+(that ancestor becomes the containing block); the top bar and the Dashboard
+header have `backdrop-blur`. `Modal` keeps a stack of the open ones and only the
+top one answers Esc, because one window can open another (the leave-the-network
+confirmation is born inside the card). There is a test (`Confirm.test.tsx`) that
+asserts the cause (the window is a child of `body`) because jsdom does not
+compute layout.
 
-## O Painel: Fluxo e Detalhes mostram a mesma máquina
+## The Dashboard: pipeline speed and cost
 
-`PeerDetailCard` (`src/components/PeerDetailCard.tsx`) é o card de uma
-máquina, e é **um só**: a aba Detalhes empilha um por máquina e o duplo clique
-num card do Fluxo abre o mesmo componente numa `PeerDetailDialog`. Duplicar a
-apresentação nos dois lugares é o que se está evitando.
+In the Flow view, each machine card shows, besides the edges' RTT, the slice's
+measured TPS - decode and prefill -, read from `peer_perf` of
+`/api/ui/chat/telemetry` (the same 15 s query that brings the RTTs). The
+gateway box, at the end of the pipeline, adds network and compute for one token
+per route and shows the equivalent tok/s of the best route; while some peer of
+the route has no measured speed, the total is only the RTT, as before. The
+numbers come from the speed test each peer runs when it starts serving and
+from the average of real traffic (see `parallelism.md`, "Choosing the pipeline
+by delivery time").
 
-Esse card é **do administrador**, e `canSeePeerDetails` (`src/lib/access.ts`)
-diz quem o vê. Ele traz o estado interno de cada máquina e as ações sobre ela -
-liberar fatia, remover do pipeline, tirar da rede -, que é operação do cluster e
-não do próprio nó. Fora do `admin` resta o Fluxo, e por isso **o seletor de
-vista também não aparece**: onde há uma vista só não há o que escolher. As duas
-portas fecham juntas - o `ViewSwitch` some do Painel e o duplo clique no card do
-canvas deixa de abrir a `PeerDetailDialog` -, porque esconder o seletor e
-continuar abrindo o card pelo desenho seria a mesma tela em dois estados. A
-regra fica ao lado da tabela de rotas por ser a mesma pergunta: o que este
-perfil enxerga. Para o admin, sem `ClusterView.active_model` a vista inicial é
-Detalhes e o botão Adicionar não aparece; com modelo ativo, a vista inicial
-continua sendo Fluxo. A escolha manual da vista prevalece sobre esse padrão.
+## The Dashboard: Flow and Details show the same machine
 
-Detalhes lista a **rede inteira**, não a pipeline: `networkPeers`
-(`src/lib/networkPeers.ts`) separa quem serve o modelo ativo na ordem das
-camadas (`pipelinePeers`) de quem está conectado sem fatia (`others`, por
-nome). Máquina sem fatia é `model` vazio com `total_layers` zerado
-(`hasSlice`), **não** uma faixa "0-0", e o card não escreve faixa nenhuma
-nesse caso.
+`PeerDetailCard` (`src/components/PeerDetailCard.tsx`) is the card of one
+machine, and there is **only one**: the Details tab stacks one per machine and
+double-clicking a card in Flow opens the same component in a
+`PeerDetailDialog`. Duplicating the presentation in both places is what is
+being avoided.
 
-As ações da máquina ficam numa **barra de ferramentas no topo do card**, junto
-do distintivo de MTP: liberar memória (`ReleaseSlice`, só na própria máquina),
-`RemoveNode` (sai do modelo, só quando serve), `LeaveNode` (sai da rede,
-sempre) e atualizar/reiniciar quando o peer anuncia `dev_update`. Estavam
-espalhadas pelo pé do card, uma por seção, e reiniciar uma máquina era rolar
-até o fim de tudo o que ela reporta.
+That card is **the administrator's**, and `canSeePeerDetails`
+(`src/lib/access.ts`) says who sees it. It carries each machine's internal
+state and the actions on it - release slice, remove from the pipeline, take off
+the network -, which are cluster operations and not the node's own. Outside
+`admin` only Flow remains, and that is why **the view selector does not show up
+either**: where there is a single view there is nothing to choose. Both doors
+close together - `ViewSwitch` disappears from the Dashboard and double-clicking
+the canvas card stops opening `PeerDetailDialog` -, because hiding the selector
+and still opening the card through the drawing would be the same screen in two
+states. The rule sits next to the route table because it is the same question:
+what this profile sees. For the admin, without `ClusterView.active_model` the
+initial view is Details and the Add button does not show up; with an active
+model, the initial view is still Flow. A manual view choice wins over that
+default.
 
-O diálogo `AddNodeDialog` consulta `POST /api/ui/deploy/node/options` depois de
-cada troca de máquina. Assim, o seletor mostra as fatias e o modelo inteiro
-que o alvo realmente tem, além dos controles de camadas na GPU, do booleano de
-KV na GPU versus RAM e dos tipos K/V daquela máquina. O POM não expõe uma
-seleção de GPU exclusiva para o KV: quando ligado, ele segue o dispositivo da
-camada dos pesos. Confirmar chama
-`POST /api/ui/deploy/node` somente no alvo e preserva a inferência dos outros
-peers. Com um `deploy_id` ativo, a alteração cria uma nova versão; selecionar
-um GGUF inteiro ao lado de fatias produz o rótulo `mixed` no Histórico e duas
-cabeças de entrada possíveis.
+Details lists the **whole network**, not the pipeline: `networkPeers`
+(`src/lib/networkPeers.ts`) separates who serves the active model in layer
+order (`pipelinePeers`) from who is connected without a slice (`others`, by
+name). A machine without a slice has an empty `model` with zeroed
+`total_layers` (`hasSlice`), **not** a "0-0" range, and the card writes no range
+at all in that case.
 
-`RemoveNode` também recebe o `deploy_id`. A remoção parcial cria uma versão com
-as máquinas restantes e mantém a implantação ativa. A última remoção cria uma
-versão vazia, que permanece no Histórico para auditoria, mas deixa de aparecer
-como implantação servindo.
+The machine's actions live in a **toolbar at the top of the card**, next to the
+MTP badge: free memory (`ReleaseSlice`, only on the machine itself),
+`RemoveNode` (leaves the model, only when it serves), `LeaveNode` (leaves the
+network, always) and update/restart when the peer announces `dev_update`. They
+used to be scattered across the bottom of the card, one per section, and
+restarting a machine meant scrolling to the end of everything it reports.
 
-O card é denso de propósito, para caber numa tela: o que é útil sem precisar
-estar sempre visível mora num `[i]` (a razão de "sem fatia", o aviso do
-`gpu_note`, a nota do fit, o caminho do modelo, pid e reinícios), e
-"Parâmetros de carga do llama.cpp" e "Processos na GPU" são blocos fechados
-que se abrem. Os discos são **um medidor por partição montada** (`disks` do
-`/api/ui/cluster`), porque uma máquina com NVMe e HDD, ou com `/` e `/dados`
-separados, aparecia como um volume só - e quem decide onde cabe um GGUF de
-40 GB não via o disco onde ele caberia. Um nó que ainda não publique a lista
-recai no volume do projeto. Ao lado de
-"Adicionar nó" há `UndeployPipeline` quando há modelo no ar, mas os dois
-controles só são montados quando `/api/ui/node` informa o perfil `admin`. O
-servidor também recusa `POST /api/ui/deploy/node` e `POST /api/ui/undeploy` para
-os perfis `node` e `infer`, com a mensagem localizada pela UI. O botão de
-remover uma única máquina no card continua independente dessa regra. `PipelineRail`
-ainda exporta `pipelinePeers`/`trackOf` usados pelo Dashboard e DeployModel.
+The `AddNodeDialog` queries `POST /api/ui/deploy/node/options` after each
+machine change. So the selector shows the slices and the whole model the target
+really has, plus the controls for layers on the GPU, the KV-on-GPU-versus-RAM
+boolean and that machine's K/V types. POM does not expose an exclusive GPU
+selection for the KV: when on, it follows the device of the weights' layer.
+Confirming calls `POST /api/ui/deploy/node` only on the target and keeps the
+other peers' inference. With an active `deploy_id`, the change creates a new
+version; selecting a whole GGUF next to slices produces the `mixed` label in
+History and two possible entry heads.
 
-Numa máquina servindo, o card traz também **"Como o modelo foi carregado"**
-(`ModelPlacement.tsx`): uma tira com uma célula por camada - verde inteira na
-GPU, âmbar dividida, cinza na CPU (as cores saem dos tokens do produto; a tira
-saiu invisível enquanto pedia `bg-lime-400`, que não existe nesta paleta) -, os pesos de cada lado em bytes, onde o
-cache KV ficou e a cabeça de saída. É a resposta medida, não a configuração:
-uma camada conta pelos **bytes** dela em cada buffer, então os experts de um
-MoE empurrados para a CPU aparecem como camada dividida em vez de camada
-descarregada. Os dados vêm de `/api/ui/peer/:node_id/runtime`, que repassa o
-`/health` daquela máquina, e a busca só acontece com o card montado
-(`usePeerRuntime(nodeId, enabled)`) - o Painel recarrega em ciclo curto, e um
-`/health` por peer a cada ciclo seria caro por uma seção quase sempre fechada.
-Nó que não informa a colocação faz a seção dizer que não sabe. Ver
-`inferencia.md`, "Onde as camadas ficaram".
-O mesmo card traz "Parâmetros de carga do llama.cpp" (`LoadParamsSection`),
-que mostra com que parâmetros o contexto daquela máquina subiu: Flash
-Attention, `n_batch`/`n_ubatch`, `n_ctx` total e por sequência, sequências de
-KV, threads, camadas na GPU e tipo do cache KV. Serve a quem quer comparar o
-nó com uma linha de comando do `llama-cli` sem abrir o `/health` na mão. Os
-valores vêm do `load_params` do `/health`, lido do contexto vivo do peer; um
-nó cujo `/health` não traga o campo simplesmente não mostra a seção. O Flash
-Attention distingue "ligado (auto)" de "ligado (pedido)", porque o padrão do
-llama.cpp é sondar o backend, e mostra "não sei" quando a ponte de
-diagnóstico não respondeu - nunca "desligado". Quando o fit mexeu nos valores,
-uma nota diz que eles podem diferir dos pedidos. Ver `inferencia.md`,
-"Flash Attention e os parâmetros de carga".
+`RemoveNode` also gets the `deploy_id`. A partial removal creates a version
+with the remaining machines and keeps the deployment active. The last removal
+creates an empty version, which stays in History for auditing, but no longer
+shows up as a serving deployment.
 
-Quando a configuração da máquina pediu MTP, o mesmo card mostra se a cabeça
-`nextn` ficou ativa. Se a criação do contexto MTP falhar, mostra
-"MTP indisponível" e o `mtp_unavailable_reason` retornado pelo `/health`; o
-operador não precisa inferir a degradação pela ausência de logs.
+The card is dense on purpose, to fit one screen: what is useful without having
+to be always visible lives behind an `[i]` (the reason for "no slice", the
+`gpu_note` warning, the fit note, the model path, pid and restarts), and
+"llama.cpp load parameters" and "Processes on the GPU" are closed blocks that
+open. Disks are **one gauge per mounted partition** (`disks` from
+`/api/ui/cluster`), because a machine with NVMe and HDD, or with separate `/`
+and `/data`, showed up as a single volume - and whoever decides where a 40 GB
+GGUF fits did not see the disk where it would fit. A node that does not publish
+the list yet falls back to the project volume. Next to "Add node" there is
+`UndeployPipeline` when a model is live, but both controls are only mounted
+when `/api/ui/node` reports the `admin` profile. The server also refuses
+`POST /api/ui/deploy/node`, `POST /api/ui/deploy/node/remove` and
+`POST /api/ui/undeploy` for the `node` and `infer` profiles, with the message
+localized by the UI. `PipelineRail` still exports `pipelinePeers`/`trackOf`,
+used by the Dashboard and DeployModel.
 
-## Configurações / Rede e Preferências
+On a serving machine, the card also carries **"How the model was loaded"**
+(`ModelPlacement.tsx`): a strip with one cell per layer - green fully on the
+GPU, amber split, grey on the CPU (the colors come from the product's tokens;
+the strip came out invisible while it asked for `bg-lime-400`, which does not
+exist in this palette) -, the weights on each side in bytes, where the KV cache
+ended up and the output head. It is the measured answer, not the
+configuration: a layer counts by its **bytes** in each buffer, so the experts of
+a MoE pushed to the CPU show up as a split layer instead of an offloaded layer.
+The data comes from `/api/ui/peer/:node_id/runtime`, which forwards that
+machine's `/health`, and the fetch only happens with the card mounted
+(`usePeerRuntime(nodeId, enabled)`) - the Dashboard reloads on a short cycle,
+and one `/health` per peer on every cycle would be expensive for a section that
+is almost always closed. A node that does not report the placement makes the
+section say it does not know. See `inference.md`, "Where the layers ended up".
+The same card carries "llama.cpp load parameters" (`LoadParamsSection`), which
+shows the parameters that machine's context started with: Flash Attention,
+`n_batch`/`n_ubatch`, total and per-sequence `n_ctx`, KV sequences, threads,
+layers on the GPU and KV cache type. It serves whoever wants to compare the node
+with an `llama-cli` command line without opening `/health` by hand. The values
+come from `/health`'s `load_params`, read from the peer's live context; a node
+whose `/health` does not carry the field simply does not show the section.
+Flash Attention tells "on (auto)" from "on (requested)", because llama.cpp's
+default is to probe the backend, and shows "unknown" when the diagnostic bridge
+did not answer - never "off". When the fit changed the values, a note says they
+may differ from the requested ones. See `inference.md`, "Flash Attention and
+the load parameters".
 
-`/config/rede` concentra as Informações da Rede: nome público, organização,
-descrição, regras, canais, visibilidade e localização. Node e infer recebem
-leitura somente, enquanto admin pode editar. País e cidade são selects
-alimentados por `GET /api/ui/network/geo-reference`, que lê as tabelas locais
-`geo_countries` e `geo_cities`; o código do país não é mostrado. A mesma tela
-calcula nós, latência média, VRAM conhecida e modelos do `ClusterView`.
-`/config/rede/participantes` reaproveita o card de nós conhecidos e fica
-disponível para admin e node.
+When the machine's configuration asked for MTP, the same card shows whether the
+`nextn` head became active. If creating the MTP context fails, it shows "MTP
+unavailable" and the `mtp_unavailable_reason` returned by `/health`; the
+operator does not need to infer the degradation from missing logs.
 
-`/config/confianca` reúne esta máquina, compartilhamento da rede e chaves de
-conexão. `/config/preferencias` monta a exposição administrativa, o
-`ThermalPanel`, o `HuggingFaceSettingsPanel` e o link para armazenamento.
-`/config/preferencias/admin` mantém as preferências administrativas de TLS,
-QUIC, logs de processo entre nós, chat da rede e descoberta local. A separação reorganiza as
-mesmas operações e conserva a autorização existente.
+## Settings / Network and Preferences
 
-A exposição é persistida no `pom.json`: localhost é o padrão instalado, e a
-rede usa uma senha separada da `connection_key`; somente o hash Argon2id é
-persistido, e a senha anterior é exigida para trocá-la. Trocar para localhost
-limpa a senha. Um token antigo é migrado para Argon2id no primeiro carregamento,
-preservando seu valor como senha. A porta é validada antes de salvar e uma colisão é informada sem
-iniciar em outra porta. O `ThermalPanel` lê e grava a política em
-`GET/POST /api/ui/thermal`; o painel de Hugging Face usa
+`/config/rede` gathers the Network Information: public name, organization,
+description, rules, channels, visibility and location. Node and infer get read
+only, while admin can edit. Country and city are selects fed by
+`GET /api/ui/network/geo-reference`, which reads the local `geo_countries` and
+`geo_cities` tables; the country code is not shown. The same screen computes
+nodes, average latency, known VRAM and models from `ClusterView`.
+`/config/rede/participantes` reuses the known nodes card and is available to
+admin and node. Each peer shows the **route in use**, not the address it
+announces: a badge (Direct, Direct (P2P), Direct (hole punch), Via relay, No
+route) and that route's address - the relay's, when the hole punch did not
+close. The announced one stays in the row's `title`. See `p2p-network.md`,
+"Diagnosis".
+
+`/config/confianca` gathers this machine, network sharing and connection keys.
+`/config/preferencias` holds the administrative exposure, the `ThermalPanel`,
+the `HuggingFaceSettingsPanel` and the link to storage.
+`/config/preferencias/admin` keeps the administrative preferences for TLS,
+QUIC, process logs between nodes, network chat and local discovery. The split
+reorganizes the same operations and keeps the existing authorization.
+
+The exposure is persisted in `pom.json`: localhost is the installed default,
+and the network uses a password separate from the `connection_key`; only the
+Argon2id hash is persisted, and the previous password is required to change it.
+Switching to localhost clears the password. An old token is migrated to
+Argon2id on the first load, keeping its value as the password. The port is
+validated before saving and a collision is reported without starting on another
+port. The `ThermalPanel` reads and writes the policy at
+`GET/POST /api/ui/thermal`; the Hugging Face panel uses
 `/api/ui/model-provider/config`.
 
+## Settings / Preferences: when to use TLS between nodes
 
-## Configurações / Preferências: quando usar TLS entre nós
+The "Encryption between nodes" panel (`TlsPanel`, in `routes/Preferences.tsx`)
+shows the cluster state and, **only on the principal node**, the switch that
+flips it. It belongs to the administrative preferences route; node and infer
+get neither the panel nor the TLS icon in the Sidebar. The state is still
+decided by the principal and applies to the whole network.
 
-O painel "Criptografia entre nós" (`TlsPanel`, em `routes/Preferences.tsx`)
-mostra o estado do cluster e, **só no nó principal**, o interruptor que o vira.
-Ele pertence à rota de preferências administrativas; node e infer não recebem
-o painel nem o ícone de TLS na Sidebar. O estado continua sendo decidido pelo
-principal e vale para a rede inteira.
+The authority that counts is the server's - `POST /api/ui/network/tls` answers
+403 outside the principal (see `http-api.md`). The screen uses
+`NodeInfo.tls_authority` only to avoid lying before the click.
 
-A autoridade que vale é a do servidor - `POST /api/ui/network/tls` responde 403
-fora do principal (ver `api-http.md`). A tela usa `NodeInfo.tls_authority` só
-para não mentir antes do clique.
+Flipping needs no restart and works in both directions; the toast says the
+other nodes adopt it in a few seconds, which is the gossip cycle plus the
+ratchet's authenticated fetch (see `p2p-network.md`, section 5).
 
-Virar não pede reinício e vale nos dois sentidos; o toast diz que os demais nós
-adotam em poucos segundos, que é o ciclo de gossip mais a busca autenticada da
-catraca (ver `rede-p2p.md`, seção 5).
+## Settings / Administrative preferences: QUIC transport
 
-## Configurações / Preferências administrativas: transporte QUIC
+The "QUIC transport" panel (`QuicPanel`) sits next to TLS on the administrative
+route. The switch is disabled outside the principal; the server also answers
+403 if another node tries `POST /api/ui/network/quic`. The change does not
+restart the model: new hops prefer HTTP/3 over QUIC, and a failure falls back to
+the HTTP/HTTPS of the TLS policy. The telemetry card shows `http`, `https` or
+`quic` according to the transport that really carried each hop, and marks the
+fallback.
 
-O painel "Transporte QUIC" (`QuicPanel`) fica ao lado do TLS na rota
-administrativa. O interruptor fica desabilitado fora do principal; o servidor
-também responde 403 se outro nó tentar
-`POST /api/ui/network/quic`. A alteração não reinicia o modelo: novos hops
-preferem HTTP/3 sobre QUIC, e uma falha cai para o HTTP/HTTPS da política TLS.
-O card de telemetria mostra `http`, `https` ou `quic` conforme o transporte que
-realmente carregou cada hop, além de marcar o fallback.
+## Deployment process logs
 
-## Logs de processo da implantação
+`DeploymentLogs.tsx`, at `/implantacoes/logs`, is the terminal console of the
+cluster's process and not the request audit of `/logs`. The black background
+and monospace font leave each line with the machine name, level and origin
+time; the lines come from the admin's local replica in arrival order and the
+screen polls for new batches every second. The deployment selector sends
+`deploy_id`, allowing the same logs to be opened from a deployment in History.
 
-`DeploymentLogs.tsx`, em `/implantacoes/logs`, é a consola terminal do processo
-do cluster e não a auditoria de requisições de `/logs`. O fundo preto e a fonte
-monoespaçada deixam cada linha com o nome da máquina, nível e horário de origem;
-as linhas vêm da réplica local do admin na ordem de chegada e a tela consulta
-novos lotes a cada segundo. O seletor de implantação envia `deploy_id`,
-permitindo abrir os mesmos logs a partir de uma implantação no Histórico.
+`Preferences.tsx` shows the "Cluster logs" panel next to TLS. The switch is
+disabled outside the principal and the backend also rejects the operation on
+those nodes. Reading the logs is available to any effective admin because the
+copy is local. State and authority come from `GET /api/ui/node`; the change
+uses `POST /api/ui/network/logs` and needs no restart. The counter of entries
+dropped by the bounded queue shows above the terminal, so the screen does not
+present an incomplete view as if it were the full stream.
 
-`Preferences.tsx` mostra o painel "Logs do cluster" junto do TLS. O interruptor
-fica desabilitado fora do principal e o backend também rejeita a operação nesses
-nós. A leitura dos logs fica disponível a qualquer admin efetivo porque a cópia
-é local. O estado e a autoridade vêm de `GET /api/ui/node`; a alteração usa
-`POST /api/ui/network/logs` e não exige reinício. O contador de entradas
-descartadas pela fila limitada aparece acima do terminal, para a tela não
-apresentar uma visão incompleta como se fosse o fluxo integral.
-
-No Dashboard, o admin pode abrir `DeploymentLogDock` no rodapé. A barra
-recolhida ocupa uma única linha; aberta, cresce para cima até metade do painel,
-consulta `GET /api/ui/cluster-logs` em tempo real e acompanha o fim enquanto o
-leitor permanece no final. A versão ativa da implantação fica disponível num
-inspetor à direita, somente leitura, usando `DeploymentInspector` e os mesmos
-campos da configuração original. Node também pode ler as versões por
-`GET /api/ui/deployments`, mas continua sem as ações administrativas.
+On the Dashboard, the admin can open `DeploymentLogDock` at the bottom. The
+collapsed bar takes a single line; open, it grows upward to half of the panel,
+queries `GET /api/ui/cluster-logs` in real time and follows the end while the
+reader stays at the bottom. The deployment's active version is available in an
+inspector on the right, read-only, using `DeploymentInspector` and the same
+fields as the original configuration. Node can also read the versions through
+`GET /api/ui/deployments`, but still without the administrative actions.
 
 ## Chat
 
-`src/routes/Chat.tsx` fala com o cluster por `POST /v1/chat/completions` com
-`stream: true`, igual a qualquer harness - o que aparece ali é o que um
-harness receberia. O histórico é do navegador (`chatStore`, `localStorage`,
-cap 50 sessões, sincronizado entre abas), não do nó. O `ChatSessionProvider`
-também mantém o stream e acumula os deltas em memória, publicando e persistindo
-o parcial em uma janela de 50 ms e fazendo flush imediato no fim ou na
-interrupção. Assim sair da rota não interrompe a geração: ao voltar, a conversa
-mostra o texto já recebido e o estado ao vivo sem forçar um re-render por token.
-Só o botão de parar ou o envio de uma nova mensagem aborta o pedido anterior.
-Três coisas a conversa guarda além das falas:
+`src/routes/Chat.tsx` talks to the cluster through `POST /v1/chat/completions`
+with `stream: true`, like any harness - what shows up there is what a harness
+would get. The history belongs to the browser (`chatStore`, `localStorage`, a
+cap of 50 sessions, synced between tabs), not to the node. `ChatSessionProvider`
+also keeps the stream and accumulates deltas in memory, publishing and
+persisting the partial on a 50 ms window and flushing immediately at the end or
+on interruption. So leaving the route does not interrupt generation: on coming
+back, the conversation shows the text already received and the live state
+without forcing a re-render per token. Only the stop button or sending a new
+message aborts the previous request. The conversation keeps three things
+besides the turns:
 
-- O único campo de ficheiro lê `GET /api/ui/chat/capabilities`, que agrega a
-  cabeça ativa e a cobertura sem reutilizar a topologia que o perfil `infer` não
-  pode consultar. Ele aceita qualquer tipo de ficheiro, botão e arrastar e
-  largar. Imagens exigem `vision: supported`; `unsupported` mantém o modelo sem
-  visão e `unavailable` informa que a leitura foi recusada ou não pôde terminar,
-  sem inventar um modelo vazio. Imagens são redimensionadas no navegador para
-  caber no orçamento efetivo antes de virar base64 no pedido: a estimativa
-  mantém quatro bytes por token, reserva 10% para segurança e tenta qualidade
-  JPEG e resolução até 2048 px no lado maior, sem passar de 512 px em imagens
-  normais. A proporção é preservada, e a bolha e o anexo pendente mostram
-  "Redimensionada automaticamente" quando a imagem foi alterada.
-- O botão `Think` usa o campo `thinking` da mesma leitura de capabilities e só
-  aparece quando o `no_thinking` global da cabeça está desligado. A escolha é
-  enviada como `thinking_enabled` em cada chamada de Chat e fica no
-  `ChatSession` persistido em `localStorage`, portanto continua entre mensagens
-  da mesma conversa até o usuário mudar o toggle. A cabeça ainda impõe o
-  desligamento global, mesmo que uma sessão antiga carregue `true`.
-- Arquivos de texto continuam sendo recusados antes do envio quando o tamanho
-  estimado ultrapassa o contexto efetivo do modelo: primeiro `context_length`
-  de `/v1/models`, depois `n_ctx` do nó ativo. Imagens usam o mesmo orçamento,
-  mas são reduzidas antes da validação; só uma imagem que não caiba nem em
-  512 px gera recusa. O conteúdo textual e as partes multimodais ficam em
-  `requestContent`, para o histórico reenviar o mesmo pedido estruturado. Cada
-  anexo pendente pode ser removido sem apagar o rascunho.
-- O botão de microfone só aparece quando existe `SpeechRecognition` ou
-  `webkitSpeechRecognition`; a transcrição usa o locale da interface quando
-  possível e entra diretamente no campo de texto.
+- The single file field reads `GET /api/ui/chat/capabilities`, which aggregates
+  the active head and the coverage without reusing the topology the `infer`
+  profile cannot query. It accepts any file type, button and drag and drop.
+  Images require `vision: supported`; `unsupported` keeps the model without
+  vision and `unavailable` says the read was refused or could not finish,
+  without inventing an empty model. Images are resized in the browser to fit the
+  effective budget before becoming base64 in the request: the estimate keeps
+  four bytes per token, reserves 10% for safety and tries JPEG quality and
+  resolution up to 2048 px on the longer side, without going over 512 px for
+  normal images. The aspect ratio is kept, and the bubble and the pending
+  attachment show "Resized automatically" when the image was changed.
+- The `Think` button uses the `thinking` field of the same capabilities read
+  and only shows up when the head's global `no_thinking` is off. The choice is
+  sent as `thinking_enabled` on each Chat call and stays in the `ChatSession`
+  persisted in `localStorage`, so it carries across messages of the same
+  conversation until the user changes the toggle. The head still enforces the
+  global off, even if an old session carries `true`.
+- Text files are still refused before sending when the estimated size exceeds
+  the model's effective context: first `context_length` from `/v1/models`, then
+  the active node's `n_ctx`. Images use the same budget, but are reduced before
+  validation; only an image that does not fit even at 512 px gets refused. The
+  textual content and the multimodal parts stay in `requestContent`, so the
+  history resends the same structured request. Each pending attachment can be
+  removed without erasing the draft.
+- The microphone button only shows up when `SpeechRecognition` or
+  `webkitSpeechRecognition` exists; the transcription uses the UI locale when
+  possible and goes straight into the text field.
 
-`ChatSessionProvider` compartilha a sessão ativa e as ações entre o Chat e a
-Sidebar. No `infer`, a Sidebar usa `ChatSessionList` como menu principal: a
-lista de histórico tem rolagem interna limitada ao espaço disponível, destaca
-a conversa ativa e deixa `Conversa nova` fixa acima dela. Trocar ou apagar uma
-sessão não aborta uma geração em andamento; apagar a sessão apenas impede que
-o stream termine recriando-a.
+`ChatSessionProvider` shares the active session and the actions between the
+Chat and the Sidebar. On `infer`, the Sidebar uses `ChatSessionList` as the main
+menu: the history list has internal scrolling limited to the available space,
+highlights the active conversation and keeps `New conversation` fixed above it.
+Switching or deleting a session does not abort a generation in progress;
+deleting the session only keeps the stream from recreating it when it ends.
 
-Esse menu é visto de **toda** rota, então escolher uma conversa ou começar uma
-nova **navega para `/chat`** além de trocar a sessão ativa. Sem isso, o clique
-feito das configurações ou da documentação mudava o estado compartilhado e
-deixava a tela onde estava - o menu parecia ter parado de responder. Quem já
-está no chat não é reenviado, para não empilhar entradas iguais no histórico do
-navegador.
+That menu is seen from **every** route, so picking a conversation or starting a
+new one **navigates to `/chat`** besides switching the active session. Without
+that, a click made from settings or documentation changed the shared state and
+left the screen where it was - the menu looked like it had stopped responding.
+Whoever is already in the chat is not sent again, so equal entries do not pile
+up in the browser history.
 
-- **A telemetria da execução chega fechada** (`components/ExecutionTelemetry.tsx`): a tabela
-  de fases e as seções densas de rede e ambiente ficam embaixo da resposta;
-  abrir é um clique. A linha de resumo mostra `N do cache` ao lado dos tokens
-  de entrada quando o turno reaproveitou o prefixo do turno anterior
-  (`trace.cached_tokens`); é o que o pipeline **executou**, não o que o cache
-  escolheu, e some quando não houve reuso - ver `inferencia.md`, seção 3.1.
-  A mesma seção mostra o `trace_id`, perfil, estado cold/warm, timeline dos
-  spans locais, `outside_node_total_ms`, `outside_node_accounted_ms` e
-  `outside_node_unaccounted_ms`. O gargalo principal é destacado somente
-  entre medidas presentes; tempo que não chegou a uma fronteira permanece
-  explicitamente como não atribuído.
-  No fim do stream, o `Bubble` usa temporariamente o trace, timings e origem de
-  `telemetryCapture` quando a captura final chega antes da atualização imutável
-  da mensagem. `telemetrySnapshots` guarda a captura completa por `messageId`,
-  então mensagens anteriores continuam com seu próprio resumo rápido e card
-  fechado. Depois que o histórico recebe `message.trace` e `message.timings`,
-  eles continuam sendo a fonte preferida; essa transição mantém o rodapé visível
-  sem recarregar a página.
-- **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
-  `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
-  embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids
-  com o seletor de implantação `@d-<deploy_id>`; o catálogo do backend e as
-  telas de gerenciamento de implantações continuam vendo os ids completos.
-- **O título se edita clicando nele** e fica gravado (`titled` impede a
-  primeira mensagem de sobrescrever o nome escolhido).
+- **Run telemetry arrives collapsed** (`components/ExecutionTelemetry.tsx`): the
+  phase table and the dense network and environment sections sit below the
+  answer; opening them is one click. The summary line shows `N from cache` next
+  to the input tokens when the turn reused the previous turn's prefix
+  (`trace.cached_tokens`); it is what the pipeline **executed**, not what the
+  cache chose, and it disappears when there was no reuse - see `inference.md`,
+  section 3.1. The same section shows the `trace_id`, profile, cold/warm state,
+  the timeline of local spans, `outside_node_total_ms`,
+  `outside_node_accounted_ms` and `outside_node_unaccounted_ms`. The main
+  bottleneck is only highlighted among measurements present; time that did not
+  reach a boundary stays explicitly unattributed.
+  At the end of the stream, `Bubble` temporarily uses the trace, timings and
+  origin from `telemetryCapture` when the final capture arrives before the
+  message's immutable update. `telemetrySnapshots` keeps the full capture per
+  `messageId`, so earlier messages keep their own quick summary and closed card.
+  Once the history gets `message.trace` and `message.timings`, they stay the
+  preferred source; that transition keeps the footer visible without reloading
+  the page.
+- **Switching models midway becomes an event in the flow** (`role: "event"`,
+  which `turnsOnly` filters before the conversation travels in the request).
+  The selector sits below the text field. `lib/chatModels.ts` removes from that
+  selector the ids with the `@d-<deploy_id>` deployment selector; the backend
+  catalog and the deployment management screens still see the full ids.
+- **The title is edited by clicking it** and is saved (`titled` keeps the first
+  message from overwriting the chosen name).
 
-`chatStream` separa `<think>` do conteúdo visível sem vazar o delimitador
-entre pedaços; `finishChatStream` grava o resumo de TTFT, velocidade de
-pré-processamento do prompt, velocidade de geração da saída e total ponta a
-  ponta, além do trace por hop. O Chat mostra essas linhas no resumo da
-  resposta, além de `server_ttft_ms`, `engine_ttft_ms`, `client_ttft_ms` e o
-  tempo de rede observado, antes do card fechado. O resumo fica visível sem
-  expandir a telemetria e deixa explícito quando uma taxa não é mensurável,
-  como no reuso total do prefixo ou numa resposta de um token. Durante o SSE,
-  o navegador mede primeiro chunk,
-primeiro token, duração, fim do último token, chunks e bytes com
-`performance.now()`; o `Date.now()` anexado ao recebimento serve apenas para
-correlação com os wall timestamps dos peers. Nenhum relógio de máquinas
-diferentes é subtraído.
-Se `/v1/chat/completions` enviar um frame SSE com o envelope de erro OpenAI,
-`streamErrorMessage` preserva a mensagem real mesmo quando já há texto na
-resposta; ela aparece em um bloco que quebra linhas, permite seleção e oferece
-um botão de cópia. A mensagem genérica de resposta vazia só aparece quando o
-stream termina sem tokens e sem erro.
-Cada fase também mostra os bytes de estado oculto enviados e recebidos na
-travessia e o `dtype` efetivamente usado, para comparar execuções f16/f8.
-No decode, a linha do backend separa a prontidão observada pelo scheduler, a
-wall de `ggml_backend_tensor_get` e o pós-processamento da captura, além da
-conversão f8 e da serialização do frame residual. O total antigo de
-captura permanece identificado como compatível; `tensor_get` pode incluir a
-cópia D2H e o sync interno do backend CUDA. A tabela de transporte QUIC também
-mostra a espera em `send_data` e `finish`, separada da espera por headers e do
-RTT.
-Ao terminar o stream, o Chat pede um snapshot de `/api/ui/chat/telemetry` para
-os pares adjacentes do trace e `/api/ui/peer/:node_id/runtime` para cada máquina
-do trace. O painel mostra o RTT total observado das chamadas, o RTT de cada
-aresta com o rótulo origem -> destino, capacidade e configuração pedida,
-colocação efetiva por buffers GPU/CPU/mistos e `POM_PROFILE_SYNC` individual de
-cada peer. A colocação não é derivada de `n_gpu_layers`, e o estado de sync não
-é deduzido de um tempo zero. Se a coleta falhar, a tela diz indisponível ou não
-medido em vez de preencher com zero. Em uma pipeline de uma máquina, ela
-explica que não existem arestas entre peers.
+`chatStream` separates `<think>` from the visible content without leaking the
+delimiter between chunks; `finishChatStream` records the summary of TTFT,
+prompt preprocessing speed, output generation speed and end-to-end total, plus
+the per-hop trace. The Chat shows those lines in the answer summary, plus
+`server_ttft_ms`, `engine_ttft_ms`, `client_ttft_ms` and the observed network
+time, before the closed card. The summary stays visible without expanding the
+telemetry and says explicitly when a rate is not measurable, as with full prefix
+reuse or a one-token answer. During the SSE, the browser measures first chunk,
+first token, duration, end of the last token, chunks and bytes with
+`performance.now()`; the `Date.now()` attached on receipt only serves to
+correlate with the peers' wall timestamps. No clocks of different machines are
+subtracted. If `/v1/chat/completions` sends an SSE frame with the OpenAI error
+envelope, `streamErrorMessage` keeps the real message even when there is
+already text in the answer; it shows up in a block that wraps lines, allows
+selection and offers a copy button. The generic empty answer message only shows
+up when the stream ends with no tokens and no error. Each phase also shows the
+hidden-state bytes sent and received in the crossing and the `dtype` actually
+used. In decode, the backend line separates the readiness observed by the
+scheduler, the wall time of `ggml_backend_tensor_get` and the capture's
+post-processing. Telemetry tells apart the peer's and the client's f32/f16
+conversions, the f8 conversion and the residual frame serialization; the
+conversion times are subsets of the overall encode/decode. The old capture
+total stays identified as compatible; `tensor_get` may include the D2H copy and
+the CUDA backend's internal sync. The QUIC transport table also shows the wait
+in `send_data` and `finish`, separate from the wait for headers and the RTT.
+When the stream ends, the Chat asks for a snapshot of `/api/ui/chat/telemetry`
+for the trace's adjacent pairs and `/api/ui/peer/:node_id/runtime` for each
+machine of the trace. The panel shows the total observed RTT of the calls, the
+RTT of each edge with the origin -> target label, capacity and requested
+configuration, effective placement by GPU/CPU/mixed buffers and each peer's own
+`POM_PROFILE_SYNC`. The placement is not derived from `n_gpu_layers`, and the
+sync state is not deduced from a zero time. If the collection fails, the screen
+says unavailable or not measured instead of filling in zero. In a one-machine
+pipeline, it explains that there are no edges between peers.
 
-## Documentação: dois públicos na mesma rota
+## Documentation: two audiences on the same route
 
-`apps/frontend/src/routes/Documentation.tsx`, com as abas em `?tab=`.
+`apps/frontend/src/routes/Documentation.tsx`, with the tabs in `?tab=`.
 
-- **Guias** (`src/guides/`) - a metade escrita para humanos: páginas ordenadas
-  com diagramas SVG, geradas de dados (`Block[]`, `content.ts`) por
-  `GuideView`. Cinco páginas hoje: o que é a plataforma, o caminho de uma
-  pergunta, do modelo ao cluster servindo, operar e diagnosticar, acesso e
-  exposição. É a aba padrão: um humano não pode aterrissar em
-  `AGENTS.md - crates/routing-base/`. Nenhum número aparece ali sem estar no
-  markdown - quando divergirem, o markdown vence.
-- **Referência** - o markdown vivo do repositório, escrito para agentes,
-  embutido no bundle por `apps/frontend/scripts/build-docs.mjs` (não há rota no
-  nó; a tela lê `manifest.json` + `import.meta.glob`).
+- **Guides** (`src/guides/`) - the half written for humans: ordered pages with
+  animated SVG diagrams, timelines, headline numbers, checklists and expandable
+  questions, generated from data (`Block[]`, `content.ts`) by `GuideView`, in
+  English and Portuguese. The animations are CSS (`guide-*` in `index.css`), so
+  `prefers-reduced-motion` freezes them and each drawing still reads static. It is the default tab: a human must not land on
+  `AGENTS.md - crates/routing-base/`. No number shows up there unless it is in
+  the markdown - when they diverge, the markdown wins. The list of guides is in
+  `apps/frontend/src/guides/AGENTS.md`.
+- **Reference** - the repository's living markdown, written for agents,
+  embedded in the bundle by `apps/frontend/scripts/build-docs.mjs` (there is no
+  route on the node; the screen reads `manifest.json` + `import.meta.glob`).
 
-Quatro decisões que não são estética:
+Four decisions that are not cosmetic:
 
-- **A tela é de largura total** (`App.tsx` lista `/documentacao` junto de `/`
-  em `isFullBleed`) e rola por dentro: a coluna de navegação e a de leitura são
-  filhos flex com `min-h-0`, cada uma com o próprio scroll. Sem esse `min-h-0`
-  o filho cresce com o conteúdo e o overflow nunca engata - era assim que a
-  busca corria para fora da tela sem barra de rolagem.
-- **Nome de arquivo não aparece na navegação.** O manifesto carrega `label`
-  (nome humano curto) e `kind`: o `AGENTS.md` de uma pasta é a **visão geral
-  daquela seção**, então o cabeçalho da seção é que o abre (clicar em "docs/"
-  mostra `docs/AGENTS.md`) e ele nunca é listado como folha. O leitor também
-  descarta o `# ` do próprio documento, que só repetiria o título do cabeçalho
-  em outra redação.
-- **Recolher funciona.** O chevron alterna, o rótulo abre a visão geral, e a
-  seção que contém o documento aberto não é mais forçada a reabrir - esse era
-  o defeito: categoria que ficava sempre expandida.
-- **No celular são duas telas com um endereço só.** Abaixo de `sm:` a coluna
-  de navegação ocupa a largura inteira e o leitor fica escondido
-  (`mobileReaderOpen`); escolher um guia ou documento abre o leitor em tela
-  cheia com um botão Voltar fixo no topo (só existe montado enquanto essa
-  vista está aberta). Voltar mexe só nesse estado local - `?doc=`/`?guia=`
-  continuam intactos, então recarregar a página não perde o lugar. Um deep
-  link que já chega com `?doc=`/`?guia=` na URL conta como a mesma seleção e
-  abre direto no leitor. A partir de `sm:` as duas colunas voltam a conviver,
-  independentemente desse estado.
+- **The screen is full width** (`App.tsx` lists `/documentacao` next to `/` in
+  `isFullBleed`) and scrolls inside: the navigation column and the reading
+  column are flex children with `min-h-0`, each with its own scroll. Without
+  that `min-h-0` the child grows with the content and overflow never kicks in -
+  that is how the search ran off the screen without a scroll bar.
+- **File names do not show up in the navigation.** The manifest carries `label`
+  (a short human name) and `kind`: a folder's `AGENTS.md` is **the overview of
+  that section**, so the section header is what opens it (clicking "docs/"
+  shows `docs/AGENTS.md`) and it is never listed as a leaf. The reader also
+  drops the document's own `# `, which would only repeat the header's title in
+  other words.
+- **Collapsing works.** The chevron toggles, the label opens the overview, and
+  the section containing the open document is no longer forced to reopen - that
+  was the defect: a category that always stayed expanded.
+- **On a phone it is two screens with a single address.** Below `sm:` the
+  navigation column takes the full width and the reader is hidden
+  (`mobileReaderOpen`); picking a guide or document opens the reader full screen
+  with a Back button fixed at the top (it only exists mounted while that view is
+  open). Back only touches that local state - `?doc=`/`?guia=` stay intact, so
+  reloading the page does not lose the place. A deep link that already arrives
+  with `?doc=`/`?guia=` in the URL counts as the same selection and opens
+  straight in the reader. From `sm:` on the two columns live together again,
+  regardless of that state.
 
-## A interface com o cluster em TLS
+## The UI with the cluster on TLS
 
-Com a política ligada, abrir `http://<peer>:8080/` devolve **301 para
-`https://`** na mesma porta, e o painel funciona normalmente a partir daí. O
-certificado que o navegador recebe é um ECDSA auto assinado, diferente do
-Ed25519 que os peers recebem - navegador não verifica Ed25519. Ver
-`rede-p2p.md`, "Dois certificados na mesma porta".
+With the policy on, opening `http://<peer>:8080/` returns **301 to `https://`**
+on the same port, and the panel works normally from there. The certificate the
+browser gets is a self-signed ECDSA one, different from the Ed25519 one the
+peers get - a browser does not verify Ed25519. See `p2p-network.md`, "Two
+certificates on the same port".
 
-**O navegador avisa na primeira visita de cada máquina**, porque o certificado é
-auto assinado e não há CA para validá-lo. É esperado; o operador aceita uma vez
-por máquina.
+**The browser warns on the first visit to each machine**, because the
+certificate is self-signed and there is no CA to validate it. It is expected;
+the operator accepts it once per machine.
 
-## O card do Fluxo diz quanto do modelo coube na GPU
+## The Flow card says how much of the model fit on the GPU
 
-Uma camada na CPU é ordens de grandeza mais lenta que na GPU, e esse é o
-primeiro motivo de uma inferência arrastada. O card do Fluxo mostra a divisão
-(`LayerPlacementMeter`, em `ModelNetworkCanvas.tsx`) na mesma forma dos medidores
-de VRAM e RAM, logo abaixo da faixa de camadas: barra âmbar e "12 GPU · 10 CPU"
-quando sobra camada na CPU, barra neutra e "22 na GPU" quando não sobra. O
-duplo clique continua abrindo o detalhe completo; isto é resumo, não
-substituição.
+A layer on the CPU is orders of magnitude slower than on the GPU, and that is
+the first reason for a sluggish inference. The Flow card shows the split
+(`LayerPlacementMeter`, in `ModelNetworkCanvas.tsx`) in the same shape as the
+VRAM and RAM gauges, right below the layer range: an amber bar and
+"12 GPU · 10 CPU" when layers are left on the CPU, a neutral bar and "22 on GPU"
+when none are. Double-clicking still opens the full detail; this is a summary,
+not a replacement.
 
-O número **não** sai de `NodeConfig.n_gpu_layers`. Esse é o *pedido*, e o pedido
-quase sempre é o sentinela 99 ("descarregue tudo"); quem decide é o `fit` do
-llama.cpp, que baixa o número até caber na VRAM. Derivar a divisão do pedido
-responde "todas na GPU" exatamente quando algumas não estão - o único caso que
-o operador precisa enxergar. O que vale é `RuntimeStatus.reported_gpu_layers`,
-que o nó lê do `n_gpu_layers_effective` do próprio `/health` do servidor de
-inferência, no mesmo poll de 3s que já lhe dá `reported_total_layers`. Nenhuma
-chamada nova: o `/api/ui/cluster` já busca o `/api/ui/node` de cada peer.
+The number does **not** come from `NodeConfig.n_gpu_layers`. That is the
+*request*, and the request is almost always the sentinel 99 ("offload
+everything"); llama.cpp's `fit` decides, lowering the number until it fits in
+VRAM. Deriving the split from the request answers "all on the GPU" exactly when
+some are not - the only case the operator needs to see. What counts is
+`RuntimeStatus.reported_gpu_layers`, which the node reads from the inference
+server's own `/health` `n_gpu_layers_effective`, in the same 3s poll that
+already gives it `reported_total_layers`. No new call: `/api/ui/cluster` already
+fetches each peer's `/api/ui/node`.
 
-Essa busca tem dois desfechos de erro, e a tela os separa. `unreachable` é o par
-que atendeu no endereço anunciado e cuja leitura quebrou - beco sem saída, ponto
-rosa, e a mensagem diz o erro. `rediscovering` é o par cujos endereços todos
-deixaram de responder e cujo endereço atual o nó já foi pedir à rede: ponto âmbar
-a pulsar e "Reencontrando este nó", porque endereços IPv6 temporários rodam
-sozinhos e o estado se resolve na volta seguinte do gossip. Dizer "nada abaixo
-pode ser lido" nesse caso mandava o operador procurar um defeito que se conserta
-sozinho - mas a promessa tem prazo de 90 s, e depois disso o card volta a
-`unreachable`, porque um par que anuncia e não atende existe. Nos dois casos as camadas do par continuam contando para a cobertura -
-o servidor de inferência dele pode estar perfeito e só o endereço de controle é
-que morreu - então o card diz isso, e o cartão "Cobertura" do topo perde o verde
-de "completo" e mostra `dashboard.coverageUnconfirmed` enquanto
-`model_inventory[].unreadable_nodes` do modelo ativo não estiver vazio.
+That fetch has two error outcomes, and the screen separates them. `unreachable`
+is the peer that answered at the announced address and whose read broke - a
+dead end, a pink dot, and the message states the error. `rediscovering` is the
+peer whose addresses all stopped answering and whose current address the node
+already asked the network for: a pulsing amber dot and "Rediscovering this
+node", because temporary IPv6 addresses rotate on their own and the state
+resolves on the next gossip round. Saying "nothing below can be read" in that
+case sent the operator after a defect that fixes itself - but the promise has a
+90 s deadline, after which the card goes back to `unreachable`, because a peer
+that announces and does not answer exists. In both cases the peer's layers
+still count for coverage - its inference server may be perfect and only the
+control address died - so the card says so, and the "Coverage" card at the top
+loses the "complete" green and shows `dashboard.coverageUnconfirmed` while the
+active model's `model_inventory[].unreadable_nodes` is not empty.
 
-Sem relato do motor a linha não aparece. `layerPlacement` (`src/lib/layerPlacement.ts`)
-devolve `null`, e a tela cala em vez de chutar - dizer "tudo na GPU" sem saber
-seria pior que o silêncio. Negativo é "todas" na convenção do llama.cpp, e lido
-como zero diria que a máquina inteira roda na CPU.
+Without an engine report the line does not show up. `layerPlacement`
+(`src/lib/layerPlacement.ts`) returns `null`, and the screen stays silent
+instead of guessing - saying "all on the GPU" without knowing would be worse
+than silence. Negative means "all" in llama.cpp's convention, and read as zero
+it would say the whole machine runs on the CPU.
 
-## O canvas do Fluxo: arranjo por camadas
+## The Flow canvas: arrangement by layers
 
-`ModelNetworkCanvas` desenha a rede, e `lib/networkLayout.ts` decide onde cada
-card fica. A regra é **uma coluna por faixa de camadas, na ordem do pipeline, e
-réplicas da mesma faixa empilhadas dentro da coluna, centradas no mesmo eixo**
-(`autoLayout`). É isso que faz a bifurcação parecer uma bifurcação e a aresta
-virar uma linha curta.
+`ModelNetworkCanvas` draws the network, and `lib/networkLayout.ts` decides where
+each card goes. The rule is **one column per layer range, in pipeline order, and
+replicas of the same range stacked inside the column, centered on the same
+axis** (`autoLayout`). That is what makes a fork look like a fork and an edge
+become a short line.
 
-A precedência é: posição arrastada > arranjo calculado > grade
-(`fallbackPosition`, que só sobra para um card que o arranjo não conheça).
-**Uma implantação nova já nasce arrumada**, sem ninguém clicar em nada.
+The precedence is: dragged position > computed arrangement > grid
+(`fallbackPosition`, only left for a card the arrangement does not know).
+**A new deployment is already born arranged**, without anyone clicking
+anything.
 
-Dois botões, e a diferença entre eles importa:
+Two buttons, and the difference between them matters:
 
-- **Organizar** (`LayoutGrid`) - aplica o arranjo por camadas **mantendo quem o
-  operador arrastou**. Um arranjo feito à mão é uma decisão, e o botão que
-  apagasse decisões seria o botão que ninguém aperta.
-- **Redefinir** (`RotateCcw`) - descarta tudo, inclusive os arrastos.
+- **Arrange** (`LayoutGrid`) - applies the arrangement by layers **keeping what
+  the operator dragged**. A hand-made arrangement is a decision, and a button
+  that erased decisions would be the button nobody presses.
+- **Reset** (`RotateCcw`) - discards everything, including the drags.
 
-`autoLayout` é estável quanto à ordem de entrada (desempate por `start_layer`,
-`end_layer`, `id`): a lista de peers se reordena a cada poll do cluster, e um
-arranjo que dependesse dela tremeria na tela.
+`autoLayout` is stable with respect to input order (tie-break by
+`start_layer`, `end_layer`, `id`): the peer list reorders on every cluster
+poll, and an arrangement that depended on it would shake on screen.
 
-**Defeito corrigido:** `deploymentLayoutKey` incluía o `changed_at` de cada
-peer. Ele muda a cada reinício de nó, o que mudava a chave, o que fazia
-`readPositions` devolver vazio - o arranjo do operador não era reorganizado, era
-**perdido**, e a tela caía na grade toda vez que uma máquina reiniciava. Hoje a
-impressão digital é só modelo + conjunto de faixas.
+**Fixed defect:** `deploymentLayoutKey` used to include each peer's
+`changed_at`. It changes on every node restart, which changed the key, which
+made `readPositions` return empty - the operator's arrangement was not
+rearranged, it was **lost**, and the screen fell back to the grid every time a
+machine restarted. Today the fingerprint is only model + set of ranges.
 
-## Fatiar, implantar e transferir na tela
+## Slicing, deploying and transferring on screen
 
-- **Fatiar** (`SliceModels`): Pipeline e Tensor Parallelism são um par de abas
-  (`role="tablist"`) no topo do painel de origem, não uma caixa de marcar - cada
-  modo tem seus próprios controles embaixo. A aba Tensor Parallelism só existe
-  quando `useNode().data.pom_desenv === true` (`NodeInfo.pom_desenv`, o mesmo
-  `POM_DESENV=1` que já esconde as seções DESENV do `DeploymentInspector`); sem
-  a flag a tela nunca oferece nem envia `mode: "tensor_parallel"` - o único
-  modo possível é pipeline, e um `mode` que já estivesse em `tensor_parallel`
-  quando a resposta de `/api/ui/node` chega depois é revertido. Pipeline
-  oferece plano por tamanho (alvo em GB por fatia, vazio =
-  "o resto") ou uma faixa específica por início/fim de camada; a faixa
-  específica usa as opções arquiteturais do GGUF, envia
-  `range: { start_layer, end_layer }` e acrescenta a parte ao manifesto por
-  hash, sem substituir nem apagar fatias anteriores. No modo TP, o operador
-  escolhe 2..64 ranks e a prévia mostra uma faixa completa por rank com a
-  identificação `1of2`, `2of2`, `1of4` etc. Cada alteração posta
-  `POST /api/ui/slice/plan` (debounce 260 ms); TP leva `mode: "tensor_parallel"`
-  e `tp_size`, enquanto pipeline leva `slices` ou `range`. `POST /api/ui/slice`
-  roda o job. O painel de atividade fica visível também para jobs terminados e
-  mostra fase nomeada, bytes, taxa, ETA quando confiável, arquivo atual e
-  saídas parciais em caso de falha. A prévia confere o espaço livre no destino
-  real configurado, com número concreto e alerta antes de iniciar. A tela Fatias separa
-  `parts` e `tp_parts`, agrupa TP por tamanho e ordena os ranks dentro de cada
-  grupo. A transferência considera ambas as listas. Quando o catálogo confirma
-  um GGUF multipart, esta tela mostra a soma real dos bytes, a etiqueta
-  MULTIPART e a lista de partes físicas. Enquanto o cabeçalho ainda está sendo
-  enriquecido, não mostra o tamanho da primeira parte. Se a fonte estiver
-  incompleta, o motivo vindo de `split.count`, `split.no` ou da parte
-  ausente aparece no painel e o botão de fatiar fica desabilitado; o operador
-  precisa colocar o conjunto completo junto e deixar o POM gerar as fatias.
-  A prévia e o início do job repetem o preflight do GGUF para a cabeça exigida
-  pelo loader. Em `deepseek4`, uma faixa intermediária copia os pesos reais da
-  cabeça que o loader exige, e a prévia mostra o payload adicional repetido em
-  cada uma; se a tabela de tensores não permitir a cópia, a recusa lista o
-  motivo concreto. A faixa final só é oferecida quando a tabela contém a
-  cabeça completa.
-- **Implantar** (`DeployModel`): abre o Deploy Studio em tela ampla, com abas de
-  Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
-  estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.
-  Todos os peers aparecem na faixa inferior e podem ser arrastados para o mapa;
-  no tab Globais, o inspetor também permite escolher `cache_type_k` e
-  `cache_type_v` para a instalação; cada mudança dos combos é aplicada por
-  `POST /api/ui/cache-types`, sem botão de salvar, subtítulo ou badge `global`;
-  o planner recalcula a sugestão considerando cortes existentes, memória, RTT e
-  carga. A barra de cobertura mostra camadas faltantes e sobrepostas; o mapa
-  exibe hops, capacidade e latência conhecida, além de rotas alternativas e
-  distribuição projetada de carga. Cada card separa a faixa física carregada da
-  sub-faixa efetivamente executada.
-  O inspetor é um componente próprio (`components/DeploymentInspector.tsx`), e é
-  **o mesmo** que o Histórico usa em somente leitura: uma lista de propriedades
-  só, e não duas cópias que divergem no primeiro campo novo. Ele tem três
-  categorias, e a fronteira entre elas é de quem é o parâmetro - *Configurações
-  padrões* (o que o llama.cpp já tem: contexto, sessões, máx. tokens, batch,
-  chunk de prefill, amostragem, cache K/V da instalação, desativar
-  thinking/embeddings, especulativa e MTP), *Configurações POM* (motor de
-  inferência, ajustar à memória, chunks em voo, juntar fatias vizinhas e
-  precisão do estado oculto) e *Configurações POM (DESENV)* (motor de
-  inferência, as três janelas do detector de ciclo, o interruptor dele e o
-  recuo do MTP para a RAM, além do descarregamento ocioso por peer). A seção
-  só aparece quando `NodeInfo.pom_desenv` está ligada; a ausência da flag faz a
-  interface remover seus controles do DOM. O `[i]`
-  vem **antes** do nome, e não depois: com nomes de larguras diferentes, os
-  ícones à direita do texto ficavam serrilhados, e antes do nome eles formam uma
-  coluna reta do topo ao pé do painel. O combo do motor não oferece
-  "Automático" e assume `llama.cpp` ao montar - é escolha de apresentação; o
-  backend continua aceitando `auto` somente quando o pedido o informa
-  explicitamente. Sem valor, o padrão é `llama.cpp` (`dense`).
-  Os cards são um **preview de como o sistema fica depois da implantação**, não
-  do estado atual: cada GPU de cada máquina ganha uma barra de VRAM projetada
-  (uso previsto contra o total, com o uso de agora como tracinho) que se
-  recalcula a cada ajuste de contexto, lote ou requisições simultâneas. A
-  projeção vem de `POST /api/ui/deploy/capacity-preview`, que roda o mesmo
-  ajuste automático do llama.cpp no peer sem carregar peso (ver
-  `implantacao.md` §3.1). O card fica amber quando cabe só porque o "Ajustar à
-  memória" apararia o contexto ou as camadas de GPU, e rósea quando não cabe
-  nem no piso; os dois casos pedem uma confirmação nomeando as máquinas ao
-  `Implantar` - é aviso, não bloqueio, para o operador reduzir ou aumentar o
-  contexto como quiser. Cada parâmetro do painel direito tem um `[i]` que abre
-  no hover/foco/toque com o que ele significa e como afeta a inferência; quando
-  o nó reporta uma capacidade duvidosa ou limitada, o mesmo lugar da coluna
-  mostra o triângulo âmbar com a razão. As arestas vêm do grafo de execução do
-  planejador: ligam apenas sub-faixas contíguas, mantêm ramos equivalentes de
-  entrada e mostram o RTT direcional usado para escolher entre eles. O canvas
-  não inventa pontes pela ordem dos cards, o que preserva uma entrada rápida
-  quando outra faixa carregada se sobrepõe. O Tensor usa o modelo inteiro em todos os
-  ranks e não apresenta a seleção antiga de fatias. As propriedades globais
-  (contexto, batch, amostragem, sessões) ficam
-  separadas das propriedades por
-  máquina (`n_gpu_layers`, o booleano de KV na GPU e capacidade local, na mesma linha de propriedade
-  das globais - `[i]`, nome, controle); ao selecionar uma máquina, o
-  inspetor também mostra as camadas que ela executará. A precisão do estado
-  oculto (f16/f8) só aparece quando o estado atravessa a fronteira de um peer -
-  um pipeline de fatias com faixas adjacentes distintas; em modelo inteiro,
-  Tensor ou fatias numa máquina só, o estado nunca é serializado e o seletor
-  seria inerte. Nas globais, a seção
-  de fatos do modelo inteiro e seu seletor de máquina não são exibidos: a
-  máquina escolhida no mapa é a única que vale para a implantação. Nas globais,
-  a seção de execução separa a especulação por lookup do MTP; ao marcar MTP, a
-  probabilidade mínima começa em `0,75`, mas continua sendo um campo editável
-  pelo operador e o valor alterado segue no deploy. A seção
-  **Motor de inferência** aparece somente quando a metadata real do GGUF
-  informa mais de um expert. A UI apresenta `dense` (llama.cpp) e `moe`, e
-  envia a escolha nos modos modelo inteiro, pipeline fatiado e Tensor
-  Parallelism. O backend também aceita `auto` somente quando ele chega como
-  escolha explícita de uma API ou implantação persistida. Em modelo denso a
-  seção fica oculta. Se a
-  combinação escolhida não for suportada, o seletor continua visível com a
-  razão explícita e o deploy fica bloqueado; a telemetria é a fonte de verdade
-  sobre o motor executado. As demais opções condicionais recebem
-  `DeployPlan.capabilities` do backend: `no_thinking` usa
-  `tokenizer.chat_template` e o vocabulário GGUF, MTP usa metadata/tensores
-  `nextn` do arquivo selecionado e usa o runtime do peer final apenas como
-  limitação, e lookup usa as capacidades runtime de todos os alvos. Ausência
-  comprovada no modelo oculta a opção; `unknown` deixa-a visível e acionável,
-  com fonte, motivo e risco. Limitação de runtime também é aviso acionável. O
-  switch `no_embeddings` permanece visível: ligado, peers comprovadamente
-  inseguros recusam a implantação de forma nominal e atômica; topologia
-  indeterminada pode seguir somente com aviso explícito.
-  **Fatias** traz o interruptor "Juntar fatias vizinhas na mesma máquina"
-  (`merge`), que é o que permite uma máquina ficar com duas faixas adjacentes:
-  o nó as funde num arquivo só (`splitter::merge`) antes de subir, porque
-  `split` renomeia os blocos de toda fatia para `blk.0..` e duas não carregam
-  lado a lado. Sem ele o planejador recusa o par, e a recusa manda "juntar as
-  fatias vizinhas na tela" - o interruptor existe para essa frase ter destino.
-  Ele aparece sob a mesma condição que decide se `merge` vai na requisição
-  (`!isWhole`): controle sem envio, ou envio sem controle, foi exatamente como
-  ele se perdeu uma vez. Não existe uma segunda
-  tabela legada abaixo do canvas: o mapa e a faixa inferior concentram a
-  topologia, os RTTs direcionais e a inclusão de peers. Cada edição volta ao nó para validação; o deploy
-  (`POST /api/ui/deploy`) **re-varre o cluster** em vez de confiar na prévia,
-  e o progresso vem de `GET /api/ui/jobs`. O mapa usa os mesmos primitives do
-  canvas do Painel: pontos no fundo, cards arrastáveis, zoom, Fit, Organizar e
-  Redefinir, com posições persistidas por implantação. O inspetor tem 19rem,
-  pode ser recolhido pela borda esquerda, começa diretamente pelas abas
-  Globais e Máquina, sem título próprio e sem o padding externo `p-3`, e separa
-  visualmente propriedades globais e da máquina selecionada. Avisos de
-  capacidade ficam como ícones âmbar ao lado do controle: o texto completo,
-  incluindo fonte e motivo, abre por hover, foco ou clique em um portal fixo que
-  quebra palavras e identificadores sem espaços sem criar overflow horizontal.
-  O conjunto de alertas permanece distribuído junto dos respectivos controles,
-  em vez de formar uma fileira de cartões. O inspetor permite atribuir ao peer uma faixa que
-  ele já possui trocando a faixa ativa daquele peer sem mover outra máquina. A mesma faixa em dois
-  peers é uma rota paralela válida, não uma troca. Clicar de novo numa faixa já
-  atribuída tira a seleção - o mesmo botão é o caminho de ida e de volta. A
-  saída remove só aquela faixa naquela máquina: as réplicas da mesma faixa em
-  outros peers ficam onde estão, e o peer continua no mapa mesmo sem faixa
-  nenhuma, porque tirar uma camada não é o mesmo gesto que "Remover da
-  implantação". Peers que já estão no mapa
-  deixam de aparecer na barra inferior; arrastar ou dar duplo clique num peer
-  disponível adiciona o card sem redesenhar a topologia até que uma faixa seja
-  atribuída. Em modelo inteiro, o mapa aceita uma máquina. Ao trocar de fatias para esse
-  modo, o mapa fica vazio para que o operador escolha a máquina; depois de uma
-  escolha, tentar incluir uma segunda mostra um aviso e preserva a máquina
-  escolhida. No Tensor, somente peers que estão no mapa entram como
-  primary/worker, mesmo que outros tenham o modelo.
-  GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; o
-  mapa do Painel mostra o último RTT e transporte efetivos observados na
-  execução de inferência para cada aresta e, no Gateway, todas as rotas
-  completas do modelo com o RTT agregado de cada perna, inclusive o retorno;
-  quando há trace recente, o RTT de fio da execução vence a sonda libp2p de
-  fallback.
-  As rotas aparecem do menor custo ao maior, com o id dos nós como desempate;
-  uma implantação de modelo inteiro com um único head também é consultada,
-  mesmo sem aresta no grafo. O
-  survey direcional do planner continua reservado à escolha de rota e não é
-  exibido como se fosse a execução. Uma GPU ausente aparece como `sem GPU`, sem barra
-  indeterminada. Em Completa, todos os peers entram no canvas e na lista de
-  candidatos nos modos de fatias e Tensor; modelo inteiro mantém a restrição de
-  uma máquina. A cobertura fica reduzida no rodapé junto da barra de peers.
-  A última implantação de cada modelo
-  fica no `localStorage` (`deployMemory`) e volta preenchida após o primeiro
-  plano, podada contra o que ainda existe.
-  Alterações de topologia são validadas por `POST /api/ui/deploy/plan` após o
-  debounce de 260 ms. Parâmetros de runtime, overrides de GPU/KV por máquina e
-  o nome operacional não mudam as máquinas ou faixas, então permanecem locais
-  durante a edição e não reiniciam o survey distribuído. A chave da consulta
-  contém somente faixas e máquinas; o deploy leva os overrides atuais. Se algum
-  deles mudar, a projeção de capacidade antiga é ocultada; `POST /api/ui/deploy` faz o preflight completo com os valores atuais
-  antes de iniciar a implantação.
-  A resposta inicial do catálogo pode conter somente nome, caminho, tamanho e
-  dados do manifesto, enquanto o nó lê os cabeçalhos GGUF em background. A
-  tela mostra o inventário imediatamente. O catálogo lê somente o KV header e
-  `stat` das partes na varredura rápida: não percorre a tabela de tensores, não
-  calcula hash de modelos inteiros e não mapeia os pesos. A tarefa de
-  enriquecimento pode validar o `pom_id` de uma origem para herdar um projetor,
-  depois que o inventário já foi publicado. O botão e o endpoint de execução verificam somente os
-  metadados necessários para a seleção atual: para um modelo inteiro pendente,
-  o planner envia seu caminho já listado a `POST /api/ui/model-metadata`, que
-  enriquece esse item sem esperar os vizinhos. Outro modelo ainda em
-  enriquecimento, peer silencioso ou peer antigo sem `metadata_complete` não
-  bloqueia. Quando a própria seleção ainda não pode ser resolvida, o plano
-  devolve um único `blocked` que nomeia a faixa ou o modelo pendente. O
-  enriquecimento registra início e conclusão; um erro terminal fica em
-  `metadata_error` no modelo e não impede os demais, enquanto
-  `metadata_complete` vira `true` ao terminar a passagem. A resposta publicada
-  é reaproveitada pelas requisições. A primeira chamada instala um placeholder
-  e compartilha a única varredura em voo, por isso F5 e trocas repetidas na combo
-  não empilham scans ou enriquecimentos. Se o refresh trocar o inventário, o
-  backend reconcilia o resultado por `path + size + mtime` e preserva os modelos
-  já lidos; somente arquivo novo ou alterado volta ao cabeçalho. Nova tentativa
-  só ocorre em refresh por TTL ou invalidação, e descartes de tarefas ficam
-  registrados no log.
-  **O botão cinza sempre diz por quê.** A comparação entre o plano do nó e as
-  linhas da tela (`sameRows`) ordena os dois lados por camada, porque a tela
-  mantém as linhas nessa ordem e o nó monta a resposta do jeito dele; e os
-  painéis de explicação renderizam sob `answered` (o nó respondeu sobre *estas*
-  linhas), nunca sob `validated`. O planner aceita várias faixas na mesma
-  máquina, mas mantém `blocked` para gaps globais, sobreposição e outros
-  problemas reais; `whyNot` põe a razão em uma linha ao lado do botão, inclusive
-  nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
-  mostra hops consecutivos somente para frente, acrescenta um Gateway virtual
-  no fim com a perna de retorno quando a cauda ainda não é o gateway e exibe
-  todas as rotas candidatas, destacando no
-  total a de menor RTT. A rolagem interna em viewport estreito não
-  corta cards nem cria overflow na página.
-- **Implantações** (`Deployments`): uma linha por `deploy_id`, "no ar" separado
-  de "padrão", ordenada pela criação. Cada linha expande e lista as versões
-  daquele `deploy_id` (o histórico de `RuntimeParams` já rodados sob o mesmo
-  id), com a versão ativa marcada. "Reimplantar esta versão" manda
-  `{ version }`; "Reimplantar com novos parâmetros" abre o formulário semeado
-  do `RuntimeParams` da versão ativa e manda `{ params }` - o backend reusa a
-  versão de parâmetros iguais ou anexa uma nova ao mesmo id. Reimplantar do
-  Deploy Studio a mesma forma (mesmo modelo provado, mesmas máquinas e faixas)
-  também cai no mesmo `deploy_id`; trocar de máquina ou de faixa cunha um id
-  novo. Ver `implantacao.md` §7.1.
-- **Transferir** (`Transfers`/`SendFile`/`Notifications`): downloads de modelos
-  remotos com progresso e cancelamento, ofertas pendentes
-  (aceitar/rejeitar direto no sino), transferências ativas (bytes, velocidade,
-  ETA, cancelar) e concluídas. O envio ("enviar um arquivo desta máquina")
-  oferece qualquer caminho legível via `POST /api/transfer/send`; o receptor
-  só vê uma concessão opaca (`grant`), então "mandar qualquer coisa" nunca
-  vira "ler qualquer coisa". O progresso vem dos nós, então recarregar a aba
-  não perde nada. `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` (variável do processo
-  receptor, lida no arranque) aceita toda oferta sem clique - só dev.
-  Peers da mesma máquina compartilham o hostname, então o destino e a etiqueta
-  de disponibilidade levam o começo do `node_id` quando o nome se repete
-  (`uniqueName`, `routes/Shards.tsx`). Ofertas, ativas e concluídas em
-  `Transfers` são cada uma uma tabela de largura total (era uma lista de
-  cartões), com a ação de aceitar/rejeitar/cancelar na última coluna.
+- **Slice** (`SliceModels`): Pipeline and Tensor Parallelism are a pair of tabs
+  (`role="tablist"`) at the top of the source panel, not a checkbox - each mode
+  has its own controls below. The Tensor Parallelism tab only exists when
+  `useNode().data.pom_desenv === true` (`NodeInfo.pom_desenv`, the same
+  `POM_DESENV=1` that already hides the DEV sections of `DeploymentInspector`);
+  without the flag the screen never offers nor sends
+  `mode: "tensor_parallel"` - the only possible mode is pipeline, and a `mode`
+  already set to `tensor_parallel` when the `/api/ui/node` answer arrives later
+  is reverted. Pipeline offers a plan by size (target in GB per slice, empty =
+  "the rest") or a specific range by start/end layer; the specific range uses
+  the GGUF's architectural options, sends `range: { start_layer, end_layer }`
+  and adds the part to the manifest by hash, without replacing or deleting
+  earlier slices. In TP mode, the operator picks 2..64 ranks and the preview
+  shows one full range per rank with the identifier `1of2`, `2of2`, `1of4`
+  etc. Each change posts `POST /api/ui/slice/plan` (260 ms debounce); TP carries
+  `mode: "tensor_parallel"` and `tp_size`, while pipeline carries `slices` or
+  `range`. `POST /api/ui/slice` runs the job. The activity panel stays visible
+  also for finished jobs and shows the named phase, bytes, rate, ETA when
+  reliable, current file and partial outputs on failure. The preview checks the
+  free space at the real configured destination, with a concrete number and a
+  warning before starting. The Shards screen separates `parts` and `tp_parts`,
+  groups TP by size and sorts the ranks inside each group. The transfer
+  considers both lists. When the catalog confirms a multipart GGUF, this screen
+  shows the real sum of bytes, the MULTIPART label and the list of physical
+  parts. While the header is still being enriched, it does not show the first
+  part's size. If the source is incomplete, the reason coming from
+  `split.count`, `split.no` or the missing part shows up in the panel and the
+  slice button is disabled; the operator needs to put the full set together and
+  let POM produce the slices. The preview and the job start repeat the GGUF
+  preflight for the head the loader requires. In `deepseek4`, an intermediate
+  range copies the real head weights the loader requires, and the preview shows
+  the additional payload repeated in each one; if the tensor table does not
+  allow the copy, the refusal lists the concrete reason. The final range is only
+  offered when the table contains the full head.
+- **Deploy** (`DeployModel`): opens the Deploy Studio on a wide screen, with
+  Shards/Whole model/Tensor tabs, separate technical model and operational name,
+  Simple/Complete strategies, a central map and a compact property inspector.
+  Every peer shows up in the bottom strip and can be dragged onto the map; in
+  the Globals tab, the inspector also lets you pick `cache_type_k` and
+  `cache_type_v` for the installation; each change of the combos is applied
+  through `POST /api/ui/cache-types`, with no save button, subtitle or `global`
+  badge; the planner recomputes the suggestion considering existing cuts,
+  memory, RTT and load. The coverage bar shows missing and overlapping layers;
+  the map shows hops, capacity and known latency, plus alternative routes and
+  the projected load distribution. Each card separates the loaded physical range
+  from the sub-range actually executed. The inspector is its own component
+  (`components/DeploymentInspector.tsx`), and it is **the same** one History
+  uses read-only: a single property list, not two copies that diverge on the
+  first new field. It has three categories, and the boundary between them is
+  whose parameter it is - *Default settings* (what llama.cpp already has:
+  context, sessions, max tokens, batch, prefill chunk, sampling, the
+  installation's K/V cache, disabling thinking/embeddings, speculative and
+  MTP), *POM settings* (inference engine, fit to memory, chunks in flight,
+  merging neighboring slices and hidden-state precision) and *POM settings
+  (DEV)* (inference engine, the cycle detector's three windows, its switch and
+  the MTP fallback to RAM, plus per-peer idle unloading). That section only
+  shows up when `NodeInfo.pom_desenv` is on; without the flag the UI removes
+  its controls from the DOM. The `[i]` comes **before** the name, not after:
+  with names of different widths, icons to the right of the text came out
+  jagged, and before the name they form a straight column from top to bottom
+  of the panel. The engine combo does not offer "Automatic" and assumes
+  `llama.cpp` on mount - a presentation choice; the backend still accepts
+  `auto` only when the request states it explicitly. Without a value, the
+  default is `llama.cpp` (`dense`). The cards are a **preview of how the system
+  will look after deployment**, not of the current state: each GPU of each
+  machine gets a projected VRAM bar (expected usage against the total, with the
+  current usage as a tick) that is recomputed on every change of context, batch
+  or simultaneous requests. The projection comes from
+  `POST /api/ui/deploy/capacity-preview`, an analytical estimate from GGUF
+  metadata and free VRAM on the peer, without loading weights or calling the
+  native fit (see `deployment.md` §3.1). The card turns amber when it only fits
+  because "Fit to memory" would trim the context or the GPU layers, and pink
+  when it does not fit even at the floor; both cases ask for a confirmation
+  naming the machines on `Deploy` - it is a warning, not a block, so the
+  operator can lower or raise the context as they like. Each parameter of the
+  right panel has an `[i]` that opens on hover/focus/touch with what it means
+  and how it affects inference; when the node reports a doubtful or limited
+  capability, the same spot in the column shows the amber triangle with the
+  reason. The edges come from the planner's execution graph: they only connect
+  contiguous sub-ranges, keep equivalent entry branches and show the
+  directional RTT used to choose between them. The canvas does not invent
+  bridges from the card order, which keeps a fast entry when another loaded
+  range overlaps. Tensor uses the whole model on every rank and does not show
+  the old slice selection. The global properties (context, batch, sampling,
+  sessions) stay separate from the per-machine properties (`n_gpu_layers`, the
+  KV-on-GPU boolean and local capacity, on the same property line as the
+  globals - `[i]`, name, control); when a machine is selected, the inspector also
+  shows the layers it will run. The hidden-state precision
+  (f32/f16/f8/i4g64/i4g128) only shows up when the state crosses a peer boundary
+  - a slice pipeline with distinct adjacent ranges; for a whole model, Tensor or
+  slices on a single machine, the state is never serialized and the selector
+  would be inert. f16 is still the default; f32 is a lossless option with four
+  bytes per value, while f8 and i4 are lossy. In the globals, the whole model
+  facts section and its machine selector are not shown: the machine chosen on
+  the map is the only one that counts for the deployment. In the globals, the
+  execution section separates lookup speculation from MTP; when MTP is checked,
+  the minimum probability starts at `0.75`, but stays a field the operator can
+  edit and the changed value goes into the deploy. The **Inference engine**
+  section only shows up when the GGUF's real metadata reports more than one
+  expert. The UI presents `dense` (llama.cpp) and `moe`, and sends the choice in
+  whole model, sliced pipeline and Tensor Parallelism modes. The backend also
+  accepts `auto` only when it arrives as an explicit choice from an API or a
+  persisted deployment. For a dense model the section stays hidden. If the chosen
+  combination is not supported, the selector stays visible with the explicit
+  reason and the deploy is blocked; telemetry is the source of truth about the
+  engine that ran. The other conditional options get `DeployPlan.capabilities`
+  from the backend: `no_thinking` uses `tokenizer.chat_template` and the GGUF
+  vocabulary, MTP uses the selected file's `nextn` metadata/tensors and only uses
+  the final peer's runtime as a limitation, and lookup uses the runtime
+  capabilities of every target. Proven absence in the model hides the option;
+  `unknown` keeps it visible and actionable, with source, reason and risk. A
+  runtime limitation is also an actionable warning. The `no_embeddings` switch
+  stays visible: on, provably unsafe peers refuse the deployment by name and
+  atomically; an undetermined topology can only proceed with an explicit
+  warning. **Shards** carries the "Merge neighboring shards on the same
+  machine" switch (`merge`), which is what lets a machine hold two adjacent
+  ranges: the node merges them into a single file (`splitter::merge`) before
+  starting, because `split` renames the blocks of every slice to `blk.0..` and
+  two cannot load side by side. Without it the planner refuses the pair, and the
+  refusal says to "merge the neighboring slices on screen" - the switch exists so
+  that sentence has a destination. It shows up under the same condition that
+  decides whether `merge` goes in the request (`!isWhole`): a control without a
+  send, or a send without a control, was exactly how it got lost once. There is
+  no second legacy table below the canvas: the map and the bottom strip hold the
+  topology, the directional RTTs and adding peers. Each edit goes back to the
+  node for validation; the deploy (`POST /api/ui/deploy`) **rescans the
+  cluster** instead of trusting the preview, and progress comes from
+  `GET /api/ui/jobs`. The map uses the same primitives as the Dashboard canvas:
+  dots in the background, draggable cards, zoom, Fit, Arrange and Reset, with
+  positions persisted per deployment. The inspector is 19rem wide, can be
+  collapsed from its left edge, starts directly with the Globals and Machine
+  tabs, with no title of its own and no outer `p-3` padding, and visually
+  separates global properties from the selected machine's. Capacity warnings sit
+  as amber icons next to the control: the full text, including source and
+  reason, opens on hover, focus or click in a fixed portal that breaks words and
+  identifiers without spaces without creating horizontal overflow. The set of
+  alerts stays spread next to the respective controls, instead of forming a row
+  of cards. The inspector lets you assign to a peer a range it already holds by
+  switching that peer's active range without moving another machine. The same
+  range on two peers is a valid parallel route, not a swap. Clicking an already
+  assigned range again removes the selection - the same button is the way there
+  and back. Leaving only removes that range on that machine: replicas of the
+  same range on other peers stay where they are, and the peer stays on the map
+  even without any range, because removing a layer is not the same gesture as
+  "Remove from deployment". Peers already on the map no longer show up in the
+  bottom bar; dragging or double-clicking an available peer adds the card
+  without redrawing the topology until a range is assigned. For a whole model,
+  the map accepts one machine. When switching from slices to that mode, the map
+  is left empty so the operator picks the machine; after a choice, trying to add
+  a second one shows a warning and keeps the chosen machine. In Tensor, only
+  peers on the map enter as primary/worker, even if others have the model.
+  GPU, RAM and load are updated by the cluster view every 5 seconds; the
+  Dashboard map shows the last effective RTT and transport observed in the
+  inference run for each edge and, at the Gateway, every complete route of the
+  model with the aggregated RTT of each leg, including the return; when there is
+  a recent trace, the run's wire RTT beats the libp2p fallback probe. Routes are
+  listed from lowest to highest cost, with the node ids as a tie-break; a whole
+  model deployment with a single head is also queried, even with no edge in the
+  graph. The planner's directional survey stays reserved for route choice and
+  is not shown as if it were the run. A missing GPU shows as `no GPU`, without
+  an indeterminate bar. In Complete, every peer enters the canvas and the
+  candidate list in slice and Tensor modes; whole model keeps the one-machine
+  restriction. Coverage is reduced to the footer next to the peer bar. The last
+  deployment of each model stays in `localStorage` (`deployMemory`) and comes
+  back filled in after the first plan, pruned against what still exists.
+  Topology changes are validated by `POST /api/ui/deploy/plan` after the 260 ms
+  debounce. Runtime parameters, per-machine GPU/KV overrides and the
+  operational name do not change machines or ranges, so they stay local during
+  editing and do not restart the distributed survey. The query key only
+  contains ranges and machines; the deploy carries the current overrides. If
+  any of them changes, the old capacity projection is hidden;
+  `POST /api/ui/deploy` runs the full preflight with the current values before
+  starting the deployment. The catalog's initial answer may only contain name,
+  path, size and manifest data, while the node reads the GGUF headers in the
+  background. The screen shows the inventory right away. The catalog only reads
+  the KV header and `stat` of the parts in the fast scan: it does not walk the
+  tensor table, does not hash whole models and does not map the weights. The
+  enrichment task can validate a source's `pom_id` to inherit a projector,
+  after the inventory was already published. The run button and endpoint only
+  check the metadata needed for the current selection: for a pending whole
+  model, the planner sends its already listed path to
+  `POST /api/ui/model-metadata`, which enriches that item without waiting for
+  the neighbors. Another model still being enriched, a silent peer or an old
+  peer without `metadata_complete` does not block. When the selection itself
+  cannot be resolved yet, the plan returns a single `blocked` naming the
+  pending range or model. Enrichment logs its start and completion; a terminal
+  error stays in the model's `metadata_error` and does not stop the others,
+  while `metadata_complete` becomes `true` when the pass ends. The published
+  answer is reused by the requests. The first call installs a placeholder and
+  shares the single scan in flight, so F5 and repeated combo changes do not
+  stack scans or enrichments. If the refresh changes the inventory, the backend
+  reconciles the result by `path + size + mtime` and keeps the models already
+  read; only a new or changed file goes back to the header. A new attempt only
+  happens on a TTL refresh or invalidation, and dropped tasks are logged.
+  **The grey button always says why.** The comparison between the node's plan
+  and the screen's rows (`sameRows`) sorts both sides by layer, because the
+  screen keeps the rows in that order and the node builds the answer its own
+  way; and the explanation panels render under `answered` (the node answered
+  about *these* rows), never under `validated`. The planner accepts several
+  ranges on the same machine, but keeps `blocked` for global gaps, overlap and
+  other real problems; `whyNot` puts the reason in one line next to the button,
+  including the two cases without a panel (nothing selected, answer in
+  flight). The map shows consecutive hops only forward, adds a virtual Gateway
+  at the end with the return leg when the tail is not the gateway yet and shows
+  every candidate route, highlighting in the total the one with the lowest RTT.
+  Internal scrolling on a narrow viewport neither cuts cards nor creates page
+  overflow.
+- **Deployments** (`Deployments`): one row per `deploy_id`, "live" separate
+  from "default", sorted by creation. Each row expands and lists that
+  `deploy_id`'s versions (the history of `RuntimeParams` already run under the
+  same id), with the active version marked. "Redeploy this version" sends
+  `{ version }`; "Redeploy with new parameters" opens the form seeded from the
+  active version's `RuntimeParams` and sends `{ params }` - the backend reuses
+  the version with equal parameters or appends a new one to the same id.
+  Redeploying the same shape from the Deploy Studio (same proven model, same
+  machines and ranges) also lands on the same `deploy_id`; changing machine or
+  range mints a new id. See `deployment.md` §7.1.
+- **Transfer** (`Transfers`/`SendFile`/`Notifications`): remote model downloads
+  with progress and cancellation, pending offers (accept/refuse straight from
+  the bell), active transfers (bytes, speed, ETA, cancel) and finished ones.
+  Sending ("send a file from this machine") offers a file from the local
+  catalog through `POST /api/transfer/send`; the receiver only sees an opaque
+  grant (`grant`), so "send anything" never becomes "read anything". Progress
+  comes from the nodes, so reloading the tab loses nothing.
+  `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` (a variable of the receiving process, read
+  at startup) accepts every offer without a click - dev only. Peers on the same
+  machine share the hostname, so the destination and the availability label
+  carry the start of the `node_id` when the name repeats (`uniqueName`,
+  `routes/Shards.tsx`). Offers, active and finished transfers in `Transfers`
+  are each a full-width table (it used to be a list of cards), with the
+  accept/refuse/cancel action in the last column.
 
-### Informações da rede e materiais de entrada
+### Network information and joining materials
 
-`/config/rede` busca `GET /api/ui/network/info` e mostra o mesmo cartão para
-todos os perfis. Node e infer veem nome, descrição, regras, organização,
-canais, visibilidade, país, cidade e localização em modo somente leitura. O
-administrador autorizado edita esses campos e salva em
-`POST /api/ui/network/settings`; o backend grava a configuração local,
-propaga a mutação assinada aos peers e republica o rótulo geo público.
+`/config/rede` fetches `GET /api/ui/network/info` and shows the same card to
+every profile. Node and infer see name, description, rules, organization,
+channels, visibility, country, city and location read-only. The authorized
+administrator edits those fields and saves through
+`POST /api/ui/network/settings`; the backend writes the local configuration,
+propagates the signed mutation to the peers and republishes the public geo
+label.
 
-O mesmo administrador tem, nessa tela, os controles de copiar e baixar o
-documento `.pom-admin-trust.json`. Em rede local ou privada também aparece a
-chave de conexão para copiar ou baixar. O wizard real oferece os mesmos
-materiais na etapa de convite, destacando a chave de conexão no primeiro
-cartão. O conteúdo bruto do trust e da chave pública começa recolhido, mas
-copiar e baixar continuam disponíveis sem expandir os cartões. `SetupWizard.tsx`
-continua sendo apenas o protótipo visual e não participa dessas chamadas.
+Below the metrics, the "NAT traversal" panel (`TraversalPanel`) shows the
+`traversal` field of `GET /api/ui/cluster`: AutoNAT state, published direct
+addresses and circuits, accepted relay reservations and the hole punch count
+with the last failure. It exists because two nodes behind NAT that do not see
+each other fail at one of three steps, and before it finding out which one
+required `RUST_LOG=debug` on the right machine. An old binary's node does not
+send `traversal` and the panel simply does not show up.
 
-O painel também expõe `Esquecer rede`, com confirmação destrutiva. Essa ação
-chama `POST /api/ui/network/leave`, que revoga a confiança local, prepara o
-`pom.json` para o setup e reinicia este nó; depois a interface volta para
-`/setup`. Ela é deliberadamente diferente de `Sair da rede`, no painel
-`Esta máquina`, que chama `POST /api/ui/leave` e apenas tira a máquina do
-cluster sem apagar sua configuração local. Essa ação também fica disponível
-para um perfil node sem autoridade administrativa e não depende de modelo
-carregado ou estado Ready: o handler para o runtime, limpa o journal da
-implantação e desanuncia a máquina antes de responder.
+The same administrator has, on that screen, the controls to copy and download
+the `.pom-admin-trust.json` document. On a local or private network the
+connection key also shows up to copy or download. The real wizard offers the
+same materials on the invitation step, highlighting the connection key in the
+first card. The raw content of the trust and of the public key starts
+collapsed, but copying and downloading stay available without expanding the
+cards. `SetupWizard.tsx` is still only the visual prototype and takes no part in
+these calls.
 
-## Defeitos anotados
+The panel also exposes `Forget network`, with a destructive confirmation. That
+action calls `POST /api/ui/network/leave`, which revokes the local trust,
+prepares `pom.json` for setup and restarts this node; then the UI goes back to
+`/setup`. It is deliberately different from `Leave network`, in the
+`This machine` panel, which calls `POST /api/ui/leave` and only takes the
+machine out of the cluster without erasing its local configuration. That action
+is also available to a node profile without administrative authority and does
+not depend on a loaded model or a Ready state: the handler stops the runtime,
+clears the deployment journal and unannounces the machine before answering.
 
-- `AddNodeDialog` re-semeia as escolhas **na transição para aberto**, não a cada
-  props nova: o Painel remonta `peers`/`slices` a cada polling do cluster, e um
-  efeito dependente desses arrays descartava a escolha do operador no meio da
-  edição (a combo "voltava" para outra máquina sozinha). Um segundo efeito só
-  troca a escolha que sumiu da lista; a fatia é identificada pela faixa
-  (`keyOf`), não pelo índice. Testes em `AddNodeDialog.test.tsx`.
-Nenhum outro em aberto nesta tela.
-- DEFEITO ANOTADO: `LeaveNode` reusa o rótulo do gatilho no botão de
-  confirmar - a janela mostra dois botões com o mesmo texto ("Sair da rede").
-  Cosmético, mas um usuário pode confundir o gatilho com a confirmação.
-- DEFEITO ANOTADO: em janela estreita (~420 px) a coluna de conteúdo estoura na
-  horizontal e os painéis saem cortados à direita - `node_id`, texto de ajuda e
-  botões ficam fora da viewport. Não é de uma tela só: reproduz igual em
-  `/config/rede` e em `/config/preferencias`, então é da moldura, não do painel.
-  Verificado em captura headless a 420x900 nas duas telas.
+## A machine has a single name
 
-## O nome de uma máquina é um só
+`node_name` in `pom.json` is how the operator names the machine, and it is the
+name the node announces to peers (`network.hostname`). Every screen reads that
+name; the "Send to..." selector of `/fatias` used to read `sysmon`, the
+operating system's raw hostname, and was the only place in the app that called
+the machine by another name. On a machine with two nodes it was worse: both
+reported the same OS hostname, the list saw a collision and broke the tie with
+the `node_id` prefix. `/api/ui/models` and `/api/ui/cluster/models` answer the
+announced name, and a peer that did not answer the survey still carries the
+name it announced - without it the screen fell back to the `node_id`, a hex
+prefix. The presentation lives in `lib/peerName.ts`.
 
-`node_name` do `pom.json` é como o operador batiza a máquina, e é o nome que o
-nó anuncia aos peers (`network.hostname`). Toda tela lê esse nome; o seletor
-"Enviar para..." de `/fatias` lia `sysmon`, o hostname cru do sistema
-operacional, e era o único lugar do aplicativo que chamava a máquina por outro
-nome. Numa máquina com dois nós era pior: os dois relatavam o mesmo hostname do
-SO, a lista via colisão e desempatava com o prefixo do `node_id`. `/api/ui/models`
-e `/api/ui/cluster/models` respondem o nome anunciado, e um peer que não
-respondeu ao levantamento ainda leva o nome que anunciou - sem ele a tela caía
-no `node_id`, um prefixo hexadecimal. A apresentação está em
-`lib/peerName.ts`.
+Note on `AddNodeDialog`: it reseeds the choices **on the transition to open**,
+not on every new prop: the Dashboard rebuilds `peers`/`slices` on every cluster
+poll, and an effect depending on those arrays discarded the operator's choice
+in the middle of editing (the combo "jumped back" to another machine on its
+own). A second effect only replaces a choice that disappeared from the list;
+the slice is identified by its range (`keyOf`), not by index. Tests in
+`AddNodeDialog.test.tsx`.
+
+## Defects noted
+
+- DEFECT NOTED: `LeaveNode` reuses the trigger's label on the confirm button -
+  the window shows two buttons with the same text ("Leave network"). Cosmetic,
+  but a user can confuse the trigger with the confirmation.
+- DEFECT NOTED: in a narrow window (~420 px) the content column overflows
+  horizontally and the panels come out cut on the right - `node_id`, help text
+  and buttons fall outside the viewport. It is not a single screen: it
+  reproduces the same on `/config/rede` and on `/config/preferencias`, so it is
+  the frame's, not the panel's. Checked in a headless capture at 420x900 on
+  both screens.

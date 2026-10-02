@@ -536,12 +536,18 @@ pub(super) async fn run_ring(
     tunnel: Option<&TunnelOutboundSender>,
     cancellation: &Cancellation,
     reuse_prefix: bool,
-    _overlap_window: PrefillOverlapWindow,
+    overlap_window: PrefillOverlapWindow,
     resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
+    // No anel, a sobreposição é feita pelos hops: cada um responde a um
+    // pedaço intermediário logo após o próprio compute e repassa em segundo
+    // plano, em ordem (`ring_overlap` em `infer_server/prefill.rs`). O
+    // gateway continua mandando um pedaço por vez; o compute do hop no
+    // pedaço k+1 corre enquanto o seguinte processa o k.
+    let ring_overlap = overlap_window.max_inflight_chunks() > 1 && !next_hops.is_empty();
 
     let mut chunk_index = resume.as_ref().map(|r| r.from_chunk).unwrap_or(0);
     let mut prompt_tokens = resume.as_ref().map(|r| r.prompt_tokens).unwrap_or(0);
@@ -557,6 +563,9 @@ pub(super) async fn run_ring(
                 .map(|id| RequestTrace::from_plan_with_trace_id(id, model, plan))
                 .unwrap_or_else(|| RequestTrace::from_plan(model, plan))
         });
+    trace.prefill_overlap_enabled = ring_overlap;
+    // Um pedaço em compute e um em repasse por hop: a profundidade efetiva.
+    trace.prefill_max_inflight_chunks = if ring_overlap { 2 } else { 1 };
 
     loop {
         check_cancelled(cancellation)?;
@@ -576,6 +585,9 @@ pub(super) async fn run_ring(
         head_meta["next_hops"] = json!(next_hops);
         head_meta["exec_start"] = json!(head.exec_start);
         head_meta["exec_end"] = json!(head.exec_end);
+        if ring_overlap {
+            head_meta["ring_overlap"] = json!(true);
+        }
 
         let sent = cancelable(
             cancellation,
@@ -934,6 +946,11 @@ pub(super) async fn run_direct(
                                 std::future::ready(Ok(head_sent)),
                                 &mut ticket,
                                 &head.node_id,
+                                crate::relay::frame_deadline(
+                                    chunk_size as usize,
+                                    if ci == 0 { images.len() } else { 0 },
+                                    plan.steps.len(),
+                                ),
                                 |_| {},
                             ),
                         )
@@ -1249,6 +1266,8 @@ pub(super) fn record_direct_hops(
                 "bytes_sent",
                 "bytes_received",
                 "client_encode_ms",
+                "client_f16_encode_ms",
+                "client_f16_decode_ms",
                 "response_headers_ms",
                 "response_body_ms",
                 "client_decode_ms",

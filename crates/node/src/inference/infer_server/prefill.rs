@@ -128,7 +128,7 @@ pub(super) async fn handle_prefill(
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
-    let (meta, tensor) = match wire::decode_inference_request(&body) {
+    let (meta, tensor, inbound_wire_timing) = match wire::decode_inference_request_profiled(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
@@ -351,16 +351,25 @@ pub(super) async fn handle_prefill(
     };
     reply.timings.frame_decode_us = frame_decode_us;
     reply.timings.input_prepare_us = input_prepare_us;
+    reply.timings.residual_wire_f16_decode_ns = reply
+        .timings
+        .residual_wire_f16_decode_ns
+        .saturating_add(inbound_wire_timing.f16_conversion_ns);
 
     // Same reasoning as handle_step: decode once so the relay branch below
     // can inspect what came back, patch in this hop's own processing_ms/
     // node_timings either way, and only then decide whether to relay or
     // just re-encode and return.
     let elapsed = processing_started.elapsed();
-    let (mut local_meta, local_tensor) = match wire::decode(&reply.bytes) {
-        Ok(v) => v,
-        Err(e) => return err500(e),
-    };
+    let (mut local_meta, local_tensor, reply_wire_timing) =
+        match wire::decode_profiled(&reply.bytes) {
+            Ok(v) => v,
+            Err(e) => return err500(e),
+        };
+    reply.timings.residual_wire_f16_decode_ns = reply
+        .timings
+        .residual_wire_f16_decode_ns
+        .saturating_add(reply_wire_timing.f16_conversion_ns);
     if local_meta
         .get("token_id")
         .and_then(|value| value.as_u64())
@@ -513,52 +522,133 @@ pub(super) async fn handle_prefill(
     let hops = next_hops.expect("should_relay implies next_hops is Some");
     let (residual, shape) = local_tensor.expect("should_relay implies local_tensor is Some");
     let is_final_chunk_for_forward = is_final_chunk_for_forward(&local_meta, is_final_chunk);
+    let ring_overlap = meta
+        .get("ring_overlap")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
-    let mut bubbled = match relay_and_bubble(
+    // Anel com sobreposição: o repasse do pedaço anterior desta sessão tem de
+    // terminar antes deste seguir, para o próximo hop receber os pedaços em
+    // ordem. Esperá-lo aqui, depois do compute local, é o que sobrepõe o
+    // compute deste hop no pedaço k+1 ao do hop seguinte no pedaço k.
+    let relay_slot = ring_overlap.then(|| ring_relay_slot(&sid_for_forward));
+    let mut relay_guard = match &relay_slot {
+        Some(slot) => Some(slot.clone().lock_owned().await),
+        None => None,
+    };
+    let previous = match relay_guard.as_mut().and_then(|guard| guard.take()) {
+        Some(pending) => match pending.await {
+            // Pedaço 0 de uma sessão nova: o repasse que sobrou é de uma
+            // requisição abandonada e não diz nada sobre esta.
+            _ if chunk_index == 0 => None,
+            Ok(Ok(bubbled)) => Some(bubbled),
+            Ok(Err(response)) => {
+                forget_ring_relay_slot(&sid_for_forward);
+                return response;
+            }
+            Err(join) => {
+                forget_ring_relay_slot(&sid_for_forward);
+                return err500(anyhow::anyhow!(
+                    "repasse do pedaço anterior abortou: {join}"
+                ));
+            }
+        },
+        None => None,
+    };
+
+    let relay_meta = {
+        let mut relay_meta = json!({
+            "session_id": sid_for_forward,
+            "pipeline_session": true,
+            "chunk_index": chunk_index,
+            "chunk_size": chunk_size,
+            "reuse_prefix": reuse_prefix_for_forward(&local_meta, reuse_prefix, chunk_index),
+            "is_final_chunk": is_final_chunk_for_forward,
+            // O próximo hop recebe a própria sub-faixa, pelo mesmo motivo
+            // que este recebeu a sua: quem manda é que decide o pedaço.
+            "exec_start": hops[0].exec_start,
+            "exec_end": hops[0].exec_end,
+        });
+        if let Some(tokens) = local_meta.get("tokens") {
+            relay_meta["tokens"] = tokens.clone();
+        }
+        if let Some(positions) = local_meta.get("mrope_positions") {
+            relay_meta["mrope_positions"] = positions.clone();
+        }
+        for field in ["start_pos", "next_pos", "stable_len"] {
+            if let Some(value) = local_meta.get(field) {
+                relay_meta[field] = value.clone();
+            }
+        }
+        if let Some(value) = local_meta.get("prefix_match_tokens") {
+            relay_meta["prefix_match_tokens"] = value.clone();
+        }
+        if let Some(value) = local_meta.get("thinking_enabled") {
+            relay_meta["thinking_enabled"] = value.clone();
+        }
+        if ring_overlap {
+            relay_meta["ring_overlap"] = json!(true);
+        }
+        preserve_batch_identity(&meta, &mut relay_meta);
+        relay_meta
+    };
+
+    if let (Some(guard), false) = (relay_guard.as_mut(), is_final_chunk_for_forward) {
+        // Pedaço intermediário: segue para o próximo hop em segundo plano e a
+        // resposta sai já, com o que só este hop sabe (posição, tokens) e a
+        // telemetria dos hops seguintes no pedaço anterior. Uma falha desse
+        // repasse volta no pedaço seguinte como 502, que o gateway trata como
+        // reconstrução - nunca como retomada.
+        let processing_ms = local_meta["processing_ms"].clone();
+        let node_timings = local_meta["node_timings"].clone();
+        **guard = Some(tokio::spawn(async move {
+            relay_and_bubble(
+                http_client(),
+                &hops,
+                "/v1/prefill",
+                relay_meta,
+                (&residual, shape),
+                wire_dtype,
+                crate::relay::CHUNK_ATTEMPTS,
+                processing_ms,
+                node_timings,
+            )
+            .await
+        }));
+        let mut early = local_meta.clone();
+        early["hop_timings"] = previous
+            .as_ref()
+            .and_then(|bubbled| bubbled.get("hop_timings"))
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        overlay_head_authoritative_fields(&local_meta, &mut early);
+        return match wire::encode_batch_single(&early, None, wire_dtype) {
+            Ok(bytes) => (
+                StatusCode::OK,
+                [("content-type", "application/octet-stream")],
+                bytes,
+            )
+                .into_response(),
+            Err(e) => err500(e),
+        };
+    }
+
+    let bubbled = relay_and_bubble(
         http_client(),
         &hops,
         "/v1/prefill",
-        {
-            let mut relay_meta = json!({
-                "session_id": sid_for_forward,
-                "pipeline_session": true,
-                "chunk_index": chunk_index,
-                "chunk_size": chunk_size,
-                "reuse_prefix": reuse_prefix_for_forward(&local_meta, reuse_prefix, chunk_index),
-                "is_final_chunk": is_final_chunk_for_forward,
-                // O próximo hop recebe a própria sub-faixa, pelo mesmo motivo
-                // que este recebeu a sua: quem manda é que decide o pedaço.
-                "exec_start": hops[0].exec_start,
-                "exec_end": hops[0].exec_end,
-            });
-            if let Some(tokens) = local_meta.get("tokens") {
-                relay_meta["tokens"] = tokens.clone();
-            }
-            if let Some(positions) = local_meta.get("mrope_positions") {
-                relay_meta["mrope_positions"] = positions.clone();
-            }
-            for field in ["start_pos", "next_pos", "stable_len"] {
-                if let Some(value) = local_meta.get(field) {
-                    relay_meta[field] = value.clone();
-                }
-            }
-            if let Some(value) = local_meta.get("prefix_match_tokens") {
-                relay_meta["prefix_match_tokens"] = value.clone();
-            }
-            if let Some(value) = local_meta.get("thinking_enabled") {
-                relay_meta["thinking_enabled"] = value.clone();
-            }
-            preserve_batch_identity(&meta, &mut relay_meta);
-            relay_meta
-        },
+        relay_meta,
         (&residual, shape),
         wire_dtype,
         crate::relay::CHUNK_ATTEMPTS, // uma resposta perdida exige rebuild frio
         local_meta["processing_ms"].clone(),
         local_meta["node_timings"].clone(),
     )
-    .await
-    {
+    .await;
+    if relay_guard.take().is_some() {
+        forget_ring_relay_slot(&sid_for_forward);
+    }
+    let mut bubbled = match bubbled {
         Ok(bubbled) => bubbled,
         Err(resp) => return resp,
     };
@@ -574,6 +664,42 @@ pub(super) async fn handle_prefill(
             .into_response(),
         Err(e) => err500(e),
     }
+}
+
+/// O repasse em segundo plano do último pedaço intermediário de uma sessão
+/// (anel com sobreposição).
+type RingRelay = tokio::task::JoinHandle<std::result::Result<Value, Response>>;
+type RingRelaySlot = Arc<tokio::sync::Mutex<Option<RingRelay>>>;
+
+fn ring_relay_slots() -> &'static std::sync::Mutex<HashMap<String, RingRelaySlot>> {
+    static SLOTS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, RingRelaySlot>>> =
+        std::sync::OnceLock::new();
+    SLOTS.get_or_init(Default::default)
+}
+
+fn ring_relay_slot(session: &str) -> RingRelaySlot {
+    let mut slots = ring_relay_slots()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Sessão abandonada no meio do prompt deixa a vaga para trás; as que não
+    // têm repasse pendente nem ninguém esperando saem aqui.
+    if slots.len() > 256 {
+        slots.retain(|_, slot| {
+            Arc::strong_count(slot) > 1
+                || slot
+                    .try_lock()
+                    .map(|pending| pending.as_ref().is_some_and(|task| !task.is_finished()))
+                    .unwrap_or(true)
+        });
+    }
+    slots.entry(session.to_string()).or_default().clone()
+}
+
+fn forget_ring_relay_slot(session: &str) {
+    ring_relay_slots()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(session);
 }
 
 pub(super) fn owns_tokens(local_meta: &Value) -> bool {
@@ -1055,9 +1181,11 @@ pub(super) fn prefill_blocking(
         timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
+    s.perf.observe_prefill(decode_started.elapsed(), n_tokens);
     timings.tp = crate::tp::take_decode_telemetry();
     timings.backend_call_us += engine_timing.backend_call_us;
     timings.backend_sync_us += engine_timing.backend_sync_us;
+    timings.mtp_observe_us += engine_timing.mtp_observe_us;
     timings.merge_engine_capture(&engine_timing);
 
     // ── Session update ───────────────────────────────────────────────────────
@@ -1832,7 +1960,19 @@ pub(super) fn prefill_batch_blocking(
                 meta["tokens"] = json!(tokens);
             }
             let started = Instant::now();
-            let bytes = wire::encode(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
+            let (bytes, wire_timing) =
+                wire::encode_profiled(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
+            timings.residual_wire_f16_encode_ns = timings
+                .residual_wire_f16_encode_ns
+                .saturating_add(wire_timing.f16_conversion_ns);
+            timings.residual_wire_f8_conversion_us = timings
+                .residual_wire_f8_conversion_us
+                .saturating_add(wire_timing.f8_conversion_us);
+            timings.residual_wire_frame_serialize_us = timings
+                .residual_wire_frame_serialize_us
+                .saturating_add(wire_timing.frame_serialize_us);
+            timings.residual_wire_encode_calls =
+                timings.residual_wire_encode_calls.saturating_add(1);
             timings.encode_us = started.elapsed().as_micros() as u64;
             Ok(TimedReply { bytes, timings })
         })();
@@ -2286,7 +2426,19 @@ pub(super) fn step_batch_blocking(
                 meta["tokens"] = json!(tokens);
             }
             let encode_started = Instant::now();
-            let bytes = wire::encode(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
+            let (bytes, wire_timing) =
+                wire::encode_profiled(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
+            timings.residual_wire_f16_encode_ns = timings
+                .residual_wire_f16_encode_ns
+                .saturating_add(wire_timing.f16_conversion_ns);
+            timings.residual_wire_f8_conversion_us = timings
+                .residual_wire_f8_conversion_us
+                .saturating_add(wire_timing.f8_conversion_us);
+            timings.residual_wire_frame_serialize_us = timings
+                .residual_wire_frame_serialize_us
+                .saturating_add(wire_timing.frame_serialize_us);
+            timings.residual_wire_encode_calls =
+                timings.residual_wire_encode_calls.saturating_add(1);
             timings.encode_us = encode_started.elapsed().as_micros() as u64;
             Ok(TimedReply { bytes, timings })
         })();

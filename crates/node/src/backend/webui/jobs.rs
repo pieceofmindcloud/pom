@@ -34,8 +34,9 @@ pub struct RuntimeParams {
     pub n_ctx: u32,
     #[serde(default = "d_true")]
     pub offload_kqv: bool,
-    /// Precisão do estado oculto nas fronteiras entre peers. f16 mantém o
-    /// comportamento original; f8 é uma escolha explícita da implantação.
+    /// Precisão do estado oculto nas fronteiras entre peers. f16 segue como
+    /// padrão; f32 preserva as ativações com o dobro do payload. f8 e i4 são
+    /// escolhas explícitas com perda.
     #[serde(default)]
     pub hidden_state_dtype: crate::wire::WireDtype,
     /// Deixa o `common_fit_params` do llama.cpp ajustar a alocação à memória

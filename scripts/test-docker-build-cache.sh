@@ -77,6 +77,18 @@ ordered "npm dependencies are isolated in the frontend stage" \
 ordered "rustup is cached before backend source copies" \
     "$(index_in "$builder_instructions" '^RUN .*sh.rustup.rs')" \
     "$(index_in "$builder_instructions" '^COPY --from=llama-fork')"
+ordered "kache is installed after rustup" \
+    "$(index_in "$builder_instructions" '^RUN .*sh.rustup.rs')" \
+    "$(index_in "$builder_instructions" '^RUN .*cargo install .*kache')"
+ordered "kache is cached before backend source copies" \
+    "$(index_in "$builder_instructions" '^RUN .*cargo install .*kache')" \
+    "$(index_in "$builder_instructions" '^COPY --from=llama-fork')"
+if printf '%s\n' "$builder_instructions" | grep -q '^ENV[[:space:]]XDG_CACHE_HOME=/build/target$' \
+   && printf '%s\n' "$builder_instructions" | grep -Eq 'kache init --no-service && .*cargo build'; then
+    pass "kache is initialised before Cargo and stores into the target cache mount"
+else
+    fail "the Cargo build must run kache init first, with XDG_CACHE_HOME=/build/target"
+fi
 ordered "the llama.cpp fork precedes backend sources" \
     "$(index_in "$builder_instructions" '^COPY .*llama\.cpp/')" \
     "$(index_in "$builder_instructions" '^COPY .*crates/')"
@@ -173,6 +185,7 @@ mkdir -p "$ctx"
             if (body ~ /npm run build/) return "ui-build"
             if (body ~ /cargo build/) return "cargo"
             if (body ~ /rustup/) return "rustup"
+            if (body ~ /cargo install .*kache/) return "kache"
             if (body ~ /apt-get/) return "apt"
             return "run" (++other)
         }
@@ -252,6 +265,8 @@ build_target_groups() {
             if (instr ~ /POM-STEP:ui-build/) return "ui"
             if (instr ~ /POM-STEP:npm-ci/ || instr ~ /apps\/frontend\/package/) return "npm-deps"
             if (instr ~ /POM-STEP:rustup/) return "toolchain"
+            # kache is compiled by the selected toolchain, so it belongs to it.
+            if (instr ~ /POM-STEP:kache/) return "toolchain"
             if (instr ~ /POM-STEP:apt/) return "base"
             if (instr ~ /llama\.cpp\// || instr ~ /^COPY vendor\//) return "llama"
             if (stage == "frontend") return "ui"

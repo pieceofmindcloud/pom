@@ -67,6 +67,7 @@ pub(crate) async fn fetch_from_principal_candidates(
     signing_key: &ed25519_dalek::SigningKey,
     authority_principal: &crate::admin_trust::AuthorityPrincipal,
     trust: &crate::admin_trust::AdminTrust,
+    tunnel: Option<&crate::peer_client::TunnelPeer>,
 ) -> Result<bool> {
     let headers = crate::gateway::GatewayState::signed_control_headers_for(
         signing_key,
@@ -83,13 +84,11 @@ pub(crate) async fn fetch_from_principal_candidates(
             TLS_POLICY_PATH,
             connection_key,
             &headers,
+            tunnel,
         )
         .await
         .context("não deu para falar com o principal")?;
-    let body: TlsReply = resp
-        .json()
-        .await
-        .context("resposta do principal não parseou")?;
+    let body: TlsReply = resp.json().context("resposta do principal não parseou")?;
     info!(
         "política de TLS confirmada pelo principal: {}",
         body.tls_required
@@ -136,7 +135,8 @@ pub(crate) fn spawn_ratchet(
             else {
                 continue;
             };
-            let candidates = peer.gateway_candidates_with_tls(anunciado);
+            let candidates =
+                net.order_gateway_bases(&peer.node_id, peer.gateway_candidates_with_tls(anunciado));
             if candidates.is_empty() {
                 warn!("principal {principal} não anuncia porta de gateway; política de TLS não pôde ser confirmada");
                 continue;
@@ -162,6 +162,7 @@ pub(crate) fn spawn_ratchet(
                 &signing_key,
                 &authority_principal,
                 &trust,
+                crate::peer_client::TunnelPeer::from_peer(&peer).as_ref(),
             )
             .await;
 

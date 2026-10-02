@@ -260,9 +260,18 @@ pub(super) async fn step_direct(
     };
     let ack_direct = direct.clone();
     let ack_ticket_id = ticket_id.clone();
-    let meta = crate::direct::await_result_with_ack(ack, &mut ticket, &head.node_id, move |sent| {
-        ack_direct.record_transport(&ack_ticket_id, 0, sent);
-    })
+    // A cadeia inteira responde dentro do prazo do frame que a cabeça recebe:
+    // tokens desta rodada vezes todos os hops (ver `relay::frame_deadline`).
+    let reply_deadline = crate::relay::frame_deadline_for(&body_meta, None);
+    let meta = crate::direct::await_result_with_ack(
+        ack,
+        &mut ticket,
+        &head.node_id,
+        reply_deadline,
+        move |sent| {
+            ack_direct.record_transport(&ack_ticket_id, 0, sent);
+        },
+    )
     .await
     .map_err(|e| {
         routes.mark_failure(&head.node_id, &head.inference_url);
@@ -343,13 +352,21 @@ pub(crate) struct RemoteDecodeStream {
     pub(super) plan: PipelinePlan,
     pub(crate) initial_trace: RequestTrace,
     pub(super) last_callback_at: Option<Instant>,
+    /// Prazo entre dois callbacks: uma rodada da cabeça remota, com os tokens
+    /// que ela pode decodificar juntos, por todos os hops do plano.
+    pub(super) callback_deadline: std::time::Duration,
 }
 
 impl RemoteDecodeStream {
     pub(crate) async fn next(&mut self, cancellation: &Cancellation) -> Result<SpeculativeStep> {
-        let meta = cancelable(cancellation, async { Ok(self.ticket.recv().await) })
-            .await?
-            .ok_or_else(|| anyhow!("transporte remoto encerrou sem lote terminal"))?;
+        let deadline = self.callback_deadline;
+        let meta = cancelable(cancellation, async {
+            tokio::time::timeout(deadline, self.ticket.recv())
+                .await
+                .map_err(|_| anyhow!("cabeça remota não entregou a rodada em {deadline:?}"))
+        })
+        .await?
+        .ok_or_else(|| anyhow!("transporte remoto encerrou sem lote terminal"))?;
         let callback_at = Instant::now();
         let callback_interval_ms = self
             .last_callback_at
@@ -535,12 +552,20 @@ pub(crate) async fn step_stream(
         ack.bytes_received,
     );
     initial_trace.record_transport_fallback_from_sent(&ack);
+    let callback_deadline = crate::relay::frame_deadline_for(
+        &json!({
+            "speculate": meta.get("speculate").cloned().unwrap_or(serde_json::Value::Null),
+            "next_hops": vec![serde_json::Value::Null; plan.steps.len().saturating_sub(1)],
+        }),
+        None,
+    );
     Ok(RemoteDecodeStream {
         ticket,
         model: model.to_string(),
         plan: plan.clone(),
         initial_trace,
         last_callback_at: None,
+        callback_deadline,
     })
 }
 

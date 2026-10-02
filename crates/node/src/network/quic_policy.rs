@@ -36,27 +36,31 @@ struct QuicReply {
     quic_enabled: bool,
 }
 
-pub async fn fetch_from_principal(
+/// Pergunta ao principal a política QUIC por todos os endereços dele, o que
+/// já respondeu primeiro, e por último pelo túnel libp2p (`/api/cluster/quic`
+/// está na lista do túnel). Só o primeiro endereço anunciado falhava para
+/// sempre com um principal atrás de NAT ou num IPv6 inalcançável.
+pub(crate) async fn fetch_from_principal(
     clients: &PeerClients,
     principal_id: &str,
-    base_url: &str,
+    base_urls: &[String],
     connection_key: &str,
     announced_tls: bool,
+    tunnel: Option<&crate::peer_client::TunnelPeer>,
 ) -> Result<bool> {
-    let http = clients.for_peer(principal_id)?;
-    let resp = http
-        .get(format!("{base_url}{QUIC_POLICY_PATH}"))
-        .bearer_auth(connection_key)
-        .timeout(crate::webui::PEER_TIMEOUT)
-        .send()
+    let resp = clients
+        .get_internal_from_candidates(
+            principal_id,
+            base_urls,
+            QUIC_POLICY_PATH,
+            connection_key,
+            &reqwest::header::HeaderMap::new(),
+            tunnel,
+        )
         .await
         .context("não deu para falar com o principal para confirmar QUIC")?;
-    if !resp.status().is_success() {
-        anyhow::bail!("principal respondeu {}", resp.status());
-    }
     let body: QuicReply = resp
         .json()
-        .await
         .context("resposta da política QUIC não parseou")?;
     info!(
         quic_enabled = body.quic_enabled,
@@ -93,23 +97,30 @@ pub fn spawn_ratchet(
             else {
                 continue;
             };
-            let Some(port) = peer.gateway_port else {
+            if peer.gateway_port.is_none() {
                 warn!("principal {principal} não anuncia porta de gateway; política QUIC não pôde ser confirmada");
                 continue;
-            };
-            let base = crate::peer_client::peer_base_url(
-                &crate::network::ip_host(&peer.addr),
-                port,
-                announced_tls,
+            }
+            let bases = net.order_gateway_bases(
+                &peer.node_id,
+                peer.gateway_candidates_with_tls(announced_tls),
             );
+            let tunnel = crate::peer_client::TunnelPeer::from_peer(&peer);
             let (local, key) = {
                 let cfg = auth.read().await;
                 (cfg.quic_enabled, cfg.connection_key.clone())
             };
             let probe = PeerClients::new(std::time::Duration::from_secs(10));
             probe.set_tls(announced_tls);
-            let fetched =
-                fetch_from_principal(&probe, &principal, &base, &key, announced_tls).await;
+            let fetched = fetch_from_principal(
+                &probe,
+                &principal,
+                &bases,
+                &key,
+                announced_tls,
+                tunnel.as_ref(),
+            )
+            .await;
             if let PolicyOutcome::Adopt(value) = adopt_or_keep(local, fetched) {
                 {
                     let mut cfg = auth.write().await;

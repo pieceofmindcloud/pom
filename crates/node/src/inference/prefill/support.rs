@@ -664,7 +664,9 @@ impl RemoteStreamTelemetry {
         self.wait.merge(&other.wait);
         self.producer_wait.merge(&other.producer_wait);
         self.channel_send_wait.merge(&other.channel_send_wait);
+        self.downstream_wait.merge(&other.downstream_wait);
         self.queue_wait.merge(&other.queue_wait);
+        self.delivery.merge(&other.delivery);
         self.token_delivery_interval
             .merge(&other.token_delivery_interval);
         self.refresh_percentiles();
@@ -1165,6 +1167,9 @@ pub struct PhaseTrace {
     /// tokens.
     pub reported_spans: u64,
     pub client_encode_ms: u64,
+    /// Subset of client frame encode/decode spent on f32<->f16 conversion.
+    pub client_f16_encode_ms: Option<f64>,
+    pub client_f16_decode_ms: Option<f64>,
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
     pub client_decode_ms: u64,
@@ -1210,6 +1215,8 @@ pub struct PhaseTrace {
     /// serialização da resposta. Quando presente, explica a produção MTP que
     /// um ciclo de remote-stream aguarda legitimamente.
     pub node_mtp_draft_ms: f64,
+    /// Soma do `observe` da cabeça `nextn` na cauda (ver `mtp_observe_ms`).
+    pub node_mtp_observe_ms: f64,
     /// Time spent in the backend evaluation API call. This is neither queue
     /// wait nor a guarantee of pure device-kernel time.
     pub node_backend_call_ms: f64,
@@ -1234,6 +1241,8 @@ pub struct PhaseTrace {
     pub node_residual_capture_postprocess_ms: f64,
     pub node_residual_capture_bytes: u64,
     pub node_residual_capture_copies: u64,
+    pub node_residual_wire_f16_encode_ms: Option<f64>,
+    pub node_residual_wire_f16_decode_ms: Option<f64>,
     pub node_residual_wire_f8_conversion_ms: f64,
     pub node_residual_wire_frame_serialize_ms: f64,
     pub node_residual_wire_encode_calls: u64,
@@ -1275,6 +1284,12 @@ pub struct PhaseTrace {
     pub(super) selected_path_seen: bool,
     #[serde(skip)]
     pub(super) hidden_state_dtype_mixed: bool,
+}
+
+fn add_optional_ms(total: &mut Option<f64>, sample: Option<f64>) {
+    if let Some(sample) = sample {
+        *total = Some((*total).unwrap_or(0.0) + sample);
+    }
 }
 
 impl PhaseTrace {
@@ -1376,6 +1391,16 @@ impl PhaseTrace {
         self.calls += 1;
         self.reported_spans = self.reported_spans.saturating_add(1);
         self.client_encode_ms += client_encode_ms;
+        add_optional_ms(
+            &mut self.client_f16_encode_ms,
+            node.get("client_f16_encode_ms")
+                .and_then(serde_json::Value::as_f64),
+        );
+        add_optional_ms(
+            &mut self.client_f16_decode_ms,
+            node.get("client_f16_decode_ms")
+                .and_then(serde_json::Value::as_f64),
+        );
         self.response_headers_ms += response_headers_ms;
         self.response_body_ms += response_body_ms;
         self.client_decode_ms += client_decode_ms;
@@ -1400,6 +1425,7 @@ impl PhaseTrace {
         self.node_setup_ms += node_ms("setup_ms");
         self.node_decode_ms += node_decode_ms;
         self.node_mtp_draft_ms += node_ms("mtp_draft_ms");
+        self.node_mtp_observe_ms += node_ms("mtp_observe_ms");
         self.node_backend_call_ms += node_ms("backend_call_ms");
         self.node_backend_sync_ms += node_ms("backend_sync_ms");
         self.node_moe_forward_ms += node_ms("moe_forward_ms");
@@ -1416,6 +1442,16 @@ impl PhaseTrace {
             node.get("residual_capture_copies")
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
+        );
+        add_optional_ms(
+            &mut self.node_residual_wire_f16_encode_ms,
+            node.get("residual_wire_f16_encode_ms")
+                .and_then(serde_json::Value::as_f64),
+        );
+        add_optional_ms(
+            &mut self.node_residual_wire_f16_decode_ms,
+            node.get("residual_wire_f16_decode_ms")
+                .and_then(serde_json::Value::as_f64),
         );
         self.node_residual_wire_f8_conversion_ms += node_ms("residual_wire_f8_conversion_ms");
         self.node_residual_wire_frame_serialize_ms += node_ms("residual_wire_frame_serialize_ms");
@@ -1558,6 +1594,8 @@ impl PhaseTrace {
         self.calls += next.calls;
         self.reported_spans = self.reported_spans.saturating_add(next.reported_spans);
         self.client_encode_ms += next.client_encode_ms;
+        add_optional_ms(&mut self.client_f16_encode_ms, next.client_f16_encode_ms);
+        add_optional_ms(&mut self.client_f16_decode_ms, next.client_f16_decode_ms);
         self.response_headers_ms += next.response_headers_ms;
         self.response_body_ms += next.response_body_ms;
         self.client_decode_ms += next.client_decode_ms;
@@ -1584,6 +1622,7 @@ impl PhaseTrace {
         self.node_setup_ms += next.node_setup_ms;
         self.node_decode_ms += next.node_decode_ms;
         self.node_mtp_draft_ms += next.node_mtp_draft_ms;
+        self.node_mtp_observe_ms += next.node_mtp_observe_ms;
         self.node_backend_call_ms += next.node_backend_call_ms;
         self.node_backend_sync_ms += next.node_backend_sync_ms;
         self.node_residual_capture_d2h_sync_ms += next.node_residual_capture_d2h_sync_ms;
@@ -1596,6 +1635,14 @@ impl PhaseTrace {
         self.node_residual_capture_copies = self
             .node_residual_capture_copies
             .saturating_add(next.node_residual_capture_copies);
+        add_optional_ms(
+            &mut self.node_residual_wire_f16_encode_ms,
+            next.node_residual_wire_f16_encode_ms,
+        );
+        add_optional_ms(
+            &mut self.node_residual_wire_f16_decode_ms,
+            next.node_residual_wire_f16_decode_ms,
+        );
         self.node_residual_wire_f8_conversion_ms += next.node_residual_wire_f8_conversion_ms;
         self.node_residual_wire_frame_serialize_ms += next.node_residual_wire_frame_serialize_ms;
         self.node_residual_wire_encode_calls = self
@@ -1905,7 +1952,7 @@ pub struct RequestTrace {
     /// `cold`. O gateway troca por `session-lost-cold` quando precisou
     /// reconstruir a sessão após um peer perder seu estado, e por `disk`
     /// quando o reuso veio de um snapshot automático em disco
-    /// (`slot_persist_prefix_cache`, ver `inferencia.md` §3.1.1).
+    /// (`slot_persist_prefix_cache`, ver `inference.md` §3.1.1).
     pub prefix_reuse_status: Option<String>,
     /// Razão local para o gateway não ter encontrado sessão em memória.
     /// Diferencia cache vazio, rota diferente, prompt que divergiu e lease
@@ -2628,6 +2675,18 @@ impl RequestTrace {
             .get("processing_ms")
             .and_then(|value| value.as_u64())
             .unwrap_or(0);
+        let mut node_timings = sent
+            .meta
+            .get("node_timings")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !node_timings.is_object() {
+            node_timings = serde_json::json!({});
+        }
+        node_timings["client_f16_encode_ms"] =
+            serde_json::json!(sent.client_f16_encode_ns as f64 / 1_000_000.0);
+        node_timings["client_f16_decode_ms"] =
+            serde_json::json!(sent.client_f16_decode_ns as f64 / 1_000_000.0);
         self.record_hop(
             hop,
             phase,
@@ -2643,9 +2702,7 @@ impl RequestTrace {
                 on: sent.tls,
                 handshake_ms: sent.tls_handshake_ms,
             },
-            sent.meta
-                .get("node_timings")
-                .unwrap_or(&serde_json::Value::Null),
+            &node_timings,
         );
         if let Some(measured_network_ms) =
             TransportTrace::measured_network_ms(sent.transport_rtt_us)
@@ -2963,11 +3020,15 @@ impl RequestTrace {
             .map(|hop| hop.decode.reported_spans)
             .sum::<u64>();
         // Remote-stream callbacks count accepted tokens directly. The regular
-        // path has no callback frames, so its completed output token count is
-        // the authoritative expected span count for each pipeline hop.
+        // path has no callback frames: each hop reports one span per decode
+        // round, and a round yields one token plus the MTP drafts it
+        // accepted. Counting output tokens alone expected ~3.8x the spans of a
+        // speculative run and reported 26% coverage on a complete trace.
+        let decode_rounds =
+            (self.output_tokens as u64).saturating_sub(self.mtp_draft_tokens_accepted);
         let expected_decode_spans = self
             .expected_decode_spans
-            .max((self.output_tokens as u64).saturating_mul(self.hops.len() as u64));
+            .max(decode_rounds.saturating_mul(self.hops.len() as u64));
         let completeness_percent = if expected_decode_spans > 0 {
             (reported_decode_spans as f64 / expected_decode_spans as f64 * 100.0).min(100.0)
         } else if expected_peers > 0 {
@@ -3039,6 +3100,18 @@ impl RequestTrace {
     /// process made itself.
     pub fn record_hop_from_json(&mut self, hop: usize, phase: Phase, entry: &serde_json::Value) {
         let get = |key: &str| entry.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+        let mut node_timings = entry
+            .get("node_timings")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !node_timings.is_object() {
+            node_timings = serde_json::json!({});
+        }
+        for key in ["client_f16_encode_ms", "client_f16_decode_ms"] {
+            if let Some(value) = entry.get(key) {
+                node_timings[key] = value.clone();
+            }
+        }
         self.record_hop(
             hop,
             phase,
@@ -3054,9 +3127,7 @@ impl RequestTrace {
                 on: entry.get("tls").and_then(|v| v.as_bool()).unwrap_or(false),
                 handshake_ms: get("tls_handshake_ms"),
             },
-            entry
-                .get("node_timings")
-                .unwrap_or(&serde_json::Value::Null),
+            &node_timings,
         );
         if let Some(measured_network_ms) = TransportTrace::measured_network_ms(
             entry

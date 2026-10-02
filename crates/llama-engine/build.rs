@@ -2,7 +2,7 @@
 //!
 //! Estava tudo no `build.rs` de `crates/node`; mudou para cá junto com o código
 //! Rust que fala com o llama.cpp, para que editar o backend/rede de `node` não
-//! recompile este lado. Ver `docs/subsystems/build-execucao.md`.
+//! recompile este lado. Ver `docs/subsystems/build-and-run.md`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

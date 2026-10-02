@@ -1977,13 +1977,12 @@ pub(super) async fn tp_shardability_check(
             primary.label()
         ));
     };
-    let Some(base) = primary.gateway_url.clone() else {
-        return Some(format!(
-            "não foi possível falar com o primary {}",
-            primary.label()
-        ));
-    };
-    let Ok(http) = state.peer_http.for_peer(&primary.node_id) else {
+    let Some(primary_peer) = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == primary.node_id)
+    else {
         return Some(format!(
             "não foi possível falar com o primary {}",
             primary.label()
@@ -1996,27 +1995,14 @@ pub(super) async fn tp_shardability_check(
     // só o TLS (cliente pinado por node_id); credencial é por requisição, como
     // no resto do arquivo.
     let body = json!({ "model_path": path, "tp_size": tp.size });
-    let request = match state
-        .control_json_request(
-            http.post(format!("{base}/api/ui/tp/check"))
-                .timeout(PEER_TIMEOUT * 4),
-            "/api/ui/tp/check",
-            &body,
-        )
+    let resp = match state
+        .control_post_json(&primary_peer, "/api/ui/tp/check", &body, PEER_TIMEOUT * 4)
         .await
     {
-        Ok(request) => request,
-        Err(error) => {
-            return Some(format!(
-                "não foi possível assinar a checagem de shard: {error}"
-            ))
-        }
-    };
-    let resp = match request.send().await {
         Ok(r) => r,
         Err(e) => {
             return Some(format!(
-                "não foi possível validar o shard em {}: {e}",
+                "não foi possível validar o shard em {}: {e:#}",
                 primary.label()
             ))
         }

@@ -248,6 +248,11 @@ pub(super) async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]
         "config": state.runtime.config().await,
         "active_model": state.active_model().await,
         "detached": state.network.is_detached(),
+        // Sem isto o retrato da travessia congelaria no cache: nem o estado do
+        // AutoNAT nem uma reserva nova mexem em `peers`.
+        "traversal": state.network.traversal_status(),
+        // A rota fixada de cada aresta muda sem mexer em `peers`.
+        "route_plan": crate::route_plan::book().signature(),
     }))
 }
 
@@ -342,9 +347,16 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
             let state = peer_state.clone();
             let routes = state.network.routes.clone();
             let network = state.network.clone();
+            let peer = p.clone();
             async move {
-                if is_self || candidatos.is_empty() {
+                if is_self {
                     return PeerRead::default();
+                }
+                if candidatos.is_empty() {
+                    return match read_node_via_tunnel(&state, &peer).await {
+                        Some(v) => PeerRead::ok(v),
+                        None => PeerRead::default(),
+                    };
                 }
                 let http = match http {
                     Ok(c) => c,
@@ -354,7 +366,12 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                 if utilizaveis.is_empty() {
                     // Todo endereço conhecido está desacreditado. Insistir não
                     // ressuscita nenhum deles: o que resolve é a rede voltar a
-                    // dizer onde o peer está.
+                    // dizer onde o peer está - ou o túnel, para um peer que
+                    // nenhum endereço alcança.
+                    if let Some(v) = read_node_via_tunnel(&state, &peer).await {
+                        network.note_peer_read(&node_id);
+                        return PeerRead::ok(v);
+                    }
                     network.request_peer_addresses(&node_id).await;
                     return sem_endereco_vivo(&network, &node_id, candidatos.len());
                 }
@@ -397,6 +414,10 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
                             ultimo_erro = Some("timeout".to_string());
                         }
                     }
+                }
+                if let Some(v) = read_node_via_tunnel(&state, &peer).await {
+                    network.note_peer_read(&node_id);
+                    return PeerRead::ok(v);
                 }
                 // Se a última tentativa derrubou o último endereço utilizável,
                 // já se pode pedir o endereço novo nesta mesma passagem.
@@ -639,6 +660,14 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         "routing_edges": routing_edges,
         "candidate_edges": candidate_edges,
         "node": self_node,
+        // Diagnóstico da travessia de NAT deste nó. Ver `TraversalStatus`:
+        // sem isto, "os dois nós não se falam" só se investiga com
+        // `RUST_LOG=debug` na máquina certa.
+        "traversal": state.network.traversal_status(),
+        // Rota fixada por aresta de saída deste nó (`route_plan`): por qual
+        // transporte a inferência e a volta ao gateway vão agora, e as
+        // alternativas já medidas.
+        "route_plan": crate::route_plan::book().snapshot(),
     });
 
     let etag = cluster_etag(&body);
@@ -785,6 +814,9 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
                     }
                 }
             }
+            if result.is_none() {
+                result = read_node_via_tunnel(&state, &peer).await;
+            }
             result.and_then(|body| body.get("config").cloned())
         };
 
@@ -919,6 +951,25 @@ pub(super) async fn peer_runtime(
     }
 }
 
+/// `/api/ui/node` de um peer só pelo túnel libp2p: o último recurso das
+/// leituras que já percorreram os endereços do peer com a memória de falha do
+/// `RouteTable`. Um peer atrás de NAT simétrico não tem endereço que responda,
+/// e sem isto ficava listado mas ilegível.
+async fn read_node_via_tunnel(
+    state: &GatewayState,
+    peer: &crate::network::PeerInfo,
+) -> Option<serde_json::Value> {
+    crate::peer_client::TunnelPeer::from_peer(peer)?;
+    let response = state
+        .control_get_via_tunnel(peer, "/api/ui/node", PEER_TIMEOUT)
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response.json().await.ok()
+}
+
 /// Each peer's installed models, so the setup screen can say who is missing what.
 pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse {
     let self_id = state.network.node_id.clone();
@@ -941,46 +992,20 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
         .iter()
         .filter(|p| p.node_id != self_id)
         .map(|p| {
-            let url = p.gateway_url();
-            let http = state.peer_http.for_peer(&p.node_id);
+            let peer = p.clone();
             let node_id = p.node_id.clone();
             let state = peer_state.clone();
             async move {
-                let Some(base) = url else {
-                    return (
-                        node_id,
-                        None,
-                        Some("sem porta de gateway anunciada".to_string()),
-                    );
-                };
-                let http = match http {
-                    Ok(c) => c,
-                    Err(e) => return (node_id, None, Some(format!("sem cliente: {e}"))),
-                };
-                let url = format!("{base}/api/ui/models");
-                let request = match state
-                    .control_get_request(http.get(&url), "/api/ui/models")
+                match state
+                    .control_get(&peer, "/api/ui/models", PEER_TIMEOUT * 3)
                     .await
                 {
-                    Ok(request) => request,
-                    Err(error) => {
-                        return (
-                            node_id,
-                            None,
-                            Some(format!("assinatura indisponível: {error}")),
-                        )
-                    }
-                };
-                match tokio::time::timeout(PEER_TIMEOUT * 3, request.send()).await {
-                    Ok(Ok(r)) if r.status().is_success() => {
-                        match r.json::<serde_json::Value>().await {
-                            Ok(v) => (node_id, Some(v), None),
-                            Err(e) => (node_id, None, Some(format!("resposta inválida: {e}"))),
-                        }
-                    }
-                    Ok(Ok(r)) => (node_id, None, Some(format!("HTTP {}", r.status()))),
-                    Ok(Err(e)) => (node_id, None, Some(format!("{e}"))),
-                    Err(_) => (node_id, None, Some("timeout".to_string())),
+                    Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+                        Ok(v) => (node_id, Some(v), None),
+                        Err(e) => (node_id, None, Some(format!("resposta inválida: {e}"))),
+                    },
+                    Ok(r) => (node_id, None, Some(format!("HTTP {}", r.status()))),
+                    Err(e) => (node_id, None, Some(format!("{e:#}"))),
                 }
             }
         })

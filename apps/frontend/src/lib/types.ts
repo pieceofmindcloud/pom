@@ -163,6 +163,8 @@ export type AdminExposure = "localhost" | "network";
 export interface AdminAccessStatus {
   admin_exposure: AdminExposure;
   requires_password: boolean;
+  /** A senha em vigor é a padrão do primeiro acesso (`admin`). */
+  default_password?: boolean;
   gateway_port: number;
 }
 
@@ -264,9 +266,38 @@ export interface GithubRepository {
   check_error: string | null;
 }
 
+export interface DevelopmentPluginSource {
+  repository: string;
+  plugin_code: string;
+  display_name: string;
+  active: boolean;
+  install_kind: "development" | "github" | "licensed" | null;
+}
+
+export interface DevelopmentPluginSources {
+  mount_available: boolean;
+  sources: DevelopmentPluginSource[];
+}
+
+export interface DevelopmentPluginRebuildResult {
+  repository: string;
+  plugin_code: string;
+  build_ms: number;
+  installed_at: string;
+}
+
+export interface DevelopmentPluginError {
+  code: string;
+  stage?: "inspect" | "metadata" | "compile" | "install";
+  exit_code?: number | null;
+}
+
 export interface PluginStatus {
   code: string;
+  /** True only when the plugin host is installed and ready. */
   active: boolean;
+  /** The running artifact was built from a locally mounted development source. */
+  development_install: boolean;
   state: PluginLicenseState;
   features: string[];
   manage_url: string;
@@ -288,6 +319,8 @@ export interface PluginStatus {
   /** Last successful manifest lookup, regardless of whether it found an update. */
   update_checked_at: string | null;
   available_update: PluginUpdateInfo | null;
+  /** Actionable installation failure, independent of license validity. */
+  installation_error?: string | null;
   /** Installed and running from a public GitHub source without a license lease. */
   public_install?: boolean;
   github_repository?: string | null;
@@ -650,6 +683,8 @@ export interface ChatTelemetryRtt {
   to_node_id: string;
   rtt_ms: number;
   transport: string;
+  /** A aresta passa por um circuito num relé libp2p: rota a rever. */
+  relayed?: boolean;
 }
 
 export interface ChatTelemetryNetwork {
@@ -664,7 +699,30 @@ export interface ChatTelemetryNetwork {
     node_ids: string[];
     legs_ms: Array<number | null>;
     rtt_ms: number | null;
+    /** Compute de um passo de decode somado nos peers da rota. */
+    compute_ms?: number | null;
+    /** Rede paga por token no modo de volta escolhido (não a soma das pernas). */
+    network_ms?: number | null;
+    return_mode?: "direct" | "ring" | null;
+    /** Um token pela rota: rede no modo escolhido mais compute. */
+    total_ms?: number | null;
+    tokens_per_sec?: number | null;
+    /** Alguma perna da rota passa por relé. */
+    relayed?: boolean;
+    /** Quais pernas passam por relé, como `[de, para]`. */
+    relayed_legs?: Array<[string, string]>;
+    /** A volta direta passaria por relé e o anel a contorna. */
+    relay_bypassed_by_ring?: boolean;
   }>;
+  /** Velocidade medida de cada peer do modelo ativo. */
+  peer_perf?: Record<string, ChatTelemetryPeerPerf>;
+}
+
+/** Velocidade medida de um peer: teste ao servir e tráfego real. */
+export interface ChatTelemetryPeerPerf {
+  prefill_tokens_per_sec: number | null;
+  decode_tokens_per_sec: number | null;
+  active_generations: number;
 }
 
 /** Resposta do recorte de topologia que um nó infer pode consultar. */
@@ -741,6 +799,23 @@ export interface ClusterView {
   routing_edges: RoutingEdge[];
   candidate_edges: RoutingEdge[];
   node: NodeInfo | null;
+  /** Diagnóstico da travessia de NAT deste nó. Ausente em nó antigo. */
+  traversal?: TraversalView;
+}
+
+/**
+ * Em que degrau a travessia de NAT parou. Sem isto, "os dois nós não se
+ * falam" só se investiga com log de depuração na máquina certa.
+ */
+export interface TraversalView {
+  nat: "unknown" | "public" | "private";
+  /** Multiaddresses publicados, inclusive o circuito de relé. */
+  addrs: string[];
+  /** PeerId dos relés que aceitaram reserva. */
+  reservations: string[];
+  hole_punch_ok: number;
+  hole_punch_failed: number;
+  last_hole_punch_error: string | null;
 }
 
 /** Aggregate facts the Chat may read from every profile without topology access. */
@@ -942,6 +1017,10 @@ export interface PathsResponse {
   default_shard_dir: string;
   default_workspace_root: string;
   shard_max_gb: number;
+  /** Variável de ambiente que define as pastas de modelos inteiros, quando vale. */
+  model_dirs_env?: string | null;
+  /** Variável de ambiente que define a pasta das fatias, quando vale. */
+  shard_dir_env?: string | null;
 }
 
 export type KvCacheType =
@@ -1228,11 +1307,33 @@ export interface OfferManifest {
   };
 }
 
+/** Uma conexão libp2p viva com o peer. */
+export interface PeerRouteLink {
+  address: string;
+  relayed: boolean;
+  relay_peer_id?: string | null;
+  hole_punched: boolean;
+}
+
+/**
+ * Por onde este nó fala de fato com o peer, observado - não o endereço que o
+ * peer anuncia. `http`: um endereço direto respondeu; `p2p_direct`: conexão
+ * libp2p direta (discada ou por hole punch); `relayed`: só pelo relé.
+ */
+export interface PeerRoute {
+  kind: "http" | "p2p_direct" | "relayed" | "none";
+  address?: string | null;
+  hole_punched: boolean;
+  links: PeerRouteLink[];
+}
+
 export interface AdminNode {
   node_id: string;
   short_id: string;
   hostname: string;
+  /** O que o peer anuncia; a rota em uso está em `route`. */
   addr: string;
+  route?: PeerRoute | null;
   role?: string;
   model?: string;
   start_layer?: number;
@@ -1715,7 +1816,7 @@ export interface RuntimeParams {
 }
 
 /** Precisões que o protocolo de inferência consegue converter ponta a ponta. */
-export type WireDtype = "f16" | "f8" | "i4g64" | "i4g128";
+export type WireDtype = "f32" | "f16" | "f8" | "i4g64" | "i4g128";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown";
 

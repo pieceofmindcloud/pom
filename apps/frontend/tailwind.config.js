@@ -22,6 +22,7 @@ export default {
         iris: "rgb(var(--iris) / <alpha-value>)",
         aqua: "rgb(var(--aqua) / <alpha-value>)",
         amber: "rgb(var(--amber) / <alpha-value>)",
+        relay: "rgb(var(--relay) / <alpha-value>)",
         rose: "rgb(var(--rose) / <alpha-value>)",
         sky: "rgb(var(--sky) / <alpha-value>)",
         lime: "rgb(var(--lime) / <alpha-value>)",

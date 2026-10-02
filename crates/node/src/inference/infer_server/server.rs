@@ -46,6 +46,7 @@ impl InferState {
             inference_path,
             mtp_min_probability: cfg.mtp_min_probability,
             tp: cfg.tp.clone(),
+            perf: perf::SlicePerf::default(),
         }
     }
 
@@ -768,6 +769,30 @@ pub async fn run(
     let local_barrier_handle = crate::tp::set_local_barrier(tp_barrier.clone(), tp_size);
 
     let state: SharedState = Arc::new(Mutex::new(state_inner));
+    // Teste de velocidade da fatia, uma vez por carga: é o que dá ao
+    // planejador do gateway o custo por token deste peer antes da primeira
+    // requisição. Roda fora do caminho de subida; uma requisição que chegar
+    // no meio espera o lock por menos de um segundo.
+    {
+        let state = state.clone();
+        tokio::task::spawn_blocking(move || {
+            let Ok(mut s) = lock_inference_state(&state) else {
+                return;
+            };
+            match perf::run_bench(&mut s) {
+                Ok(Some(bench)) => info!(
+                    "velocidade da fatia L{}-{}: prefill {:.1} tok/s, decode {:.1} tok/s (teste de {} ms)",
+                    s.start_layer,
+                    s.end_layer,
+                    1e6 / bench.prefill_us_per_token.max(1.0),
+                    1e6 / bench.decode_us_per_step.max(1.0),
+                    bench.duration_ms
+                ),
+                Ok(None) => debug!("teste de velocidade da fatia pulado (TP ou sem slot livre)"),
+                Err(error) => warn!("teste de velocidade da fatia falhou: {error}"),
+            }
+        });
+    }
     let scheduler_cfg = crate::scheduler::SchedulerConfig::from_node_config(&cfg);
     // TP participates in the same canonical batch frame. The handler opens
     // one shared decode id for the whole frame, broadcasts that frame to the
@@ -851,7 +876,11 @@ pub async fn run(
                 .route("/health", get(handle_health))
                 .with_state(app_state.clone()),
         )
-        .merge(tp_routes);
+        .merge(tp_routes)
+        // Toda resposta diz de qual nó veio; ver `peer_client::answered_by_other_node`.
+        .layer(axum::middleware::map_response(
+            crate::peer_client::stamp_node_id,
+        ));
 
     info!("inference server pronto em [::]:{port}");
 
@@ -1271,6 +1300,12 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
         // Sessões paradas no fim do prompt, esperando o turno seguinte. É o
         // cache de prefixo visto do lado que o executa.
         "sessions_retained": s.sessions.values().filter(|x| x.retained).count(),
+        // Gerações em curso neste peer, de qualquer gateway: sessão viva que
+        // não está só retida para o cache de prefixo. É a fila que o
+        // planejador multiplica pelo custo da fatia para espalhar a carga.
+        "active_generations": s.sessions.values().filter(|x| !x.retained).count(),
+        // Velocidade medida desta fatia (teste ao servir + tráfego real).
+        "perf": s.perf.json(),
         "prefix_tokens_retained": s
             .sessions
             .values()
@@ -1323,6 +1358,18 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
         "slot_persist_enabled": s.slot_dir.is_some(),
         "slot_count": slot_count,
     });
+    // Rotas fixadas deste nó (`route_plan`): RTT e transporte até o servidor
+    // de inferência e até o gateway de cada peer. O gateway que planeja não
+    // mede as arestas entre dois outros peers nem a volta até ele; lê daqui.
+    // Fora do `json!` acima, que já está no limite de recursão da macro.
+    {
+        let book = crate::route_plan::book();
+        body["route_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Inference));
+        body["gateway_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Gateway));
+        body["route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Inference));
+        body["gateway_route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Gateway));
+        body["relayed_peers"] = json!(book.relayed_nodes());
+    }
     // Keep the identity fields separate from the large diagnostic object. A
     // direct addition to the json! tree would exceed the macro recursion limit
     // and would make this readiness contract depend on compiler settings.

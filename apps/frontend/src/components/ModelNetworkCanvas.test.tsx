@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { edgeStyle, isControlTarget, ModelNetworkCanvas } from "./ModelNetworkCanvas";
 import type { PipelineCycleCost, PipelineRouteCost } from "./PipelineGatewayNode";
 import { LocaleProvider } from "../i18n/provider";
-import type { ChatTelemetryRtt, ClusterView } from "../lib/types";
+import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView } from "../lib/types";
 import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../test/fixtures";
 import { deploymentLayoutKey, writePositions } from "../lib/networkLayout";
 
@@ -39,6 +39,7 @@ function mount(
   pipelineCost?: PipelineCycleCost,
   properties?: { open: boolean; onToggle: () => void },
   pipelineRoutes?: PipelineRouteCost[],
+  peerPerf?: Record<string, ChatTelemetryPeerPerf>,
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -49,6 +50,7 @@ function mount(
         rttMeasurements={rttMeasurements}
         pipelineCost={pipelineCost}
         pipelineRoutes={pipelineRoutes}
+        peerPerf={peerPerf}
         propertiesOpen={properties?.open}
         onToggleProperties={properties?.onToggle}
       />
@@ -127,7 +129,7 @@ describe("ModelNetworkCanvas: RTT das arestas", () => {
     expect(screen.getByText("rede 110.0 ms · compute 40.0 ms")).toBeTruthy();
   });
 
-  it("mostra todas as rotas de cabeca, ordenadas pelo RTT agregado", () => {
+  it("mostra todas as rotas de cabeca, ordenadas pelo tempo por token do backend", () => {
     const view = fakeCluster([
       fakeSlicePeer("head-fast", 0, 15),
       fakeSlicePeer("head-slow", 0, 15),
@@ -139,15 +141,88 @@ describe("ModelNetworkCanvas: RTT das arestas", () => {
     ];
 
     mount(view, [], undefined, undefined, [
-      { nodeIds: ["head-fast", "tail", "gateway"], legsMs: [4, 12, 3], computeMs: null },
-      { nodeIds: ["head-slow", "tail", "gateway"], legsMs: [18, 12, 3], computeMs: null },
+      { nodeIds: ["head-slow", "tail", "gateway"], legsMs: [18, 12, 3], computeMs: null, networkMs: 16.5, returnMode: "direct" },
+      { nodeIds: ["head-fast", "tail", "gateway"], legsMs: [4, 12, 3], computeMs: null, networkMs: 9.5, returnMode: "direct" },
     ]);
 
     const gateway = screen.getByRole("heading", { name: "Gateway" }).closest("article") as HTMLElement;
     expect(gateway.textContent).not.toContain("não medido");
-    expect(gateway.textContent).toMatch(/head-fast.*19\.0 ms/);
-    expect(gateway.textContent).toMatch(/head-slow.*33\.0 ms/);
+    // A soma das pernas (19 e 33 ms) contaria ida e volta inteiras.
+    expect(gateway.textContent).toMatch(/head-fast.*9\.5 ms/);
+    expect(gateway.textContent).toMatch(/head-slow.*16\.5 ms/);
     expect(gateway.textContent?.indexOf("head-fast")).toBeLessThan(gateway.textContent?.indexOf("head-slow") ?? -1);
+  });
+});
+
+describe("ModelNetworkCanvas: velocidade das máquinas", () => {
+  afterEach(cleanup);
+
+  it("mostra o TPS de decode e prefill de cada máquina e o tok/s da melhor rota", () => {
+    const view = fakeCluster([fakeSlicePeer("head", 0, 15), fakeSlicePeer("tail", 16, 31)]);
+    mount(view, [], undefined, undefined, [
+      { nodeIds: ["head", "tail", "gateway"], legsMs: [4, 12, 4], computeMs: 30, networkMs: 20, totalMs: 50, returnMode: "ring" },
+    ], {
+      head: { decode_tokens_per_sec: 66.7, prefill_tokens_per_sec: 1250, active_generations: 0 },
+    });
+
+    const cards = screen.getAllByTestId("machine-tps").map((element) => element.textContent);
+    expect(cards).toContain("decode 66.7 · prefill 1250 tok/s");
+    expect(cards).toContain("velocidade não medida");
+    expect(screen.getByText("Total do pipeline: 50.0 ms")).toBeTruthy();
+    expect(screen.getByTestId("pipeline-throughput").textContent).toBe("≈ 20.0 tok/s por ciclo de token");
+    expect(screen.getByTestId("pipeline-route-breakdown").textContent).toBe("rede 20.0 ms (anel) · compute 30.0 ms");
+  });
+});
+
+describe("ModelNetworkCanvas: rota por relé", () => {
+  afterEach(cleanup);
+
+  it("pinta de laranja a aresta por relé e explica a lentidão no gateway", () => {
+    const view = fakeCluster([fakeSlicePeer("head", 0, 15), fakeSlicePeer("tail", 16, 31)]);
+    view.routing_edges = [
+      { from_node_id: "head", to_node_id: "tail", model_id: "qwen35", from_end_layer: 15, to_start_layer: 16 },
+    ];
+    const { container } = mount(view, [
+      { from_node_id: "head", to_node_id: "tail", rtt_ms: 67, transport: "libp2p-tunnel", relayed: true },
+      { from_node_id: "tail", to_node_id: "gateway", rtt_ms: 3, transport: "quic" },
+    ], undefined, undefined, [
+      { nodeIds: ["head", "tail", "gateway"], legsMs: [4, 67, 3], computeMs: 30, networkMs: 37, totalMs: 67, returnMode: "direct", relayed: true, relayedLegs: [["head", "tail"]] },
+    ]);
+
+    const label = screen.getByTestId("route-relay-label");
+    expect(label.textContent).toContain("RELAY");
+    expect(label.textContent).toContain("RTT 67.0 ms");
+    expect(label.getAttribute("title")).toContain("peer de relé");
+    expect(container.querySelectorAll('path[data-relayed="true"]').length).toBe(1);
+    expect(screen.getByTestId("pipeline-route-relay").textContent).toBe("RELAY");
+    expect(screen.getByTestId("pipeline-relay-warning").textContent).toContain("Rota por relé");
+    // O texto longo só aparece no card, ao clicar no ícone.
+    expect(screen.queryByTestId("pipeline-relay-popup")).toBeNull();
+    fireEvent.click(screen.getByTestId("pipeline-relay-info"));
+    expect(screen.getByTestId("pipeline-relay-legs").textContent).toBe("Pernas por relé: head → tail");
+    expect(screen.getByTestId("pipeline-relay-popup").textContent).toContain("não consegue contornar");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByTestId("pipeline-relay-popup")).toBeNull();
+  });
+
+  it("diz quando o anel contorna o relé da volta direta", () => {
+    const view = fakeCluster([fakeSlicePeer("gw", 0, 15), fakeSlicePeer("tail", 16, 31)]);
+    mount(view, [], undefined, undefined, [
+      { nodeIds: ["gw", "tail", "gw"], legsMs: [0, 30, 52], computeMs: 90, networkMs: 30, totalMs: 120, returnMode: "ring", relayBypassedByRing: true },
+    ]);
+    expect(screen.getByTestId("pipeline-relay-warning").textContent).toContain("Relé contornado pelo anel");
+    fireEvent.click(screen.getByTestId("pipeline-relay-info"));
+    expect(screen.getByTestId("pipeline-relay-bypass").textContent).toContain("tail → gw");
+    expect(screen.getByTestId("pipeline-relay-popup").textContent).toContain("volta pelo anel");
+  });
+
+  it("não alerta quando nenhuma perna passa por relé", () => {
+    const view = fakeCluster([fakeSlicePeer("head", 0, 15), fakeSlicePeer("tail", 16, 31)]);
+    mount(view, [], undefined, undefined, [
+      { nodeIds: ["head", "tail", "gateway"], legsMs: [4, 12, 3], computeMs: 30, networkMs: 9.5, totalMs: 39.5, returnMode: "direct" },
+    ]);
+    expect(screen.queryByTestId("pipeline-relay-warning")).toBeNull();
+    expect(screen.queryByTestId("route-relay-label")).toBeNull();
   });
 });
 

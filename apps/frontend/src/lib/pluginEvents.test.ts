@@ -50,6 +50,20 @@ describe("pom-plugin-events/v1", () => {
     expect(posted).toHaveBeenCalledWith(event, window.location.origin);
   });
 
+  it("calls the plugin's own RPC on its namespaced route", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await expect(scopedPluginApi("enterprise").rpc("directory.set_node", { node_id: "n1" })).resolves.toEqual({ ok: true });
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toContain("/api/ui/plugins/enterprise/rpc/directory.set_node");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(String(init.body))).toEqual({ node_id: "n1" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("replays the last global event and filters events addressed to another plugin", () => {
     publishPluginEvent("locale.changed", { locale: "pt-BR" });
     const seen: string[] = [];

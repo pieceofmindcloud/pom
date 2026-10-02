@@ -11,7 +11,8 @@
  * protocolo `pom-plugin-events/v1` (`events`, `notifications`, `plugin(code)`
  * e `context()`); ver `lib/pluginEvents.ts`. Version 3 adds the basic
  * `TelemetryLine` and the `chat.telemetry` slot contract (`lib/chatTelemetry.ts`);
- * `ExecutionTelemetry` now renders that basic line.
+ * `ExecutionTelemetry` now renders that basic line. Version 4 adds
+ * `plugin(code).rpc(op, params)`, the plugin's own read/write API.
  */
 import * as React from "react";
 import * as ReactDOM from "react-dom";
@@ -37,7 +38,7 @@ import {
   subscribePluginEvents,
 } from "./pluginEvents";
 
-export const PLUGIN_HOST_VERSION = 3;
+export const PLUGIN_HOST_VERSION = 4;
 
 /**
  * Compatibility for plugins built against host version 2, which rendered the

@@ -146,6 +146,19 @@ Version 3 added `TelemetryLine` (the basic one-line telemetry) and the
 renders that basic line. The plugin's CSS uses the same color tokens (CSS
 variables) as POM.
 
+## Plugin RPC
+
+A plugin screen that needs more than reading (saving settings, a directory,
+custom queries) calls `__POM_HOST__.plugin(code).rpc(op, params)` (host
+version 4). It posts to `POST /api/ui/plugins/<code>/rpc/<op>`; the node
+forwards `{params, profile}` to the plugin's `query` as operation
+`rpc.<op>` and returns the plugin's JSON reply as is. The node knows no
+operation and checks only the name, the size (256 KiB), the same origin and
+that the plugin is active. `profile` is the node's persisted profile
+(`admin`, `node` or `infer`), so the plugin decides who may call each
+operation; the enterprise plugin, for example, answers its directory and
+insights only for `admin`.
+
 ## Slots inside native screens
 
 `slots` maps a slot id (lowercase, dots, dashes or underscores, up to 64

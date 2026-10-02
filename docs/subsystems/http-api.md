@@ -786,6 +786,15 @@ server. `PluginStatus.github_repository`, `public_install`,
 `preferences_schema` and `preferences` expose the local state, with no tokens
 and no synthetic entitlement.
 
+`POST /api/ui/plugins/:code/rpc/:op` is a plugin's own API for its screens
+(`plugin_ui::plugin_rpc`, contract in `plugins-ui.md`). The JSON body (at most
+256 KiB) reaches the plugin's generic `query` as operation `rpc.<op>` with
+`{params, profile}`, and the plugin's JSON reply is returned unchanged. `op` is
+lowercase letters, digits, `.`, `_` and `-` (up to 64). Same-origin only, like
+the proxy; 400 for a bad name or body, 413 above the ceiling, 502 when the
+plugin is inactive or the operation fails. Open to every profile; the plugin
+authorizes by the forwarded `profile`.
+
 `ANY /api/ui/plugins/:code/proxy` and `/api/ui/plugins/:code/proxy/*path` are
 the proxy of the web UIs served by the plugins themselves
 (`crates/node/src/plugin_proxy.rs`, contract in `plugins-ui.md`). Open to every

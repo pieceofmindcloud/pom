@@ -464,6 +464,69 @@ pub(crate) async fn list_plugin_ui(State(state): State<crate::gateway::GatewaySt
     axum::Json(json!({ "plugins": out })).into_response()
 }
 
+/// Largest JSON body a plugin RPC accepts.
+const MAX_RPC_BODY: usize = 256 * 1024;
+
+/// An RPC operation name: `directory.set_node`, `insights`.
+fn valid_rpc_op(op: &str) -> bool {
+    (1..=64).contains(&op.len())
+        && op.starts_with(|c: char| c.is_ascii_lowercase())
+        && op
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+/// `POST /api/ui/plugins/:code/rpc/:op`: a plugin's own API for its screens.
+///
+/// The body (a JSON value, at most 256 KiB) reaches the plugin's generic
+/// `query` as operation `rpc.<op>` with `{params, profile}`; the plugin's
+/// JSON reply is returned as is. The node knows no operation: the plugin owns
+/// its API and authorizes by `profile`. Only active plugins answer, and the
+/// request must come from the same origin as the UI.
+pub(crate) async fn plugin_rpc(
+    State(state): State<crate::gateway::GatewayState>,
+    Path((code, op)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !crate::plugin_proxy::same_origin(&headers) {
+        return (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "cross-origin plugin call" }))).into_response();
+    }
+    if !valid_rpc_op(&op) {
+        return (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": "invalid operation" }))).into_response();
+    }
+    if body.len() > MAX_RPC_BODY {
+        return (StatusCode::PAYLOAD_TOO_LARGE, axum::Json(json!({ "error": "body too large" }))).into_response();
+    }
+    let params: Value = if body.is_empty() {
+        Value::Null
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": "body is not JSON" }))).into_response()
+            }
+        }
+    };
+    let profile = state.auth.read().await.profile;
+    match state
+        .plugins
+        .query_audit(
+            &code,
+            &format!("rpc.{op}"),
+            json!({ "params": params, "profile": profile.to_string() }),
+        )
+        .await
+    {
+        Some(reply) => axum::Json(reply).into_response(),
+        None => (
+            StatusCode::BAD_GATEWAY,
+            axum::Json(json!({ "error": "plugin unavailable or the operation failed" })),
+        )
+            .into_response(),
+    }
+}
+
 /// `GET /api/ui/plugins/:code/assets/*path`: asset declarado no manifesto.
 pub(crate) async fn plugin_asset(
     State(state): State<crate::gateway::GatewayState>,
@@ -787,6 +850,16 @@ mod tests {
         let parsed = PluginUiManifest::parse("enterprise", value).expect("valid");
         assert_eq!(parsed.screens["stats"].export.as_deref(), Some("stats"));
         assert_eq!(parsed.i18n.len(), 2);
+    }
+
+    #[test]
+    fn rpc_operation_names_are_short_dotted_lowercase() {
+        for op in ["insights", "directory.set_node", "projects.rules-v2"] {
+            assert!(valid_rpc_op(op), "{op}");
+        }
+        for op in ["", "Insights", "../x", "a/b", "rpc op", &"a".repeat(65)] {
+            assert!(!valid_rpc_op(op), "{op}");
+        }
     }
 
     #[test]

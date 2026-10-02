@@ -109,6 +109,14 @@ fn main() {
                     ("ui.upstream", Some(upstream)) => {
                         json!({"id": id, "ok": true, "result": upstream, "error": null})
                     }
+                    // Plugin RPC: echo what the node forwarded.
+                    (op, _) if op.starts_with("rpc.") => {
+                        json!({"id": id, "ok": true, "result": {
+                            "operation": op,
+                            "params": payload.get("params").cloned().unwrap_or(Value::Null),
+                            "profile": payload.get("profile").cloned().unwrap_or(Value::Null),
+                        }, "error": null})
+                    }
                     _ => {
                         json!({"id": id, "ok": false, "result": null, "error": "operação desconhecida"})
                     }

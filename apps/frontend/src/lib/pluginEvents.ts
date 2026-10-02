@@ -19,6 +19,7 @@
  * Ver `docs/subsystems/plugins-ui.md`, seção "Events and notifications".
  */
 import { randomId as newId } from "./id";
+import { api } from "./api";
 
 export const PLUGIN_EVENTS_PROTOCOL = "pom-plugin-events/v1";
 export const PLUGIN_EVENT_DOM = "pom:plugin-event";
@@ -316,6 +317,12 @@ export function scopedPluginApi(code: string) {
       notify: (request: NotifyRequest) => command("notification.notify", request),
       confirm: (request: ConfirmRequest) => command("notification.confirm", request),
     },
+    /**
+     * The plugin's own API: `POST /api/ui/plugins/<code>/rpc/<op>`, answered
+     * by the plugin's `rpc.<op>` operation (see `docs/subsystems/plugins-ui.md`).
+     */
+    rpc: <T = unknown>(op: string, params?: unknown) =>
+      api.post<T>(`/api/ui/plugins/${encodeURIComponent(code)}/rpc/${encodeURIComponent(op)}`, params ?? {}),
   };
 }
 

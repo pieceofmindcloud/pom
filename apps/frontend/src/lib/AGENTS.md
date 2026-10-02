@@ -626,7 +626,8 @@ When updating this file, preserve this bar for all agents and keep entries conci
   empacotar cópias próprias. Versão 2: `context()`, `events`, `protocol` e
   `plugin(code)` (eventos e comandos com escopo do plugin). Version 3 adds
   `components.TelemetryLine`; `components.ExecutionTelemetry` stays for
-  version-2 bundles and renders the same basic line.
+  version-2 bundles and renders the same basic line. Version 4 adds
+  `plugin(code).rpc`.
 - `pluginEvents.ts` - o protocolo `pom-plugin-events/v1`: envelope, barramento
   (`publishPluginEvent`, `subscribePluginEvents`, replay do último evento
   global), entrega por `CustomEvent("pom:plugin-event")` e `postMessage` para
@@ -636,6 +637,8 @@ When updating this file, preserve this bar for all agents and keep entries conci
   `postMessage` da mesma origem. Quem executa é a `PluginBridge`.
   `forwardNodeEvent` repassa os envelopes do nó (`deployment.started`,
   `model.serving`, `model.stopped`, `preferences.changed`) preservando `id`.
+  `scopedPluginApi(code).rpc(op, params)` posts to the plugin's own API
+  (`/api/ui/plugins/<code>/rpc/<op>`).
 - `pluginInbox.ts` - caixa de entrada dos plugins no sino: perguntas
   `notification.confirm` com Aceitar/Recusar (só nesta aba) e avisos
   `notification.notify` sem botões, não lidos até o sino abrir

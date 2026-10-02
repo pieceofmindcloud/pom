@@ -6235,10 +6235,45 @@ mod tests {
         assert_eq!(forged.status(), axum::http::StatusCode::FORBIDDEN);
 
         let unknown = app
+            .clone()
             .oneshot(request("/api/ui/plugins/nope/proxy/hello", None))
             .await
             .unwrap();
         assert_eq!(unknown.status(), axum::http::StatusCode::NOT_FOUND);
+
+        // Plugin RPC: the body reaches `rpc.<op>` with the node profile.
+        let rpc = |uri: &str, body: &str, origin: Option<&str>| {
+            let mut builder = axum::http::Request::post(uri)
+                .header("host", "salem:8080")
+                .header("content-type", "application/json");
+            if let Some(origin) = origin {
+                builder = builder.header("origin", origin);
+            }
+            builder.body(axum::body::Body::from(body.to_owned())).unwrap()
+        };
+        let reply = app
+            .clone()
+            .oneshot(rpc(
+                "/api/ui/plugins/enterprise/rpc/directory.set_node",
+                r#"{"node_id":"n1","person":"Ana"}"#,
+                Some("http://salem:8080"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), axum::http::StatusCode::OK);
+        let reply = crate::gateway::testkit::body_of(reply).await;
+        assert_eq!(reply["operation"], "rpc.directory.set_node");
+        assert_eq!(reply["params"]["person"], "Ana");
+        assert!(reply["profile"].is_string());
+        for (uri, body, origin, status) in [
+            ("/api/ui/plugins/enterprise/rpc/insights", "{}", Some("http://evil.example"), axum::http::StatusCode::FORBIDDEN),
+            ("/api/ui/plugins/enterprise/rpc/Bad.Op", "{}", None, axum::http::StatusCode::BAD_REQUEST),
+            ("/api/ui/plugins/enterprise/rpc/insights", "not json", None, axum::http::StatusCode::BAD_REQUEST),
+            ("/api/ui/plugins/nope/rpc/insights", "{}", None, axum::http::StatusCode::BAD_GATEWAY),
+        ] {
+            let response = app.clone().oneshot(rpc(uri, body, origin)).await.unwrap();
+            assert_eq!(response.status(), status, "{uri} {body}");
+        }
 
         runtime.stop_host_for_test().await;
         runtime.ensure_host_running(&persisted).await;

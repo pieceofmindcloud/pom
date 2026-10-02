@@ -41,6 +41,8 @@ pom*.json
 
 # build artifacts do web-ui
 web-ui/node_modules/
+# Any node_modules, including a symlink (a trailing slash only matches directories).
+node_modules
 web-ui/dist/
 # dist-release is the exception: it is the versioned bundle a release build
 # embeds, and cut-ui-bundle.sh is what regenerates it.

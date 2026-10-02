@@ -184,6 +184,48 @@ tokio::task_local! {
     static FRAME_DEADLINE: Instant;
 }
 
+/// Deadline of a prefill chunk, per hop. It is not a work estimate: a chunk may
+/// wait in the peer's queue behind another session's chunk (there is a single
+/// engine and it serves one frame at a time), and the deadline computed from
+/// the work itself expired during that wait - the already delivered frame
+/// cannot be repeated, the request failed, and the peer still ran the
+/// abandoned chunk, delaying the other session until it failed too. A dead
+/// peer is detected by the connection's lifetime (QUIC idle 1.2 s, TCP
+/// keep-alive ~4 s, libp2p connection closed), not by this deadline; it only
+/// bounds a live peer that stopped making progress. Decode keeps the tight
+/// `frame_deadline`.
+#[cfg(not(test))]
+pub(crate) const PREFILL_FRAME_DEADLINE_PER_HOP: Duration = Duration::from_secs(600);
+#[cfg(test)]
+pub(crate) const PREFILL_FRAME_DEADLINE_PER_HOP: Duration = Duration::from_secs(30);
+
+/// Path of the prefill chunks, at the head and when forwarded between hops.
+pub(crate) const PREFILL_PATH: &str = "/v1/prefill";
+
+/// Deadline of a prefill chunk crossing `hops` hops.
+pub(crate) fn prefill_frame_deadline(hops: usize) -> Duration {
+    PREFILL_FRAME_DEADLINE_PER_HOP.saturating_mul(hops.max(1) as u32)
+}
+
+/// The deadline of a frame sent on `path`: prefill gets the liveness deadline
+/// of `prefill_frame_deadline`; everything else, that of the work it asks for.
+pub(crate) fn frame_deadline_for_path(
+    path: &str,
+    meta: &Value,
+    tensor_rows: Option<usize>,
+) -> Duration {
+    if path == PREFILL_PATH {
+        let hops = 1 + meta
+            .get("next_hops")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        prefill_frame_deadline(hops)
+    } else {
+        frame_deadline_for(meta, tensor_rows)
+    }
+}
+
 /// `(base + tokens x por_token + imagens x por_imagem) x hops`.
 pub(crate) fn frame_deadline(tokens: usize, images: usize, hops: usize) -> Duration {
     let per_hop = FRAME_DEADLINE_BASE
@@ -237,6 +279,13 @@ pub(crate) async fn with_frame_deadline<F: std::future::Future>(
 ) -> F::Output {
     FRAME_DEADLINE.scope(deadline, Box::pin(work)).await
 }
+
+/// Reason for a frame that went straight to the tunnel without trying the
+/// direct path: route pinned to the tunnel (`HopTransport::tunnel_first`) or a
+/// peer marked as only reachable through it (`PeerClients::prefer_tunnel`). It
+/// only shows up in the error of a tunnel that also failed; a tunnel that
+/// delivers this way is not a fallback.
+const DIRECT_SKIPPED: &str = "direct skipped: this peer only answers through the tunnel";
 
 /// Transporte que realmente carregou um frame de inferência.
 ///
@@ -2020,8 +2069,16 @@ async fn send_batch_body(
                 }
             }
         }
+        // With the direct path skipped on purpose (route pinned to the tunnel
+        // or a peer that only answers through it) there was no direct attempt:
+        // there is no "did not receive" to report, and the tunnel is not a
+        // fallback.
         let direct_error = anyhow::Error::new(FrameNotDelivered {
-            message: format!("{peer_label} não recebeu o batch: {last_error}"),
+            message: if skip_direct {
+                format!("{peer_label}: {DIRECT_SKIPPED}")
+            } else {
+                format!("{peer_label} não recebeu o batch: {last_error}")
+            },
         });
 
         // Cada tentativa percorre a escada completa antes do recuo: QUIC,
@@ -2044,11 +2101,19 @@ async fn send_batch_body(
             {
                 Ok(mut response) => {
                     clients.remember_tunnel_win(&step.node_id);
-                    response.transport_fallback = true;
-                    response.transport_fallback_reason = Some(match transport_fallback_reason {
-                        Some(previous) => format!("{previous}; http: {direct_error}"),
-                        None => format!("http: {direct_error}"),
-                    });
+                    if skip_direct {
+                        // Only what had already failed before (the persistent
+                        // channel, for example) counts as a fallback.
+                        response.transport_fallback = transport_fallback;
+                        response.transport_fallback_reason = transport_fallback_reason;
+                    } else {
+                        response.transport_fallback = true;
+                        response.transport_fallback_reason =
+                            Some(match transport_fallback_reason {
+                                Some(previous) => format!("{previous}; http: {direct_error}"),
+                                None => format!("http: {direct_error}"),
+                            });
+                    }
                     return Ok(response);
                 }
                 Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
@@ -2489,6 +2554,11 @@ async fn send_frame_planned(
 ) -> Result<SentFrame> {
     use crate::route_plan::{book, FailureOutcome, Plane};
 
+    // The frame pins the edge's route while in flight and for
+    // `route_plan::PIN_GRACE` afterwards: the planner does not swap the route
+    // of an inference in progress. The frame's own failure still swaps it,
+    // below.
+    let _route_use = book().begin_use(&step.node_id, Plane::Inference);
     if !crate::infer_tunnel::is_local_node(&step.node_id) {
         for _ in 0..MAX_PINNED_ATTEMPTS {
             let Some(route) = book().active(&step.node_id, Plane::Inference) else {
@@ -2567,7 +2637,7 @@ pub async fn send_frame_or_tunnel(
     let rows = tensor
         .as_ref()
         .and_then(|(_, shape)| shape.first().copied());
-    let own = Instant::now() + frame_deadline_for(meta, rows);
+    let own = Instant::now() + frame_deadline_for_path(path, meta, rows);
     let deadline = FRAME_DEADLINE
         .try_with(|outer| (*outer).min(own))
         .unwrap_or(own);
@@ -2818,7 +2888,7 @@ async fn send_frame_or_tunnel_inner(
                     None => direct_stage,
                 }
             }
-            None => "direto pulado: este peer só responde pelo túnel".to_string(),
+            None => DIRECT_SKIPPED.to_string(),
         };
         last_error = direct_reason.clone();
 
@@ -2842,8 +2912,15 @@ async fn send_frame_or_tunnel_inner(
             {
                 Ok(mut sent) => {
                     clients.remember_tunnel_win(&step.node_id);
-                    sent.transport_fallback = true;
-                    sent.transport_fallback_reason = Some(direct_reason);
+                    if direct_error.is_some() {
+                        sent.transport_fallback = true;
+                        sent.transport_fallback_reason = Some(direct_reason);
+                    } else {
+                        // Tunnel chosen on purpose: not a fallback. Only what
+                        // had already failed before this ladder counts.
+                        sent.transport_fallback = transport_fallback;
+                        sent.transport_fallback_reason = transport_fallback_reason.clone();
+                    }
                     return Ok(sent);
                 }
                 Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
@@ -2998,8 +3075,25 @@ pub async fn post_json_via_tunnel(
         Err(_) => return Err(anyhow!("túnel libp2p não respondeu em {timeout:?}")),
     };
     if !(200..300).contains(&response.status) {
+        // The refusal body goes along: a "snapshot does not exist" or "unknown
+        // session" is what tells the caller why to stop.
+        let detail = serde_json::from_slice::<Value>(&response.body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .or_else(|| value.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| {
+                String::from_utf8_lossy(&response.body)
+                    .chars()
+                    .take(200)
+                    .collect()
+            });
         return Err(anyhow!(
-            "{path} em {} respondeu HTTP {} pelo túnel",
+            "{path} em {} respondeu HTTP {} pelo túnel: {detail}",
             step.node_id,
             response.status
         ));
@@ -3187,6 +3281,28 @@ mod tests {
         assert_eq!(
             frame_deadline_for(&json!({"chunk_size": 512}), Some(32)),
             frame_deadline(32, 0, 1)
+        );
+    }
+
+    /// A prefill chunk has a liveness deadline, not one from the work it asks
+    /// for: it may wait in the peer's queue behind another session. Decode
+    /// stays tight.
+    #[test]
+    fn prefill_frames_get_a_liveness_deadline_and_decode_keeps_the_work_one() {
+        let chunk = json!({"chunk_size": 48, "next_hops": [null]});
+        assert_eq!(
+            frame_deadline_for_path(PREFILL_PATH, &chunk, None),
+            prefill_frame_deadline(2)
+        );
+        assert!(prefill_frame_deadline(2) > frame_deadline_for(&chunk, None));
+        assert_eq!(
+            frame_deadline_for_path(PREFILL_PATH, &json!({}), Some(48)),
+            PREFILL_FRAME_DEADLINE_PER_HOP
+        );
+        let decode = json!({"next_hops": [null]});
+        assert_eq!(
+            frame_deadline_for_path("/v1/step", &decode, None),
+            frame_deadline_for(&decode, None)
         );
     }
 
@@ -4434,6 +4550,84 @@ mod tests {
             .transport_fallback_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("quic")));
+    }
+
+    /// Peer marked as only reachable through the tunnel: the frame goes
+    /// straight to it, without trying the direct path, and that is not a
+    /// fallback - telemetry must not count the chosen route as a failure.
+    #[tokio::test]
+    async fn a_tunnel_chosen_on_purpose_is_not_a_fallback() {
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        let step = step_with(
+            "http://127.0.0.1:1",
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        clients.remember_tunnel_win(&step.node_id);
+        let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: tunnel_body,
+        }));
+
+        let sent = send_frame_or_tunnel(
+            &clients,
+            &step,
+            Some(&tunnel_tx),
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("the chosen tunnel must deliver");
+
+        assert_eq!(sent.transport, InferenceTransport::Libp2pTunnel);
+        assert!(!sent.transport_fallback);
+        assert_eq!(sent.transport_fallback_reason, None);
+    }
+
+    /// The same on the prefill batch path, which used to report "did not
+    /// receive the batch: " with an empty reason.
+    #[tokio::test]
+    async fn a_batch_sent_through_the_chosen_tunnel_is_not_a_fallback() {
+        let clients = crate::peer_client::PeerClients::new(Duration::from_secs(600));
+        let step = step_with(
+            "http://127.0.0.1:1",
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        clients.remember_tunnel_win(&step.node_id);
+        let reply =
+            wire::encode_batch_single(&json!({"done": true}), None, WireDtype::F16).unwrap();
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: reply,
+        }));
+        let body = wire::encode_batch_single(&json!({}), None, WireDtype::F16).unwrap();
+
+        let response = send_batch_body(
+            &clients,
+            &step,
+            Some(&tunnel_tx),
+            None,
+            "/v1/prefill",
+            "batch-1",
+            Bytes::from(body),
+            1,
+            "peer-x",
+            None,
+            None,
+        )
+        .await
+        .expect("the chosen tunnel must deliver the batch");
+
+        assert!(!response.transport_fallback);
+        assert_eq!(response.transport_fallback_reason, None);
     }
 
     #[tokio::test]

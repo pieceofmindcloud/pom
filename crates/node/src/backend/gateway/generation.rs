@@ -474,7 +474,7 @@ pub(super) async fn generate_stream_inner(
         preferred_head,
         request_details: _,
     } = input;
-    let budget = budget.normalized();
+    let mut budget = budget.normalized();
     if cancellation.is_cancelled() {
         log_early_outcome("cancelado", "o cliente desistiu antes do início");
         return;
@@ -508,6 +508,13 @@ pub(super) async fn generate_stream_inner(
             }
         }
     }
+    // One session's window (`n_ctx_per_session`): the same capacity the
+    // admission above uses, applied again to the total after prefill, with the
+    // real prompt size (`OutputBudget::within_session_window`).
+    let session_window = match state.runtime_capacity_for_model(Some(&model)).await {
+        (Some(capacity), false) => Some(capacity.n_ctx),
+        _ => state.runtime.config().await.map(|cfg| cfg.n_ctx),
+    };
     record_gateway_span(
         &mut gateway_spans,
         request_started,
@@ -1097,6 +1104,15 @@ pub(super) async fn generate_stream_inner(
                 return;
             }
         };
+
+        let windowed = budget.within_session_window(session_window, first.prompt_tokens);
+        if windowed.total < budget.total {
+            info!(
+                "output limited by the session window: {} of {} tokens (prompt {} of {:?})",
+                windowed.total, budget.total, first.prompt_tokens, session_window
+            );
+            budget = windowed;
+        }
 
         let first_token_at = Instant::now();
         let mut next_token = first.token_id;
@@ -2086,7 +2102,7 @@ pub(super) async fn rewind_sessions(
             "/v1/session/rewind",
             &body,
             session_id,
-            REWIND_TIMEOUT,
+            SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
         {
@@ -2145,7 +2161,7 @@ pub(super) async fn release_sessions(
             "/v1/session/release",
             &body,
             session_id,
-            Duration::from_secs(10),
+            SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
         {
@@ -2186,7 +2202,7 @@ pub(super) async fn rollback_sessions(
             "/v1/session/rollback",
             &body,
             session_id,
-            Duration::from_secs(10),
+            SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
         {
@@ -2238,23 +2254,109 @@ pub(super) fn plan_supports_slot_persist(plan: &PipelinePlan) -> Result<(), Stri
     Ok(())
 }
 
+/// Call to `POST /v1/session/slot` (save, restore or erase a hop's KV
+/// snapshot), along the same path as the session lifecycle
+/// (`post_session_lifecycle`): with the plan's route pinned to the tunnel,
+/// straight through it; otherwise the peer's inference addresses and, if none
+/// answers at the transport level, the tunnel. A peer only the relay reaches
+/// (Docker bridge, NAT) had no other path, and the persistent prefix cache
+/// failed on it every turn. An HTTP refusal from the peer is final on any path.
 pub(super) async fn slot_call_step(
     step: &crate::pipeline::PipelineStep,
     body: serde_json::Value,
     clients: &crate::peer_client::PeerClients,
 ) -> Result<serde_json::Value, String> {
-    let http = clients
-        .for_peer(&step.node_id)
-        .map_err(|e| format!("sem cliente para {}: {e}", step.node_id))?;
     let session_id = body
         .get("session_id")
         .or_else(|| body.get("dest_session_id"))
-        .and_then(serde_json::Value::as_str);
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let tunnel = crate::infer_tunnel::tunnel_sender().filter(|_| step.libp2p_peer_id.is_some());
+    let pinned_tunnel = crate::route_plan::book()
+        .kind_map(crate::route_plan::Plane::Inference)
+        .get(&step.node_id)
+        .is_some_and(|kind| kind == "tunnel");
+    let via_tunnel = |tunnel: &'static crate::infer_tunnel::TunnelOutboundSender| {
+        let body = body.clone();
+        let session_id = session_id.clone();
+        async move {
+            crate::relay::post_json_via_tunnel(
+                clients,
+                tunnel,
+                step,
+                "/v1/session/slot",
+                &body,
+                &session_id,
+                SLOT_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|error| {
+                let error = error.to_string();
+                if error.contains(" respondeu HTTP ") {
+                    SlotCallError::Refused(format!(
+                        "{} refused the snapshot: {error}",
+                        step.node_id
+                    ))
+                } else {
+                    SlotCallError::Unreachable(error)
+                }
+            })
+        }
+    };
+    if let (true, Some(tunnel)) = (pinned_tunnel, tunnel) {
+        return via_tunnel(tunnel)
+            .await
+            .map_err(SlotCallError::into_message);
+    }
+    match slot_call_direct(step, &body, &session_id, clients).await {
+        Ok(payload) => Ok(payload),
+        Err(SlotCallError::Unreachable(direct)) => match tunnel {
+            Some(tunnel) => via_tunnel(tunnel).await.map_err(|error| match error {
+                SlotCallError::Refused(message) => message,
+                SlotCallError::Unreachable(tunnel) => {
+                    format!("{direct}; libp2p-tunnel: {tunnel}")
+                }
+            }),
+            None => Err(direct),
+        },
+        Err(error) => Err(error.into_message()),
+    }
+}
+
+const SLOT_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Why a snapshot call failed: the peer refused (final) or was not reached on
+/// that path (worth trying the next one).
+enum SlotCallError {
+    Refused(String),
+    Unreachable(String),
+}
+
+impl SlotCallError {
+    fn into_message(self) -> String {
+        match self {
+            SlotCallError::Refused(message) | SlotCallError::Unreachable(message) => message,
+        }
+    }
+}
+
+/// The peer's announced inference addresses, in route-memory order.
+async fn slot_call_direct(
+    step: &crate::pipeline::PipelineStep,
+    body: &serde_json::Value,
+    session_id: &str,
+    clients: &crate::peer_client::PeerClients,
+) -> Result<serde_json::Value, SlotCallError> {
+    let http = clients
+        .for_peer(&step.node_id)
+        .map_err(|e| SlotCallError::Unreachable(format!("no client for {}: {e}", step.node_id)))?;
+    let session_id = (!session_id.is_empty()).then_some(session_id);
     let route_key = format!("inference:{}", step.node_id);
     let mut last_error = None;
     for base in clients.route_order(&route_key, &inference_route_candidates(step)) {
         let url = format!("{}/v1/session/slot", base.trim_end_matches('/'));
-        let request = http.post(&url).json(&body).timeout(Duration::from_secs(60));
+        let request = http.post(&url).json(body).timeout(SLOT_CALL_TIMEOUT);
         let response = match clients
             .authorize_inference_request_for_session(request, session_id)
             .await
@@ -2264,34 +2366,30 @@ pub(super) async fn slot_call_step(
             Ok(response) => response,
             Err(error) => {
                 clients.remember_route_failure(&route_key, &base);
-                last_error = Some(format!("{} não respondeu: {error}", step.node_id));
+                last_error = Some(format!("{} did not answer: {error}", step.node_id));
                 continue;
             }
         };
         let status = response.status();
-        let payload: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| format!("{} devolveu corpo ilegível: {e}", step.node_id))?;
+        let payload: serde_json::Value = response.json().await.map_err(|e| {
+            SlotCallError::Refused(format!("{} returned an unreadable body: {e}", step.node_id))
+        })?;
         if !status.is_success() {
-            return Err(format!(
-                "{} recusou o snapshot ({status}): {}",
+            return Err(SlotCallError::Refused(format!(
+                "{} refused the snapshot ({status}): {}",
                 step.node_id,
                 payload
                     .as_str()
                     .or_else(|| payload.get("error").and_then(|v| v.as_str()))
                     .unwrap_or("sem detalhe")
-            ));
+            )));
         }
         clients.remember_route_success(&route_key, &base);
         return Ok(payload);
     }
-    Err(last_error.unwrap_or_else(|| {
-        format!(
-            "{} não respondeu por nenhum endereço de inferência",
-            step.node_id
-        )
-    }))
+    Err(SlotCallError::Unreachable(last_error.unwrap_or_else(
+        || format!("{} did not answer on any inference address", step.node_id),
+    )))
 }
 
 /// Constrói o índice de disco do cache de prefixo, ou `None` quando

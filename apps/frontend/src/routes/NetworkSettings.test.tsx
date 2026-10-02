@@ -311,7 +311,15 @@ describe("NetworkParticipants", () => {
         short_id: "relayed",
         hostname: "salem",
         addr: "[2804:d55::2]:42777",
-        route: { kind: "relayed", address: "82.25.69.187:52777 (TCP)", hole_punched: false, links: [] },
+        route: { kind: "relayed", address: "82.25.69.187:52777 (TCP)", relay_kind: "dedicated", hole_punched: false, links: [] },
+      },
+      {
+        ...base,
+        node_id: "member-relayed",
+        short_id: "member-relayed",
+        hostname: "mac",
+        addr: "[2804:d55::3]:42777",
+        route: { kind: "relayed", address: "198.51.100.4:52777 (QUIC)", relay_kind: "member", hole_punched: false, links: [] },
       },
       {
         ...base,
@@ -330,9 +338,10 @@ describe("NetworkParticipants", () => {
     );
 
     expect(screen.getByText("Direto (hole punch)")).toBeTruthy();
-    expect(screen.getByText("Via relé")).toBeTruthy();
+    expect(screen.getAllByText("Via relé")).toHaveLength(2);
     expect(screen.getByText("Direto")).toBeTruthy();
     expect(screen.getByText(/relé 82\.25\.69\.187:52777/)).toBeTruthy();
+    expect(screen.getByText(/relé membro 198\.51\.100\.4:52777/)).toBeTruthy();
     expect(screen.getByText(/189\.75\.167\.63:28515/)).toBeTruthy();
     // O anunciado fica só no `title`, para comparação.
     expect(screen.queryByText(/2804:d55::1/)).toBeNull();

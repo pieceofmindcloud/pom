@@ -1319,10 +1319,13 @@ export interface PeerRouteLink {
  * Por onde este nó fala de fato com o peer, observado - não o endereço que o
  * peer anuncia. `http`: um endereço direto respondeu; `p2p_direct`: conexão
  * libp2p direta (discada ou por hole punch); `relayed`: só pelo relé.
+ * `relay_kind` diz, em `relayed`, se o relé é dedicado (configurado) ou um
+ * membro do cluster servindo de relé - o último degrau da escada.
  */
 export interface PeerRoute {
   kind: "http" | "p2p_direct" | "relayed" | "none";
   address?: string | null;
+  relay_kind?: "dedicated" | "member" | null;
   hole_punched: boolean;
   links: PeerRouteLink[];
 }

@@ -30,17 +30,22 @@ Per-file list:
   trazidas pela descoberta local (`LocalDiscoveryPanel`) ou coladas em
   `TrustFields`, que só monta quando o bloco manual é aberto. No convite, cada
   computador que procura a rede aparece em `DiscoveredMachineCard` com nome,
-  sistema, IP, CPU, RAM e GPU. Pastas, disco, reservas, senha (`admin`) e
+  sistema, IP (da LAN, só no wizard local), CPU, RAM e GPU. The admin's
+  preferred address is optional and never pre-filled: the network is found by
+  the principal's key, and neither the trust root nor joining from Public
+  networks brings an IP bootstrap. Pastas, disco, reservas, senha (`admin`) e
   workspace (`~/pom_workspace`) são padrões ajustados depois. As telas conversam
   com `/api/setup/*`; não confundir com o protótipo `SetupWizard.tsx`. Ver
   `docs/subsystems/web-ui.md`, "Wizard de primeiro acesso".
 
 - `PublicNetworks.tsx` - Diretório full-bleed de redes públicas, no mesmo
   padrão de Logs: tabela rolável com nome público, organização, localização,
-  label geo-hierárquico, endereço publicado com indicador de alcançabilidade,
-  nós, latência, VRAM, modelos e ação de entrada. Usa `/api/public/networks`;
-  o indicador consulta `/health` no navegador com timeout de 1,8 s e cache de
-  30 s, sem alterar a publicação pkarr. Métricas agregadas só aparecem quando o cluster local
+  label geo-hierárquico, alcance, nós, latência, VRAM, modelos e ação de
+  entrada. Usa `/api/public/networks`. **No IP is shown**: reachability comes
+  from `usePublicLocator` (`lib/publicLocator.ts`), which asks the node
+  (`/api/public/networks/locate?key=<publisher_key>`) whether the publisher key
+  has a direct route, only a relay or no pkarr record at all; the details show
+  the publisher key and the `relay_hints`. Métricas agregadas só aparecem quando o cluster local
   corresponde à rede exibida, pois o catálogo público atual não as fornece.
   Os filtros de país e cidade são derivados do próprio catálogo; ao escolher um
   país, o combo de cidade mostra apenas as cidades daquele país.
@@ -531,7 +536,9 @@ Per-file list:
   `/config/rede/participantes`; the route is allowed only to `admin` and
   `node`, and block/unblock mutations remain admin-only. Each peer row shows
   the route actually in use (`AdminNode.route`: `RouteBadge` + `routeAddress`),
-  never the advertised `addr`, which only goes into the row's `title`.
+  never the advertised `addr`, which only goes into the row's `title`. A
+  relayed route names the relay kind (`relay_kind`: dedicated relay or member
+  relay, the last rung of the ladder).
   (`POST /api/ui/leave` / `/api/ui/rejoin`, reachable by every profile: leaving
   is abdication, not a privilege) and the known-node list from
   `GET /admin/nodes` (`node+admin`: reading the roster is what this screen
@@ -733,11 +740,16 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 ### Deploy e chat multimodais
 
 `DeployModel.tsx` exibe a opção de visão para modelo inteiro e para conjunto de
-fatias quando o plano expõe `mmproj_candidates`. A lista é pré-selecionada pelo
-primeiro caminho compatível e permite escolher outro formato local na hora da
-implantação. Sem candidatos, mostra `mmproj_reason` ou uma orientação
-localizada. A tela envia `vision` e `mmproj_path`, e a rota de implantação refaz
-o survey e o plano antes de validar o caminho escolhido para a cabeça.
+fatias quando o plano expõe `mmproj_candidates`. Once the plan has answered,
+the options are **only** those of the layer-0 machine
+(`currentPlan.mmproj_candidates` and `mmproj_path`); the catalog, which mixes
+every machine's paths, only fills the list while the first plan loads, and a
+selection that is not among the head's options is replaced. The list is
+preselected with the plan's path and lets the operator pick another local
+format at deploy time. Without candidates, it shows `mmproj_reason` or a
+localized hint. The plan request carries no projector; the deployment sends
+`vision` and, only with vision on, `mmproj_path`, and the route redoes the
+survey and the plan before validating the path chosen for the head.
 `Chat.tsx` usa um único
 campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
 visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens

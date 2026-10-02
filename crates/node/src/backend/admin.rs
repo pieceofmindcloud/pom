@@ -93,7 +93,7 @@ async fn principal_peer_for(
         peer.node_id != network.node_id
             && peer.node_id == primary.node_id
             && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
-            && peer.authority_pubkey == primary.pubkey
+            && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     })
 }
@@ -104,9 +104,12 @@ fn gateway_urls(network: &crate::network::Network, peer: &crate::network::PeerIn
     network.gateway_bases(peer)
 }
 
-/// Envia uma chamada de controle para cada endereço anunciado pelo peer até
-/// que um deles responda. Um endereço que deixou de existir não pode impedir
-/// a promoção quando o mesmo anúncio ainda traz um candidato vivo.
+/// Sends a control call to each address the peer announced until one of them
+/// answers and, last, through the libp2p tunnel
+/// (`peer_client::send_to_gateway_over`). An address that ceased to exist must
+/// not block the promotion while the same announcement still carries a live
+/// candidate, and a peer only the relay reaches (Docker bridge, NAT) has no
+/// direct address at all.
 async fn post_internal_json<T: Serialize>(
     state: &crate::gateway::GatewayState,
     peer: &crate::network::PeerInfo,
@@ -115,7 +118,7 @@ async fn post_internal_json<T: Serialize>(
     timeout: Duration,
 ) -> anyhow::Result<reqwest::Response> {
     let urls = gateway_urls(&state.network, peer);
-    if urls.is_empty() {
+    if urls.is_empty() && crate::peer_client::TunnelPeer::from_peer(peer).is_none() {
         anyhow::bail!("o peer não anuncia porta de gateway");
     }
     let client = state.peer_http.for_peer(&peer.node_id)?;
@@ -125,9 +128,7 @@ async fn post_internal_json<T: Serialize>(
         let config = state.auth.read().await;
         crate::auth::internal_node_token(&config)
     };
-
-    let mut last_error = "nenhum endereço de gateway respondeu".to_string();
-    for base in &urls {
+    crate::peer_client::send_to_gateway_over(peer, &urls, |base| {
         let mut request = client
             .post(format!("{base}{path}"))
             .timeout(timeout)
@@ -135,19 +136,11 @@ async fn post_internal_json<T: Serialize>(
         if let Some(connection_key) = &connection_key {
             request = request.bearer_auth(connection_key);
         }
-        match request
+        request
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body_bytes.clone())
-            .send()
-            .await
-        {
-            Ok(response) => return Ok(response),
-            Err(error) => {
-                last_error = format!("{base}: {error}");
-            }
-        }
-    }
-    anyhow::bail!(last_error)
+    })
+    .await
 }
 
 async fn sync_json<T: Serialize>(
@@ -162,14 +155,18 @@ async fn sync_json<T: Serialize>(
     let urls = gateway_urls(&state.network, &peer);
     let client = state.peer_http.for_peer(&peer.node_id)?;
     let body_bytes = serde_json::to_vec(body)?;
-    let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
     let connection_key = {
         let config = state.auth.read().await;
         crate::auth::internal_node_token(&config)
     };
     let mut last_error = "central admin synchronization failed".to_string();
     for attempt in 0..SYNC_ATTEMPTS {
-        for base in &urls {
+        // Direct addresses and, last, the tunnel: a node that only reaches the
+        // principal through the relay also registers and revokes keys. Each
+        // attempt signs a new envelope, because the principal refuses a nonce
+        // it has already seen and these mutations are idempotent.
+        let control_headers = state.signed_control_headers("POST", path, &body_bytes)?;
+        let result = crate::peer_client::send_to_gateway_over(&peer, &urls, |base| {
             let mut request = client
                 .post(format!("{base}{path}"))
                 .timeout(SYNC_TIMEOUT)
@@ -177,16 +174,20 @@ async fn sync_json<T: Serialize>(
             if let Some(connection_key) = &connection_key {
                 request = request.bearer_auth(connection_key);
             }
-            let result = request
+            request
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body_bytes.clone())
-                .send()
-                .await;
-            match result {
-                Ok(response) if response.status().is_success() => return Ok(()),
-                Ok(_) => last_error = "central admin rejected synchronization".into(),
-                Err(_) => last_error = "central admin synchronization timed out".into(),
+        })
+        .await;
+        match result {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                last_error = format!(
+                    "central admin rejected synchronization: {}",
+                    response.status()
+                )
             }
+            Err(error) => last_error = format!("central admin unreachable: {error:#}"),
         }
         if attempt + 1 < SYNC_ATTEMPTS {
             tokio::time::sleep(Duration::from_millis(50 * (attempt as u64 + 1))).await;
@@ -310,8 +311,10 @@ pub(crate) async fn validate_api_key_remote_parts(
         let config = auth.read().await;
         crate::auth::internal_node_token(&config)
     };
+    let bases = gateway_urls(network, &peer);
     for attempt in 0..SYNC_ATTEMPTS {
-        for base in gateway_urls(network, &peer) {
+        // Direct addresses and, last, the libp2p tunnel.
+        let result = crate::peer_client::send_to_gateway_over(&peer, &bases, |base| {
             let mut request = client
                 .post(format!("{base}/api/internal/api-keys/validate"))
                 .timeout(SYNC_TIMEOUT)
@@ -319,15 +322,14 @@ pub(crate) async fn validate_api_key_remote_parts(
             if let Some(connection_key) = &connection_key {
                 request = request.bearer_auth(connection_key);
             }
-            let result = request
+            request
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body_bytes.clone())
-                .send()
-                .await;
-            if let Ok(response) = result {
-                if let Ok(payload) = response.json::<ValidateResponse>().await {
-                    return Ok(payload.valid.then_some(payload.key).flatten());
-                }
+        })
+        .await;
+        if let Ok(response) = result {
+            if let Ok(payload) = response.json::<ValidateResponse>().await {
+                return Ok(payload.valid.then_some(payload.key).flatten());
             }
         }
         if attempt + 1 < SYNC_ATTEMPTS {
@@ -510,7 +512,7 @@ fn peer_for_principal<'a>(
     peers.iter().find(|peer| {
         peer.node_id == principal.node_id
             && peer.libp2p_peer_id.as_deref() == Some(principal.peer_id.as_str())
-            && peer.authority_pubkey == principal.pubkey
+            && peer.pubkey == principal.pubkey
     })
 }
 
@@ -694,13 +696,13 @@ async fn request_node_promotion(
         let Some(peer_id) = peer.libp2p_peer_id.as_deref() else {
             return false;
         };
-        if peer.authority_pubkey.is_empty() {
+        if peer.pubkey.is_empty() {
             return false;
         }
         let admin = AuthorityPrincipal {
             node_id: peer.node_id.clone(),
             peer_id: peer_id.to_string(),
-            pubkey: peer.authority_pubkey.clone(),
+            pubkey: peer.pubkey.clone(),
         };
         state
             .admin_trust
@@ -761,7 +763,7 @@ async fn internal_authorize_node(
     }
     let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id == request.subject.node_id
-            && peer.authority_pubkey == request.subject.pubkey
+            && peer.pubkey == request.subject.pubkey
             && peer.libp2p_peer_id.as_deref() == Some(request.subject.peer_id.as_str())
     }) else {
         return (
@@ -1229,7 +1231,7 @@ async fn promote_node_to_admin(
         )
             .into_response();
     };
-    if peer.authority_pubkey.is_empty() {
+    if peer.pubkey.is_empty() {
         return (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": "o peer não anuncia a chave de autoridade libp2p" })),
@@ -1239,7 +1241,7 @@ async fn promote_node_to_admin(
     let subject = AuthorityPrincipal {
         node_id: peer.node_id.clone(),
         peer_id,
-        pubkey: peer.authority_pubkey.clone(),
+        pubkey: peer.pubkey.clone(),
     };
     let grant = match state.admin_trust.signed_secondary_grant(
         &state.authority_signing_key,
@@ -1427,7 +1429,7 @@ async fn resign_authority(
     let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id == successor.node_id
             && peer.libp2p_peer_id.as_deref() == Some(successor.peer_id.as_str())
-            && peer.authority_pubkey == successor.pubkey
+            && peer.pubkey == successor.pubkey
             && peer.profile == NodeProfile::Admin
     }) else {
         return (
@@ -1525,7 +1527,7 @@ pub(crate) async fn accept_authority_transfer(
     let Some(peer) = peers.into_iter().find(|peer| {
         peer.node_id == offer.issuer.node_id
             && peer.libp2p_peer_id.as_deref() == Some(offer.issuer.peer_id.as_str())
-            && peer.authority_pubkey == offer.issuer.pubkey
+            && peer.pubkey == offer.issuer.pubkey
     }) else {
         return Json(json!({
             "accepted": true,
@@ -1787,11 +1789,14 @@ pub(crate) async fn chat_key(
             };
             (status, Json(key)).into_response()
         }
-        Err(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "não foi possível preparar a chave do chat" })),
-        )
-            .into_response(),
+        Err(error) => {
+            tracing::warn!("could not prepare the chat key: {error:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "não foi possível preparar a chave do chat" })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -2352,14 +2357,14 @@ mod tests {
         let admin_peer = {
             let mut peer = crate::gateway::testkit::peer("admin", "admin", admin_port);
             peer.profile = NodeProfile::Admin;
-            peer.authority_pubkey = admin_principal.pubkey.clone();
+            peer.pubkey = admin_principal.pubkey.clone();
             peer.libp2p_peer_id = Some(admin_principal.peer_id.clone());
             peer
         };
         let infer_peer = {
             let mut peer = crate::gateway::testkit::peer("infer", "infer", infer_port);
             peer.profile = NodeProfile::Infer;
-            peer.authority_pubkey = infer_principal.pubkey.clone();
+            peer.pubkey = infer_principal.pubkey.clone();
             peer.libp2p_peer_id = Some(infer_principal.peer_id.clone());
             peer.addr = format!("{stale_infer_host}:42777");
             peer.addr_candidates = vec!["127.0.0.1:42777".into()];
@@ -2442,8 +2447,8 @@ mod tests {
             admin_peer.addr = "[2001:db8::dead]:42777".into();
             admin_peer.addr_candidates = vec!["127.0.0.1:42777".into()];
         }
-        assert_eq!(admin.admin_trust.document().replay.len(), 0);
-        assert_eq!(infer.admin_trust.document().replay.len(), 0);
+        assert_eq!(admin.admin_trust.replay_len(), 0);
+        assert_eq!(infer.admin_trust.replay_len(), 0);
         let admin_address = spawn_admin_router(admin_listener, admin.clone()).await;
         let infer_address = spawn_admin_router(infer_listener, infer.clone()).await;
 
@@ -2458,10 +2463,10 @@ mod tests {
         let status = response.status();
         let body = response.text().await.unwrap();
         assert_eq!(
-            admin.admin_trust.document().replay.len(),
+            admin.admin_trust.replay_len(),
             2,
             "a ida chegou ao admin: status={status}, body={body}, infer_replay={}, infer_profile={:?}",
-            infer.admin_trust.document().replay.len(),
+            infer.admin_trust.replay_len(),
             infer.auth.read().await.profile,
         );
         assert_eq!(

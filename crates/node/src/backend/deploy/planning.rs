@@ -1049,6 +1049,33 @@ pub(super) fn requested_capability_block(
         })
 }
 
+/// File name of a projector, to compare copies of the same file on machines
+/// with different folders.
+fn projector_file_name(path: &str) -> &str {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+}
+
+/// The head's path for the projector the screen asked for: the same path, or
+/// the only candidate with the same file name. `None` when the head does not
+/// have that projector (or has more than one with the same name, which cannot
+/// be disambiguated).
+pub(super) fn resolve_head_projector(requested: &str, candidates: &[String]) -> Option<String> {
+    if candidates.iter().any(|candidate| candidate == requested) {
+        return Some(requested.to_string());
+    }
+    let name = projector_file_name(requested);
+    let mut same_name = candidates
+        .iter()
+        .filter(|candidate| projector_file_name(candidate) == name);
+    match (same_name.next(), same_name.next()) {
+        (Some(only), None) => Some(only.clone()),
+        _ => None,
+    }
+}
+
 pub(super) fn plan_with_rtt_options(
     group: &str,
     machines: &[Machine],
@@ -1202,10 +1229,23 @@ pub(super) fn plan_with_rtt_options(
     }
     mmproj_candidates.sort();
     mmproj_candidates.dedup();
-    let mmproj_path = requested_mmproj_path
-        .filter(|path| !path.is_empty())
-        .map(str::to_string)
-        .or_else(|| selected_head_projector.and_then(|shard| shard.mmproj_path.clone()));
+    // The projector the screen asked for is resolved against the **head's**
+    // copy: each machine loads its own file, and the chosen path may have come
+    // from another machine in the catalog. The same path is accepted;
+    // otherwise, the same file name among the head's candidates. With no known
+    // candidates, the path goes through as is and is validated on the head.
+    let requested_mmproj_path = requested_mmproj_path.filter(|path| !path.is_empty());
+    let resolved_request = requested_mmproj_path.map(|requested| {
+        if mmproj_candidates.is_empty() {
+            Some(requested.to_string())
+        } else {
+            resolve_head_projector(requested, &mmproj_candidates)
+        }
+    });
+    let mmproj_path = match &resolved_request {
+        Some(resolved) => resolved.clone(),
+        None => selected_head_projector.and_then(|shard| shard.mmproj_path.clone()),
+    };
     let mmproj_reason = selected_head_projector
         .and_then(|shard| shard.mmproj_reason.clone())
         .or_else(|| {
@@ -1213,17 +1253,12 @@ pub(super) fn plan_with_rtt_options(
                 "o catálogo não comprovou um projetor pertencente ao modelo selecionado".into()
             })
         });
-    if let Some(requested) = requested_mmproj_path.filter(|path| !path.is_empty()) {
-        if !mmproj_candidates.is_empty()
-            && !mmproj_candidates
-                .iter()
-                .any(|candidate| candidate == requested)
-        {
-            blocked = Some(
-                "o projetor selecionado não está entre os candidatos compatíveis do peer da cabeça"
-                    .into(),
-            );
-        }
+    if let (Some(requested), Some(None)) = (requested_mmproj_path, &resolved_request) {
+        blocked = Some(format!(
+            "the chosen projector ({}) does not exist on the machine that processes \
+             the prompt; pick one of its projectors",
+            projector_file_name(requested)
+        ));
     }
 
     for (i, ..) in &chosen {

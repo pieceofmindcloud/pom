@@ -418,8 +418,13 @@ profile policy remains the effective authorization boundary.
   A secondary admin keeps management access but cannot promote another admin.
 - `admin_trust.rs` - the protected, durable Ed25519 authority chain. It stores
   the manually anchored root, one-level secondary grants, signed demotions,
-  transfer offer and acceptance state, monotonic replay records, and full-chain
-  reconciliation. A profile set to `admin` without a valid local chain remains
+  transfer offer and acceptance state, and full-chain reconciliation. Consumed
+  nonces live in a local replay ledger beside the chain
+  (`replay_path_for`: `<chain>.replay.json`), never in the shared document:
+  control-envelope entries expire with the envelope's `CONTROL_WINDOW_SECS`
+  (5 min) window, admin-mutation entries (grants, demotions, transfers, infer
+  promotion) have no clock and are kept. `ControlEnvelope.issued_at` is signed
+  and checked against that window on both verify paths. A profile set to `admin` without a valid local chain remains
   without administrative capability. `is_anchored`/`anchor_file_exists` are the
   anchored-versus-not judgement the UI shows; `parse_transported`,
   `anchor_fingerprint` and `fingerprint_matches` are the single manual check
@@ -429,9 +434,11 @@ profile policy remains the effective authorization boundary.
   already has one, because replacing a root is manual re-anchoring on the
   machine (`--replace`), not an interface gesture. A chain created by first
   access also carries a signed `setup` block with the network name, visibility,
-  access policy, geographic label, admin advertised address, bootstrap address
-  and federated-directory replicas, so a joining node does not retype network
-  identity data. `ensure_setup_metadata` repairs only a missing setup block
+  access policy, geographic label, `relay_hints` (dedicated relay `pk:` keys,
+  never addresses) and federated-directory replicas, so a joining node does not
+  retype network identity data. The block carries no IP: a joining node finds
+  the principal by its key through pkarr (`main::spawn_pkarr_bootstrap`), and
+  setup copies `relay_hints` into its `relay_peers`. `ensure_setup_metadata` repairs only a missing setup block
   from the local administrator configuration, and only when the local
   principal is the current primary.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, dividido em
@@ -575,8 +582,11 @@ profile policy remains the effective authorization boundary.
   (`peer_client::send_to_gateway_over`), que é o caminho para um peer atrás de
   NAT simétrico. `control_get_via_tunnel` é o último recurso de quem já
   percorreu os endereços com a memória de falha do `RouteTable` (a leitura do
-  `/api/ui/cluster`). Ficam fora do túnel a transferência de pesos e a
-  sincronização de `admin.rs`.
+  `/api/ui/cluster`). `admin.rs` sync with the principal (`sync_json`,
+  `post_internal_json`, `validate_api_key_remote_parts`) uses the same
+  `send_to_gateway_over`: direct addresses and, last, the tunnel; `sync_json`
+  signs a new envelope on every attempt. Only weight transfer stays outside
+  the tunnel.
 - `serve.rs` - o laço de accept: espia o primeiro byte, guarda o `PeerAddr` no
   request (`request_origin`: um pedido do loopback com a marca do túnel libp2p
   vira `TUNNELED_ORIGIN`, não-loopback, e o cabeçalho da marca sai de todo
@@ -626,7 +636,11 @@ faz o download autenticado do blob persistido.
   inference `/health` before planning, trying every inference address in
   `Network::inference_bases` order (the host that already answered first) with
   the `ADMISSION_PROBE_TIMEOUT` of 300ms each, then `/health` over the libp2p
-  tunnel (`infer_tunnel::health_via_tunnel`, 3 s); probing only the first
+  tunnel (`infer_tunnel::health_via_tunnel`, 3 s). The peer answers `/health`
+  without waiting for its engine (a busy peer returns its last snapshot with
+  `busy: true`), so a peer mid-prefill stays in the plan. Session lifecycle
+  calls use `SESSION_LIFECYCLE_TIMEOUT` (60 s), because the peer's handler
+  needs the engine lock. Probing only the first
   announced address left a peer behind an unreachable IPv6 out of every plan
   ("Gap at layer 0"). A direct success is remembered with
   `RouteTable::mark_success`. The probe follows the pinned route
@@ -741,7 +755,10 @@ faz o download autenticado do blob persistido.
 - `gateway/` - **os dois orçamentos** (`OutputBudget`), que nunca são o mesmo
   número. `leg` é o `max_new_tokens` da implantação: o teto de **uma** geração
   de backend, escolha do operador, que a decisão do produto proíbe levantar.
-  `total` é o teto da **requisição**: `min(pedido, n_ctx restante)`. Esgotar a
+  `total` é o teto da **requisição**: `min(pedido, n_ctx restante)`, recomputed
+  after prefill with the real prompt (`OutputBudget::within_session_window`,
+  against `n_ctx_per_session`); reaching the window also ends with `length`.
+  Esgotar a
   perna não encerra a resposta -
   `note_leg_boundary` conta a perna e o laço segue decodificando na **mesma**
   sessão de KV, no mesmo fluxo SSE, sem reprefill e sem o cliente ver nada
@@ -1062,8 +1079,9 @@ faz o download autenticado do blob persistido.
   installs the trust document, persists network details in both `pom.json` and
   `pom.db`, and respawns. `setup_pending` keeps the router active after leaving
   a network while preserving local hardware preferences. The setup hardware
-  response returns the effective P2P port used to render the advertised IPv6;
-  the anchor preview signs the network setup metadata into the trust document.
+  response returns the effective P2P port used to render the optional preferred
+  address (never pre-filled nor required); the anchor preview signs the network
+  setup metadata into the trust document.
   Public-network setup accepts an empty federated-directory list; configured
   environment or administration entries are still copied into that metadata.
   The setup health response also reports the existing Windows firewall-rule
@@ -1074,8 +1092,11 @@ faz o download autenticado do blob persistido.
   and `pom.json` persists only its Argon2id hash. Localhost-only exposure has
   no administrative password.
   `GET /api/public/network(s)` exposes public network metadata, including the
-  signed trust document, Markdown description/rules/channels and a P2P
-  bootstrap address for the no-secret join flow. `GET/POST
+  signed trust document, Markdown description/rules/channels, the publisher
+  `pk:` key and `relay_hints` for the no-secret join flow - never an address.
+  `GET /api/public/networks/locate?key=pk:...` resolves a listed publisher key
+  through pkarr on the node and answers only `direct|relayed|unresolved` plus a
+  relay count (30 s cache; keys the node does not list get 404). `GET/POST
   /api/public/directory/records` is the federated directory
   ingress: records are checked locally for Ed25519 signature, proof of work,
   trust-root consistency and expiry before entering the bounded SQLite cache.
@@ -1085,6 +1106,13 @@ faz o download autenticado do blob persistido.
   peers through the listing feature. Direct pkarr discovery remains available
   only while the active network is public; it still cannot enumerate arbitrary
   pkarr keys or make an unroutable IPv6 address reachable.
+  `gateway::PkarrPublishHandle` is the live pkarr publisher: it rebuilds the
+  record from `Network::libp2p_addrs` every 15 s (`record_addrs` turns circuits
+  into relay keys and drops private addresses) and republishes on change or
+  every 30 min, with or without a deployment. Failed publishes back off from
+  15 s to 30 min (`PublishBackoff`) and only the 1st, 2nd, 4th, 8th...
+  consecutive failure logs at `warn`. With `--no-pkarr` there is no publisher
+  (`pkarr_publisher` is `None`).
   The trust root is reached by `GET/POST /api/ui/network/trust-anchor`
   (`webui/trust.rs`), outside the admin-only scope on purpose.
   The authority contract adds `GET /api/ui/network/admin-authority`,
@@ -1178,7 +1206,7 @@ faz o download autenticado do blob persistido.
   `crate::models`/`crate::catalog`/`crate::gguf`/`crate::plan`
   (`Catalog`, `GgufLayout`, `PeerBudget`, `pom::PomManifest`), `crate::splitter`
   (`MergePart`, `merge`), `crate::sysmon`, `crate::route` (`RouteTable` for the
-  cluster view), `crate::pkarr_node` (`detect_local_ip`), `crate::prefill`
+  cluster view), `crate::addrs` (`outbound_local_ip`), `crate::prefill`
   (`RequestTrace` in the summaries), `crate::direct` (`ReplyInbox`,
   `DirectReply`, `Ticket`, `self_reply_urls`, `handle_relay_result`,
   `RELAY_RESULT_PATH` - the direct-reply relay that lets the tail answer the
@@ -1205,6 +1233,10 @@ inteiro ou do `ShardSet` escolhido. A interface pré-seleciona o primeiro
 candidato compatível e pode enviar `DeployRequest.mmproj_path` para escolher
 outro formato na cabeça selecionada. A seleção da cabeça usa a faixa e o nome
 do candidato escolhido, não o primeiro arquivo de visão da máquina.
+`deploy::launch` only passes `mmproj_path` to the plan with `vision: true`, and
+`planning::resolve_head_projector` resolves it against the head by path or, if
+the screen sent another machine's copy, by the unique file name among the
+head's candidates; with no match, the plan refuses naming the file.
 `DeployRequest.vision` só habilita o projetor no alvo cujo `start_layer` é zero, a cabeça da implantação;
 `webui::ApplyRequest.use_mmproj` persiste a escolha em `NodeConfig` e o
 `openai` extrai imagens base64 dos pedidos multimodais. A recusa de visão devolve

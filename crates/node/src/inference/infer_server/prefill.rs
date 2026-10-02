@@ -1009,6 +1009,7 @@ pub(super) fn prefill_blocking(
             let add_bos = !use_tmpl;
             let tokens = s.engine.tokenize(&formatted, add_bos, true);
             let new_prompt_tokens = tokens.len();
+            check_prompt_fits_session(&s, new_prompt_tokens)?;
             let stable = stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
             prefix = s.adopt_prompt_prefix(&sid_key, tokens, stable, want_reuse)?;
             if chunk_index == 0 {
@@ -1514,6 +1515,7 @@ pub(super) fn prefill_batch_blocking(
                     };
                     let tokens = s.engine.tokenize(&formatted, !use_tmpl, true);
                     let new_prompt_tokens = tokens.len();
+                    check_prompt_fits_session(&s, new_prompt_tokens)?;
                     let stable =
                         stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
                     prefix = s.adopt_prompt_prefix(&sid_key, tokens, stable, want_reuse)?;

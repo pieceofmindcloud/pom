@@ -847,6 +847,20 @@ visibilidade dos controles de implantação na UI local.
   quente, não capacidade: contá-la como slot admitia um prefill que, no worker,
   só entrava destruindo o prefixo de outra conversa.
   `SchedulerQueue::oldest_new_session_wait` é o relógio dessa carência.
+- `check_prompt_fits_session`/`check_decode_fits_session`
+  (`infer_server/server.rs`) - one session's window
+  (`context_per_session = n_ctx_total / max_sessions`) is enforced on the peer:
+  the tokenized prompt must leave room for one token, and decode refuses with
+  the session at the last position. With `kv_unified` llama.cpp would let it
+  go past it using another session's cells. The gateway stops earlier, with
+  `length`.
+- `handle_health` (`infer_server/server.rs`) - never waits for the engine: it
+  tries the `InferState` lock without blocking; when busy, it returns the last
+  snapshot (`HealthSnapshot`, `busy: true`, `snapshot_age_ms`) with queue and
+  routes recomputed; when free, it builds the body (`health_body`) and stores
+  the snapshot again. With no snapshot yet, it waits for the lock in
+  `spawn_blocking`. The gateway's readiness probe and the route plan's probe
+  depend on this on a peer with a long prefill.
 - `handle_prefill`/`handle_step` - autenticação, decode do frame e envio para o
   scheduler local. O worker usa `prefill_batch_blocking` ou
   `step_batch_blocking` quando as entradas são compatíveis e mantém o caminho
@@ -908,7 +922,8 @@ visibilidade dos controles de implantação na UI local.
   mais o sidecar `<name>.json` (identidade do modelo e da fatia).
   `restore_slot` confere o sidecar antes de tocar no motor, `alloc_seq` uma
   sessão nova `retained` na fronteira salva. `slot_dir` vem de
-  `NodeConfig.slot_save_path`; sem ele a rota responde 400. `replicate_slot_call`
+  `NodeConfig.slot_save_path` (default `~/.pom/kv-slots`, from
+  `Config::slot_save_path_effective`); with it empty the route answers 400. `replicate_slot_call`
   repassa a ação aos workers de TP. Capability `inference/slot-persist-v1`.
   Ver `inference.md` §3.1.1.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
@@ -1151,7 +1166,11 @@ visibilidade dos controles de implantação na UI local.
 `http`, `https`, `quic` ou `remote-stream`). O detalhe interno
 `https-link` é normalizado para `http`/`https` na telemetria. O campo
 `transport_fallback` denuncia quando a chamada desceu a escada depois de
-falha de transporte.
+falha de transporte. A frame that goes straight to the tunnel without trying
+the direct path - route pinned to the tunnel (`tunnel_first`) or a peer marked
+by `prefer_tunnel` - is **not** a fallback: only what had already failed before
+the ladder counts (the persistent channel, for example). `DIRECT_SKIPPED` is the
+reason that only shows up in the error of a tunnel that also failed.
 - `send_batch_body` é o único ponto por onde todo lote remoto passa, inclusive
   as ativações `remote_stream` que não podem ser agrupadas com uma sessão
   diferente. É ali que a seleção de transporte vive: com QUIC ligado, tenta
@@ -1161,7 +1180,9 @@ falha de transporte.
   usado depois de o anterior falhar por **transporte**; uma recusa HTTP do peer
   é final, exceto 404/405 no QUIC, que significam peer sem a rota HTTP/3. O
   degrau usado vira `transport`, e ter descido a escada vira
-  `transport_fallback`.
+  `transport_fallback`. With the direct path skipped on purpose, a tunnel that
+  delivers does not mark a fallback and there is no empty-reason "did not
+  receive the batch".
 - O transporte por requisição tenta QUIC antes do cliente TCP quando a
   preferência está ligada; uma falha QUIC cai no cliente HTTP pinado e, só se
   todos os endereços diretos falharem, no túnel libp2p/Noise. Os destinos QUIC
@@ -1230,7 +1251,10 @@ falha de transporte.
   antigo borbulhou a resposta inteira - `token_id` presente vale como
   resultado), e o prazo do frame que o chamador passa (`relay::frame_deadline`
   com os tokens da rodada e todos os hops do plano; hop morreu depois de
-  aceitar). `RemoteDecodeStream::next` usa o mesmo cálculo entre dois
+  aceitar). In prefill the deadline is a liveness one,
+  `relay::prefill_frame_deadline` (10 min per hop): the chunk may wait in the
+  peer's queue behind another session, and the work-based deadline brought both
+  down. `RemoteDecodeStream::next` usa o mesmo cálculo entre dois
   callbacks. Se o resultado chega antes do ack, ele não espera telemetria
   atrasada: o futuro do ack continua em tarefa destacada para registrar a
   evidência do primeiro hop.

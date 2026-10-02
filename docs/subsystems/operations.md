@@ -38,12 +38,15 @@ field.
   machine, not the deploy. Two sources, in this precedence: the
   `POM_SLOT_SAVE_PATH` variable and the `slot_save_path` field of `pom.json`.
   The env var is per process and is not persisted to `pom.json`. With neither,
-  the feature is off and `POST /v1/session/slot` / `POST /admin/slots/{name}`
-  answer "not configured". See `inference.md` §3.1.1 and `http-api.md`.
+  the directory is `~/.pom/kv-slots` (created on the first save); an empty
+  value turns the feature off and `POST /v1/session/slot` /
+  `POST /admin/slots/{name}` answer "not configured". See `inference.md` §3.1.1 and `http-api.md`.
 - **Persistent prefix cache:** `slot_persist_prefix_cache` in `pom.json` (or
   `POM_SLOT_PERSIST_PREFIX_CACHE=1`) makes the gateway write the retained KV at
   the end of each turn and restore it on a miss after a restart, without a
-  manual call. Off by default; requires `slot_save_path` on every hop. A
+  manual call. On by default (`false` in `pom.json` or
+  `POM_SLOT_PERSIST_PREFIX_CACHE=0` turns it off); requires `slot_save_path`
+  on every hop, which the `~/.pom/kv-slots` default provides. A
   growing conversation keeps a single snapshot (supersession); short turns do
   not rewrite it (debounce). `slot_auto_max_bytes` caps the disk use (default
   2 GiB) and `slot_auto_ttl_secs` / `POM_SLOT_AUTO_TTL_SECS` the TTL (default 7
@@ -158,6 +161,12 @@ check the offload, watch VRAM during loading.
   `target/release`). An `ssh host '/path/pom'` runs in `$HOME`, reads another
   config and finds no slice. The `Project root: ...` line at startup says which
   one was chosen; check it before suspecting the catalog.
+- **Clocks out of sync break control between nodes.** The signed control
+  envelope carries its issue time and is refused outside 5 min of the
+  receiver's clock (`admin_trust::CONTROL_WINDOW_SECS`), with the message
+  "control envelope outside the time window". Deployment, slice surveys, idle
+  model reloads and the policy ratchets depend on it. Keep NTP on the nodes; on
+  a network without internet access, point them at an internal NTP server.
 
 ## Two peers on the same machine - the trap is identity
 

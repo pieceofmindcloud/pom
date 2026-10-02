@@ -423,7 +423,7 @@ mod network_chat_settings_tests {
         let primary_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         let mut primary = peer("primary", "primary", port);
         primary.libp2p_peer_id = Some("peer-primary".into());
-        primary.authority_pubkey =
+        primary.pubkey =
             hex::encode(primary_key.verifying_key().as_bytes());
         let state = state_with_secondary_admin("secondary", vec![primary]).await;
 

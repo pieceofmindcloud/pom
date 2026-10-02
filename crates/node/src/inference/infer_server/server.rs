@@ -802,6 +802,7 @@ pub async fn run(
     let app_state = InferenceAppState {
         state,
         scheduler,
+        health_snapshot: HealthSnapshot::default(),
         tp_batch_gate: Arc::new(tokio::sync::Mutex::new(())),
         direct_forward_order: DirectForwardOrder::default(),
         loads,
@@ -1224,20 +1225,143 @@ pub(super) fn context_per_session(n_ctx_total: u32, max_sessions: u32) -> u32 {
     n_ctx_total / max_sessions.max(1)
 }
 
+/// The tokenized prompt fits in the session window, with room for at least one
+/// generated token. With the unified KV cache llama.cpp would accept a larger
+/// prompt - it would take another session's cells -, so the boundary is
+/// enforced here. The gateway already refuses by the estimate; this catches a
+/// prompt denser than it and any caller that does not go through the gateway.
+pub(super) fn check_prompt_fits_session(
+    s: &super::InferState,
+    prompt_tokens: usize,
+) -> anyhow::Result<()> {
+    let window = context_per_session(s.engine.n_ctx(), s.max_sessions);
+    match prompt_window_refusal(prompt_tokens, window) {
+        Some(reason) => Err(anyhow::anyhow!(reason)),
+        None => Ok(()),
+    }
+}
+
+pub(super) fn prompt_window_refusal(prompt_tokens: usize, window: u32) -> Option<String> {
+    (prompt_tokens >= window as usize).then(|| {
+        format!(
+            "the prompt has {prompt_tokens} tokens and the session window is {window}; \
+             there is no room left for the answer"
+        )
+    })
+}
+
+/// This session's generation still fits in the window. Reaching it is a stop:
+/// the gateway bounds the total (`OutputBudget::within_session_window`) and
+/// ends with `length` before getting here; this refusal is the safety net for
+/// the path that does not go through it and for the head that generates ahead
+/// in remote-stream mode.
+pub(super) fn check_decode_fits_session(s: &super::InferState, n_past: u32) -> anyhow::Result<()> {
+    let window = context_per_session(s.engine.n_ctx(), s.max_sessions);
+    match decode_window_refusal(n_past, window) {
+        Some(reason) => Err(anyhow::anyhow!(reason)),
+        None => Ok(()),
+    }
+}
+
+pub(super) fn decode_window_refusal(n_past: u32, window: u32) -> Option<String> {
+    (n_past >= window).then(|| {
+        format!(
+            "the session window is full ({n_past} of {window} positions); \
+             generation stopped at the context limit"
+        )
+    })
+}
+
 // ── /health ───────────────────────────────────────────────────────────────────
 
+/// `GET /health`. With the engine busy, it answers the last snapshot marked
+/// `busy: true` (with `snapshot_age_ms`); the snapshot is stored again whenever
+/// the lock is free.
 pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     let scheduler = app.scheduler;
     let state = app.state;
-    let slot_dir = match lock_inference_state(&state) {
-        Ok(s) => s.slot_dir.clone(),
-        Err(error) => return err500(error),
+    let snapshot = app.health_snapshot;
+    // `/health` is a readiness and route probe: it has to answer with the
+    // engine busy. The `InferState` lock is held for a whole prefill chunk
+    // (seconds), and waiting for it made the gateway's readiness probe and the
+    // route plan's probe expire - the peer dropped out of the plan ("Gap at
+    // layer 0") and the tunnel route was erased. When busy, return the last
+    // snapshot.
+    let slot_dir = match state.try_lock() {
+        Ok(s) => Some(s.slot_dir.clone()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            return err500(anyhow::anyhow!("inference state mutex poisoned"))
+        }
     };
-    let slot_count = slot_dir.as_deref().map(count_slot_entries).unwrap_or(0);
-    let s = match lock_inference_state(&state) {
-        Ok(s) => s,
-        Err(error) => return err500(error),
-    };
+    if let Some(slot_dir) = slot_dir {
+        let slot_count = slot_dir.as_deref().map(count_slot_entries).unwrap_or(0);
+        if let Ok(s) = state.try_lock() {
+            let body = health_body(&s, &scheduler, slot_count);
+            drop(s);
+            store_health_snapshot(&snapshot, &body);
+            return Json(body).into_response();
+        }
+    }
+    if let Some(body) = busy_health_body(&snapshot, &scheduler) {
+        return Json(body).into_response();
+    }
+    // Busy and no snapshot yet (first probe after loading): wait for the
+    // engine on a blocking thread, so the async runtime is not stalled.
+    let built = tokio::task::spawn_blocking(move || {
+        let s = lock_inference_state(&state)?;
+        let slot_dir = s.slot_dir.clone();
+        let slot_count = slot_dir.as_deref().map(count_slot_entries).unwrap_or(0);
+        anyhow::Ok(health_body(&s, &scheduler, slot_count))
+    })
+    .await;
+    match built {
+        Ok(Ok(body)) => {
+            store_health_snapshot(&snapshot, &body);
+            Json(body).into_response()
+        }
+        Ok(Err(error)) => err500(error),
+        Err(error) => err500(anyhow::anyhow!("/health did not complete: {error}")),
+    }
+}
+
+/// `/health` snapshot kept for when the engine is busy.
+pub(super) type HealthSnapshot = Arc<std::sync::Mutex<Option<(Value, Instant)>>>;
+
+pub(super) fn store_health_snapshot(snapshot: &HealthSnapshot, body: &Value) {
+    if let Ok(mut slot) = snapshot.lock() {
+        *slot = Some((body.clone(), Instant::now()));
+    }
+}
+
+/// The last snapshot, with what does not depend on the engine recomputed now:
+/// the scheduler queue and the routes. `busy` says the rest comes from the
+/// snapshot.
+fn busy_health_body(snapshot: &HealthSnapshot, scheduler: &SchedulerHandle) -> Option<Value> {
+    let mut body = snapshot_health_body(snapshot)?;
+    body["scheduler"] = scheduler.stats.json(&scheduler.config);
+    add_route_fields(&mut body);
+    Some(body)
+}
+
+/// The stored snapshot, marked as served with the engine busy.
+pub(super) fn snapshot_health_body(snapshot: &HealthSnapshot) -> Option<Value> {
+    let (mut body, at) = snapshot.lock().ok()?.clone()?;
+    body["busy"] = Value::Bool(true);
+    body["snapshot_age_ms"] = Value::from(at.elapsed().as_millis() as u64);
+    Some(body)
+}
+
+fn add_route_fields(body: &mut Value) {
+    let book = crate::route_plan::book();
+    body["route_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Inference));
+    body["gateway_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Gateway));
+    body["route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Inference));
+    body["gateway_route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Gateway));
+    body["relayed_peers"] = json!(book.relayed_nodes());
+}
+
+fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -> Value {
     // Keep in sync with network.rs's `self_announce`, gateway.rs's local peer
     // entry, and the capability constants in routing/pipeline.rs.
     let mut caps = vec![
@@ -1362,14 +1486,7 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
     // de inferência e até o gateway de cada peer. O gateway que planeja não
     // mede as arestas entre dois outros peers nem a volta até ele; lê daqui.
     // Fora do `json!` acima, que já está no limite de recursão da macro.
-    {
-        let book = crate::route_plan::book();
-        body["route_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Inference));
-        body["gateway_rtt_ms"] = json!(book.rtt_map(crate::route_plan::Plane::Gateway));
-        body["route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Inference));
-        body["gateway_route_kinds"] = json!(book.kind_map(crate::route_plan::Plane::Gateway));
-        body["relayed_peers"] = json!(book.relayed_nodes());
-    }
+    add_route_fields(&mut body);
     // Keep the identity fields separate from the large diagnostic object. A
     // direct addition to the json! tree would exceed the macro recursion limit
     // and would make this readiness contract depend on compiler settings.
@@ -1378,7 +1495,8 @@ pub(super) async fn handle_health(State(app): State<InferenceAppState>) -> Respo
     body["start_layer"] = Value::from(s.start_layer);
     body["end_layer"] = Value::from(s.end_layer);
     body["total_layers"] = Value::from(s.total_layers);
-    Json(body).into_response()
+    body["busy"] = Value::Bool(false);
+    body
 }
 
 // ── /v1/tp/reduce ────────────────────────────────────────────────────────────

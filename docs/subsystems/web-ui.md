@@ -324,7 +324,9 @@ the normal `NAV` projection.
   summary), Network (name and **Private** or **Public**; country and city only
   for public, because they go to pkarr and the directory) and Invitation
   (connection key, when private, and the `trust.json` to download or copy). The
-  advertised address comes suggested and sits under "Advanced". There is no
+  preferred address is optional, starts empty under "Advanced" and is only a
+  hint (IP or DNS name); `trust.json` carries no IP - a joining node finds the
+  primary by its key through pkarr. There is no
   "local-only network" or "who can access" question: private requires the key
   and the `trust.json`, public requires the `trust.json`.
 - **Node and inference, 2 steps:** Start and Join. Join looks for the
@@ -629,10 +631,10 @@ diagnosed. On Windows the binary creates no console, so tracing also opens
 `<project_root>/pom.log` directly; the PowerShell `*> file` redirection is not
 the reliable source in that mode. For a native reproduction, use
 `RUST_LOG=debug` and collect that `pom.log` together with
-`infer_server_<port>.log`. The `advertise_addr` suggestion uses the real
-enumeration of the interfaces: non-temporary global IPv6 first, then IPv4; it
-is only an editable suggestion and the announcement keeps redetecting the
-addresses on every cycle. A configured node's answer publishes
+`infer_server_<port>.log`. The wizard neither suggests nor requires
+`advertise_addr`: the interface enumeration (`preferred_local_advertise_ip`)
+only reports whether there is a public IPv6 (`public_ipv6_available`), and the
+announcement keeps redetecting the addresses on every cycle. A configured node's answer publishes
 `addr_candidates`, `libp2p_peer_id` and the tunnel capabilities, used by the TP
 deploy to carry the right address to each rank.
 
@@ -643,14 +645,15 @@ never the pkarr key. The local index persists labels already observed and
 accepts `geo_prefix`/`geo_suffix`, allowing candidates to be filtered before the
 HTTP probes. The `/redes-publicas` page is full-bleed, like Logs, and shows a
 table with name, organization, country/city, label, nodes, latency, VRAM,
-models and address. The local cluster's metrics are computed from
+models and reachability. **No IP is listed**: reachability comes from
+`GET /api/public/networks/locate`, which the node resolves from the publisher's
+key through pkarr (`direct`, `relayed` or `unresolved`); the details show the
+publisher key and the dedicated relays (`relay_hints`). The local cluster's metrics are computed from
 `ClusterView` when the network matches; the other fields show as unavailable
 because the current public catalog does not provide them. The trust document
 travels inside the signed federated record for a join without a secret. A
 private node queries the directory over outgoing HTTP(S), but does not use the
-private swarm to look for candidates. The listed address may still be
-unreachable, for example when it is an IPv6 announced without an external
-route. Joining a public network ends the current private network; two
+private swarm to look for candidates. Joining a public network ends the current private network; two
 simultaneous P2P networks are not supported in v1.
 
 The UI **profile** (*Menu and routes*) is not part of this math as a

@@ -501,7 +501,6 @@ export function DeployModel() {
       merge == null ? "merge-padrão" : `merge-${merge}`,
       strategy,
       JSON.stringify(preferredNodeIds),
-      selectedMmprojPath ?? "sem-mmproj-selecionado",
       // TP: o plano revalida quando o primary/workers mudam — a checagem de
       // shardabilidade roda no nó, então a troca precisa re-disparar a query.
       isTp ? JSON.stringify(tpPayload()) : "sem-tp",
@@ -514,7 +513,6 @@ export function DeployModel() {
         preferred_node_ids: preferredNodeIds,
         ...(settled ? { selection: settled } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
-        ...(selectedMmprojPath ? { mmproj_path: selectedMmprojPath } : {}),
         // A whole model is one machine, so there is nothing to join and the
         // toggle is not on screen. Sending it anyway would be sending a value
         // the operator was never shown.
@@ -534,13 +532,21 @@ export function DeployModel() {
   const catalogMmprojCandidates = wholeModel?.mmproj_candidates
     ?? slicedGroup?.mmprojCandidates
     ?? [];
+  // Once the plan answers, the options are only the projectors of the
+  // machine that runs layer 0: that is the copy that gets loaded, and its
+  // paths are its own. The catalog mixes every machine's paths (the admin's
+  // `/data/models/...` next to a peer's `/models/...`), so it only fills the
+  // list while the first plan is loading.
   const mmprojCandidates = useMemo(() => {
-    const candidates = [
-      ...(currentPlan?.mmproj_candidates ?? []),
-      ...catalogMmprojCandidates,
-      ...(currentPlan?.mmproj_path ? [currentPlan.mmproj_path] : []),
-      ...(catalogMmprojPath ? [catalogMmprojPath] : []),
-    ];
+    const candidates = currentPlan
+      ? [
+        ...(currentPlan.mmproj_candidates ?? []),
+        ...(currentPlan.mmproj_path ? [currentPlan.mmproj_path] : []),
+      ]
+      : [
+        ...catalogMmprojCandidates,
+        ...(catalogMmprojPath ? [catalogMmprojPath] : []),
+      ];
     return [...new Set(candidates)];
   }, [catalogMmprojCandidates, catalogMmprojPath, currentPlan]);
   const preferredMmprojPath = currentPlan?.mmproj_path ?? catalogMmprojPath;
@@ -971,7 +977,9 @@ export function DeployModel() {
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
         vision: useVision,
-        ...(selectedMmprojPath ? { mmproj_path: selectedMmprojPath } : {}),
+        // The projector only matters with vision on; without it, a path the
+        // screen still holds must not reach (or refuse) the deployment.
+        ...(useVision && selectedMmprojPath ? { mmproj_path: selectedMmprojPath } : {}),
       });
       setJobId(started.job_id);
       // Written from `rows` and `eff`, not from the possibly-null edit state:

@@ -23,7 +23,15 @@ slice record to `serving`, see `slicing.md`) and exposes the executable identity
 `model_label`/`deploy_id` and its range `start_layer`/`end_layer`/
 `total_layers`. The gateway uses that range during admission when the P2P
 announcement is still late. The endpoint also exposes `kv_can_shift`, the
-condition for the head to draft in speculative decoding. The internal routes of
+condition for the head to draft in speculative decoding. It **does not wait for
+the engine**: with the `InferState` lock held (a prefill chunk may take
+seconds), it returns the last snapshot with `busy: true` and `snapshot_age_ms`,
+recomputing only the scheduler queue and the routes; the snapshot is stored
+again whenever the lock is free. With no snapshot yet, it waits for the lock on
+a blocking thread. It used to wait, and the gateway's readiness probe (3 s
+through the tunnel) and the route plan's probe (2 s) expired on a busy peer -
+the peer dropped out of the plan ("Gap at layer 0") and the tunnel route was
+erased. The internal routes of
 that listener require the `connection_key` and `x-pom-internal-node: 1` on
 private networks; on public networks, HTTPS and QUIC can use the secure
 transport and the marker, while the HTTP fallback carries the same shared
@@ -47,8 +55,17 @@ last):
   /api/public/directory/records` are public metadata ingresses. GET delivers
   signed records and POST only accepts records with a compatible signature,
   proof of work, chain of trust and principal. The local cache is bounded and
-  expiring; none of these routes carries bootstrap data or private network
-  credentials.
+  expiring; none of these routes carries bootstrap data, addresses or private
+  network credentials: the record names the network by the publisher's key and
+  the relays by `relay_hints` (`pk:` keys).
+- **Public networks** (`gateway/http.rs`, no authentication): `GET
+  /api/public/network` (the local network, when public) and `GET
+  /api/public/networks` (local, directory and pkarr candidates) return
+  `PublicNetworkView` with `publisher_key` and `relay_hints`, never an IP. `GET
+  /api/public/networks/locate?key=pk:...` resolves the key through pkarr on the
+  node and answers `{reachability: "direct"|"relayed"|"unresolved", relays}`; it
+  only accepts keys the node already lists (404 otherwise) and caches the answer
+  for 30 s.
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,
@@ -129,8 +146,13 @@ the administrative signature when the operation changes authority. On the
 `common/identity internal` routes, calls between private nodes require the
 right `connection_key` and the internal marker validated by the handler, never
 the marker alone. On public networks, control uses `x-pom-control-signature`:
-an Ed25519 envelope covers method, path, nonce, epoch and body hash, and the
-sender must be a current authority in the chain. Inference frames stay outside
+an Ed25519 envelope covers method, path, nonce, epoch, body hash and the issue
+time (`issued_at`), and the sender must be a current authority in the chain.
+The receiver refuses an envelope outside `CONTROL_WINDOW_SECS` (5 min, on
+either side of its own clock) and records the nonce and command id of every
+signed POST/PUT/DELETE in the local replay ledger, which forgets the entry when
+the envelope's window closes. Nodes whose clocks differ by more than 5 min make
+signed control fail. Inference frames stay outside
 that signature and depend on TLS transport. `/api/setup/hardware`,
 `/api/setup/models`, `/api/setup/admin-anchor/preview`,
 `/api/setup/trust-anchor`, `/api/setup/health`,
@@ -162,8 +184,11 @@ do not define the key, signature or storage of grants.
 credential of the administrative surface. On a public network, it is neither an
 admission secret nor shared. Admin capability comes from the separate file
 `config::admin_trust_path()`, protected with mode 0600 and containing the manual
-anchor, the root grant, the chain of secondary grants, demotions, succession
-and persisted replay records. `profile: admin` alone creates no capability:
+anchor, the root grant, the chain of secondary grants, demotions and
+succession. Consumed nonces are **not** kept in that document, which is shared
+and replaced wholesale by `reconcile`: they live in the local replay ledger next
+to it (`<chain>.replay.json`, also 0600), state of a single node.
+`profile: admin` alone creates no capability:
 without a valid chain the node stays without access to the `admin-only` routes
 and emits a diagnostic at startup.
 
@@ -908,8 +933,15 @@ refused so a preference that will not be honored is not presented.
 
 In deployments with vision, `DeployPlan.mmproj_candidates` lists the compatible
 local paths on the peer serving layer 0. The UI preselects one of them and can
-send `DeployRequest.mmproj_path` to choose another format.
-`DeployRequest.vision` still enables the projector only on the head. The
+send `DeployRequest.mmproj_path` to choose another format;
+`POST /api/ui/deploy/plan` ignores that field. `DeployRequest.vision` still
+enables the projector only on the head, and `mmproj_path` is only considered
+with `vision: true` - without vision, a path that was sent does not refuse the
+deployment. The path is resolved against the head
+(`planning::resolve_head_projector`): the same path, or the head's only
+candidate with the same file name, because each machine keeps its own copy in
+different folders. The plan refuses, naming the file, only when the head does
+not have it. The
 backend redoes the survey, checks the chosen path against the GGUF headers in
 the peer's apply and does not compute the SHA-256 of the `mmproj` payload to
 discover or select candidates.

@@ -564,3 +564,13 @@ mod tests {
         assert_eq!(achados, vec!["192.168.100.138"]);
     }
 }
+
+/// Local IP this machine uses to reach the internet: a UDP socket "connected"
+/// to `8.8.8.8:80` picks the route without sending anything. Behind NAT it is a
+/// private IP; it is only a last resort for the node to dial itself, and it is
+/// never published as an identity.
+pub fn outbound_local_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    Some(socket.local_addr().ok()?.ip().to_string())
+}

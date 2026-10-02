@@ -1086,10 +1086,11 @@ impl NodeRuntime {
             let installation = auth.read().await;
             cfg.cache_type_k = installation.cache_type_k;
             cfg.cache_type_v = installation.cache_type_v;
-            // Precedência: o que já veio no `cfg` vence; senão
-            // `POM_SLOT_SAVE_PATH` e depois o campo do `pom.json`
-            // (`slot_save_path_effective`). Uma implantação pela UI chega aqui
-            // com `None` e adota o valor da instalação.
+            // Precedence: what already came in `cfg` wins; otherwise
+            // `POM_SLOT_SAVE_PATH`, then the `pom.json` field, then the
+            // `~/.pom/kv-slots` default (`slot_save_path_effective`). A
+            // deployment from the UI arrives here with `None` and adopts the
+            // installation's value.
             cfg.slot_save_path = cfg
                 .slot_save_path
                 .take()

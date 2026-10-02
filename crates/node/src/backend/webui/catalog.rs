@@ -1418,7 +1418,7 @@ async fn forward_network_chat_to_primary(
     let Some(peer) = state.all_peers().await.into_iter().find(|peer| {
         peer.node_id == primary.node_id
             && peer.libp2p_peer_id.as_deref() == Some(primary.peer_id.as_str())
-            && peer.authority_pubkey == primary.pubkey
+            && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     }) else {
         return bad_request("o nó principal não está disponível para decidir o Chat da rede");

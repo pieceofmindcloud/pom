@@ -185,7 +185,11 @@ the accepted MTP drafts) times the plan's hops when there is no explicit
 expectation from the remote-stream callbacks: each hop reports one span per
 round, and a speculative round produces several tokens. Counting only the
 tokens expected ~3.8x the spans of a run with MTP and marked 26% coverage on a
-complete trace. The reported spans are still observed counts per hop.
+complete trace. The reported spans are still observed counts per hop. Typed
+`/v1/systemone` (`/v1/decisions`) requests are prefill-only: the final peer
+scores labels from the next-token distribution and does not run a decode step.
+They count one API output token, but a trace with `probe` or `jev` expects zero
+decode rounds, so its coverage follows the prefill peers (section 3.9).
 
 `hidden_state_dtype` is evidence from the wire, not the gateway's local
 configuration: it only shows up when hidden-state bytes crossed the hop. That is
@@ -1811,6 +1815,50 @@ same session.
 The `/health` endpoint exposes `scheduler.queue_depth`, the effective limits,
 the size and tokens of the last batch, plus the accumulated counters. That makes
 it possible to tell local queueing from network time and decode time.
+
+### 3.9 Typed decisions (`probe`)
+
+`POST /v1/systemone` (`backend/decisions.rs`) runs each typed question as one
+generation with `max_tokens=1` and a `prefill::DecisionProbe` in
+`GenerationInput::probe`. The gateway puts the labels in the head's metadata
+(`probe`) and every hop forwards them; the last peer, before sampling, reads
+the full-vocabulary softmax of the first token of each label (with and without
+a leading space, `llm::probe_candidates`) and answers `probe_result`
+(`labels`, `probabilities`, `mass`, `probe_ms`). `mass` is the share of the
+distribution that fell on the labels; `probe_ms` is that peer's forward pass
+plus the read. Probe jobs are never batched with other sessions.
+
+**Prompt order and prefix reuse.** The rendered prompt is: fixed system turn,
+then the question head (instructions and answer format), then the state as
+compact JSON or text, then the options. Everything before the state is the
+same for every request that asks this question, so `decisions.rs` uses that
+text as the prefix-cache key and sends its byte length to the head as
+`retain_prefix_bytes`. The head bounds the stable boundary of section 3.1 by
+it (`prefix::bounded_stable_len`, the same token-common-prefix measurement as
+`stable_prefix_len`, cut before the state), so the retained `prompt_seq` holds
+only the question and the next decision with the same question and a new
+state is an append-only hit. Keying by the full prompt, as chat does, could
+never hit: the state changes on every call. Questions of one request share
+only the system turn; they are not batched against each other's state. The
+ignored test `decision_prefix_tests` (run with `POM_JEV_TEST_MODEL=<gguf>`)
+checks this with a real tokenizer and chat template: with Qwen2.5-0.5B the
+head retains 64 of 112 prompt tokens and a new state reuses them, while the
+unbounded boundary reuses nothing.
+
+**Chunking.** Decisions use the same chunked prefill and in-flight window as
+chat (`prefill_chunk_tokens`, `prefill_max_inflight_chunks`). When a hop runs
+over a slow route (relay or libp2p tunnel), the hidden state of the prompt
+dominates the time to the answer; chunking overlaps compute with transfer but
+does not reduce the bytes. What reduces them is prefix reuse, a compact state
+and the wire dtype.
+
+**Trace.** On success the gateway copies `probe_result` to `RequestTrace::probe`
+and builds `RequestTrace::jev` (`DecisionProbe::trace_summary`): `enabled`,
+`question`, `question_type`, `candidates`, `labels`, `options`, normalized
+`probabilities` per label, `selected`, `selected_option`, `confidence`
+(normalized top probability), `mass`, `probe_ms`, `probe_tokens`,
+`prefill_ms` and `cache_hit_tokens`. `refresh_telemetry` expects no decode
+spans for such a trace.
 
 ## 4. Ring mode vs direct reply
 

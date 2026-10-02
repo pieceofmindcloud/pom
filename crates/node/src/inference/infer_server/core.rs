@@ -515,7 +515,7 @@ pub(super) struct PrefillJob {
     pub(super) thinking_enabled: Option<bool>,
     /// Rótulos-candidatos de uma decisão tipada. Só o último hop usa: devolve
     /// em `probe_result` a probabilidade de cada rótulo no lugar de decidir.
-    pub(super) probe: Option<Vec<String>>,
+    pub(super) probe: Option<super::prefill::HeadProbe>,
     pub(super) tensor: Option<(Vec<f32>, TensorShape)>,
     pub(super) chunk_tokens: Option<Vec<i32>>,
     pub(super) queued_at: Instant,

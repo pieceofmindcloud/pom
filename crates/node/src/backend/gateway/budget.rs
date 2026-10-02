@@ -674,7 +674,7 @@ pub(crate) struct GenerationInput {
     pub(crate) request_details: serde_json::Value,
     /// Rótulos de uma decisão tipada (`/v1/systemone`). O último peer devolve a
     /// probabilidade de cada um em `GenSummary::trace.probe`.
-    pub(crate) probe: Option<Vec<String>>,
+    pub(crate) probe: Option<crate::prefill::DecisionProbe>,
 }
 
 #[derive(Debug, Clone, Serialize)]

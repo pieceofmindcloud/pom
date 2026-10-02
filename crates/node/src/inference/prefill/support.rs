@@ -1901,6 +1901,9 @@ pub struct RequestTrace {
     /// (`/v1/systemone`): `{labels, probabilities, mass}` do último peer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub probe: Option<serde_json::Value>,
+    /// Typed decision summary (`/v1/systemone`), see `DecisionProbe::trace_summary`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jev: Option<serde_json::Value>,
     pub profile: crate::telemetry::Profile,
     pub request_state: RequestState,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -2262,6 +2265,7 @@ impl RequestTrace {
         Self {
             trace_id: trace_id.into(),
             probe: None,
+            jev: None,
             profile: crate::telemetry::Profile::current(),
             request_state: RequestState::Unknown,
             spans: Vec::new(),
@@ -3032,8 +3036,14 @@ impl RequestTrace {
         // round, and a round yields one token plus the MTP drafts it
         // accepted. Counting output tokens alone expected ~3.8x the spans of a
         // speculative run and reported 26% coverage on a complete trace.
-        let decode_rounds =
-            (self.output_tokens as u64).saturating_sub(self.mtp_draft_tokens_accepted);
+        // A typed decision is prefill-only: the last peer scores the labels
+        // from the prompt's logits and no `/v1/step` round runs, even though
+        // the answer counts as one output token.
+        let decode_rounds = if self.probe.is_some() || self.jev.is_some() {
+            0
+        } else {
+            (self.output_tokens as u64).saturating_sub(self.mtp_draft_tokens_accepted)
+        };
         let expected_decode_spans = self
             .expected_decode_spans
             .max(decode_rounds.saturating_mul(self.hops.len() as u64));
@@ -3428,14 +3438,102 @@ pub(super) fn head_prefill_meta(
     meta
 }
 
+/// A typed decision (`/v1/systemone`): the answer labels the last peer scores
+/// and, for the head, where the reusable part of the prompt ends.
+///
+/// `retain_prefix_bytes` is a byte offset into the prompt text sent to the
+/// head. Everything before it is the same for every request with this
+/// question (instructions and answer format); the state and the options come
+/// after it. The head keeps only that part in the retained KV sequence, so the
+/// next decision with the same question reuses it instead of prefilling it
+/// again. `question`, `question_type` and `options` never leave the gateway:
+/// they only label the `jev` trace.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DecisionProbe {
+    pub labels: Vec<String>,
+    pub retain_prefix_bytes: Option<usize>,
+    pub question: Option<String>,
+    pub question_type: Option<String>,
+    pub options: Vec<String>,
+}
+
+impl DecisionProbe {
+    /// The `jev` object of the request trace, from the last peer's
+    /// `probe_result` and the prefill measurements.
+    pub fn trace_summary(
+        &self,
+        probe_result: &serde_json::Value,
+        prefill_ms: u64,
+        cached_tokens: u32,
+    ) -> serde_json::Value {
+        let raw: Vec<f64> = probe_result["probabilities"]
+            .as_array()
+            .map(|values| values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect())
+            .unwrap_or_default();
+        let total: f64 = raw.iter().sum();
+        let normalized: Vec<f64> = raw
+            .iter()
+            .map(|p| if total > 0.0 { p / total } else { 0.0 })
+            .collect();
+        let best = normalized.iter().enumerate().fold(
+            None,
+            |best: Option<(usize, f64)>, (i, p)| match best {
+                Some((_, top)) if top >= *p => best,
+                _ => Some((i, *p)),
+            },
+        );
+        let round = |value: f64| (value * 1e6).round() / 1e6;
+        let probabilities: serde_json::Map<String, serde_json::Value> = self
+            .labels
+            .iter()
+            .zip(&normalized)
+            .map(|(label, p)| (label.clone(), json!(round(*p))))
+            .collect();
+        let mut summary = json!({
+            "enabled": true,
+            "candidates": self.labels.len(),
+            "labels": self.labels,
+            "probabilities": probabilities,
+            "mass": round(probe_result["mass"].as_f64().unwrap_or(0.0)),
+            "probe_tokens": 1,
+            "prefill_ms": prefill_ms,
+            "cache_hit_tokens": cached_tokens,
+        });
+        if let Some(ms) = probe_result["probe_ms"].as_f64() {
+            summary["probe_ms"] = json!(round(ms));
+        }
+        if let Some((index, p)) = best {
+            summary["selected"] = json!(self.labels.get(index));
+            summary["confidence"] = json!(round(p));
+            if let Some(option) = self.options.get(index) {
+                summary["selected_option"] = json!(option);
+            }
+        }
+        if let Some(question) = &self.question {
+            summary["question"] = json!(question);
+        }
+        if let Some(kind) = &self.question_type {
+            summary["question_type"] = json!(kind);
+        }
+        if !self.options.is_empty() {
+            summary["options"] = json!(self.options);
+        }
+        summary
+    }
+}
+
 /// Leva os rótulos de uma decisão tipada até o último peer, que responde com
-/// a probabilidade de cada um em `probe_result`.
+/// a probabilidade de cada um em `probe_result`, e diz à cabeça até onde o
+/// prompt é reaproveitável (`retain_prefix_bytes`).
 pub(super) fn add_probe_to_head_meta(
     mut meta: serde_json::Value,
-    probe: Option<&[String]>,
+    probe: Option<&DecisionProbe>,
 ) -> serde_json::Value {
-    if let Some(labels) = probe.filter(|labels| !labels.is_empty()) {
-        meta["probe"] = json!(labels);
+    if let Some(probe) = probe.filter(|probe| !probe.labels.is_empty()) {
+        meta["probe"] = json!(probe.labels);
+        if let Some(bytes) = probe.retain_prefix_bytes {
+            meta["retain_prefix_bytes"] = json!(bytes);
+        }
     }
     meta
 }

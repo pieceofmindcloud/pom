@@ -1732,4 +1732,54 @@ mod tests {
         assert!(first.remote_stream_downstream_wait_p50_ms >= 60);
         assert!(first.remote_stream_delivery_p50_ms >= 25);
     }
+
+    #[test]
+    fn a_typed_decision_expects_no_decode_spans() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 27), ("no2", 28, 47)]);
+        trace.output_tokens = 1;
+        for hop in 0..2 {
+            trace.record_hop_from_json(
+                hop,
+                Phase::Prefill,
+                &json!({"round_trip_ms": 40, "processing_ms": 30}),
+            );
+        }
+        trace.probe = Some(json!({"labels": ["A", "B"], "probabilities": [0.6, 0.2], "mass": 0.8}));
+        trace.complete = true;
+        trace.refresh_telemetry(90);
+
+        assert_eq!(trace.telemetry.expected_decode_spans, 0);
+        assert_eq!(trace.telemetry.status, "complete");
+    }
+
+    #[test]
+    fn the_jev_trace_summary_names_the_selected_option() {
+        let probe = DecisionProbe {
+            labels: vec!["A".into(), "B".into(), "C".into()],
+            retain_prefix_bytes: Some(120),
+            question: Some("move".into()),
+            question_type: Some("choice".into()),
+            options: vec!["down".into(), "left".into(), "up".into()],
+        };
+        let summary = probe.trace_summary(
+            &json!({"labels": ["A", "B", "C"], "probabilities": [0.1, 0.6, 0.3], "mass": 0.95, "probe_ms": 69.8861}),
+            3007,
+            42,
+        );
+        assert_eq!(summary["enabled"], true);
+        assert_eq!(summary["candidates"], 3);
+        assert_eq!(summary["selected"], "B");
+        assert_eq!(summary["selected_option"], "left");
+        assert_eq!(summary["confidence"], 0.6);
+        assert_eq!(summary["probabilities"]["C"], 0.3);
+        assert_eq!(summary["mass"], 0.95);
+        assert_eq!(summary["probe_ms"], 69.8861);
+        assert_eq!(summary["prefill_ms"], 3007);
+        assert_eq!(summary["cache_hit_tokens"], 42);
+        assert_eq!(summary["question"], "move");
+
+        let meta = add_probe_to_head_meta(json!({}), Some(&probe));
+        assert_eq!(meta["probe"], json!(["A", "B", "C"]));
+        assert_eq!(meta["retain_prefix_bytes"], 120);
+    }
 }

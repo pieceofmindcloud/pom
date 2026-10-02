@@ -118,6 +118,43 @@ pub(super) fn stable_prefix_len(
     retainable_prefix_len(comum, tokens.len())
 }
 
+/// The stable boundary of a typed decision: only the text before `bytes`
+/// (instructions and answer format, the same for every request with this
+/// question) is worth retaining; the state and options after it change on
+/// every request. Renders the prompt cut at `bytes` followed by a byte the
+/// real prompt never has there, and keeps the tokens both share - the same
+/// measurement `stable_prefix_len` does, at an earlier cut. An invalid offset
+/// retains nothing extra (returns the full length, so the caller's `min`
+/// keeps the ordinary boundary).
+pub(super) fn bounded_stable_len(
+    engine: &crate::llm::LlmEngine,
+    texto: &str,
+    bytes: usize,
+    use_tmpl: bool,
+    no_think: bool,
+    tokens: &[i32],
+) -> usize {
+    if bytes == 0 || bytes >= texto.len() || !texto.is_char_boundary(bytes) {
+        return tokens.len();
+    }
+    let cortado = format!("{}\u{7}", &texto[..bytes]);
+    let sondado = if use_tmpl {
+        match engine.apply_chat_template(&[("user", &cortado)], true, no_think) {
+            Ok(rendered) => rendered,
+            Err(_) => return 0,
+        }
+    } else {
+        cortado
+    };
+    let sondados = engine.tokenize(&sondado, !use_tmpl, true);
+    let comum = common_prefix_len(tokens, &sondados);
+    retainable_prefix_len(comum, tokens.len())
+}
+
+pub(super) fn common_prefix_len(a: &[i32], b: &[i32]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
 pub(super) fn retainable_prefix_len(common: usize, prompt_len: usize) -> usize {
     common.min(prompt_len.saturating_sub(1))
 }
@@ -142,6 +179,98 @@ pub(super) fn expected_prefill_pos(
         None => bail!(
             "chunk {chunk_index} sem start_pos absoluto; não é seguro derivar a posição do índice"
         ),
+    }
+}
+
+#[cfg(test)]
+mod decision_prefix_tests {
+    use super::*;
+
+    /// Two decisions with the same question and different states: the head's
+    /// bounded boundary must leave an append-only prefix the second request
+    /// reuses. Needs a small chat GGUF:
+    ///
+    /// ```text
+    /// POM_JEV_TEST_MODEL=<model.gguf> cargo test -p node --bin pom \
+    ///   decision_prefix_tests -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "requires POM_JEV_TEST_MODEL (any small chat GGUF)"]
+    fn a_new_state_reuses_the_retained_question_prefix() {
+        let path = std::env::var("POM_JEV_TEST_MODEL").expect("POM_JEV_TEST_MODEL");
+        let cfg = crate::llm::EngineConfig {
+            n_ctx: 2048,
+            offload_kqv: false,
+            cache_type_k: llama_engine::KvCacheType::F16,
+            cache_type_v: llama_engine::KvCacheType::F16,
+            fit_memory: false,
+            fit_memory_margin_mb: llama_engine::DEFAULT_FIT_MEMORY_MARGIN_MB,
+            n_batch: 512,
+            n_gpu_layers: 0,
+            n_threads: 2,
+            max_sessions: 1,
+            need_embeddings: false,
+            mtp: false,
+            mtp_cpu_fallback_enabled: true,
+            rs_seq_window: 0,
+            moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
+            mmproj_path: None,
+            mtp_draft_path: None,
+        };
+        let engine = crate::llm::LlmEngine::load_with_cache(
+            &path,
+            &cfg,
+            &crate::llm::ModelCache::new(),
+            false,
+        )
+        .expect("model loads");
+        let question = crate::decisions::parse_questions(&serde_json::json!({
+            "move": {"type": "choice", "instructions": "Pick the next move.",
+                     "criteria": {"up": "goes up", "down": "goes down", "left": null}}
+        }))
+        .unwrap()
+        .remove(0);
+        let render = |state: serde_json::Value| {
+            let messages: Vec<crate::openai::ChatMessage> =
+                serde_json::from_value(serde_json::json!([
+                    {"role": "system", "content": crate::decisions::SYSTEM_MESSAGE},
+                    {"role": "user", "content": question.user_message(&state)},
+                ]))
+                .unwrap();
+            crate::openai::render_prompt_with_images(&messages, &[])
+                .unwrap()
+                .0
+        };
+        let tokens_of = |text: &str| {
+            let formatted = engine
+                .apply_chat_template(&[("user", text)], true, true)
+                .unwrap();
+            engine.tokenize(&formatted, false, true)
+        };
+        let first = render(serde_json::json!({"snake": [[5, 10], [4, 10]], "food": [9, 3]}));
+        let second = render(serde_json::json!({"snake": [[6, 10], [5, 10]], "food": [9, 3]}));
+        let first_tokens = tokens_of(&first);
+        let second_tokens = tokens_of(&second);
+        let bytes = crate::decisions::reusable_prefix_end(&first, &question).unwrap();
+        let stable = stable_prefix_len(&engine, &first, true, true, &first_tokens).min(
+            bounded_stable_len(&engine, &first, bytes, true, true, &first_tokens),
+        );
+        assert!(stable > 20, "retained only {stable} tokens");
+        assert!(stable < first_tokens.len());
+        let decision = plan_prefix_reuse(&first_tokens[..stable], stable as u32, &second_tokens);
+        assert!(decision.reused, "{decision:?}");
+        assert_eq!(decision.cached_tokens, stable as u32);
+        // Without the bound the whole first prompt is retained and the new
+        // state diverges inside it: no reuse at all.
+        let unbounded = stable_prefix_len(&engine, &first, true, true, &first_tokens);
+        let cold = plan_prefix_reuse(&first_tokens[..unbounded], unbounded as u32, &second_tokens);
+        assert!(!cold.reused);
+        eprintln!(
+            "retained {stable} of {} prompt tokens; second prompt has {}",
+            first_tokens.len(),
+            second_tokens.len()
+        );
     }
 }
 

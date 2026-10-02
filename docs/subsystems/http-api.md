@@ -68,6 +68,14 @@ last):
   for 30 s.
 - **OpenAI** (`openai.rs`): `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
+- **Typed decisions** (`decisions.rs`): `POST /v1/systemone`, alias
+  `POST /v1/decisions`, the Jev API shape. Body `{model?, state, questions}`,
+  where each question is `{type: noul|choice|score, instructions, criteria}`;
+  the answer carries one typed answer per question id plus
+  `x_pom.questions.<id>` (`label_mass`, tokens, `cached_tokens`, duration).
+  An unknown `model` name (such as `jev-latest`) falls back to the active
+  model. Same API key authentication as the rest of `/v1`. See
+  `inference.md` 3.9.
 - **Anthropic** (`messages.rs`): `POST /v1/messages` + OPTIONS,
   `POST /v1/messages/count_tokens` + OPTIONS.
 - **Dashboard** (`webui.rs`): the `/api/ui/*` plane (see below).

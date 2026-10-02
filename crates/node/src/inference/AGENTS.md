@@ -1474,6 +1474,20 @@ prometido pelo bloco é real no LM Studio (21 → 35 tok/s no Qwen3.8-27B-Q3_K_S
 medido pelo operador), aqui a implementação está completa e verde nos testes de
 unidade mas **não** tem número medido de ponta a ponta.
 
+## Typed decisions (`probe`)
+
+- `prefill::DecisionProbe` (gateway side) carries the labels, the head's
+  `retain_prefix_bytes` and the question metadata; `add_probe_to_head_meta`
+  puts `probe` and `retain_prefix_bytes` in the head frame, and
+  `trace_summary` builds `RequestTrace::jev`.
+- `infer_server/prefill.rs`: `HeadProbe`/`parse_probe` read the frame;
+  the head bounds the stable boundary with `prefix::bounded_stable_len`; the
+  last peer answers `probe_result` (`probe_reply`, plus `probe_ms`) before
+  sampling. Probe jobs run alone in the scheduler.
+- `RequestTrace::refresh_telemetry` expects no decode rounds for a trace with
+  `probe` or `jev`: decisions are prefill-only.
+- Details: `docs/subsystems/inference.md` 3.9.
+
 ## Ligações
 
 - **Chamado por**: `backend/gateway.rs` (monta `DirectReply` com `ReplyInbox` +

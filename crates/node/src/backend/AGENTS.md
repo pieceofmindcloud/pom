@@ -486,6 +486,16 @@ profile policy remains the effective authorization boundary.
   ofereceu** (`receive_answer`), e todo desfecho passa por
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
   da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
+- `decisions.rs` - typed decisions, `POST /v1/systemone` and `/v1/decisions`
+  (Jev API shape). Each question is one blocking generation with
+  `max_tokens=1`, thinking off and a `prefill::DecisionProbe`: the last peer
+  returns the probability of each single-token label (`A`.. for choice,
+  `0`.. for score, `Yes`/`No` for noul) and this file turns them into typed
+  answers and confidences. The prompt is ordered fixed system turn ->
+  question head (instructions + answer format) -> compact state -> options;
+  the text up to the state is the prefix-cache key and the head's retain
+  boundary (`retain_prefix_bytes`), so repeated questions over new states
+  reuse the question's KV. See `docs/subsystems/inference.md` 3.9.
 - `openai.rs` - OpenAI-compatible `/v1/*` on top of the generation path;
   `max_tokens` da requisição é `min(pedido, n_ctx restante)`, com
   `DEFAULT_MAX_TOKENS=512` só como padrão de quem não pede. O

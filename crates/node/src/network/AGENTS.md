@@ -84,7 +84,8 @@ direct -> dedicated relay (with DCuTR) -> member relay, are in
 - `network_chat_policy.rs` - catraca autenticada do interruptor do Chat da
   rede; o booleano anunciado é gatilho e a leitura autenticada no principal é
   a fonte efetiva.
-- `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
+- `discovery.rs` - swarm libp2p: gossipsub (IDONTWANT only above
+  `GOSSIP_IDONTWANT_THRESHOLD_BYTES` = 64 KiB, so announces never trigger it), Kademlia, mDNS, identify, relay
   (cliente e servidor), DCuTR, AutoNAT, túnel de inferência e os protocolos de
   logs do cluster, auditoria de requisições e Chat da rede. A auditoria recebida
   entra numa fila limitada fora do loop do swarm e segue para o plugin ativo ou

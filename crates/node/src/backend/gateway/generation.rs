@@ -984,7 +984,7 @@ pub(super) async fn generate_stream_inner(
                 max_inflight_chunks,
                 resume,
                 trace_id.as_deref(),
-                probe.as_deref(),
+                probe.as_ref(),
             )
         };
         let mut prefill_result = prefill_attempt(reuse_prefix, None).await;
@@ -1056,6 +1056,13 @@ pub(super) async fn generate_stream_inner(
         let first = match prefill_result {
             Ok(mut o) => {
                 o.trace.probe = o.probe.take();
+                if let (Some(decision), Some(result)) = (probe.as_ref(), o.trace.probe.as_ref()) {
+                    o.trace.jev = Some(decision.trace_summary(
+                        result,
+                        o.trace.prefill_ms,
+                        o.cached_tokens,
+                    ));
+                }
                 o.trace.gateway_prefix_miss_reason =
                     prefix_lease.miss_reason().map(str::to_owned);
                 o.trace.prefill_chunk_tokens = chunk_tokens;

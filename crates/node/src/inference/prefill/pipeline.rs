@@ -25,7 +25,7 @@ pub async fn run_with_options(
     resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
     // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
-    probe: Option<&[String]>,
+    probe: Option<&DecisionProbe>,
 ) -> Result<PrefillOutcome> {
     check_cancelled(cancellation)?;
     plan.validate_wire_dtype(dtype)?;
@@ -546,7 +546,7 @@ pub(super) async fn run_ring(
     resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
     // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
-    probe: Option<&[String]>,
+    probe: Option<&DecisionProbe>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -748,7 +748,7 @@ pub(super) async fn run_direct(
     resume: Option<PrefillResumable>,
     trace_id: Option<&str>,
     // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
-    probe: Option<&[String]>,
+    probe: Option<&DecisionProbe>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -1127,7 +1127,7 @@ pub(super) async fn dispatch_direct_prefill(
     prefill_sequence_id: &str,
     trace_id: Option<&str>,
     // Rótulos de uma decisão tipada; o último peer devolve `probe_result`.
-    probe: Option<&[String]>,
+    probe: Option<&DecisionProbe>,
 ) -> Result<crate::relay::SentFrame> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];

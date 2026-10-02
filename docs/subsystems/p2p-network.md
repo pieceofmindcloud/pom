@@ -64,6 +64,11 @@ address, and an IP written into a document goes stale. Therefore:
   with gossipsub to exchange `Announce`, Kademlia + mDNS for discovery, relay to
   cross NAT and DCuTR for hole punching. Addresses are also published/resolved
   in the pkarr DHT.
+  Gossipsub sends IDONTWANT only for messages above 64 KiB
+  (`GOSSIP_IDONTWANT_THRESHOLD_BYTES` in `discovery.rs`). With the library
+  default of 1000 bytes, every announce (~1.3 KB) queued an IDONTWANT per mesh
+  peer, and a peer behind a slow relay or tunnel filled its send queue
+  ("Send Queue full" warnings by the thousand).
 - Both paths end in the same place: `Network`'s `peers` table
   (`HashMap<node_id, PeerInfo>`). libp2p enters through
   `Network::insert_peer`.

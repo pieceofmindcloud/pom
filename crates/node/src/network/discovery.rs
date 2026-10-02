@@ -525,6 +525,10 @@ fn observed_host_port(addr: &Multiaddr) -> Option<String> {
     Some(format!("{host}:{udp_port}"))
 }
 
+/// Announces stay far below this; only an unusually large gossip message
+/// still gets IDONTWANT.
+const GOSSIP_IDONTWANT_THRESHOLD_BYTES: usize = 64 * 1024;
+
 /// How gossipsub tells two announces apart.
 ///
 /// **This has to be set, and the default is silently wrong for us.** Gossipsub
@@ -676,6 +680,13 @@ impl Discovery {
                     // Without this, gossipsub silently stops carrying
                     // announces. See `announce_message_id`.
                     .message_id_fn(announce_message_id)
+                    // IDONTWANT saves bandwidth only for large messages. The
+                    // default threshold (1000 bytes) is below the size of a
+                    // typical announce (~1.3 KB), so every announce made each
+                    // node queue an IDONTWANT for every mesh peer; a peer
+                    // behind a slow relay or tunnel then filled its send queue
+                    // and the log repeated "Send Queue full" thousands of times.
+                    .idontwant_message_size_threshold(GOSSIP_IDONTWANT_THRESHOLD_BYTES)
                     .build()
                     .expect("gossipsub config");
                 let gossipsub = gossipsub::Behaviour::new(

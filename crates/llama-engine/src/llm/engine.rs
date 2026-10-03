@@ -36,6 +36,30 @@ fn write_mrope_position(
     Ok(())
 }
 
+/// The four M-RoPE sections of `n_tokens` text positions starting at `start`,
+/// laid out as llama.cpp reads an embedding batch.
+fn text_mrope_positions(n_tokens: usize, start: u32) -> Result<Vec<sys::llama_pos>> {
+    let mut storage = vec![0 as sys::llama_pos; n_tokens.saturating_mul(4)];
+    for row in 0..n_tokens {
+        let position = start + row as u32;
+        write_mrope_position(&mut storage, n_tokens, row, [position, position, position, 0])?;
+    }
+    Ok(storage)
+}
+
+#[cfg(test)]
+mod mrope_text_tests {
+    use super::*;
+
+    #[test]
+    fn text_positions_fill_all_four_sections_for_every_row() {
+        let storage = text_mrope_positions(3, 10).unwrap();
+        // Section-major: [s0 rows][s1 rows][s2 rows][s3 rows].
+        assert_eq!(storage, vec![10, 11, 12, 10, 11, 12, 10, 11, 12, 0, 0, 0]);
+        assert_eq!(storage.len(), 3 * 4, "llama.cpp reads n_tokens * 4 positions");
+    }
+}
+
 /// O que um decode de estado oculto faz com a cabeça `nextn` depois do alvo.
 #[derive(Clone, Copy)]
 enum MtpObserve<'a> {
@@ -934,6 +958,14 @@ impl LlmEngine {
     /// enquanto `mtmd_input_chunk_get_n_pos` conta posições lógicas. Em
     /// M-RoPE uma imagem tem várias células por posição temporal, por isso o
     /// POM não pode reconstruir os eixos apenas a partir de `n_tokens`.
+    /// The model rotates with M-RoPE: llama.cpp then reads **four** positions
+    /// per row of an embedding batch (`n_pos_per_embd`), one per section, and
+    /// never just the scalar one. A hidden-state batch must carry all four.
+    fn uses_mrope(&self) -> bool {
+        let rope_type = unsafe { sys::llama_model_rope_type(self.loaded.model) };
+        rope_type == sys::LLAMA_ROPE_TYPE_MROPE || rope_type == sys::LLAMA_ROPE_TYPE_IMROPE
+    }
+
     fn multimodal_mrope_positions(
         &self,
         chunks: *const sys::mtmd_input_chunks,
@@ -1500,7 +1532,11 @@ impl LlmEngine {
             .map_err(|_| anyhow::anyhow!("largura de entrada excede o limite do llama.cpp"))?;
         let has_mrope_positions = entries.iter().any(|entry| entry.mrope_positions.is_some());
         self.reset_capture_slot_with_physical_chunks(layout.total_tokens(), has_mrope_positions);
-        let mut flattened_positions = has_mrope_positions
+        // With M-RoPE every embedding batch needs the four sections, text or
+        // image: llama.cpp reads `pos[j * n_tokens + i]` for all four, and a
+        // scalar array made it read past the end - garbage rotations on every
+        // peer after the head, and a crash once the read crossed a page.
+        let mut flattened_positions = (has_mrope_positions || self.uses_mrope())
             .then(|| vec![0 as sys::llama_pos; layout.total_tokens().saturating_mul(4)]);
         if let Some(storage) = flattened_positions.as_mut() {
             let mut row = 0usize;
@@ -1946,6 +1982,10 @@ impl LlmEngine {
                 write_mrope_position(&mut storage, n_tokens, row, position)?;
             }
             Some(storage)
+        } else if self.uses_mrope() {
+            // Text on an M-RoPE model: the same four sections a text token
+            // gets (see the batch path above), never a scalar array.
+            Some(text_mrope_positions(n_tokens, pos_offset)?)
         } else {
             None
         };

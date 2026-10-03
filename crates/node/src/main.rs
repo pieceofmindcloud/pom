@@ -185,6 +185,8 @@ mod relay;
 mod reqlog;
 #[path = "utils/respawn.rs"]
 mod respawn;
+#[path = "utils/crash.rs"]
+mod crash;
 #[path = "network/route.rs"]
 pub mod route;
 #[path = "network/route_plan.rs"]
@@ -482,6 +484,9 @@ fn apply_env_overrides(config: &mut config::Config, args: &Args) {
 /// disso existe e o runtime é construído aqui mesmo, de modo que quem corre o
 /// binário num servidor Linux não ganha dependência de interface gráfica.
 fn main() -> Result<()> {
+    // First of all: a native crash inside llama.cpp leaves no line in the
+    // node's own log otherwise.
+    crash::install();
     respawn::remember_argv(std::env::args().collect());
     let (log_capture, log_receiver) =
         cluster_logs::LogCapture::new(cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);

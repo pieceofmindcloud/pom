@@ -71,6 +71,36 @@ impl VisionContext {
         params.use_gpu = cfg.n_gpu_layers != 0;
         params.batch_max_tokens = i32::try_from(cfg.n_batch)
             .map_err(|_| anyhow::anyhow!("n_batch excede o limite do mtmd"))?;
+        // The encoder's working memory grows with the image: cap it, so the
+        // warmup (which encodes the largest image the projector accepts) and
+        // every request fit in what was reserved below.
+        params.image_max_tokens = VISION_MAX_IMAGE_TOKENS;
+        if params.use_gpu {
+            let weights = std::fs::metadata(mmproj_path).map(|meta| meta.len()).unwrap_or(0);
+            let need = vision_reserve_bytes(weights);
+            let devices = gpu_devices_with_free_memory();
+            match choose_vision_device(&devices, need) {
+                Some(index) => {
+                    let (device, free, name) = &devices[index];
+                    params.device = *device;
+                    tracing::info!(
+                        "projetor de visão em {name}: {} MiB livres para {} MiB necessários",
+                        free / MIB,
+                        need / MIB
+                    );
+                }
+                None => {
+                    // Loading it on a full GPU is what crashed the node: the
+                    // allocation fails inside llama.cpp and it aborts or
+                    // dereferences null. The CPU is slow, but it answers.
+                    params.use_gpu = false;
+                    tracing::warn!(
+                        "nenhuma GPU tem {} MiB livres para o projetor de visão; ele roda na CPU",
+                        need / MIB
+                    );
+                }
+            }
+        }
         let ctx = unsafe { sys::mtmd_init_from_file(path.as_ptr(), model, params) };
         if ctx.is_null() {
             bail!("não foi possível carregar o mmproj: {mmproj_path}");
@@ -80,6 +110,79 @@ impl VisionContext {
             bail!("o mmproj não oferece entrada de imagem: {mmproj_path}");
         }
         Ok(Self { ctx })
+    }
+}
+
+const MIB: u64 = 1024 * 1024;
+
+/// Most image tokens one image may produce. The projector's own metadata
+/// allows images of millions of pixels, and the warmup encodes exactly that
+/// worst case; at this cap an image still describes well and the encoder's
+/// compute buffer stays near a gigabyte.
+const VISION_MAX_IMAGE_TOKENS: i32 = 1024;
+
+/// Working memory for the encoder on top of its weights, at
+/// `VISION_MAX_IMAGE_TOKENS`.
+const VISION_COMPUTE_RESERVE_BYTES: u64 = 1536 * MIB;
+
+fn vision_reserve_bytes(weights: u64) -> u64 {
+    weights.saturating_add(weights / 10).saturating_add(VISION_COMPUTE_RESERVE_BYTES)
+}
+
+/// The GPU with the most free memory that still fits `need`, measured after
+/// the model and its contexts are loaded. `None` means none fits and the
+/// projector goes to the CPU.
+fn choose_vision_device<D>(devices: &[(D, u64, String)], need: u64) -> Option<usize> {
+    devices
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, free, _))| *free >= need)
+        .max_by_key(|(_, (_, free, _))| *free)
+        .map(|(index, _)| index)
+}
+
+/// Every GPU-like device the backend registry offers, with its free memory now.
+fn gpu_devices_with_free_memory() -> Vec<(sys::ggml_backend_dev_t, u64, String)> {
+    let mut devices = vec![ptr::null_mut(); 32];
+    let count = unsafe { sys::llama_rs_get_devices(devices.as_mut_ptr(), devices.len()) };
+    devices.truncate(count.min(32));
+    devices
+        .into_iter()
+        .filter(|device| !device.is_null())
+        .filter(|&device| {
+            let kind = unsafe { sys::ggml_backend_dev_type(device) };
+            kind == sys::GGML_BACKEND_DEVICE_TYPE_GPU || kind == sys::GGML_BACKEND_DEVICE_TYPE_IGPU
+        })
+        .map(|device| {
+            let mut free = 0usize;
+            let mut total = 0usize;
+            unsafe { sys::ggml_backend_dev_memory(device, &mut free, &mut total) };
+            let name = unsafe { std::ffi::CStr::from_ptr(sys::ggml_backend_dev_name(device)) }
+                .to_string_lossy()
+                .into_owned();
+            (device, free as u64, name)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod vision_device_tests {
+    use super::*;
+
+    #[test]
+    fn the_projector_goes_to_the_gpu_with_room_or_to_the_cpu() {
+        let need = vision_reserve_bytes(900 * MIB);
+        assert_eq!(need, 900 * MIB + 90 * MIB + 1536 * MIB);
+        // A full first GPU and a second one with room: the second.
+        let devices = vec![((), 600 * MIB, "CUDA0".to_string()), ((), 6000 * MIB, "Vulkan0".to_string())];
+        assert_eq!(choose_vision_device(&devices, need), Some(1));
+        // Both with room: the one with more.
+        let devices = vec![((), 9000 * MIB, "CUDA0".to_string()), ((), 6000 * MIB, "CUDA1".to_string())];
+        assert_eq!(choose_vision_device(&devices, need), Some(0));
+        // None with room: the CPU.
+        let devices = vec![((), 600 * MIB, "CUDA0".to_string())];
+        assert_eq!(choose_vision_device(&devices, need), None);
+        assert_eq!(choose_vision_device::<()>(&[], need), None);
     }
 }
 

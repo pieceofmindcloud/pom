@@ -1536,6 +1536,21 @@ Antes de aplicar uma configuração, `NodeConfig::validate` lê os dois headers
 GGUF e recusa um caminho que não seja projetor ou cuja identidade/dimensão de
 saída contradiga o modelo. Isso também impede que um `mmproj_path` incompatível
 persistido anteriormente chegue ao servidor.
+The projector is placed by `VisionContext::load` after the model and its
+contexts are loaded: on the GPU with the most free memory that fits its
+weights plus `VISION_COMPUTE_RESERVE_BYTES`, or on the CPU when none fits
+(loading it on a full GPU made llama.cpp abort in the warmup or dereference
+null in `ggml_gallocr_alloc_graph` on the first image). `image_max_tokens` is
+capped at `VISION_MAX_IMAGE_TOKENS`, which bounds the warmup and each encode.
+
+**M-RoPE hidden-state batches always carry four positions per row.** With an
+embedding batch (`batch.token` null) llama.cpp reads `pos[j * n_tokens + i]`
+for every M-RoPE section. Text-only requests used to send one scalar position
+per row, so every peer after the head rotated sections 1-3 with heap garbage
+and a long prompt crashed in `llama_batch_allocr::ubatch_add` once the read
+crossed a page. `decode_hidden` and the batched hidden path now build the four
+sections (`text_mrope_positions`) whenever the model's rope type is MROPE or
+IMROPE. MTP batches carry tokens, so llama.cpp reads one position there.
 
 **Célula de KV não é posição lógica.** Uma imagem escreve `n_tokens` células
 de embedding no KV, mas em M-RoPE ocupa apenas

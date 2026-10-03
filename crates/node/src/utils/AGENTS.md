@@ -32,6 +32,16 @@ Caminhos de configuração, o respawn do processo e o monitor de sistema. Nada a
   `cluster_logs_min_level` também vive no JSON, aceita
   `trace`, `debug`, `info`, `warn` e `error`, e assume `info` quando ausente;
   ele só controla o que `CaptureLayer` enfileira.
+- `crash.rs` - native crash report, installed first thing in `main`: on
+  SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT it writes the signal, the faulting
+  address, the thread and the native stack as `binary(+offset)` to stderr
+  (async-signal-safe calls only), then restores the default action and
+  re-raises, so the exit status and core dump do not change. llama.cpp runs
+  in-process and a native fault otherwise leaves no line in the node log.
+  Resolve a frame with `addr2line -f -C -e <binary> <offset>` against the
+  same build. A kernel line `in pom[X,...]` gives the **file** offset: add the
+  difference between the executable `LOAD` segment's `p_vaddr` and `p_offset`
+  (`readelf -lW`) before `addr2line`.
 - `respawn.rs` - reiniciar este processo preservando o argv do arranque,
   criando uma nova sessão em Unix e redirecionando stdout/stderr para
   `<project_root>/pom.log` para que falhas logo após o reinício deixem rastro.

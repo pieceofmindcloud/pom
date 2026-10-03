@@ -241,6 +241,9 @@ pub struct ChatRequest {
     /// thinking globalmente.
     #[serde(default)]
     pub thinking_enabled: Option<bool>,
+    /// `false` keeps retrieved context (`crate::rag`) out of this request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rag: Option<bool>,
 }
 
 /// OpenAI wraps each tool in `{"type":"function","function":{...}}`, unlike
@@ -312,6 +315,27 @@ impl ChatRequest {
 /// O peer então recusava todo o prefixo e reprocessava o prompt inteiro.
 pub fn conversation_cache_key(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
     render_prompt(messages, tools)
+}
+
+/// The question retrieval searches for: the text of the last message, when a
+/// person wrote it. A tool result, an assistant turn or a system message at
+/// the end is an agent in the middle of its own loop, not a question.
+pub(crate) fn last_user_question(messages: &[ChatMessage]) -> Option<String> {
+    let last = messages.iter().rev().find(|message| !message.is_empty())?;
+    if last.role != "user" {
+        return None;
+    }
+    let text = last.content.as_text();
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// A probe that scores nothing and only tells the head where the reusable
+/// part of the prompt ends. See `prefill::DecisionProbe`.
+fn retain_boundary(bytes: Option<usize>) -> Option<crate::prefill::DecisionProbe> {
+    bytes.map(|bytes| crate::prefill::DecisionProbe {
+        retain_prefix_bytes: Some(bytes),
+        ..Default::default()
+    })
 }
 
 /// Flatten a conversation (plus any declared tools) into the single prompt
@@ -606,13 +630,32 @@ async fn chat_completions(
         .map(ChatToolDef::into_tool_def)
         .collect();
     let preferred_head = req.inference_head.clone();
-    let (prompt, images) = match render_prompt_with_images(&req.messages, &tools) {
+    let (mut prompt, images) = match render_prompt_with_images(&req.messages, &tools) {
         Ok(rendered) => rendered,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
     };
     // Chaveia o cache de prefixo pelas mensagens, não pelo texto renderizado -
     // ver `conversation_cache_key`.
     let cache_key = conversation_cache_key(&req.messages, &tools);
+    // Transparent retrieval: passages for the user's question go after the
+    // whole conversation, and the head keeps the KV only up to here, so the
+    // next turn still finds its prefix. The cache key stays the conversation.
+    let mut request_details = request_details;
+    let mut retain_prefix_bytes = None;
+    if req.rag != Some(false) {
+        if let Some(question) = last_user_question(&req.messages) {
+            if let Some(retrieved) = crate::rag::retrieve(&state, &question).await {
+                retain_prefix_bytes = Some(prompt.len());
+                prompt.push_str(&crate::rag::context_block(&retrieved.passages));
+                let summary = retrieved.summary();
+                info!(
+                    "📚 RAG: {} passages added from {summary}",
+                    retrieved.passages.len()
+                );
+                request_details["rag"] = summary;
+            }
+        }
+    }
     let prompt_tokens = approx_tokens(&prompt);
     let inference_token = auth.token().to_string();
     let caller = auth.into_caller();
@@ -667,6 +710,7 @@ async fn chat_completions(
             Mode::Chat,
             stops,
             Some(cache_key),
+            retain_prefix_bytes,
             preferred_head.clone(),
             thinking_enabled,
             request_details.clone(),
@@ -688,6 +732,7 @@ async fn chat_completions(
             Mode::Chat,
             stops,
             Some(cache_key),
+            retain_prefix_bytes,
             preferred_head,
             thinking_enabled,
             request_details,
@@ -747,6 +792,7 @@ async fn completions(
             // Completion crua não tem conversa: o prefixo é o próprio texto.
             None,
             None,
+            None,
             true,
             request_details.clone(),
             output_limit,
@@ -766,6 +812,7 @@ async fn completions(
             prompt_tokens,
             Mode::Completion,
             stops,
+            None,
             None,
             None,
             true,
@@ -838,6 +885,7 @@ async fn blocking_response(
     mode: Mode,
     stops: Vec<String>,
     cache_key: Option<String>,
+    retain_prefix_bytes: Option<usize>,
     preferred_head: Option<String>,
     thinking_enabled: bool,
     request_details: serde_json::Value,
@@ -847,7 +895,7 @@ async fn blocking_response(
         route,
         caller,
         GenerationInput {
-            probe: None,
+            probe: retain_boundary(retain_prefix_bytes),
             trace_id: Some(id.clone()),
             state,
             inference_token,
@@ -1048,6 +1096,7 @@ fn stream_response(
     mode: Mode,
     stops: Vec<String>,
     cache_key: Option<String>,
+    retain_prefix_bytes: Option<usize>,
     preferred_head: Option<String>,
     thinking_enabled: bool,
     request_details: serde_json::Value,
@@ -1058,7 +1107,7 @@ fn stream_response(
         route,
         caller,
         GenerationInput {
-            probe: None,
+            probe: retain_boundary(retain_prefix_bytes),
             trace_id: Some(id.clone()),
             state,
             inference_token,
@@ -1511,6 +1560,70 @@ fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn retrieval_searches_for_what_the_person_last_wrote() {
+        let messages = |value: serde_json::Value| -> Vec<ChatMessage> {
+            serde_json::from_value(value).unwrap()
+        };
+        let asked = messages(json!([
+            {"role": "system", "content": "be brief"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": [{"type": "text", "text": "how long is the warranty?"}]},
+        ]));
+        assert_eq!(
+            last_user_question(&asked).as_deref(),
+            Some("how long is the warranty?")
+        );
+        // An agent in the middle of its loop is not asking a question.
+        let tool_result = messages(json!([
+            {"role": "user", "content": "run it"},
+            {"role": "assistant", "content": null, "tool_calls": [{"function": {"name": "run", "arguments": "{}"}}]},
+            {"role": "tool", "content": "done"},
+        ]));
+        assert_eq!(last_user_question(&tool_result), None);
+        let assistant_last = messages(json!([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]));
+        assert_eq!(last_user_question(&assistant_last), None);
+        assert_eq!(last_user_question(&[]), None);
+    }
+
+    #[test]
+    fn retrieved_context_never_enters_the_reusable_prefix() {
+        let messages = |value: serde_json::Value| -> Vec<ChatMessage> {
+            serde_json::from_value(value).unwrap()
+        };
+        let turn_one = messages(json!([{"role": "user", "content": "how long is the warranty?"}]));
+        let turn_two = messages(json!([
+            {"role": "user", "content": "how long is the warranty?"},
+            {"role": "assistant", "content": "Two years."},
+            {"role": "user", "content": "and what does it cover?"},
+        ]));
+        let conversation = render_prompt(&turn_one, &[]);
+        let context = crate::rag::context_block(&[crate::rag::Passage {
+            path: "manual.pdf".into(),
+            text: "The warranty lasts twenty four months.".into(),
+            score: 0.9,
+        }]);
+        let sent = format!("{conversation}{context}");
+        let boundary = retain_boundary(Some(conversation.len())).unwrap();
+        // The head keeps the conversation and nothing of the context...
+        assert_eq!(boundary.retain_prefix_bytes, Some(conversation.len()));
+        assert!(boundary.labels.is_empty());
+        assert_eq!(&sent[..conversation.len()], conversation);
+        // ...and the next turn's prompt, with or without its own context,
+        // starts with exactly what was kept, as the prefix cache key does.
+        let next = render_prompt(&turn_two, &[]);
+        assert!(next.starts_with(&conversation));
+        assert!(conversation_cache_key(&turn_two, &[])
+            .starts_with(&conversation_cache_key(&turn_one, &[])));
+        assert!(!next.contains("Retrieved context"));
+        assert_eq!(retain_boundary(None), None);
+    }
+
     use super::*;
 
     fn msg(role: &str, text: &str) -> ChatMessage {
@@ -1735,6 +1848,8 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                // Retrieval is not what this test is about.
+                rag: Some(false),
                 model: Some("lab".into()),
                 messages: vec![msg("user", "Oi, teste")],
                 stream: false,
@@ -1871,6 +1986,8 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                // Retrieval is not what this test is about.
+                rag: Some(false),
                 model: Some("lab".into()),
                 messages: vec![msg("user", "Oi, teste")],
                 stream: false,
@@ -2023,6 +2140,8 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state.clone()),
             Json(ChatRequest {
+                // Retrieval is not what this test is about.
+                rag: Some(false),
                 model: Some("whole-model".into()),
                 messages: vec![msg("user", "primeiro")],
                 stream: true,
@@ -2044,6 +2163,8 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                // Retrieval is not what this test is about.
+                rag: Some(false),
                 model: Some("whole-model".into()),
                 messages: vec![
                     msg("user", "primeiro"),
@@ -2092,6 +2213,8 @@ mod tests {
             ApiKeyAuth::for_test(crate::reqlog::Caller::anonymous()),
             State(state),
             Json(ChatRequest {
+                // Retrieval is not what this test is about.
+                rag: Some(false),
                 // Sem peer anunciando "lab" nesta fixture, um `model`
                 // explícito seria recusado pelo `resolve_model` - o alvo deste
                 // teste é a matemática de orçamento/contexto, não a resolução

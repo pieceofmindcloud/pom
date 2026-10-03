@@ -68,6 +68,13 @@ mod prefix_reuse_gate_tests {
             .unwrap()
             .unwrap();
         assert_eq!(bare.retain_prefix_bytes, None);
+
+        // A retain boundary without labels: nothing is scored, the boundary stays.
+        let boundary = parse_probe(&json!({"retain_prefix_bytes": 512}))
+            .unwrap()
+            .unwrap();
+        assert!(boundary.labels.is_empty());
+        assert_eq!(boundary.retain_prefix_bytes, Some(512));
         assert!(parse_probe(&json!({})).unwrap().is_none());
         assert!(parse_probe(&json!({"probe": []})).is_err());
     }
@@ -945,8 +952,17 @@ pub(super) struct HeadProbe {
 
 /// Rótulos de uma decisão tipada (`probe`): 1 a 256 textos curtos.
 pub(super) fn parse_probe(meta: &Value) -> std::result::Result<Option<HeadProbe>, String> {
+    let retain_prefix_bytes = meta
+        .get("retain_prefix_bytes")
+        .and_then(Value::as_u64)
+        .map(|bytes| bytes as usize);
     let Some(value) = meta.get("probe").filter(|value| !value.is_null()) else {
-        return Ok(None);
+        // No labels to score, but the gateway may still say where the
+        // reusable part of the prompt ends (retrieved context after it).
+        return Ok(retain_prefix_bytes.map(|bytes| HeadProbe {
+            labels: Vec::new(),
+            retain_prefix_bytes: Some(bytes),
+        }));
     };
     let labels: Vec<String> = serde_json::from_value(value.clone())
         .map_err(|_| "campo probe deve ser uma lista de rótulos".to_owned())?;
@@ -959,10 +975,6 @@ pub(super) fn parse_probe(meta: &Value) -> std::result::Result<Option<HeadProbe>
     {
         return Err("rótulo de probe vazio ou maior que 32 bytes".into());
     }
-    let retain_prefix_bytes = meta
-        .get("retain_prefix_bytes")
-        .and_then(Value::as_u64)
-        .map(|bytes| bytes as usize);
     Ok(Some(HeadProbe {
         labels,
         retain_prefix_bytes,
@@ -1356,12 +1368,15 @@ pub(super) fn prefill_blocking(
         let recent = s.sessions[&sid_key].recent_tokens.clone();
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
-        let probe_result = probe.as_ref().map(|probe| {
-            let mut reply = probe_reply(&s.engine, logits, &probe.labels);
-            // The last peer's forward pass plus the label read.
-            reply["probe_ms"] = json!(decode_started.elapsed().as_secs_f64() * 1000.0);
-            reply
-        });
+        let probe_result = probe
+            .as_ref()
+            .filter(|probe| !probe.labels.is_empty())
+            .map(|probe| {
+                let mut reply = probe_reply(&s.engine, logits, &probe.labels);
+                // The last peer's forward pass plus the label read.
+                reply["probe_ms"] = json!(decode_started.elapsed().as_secs_f64() * 1000.0);
+                reply
+            });
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
         super::core::mark_first_token_produced(&mut timings, decode_started);
         let done = s.engine.is_generation_stop(&recent, next_id);

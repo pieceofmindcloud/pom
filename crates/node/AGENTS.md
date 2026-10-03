@@ -432,7 +432,17 @@ with the caller (`node_id`, `head`). A call without the signed envelope is
 refused. See `docs/subsystems/plugins-ui.md`, "Services a plugin offers to the
 cluster".
 
-`src/pom_core_update.rs` é deliberadamente SEPARADO de `src/plugins.rs`: a
+`src/rag.rs` is transparent retrieval for `/v1/chat/completions`: it finds
+the ready `rag` service of the network (15 s cache, peers asked behind the
+request), calls that plugin's `peer.search` within `POM_RAG_TIMEOUT_MS`
+(300 ms) along the measured gateway route
+(`GatewayState::control_post_json_routed`), and appends the passages after the
+conversation. The retain boundary at the end of the conversation travels as a
+label-less `DecisionProbe`, so the prefix cache keeps the conversation and
+never the passages. Any failure leaves the request untouched. See
+`docs/subsystems/plugins-ui.md`, "Transparent retrieval (RAG)".
+
+: a
 atualização do binário `pom` em si não é um plugin e vai virar GitHub Releases
 público sem licença (outra tarefa). Até essa migração, `PomCoreUpdater`
 empresta o lease do plugin `enterprise` para autenticar o manifest genérico

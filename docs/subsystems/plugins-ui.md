@@ -322,6 +322,48 @@ the network and nobody else: the Qdrant plugin answers `peer.connection` with
 its port and API key only when `caller.head` is true. The body is capped at
 256 KiB and the plugin's reply is returned as is.
 
+`GET /api/internal/plugins/services` (signed or key-authenticated peer call)
+returns the same service list, so a peer can find which machine serves what.
+
+## Transparent retrieval (RAG)
+
+`crates/node/src/rag.rs` adds passages from the network's RAG server to chat
+requests. The RAG server is any plugin, on any machine, that publishes a ready
+service of kind `rag`; the gateway knows no plugin by name.
+
+- **Finding the server.** The gateway keeps the choice for 15 s. A request
+  never waits for the network to find it: this node's own plugins are asked in
+  line, peers are asked behind the request (`/api/internal/plugins/services`),
+  so with the server on another machine the first request after startup goes
+  out without context.
+- **Searching.** `POST /v1/chat/completions` takes the text of the last
+  message when a person wrote it (role `user`; a tool result or an assistant
+  turn at the end is an agent in its loop, not a question) and calls the
+  plugin's `peer.search` - directly when the plugin is on this node, through
+  the peer route otherwise. The call goes along the route already measured to
+  that machine (`GatewayState::control_post_json_routed`): the pinned address,
+  or the libp2p tunnel alone when that is what reaches a peer behind NAT,
+  instead of walking every announced address. The whole search has 300 ms
+  (`POM_RAG_TIMEOUT_MS`, 20 to 5000); past it, or on any failure, the request
+  goes on unchanged. Retrieval never fails a request.
+- **What is added.** Up to 4 passages (`POM_RAG_PASSAGES`) scoring at least
+  0.8 (`POM_RAG_MIN_SCORE`), appended after the whole conversation as a
+  "Retrieved context" block naming each source. `x_pom` is unchanged; the
+  request audit gets `rag: {node_id, plugin, passages: [{path, score}]}`,
+  never the text.
+- **The prefix cache survives.** The passages change with every question, so
+  they must not be part of the retained KV. The request carries a retain
+  boundary at the end of the conversation (`DecisionProbe.retain_prefix_bytes`
+  with no labels; see `inference.md` 3.9) and the cache key stays the
+  conversation alone. The next turn's prompt starts with exactly what was
+  kept. A request with this boundary is not batched with other prefills on the
+  head, like every probe request.
+- **Turning it off.** `"rag": false` in the request body, the RAG button of
+  the Chat (shown only while `GET /api/ui/chat/capabilities` reports
+  `rag: "supported"`), or `POM_RAG=0` on the gateway.
+
+`/v1/messages`, `/v1/completions` and `/api/generate` do not retrieve.
+
 ## Events and notifications (`pom-plugin-events/v1`)
 
 POM and plugins talk through a single protocol. Every event uses the same JSON

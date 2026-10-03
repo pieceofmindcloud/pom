@@ -872,11 +872,19 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
         "supported"
     };
 
+    let rag_state = if crate::rag::available(&state).await {
+        "supported"
+    } else {
+        "unavailable"
+    };
+
     Json(json!({
         "active_model": active_model,
         "vision": vision_state,
         "coverage": coverage_state,
         "thinking": thinking_state,
+        // A plugin of some machine serves retrieval to this network.
+        "rag": rag_state,
     }))
 }
 

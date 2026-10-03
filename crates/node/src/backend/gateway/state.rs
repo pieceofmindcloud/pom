@@ -615,6 +615,38 @@ impl GatewayState {
             .await
     }
 
+    /// Signed control POST to `peer`'s gateway along the route this node
+    /// already measured to it (`route_plan`, gateway plane): only the pinned
+    /// address, or only the libp2p tunnel when that is what reaches the peer -
+    /// a machine behind NAT, for example. Without a measured route, the
+    /// address that last answered. For a call with a deadline of
+    /// milliseconds, where walking every announced address would spend it on
+    /// the ones that do not answer. The tunnel stays as the fallback.
+    pub(crate) async fn control_post_json_routed<T: serde::Serialize>(
+        &self,
+        peer: &crate::network::PeerInfo,
+        path: &str,
+        body: &T,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<reqwest::Response> {
+        use crate::route_plan::{book, Plane, RouteKind};
+        let bases = match book().active(&peer.node_id, Plane::Gateway) {
+            Some(route) if route.kind == RouteKind::Tunnel => Vec::new(),
+            Some(route) => vec![route.base_url.trim_end_matches('/').to_string()],
+            None => self.gateway_bases(peer).into_iter().take(1).collect(),
+        };
+        let bytes = serde_json::to_vec(body)?;
+        self.control_call_over(
+            peer,
+            &bases,
+            reqwest::Method::POST,
+            path,
+            Some(bytes),
+            timeout,
+        )
+        .await
+    }
+
     /// `control_get` só pelo túnel, para quem já tentou os endereços do peer
     /// com critério próprio (ver `send_to_gateway_over`).
     pub(crate) async fn control_get_via_tunnel(

@@ -1781,5 +1781,17 @@ mod tests {
         let meta = add_probe_to_head_meta(json!({}), Some(&probe));
         assert_eq!(meta["probe"], json!(["A", "B", "C"]));
         assert_eq!(meta["retain_prefix_bytes"], 120);
+
+        // A retain boundary without labels (retrieved context after the
+        // conversation) reaches the head on its own, and scores nothing.
+        let boundary = DecisionProbe {
+            retain_prefix_bytes: Some(512),
+            ..Default::default()
+        };
+        let meta = add_probe_to_head_meta(json!({"chunk_index": 0}), Some(&boundary));
+        assert_eq!(meta["retain_prefix_bytes"], 512);
+        assert!(meta.get("probe").is_none());
+        let untouched = add_probe_to_head_meta(json!({"chunk_index": 0}), None);
+        assert_eq!(untouched, json!({"chunk_index": 0}));
     }
 }

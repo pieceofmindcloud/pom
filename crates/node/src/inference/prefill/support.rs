@@ -3441,6 +3441,10 @@ pub(super) fn head_prefill_meta(
 /// A typed decision (`/v1/systemone`): the answer labels the last peer scores
 /// and, for the head, where the reusable part of the prompt ends.
 ///
+/// With no labels the probe scores nothing and only carries the retain
+/// boundary: that is how a chat request with retrieved context appended
+/// (`crate::rag`) keeps the conversation, and not the context, in the KV.
+///
 /// `retain_prefix_bytes` is a byte offset into the prompt text sent to the
 /// head. Everything before it is the same for every request with this
 /// question (instructions and answer format); the state and the options come
@@ -3529,8 +3533,12 @@ pub(super) fn add_probe_to_head_meta(
     mut meta: serde_json::Value,
     probe: Option<&DecisionProbe>,
 ) -> serde_json::Value {
-    if let Some(probe) = probe.filter(|probe| !probe.labels.is_empty()) {
-        meta["probe"] = json!(probe.labels);
+    if let Some(probe) = probe {
+        if !probe.labels.is_empty() {
+            meta["probe"] = json!(probe.labels);
+        }
+        // The retain boundary stands on its own: a request whose prompt ends
+        // with retrieved context (`crate::rag`) carries it without labels.
         if let Some(bytes) = probe.retain_prefix_bytes {
             meta["retain_prefix_bytes"] = json!(bytes);
         }

@@ -150,6 +150,7 @@ mod plugin_github;
 mod plugin_host;
 mod plugin_proxy;
 mod plugin_services;
+mod rag;
 mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;

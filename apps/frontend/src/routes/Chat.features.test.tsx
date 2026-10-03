@@ -23,6 +23,7 @@ const headQuery = vi.hoisted(() => ({
 }));
 
 const thinkingScenario = vi.hoisted(() => ({ enabled: true }));
+const ragScenario = vi.hoisted(() => ({ available: false }));
 
 const imageResizeScenario = vi.hoisted(() => ({
   calls: [] as number[],
@@ -68,6 +69,7 @@ vi.mock("../lib/queries", () => ({
       vision: "supported",
       coverage: "complete",
       thinking: thinkingScenario.enabled ? "supported" : "unsupported",
+      rag: ragScenario.available ? "supported" : "unavailable",
     },
   }),
   useServableModels: () => ({ data: [{ id: "qwen", context_length: 4 }] }),
@@ -132,6 +134,7 @@ afterEach(() => {
   imageResizeScenario.calls = [];
   imageResizeScenario.reject = false;
   thinkingScenario.enabled = true;
+  ragScenario.available = false;
   headQuery.data = undefined;
   headQuery.isLoading = false;
   headQuery.isError = false;
@@ -246,6 +249,31 @@ describe("Chat", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "segunda" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
     await waitFor(() => expect(streamScenario.lastBody?.thinking_enabled).toBe(false));
+  });
+
+  it("oferece o RAG só quando a rede tem um servidor de RAG, e manda desligá-lo", async () => {
+    ragScenario.available = true;
+    mountChat();
+    const rag = screen.getByRole("button", { name: "RAG" });
+    expect(rag.getAttribute("aria-pressed")).toBe("true");
+
+    // Ligado é o padrão do gateway: nada precisa ir no pedido.
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "primeira" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(streamScenario.lastBody?.messages).toBeTruthy());
+    expect(streamScenario.lastBody?.rag).toBeUndefined();
+
+    await waitFor(() => expect(screen.getByText(/segundo/)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "RAG" }));
+    expect(screen.getByRole("button", { name: "RAG" }).getAttribute("aria-pressed")).toBe("false");
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "segunda" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(streamScenario.lastBody?.rag).toBe(false));
+  });
+
+  it("não mostra o RAG sem um servidor de RAG na rede", () => {
+    mountChat();
+    expect(screen.queryByRole("button", { name: "RAG" })).toBeNull();
   });
 
   it("não mostra Think quando a implantação desabilita thinking", () => {

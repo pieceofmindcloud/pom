@@ -632,6 +632,10 @@ function ChatScreen() {
   const visionAvailable = chatCapabilities.data?.vision === "supported";
   const thinkingAvailable = chatCapabilities.data?.thinking === "supported";
   const thinkingEnabled = session.thinkingEnabled ?? thinkingAvailable;
+  // The switch only exists while the network has a RAG server; without one
+  // there is nothing to turn off.
+  const ragAvailable = chatCapabilities.data?.rag === "supported";
+  const ragEnabled = session.ragEnabled ?? true;
   const servedModel = models.data?.find((candidate) => candidate.id === model);
   const contextLength = servedModel?.context_length
     ?? servedModel?.max_input_tokens
@@ -873,6 +877,7 @@ function ChatScreen() {
       maxTokens: node.data?.config?.max_new_tokens,
       inferenceHead: selectedInferenceHead ?? undefined,
       thinkingEnabled,
+      ragEnabled: ragAvailable ? ragEnabled : undefined,
       emptyResponseMessage: t("chat.emptyResponse"),
       interruptedMessage: t("chat.interrupted"),
       cluster: cluster.data ?? null,
@@ -1181,6 +1186,26 @@ function ChatScreen() {
                       )}
                     >
                       {t("chat.thinkToggle")}
+                    </Button>
+                  )}
+                  {ragAvailable && (
+                    <Button
+                      size="sm"
+                      variant={ragEnabled ? "outline" : "ghost"}
+                      aria-pressed={ragEnabled}
+                      aria-label={t("chat.ragToggle")}
+                      title={t("chat.ragToggleHint")}
+                      onClick={() => {
+                        const updated = { ...session, ragEnabled: !ragEnabled };
+                        setSession(updated);
+                        upsert(updated);
+                      }}
+                      className={clsx(
+                        "shrink-0",
+                        ragEnabled ? "border-aqua/50 bg-aqua/[0.08] text-aqua" : "text-faint",
+                      )}
+                    >
+                      {t("chat.ragToggle")}
                     </Button>
                   )}
                   {speechSupported && (

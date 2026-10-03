@@ -880,6 +880,8 @@ export interface ChatCapabilities {
   coverage: "complete" | "incomplete" | "unavailable";
   /** Thinking is available only when the active deployment leaves it enabled. */
   thinking: "supported" | "unsupported" | "unavailable";
+  /** The network has a RAG server and retrieval is on. Absent on an older node. */
+  rag?: "supported" | "unavailable";
 }
 
 export type ModelSource = "ollama" | "lmstudio" | "folder" | string;

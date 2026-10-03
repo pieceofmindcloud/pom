@@ -397,6 +397,7 @@ const unavailableChatCapabilities: ChatCapabilities = {
   vision: "unavailable",
   coverage: "unavailable",
   thinking: "unavailable",
+  rag: "unavailable",
 };
 
 /**

@@ -24,6 +24,7 @@ pub mod kv_cache;
 pub mod llm;
 pub mod moe;
 pub mod mtp;
+pub mod mtp_draft;
 pub mod multipart;
 pub mod sysmon;
 pub mod tp_probe;

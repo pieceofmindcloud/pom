@@ -2244,6 +2244,22 @@ two values are equal.
   file itself did not load. See `crates/llama-engine/src/mtp.rs` for the full
   mechanics.
 
+  **Shared drafts borrow the target's embedding and output head.** Some
+  published drafts (flagged `<arch>.nextn_shared_target_tensors = true`) leave
+  `token_embd.weight` and `output.weight` out, and llama.cpp loads a draft as an
+  independent model, so such a file fails with `check_tensor_dims: tensor
+  'token_embd.weight' not found`. Before loading, `load_with_cache` passes the
+  draft through `llama_engine::mtp_draft::ready_draft_path`: a draft that has
+  `token_embd.weight` is used unchanged; otherwise a completed copy is written
+  that keeps the draft's metadata and tensors and appends the missing tensors
+  read from the node's own target file (the final slice or the whole model,
+  multipart included). The copy lives in `.mtp-drafts/` next to the target, is
+  named after the draft plus a fingerprint of both files (path, size, mtime),
+  is reused while neither changes, and replaces older copies of the same
+  draft. The original files are never written. A target without
+  `token_embd.weight` (a middle slice) is refused by name, and that reason
+  reaches `mtp_unavailable_reason`. The model catalog skips `.mtp-drafts/`.
+
   **Attaching the draft is not enough - both loading the weights and the MTP
   context can blow VRAM even when the fit already decided RAM.**
   `LoadedModel::load_mtp_draft` alone always tries VRAM (`MtpFitMode::Vram`,

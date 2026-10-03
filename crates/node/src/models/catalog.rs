@@ -611,6 +611,11 @@ fn find_gguf(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             }
         };
         if ft.is_dir() {
+            // Completed shared MTP drafts are a cache of the engine, not files
+            // of the operator (`llama_engine::mtp_draft`).
+            if entry.file_name() == llama_engine::mtp_draft::CACHE_DIR {
+                continue;
+            }
             find_gguf(&path, depth + 1, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
             if is_secondary_part(&path) {

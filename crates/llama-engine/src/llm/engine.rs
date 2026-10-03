@@ -287,8 +287,21 @@ impl LlmEngine {
                 // proativo aqui quando o fit já decidiu Ram, e reativo logo
                 // abaixo (`.or_else`) quando o fit achou que cabia mas a VRAM
                 // mudou entre o fit e esta carga.
+                // A shared draft (no `token_embd`/`output` of its own) is
+                // completed against this target first; a complete draft
+                // comes back unchanged. See `crate::mtp_draft`.
+                let (draft_path, draft_prepare_error) = match crate::mtp_draft::ready_draft_path(
+                    std::path::Path::new(&draft_path),
+                    std::path::Path::new(model_path),
+                ) {
+                    Ok(ready) => (ready.to_string_lossy().into_owned(), None),
+                    Err(error) => (draft_path, Some(error)),
+                };
                 let draft_wants_ram = vram_plan.mtp_mode == MtpFitMode::Ram;
-                let draft_loaded_result = if draft_wants_ram {
+                let draft_unprepared = draft_prepare_error.is_some();
+                let draft_loaded_result = if let Some(error) = draft_prepare_error {
+                    Err(error)
+                } else if draft_wants_ram {
                     LoadedModel::load_mtp_draft_cpu(&draft_path, cfg)
                 } else {
                     LoadedModel::load_mtp_draft(&draft_path, cfg)
@@ -296,7 +309,7 @@ impl LlmEngine {
                 let draft_loaded_result = draft_loaded_result
                     .map(|draft_loaded| (draft_loaded, draft_wants_ram))
                     .or_else(|vram_error| {
-                        if draft_wants_ram || !cfg.mtp_cpu_fallback_enabled {
+                        if draft_wants_ram || draft_unprepared || !cfg.mtp_cpu_fallback_enabled {
                             return Err(vram_error);
                         }
                         warn!(

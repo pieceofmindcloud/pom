@@ -13,7 +13,8 @@ transferência.
   external MTP drafts found under the shard folder and the GGUF libraries
   (`discover_sidecars`, filled by `enrich`); `sidecar_kind` recognizes them
   from the header (clip, or `nextn` with few tensors and no split), so they are
-  dropped from `models`. `Sidecar::compatible_with` is the projector/draft to
+  dropped from `models`. The walk skips `.mtp-drafts/`, the engine's cache of
+  completed shared drafts (`llama_engine::mtp_draft`). `Sidecar::compatible_with` is the projector/draft to
   model rule, `SidecarLink`/`SidecarMode` the link kept on the principal,
   `SidecarFile` the name + size identity and `find_local_sidecar` the on-disk
   lookup used at apply time. `DiscoveredModel.embedding_length` carries the

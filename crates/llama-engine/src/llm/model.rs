@@ -686,6 +686,36 @@ mod mtp_draft_tests {
         }
     }
 
+    /// A real shared draft (`POM_MTP_SHARED_DRAFT`, without `token_embd` and
+    /// `output`) does not load on its own, and loads on the CPU once
+    /// `crate::mtp_draft` completes it from the slice that holds the output
+    /// head (`POM_MTP_TARGET_SLICE`). Point the slice through a symlink in a
+    /// scratch folder to keep the completed copy out of the model folder.
+    #[test]
+    #[ignore]
+    fn a_real_shared_draft_loads_once_completed_from_its_target() {
+        let (Ok(draft), Ok(target)) = (
+            std::env::var("POM_MTP_SHARED_DRAFT"),
+            std::env::var("POM_MTP_TARGET_SLICE"),
+        ) else {
+            return;
+        };
+        let cfg = draft_cfg(&draft);
+        let raw = LoadedModel::load_mtp_draft_cpu(&draft, &cfg);
+        assert!(raw.is_err(), "the shared draft alone should miss token_embd");
+
+        let ready = crate::mtp_draft::ready_draft_path(
+            std::path::Path::new(&draft),
+            std::path::Path::new(&target),
+        )
+        .unwrap();
+        assert_ne!(ready.to_string_lossy(), draft);
+        let ready = ready.to_string_lossy().into_owned();
+        let loaded = LoadedModel::load_mtp_draft_cpu(&ready, &draft_cfg(&ready))
+            .unwrap_or_else(|error| panic!("completed draft should load: {error:#}"));
+        assert!(loaded.has_nextn_weights());
+    }
+
     /// Regressão para o porte do padrão `qwen35`/`deepseek4` em
     /// `qwen4exp.cpp` (`mtp_only` no `load_arch_tensors`, tensores
     /// `layer.nextn.*`, `graph_mtp` para `LLM_GRAPH_TYPE_DECODER_MTP`):

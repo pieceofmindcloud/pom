@@ -482,6 +482,12 @@ profile policy remains the effective authorization boundary.
   carregadas sobrepostas são permitidas quando pertencem a caminhos distintos;
   a cobertura é validada pelo caminho executável, não pela união dos arquivos.
   `undeploy` tira uma pipeline inteira do ar.
+- `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
+  `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
+  `POST /api/ui/kv-cache/clear` (AdminOnly, forwarded by `node_id` like
+  `/api/ui/leave`) deletes its `.bin`/`.json` files, resets
+  `GatewayState.prefix_disk` and clears the inference server's host-memory
+  cache. See `http-api.md`.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and

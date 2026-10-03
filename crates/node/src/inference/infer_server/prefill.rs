@@ -1059,6 +1059,10 @@ pub(super) fn prefill_blocking(
     // Reusar exige a sessão viva aqui. Ela pode ter sido despejada ou reciclada
     // desde o turno anterior; nesse caso este peer simplesmente recomeça, e é a
     // resposta dele (`reuse_prefix` no meta) que os hops seguintes obedecem.
+    if reuse_prefix && chunk_index == 0 {
+        // The session may be parked in host RAM (`--cache-ram`).
+        s.unpark_session(&sid_key);
+    }
     let reuse_snapshot = PrefixReuseSnapshot::from_session(s.sessions.get(&sid_key));
     let (want_reuse, reuse_gate_reason) =
         prefix_reuse_gate(reuse_prefix, chunk_index, reuse_snapshot);
@@ -1587,6 +1591,9 @@ pub(super) fn prefill_batch_blocking(
         let result = (|| -> Result<PreparedPrefill> {
             // Mesmo contrato do caminho não-lotado (`prefill_blocking`): reuso
             // só com a sessão viva, e quem tokeniza decide se o prefixo serve.
+            if reuse_prefix && chunk_index == 0 {
+                s.unpark_session(&sid_key);
+            }
             let reuse_snapshot = PrefixReuseSnapshot::from_session(s.sessions.get(&sid_key));
             let (want_reuse, reuse_gate_reason) =
                 prefix_reuse_gate(reuse_prefix, chunk_index, reuse_snapshot);

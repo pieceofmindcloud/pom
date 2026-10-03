@@ -1486,6 +1486,13 @@ from the installation, like `cache_type_*`.
   an error. Operator: `GET /admin/slots`,
   `POST /admin/slots/{name}?action=save|restore|erase` (see `http-api.md`).
 
+The directory is flat and shared by every model: nothing is organised per
+model on disk. A KV state only fits the model and layer range that wrote it,
+and that is enforced per snapshot - the sidecar check above on restore, and the
+model plus hop sequence in the name of every automatic snapshot
+(`PrefixRouteKey`). Snapshots of a model no longer served stay until the TTL,
+the byte budget, or `POST /api/ui/kv-cache/clear` remove them.
+
 Restoring reproduces the same physical state as a live retained session (cells
 beyond `prompt_len` may remain in `prompt_seq`, exactly as on the normal path),
 so the next turn follows `plan_prefix_reuse`'s append-only rule unchanged.
@@ -1535,6 +1542,50 @@ with no manual call:
   fails (a file vanished on a hop, incompatible geometry) forgets the entry and
   proceeds cold - reuse is an optimization, never a reason for the request to
   fail.
+
+### 3.1.2 Host-memory KV cache (`cache_ram_mib`)
+
+A peer has `max_sessions` live KV sequences (one by default). A retained
+session that loses its sequence - the scheduler reclaims it for another
+conversation (`evict_retained`), or the idle collector takes it (`reap_idle`) -
+used to have its KV wiped, and the conversation's next turn paid a cold
+prefill on that peer. With the host-memory cache the peer first copies the
+session's `prompt_seq` state to RAM (`LlmEngine::state_seq_get_data`,
+`InferState::park_session`) and keeps it under the same `session_id`. This is
+llama-server's `--cache-ram`: the parked entries are extra slots that cost RAM
+instead of KV context.
+
+- **Return.** On chunk 0 of a prefill that asks for `reuse_prefix`, a session
+  that is not live but is parked is copied back into a free sequence
+  (`unpark_session`, `state_seq_set_data`) as a retained session, and the turn
+  proceeds through the same append-only rule as any hit. The scheduler treats
+  the parked session as a new one, so the sequence it needs is admitted the
+  usual way. Nothing changes for the gateway, the wire or the other hops.
+- **Budget.** `cache_ram_mib` in `pom.json` or `POM_CACHE_RAM`, with the
+  llama-server values: a positive ceiling in MiB, `0` for off, absent or `-1`
+  for as much as the machine allows. Least recently parked entries leave first.
+- **The user comes first.** Whatever the setting, half of the host RAM stays
+  **available** to whoever uses the machine: a state is parked only if the host
+  still has that half available after the copy, and the cache never holds more
+  than the other half. A host whose half is under 6 GiB (less than 12 GiB of
+  RAM) parks nothing. Available memory is sampled every 2 s in the background
+  (`HostMemory`), so the parking path never waits on the operating system; a
+  host not sampled yet parks nothing.
+- **What is not parked.** A session that is not retained, has no prompt, holds
+  media or M-RoPE cells (same eligibility as a disk snapshot), or belongs to a
+  tensor-parallel group, where the ranks keep their sessions in lockstep.
+- **What forgets an entry.** `/v1/session/release`, a reset of the same
+  session id, `POST /v1/session/cache/clear`, and unloading the model: the
+  bytes belong to the loaded context and never outlive it. Surviving a restart
+  is the job of the disk snapshots above.
+- **Observability.** `/health` publishes `cache_ram`: `enabled`, `limit_bytes`
+  (`null` when the host is too small or not measured), `user_reserve_bytes`,
+  `bytes`, `entries`, `tokens` and the `parked`/`restored`/`evicted` counters.
+
+The eviction copies the KV out of the context, a multi-gigabyte read for a
+long conversation, so `run_scheduler` reclaims through `spawn_blocking`.
+Each hop parks and restores on its own; a hop that no longer has the entry
+answers as it always did for a lost session and the gateway rebuilds cold.
 
 ### 3.2 Executor selection
 

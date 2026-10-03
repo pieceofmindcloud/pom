@@ -199,6 +199,13 @@ pub struct NodeConfig {
     /// mudar o diretório não invalida os pesos carregados.
     #[serde(default)]
     pub slot_save_path: Option<String>,
+    /// Host-memory KV cache setting in MiB (`Config::cache_ram_mib`, the
+    /// `--cache-ram` of llama-server), injected from the installation like
+    /// `slot_save_path`: `0` is off, a positive value is a ceiling, absent or
+    /// negative lets the cache use what the user reserve allows. See
+    /// `infer_server/ram_cache.rs`.
+    #[serde(default)]
+    pub cache_ram_mib: Option<i64>,
     /// Permite ao llama.cpp ajustar camadas/contexto à memória livre.
     #[serde(default = "default_fit_memory")]
     pub fit_memory: bool,
@@ -339,6 +346,7 @@ impl NodeConfig {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             slot_save_path: None,
+            cache_ram_mib: None,
             fit_memory: p.fit_memory && allow_fit_memory,
             fit_memory_margin_mb: p.fit_memory_margin_mb,
             n_batch: p.n_batch,
@@ -1095,6 +1103,10 @@ impl NodeRuntime {
                 .slot_save_path
                 .take()
                 .or_else(|| installation.slot_save_path_effective());
+            cfg.cache_ram_mib = cfg
+                .cache_ram_mib
+                .take()
+                .or_else(|| installation.cache_ram_mib_effective());
         }
         cfg.validate()?;
 
@@ -2181,6 +2193,7 @@ mod tests {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             slot_save_path: None,
+            cache_ram_mib: None,
             fit_memory: true,
             fit_memory_margin_mb: DEFAULT_FIT_MEMORY_MARGIN_MB,
             max_sessions: 1,

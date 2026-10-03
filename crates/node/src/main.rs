@@ -988,6 +988,7 @@ async fn start_setup_mode(
         slot_persist_prefix_cache: true,
         slot_auto_max_bytes: None,
         slot_auto_ttl_secs: None,
+        cache_ram_mib: None,
     })));
 
     let setup_p2p_port = config.read().await.p2p_port;

@@ -2158,6 +2158,49 @@ impl LlmEngine {
         unsafe { sys::llama_state_seq_get_size(self.ctx, seq_id as i32) }
     }
 
+    /// Copia o estado de uma sequência de KV para a memória do host
+    /// (`llama_state_seq_get_data`), o mesmo conteúdo que
+    /// `state_seq_save_file` grava, sem o cabeçalho de tokens. É a base do
+    /// cache em RAM (`--cache-ram` do llama-server): quem chama guarda os bytes
+    /// e os devolve com `state_seq_set_data` no mesmo contexto.
+    pub fn state_seq_get_data(&self, seq_id: u32) -> Result<Vec<u8>> {
+        if self.ctx.is_null() {
+            bail!("state_seq_get_data: contexto nulo");
+        }
+        let size = self.state_seq_size(seq_id);
+        if size == 0 {
+            bail!("state_seq_get_data: sequência {seq_id} sem estado");
+        }
+        let mut data = vec![0u8; size];
+        let written = unsafe {
+            sys::llama_state_seq_get_data(self.ctx, data.as_mut_ptr(), data.len(), seq_id as i32)
+        };
+        if written == 0 || written > data.len() {
+            bail!("llama_state_seq_get_data devolveu {written} para {size} bytes");
+        }
+        data.truncate(written);
+        Ok(data)
+    }
+
+    /// Restaura em `dest_seq_id` um estado copiado por `state_seq_get_data`
+    /// (`llama_state_seq_set_data`). Devolve os bytes lidos; zero é falha - o
+    /// estado não cabe ou não pertence à geometria de KV deste contexto.
+    pub fn state_seq_set_data(&self, data: &[u8], dest_seq_id: u32) -> Result<usize> {
+        if self.ctx.is_null() {
+            bail!("state_seq_set_data: contexto nulo");
+        }
+        let read = unsafe {
+            sys::llama_state_seq_set_data(self.ctx, data.as_ptr(), data.len(), dest_seq_id as i32)
+        };
+        if read == 0 {
+            bail!(
+                "llama_state_seq_set_data devolveu 0 para {} bytes",
+                data.len()
+            );
+        }
+        Ok(read)
+    }
+
     /// Grava o KV de uma sequência em disco com um cabeçalho de tokens, como o
     /// `--slot-save-path` do llama-server (`llama_state_seq_save_file`). Só
     /// `prompt_seq` deve ser salvo: nunca a cauda volátil da geração. `tokens`

@@ -699,6 +699,18 @@ key never authenticates again.
 `prefix_auto_cache: {enabled, index_entries, index_bytes}` when the persistent
 prefix cache (`slot_persist_prefix_cache`) is on in this gateway.
 
+`POST /api/ui/kv-cache/clear` (AdminOnly) empties the KV cache of **one**
+machine. The body is `{node_id?}`: absent or the node's own id acts locally,
+another id is forwarded to that machine, since only the owner of a disk deletes
+from it. Locally it removes every `.bin` and `.json` of the snapshot directory,
+resets this gateway's automatic prefix index and calls
+`POST /v1/session/cache/clear` on the local inference server. Sessions that are
+live in the model context are untouched. The answer is `{cleared, node_id,
+disk_files, disk_bytes, ram_entries, ram_bytes}`. `GET /api/ui/node` publishes
+the disk side as `kv_cache: {enabled, path, snapshots, bytes}`, measured on each
+call, and `/health` of the inference port publishes the RAM side as `cache_ram`
+(see `inference.md` 3.1.2).
+
 `POST /admin/slots/:name?action=save|restore|erase` orchestrates a snapshot
 across the whole deployment. Body: `{model, session_id?, dest_session_id?}`
 (`model` is the label or the `deploy_id`). The gateway resolves the pipeline

@@ -389,6 +389,15 @@ pub struct Config {
     /// vence o campo. Use `slot_auto_ttl_secs()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_auto_ttl_secs: Option<u64>,
+    /// Host-memory KV cache for retained sessions that lose their sequence to
+    /// another conversation - llama-server's `--cache-ram`, in MiB: a positive
+    /// ceiling, `0` for off, absent or `-1` for as much as the machine allows.
+    /// Whatever the value, half of the host RAM stays available to the user
+    /// and a host whose half is under 6 GiB caches nothing
+    /// (`infer_server/ram_cache.rs`). A machine property; the `POM_CACHE_RAM`
+    /// environment variable takes precedence. Use `cache_ram_mib_effective()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ram_mib: Option<i64>,
 }
 
 impl fmt::Debug for Config {
@@ -439,6 +448,7 @@ impl fmt::Debug for Config {
             .field("slot_persist_prefix_cache", &self.slot_persist_prefix_cache)
             .field("slot_auto_max_bytes", &self.slot_auto_max_bytes)
             .field("slot_auto_ttl_secs", &self.slot_auto_ttl_secs)
+            .field("cache_ram_mib", &self.cache_ram_mib)
             .finish()
     }
 }
@@ -832,6 +842,15 @@ impl Config {
             .unwrap_or(crate::prefix_cache::DEFAULT_SLOT_AUTO_MAX_BYTES)
     }
 
+    /// Host-memory KV cache setting in MiB (`--cache-ram`); `POM_CACHE_RAM`
+    /// beats the `pom.json` field. `None` means neither source set it.
+    pub fn cache_ram_mib_effective(&self) -> Option<i64> {
+        crate::brand::env("CACHE_RAM")
+            .ok()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .or(self.cache_ram_mib)
+    }
+
     /// TTL efetivo dos snapshots automáticos de prefixo, em segundos.
     /// `POM_SLOT_AUTO_TTL_SECS` vence o campo do `pom.json`.
     pub fn slot_auto_ttl_secs(&self) -> i64 {
@@ -1142,6 +1161,7 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -1248,6 +1268,7 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -1414,6 +1435,7 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         };
         cfg.admin_exposure = AdminExposure::Network;
         let admin_password_hash = crate::auth::hash_admin_password("admin_super_secret").unwrap();
@@ -1609,6 +1631,7 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         };
         assert_eq!(cfg.active_api_key().unwrap().id, "active-id");
     }

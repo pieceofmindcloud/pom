@@ -705,6 +705,15 @@ double-clicking a card in Flow opens the same component in a
 `PeerDetailDialog`. Duplicating the presentation in both places is what is
 being avoided.
 
+The card also carries the machine's **KV cache** (`components/KvCache.tsx`):
+the disk its snapshot directory uses and the number of snapshots
+(`node.kv_cache`), the host-memory cache when a model is loaded
+(`cache_ram` from `/health`), and "Clear cache", which empties both on that
+machine only through `POST /api/ui/kv-cache/clear` after a confirmation. The
+disk line shows with or without a loaded model, because snapshots of models no
+longer served are exactly what accumulates. A node that does not publish the
+field yet draws nothing.
+
 That card is **the administrator's**, and `canSeePeerDetails`
 (`src/lib/access.ts`) says who sees it. It carries each machine's internal
 state and the actions on it - release slice, remove from the pipeline, take off

@@ -429,6 +429,12 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::AdminOnly,
     },
+    // Emptying a machine's KV cache deletes what its conversations saved.
+    RouteRule {
+        prefix: "/api/ui/kv-cache",
+        method: None,
+        scope: RouteScope::AdminOnly,
+    },
     RouteRule {
         prefix: "/api/ui/reconfigure",
         method: None,

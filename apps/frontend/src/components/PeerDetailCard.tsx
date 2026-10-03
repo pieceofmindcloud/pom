@@ -23,6 +23,7 @@ import { trackOf } from "./PipelineRail";
 import { ReleaseSlice } from "./ReleaseSlice";
 import { RemoveNode } from "./RemoveNode";
 import { LeaveNode } from "./LeaveNode";
+import { KvCache } from "./KvCache";
 import { isCpuBuffer, ModelPlacementSection } from "./ModelPlacement";
 import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
 import { Badge, Button, Dot, InfoTip, KeyValue, Meter } from "./ui";
@@ -708,6 +709,17 @@ export function PeerDetailCard({
               </span>
             </KeyValue>
           </dl>
+
+          {/* O disco do cache existe com ou sem modelo carregado; a RAM só
+              aparece quando o `/health` desta máquina a reporta. */}
+          <KvCache
+            nodeId={peer.node_id}
+            hostname={n?.hostname || peer.short_id}
+            isSelf={peer.is_self}
+            disk={n?.kv_cache}
+            ram={health?.cache_ram}
+            className={clsx("border-t border-line", pad, dialog ? "py-4" : "py-2.5")}
+          />
 
           {/* Só faz pergunta quem tem a quem perguntar: sem modelo carregado
               não há colocação nenhuma a mostrar. */}

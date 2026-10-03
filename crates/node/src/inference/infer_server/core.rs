@@ -929,6 +929,21 @@ pub(super) fn new_session_slots(free_slots: usize, _retained: usize) -> usize {
     free_slots
 }
 
+/// Takes the sequence of the least recently used retained session.
+///
+/// Off the async threads: with the host-memory cache on, the eviction first
+/// copies that session's KV out of the context (`InferState::park_session`),
+/// which is a multi-gigabyte read for a long conversation.
+async fn reclaim_retained(state: &SharedState) -> bool {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.evict_retained()
+    })
+    .await
+    .unwrap_or(false)
+}
+
 pub(super) async fn run_scheduler(
     mut rx: mpsc::Receiver<InferenceCommand>,
     state: SharedState,
@@ -999,10 +1014,7 @@ pub(super) async fn run_scheduler(
         // explicit: reclaim a retained KV slot immediately for this path, but
         // keep the five-second protection for unrelated standalone requests.
         if new_slots == 0 && retained > 0 && queue.has_pipeline_new_session_wait(is_existing) {
-            let reclaimed = {
-                let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
-                guard.evict_retained()
-            };
+            let reclaimed = reclaim_retained(&state).await;
             if reclaimed {
                 admission_wait_reason = Some(pipeline_scheduler_wait_reason());
                 continue;
@@ -1038,10 +1050,7 @@ pub(super) async fn run_scheduler(
             // pendurada até o `reap_idle` de 15 minutos.
             let waited = queue.oldest_new_session_wait(Instant::now(), is_existing);
             if retained > 0 && waited.is_some_and(|w| w >= RETAINED_RECLAIM_GRACE) {
-                let reclaimed = {
-                    let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
-                    guard.evict_retained()
-                };
+                let reclaimed = reclaim_retained(&state).await;
                 if reclaimed {
                     admission_wait_reason = Some(scheduler_wait_reason(true));
                     continue;
@@ -1739,6 +1748,7 @@ mod tests {
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             slot_save_path: None,
+            cache_ram_mib: None,
             fit_memory: true,
             fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             max_sessions: 1,

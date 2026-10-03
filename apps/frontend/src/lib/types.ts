@@ -364,6 +364,8 @@ export interface NodeInfo {
   config: NodeConfig | null;
   status: RuntimeStatus;
   system: SystemLoad;
+  /** Disco usado pelo diretório de snapshots de KV desta máquina (`kv-slots`). Ausente num nó antigo. */
+  kv_cache?: KvCacheDisk;
   peer_count: number;
   load: number;
   active_model: string;
@@ -636,6 +638,39 @@ export interface PeerLoadParams {
   fit_memory_applied: boolean;
 }
 
+/** O diretório de snapshots de KV de uma máquina, medido pelo próprio nó. */
+export interface KvCacheDisk {
+  /** `false` quando `slot_save_path` está desligado naquela máquina. */
+  enabled: boolean;
+  path: string | null;
+  snapshots: number;
+  bytes: number;
+}
+
+/** O cache de KV em RAM (`--cache-ram`) do servidor de inferência. */
+export interface KvCacheRam {
+  enabled: boolean;
+  /** `null` com o cache ligado: máquina com menos de 12 GiB de RAM, ou ainda não medida. */
+  limit_bytes: number | null;
+  user_reserve_bytes: number | null;
+  bytes: number;
+  entries: number;
+  tokens: number;
+  parked: number;
+  restored: number;
+  evicted: number;
+}
+
+/** O que `POST /api/ui/kv-cache/clear` devolve. */
+export interface KvCacheCleared {
+  cleared: boolean;
+  node_id: string;
+  disk_files: number;
+  disk_bytes: number;
+  ram_entries: number;
+  ram_bytes: number;
+}
+
 /** O `/health` do servidor de inferência de uma máquina, como a tela o lê. */
 export interface PeerRuntimeHealth {
   start_layer: number;
@@ -657,6 +692,8 @@ export interface PeerRuntimeHealth {
   moe_executor_dtypes?: number[];
   /** Razão concreta quando o executor MoE não foi instalado ou usa CPU. */
   moe_executor_reason?: string | null;
+  /** Cache de KV em RAM deste nó. Ausente num nó antigo. */
+  cache_ram?: KvCacheRam;
   mtp_ready: boolean;
   /** Motivo retornado pelo runtime quando o MTP pedido não foi anexado. */
   mtp_unavailable_reason?: string | null;

@@ -5126,6 +5126,7 @@ mod tests {
             slot_persist_prefix_cache: false,
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
+            cache_ram_mib: None,
         }))
     }
 

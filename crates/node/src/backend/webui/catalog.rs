@@ -43,6 +43,8 @@ pub struct NodeInfo {
     pub config: Option<NodeConfig>,
     pub status: RuntimeStatus,
     pub system: SystemLoad,
+    /// Disk used by this machine's KV snapshot directory (`kv-slots`).
+    pub kv_cache: KvCacheDisk,
     pub peer_count: usize,
     pub load: u32,
     pub active_model: String,
@@ -147,6 +149,10 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
                 .is_some_and(|hash| !hash.is_empty()),
         )
     };
+    let kv_cache = {
+        let dir = state.auth.read().await.slot_save_dir();
+        kv_cache_disk(dir.as_deref())
+    };
     Json(NodeInfo {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
         node_id: state.network.node_id.clone(),
@@ -216,6 +222,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         network_chat_authority,
         thermal,
         system,
+        kv_cache,
     })
 }
 

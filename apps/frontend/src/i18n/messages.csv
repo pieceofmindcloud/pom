@@ -314,6 +314,22 @@ dashboard.inFlight,In flight,Em voo
 dashboard.inFlightUnavailable,in-flight count unavailable,carga em voo indisponível
 dashboard.incompletePipeline,pipeline incomplete,pipeline incompleto
 dashboard.inference,Inference,Inferência
+dashboard.kvCache,KV cache,Cache de KV
+dashboard.kvCacheClear,Clear cache,Limpar cache
+dashboard.kvCacheClearConfirm,Clear cache,Limpar cache
+dashboard.kvCacheClearDescription,Deletes the KV snapshots {hostname} keeps on disk ({size}) and what it holds in RAM. Conversations in progress keep working; a conversation that was only saved reprocesses its whole prompt on the next turn.,Apaga os snapshots de KV que {hostname} guarda em disco ({size}) e o que ela mantém em RAM. Conversas em andamento continuam; uma conversa que estava só salva reprocessa o prompt inteiro no próximo turno.
+dashboard.kvCacheClearFailed,The cache of {hostname} was not cleared,O cache de {hostname} não foi limpo
+dashboard.kvCacheClearTitle,Clear the KV cache of {hostname}?,Limpar o cache de KV de {hostname}?
+dashboard.kvCacheCleared,Cache of {hostname} cleared,Cache de {hostname} limpo
+dashboard.kvCacheClearedDetail,"{disk} freed on disk, {ram} in RAM","{disk} liberados em disco, {ram} em RAM"
+dashboard.kvCacheDisk,On disk,Em disco
+dashboard.kvCacheOff,off,desligado
+dashboard.kvCacheRam,In RAM,Em RAM
+dashboard.kvCacheRamOf,{used} of {limit},{used} de {limit}
+dashboard.kvCacheRamUnavailable,unavailable on this machine,indisponível nesta máquina
+dashboard.kvCacheRamUnavailableTip,"The RAM cache always leaves half of the machine memory to the user, and at least 6 GB. This machine has less than 12 GB, so nothing is kept in RAM.","O cache em RAM sempre deixa metade da memória da máquina para o usuário, e no mínimo 6 GB. Esta máquina tem menos de 12 GB, então nada é guardado em RAM."
+dashboard.kvCacheSnapshots,"{count} {count, plural, =1 {snapshot} other {snapshots}}","{count} {count, plural, =1 {snapshot} other {snapshots}}"
+dashboard.kvCacheTip,"Saved KV lets a conversation continue without reprocessing its prompt. Disk holds the snapshots of every model this machine served ({path}). RAM holds the conversations that lost their slot to another one, always leaving half of the machine memory to the user.","O KV salvo deixa uma conversa continuar sem reprocessar o prompt. O disco guarda os snapshots de todos os modelos que esta máquina serviu ({path}). A RAM guarda as conversas que perderam o slot para outra, sempre deixando metade da memória da máquina para o usuário."
 dashboard.layers,{covered} of {total} layers,{covered} de {total} camadas
 dashboard.leaveNode,Leave network,Sair da rede
 dashboard.leaveNodeConfirm,Leave network,Confirmar saída

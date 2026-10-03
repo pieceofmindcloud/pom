@@ -362,6 +362,11 @@ Per-file list:
   local medido do contexto e a razão da falha de anexação. A seção térmica mostra uma linha por GPU e declara temperatura
   desconhecida quando o driver não fornece leitura; a potência permanece
   desconhecida quando a plataforma não publica watts.
+- `KvCache.tsx` - the KV cache block of `PeerDetailCard`: disk used by the
+  machine's snapshot directory (`node.kv_cache`), the host-memory cache from
+  `/health` (`cache_ram`) and "Clear cache" with a confirmation, sent to the
+  local node with the target `node_id` (`clearKvCache`). Tests in
+  `KvCache.test.tsx`.
 - `ModelPlacement.tsx` - a seção "Como o modelo foi carregado": a tira de
   camadas (uma célula por bloco, verde na GPU, âmbar dividida, cinza na CPU),
   os totais de peso por lado, onde o cache KV ficou e a cabeça de saída.

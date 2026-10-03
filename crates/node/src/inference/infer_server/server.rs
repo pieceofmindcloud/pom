@@ -41,6 +41,20 @@ impl InferState {
                 .map(str::trim)
                 .filter(|d| !d.is_empty())
                 .map(std::path::PathBuf::from),
+            ram_cache: {
+                // Tensor parallelism keeps one session per rank in lockstep; a
+                // rank parking on its own would leave the group out of step.
+                let setting = if cfg.tp.as_ref().is_some_and(|tp| tp.size > 1) {
+                    CacheRamSetting::Off
+                } else {
+                    CacheRamSetting::from_mib(cfg.cache_ram_mib)
+                };
+                let host = Arc::new(HostMemory::default());
+                if setting != CacheRamSetting::Off {
+                    host.spawn_sampler();
+                }
+                KvRamCache::new(setting, host)
+            },
             slot_freed: Arc::new(tokio::sync::Notify::new()),
             original_block_count: None, // filled in after engine load
             inference_path,
@@ -131,11 +145,118 @@ impl InferState {
         else {
             return false;
         };
+        let parked = self.park_session(&sid);
         info!(
-            "despejando prefixo retido da sessão {}… para liberar slot",
-            &sid[..8.min(sid.len())]
+            "despejando prefixo retido da sessão {}… para liberar slot (cache em RAM: {})",
+            &sid[..8.min(sid.len())],
+            if parked { "guardado" } else { "não" }
         );
-        self.finish(&sid);
+        self.close_session(&sid);
+        true
+    }
+
+    /// Copies a retained session's prompt KV to host RAM before its sequence
+    /// is given away, so `unpark_session` can bring it back (`--cache-ram`).
+    ///
+    /// Same eligibility as `save_slot`: only a retained prompt whose cells
+    /// match its logical positions. Returns whether the session was parked;
+    /// the caller still closes the live session either way.
+    pub(super) fn park_session(&mut self, sid: &str) -> bool {
+        if !self.ram_cache.enabled() {
+            return false;
+        }
+        let Some(session) = self.sessions.get(sid) else {
+            return false;
+        };
+        if !session.retained
+            || session.prompt_len == 0
+            || !session.positions_match_cells()
+            || session.prompt_cells != session.prompt_len
+        {
+            return false;
+        }
+        let seq = session.prompt_seq;
+        if !self
+            .ram_cache
+            .accepts(self.engine.state_seq_size(seq) as u64)
+        {
+            return false;
+        }
+        let started = Instant::now();
+        let data = match self.engine.state_seq_get_data(seq) {
+            Ok(data) => data,
+            Err(error) => {
+                warn!(
+                    "cache em RAM: não foi possível copiar o KV da sessão {}…: {error:#}",
+                    &sid[..8.min(sid.len())]
+                );
+                return false;
+            }
+        };
+        let bytes = data.len();
+        let session = self.sessions.get(sid).expect("session exists");
+        let entry = ParkedSession::new(
+            data,
+            session.prompt_len,
+            session.stable_len,
+            session.prompt_tokens.clone(),
+        );
+        let tokens = entry.prompt_len;
+        let parked = self.ram_cache.insert(sid, entry);
+        if parked {
+            info!(
+                "cache em RAM: sessão {}… guardada ({tokens} tokens, {bytes} bytes, {} ms)",
+                &sid[..8.min(sid.len())],
+                started.elapsed().as_millis()
+            );
+        }
+        parked
+    }
+
+    /// Brings a parked session back into a free sequence as a retained
+    /// session, exactly as `restore_slot` does from disk. Returns `false`
+    /// when the session is not parked, no sequence is free, or the engine
+    /// refuses the state; in every such case the parked entry is gone and the
+    /// caller proceeds as with any unknown session.
+    pub(super) fn unpark_session(&mut self, sid: &str) -> bool {
+        if self.sessions.contains_key(sid) {
+            return false;
+        }
+        let Some(entry) = self.ram_cache.remove(sid) else {
+            return false;
+        };
+        let Some(seq) = self.alloc_seq() else {
+            return false;
+        };
+        let started = Instant::now();
+        // The sequence may hold cells of whoever used it last.
+        let _ = self.engine.kv_remove(seq, 0, -1);
+        if let Err(error) = self.engine.state_seq_set_data(&entry.data, seq) {
+            warn!(
+                "cache em RAM: sessão {}… não pôde ser restaurada: {error:#}",
+                &sid[..8.min(sid.len())]
+            );
+            let _ = self.engine.kv_remove(seq, 0, -1);
+            self.free_seq(seq);
+            return false;
+        }
+        let mut session = Session::new(seq);
+        session.prompt_len = entry.prompt_len;
+        session.n_past = entry.prompt_len;
+        session.stable_len = entry.stable_len;
+        session.prompt_cells = entry.prompt_len;
+        session.prompt_tokens = entry.prompt_tokens;
+        session.retained = true;
+        session.last_used = Instant::now();
+        self.sessions.insert(sid.to_string(), session);
+        self.ram_cache.note_restored();
+        info!(
+            "cache em RAM: sessão {}… restaurada ({} tokens, {} bytes, {} ms)",
+            &sid[..8.min(sid.len())],
+            entry.prompt_len,
+            entry.data.len(),
+            started.elapsed().as_millis()
+        );
         true
     }
 
@@ -513,6 +634,8 @@ impl InferState {
             .collect();
         let count = stale.len();
         for sid in stale {
+            // An idle conversation may still come back: keep its KV in RAM.
+            self.park_session(&sid);
             if let Some(mut s) = self.sessions.remove(&sid) {
                 // A timeout is an aborted stream. Clear its byte tail before
                 // returning the sequence slot so it cannot affect a later
@@ -536,6 +659,9 @@ impl InferState {
 
     pub(super) fn get_or_create(&mut self, sid: &str, reset: bool) -> Result<&mut Session> {
         if reset {
+            // A reset starts the session over: a parked KV of the same id is
+            // a past this session no longer has.
+            self.ram_cache.remove(sid);
             if let Some(mut old) = self.sessions.remove(sid) {
                 let _ = old.finish_token_stream();
                 self.wipe_kv(&old);
@@ -559,6 +685,14 @@ impl InferState {
     /// `retain_prompt`, que guarda o prompt. Aqui chegam a liberação explícita
     /// do gateway, o cancelamento e a limpeza de erro.
     pub(super) fn finish(&mut self, sid: &str) {
+        // Releasing for good also forgets the copy parked in host RAM.
+        self.ram_cache.remove(sid);
+        self.close_session(sid);
+    }
+
+    /// Wipes the live session and returns its sequence to the pool, leaving
+    /// the host-memory cache alone - the eviction path parks first.
+    pub(super) fn close_session(&mut self, sid: &str) {
         if let Some(mut s) = self.sessions.remove(sid) {
             // The output path flushes before the caller reaches this method;
             // the cleanup cases deliberately discard the result after clearing
@@ -831,7 +965,8 @@ pub async fn run(
         .route("/v1/session/release", post(handle_release))
         .route("/v1/session/rewind", post(handle_rewind))
         .route("/v1/session/rollback", post(handle_rollback))
-        .route("/v1/session/slot", post(handle_slot));
+        .route("/v1/session/slot", post(handle_slot))
+        .route("/v1/session/cache/clear", post(handle_cache_clear));
     let inference_routes = if let Some(auth) = auth.clone() {
         inference_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
     } else {
@@ -1382,6 +1517,7 @@ fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -
     if scheduler.config.enabled {
         caps.push(crate::pipeline::CAP_FRAME_BATCH);
     }
+    let ram_cache = s.ram_cache.stats();
     if s.slot_dir.is_some() {
         caps.push(crate::pipeline::CAP_SLOT_PERSIST);
     }
@@ -1481,6 +1617,21 @@ fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -
         // JSON, para não segurar o lock do motor em leitura de disco.
         "slot_persist_enabled": s.slot_dir.is_some(),
         "slot_count": slot_count,
+    });
+    // Host-memory KV cache (`--cache-ram`): retained sessions parked in RAM
+    // after losing their sequence. See `ram_cache.rs`. A `null` limit with the
+    // cache on means this host is too small (half of its RAM is under 6 GiB)
+    // or was not measured yet.
+    body["cache_ram"] = json!({
+        "enabled": s.ram_cache.enabled(),
+        "limit_bytes": s.ram_cache.limit_bytes(),
+        "user_reserve_bytes": s.ram_cache.reserve_bytes(),
+        "bytes": ram_cache.bytes,
+        "entries": ram_cache.entries,
+        "tokens": ram_cache.tokens,
+        "parked": ram_cache.parked,
+        "restored": ram_cache.restored,
+        "evicted": ram_cache.evicted,
     });
     // Rotas fixadas deste nó (`route_plan`): RTT e transporte até o servidor
     // de inferência e até o gateway de cada peer. O gateway que planeja não
@@ -1718,6 +1869,20 @@ pub(super) async fn handle_slot(
         }
         other => err400(format!("ação de snapshot desconhecida: {other}")),
     }
+}
+
+/// `POST /v1/session/cache/clear` - drops every session parked in host RAM
+/// (`--cache-ram`). Live and retained sessions keep their sequences: this only
+/// gives back the memory of conversations that had already lost theirs.
+pub(super) async fn handle_cache_clear(State(app): State<InferenceAppState>) -> Response {
+    let mut state = match lock_inference_state(&app.state) {
+        Ok(state) => state,
+        Err(error) => return err500(error),
+    };
+    let (entries, bytes) = state.ram_cache.clear();
+    drop(state);
+    info!("cache em RAM limpo: {entries} sessões, {bytes} bytes");
+    Json(json!({ "cleared": true, "entries": entries, "bytes": bytes })).into_response()
 }
 
 pub(super) fn replicate_slot_call(

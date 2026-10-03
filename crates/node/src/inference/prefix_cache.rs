@@ -490,6 +490,16 @@ impl PrefixDiskIndex {
         }
     }
 
+    /// Forgets every entry: the operator emptied this machine's snapshot
+    /// directory. Returns how many were dropped.
+    pub fn clear(&self) -> usize {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let dropped = state.len();
+        state.clear();
+        self.persist(&state);
+        dropped
+    }
+
     /// `(entradas, bytes)` para telemetria.
     pub fn stats(&self) -> (usize, u64) {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());

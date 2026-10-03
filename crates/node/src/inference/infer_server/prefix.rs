@@ -861,6 +861,9 @@ pub(crate) struct InferState {
     /// Diretório de snapshots de KV cache (`Config::slot_save_path`), ou `None`
     /// quando o recurso está desligado nesta máquina. Ver `save_slot`.
     pub(super) slot_dir: Option<std::path::PathBuf>,
+    /// Retained sessions whose KV left the context and is parked in host RAM
+    /// (`NodeConfig::cache_ram_mib`). See `ram_cache.rs`.
+    pub(super) ram_cache: KvRamCache,
     /// Acordado sempre que um slot de sequência pode ter ficado livre (fim de
     /// sessão, retenção, coleta de ociosidade, despejo). O `run_scheduler`
     /// espera nele quando o item da frente é um prefill de sessão nova e não

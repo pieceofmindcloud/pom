@@ -550,6 +550,11 @@ async fn sample_uncached() -> SystemLoad {
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 
+/// Host RAM alone, without the GPU and disk probes of the full sample.
+pub async fn sample_memory() -> MemStat {
+    read_memory().await.0
+}
+
 /// Returns (RAM, wired pages in MB).
 async fn read_memory() -> (MemStat, Option<f64>) {
     #[cfg(target_os = "linux")]

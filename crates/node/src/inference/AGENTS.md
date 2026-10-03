@@ -926,6 +926,15 @@ visibilidade dos controles de implantação na UI local.
   `Config::slot_save_path_effective`); with it empty the route answers 400. `replicate_slot_call`
   repassa a ação aos workers de TP. Capability `inference/slot-persist-v1`.
   Ver `inference.md` §3.1.1.
+- `infer_server/ram_cache.rs` - the host-memory KV cache (`--cache-ram`):
+  `KvRamCache` parks the serialized `prompt_seq` of a retained session that
+  loses its sequence and `InferState::park_session`/`unpark_session`
+  (`server.rs`) move it out of and back into the context. `evict_retained` and
+  `reap_idle` park before closing; `finish` and a reset forget the entry; the
+  prefill unparks on chunk 0 when `reuse_prefix` is asked. Half of the host RAM
+  always stays available to the user and a host under 12 GiB parks nothing
+  (`user_ram_reserve`, `HostMemory`). Off for tensor-parallel ranks.
+  `POST /v1/session/cache/clear` empties it. See `inference.md` §3.1.2.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
   reinício do processo também remove o estado em memória. Se um desses eventos
   ocorrer no meio de um prefill, o peer devolve sessão desconhecida e o gateway

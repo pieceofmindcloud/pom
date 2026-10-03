@@ -23,7 +23,7 @@ const headQuery = vi.hoisted(() => ({
 }));
 
 const thinkingScenario = vi.hoisted(() => ({ enabled: true }));
-const ragScenario = vi.hoisted(() => ({ available: false }));
+const ragScenario = vi.hoisted(() => ({ available: false, collections: [] as string[] }));
 
 const imageResizeScenario = vi.hoisted(() => ({
   calls: [] as number[],
@@ -70,6 +70,7 @@ vi.mock("../lib/queries", () => ({
       coverage: "complete",
       thinking: thinkingScenario.enabled ? "supported" : "unsupported",
       rag: ragScenario.available ? "supported" : "unavailable",
+      rag_collections: ragScenario.collections,
     },
   }),
   useServableModels: () => ({ data: [{ id: "qwen", context_length: 4 }] }),
@@ -135,6 +136,7 @@ afterEach(() => {
   imageResizeScenario.reject = false;
   thinkingScenario.enabled = true;
   ragScenario.available = false;
+  ragScenario.collections = [];
   headQuery.data = undefined;
   headQuery.isLoading = false;
   headQuery.isError = false;
@@ -251,29 +253,46 @@ describe("Chat", () => {
     await waitFor(() => expect(streamScenario.lastBody?.thinking_enabled).toBe(false));
   });
 
-  it("oferece o RAG só quando a rede tem um servidor de RAG, e manda desligá-lo", async () => {
+  it("oferece o RAG só quando a rede tem um servidor de RAG, desligado até a pessoa pedir", async () => {
     ragScenario.available = true;
     mountChat();
     const rag = screen.getByRole("button", { name: "RAG" });
-    expect(rag.getAttribute("aria-pressed")).toBe("true");
+    expect(rag.getAttribute("aria-pressed")).toBe("false");
 
-    // Ligado é o padrão do gateway: nada precisa ir no pedido.
+    // Desligado é o padrão, e vai dito no pedido: o gateway não busca nada.
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "primeira" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
-    await waitFor(() => expect(streamScenario.lastBody?.messages).toBeTruthy());
-    expect(streamScenario.lastBody?.rag).toBeUndefined();
+    await waitFor(() => expect(streamScenario.lastBody?.rag).toBe(false));
 
     await waitFor(() => expect(screen.getByText(/segundo/)).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "RAG" }));
-    expect(screen.getByRole("button", { name: "RAG" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: "RAG" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "segunda" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
-    await waitFor(() => expect(streamScenario.lastBody?.rag).toBe(false));
+    await waitFor(() => expect(streamScenario.lastBody?.rag).toBe(true));
   });
 
-  it("não mostra o RAG sem um servidor de RAG na rede", () => {
+  it("deixa escolher a coleção consultada quando o RAG está ligado e há mais de uma", async () => {
+    ragScenario.available = true;
+    ragScenario.collections = ["folha", "manuais"];
+    mountChat();
+    expect(screen.queryByRole("combobox", { name: "Coleção consultada pelo RAG" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "RAG" }));
+    const picker = screen.getByRole("combobox", { name: "Coleção consultada pelo RAG" });
+    fireEvent.change(picker, { target: { value: "folha" } });
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "primeira" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(streamScenario.lastBody?.rag).toBe(true));
+    expect(streamScenario.lastBody?.rag_collection).toBe("folha");
+  });
+
+  it("não mostra o RAG nem o menciona no pedido sem um servidor de RAG na rede", async () => {
     mountChat();
     expect(screen.queryByRole("button", { name: "RAG" })).toBeNull();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "primeira" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(streamScenario.lastBody?.messages).toBeTruthy());
+    expect(streamScenario.lastBody && "rag" in streamScenario.lastBody).toBe(false);
   });
 
   it("não mostra Think quando a implantação desabilita thinking", () => {

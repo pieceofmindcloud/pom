@@ -244,6 +244,9 @@ pub struct ChatRequest {
     /// `false` keeps retrieved context (`crate::rag`) out of this request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rag: Option<bool>,
+    /// Keeps the retrieval to one collection of the RAG server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rag_collection: Option<String>,
 }
 
 /// OpenAI wraps each tool in `{"type":"function","function":{...}}`, unlike
@@ -637,28 +640,53 @@ async fn chat_completions(
     // Chaveia o cache de prefixo pelas mensagens, não pelo texto renderizado -
     // ver `conversation_cache_key`.
     let cache_key = conversation_cache_key(&req.messages, &tools);
-    // Transparent retrieval: passages for the user's question go after the
-    // whole conversation, and the head keeps the KV only up to here, so the
-    // next turn still finds its prefix. The cache key stays the conversation.
+    let inference_token = auth.token().to_string();
+    let caller = auth.into_caller();
+    // Retrieval comes before the generation: passages for the user's question
+    // go after the whole conversation, and the head keeps the KV only up to
+    // here, so the next turn still finds its prefix. The cache key stays the
+    // conversation. A request that asked for retrieval (`"rag": true`) also
+    // lets a long message be reduced to search terms by a short generation.
     let mut request_details = request_details;
     let mut retain_prefix_bytes = None;
     if req.rag != Some(false) {
         if let Some(question) = last_user_question(&req.messages) {
-            if let Some(retrieved) = crate::rag::retrieve(&state, &question).await {
-                retain_prefix_bytes = Some(prompt.len());
-                prompt.push_str(&crate::rag::context_block(&retrieved.passages));
-                let summary = retrieved.summary();
-                info!(
-                    "📚 RAG: {} passages added from {summary}",
-                    retrieved.passages.len()
-                );
-                request_details["rag"] = summary;
+            let rewriter = (req.rag == Some(true)).then(|| crate::rag::Rewriter {
+                model: model.clone(),
+                inference_token: inference_token.clone(),
+                caller: caller.clone(),
+                preferred_head: preferred_head.clone(),
+            });
+            match crate::rag::retrieve(
+                &state,
+                &question,
+                rewriter.as_ref(),
+                req.rag_collection.as_deref(),
+            )
+            .await
+            {
+                crate::rag::Outcome::Retrieved(retrieved) => {
+                    retain_prefix_bytes = Some(prompt.len());
+                    prompt.push_str(&crate::rag::context_block(&retrieved.passages));
+                    let summary = retrieved.summary();
+                    info!(
+                        "📚 RAG: {} passages added from {summary}",
+                        retrieved.passages.len()
+                    );
+                    request_details["rag"] = summary;
+                }
+                crate::rag::Outcome::NotNeeded { probability } => {
+                    info!("📚 RAG: skipped, the message needs no documents (yes={probability:.2})");
+                    request_details["rag"] = json!({
+                        "skipped": "not_needed",
+                        "needed": (probability * 1000.0).round() / 1000.0,
+                    });
+                }
+                crate::rag::Outcome::Nothing => {}
             }
         }
     }
     let prompt_tokens = approx_tokens(&prompt);
-    let inference_token = auth.token().to_string();
-    let caller = auth.into_caller();
 
     let output_limit = state
         .request_output_limit_for_model(Some(&model), requested_max_tokens, &prompt)
@@ -1850,6 +1878,7 @@ mod tests {
             Json(ChatRequest {
                 // Retrieval is not what this test is about.
                 rag: Some(false),
+                rag_collection: None,
                 model: Some("lab".into()),
                 messages: vec![msg("user", "Oi, teste")],
                 stream: false,
@@ -1988,6 +2017,7 @@ mod tests {
             Json(ChatRequest {
                 // Retrieval is not what this test is about.
                 rag: Some(false),
+                rag_collection: None,
                 model: Some("lab".into()),
                 messages: vec![msg("user", "Oi, teste")],
                 stream: false,
@@ -2142,6 +2172,7 @@ mod tests {
             Json(ChatRequest {
                 // Retrieval is not what this test is about.
                 rag: Some(false),
+                rag_collection: None,
                 model: Some("whole-model".into()),
                 messages: vec![msg("user", "primeiro")],
                 stream: true,
@@ -2165,6 +2196,7 @@ mod tests {
             Json(ChatRequest {
                 // Retrieval is not what this test is about.
                 rag: Some(false),
+                rag_collection: None,
                 model: Some("whole-model".into()),
                 messages: vec![
                     msg("user", "primeiro"),
@@ -2215,6 +2247,7 @@ mod tests {
             Json(ChatRequest {
                 // Retrieval is not what this test is about.
                 rag: Some(false),
+                rag_collection: None,
                 // Sem peer anunciando "lab" nesta fixture, um `model`
                 // explícito seria recusado pelo `resolve_model` - o alvo deste
                 // teste é a matemática de orçamento/contexto, não a resolução

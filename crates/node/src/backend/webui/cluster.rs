@@ -877,6 +877,7 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
     } else {
         "unavailable"
     };
+    let rag_collections = crate::rag::collections(&state).await;
 
     Json(json!({
         "active_model": active_model,
@@ -885,6 +886,8 @@ pub(super) async fn chat_capabilities(State(state): State<GatewayState>) -> impl
         "thinking": thinking_state,
         // A plugin of some machine serves retrieval to this network.
         "rag": rag_state,
+        // What a request may keep its retrieval to (`rag_collection`).
+        "rag_collections": rag_collections,
     }))
 }
 

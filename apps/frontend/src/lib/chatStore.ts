@@ -101,8 +101,10 @@ export interface ChatSession {
   modelAtStart?: string | null;
   /** Per-inference Think choice, kept for every message in this conversation. */
   thinkingEnabled?: boolean;
-  /** Per-conversation choice to add retrieved context (RAG). Absent means on. */
+  /** Per-conversation choice to add retrieved context (RAG). Absent means off. */
   ragEnabled?: boolean;
+  /** The collection retrieval is kept to in this conversation. Absent means all. */
+  ragCollection?: string;
   messages: ChatMessage[];
   updatedAt: string;
 }
@@ -117,8 +119,10 @@ export interface StartChatStreamOptions {
   inferenceHead?: string;
   /** Per-inference choice captured when the user sends this message. */
   thinkingEnabled: boolean;
-  /** `false` asks the gateway to leave retrieved context out of this message. */
+  /** Whether this message asks the gateway for retrieved context. Absent: no RAG server, nothing is sent. */
   ragEnabled?: boolean;
+  /** The collection the retrieval of this message is kept to. */
+  ragCollection?: string;
   emptyResponseMessage: string;
   interruptedMessage: string;
   cluster: ClusterView | null;
@@ -377,7 +381,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
             stream: true,
             ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
             thinking_enabled: options.thinkingEnabled,
-            ...(options.ragEnabled === false ? { rag: false } : {}),
+            ...(options.ragEnabled === undefined ? {} : { rag: options.ragEnabled }),
+            ...(options.ragEnabled && options.ragCollection ? { rag_collection: options.ragCollection } : {}),
             messages: turnsOnly(options.history).map((message) => ({
               role: message.role,
               content: message.content,

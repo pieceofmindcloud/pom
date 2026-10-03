@@ -437,7 +437,10 @@ the ready `rag` service of the network (15 s cache, peers asked behind the
 request), calls that plugin's `peer.search` within `POM_RAG_TIMEOUT_MS`
 (300 ms) along the measured gateway route
 (`GatewayState::control_post_json_routed`), and appends the passages after the
-conversation. The retain boundary at the end of the conversation travels as a
+conversation. With `"rag": true` it may first run short generations of its own
+on the pipeline: a typed yes-or-no decision on whether documents are needed
+(reusing `decisions.rs`) and, for a long message, its search terms; both take a
+KV session per hop. The retain boundary at the end of the conversation travels as a
 label-less `DecisionProbe`, so the prefix cache keeps the conversation and
 never the passages. Any failure leaves the request untouched. See
 `docs/subsystems/plugins-ui.md`, "Transparent retrieval (RAG)".

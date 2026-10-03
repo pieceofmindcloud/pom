@@ -635,7 +635,13 @@ function ChatScreen() {
   // The switch only exists while the network has a RAG server; without one
   // there is nothing to turn off.
   const ragAvailable = chatCapabilities.data?.rag === "supported";
-  const ragEnabled = session.ragEnabled ?? true;
+  // Off until the person asks for it: retrieved context is prompt the
+  // pipeline has to process on every question.
+  const ragEnabled = session.ragEnabled ?? false;
+  const ragCollections = chatCapabilities.data?.rag_collections ?? [];
+  // A collection that no longer exists is not asked for.
+  const ragCollection =
+    session.ragCollection && ragCollections.includes(session.ragCollection) ? session.ragCollection : "";
   const servedModel = models.data?.find((candidate) => candidate.id === model);
   const contextLength = servedModel?.context_length
     ?? servedModel?.max_input_tokens
@@ -878,6 +884,7 @@ function ChatScreen() {
       inferenceHead: selectedInferenceHead ?? undefined,
       thinkingEnabled,
       ragEnabled: ragAvailable ? ragEnabled : undefined,
+      ragCollection: ragAvailable && ragCollection ? ragCollection : undefined,
       emptyResponseMessage: t("chat.emptyResponse"),
       interruptedMessage: t("chat.interrupted"),
       cluster: cluster.data ?? null,
@@ -1207,6 +1214,26 @@ function ChatScreen() {
                     >
                       {t("chat.ragToggle")}
                     </Button>
+                  )}
+                  {ragAvailable && ragEnabled && ragCollections.length > 1 && (
+                    <select
+                      value={ragCollection}
+                      aria-label={t("chat.ragCollection")}
+                      title={t("chat.ragCollectionHint")}
+                      onChange={(event) => {
+                        const updated = { ...session, ragCollection: event.target.value || undefined };
+                        setSession(updated);
+                        upsert(updated);
+                      }}
+                      className="h-8 min-w-0 max-w-[11rem] shrink cursor-pointer truncate rounded-lg border border-line bg-raised px-2 text-[0.74rem] text-fg focus:border-iris focus:outline-none"
+                    >
+                      <option value="">{t("chat.ragCollectionAll")}</option>
+                      {ragCollections.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
                   )}
                   {speechSupported && (
                     <button

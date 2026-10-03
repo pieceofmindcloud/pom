@@ -882,6 +882,8 @@ export interface ChatCapabilities {
   thinking: "supported" | "unsupported" | "unavailable";
   /** The network has a RAG server and retrieval is on. Absent on an older node. */
   rag?: "supported" | "unavailable";
+  /** Collections of the RAG server a message may keep its search to. */
+  rag_collections?: string[];
 }
 
 export type ModelSource = "ollama" | "lmstudio" | "folder" | string;

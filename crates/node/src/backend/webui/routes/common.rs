@@ -21,6 +21,10 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::plugin_ui::plugin_rpc),
         )
         .route(
+            "/api/internal/plugins/:code/peer/:op",
+            post(crate::plugin_services::plugin_peer_call),
+        )
+        .route(
             "/api/ui/pom-update/status",
             get(crate::pom_core_update::pom_update_status),
         )

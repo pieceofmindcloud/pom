@@ -423,6 +423,15 @@ do plugin. A autorização é a da superfície administrativa (aberta a todo per
 falsificação entre sites é barrada por `same_origin`, e chamadas entre nós são
 recusadas.
 
+`src/plugin_services.rs` covers what a plugin offers to the cluster: it
+validates the optional `host.services` answer of every running plugin into
+`NodeInfo.plugin_services` (5 s cache, drawn by the dashboard next to the
+machine) and serves `POST /api/internal/plugins/:code/peer/:op`, which forwards
+a signed call from a live peer to the plugin's `peer.<op>` operation together
+with the caller (`node_id`, `head`). A call without the signed envelope is
+refused. See `docs/subsystems/plugins-ui.md`, "Services a plugin offers to the
+cluster".
+
 `src/pom_core_update.rs` é deliberadamente SEPARADO de `src/plugins.rs`: a
 atualização do binário `pom` em si não é um plugin e vai virar GitHub Releases
 público sem licença (outra tarefa). Até essa migração, `PomCoreUpdater`

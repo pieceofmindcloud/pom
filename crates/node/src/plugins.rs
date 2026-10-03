@@ -1939,6 +1939,33 @@ impl PluginRuntime {
         }
     }
 
+    /// Like `query_audit`, for an operation a plugin is free not to implement:
+    /// a refusal is expected and stays out of the warning log.
+    pub(crate) async fn query_optional(
+        &self,
+        operation: &str,
+        query: serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        if !self.status().await.active {
+            return None;
+        }
+        let host = self.host.lock().await.clone()?;
+        let mut payload = query;
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "operation".into(),
+                serde_json::Value::String(operation.into()),
+            );
+        }
+        match host.query(payload).await {
+            Ok(result) => Some(result),
+            Err(error) => {
+                tracing::debug!(plugin_code = %self.code, operation, %error, "plugin não respondeu à operação opcional");
+                None
+            }
+        }
+    }
+
     /// Manifesto de UI do plugin, pedido ao host (`ui.manifest`) e validado.
     /// `None` quando inativo, sem host, sem UI ou com manifesto inválido.
     pub(crate) async fn ui_manifest(&self) -> Option<crate::plugin_ui::PluginUiManifest> {
@@ -3393,6 +3420,22 @@ impl PluginManager {
         query: serde_json::Value,
     ) -> Option<serde_json::Value> {
         self.runtime_for(code)?.query_audit(operation, query).await
+    }
+
+    /// Asks every running plugin an optional operation and returns the
+    /// answers by `plugin_code`, in code order.
+    pub(crate) async fn query_running(&self, operation: &str) -> Vec<(String, serde_json::Value)> {
+        let mut answers = Vec::new();
+        for runtime in self.runtime_values() {
+            if let Some(answer) = runtime
+                .query_optional(operation, serde_json::json!({}))
+                .await
+            {
+                answers.push((runtime.code.clone(), answer));
+            }
+        }
+        answers.sort_by(|left, right| left.0.cmp(&right.0));
+        answers
     }
 
     pub(crate) async fn ui_manifest(

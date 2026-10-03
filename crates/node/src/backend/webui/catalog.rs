@@ -43,6 +43,9 @@ pub struct NodeInfo {
     pub config: Option<NodeConfig>,
     pub status: RuntimeStatus,
     pub system: SystemLoad,
+    /// What this machine's running plugins serve to the cluster
+    /// (`host.services`), for the dashboard to draw next to the machine.
+    pub plugin_services: Vec<crate::plugin_services::PluginService>,
     /// Disk used by this machine's KV snapshot directory (`kv-slots`).
     pub kv_cache: KvCacheDisk,
     pub peer_count: usize,
@@ -153,6 +156,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         let dir = state.auth.read().await.slot_save_dir();
         kv_cache_disk(dir.as_deref())
     };
+    let plugin_services = crate::plugin_services::node_services(&state.plugins).await;
     Json(NodeInfo {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
         node_id: state.network.node_id.clone(),
@@ -222,6 +226,7 @@ pub(super) async fn node_info(State(state): State<GatewayState>) -> Json<NodeInf
         network_chat_authority,
         thermal,
         system,
+        plugin_services,
         kv_cache,
     })
 }

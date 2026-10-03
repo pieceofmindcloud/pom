@@ -149,6 +149,7 @@ mod plugin_github;
 #[path = "plugin_host.rs"]
 mod plugin_host;
 mod plugin_proxy;
+mod plugin_services;
 mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;

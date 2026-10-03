@@ -400,6 +400,14 @@ dashboard.sampled,"Sampled {time} · unified memory does not report dedicated VR
 dashboard.sectionDeployment,Deployment,Implantação
 dashboard.sectionResources,Resources,Recursos
 dashboard.server,Server,Servidor
+dashboard.serviceKindRag,RAG server,Servidor de RAG
+dashboard.serviceStatusError,error,erro
+dashboard.serviceStatusInstalling,installing,instalando
+dashboard.serviceStatusReady,running,em execução
+dashboard.serviceStatusStarting,starting,iniciando
+dashboard.serviceStatusWaiting,waiting,aguardando
+dashboard.services,Services,Serviços
+dashboard.servicesTip,What the plugins of this machine serve to the whole network.,O que os plugins desta máquina servem para a rede inteira.
 dashboard.serving,serving,servindo
 dashboard.session,"{count, plural, =1 {session} other {sessions}}","{count, plural, =1 {sessão} other {sessões}}"
 dashboard.single,serves the full model,serve o modelo inteiro

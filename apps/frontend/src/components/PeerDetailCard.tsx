@@ -24,6 +24,7 @@ import { ReleaseSlice } from "./ReleaseSlice";
 import { RemoveNode } from "./RemoveNode";
 import { LeaveNode } from "./LeaveNode";
 import { KvCache } from "./KvCache";
+import { PluginServiceBadge } from "./PluginServices";
 import { isCpuBuffer, ModelPlacementSection } from "./ModelPlacement";
 import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
 import { Badge, Button, Dot, InfoTip, KeyValue, Meter } from "./ui";
@@ -709,6 +710,20 @@ export function PeerDetailCard({
               </span>
             </KeyValue>
           </dl>
+
+          {(n?.plugin_services?.length ?? 0) > 0 && (
+            <div data-testid="plugin-services" className={clsx("border-t border-line", pad, dialog ? "py-4" : "py-2.5")}>
+              <div className="mb-1.5 flex items-center gap-1">
+                <span className="eyebrow">{t("dashboard.services")}</span>
+                <InfoTip label={t("dashboard.services")} message={t("dashboard.servicesTip")} />
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {n?.plugin_services?.map((service) => (
+                  <PluginServiceBadge key={`${service.plugin_code}:${service.id}`} service={service} />
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* O disco do cache existe com ou sem modelo carregado; a RAM só
               aparece quando o `/health` desta máquina a reporta. */}

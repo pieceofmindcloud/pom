@@ -43,6 +43,7 @@ import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
 import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView, RoutingEdge } from "../lib/types";
 import { RouteRttLabel } from "./RouteRttLabel";
 import { PipelineGatewayNode, type PipelineCycleCost, type PipelineRouteCost } from "./PipelineGatewayNode";
+import { PluginServiceTether } from "./PluginServices";
 
 export type EdgeState = "principal" | "paralela" | "inativa";
 
@@ -549,6 +550,15 @@ export function ModelNetworkCanvas({
       {ranges.map((range, index) => {
         const id = keyFor(range);
         return <NetworkNode key={id} range={range} position={positionOf(range, index)} dragging={dragging === id} perf={peerPerf?.[range.node_id]} speed={speedOf(range)} compact={compactOf(id)} onToggleCompact={() => toggleCard(id)} onPointerDown={(event) => beginDrag(id, positionOf(range, index), event)} onPointerMove={(event) => drag(id, sizeOf(id), event)} onPointerUp={endDrag} onOpen={detailed ? () => setDetailNodeId(range.node_id) : undefined} />;
+      })}
+      {/* O que os plugins de cada máquina servem à rede (o Qdrant como banco
+          de RAG, por exemplo), ligado ao card dela. Uma máquina com várias
+          faixas ganha os selos só na primeira. */}
+      {ranges.map((range, index) => {
+        const services = range.node?.plugin_services ?? [];
+        if (services.length === 0 || ranges.findIndex((other) => other.node_id === range.node_id) !== index) return null;
+        const id = keyFor(range);
+        return <PluginServiceTether key={`services-${id}`} services={services} position={positionOf(range, index)} size={sizeOf(id)} />;
       })}
       {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} routes={pipelineRoutes} nameOf={nameOf} dragging={dragging === GATEWAY_LAYOUT_ID} onPointerDown={(event) => beginDrag(GATEWAY_LAYOUT_ID, gatewayPosition, event)} onPointerMove={(event) => drag(GATEWAY_LAYOUT_ID, GATEWAY_SIZE, event)} onPointerUp={endDrag} />}
     </div>}

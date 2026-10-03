@@ -362,6 +362,12 @@ Per-file list:
   local medido do contexto e a razão da falha de anexação. A seção térmica mostra uma linha por GPU e declara temperatura
   desconhecida quando o driver não fornece leitura; a potência permanece
   desconhecida quando a plataforma não publica watts.
+- `PluginServices.tsx` - what a machine's plugins serve to the network
+  (`node.plugin_services`, e.g. Qdrant as the RAG server). `PluginServiceBadge`
+  is the badge, toned by status; `PluginServiceTether` hangs the badges under
+  the machine's card in `ModelNetworkCanvas` with a connecting line, and
+  `PeerDetailCard` lists them in a Services section. Tests in
+  `PluginServices.test.tsx`.
 - `KvCache.tsx` - the KV cache block of `PeerDetailCard`: disk used by the
   machine's snapshot directory (`node.kv_cache`), the host-memory cache from
   `/health` (`cache_ram`) and "Clear cache" with a confirmation, sent to the

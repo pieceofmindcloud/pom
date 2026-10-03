@@ -280,6 +280,48 @@ stable mount is `/data/workspace` and must stay persistent across restarts.
 POM checks the path when saving the configuration and resends the context to
 running hosts when the root changes.
 
+## Services a plugin offers to the cluster
+
+A plugin is local to its node, but what it runs can serve everyone - a vector
+database that is the retrieval source of the pipeline, for example. Two generic
+pieces, in `crates/node/src/plugin_services.rs`, make that visible and
+reachable without the node knowing any plugin.
+
+**`host.services`.** A running plugin may describe what it serves:
+
+```json
+{"operation": "host.services"}
+{"services": [{"id": "rag", "kind": "rag", "name": "Qdrant",
+               "status": "ready", "version": "v1.19.1", "detail": null}]}
+```
+
+`id` and `kind` are lowercase slugs, `name` and the optional `version` and
+`detail` are short single-line texts, and `status` is one of `ready`,
+`starting`, `installing`, `waiting` or `error`. The node drops an entry that
+does not follow the contract (at most 8 per plugin), asks the plugins at most
+every 5 s and publishes the result in `plugin_services` of `GET /api/ui/node`.
+The dashboard draws each service next to its machine: in the Flow, hanging
+under the machine's card with a connecting line, and in the machine's detail
+card (`components/PluginServices.tsx`). A plugin that does not know the
+operation answers with an error, which is ignored.
+
+**Peer calls.** `POST /api/internal/plugins/:code/peer/:op` lets a peer call
+the plugin's `peer.<op>` operation on another machine. The call must carry the
+signed control envelope (the shared connection key alone is refused, because it
+proves membership and not identity) and its issuer must be a live peer. The
+plugin receives who is asking and decides what to hand over:
+
+```json
+{"operation": "peer.connection", "params": null,
+ "caller": {"node_id": "<node>", "head": true, "model": "<model>"}}
+```
+
+`head` is true when the caller announces layer 0 of a model, the machine every
+prompt enters through. This is how a plugin shares a secret with the heads of
+the network and nobody else: the Qdrant plugin answers `peer.connection` with
+its port and API key only when `caller.head` is true. The body is capped at
+256 KiB and the plugin's reply is returned as is.
+
 ## Events and notifications (`pom-plugin-events/v1`)
 
 POM and plugins talk through a single protocol. Every event uses the same JSON

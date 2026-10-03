@@ -364,6 +364,8 @@ export interface NodeInfo {
   config: NodeConfig | null;
   status: RuntimeStatus;
   system: SystemLoad;
+  /** O que os plugins em execução nesta máquina servem para a rede. Ausente num nó antigo. */
+  plugin_services?: PluginService[];
   /** Disco usado pelo diretório de snapshots de KV desta máquina (`kv-slots`). Ausente num nó antigo. */
   kv_cache?: KvCacheDisk;
   peer_count: number;
@@ -636,6 +638,22 @@ export interface PeerLoadParams {
   cache_type_v: KvCacheType;
   n_gpu_layers: number;
   fit_memory_applied: boolean;
+}
+
+/**
+ * Um serviço que um plugin de uma máquina oferece ao cluster (`host.services`),
+ * como o Qdrant servindo de banco de RAG. O nó valida e publica; a tela só
+ * desenha.
+ */
+export interface PluginService {
+  plugin_code: string;
+  id: string;
+  /** Para que serve: `rag`. Vocabulário aberto; um tipo desconhecido aparece como veio. */
+  kind: string;
+  name: string;
+  status: "ready" | "starting" | "installing" | "waiting" | "error";
+  version?: string;
+  detail?: string;
 }
 
 /** O diretório de snapshots de KV de uma máquina, medido pelo próprio nó. */

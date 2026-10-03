@@ -512,7 +512,8 @@ pub(super) fn pending_metadata(catalog: &Catalog) -> Catalog {
 
 /// Copy completed metadata into a newer inventory by filesystem identity.
 /// Inventory refreshes necessarily create a new `Arc`, so pointer equality is
-/// not a valid publication condition.
+/// not a valid publication condition. `sidecars` is left alone: the newer
+/// inventory read them itself (`scan_catalog`).
 pub(super) fn reconcile_enriched_catalog(current: &mut Catalog, enriched: &Catalog) -> usize {
     let mut applied = 0;
     for source in &enriched.models {
@@ -537,8 +538,17 @@ pub(super) fn reconcile_enriched_catalog(current: &mut Catalog, enriched: &Catal
 /// Inventory the directories without opening GGUF headers.
 pub(super) async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
     let (dirs, shards) = (roots.0.clone(), roots.1.clone());
-    tokio::task::spawn_blocking(move || catalog::discover_fast(&dirs, &shards))
-        .await
+    tokio::task::spawn_blocking(move || {
+        let mut catalog = catalog::discover_fast(&dirs, &shards);
+        // Sidecars go with the inventory, not with the enrichment: the
+        // enrichment only runs while some model still lacks its headers, so a
+        // list filled only there vanished on the next refresh. Headers are
+        // cached by path, size and mtime, so after the first read this costs a
+        // `stat` per file.
+        catalog.sidecars = catalog::discover_sidecars(&catalog.sidecar_roots);
+        catalog
+    })
+    .await
         .unwrap_or_else(|e| {
             warn!("varredura de modelos falhou: {e}");
             Catalog {

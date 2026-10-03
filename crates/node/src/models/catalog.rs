@@ -2070,7 +2070,7 @@ pub(crate) mod tests {
 
     /// An MTP draft as the observed one: the model architecture, `nextn`,
     /// a few dozen tensors and a name that says nothing about the model.
-    fn mtp_draft_fixture(architecture: &str, embedding_length: u32, tensors: u64) -> Vec<u8> {
+    pub(crate) fn mtp_draft_fixture(architecture: &str, embedding_length: u32, tensors: u64) -> Vec<u8> {
         let embedding_key = format!("{architecture}.embedding_length");
         let nextn_key = format!("{architecture}.nextn_predict_layers");
         let mut bytes = gguf_header_fixture(

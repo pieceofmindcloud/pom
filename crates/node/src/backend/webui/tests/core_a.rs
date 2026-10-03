@@ -56,6 +56,46 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// The inventory a refresh publishes has to carry the sidecars itself:
+    /// the enrichment only runs while a model still lacks its headers, so a
+    /// list filled only there was empty again after the next refresh - the
+    /// MTP drafts in the shard folder never reached the deploy screen.
+    #[tokio::test]
+    async fn every_refresh_publishes_the_sidecars_of_the_inventory() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-catalog-sidecars-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(shards.join("MTP")).unwrap();
+        std::fs::write(models.join("model.gguf"), crate::splitter::test_gguf_bytes(1)).unwrap();
+        std::fs::write(
+            shards.join("MTP").join("mtp-model-shared-Q8_0.gguf"),
+            crate::catalog::tests::mtp_draft_fixture("llama", 64, 32),
+        )
+        .unwrap();
+        let roots = normalize_catalog_roots(vec![models.clone()], shards.clone());
+
+        let first = scan_catalog(&roots).await;
+        let enriched = crate::catalog::enrich(first.clone());
+        let mut refreshed = scan_catalog(&roots).await;
+        reconcile_enriched_catalog(&mut refreshed, &enriched);
+
+        for catalog in [&first, &refreshed] {
+            assert_eq!(
+                catalog
+                    .sidecars
+                    .iter()
+                    .map(|sidecar| sidecar.file_name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["mtp-model-shared-Q8_0.gguf"]
+            );
+        }
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn catalog_refresh_claim_is_single_flight() {
         let roots = (vec!["/models".into()], "/slices".into());

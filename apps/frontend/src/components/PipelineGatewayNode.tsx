@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { Info, ServerCog, X } from "lucide-react";
+import clsx from "clsx";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowRight, Info, Maximize2, ServerCog, X } from "lucide-react";
+import { Modal } from "./Confirm";
+import { Button } from "./ui";
 import { useI18n } from "../i18n/provider";
 import {
   GATEWAY_HEIGHT,
@@ -155,18 +158,9 @@ function RelayNotice({ route }: { route: PipelineRouteCost }) {
   );
 }
 
-export function PipelineGatewayNode({
-  position,
-  cost,
-  routes = [],
-}: {
-  position: CanvasPosition;
-  cost?: PipelineCycleCost;
-  routes?: PipelineRouteCost[];
-}) {
-  const { t } = useI18n();
-  const totalMs = pipelineCycleTotalMs(cost);
-  const orderedRoutes = routes
+/** Rotas da mais barata para a mais cara; sem medida, vão para o fim em ordem estável. */
+export function orderPipelineRoutes(routes: PipelineRouteCost[]) {
+  return routes
     .map((route) => ({ route, totalMs: pipelineRouteTotalMs(route) }))
     .sort((left, right) => {
       if (left.totalMs != null && right.totalMs != null) {
@@ -179,6 +173,123 @@ export function PipelineGatewayNode({
       }
       return left.route.nodeIds.join("\u0000").localeCompare(right.route.nodeIds.join("\u0000"));
     });
+}
+
+/** O nome que o resto do mapa usa; o gateway virtual é chamado pelo que é. */
+type NameOf = (nodeId: string) => string;
+
+/**
+ * Uma rota inteira, perna por perna: de onde o token sai, por onde passa e
+ * quanto cada trecho custou. A primeira perna é a entrada (gateway -> cabeça),
+ * a última é a volta da cauda.
+ */
+function RouteDetail({ route, totalMs, best, nameOf }: { route: PipelineRouteCost; totalMs: number | null; best: boolean; nameOf: NameOf }) {
+  const { t } = useI18n();
+  const hops = ["gateway", ...route.nodeIds];
+  const relayed = new Set((route.relayedLegs ?? []).map(([from, to]) => `${from}\u0000${to}`));
+  return (
+    <li
+      data-testid="pipeline-route"
+      className={clsx(
+        "rounded-lg border p-3",
+        route.relayed ? "border-relay/60 bg-relay/5" : best ? "border-aqua/40 bg-aqua/5" : "border-line bg-raised/40",
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-1.5">
+        {route.nodeIds.map((nodeId, index) => (
+          <span key={`${nodeId}-${index}`} className="flex items-center gap-1.5">
+            {index > 0 && <ArrowRight className="h-3 w-3 text-faint" aria-hidden="true" />}
+            <span className="rounded-md border border-line bg-ink px-1.5 py-0.5 font-mono text-[11px] text-fg">{nameOf(nodeId)}</span>
+          </span>
+        ))}
+        <span className="ml-auto flex items-center gap-1.5">
+          {best && <span className="rounded bg-aqua/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-aqua">{t("canvas.gatewayRouteBest")}</span>}
+          {route.relayed && <span data-testid="pipeline-route-relay" className="rounded bg-relay px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-white">{t("canvas.relayBadge")}</span>}
+          <span className={clsx("font-mono text-sm font-semibold tabular-nums", route.relayed ? "text-relay" : "text-aqua")}>
+            {totalMs == null ? t("canvas.pipelineTotalUnknown") : `${totalMs.toFixed(1)} ms`}
+          </span>
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] tabular-nums text-muted">
+        {validMs(route.networkMs) && <span>{t("canvas.gatewayNetwork")} {route.networkMs.toFixed(1)} ms</span>}
+        {validMs(route.computeMs) && <span>{t("canvas.gatewayCompute")} {route.computeMs.toFixed(1)} ms</span>}
+        {route.returnMode && (
+          <span title={route.returnMode === "direct" ? t("canvas.returnDirectHint") : t("canvas.returnRingHint")}>
+            {route.returnMode === "direct" ? t("canvas.returnDirect") : t("canvas.returnRing")}
+          </span>
+        )}
+      </div>
+      {route.legsMs.length > 0 && (
+        <ol className="mt-2 grid gap-1 sm:grid-cols-2" aria-label={t("canvas.gatewayLegs")}>
+          {route.legsMs.map((leg, index) => {
+            const from = hops[index];
+            const to = hops[index + 1] ?? "gateway";
+            const isRelay = relayed.has(`${from}\u0000${to}`);
+            return (
+              <li key={index} className={clsx("flex items-center justify-between gap-2 rounded px-2 py-1 font-mono text-[10px] tabular-nums", isRelay ? "bg-relay/15 text-relay" : "bg-ink/60 text-muted")}>
+                <span className="min-w-0 truncate">{nameOf(from)} → {nameOf(to)}</span>
+                <span className="shrink-0">{validMs(leg) ? `${leg.toFixed(1)} ms` : "-"}</span>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      {(route.relayed || route.relayBypassedByRing) && (
+        <p className="mt-2 text-[11px] leading-snug text-muted">
+          {route.relayBypassedByRing && route.nodeIds.length >= 2
+            ? t("canvas.relayBypassed", { from: nameOf(route.nodeIds.at(-2)!), to: nameOf(route.nodeIds.at(-1)!) })
+            : t("canvas.relayNotBypassed")}
+        </p>
+      )}
+    </li>
+  );
+}
+
+function Stat({ label, value, tone = "text-fg" }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="rounded-lg border border-line bg-raised/50 px-3 py-2">
+      <div className="text-[9px] uppercase tracking-[0.12em] text-faint">{label}</div>
+      <div className={clsx("mt-0.5 font-mono text-sm font-semibold tabular-nums", tone)}>{value}</div>
+    </div>
+  );
+}
+
+/**
+ * O gateway no mapa: o fim de cada ciclo de token e o resumo do que ele custa.
+ *
+ * O card fica pequeno de propósito - o número que importa (tempo por token) e
+ * o aviso de relé. A lista de rotas, que numa rede com réplicas cresce com o
+ * produto das colunas, foi para a janela que o botão do card (ou o duplo
+ * clique) abre: dentro do card ela empurrava a altura e soltava as arestas.
+ *
+ * Arrastar é opcional: quem passa os handlers (o Fluxo do Painel) move o
+ * gateway como uma máquina; o mapa da implantação continua com ele fixo.
+ */
+export function PipelineGatewayNode({
+  position,
+  cost,
+  routes = [],
+  dragging = false,
+  nameOf = (nodeId) => nodeId,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+}: {
+  position: CanvasPosition;
+  cost?: PipelineCycleCost;
+  routes?: PipelineRouteCost[];
+  dragging?: boolean;
+  nameOf?: NameOf;
+  onPointerDown?: (event: React.PointerEvent<HTMLElement>) => void;
+  onPointerMove?: (event: React.PointerEvent<HTMLElement>) => void;
+  onPointerUp?: (event: React.PointerEvent<HTMLElement>) => void;
+}) {
+  const { t } = useI18n();
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const closeDetails = useCallback(() => setDetailsOpen(false), []);
+  const label = (nodeId: string) => (nodeId === "gateway" ? t("canvas.gateway") : nameOf(nodeId));
+  const totalMs = pipelineCycleTotalMs(cost);
+  const orderedRoutes = orderPipelineRoutes(routes);
   const routeTotalMs = orderedRoutes[0]?.totalMs ?? null;
   const bestRoute = orderedRoutes[0]?.route;
   const displayedTotalMs = orderedRoutes.length > 0 ? routeTotalMs : totalMs;
@@ -188,68 +299,130 @@ export function PipelineGatewayNode({
   const computeMs = cost?.computeMs != null && Number.isFinite(cost.computeMs) && cost.computeMs >= 0
     ? cost.computeMs
     : null;
+  // Com o compute medido, o total é o tempo de um token pela rota.
+  const throughput = displayedTotalMs != null && displayedTotalMs > 0 && (orderedRoutes.length === 0 ? computeMs != null : validMs(bestRoute?.totalMs))
+    ? 1000 / displayedTotalMs
+    : null;
+  const breakdown = bestRoute && validMs(bestRoute.networkMs) && validMs(bestRoute.computeMs)
+    ? t("canvas.pipelineRouteBreakdown", {
+      network: bestRoute.networkMs.toFixed(1),
+      mode: bestRoute.returnMode === "direct" ? t("canvas.returnDirect") : t("canvas.returnRing"),
+      compute: bestRoute.computeMs.toFixed(1),
+    })
+    : orderedRoutes.length === 0 && networkMs != null && computeMs != null
+      ? t("canvas.pipelineCostBreakdown", { network: networkMs.toFixed(1), compute: computeMs.toFixed(1) })
+      : null;
+  const draggable = onPointerDown != null;
 
   return (
-    <article
-      data-testid="pipeline-gateway"
-      className="absolute rounded-xl border border-aqua/35 bg-ink/95 p-3.5 shadow-panel backdrop-blur"
-      style={{ left: position.left, top: position.top, width: GATEWAY_WIDTH, minHeight: GATEWAY_HEIGHT }}
-    >
-      <div className="absolute inset-x-3.5 top-0 h-px bg-aqua/70" />
-      <div className="flex items-start gap-2">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-aqua/25 bg-aqua/10 text-aqua">
-          <ServerCog className="h-4 w-4" />
-        </span>
-        <div className="min-w-0">
-          <h3 className="truncate text-sm font-semibold text-fg">{t("canvas.gateway")}</h3>
-          <p className="truncate text-[10px] text-faint">{t("canvas.gatewayReturn")}</p>
-        </div>
-      </div>
-      <div className="mt-3 rounded-lg border border-aqua/25 bg-aqua/10 px-2.5 py-2">
-        <div className="text-[9px] uppercase tracking-[0.12em] text-faint">{t("canvas.pipelineTotalLabel")}</div>
-        <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-aqua">
-          {displayedTotalMs == null ? t("canvas.pipelineTotalUnknown") : t("canvas.pipelineTotal", { ms: displayedTotalMs.toFixed(1) })}
-        </div>
-        {/* Com o compute medido, o total é o tempo de um token pela rota. */}
-        {displayedTotalMs != null && displayedTotalMs > 0 && (orderedRoutes.length === 0 ? computeMs != null : validMs(bestRoute?.totalMs)) && (
-          <div data-testid="pipeline-throughput" className="mt-0.5 font-mono text-[10px] tabular-nums text-muted">
-            {t("canvas.pipelineThroughput", { tps: (1000 / displayedTotalMs).toFixed(1) })}
-          </div>
+    <>
+      <article
+        data-testid="pipeline-gateway"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onDoubleClick={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) setDetailsOpen(true); }}
+        className={clsx(
+          "absolute select-none rounded-xl border bg-ink/95 p-3 shadow-panel backdrop-blur transition-[box-shadow,border-color]",
+          dragging ? "cursor-grabbing border-aqua shadow-lift" : clsx("border-aqua/35 hover:border-aqua/70 hover:shadow-lift", draggable && "cursor-grab"),
         )}
-      </div>
-      {bestRoute && validMs(bestRoute.networkMs) && validMs(bestRoute.computeMs) ? (
-        <p data-testid="pipeline-route-breakdown" className="mt-2 font-mono text-[10px] tabular-nums text-muted">
-          {t("canvas.pipelineRouteBreakdown", {
-            network: bestRoute.networkMs.toFixed(1),
-            mode: bestRoute.returnMode === "direct" ? t("canvas.returnDirect") : t("canvas.returnRing"),
-            compute: bestRoute.computeMs.toFixed(1),
-          })}
-        </p>
-      ) : orderedRoutes.length === 0 && networkMs != null && computeMs != null && (
-        <p className="mt-2 font-mono text-[10px] tabular-nums text-muted">
-          {t("canvas.pipelineCostBreakdown", { network: networkMs.toFixed(1), compute: computeMs.toFixed(1) })}
-        </p>
-      )}
-      {bestRoute && (bestRoute.relayed || bestRoute.relayBypassedByRing) && <RelayNotice route={bestRoute} />}
-      {orderedRoutes.length > 0 && (
-        <div data-testid="pipeline-routes" className="mt-2 border-t border-aqua/15 pt-2">
-          <div className="text-[9px] uppercase tracking-[0.12em] text-faint">
-            {t("canvas.pipelineRouteCount", { count: orderedRoutes.length })}
+        style={{ left: position.left, top: position.top, width: GATEWAY_WIDTH, minHeight: GATEWAY_HEIGHT, touchAction: draggable ? "none" : undefined }}
+      >
+        <div className="absolute inset-x-3 top-0 h-px bg-aqua/70" />
+        <div className="flex items-start gap-2">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-aqua/25 bg-aqua/10 text-aqua">
+            <ServerCog className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h3 className="truncate text-sm font-semibold text-fg">{t("canvas.gateway")}</h3>
+            <p className="truncate text-[10px] text-faint">
+              {orderedRoutes.length > 0 ? t("canvas.pipelineRouteCount", { count: orderedRoutes.length }) : t("canvas.gatewayReturn")}
+            </p>
           </div>
-          <ol className="mt-1.5 space-y-1">
-            {orderedRoutes.map(({ route, totalMs: routeMs }) => {
-              const path = route.nodeIds.join(" → ");
-              return (
-                <li key={path} className={`flex min-w-0 items-center justify-between gap-2 font-mono text-[10px] tabular-nums text-muted${route.relayed ? " rounded border-l-2 border-relay pl-1" : ""}`} title={route.relayed ? `${path}\n${t("canvas.relayEdgeHint")}` : path}>
-                  <span className="min-w-0 truncate">{path}</span>
-                  {route.relayed && <span data-testid="pipeline-route-relay" className="shrink-0 rounded bg-relay px-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-white">{t("canvas.relayBadge")}</span>}
-                  <span className={`shrink-0 ${route.relayed ? "text-relay" : "text-aqua"}`}>{routeMs == null ? t("canvas.pipelineTotalUnknown") : `${routeMs.toFixed(1)} ms`}</span>
-                </li>
-              );
-            })}
-          </ol>
+          <button
+            type="button"
+            data-testid="pipeline-gateway-open"
+            aria-label={t("canvas.gatewayOpenDetails")}
+            title={t("canvas.gatewayOpenDetails")}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => setDetailsOpen(true)}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted hover:bg-raised hover:text-fg"
+          >
+            <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
         </div>
-      )}
-    </article>
+        <div className="mt-2.5 flex items-end justify-between gap-2 rounded-lg border border-aqua/20 bg-aqua/[0.07] px-2.5 py-2">
+          <div className="min-w-0">
+            <div className="text-[9px] uppercase tracking-[0.12em] text-faint">{t("canvas.pipelineTotalLabel")}</div>
+            <div data-testid="pipeline-total" className="mt-0.5 font-mono text-base font-semibold leading-tight tabular-nums text-aqua">
+              {displayedTotalMs == null ? t("canvas.pipelineTotalUnknown") : `${displayedTotalMs.toFixed(1)} ms`}
+            </div>
+          </div>
+          {throughput != null && (
+            <span data-testid="pipeline-throughput-badge" title={t("canvas.pipelineThroughput", { tps: throughput.toFixed(1) })} className="shrink-0 rounded-md bg-aqua/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-aqua">
+              {throughput.toFixed(1)} tok/s
+            </span>
+          )}
+        </div>
+        {breakdown && <p className="mt-1.5 truncate font-mono text-[10px] tabular-nums text-muted" title={breakdown}>{breakdown}</p>}
+        {bestRoute && (bestRoute.relayed || bestRoute.relayBypassedByRing) && <RelayNotice route={bestRoute} />}
+      </article>
+      <Modal
+        open={detailsOpen}
+        size="lg"
+        title={t("canvas.gatewayDialogTitle")}
+        onClose={closeDetails}
+        footer={<Button variant="ghost" onClick={closeDetails}>{t("common.close")}</Button>}
+      >
+        <div data-testid="pipeline-gateway-details" className="space-y-4">
+          <p>{t("canvas.gatewayIntro")}</p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Stat label={t("canvas.gatewayPerToken")} value={displayedTotalMs == null ? t("canvas.pipelineTotalUnknown") : `${displayedTotalMs.toFixed(1)} ms`} tone="text-aqua" />
+            <Stat label={t("canvas.gatewayThroughput")} value={throughput == null ? "-" : `${throughput.toFixed(1)} tok/s`} />
+            <Stat label={t("canvas.gatewayNetwork")} value={validMs(bestRoute?.networkMs) ? `${bestRoute.networkMs.toFixed(1)} ms` : networkMs != null && orderedRoutes.length === 0 ? `${networkMs.toFixed(1)} ms` : "-"} />
+            <Stat label={t("canvas.gatewayCompute")} value={validMs(bestRoute?.computeMs) ? `${bestRoute.computeMs.toFixed(1)} ms` : computeMs != null && orderedRoutes.length === 0 ? `${computeMs.toFixed(1)} ms` : "-"} />
+          </div>
+          {displayedTotalMs != null && (
+            <p className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px] tabular-nums text-muted">
+              <span data-testid="pipeline-total-detail" className="text-fg">{t("canvas.pipelineTotal", { ms: displayedTotalMs.toFixed(1) })}</span>
+              {throughput != null && <span data-testid="pipeline-throughput">{t("canvas.pipelineThroughput", { tps: throughput.toFixed(1) })}</span>}
+              {breakdown && <span data-testid="pipeline-route-breakdown">{breakdown}</span>}
+            </p>
+          )}
+          {orderedRoutes.length === 0 && cost && cost.legsMs.length > 0 && (
+            <section>
+              <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">{t("canvas.gatewayCycleLegs")}</h3>
+              <ol className="mt-1.5 grid gap-1 sm:grid-cols-2">
+                {cost.legsMs.map((leg, index) => (
+                  <li key={index} className="flex justify-between gap-2 rounded bg-raised/50 px-2 py-1 font-mono text-[11px] tabular-nums">
+                    <span>{t("canvas.gatewayLeg", { index: index + 1 })}</span>
+                    <span>{validMs(leg) ? `${leg.toFixed(1)} ms` : "-"}</span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
+          <section>
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+              {t("canvas.gatewayRoutesTitle")}{orderedRoutes.length > 0 && ` · ${orderedRoutes.length}`}
+            </h3>
+            {orderedRoutes.length === 0 ? (
+              <p className="mt-1.5 text-xs text-muted">{t("canvas.gatewayRoutesEmpty")}</p>
+            ) : (
+              <ol data-testid="pipeline-routes" className="mt-1.5 space-y-2">
+                {orderedRoutes.map(({ route, totalMs: routeMs }, index) => (
+                  <RouteDetail key={route.nodeIds.join("\u0000")} route={route} totalMs={routeMs} best={index === 0 && routeMs != null} nameOf={label} />
+                ))}
+              </ol>
+            )}
+          </section>
+          {/* O texto fala da rota mais rápida; uma réplica por relé fora de uso não o justifica. */}
+          {bestRoute && (bestRoute.relayed || bestRoute.relayBypassedByRing) && (
+            <p className="rounded-lg border border-relay/40 bg-relay/5 p-3 text-xs text-muted">{t("canvas.relayRouteHint")}</p>
+          )}
+        </div>
+      </Modal>
+    </>
   );
 }

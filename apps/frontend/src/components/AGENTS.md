@@ -244,8 +244,23 @@ Per-file list:
   Currently rendered hidden on Dashboard.
 - `ModelNetworkCanvas.tsx` - Cada card de máquina mostra também o TPS medido de
   decode e de prefill (`machine-tps`, de `peer_perf` do
-  `/api/ui/chat/telemetry`); sem medição diz "velocidade não medida". No
-  `PipelineGatewayNode`, o total de cada rota é o `total_ms` do backend
+  `/api/ui/chat/telemetry`) como selos (`speed-decode`/`speed-prefill`)
+  coloridos por `rateSpeed` (`../lib/peerSpeed`): a razão para a fatia mais
+  rápida do mesmo modelo (verde >= 75%, âmbar >= 40%, vermelho abaixo), neutro
+  quando só uma fatia foi medida; sem medição diz "velocidade não medida".
+  Cada card pode ser minimizado (`machine-compact-toggle`; nome, estado,
+  faixa, selos e uma linha de VRAM em `COMPACT_CARD_SIZE`), e o botão
+  `cards-compact-all` da barra dos modelos minimiza ou expande todos e apaga as
+  exceções; o estado fica em `readCardModes`/`writeCardModes`. Arestas,
+  `autoLayout` e limites do arrasto usam o tamanho real de cada card, e
+  "Organizar" grava só o que foi arrastado, para o arranjo se recompor quando
+  os cards mudam de tamanho. O `PipelineGatewayNode` é um card pequeno e
+  arrastável (posição em `GATEWAY_LAYOUT_ID`, no mesmo mapa das máquinas;
+  sem arrasto segue o último estágio): mostra o custo por token, o tok/s e o
+  aviso de relé; o botão `pipeline-gateway-open` (ou o duplo clique) abre a
+  janela com o resumo, todas as rotas (`pipeline-route`) perna por perna, o
+  modo de volta e as pernas por relé. No mapa de implantação ele continua
+  fixo. O total de cada rota é o `total_ms` do backend
   (`pipelineRouteTotalMs`): rede no modo de volta que o planejador escolheria
   mais compute de um token, com o tok/s equivalente (`pipeline-throughput`) e a
   divisão rede/modo/compute da melhor rota (`pipeline-route-breakdown`). A
@@ -282,10 +297,10 @@ Per-file list:
   summary; node and infer profiles use their own model and slice data instead.
   A missing peer load stays visibly unknown in the card meter and is never
   rendered as zero. The selected pipeline is drawn only forward; a virtual
-  `Gateway` is placed after the last layer stage and receives the return-leg
-  arrow. Its card shows every complete deployed route, including the return
-  leg, ordered by aggregate RTT and then node ID. It uses the least-cost route
-  for the headline and keeps alternatives visible; an absent leg remains
+  `Gateway` is placed after the last layer stage (until dragged) and receives
+  the return-leg arrow. Its window lists every complete deployed route,
+  including the return leg, ordered by time per token and then node ID. The
+  card uses the least-cost route for the headline; an absent leg remains
   unknown and is never treated as zero. An observed execution cost still
   includes peer compute when that measurement exists.
   When the Dashboard has an active deployment, its properties toggle is a
@@ -466,8 +481,9 @@ Key logic carriers:
 - `ModelNetworkCanvas.isControlTarget` (ModelNetworkCanvas.tsx:69) — the
   double-click guard: a gesture that landed on a control is not a gesture on
   the card, so opening details never becomes a trap for a future button.
-- `ModelNetworkCanvas.beginDrag`/`drag` (ModelNetworkCanvas.tsx:152) — pointer
-  capture drag with zoom-aware offsets and clamping to the canvas; positions are
+- `ModelNetworkCanvas.beginDrag`/`drag` — pointer capture drag shared by
+  machine cards and the gateway, keyed by layout id and clamped by card size;
+  a pointer that starts on a control is left to the control. Positions are
   persisted on every move (`writePositions`).
 - `DeployNetworkCanvas.tsx` — The compact, deploy-time topology view. It
   reutiliza o contrato visual do `ModelNetworkCanvas`: fundo pontilhado, cards de

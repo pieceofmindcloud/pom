@@ -125,8 +125,12 @@ describe("ModelNetworkCanvas: RTT das arestas", () => {
 
     mount(view, [], cost);
 
-    expect(screen.getByText("Total do pipeline: 150.0 ms")).toBeTruthy();
+    expect(screen.getByTestId("pipeline-total").textContent).toBe("150.0 ms");
     expect(screen.getByText("rede 110.0 ms · compute 40.0 ms")).toBeTruthy();
+    // As pernas uma a uma ficam na janela do gateway.
+    fireEvent.click(screen.getByTestId("pipeline-gateway-open"));
+    expect(screen.getByTestId("pipeline-total-detail").textContent).toBe("Total do pipeline: 150.0 ms");
+    expect(screen.getByTestId("pipeline-gateway-details").textContent).toContain("perna 4");
   });
 
   it("mostra todas as rotas de cabeca, ordenadas pelo tempo por token do backend", () => {
@@ -147,10 +151,18 @@ describe("ModelNetworkCanvas: RTT das arestas", () => {
 
     const gateway = screen.getByRole("heading", { name: "Gateway" }).closest("article") as HTMLElement;
     expect(gateway.textContent).not.toContain("não medido");
+    expect(gateway.textContent).toContain("2 rotas");
+    expect(screen.getByTestId("pipeline-total").textContent).toBe("9.5 ms");
+    // A lista inteira fica na janela, para o card não crescer com as réplicas.
+    fireEvent.click(screen.getByTestId("pipeline-gateway-open"));
+    const routes = screen.getAllByTestId("pipeline-route").map((route) => route.textContent ?? "");
     // A soma das pernas (19 e 33 ms) contaria ida e volta inteiras.
-    expect(gateway.textContent).toMatch(/head-fast.*9\.5 ms/);
-    expect(gateway.textContent).toMatch(/head-slow.*16\.5 ms/);
-    expect(gateway.textContent?.indexOf("head-fast")).toBeLessThan(gateway.textContent?.indexOf("head-slow") ?? -1);
+    expect(routes[0]).toMatch(/head-fast.*9\.5 ms/);
+    expect(routes[0]).toContain("mais rápida");
+    expect(routes[1]).toMatch(/head-slow.*16\.5 ms/);
+    // Perna por perna, da entrada no gateway até a volta.
+    expect(routes[1]).toMatch(/Gateway → head-slow18\.0 ms/);
+    expect(routes[1]).toMatch(/tail → Gateway3\.0 ms/);
   });
 });
 
@@ -166,9 +178,13 @@ describe("ModelNetworkCanvas: velocidade das máquinas", () => {
     });
 
     const cards = screen.getAllByTestId("machine-tps").map((element) => element.textContent);
-    expect(cards).toContain("decode 66.7 · prefill 1250 tok/s");
+    expect(cards).toContain("decode66.7tok/sprefill1250tok/s");
     expect(cards).toContain("velocidade não medida");
-    expect(screen.getByText("Total do pipeline: 50.0 ms")).toBeTruthy();
+    // Uma fatia medida só não tem com quem se comparar: tom neutro.
+    expect(screen.getByTestId("speed-decode").getAttribute("data-tone")).toBe("solo");
+    expect(screen.getByTestId("pipeline-throughput-badge").textContent).toBe("20.0 tok/s");
+    fireEvent.click(screen.getByTestId("pipeline-gateway-open"));
+    expect(screen.getByTestId("pipeline-total-detail").textContent).toBe("Total do pipeline: 50.0 ms");
     expect(screen.getByTestId("pipeline-throughput").textContent).toBe("≈ 20.0 tok/s por ciclo de token");
     expect(screen.getByTestId("pipeline-route-breakdown").textContent).toBe("rede 20.0 ms (anel) · compute 30.0 ms");
   });
@@ -194,7 +210,6 @@ describe("ModelNetworkCanvas: rota por relé", () => {
     expect(label.textContent).toContain("RTT 67.0 ms");
     expect(label.getAttribute("title")).toContain("peer de relé");
     expect(container.querySelectorAll('path[data-relayed="true"]').length).toBe(1);
-    expect(screen.getByTestId("pipeline-route-relay").textContent).toBe("RELAY");
     expect(screen.getByTestId("pipeline-relay-warning").textContent).toContain("Rota por relé");
     // O texto longo só aparece no card, ao clicar no ícone.
     expect(screen.queryByTestId("pipeline-relay-popup")).toBeNull();
@@ -203,6 +218,10 @@ describe("ModelNetworkCanvas: rota por relé", () => {
     expect(screen.getByTestId("pipeline-relay-popup").textContent).toContain("não consegue contornar");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByTestId("pipeline-relay-popup")).toBeNull();
+    // Na janela, a rota marcada e a perna por relé destacada.
+    fireEvent.click(screen.getByTestId("pipeline-gateway-open"));
+    expect(screen.getByTestId("pipeline-route-relay").textContent).toBe("RELAY");
+    expect(screen.getByTestId("pipeline-route").textContent).toMatch(/head → tail67\.0 ms/);
   });
 
   it("diz quando o anel contorna o relé da volta direta", () => {
@@ -664,5 +683,123 @@ describe("ModelNetworkCanvas: arrumação do card menor", () => {
     expect(status.compareDocumentPosition(layers) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(layers.className).toContain("text-[9px]");
     expect(card.className).toContain("p-3");
+  });
+});
+
+/**
+ * O que o Painel tem de deixar ver numa rede grande: quem segura o token
+ * (cor da velocidade), uma visão menor dos cards e o gateway onde o operador
+ * quiser.
+ */
+describe("ModelNetworkCanvas: velocidade em selos coloridos", () => {
+  afterEach(cleanup);
+
+  it("pinta cada fatia pela comparação com a mais rápida do modelo", () => {
+    const view = fakeCluster([fakeSlicePeer("a", 0, 15), fakeSlicePeer("b", 16, 31), fakeSlicePeer("c", 32, 47)]);
+    mount(view, [], undefined, undefined, [], {
+      a: { decode_tokens_per_sec: 100, prefill_tokens_per_sec: 2000, active_generations: 0 },
+      b: { decode_tokens_per_sec: 60, prefill_tokens_per_sec: 1900, active_generations: 0 },
+      c: { decode_tokens_per_sec: 20, prefill_tokens_per_sec: null, active_generations: 0 },
+    });
+
+    const decodes = screen.getAllByTestId("speed-decode");
+    expect(decodes.map((badge) => badge.getAttribute("data-tone"))).toEqual(["fast", "medium", "slow"]);
+    expect(decodes[2].getAttribute("title")).toBe("decode: 20.0 tok/s, 20% da fatia mais rápida deste modelo. Verde a partir de 75%, âmbar a partir de 40%, vermelho abaixo.");
+    const prefills = screen.getAllByTestId("speed-prefill");
+    expect(prefills.map((badge) => badge.getAttribute("data-tone"))).toEqual(["fast", "fast", "unknown"]);
+  });
+});
+
+describe("ModelNetworkCanvas: cards minimizados", () => {
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+  });
+
+  const rede = fakeCluster([fakeSlicePeer("a", 0, 15), fakeSlicePeer("b", 16, 31)]);
+
+  function cardDe(container: HTMLElement, hostname: string) {
+    const titulo = Array.from(container.querySelectorAll("h3")).find((h) => h.textContent === hostname);
+    return titulo?.closest("article") as HTMLElement;
+  }
+
+  it("minimiza um card só, e o botão do próprio card o expande de volta", () => {
+    const { container } = mount(rede);
+    fireEvent.click(cardDe(container, "a").querySelector('[data-testid="machine-compact-toggle"]')!);
+
+    expect(cardDe(container, "a").getAttribute("data-compact")).toBe("true");
+    expect(cardDe(container, "a").style.height).toBe("84px");
+    expect(cardDe(container, "b").getAttribute("data-compact")).toBeNull();
+    // Minimizado, continua mostrando o essencial.
+    expect(cardDe(container, "a").textContent).toContain("L0 - L15");
+    expect(cardDe(container, "a").querySelector('[data-testid="machine-status"]')).not.toBeNull();
+
+    fireEvent.click(cardDe(container, "a").querySelector('[data-testid="machine-compact-toggle"]')!);
+    expect(cardDe(container, "a").getAttribute("data-compact")).toBeNull();
+  });
+
+  it("minimiza e expande todos pela barra dos modelos, e lembra a escolha", () => {
+    const { container, unmount } = mount(rede);
+    const leftAberto = parseFloat(cardDe(container, "b").style.left);
+    fireEvent.click(screen.getByRole("button", { name: "Minimizar todos os cards" }));
+
+    expect(cardDe(container, "a").getAttribute("data-compact")).toBe("true");
+    expect(cardDe(container, "b").getAttribute("data-compact")).toBe("true");
+    // O arranjo automático aproxima as colunas de cards menores.
+    expect(parseFloat(cardDe(container, "b").style.left)).toBeLessThan(leftAberto);
+
+    unmount();
+    const again = mount(rede);
+    expect(cardDe(again.container, "a").getAttribute("data-compact")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Expandir todos os cards" }));
+    expect(cardDe(again.container, "a").getAttribute("data-compact")).toBeNull();
+    expect(cardDe(again.container, "b").getAttribute("data-compact")).toBeNull();
+  });
+});
+
+describe("ModelNetworkCanvas: gateway arrastável", () => {
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("move o gateway para onde foi solto, guarda a posição e o redefinir devolve", () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, right: 2000, bottom: 1200, width: 2000, height: 1200, x: 0, y: 0, toJSON: () => ({}) } as DOMRect);
+    Object.assign(HTMLElement.prototype, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => true });
+    // O jsdom não tem `PointerEvent`; sem ele o evento chega sem `clientX`.
+    vi.stubGlobal("PointerEvent", class extends MouseEvent {
+      pointerId: number;
+      constructor(type: string, init: PointerEventInit = {}) { super(type, init); this.pointerId = init.pointerId ?? 0; }
+    });
+    mount(cluster);
+    const gateway = screen.getByTestId("pipeline-gateway");
+    const before = { left: gateway.style.left, top: gateway.style.top };
+
+    fireEvent.pointerDown(gateway, { clientX: parseFloat(before.left) + 10, clientY: parseFloat(before.top) + 10, pointerId: 1 });
+    fireEvent.pointerMove(gateway, { clientX: 410, clientY: 610, pointerId: 1 });
+    fireEvent.pointerUp(gateway, { pointerId: 1 });
+
+    expect(gateway.style.left).toBe("400px");
+    expect(gateway.style.top).toBe("600px");
+    const saved = Object.entries(localStorage).find(([key]) => key.includes("network-layout"))?.[1] ?? "{}";
+    expect(JSON.parse(saved).__gateway__).toEqual({ left: 400, top: 600 });
+
+    fireEvent.click(screen.getByLabelText(/Redefinir o arranjo/i));
+    expect(screen.getByTestId("pipeline-gateway").style.left).toBe(before.left);
+  });
+
+  it("abre a janela da pipeline no botão e não começa um arrasto", () => {
+    const capture = vi.fn();
+    Object.assign(HTMLElement.prototype, { setPointerCapture: capture });
+    mount(cluster, [], { legsMs: [2, 3, 4], computeMs: 10 });
+    const open = screen.getByTestId("pipeline-gateway-open");
+    fireEvent.pointerDown(open, { pointerId: 1 });
+    fireEvent.click(open);
+
+    expect(capture).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Gateway · pipeline e rotas" })).toBeTruthy();
+    expect(screen.getByTestId("pipeline-gateway-details").textContent).toContain("Nenhuma rota medida ainda");
   });
 });

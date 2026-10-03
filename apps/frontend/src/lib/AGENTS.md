@@ -84,8 +84,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   hardware de uma caixa com duas placas sumia da tela. Testes em `gpu.test.ts`.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - posições dos nós do canvas persistidas por impressão
-  digital da implantação; `CARD_HEIGHT` mantém a altura reduzida do card
-  compacto sincronizada com seus medidores agrupados.
+  digital da implantação (o gateway arrastado entra como `GATEWAY_LAYOUT_ID`);
+  `CARD_SIZE`/`COMPACT_CARD_SIZE`/`GATEWAY_SIZE` alimentam arestas, arranjo e
+  arrasto, e `readCardModes`/`writeCardModes` guardam quais cards do Fluxo
+  estão minimizados.
+- `peerSpeed.ts` - `rateSpeed`: tom de decode/prefill de uma fatia pela razão
+  para a mais rápida do mesmo modelo; com uma só medida, `solo`.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
 - `networkStats.ts` - agrega somente dados presentes no `ClusterView`: nós,
   RTT médio, VRAM conhecida e modelos servidos. Cada métrica permanece nula

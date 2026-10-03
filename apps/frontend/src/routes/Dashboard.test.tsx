@@ -220,8 +220,10 @@ describe("Dashboard", () => {
     await waitFor(() => {
       const gateway = screen.getByRole("heading", { name: "Gateway" }).closest("article") as HTMLElement;
       expect(gateway.textContent).not.toContain("não medido");
-      expect(gateway.textContent).toMatch(/head.*4\.0 ms/);
+      expect(screen.getByTestId("pipeline-total").textContent).toBe("4.0 ms");
     });
+    fireEvent.click(screen.getByTestId("pipeline-gateway-open"));
+    expect(screen.getByTestId("pipeline-route").textContent).toMatch(/head.*4\.0 ms/);
   });
 
   /**

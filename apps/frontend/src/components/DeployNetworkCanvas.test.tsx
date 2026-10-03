@@ -226,7 +226,7 @@ describe("DeployNetworkCanvas", () => {
       { legsMs: [18, 30, 31, 29], computeMs: 42 },
     );
 
-    expect(screen.getByText("Total do pipeline: 150.0 ms")).toBeTruthy();
+    expect(screen.getByTestId("pipeline-total").textContent).toBe("150.0 ms");
     expect(screen.getByText("rede 108.0 ms · compute 42.0 ms")).toBeTruthy();
     view.unmount();
   });

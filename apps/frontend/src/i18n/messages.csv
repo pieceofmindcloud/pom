@@ -109,9 +109,26 @@ adminAuthority.successorRule,This is the last node promoted by the principal. Yo
 adminAuthority.title,Network administration,Administração da rede
 app.topbarFailed,The top bar failed. The rest of the interface is still available.,A barra superior falhou. O resto da interface continua.
 canvas.autoLayout,Arrange by layer order (keeps what you dragged),Organizar pela ordem das camadas (mantém o que você arrastou)
+canvas.cardExpand,Expand card,Expandir card
+canvas.cardMinimize,Minimize card,Minimizar card
+canvas.cardsExpandAll,Expand all cards,Expandir todos os cards
+canvas.cardsMinimizeAll,Minimize all cards,Minimizar todos os cards
 canvas.fit,Fit to network,Ajustar à rede
 canvas.gateway,Gateway,Gateway
+canvas.gatewayCompute,compute,compute
+canvas.gatewayCycleLegs,Legs of the measured cycle,Pernas do ciclo medido
+canvas.gatewayDialogTitle,Gateway · pipeline and routes,Gateway · pipeline e rotas
+canvas.gatewayIntro,"Each token enters the first machine of a route, crosses the slices in layer order and comes back to the gateway. The planner serves through the route with the lowest time per token: the network in the chosen return mode plus the measured compute.","Cada token entra na primeira máquina de uma rota, atravessa as fatias na ordem das camadas e volta ao gateway. O planejador serve pela rota com menor tempo por token: a rede no modo de volta escolhido mais o compute medido."
+canvas.gatewayLeg,leg {index},perna {index}
+canvas.gatewayLegs,Legs,Pernas
+canvas.gatewayNetwork,network,rede
+canvas.gatewayOpenDetails,Open pipeline and routes,Abrir pipeline e rotas
+canvas.gatewayPerToken,per token,por token
 canvas.gatewayReturn,return leg,perna de retorno
+canvas.gatewayRouteBest,fastest,mais rápida
+canvas.gatewayRoutesEmpty,No route measured yet. Routes show up once requests cross the pipeline.,Nenhuma rota medida ainda. As rotas aparecem quando as requisições atravessam a pipeline.
+canvas.gatewayRoutesTitle,Routes found,Rotas encontradas
+canvas.gatewayThroughput,throughput,vazão
 canvas.inFlight,{count} in flight,{count} em voo
 canvas.layers,layers,camadas
 canvas.layersAllGpu,{count} on GPU,{count} na GPU
@@ -131,6 +148,7 @@ canvas.openDetails,Double-click to open this machine''s details,Duplo clique abr
 canvas.pipelineCostBreakdown,network {network} ms · compute {compute} ms,rede {network} ms · compute {compute} ms
 canvas.pipelineRouteBreakdown,network {network} ms ({mode}) · compute {compute} ms,rede {network} ms ({mode}) · compute {compute} ms
 canvas.returnDirect,direct return,resposta direta
+canvas.returnDirectHint,Direct return: the last machine answers the gateway itself; each leg costs half a round trip.,Resposta direta: a última máquina responde ao próprio gateway; cada perna custa meio RTT.
 canvas.returnRing,ring,anel
 canvas.relayBadge,RELAY,RELAY
 "canvas.relayEdgeHint","This link goes through a relay peer: every frame crosses an intermediate server, which adds latency. Review the route.","Esta ligação passa por um peer de relé: cada frame atravessa um servidor intermediário, o que aumenta a latência. Reveja a rota."
@@ -148,6 +166,12 @@ canvas.pipelineTotal,Pipeline total: {ms} ms,Total do pipeline: {ms} ms
 canvas.pipelineTotalLabel,cycle cost,custo do ciclo
 canvas.pipelineTotalUnknown,not measured,não medido
 canvas.resetLayout,"Reset the arrangement, including what you dragged","Redefinir o arranjo, inclusive o que você arrastou"
+canvas.returnRingHint,"Ring: the answer comes back over the forward connections, so the tail''s return is not paid.","Anel: a resposta volta pelas conexões da ida, então a volta da cauda não é paga."
+canvas.speedDecode,decode,decode
+canvas.speedPrefill,prefill,prefill
+canvas.speedRelative,"{kind}: {value} tok/s, {percent}% of the fastest slice of this model. Green from 75%, amber from 40%, red below.","{kind}: {value} tok/s, {percent}% da fatia mais rápida deste modelo. Verde a partir de 75%, âmbar a partir de 40%, vermelho abaixo."
+canvas.speedSolo,"{kind}: {value} tok/s. Only this slice was measured, so there is nothing to compare it with.","{kind}: {value} tok/s. Só esta fatia foi medida, então não há com o que comparar."
+canvas.speedUnknown,{kind}: not measured yet,{kind}: ainda não medido
 canvas.vramTotal,VRAM · {count} GPUs,VRAM · {count} GPUs
 canvas.zoomIn,Zoom in,Aumentar zoom
 canvas.zoomOut,Zoom out,Diminuir zoom

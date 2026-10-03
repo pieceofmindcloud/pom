@@ -60,6 +60,53 @@ mod mrope_text_tests {
     }
 }
 
+/// How many copies of a projector embedding a fresh embedding batch needs.
+///
+/// A hyper-connection model (`qwen4exp`) reads a batch without token ids as
+/// its wide residual, `n_embd_out = hc * n_embd` per row, because that is what
+/// one pipeline hop forwards to the next. Its token path starts that residual
+/// as `hc` identical copies of the embedding, so an image embedding, which the
+/// projector emits at `n_embd_inp`, has to enter the same way. Every other
+/// model returns 1 and keeps the stock mtmd evaluation.
+fn image_embedding_copies(n_embd_inp: usize, n_embd_out: usize) -> usize {
+    if n_embd_inp > 0 && n_embd_out > n_embd_inp && n_embd_out % n_embd_inp == 0 {
+        n_embd_out / n_embd_inp
+    } else {
+        1
+    }
+}
+
+/// Repeats every `width`-wide row `copies` times, contiguously.
+fn widen_embedding_rows(rows: &[f32], width: usize, copies: usize) -> Vec<f32> {
+    let mut wide = Vec::with_capacity(rows.len() * copies);
+    for row in rows.chunks_exact(width) {
+        for _ in 0..copies {
+            wide.extend_from_slice(row);
+        }
+    }
+    wide
+}
+
+#[cfg(test)]
+mod wide_image_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_wide_residual_model_widens_the_image() {
+        assert_eq!(image_embedding_copies(2560, 10240), 4);
+        assert_eq!(image_embedding_copies(4096, 4096), 1);
+        // Deepstack vision: the projector is wider than the hidden state.
+        assert_eq!(image_embedding_copies(4096 * 4, 4096), 1);
+        assert_eq!(image_embedding_copies(3000, 10240), 1);
+    }
+
+    #[test]
+    fn each_row_becomes_contiguous_copies_of_itself() {
+        let wide = widen_embedding_rows(&[1.0, 2.0, 3.0, 4.0], 2, 3);
+        assert_eq!(wide, vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 3.0, 4.0]);
+    }
+}
+
 /// O que um decode de estado oculto faz com a cabeça `nextn` depois do alvo.
 #[derive(Clone, Copy)]
 enum MtpObserve<'a> {
@@ -928,20 +975,33 @@ impl LlmEngine {
         self.reset_capture_slot_with_physical_chunks(n_tokens, true);
         let backend_call_started = Instant::now();
         self.begin_moe_callback();
-        let rc = unsafe {
-            sys::mtmd_helper_eval_chunks(
+        let copies = image_embedding_copies(self.n_embd_inp, self.n_embd_out);
+        if copies > 1 {
+            new_n_past = self.eval_chunks_with_wide_images(
                 vision_ctx,
-                self.ctx,
                 chunks.0,
-                n_past as sys::llama_pos,
-                seq_id as sys::llama_seq_id,
-                self.n_batch() as i32,
+                n_past,
+                seq_id,
                 logits_last,
-                &mut new_n_past,
-            )
-        };
-        if rc != 0 {
-            bail!("mtmd falhou ao avaliar a mensagem multimodal (rc={rc})");
+                copies,
+                mrope_positions.as_deref(),
+            )?;
+        } else {
+            let rc = unsafe {
+                sys::mtmd_helper_eval_chunks(
+                    vision_ctx,
+                    self.ctx,
+                    chunks.0,
+                    n_past as sys::llama_pos,
+                    seq_id as sys::llama_seq_id,
+                    self.n_batch() as i32,
+                    logits_last,
+                    &mut new_n_past,
+                )
+            };
+            if rc != 0 {
+                bail!("mtmd falhou ao avaliar a mensagem multimodal (rc={rc})");
+            }
         }
         let backend_call_us = backend_call_started.elapsed().as_micros() as u64;
         let mut timings = DecodeTimings {
@@ -963,6 +1023,138 @@ impl LlmEngine {
             mrope_positions,
             timings,
         })
+    }
+
+    /// `mtmd_helper_eval_chunks` for a model whose embedding batch is wider
+    /// than the projector output (see [`image_embedding_copies`]). Text chunks
+    /// still go through the mtmd helper; each image is encoded by mtmd and
+    /// decoded here with its rows repeated `copies` times and the same
+    /// positions and attention mode the helper would use. Returns the next
+    /// logical position.
+    #[allow(clippy::too_many_arguments)]
+    fn eval_chunks_with_wide_images(
+        &mut self,
+        vision_ctx: *mut sys::mtmd_context,
+        chunks: *const sys::mtmd_input_chunks,
+        n_past: u32,
+        seq_id: u32,
+        logits_last: bool,
+        copies: usize,
+        mrope_positions: Option<&[[u32; 4]]>,
+    ) -> Result<sys::llama_pos> {
+        let n_batch = self.n_batch().max(1) as usize;
+        let width = self.n_embd_inp;
+        let wide_width = width * copies;
+        let mut n_past = n_past as sys::llama_pos;
+        let mut cell = 0usize;
+        let chunk_count = unsafe { sys::mtmd_input_chunks_size(chunks) };
+        for index in 0..chunk_count {
+            let chunk = unsafe { sys::mtmd_input_chunks_get(chunks, index) };
+            if chunk.is_null() {
+                bail!("mtmd retornou um chunk multimodal nulo");
+            }
+            let last_chunk = index + 1 == chunk_count;
+            let n_tokens = unsafe { sys::mtmd_input_chunk_get_n_tokens(chunk) };
+            let kind = unsafe { sys::mtmd_input_chunk_get_type(chunk) };
+            if kind == sys::MTMD_INPUT_CHUNK_TYPE_TEXT {
+                let mut next = n_past;
+                let rc = unsafe {
+                    sys::mtmd_helper_eval_chunk_single(
+                        vision_ctx,
+                        self.ctx,
+                        chunk,
+                        n_past,
+                        seq_id as sys::llama_seq_id,
+                        n_batch as i32,
+                        logits_last && last_chunk,
+                        &mut next,
+                    )
+                };
+                if rc != 0 {
+                    bail!("mtmd falhou ao avaliar o texto da mensagem multimodal (rc={rc})");
+                }
+                n_past = next;
+                cell += n_tokens;
+                continue;
+            }
+            if kind != sys::MTMD_INPUT_CHUNK_TYPE_IMAGE {
+                bail!("este modelo só aceita imagem como entrada multimodal");
+            }
+
+            let rc = unsafe { sys::mtmd_encode_chunk(vision_ctx, chunk) };
+            if rc != 0 {
+                bail!("mtmd falhou ao codificar a imagem (rc={rc})");
+            }
+            let embd = unsafe { sys::mtmd_get_output_embd(vision_ctx) };
+            if embd.is_null() {
+                bail!("mtmd não devolveu os embeddings da imagem");
+            }
+            let rows = unsafe { std::slice::from_raw_parts(embd, n_tokens * width) };
+            let wide = widen_embedding_rows(rows, width, copies);
+            let positions = match mrope_positions {
+                Some(positions) => Some(positions.get(cell..cell + n_tokens).ok_or_else(|| {
+                    anyhow::anyhow!("a tabela M-RoPE não cobre as células da imagem")
+                })?),
+                None => None,
+            };
+
+            let non_causal = unsafe { sys::mtmd_decode_use_non_causal(vision_ctx, chunk) };
+            if non_causal {
+                unsafe { sys::llama_set_causal_attn(self.ctx, false) };
+            }
+            let decoded = (|| -> Result<()> {
+                for start in (0..n_tokens).step_by(n_batch) {
+                    let end = (start + n_batch).min(n_tokens);
+                    let rows = end - start;
+                    let mut storage = match positions {
+                        Some(positions) => {
+                            let mut storage = vec![0 as sys::llama_pos; rows * 4];
+                            for (row, position) in positions[start..end].iter().enumerate() {
+                                write_mrope_position(&mut storage, rows, row, *position)?;
+                            }
+                            Some(storage)
+                        }
+                        None => None,
+                    };
+                    let mut batch =
+                        unsafe { sys::llama_batch_init(rows as i32, wide_width as i32, 1) };
+                    batch.n_tokens = rows as i32;
+                    batch.token = ptr::null_mut();
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            wide[start * wide_width..end * wide_width].as_ptr(),
+                            batch.embd,
+                            rows * wide_width,
+                        );
+                        for i in 0..rows {
+                            *batch.pos.add(i) = n_past + (start + i) as sys::llama_pos;
+                            *batch.n_seq_id.add(i) = 1;
+                            *(*batch.seq_id.add(i)).add(0) = seq_id as sys::llama_seq_id;
+                            *batch.logits.add(i) =
+                                (logits_last && last_chunk && start + i + 1 == n_tokens) as i8;
+                        }
+                    }
+                    let scalar_positions = batch.pos;
+                    if let Some(storage) = storage.as_mut() {
+                        batch.pos = storage.as_mut_ptr();
+                    }
+                    let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+                    batch.pos = scalar_positions;
+                    unsafe { sys::llama_batch_free(batch) };
+                    if rc != 0 {
+                        bail!("llama_decode falhou na imagem (rc={rc})");
+                    }
+                }
+                Ok(())
+            })();
+            if non_causal {
+                unsafe { sys::llama_set_causal_attn(self.ctx, true) };
+            }
+            decoded?;
+            n_past += unsafe { sys::mtmd_input_chunk_get_n_pos(chunk) } as sys::llama_pos;
+            cell += n_tokens;
+        }
+        Ok(n_past)
     }
 
     /// Converte os chunks do mtmd para a representação que atravessa o POM.

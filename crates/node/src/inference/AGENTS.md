@@ -1543,6 +1543,18 @@ weights plus `VISION_COMPUTE_RESERVE_BYTES`, or on the CPU when none fits
 null in `ggml_gallocr_alloc_graph` on the first image). `image_max_tokens` is
 capped at `VISION_MAX_IMAGE_TOKENS`, which bounds the warmup and each encode.
 
+**An image on a hyper-connection model enters as `hc` copies.** `qwen4exp`
+reads any batch without token ids as its wide residual (`n_embd_out = hc *
+n_embd` per row), the form one pipeline hop forwards to the next. The
+projector emits `n_embd_inp` per row, so `mtmd_helper_eval_chunks` aborted the
+head in `ggml_reshape_3d` on the first image. When `n_embd_out` is a whole
+multiple of `n_embd_inp`, `decode_multimodal` evaluates the chunks itself
+(`eval_chunks_with_wide_images`): text chunks still go through the mtmd
+helper, and each image is encoded by mtmd and decoded with every row repeated
+`n_embd_out / n_embd_inp` times, which is how the token path starts the
+residual. Positions and the non-causal switch follow the helper. Other models
+keep the stock helper.
+
 **M-RoPE hidden-state batches always carry four positions per row.** With an
 embedding batch (`batch.token` null) llama.cpp reads `pos[j * n_tokens + i]`
 for every M-RoPE section. Text-only requests used to send one scalar position

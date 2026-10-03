@@ -301,10 +301,7 @@ pub fn context_params_with_offload(
     // Sem instantâneos de estado recorrente: o bloco `nextn` é uma camada
     // de atenção comum, e o upstream zera este campo pelo mesmo motivo.
     cparams.n_rs_seq = 0;
-    if cfg.n_threads > 0 {
-        cparams.n_threads = cfg.n_threads;
-        cparams.n_threads_batch = cfg.n_threads;
-    }
+    crate::llm::apply_thread_params(&mut cparams, cfg);
     cparams
 }
 

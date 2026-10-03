@@ -1004,6 +1004,11 @@ visibilidade dos controles de implantação na UI local.
   parte de uma camada para a CPU. `json_from_wrapper` é quem chama e quem
   libera a string (`llama_rs_string_free`, nunca `free` nem
   `CString::from_raw`).
+- `effective_n_threads` / `apply_thread_params` (`llama-engine`, `llm/config.rs`)
+  - threads de CPU dos contextos principal e MTP. Sem `n_threads` configurado,
+  usa todos os threads disponíveis ao processo (`available_parallelism`, que
+  respeita afinidade e cota de CPU do container) em vez do número fixo e
+  pequeno do llama.cpp; vale para geração e lote.
 - `LlmEngine::flash_attn` / `LlmEngine::load_params` - com que parâmetros de
   llama.cpp este contexto está de pé, para o `/health` e a tela de Detalhes.
   Nada aqui é eco do `EngineConfig`: os valores saem do contexto vivo

@@ -726,6 +726,19 @@ mod pool_tests {
     }
 
     #[test]
+    fn threads_default_to_everything_the_process_may_use() {
+        let available = std::thread::available_parallelism().unwrap().get() as i32;
+        assert_eq!(effective_n_threads(0), available);
+        assert_eq!(effective_n_threads(-1), available);
+        assert_eq!(effective_n_threads(3), 3);
+
+        let mut params = unsafe { sys::llama_context_default_params() };
+        apply_thread_params(&mut params, &cfg());
+        assert_eq!(params.n_threads, available);
+        assert_eq!(params.n_threads_batch, available);
+    }
+
+    #[test]
     fn context_batch_params_follow_the_requested_batch_when_fit_is_disabled() {
         let mut cfg = cfg();
         cfg.mtp = true;

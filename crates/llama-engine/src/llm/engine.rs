@@ -547,10 +547,7 @@ impl LlmEngine {
         apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
         cparams.embeddings = generic_embeddings_compatible(cfg.need_embeddings, n_embd, n_embd_out);
         cparams.n_rs_seq = cfg.rs_seq_window;
-        if cfg.n_threads > 0 {
-            cparams.n_threads = cfg.n_threads;
-            cparams.n_threads_batch = cfg.n_threads;
-        }
+        apply_thread_params(&mut cparams, cfg);
 
         // ── Residual capture callback ────────────────────────────────────────
         let capture: Box<Mutex<CaptureSlot>> = Box::new(Mutex::new(CaptureSlot {

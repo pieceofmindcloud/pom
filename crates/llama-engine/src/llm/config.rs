@@ -1136,6 +1136,29 @@ fn effective_n_ubatch_with_limit(cfg: &EngineConfig, external_moe: bool) -> u32 
     }
 }
 
+/// Quantos threads de CPU o llama.cpp usa num contexto.
+///
+/// Sem valor configurado (`n_threads <= 0`), o POM usa todos os threads que o
+/// processo tem disponíveis na máquina onde roda: `available_parallelism`
+/// respeita a afinidade e a cota de CPU do container. O padrão do llama.cpp é
+/// um número fixo e pequeno, que deixa a CPU quase ociosa justamente quando
+/// parte das camadas não coube na VRAM e roda nela.
+pub fn effective_n_threads(requested: i32) -> i32 {
+    if requested > 0 {
+        return requested;
+    }
+    std::thread::available_parallelism()
+        .map(|threads| i32::try_from(threads.get()).unwrap_or(i32::MAX))
+        .unwrap_or(1)
+}
+
+/// Aplica `effective_n_threads` à geração e ao lote do contexto.
+pub fn apply_thread_params(cparams: &mut sys::llama_context_params, cfg: &EngineConfig) {
+    let threads = effective_n_threads(cfg.n_threads);
+    cparams.n_threads = threads;
+    cparams.n_threads_batch = threads;
+}
+
 /// Aplica a política de lote público e microlote do contexto principal.
 pub fn apply_context_batch_params(cparams: &mut sys::llama_context_params, cfg: &EngineConfig) {
     cparams.n_batch = cfg.n_batch;

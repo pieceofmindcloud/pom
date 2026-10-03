@@ -395,13 +395,14 @@ service of kind `rag`; the gateway knows no plugin by name.
   is ignored); without it the plugin searches every collection it has a folder
   linked to. The gateway reads the names with the plugin's `peer.collections`
   (same route and timeout as the search, cached 15 s) and publishes them as
-  `rag_collections` in `GET /api/ui/chat/capabilities`. The Chat shows a
-  collection picker next to the RAG button when RAG is on and there is more
-  than one. The audit records the collection as `rag.collection`.
+  `rag_collections` in `GET /api/ui/chat/capabilities`. The audit records the
+  collection as `rag.collection`.
 - **Turning it on and off.** A request without the `rag` field retrieves;
-  `"rag": false` does not. The Chat has a RAG button (shown only while
-  `GET /api/ui/chat/capabilities` reports `rag: "supported"`) that starts off
-  and always states its choice, `true` or `false`. `POM_RAG=0` turns retrieval
+  `"rag": false` does not. The Chat has a database icon next to the model
+  picker (shown only while `GET /api/ui/chat/capabilities` reports
+  `rag: "supported"`); its menu offers no search (the default), every
+  collection, or one collection, and the Chat always states the choice,
+  `true` or `false`. `POM_RAG=0` turns retrieval
   off on the gateway.
 
 `/v1/messages`, `/v1/completions` and `/api/generate` do not retrieve.

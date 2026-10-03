@@ -14,6 +14,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Database,
   Mic,
   MicOff,
   MessagesSquare,
@@ -119,6 +120,10 @@ type SpeechWindow = Window & {
 
 function speechRecognitionConstructor(): SpeechRecognitionConstructor | undefined {
   if (typeof window === "undefined") return undefined;
+  // Browsers only hand the microphone to a secure page (HTTPS or localhost):
+  // on plain HTTP the recognizer exists and every attempt fails, so the
+  // button would be there and never work.
+  if (window.isSecureContext === false) return undefined;
   const speechWindow = window as SpeechWindow;
   return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
 }
@@ -413,6 +418,93 @@ function TitleField({
  * message, and every change to it is written into the transcript so a thread
  * that switched model halfway still reads correctly later.
  */
+/**
+ * Retrieval for this conversation: off, every collection, or one of them.
+ * A database icon next to the model picker; it lights up while retrieval is
+ * on, and its menu opens upward because the composer sits at the bottom.
+ */
+function RagMenu({
+  enabled,
+  collection,
+  collections,
+  onChange,
+}: {
+  enabled: boolean;
+  collection: string;
+  collections: string[];
+  onChange: (enabled: boolean, collection: string) => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: MouseEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("mousedown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+  const options = [
+    { key: "off", label: t("chat.ragOff"), on: false, name: "" },
+    { key: "all", label: t("chat.ragCollectionAll"), on: true, name: "" },
+    ...collections.map((name) => ({ key: `c:${name}`, label: name, on: true, name })),
+  ];
+  const current = !enabled ? "off" : collection ? `c:${collection}` : "all";
+  return (
+    <div ref={root} className="relative shrink-0">
+      <button
+        type="button"
+        aria-label={t("chat.ragToggle")}
+        aria-pressed={enabled}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={enabled ? t("chat.ragOn", { collection: collection || t("chat.ragCollectionAll") }) : t("chat.ragToggleHint")}
+        onClick={() => setOpen(!open)}
+        className={clsx(
+          "inline-flex h-8 w-8 items-center justify-center rounded-lg border transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-iris/25",
+          enabled
+            ? "border-aqua/50 bg-aqua/[0.1] text-aqua"
+            : "border-line bg-raised text-faint hover:border-line-strong hover:text-muted",
+        )}
+      >
+        <Database className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label={t("chat.ragCollection")}
+          className="absolute bottom-full left-0 z-20 mb-1.5 max-h-64 w-56 overflow-y-auto rounded-lg border border-line bg-raised p-1 shadow-lg"
+        >
+          {options.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              role="menuitemradio"
+              aria-checked={current === option.key}
+              onClick={() => {
+                onChange(option.on, option.name);
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[0.78rem] text-fg hover:bg-line/40"
+            >
+              <Check className={clsx("h-3.5 w-3.5 shrink-0 text-aqua", current !== option.key && "invisible")} />
+              <span className="min-w-0 truncate">{option.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ModelPicker({
   value,
   options,
@@ -1195,46 +1287,6 @@ function ChatScreen() {
                       {t("chat.thinkToggle")}
                     </Button>
                   )}
-                  {ragAvailable && (
-                    <Button
-                      size="sm"
-                      variant={ragEnabled ? "outline" : "ghost"}
-                      aria-pressed={ragEnabled}
-                      aria-label={t("chat.ragToggle")}
-                      title={t("chat.ragToggleHint")}
-                      onClick={() => {
-                        const updated = { ...session, ragEnabled: !ragEnabled };
-                        setSession(updated);
-                        upsert(updated);
-                      }}
-                      className={clsx(
-                        "shrink-0",
-                        ragEnabled ? "border-aqua/50 bg-aqua/[0.08] text-aqua" : "text-faint",
-                      )}
-                    >
-                      {t("chat.ragToggle")}
-                    </Button>
-                  )}
-                  {ragAvailable && ragEnabled && ragCollections.length > 1 && (
-                    <select
-                      value={ragCollection}
-                      aria-label={t("chat.ragCollection")}
-                      title={t("chat.ragCollectionHint")}
-                      onChange={(event) => {
-                        const updated = { ...session, ragCollection: event.target.value || undefined };
-                        setSession(updated);
-                        upsert(updated);
-                      }}
-                      className="h-8 min-w-0 max-w-[11rem] shrink cursor-pointer truncate rounded-lg border border-line bg-raised px-2 text-[0.74rem] text-fg focus:border-iris focus:outline-none"
-                    >
-                      <option value="">{t("chat.ragCollectionAll")}</option>
-                      {ragCollections.map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
-                    </select>
-                  )}
                   {speechSupported && (
                     <button
                       type="button"
@@ -1264,7 +1316,21 @@ function ChatScreen() {
             {/* Under the box, on the same baseline: what answers on the left,
                 how to send on the right. */}
             <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-              <ModelPicker value={model} options={available} onChange={chooseModel} />
+              <div className="flex min-w-0 items-center gap-2">
+                <ModelPicker value={model} options={available} onChange={chooseModel} />
+                {ragAvailable && (
+                  <RagMenu
+                    enabled={ragEnabled}
+                    collection={ragCollection}
+                    collections={ragCollections}
+                    onChange={(enabled, collection) => {
+                      const updated = { ...session, ragEnabled: enabled, ragCollection: collection || undefined };
+                      setSession(updated);
+                      upsert(updated);
+                    }}
+                  />
+                )}
+              </div>
               <p className="text-[0.7rem] text-faint">{t("chat.composerHint")}</p>
             </div>
             {model && (

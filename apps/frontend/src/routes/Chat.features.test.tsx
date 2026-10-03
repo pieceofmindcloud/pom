@@ -253,37 +253,66 @@ describe("Chat", () => {
     await waitFor(() => expect(streamScenario.lastBody?.thinking_enabled).toBe(false));
   });
 
-  it("oferece o RAG só quando a rede tem um servidor de RAG, desligado até a pessoa pedir", async () => {
+  it("oferece o RAG num ícone com menu, desligado até a pessoa escolher", async () => {
     ragScenario.available = true;
+    ragScenario.collections = ["folha", "manuais"];
     mountChat();
     const rag = screen.getByRole("button", { name: "RAG" });
     expect(rag.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByRole("menu")).toBeNull();
 
     // Desligado é o padrão, e vai dito no pedido: o gateway não busca nada.
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "primeira" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
     await waitFor(() => expect(streamScenario.lastBody?.rag).toBe(false));
-
     await waitFor(() => expect(screen.getByText(/segundo/)).toBeTruthy());
+
     fireEvent.click(screen.getByRole("button", { name: "RAG" }));
+    const items = screen.getAllByRole("menuitemradio").map((item) => item.textContent);
+    expect(items).toEqual(["Sem busca em documentos", "Todas as coleções", "folha", "manuais"]);
+    expect(screen.getByRole("menuitemradio", { name: "Sem busca em documentos" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Todas as coleções" }));
+    expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.getByRole("button", { name: "RAG" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "segunda" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
     await waitFor(() => expect(streamScenario.lastBody?.rag).toBe(true));
+    expect(streamScenario.lastBody && "rag_collection" in streamScenario.lastBody).toBe(false);
   });
 
-  it("deixa escolher a coleção consultada quando o RAG está ligado e há mais de uma", async () => {
+  it("limita a busca à coleção escolhida no menu e desliga pela primeira opção", async () => {
     ragScenario.available = true;
     ragScenario.collections = ["folha", "manuais"];
     mountChat();
-    expect(screen.queryByRole("combobox", { name: "Coleção consultada pelo RAG" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "RAG" }));
-    const picker = screen.getByRole("combobox", { name: "Coleção consultada pelo RAG" });
-    fireEvent.change(picker, { target: { value: "folha" } });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "folha" }));
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "primeira" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
     await waitFor(() => expect(streamScenario.lastBody?.rag).toBe(true));
     expect(streamScenario.lastBody?.rag_collection).toBe("folha");
+    await waitFor(() => expect(screen.getByText(/segundo/)).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "RAG" }));
+    expect(screen.getByRole("menuitemradio", { name: "folha" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Sem busca em documentos" }));
+    expect(screen.getByRole("button", { name: "RAG" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("não oferece o ditado numa página sem HTTPS, onde o navegador nega o microfone", () => {
+    // The recognizer exists; only the page is insecure.
+    vi.stubGlobal("SpeechRecognition", class {});
+    const secure = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    mountChat();
+    expect(screen.getByRole("button", { name: "Iniciar ditado" })).toBeTruthy();
+    cleanup();
+    Object.defineProperty(window, "isSecureContext", { value: false, configurable: true });
+    try {
+      mountChat();
+      expect(screen.queryByRole("button", { name: "Iniciar ditado" })).toBeNull();
+    } finally {
+      if (secure) Object.defineProperty(window, "isSecureContext", secure);
+      else delete (window as unknown as { isSecureContext?: boolean }).isSecureContext;
+    }
   });
 
   it("não mostra o RAG nem o menciona no pedido sem um servidor de RAG na rede", async () => {

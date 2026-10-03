@@ -242,11 +242,12 @@ chat.noModelDetail,Assign a model to the nodes in Settings before testing.,Atrib
 chat.openLargerWindow,Open the chat in a larger window,Abrir o chat em uma janela maior
 chat.openLargerWindowShort,Larger window,Janela maior
 chat.placeholder,Write to the network…,Escreva para a rede…
-chat.ragCollection,Collection searched by RAG,Coleção consultada pelo RAG
+chat.ragCollection,Documents searched for this conversation,Documentos consultados nesta conversa
 chat.ragCollectionAll,All collections,Todas as coleções
-chat.ragCollectionHint,Keep the search to one collection: fewer documents to look through and more precise passages.,Limitar a busca a uma coleção: menos documentos para percorrer e trechos mais precisos.
+chat.ragOff,No document search,Sem busca em documentos
+chat.ragOn,Searching documents: {collection},Buscando em documentos: {collection}
 chat.ragToggle,RAG,RAG
-chat.ragToggleHint,Add passages from the indexed documents to this question. The choice stays active in this conversation.,Acrescentar trechos dos documentos indexados a esta pergunta. A escolha fica ativa nesta conversa.
+chat.ragToggleHint,Search the indexed documents (RAG) and add what is found to each question of this conversation.,Buscar nos documentos indexados (RAG) e acrescentar o que for encontrado a cada pergunta desta conversa.
 chat.removeAttachment,Remove {name},Remover {name}
 chat.renameAria,Conversation name,Nome da conversa
 chat.renameHint,Click to rename this conversation,Clique para renomear esta conversa

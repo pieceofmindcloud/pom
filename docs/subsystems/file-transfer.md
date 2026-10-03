@@ -295,3 +295,13 @@ an invented `grant` are refused.
   `transfer.rs`) - a `grant` created by `send_to_peer` lives until the process
   dies, even after the download finishes or the offer is refused. The error
   message talks about an "expired grant", but there is no deadline.
+
+## Sidecars outside the shard folder
+
+A pull by path is confined to the shard folder (`safe_model_path`), with one
+exception: a path that is in the serving node's own sidecar inventory
+(`catalog::discover_sidecars` over its shard folder and GGUF libraries) is
+served too. That is how a deployment copies a vision projector or an MTP draft
+from a models folder to the head or the tail. Any other path keeps being
+refused. A completed download invalidates the receiver's catalog, so the new
+file shows up on the next read.

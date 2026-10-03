@@ -625,6 +625,88 @@ impl PomDb {
         })
     }
 
+    /// Every model -> sidecar link. Authoritative on the principal; elsewhere
+    /// the last copy read from it, used when the principal does not answer.
+    pub fn model_sidecar_links(&self) -> Result<Vec<crate::catalog::SidecarLink>> {
+        self.with_read("ler vínculos de visão e MTP", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT model_key, kind, mode, file_name, size_bytes, updated_at, updated_by
+                 FROM model_sidecar_links ORDER BY model_key, kind",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?;
+            let mut links = Vec::new();
+            for row in rows {
+                let (model_key, kind, mode, file_name, size_bytes, updated_at, updated_by) = row?;
+                links.push(crate::catalog::SidecarLink {
+                    model_key,
+                    kind: serde_json::from_value(serde_json::Value::String(kind))
+                        .context("tipo de vínculo inválido")?,
+                    mode: serde_json::from_value(serde_json::Value::String(mode))
+                        .context("modo de vínculo inválido")?,
+                    file_name,
+                    size_bytes: size_bytes.and_then(|size| u64::try_from(size).ok()),
+                    updated_at,
+                    updated_by,
+                });
+            }
+            Ok(links)
+        })
+    }
+
+    /// Insert or replace one link (one model, one kind).
+    pub fn save_model_sidecar_link(&self, link: &crate::catalog::SidecarLink) -> Result<()> {
+        link.validate().map_err(anyhow::Error::msg)?;
+        let kind = serde_json::to_value(link.kind)?.as_str().unwrap_or_default().to_string();
+        let mode = serde_json::to_value(link.mode)?.as_str().unwrap_or_default().to_string();
+        self.with_write("salvar vínculo de visão ou MTP", |connection| {
+            connection.execute(
+                "INSERT INTO model_sidecar_links
+                    (model_key, kind, mode, file_name, size_bytes, updated_at, updated_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(model_key, kind) DO UPDATE SET
+                    mode = excluded.mode,
+                    file_name = excluded.file_name,
+                    size_bytes = excluded.size_bytes,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by",
+                params![
+                    &link.model_key,
+                    kind,
+                    mode,
+                    &link.file_name,
+                    link.size_bytes.and_then(|size| i64::try_from(size).ok()),
+                    &link.updated_at,
+                    &link.updated_by,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Replace the local copy with the principal's full list.
+    pub fn replace_model_sidecar_links(&self, links: &[crate::catalog::SidecarLink]) -> Result<()> {
+        self.with_write("espelhar vínculos de visão e MTP", |connection| {
+            let tx = connection.unchecked_transaction()?;
+            tx.execute("DELETE FROM model_sidecar_links", [])?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        for link in links {
+            self.save_model_sidecar_link(link)?;
+        }
+        Ok(())
+    }
+
     pub fn thermal_policy(&self) -> Result<Option<ThermalPolicy>> {
         self.with_read("ler política térmica", |connection| {
             let value = connection
@@ -1708,6 +1790,16 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS api_key_revocations_key_idx
             ON api_key_revocations(key_id, revoked_at);
+        CREATE TABLE IF NOT EXISTS model_sidecar_links (
+            model_key TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('mmproj', 'mtp')),
+            mode TEXT NOT NULL CHECK (mode IN ('file', 'embedded', 'none')),
+            file_name TEXT,
+            size_bytes INTEGER,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            PRIMARY KEY (model_key, kind)
+        );
         CREATE TABLE IF NOT EXISTS model_history (
             model_id TEXT PRIMARY KEY,
             identity_kind TEXT NOT NULL,
@@ -2695,6 +2787,8 @@ mod tests {
             shard_sets: Vec::new(),
             scanned: Vec::new(),
             metadata_complete: true,
+            sidecars: Vec::new(),
+            sidecar_roots: Vec::new(),
         };
         db.record_catalog(&catalog).unwrap();
 
@@ -2715,6 +2809,8 @@ mod tests {
             shard_sets: Vec::new(),
             scanned: Vec::new(),
             metadata_complete: true,
+            sidecars: Vec::new(),
+            sidecar_roots: Vec::new(),
         })
         .unwrap();
         assert!(db
@@ -2744,6 +2840,8 @@ mod tests {
             shard_sets: Vec::new(),
             scanned: Vec::new(),
             metadata_complete: false,
+            sidecars: Vec::new(),
+            sidecar_roots: Vec::new(),
         };
 
         db.record_catalog(&catalog).unwrap();
@@ -2788,6 +2886,7 @@ mod tests {
             metadata_error: None,
             metadata_identity: None,
             architecture: Some("llama".into()),
+            embedding_length: None,
             is_moe: false,
             total_layers: shard_range.map(|_| 32),
             quant: Some("Q4_K_M".into()),

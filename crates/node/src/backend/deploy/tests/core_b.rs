@@ -1219,3 +1219,132 @@
         )
         .is_none());
     }
+
+    fn sidecar(kind: crate::catalog::SidecarKind, name: &str, size: u64, path: &str) -> crate::catalog::Sidecar {
+        crate::catalog::Sidecar {
+            kind,
+            path: path.to_string(),
+            file_name: name.to_string(),
+            size_bytes: size,
+            architecture: Some(if kind == crate::catalog::SidecarKind::Mtp { "llama" } else { "clip" }.to_string()),
+            dim: Some(3072),
+            general_name: None,
+            quant: None,
+        }
+    }
+
+    /// The projector belongs to the head and the MTP draft to the tail, and
+    /// neither has to be there already: the one that is missing is copied from
+    /// whoever holds it. The screen's choice wins over the saved link, and
+    /// the link fills in what the screen left open.
+    #[test]
+    fn vision_goes_to_the_head_and_mtp_to_the_tail_copied_when_missing() {
+        use crate::catalog::{SidecarKind, SidecarLink, SidecarMode};
+        let machines = build(vec![m("head", 20_000, &[(0, 15)]), m("tail", 20_000, &[(16, 31)])]);
+        let mut params = RuntimeParams::default();
+        params.mtp_enabled = true;
+        let mut deploy_plan = super::plan(
+            "qwen",
+            &machines,
+            Some(&[pick(0, 15, "head"), pick(16, 31, "tail")]),
+            &params,
+            false,
+            DeployKind::Shards,
+            None,
+        );
+        let blocked_before = deploy_plan.blocked.clone();
+        let bytes_before = deploy_plan.transfer_bytes;
+        let mut inventory = HashMap::new();
+        inventory.insert(
+            "head".to_string(),
+            vec![sidecar(SidecarKind::Mtp, "draft.gguf", 34, "/library/other-quant/draft.gguf")],
+        );
+        inventory.insert(
+            "tail".to_string(),
+            vec![
+                sidecar(SidecarKind::Mmproj, "mmproj.gguf", 7, "/library/mmproj.gguf"),
+                // Wrong width: never offered.
+                crate::catalog::Sidecar { dim: Some(1024), ..sidecar(SidecarKind::Mmproj, "other.gguf", 9, "/x/other.gguf") },
+            ],
+        );
+        let shape = ModelShape {
+            model_key: "qwen.gguf".into(),
+            architecture: Some("llama".into()),
+            embedding_length: Some(3072),
+            embedded_mtp: false,
+        };
+        let links = vec![SidecarLink {
+            model_key: "qwen.gguf".into(),
+            kind: SidecarKind::Mtp,
+            mode: SidecarMode::File,
+            file_name: Some("draft.gguf".into()),
+            size_bytes: Some(34),
+            updated_at: String::new(),
+            updated_by: String::new(),
+        }];
+        let vision = SidecarChoice {
+            mode: Some(SidecarMode::File),
+            file: Some(SidecarRef { file_name: "mmproj.gguf".into(), size_bytes: 7 }),
+        };
+
+        attach_sidecars(&mut deploy_plan, &machines, &inventory, Some(&shape), &links, false, true, Some(&vision), true, None);
+
+        assert_eq!(deploy_plan.blocked, blocked_before);
+        assert_eq!(deploy_plan.sidecars.options.len(), 2, "the 1024-wide projector is not offered");
+        let vision = deploy_plan.sidecars.vision.as_ref().unwrap();
+        assert_eq!(vision.target_node_id, "head");
+        assert!(!vision.from_link);
+        assert!(vision.needs_copy());
+        assert_eq!(vision.source_path.as_deref(), Some("/library/mmproj.gguf"));
+        let mtp = deploy_plan.sidecars.mtp.as_ref().unwrap();
+        assert_eq!(mtp.target_node_id, "tail");
+        assert!(mtp.from_link);
+        assert_eq!(mtp.source_node_id.as_deref(), Some("head"));
+        assert_eq!(deploy_plan.transfer_bytes, bytes_before + 7 + 34);
+
+        // A file nobody has refuses the plan and names it.
+        let gone = SidecarChoice {
+            mode: Some(SidecarMode::File),
+            file: Some(SidecarRef { file_name: "missing.gguf".into(), size_bytes: 1 }),
+        };
+        let mut again = super::plan(
+            "qwen",
+            &machines,
+            Some(&[pick(0, 15, "head"), pick(16, 31, "tail")]),
+            &params,
+            false,
+            DeployKind::Shards,
+            None,
+        );
+        attach_sidecars(&mut again, &machines, &inventory, Some(&shape), &[], false, false, None, true, Some(&gone));
+        assert!(again.blocked.as_deref().is_some_and(|reason| reason.contains("missing.gguf")));
+        assert!(again.sidecars.vision.is_none(), "vision off resolves no projector");
+    }
+
+    #[test]
+    fn an_external_draft_makes_mtp_available_for_a_model_without_nextn() {
+        let machines = build(vec![m("head", 20_000, &[(0, 15)]), m("tail", 20_000, &[(16, 31)])]);
+        let mut deploy_plan = super::plan(
+            "qwen",
+            &machines,
+            Some(&[pick(0, 15, "head"), pick(16, 31, "tail")]),
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Shards,
+            None,
+        );
+        assert_eq!(deploy_plan.capabilities.mtp.state, crate::capabilities::CapabilityState::Unsupported);
+        let mut inventory = HashMap::new();
+        inventory.insert(
+            "tail".to_string(),
+            vec![sidecar(crate::catalog::SidecarKind::Mtp, "draft.gguf", 34, "/library/draft.gguf")],
+        );
+        let shape = ModelShape {
+            model_key: "qwen.gguf".into(),
+            architecture: Some("llama".into()),
+            embedding_length: Some(3072),
+            embedded_mtp: false,
+        };
+        attach_sidecars(&mut deploy_plan, &machines, &inventory, Some(&shape), &[], false, false, None, false, None);
+        assert_eq!(deploy_plan.capabilities.mtp.state, crate::capabilities::CapabilityState::Supported);
+    }

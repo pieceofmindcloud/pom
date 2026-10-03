@@ -30,6 +30,8 @@
 import { useState, type ReactNode } from "react";
 import { AlertTooltip, InfoTip, Input, Select } from "./ui";
 import { MTP_MIN_PROBABILITY, Tick } from "./RuntimeParamsForm";
+import { SidecarPicker, type SidecarPick } from "./SidecarPicker";
+import type { SidecarOption, SidecarSlot } from "../lib/types";
 import type {
   DeploymentCapabilities,
   InferenceMode,
@@ -124,6 +126,25 @@ export interface MergeControl {
 }
 
 /** Vision is a deployment control, even though only the pipeline head uses it. */
+/** One sidecar choice in the inspector: the pick, what the plan did with it. */
+export interface SidecarChoiceControl {
+  value: SidecarPick;
+  onChange: (next: SidecarPick) => void;
+  slot?: SidecarSlot | null;
+  /** Describes the model's saved link; `null` when none is saved. */
+  linkLabel: string | null;
+}
+
+/**
+ * Vision projector for the head and MTP draft for the tail, picked among the
+ * compatible files of the whole network (`DeployPlan.sidecars.options`).
+ */
+export interface SidecarControls {
+  options: SidecarOption[];
+  vision: SidecarChoiceControl;
+  mtp: SidecarChoiceControl & { allowEmbedded: boolean };
+}
+
 export interface VisionControl {
   available: boolean;
   enabled: boolean;
@@ -226,6 +247,7 @@ export function DeploymentInspector({
   cacheTypes,
   merge,
   vision,
+  sidecars,
   /**
    * O motor só é uma pergunta quando o modelo é MoE: num modelo denso não há
    * escolha a fazer, e um combo com uma resposta só é ruído. O Histórico
@@ -244,6 +266,7 @@ export function DeploymentInspector({
   cacheTypes?: CacheTypeControl;
   merge?: MergeControl;
   vision?: VisionControl;
+  sidecars?: SidecarControls;
   showInferenceMode?: boolean;
   inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
@@ -459,6 +482,22 @@ export function DeploymentInspector({
             {numeric("mtp_min_probability")}
           </>
         )}
+        {mtpOn && sidecars && !readOnly && (
+          <div className="px-0.5 py-1.5">
+            <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.mtp")}</p>
+            <SidecarPicker
+              kind="mtp"
+              label={t("sidecars.mtp")}
+              options={sidecars.options.filter((option) => option.kind === "mtp")}
+              value={sidecars.mtp.value}
+              onChange={sidecars.mtp.onChange}
+              slot={sidecars.mtp.slot}
+              linkLabel={sidecars.mtp.linkLabel}
+              allowEmbedded={sidecars.mtp.allowEmbedded}
+              compact
+            />
+          </div>
+        )}
       </Section>
 
       {vision && (
@@ -473,7 +512,21 @@ export function DeploymentInspector({
                   onToggle={() => vision.onChange(!vision.enabled)}
                 />
               </InspectorRow>
-              {vision.candidates.length > 1 ? (
+              {vision.enabled && sidecars && !readOnly ? (
+                <div className="px-0.5 py-1.5">
+                  <p className="mb-1 text-[0.6rem] text-muted">{t("sidecars.vision")}</p>
+                  <SidecarPicker
+                    kind="mmproj"
+                    label={t("sidecars.vision")}
+                    options={sidecars.options.filter((option) => option.kind === "mmproj")}
+                    value={sidecars.vision.value}
+                    onChange={sidecars.vision.onChange}
+                    slot={sidecars.vision.slot}
+                    linkLabel={sidecars.vision.linkLabel}
+                    compact
+                  />
+                </div>
+              ) : vision.candidates.length > 1 ? (
                 <InspectorRow label="Modelo de visão" tip="Escolha o projetor compatível que será usado na cabeça da implantação.">
                   <Select
                     aria-label="Projetor de visão"

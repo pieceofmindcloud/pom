@@ -64,6 +64,8 @@ mod tests {
             shard_sets: Vec::new(),
             scanned: Vec::new(),
             metadata_complete: false,
+            sidecars: Vec::new(),
+            sidecar_roots: Vec::new(),
         });
         let mut cached = CachedCatalog {
             at: Instant::now(),
@@ -124,6 +126,8 @@ mod tests {
                 shard_sets: Vec::new(),
                 scanned: Vec::new(),
                 metadata_complete: false,
+                sidecars: Vec::new(),
+                sidecar_roots: Vec::new(),
             }),
             refreshing: Some(roots),
             enriching: None,
@@ -182,6 +186,9 @@ mod tests {
             params: RuntimeParams::default(),
             use_mmproj: false,
             mmproj_path: None,
+            mtp_draft_path: None,
+            mtp_draft_file: None,
+            mmproj_file: None,
         };
         let ident = |rank: u32, role: &str| crate::network::TpIdentity {
             role: role.into(),
@@ -254,6 +261,9 @@ mod tests {
             peer_count: None,
             tp: None,
             mmproj_path: None,
+            mtp_draft_path: None,
+            mtp_draft_file: None,
+            mmproj_file: None,
             use_mmproj: false,
         };
 
@@ -294,6 +304,9 @@ mod tests {
             params: RuntimeParams::default(),
             use_mmproj: false,
             mmproj_path: None,
+            mtp_draft_path: None,
+            mtp_draft_file: None,
+            mmproj_file: None,
         }
     }
 

@@ -975,6 +975,19 @@ backend redoes the survey, checks the chosen path against the GGUF headers in
 the peer's apply and does not compute the SHA-256 of the `mmproj` payload to
 discover or select candidates.
 
+`GET /api/ui/model-sidecar-links` (`NodeAdmin`) returns `{ links, stale }`:
+the principal's list of model -> projector / MTP draft links, read from the
+principal by a secondary (which keeps the last copy and sets `stale: true`
+when the principal does not answer). `POST /api/ui/model-sidecar-links`
+(`AdminOnly`) saves one `SidecarLink`; a secondary forwards it to the
+principal, which stamps `updated_at`/`updated_by`. A file link needs a name and
+a size; vision cannot be `embedded`. `DeployRequest` accepts `vision_choice`
+and `mtp_choice` (`{ mode, file: { file_name, size_bytes } }`) and
+`DeployPlan.sidecars` answers with the compatible files of the network (each
+with every holder and its path), the resolved `vision` (head) and `mtp` (tail)
+slots and whether each is already there or will be copied.
+`/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine.
+
 **`GET` and `POST /api/ui/model-provider/config`** require `ConnectionAuth` and
 control the optional Hugging Face token. GET only returns
 `{ configured, masked, source }`, never the secret. POST receives `{ token }` -

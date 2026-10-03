@@ -602,9 +602,9 @@ Per-file list:
   rows use the one-based labels `1of2`, `2of2`, and so on, with the zero-based
   rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
   `../lib/deleteModel`. `uniqueName` disambiguates same-hostname peers with
-  the node_id prefix. Full-bleed shell; each `ShardCard` shows the set's
-  `mmproj_path` basename (`../lib/format::optionalBasename`) next to the coverage bar,
-  or "no projector" when the set has none - never invented.
+  the node_id prefix. Full-bleed shell; each `ShardCard` carries the set's
+  vision / MTP link editor (`SidecarLinkEditor`), with the compatible files of
+  every machine from `useClusterCatalog`.
 - `SliceModels.tsx` - "Fatiar": full-bleed shell. Pipeline and Tensor
   Parallelism are a segmented tab pair (`role="tablist"`), not a checkbox -
   each mode owns its own controls (Pipeline: size list, one explicit layer
@@ -649,7 +649,8 @@ Per-file list:
   projector's basename (`../lib/format::optionalBasename`) when
   `DiscoveredModel.mmproj_path` is set, or "no projector" otherwise - the
   catalog already resolves this file from GGUF identity and projection dimensions,
-  the screen only renders it. `ScannedRoots`
+  the screen only renders it; the cell's "Vision and MTP" button opens the
+  same `SidecarLinkEditor` as Shards in a window. `ScannedRoots`
   lists the scanned folders and per-folder file counts. Full-bleed shell.
 - `RemoteModels.tsx` - mostra modelos GGUF em alta pela API pública do Hugging
   Face ao abrir, sem credenciais; a busca autenticada usa debounce em
@@ -742,6 +743,9 @@ format at deploy time. Without candidates, it shows `mmproj_reason` or a
 localized hint. The plan request carries no projector; the deployment sends
 `vision` and, only with vision on, `mmproj_path`, and the route redoes the
 survey and the plan before validating the path chosen for the head.
+The vision and MTP pickers of the inspector (`DeployPlan.sidecars`) send
+`vision_choice` / `mtp_choice` with the plan and the deploy; "use the model's
+link" sends nothing and leaves the saved link in charge.
 `Chat.tsx` usa um único
 campo de ficheiro sem filtro de extensão, aceita arrastar e largar com retorno
 visual e redimensiona imagens antes de enviá-las ao endpoint OpenAI. Imagens

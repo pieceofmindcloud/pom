@@ -503,6 +503,9 @@ pub(super) async fn add_node_endpoint(
                 peer_count: Some(peer_count),
                 tp: None,
                 mmproj_path: None,
+                mtp_draft_path: None,
+                mtp_draft_file: None,
+                mmproj_file: None,
                 use_mmproj: false,
             }],
             // Quem e a entrada do pipeline nao muda por isto: so quem fica com
@@ -545,6 +548,9 @@ pub(super) async fn add_node_endpoint(
             peer_count: Some(peer_count),
             tp: None,
             mmproj_path: None,
+            mtp_draft_path: None,
+            mtp_draft_file: None,
+            mmproj_file: None,
             use_mmproj: false,
         };
         let machines = survey(&state, &req.group, req.kind, None, None)

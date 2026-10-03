@@ -85,6 +85,7 @@ mod planning;
 mod preview;
 #[path = "routes.rs"]
 mod routes_impl;
+mod sidecars;
 mod survey;
 mod types;
 
@@ -96,6 +97,7 @@ use preview::*;
 pub use routes_impl::*;
 #[cfg(test)]
 pub(crate) use survey::survey_for_tests;
+pub use sidecars::*;
 use survey::*;
 pub use types::*;
 

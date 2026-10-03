@@ -430,6 +430,39 @@ touch the raw image. Before starting the server, `NodeConfig::validate`
 rereads the headers and refuses a dimensional mismatch or a contradictory GGUF
 identity, including on a path persisted by an old configuration.
 
+### Sidecars: vision projector and MTP draft anywhere in the network
+
+A projector or an external MTP draft rarely sits next to the file a peer
+loads: a slice lives in the shard folder, and the sidecars stay in a models
+folder, often the folder of another quantization. Three pieces handle that.
+
+- **Inventory.** Each node's catalog lists `sidecars` (`catalog::Sidecar`)
+  under the shard folder and the GGUF libraries, read from the header: a
+  projector has `general.architecture == "clip"`; an MTP draft has
+  `<arch>.nextn_predict_layers > 0`, no split and at most
+  `MTP_DRAFT_MAX_TENSORS` tensors (the `mtp-` prefix is only a hint, because a
+  draft's `general.name` may say nothing about its model). Sidecars are never
+  listed as models. `Sidecar::compatible_with` is the one rule: a projector
+  matches the model's `embedding_length`; a draft also its architecture.
+- **Link.** `SidecarLink` (`model_key`, `kind`, `mode` = file / embedded /
+  none, file name + size) is kept on the principal in `model_sidecar_links`.
+  `model_key` is the model label, the same string for a slice set
+  (`model_label`) and a whole model (`name`). A file is named by name + size,
+  never by path, because each machine keeps it in its own folder.
+- **Plan and launch.** `deploy::attach_sidecars` resolves the screen's choice
+  (`DeployRequest.vision_choice` / `mtp_choice`) or else the link: the head
+  gets the projector, the tail gets the MTP draft. A target that already has a
+  file with that name and size uses it; otherwise a holder is chosen, the copy
+  joins `transfer_bytes` and the `pulls` of `lifecycle::run` (by path, landing
+  in the target's `recebidos/` folder), and a file nobody has blocks the plan
+  naming it. `LaunchTarget`/`ApplyRequest` carry `mmproj_file` and
+  `mtp_draft_file`; the target resolves them on its own disk at apply time
+  (`catalog::find_local_sidecar`), so a file copied a moment ago is found
+  without waiting for the catalog cache. A model without `nextn` reports MTP as
+  supported when a compatible draft exists anywhere in the network. With no
+  choice and no link, the old defaults apply: the catalog's sibling projector
+  and the `mtp-` sibling of the loaded file.
+
 ### The model and its size
 
 `model_size` resolves the model's total layers with the precedence

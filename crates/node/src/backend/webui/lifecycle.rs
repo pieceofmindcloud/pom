@@ -615,6 +615,9 @@ pub(super) async fn release_slice(
         skip_split: true,
         use_mmproj: cfg.mmproj_path.is_some(),
         mmproj_path: cfg.mmproj_path.clone(),
+        mtp_draft_path: None,
+        mtp_draft_file: None,
+        mmproj_file: None,
         merge: None,
         params: RuntimeParams::from(&cfg),
     };
@@ -750,6 +753,18 @@ pub struct LaunchTarget {
     /// Projector path on the target peer, resolved from its shard metadata.
     #[serde(default)]
     pub mmproj_path: Option<String>,
+    /// External MTP draft on the target peer (the pipeline tail), resolved by
+    /// the deployment from the model's sidecar link. `None` keeps the peer's
+    /// own lookup next to the loaded file.
+    #[serde(default)]
+    pub mtp_draft_path: Option<String>,
+    /// The same draft by name + size, for the target to find on its own disk
+    /// when the coordinator did not know the path (a file copied a moment ago).
+    #[serde(default)]
+    pub mtp_draft_file: Option<crate::catalog::SidecarFile>,
+    /// The projector by name + size, under the same rule, for the head.
+    #[serde(default)]
+    pub mmproj_file: Option<crate::catalog::SidecarFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -950,6 +965,9 @@ pub(crate) async fn launch(
             merge: target.merge.clone(),
             use_mmproj: req.use_mmproj && target.use_mmproj,
             mmproj_path: target.mmproj_path.clone(),
+            mtp_draft_path: target.mtp_draft_path.clone(),
+            mtp_draft_file: target.mtp_draft_file.clone(),
+            mmproj_file: target.mmproj_file.clone(),
             params,
         };
 

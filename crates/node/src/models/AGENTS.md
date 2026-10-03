@@ -9,6 +9,15 @@ Modelos, leitura de GGUF, planejamento e arquivos de fatias. O módulo é usado
 por `main.rs` e pelos handlers de catálogo, fatiamento, implantação e
 transferência.
 
+- `catalog.rs` sidecars - `Catalog.sidecars` lists vision projectors and
+  external MTP drafts found under the shard folder and the GGUF libraries
+  (`discover_sidecars`, filled by `enrich`); `sidecar_kind` recognizes them
+  from the header (clip, or `nextn` with few tensors and no split), so they are
+  dropped from `models`. `Sidecar::compatible_with` is the projector/draft to
+  model rule, `SidecarLink`/`SidecarMode` the link kept on the principal,
+  `SidecarFile` the name + size identity and `find_local_sidecar` the on-disk
+  lookup used at apply time. `DiscoveredModel.embedding_length` carries the
+  width a sidecar must match.
 - `catalog.rs` - descobre modelos inteiros e fatias nas pastas configuradas.
   `discover_fast` enumera arquivos e lê apenas `stat`/metadados do sistema,
   sem abrir o conteúdo GGUF; `enrich` lê os cabeçalhos depois e marca

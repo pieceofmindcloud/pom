@@ -913,6 +913,10 @@ export interface DiscoveredModel {
   /** Motivo concreto que impede ler um conjunto multipart incompleto. */
   multipart_error?: string | null;
   architecture: string | null;
+  /** `<arch>.embedding_length`: the width a projector or MTP draft must match. */
+  embedding_length?: number | null;
+  /** Header evidence: `mtp` is true when the GGUF carries its own `nextn` block. */
+  capabilities?: { thinking?: boolean | null; mtp?: boolean | null } | null;
   /** True only when the GGUF metadata reports more than one expert. */
   is_moe?: boolean;
   total_layers: number | null;
@@ -1039,9 +1043,90 @@ export interface CatalogResponse {
   node_id: string;
   models: DiscoveredModel[];
   shard_sets: ShardSet[];
+  /** Vision projectors and MTP drafts found in this node's folders. */
+  sidecars?: Sidecar[];
   scanned: ScannedRoot[];
   /** False while the node is reading GGUF headers in the background. */
   metadata_complete: boolean;
+}
+
+export type SidecarKind = "mmproj" | "mtp";
+export type SidecarMode = "file" | "embedded" | "none";
+
+/** A vision projector or an external MTP draft on one machine's disk. */
+export interface Sidecar {
+  kind: SidecarKind;
+  path: string;
+  file_name: string;
+  size_bytes: number;
+  architecture: string | null;
+  /** Projection width for a projector, embedding width for an MTP draft. */
+  dim: number | null;
+  general_name: string | null;
+  quant: string | null;
+}
+
+/** A sidecar named the way it crosses machines: name + size. */
+export interface SidecarFile {
+  file_name: string;
+  size_bytes: number;
+}
+
+/** The operator's choice of sidecar for one model, kept on the principal. */
+export interface SidecarLink {
+  model_key: string;
+  kind: SidecarKind;
+  mode: SidecarMode;
+  file_name?: string | null;
+  size_bytes?: number | null;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+export interface SidecarHolder {
+  node_id: string;
+  hostname: string;
+  path: string;
+}
+
+/** One compatible file and every machine that holds it. */
+export interface SidecarOption {
+  kind: SidecarKind;
+  file_name: string;
+  size_bytes: number;
+  general_name: string | null;
+  quant: string | null;
+  holders: SidecarHolder[];
+}
+
+/** How one sidecar reaches the machine that loads it in a plan. */
+export interface SidecarSlot {
+  kind: SidecarKind;
+  mode: SidecarMode;
+  file: SidecarFile | null;
+  from_link: boolean;
+  target_node_id: string;
+  target_host: string;
+  target_path: string | null;
+  source_node_id: string | null;
+  source_host: string | null;
+  source_path: string | null;
+  problem: string | null;
+}
+
+export interface SidecarsPlan {
+  model_key: string | null;
+  embedded_mtp: boolean;
+  options: SidecarOption[];
+  vision: SidecarSlot | null;
+  mtp: SidecarSlot | null;
+  links_stale: boolean;
+}
+
+/** What the screen asks for one kind; no mode leaves the saved link in charge. */
+export interface SidecarChoice {
+  mode?: SidecarMode;
+  file?: SidecarFile | null;
 }
 
 export interface PeerCatalog {
@@ -1050,6 +1135,7 @@ export interface PeerCatalog {
   is_self: boolean;
   models: DiscoveredModel[];
   shard_sets: ShardSet[];
+  sidecars?: Sidecar[];
   scanned?: ScannedRoot[];
   /** False while this peer is reading GGUF headers in the background. */
   metadata_complete?: boolean;
@@ -2010,4 +2096,6 @@ export interface DeployPlan {
   chunk_tokens: number;
   route_options: DeployRouteOption[];
   load_distribution: DeployLoadDistribution[];
+  /** Vision projector for the head and MTP draft for the tail. */
+  sidecars?: SidecarsPlan;
 }

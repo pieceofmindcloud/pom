@@ -537,6 +537,16 @@ Key logic carriers:
   rolagem interna para preservar o tamanho dos cards e alinhar a curva aos
   endpoints mesmo quando o conteúdo é mais largo que o painel. A separação existe porque este grafo
   representa uma implantação ainda não aplicada.
+- `SidecarPicker.tsx` - the vision projector / MTP draft picker shared by the
+  three screens: a select naming each compatible file with its size and
+  machines, and below it the full name and the path on every machine,
+  wrapped. On the deploy screen it also says whether the target already has
+  the file, copies it from another machine, or why it cannot. `sidecarOptions`
+  builds the options from the cluster catalog with the backend's
+  compatibility rule.
+- `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in place
+  (Shards) or in a window (Models) and saved on the principal through
+  `POST /api/ui/model-sidecar-links`; read-only outside the `admin` profile.
 - `DeploymentInspector.tsx` - o inspetor de propriedades de uma implantação, e
   **um só** para os dois ecrãs: a tela de implantar o usa editável, o Histórico
   o usa com `readOnly` para mostrar com que parâmetros uma versão subiu. Em
@@ -559,7 +569,9 @@ Key logic carriers:
   depende de capability. `VisionControl` segue
   a mesma fronteira: exibe e alterna o mmproj pré-selecionado para modelos
   inteiros e fatias, oferece os `mmproj_candidates` compatíveis para escolha de
-  formato e mostra `mmproj_reason` quando não há candidatos. O teste de idle
+  formato e mostra `mmproj_reason` quando não há candidatos. With
+  `sidecars` (`DeployPlan.sidecars`), the vision section and the MTP section
+  render `SidecarPicker` instead, over the network's compatible files. O teste de idle
   fornece `candidates`, `reason` e `onPathChange` do contrato completo. A seção
   `Configurações POM (DESENV)` só é montada quando
   `NodeInfo.pom_desenv` vem verdadeiro de `/api/ui/node`; quando a flag está

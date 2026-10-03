@@ -482,6 +482,21 @@ profile policy remains the effective authorization boundary.
   carregadas sobrepostas são permitidas quando pertencem a caminhos distintos;
   a cobertura é validada pelo caminho executável, não pela união dos arquivos.
   `undeploy` tira uma pipeline inteira do ar.
+- `webui/sidecars.rs` - `GET/POST /api/ui/model-sidecar-links`: the
+  principal's model -> projector / MTP draft links (`model_sidecar_links` in
+  `pom.db`). A secondary reads them from the principal and keeps the last copy
+  (`stale`), and forwards a save there. `load_sidecar_links` is what the deploy
+  preview and launch read.
+- `deploy/sidecars.rs` - `attach_sidecars` fills `Plan.sidecars`: the
+  compatible files of the network with every holder, the head's projector and
+  the tail's MTP draft (screen choice, else the link), whether each is already
+  on its target or copied from a holder, and the refusal when nobody has it. A
+  compatible external draft turns `capabilities.mtp` supported for a model
+  without `nextn`. `lifecycle::run` adds the copies to its `pulls` and sends
+  `mmproj_file` / `mtp_draft_file` so the target resolves the path on its own
+  disk (`jobs_apply`). `transfer::servable_path` serves a path outside the
+  shard folder only when it is in the node's sidecar inventory, and a finished
+  download invalidates the receiver's catalog.
 - `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
   `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
   `POST /api/ui/kv-cache/clear` (AdminOnly, forwarded by `node_id` like

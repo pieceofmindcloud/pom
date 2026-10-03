@@ -35,6 +35,10 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/chat/capabilities", get(chat_capabilities))
         .route("/api/ui/cluster/models", get(cluster_models))
+        .route(
+            "/api/ui/model-sidecar-links",
+            get(super::super::sidecars::sidecar_links).post(super::super::sidecars::save_sidecar_link),
+        )
         .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
         .route("/api/ui/network/info", get(network_info))

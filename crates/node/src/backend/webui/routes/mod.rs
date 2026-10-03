@@ -251,6 +251,18 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::NodeAdmin,
     },
+    // Qual projetor e qual MTP pertencem a cada modelo: lido por quem vê o
+    // catálogo, gravado só por administrador (e só no principal).
+    RouteRule {
+        prefix: "/api/ui/model-sidecar-links",
+        method: Some(Method::GET),
+        scope: RouteScope::NodeAdmin,
+    },
+    RouteRule {
+        prefix: "/api/ui/model-sidecar-links",
+        method: Some(Method::POST),
+        scope: RouteScope::AdminOnly,
+    },
     RouteRule {
         prefix: "/api/ui/paths",
         method: None,

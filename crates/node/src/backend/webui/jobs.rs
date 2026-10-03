@@ -363,6 +363,16 @@ pub struct ApplyRequest {
     /// away from the original whole model, so adjacency is not sufficient.
     #[serde(default)]
     pub mmproj_path: Option<String>,
+    /// External MTP draft to load with the model, chosen by the deployment.
+    #[serde(default)]
+    pub mtp_draft_path: Option<String>,
+    /// The draft by name + size, resolved on this machine's disk when no path
+    /// came with the request.
+    #[serde(default)]
+    pub mtp_draft_file: Option<crate::catalog::SidecarFile>,
+    /// The projector by name + size, under the same rule.
+    #[serde(default)]
+    pub mmproj_file: Option<crate::catalog::SidecarFile>,
     #[serde(default)]
     pub params: RuntimeParams,
 }

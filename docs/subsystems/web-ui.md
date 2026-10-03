@@ -196,10 +196,13 @@ does not get past that clip. The minimized choice is persisted in the browser.
   its own content scrolling inside, instead of the central column with
   `max-w-[1400px]`. `WholeModels`, `Shards` and the `RemoteModels` search became
   full-width tables; `RemoteModelCard`, the card the search used before, was
-  removed. `WholeModels` and `Shards` show a vision column/note with the
-  `mmproj` file name (`DiscoveredModel.mmproj_path`/`ShardSet.mmproj_path`,
-  resolved by the catalog with a GGUF identity and compatible dimensions) or
-  "no projector" with the refusal reason. The screen never invents the name.
+  removed. `Shards` shows, for each slice set, the vision / MTP link editor
+  (`SidecarLinkEditor`): two pickers over the compatible sidecars of every
+  machine, each option naming its machines and the full path on each, saved on
+  the principal. `WholeModels` keeps the catalog's projector column and opens
+  the same editor in a window. The deploy inspector offers the same pickers
+  (head projector, tail MTP draft) prefilled from the link, and says whether
+  the target already has the file or will copy it.
 - `/implantar` -> DeployModel (a top-level entry to put slices into service)
 - `/implantacoes` -> Deployments (the record of deployments, activating the
   default one, versions per `deploy_id`, redeploying by version or by new

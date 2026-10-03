@@ -150,6 +150,8 @@ mod network;
 mod params;
 mod routes;
 mod setup;
+mod sidecars;
+pub(crate) use sidecars::load_links as load_sidecar_links;
 mod slicing;
 mod trust;
 

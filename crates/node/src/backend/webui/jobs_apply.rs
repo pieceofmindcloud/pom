@@ -906,10 +906,29 @@ pub(super) async fn run_apply(
         .inference_port
         .ok_or_else(|| anyhow::anyhow!("este nó não anuncia porta de inferência"))?;
 
+    // Sidecars the deployment named by file: the path came with the request,
+    // or this machine finds the file in its own folders now.
+    let sidecar_roots = {
+        let config = state.auth.read().await;
+        let mut roots = vec![config.shard_dir_path()];
+        roots.extend(config.model_dir_paths());
+        roots
+    };
+    let local_sidecar = |kind, file: Option<&crate::catalog::SidecarFile>| -> anyhow::Result<Option<String>> {
+        let Some(file) = file else { return Ok(None) };
+        crate::catalog::find_local_sidecar(&sidecar_roots, kind, file)
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("{} não está nesta máquina", file.file_name))
+    };
+    let requested_mmproj = match req.mmproj_path.clone().filter(|path| !path.is_empty()) {
+        Some(path) => Some(path),
+        None if req.use_mmproj => local_sidecar(crate::catalog::SidecarKind::Mmproj, req.mmproj_file.as_ref())?,
+        None => None,
+    };
     let mmproj_path = if req.use_mmproj {
         Some(resolve_mmproj_path(
             std::path::Path::new(&model_path),
-            req.mmproj_path.as_deref(),
+            requested_mmproj.as_deref(),
         )?)
     } else {
         None
@@ -918,7 +937,23 @@ pub(super) async fn run_apply(
     // `req.params`. Achar (ou não) o arquivo aqui só decide como o MTP roda
     // quando o modelo alvo não traz `nextn` embutido - nunca se ele foi
     // pedido. Ver `models::catalog::find_mtp_draft_sibling`.
-    let mtp_draft_path = crate::catalog::find_mtp_draft_sibling(std::path::Path::new(&model_path));
+    let requested_mtp = match req.mtp_draft_path.clone().filter(|path| !path.is_empty()) {
+        Some(path) => Some(path),
+        None => local_sidecar(crate::catalog::SidecarKind::Mtp, req.mtp_draft_file.as_ref())?,
+    };
+    let mtp_draft_path = match requested_mtp.as_deref() {
+        // A deployment that resolved the draft from the model's sidecar link
+        // names it: the slice lives in the shard folder, and the draft almost
+        // never sits next to it.
+        Some(path) => {
+            anyhow::ensure!(
+                std::path::Path::new(path).is_file(),
+                "o arquivo de MTP escolhido não existe nesta máquina: {path}"
+            );
+            Some(path.to_string())
+        }
+        None => crate::catalog::find_mtp_draft_sibling(std::path::Path::new(&model_path)),
+    };
 
     let cfg = NodeConfig {
         deploy_id: req.deploy_id.clone(),

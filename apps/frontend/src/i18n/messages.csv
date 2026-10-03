@@ -2041,6 +2041,23 @@ sidebar.leaveNetworkDescription,"This removes the trust document and private net
 sidebar.leaveNetworkFailed,The node could not leave the network,Não foi possível sair da rede
 sidebar.leaveNetworkNamed,Leave the network {name},Sair da rede {name}
 sidebar.thisNetwork,this network,esta rede
+sidecars.copy,{host} copies it from {source} ({size}) before starting,{host} copia de {source} ({size}) antes de subir
+sidecars.embedded,Embedded in the model,Embutido no modelo
+sidecars.linkHint,"Which vision projector and which MTP draft belong to this model, wherever each file is in the network. Deployments use this link by default.","Qual projetor de visão e qual MTP pertencem a este modelo, onde quer que cada arquivo esteja na rede. As implantações usam este vínculo por padrão."
+sidecars.linkTitle,Vision and MTP,Visão e MTP
+sidecars.missing,not found in the network,não encontrado na rede
+sidecars.mtp,MTP draft (tail),MTP (cauda)
+sidecars.noMtp,No external MTP,Sem MTP externo
+sidecars.noVision,No vision,Sem visão
+sidecars.noneCompatible,No compatible file was found in the network.,Nenhum arquivo compatível foi encontrado na rede.
+sidecars.readOnly,Only an administrator changes the link.,Só um administrador altera o vínculo.
+sidecars.ready,{host} already has the file,{host} já tem o arquivo
+sidecars.saveFailed,The link was not saved,O vínculo não foi salvo
+sidecars.saved,Link saved,Vínculo salvo
+sidecars.stale,The principal did not answer: showing the last copy of the links.,O principal não respondeu: mostrando a última cópia dos vínculos.
+sidecars.useLink,Model link: {name},Vínculo do modelo: {name}
+sidecars.useLinkNone,Model link (none saved),Vínculo do modelo (nenhum salvo)
+sidecars.vision,Vision projector (head),Projetor de visão (cabeça)
 slice.actualSize,Actual size,Peso real
 slice.add,Add another shard,Mais uma fatia
 slice.complete,full model covered,modelo inteiro coberto

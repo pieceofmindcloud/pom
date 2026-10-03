@@ -256,7 +256,7 @@ pub(super) async fn cluster_logs(
     }
 }
 
-async fn local_is_primary(state: &GatewayState) -> bool {
+pub(super) async fn local_is_primary(state: &GatewayState) -> bool {
     let profile = state.auth.read().await.profile;
     state
         .admin_trust
@@ -546,6 +546,8 @@ pub(super) async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
                 shard_sets: Vec::new(),
                 scanned: Vec::new(),
                 metadata_complete: false,
+                sidecars: Vec::new(),
+                sidecar_roots: Vec::new(),
             }
         })
 }
@@ -757,6 +759,8 @@ pub(super) async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
                     shard_sets: Vec::new(),
                     scanned: Vec::new(),
                     metadata_complete: false,
+                    sidecars: Vec::new(),
+                    sidecar_roots: Vec::new(),
                 });
                 let mut cached = CachedCatalog {
                     at: Instant::now(),
@@ -1504,6 +1508,7 @@ pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoRespon
         "node_id": state.network.node_id,
         "models": catalog.models,
         "shard_sets": catalog.shard_sets,
+        "sidecars": catalog.sidecars,
         "scanned": catalog.scanned,
         "metadata_complete": catalog.metadata_complete,
     }))

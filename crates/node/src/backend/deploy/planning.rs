@@ -257,6 +257,10 @@ pub struct Plan {
     /// quando o gateway ainda não mediu o peer.
     pub(super) route_options: Vec<RouteOption>,
     pub(super) load_distribution: Vec<LoadDistribution>,
+    /// Vision projector for the head and MTP draft for the tail: the
+    /// compatible files in the network, the choice and how each one gets to
+    /// its machine. Filled by `attach_sidecars`.
+    pub(super) sidecars: SidecarsPlan,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1872,6 +1876,7 @@ pub(super) fn plan_with_rtt_options(
     }
 
     Plan {
+        sidecars: SidecarsPlan::default(),
         group: group.to_string(),
         deployment_name: deployment_name.to_string(),
         strategy,

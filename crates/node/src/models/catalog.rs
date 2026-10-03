@@ -119,6 +119,10 @@ pub struct DiscoveredModel {
     #[serde(skip)]
     pub(crate) metadata_identity: Option<MetadataIdentity>,
     pub architecture: Option<String>,
+    /// `<arch>.embedding_length`: the width a sidecar (projector or MTP draft)
+    /// has to match to belong to this model.
+    #[serde(default)]
+    pub embedding_length: Option<u32>,
     /// True only when the GGUF header reports more than one expert.
     #[serde(default)]
     pub is_moe: bool,
@@ -219,6 +223,198 @@ pub struct Catalog {
     pub scanned: Vec<ScannedRoot>,
     /// False while the GGUF headers are being enriched asynchronously.
     pub metadata_complete: bool,
+    /// Vision projectors and MTP drafts found under the scanned roots. Filled
+    /// with the headers, by `enrich`.
+    #[serde(default)]
+    pub sidecars: Vec<Sidecar>,
+    /// Where `enrich` looks for sidecars: the slice folder and the GGUF
+    /// libraries `discover_fast` scanned. Not serialized.
+    #[serde(skip)]
+    pub(crate) sidecar_roots: Vec<PathBuf>,
+}
+
+/// What a sidecar is for. A projector loads on the pipeline head; an MTP
+/// draft loads on the tail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidecarKind {
+    Mmproj,
+    Mtp,
+}
+
+/// A vision projector or an external MTP draft found on disk.
+///
+/// Sidecars are not models: they cannot be sliced or served alone. They are
+/// listed apart so a model can be linked to one wherever it lives - the folder
+/// of another quantization, the root of a library - and so a deployment can
+/// find (or copy) it on the machine that loads it. `file_name` + `size_bytes`
+/// is the identity that crosses machines; `path` is only valid here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Sidecar {
+    pub kind: SidecarKind,
+    pub path: String,
+    pub file_name: String,
+    pub size_bytes: u64,
+    /// `clip` for a projector; the model architecture for an MTP draft.
+    pub architecture: Option<String>,
+    /// `clip.vision.projection_dim` for a projector, `<arch>.embedding_length`
+    /// for an MTP draft: the width the model has to have.
+    pub dim: Option<u32>,
+    pub general_name: Option<String>,
+    pub quant: Option<String>,
+}
+
+impl Sidecar {
+    /// Whether this sidecar can serve a model with this architecture and
+    /// embedding width. A projector only has to match the width; an MTP draft
+    /// also has to share the architecture, because its blocks run inside it.
+    pub fn compatible_with(&self, architecture: Option<&str>, embedding_length: Option<u32>) -> bool {
+        let Some(width) = embedding_length else {
+            return false;
+        };
+        if self.dim != Some(width) {
+            return false;
+        }
+        match self.kind {
+            SidecarKind::Mmproj => true,
+            SidecarKind::Mtp => architecture.is_some() && self.architecture.as_deref() == architecture,
+        }
+    }
+}
+
+/// How a model gets a sidecar of one kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidecarMode {
+    /// A file, by `file_name` + `size_bytes`.
+    File,
+    /// The model GGUF carries it (`nextn` for MTP). Never valid for vision.
+    Embedded,
+    /// The operator said this model has none.
+    None,
+}
+
+/// The operator's choice of sidecar for one model, kept on the principal.
+///
+/// `model_key` is the model label: the `model_label` of a slice set and the
+/// `name` of a whole model are the same string, so one link serves the model
+/// whether it is deployed whole or sliced. The file is named by name + size,
+/// never by path, because each machine keeps it somewhere else.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SidecarLink {
+    pub model_key: String,
+    pub kind: SidecarKind,
+    pub mode: SidecarMode,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub updated_by: String,
+}
+
+impl SidecarLink {
+    /// Refuses a link that cannot be resolved: a file without its identity,
+    /// or vision "embedded", which no GGUF provides.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.model_key.trim().is_empty() {
+            return Err("vínculo sem modelo".into());
+        }
+        match self.mode {
+            SidecarMode::File
+                if self.file_name.as_deref().is_none_or(|name| name.trim().is_empty())
+                    || self.size_bytes.is_none() =>
+            {
+                Err("vínculo de arquivo sem nome ou tamanho".into())
+            }
+            SidecarMode::Embedded if self.kind == SidecarKind::Mmproj => {
+                Err("a visão não vem embutida no GGUF; escolha um projetor".into())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// A sidecar named the way it crosses machines: each machine keeps it in its
+/// own folder, so name + size is the identity and the path is resolved locally.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SidecarFile {
+    pub file_name: String,
+    pub size_bytes: u64,
+}
+
+/// This machine's copy of a sidecar, read from disk now rather than from the
+/// catalog cache: a file copied a moment ago has to be found.
+pub(crate) fn find_local_sidecar(roots: &[PathBuf], kind: SidecarKind, file: &SidecarFile) -> Option<String> {
+    discover_sidecars(roots).into_iter().find_map(|sidecar| {
+        (sidecar.kind == kind && sidecar.file_name == file.file_name && sidecar.size_bytes == file.size_bytes)
+            .then_some(sidecar.path)
+    })
+}
+
+/// An MTP draft carries only the `nextn` block and a few tensors; a model with
+/// embedded `nextn` carries every block. The observed draft has 34 tensors and
+/// the smallest dense model with `nextn` has hundreds.
+const MTP_DRAFT_MAX_TENSORS: u64 = 256;
+
+/// What a GGUF is, when it is a sidecar. Read from the header, with the name
+/// only as a hint: the observed MTP draft calls itself `Ckpt_Q38`.
+pub(crate) fn sidecar_kind(filename: &str, info: &GgufInfo) -> Option<SidecarKind> {
+    let lower = filename.to_ascii_lowercase();
+    if info.architecture.as_deref() == Some("clip") || lower.contains("mmproj") {
+        return Some(SidecarKind::Mmproj);
+    }
+    let draft_shaped = info.nextn_predict_layers.is_some_and(|layers| layers > 0)
+        && info.split_count.unwrap_or(1) <= 1
+        && info.tensor_count > 0
+        && info.tensor_count <= MTP_DRAFT_MAX_TENSORS;
+    (lower.starts_with("mtp-") || draft_shaped).then_some(SidecarKind::Mtp)
+}
+
+/// Every sidecar under these roots. Header reads go through the same cache as
+/// the catalog, so a second pass over the same files costs a `stat` each.
+pub(crate) fn discover_sidecars(roots: &[PathBuf]) -> Vec<Sidecar> {
+    let mut files = Vec::new();
+    for root in roots {
+        if root.is_dir() {
+            find_gguf(root, 0, &mut files);
+        }
+    }
+    files.sort();
+    files.dedup();
+    let mut sidecars = Vec::new();
+    for path in files {
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Ok(info) = cached_info(&path, meta.len(), file_mtime_fingerprint(&meta)) else {
+            continue;
+        };
+        let Some(kind) = sidecar_kind(&file_name, &info) else {
+            continue;
+        };
+        let dim = match kind {
+            SidecarKind::Mmproj => info.projector_projection_dim,
+            SidecarKind::Mtp => info.embedding_length,
+        };
+        sidecars.push(Sidecar {
+            kind,
+            path: path.to_string_lossy().into_owned(),
+            quant: parse_quant(&file_name),
+            file_name,
+            size_bytes: meta.len(),
+            architecture: info.architecture.clone(),
+            dim,
+            general_name: info.name.clone(),
+        });
+    }
+    sidecars
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -593,6 +789,7 @@ fn describe(
         metadata_error: None,
         metadata_identity: None,
         architecture: None,
+        embedding_length: None,
         is_moe: false,
         total_layers,
         // Numa parte o nome do arquivo é o hash, e hash não tem tag de
@@ -1038,10 +1235,7 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
             return EnrichResult::Failed;
         }
     };
-    if info.architecture.as_deref() == Some("clip")
-        || filename.starts_with("mmproj")
-        || filename.to_ascii_lowercase().starts_with("mtp-")
-    {
+    if sidecar_kind(&filename, &info).is_some() {
         return EnrichResult::Drop;
     }
 
@@ -1051,6 +1245,7 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     model.mmproj_candidates = projector.candidates;
     model.mmproj_reason = projector.reason;
     model.architecture = info.architecture.clone();
+    model.embedding_length = info.embedding_length;
     model.is_moe = info.is_moe();
     if let Err(error) = fill_multipart_metadata(model, &path, &info) {
         if info.split_count.unwrap_or(1) > 1 {
@@ -1753,11 +1948,20 @@ pub fn discover_fast(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
     });
 
     let shard_sets = build_shard_sets_fast(&models);
+    let mut sidecar_roots = vec![shard_dir.to_path_buf()];
+    sidecar_roots.extend(
+        model_dirs
+            .iter()
+            .filter(|dir| detect_source(dir) != ModelSource::Ollama)
+            .cloned(),
+    );
     Catalog {
         models,
         shard_sets,
         scanned,
         metadata_complete: false,
+        sidecars: Vec::new(),
+        sidecar_roots,
     }
 }
 
@@ -1782,6 +1986,7 @@ pub fn enrich(mut catalog: Catalog) -> Catalog {
             shard.mmproj_reason = set.mmproj_reason.clone();
         }
     }
+    catalog.sidecars = discover_sidecars(&catalog.sidecar_roots);
     catalog.metadata_complete = true;
     catalog
 }
@@ -1861,6 +2066,81 @@ pub(crate) mod tests {
                 ("general.name", name),
             ],
         )
+    }
+
+    /// An MTP draft as the observed one: the model architecture, `nextn`,
+    /// a few dozen tensors and a name that says nothing about the model.
+    fn mtp_draft_fixture(architecture: &str, embedding_length: u32, tensors: u64) -> Vec<u8> {
+        let embedding_key = format!("{architecture}.embedding_length");
+        let nextn_key = format!("{architecture}.nextn_predict_layers");
+        let mut bytes = gguf_header_fixture(
+            &[(embedding_key.as_str(), embedding_length), (nextn_key.as_str(), 1)],
+            &[("general.architecture", architecture), ("general.name", "Ckpt_Q38")],
+        );
+        bytes[8..16].copy_from_slice(&tensors.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn sidecars_are_recognized_by_metadata_and_kept_out_of_the_models() {
+        let root = std::env::temp_dir().join(format!("pom-sidecars-{}", uuid::Uuid::new_v4()));
+        let library = root.join("library");
+        let other_quant = library.join("other-quant");
+        std::fs::create_dir_all(&other_quant).unwrap();
+        std::fs::write(library.join("Model-Q2.gguf"), text_model_fixture("Model", "llama", 3072)).unwrap();
+        std::fs::write(library.join("mmproj-Model-BF16.gguf"), projector_fixture("Model", 3072)).unwrap();
+        // No `mtp-` prefix: only the header says what it is.
+        std::fs::write(other_quant.join("draft.gguf"), mtp_draft_fixture("llama", 3072, 34)).unwrap();
+        std::fs::write(other_quant.join("mmproj-other.gguf"), projector_fixture("Other", 1024)).unwrap();
+
+        let catalog = discover(&[library.clone()], &root.join("shards"));
+
+        assert_eq!(
+            catalog.models.iter().map(|model| model.name.as_str()).collect::<Vec<_>>(),
+            vec!["Model-Q2.gguf"]
+        );
+        let model = &catalog.models[0];
+        assert_eq!(model.embedding_length, Some(3072));
+        let mut kinds = catalog
+            .sidecars
+            .iter()
+            .map(|sidecar| (sidecar.file_name.as_str(), sidecar.kind, sidecar.dim))
+            .collect::<Vec<_>>();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            vec![
+                ("draft.gguf", SidecarKind::Mtp, Some(3072)),
+                ("mmproj-Model-BF16.gguf", SidecarKind::Mmproj, Some(3072)),
+                ("mmproj-other.gguf", SidecarKind::Mmproj, Some(1024)),
+            ]
+        );
+        let compatible = catalog
+            .sidecars
+            .iter()
+            .filter(|sidecar| sidecar.compatible_with(model.architecture.as_deref(), model.embedding_length))
+            .map(|sidecar| sidecar.file_name.as_str())
+            .collect::<Vec<_>>();
+        assert!(compatible.contains(&"draft.gguf"));
+        assert!(compatible.contains(&"mmproj-Model-BF16.gguf"));
+        assert!(!compatible.contains(&"mmproj-other.gguf"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_model_with_embedded_nextn_is_not_an_mtp_draft() {
+        let mut info = GgufInfo {
+            architecture: Some("qwen4exp".into()),
+            nextn_predict_layers: Some(1),
+            tensor_count: 1224,
+            ..Default::default()
+        };
+        assert_eq!(sidecar_kind("Qwen-Q2_K.gguf", &info), None);
+        info.tensor_count = 34;
+        assert_eq!(sidecar_kind("Ckpt.gguf", &info), Some(SidecarKind::Mtp));
+        info.split_count = Some(3);
+        info.tensor_count = 0;
+        assert_eq!(sidecar_kind("Qwen-00001-of-00003.gguf", &info), None);
     }
 
     pub(crate) fn projector_fixture(name: &str, projection_dim: u32) -> Vec<u8> {
@@ -2233,6 +2513,7 @@ pub(crate) mod tests {
             identity_names: Vec::new(),
             size_bytes: 4096,
             architecture: None,
+            embedding_length: None,
             is_moe: false,
             total_layers: Some(total),
             quant: None,
@@ -2273,6 +2554,7 @@ pub(crate) mod tests {
             identity_names: vec!["vision-model".into()],
             size_bytes: 4096,
             architecture: None,
+            embedding_length: None,
             is_moe: false,
             total_layers: Some(32),
             quant: None,
@@ -2336,6 +2618,7 @@ pub(crate) mod tests {
             identity_names: vec!["vision-model".into()],
             size_bytes: 4096,
             architecture: None,
+            embedding_length: None,
             is_moe: false,
             total_layers: Some(32),
             quant: Some("Q4_K_M".into()),
@@ -2391,6 +2674,7 @@ pub(crate) mod tests {
                 identity_names: Vec::new(),
                 size_bytes: 4096,
                 architecture: None,
+                embedding_length: None,
                 is_moe: false,
                 total_layers: Some(32),
                 quant: None,
@@ -2524,6 +2808,7 @@ pub(crate) mod tests {
             identity_names: Vec::new(),
             size_bytes: 4096,
             architecture: None,
+            embedding_length: None,
             is_moe: false,
             total_layers: None,
             quant: None,

@@ -515,7 +515,14 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
             .path
             .as_deref()
             .ok_or_else(|| "informe ?grant=, ?sha= ou ?path=".to_string())?;
-        safe_model_path(&state.shard_dir().await, requested)?
+        match safe_model_path(&state.shard_dir().await, requested) {
+            Ok(path) => path,
+            // A projector or MTP draft a deployment copies to the head or the
+            // tail usually lives outside the slice folder. It is served only
+            // when it is in this machine's own sidecar inventory - a path
+            // anywhere else is refused as before.
+            Err(error) => listed_sidecar(state, requested).await.ok_or(error)?,
+        }
     };
     // Também no caminho da concessão: é por ali que sai um arquivo de fora de
     // `models/`, e era a única porta sem checagem de tipo.
@@ -526,6 +533,29 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
         ));
     }
     Ok(path)
+}
+
+/// `requested` when it is one of this machine's sidecars, compared resolved.
+async fn listed_sidecar(state: &GatewayState, requested: &str) -> Option<PathBuf> {
+    let roots = {
+        let config = state.auth.read().await;
+        let mut roots = vec![config.shard_dir_path()];
+        roots.extend(config.model_dir_paths());
+        roots
+    };
+    let wanted = std::fs::canonicalize(requested).ok()?;
+    tokio::task::spawn_blocking(move || {
+        crate::catalog::discover_sidecars(&roots)
+            .into_iter()
+            .find_map(|sidecar| {
+                std::fs::canonicalize(&sidecar.path)
+                    .ok()
+                    .filter(|path| *path == wanted)
+            })
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Onde está a parte com este hash, se esta máquina a tem.
@@ -2442,6 +2472,9 @@ async fn run_download(
     tokio::fs::rename(part, dest)
         .await
         .map_err(|e| e.to_string())?;
+    // What just arrived has to show up in this machine's catalog now, not
+    // after the cache's next pass: a deployment reads it right away.
+    crate::webui::invalidate_catalog(state.database.clone()).await;
 
     {
         let mut jobs = state.transfers.jobs.write().await;

@@ -119,6 +119,74 @@ pub(super) struct Survey {
     pub(super) machines: Vec<Machine>,
     pub(super) pairwise_rtt: PairwiseRtt,
     pub(super) metadata_pending: Option<String>,
+    /// Vision projectors and MTP drafts each machine reported, by node id.
+    pub(super) sidecars: HashMap<String, Vec<crate::catalog::Sidecar>>,
+    /// Architecture and width of the selected model, as the first machine that
+    /// described it reported them. What a sidecar has to match.
+    pub(super) model_shape: Option<ModelShape>,
+}
+
+/// What a sidecar has to match, read from the selected model's catalog entry.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ModelShape {
+    /// The model label: the key of its sidecar link.
+    pub(super) model_key: String,
+    pub(super) architecture: Option<String>,
+    pub(super) embedding_length: Option<u32>,
+    /// The GGUF carries its own `nextn` block, so MTP needs no external draft.
+    pub(super) embedded_mtp: bool,
+}
+
+/// The selected model's shape in one machine's `/api/ui/models` answer: the
+/// whole model with this name, or the shards of the set with this group.
+pub(super) fn model_shape_in(body: &serde_json::Value, group: &str, kind: DeployKind) -> Option<ModelShape> {
+    let mut model_key = group.to_string();
+    let entries: Vec<&serde_json::Value> = if kind.whole() {
+        body.get("models")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|model| model.get("name").and_then(|name| name.as_str()) == Some(group))
+            .collect()
+    } else {
+        let sets: Vec<&serde_json::Value> = body
+            .get("shard_sets")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|set| {
+                set.get("group").and_then(|value| value.as_str()) == Some(group)
+                    || set.get("model_label").and_then(|value| value.as_str()) == Some(group)
+            })
+            .collect();
+        if let Some(label) = sets
+            .iter()
+            .find_map(|set| set.get("model_label").and_then(|value| value.as_str()))
+            .filter(|label| !label.is_empty())
+        {
+            model_key = label.to_string();
+        }
+        sets.into_iter()
+            .flat_map(|set| set.get("shards").and_then(|value| value.as_array()).into_iter().flatten())
+            .collect()
+    };
+    let described = entries
+        .iter()
+        .find(|entry| entry.get("embedding_length").and_then(|value| value.as_u64()).is_some())?;
+    Some(ModelShape {
+        model_key,
+        architecture: described
+            .get("architecture")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        embedding_length: described
+            .get("embedding_length")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| u32::try_from(value).ok()),
+        embedded_mtp: entries
+            .iter()
+            .any(|entry| entry.pointer("/capabilities/mtp").and_then(|value| value.as_bool()) == Some(true)),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -737,18 +805,29 @@ pub(super) async fn survey(
                 },
                 rtt_report,
                 metadata_pending_candidate,
+                body.get("sidecars")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value::<Vec<crate::catalog::Sidecar>>(value).ok())
+                    .unwrap_or_default(),
+                model_shape_in(&body, &group, kind),
             ))
         }
     });
 
     let mut machines = Vec::new();
     let mut metadata_pending_candidate = false;
+    let mut sidecars = HashMap::new();
+    let mut model_shape: Option<ModelShape> = None;
     for result in futures::future::join_all(futures)
         .await
         .into_iter()
         .flatten()
     {
         metadata_pending_candidate |= result.2;
+        sidecars.insert(result.0.node_id.clone(), result.3);
+        if model_shape.is_none() {
+            model_shape = result.4;
+        }
         if let Some(report) = &result.1 {
             if report.source_node_id == result.0.node_id {
                 for measurement in &report.measurements {
@@ -770,6 +849,8 @@ pub(super) async fn survey(
         machines,
         pairwise_rtt,
         metadata_pending,
+        sidecars,
+        model_shape,
     }
 }
 

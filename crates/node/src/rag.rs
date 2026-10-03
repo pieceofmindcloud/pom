@@ -131,8 +131,10 @@ pub(crate) fn rag_plugin(services: &[crate::plugin_services::PluginService]) -> 
         .map(|service| service.plugin_code.as_str())
 }
 
-/// Reads the passages of a `peer.search` answer, best first, dropping what is
-/// below `min_score` or is not a passage.
+/// Reads the passages of a `peer.search` answer, dropping what is below
+/// `min_score` or is not a passage. The order is the plugin's: it ranks with
+/// more than the similarity it reports (words as well as meaning), so the
+/// first passage is its best one even when another has a higher score.
 pub(crate) fn parse_passages(answer: &Value, settings: Settings) -> Vec<Passage> {
     let mut passages: Vec<Passage> = answer["hits"]
         .as_array()
@@ -148,7 +150,6 @@ pub(crate) fn parse_passages(answer: &Value, settings: Settings) -> Vec<Passage>
             })
         })
         .collect();
-    passages.sort_by(|left, right| right.score.total_cmp(&left.score));
     passages.truncate(settings.passages);
     passages
 }
@@ -399,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn only_relevant_passages_are_kept_best_first() {
+    fn only_relevant_passages_are_kept_in_the_plugins_order() {
         let answer = json!({"hits": [
             {"path": "b.md", "chunk": 0, "text": "second", "score": 0.84},
             {"path": "a.md", "chunk": 1, "text": " first ", "score": 0.91},
@@ -412,8 +413,9 @@ mod tests {
             .iter()
             .map(|passage| passage.path.as_str())
             .collect();
-        assert_eq!(paths, ["a.md", "b.md"]);
-        assert_eq!(passages[0].text, "first");
+        // "b.md" stays first: the plugin ranked it there.
+        assert_eq!(paths, ["b.md", "a.md"]);
+        assert_eq!(passages[1].text, "first");
 
         let one = parse_passages(
             &answer,

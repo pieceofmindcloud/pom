@@ -347,7 +347,8 @@ service of kind `rag`; the gateway knows no plugin by name.
   (`POM_RAG_TIMEOUT_MS`, 20 to 5000); past it, or on any failure, the request
   goes on unchanged. Retrieval never fails a request.
 - **What is added.** Up to 4 passages (`POM_RAG_PASSAGES`) scoring at least
-  0.8 (`POM_RAG_MIN_SCORE`), appended after the whole conversation as a
+  0.8 (`POM_RAG_MIN_SCORE`), in the order the plugin ranked them - its ranking
+  may use more than the similarity it reports as `score` -, appended after the whole conversation as a
   "Retrieved context" block naming each source. `x_pom` is unchanged; the
   request audit gets `rag: {node_id, plugin, passages: [{path, score}]}`,
   never the text.

@@ -907,11 +907,20 @@ async fn internal_upsert_api_key(
     if !(admin || self_owned_chat_key) || key.key_hash.is_empty() || key.id.is_empty() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match state.database.insert_api_key(&key) {
-        Ok(()) => match refresh_api_key_snapshot(&state).await {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        },
+    if let Err(error) = state.database.insert_api_key(&key) {
+        tracing::warn!("não foi possível registrar a API key: {error:#}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    // A chave interna nova de um nó aposenta a anterior, cujo segredo o nó já
+    // não tem: sem isto ela ficaria ativa no principal, sem dono.
+    if let Err(error) = state
+        .database
+        .revoke_superseded_node_keys(&state.network.node_id)
+    {
+        tracing::warn!("não foi possível revogar chaves internas substituídas: {error:#}");
+    }
+    match refresh_api_key_snapshot(&state).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }

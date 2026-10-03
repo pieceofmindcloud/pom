@@ -546,6 +546,38 @@ impl PomDb {
         })
     }
 
+    /// Revoke a node's superseded internal keys (`pom-<node_id>`), keeping
+    /// only the newest active one per node. The node mints a new internal key
+    /// whenever its local secret stops matching, and the old secret is gone at
+    /// that point, so every older active row is an orphan nobody can use.
+    pub fn revoke_superseded_node_keys(&self, revoked_by: &str) -> Result<usize> {
+        let superseded = self.with_read("procurar chaves internas substituídas", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT older.id FROM api_keys AS older
+                 WHERE older.active = 1
+                   AND older.label = 'pom-' || older.node_id
+                   AND EXISTS (
+                       SELECT 1 FROM api_keys AS newer
+                       WHERE newer.active = 1
+                         AND newer.label = older.label
+                         AND newer.node_id = older.node_id
+                         AND (newer.created_at > older.created_at
+                              OR (newer.created_at = older.created_at AND newer.id > older.id))
+                   )",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("procurar chaves internas substituídas")
+        })?;
+        let mut revoked = 0;
+        for id in superseded {
+            if self.revoke_api_key(&id, revoked_by)? {
+                revoked += 1;
+            }
+        }
+        Ok(revoked)
+    }
+
     pub fn api_key_revocations(&self) -> Result<Vec<(String, String, String)>> {
         self.with_read("ler histórico de revogações", |connection| {
             let mut statement = connection.prepare(
@@ -2769,6 +2801,45 @@ mod tests {
             tp_size: None,
             capabilities: None,
         }
+    }
+
+    #[test]
+    fn revokes_superseded_node_keys_and_keeps_the_newest() {
+        let path = temporary_path("superseded");
+        let db = PomDb::open(&path).expect("abrir banco novo");
+        let key = |id: &str, label: &str, node: &str, created: &str| ApiKey {
+            id: id.into(),
+            key_hash: crate::auth::api_key_hash(id),
+            key_hint: String::new(),
+            label: label.into(),
+            node_id: node.into(),
+            origin_node_id: node.into(),
+            active: true,
+            created_at: created.into(),
+        };
+        db.insert_api_key(&key("old", "pom-n1", "n1", "2026-01-01"))
+            .unwrap();
+        db.insert_api_key(&key("new", "pom-n1", "n1", "2026-10-03"))
+            .unwrap();
+        db.insert_api_key(&key("only", "pom-n2", "n2", "2026-01-01"))
+            .unwrap();
+        // Chave de produto com dois tokens: não é interna, nada muda.
+        db.insert_api_key(&key("prod-a", "produto", "n1", "2026-01-01"))
+            .unwrap();
+        db.insert_api_key(&key("prod-b", "produto", "n1", "2026-10-03"))
+            .unwrap();
+
+        assert_eq!(db.revoke_superseded_node_keys("principal").unwrap(), 1);
+        let active: Vec<String> = db
+            .api_keys()
+            .unwrap()
+            .into_iter()
+            .filter(|key| key.active)
+            .map(|key| key.id)
+            .collect();
+        assert_eq!(active, vec!["only", "prod-a", "new", "prod-b"]);
+        assert_eq!(db.revoke_superseded_node_keys("principal").unwrap(), 0);
+        remove_database(&path);
     }
 
     /// Um banco de antes do hash: o segredo em texto puro na coluna `key`.

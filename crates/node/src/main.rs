@@ -1513,6 +1513,14 @@ async fn start_node(
     let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
+    // Chaves internas que um nó trocou antes de o principal saber aposentá-las
+    // (a troca da migração para hash): só a mais nova de cada nó vale.
+    match database.revoke_superseded_node_keys(&node_id) {
+        Ok(0) => {}
+        // A validação lê o banco, não o retrato em `api_keys`: nada a recarregar.
+        Ok(count) => info!("{count} chave(s) interna(s) substituída(s) revogada(s)"),
+        Err(error) => warn!("não foi possível revogar chaves internas substituídas: {error:#}"),
+    }
     let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
 
     let node_display_name = match app_config.node_name.clone() {

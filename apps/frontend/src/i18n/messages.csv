@@ -381,6 +381,8 @@ dashboard.role,Role,Papel
 dashboard.route,Route,Rota
 dashboard.routeUnmeasured,not measured yet,ainda não medida
 dashboard.sampled,"Sampled {time} · unified memory does not report dedicated VRAM, so the Mac shows wired memory.","Amostrado {time} · memória unificada não reporta VRAM dedicada, por isso o Mac mostra memória wired."
+dashboard.sectionDeployment,Deployment,Implantação
+dashboard.sectionResources,Resources,Recursos
 dashboard.server,Server,Servidor
 dashboard.serving,serving,servindo
 dashboard.session,"{count, plural, =1 {session} other {sessions}}","{count, plural, =1 {sessão} other {sessões}}"

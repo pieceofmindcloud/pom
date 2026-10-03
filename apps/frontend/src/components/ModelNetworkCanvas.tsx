@@ -35,7 +35,8 @@ import {
   type CardModes,
   type CardSize,
 } from "../lib/networkLayout";
-import { rateSpeed, type SpeedRating } from "../lib/peerSpeed";
+import { rateSpeed } from "../lib/peerSpeed";
+import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
 import { sumVram } from "../lib/gpu";
 import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
@@ -136,53 +137,6 @@ export function isControlTarget(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest("button, a, input, select, textarea, [role='button']") != null;
 }
 
-const SPEED_TONE_CLASS: Record<SpeedRating["tone"], string> = {
-  fast: "border-aqua/35 bg-aqua/10 text-aqua",
-  medium: "border-amber/40 bg-amber/10 text-amber",
-  slow: "border-rose/45 bg-rose/10 text-rose",
-  solo: "border-iris/35 bg-iris/10 text-iris",
-  unknown: "border-line bg-raised/60 text-faint",
-};
-
-/**
- * Decode e prefill como selos, coloridos pela comparação com a fatia mais
- * rápida do modelo (`rateSpeed`). O número exato e a regra das cores ficam no
- * `title`: no card, a cor é que tem de saltar aos olhos.
- */
-function SpeedBadge({ kind, value, rating, compact = false }: { kind: "decode" | "prefill"; value: number | null | undefined; rating: SpeedRating; compact?: boolean }) {
-  const { t } = useI18n();
-  const label = t(kind === "decode" ? "canvas.speedDecode" : "canvas.speedPrefill");
-  const shown = value != null && Number.isFinite(value) && value > 0 ? value.toFixed(kind === "decode" ? 1 : 0) : null;
-  const hint = shown == null
-    ? t("canvas.speedUnknown", { kind: label })
-    : rating.ratio == null
-      ? t("canvas.speedSolo", { kind: label, value: shown })
-      : t("canvas.speedRelative", { kind: label, value: shown, percent: Math.round(rating.ratio * 100) });
-  return <span
-    data-testid={`speed-${kind}`}
-    data-tone={rating.tone}
-    title={hint}
-    aria-label={hint}
-    className={clsx("inline-flex min-w-0 items-baseline gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 font-mono text-[10px] tabular-nums", SPEED_TONE_CLASS[rating.tone], !compact && "justify-between")}
-  >
-    <span className="text-[8px] font-semibold uppercase tracking-[0.12em] opacity-80">{label}</span>
-    <span className="whitespace-nowrap"><span className="font-semibold">{shown ?? "-"}</span>{!compact && <span className="ml-1 text-[9px] opacity-70">tok/s</span>}</span>
-  </span>;
-}
-
-function SpeedBadges({ perf, rating, compact = false }: { perf?: ChatTelemetryPeerPerf; rating: { decode: SpeedRating; prefill: SpeedRating }; compact?: boolean }) {
-  const { t } = useI18n();
-  const decode = perf?.decode_tokens_per_sec;
-  const prefill = perf?.prefill_tokens_per_sec;
-  if (decode == null && prefill == null) {
-    return <p data-testid="machine-tps" className="font-mono text-[10px] text-faint">{t("canvas.machineTpsUnknown")}</p>;
-  }
-  return <div data-testid="machine-tps" className={clsx("min-w-0 gap-1.5", compact ? "flex items-center" : "grid grid-cols-2")}>
-    <SpeedBadge kind="decode" value={decode} rating={rating.decode} compact={compact} />
-    <SpeedBadge kind="prefill" value={prefill} rating={rating.prefill} compact={compact} />
-  </div>;
-}
-
 function CompactToggle({ compact, onToggle }: { compact: boolean; onToggle: () => void }) {
   const { t } = useI18n();
   const label = t(compact ? "canvas.cardExpand" : "canvas.cardMinimize");
@@ -204,7 +158,7 @@ type NetworkNodeProps = {
   position: CanvasPosition;
   dragging: boolean;
   perf?: ChatTelemetryPeerPerf;
-  speed?: { decode: SpeedRating; prefill: SpeedRating };
+  speed?: PeerSpeed;
   compact?: boolean;
   onToggleCompact?: () => void;
   onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
@@ -213,7 +167,7 @@ type NetworkNodeProps = {
   onOpen?: () => void;
 };
 
-const UNRATED = { decode: { tone: "unknown", ratio: null }, prefill: { tone: "unknown", ratio: null } } as const satisfies { decode: SpeedRating; prefill: SpeedRating };
+const UNRATED = { decode: { tone: "unknown", ratio: null }, prefill: { tone: "unknown", ratio: null } } as const satisfies PeerSpeed;
 
 function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact = false, onToggleCompact, onPointerDown, onPointerMove, onPointerUp, onOpen }: NetworkNodeProps) {
   const system = range.node?.system;
@@ -604,6 +558,11 @@ export function ModelNetworkCanvas({
       group={cluster.active_model}
       otherRanges={pipeline.filter((peer) => peer.node_id !== detailNodeId && peer.total_layers > 0).map((peer) => [peer.start_layer, peer.end_layer] as [number, number])}
       onClose={() => setDetailNodeId(null)}
+      perf={detailNodeId ? peerPerf?.[detailNodeId] : undefined}
+      speed={detailNodeId ? {
+        decode: rateSpeed(peerPerf?.[detailNodeId]?.decode_tokens_per_sec, decodes),
+        prefill: rateSpeed(peerPerf?.[detailNodeId]?.prefill_tokens_per_sec, prefills),
+      } : undefined}
     />
     {ranges.length > 0 && <div className="absolute bottom-3 left-4 z-20 flex items-center gap-3 rounded-lg border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur"><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-aqua" />{t("canvas.legendPrimary")}</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-iris" />{t("canvas.legendParallel")}</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 border-t-2 border-dashed border-faint" />{t("canvas.legendInactive")}</span></div>}
   </section>;

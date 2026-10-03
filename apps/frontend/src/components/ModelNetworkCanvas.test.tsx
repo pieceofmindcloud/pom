@@ -803,3 +803,25 @@ describe("ModelNetworkCanvas: gateway arrastável", () => {
     expect(screen.getByTestId("pipeline-gateway-details").textContent).toContain("Nenhuma rota medida ainda");
   });
 });
+
+describe("ModelNetworkCanvas: janela da máquina", () => {
+  afterEach(cleanup);
+
+  it("abre com a velocidade da máquina, as seções nomeadas e o nome só uma vez", () => {
+    const view = fakeCluster([fakeSlicePeer("a", 0, 15), fakeSlicePeer("b", 16, 31)]);
+    mount(view, [], undefined, undefined, [], {
+      a: { decode_tokens_per_sec: 100, prefill_tokens_per_sec: 2000, active_generations: 0 },
+      b: { decode_tokens_per_sec: 30, prefill_tokens_per_sec: 1900, active_generations: 0 },
+    });
+    const card = Array.from(document.querySelectorAll("h3")).find((h) => h.textContent === "b")!.closest("article")!;
+    act(() => { fireEvent.doubleClick(card); });
+
+    const dialog = screen.getByRole("dialog", { name: "Detalhes de b" });
+    const decode = dialog.querySelector('[data-testid="speed-decode"]');
+    expect(decode?.getAttribute("data-tone")).toBe("slow");
+    expect(dialog.textContent).toContain("Recursos");
+    expect(dialog.textContent).toContain("Implantação");
+    // O título da janela fica para leitores de tela; o cabeçalho visível é o do card.
+    expect(dialog.querySelector("h2")?.className).toBe("sr-only");
+  });
+});

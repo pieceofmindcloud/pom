@@ -54,7 +54,7 @@ export const GATEWAY_SIZE: CardSize = { width: GATEWAY_WIDTH, height: GATEWAY_HE
  * fica onde foi posto; sem arrasto, segue o último estágio como antes.
  */
 export const GATEWAY_LAYOUT_ID = "__gateway__";
-const GAP_X = 92;
+const GAP_X = 148;
 const GAP_Y = 40;
 const ORIGIN_X = 48;
 /** Eixo horizontal em torno do qual cada coluna é centrada. */

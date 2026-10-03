@@ -312,7 +312,10 @@ Per-file list:
   transporte efetivo (`HTTP`, `HTTPS` ou `QUIC`) observado na execução; quando
   a medição ainda não existe, conserva `RTT -` em vez de usar a sonda libp2p.
 - `PeerDetailCard.tsx` - The card of one machine, in the same drawing for every
-  machine. It lives outside `Dashboard` because it shows in two places: the
+  machine. Each GPU is one tile (`gpu-telemetry-row`: name, VRAM, usage,
+  temperature, power). `variant="dialog"` is the Flow window: no frame, larger
+  header with the speed badges (`SpeedBadge.tsx`, shared with the canvas),
+  named Resources/Deployment sections, `Modal size="xl"` with `titleHidden`. It lives outside `Dashboard` because it shows in two places: the
   details tab stacks one card per machine (`networkPeers` splits the whole
   network into the active deployment first, in layer order, then the rest), and
   the double-click on a Flow canvas card opens the same card in a

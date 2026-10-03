@@ -10,6 +10,7 @@
  * desimplantação usa a mesma janela e não tem "cancelar". Ter as duas coisas
  * numa função só levaria a um botão "cancelar" que não cancela nada.
  */
+import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useId } from "react";
 import { createPortal } from "react-dom";
@@ -33,6 +34,7 @@ export function Modal({
   footer,
   onClose,
   size = "md",
+  titleHidden = false,
 }: {
   open: boolean;
   title: string;
@@ -40,7 +42,13 @@ export function Modal({
   footer: React.ReactNode;
   onClose: () => void;
   /** `lg` para conteúdo que é um painel inteiro, e não um parágrafo. */
-  size?: "md" | "lg";
+  size?: "md" | "lg" | "xl";
+  /**
+   * O título continua sendo o nome da janela para leitores de tela, mas some
+   * da vista quando o conteúdo já abre com o próprio cabeçalho - senão o nome
+   * aparece duas vezes, um em cima do outro.
+   */
+  titleHidden?: boolean;
 }) {
   const id = useId();
 
@@ -92,12 +100,12 @@ export function Modal({
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
             className={
               "relative flex w-full max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-lift " +
-              (size === "lg" ? "max-w-2xl" : "max-w-md")
+              (size === "xl" ? "max-w-4xl" : size === "lg" ? "max-w-2xl" : "max-w-md")
             }
           >
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-              <h2 className="font-display text-base font-semibold text-fg">{title}</h2>
-              <div className="mt-2 text-sm leading-relaxed text-muted">{children}</div>
+              <h2 className={titleHidden ? "sr-only" : "font-display text-base font-semibold text-fg"}>{title}</h2>
+              <div className={clsx("text-sm leading-relaxed text-muted", !titleHidden && "mt-2")}>{children}</div>
             </div>
             <div className="flex justify-end gap-2 border-t border-line bg-raised px-5 py-3">
               {footer}

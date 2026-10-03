@@ -3575,7 +3575,7 @@ pub(crate) async fn refresh_host_context(
         .plugins
         .set_host_context(host_context_payload(
             state.gateway_port,
-            &key.key,
+            &key.secret,
             &workspace_root,
         ))
         .await;

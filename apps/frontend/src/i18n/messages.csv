@@ -947,6 +947,10 @@ keys.inferenceNewToken,Replace API key,Trocar API key
 keys.inferenceSingle,One active key for this node.,Uma chave ativa para este nó.
 keys.inferenceSubtitle,Use this key to talk to models available on the network. This view keeps one active key for this node.,Use esta chave para conversar com os modelos disponíveis na rede. Esta tela mantém uma chave ativa para este nó.
 keys.inferenceTitle,Your Inference API key,Sua API key de inferência
+keys.issuedCopied,Copied,Copiado
+keys.issuedDetail,"This is the only time this token is shown. The network keeps only its hash and the start and end you see in the list, so copy it now and store it somewhere safe.","Esta é a única vez que este token aparece. A rede guarda só o hash dele e o começo e o fim que você vê na lista, então copie agora e guarde num lugar seguro."
+keys.issuedDone,I copied it,Já copiei
+keys.issuedTitle,Copy your new token,Copie o seu novo token
 keys.keyAccess,What this key grants access to,O que esta chave abre
 keys.networkNode,Network node,Nó da rede
 keys.newToken,New token,Novo token
@@ -976,6 +980,8 @@ keys.tokenLabel,token {label},token {label}
 keys.tokenSubtitle,One token per node or harness. Every request made with a token is attributed to it on the Logs screen.,Um token por nó ou harness. Toda requisição com token fica atribuída a ele na tela de Logs.
 keys.tokenValue,Token,Token
 keys.tokensCoexist,Tokens coexist: creating one does not revoke earlier tokens.,Tokens convivem: criar um novo não revoga os anteriores.
+keys.trackingId,Tracking ID,ID de rastreio
+keys.trackingIdHint,Identifies this token in the logs of every node. It is not a credential.,Identifica este token nos logs de todos os nós. Não é uma credencial.
 keys.unnamed,unnamed,sem nome
 models.architecture,Architecture,Arquitetura
 models.chooseFolders,Choose folders,Escolher as pastas

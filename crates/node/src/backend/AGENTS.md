@@ -114,7 +114,7 @@ profile policy remains the effective authorization boundary.
   When both headers are present they are checked independently, so an invalid
   one cannot hide a valid one; a valid API key still supplies its non-secret
   `Caller`. Uma chave desconhecida é consultada no principal pelo canal interno
-  autenticado e falha fechada em timeout ou erro. A porta de inferência não
+  autenticado, enviando só o hash, e falha fechada em timeout ou erro. A porta de inferência não
   usa a `connection_key` compartilhada somente em redes privadas; em redes
   públicas exige transporte TLS e o marcador interno, enquanto os callbacks de
   resultado validam o `Ticket` por quadro.
@@ -251,7 +251,9 @@ profile policy remains the effective authorization boundary.
   assina-os com o principal local e grava a cadeia antes do download; uma
   autoridade secundária não pode fabricar esses metadados.
   `POST /api/ui/chat-key` é permitido a `node` porque cria somente a chave
-  local `pom-<node_id>` e a registra no principal pela rota interna assinada;
+  local `pom-<node_id>` e a registra no principal pela rota interna assinada
+  (só o hash vai; o segredo fica em `local_secrets`, `PomDb::node_api_key`, e
+  é trocado quando não bate mais com uma chave ativa);
   a exceção não permite criar, revogar ou validar chaves de terceiros.
   A leitura `/api/cluster/network-settings` é interna e somente leitura: um
   nó adota do principal o documento completo de `NetworkSettings`, inclusive
@@ -1164,6 +1166,14 @@ faz o download autenticado do blob persistido.
   hashes the actual body before a mutating handler runs. `ApiKeyAuth` accepts
   `authorization` or `x-api-key`, but only for an active API key, and
   `api_key_identity` supplies the stable non-secret id used by the audit trail.
+  API keys are stored and exchanged only as `key_hash` (SHA-256 of the secret,
+  `api_key_hash`) plus `key_hint` (`api_key_hint`, start and end only); the
+  secret (`generate_api_key_secret`, `sk-pom-` + 32 random bytes) leaves the
+  node once, in the `POST /admin/api-keys` response (`IssuedApiKey`). The
+  tracking id (`ApiKey.id`, UUID v4) is what logs record. `db.rs`
+  (`migrate_api_key_secrets`) converts pre-hash databases in place, keeping
+  every id, and rewrites the file so no plain-text secret survives. `pom.json`
+  never carries API keys.
   `internal_node_token` remains the private-network credential for inference
   transport; client API keys never cross that boundary.
   `AuthRejection`: MissingHeader=401, InvalidKey=403.

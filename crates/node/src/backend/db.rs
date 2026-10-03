@@ -13,7 +13,6 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -365,17 +364,22 @@ impl PomDb {
     }
 
     pub fn insert_api_key(&self, key: &ApiKey) -> Result<()> {
-        if key.id.trim().is_empty() || key.key.trim().is_empty() {
-            anyhow::bail!("API key sem identidade ou segredo");
+        if key.id.trim().is_empty() || key.key_hash.trim().is_empty() {
+            anyhow::bail!("API key sem identidade ou hash");
         }
         self.with_write("salvar chave de API", |connection| {
             connection.execute(
-                "INSERT INTO api_keys (id, key, label, node_id, origin_node_id, active, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                "INSERT INTO api_keys
+                    (id, key_hash, key_hint, label, node_id, origin_node_id, active, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                     label = excluded.label,
                     node_id = excluded.node_id,
                     origin_node_id = excluded.origin_node_id,
+                    key_hint = CASE
+                        WHEN excluded.key_hint = '' THEN api_keys.key_hint
+                        ELSE excluded.key_hint
+                    END,
                     active = CASE
                         WHEN EXISTS (
                             SELECT 1 FROM api_key_revocations
@@ -385,7 +389,8 @@ impl PomDb {
                     END",
                 params![
                     &key.id,
-                    &key.key,
+                    &key.key_hash,
+                    &key.key_hint,
                     &key.label,
                     &key.node_id,
                     if key.origin_node_id.is_empty() {
@@ -403,21 +408,10 @@ impl PomDb {
 
     pub fn api_keys(&self) -> Result<Vec<ApiKey>> {
         self.with_read("ler chaves de API", |connection| {
-            let mut statement = connection.prepare(
-                "SELECT id, key, label, node_id, origin_node_id, active, created_at
-                 FROM api_keys ORDER BY created_at, id",
-            )?;
-            let rows = statement.query_map([], |row| {
-                Ok(ApiKey {
-                    id: row.get(0)?,
-                    key: row.get(1)?,
-                    label: row.get(2)?,
-                    node_id: row.get(3)?,
-                    origin_node_id: row.get(4)?,
-                    active: row.get::<_, i64>(5)? != 0,
-                    created_at: row.get(6)?,
-                })
-            })?;
+            let mut statement = connection.prepare(&format!(
+                "SELECT {API_KEY_COLUMNS} FROM api_keys ORDER BY created_at, id"
+            ))?;
+            let rows = statement.query_map([], api_key_from_row)?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .context("ler API keys do banco local")
         })
@@ -432,29 +426,33 @@ impl PomDb {
             let tx = connection.unchecked_transaction()?;
             tx.execute("DELETE FROM api_key_revocations", [])?;
             tx.execute("DELETE FROM api_keys", [])?;
+            tx.execute(
+                "DELETE FROM local_secrets WHERE secret_key = ?",
+                params![NODE_API_KEY_SECRET],
+            )?;
             tx.commit()?;
             Ok(())
         })
     }
 
+    /// The active key whose hash matches a presented token. The token itself
+    /// is hashed here and never reaches SQLite.
     pub fn api_key_for_token(&self, token: &str) -> Result<Option<ApiKey>> {
+        if token.is_empty() {
+            return Ok(None);
+        }
+        self.api_key_for_hash(&crate::auth::api_key_hash(token))
+    }
+
+    pub fn api_key_for_hash(&self, key_hash: &str) -> Result<Option<ApiKey>> {
         self.with_read("consultar chave de API", |connection| {
             connection
                 .query_row(
-                    "SELECT id, key, label, node_id, origin_node_id, active, created_at
-                     FROM api_keys WHERE key = ? AND active = 1",
-                    params![token],
-                    |row| {
-                        Ok(ApiKey {
-                            id: row.get(0)?,
-                            key: row.get(1)?,
-                            label: row.get(2)?,
-                            node_id: row.get(3)?,
-                            origin_node_id: row.get(4)?,
-                            active: row.get::<_, i64>(5)? != 0,
-                            created_at: row.get(6)?,
-                        })
-                    },
+                    &format!(
+                        "SELECT {API_KEY_COLUMNS} FROM api_keys WHERE key_hash = ? AND active = 1"
+                    ),
+                    params![key_hash],
+                    api_key_from_row,
                 )
                 .optional()
                 .context("consultar API key no banco local")
@@ -465,40 +463,70 @@ impl PomDb {
         self.with_read("consultar chave nomeada de API", |connection| {
             connection
                 .query_row(
-                    "SELECT id, key, label, node_id, origin_node_id, active, created_at
-                     FROM api_keys
-                     WHERE label = ? AND node_id = ? AND active = 1
-                     ORDER BY created_at DESC, id DESC LIMIT 1",
+                    &format!(
+                        "SELECT {API_KEY_COLUMNS} FROM api_keys
+                         WHERE label = ? AND node_id = ? AND active = 1
+                         ORDER BY created_at DESC, id DESC LIMIT 1"
+                    ),
                     params![label, node_id],
-                    |row| {
-                        Ok(ApiKey {
-                            id: row.get(0)?,
-                            key: row.get(1)?,
-                            label: row.get(2)?,
-                            node_id: row.get(3)?,
-                            origin_node_id: row.get(4)?,
-                            active: row.get::<_, i64>(5)? != 0,
-                            created_at: row.get(6)?,
-                        })
-                    },
+                    api_key_from_row,
                 )
                 .optional()
                 .context("consultar chave nomeada de API")
         })
     }
 
+    /// The secret of this node's own key (the one its chat UI and plugins call
+    /// `/v1` with), and its tracking id. It lives in `local_secrets`, the same
+    /// place as the Hugging Face token: it is this node's client credential,
+    /// not a row of the key registry, which holds only hashes.
+    pub fn node_api_key(&self) -> Result<Option<(String, String)>> {
+        self.with_read("ler chave de API do nó", |connection| {
+            let value = connection
+                .query_row(
+                    "SELECT value_text FROM local_secrets WHERE secret_key = ?",
+                    params![NODE_API_KEY_SECRET],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+            let Some(value) = value else { return Ok(None) };
+            let parsed: serde_json::Value =
+                serde_json::from_str(&value).context("interpretar chave de API do nó")?;
+            Ok(parsed["id"]
+                .as_str()
+                .zip(parsed["secret"].as_str())
+                .map(|(id, secret)| (id.to_string(), secret.to_string())))
+        })
+    }
+
+    pub fn save_node_api_key(&self, id: &str, secret: &str) -> Result<()> {
+        let value = serde_json::json!({ "id": id, "secret": secret }).to_string();
+        self.with_write("salvar chave de API do nó", |connection| {
+            connection.execute(
+                "INSERT INTO local_secrets (secret_key, value_text) VALUES (?, ?)
+                 ON CONFLICT(secret_key) DO UPDATE SET value_text = excluded.value_text",
+                params![NODE_API_KEY_SECRET, value],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Revoke once, retaining both the inactive key and the first audit event.
+    /// `key_or_id` is the tracking id or, for an operator holding it, the
+    /// secret itself (matched by hash).
     pub fn revoke_api_key(&self, key_or_id: &str, revoked_by: &str) -> Result<bool> {
+        let presented_hash = crate::auth::api_key_hash(key_or_id);
         self.with_write("revogar chave de API", |connection| {
             let tx = connection.unchecked_transaction()?;
             let key = tx
                 .query_row(
-                    "SELECT id, key FROM api_keys WHERE (key = ? OR id = ?)",
-                    params![key_or_id, key_or_id],
+                    "SELECT id, key_hash FROM api_keys WHERE id = ? OR key_hash = ?",
+                    params![key_or_id, presented_hash],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?;
-            let Some((key_id, secret)) = key else {
+            let Some((key_id, key_hash)) = key else {
                 tx.commit()?;
                 return Ok(false);
             };
@@ -511,7 +539,7 @@ impl PomDb {
                     (key_id, key_sha256, revoked_by, revoked_at)
                  SELECT ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE NOT EXISTS (SELECT 1 FROM api_key_revocations WHERE key_id = ?)",
-                params![&key_id, secret_digest(&secret), revoked_by, &key_id],
+                params![&key_id, &key_hash, revoked_by, &key_id],
             )?;
             tx.commit()?;
             Ok(true)
@@ -538,7 +566,7 @@ impl PomDb {
             let tx = connection.unchecked_transaction()?;
             let ids = {
                 let mut statement = tx.prepare(
-                    "SELECT id, key FROM api_keys
+                    "SELECT id, key_hash FROM api_keys
                      WHERE origin_node_id = ? OR (origin_node_id = '' AND node_id = ?)",
                 )?;
                 let rows = statement.query_map(params![origin, origin], |row| {
@@ -547,7 +575,7 @@ impl PomDb {
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             };
             let mut changed = 0;
-            for (id, secret) in ids {
+            for (id, key_hash) in ids {
                 changed += tx.execute(
                     "UPDATE api_keys SET active = 0 WHERE id = ? AND active = 1",
                     params![&id],
@@ -557,7 +585,7 @@ impl PomDb {
                         (key_id, key_sha256, revoked_by, revoked_at)
                      SELECT ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                      WHERE NOT EXISTS (SELECT 1 FROM api_key_revocations WHERE key_id = ?)",
-                    params![&id, secret_digest(&secret), revoked_by, &id],
+                    params![&id, &key_hash, revoked_by, &id],
                 )?;
             }
             tx.commit()?;
@@ -1493,7 +1521,8 @@ impl PomDb {
     fn insert_test_marker(&self, marker: &str) -> Result<()> {
         let key = ApiKey {
             id: marker.into(),
-            key: format!("secret-{marker}"),
+            key_hash: crate::auth::api_key_hash(&format!("secret-{marker}")),
+            key_hint: String::new(),
             label: marker.into(),
             node_id: String::new(),
             origin_node_id: String::new(),
@@ -1512,8 +1541,8 @@ impl PomDb {
         self.with_write("teste de escrita presa", |connection| {
             let transaction = connection.unchecked_transaction()?;
             transaction.execute(
-                "INSERT INTO api_keys (id, key, label, node_id, origin_node_id, active, created_at)
-                 VALUES ('held-write', 'held-secret', 'held', '', '', 1, 'held')",
+                "INSERT INTO api_keys (id, key_hash, label, node_id, origin_node_id, active, created_at)
+                 VALUES ('held-write', 'held-hash', 'held', '', '', 1, 'held')",
                 [],
             )?;
             started.send(()).expect("sinalizar escrita presa");
@@ -1629,7 +1658,8 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         );
         CREATE TABLE IF NOT EXISTS api_keys (
             id TEXT PRIMARY KEY,
-            key TEXT NOT NULL UNIQUE,
+            key_hash TEXT NOT NULL UNIQUE,
+            key_hint TEXT NOT NULL DEFAULT '',
             label TEXT NOT NULL,
             node_id TEXT NOT NULL,
             origin_node_id TEXT NOT NULL DEFAULT '',
@@ -1835,7 +1865,61 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             [],
         )?;
     }
+    migrate_api_key_secrets(connection)?;
     seed_geo_reference(connection)?;
+    Ok(())
+}
+
+/// Bancos de antes do hash guardavam cada segredo, em texto puro, na coluna
+/// `api_keys.key`. Esta migração troca o segredo pelo SHA-256 e pelo trecho
+/// visível, e renomeia a coluna para `key_hash`. O tracking id (`id`) não
+/// muda: os logs continuam ligados às mesmas chaves, e quem já tem o token
+/// continua usando o mesmo, porque a validação compara hashes.
+///
+/// O texto antigo não pode sobrar no arquivo: `secure_delete` zera as páginas
+/// liberadas, e o checkpoint e o `VACUUM` reescrevem WAL e banco sem ele.
+fn migrate_api_key_secrets(connection: &Connection) -> Result<()> {
+    let columns = connection
+        .prepare("PRAGMA table_info(api_keys)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|column| column == "key") {
+        return Ok(());
+    }
+    connection.execute_batch("PRAGMA secure_delete = ON;")?;
+    let tx = connection.unchecked_transaction()?;
+    if !columns.iter().any(|column| column == "key_hint") {
+        tx.execute(
+            "ALTER TABLE api_keys ADD COLUMN key_hint TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    let secrets = {
+        let mut statement = tx.prepare("SELECT id, key FROM api_keys")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (id, secret) in &secrets {
+        tx.execute(
+            "UPDATE api_keys SET key = ?, key_hint = ? WHERE id = ?",
+            params![
+                crate::auth::api_key_hash(secret),
+                crate::auth::api_key_hint(secret),
+                id
+            ],
+        )?;
+    }
+    tx.execute("ALTER TABLE api_keys RENAME COLUMN key TO key_hash", [])?;
+    tx.commit()?;
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+        .context("reescrever o banco sem os segredos antigos")?;
+    tracing::info!(
+        "API keys migradas para hash: {} chave(s), tracking ids preservados",
+        secrets.len()
+    );
     Ok(())
 }
 
@@ -1895,10 +1979,24 @@ pub(crate) fn secure_database_permissions(path: &Path) -> Result<()> {
     restrict_sidecar_permissions(path)
 }
 
-fn secret_digest(secret: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(secret.as_bytes());
-    hex::encode(hasher.finalize())
+/// Columns of an `ApiKey`, in `api_key_from_row` order.
+const API_KEY_COLUMNS: &str =
+    "id, key_hash, key_hint, label, node_id, origin_node_id, active, created_at";
+
+/// `local_secrets` row holding this node's own API key (`node_api_key`).
+const NODE_API_KEY_SECRET: &str = "node_api_key";
+
+fn api_key_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
+    Ok(ApiKey {
+        id: row.get(0)?,
+        key_hash: row.get(1)?,
+        key_hint: row.get(2)?,
+        label: row.get(3)?,
+        node_id: row.get(4)?,
+        origin_node_id: row.get(5)?,
+        active: row.get::<_, i64>(6)? != 0,
+        created_at: row.get(7)?,
+    })
 }
 
 fn model_identity(model: &DiscoveredModel) -> Result<(String, &'static str, String, &'static str)> {
@@ -2313,7 +2411,8 @@ mod tests {
         let db = PomDb::open(&path).expect("abrir banco novo");
         db.insert_api_key(&ApiKey {
             id: "key-1".into(),
-            key: "sk-secret".into(),
+            key_hash: crate::auth::api_key_hash("sk-secret"),
+            key_hint: String::new(),
             label: "operador".into(),
             node_id: "node-a".into(),
             origin_node_id: "node-a".into(),
@@ -2330,7 +2429,8 @@ mod tests {
         assert!(reopened.api_key_for_token("sk-secret").unwrap().is_none());
         let key = ApiKey {
             id: "key-1".into(),
-            key: "sk-secret".into(),
+            key_hash: crate::auth::api_key_hash("sk-secret"),
+            key_hint: String::new(),
             label: "operador".into(),
             node_id: "node-a".into(),
             origin_node_id: "node-a".into(),
@@ -2353,7 +2453,8 @@ mod tests {
         for (id, origin) in [("a-1", "node-a"), ("a-2", "node-a"), ("b-1", "node-b")] {
             db.insert_api_key(&ApiKey {
                 id: id.into(),
-                key: format!("sk-{id}"),
+                key_hash: crate::auth::api_key_hash(&format!("sk-{id}")),
+                key_hint: String::new(),
                 label: id.into(),
                 node_id: origin.into(),
                 origin_node_id: origin.into(),
@@ -2668,6 +2769,72 @@ mod tests {
             tp_size: None,
             capabilities: None,
         }
+    }
+
+    /// Um banco de antes do hash: o segredo em texto puro na coluna `key`.
+    /// Depois de abrir, a chave vale pelo mesmo token, mantém o tracking id, e
+    /// o texto não está mais em nenhum byte do arquivo nem do WAL.
+    #[test]
+    fn migrates_plaintext_api_keys_to_hashes_and_scrubs_the_file() {
+        let root = temporary_path("hash-migration");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(DATABASE_FILENAME);
+        let secret = "sk-0b5d7e2a-1c3f-4a6b-9d8e-7f6a5b4c3d2e";
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(&format!(
+                    "PRAGMA journal_mode = WAL;
+                     CREATE TABLE api_keys (
+                        id TEXT PRIMARY KEY,
+                        key TEXT NOT NULL UNIQUE,
+                        label TEXT NOT NULL,
+                        node_id TEXT NOT NULL,
+                        origin_node_id TEXT NOT NULL DEFAULT '',
+                        active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL
+                     );
+                     CREATE TABLE api_key_revocations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        key_id TEXT NOT NULL REFERENCES api_keys(id),
+                        key_sha256 TEXT NOT NULL,
+                        revoked_by TEXT NOT NULL,
+                        revoked_at TEXT NOT NULL
+                     );
+                     INSERT INTO api_keys VALUES
+                        ('produto-x', '{secret}', 'produto', 'n1', 'n1', 1, '2026-01-01');"
+                ))
+                .unwrap();
+        }
+
+        let db = PomDb::open(&path).expect("abrir e migrar");
+        let key = db
+            .api_key_for_token(secret)
+            .unwrap()
+            .expect("mesmo token vale");
+        assert_eq!(key.id, "produto-x");
+        assert_eq!(key.key_hash, crate::auth::api_key_hash(secret));
+        assert_eq!(key.key_hint, "sk-0b5d7…3d2e");
+        drop(db);
+        let reopened = PomDb::open(&path).expect("reabrir já migrado");
+        assert_eq!(reopened.api_keys().unwrap().len(), 1);
+        drop(reopened);
+
+        for file in [
+            path.clone(),
+            PathBuf::from(format!("{}-wal", path.display())),
+        ] {
+            if let Ok(bytes) = std::fs::read(&file) {
+                assert!(
+                    !bytes
+                        .windows(secret.len())
+                        .any(|window| window == secret.as_bytes()),
+                    "segredo em texto puro sobrou em {file:?}"
+                );
+            }
+        }
+        remove_database(&path);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn temporary_path(label: &str) -> PathBuf {

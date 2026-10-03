@@ -493,7 +493,8 @@ async fn no_with_peer_capacities(
     state.runtime.seed_config_for_test(config).await;
     let api_key = crate::config::ApiKey {
         id: "claude-code-contract".into(),
-        key: API_CHAVE.into(),
+        key_hash: crate::auth::api_key_hash(API_CHAVE),
+        key_hint: String::new(),
         label: "claude-code".into(),
         node_id: "eu".into(),
         origin_node_id: "eu".into(),

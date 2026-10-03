@@ -166,12 +166,32 @@ impl Default for ResourcePolicy {
 /// `crate::config::KvCacheType` continue valendo.
 pub use llama_engine::KvCacheType;
 
+/// Older `pom.json` files carried API keys with their secrets in plain text.
+/// The database owns the keys now, so whatever the file holds is read past and
+/// dropped instead of loaded (or refused for the missing `key_hash`).
+fn discard_legacy_api_keys<'de, D>(deserializer: D) -> Result<Vec<ApiKey>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(Vec::new())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
-    /// Stable public identity used by the audit trail. Never a credential.
+    /// Tracking id: the stable public identity the audit trail and the logs
+    /// plugin record for every request. Random (UUID v4), so it is unique
+    /// across every node of the network. Never a credential.
     #[serde(default)]
     pub id: String,
-    pub key: String,
+    /// SHA-256 (hex) of the secret. The secret itself is shown once, when the
+    /// key is minted, and is never stored or sent between nodes: inference
+    /// validates a presented token by hashing it (`auth::api_key_hash`).
+    pub key_hash: String,
+    /// The start and the end of the secret (`sk-pom-3f9a…c41e`), enough for a
+    /// person or another node to tell keys apart without being able to use one.
+    #[serde(default)]
+    pub key_hint: String,
     pub label: String,
     pub node_id: String,
     /// Node that minted this key. It remains stable when the key is
@@ -243,7 +263,13 @@ pub struct Config {
     /// Human-facing network settings captured during first access.
     #[serde(default)]
     pub network: NetworkSettings,
-    #[serde(default)]
+    /// In-memory snapshot of `pom.db`'s `api_keys`, which owns them. Never
+    /// written to `pom.json`: the file is versioned in the cluster config repo.
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "discard_legacy_api_keys"
+    )]
     pub api_keys: Vec<ApiKey>,
     #[serde(default)]
     pub blocked_nodes: Vec<String>,
@@ -633,12 +659,9 @@ impl Config {
             // These fields are now owned by pom.db. Preserve their old values
             // when another setting updates pom.json, so the legacy source stays
             // a usable safety copy until the operator explicitly migrates it.
-            for field in ["api_keys", "thermal", "huggingface_token"] {
-                // Leaving a network revokes every network API key. Never
-                // resurrect it while writing the setup-pending shell.
-                if self.setup_pending && field == "api_keys" {
-                    continue;
-                }
+            // `api_keys` is deliberately absent: older files carried the
+            // secrets in plain text, and rewriting the file drops them.
+            for field in ["thermal", "huggingface_token"] {
                 if let Some(old_value) = old.get(field) {
                     value[field] = old_value.clone();
                 }
@@ -1554,7 +1577,8 @@ mod tests {
             api_keys: vec![
                 ApiKey {
                     id: "old-id".into(),
-                    key: "sk-old".into(),
+                    key_hash: "hash-old".into(),
+                    key_hint: String::new(),
                     label: "old".into(),
                     node_id: "n1".into(),
                     origin_node_id: "n1".into(),
@@ -1563,7 +1587,8 @@ mod tests {
                 },
                 ApiKey {
                     id: "active-id".into(),
-                    key: "sk-active".into(),
+                    key_hash: "hash-active".into(),
+                    key_hint: String::new(),
                     label: "active".into(),
                     node_id: "n1".into(),
                     origin_node_id: "n1".into(),
@@ -1585,7 +1610,7 @@ mod tests {
             slot_auto_max_bytes: None,
             slot_auto_ttl_secs: None,
         };
-        assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
+        assert_eq!(cfg.active_api_key().unwrap().id, "active-id");
     }
 
     #[test]

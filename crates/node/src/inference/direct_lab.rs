@@ -753,7 +753,8 @@ async fn direct_pipeline_reproduces_both_missing_credentials() {
         config.connection_key = connection_key;
         config.api_keys.push(crate::config::ApiKey {
             id: "session-key".into(),
-            key: session_key.clone(),
+            key_hash: crate::auth::api_key_hash(&session_key.clone()),
+            key_hint: String::new(),
             label: "direct-lab".into(),
             node_id: "gateway".into(),
             origin_node_id: "gateway".into(),

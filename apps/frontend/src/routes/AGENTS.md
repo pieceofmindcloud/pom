@@ -511,7 +511,9 @@ Per-file list:
   auditoria de requisições, que é do plugin `enterprise`.
 - `Keys.tsx` - Two screens in one file. `TokenKeys` delega a tabela full-bleed
   `ApiKeysTable`: per-node API tokens for
-  harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
+  harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:id`. The
+  list carries only `key_hint` and the tracking id; the secret appears once,
+  in the `IssuedSecret` window right after creation.
   No perfil `infer`, mostra só a chave ativa deste nó, esconde o seletor de nó
   e, ao gerar uma chave nova, revoga a anterior. As rotas de API key são
   `infer+node+admin`: são a credencial de quem atende `/v1`, e todo perfil

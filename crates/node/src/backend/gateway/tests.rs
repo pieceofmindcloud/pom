@@ -18,7 +18,8 @@ mod tests {
             .database
             .insert_api_key(&crate::config::ApiKey {
                 id: "ui-key".into(),
-                key: "sk-active".into(),
+                key_hash: crate::auth::api_key_hash("sk-active"),
+                key_hint: String::new(),
                 label: "pom-eu".into(),
                 node_id: "eu".into(),
                 origin_node_id: "eu".into(),

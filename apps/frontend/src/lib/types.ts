@@ -1414,14 +1414,21 @@ export type TrustAnchorRefusal =
   | "install_failed";
 
 export interface ApiKey {
-  /** Stable identity used by audit queries, never a secret. */
+  /** Tracking id: identifies the key in every node's logs. Never a secret. */
   id: string;
-  key: string;
+  /** Start and end of the secret (`sk-pom-3f9a…c41e`). The secret itself is
+   *  never listed: the network keeps only its hash. */
+  key_hint: string;
   label: string;
   node_id: string;
   origin_node_id?: string;
   active: boolean;
   created_at: string;
+}
+
+/** The response that mints a key: the only one that carries the secret. */
+export interface IssuedApiKey extends ApiKey {
+  key: string;
 }
 
 /** Request-level performance, aggregated over the whole inference pipeline. */

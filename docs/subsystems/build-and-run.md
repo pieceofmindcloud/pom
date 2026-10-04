@@ -662,11 +662,6 @@ flags on the command line.
   `POM_BENCH_MODEL` pins a model only when wanted. For the origin reached over SSH,
   export the password variable without writing the password to a file.
 
-The conservative cycle detector is off by default in each process. The
-operator turns it on by starting a node with `--cycle-detection`; the window
-limits and the number of repetitions are runtime parameters persisted by the
-deploy screen.
-
 The local build script cited in that step's plan is not versioned in this
 repository (not even in git history).
 
@@ -675,7 +670,7 @@ repository (not even in git history).
 | Variable | Effect |
 |---|---|
 | `POM_HOME` | First step of `project_root()` resolution: config, `models/`, UI. Without it: a cwd that looks like the project, then walking up from the executable's directory. Two nodes on the same machine need distinct homes (the `node_id` identity also lives in the project root). |
-| `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_SETUP_BIND`, `POM_CYCLE_DETECTION`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY`, `POM_NO_PKARR` | One per command line option (`--port`, `--bootstrap`, ...; the `ARG_ENV` table in `main.rs`). The flag beats the variable, which beats the default; the booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The variable beats `pom.json`: `POM_PORT` and `POM_GATEWAY_PORT` replace the stored port, unlike `--port`/`--gateway-port`, which only apply in setup mode; `POM_BOOTSTRAP` and `POM_RELAY_PEERS` add to the config lists, like the flags. |
+| `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_SETUP_BIND`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY`, `POM_NO_PKARR` | One per command line option (`--port`, `--bootstrap`, ...; the `ARG_ENV` table in `main.rs`). The flag beats the variable, which beats the default; the booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The variable beats `pom.json`: `POM_PORT` and `POM_GATEWAY_PORT` replace the stored port, unlike `--port`/`--gateway-port`, which only apply in setup mode; `POM_BOOTSTRAP` and `POM_RELAY_PEERS` add to the config lists, like the flags. |
 | `POM_FORCE_SETUP=<token>` / `--setup` (alias `--wizard`) | Forces the first access wizard on an already configured machine, to test it: before opening the database, `pom.json`, the trust root and `pom.db` (with WAL/SHM) move to `<project_root>/setup-backups/<date-time>/` and the node starts in setup mode. The identity (`.pom-node.key`) stays. To go back, stop the node and move the files back. **Once per request**, so the restart after the save does not go back to the wizard: the flag uses the `POM_SETUP_FORCED` marker in the environment inherited by the restart; the variable keeps the last consumed token in `<project_root>/.pom-setup-forced`, because in Docker the restart recreates the container with the compose environment. The same token does not force again. `scripts/up.sh <cluster> --wizard`, in the `pom-cluster-config` repository, generates a new token per call. |
 | `POM_RETURN_MODE` | `direct` or `ring` forces the gateway's reply return mode (planner and decision), to test a path the planner would not pick - for example direct delivery to a gateway behind NAT, which the ring would hide. Absent or `auto`, the planner picks. With `direct`, a missing return path becomes an inference failure. See `parallelism.md`. |
 | `POM_SLICE_BENCH` | `0` turns off the slice speed test when the model loads (`infer_server/perf.rs`). |

@@ -672,6 +672,7 @@ mod mtp_draft_tests {
             fit_memory: true,
             fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 64,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: 0,
             n_threads: 1,
             max_sessions: 1,

@@ -206,6 +206,7 @@ mod decision_prefix_tests {
             fit_memory: false,
             fit_memory_margin_mb: llama_engine::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
+            n_ubatch: llama_engine::DEFAULT_N_UBATCH,
             n_gpu_layers: 0,
             n_threads: 2,
             max_sessions: 1,
@@ -842,6 +843,12 @@ pub(crate) struct InferState {
     pub(super) seq_pool: Vec<u32>,
     pub(super) max_sessions: u32,
     pub(super) sampling: SamplingConfig,
+    /// The model's template opens the thinking block in the prompt.
+    pub(super) thinking_forced_open: bool,
+    /// Per session, whether its current request started inside a thinking
+    /// block: what the reasoning budget needs and the generated tokens alone
+    /// do not say.
+    pub(super) thinking_open: HashMap<String, bool>,
     pub(super) no_thinking: bool,
     /// Whether to apply the model's chat template before tokenising.
     pub(super) chat_template: bool,

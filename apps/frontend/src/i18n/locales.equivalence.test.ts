@@ -38,7 +38,11 @@ const MOVED_TO_PLUGINS = new Set([
   "chat.ttftClient",
   "chat.ttftPipeline",
 ]);
-const moved = (key: string) => key.startsWith("chat.telemetry.") || MOVED_TO_PLUGINS.has(key);
+// Keys of the repetition-cycle detector, removed from the POM with it.
+const removed = (key: string) =>
+  key.startsWith("deploy.cycleDetection") || key.includes(".knob.cycle_detection_");
+const moved = (key: string) =>
+  key.startsWith("chat.telemetry.") || MOVED_TO_PLUGINS.has(key) || removed(key);
 
 describe("ICU locale equivalence", () => {
   it("keeps the CSV key order stable", () => {

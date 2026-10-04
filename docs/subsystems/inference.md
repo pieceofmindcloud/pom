@@ -1783,6 +1783,67 @@ probability in the vector itself and keeps the smallest prefix whose mass
 reaches `top_p`; after renormalizing that nucleus, it does the multinomial draw
 with the `Mutex`-protected LCG.
 
+The overrides of the window carry three penalties, applied in llama.cpp's
+order: `repeat_penalty` scales the logit (divides a positive one, multiplies a
+negative one), then `frequency_penalty` is subtracted once per occurrence of
+the token in the window and `presence_penalty` once per distinct token. All
+three are off at 1, 0 and 0, and with all off no override is built. `min_p`,
+when positive, runs after the top-p nucleus: candidates below that fraction of
+the most likely one are dropped and the rest renormalized.
+
+The deployment forms show, in each property's description, the name llama.cpp
+gives it (`apps/frontend/src/lib/llamaCppNames.ts`); a property without one is
+POM's own. Sampler settings of llama.cpp that POM's sampler does not implement
+are absent from the forms: `typical_p`, `top_n_sigma`, XTC, mirostat and
+dynamic temperature.
+
+`reasoning_budget` is llama.cpp's `--reasoning-budget`: the tokens a thinking
+block may take, -1 for no limit (the default) and 0 to close it at once. The
+machine that samples resolves the tokens of `<think>` and `</think>` when the
+deployment is loaded. Before sampling, `forced_reasoning_token` looks at the
+tokens generated in this request: if a thinking block is open and has reached
+the budget, the end tag is returned instead of a sampled token, one token per
+step until the tag is whole, and the answer then goes on freely. A block is
+open when a start tag was generated after the last end tag, or when the request
+started inside one: thinking is on for it and the model's template ends the
+prompt with the start tag (`thinking_forced_open`, checked once by rendering
+the template), which each prefill records per session (`note_thinking`),
+because the sampling machine never sees the prompt's tokens. llama.cpp's
+`--reasoning-budget-message` has no counterpart. A model whose thinking tags
+are not `<think>` and `</think>` is not limited.
+
+DRY (`dry_multiplier`, `dry_base`, `dry_allowed_length`, `dry_penalty_last_n`)
+is llama.cpp's sampler against repeated runs, ported to the same sparse
+overrides. For the tokens so far, it finds every earlier place where the
+current ending already appeared; the token that followed it there would extend
+a run of `match` tokens and loses `multiplier * base^(match - allowed_length)`
+from its logit once `match >= allowed_length`. A run does not reach across a
+sequence breaker: the tokens this model has for llama.cpp's default breakers
+(newline, `:`, `"`, `*`), resolved when the deployment is loaded, so the frame
+of a list or a table is not taken for a repetition. Runs are counted up to 50
+tokens and searched in the last `dry_penalty_last_n` tokens (0 is the whole
+history, capped at 8192). `dry_multiplier = 0`, the default, turns it off.
+
+`n_ubatch` is the physical micro-batch of a context under the memory fit:
+`min(n_batch, n_ubatch)`, and at most 128 on the main context of an external
+MoE executor. Its default, 512, is the value that was a constant before it
+became a deployment setting. With the fit off the micro-batch stays equal to
+`n_batch`. A smaller value shrinks the compute buffers in VRAM, including those
+of the MTP context.
+
+`seed` is where the sampler's generator starts. It is applied once, when the
+deployment is loaded (`set_sampler_seed`), and the sequence then runs on across
+requests; it is not restarted for each one, unlike llama.cpp's per-request
+seed. The default, `DEFAULT_SAMPLER_SEED` (9600629759793949339), is the fixed
+state POM has always started from. It travels as text in JSON because a browser
+cannot hold every 64-bit integer in a number.
+
+Repetition is handled by the sampler only: the penalties and DRY. An earlier gateway-side
+detector that stopped a generation after repeated windows of output
+(`finish_reason: "cycle"`, `--cycle-detection`, the `cycle_detection_*`
+deployment fields) was removed: it was not a setting any LLM engine has, and
+old deployments that still carry those fields load with them ignored.
+
 Ties at the `top_k` cut are broken by the original id and do not grow the set
 beyond K. The top-p cut also keeps only the minimal prefix, even with ties, so
 the chosen mass is observable and deterministic before the draw.
@@ -1802,45 +1863,6 @@ defaults went from about 237 us to 203 us per token and the top-k stage from
 227 us to 200 us; with `top_k` off, time went from 3.03 ms to 2.76 ms. The input
 is synthetic and times vary per host, so they are not a universal latency
 target.
-
-### 3.7 Cycle detection in the output
-
-POM picks family **C, detect and stop**, as a safety net on the gateway. Family
-**D, repeat the inference**, is incompatible with streaming: by the time the
-pattern is evident, the tokens have already reached the client and a second run
-would have to discard minutes of already sent output. Family **A** can be added
-to the sampler in the future, but a structural penalty needs tuning against
-legitimate tables, lists and code. Family **B** also stays open for a future
-intervention, but it cannot take back a token already sent nor promises to
-recover a model that became confident in the pattern.
-
-`inference/cycle.rs` watches the pieces' text after sampling, keeps a bounded
-history and looks for three equal consecutive windows. For incremented names,
-digits at the suffix of an identifier are normalized to a common mark
-(`SRS_FINAL_FULL_2`, `_3`, `_4`); separate numbers in table data stay distinct.
-The default minimum window is 32 tokens, the maximum 512, and the detector
-accepts configurable limits from 1 to 1024 tokens and from 2 to 8 repetitions.
-Confirmation requires three occurrences to reduce false positives: a table or
-list that repeats the frame with new values does not match, because the
-canonical content also changes.
-
-The detector does not change logits, temperature, `top_p`, `top_k`,
-`repeat_penalty`, `repeat_last_n`, the recurrent state or `kv_seq_budget`, and
-is not part of the protocol between peers. When it confirms a cycle, the gateway
-includes the token it just received, empties the `StopMatcher`, asks for no
-further decode round, releases the session and emits a summary with
-`partial: true` and `finish_reason: "cycle"`. `/api/generate` exposes those
-fields directly. In the OpenAI and Anthropic adapters, the specific reason goes
-in `x_pom.finish_reason` on the final frame and `x_pom.partial` is true; the
-providers' default reasons stay compatible (`stop` and `end_turn`). There is no
-silent truncation and no new inference.
-
-It is off by default; the operator turns it on with `--cycle-detection` on the
-process or by checking `cycle_detection_enabled` in the deployment
-configuration. The fields `cycle_detection_min_window_tokens`,
-`cycle_detection_max_window_tokens` and `cycle_detection_repetitions` tune the
-policy through the deploy screen's runtime parameters and are propagated to
-every peer.
 
 In TP, `handle_prefill` and `handle_step` also serialize the path of a frame with
 a single item using `tp_batch_gate`. The gateway may send that frame through the
@@ -2619,9 +2641,6 @@ terminal truncation are never confused. `x_pom` tells the truth:
 `truncated_tool_call` says whether the cut fell inside a call, and `partial` is
 `true` whenever that happened or there was a transport loss.
 
-A detected cycle is also an explicit terminal stop, but uses
-`finish_reason: "cycle"` in `x_pom`, with `partial: true`; see section 3.7.
-
 **Why there is no re-prefill.** The loop does not reopen a generation: it
 continues the one already open. The alternative - ending the leg, reopening
 with the generated text as a prefix and counting on the prefix cache - would
@@ -2794,7 +2813,7 @@ stream.
   `--skip prefix_reuse_lab`. The tests
   `spec_lab::um_orcamento_acima_de_n_batch_nao_e_truncado` and
   `prefix_reuse_lab::unknown_session_recovery_is_bounded` now isolate,
-  respectively, the cycle detector's budget and the cold attempt limit; the
+  respectively, the generation budget and the cold attempt limit; the
   total of frames stays determined by the prefill window.
 - **The `webui` tests that forward to a fake machine are flaky under load**
   (2026-09-03): each round of the full suite drops **one** of them, and not

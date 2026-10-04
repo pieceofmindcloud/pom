@@ -1,6 +1,23 @@
 use super::*;
 
 impl InferState {
+    /// Records, when a request's prefill arrives, whether its generation
+    /// starts inside a thinking block: thinking is on for it and the template
+    /// opens the block in the prompt.
+    pub(super) fn note_thinking(&mut self, sid_key: &str, thinking_enabled: Option<bool>) {
+        let thinking = !self.no_thinking && thinking_enabled.unwrap_or(!self.no_thinking);
+        // Sessions that are gone take their entries along.
+        let sessions = &self.sessions;
+        self.thinking_open
+            .retain(|key, _| key == sid_key || sessions.contains_key(key));
+        self.thinking_open
+            .insert(sid_key.to_owned(), thinking && self.thinking_forced_open);
+    }
+
+    pub(super) fn thinking_open_at_start(&self, sid_key: &str) -> bool {
+        self.thinking_open.get(sid_key).copied().unwrap_or(false)
+    }
+
     pub(super) fn new(
         engine: LlmEngine,
         cfg: &NodeConfig,
@@ -10,6 +27,28 @@ impl InferState {
     ) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
+        // The deployment's seed restarts the sampler's generator once, here,
+        // when the model is loaded.
+        crate::llm::set_sampler_seed(cfg.seed);
+        // Whether this model's template opens the thinking block in the
+        // prompt itself: then the generation starts inside it and no start
+        // tag is ever generated for the reasoning budget to see.
+        let thinking_start = engine.tokenize(crate::llm::THINKING_START_TAG, false, true);
+        let thinking_end = engine.tokenize(crate::llm::THINKING_END_TAG, false, true);
+        let thinking_forced_open = engine
+            .apply_chat_template(&[("user", "x")], true, false)
+            .is_ok_and(|prompt| prompt.trim_end().ends_with(crate::llm::THINKING_START_TAG));
+        // llama.cpp's default DRY sequence breakers, as the tokens this
+        // model has for them: a repeated run does not reach across one.
+        let dry_breakers: Vec<i32> = crate::llm::DRY_SEQUENCE_BREAKERS
+            .iter()
+            .filter_map(
+                |text| match engine.tokenize(text, false, false).as_slice() {
+                    [token] => Some(*token),
+                    _ => None,
+                },
+            )
+            .collect();
         Self {
             tls_handshake_ms: None,
             engine,
@@ -24,7 +63,24 @@ impl InferState {
                 top_k: cfg.top_k as i32,
                 repeat_penalty: cfg.repeat_penalty,
                 repeat_last_n: cfg.repeat_last_n as usize,
+                presence_penalty: cfg.presence_penalty,
+                frequency_penalty: cfg.frequency_penalty,
+                min_p: cfg.min_p,
+                dry: crate::llm::DrySampling {
+                    multiplier: cfg.dry_multiplier,
+                    base: cfg.dry_base,
+                    allowed_length: cfg.dry_allowed_length as usize,
+                    penalty_last_n: cfg.dry_penalty_last_n as usize,
+                    breakers: dry_breakers,
+                },
+                reasoning: crate::llm::ReasoningBudget {
+                    tokens: cfg.reasoning_budget,
+                    start: thinking_start,
+                    end: thinking_end,
+                },
             },
+            thinking_forced_open,
+            thinking_open: HashMap::new(),
             no_thinking: cfg.no_thinking,
             // Mantém o comportamento dos chamadores antigos que não enviam a
             // flag. O gateway atual sempre a explicita por endpoint.

@@ -851,7 +851,11 @@ pub(super) async fn generate_stream_inner(
     // The head tokenizes; the gateway only needs the size to plan chunks.
     // About 4 bytes per token, minus what the prefix cache will reuse.
     let estimated_new_prompt_tokens = ((prompt.len() as f64 / 4.0).ceil() as u32)
-        .saturating_sub(if reuse_prefix { prefix_lease.cached_tokens } else { 0 })
+        .saturating_sub(if reuse_prefix {
+            prefix_lease.cached_tokens
+        } else {
+            0
+        })
         .max(1);
     let (
         chunk_tokens,
@@ -930,18 +934,6 @@ pub(super) async fn generate_stream_inner(
     };
 
     let mut stop_matcher = StopMatcher::new(stops);
-    let cycle_config = state
-        .runtime
-        .config()
-        .await
-        .map(|cfg| crate::cycle::CycleConfig {
-            enabled: cfg.cycle_detection_enabled,
-            min_window_tokens: cfg.cycle_detection_min_window_tokens as usize,
-            max_window_tokens: cfg.cycle_detection_max_window_tokens as usize,
-            repetitions: cfg.cycle_detection_repetitions as usize,
-        })
-        .unwrap_or(state.cycle_config);
-    let mut cycle_detector = crate::cycle::CycleDetector::new(cycle_config);
 
     // O evento final não pode sair antes de a sessão estar arrumada.
     //
@@ -1183,25 +1175,6 @@ pub(super) async fn generate_stream_inner(
                 return;
             }
             StopSend::Continue => {}
-        }
-        if !first.done {
-            if let Some(cycle) = cycle_detector.observe(first.token_id, &first.text) {
-                if !flush_stop_matcher(&tx, &mut stop_matcher).await {
-                    return;
-                }
-                send_cycle_summary(
-                    &tx,
-                    &plan,
-                    request_started,
-                    first_token_at,
-                    tokens_generated,
-                    legs,
-                    trace,
-                    cycle,
-                )
-                .await;
-                return;
-            }
         }
         if generation_finish_reason(budget.total, tokens_generated, first.done)
             == Some("length")
@@ -1507,7 +1480,6 @@ pub(super) async fn generate_stream_inner(
                 let take = step.accepted.len().min(remaining);
                 let truncated_by_budget = take < step.accepted.len();
 
-                let mut cycle_match = None;
                 for (token_id, text) in step.accepted.iter().take(take) {
                     next_token = *token_id;
                     tokens_generated += 1;
@@ -1533,30 +1505,6 @@ pub(super) async fn generate_stream_inner(
                         }
                         StopSend::Continue => {}
                     }
-                    if cycle_match.is_none() {
-                        cycle_match = cycle_detector.observe(*token_id, text);
-                    }
-                    if cycle_match.is_some() {
-                        break;
-                    }
-                }
-
-                if let Some(cycle) = cycle_match {
-                    if !flush_stop_matcher(&tx, &mut stop_matcher).await {
-                        return;
-                    }
-                    send_cycle_summary(
-                        &tx,
-                        &plan,
-                        request_started,
-                        first_token_at,
-                        tokens_generated,
-                        legs,
-                        trace,
-                        cycle,
-                    )
-                    .await;
-                    return;
                 }
 
                 let finish_reason = generation_finish_reason(
@@ -1690,7 +1638,6 @@ pub(super) async fn generate_stream_inner(
                         remaining_generation_steps(budget.total, tokens_generated) as usize;
                     let take = step.accepted.len().min(remaining);
                     let truncated_by_budget = take < step.accepted.len();
-                    let mut cycle_match = None;
                     for (index, (token_id, text)) in step.accepted.iter().take(take).enumerate() {
                         next_token = *token_id;
                         tokens_generated += 1;
@@ -1722,29 +1669,6 @@ pub(super) async fn generate_stream_inner(
                                 cycle_started.elapsed().as_millis() as u64,
                             );
                         }
-                        if !step.done || index + 1 < take {
-                            if let Some(cycle) = cycle_detector.observe(*token_id, text) {
-                                cycle_match = Some(cycle);
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(cycle) = cycle_match {
-                        if !flush_stop_matcher(&tx, &mut stop_matcher).await {
-                            return;
-                        }
-                        send_cycle_summary(
-                            &tx,
-                            &plan,
-                            request_started,
-                            first_token_at,
-                            tokens_generated,
-                            legs,
-                            trace,
-                            cycle,
-                        )
-                        .await;
-                        return;
                     }
                     let finish_reason = generation_finish_reason(
                         budget.total,

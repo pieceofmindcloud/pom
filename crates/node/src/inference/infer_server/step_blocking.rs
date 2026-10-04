@@ -309,7 +309,12 @@ pub(crate) fn step_blocking(
             let mut pieces: Vec<Vec<u8>> = Vec::with_capacity(n_tokens);
             for i in 0..n_tokens {
                 let logits = s.engine.logits_ith(i as i32);
-                let (id, _timing) = sample_token_profiled(logits, &recent, &sampling);
+                let (id, _timing) = sample_token_within_budget(
+                    logits,
+                    &recent,
+                    &sampling,
+                    s.thinking_open_at_start(&sid_key),
+                );
                 if i == 0 {
                     super::core::mark_first_token_produced(&mut timings, decode_started);
                 }
@@ -512,7 +517,12 @@ pub(crate) fn step_blocking(
         let recent = s.sessions[&sid_key].recent_tokens.clone();
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
-        let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        let (next_id, sampling_timing) = sample_token_within_budget(
+            logits,
+            &recent,
+            &sampling,
+            s.thinking_open_at_start(&sid_key),
+        );
         super::core::mark_first_token_produced(&mut timings, decode_started);
         let done = s.engine.is_generation_stop(&recent, next_id);
         let token_text_started = Instant::now();

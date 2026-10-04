@@ -2847,7 +2847,7 @@ mod tests {
             duration_ms: 2666,
             timings: crate::gateway::timing_metrics(2666, 900, 900, 12, 12),
             partial: true,
-            finish_reason: Some("cycle".into()),
+            finish_reason: Some("length".into()),
             stop_sequence: None,
             legs: 1,
             trace: Some(crate::prefill::RequestTrace::new(
@@ -2873,7 +2873,7 @@ mod tests {
         assert!(payload["x_pom"]["timings"]["generation_tokens_per_sec"].is_number());
         assert_eq!(payload["x_pom"]["trace"]["model"], "qwen35");
         assert_eq!(payload["choices"][0]["finish_reason"], "stop");
-        assert_eq!(payload["x_pom"]["finish_reason"], "cycle");
+        assert_eq!(payload["x_pom"]["finish_reason"], "length");
         assert_eq!(payload["x_pom"]["partial"], true);
     }
 }

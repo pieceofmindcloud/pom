@@ -50,6 +50,10 @@ pub struct RuntimeParams {
     pub fit_memory_margin_mb: u32,
     #[serde(default = "d_n_batch")]
     pub n_batch: u32,
+    /// Microlote físico (`n_ubatch` do llama.cpp) enquanto o fit de memória
+    /// está ligado; nunca maior que `n_batch`.
+    #[serde(default = "d_n_ubatch")]
+    pub n_ubatch: u32,
     #[serde(default = "d_max_new")]
     pub max_new_tokens: u32,
     /// Generations allowed in flight at once. Each generation gets the full
@@ -82,16 +86,36 @@ pub struct RuntimeParams {
     pub repeat_penalty: f32,
     #[serde(default = "d_repeat_last_n")]
     pub repeat_last_n: u32,
-    /// Detector conservador de ciclos; fica desligado por padrão e pode ser
-    /// ligado sem alterar os parâmetros do sampler.
-    #[serde(default = "d_cycle_detection_enabled")]
-    pub cycle_detection_enabled: bool,
-    #[serde(default = "d_cycle_detection_min_window_tokens")]
-    pub cycle_detection_min_window_tokens: u32,
-    #[serde(default = "d_cycle_detection_max_window_tokens")]
-    pub cycle_detection_max_window_tokens: u32,
-    #[serde(default = "d_cycle_detection_repetitions")]
-    pub cycle_detection_repetitions: u32,
+    /// Subtraída uma vez do logit de cada token visto na janela. 0 desliga.
+    #[serde(default)]
+    pub presence_penalty: f32,
+    /// Subtraída do logit por ocorrência do token na janela. 0 desliga.
+    #[serde(default)]
+    pub frequency_penalty: f32,
+    /// Corta candidatos abaixo desta fração do mais provável. 0 desliga.
+    #[serde(default)]
+    pub min_p: f32,
+    /// Semente do gerador do sampler, aplicada quando a implantação carrega.
+    /// O padrão é o valor fixo que o POM sempre usou.
+    #[serde(
+        with = "llama_engine::llm::seed_text",
+        default = "llama_engine::llm::seed_text::default_seed"
+    )]
+    pub seed: u64,
+    /// Sampler DRY do llama.cpp: penaliza o token que estenderia uma sequência
+    /// já vista. `dry_multiplier` 0 desliga.
+    #[serde(default)]
+    pub dry_multiplier: f32,
+    #[serde(default = "d_dry_base")]
+    pub dry_base: f32,
+    #[serde(default = "d_dry_allowed_length")]
+    pub dry_allowed_length: u32,
+    #[serde(default = "d_dry_penalty_last_n")]
+    pub dry_penalty_last_n: u32,
+    /// Limite de tokens de um bloco de raciocínio (`--reasoning-budget` do
+    /// llama.cpp): ao atingi-lo, a tag de fim é forçada. -1 não limita.
+    #[serde(default = "d_reasoning_budget")]
+    pub reasoning_budget: i32,
     #[serde(default = "d_true")]
     pub no_thinking: bool,
     /// Disable embedding extraction in llama.cpp context on this peer.
@@ -180,18 +204,6 @@ pub(super) fn d_repeat_penalty() -> f32 {
 pub(super) fn d_repeat_last_n() -> u32 {
     64
 }
-pub(super) fn d_cycle_detection_enabled() -> bool {
-    false
-}
-pub(super) fn d_cycle_detection_min_window_tokens() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
-}
-pub(super) fn d_cycle_detection_max_window_tokens() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS
-}
-pub(super) fn d_cycle_detection_repetitions() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_REPETITIONS
-}
 pub(super) fn d_true() -> bool {
     true
 }
@@ -209,6 +221,21 @@ pub(super) fn d_mtp_draft_tokens() -> u32 {
 }
 pub(super) fn d_mtp_min_probability() -> f32 {
     0.0
+}
+pub(super) fn d_dry_base() -> f32 {
+    1.75
+}
+pub(super) fn d_dry_allowed_length() -> u32 {
+    2
+}
+pub(super) fn d_dry_penalty_last_n() -> u32 {
+    1024
+}
+pub(super) fn d_n_ubatch() -> u32 {
+    llama_engine::DEFAULT_N_UBATCH
+}
+pub(super) fn d_reasoning_budget() -> i32 {
+    -1
 }
 pub(super) fn d_mtp_cpu_fallback_enabled() -> bool {
     true
@@ -228,6 +255,7 @@ impl Default for RuntimeParams {
             fit_memory: d_true(),
             fit_memory_margin_mb: d_fit_memory_margin_mb(),
             n_batch: d_n_batch(),
+            n_ubatch: d_n_ubatch(),
             max_new_tokens: d_max_new(),
             max_sessions: d_max_sessions(),
             batching_enabled: d_batching_enabled(),
@@ -242,10 +270,15 @@ impl Default for RuntimeParams {
             top_k: d_top_k(),
             repeat_penalty: d_repeat_penalty(),
             repeat_last_n: d_repeat_last_n(),
-            cycle_detection_enabled: d_cycle_detection_enabled(),
-            cycle_detection_min_window_tokens: d_cycle_detection_min_window_tokens(),
-            cycle_detection_max_window_tokens: d_cycle_detection_max_window_tokens(),
-            cycle_detection_repetitions: d_cycle_detection_repetitions(),
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_p: 0.0,
+            seed: llama_engine::llm::DEFAULT_SAMPLER_SEED,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_penalty_last_n: 1024,
+            reasoning_budget: -1,
             no_thinking: d_true(),
             no_embeddings: false,
             speculative_decoding_enabled: false,
@@ -278,6 +311,7 @@ impl From<&NodeConfig> for RuntimeParams {
             fit_memory: c.fit_memory,
             fit_memory_margin_mb: c.fit_memory_margin_mb,
             n_batch: c.n_batch,
+            n_ubatch: c.n_ubatch,
             max_new_tokens: c.max_new_tokens,
             max_sessions: c.max_sessions,
             batching_enabled: c.batching_enabled,
@@ -292,10 +326,15 @@ impl From<&NodeConfig> for RuntimeParams {
             top_k: c.top_k,
             repeat_penalty: c.repeat_penalty,
             repeat_last_n: c.repeat_last_n,
-            cycle_detection_enabled: c.cycle_detection_enabled,
-            cycle_detection_min_window_tokens: c.cycle_detection_min_window_tokens,
-            cycle_detection_max_window_tokens: c.cycle_detection_max_window_tokens,
-            cycle_detection_repetitions: c.cycle_detection_repetitions,
+            presence_penalty: c.presence_penalty,
+            frequency_penalty: c.frequency_penalty,
+            min_p: c.min_p,
+            seed: c.seed,
+            dry_multiplier: c.dry_multiplier,
+            dry_base: c.dry_base,
+            dry_allowed_length: c.dry_allowed_length,
+            dry_penalty_last_n: c.dry_penalty_last_n,
+            reasoning_budget: c.reasoning_budget,
             no_thinking: c.no_thinking,
             no_embeddings: c.no_embeddings,
             speculative_decoding_enabled: c.speculative_decoding_enabled,

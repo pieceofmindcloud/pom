@@ -759,8 +759,7 @@ pub struct GenerateResponse {
     pub duration_ms: u64,
     pub timings: Option<GenerationTimings>,
     pub stop_sequence: Option<String>,
-    /// Motivo terminal. `cycle` é uma interrupção explícita do detector de
-    /// degenerescência, distinta de `stop` e do limite `length`.
+    /// Motivo terminal, quando não é um fim comum.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
     #[serde(skip_serializing_if = "is_false")]
@@ -1218,36 +1217,6 @@ pub(super) async fn send_length_summary(
         trace,
         false,
         Some("length".to_string()),
-        None,
-    );
-    let _ = tx.send(GenEvent::Done(summary)).await;
-}
-
-pub(super) async fn send_cycle_summary(
-    tx: &mpsc::Sender<GenEvent>,
-    plan: &PipelinePlan,
-    request_started: Instant,
-    first_token_at: Instant,
-    tokens_generated: u32,
-    legs: u32,
-    trace: crate::prefill::RequestTrace,
-    cycle: crate::cycle::CycleMatch,
-) {
-    info!(
-        tokens_generated,
-        period_tokens = cycle.period,
-        repetitions = cycle.repetitions,
-        "ciclo de repetição detectado; encerrando a geração"
-    );
-    let summary = summary_for(
-        plan,
-        request_started,
-        first_token_at,
-        tokens_generated,
-        legs,
-        trace,
-        true,
-        Some("cycle".to_string()),
         None,
     );
     let _ = tx.send(GenEvent::Done(summary)).await;

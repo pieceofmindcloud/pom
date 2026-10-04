@@ -1157,130 +1157,6 @@ mod tests {
         assert_eq!(generation_finish_reason(4000, 3640, false), None);
     }
 
-    /// Exercicio de ponta a ponta do caminho que um consumidor de
-    /// `/api/generate` usa: o gateway transmite as fichas repetidas, para
-    /// antes de pedir a próxima, libera a sessão e publica `cycle` em vez de
-    /// amputar silenciosamente o orçamento.
-    #[tokio::test]
-    async fn api_generate_reports_and_stops_a_detected_cycle() {
-        let steps = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let script: std::sync::Arc<Vec<&'static str>> = std::sync::Arc::new(vec![
-            "alpha ", "beta ", "alpha ", "beta ", "alpha ", "beta ",
-        ]);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let app = axum::Router::new()
-            .route(
-                "/health",
-                axum::routing::get(|| async {
-                    axum::Json(json!({"status": "ok", "model_loaded": true}))
-                }),
-            )
-            .route(
-                "/v1/prefill",
-                axum::routing::post(|| async {
-                    let response = json!({
-                        "done": false,
-                        "more_chunks": false,
-                        "n_prompt_tokens": 1,
-                        "token_id": 1,
-                        "text": "seed "
-                    });
-                    let bytes = crate::wire::encode_batch_single(
-                        &response,
-                        None,
-                        crate::wire::WireDtype::F16,
-                    )
-                    .unwrap();
-                    (
-                        StatusCode::OK,
-                        [("content-type", "application/octet-stream")],
-                        bytes,
-                    )
-                        .into_response()
-                }),
-            )
-            .route(
-                "/v1/step",
-                axum::routing::post({
-                    let steps = steps.clone();
-                    let script = script.clone();
-                    move || {
-                        let steps = steps.clone();
-                        let script = script.clone();
-                        async move {
-                            let index = steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            let text = script.get(index).copied().unwrap_or("unexpected ");
-                            let response = json!({
-                                "done": false,
-                                "token_id": index as u32 + 2,
-                                "text": text
-                            });
-                            let bytes = crate::wire::encode_batch_single(
-                                &response,
-                                None,
-                                crate::wire::WireDtype::F16,
-                            )
-                            .unwrap();
-                            (
-                                StatusCode::OK,
-                                [("content-type", "application/octet-stream")],
-                                bytes,
-                            )
-                                .into_response()
-                        }
-                    }
-                }),
-            )
-            .route(
-                "/v1/session/release",
-                axum::routing::post(|| async { StatusCode::OK }),
-            );
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-
-        let mut peer = crate::gateway::testkit::peer("head", "head", 8080);
-        peer.model = "lab".into();
-        peer.start_layer = 0;
-        peer.end_layer = 0;
-        peer.total_layers = 1;
-        peer.inference_port = Some(port);
-        let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
-        let mut config = crate::gateway::testkit::spec_config();
-        config.total_layers = 1;
-        config.end_layer = 0;
-        config.peer_count = 1;
-        config.speculative_decoding_enabled = false;
-        config.cycle_detection_min_window_tokens = 2;
-        config.cycle_detection_max_window_tokens = 2;
-        config.cycle_detection_repetitions = 3;
-        state.runtime.seed_config_for_test(config).await;
-
-        let request = serde_json::to_vec(&GenerateRequest {
-            model: Some("lab".into()),
-            prompt: "Oi".into(),
-            max_tokens: Some(32),
-            stop: None,
-        })
-        .unwrap();
-        let response = handle_generate(
-            crate::auth::ApiKeyAuth::for_test(crate::reqlog::Caller::operator()),
-            State(state),
-            axum::body::Bytes::from(request),
-        )
-        .await
-        .into_response();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = crate::gateway::testkit::body_of(response).await;
-        assert_eq!(body["response"], "seed alpha beta alpha beta alpha beta ");
-        assert_eq!(body["tokens_generated"], 7);
-        assert_eq!(body["finish_reason"], "cycle");
-        assert_eq!(body["partial"], true);
-        assert_eq!(body["stop_sequence"], Value::Null);
-        assert_eq!(steps.load(std::sync::atomic::Ordering::SeqCst), 6);
-    }
-
     #[test]
     fn normal_api_generate_responses_keep_the_existing_shape() {
         let response = GenerateResponse {
@@ -1837,6 +1713,7 @@ mod budget_tests {
             fit_memory: true,
             fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch,
+            n_ubatch: llama_engine::DEFAULT_N_UBATCH,
             max_sessions,
             batching_enabled: true,
             max_queue_requests: 128,
@@ -1852,10 +1729,15 @@ mod budget_tests {
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
-            cycle_detection_enabled: true,
-            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
-            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
-            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_p: 0.0,
+            seed: llama_engine::llm::DEFAULT_SAMPLER_SEED,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_penalty_last_n: 1024,
+            reasoning_budget: -1,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
@@ -2915,7 +2797,6 @@ pub(crate) mod testkit {
             )),
             admission_health: Default::default(),
             runtime: NodeRuntime::new(net, assignment),
-            cycle_config: crate::cycle::CycleConfig::default(),
             audit: crate::reqlog::AuditLog::new(database.clone()),
             plugins,
             pom_core_update,
@@ -2971,6 +2852,7 @@ pub(crate) mod testkit {
             fit_memory: true,
             fit_memory_margin_mb: crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
+            n_ubatch: llama_engine::DEFAULT_N_UBATCH,
             max_sessions: 1,
             batching_enabled: true,
             max_queue_requests: 128,
@@ -2986,10 +2868,15 @@ pub(crate) mod testkit {
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
-            cycle_detection_enabled: true,
-            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
-            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
-            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_p: 0.0,
+            seed: llama_engine::llm::DEFAULT_SAMPLER_SEED,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_penalty_last_n: 1024,
+            reasoning_budget: -1,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,

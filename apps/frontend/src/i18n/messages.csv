@@ -473,8 +473,6 @@ deploy.copyCount,"{count}{count, plural, =1 { copy} other { copies}}","{count}{c
 deploy.copyFrom,copy from {host},copiar de {host}
 deploy.copySummary,"{count}{count, plural, =1 { copy} other { copies}} · {size} over the network","{count}{count, plural, =1 { cópia} other { cópias}} · {size} pela rede"
 deploy.coverage,Layers covered by this selection,Camadas cobertas pela escolha
-deploy.cycleDetection,Stop repetition cycles,Interromper ciclos de repetição
-deploy.cycleDetectionHint,Stops after three consecutive windows repeat the same structure. Identifier suffixes such as _2 and _3 are treated as one shape; new table values remain progress.,Interrompe quando três janelas consecutivas repetem a mesma estrutura. Sufixos de identificador como _2 e _3 contam como o mesmo formato; valores novos de tabela continuam sendo progresso.
 deploy.deploy,Deploy this way,Implantar assim
 deploy.deployment,Deployment,Implantação
 deploy.destination,Destination,Vai para
@@ -510,14 +508,18 @@ deploy.kindTp,Tensor parallel,Tensor parallel
 deploy.kindTpHint,"One primary + workers, each holding a tensor shard. No weight crosses the network.","Um primary + workers, cada um com um shard de tensor. Nenhum peso cruza a rede."
 deploy.kindWhole,A whole model,Um modelo inteiro
 deploy.kindWholeHint,"One machine serves every layer. No slicing, no pipeline.","Uma máquina serve todas as camadas. Sem fatiar, sem pipeline."
-deploy.knob.cycle_detection_max_window_tokens,Cycle maximum window,Janela máxima do ciclo
-deploy.knob.cycle_detection_max_window_tokensHint,Largest token window compared for a repeated structure.,Maior janela de tokens comparada em busca de uma estrutura repetida.
-deploy.knob.cycle_detection_min_window_tokens,Cycle minimum window,Janela mínima do ciclo
-deploy.knob.cycle_detection_min_window_tokensHint,Smallest token window compared for a repeated structure.,Menor janela de tokens comparada em busca de uma estrutura repetida.
-deploy.knob.cycle_detection_repetitions,Cycle repetitions,Repetições do ciclo
-deploy.knob.cycle_detection_repetitionsHint,Consecutive occurrences required before stopping. Higher is safer for legitimate repeated structure.,Ocorrências consecutivas necessárias antes de interromper. Um valor maior protege melhor estruturas legítimas.
+deploy.knob.dry_allowed_length,DRY allowed length,Tamanho permitido do DRY
+deploy.knob.dry_allowed_lengthHint,Repeated sequences shorter than this are not penalized. 2 is the default.,Sequências repetidas menores que isto não são penalizadas. 2 é o padrão.
+deploy.knob.dry_base,DRY base,Base do DRY
+deploy.knob.dry_baseHint,How fast the DRY penalty grows with each extra token of the repeated sequence. 1.75 is the default.,"O quanto a penalidade do DRY cresce a cada token a mais da sequência repetida. 1,75 é o padrão."
+deploy.knob.dry_multiplier,DRY multiplier,Multiplicador do DRY
+deploy.knob.dry_multiplierHint,"Turns on the DRY sampler: a token that would continue a sequence already seen in the text loses multiplier x base^(length - allowed length) from its logit. 0 is off; 0.8 is the usual value. Unlike the repeat penalty, it does not punish single repeated words, only repeated runs.","Liga o sampler DRY: um token que continuaria uma sequência já vista no texto perde multiplicador x base^(tamanho - tamanho permitido) do logit. 0 desliga; 0,8 é o valor usual. Diferente da penalidade de repetição, não pune palavras repetidas isoladas, só sequências repetidas."
+deploy.knob.dry_penalty_last_n,DRY window,Janela do DRY
+deploy.knob.dry_penalty_last_nHint,"How many of the most recent tokens DRY searches for the repeated sequence. 0 searches the whole history, up to 8192 tokens.","Quantos dos tokens mais recentes o DRY percorre atrás da sequência repetida. 0 percorre o histórico inteiro, até 8192 tokens."
 deploy.knob.fit_memory_margin_mb,VRAM safety reserve (MiB),Reserva de segurança da VRAM (MiB)
 deploy.knob.fit_memory_margin_mbHint,"VRAM the automatic fit leaves unused on each device, to cover allocator drift and late workspaces. Raise it if a deploy starts then dies with an out-of-memory error.","VRAM que o ajuste automático deixa livre em cada dispositivo, para cobrir folga do alocador e buffers tardios. Aumente se uma implantação sobe e cai com erro de falta de memória."
+deploy.knob.frequency_penalty,Frequency penalty,Penalidade de frequência
+deploy.knob.frequency_penaltyHint,"Subtracted from the logit of a token once for each time it appeared in the penalty window, so the more a word repeats the less likely it gets. 0 is off. Same as llama.cpps frequency_penalty.","Subtraída do logit de um token uma vez para cada vez que ele apareceu na janela da penalidade: quanto mais a palavra se repete, menos provável ela fica. 0 desliga. É o frequency_penalty do llama.cpp."
 deploy.knob.hidden_state_dtype,Hidden-state precision,Precisão do estado oculto
 deploy.knob.hidden_state_dtypeF16,f16 - 2 bytes per value,f16 - 2 bytes por valor
 deploy.knob.hidden_state_dtypeF32,f32 - 4 bytes per value,f32 - 4 bytes por valor
@@ -532,6 +534,8 @@ deploy.knob.max_new_tokens,Max new tokens,Máx. tokens novos
 deploy.knob.max_new_tokensHint,"Ceiling for one leg of the gateway''s continuation loop, not for the request. The client''s max_tokens is what actually bounds a response and produces finish_reason length.","Teto de uma perna do laço de continuação do gateway, não da requisição. Quem limita a resposta e produz finish_reason length é o max_tokens do cliente."
 deploy.knob.max_sessions,Concurrent requests,Requisições simultâneas
 deploy.knob.max_sessionsHint,"Generations served at once. Each one reserves its own full context, so this multiplies the KV-cache VRAM: two sessions at 32k cost the same as one at 64k.","Gerações atendidas ao mesmo tempo. Cada uma reserva o contexto inteiro, então isto multiplica a VRAM do cache KV: duas sessões a 32k custam o mesmo que uma a 64k."
+deploy.knob.min_p,Min-p,Min-p
+deploy.knob.min_pHint,"Drops every candidate token whose probability is below this fraction of the most likely one, after top-k and top-p. 0 is off; 0.05 is a common value.","Descarta todo token candidato cuja probabilidade fica abaixo desta fração do mais provável, depois do top-k e do top-p. 0 desliga; 0,05 é um valor comum."
 deploy.knob.mtp_draft_tokens,MTP draft tokens,Tokens rascunhados pelo MTP
 deploy.knob.mtp_draft_tokensHint,How many tokens the nextn head guesses per round. More widens the batch on every hop; fewer wastes less when a guess is rejected.,Quantos tokens a cabeça nextn adivinha por rodada. Mais alarga o lote em todos os hops; menos desperdiça menos quando o palpite é recusado.
 deploy.knob.mtp_min_probability,MTP minimum probability,Probabilidade mínima do MTP
@@ -542,15 +546,23 @@ deploy.knob.n_ctx,Context (n_ctx),Contexto (n_ctx)
 deploy.knob.n_ctxHint,"Full attention window per request, in tokens. This is the largest driver of KV-cache VRAM after the weights, and it is multiplied by the concurrent-request count.","Janela de atenção completa por requisição, em tokens. É o que mais pesa na VRAM do cache KV depois dos pesos, e é multiplicada pelo número de requisições simultâneas."
 deploy.knob.n_gpu_layers,GPU layers,Camadas na GPU
 deploy.knob.n_gpu_layersHint,How many transformer blocks this machine keeps on the GPU; the rest run on CPU. Blank means all of them. Fewer layers on the GPU frees VRAM but slows this hop.,"Quantos blocos do transformer esta máquina mantém na GPU; o resto roda na CPU. Em branco são todos. Menos camadas na GPU liberam VRAM, mas deixam este salto mais lento."
+deploy.knob.n_ubatch,Micro-batch,Microlote
+deploy.knob.n_ubatchHint,"How many tokens the context decodes at once while the memory fit is on; the compute buffers in VRAM are sized for it. Smaller frees VRAM (for MTP, for example) and makes prefill a little slower. Never more than the batch; with the fit off, the micro-batch is the batch. The default, 512, is the value that used to be fixed.","Quantos tokens o contexto decodifica de uma vez enquanto o ajuste de memória está ligado; os buffers de cálculo na VRAM são dimensionados por ele. Menor libera VRAM (para o MTP, por exemplo) e deixa o prefill um pouco mais lento. Nunca maior que o lote; com o ajuste desligado, o microlote é o lote. O padrão, 512, é o valor que antes era fixo."
 deploy.knob.offload_kqvHint,"Keep this machine''s KV cache in VRAM. Turn it off to spend host RAM instead of GPU memory on large contexts, at some latency cost. Set per machine.","Mantém o cache KV desta máquina na VRAM. Desligue para gastar RAM do host em vez de memória de GPU em contextos grandes, com algum custo de latência. É por máquina."
 deploy.knob.prefill_chunk_tokens,Tokens per chunk,Tokens por pedaço
 deploy.knob.prefill_chunk_tokensHint,Prompt tokens sent through the pipeline per round trip during prefill. Smaller chunks start streaming sooner on a slow link; larger chunks cut the number of round trips.,Tokens do prompt enviados pelo pipeline a cada ida e volta no prefill. Pedaços menores começam a transmitir antes num link lento; maiores reduzem o número de idas e voltas.
 deploy.knob.prefill_max_inflight_chunks,Prefill chunks in flight,Pedaços de prefill em voo
 deploy.knob.prefill_max_inflight_chunksHint,How many prefill chunks travel the pipeline at once (1..8). Higher hides per-hop latency on a deep pipeline; 1 turns the overlap off.,Quantos pedaços de prefill andam pelo pipeline ao mesmo tempo (1..8). Maior esconde a latência de cada salto num pipeline profundo; 1 desliga a sobreposição.
+deploy.knob.presence_penalty,Presence penalty,Penalidade de presença
+deploy.knob.presence_penaltyHint,"Subtracted once from the logit of every token already seen in the penalty window, however often it appeared, which pushes the model toward new words. 0 is off; Qwen recommends up to 1.5 against endless repetition. Same as llama.cpps presence_penalty.","Subtraída uma vez do logit de cada token já visto na janela da penalidade, não importa quantas vezes apareceu, o que empurra o modelo para palavras novas. 0 desliga; a Qwen recomenda até 1,5 contra repetição sem fim. É o presence_penalty do llama.cpp."
+deploy.knob.reasoning_budget,Reasoning budget (tokens),Limite de raciocínio (tokens)
+deploy.knob.reasoning_budgetHint,"How many tokens a thinking block may take. When it reaches the limit, the end-of-thinking tag is forced and the model goes on to the answer. Empty is no limit (-1); 0 closes the block at once.","Quantos tokens um bloco de raciocínio pode ocupar. Ao atingir o limite, a tag de fim do raciocínio é forçada e o modelo segue para a resposta. Vazio é sem limite (-1); 0 fecha o bloco de imediato."
 deploy.knob.repeat_last_n,Penalty window,Janela da penalidade
 deploy.knob.repeat_last_nHint,How many of the most recent tokens the repeat penalty looks back over. 0 disables the window.,Quantos dos tokens mais recentes a penalidade de repetição considera. 0 desliga a janela.
 deploy.knob.repeat_penalty,Repeat penalty,Penalidade de repetição
 deploy.knob.repeat_penaltyHint,"Divides the logit of tokens seen in the recent window before sampling, discouraging loops. 1 is no penalty; values above ~1.3 can distort fluency.","Divide o logit dos tokens vistos na janela recente antes da amostragem, desencorajando laços. 1 é sem penalidade; acima de ~1,3 pode distorcer a fluência."
+deploy.knob.seed,Seed,Semente
+deploy.knob.seedHint,"Where the samplers random generator starts when the deployment is loaded. The sequence then runs on across requests; it is not restarted for each one. The same seed, the same model and the same requests in the same order give the same answers. The default is the fixed value POM has always used.","De onde o gerador aleatório do sampler parte quando a implantação é carregada. A sequência depois segue entre as requisições; não recomeça a cada uma. A mesma semente, o mesmo modelo e as mesmas requisições na mesma ordem dão as mesmas respostas. O padrão é o valor fixo que o POM sempre usou."
 deploy.knob.speculative_k,Draft width (K),Largura do rascunho (K)
 deploy.knob.speculative_kHint,The confirmed token plus up to K-1 guesses in one batch. Higher means more tokens per round trip and more wasted work when the guess is wrong.,O token confirmado mais até K-1 palpites num lote só. Maior rende mais tokens por ida e volta e desperdiça mais trabalho quando o palpite erra.
 deploy.knob.speculative_lookup_window,Lookup window,Janela de busca
@@ -617,6 +629,7 @@ deploy.processesPrompt,processes prompt,processa o prompt
 deploy.progress,In progress,Em andamento
 deploy.prompt,prompt,prompt
 deploy.properties,Deployment properties,Propriedades da implantação
+deploy.reasoningBudgetUnlimited,no limit,sem limite
 deploy.removeLeavesGap,Layers {layers} are left uncovered and the pipeline stops planning until someone takes them.,As camadas {layers} ficam descobertas e o pipeline para de planejar até alguém assumir.
 deploy.removeNode,Remove,Remover
 deploy.removeNodeTitle,Take this machine out of the model,Tirar esta máquina do modelo
@@ -913,20 +926,27 @@ inspector.engine.moe,MoE,MoE
 inspector.fitMemory,Fit to memory,Ajustar à memória
 inspector.inferenceMode,Inference engine,Motor de inferência
 inspector.inferenceModeHint,"Which engine runs the forward pass. The choice reaches the whole model, the shards and tensor parallelism alike; llama.cpp is the default and MoE is POM''s own path for mixture-of-experts models.","Qual motor roda a passagem à frente. A escolha vale para o modelo inteiro, para as fatias e para o Tensor Parallelism; o llama.cpp é o padrão e o MoE é o caminho próprio do POM para modelos de mistura de especialistas."
-inspector.knob.cycle_detection_max_window_tokens,Cycle: maximum window,Ciclo: janela máxima
-inspector.knob.cycle_detection_min_window_tokens,Cycle: minimum window,Ciclo: janela mínima
-inspector.knob.cycle_detection_repetitions,Cycle: repetitions,Ciclo: repetições
+inspector.knob.dry_allowed_length,DRY allowed length,DRY: tamanho permitido
+inspector.knob.dry_base,DRY base,DRY: base
+inspector.knob.dry_multiplier,DRY multiplier,DRY: multiplicador
+inspector.knob.dry_penalty_last_n,DRY window,DRY: janela
+inspector.knob.frequency_penalty,Frequency,Frequência
 inspector.knob.idle_minutes,Idle time (minutes),Tempo ocioso (minutos)
 inspector.knob.max_new_tokens,Max. tokens,Máx. tokens
 inspector.knob.max_sessions,Sessions,Sessões
+inspector.knob.min_p,Min-p,Min-p
 inspector.knob.mtp_draft_tokens,MTP draft tokens,Tokens rascunhados pelo MTP
 inspector.knob.mtp_min_probability,MTP minimum probability,Probabilidade mínima do MTP
 inspector.knob.n_batch,Batch,Batch
 inspector.knob.n_ctx,Context,Contexto
+inspector.knob.n_ubatch,Micro-batch,Microlote
 inspector.knob.prefill_chunk_tokens,Prefill chunk,Chunk prefill
 inspector.knob.prefill_max_inflight_chunks,Chunks in flight,Chunks em voo
+inspector.knob.presence_penalty,Presence,Presença
+inspector.knob.reasoning_budget,Reasoning budget,Limite de raciocínio
 inspector.knob.repeat_last_n,Repeat window,Janela repetição
 inspector.knob.repeat_penalty,Penalty,Penalidade
+inspector.knob.seed,Seed,Semente
 inspector.knob.speculative_k,Draft width,Largura do rascunho
 inspector.knob.speculative_lookup_window,Lookup window,Janela de busca
 inspector.knob.temperature,Temperature,Temperatura

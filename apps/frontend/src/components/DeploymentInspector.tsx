@@ -31,6 +31,13 @@ import { useState, type ReactNode } from "react";
 import { AlertTooltip, InfoTip, Input, Select } from "./ui";
 import { MTP_MIN_PROBABILITY, Tick } from "./RuntimeParamsForm";
 import { SidecarPicker, type SidecarPick } from "./SidecarPicker";
+import {
+  DEFAULT_SAMPLER_SEED,
+  reasoningBudgetText,
+  reasoningBudgetValue,
+  seedText,
+  withLlamaCppName,
+} from "../lib/llamaCppNames";
 import type { MtpPlacement, SidecarOption, SidecarSlot } from "../lib/types";
 import type {
   DeploymentCapabilities,
@@ -58,13 +65,18 @@ type NumericKey =
   | "top_k"
   | "repeat_penalty"
   | "repeat_last_n"
+  | "presence_penalty"
+  | "frequency_penalty"
+  | "min_p"
+  | "dry_multiplier"
+  | "dry_base"
+  | "dry_allowed_length"
+  | "dry_penalty_last_n"
+  | "n_ubatch"
   | "speculative_k"
   | "speculative_lookup_window"
   | "mtp_draft_tokens"
   | "mtp_min_probability"
-  | "cycle_detection_min_window_tokens"
-  | "cycle_detection_max_window_tokens"
-  | "cycle_detection_repetitions"
   | "idle_minutes";
 
 /**
@@ -75,6 +87,11 @@ const NUMERIC_STEP: Partial<Record<NumericKey, string>> = {
   temperature: "0.05",
   top_p: "0.01",
   repeat_penalty: "0.01",
+  presence_penalty: "0.05",
+  frequency_penalty: "0.05",
+  min_p: "0.01",
+  dry_multiplier: "0.05",
+  dry_base: "0.05",
   mtp_min_probability: "0.01",
 };
 
@@ -84,18 +101,24 @@ const DEFAULT_NUMERIC_KNOBS: NumericKey[] = [
   "max_sessions",
   "max_new_tokens",
   "n_batch",
+  "n_ubatch",
   "prefill_chunk_tokens",
   "temperature",
   "top_p",
   "top_k",
   "repeat_penalty",
   "repeat_last_n",
+  "presence_penalty",
 ];
 
-const CYCLE_KNOBS: NumericKey[] = [
-  "cycle_detection_min_window_tokens",
-  "cycle_detection_max_window_tokens",
-  "cycle_detection_repetitions",
+/** Sampler settings of llama.cpp that few deployments touch; shown with the development settings. */
+const DEV_SAMPLING_KNOBS: NumericKey[] = [
+  "frequency_penalty",
+  "min_p",
+  "dry_multiplier",
+  "dry_base",
+  "dry_allowed_length",
+  "dry_penalty_last_n",
 ];
 
 export const CACHE_TYPE_LABELS: Record<KvCacheType, string> = {
@@ -332,7 +355,7 @@ export function DeploymentInspector({
   function numeric(key: NumericKey) {
     const label = t("inspector.knob." + key);
     return (
-      <InspectorRow key={key} label={label} tip={t("deploy.knob." + key + "Hint")}>
+      <InspectorRow key={key} label={label} tip={withLlamaCppName(t("deploy.knob." + key + "Hint"), key)}>
         {readOnly ? (
           <ReadValue>{value[key] == null ? "-" : showNumber(value[key])}</ReadValue>
         ) : (
@@ -398,7 +421,7 @@ export function DeploymentInspector({
           }`
         : undefined;
     return (
-      <InspectorRow key={key} label={label} tip={tip} alert={alert}>
+      <InspectorRow key={key} label={label} tip={tip ? withLlamaCppName(tip, key) : tip} alert={alert}>
         <Tick
           on={checked}
           label={label}
@@ -409,7 +432,6 @@ export function DeploymentInspector({
     );
   }
 
-  const cycleOn = value.cycle_detection_enabled ?? false;
   const speculativeOn = value.speculative_decoding_enabled ?? false;
   const mtpOn = value.mtp_enabled ?? false;
 
@@ -423,7 +445,7 @@ export function DeploymentInspector({
             const label = part === "k" ? t("inspector.cacheK") : t("inspector.cacheV");
             const current = part === "k" ? cacheTypes.k : cacheTypes.v;
             return (
-              <InspectorRow key={`cache_${part}`} label={label} tip={t("inspector.cacheHint")}>
+              <InspectorRow key={`cache_${part}`} label={label} tip={withLlamaCppName(t("inspector.cacheHint"), `cache_type_${part}`)}>
                 {readOnly ? (
                   <ReadValue>{CACHE_TYPE_LABELS[current]}</ReadValue>
                 ) : (
@@ -456,6 +478,26 @@ export function DeploymentInspector({
           onToggle: (next) => set({ no_thinking: next }),
           tip: t("deploy.noThinkingHint"),
         })}
+        {!(value.no_thinking ?? false) && (
+          <InspectorRow
+            label={t("inspector.knob.reasoning_budget")}
+            tip={withLlamaCppName(t("deploy.knob.reasoning_budgetHint"), "reasoning_budget")}
+          >
+            {readOnly ? (
+              <ReadValue>{reasoningBudgetText(value.reasoning_budget) || t("deploy.reasoningBudgetUnlimited")}</ReadValue>
+            ) : (
+              <Input
+                aria-label={t("inspector.knob.reasoning_budget")}
+                name="reasoning_budget"
+                type="text"
+                inputMode="numeric"
+                placeholder={t("deploy.reasoningBudgetUnlimited")}
+                value={reasoningBudgetText(value.reasoning_budget)}
+                onChange={(event) => set({ reasoning_budget: reasoningBudgetValue(event.target.value) })}
+              />
+            )}
+          </InspectorRow>
+        )}
         {toggle({
           key: "speculative_decoding_enabled",
           label: t("deploy.speculative"),
@@ -661,15 +703,24 @@ export function DeploymentInspector({
             )}
           </InspectorRow>
         )}
-        {CYCLE_KNOBS.map((key) => numeric(key))}
-        {toggle({
-          key: "cycle_detection_enabled",
-          label: t("deploy.cycleDetection"),
-          alwaysVisible: true,
-          checked: cycleOn,
-          onToggle: (next) => set({ cycle_detection_enabled: next }),
-          tip: t("deploy.cycleDetectionHint"),
-        })}
+        {DEV_SAMPLING_KNOBS.map((key) => numeric(key))}
+        <InspectorRow label={t("inspector.knob.seed")} tip={withLlamaCppName(t("deploy.knob.seedHint"), "seed")}>
+          {readOnly ? (
+            <ReadValue>{value.seed ?? DEFAULT_SAMPLER_SEED}</ReadValue>
+          ) : (
+            <Input
+              aria-label={t("inspector.knob.seed")}
+              name="seed"
+              type="text"
+              inputMode="numeric"
+              value={value.seed ?? DEFAULT_SAMPLER_SEED}
+              onChange={(event) => set({ seed: seedText(event.target.value) })}
+              onBlur={() => {
+                if (!value.seed) set({ seed: DEFAULT_SAMPLER_SEED });
+              }}
+            />
+          )}
+        </InspectorRow>
         <InspectorRow label={t("deploy.mtpPlacement")} tip={t("deploy.mtpPlacementHint")}>
           {readOnly ? (
             <ReadValue>{t(MTP_PLACEMENT_LABELS[value.mtp_placement ?? "auto"])}</ReadValue>

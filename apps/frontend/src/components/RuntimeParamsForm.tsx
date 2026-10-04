@@ -16,6 +16,13 @@
 import { useState } from "react";
 import { Check } from "lucide-react";
 import { AlertTooltip, Field, Input, Select } from "./ui";
+import {
+  DEFAULT_SAMPLER_SEED,
+  reasoningBudgetText,
+  reasoningBudgetValue,
+  seedText,
+  withLlamaCppName,
+} from "../lib/llamaCppNames";
 import type { DeploymentCapabilities, MtpPlacement, RuntimeCapability, RuntimeParams, WireDtype } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -31,6 +38,7 @@ export const KNOBS: Knob[] = [
   { key: "n_gpu_layers", min: 0 },
   { key: "n_ctx", min: 512, max: 250000, step: 512 },
   { key: "n_batch", min: 32, step: 32 },
+  { key: "n_ubatch", min: 16, max: 4096, step: 16 },
   { key: "fit_memory_margin_mb", min: 4, max: 16384, step: 16 },
   { key: "max_new_tokens", min: 16 },
   { key: "max_sessions", min: 1, max: 16 },
@@ -41,14 +49,17 @@ export const KNOBS: Knob[] = [
   { key: "top_k", min: 0 },
   { key: "repeat_penalty", min: 1, max: 2, step: 0.01 },
   { key: "repeat_last_n", min: 0 },
+  { key: "presence_penalty", min: -2, max: 2, step: 0.05 },
 ];
 
-/** Ajustes do detector, mantidos fora da lista de sampling para deixar clara
- * a diferença entre penalizar o próximo token e interromper uma degeneração. */
-export const CYCLE_KNOBS: Knob[] = [
-  { key: "cycle_detection_min_window_tokens", min: 1, max: 1024 },
-  { key: "cycle_detection_max_window_tokens", min: 1, max: 1024 },
-  { key: "cycle_detection_repetitions", min: 2, max: 8 },
+/** Sampler settings of llama.cpp that few deployments touch; development only. */
+export const DEV_SAMPLING_KNOBS: Knob[] = [
+  { key: "frequency_penalty", min: -2, max: 2, step: 0.05 },
+  { key: "min_p", min: 0, max: 1, step: 0.01 },
+  { key: "dry_multiplier", min: 0, max: 5, step: 0.05 },
+  { key: "dry_base", min: 1, max: 4, step: 0.05 },
+  { key: "dry_allowed_length", min: 1, max: 50 },
+  { key: "dry_penalty_last_n", min: 0, max: 8192 },
 ];
 
 /**
@@ -251,7 +262,7 @@ export function RuntimeParamsForm({
     <Field
       key={k.key}
       label={t("deploy.knob." + k.key)}
-      tip={t("deploy.knob." + k.key + "Hint")}
+      tip={withLlamaCppName(t("deploy.knob." + k.key + "Hint"), k.key)}
     >
       <Input
         type="number"
@@ -318,7 +329,7 @@ export function RuntimeParamsForm({
           onChange={(v) => onChange({ ...value, fit_memory: v })}
           disabled={disabled || isTp}
           label={t("deploy.fitMemory")}
-          hint={t(isTp ? "deploy.fitMemoryTpHint" : "deploy.fitMemoryHint")}
+          hint={withLlamaCppName(t(isTp ? "deploy.fitMemoryTpHint" : "deploy.fitMemoryHint"), "fit_memory")}
         />
         <CapabilitySwitch
           capability={capabilities?.no_thinking}
@@ -326,8 +337,25 @@ export function RuntimeParamsForm({
           onChange={(v) => onChange({ ...value, no_thinking: v })}
           disabled={disabled}
           label={t("deploy.noThinking")}
-          hint={t("deploy.noThinkingHint")}
+          hint={withLlamaCppName(t("deploy.noThinkingHint"), "no_thinking")}
         />
+        {!(value.no_thinking ?? true) && (
+          <Field
+            label={t("deploy.knob.reasoning_budget")}
+            tip={withLlamaCppName(t("deploy.knob.reasoning_budgetHint"), "reasoning_budget")}
+          >
+            <Input
+              type="text"
+              inputMode="numeric"
+              name="reasoning_budget"
+              aria-label={t("deploy.knob.reasoning_budget")}
+              placeholder={t("deploy.reasoningBudgetUnlimited")}
+              disabled={disabled}
+              value={reasoningBudgetText(value.reasoning_budget)}
+              onChange={(event) => onChange({ ...value, reasoning_budget: reasoningBudgetValue(event.target.value) })}
+            />
+          </Field>
+        )}
         <CapabilitySwitch
           capability={capabilities?.no_embeddings}
           alwaysVisible
@@ -335,24 +363,15 @@ export function RuntimeParamsForm({
           onChange={(v) => onChange({ ...value, no_embeddings: v })}
           disabled={disabled}
           label={t("deploy.noEmbeddings")}
-          hint={t("deploy.noEmbeddingsHint")}
+          hint={withLlamaCppName(t("deploy.noEmbeddingsHint"), "no_embeddings")}
         />
-        {pomDesenv && (
-          <Switch
-            checked={value.cycle_detection_enabled ?? false}
-            onChange={(v) => onChange({ ...value, cycle_detection_enabled: v })}
-            disabled={disabled}
-            label={t("deploy.cycleDetection")}
-            hint={t("deploy.cycleDetectionHint")}
-          />
-        )}
         <CapabilitySwitch
           capability={capabilities?.speculative_decoding}
           checked={value.speculative_decoding_enabled ?? false}
           onChange={(v) => onChange({ ...value, speculative_decoding_enabled: v })}
           disabled={disabled}
           label={t("deploy.speculative")}
-          hint={t("deploy.speculativeHint")}
+          hint={withLlamaCppName(t("deploy.speculativeHint"), "speculative_decoding_enabled")}
         />
         <CapabilitySwitch
           capability={capabilities?.mtp}
@@ -366,13 +385,27 @@ export function RuntimeParamsForm({
           }
           disabled={disabled}
           label={t("deploy.mtp")}
-          hint={t("deploy.mtpHint")}
+          hint={withLlamaCppName(t("deploy.mtpHint"), "mtp_enabled")}
         />
       </div>
 
-      {pomDesenv && (value.cycle_detection_enabled ?? false) && (
+      {pomDesenv && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-          {CYCLE_KNOBS.map((k) => numeric(k))}
+          {DEV_SAMPLING_KNOBS.map((k) => numeric(k))}
+          <Field label={t("deploy.knob.seed")} tip={withLlamaCppName(t("deploy.knob.seedHint"), "seed")}>
+            <Input
+              type="text"
+              inputMode="numeric"
+              name="seed"
+              aria-label={t("deploy.knob.seed")}
+              disabled={disabled}
+              value={value.seed ?? DEFAULT_SAMPLER_SEED}
+              onChange={(event) => onChange({ ...value, seed: seedText(event.target.value) })}
+              onBlur={() => {
+                if (!value.seed) onChange({ ...value, seed: DEFAULT_SAMPLER_SEED });
+              }}
+            />
+          </Field>
         </div>
       )}
 

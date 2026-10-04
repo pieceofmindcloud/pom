@@ -17,7 +17,7 @@
 //! Wire format is defined in [`crate::wire`] (binary framing, f16 on the wire).
 //! Decode calls run in `spawn_blocking` so they don't starve the tokio runtime.
 
-pub(crate) use crate::llm::{sample_token_profiled, LlmEngine, ModelCache, SamplingConfig};
+pub(crate) use crate::llm::{sample_token_within_budget, LlmEngine, ModelCache, SamplingConfig};
 pub(crate) use crate::pipeline::PipelineStep;
 pub(crate) use crate::runtime::NodeConfig;
 pub(crate) use crate::wire::{self, TensorShape, WireDtype};

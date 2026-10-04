@@ -86,6 +86,7 @@ pub(crate) fn engine_config_from_node(
         fit_memory: cfg.fit_memory && cfg.tp.is_none(),
         fit_memory_margin_mb: cfg.fit_memory_margin_mb,
         n_batch: cfg.n_batch,
+        n_ubatch: cfg.n_ubatch,
         n_gpu_layers: cfg.n_gpu_layers as i32,
         n_threads: 0,
         max_sessions: cfg.max_sessions.max(1),
@@ -214,6 +215,10 @@ pub struct NodeConfig {
     #[serde(default = "default_fit_memory_margin_mb")]
     pub fit_memory_margin_mb: u32,
     pub n_batch: u32,
+    /// Microlote físico (`n_ubatch` do llama.cpp) enquanto o fit de memória
+    /// está ligado; nunca maior que `n_batch`.
+    #[serde(default = "default_n_ubatch")]
+    pub n_ubatch: u32,
     /// Concurrent generations; each one gets the full configured context.
     #[serde(default = "default_max_sessions")]
     pub max_sessions: u32,
@@ -247,16 +252,37 @@ pub struct NodeConfig {
     pub top_k: u32,
     pub repeat_penalty: f32,
     pub repeat_last_n: u32,
-    /// Detecta três janelas consecutivas que repetem a mesma estrutura e
-    /// encerra a resposta com `finish_reason: cycle`.
-    #[serde(default = "default_cycle_detection_enabled")]
-    pub cycle_detection_enabled: bool,
-    #[serde(default = "default_cycle_detection_min_window_tokens")]
-    pub cycle_detection_min_window_tokens: u32,
-    #[serde(default = "default_cycle_detection_max_window_tokens")]
-    pub cycle_detection_max_window_tokens: u32,
-    #[serde(default = "default_cycle_detection_repetitions")]
-    pub cycle_detection_repetitions: u32,
+    /// Penalidades do sampler do llama.cpp, subtraídas do logit dos tokens
+    /// vistos na janela: uma vez por token (`presence`) e por ocorrência
+    /// (`frequency`). 0 desliga.
+    #[serde(default)]
+    pub presence_penalty: f32,
+    #[serde(default)]
+    pub frequency_penalty: f32,
+    /// Corta candidatos abaixo desta fração do mais provável. 0 desliga.
+    #[serde(default)]
+    pub min_p: f32,
+    /// Semente do gerador do sampler, aplicada quando a implantação carrega.
+    /// O padrão é o valor fixo que o POM sempre usou.
+    #[serde(
+        with = "llama_engine::llm::seed_text",
+        default = "llama_engine::llm::seed_text::default_seed"
+    )]
+    pub seed: u64,
+    /// Sampler DRY do llama.cpp: penaliza o token que estenderia uma sequência
+    /// já vista. `dry_multiplier` 0 desliga.
+    #[serde(default)]
+    pub dry_multiplier: f32,
+    #[serde(default = "default_dry_base")]
+    pub dry_base: f32,
+    #[serde(default = "default_dry_allowed_length")]
+    pub dry_allowed_length: u32,
+    #[serde(default = "default_dry_penalty_last_n")]
+    pub dry_penalty_last_n: u32,
+    /// Limite de tokens de um bloco de raciocínio (`--reasoning-budget` do
+    /// llama.cpp): ao atingi-lo, a tag de fim é forçada. -1 não limita.
+    #[serde(default = "default_reasoning_budget")]
+    pub reasoning_budget: i32,
     pub no_thinking: bool,
     pub single_peer: bool,
     /// Disable embedding extraction in llama.cpp. Set on the last (sampling)
@@ -354,6 +380,7 @@ impl NodeConfig {
             fit_memory: p.fit_memory && allow_fit_memory,
             fit_memory_margin_mb: p.fit_memory_margin_mb,
             n_batch: p.n_batch,
+            n_ubatch: p.n_ubatch,
             max_new_tokens: p.max_new_tokens,
             max_sessions: p.max_sessions,
             batching_enabled: p.batching_enabled,
@@ -368,10 +395,15 @@ impl NodeConfig {
             top_k: p.top_k,
             repeat_penalty: p.repeat_penalty,
             repeat_last_n: p.repeat_last_n,
-            cycle_detection_enabled: p.cycle_detection_enabled,
-            cycle_detection_min_window_tokens: p.cycle_detection_min_window_tokens,
-            cycle_detection_max_window_tokens: p.cycle_detection_max_window_tokens,
-            cycle_detection_repetitions: p.cycle_detection_repetitions,
+            presence_penalty: p.presence_penalty,
+            frequency_penalty: p.frequency_penalty,
+            min_p: p.min_p,
+            seed: p.seed,
+            dry_multiplier: p.dry_multiplier,
+            dry_base: p.dry_base,
+            dry_allowed_length: p.dry_allowed_length,
+            dry_penalty_last_n: p.dry_penalty_last_n,
+            reasoning_budget: p.reasoning_budget,
             no_thinking: p.no_thinking,
             speculative_decoding_enabled: p.speculative_decoding_enabled,
             speculative_k: p.speculative_k,
@@ -451,19 +483,6 @@ fn default_offload_kqv() -> bool {
     true
 }
 
-fn default_cycle_detection_enabled() -> bool {
-    false
-}
-fn default_cycle_detection_min_window_tokens() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
-}
-fn default_cycle_detection_max_window_tokens() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS
-}
-fn default_cycle_detection_repetitions() -> u32 {
-    crate::cycle::DEFAULT_CYCLE_REPETITIONS
-}
-
 fn default_fit_memory() -> bool {
     true
 }
@@ -484,6 +503,21 @@ fn default_mtp_draft_tokens() -> u32 {
 /// medição diga que cortar rende mais que rascunhar.
 fn default_mtp_min_probability() -> f32 {
     0.0
+}
+fn default_dry_base() -> f32 {
+    1.75
+}
+fn default_dry_allowed_length() -> u32 {
+    2
+}
+fn default_dry_penalty_last_n() -> u32 {
+    1024
+}
+fn default_n_ubatch() -> u32 {
+    llama_engine::DEFAULT_N_UBATCH
+}
+fn default_reasoning_budget() -> i32 {
+    -1
 }
 fn default_mtp_cpu_fallback_enabled() -> bool {
     true
@@ -2211,16 +2245,22 @@ mod tests {
             prefill_max_inflight_chunks:
                 crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             n_batch: 512,
+            n_ubatch: llama_engine::DEFAULT_N_UBATCH,
             max_new_tokens: 256,
             temperature: 0.7,
             top_p: 0.9,
             top_k: 40,
             repeat_penalty: 1.15,
             repeat_last_n: 64,
-            cycle_detection_enabled: true,
-            cycle_detection_min_window_tokens: crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS,
-            cycle_detection_max_window_tokens: crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS,
-            cycle_detection_repetitions: crate::cycle::DEFAULT_CYCLE_REPETITIONS,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_p: 0.0,
+            seed: llama_engine::llm::DEFAULT_SAMPLER_SEED,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_penalty_last_n: 1024,
+            reasoning_budget: -1,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,

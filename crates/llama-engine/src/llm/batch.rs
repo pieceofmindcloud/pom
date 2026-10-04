@@ -328,6 +328,7 @@ mod pool_tests {
             fit_memory: true,
             fit_memory_margin_mb: crate::DEFAULT_FIT_MEMORY_MARGIN_MB,
             n_batch: 512,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: 99,
             n_threads: 0,
             max_sessions: 2,

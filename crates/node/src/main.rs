@@ -67,10 +67,12 @@ mod config;
 mod continuation_lab;
 #[path = "core_update.rs"]
 mod core_update;
-#[path = "inference/cycle.rs"]
-mod cycle;
+#[path = "utils/crash.rs"]
+mod crash;
 #[path = "backend/db.rs"]
 mod db;
+#[path = "backend/decisions.rs"]
+mod decisions;
 #[path = "backend/deploy/mod.rs"]
 mod deploy;
 #[path = "models/deployment.rs"]
@@ -132,8 +134,6 @@ mod network_chat_policy;
 mod network_chat_tests;
 #[path = "models/ollama.rs"]
 mod ollama;
-#[path = "backend/decisions.rs"]
-mod decisions;
 #[path = "backend/openai.rs"]
 mod openai;
 #[path = "network/peer_client.rs"]
@@ -150,7 +150,6 @@ mod plugin_github;
 mod plugin_host;
 mod plugin_proxy;
 mod plugin_services;
-mod rag;
 mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;
@@ -179,14 +178,13 @@ mod public_directory;
 pub mod quic;
 #[path = "network/quic_policy.rs"]
 pub mod quic_policy;
+mod rag;
 #[path = "inference/relay.rs"]
 mod relay;
 #[path = "backend/reqlog.rs"]
 mod reqlog;
 #[path = "utils/respawn.rs"]
 mod respawn;
-#[path = "utils/crash.rs"]
-mod crash;
 #[path = "network/route.rs"]
 pub mod route;
 #[path = "network/route_plan.rs"]
@@ -331,10 +329,6 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0")]
     setup_bind: std::net::IpAddr,
 
-    /// Enable the conservative cycle detector for this node (off by default).
-    #[arg(long)]
-    cycle_detection: bool,
-
     /// Pkarr public keys of known peers to dial on startup (comma-separated, format: pk:zbase32...).
     #[arg(long, default_value = "")]
     pkarr_peers: String,
@@ -411,7 +405,6 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("ollama_url", "OLLAMA_URL"),
     ("gateway_port", "GATEWAY_PORT"),
     ("setup_bind", "SETUP_BIND"),
-    ("cycle_detection", "CYCLE_DETECTION"),
     ("pkarr_peers", "PKARR_PEERS"),
     ("public_addr", "PUBLIC_ADDR"),
     ("relay_peers", "RELAY_PEERS"),
@@ -820,7 +813,6 @@ async fn async_main(
         args.serve_relay,
         args.advertise_addr.clone(),
         args.public_addr.clone(),
-        args.cycle_detection,
         cluster_logs,
         audit,
         gateway_ready,
@@ -1512,7 +1504,6 @@ async fn start_node(
     serve_relay: bool,
     advertise_addr_cli: String,
     public_addr_cli: String,
-    cycle_detection_enabled: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     audit: Arc<reqlog::AuditLog>,
     gateway_ready: Option<gateway::GatewayReadySender>,
@@ -1733,10 +1724,6 @@ async fn start_node(
         peer_http: peer_clients.clone(),
         admission_health: Default::default(),
         runtime: node_runtime.clone(),
-        cycle_config: crate::cycle::CycleConfig {
-            enabled: cycle_detection_enabled,
-            ..crate::cycle::CycleConfig::default()
-        },
         audit,
         plugins: plugins.clone(),
         pom_core_update: pom_core_update.clone(),
@@ -2071,18 +2058,6 @@ mod main_tests {
     fn every_node_advertises_the_ollama_port() {
         let args = Args::parse_from(["pom"]);
         assert_eq!(advertised_ollama_port(&args.ollama_url), Some(11434));
-    }
-
-    /// Sem nenhuma flag de CLI, o detector de ciclos fica desligado - o padrão
-    /// pedido pelo produto. `--cycle-detection` é o interruptor explícito para
-    /// ligá-lo.
-    #[test]
-    fn cycle_detection_is_off_by_default_from_cli_args() {
-        let args = Args::parse_from(["pom"]);
-        assert!(!args.cycle_detection);
-
-        let with_flag = Args::parse_from(["pom", "--cycle-detection"]);
-        assert!(with_flag.cycle_detection);
     }
 
     #[test]

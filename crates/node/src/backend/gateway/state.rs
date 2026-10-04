@@ -426,10 +426,6 @@ pub struct GatewayState {
     pub admission_health: Arc<AdmissionHealth>,
     /// Mutable node configuration driven by the web UI.
     pub runtime: Arc<NodeRuntime>,
-    /// Cycle policy used before a deployment exists. A loaded deployment's
-    /// `NodeConfig` takes precedence, so this is also the CLI fallback for a
-    /// gateway-only process.
-    pub cycle_config: crate::cycle::CycleConfig,
     /// Durable audit trail for requests entering this gateway.
     pub audit: Arc<crate::reqlog::AuditLog>,
     /// Gerenciador dos plugins independentes (licença, host de processo por

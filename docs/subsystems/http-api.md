@@ -340,10 +340,7 @@ configuration.
   effective capacity comes from the `n_ctx` confirmed by the runtime and the
   smallest value among the live peers; the deployment's `max_new_tokens` only
   limits one leg of the continuation loop. If the prompt fills the whole
-  context, the route answers 413 before opening the SSE. `finish_reason` and
-  `partial` also show up in the body: a generation stopped by the cycle
-  detector has `finish_reason: "cycle"` and `partial: true`; that reason is
-  neither a silent cut nor a new run. The route only accepts
+  context, the route answers 413 before opening the SSE. The route only accepts
   `Authorization: Bearer <active API key>` or `x-api-key: <active API key>`;
   the `connection_key`, a missing token and an anonymous caller are refused
   before the pipeline. `trace` also exposes, per request,
@@ -1314,14 +1311,6 @@ spans, duplicates, late receipts, absences and `remote-stream` aggregates.
 `client_ttft_ms`. A missing field means the boundary was not measured, not
 zero. The audit at `GET /api/ui/requests` keeps that same object in
 `telemetry`, next to the generation `timings`.
-
-`x_pom.finish_reason: "cycle"` and `x_pom.partial: true` identify a stop due to
-repetition in the OpenAI and Anthropic adapters, in the final chunk and in the
-non-streaming answer. The provider's default reason stays compatible (`stop`
-in OpenAI and `end_turn` in Anthropic); POM-aware clients must read the
-extension to tell a cycle from a normal answer. The gateway already sent the
-token that confirmed the cycle, asks for no further token, releases the session
-and closes the stream.
 
 ## 5. Route tests - there is a single scaffold (`gateway::testkit`)
 

@@ -1064,6 +1064,7 @@ pub(super) fn prefill_blocking(
     let mut s = lock_inference_state(&state)?;
     timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
     timings.selected_path = s.inference_path;
+    s.note_thinking(&sid_key, thinking_enabled);
 
     // ── Session setup ────────────────────────────────────────────────────────
 
@@ -1377,7 +1378,12 @@ pub(super) fn prefill_blocking(
                 reply["probe_ms"] = json!(decode_started.elapsed().as_secs_f64() * 1000.0);
                 reply
             });
-        let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        let (next_id, sampling_timing) = sample_token_within_budget(
+            logits,
+            &recent,
+            &sampling,
+            s.thinking_open_at_start(&sid_key),
+        );
         super::core::mark_first_token_produced(&mut timings, decode_started);
         let done = s.engine.is_generation_stop(&recent, next_id);
         let token_text_started = Instant::now();
@@ -1609,6 +1615,7 @@ pub(super) fn prefill_batch_blocking(
             if reuse_prefix && chunk_index == 0 {
                 s.unpark_session(&sid_key);
             }
+            s.note_thinking(&sid_key, thinking_enabled);
             let reuse_snapshot = PrefixReuseSnapshot::from_session(s.sessions.get(&sid_key));
             let (want_reuse, reuse_gate_reason) =
                 prefix_reuse_gate(reuse_prefix, chunk_index, reuse_snapshot);
@@ -1998,8 +2005,12 @@ pub(super) fn prefill_batch_blocking(
                     })?;
                 let recent = s.sessions[&item.sid_key].recent_tokens.clone();
                 let logits = s.engine.logits_ith(logits_index as i32);
-                let (next_id, sampling_timing) =
-                    sample_token_profiled(logits, &recent, &s.sampling);
+                let (next_id, sampling_timing) = sample_token_within_budget(
+                    logits,
+                    &recent,
+                    &s.sampling,
+                    s.thinking_open_at_start(&item.sid_key),
+                );
                 super::core::mark_first_token_produced(&mut timings, decode_started);
                 let piece = s.engine.token_to_piece_bytes(next_id, false);
                 let mut text = s
@@ -2494,8 +2505,12 @@ pub(super) fn step_batch_blocking(
                     })?;
                 let recent = s.sessions[&item.sid_key].recent_tokens.clone();
                 let logits = s.engine.logits_ith(logits_index as i32);
-                let (next_id, sampling_timing) =
-                    sample_token_profiled(logits, &recent, &s.sampling);
+                let (next_id, sampling_timing) = sample_token_within_budget(
+                    logits,
+                    &recent,
+                    &s.sampling,
+                    s.thinking_open_at_start(&item.sid_key),
+                );
                 super::core::mark_first_token_produced(&mut timings, decode_started);
                 let token_text_started = Instant::now();
                 let piece = s.engine.token_to_piece_bytes(next_id, false);

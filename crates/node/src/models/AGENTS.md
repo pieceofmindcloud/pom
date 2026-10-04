@@ -209,10 +209,7 @@ mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
 `cache_type_v`) e a margem de segurança do fit também são serializados no
 estado efetivo. Os tipos do cache continuam sendo repostos a partir do
 `pom.json` pelo `NodeRuntime` antes de carregar o modelo; a margem vem dos
-parâmetros da implantação. Os parâmetros do detector de ciclos
-(`cycle_detection_*`) também fazem parte do `NodeConfig` achatado, para que o
-gateway preserve a mesma política depois de um restart e a fatia anotada não
-volte a gerar com uma configuração diferente. `save_at` é crate-private para o
+parâmetros da implantação. `save_at` é crate-private para o
 watcher de `/health` gravar no caminho de configuração que capturou ao iniciar,
 sem seguir uma mudança posterior de `POM_CONFIG` no processo.
 

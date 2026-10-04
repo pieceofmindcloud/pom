@@ -70,7 +70,11 @@ mod tests {
         let shards = root.join("shards");
         std::fs::create_dir_all(&models).unwrap();
         std::fs::create_dir_all(shards.join("MTP")).unwrap();
-        std::fs::write(models.join("model.gguf"), crate::splitter::test_gguf_bytes(1)).unwrap();
+        std::fs::write(
+            models.join("model.gguf"),
+            crate::splitter::test_gguf_bytes(1),
+        )
+        .unwrap();
         std::fs::write(
             shards.join("MTP").join("mtp-model-shared-Q8_0.gguf"),
             crate::catalog::tests::mtp_draft_fixture("llama", 64, 32),
@@ -386,19 +390,6 @@ mod tests {
             p.fit_memory_margin_mb,
             crate::runtime::DEFAULT_FIT_MEMORY_MARGIN_MB
         );
-        assert!(!p.cycle_detection_enabled);
-        assert_eq!(
-            p.cycle_detection_min_window_tokens,
-            crate::cycle::DEFAULT_CYCLE_MIN_WINDOW_TOKENS
-        );
-        assert_eq!(
-            p.cycle_detection_max_window_tokens,
-            crate::cycle::DEFAULT_CYCLE_MAX_WINDOW_TOKENS
-        );
-        assert_eq!(
-            p.cycle_detection_repetitions,
-            crate::cycle::DEFAULT_CYCLE_REPETITIONS
-        );
     }
 
     #[test]
@@ -475,26 +466,6 @@ mod tests {
         assert!(!p.fit_memory);
         assert_eq!(p.fit_memory_margin_mb, 512);
         assert_eq!(p.top_k, 40, "campos ausentes mantêm o padrão");
-    }
-
-    #[test]
-    fn cycle_detection_can_be_disabled_and_tuned_as_a_runtime_parameter() {
-        let p: RuntimeParams = serde_json::from_value(serde_json::json!({
-            "cycle_detection_enabled": false,
-            "cycle_detection_min_window_tokens": 64,
-            "cycle_detection_max_window_tokens": 256,
-            "cycle_detection_repetitions": 4
-        }))
-        .unwrap();
-
-        assert!(!p.cycle_detection_enabled);
-        assert_eq!(p.cycle_detection_min_window_tokens, 64);
-        assert_eq!(p.cycle_detection_max_window_tokens, 256);
-        assert_eq!(p.cycle_detection_repetitions, 4);
-
-        let encoded = serde_json::to_value(p).unwrap();
-        assert_eq!(encoded["cycle_detection_enabled"], false);
-        assert_eq!(encoded["cycle_detection_repetitions"], 4);
     }
 
     #[test]

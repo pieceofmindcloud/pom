@@ -249,10 +249,6 @@ describe("RuntimeParamsForm", () => {
     const requested = {
       ...FORM_PARAMS,
       inference_mode: "moe" as const,
-      cycle_detection_enabled: true,
-      cycle_detection_min_window_tokens: 7,
-      cycle_detection_max_window_tokens: 9,
-      cycle_detection_repetitions: 8,
       mtp_enabled: true,
       mtp_cpu_fallback_enabled: false,
       unload_if_idle: true,
@@ -265,16 +261,10 @@ describe("RuntimeParamsForm", () => {
       </LocaleProvider>,
     );
 
-    expect(screen.queryByRole("checkbox", { name: /ciclos/i })).toBeNull();
-    expect(screen.queryByRole("spinbutton", { name: /janela mínima/i })).toBeNull();
     expect(screen.queryByRole("checkbox", { name: /recuo.*MTP/i })).toBeNull();
     fireEvent.click(screen.getByRole("checkbox", { name: /embeddings/i }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       inference_mode: "moe",
-      cycle_detection_enabled: true,
-      cycle_detection_min_window_tokens: 7,
-      cycle_detection_max_window_tokens: 9,
-      cycle_detection_repetitions: 8,
       mtp_cpu_fallback_enabled: false,
       unload_if_idle: true,
       idle_minutes: 2,
@@ -286,19 +276,46 @@ describe("RuntimeParamsForm", () => {
     render(
       <LocaleProvider initialLocale="pt-BR">
         <RuntimeParamsForm
-          value={{ ...FORM_PARAMS, cycle_detection_enabled: true, mtp_enabled: true }}
+          value={{ ...FORM_PARAMS, mtp_enabled: true }}
           onChange={vi.fn()}
           pomDesenv
         />
       </LocaleProvider>,
     );
 
-    expect(screen.getByRole("checkbox", { name: /ciclos/i })).toBeTruthy();
     // Onde o MTP fica é uma escolha entre três lugares, não um interruptor.
     expect(screen.queryByRole("checkbox", { name: /recuo.*MTP/i })).toBeNull();
     const placement = screen.getByRole("combobox", { name: "Onde o MTP fica" }) as HTMLSelectElement;
     expect(placement.value).toBe("auto");
     expect(Array.from(placement.options).map((option) => option.value)).toEqual(["auto", "vram", "ram"]);
+  });
+
+  it("mostra o limite de raciocínio só com o thinking ligado, e vazio quer dizer sem limite", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RuntimeParamsForm value={{ ...FORM_PARAMS, no_thinking: true }} onChange={onChange} />
+      </LocaleProvider>,
+    );
+    expect(screen.queryByRole("textbox", { name: "Limite de raciocínio (tokens)" })).toBeNull();
+
+    rerender(
+      <LocaleProvider initialLocale="pt-BR">
+        <RuntimeParamsForm value={{ ...FORM_PARAMS, no_thinking: false }} onChange={onChange} />
+      </LocaleProvider>,
+    );
+    const budget = screen.getByRole("textbox", { name: "Limite de raciocínio (tokens)" }) as HTMLInputElement;
+    expect(budget.value).toBe("");
+    fireEvent.change(budget, { target: { value: "2048" } });
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ reasoning_budget: 2048 }));
+
+    rerender(
+      <LocaleProvider initialLocale="pt-BR">
+        <RuntimeParamsForm value={{ ...FORM_PARAMS, no_thinking: false, reasoning_budget: 2048 }} onChange={onChange} />
+      </LocaleProvider>,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Limite de raciocínio (tokens)" }), { target: { value: "" } });
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ reasoning_budget: -1 }));
   });
 
   it("mantém f16 como padrão e grava f8 quando o cluster confirma a capacidade", () => {

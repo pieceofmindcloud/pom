@@ -1099,7 +1099,6 @@ pub(super) async fn handle_generate(
     .await
     {
         Ok((text, summary)) => {
-            let cycle_interrupted = summary.finish_reason.as_deref() == Some("cycle");
             (
                 StatusCode::OK,
                 Json(GenerateResponse {
@@ -1110,11 +1109,10 @@ pub(super) async fn handle_generate(
                     duration_ms: summary.duration_ms,
                     timings: Some(summary.timings),
                     stop_sequence: summary.stop_sequence,
-                    // Keep the established `/api/generate` shape for ordinary
-                    // stops and transport-partial responses. These fields are
-                    // the explicit public marker for the new cycle interruption.
-                    finish_reason: cycle_interrupted.then(|| "cycle".to_string()),
-                    partial: cycle_interrupted,
+                    // `/api/generate` keeps its established shape: ordinary
+                    // stops and transport-partial responses carry neither.
+                    finish_reason: None,
+                    partial: false,
                     trace: summary.trace,
                 }),
             )

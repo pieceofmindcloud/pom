@@ -69,10 +69,6 @@ describe("DeploymentInspector idle policy", () => {
       {
         ...params,
         inference_mode: "moe",
-        cycle_detection_enabled: true,
-        cycle_detection_min_window_tokens: 7,
-        cycle_detection_max_window_tokens: 9,
-        cycle_detection_repetitions: 8,
         mtp_cpu_fallback_enabled: false,
         unload_if_idle: true,
         idle_minutes: 2,
@@ -89,10 +85,6 @@ describe("DeploymentInspector idle policy", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Disable embeddings" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       inference_mode: "moe",
-      cycle_detection_enabled: true,
-      cycle_detection_min_window_tokens: 7,
-      cycle_detection_max_window_tokens: 9,
-      cycle_detection_repetitions: 8,
       mtp_cpu_fallback_enabled: false,
       unload_if_idle: true,
       idle_minutes: 2,

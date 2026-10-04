@@ -810,12 +810,6 @@ faz o download autenticado do blob persistido.
   numa decisão tipada (trace com `jev`/`probe`), que sempre para no seu único
   token e por isso é `ok` -, e reserva `partial` para falha de transporte com
   texto salvo.
-  O detector de ciclos (`inference/cycle.rs`) roda depois de cada peça no
-  gateway. Ele exige três janelas canônicas, trata sufixos numéricos de
-  identificadores como a mesma estrutura e preserva números de dados. Quando
-  confirma, termina sem pedir outra ficha, libera a sessão e publica
-  `finish_reason: "cycle"` e `partial: true`; desligado por padrão, o
-  detector é ligado em `RuntimeParams` ou com `--cycle-detection`.
   **O total é inviolável.** Nada o ultrapassa, nem uma chamada de ferramenta
   aberta no token do corte - houve aqui uma folga que ultrapassava o teto, e
   ela foi removida porque nenhum dos dois

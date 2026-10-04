@@ -137,11 +137,23 @@ export interface NodeConfig {
   top_k: number;
   repeat_penalty: number;
   repeat_last_n: number;
-  /** Conservatively stops a confirmed degenerative cycle; absent means on. */
-  cycle_detection_enabled?: boolean;
-  cycle_detection_min_window_tokens?: number;
-  cycle_detection_max_window_tokens?: number;
-  cycle_detection_repetitions?: number;
+  /** Subtracted once from the logit of each token seen in the window; 0 is off. */
+  presence_penalty?: number;
+  /** Subtracted per occurrence of a token in the window; 0 is off. */
+  frequency_penalty?: number;
+  /** Drops candidates less likely than this fraction of the most likely one; 0 is off. */
+  min_p?: number;
+  /** Seed of the sampler's generator, as text: a 64-bit integer does not fit a JS number. */
+  seed?: string;
+  /** DRY sampler: penalty for extending a sequence already seen; 0 is off. */
+  dry_multiplier?: number;
+  dry_base?: number;
+  dry_allowed_length?: number;
+  dry_penalty_last_n?: number;
+  /** Physical micro-batch under the memory fit; never more than `n_batch`. */
+  n_ubatch?: number;
+  /** Token limit of a thinking block; -1 (or absent) is no limit. */
+  reasoning_budget?: number;
   no_thinking: boolean;
   single_peer: boolean;
   no_embeddings: boolean;
@@ -1943,11 +1955,23 @@ export interface RuntimeParams {
   top_k: number;
   repeat_penalty: number;
   repeat_last_n: number;
-  /** Conservatively stops a confirmed degenerative cycle; absent means on. */
-  cycle_detection_enabled?: boolean;
-  cycle_detection_min_window_tokens?: number;
-  cycle_detection_max_window_tokens?: number;
-  cycle_detection_repetitions?: number;
+  /** Subtracted once from the logit of each token seen in the window; 0 is off. */
+  presence_penalty?: number;
+  /** Subtracted per occurrence of a token in the window; 0 is off. */
+  frequency_penalty?: number;
+  /** Drops candidates less likely than this fraction of the most likely one; 0 is off. */
+  min_p?: number;
+  /** Seed of the sampler's generator, as text: a 64-bit integer does not fit a JS number. */
+  seed?: string;
+  /** DRY sampler: penalty for extending a sequence already seen; 0 is off. */
+  dry_multiplier?: number;
+  dry_base?: number;
+  dry_allowed_length?: number;
+  dry_penalty_last_n?: number;
+  /** Physical micro-batch under the memory fit; never more than `n_batch`. */
+  n_ubatch?: number;
+  /** Token limit of a thinking block; -1 (or absent) is no limit. */
+  reasoning_budget?: number;
   no_thinking: boolean;
   no_embeddings: boolean;
   /** Kill-switch do operador: mesmo com todos os peers capazes, a

@@ -79,7 +79,7 @@ interface, e num reinício volta pelo journal da fatia (`lastslice`).
 
 **Flags (clap derive, `Args`):** `-p/--port` (42777), `-b/--bootstrap`,
 `--advertise-addr`, `--ollama-url`, `--gateway-port` (8080),
-`--setup-bind`, `--cycle-detection` (desligado por padrão), `--pkarr-peers`,
+`--setup-bind`, `--pkarr-peers`,
 `--public-addr`, `--relay-peers`, `--serve-relay`, `--no-default-relays`,
 `--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
 access).
@@ -236,7 +236,6 @@ automáticas de uma implantação problemática.
 - `inference/` - servidor Rust e wire format: `infer_server.rs`
   (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),
-  `cycle.rs` (detector de ciclo de saída, lido pelo gateway),
   `wire.rs` (frame inicial único `[len][JSON][itens][tensor]`, f16/f8/i4
   groupwise e batch validado), `relay.rs` (chain relay + agrupamento por próximo hop),
   `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +

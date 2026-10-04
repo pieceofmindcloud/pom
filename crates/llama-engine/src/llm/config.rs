@@ -103,6 +103,11 @@ pub struct EngineConfig {
     /// este campo é somente a reserva de segurança configurável.
     pub fit_memory_margin_mb: u32,
     pub n_batch: u32,
+    /// The physical micro-batch (llama.cpp's `n_ubatch`) while the memory fit
+    /// is on: the context decodes at most this many tokens at once, and its
+    /// compute buffers are sized for it. Never more than `n_batch`. With the
+    /// fit off the micro-batch is the batch, as before.
+    pub n_ubatch: u32,
     pub n_gpu_layers: i32,
     pub n_threads: i32,
     pub max_sessions: u32,
@@ -232,7 +237,7 @@ pub(super) const FIT_MIN_CONTEXT: u32 = 4096;
 /// public `n_batch` can stay large enough to accept a prompt chunk. A smaller
 /// ubatch is the safe automatic fallback before llama.cpp reserves those
 /// workspaces on a nearly-full GPU.
-pub(super) const FIT_MAX_UBATCH: u32 = 512;
+pub(super) const FIT_MAX_UBATCH: u32 = crate::DEFAULT_N_UBATCH;
 /// Exceção aprovada para o contexto principal que usa o executor externo de
 /// MoE. O microlote menor devolve VRAM ao cache residente; não é a política
 /// do contexto denso nem do MTP, que continuam em `FIT_MAX_UBATCH`.
@@ -747,6 +752,7 @@ mod fit_memory_margin_tests {
             fit_memory: true,
             fit_memory_margin_mb: 256,
             n_batch: 128,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: DEFAULT_GPU_LAYERS,
             n_threads: 0,
             need_embeddings: false,
@@ -1049,6 +1055,7 @@ mod fit_memory_margin_tests {
             fit_memory: false,
             fit_memory_margin_mb: 256,
             n_batch: 128,
+            n_ubatch: crate::DEFAULT_N_UBATCH,
             n_gpu_layers: DEFAULT_GPU_LAYERS,
             n_threads: 0,
             need_embeddings: false,
@@ -1243,10 +1250,11 @@ pub fn effective_mtp_n_ubatch(cfg: &EngineConfig) -> u32 {
 fn effective_n_ubatch_with_limit(cfg: &EngineConfig, external_moe: bool) -> u32 {
     let n_batch = cfg.n_batch.max(1);
     if cfg.fit_memory {
+        let chosen = cfg.n_ubatch.max(1);
         let limit = if external_moe {
-            MOE_EXTERNAL_MAX_UBATCH
+            MOE_EXTERNAL_MAX_UBATCH.min(chosen)
         } else {
-            FIT_MAX_UBATCH
+            chosen
         };
         n_batch.min(limit)
     } else {

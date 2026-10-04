@@ -1552,8 +1552,16 @@ multiple of `n_embd_inp`, `decode_multimodal` evaluates the chunks itself
 (`eval_chunks_with_wide_images`): text chunks still go through the mtmd
 helper, and each image is encoded by mtmd and decoded with every row repeated
 `n_embd_out / n_embd_inp` times, which is how the token path starts the
-residual. Positions and the non-causal switch follow the helper. Other models
-keep the stock helper.
+residual. Positions and the non-causal switch follow the helper. Such a model
+runs without `cparams.embeddings`, so its last layer keeps only the rows
+marked as outputs; when the hop forwards the residual, every text and image
+cell is marked (the mtmd helper marks only the last one, and `take_residual`
+then refused the short capture). Text chunks are decoded there too for that
+reason. Other models keep the stock helper.
+
+A failed prefill reaches the client as `Prefill falhou: <cause>`, built by
+`prefill::failure_cause`, which drops the telemetry and resume wrappers from
+the error chain; the gateway also logs the full chain at `warn`.
 
 **M-RoPE hidden-state batches always carry four positions per row.** With an
 embedding batch (`batch.token` null) llama.cpp reads `pos[j * n_tokens + i]`

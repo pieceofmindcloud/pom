@@ -95,7 +95,7 @@ impl std::fmt::Display for PrefillResumable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "prefill retomável do pedaço {} (posição {})",
+            "{RESUMABLE_TEXT_PREFIX}{} (posição {})",
             self.from_chunk, self.start_pos
         )
     }
@@ -113,11 +113,34 @@ pub struct PartialPrefillTrace {
 
 impl std::fmt::Display for PartialPrefillTrace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("telemetria parcial do prefill")
+        f.write_str(PARTIAL_TRACE_TEXT)
     }
 }
 
 impl std::error::Error for PartialPrefillTrace {}
+
+const PARTIAL_TRACE_TEXT: &str = "telemetria parcial do prefill";
+const RESUMABLE_TEXT_PREFIX: &str = "prefill retomável do pedaço ";
+
+/// The prefill error as a person reads it: the context chain without the
+/// wrappers that only carry telemetry or a resume point. Printing just the
+/// outermost context showed "telemetria parcial do prefill" and hid the cause.
+pub fn failure_cause(error: &anyhow::Error) -> String {
+    // Both wrappers are attached with `context`, which hides their type from
+    // `chain()`; their fixed text is what identifies them.
+    let parts: Vec<String> = error
+        .chain()
+        .map(|cause| cause.to_string())
+        .filter(|text| {
+            text != PARTIAL_TRACE_TEXT && !text.starts_with(RESUMABLE_TEXT_PREFIX)
+        })
+        .collect();
+    if parts.is_empty() {
+        error.to_string()
+    } else {
+        parts.join(": ")
+    }
+}
 
 /// Partial trace retained by a failed prefill, whether or not it can resume.
 pub fn partial_trace(error: &anyhow::Error) -> Option<RequestTrace> {

@@ -1110,8 +1110,9 @@ pub(super) async fn generate_stream_inner(
                 } else if cold_recovery_attempted {
                     "Prefill falhou: uma falha de transporte deixou incerto se o peer processou o último chunk. O sistema tentou reconstruir o contexto uma vez, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
                 } else {
-                    format!("Prefill falhou: {e}")
+                    format!("Prefill falhou: {}", crate::prefill::failure_cause(&e))
                 };
+                warn!("prefill falhou: {e:#}");
                 let _ = tx
                     .send(GenEvent::FailedWithTelemetry {
                         error: message,

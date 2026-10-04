@@ -977,6 +977,8 @@ impl LlmEngine {
         self.begin_moe_callback();
         let copies = image_embedding_copies(self.n_embd_inp, self.n_embd_out);
         if copies > 1 {
+            // The caller asks for outputs (`!is_last`) exactly when this hop
+            // forwards the residual, so every cell becomes an output row.
             new_n_past = self.eval_chunks_with_wide_images(
                 vision_ctx,
                 chunks.0,
@@ -1026,11 +1028,16 @@ impl LlmEngine {
     }
 
     /// `mtmd_helper_eval_chunks` for a model whose embedding batch is wider
-    /// than the projector output (see [`image_embedding_copies`]). Text chunks
-    /// still go through the mtmd helper; each image is encoded by mtmd and
-    /// decoded here with its rows repeated `copies` times and the same
-    /// positions and attention mode the helper would use. Returns the next
-    /// logical position.
+    /// than the projector output (see [`image_embedding_copies`]). Each image
+    /// is encoded by mtmd and decoded here with its rows repeated `copies`
+    /// times and the same positions and attention mode the helper would use.
+    ///
+    /// Such a model runs without `cparams.embeddings` (its hidden width is not
+    /// `n_embd`), so its last layer keeps only the rows marked as outputs. A
+    /// hop that forwards the residual (`all_rows`) needs every cell, which the
+    /// helper never marks; text is therefore decoded here too. Otherwise only
+    /// the final row is an output, for the logits. Returns the next logical
+    /// position.
     #[allow(clippy::too_many_arguments)]
     fn eval_chunks_with_wide_images(
         &mut self,
@@ -1038,7 +1045,7 @@ impl LlmEngine {
         chunks: *const sys::mtmd_input_chunks,
         n_past: u32,
         seq_id: u32,
-        logits_last: bool,
+        all_rows: bool,
         copies: usize,
         mrope_positions: Option<&[[u32; 4]]>,
     ) -> Result<sys::llama_pos> {
@@ -1057,23 +1064,35 @@ impl LlmEngine {
             let n_tokens = unsafe { sys::mtmd_input_chunk_get_n_tokens(chunk) };
             let kind = unsafe { sys::mtmd_input_chunk_get_type(chunk) };
             if kind == sys::MTMD_INPUT_CHUNK_TYPE_TEXT {
-                let mut next = n_past;
-                let rc = unsafe {
-                    sys::mtmd_helper_eval_chunk_single(
-                        vision_ctx,
-                        self.ctx,
-                        chunk,
-                        n_past,
-                        seq_id as sys::llama_seq_id,
-                        n_batch as i32,
-                        logits_last && last_chunk,
-                        &mut next,
-                    )
+                let mut n_text = 0usize;
+                let tokens = unsafe { sys::mtmd_input_chunk_get_tokens_text(chunk, &mut n_text) };
+                let tokens = if n_text == 0 {
+                    &[][..]
+                } else {
+                    unsafe { std::slice::from_raw_parts(tokens, n_text) }
                 };
-                if rc != 0 {
-                    bail!("mtmd falhou ao avaliar o texto da mensagem multimodal (rc={rc})");
+                for start in (0..n_text).step_by(n_batch) {
+                    let end = (start + n_batch).min(n_text);
+                    let rows = end - start;
+                    let mut batch = unsafe { sys::llama_batch_init(rows as i32, 0, 1) };
+                    batch.n_tokens = rows as i32;
+                    unsafe {
+                        for i in 0..rows {
+                            *batch.token.add(i) = tokens[start + i];
+                            *batch.pos.add(i) = n_past + (start + i) as sys::llama_pos;
+                            *batch.n_seq_id.add(i) = 1;
+                            *(*batch.seq_id.add(i)).add(0) = seq_id as sys::llama_seq_id;
+                            *batch.logits.add(i) =
+                                (all_rows || (last_chunk && start + i + 1 == n_text)) as i8;
+                        }
+                    }
+                    let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+                    unsafe { sys::llama_batch_free(batch) };
+                    if rc != 0 {
+                        bail!("llama_decode falhou no texto da mensagem multimodal (rc={rc})");
+                    }
                 }
-                n_past = next;
+                n_past += n_text as sys::llama_pos;
                 cell += n_tokens;
                 continue;
             }
@@ -1131,7 +1150,7 @@ impl LlmEngine {
                             *batch.n_seq_id.add(i) = 1;
                             *(*batch.seq_id.add(i)).add(0) = seq_id as sys::llama_seq_id;
                             *batch.logits.add(i) =
-                                (logits_last && last_chunk && start + i + 1 == n_tokens) as i8;
+                                (all_rows || (last_chunk && start + i + 1 == n_tokens)) as i8;
                         }
                     }
                     let scalar_positions = batch.pos;

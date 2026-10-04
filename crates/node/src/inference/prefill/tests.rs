@@ -1795,3 +1795,22 @@ mod tests {
         assert_eq!(untouched, json!({"chunk_index": 0}));
     }
 }
+
+#[test]
+fn a_failed_prefill_names_its_cause_not_the_telemetry_wrapper() {
+    let error = anyhow::anyhow!("captura tem 3 linhas, esperado 238")
+        .context("hop 1 recusou o pedaço 0")
+        .context(PartialPrefillTrace {
+            trace: Box::new(RequestTrace::from_plan(
+                "m",
+                &crate::pipeline::PipelinePlan {
+                    steps: Vec::new(),
+                    edges: Vec::new(),
+                },
+            )),
+        });
+    assert_eq!(
+        failure_cause(&error),
+        "hop 1 recusou o pedaço 0: captura tem 3 linhas, esperado 238"
+    );
+}
